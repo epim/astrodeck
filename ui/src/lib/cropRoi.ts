@@ -144,42 +144,86 @@ export function centerSensorRoi(g: RoiGeom, size: number): CropRoi | null {
 }
 
 /* ------------------------------------------------------------------ loupe fit
- * How big the 1:1 loupe box may be on a stage this wide.
+ * How big the 1:1 loupe box may be on a stage this size.
  *
- * The loupe is a fixed-size panel pinned to the stage's bottom-right. At its
- * original 160px box (172px with chrome) it ate ~48% of a 360px phone stage and
- * ran straight into the bottom-left chip stack. The stage is NOT the viewport —
- * it is a panel inside a scrolling column, and `compact` is smaller again — so a
- * CSS media query keyed to viewport width is the wrong instrument. This is a
- * pure function of the MEASURED stage width (PreviewStage already runs a
- * ResizeObserver for `fitScale`; we reuse that measurement).
+ * The loupe is a panel pinned to a corner of the stage. At its original 160px
+ * box (172px with chrome) it ate ~48% of a 360px phone stage and ran straight
+ * into the bottom-left chip stack. The stage is NOT the viewport — it is a panel
+ * inside a scrolling column, and `compact` is smaller again — so a CSS media
+ * query keyed to viewport width is the wrong instrument. This is a pure function
+ * of the MEASURED stage box (PreviewStage already runs a ResizeObserver for
+ * `fitScale`; we reuse that measurement).
  *
- * SCALE FIRST, SUPPRESS ONLY AT THE FLOOR. "1:1" is a pixel RATIO, not a size:
- * a 108px window still shows 108 real sensor pixels, ~20x a typical star's FWHM
- * and plenty for the focus/noise check the loupe exists for. Silently rendering
- * nothing would leave the user staring at a Magnifier toggle they just pressed
- * that does nothing (house rule §11.8). Below `LOUPE_BOX_MIN` the crosshair, the
- * 1px border and the ROI caption stop framing anything useful, so we return 0
- * and the stage says WHY out loud instead of shrinking to a peephole.
+ * SCALE FIRST, SUPPRESS ONLY WHEN IT CANNOT FIT AT ALL. "1:1" is a pixel RATIO,
+ * not a size: an 88px window still shows 88 real sensor pixels, ~18x a typical
+ * star's FWHM and plenty for the focus/noise check the loupe exists for.
+ * Silently rendering nothing would leave the user staring at a Magnifier toggle
+ * they just pressed that does nothing (house rule §11.8).
+ *
+ * THE RULE, in one sentence: the loupe gets `LOUPE_STAGE_FRACTION` of a roomy
+ * stage, and on a narrow one it is allowed to grow its SHARE (up to
+ * `LOUPE_STAGE_FRACTION_MAX`) rather than shrink below `LOUPE_BOX_MIN` — because
+ * on a phone the loupe IS the reason the panel is open. This is what the old
+ * width-only rule got wrong: it computed 0.34 of the width and, finding it under
+ * the floor, returned 0. A 390px phone leaves the stage 324px, and 0.34 of that
+ * was 98 — one pixel over the old 96px floor. A 360px phone (Galaxy S23, iPhone
+ * 12 mini) left 294px, 0.34 of which is 87, so the magnifier was suppressed
+ * outright on the device it is most wanted on.
+ *
+ * HEIGHT COUNTS TOO. The panel is taller than it is wide (window + caption), and
+ * a `compact` stage is 3:2 with a floor of 230px — so on the Focus screen the
+ * binding constraint is vertical, not horizontal. `stageH` is the height the
+ * loupe may actually use; the CALLER subtracts anything a sibling overlay owns
+ * (FocusView's pod disc), because the stage cannot see its own siblings.
  */
 /** Full-size loupe box, CSS px (== sensor px at 1:1). */
 export const LOUPE_BOX_MAX = 160;
 /** Below this a 1:1 window is a peephole, not an inspection tool. */
-export const LOUPE_BOX_MIN = 96;
-/** Panel padding + border around the box. */
+export const LOUPE_BOX_MIN = 88;
+/** Panel padding + border to the left and right of the box. */
 export const LOUPE_CHROME_PX = 12;
-/** Widest share of the stage the whole loupe panel may occupy. */
+/** …and above + below it: padding + border (14), the 4px gap, and the 44px
+ *  copy/ROI row. */
+export const LOUPE_CHROME_V_PX = 62;
+/** The DENSE layout's vertical chrome: the 1:1 window is itself the copy target
+ *  (it is ≥44px, so it already clears the tap floor) and the ROI is one 10px
+ *  line under it — 14 + 4 + 13, rounded up. Used on a `compact` stage, where a
+ *  44px caption row is the difference between a loupe and no loupe. */
+export const LOUPE_CHROME_V_DENSE_PX = 32;
+/** The panel's inset from the stage edges it is pinned between (`*-2` == 8px). */
+export const LOUPE_INSET_PX = 8;
+/** Share of a roomy stage's WIDTH the whole loupe panel takes. */
 export const LOUPE_STAGE_FRACTION = 0.34;
+/** …and the most a narrow one may lend it before we suppress instead. Half the
+ *  stage is the point past which the loupe stops being an inset and starts being
+ *  a split screen. */
+export const LOUPE_STAGE_FRACTION_MAX = 0.5;
 
-export function loupeBoxSize(stageW: number): number {
+/**
+ * @param stageW measured stage width, CSS px. 0/NaN = not measured yet.
+ * @param stageH height the loupe may use, CSS px — the measured stage height
+ *   MINUS whatever a sibling overlay owns. 0/omitted = not measured yet.
+ * @param dense the caption row is collapsed (see LOUPE_CHROME_V_DENSE_PX).
+ */
+export function loupeBoxSize(stageW: number, stageH: number = 0, dense = false): number {
   // Unmeasured (ResizeObserver has not fired yet): assume it fits. Returning 0
   // here would flash the "too narrow" note for one commit on every mount.
   if (!(stageW > 0)) return LOUPE_BOX_MAX;
-  const budget = Math.floor(stageW * LOUPE_STAGE_FRACTION) - LOUPE_CHROME_PX;
-  if (budget >= LOUPE_BOX_MAX) return LOUPE_BOX_MAX;
-  if (budget < LOUPE_BOX_MIN) return 0;
+  const chromeV = dense ? LOUPE_CHROME_V_DENSE_PX : LOUPE_CHROME_V_PX;
+  // What the corner can physically hold, in each axis.
+  const roomW = Math.floor(stageW * LOUPE_STAGE_FRACTION_MAX) - LOUPE_CHROME_PX;
+  const roomH = stageH > 0
+    ? Math.floor(stageH) - chromeV - 2 * LOUPE_INSET_PX
+    : LOUPE_BOX_MAX;
+  const room = Math.min(roomW, roomH);
+  // Genuinely no room for even the minimum useful window: 0, and the stage says
+  // WHY out loud instead of shrinking to a peephole.
+  if (room < LOUPE_BOX_MIN) return 0;
+  // The comfortable share, clamped into what the corner can hold, then onto a
   // 4px lattice so the centre crosshair always lands on a whole pixel.
-  return Math.floor(budget / 4) * 4;
+  const share = Math.floor(stageW * LOUPE_STAGE_FRACTION) - LOUPE_CHROME_PX;
+  const box = Math.max(LOUPE_BOX_MIN, Math.min(share, room, LOUPE_BOX_MAX));
+  return Math.floor(box / 4) * 4;
 }
 
 /**

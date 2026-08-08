@@ -39,7 +39,19 @@ win.matchMedia = () => ({
   addListener() {}, removeListener() {},
 });
 win.WebSocket = class { close() {} addEventListener() {} send() {} };
-win.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
+// A RECORDING ResizeObserver, not an inert one. jsdom lays nothing out, so a
+// no-op stub pins every measured box at 0x0 — and `loupeBoxSize` reads 0 as
+// "not measured yet, assume it fits", which means a stub like that can only
+// ever test the roomiest stage that exists. Half of what is asserted below is
+// about a 324px phone stage, so the tests have to be able to SAY that box.
+const roLive: any[] = [];
+win.ResizeObserver = class {
+  cb: (entries: unknown[]) => void;
+  constructor(cb: (entries: unknown[]) => void) { this.cb = cb; roLive.push(this); }
+  observe() {}
+  unobserve() {}
+  disconnect() { const i = roLive.indexOf(this); if (i >= 0) roLive.splice(i, 1); }
+};
 win.Element.prototype.setPointerCapture = function () {};
 win.Element.prototype.releasePointerCapture = function () {};
 // The linear path draws through a 2D context jsdom does not implement; the
@@ -149,13 +161,29 @@ function click(node: any): void {
 }
 
 // ============================================================== PreviewStage
-function stage(p: PreviewInfo, ov: OverlayToggles = overlays): any {
+/** The most recent StageControls the stage handed out — the ONLY way to drive
+ *  the magnifier, whose state lives inside PreviewStage (Decision F). */
+let controls: any = null;
+function stage(p: PreviewInfo, ov: OverlayToggles = overlays, extra: Record<string, any> = {}): any {
   return createElement(PreviewStage, {
     preview: p, viewport, setViewport: () => {}, stretch, overlays: ov,
     hfrGood: 3.5, hfrWarn: 5, night: false, linkDown: false, pinned: false,
     newSincePinned: 0, onReturnToLive: () => {},
+    onControls: (c: any) => { controls = c; },
+    ...extra,
   });
 }
+/** Hand the mounted stage a real box. See the ResizeObserver note up top. */
+function sizeStage(w: number, h: number): void {
+  act(() => {
+    for (const ro of [...roLive]) ro.cb([{ contentRect: { width: w, height: h } }]);
+  });
+}
+function setLoupe(on: boolean): void {
+  assert(controls != null, "the stage never handed out its controls, so the magnifier cannot be driven");
+  act(() => { controls.setLoupeOn(on); });
+}
+const loupeEl = () => container.querySelector("[data-loupe]");
 
 mount(stage(frame()));
 
@@ -214,6 +242,80 @@ test("the readout is gated on the overlay that produced it", () => {
   rerender(stage(frame(), { ...overlays, stars: false }));
   assert(!/HFR /.test(container.textContent || ""),
     "turning the star overlay off left its readout behind — the chip outlives the rings it belongs to");
+});
+
+// ------------------------------------------------------- the 1:1 magnifier
+// Reported 2026-08-08 from a phone at the scope: "the magnifier doesn't work".
+// It was gated on FOUR things and two of them fired on a phone. `!compact` meant
+// it could never appear on the Focus screen — the screen whose entire job is
+// judging focus — and `loupeBoxSize` returned 0 for any stage under 318px, which
+// is what a 360px phone hands it. Both are geometry, and geometry is what the
+// sizing function is for; neither is a reason to delete the feature.
+
+test("the magnifier is offered exactly where the frame can support it", () => {
+  mount(stage(frame()));
+  assert(controls?.loupeAvailable === true,
+    "a linear frame cannot crop — the fixture is wrong, not the component");
+  mount(stage(frame({ is_stretched: true, data_is_linear: false })));
+  assert(controls?.loupeAvailable === false,
+    "a NINA frame has no linear array behind /crop, so the toggle must report itself unavailable " +
+    "(the toolbar renders that as a LockedChip with the reason, never a dead button)");
+});
+
+test("the magnifier opens on a phone-sized full stage (360px device)", () => {
+  // 360px viewport - 16px main pad x2 - 16px panel pad x2 - 1px border x2 = 294.
+  mount(stage(frame()));
+  sizeStage(294, 380);
+  assert(loupeEl() == null, "the magnifier is up before it was switched on, so this proves nothing");
+  setLoupe(true);
+  assert(loupeEl() != null,
+    "pressing Magnifier on a 294px stage rendered nothing at all — loupeBoxSize suppressed it, " +
+    "which is the toggle-that-does-nothing this whole gate exists to avoid");
+  assert(!/Magnifier hidden/.test(container.textContent || ""),
+    "the stage suppressed the magnifier on a stage that can perfectly well hold an 88px window");
+});
+
+test("…and on a COMPACT stage, which is the Focus screen on that same phone", () => {
+  // 324x230: a 390px phone, `compact` (3:2) floored at POD_MIN_STAGE_H.
+  mount(stage(frame(), overlays, { compact: true, bottomRightReserve: 38 + 56 }));
+  sizeStage(324, 230);
+  assert(loupeEl() == null, "the magnifier is up before it was switched on, so this proves nothing");
+  setLoupe(true);
+  assert(loupeEl() != null,
+    "the magnifier still cannot appear on a compact stage — the Focus screen offers a toggle that " +
+    "does nothing, on the one screen whose job is judging focus");
+});
+
+test("…placed in the corner the focus pod does NOT own", () => {
+  // Precondition: the magnifier from the test above is still up.
+  assert(loupeEl() != null, "no magnifier on screen, so where it sits proves nothing");
+  assert(loupeEl()!.getAttribute("data-loupe") === "top-right",
+    "the magnifier is in the lower-right of a compact stage, which is where FocusView parks its pod " +
+    "disc (right 12 / bottom 38) — it would be sitting on top of the shutter");
+  // …and on a full stage the lower right is free, so it stays where it was.
+  mount(stage(frame()));
+  sizeStage(800, 600);
+  setLoupe(true);
+  assert(loupeEl()?.getAttribute("data-loupe") === "bottom-right",
+    "the magnifier moved off the bottom-right on a full stage, where nothing else is");
+});
+
+test("the magnifier is exempt from the pan/double-tap gesture", () => {
+  // Same rule as every other tappable thing over this stage: the gesture layer
+  // binds pointerdown natively on the stage root, so two presses on "Copy
+  // region" counted as a double tap and flipped the zoom instead of copying.
+  assert(loupeEl() != null, "no magnifier on screen, so this proves nothing");
+  assert(loupeEl()!.closest("[data-no-pan]") != null,
+    "the magnifier panel is not inside [data-no-pan] — tapping its copy control zooms the preview");
+});
+
+test("a stage that truly cannot hold a 1:1 window still says so out loud", () => {
+  mount(stage(frame()));
+  sizeStage(150, 380);
+  setLoupe(true);
+  assert(loupeEl() == null, "a 150px stage rendered a magnifier, so the suppressed branch proves nothing");
+  assert(/Magnifier hidden/.test(container.textContent || ""),
+    "the magnifier was suppressed with no statement of why — the user pressed a toggle and got silence");
 });
 
 // ============================================================ PreviewToolbar
@@ -417,6 +519,33 @@ test("…and it never STEALS focus from somewhere else in the toolbar", () => {
   rerender(toolbar(frame(), { linkDown: true }));
   assert(win.document.activeElement === fit,
     "locking the Download control pulled focus off an unrelated button the user was on");
+});
+
+test("the toolbar's Magnifier is a live toggle or a stated reason — never a dead button", () => {
+  setLive(20);
+  const asked: boolean[] = [];
+  mount(toolbar(frame(), {
+    loupeAvailable: true, loupeOn: false, onLoupe: (v: boolean) => asked.push(v),
+  }));
+  const mag = [...container.querySelectorAll("button")]
+    .find((b: any) => /Magnifier/.test(b.textContent || ""));
+  assert(mag != null, "no Magnifier control in the toolbar at all");
+  assert(mag.getAttribute("aria-pressed") === "false", "the Magnifier does not report its pressed state");
+  click(mag);
+  assert(asked[0] === true, "pressing Magnifier asked the stage for nothing");
+
+  // …and off the linear path (/crop 404s for a NINA frame) it is the house
+  // LockedChip carrying the reason, not a greyed shape whose explanation lives
+  // in a title= no fingertip can fire.
+  mount(toolbar(frame({ is_stretched: true, data_is_linear: false }), { loupeAvailable: false }));
+  assert([...container.querySelectorAll("button")]
+    .find((b: any) => /Magnifier/.test(b.textContent || "")) == null,
+  "the Magnifier is still a live button on a frame with no linear data behind it");
+  const locked = [...container.querySelectorAll('span[role="button"]')]
+    .find((n: any) => /Magnifier/.test(n.textContent || ""));
+  assert(locked != null, "no honest stand-in for the blocked Magnifier — the control simply vanished");
+  assert(/linear data/.test(locked.getAttribute("aria-label") || ""),
+    `the locked Magnifier must name its cause — got ${locked.getAttribute("aria-label")}`);
 });
 
 // ------------------------------------------------------------------- report
