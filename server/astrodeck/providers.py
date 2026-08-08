@@ -507,7 +507,15 @@ def _resolve_guide(hub: object, override: str) -> ProviderChoice:
         # legacy PHD2 socket is one the host can always attempt), so honor it.
         return ProviderChoice("backend", "NINA" if nina else "PHD2",
                               "override: NINA/PHD2 bridge guiding")
-    if override == "astrodeck" and native_ok:
+    # The SAME predicate the offer uses — not a second copy of its terms.
+    # ``native_ok`` alone omitted the NINA term, so on a NINA rig whose guider
+    # was not yet constructed the dropdown locked "AstroDeck native" with "NINA
+    # owns guiding on a NINA rig" while this branch resolved to exactly that,
+    # and the badge above the locked row read AstroDeck native. Third time this
+    # function's offer and resolver disagreed; calling the blocker is what makes
+    # ``_guide_native_blocker``'s "one predicate answers both questions" claim
+    # true rather than aspirational.
+    if override == "astrodeck" and _guide_native_blocker(hub) is None:
         return ProviderChoice("astrodeck", "AstroDeck native",
                               "override: native guider on guide camera + mount")
 
