@@ -6,9 +6,10 @@
 // The strip exists because of three findings from a real alignment night
 // (2026-08-07): no way to tell a 15 s solve from a hang, the error number
 // below the fold on a phone, and no control over the solve frame's imaging
-// settings. The 12:50 refinement replaced the settings FOLD with SPEED DIALS —
-// the Focus pod's cycling-badge idiom, one dial per setting, no fold to open.
-// Each test here is one of those findings, asserted at the DOM.
+// settings. The 20:09 refinement replaced cycling badges with the Capture
+// screen's PickerButton pop-outs (a 0.3→120 s change was eleven cycle-taps),
+// added the long-exposure tail (narrowband-over-OSC solves at minutes per
+// frame) and a custom exposure box. Each test is one finding, at the DOM.
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -27,7 +28,8 @@ win.matchMedia = () => ({
 
 const g = globalThis as any;
 for (const k of [
-  "window", "document", "navigator", "HTMLElement", "Element", "Node", "Event",
+  "window", "document", "navigator", "HTMLElement", "HTMLInputElement",
+  "Element", "Node", "Event", "KeyboardEvent", "PointerEvent",
   "CustomEvent", "MouseEvent", "localStorage", "getComputedStyle", "matchMedia",
   "WebSocket",
 ]) {
@@ -58,7 +60,7 @@ const assert = {
     if (a !== b) throw new Error(msg ?? `${String(a)} !== ${String(b)}`);
   },
   match(text: string, re: RegExp, msg?: string) {
-    if (!re.test(text)) throw new Error(msg ?? `no match for ${re} in: ${text.slice(0, 200)}`);
+    if (!re.test(text)) throw new Error(msg ?? `no match for ${re} in: ${text.slice(0, 250)}`);
   },
   deepEqual(a: unknown, b: unknown, msg?: string) {
     const ja = JSON.stringify(a), jb = JSON.stringify(b);
@@ -68,7 +70,7 @@ const assert = {
 
 const { api } = await import("../../api");
 const { useStore } = await import("../../store");
-const { PolarQuickBar, nextFilter } = await import("../PolarQuickBar");
+const { PolarQuickBar } = await import("../PolarQuickBar");
 
 // PUT recorder — the strip's only write path.
 const puts: Array<{ path: string; body: unknown }> = [];
@@ -77,8 +79,8 @@ const puts: Array<{ path: string; body: unknown }> = [];
   return {};
 };
 
-// The filter dial reads the wheel from status; give it a real-shaped one
-// with an opaque Dark slot the dial's cycle must NOT contain.
+// The filter picker reads the wheel from status; give it a real-shaped one
+// with an opaque Dark slot the picker must NOT offer.
 useStore.setState({
   status: {
     filterwheel: {
@@ -87,9 +89,8 @@ useStore.setState({
       opaque: [false, false, false, false, true],
     },
   } as any,
-  // capAllowed fails CLOSED on a null principal, so the dials would render
-  // locked and their clicks silent — grant mount control the same way
-  // slewPadDom.test.tsx does.
+  // capAllowed fails CLOSED on a null principal — grant mount control the
+  // same way slewPadDom.test.tsx does.
   principal: { role: "operator", email: null,
                caps: ["view.status", "control.mount"] },
 } as any);
@@ -99,9 +100,14 @@ const render = (polar: any) =>
   act(() => root.render(React.createElement(PolarQuickBar, { polar })));
 
 const text = () => win.document.body.textContent ?? "";
-const dial = (key: string): any =>
-  win.document.querySelector(`[data-polar-dial="${key}"]`);
+const picker = (label: string): any =>
+  Array.from(win.document.querySelectorAll("button[aria-haspopup='listbox']"))
+    .find((b: any) => (b.getAttribute("aria-label") ?? "").startsWith(label));
+const option = (label: string): any =>
+  Array.from(win.document.querySelectorAll("[role='option']"))
+    .find((o: any) => (o.textContent ?? "").replace("•", "").trim() === label);
 
+const IDLE = { state: "idle", total_error: 0, az_error: 0, alt_error: 0 };
 const LIVE = {
   state: "running", phase: "adjusting",
   total_error: 4.2, az_error: 4.0, alt_error: 1.3,
@@ -109,12 +115,9 @@ const LIVE = {
 
 // ----------------------------------------------------------------------------
 
-test("idle shows the dials to an operator — the FIRST frame is settable too", () => {
-  /* 2026-08-07 19:53: the first cut hid the dials until a session was live,
-     so setting 2 s BEFORE the run — the whole point on a night of failing
-     solves — took six failures to reach. */
-  render({ state: "idle", total_error: 0, az_error: 0, alt_error: 0 });
-  assert.ok(dial("exposure"), "an operator's idle Align screen must offer the dials");
+test("idle shows the pickers to an operator — the FIRST frame is settable too", () => {
+  render(IDLE);
+  assert.ok(picker("EXP"), "an operator's idle Align screen must offer the pickers");
   assert.match(text(), /idle/i);
 });
 
@@ -122,7 +125,7 @@ test("a viewer's idle screen stays clean — no dead controls", () => {
   const prev = useStore.getState().principal;
   useStore.setState({ principal: { role: "viewer", email: null,
                                    caps: ["view.status"] } } as any);
-  render({ state: "idle", total_error: 0, az_error: 0, alt_error: 0 });
+  render(IDLE);
   assert.equal(win.document.getElementById("root").children.length, 0);
   useStore.setState({ principal: prev } as any);
 });
@@ -144,69 +147,96 @@ test("the capture chip says capturing — the same word the ring uses", () => {
   assert.ok(!/exposing/.test(text()), "the wire word must not leak to the UI");
 });
 
-test("the error number is on the strip, in degrees once it stops being a bolt turn", () => {
+test("the number AND the az/alt split ride the strip at every width", () => {
   render({
     state: "running", phase: "adjusting",
     total_error: 96.6, az_error: 5.0, alt_error: 96.4,
   });
   assert.match(text(), /1\.6°/, "96.6' must render as degrees");
-
   render(LIVE);
   assert.match(text(), /4\.2′/, "bolt-sized errors keep the arcminute");
+  // 20:09: on a tall phone this strip is the only readout on the first
+  // screenful, so the split may not hide behind a breakpoint.
+  assert.match(text(), /az 4\.0′/);
+  assert.match(text(), /alt 1\.3′/);
 });
 
-test("the dials are on the strip while live — no fold to open", () => {
+test("a picker opens a menu and one tap PUTs the chosen preset", () => {
   render({ ...LIVE, solve_settings: {
     exposure_s: 0.3, gain: 200, offset: 30, binning: 1, filter: null } });
-  assert.ok(dial("exposure"), "exposure dial missing");
-  assert.equal(dial("exposure").textContent.trim(), "0.3s");
-  assert.equal(dial("gain").textContent.trim(), "g200");
-  assert.equal(dial("binning").textContent.trim(), "b1");
-  assert.equal(dial("filter").textContent.trim(), "as-is");
+  act(() => picker("EXP").click());
+  assert.ok(option("2s"), "the exposure menu must list the presets");
+  act(() => option("2s").click());
+  assert.deepEqual(puts.at(-1), {
+    path: "/api/polar/solve-settings", body: { exposure_s: 2 },
+  });
+  assert.ok(!option("2s"), "single-select closes on choice");
 });
 
-test("a dial tap PUTs the NEXT preset — the speed-dial contract", () => {
+test("the long tail exists — narrowband-over-OSC solves at minutes per frame", () => {
   render({ ...LIVE, solve_settings: {
     exposure_s: 0.3, gain: 200, offset: 30, binning: 1, filter: null } });
-  act(() => dial("exposure").click());
+  act(() => picker("EXP").click());
+  for (const label of ["10s", "30s", "1m", "2m", "5m"]) {
+    assert.ok(option(label), `preset ${label} missing`);
+  }
+  act(() => option("5m").click());
   assert.deepEqual(puts.at(-1), {
-    path: "/api/polar/solve-settings", body: { exposure_s: 0.5 },
+    path: "/api/polar/solve-settings", body: { exposure_s: 300 },
   });
-  act(() => dial("gain").click());
+});
+
+test("the custom exposure box PUTs an arbitrary value and closes the menu", () => {
+  render({ ...LIVE, solve_settings: {
+    exposure_s: 0.3, gain: 200, offset: 30, binning: 1, filter: null } });
+  act(() => picker("EXP").click());
+  const input = win.document.querySelector(
+    'input[aria-label="Custom exposure in seconds"]');
+  assert.ok(input, "no custom exposure box");
+  input.value = "45";   // uncontrolled by design: Set reads the box directly
+  const setBtn = Array.from(win.document.querySelectorAll("button"))
+    .find((b: any) => (b.textContent ?? "").trim() === "Set");
+  act(() => (setBtn as any).click());
   assert.deepEqual(puts.at(-1), {
-    path: "/api/polar/solve-settings", body: { gain: 300 },
+    path: "/api/polar/solve-settings", body: { exposure_s: 45 },
   });
-  act(() => dial("binning").click());
+});
+
+test("gain and binning pick from menus too — no cycling", () => {
+  render({ ...LIVE, solve_settings: {
+    exposure_s: 0.3, gain: 200, offset: 30, binning: 1, filter: null } });
+  act(() => picker("GAIN").click());
+  act(() => option("400").click());
+  assert.deepEqual(puts.at(-1), {
+    path: "/api/polar/solve-settings", body: { gain: 400 },
+  });
+  act(() => picker("BIN").click());
+  act(() => option("2×2").click());
   assert.deepEqual(puts.at(-1), {
     path: "/api/polar/solve-settings", body: { binning: 2 },
   });
 });
 
-test("the filter dial cycles as-is → filters → as-is and never offers Dark", () => {
-  render({ ...LIVE, solve_settings: {
-    exposure_s: 0.3, gain: 200, offset: 30, binning: 1, filter: null } });
-  act(() => dial("filter").click());
-  assert.deepEqual(puts.at(-1), {
-    path: "/api/polar/solve-settings", body: { filter: "L" },
-  });
-  // from the LAST real filter the cycle wraps to as-is (null) — the opaque
-  // Dark slot is not in the ring at all, or a solve becomes a dark frame
+test("the filter menu offers as-is and every real slot — never Dark", () => {
   render({ ...LIVE, solve_settings: {
     exposure_s: 0.3, gain: 200, offset: 30, binning: 1, filter: "B" } });
-  act(() => dial("filter").click());
+  act(() => picker("FILT").click());
+  const labels = Array.from(win.document.querySelectorAll("[role='option']"))
+    .map((o: any) => (o.textContent ?? "").trim());
+  assert.ok(labels.some((l: string) => l === "as-is"), String(labels));
+  assert.ok(labels.some((l: string) => l === "L"), String(labels));
+  assert.ok(!labels.some((l: string) => l.includes("Dark")),
+    "an opaque slot in the picker would offer a dark frame as a solve");
+  act(() => option("as-is").click());
   assert.deepEqual(puts.at(-1), {
     path: "/api/polar/solve-settings", body: { filter: null },
   });
-  assert.deepEqual(
-    ["L", null].concat(),   // spot checks above; the ring itself:
-    [nextFilter(["L", "R", "G", "B"], null), nextFilter(["L", "R", "G", "B"], "B")],
-  );
 });
 
-test("a finished session keeps the verdict AND the dials — the next run starts here", () => {
+test("a finished session keeps the verdict AND the pickers — the next run starts here", () => {
   render({ state: "done", total_error: 0.8, az_error: 0.5, alt_error: 0.6 });
   assert.match(text(), /0\.8′/);
-  assert.ok(dial("exposure"),
+  assert.ok(picker("EXP"),
     "the re-run after a verdict is exactly when the settings get changed");
 });
 

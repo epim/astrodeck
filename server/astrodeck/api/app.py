@@ -956,9 +956,12 @@ class PolarSolveSettingsBody(BaseModel):
     """Imaging settings for the native TPPA's solve frames (PUT
     /api/polar/solve-settings). All optional: only the fields the client SENDS
     change, and sending null clears a field back to its default. Bounds match
-    the capture surface's; the exposure ceiling is deliberately low — a polar
-    solve frame past ~30 s is a sign the pointing or the sky is the problem."""
-    exposure_s: float | None = Field(None, gt=0, le=30)
+    the capture surface's. The exposure ceiling was 30 s ("past that the
+    pointing is the problem") — wrong for a real rig class: an OSC camera
+    behind a narrowband filter legitimately needs minutes per solve frame
+    (operator feedback 2026-08-07 20:09), so the ceiling now matches the
+    longest preset the Align dial offers."""
+    exposure_s: float | None = Field(None, gt=0, le=300)
     gain: int | None = Field(None, ge=0, le=1000)
     offset: int | None = Field(None, ge=0, le=255)
     binning: int | None = Field(None, ge=1, le=4)

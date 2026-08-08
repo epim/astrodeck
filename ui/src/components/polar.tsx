@@ -516,12 +516,14 @@ export function PolarReticle({
 
   return (
     <>
-    <svg viewBox={`0 0 ${size} ${size}`} className="w-full mx-auto block instr-fit"
-      /* 44vh cap: on short phones (SE-class portrait, 667px) a 338px reticle
-         plus its panel chrome pushed the Total-error panel below the fold —
-         the exact scroll the 2026-08-07 feedback is about. 44vh of 667 is
-         ~293px; taller viewports never hit the cap and keep the full 338. */
-      style={{ aspectRatio: "1 / 1", maxWidth: "min(338px, 44vh)" }}
+    <svg viewBox={`0 0 ${size} ${size}`}
+      /* .reticle-cap (index.css): the viewport-height cap that keeps the
+         Total-error panel on the first screenful. First cut used 44vh, which
+         never bit on a tall phone because vh ignores the browser chrome that
+         actually ate the room (S25 Ultra, 2026-08-07 20:09) — the dvh rule
+         under @supports is the one that fires on modern mobile. */
+      className="w-full mx-auto block instr-fit reticle-cap"
+      style={{ aspectRatio: "1 / 1" }}
       role="img"
       aria-label={
         active
