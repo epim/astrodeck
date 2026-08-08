@@ -108,6 +108,13 @@ class _Tel:
         self.reject_slew: set[int] = set()
         #: from this 1-based ordinal on, accept the goto and never arrive.
         self.deaf_from: int | None = None
+        #: Degrees the mount ends up away from the DECLINATION it was commanded,
+        #: applied after every accepted goto — so it both misses and then reports
+        #: the value it missed to. This is the 2026-08-06/07 fault on the sky: a
+        #: driver that re-read the mount's Dec before each leg turned a per-goto
+        #: miss into a compounding walk (-361.6' then +176.1' in one run), and
+        #: its own axis-moved guard then refused the arc for it.
+        self.dec_drift_per_slew = 0.0
         #: A real mount reports and controls sidereal tracking, and ``_drive``
         #: calls ``_ensure_tracking`` before the first frame. Defaulting to True
         #: means that call is a no-op here; the tracking-off path is graded in
@@ -133,7 +140,8 @@ class _Tel:
             raise DeviceError("mount: goto rejected (reply 'e3')")
         if self.deaf_from is not None and n >= self.deaf_from:
             return                      # accepted, settled instantly, never moved
-        self.ra, self.dec = ra_hours % 24.0, dec_deg
+        self.ra = ra_hours % 24.0
+        self.dec = dec_deg + self.dec_drift_per_slew
 
 
 class _Hub:
@@ -321,6 +329,66 @@ async def test_the_rotation_keeps_the_declination_it_was_given(make_rig):
     await rig.run()
     assert len(rig.hub.slews) == 2, rig.hub.slews
     assert [dec for _ra, dec in rig.hub.slews] == [_DEC, _DEC], rig.hub.slews
+
+
+@pytest.mark.parametrize("drift", [0.2, -0.5])
+async def test_every_leg_commands_the_declination_the_arc_started_at(
+        make_rig, drift):
+    """THE 2026-08-06/07 FAILURE ON THE SKY, and it was ours.
+
+    The rotation used to re-read ``tel.get_position()`` on every leg and command
+    a goto to whatever declination it found. A goto moves BOTH axes, so any gap
+    between the mount's claimed Dec and where it had actually arrived became a
+    REAL declination move — and the next leg read the new position and did it
+    again. Measured on the rig: one run stepped Dec -361.6' and then +176.1', a
+    538' bend across two rotations that were supposed to be pure RA, while the
+    very next run on the same sky held Dec flat to 2.5'. TPPA was driving the
+    declination axis and then refusing the arc for moving.
+
+    So the arc pins ONE declination, captured when it begins, and commands that
+    same value on every leg — the discipline ``step`` has always had. The mount
+    below misses its commanded Dec by a fixed amount on every goto, which is
+    precisely the input that used to compound: the commanded values must not
+    move, and the sky excursion must stay inside ONE miss rather than the
+    running sum of them."""
+    rig = make_rig(start_ha=-2.0)
+    rig.hub.tel.dec_drift_per_slew = drift
+    await rig.run()
+
+    assert len(rig.hub.slews) == 2, rig.hub.slews
+    commanded = [dec for _ra, dec in rig.hub.slews]
+    assert commanded == [_DEC, _DEC], (
+        f"the mount missed its commanded declination by {drift:+.2f}° per goto "
+        f"and the driver chased it: commanded {commanded}, having started the "
+        f"arc at {_DEC}. Every leg must be commanded the declination the arc "
+        f"began at, or the driver walks the Dec axis it is trying to measure.")
+    decs = [dec for _ra, dec in rig.solved[:3]]
+    assert max(decs) - min(decs) <= abs(drift) + 1e-9, (
+        f"the arc walked {max(decs) - min(decs):.3f}° in declination off a "
+        f"{abs(drift):.3f}° per-goto miss — the misses compounded: {decs}")
+
+
+async def test_the_arc_declination_is_read_once_not_once_per_leg(make_rig):
+    """The mechanism behind the test above, pinned separately so a regression
+    says WHICH half broke.
+
+    ``_rotate_in_ra`` still reads the mount to find its RA — that is where the
+    step is applied from — but the declination it commands has to come from the
+    caller's single capture, not from that read. A mount whose Dec report is
+    already 3° adrift when the second leg starts must still be sent back to the
+    declination the arc began at."""
+    rig = make_rig(start_ha=-2.0)
+    await rig.run()
+    assert len(rig.hub.slews) == 2, rig.hub.slews
+
+    # ... and directly: the caller's value wins over whatever the mount says now.
+    rig.hub.tel.dec = _DEC + 3.0
+    rig.hub.slews.clear()
+    await nat._rotate_in_ra(rig.hub, rig.hub.tel, rig.hub._motion_epoch,
+                            nat._RA_STEP_HOURS, _DEC)
+    assert rig.hub.slews[-1][1] == _DEC, rig.hub.slews
+    # the sun cone is checked against the declination actually commanded
+    assert rig.hub.solar_checks[-1][1] == _DEC, rig.hub.solar_checks
 
 
 # ----------------------------------------------------------------- ALTITUDE
@@ -594,6 +662,60 @@ async def test_a_failed_solve_leaves_the_mounts_position_in_the_log(make_rig, bu
     assert f"rotating RA to {left_at:.2f}h" in rotations[-1], (rotations, left_at)
     assert any("plate solve failed" in m for _l, m, _s in bus_lines
                if _l == "warning"), msgs
+
+
+# ------------------------------------------- what the per-point log has to say
+
+async def test_the_point_log_records_the_sky_AND_the_mounts_own_claim(
+        make_rig, bus_lines):
+    """One witness is not enough to diagnose a bent arc, and 2026-08-06/07 cost
+    a night proving it.
+
+    The log showed declination stepping hundreds of arcminutes across an arc
+    that was supposed to be a pure RA rotation — and nothing in it could say
+    whether the DRIVER had commanded that motion or the MOUNT had wandered off a
+    declination it was told to hold. Both stories fit the same three numbers.
+
+    With the mount's own claim beside the sky's, the next occurrence separates
+    itself on sight: a mount claiming a constant Dec while the sky dips is a
+    mount that is not arriving where it was sent; a mount claiming the dip too is
+    a declination the driver commanded. Here the two are deliberately 2° apart,
+    so a line carrying only one of them cannot pass."""
+    rig = make_rig(start_ha=-2.0)
+    rig.solved_dec = _DEC + 2.0          # the sky and the mount disagree by 2°
+    await rig.run()
+
+    points = [m for _l, m, _s in bus_lines if m.startswith("native TPPA point")]
+    assert len(points) == 3, points
+    for m in points:
+        assert f"Dec {_DEC + 2.0:+.3f}" in m, (
+            f"the SOLVED declination is missing from the point line: {m!r}")
+        assert "mount says" in m, (
+            f"the line records only where the SKY was, so a run like "
+            f"2026-08-06's cannot be told from a mount that never arrived: {m!r}")
+        assert f"Dec {_DEC:+.3f}" in m, (
+            f"the MOUNT's own claimed declination is missing: {m!r}")
+        assert "RA " in m and "HA " in m, m
+
+
+async def test_the_point_log_survives_a_mount_that_will_not_answer(bus_lines):
+    """The mount read is a diagnostic, and a diagnostic must never cost a
+    measurement that already SUCCEEDED. A mount too busy or too dumb to answer a
+    position query at that instant still has three good plate solves behind it —
+    losing the alignment over the annotation would invert the whole point."""
+    class _Mute:
+        async def get_position(self):
+            raise DeviceError("mount: no reply to :GD#")
+
+    hub = _Hub(_ra_at_hour_angle(-2.0), _DEC)
+    await nat._log_measurement(hub, _Mute(), 0, _Solve(5.0, _DEC, 12.0),
+                               _Frame(time.time()))
+
+    points = [m for _l, m, _s in bus_lines if m.startswith("native TPPA point")]
+    assert len(points) == 1, points
+    assert f"Dec {_DEC:+.3f}" in points[0], points[0]
+    assert "would not say" in points[0], (
+        f"a silent mount has to be recorded as silent, not omitted: {points[0]!r}")
 
 
 # ----------------------------------- the 2026-08-07 review fixes, pinned
@@ -1096,12 +1218,48 @@ async def test_bolts_turned_mid_measure_are_refused_not_fitted(make_rig):
     assert len(rig.solved) == 3, "precondition: all three points were measured"
     st = rig.session.state
     assert st["state"] == "error", st
-    assert "axis moved" in st["message"], st["message"]
-    assert "bolts" in st["message"], st["message"]
+    assert "do not lie on one circle" in st["message"], st["message"]
     # the wrecked points never reach the fit, and no error number is published
     assert rig.engine.from_three_calls == [], \
         "the wrecked arc was handed to the fit anyway"
     assert st["total_error"] == 0.0, st
+
+
+async def test_the_bent_arc_refusal_reports_what_it_saw_instead_of_accusing(
+        make_rig):
+    """This refusal used to open "the mount's axis moved while it was being
+    measured" and close "Leave the bolts alone until the run says adjust the
+    mount" — and on 2026-08-06/07 it fired run after run on a rig nobody had
+    touched, because the DRIVER was commanding the declination motion itself.
+
+    The check sees three declinations and nothing else, so a cause is not
+    something it can know. It has to report the OBSERVATION — the two Dec steps
+    it measured, which are the whole evidence — list the candidates without
+    picking one, and say what to do next. Telling an operator to stop doing
+    something they were not doing costs the one person who could have diagnosed
+    it a night of looking at the wrong thing."""
+    rig = make_rig(start_ha=-2.0)
+    rig.solved_dec_by_point = {1: _DEC, 2: _DEC, 3: _DEC + 2.5}
+    await rig.run()
+
+    msg = rig.session.state["message"]
+    # THE OBSERVATION: the two measured steps, in the units the log uses.
+    assert "+0.0'" in msg and "+150.0'" in msg, (
+        f"the refusal must quote the declination steps it measured — they are "
+        f"its entire evidence: {msg!r}")
+    # THE CANDIDATES, none of them chosen, and the driver's own fault first.
+    assert "not arriving in declination" in msg, msg
+    assert "settling" in msg, msg
+    # NO ACCUSATION, and no instruction to stop doing something.
+    for accusation in ("Leave the bolts alone",
+                       "the mount's axis moved while it was being measured"):
+        assert accusation not in msg, (
+            f"the refusal still accuses the operator: {msg!r}")
+    assert "bolts" not in msg, (
+        f"'bolts' only ever appeared here as an instruction to leave them "
+        f"alone, which is an accusation: {msg!r}")
+    # ...and what to actually do.
+    assert "again" in msg and "holding declination across gotos" in msg, msg
 
 
 async def test_a_smooth_dec_drift_is_the_signal_not_a_wreck(make_rig):
