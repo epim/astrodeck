@@ -79,6 +79,17 @@ WARM_LEAD_CHECKS = 2
 #: ramp as soon as the sensor stops following, i.e. at the REAL ambient.
 WARM_FALLBACK_AMBIENT_C = 20.0
 
+#: Hard ceiling on an ASSUMED ambient that the ramp extends into (see
+#: ``warm_extend_ambient_c``). Nothing thermal stops here — the lead check does
+#: — this only bounds a sensor that reports a temperature which follows the
+#: setpoint forever, so a broken driver cannot walk the TEC up indefinitely.
+WARM_AMBIENT_CEILING_C = 45.0
+
+#: How far past an assumed ambient one extension reaches. Small, because each
+#: one costs only a poll and the lead check ends the climb the moment the TEC
+#: stops being what sets the temperature.
+WARM_AMBIENT_EXTEND_C = 2.0
+
 #: A delta smaller than this is not worth ramping: the sensor is already at
 #: (or above) ambient, so there is nothing to protect it from. Switch off and
 #: say why, rather than run a 20-second theatre ramp.
@@ -144,6 +155,41 @@ def warm_ambient_c(cfg: object | None, start_c: float,
     if measured_ambient_c is not None:
         return max(float(measured_ambient_c), start_c), "measured"
     return max(WARM_FALLBACK_AMBIENT_C, start_c), "assumed"
+
+
+def warm_extend_ambient_c(ambient_c: float, provenance: str, sensor_c: float | None,
+                          setpoint_c: float) -> float | None:
+    """A higher target when an ASSUMED ambient is demonstrably too low, else None.
+
+    THE BUG (rig, 2026-08-06): the fallback ambient is 20 °C and the air was
+    32 °C. The ramp climbed to 20, stopped because it had reached "ambient",
+    switched the TEC off — and the sensor then jumped the remaining 12 °C at the
+    free-running rate. That is precisely the plunge the ramp exists to prevent,
+    performed by the ramp, because it trusted a constant over the evidence.
+
+    The evidence is already being collected: the loop's lead check ends the ramp
+    when the sensor STOPS following the setpoint, which is what reaching the real
+    ambient looks like. So if the setpoint has arrived at the assumed ambient and
+    the sensor is still tracking it, the assumption was simply low — extend, and
+    let the lead check terminate at whatever the air actually is.
+
+    ONLY for ``"assumed"``. A ``configured`` ambient is someone stating a fact
+    about their observatory and a ``measured`` one comes from a device; walking
+    past either would be overriding a real claim with an inference. Bounded by
+    ``WARM_AMBIENT_CEILING_C`` so a driver whose reported temperature follows the
+    setpoint forever cannot drive the TEC up without end.
+    """
+    if provenance != "assumed" or sensor_c is None:
+        return None
+    if setpoint_c < ambient_c - 1e-6:          # not there yet; nothing to decide
+        return None
+    if ambient_c >= WARM_AMBIENT_CEILING_C:
+        return None
+    # Still following ⇒ the TEC is still what sets the temperature ⇒ the air is
+    # warmer than we assumed. (The loop's own lead check owns the other case.)
+    if (setpoint_c - sensor_c) > WARM_MAX_LEAD_C:
+        return None
+    return min(WARM_AMBIENT_CEILING_C, ambient_c + WARM_AMBIENT_EXTEND_C)
 
 
 def warm_next_setpoint_c(setpoint_c: float, ambient_c: float, rate_c_per_min: float,
