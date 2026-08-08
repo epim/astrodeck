@@ -55,6 +55,18 @@ _IMAGEREADY_POLL_MARGIN_S = 30.0
 FIND_HOME_TIMEOUT_S = 180.0
 FIND_HOME_POLL_S = 1.0
 
+# --- focuser move completion ------------------------------------------------
+# An absolute move succeeds when the drawtube REACHES the target, not when the
+# device stops claiming to move: an idle motor reads not-moving on the first
+# poll, so a move the driver silently refused is indistinguishable from one that
+# finished. That mistake was found on the EAF (2026-07-31, refused every move
+# past a mechanical stop and reported success every time) and again on the
+# ASIAIR (audit finding #15); the same numbers are used here so the three cannot
+# drift. ARRIVAL_TOLERANCE_STEPS matches zwo_usb.py and ui/src/lib/focusMove.ts.
+FOCUS_POLL_S = 0.25
+FOCUS_MOVE_TIMEOUT_S = 180.0
+ARRIVAL_TOLERANCE_STEPS = 2
+
 _client_id = 4242
 _txn = 0
 
@@ -731,6 +743,13 @@ class AlpacaTelescope(_AlpacaDevice, Telescope):
 class AlpacaFocuser(_AlpacaDevice, Focuser):
     dev_type = "focuser"
 
+    #: ASCOM ``Absolute``. On a RELATIVE focuser ``Move(Position)`` is a step
+    #: COUNT, not a destination, and ``Position`` may not be readable at all —
+    #: so the arrival check below does not apply to one. Assumed True when the
+    #: driver will not say: absolute is overwhelmingly the common case, and
+    #: assuming relative would silently disable the check for everyone.
+    absolute: bool = True
+
     async def connect(self) -> None:
         await _AlpacaDevice.connect(self)
         self.max_position = await self._get("maxstep")
@@ -738,17 +757,85 @@ class AlpacaFocuser(_AlpacaDevice, Focuser):
             self.step_size_um = await self._get("stepsize")
         except DeviceError:
             self.step_size_um = None
+        try:
+            self.absolute = bool(await self._get("absolute"))
+        except DeviceError:
+            self.absolute = True
 
     async def get_position(self) -> int:
         return await self._get("position")
 
-    async def move_to(self, position: int) -> None:
-        await self._put("move", Position=int(position))
+    async def _position_or_none(self) -> int | None:
+        """Where the drawtube is, or None when this focuser cannot say.
+
+        None is not a failure — it is the honest answer for a relative focuser,
+        and for a driver whose ``Position`` read errors. The caller then has
+        only absence-of-motion to go on and says so, rather than reading a
+        missing number as position 0 and reporting a jam that is not there."""
+        if not self.absolute:
+            return None
         try:
-            while await self._get("ismoving"):
-                await asyncio.sleep(0.25)
-        except asyncio.CancelledError:
-            await self._put("halt")
+            return int(await self._get("position"))
+        except (DeviceError, TypeError, ValueError):
+            return None
+
+    async def move_to(self, position: int) -> None:
+        """Absolute move; returns only once the drawtube has ARRIVED.
+
+        This loop used to be ``while ismoving: sleep`` — no arrival test and no
+        deadline. Both halves were wrong on real hardware: a driver that ignores
+        the move reports not-moving immediately and this returned SUCCESS, and a
+        driver that never clears ``IsMoving`` held the caller forever, which on
+        the autofocus path means the sweep never ends and the night is over.
+        The shape below is ``EafFocuser._move_to_locked``'s, which is the one
+        that has been proven against a focuser that really did refuse to move.
+        """
+        target = int(position)
+        start = await self._position_or_none()
+        await self._put("move", Position=target)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + FOCUS_MOVE_TIMEOUT_S
+        last, idle_polls = start, 0
+        try:
+            while True:
+                await asyncio.sleep(FOCUS_POLL_S)
+                moving = bool(await self._get("ismoving"))
+                pos = await self._position_or_none()
+                if pos is None:
+                    # Nothing to compare against: absence of motion is all the
+                    # evidence this focuser can give.
+                    if not moving:
+                        return
+                elif abs(pos - target) <= ARRIVAL_TOLERANCE_STEPS:
+                    return                                   # actually arrived
+                elif pos != last:
+                    last, idle_polls = pos, 0                # making progress
+                else:
+                    # Not at the target and not advancing. Two polls of that
+                    # with the device idle before it counts, so a slow motor
+                    # start cannot cry wolf.
+                    idle_polls = idle_polls + 1 if not moving else 0
+                    if idle_polls >= 2:
+                        raise DeviceError(
+                            f"{self.name}: move to {target} did not happen — "
+                            f"the focuser stopped at {pos} (started from "
+                            f"{start}) and is no longer moving. It is probably "
+                            "at a mechanical limit or the drawtube is jammed; "
+                            "try a smaller move in the other direction.")
+                if loop.time() > deadline:
+                    raise DeviceError(
+                        f"{self.name}: move to {target} did not settle within "
+                        f"{FOCUS_MOVE_TIMEOUT_S:.0f}s — halted, stopped at "
+                        f"{pos if pos is not None else 'an unknown position'} "
+                        f"(started from {start})")
+        except BaseException:
+            # Halt on ANY abnormal exit (cancel / timeout / transport failure):
+            # a driver that raises while the motor is still commanded leaves the
+            # drawtube travelling with nobody waiting for it.
+            try:
+                await self._put("halt")
+            except Exception:  # noqa: BLE001 — halt is best-effort
+                pass
             raise
 
     async def halt(self) -> None:

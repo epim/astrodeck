@@ -59,6 +59,16 @@ from ..guide.base import Guider, GuideStats
 
 DEFAULT_PORT = 1888
 
+# --- focuser move completion ------------------------------------------------
+# Same rule and the same numbers as alpaca.py / zwo_usb.py / asiair_backend.py:
+# a move succeeds when the drawtube REACHES the target. The budget is the one
+# the old poll loop already spent (800 polls x 0.3 s), so no move that used to
+# finish starts timing out — what changes is that the end of the budget is now
+# an ERROR instead of a silent success.
+FOCUS_POLL_S = 0.3
+FOCUS_MOVE_TIMEOUT_S = 240.0
+FOCUS_ARRIVAL_TOLERANCE_STEPS = 2
+
 
 # --------------------------------------------------------------------- helpers
 
@@ -71,6 +81,17 @@ def pick(d: Any, *keys: str, default: Any = None) -> Any:
         if k in d and d[k] is not None:
             return d[k]
     return default
+
+
+def _maybe_int(v: Any) -> int | None:
+    """``int(v)`` or None. A focuser position that is absent must stay ABSENT —
+    defaulting it to 0 turns "this bridge did not say" into "the drawtube is at
+    zero", which reads as a jam a thousand steps from where the tube really is.
+    """
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
 
 
 def _maybe_float(v: Any) -> float | None:
@@ -522,11 +543,59 @@ class NinaFocuser(_NinaDevice, Focuser):
         return _maybe_float(pick(await self.info(), "Temperature"))
 
     async def move_to(self, position: int) -> None:
-        await self.client.get("/equipment/focuser/move", position=int(position))
-        for _ in range(800):
-            if not bool(pick(await self.info(force=True), "IsMoving", "Moving", default=False)):
-                return
-            await asyncio.sleep(0.3)
+        """Absolute move; returns only once the drawtube has ARRIVED.
+
+        Two failures were folded into one loop here. It polled ``IsMoving`` and
+        returned the moment that read false — which an idle motor satisfies on
+        the first poll, so a move the focuser refused looked exactly like a move
+        that finished (the EAF did precisely that on 2026-07-31, and the ASIAIR
+        driver had the same bug, audit finding #15). And after 800 polls it fell
+        out of the loop and returned NORMALLY: the one path that means "this
+        move is still not finished" reported success.
+        """
+        target = int(position)
+        start = _maybe_int(pick(await self.info(force=True), "Position"))
+        await self.client.get("/equipment/focuser/move", position=target)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + FOCUS_MOVE_TIMEOUT_S
+        last, idle_polls = start, 0
+        try:
+            while True:
+                await asyncio.sleep(FOCUS_POLL_S)
+                info = await self.info(force=True)
+                moving = bool(pick(info, "IsMoving", "Moving", default=False))
+                pos = _maybe_int(pick(info, "Position"))
+                if pos is None:
+                    # A bridge that will not report a position leaves absence of
+                    # motion as the only evidence — but a MISSING number must
+                    # not be read as position 0, which would manufacture a jam.
+                    if not moving:
+                        return
+                elif abs(pos - target) <= FOCUS_ARRIVAL_TOLERANCE_STEPS:
+                    return                                   # actually arrived
+                elif pos != last:
+                    last, idle_polls = pos, 0                # making progress
+                else:
+                    idle_polls = idle_polls + 1 if not moving else 0
+                    if idle_polls >= 2:
+                        raise DeviceError(
+                            f"{self.name}: move to {target} did not happen — "
+                            f"the focuser stopped at {pos} (started from "
+                            f"{start}) and is no longer moving. It is probably "
+                            "at a mechanical limit or the drawtube is jammed; "
+                            "try a smaller move in the other direction.")
+                if loop.time() > deadline:
+                    raise DeviceError(
+                        f"{self.name}: move to {target} did not settle within "
+                        f"{FOCUS_MOVE_TIMEOUT_S:.0f}s — halted, stopped at "
+                        f"{pos if pos is not None else 'an unknown position'} "
+                        f"(started from {start})")
+        except BaseException:
+            try:
+                await self.halt()
+            except Exception:  # noqa: BLE001 — halt is best-effort
+                pass
+            raise
 
     async def halt(self) -> None:
         await self.client.get("/equipment/focuser/stop-move")

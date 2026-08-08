@@ -882,3 +882,88 @@ Its park branch was exercised against the real mount (unpark -> detect -> park
 NOTE for whoever writes that script: `Invoke-RestMethod` SILENTLY IGNORES a
 hand-set `Cookie:` header and the request 401s. The session JWT has to go in a
 `WebRequestSession` cookie jar (or use `curl.exe`). Measured on the rig.
+
+---
+
+# Phase 1 + Phase 2 of the plan, built 2026-08-08 (task #135)
+
+The audit plan's `docs/superpowers/specs/2026-08-04-broken-promises-audit-plan.md`
+Phase 1 (permanent detectors for B / E / the provenance half of A) and Phase 2
+(mutation sampling for F) now exist as standing tests. Four files, one per
+claim, each carrying the finding that motivated it:
+
+| file | class | what it keeps |
+|---|---|---|
+| `server/tests/test_offer_matches_resolver.py` | B | every value the product offers for a capability is one the resolver will run — swept over all four capabilities x the write vocabulary x a six-rig matrix, plus the per-driver `offers.tasks` surface nobody had checked |
+| `server/tests/test_focuser_move_contract.py` | E | one move-completion corpus bound to all five focuser drivers, in the `test_camera_contract.py` idiom |
+| `server/tests/test_displayed_layer_is_the_running_layer.py` | A | no execution path reads the layer a profile beats; no UI surface binds the global block without the winner; the two ends agree on the provenance key vocabulary |
+| `server/tests/test_mutation_sampling.py` | F | eight expensive guards broken mechanically on a throwaway copy of the tree, each asserting its covering test goes red |
+
+## Found by those detectors, and FIXED in the same pass
+
+## L. [important] The guide offer and the guide resolver disagreed a THIRD time
+
+`_resolve_guide`'s explicit-`astrodeck` branch tested `native_ok`, which omits
+the NINA term that `_guide_native_blocker` applies. So on a NINA rig whose
+guider was not yet constructed, the dropdown locked "AstroDeck native" with
+"NINA owns guiding on a NINA rig" while the badge directly above it resolved to
+exactly that. The same shape as the two instances fixed on 2026-08-03, in the
+same function, and it survived both of those fixes because each was written
+against the specific rig that had failed.
+
+Fixed by CALLING the offer predicate instead of restating its terms
+(`providers.py`), which is what `_guide_native_blocker`'s own docstring already
+claimed ("one predicate now answers both questions"). Pinned twice: by the
+per-rig agreement sweep, and by a structural assertion that the resolver reaches
+its answer through the blocker — because once the two cannot drift, the
+agreement test becomes true by construction and would otherwise rot unnoticed.
+
+## M. [blocker] `AlpacaFocuser.move_to` reported success for a move that never happened, and hung for one that never finished
+
+`while await self._get("ismoving"): sleep(0.25)` — no arrival check and no
+deadline. An idle motor reads not-moving on the first poll, so a driver that
+refuses or ignores the move returned SUCCESS; a driver that never clears
+`IsMoving` held the caller forever, which on the autofocus path ends the night.
+
+This is the defect fixed in `zwo_usb.py` on 2026-07-31 (an EAF against a
+mechanical stop, thirteen silent autofocus steps) and again in
+`asiair_backend.py` as audit finding #15 — and Alpaca is the ASCOM path, i.e.
+the one most real hardware takes, including the bundled COM host. Neither fix
+was ever bound to the sibling drivers, which is exactly what class E is.
+
+Fixed to the proven shape: arrival within `ARRIVAL_TOLERANCE_STEPS`, two idle
+polls before declaring a stall, a stated timeout, halt on any abnormal exit.
+Gated on ASCOM `Absolute` — on a relative focuser `Move(Position)` is a step
+count and `Position` may not be readable, so it keeps the old evidence and says
+so rather than manufacturing a jam.
+
+## N. [important] `NinaFocuser.move_to` returned NORMALLY when its poll budget ran out
+
+`for _ in range(800): if not moving: return; sleep(0.3)` — falling out of that
+loop is the one path that means "this move is still not finished", and it
+returned success. Plus the same missing arrival check as M. Fixed the same way,
+keeping the original 240 s budget so no move that used to finish starts timing
+out; what changed is that the end of the budget is now an error.
+
+## Still open, from the same detectors
+
+## O. [minor] `ConfigStore.set_providers` validates against a capability-BLIND vocabulary
+
+`POST /api/config` accepts `providers.solve = "astrodeck"`, `autofocus =
+"astap"`, `guide = "sim"` and four more pairs that no resolver has a branch
+for. Each is stored, and resolves exactly as if the user had never touched the
+control, with nothing anywhere saying the pick was discarded. Not reachable
+from the UI today (the Tasks dropdowns are built from `offers.tasks`, the guide
+row from `guide_provider_options`), so it is latent rather than live — an
+imported profile file, which is posted verbatim, is the one path that reaches
+it. Enumerated with reasons in `_ACCEPTED_BUT_INERT`, and that list is asserted
+not to grow. Fix direction: a per-capability write vocabulary (422 at the
+route), or the missing resolver branches.
+
+## P. [minor] The mutation sample found no vacuous test among the eight guards it broke
+
+Recorded because a negative result is the point of running it: the sun cone,
+path containment, the site-derived keys, the focuser arrival check, the dawn
+park, the unsafe-confirm debounce, the warm ramp and the guide offer predicate
+all have covering tests that go red when the guard is disarmed. The sample is
+eight of thousands; the file states the bound and asserts it.
