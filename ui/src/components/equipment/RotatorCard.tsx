@@ -187,6 +187,20 @@ export default function RotatorCard(): JSX.Element | null {
                       { target_pa_deg: angleOk ? mod360(parsedAngle) : rot.sky_deg }))}>
               Rotate to PA (plate solve)
             </button>
+            {/* The other half of the same measurement, and the one that MOVES
+                NOTHING. POST /api/rotator/sync-to-sky shipped in 0.2.65 with no
+                caller anywhere in the UI, so the only way to establish the
+                sky↔mechanical offset from the app was still to command a
+                rotation nobody wanted — which is the complaint the route was
+                added to answer. Placed beside Rotate deliberately: they are the
+                same solve, and the difference between them is whether the
+                camera turns. */}
+            <button className="btn min-h-9" data-rotator-sync
+                    disabled={busy || !canMove}
+                    title="Plate-solve and tell the rotator its sky angle. Does not turn the camera."
+                    onClick={() => void run(() => api.post("/api/rotator/sync-to-sky", {}))}>
+              Sync to sky (no movement)
+            </button>
             {rot.can_reverse && (
               <label className="flex items-center gap-1.5 text-[11px] text-dim">
                 <input type="checkbox" checked={rot.reverse} disabled={busy || !canMove}
