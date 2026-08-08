@@ -473,3 +473,90 @@ async def test_a_sweep_that_wanders_out_of_its_window_is_stopped(monkeypatch):
     assert "outside the window" in res.message, res.message
     assert str(start - 2 * 1000) in res.message or "9" in res.message, res.message
     assert res.advice and "smaller the further out" in res.advice, res.advice
+
+
+async def test_a_perfectly_flat_curve_is_refused_on_the_measurement(monkeypatch):
+    """The refusal must come from the SPREAD, not from a rounding sign.
+
+    ``a <= 0`` alone rejects a flat curve only when the quadratic's leading
+    coefficient happens to round negative — and on genuinely flat data that sign
+    is floating-point noise. The same nine identical points failed on Windows
+    and produced a confident best_hfr of 2.01, from points that were all exactly
+    3.40, on CI's Linux/BLAS (2026-08-08). A curve that does not move has no
+    minimum on any platform.
+
+    Distinct from the test above, which asserts the ADVICE. This asserts the
+    VERDICT, and that it is reached from evidence rather than from luck.
+    """
+    _rig, cam, foc = await _connected_sim()
+    monkeypatch.setattr(A, "sweep_metric",
+                        lambda data, min_stars=3: (3.4, 400, None))
+    res = await run_autofocus(cam, foc, exposure_s=2.0, gain=200, step=350,
+                              steps_each_side=4, binning=2)
+    assert res.success is False, (
+        f"a flat sweep produced a focus at {res.best_position} "
+        f"(HFR {res.best_hfr}) from points that never moved")
+    assert "flat" in (res.message or "").lower(), res.message
+
+
+async def test_a_real_v_curve_is_not_caught_by_the_flat_gate(monkeypatch):
+    """The positive control, and the reason the threshold is 5% and not 50%.
+
+    Without it the gate could refuse everything and the test above would still
+    pass.
+    """
+    _rig, cam, foc = await _connected_sim()
+    start = await foc.get_position()
+
+    def v(data, min_stars=3):
+        # A real V about the start position, read off the focuser's OWN place —
+        # `rig.focuser_pos`, which is what get_position() returns. A first draft
+        # guessed an attribute name, silently got the constant `start` every
+        # time, and so fed the gate the very flat curve it was meant to be the
+        # control for.
+        return (2.0 + abs(foc.rig.focuser_pos - start) / 350.0, 400, None)
+
+    monkeypatch.setattr(A, "sweep_metric", v)
+    res = await run_autofocus(cam, foc, exposure_s=2.0, gain=200, step=350,
+                              steps_each_side=4, binning=2)
+    assert res.success, f"the flat gate refused a real V-curve: {res.message}"
+
+
+# ------------------------------------------------- the flat-sweep decision itself
+# Extracted and tested directly BECAUSE the end-to-end behaviour is platform
+# dependent: on flat data the quadratic's leading coefficient rounds negative on
+# one BLAS and positive on another, so a full-sweep test of this case passes for
+# free on the machine where it already worked and can only fail on the one where
+# it did not. Measured 2026-08-08: nine points all exactly 3.40 failed on Windows
+# and produced a confident best_hfr of 2.01 on CI's Linux.
+
+def test_a_curve_that_never_moves_is_flat():
+    assert A.is_flat_sweep([3.4] * 9) is True
+
+
+def test_a_curve_that_moves_by_noise_is_still_flat():
+    assert A.is_flat_sweep([3.40, 3.41, 3.40, 3.42, 3.40]) is True
+
+
+def test_a_real_v_is_not_flat():
+    """The rig's own Oiii sweep, 2026-08-08."""
+    assert A.is_flat_sweep(
+        [19.78, 35.56, 23.96, 12.25, 1.67, 3.09, 10.93, 22.89, 34.72, 44.70]
+    ) is False
+
+
+def test_a_shallow_but_real_v_is_not_flat():
+    """The threshold must not eat a genuine curve near good focus. 2.0 -> 2.4 is
+    a 20% swing — shallow, and still twenty times the noise band above."""
+    assert A.is_flat_sweep([2.4, 2.2, 2.0, 2.2, 2.4]) is False
+
+
+def test_too_few_points_to_see_a_v_counts_as_flat():
+    assert A.is_flat_sweep([]) is True
+    assert A.is_flat_sweep([3.4]) is True
+
+
+def test_a_tiny_absolute_swing_cannot_pass_on_a_tiny_minimum():
+    """The absolute floor. Without it a sweep whose minimum HFR is near zero
+    would make the relative threshold vanish and any wobble would read as a V."""
+    assert A.is_flat_sweep([0.001, 0.002, 0.001]) is True
