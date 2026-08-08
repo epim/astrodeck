@@ -2,7 +2,9 @@ import { useRef } from "react";
 import { api } from "../api";
 import { useStatus, useStore } from "../store";
 import { polarTier } from "./polar";
-import PickerButton from "./ui/PickerButton";
+import {
+  BinningPicker, ExposurePicker, FilterPicker, GainPicker,
+} from "./ui/CameraPickers";
 import { useCanControlMount } from "../lib/caps";
 
 /* The three things the Align screen made you scroll for, pinned where a thumb
@@ -49,15 +51,13 @@ const DEFAULTS: SolveSettings = {
   exposure_s: 0.3, gain: 200, offset: 30, binning: 1, filter: null,
 };
 
-/* 20:09 operator list, verbatim, plus the sub-second pair the defaults live
-   in. The long tail is not decoration: narrowband-over-OSC alignments really
-   do solve at 2-5 minutes per frame. The route's ceiling matches (300). */
-const EXPOSURES = [0.3, 0.5, 1, 2, 5, 10, 15, 30, 60, 90, 120, 180, 300];
-const GAINS = [0, 50, 100, 150, 200, 250, 300, 400, 500];
-const BINS = [1, 2, 3, 4];
+/* Presets, formatting and the controls themselves are SHARED (CameraPickers):
+   the camera behind a solve frame is the camera behind a focus frame, and a
+   user who learns "tap EXP, pick 5s" here must not meet a different idiom on
+   the next screen. Only the ceiling is restated, because the route enforces
+   it and a client that offered more would be promising what the server
+   refuses. */
 const EXPOSURE_MAX_S = 300;
-
-const fmtExp = (e: number) => e < 60 ? `${e}s` : `${e / 60}m`;
 
 export function PolarQuickBar({ polar }: { polar: QuickBarPolar }) {
   const showToast = useStore((s) => s.showToast);
@@ -98,11 +98,9 @@ export function PolarQuickBar({ polar }: { polar: QuickBarPolar }) {
         : { text: polar.state, blink: polar.state === "running" || polar.state === "pausing" };
 
   const settings = { ...DEFAULTS, ...(polar.solve_settings ?? {}) };
-  const wheel = status?.filterwheel;
-  /* Opaque slots are carriers with no glass — a solve through one is a dark
-     frame. They exist in the wheel but not in this picker. */
-  const filters = (wheel?.names ?? []).filter(
-    (n, i) => n && !(wheel?.opaque?.[i] ?? false));
+  /* Whether the rig HAS a wheel decides the grid width; which slots are
+     offerable is FilterPicker's own business (it drops the opaque ones). */
+  const hasWheel = (status?.filterwheel?.names ?? []).length > 0;
 
   const put = (patch: Partial<SolveSettings>) => {
     void api.put("/api/polar/solve-settings", patch).catch(
@@ -158,15 +156,11 @@ export function PolarQuickBar({ polar }: { polar: QuickBarPolar }) {
             {/* FOUR EQUAL COLUMNS, not a wrapping flex row: on a 412px phone
                 the flex row broke FILT onto a second line by itself. A grid
                 keeps one tidy row of thumb-sized buttons at every width. */}
-            <div className={`grid gap-1.5 ${filters.length > 0 ? "grid-cols-4" : "grid-cols-3"}`}>
-              <PickerButton
-                label="EXP"
-                summary={fmtExp(settings.exposure_s)}
+            <div className={`grid gap-1.5 ${hasWheel ? "grid-cols-4" : "grid-cols-3"}`}>
+              <ExposurePicker
+                value={settings.exposure_s}
                 className="w-full !justify-center"
-                columns={3}
-                options={EXPOSURES.map((e) => ({ id: String(e), label: fmtExp(e) }))}
-                selected={[String(settings.exposure_s)]}
-                onPick={(id) => put({ exposure_s: Number(id) })}
+                onPick={(s) => put({ exposure_s: s })}
               >
                 {/* narrowband-over-OSC rigs need values no list predicts */}
                 <div className="col-span-3 border-t border-line mt-1 pt-2 flex items-center gap-1.5">
@@ -184,41 +178,24 @@ export function PolarQuickBar({ polar }: { polar: QuickBarPolar }) {
                     Set
                   </button>
                 </div>
-              </PickerButton>
-              <PickerButton
-                label="GAIN"
-                summary={String(settings.gain)}
+              </ExposurePicker>
+              <GainPicker
+                value={settings.gain}
                 className="w-full !justify-center"
-                columns={3}
-                options={GAINS.map((v) => ({ id: String(v), label: String(v) }))}
-                selected={[String(settings.gain)]}
-                onPick={(id) => put({ gain: Number(id) })}
+                onPick={(g) => put({ gain: g })}
               />
-              <PickerButton
-                label="BIN"
-                summary={`${settings.binning}×${settings.binning}`}
+              <BinningPicker
+                value={settings.binning}
+                max={status?.camera?.max_bin ?? 4}
                 className="w-full !justify-center"
-                columns={2}
-                options={BINS.map((b) => ({ id: String(b), label: `${b}×${b}` }))}
-                selected={[String(settings.binning)]}
-                onPick={(id) => put({ binning: Number(id) })}
+                onPick={(b) => put({ binning: b })}
               />
-              {filters.length > 0 && (
-                <PickerButton
-                  label="FILT"
-                  summary={settings.filter ?? "as-is"}
-                  className="w-full !justify-center"
-                  align="right"
-                  columns={2}
-                  options={[
-                    { id: "", label: "as-is",
-                      hint: "leave the filter wheel where it sits" },
-                    ...filters.map((f) => ({ id: f, label: f })),
-                  ]}
-                  selected={[settings.filter ?? ""]}
-                  onPick={(id) => put({ filter: id === "" ? null : id })}
-                />
-              )}
+              <FilterPicker
+                value={settings.filter}
+                align="right"
+                className="w-full !justify-center"
+                onPick={(name) => put({ filter: name })}
+              />
             </div>
           </div>
         )}
