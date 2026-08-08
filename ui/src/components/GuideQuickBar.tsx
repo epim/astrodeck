@@ -20,14 +20,11 @@
 import { useEffect, useState, type JSX } from "react";
 import { api } from "../api";
 import { useGuide, useStatus, useStore } from "../store";
-import { LockedChip } from "./ui";
 import ActivityRing from "./ui/ActivityRing";
-import { nextInCycle } from "./focus/FocusPod";
+import {
+  BinningPicker, ExposurePicker, GainPicker, GUIDE_EXPOSURE_PRESETS_S,
+} from "./ui/CameraPickers";
 import { useCanControlGuide } from "../lib/caps";
-
-const EXPOSURES = [0.5, 1, 1.5, 2, 3, 5];
-const GAINS = [100, 200, 300, 400];
-const BINS = [1, 2];
 
 type CamSettings = { exposure_s: number; gain: number; binning: number };
 
@@ -90,29 +87,15 @@ export function GuideQuickBar(): JSX.Element | null {
       .catch((e) => showToast("error", (e as Error).message));
   };
 
-  const dial = (key: string, face: string, aria: string,
-                patch: Partial<CamSettings>) => canGuide ? (
-    <button
-      key={key}
-      type="button"
-      data-guide-dial={key}
-      className="btn tap mono !normal-case justify-center px-2 min-h-[40px] min-w-[48px]"
-      aria-label={aria}
-      onClick={() => put(patch)}
-    >
-      {face}
-    </button>
-  ) : (
-    <LockedChip key={key}
-      reason="Changing guide-camera settings needs guiding control access."
-      className="btn mono !normal-case justify-center !px-2 min-h-[40px] min-w-[48px]">
-      <span className="text-[11px]">{face}</span>
-    </LockedChip>
-  );
-
-  const nextExp = cam ? nextInCycle(EXPOSURES, cam.exposure_s) : EXPOSURES[0];
-  const nextGain = cam ? nextInCycle(GAINS, cam.gain) : GAINS[0];
-  const nextBin = cam ? nextInCycle(BINS, cam.binning) : BINS[0];
+  const lockReason = canGuide ? null
+    : "Changing guide-camera settings needs guiding control access.";
+  /* Binning is refused server-side while a session is live (the calibration
+     measured px/ms in the CURRENT binning's pixels), so say so HERE too
+     rather than letting the tap earn a 409. */
+  const binReason = lockReason ?? (live
+    ? "Stop guiding to change binning — the calibration was measured in the "
+      + "current binning's pixels."
+    : null);
 
   return (
     <div className="sticky top-0 z-20 -mx-1 px-1" data-guide-quickbar>
@@ -165,23 +148,40 @@ export function GuideQuickBar(): JSX.Element | null {
           </div>
         )}
 
-        {/* the guide camera's speed dials */}
+        {/* The guide camera's settings — the SAME pickers the Align and Focus
+            screens use (CameraPickers), with the guide camera's own exposure
+            range. One idiom per rig, not one per screen. */}
         <div className="mt-1.5 pt-1.5 border-t border-line"
-          role="group" aria-label="guide camera speed dials">
-          <div className="flex items-center gap-1.5 flex-wrap">
-            {dial("exposure", cam ? `${cam.exposure_s}s` : "—s",
-              `Guide exposure ${cam?.exposure_s ?? "unknown"} seconds — tap for ${nextExp}`,
-              { exposure_s: nextExp })}
-            {dial("gain", cam ? `g${cam.gain}` : "g—",
-              `Guide gain ${cam?.gain ?? "unknown"} — tap for ${nextGain}`,
-              { gain: nextGain })}
-            {dial("binning", cam ? `b${cam.binning}` : "b—",
-              `Guide binning ${cam?.binning ?? "unknown"} — tap for ${nextBin}. `
-              + "Refused while guiding: it changes the calibration's pixel scale.",
-              { binning: nextBin })}
-            <span className="text-[10px] text-faint leading-tight ml-auto hidden sm:inline">
-              applies from the next guide frame
-            </span>
+          role="group" aria-label="guide camera settings">
+          <div className="grid grid-cols-3 gap-1.5">
+            <ExposurePicker
+              value={cam?.exposure_s ?? 2}
+              presets={GUIDE_EXPOSURE_PRESETS_S}
+              className="w-full !justify-center"
+              disabled={!canGuide}
+              disabledReason={lockReason}
+              onBlocked={(r) => showToast("warning", r)}
+              onPick={(s) => put({ exposure_s: s })}
+            />
+            <GainPicker
+              value={cam?.gain ?? 100}
+              className="w-full !justify-center"
+              disabled={!canGuide}
+              disabledReason={lockReason}
+              onBlocked={(r) => showToast("warning", r)}
+              onPick={(g) => put({ gain: g })}
+            />
+            <BinningPicker
+              value={cam?.binning ?? 1}
+              /* The guide-camera status block carries no max_bin (types.ts);
+                 4 is the picker's own ceiling and the server validates. */
+              max={4}
+              className="w-full !justify-center"
+              disabled={!!binReason}
+              disabledReason={binReason}
+              onBlocked={(r) => showToast("warning", r)}
+              onPick={(b) => put({ binning: b })}
+            />
           </div>
         </div>
       </div>

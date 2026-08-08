@@ -121,7 +121,10 @@ test("the inert-mount verdict is loud and names the fix", () => {
 
 // -------------------------------------------------------------- GuideQuickBar
 
-await testAsync("the guide dials seed from the server and PUT the next preset", async () => {
+await testAsync("the guide settings use the SHARED pickers and PUT the pick", async () => {
+  /* 2026-08-07 21:27: one set of camera pickers across every screen that
+     shoots a frame — the guide camera gets the same control the Align and
+     Focus screens use, with its own exposure range. */
   useStore.setState({
     status: { busy_lanes: [], guider: { connected: true } },
     guide: { guiding: false, rms_ra: 0, rms_dec: 0, rms_total: 0, snr: 0,
@@ -130,13 +133,21 @@ await testAsync("the guide dials seed from the server and PUT the next preset", 
   } as any);
   render(React.createElement(GuideQuickBar));
   await act(async () => {});               // flush the GET seeding
-  assert.equal(q("[data-guide-dial='exposure']").textContent.trim(), "2s");
-  act(() => q("[data-guide-dial='exposure']").click());
+  const exp = (): any =>
+    Array.from(win.document.querySelectorAll("button[aria-haspopup='listbox']"))
+      .find((b: any) => (b.getAttribute("aria-label") ?? "").startsWith("EXP"));
+  assert.ok(exp(), "no shared exposure picker on the guide bar");
+  assert.match(exp().getAttribute("aria-label"), /EXP — 2s$/);
+  act(() => exp().click());
+  const three = Array.from(win.document.querySelectorAll("[role='option']"))
+    .find((o: any) => (o.textContent ?? "").trim() === "3s");
+  assert.ok(three, "the guide exposure menu must list its presets");
+  act(() => (three as any).click());
   assert.deepEqual(puts.at(-1), {
     path: "/api/guide/camera-settings", body: { exposure_s: 3 },
   });
-  await act(async () => {});               // PUT answer re-seeds the faces
-  assert.equal(q("[data-guide-dial='exposure']").textContent.trim(), "3s");
+  await act(async () => {});               // PUT answer re-seeds the face
+  assert.match(exp().getAttribute("aria-label"), /EXP — 3s$/);
 });
 
 await testAsync("the calibration walk gets a step chip, a pulse ring and the plot", async () => {

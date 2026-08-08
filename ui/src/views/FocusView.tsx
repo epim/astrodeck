@@ -34,8 +34,11 @@ import {
 import { isExposureInvalid } from "../lib/exposure";
 import { ProviderBadge } from "../components/ProviderBadge";
 import { PreviewStage } from "../components/preview/PreviewStage";
-import FocusPod, { POD_MIN_STAGE_H, nextInCycle } from "../components/focus/FocusPod";
+import FocusPod, { POD_MIN_STAGE_H } from "../components/focus/FocusPod";
 import ActivityRing from "../components/ui/ActivityRing";
+import {
+  BinningPicker, ExposurePicker, FilterPicker, GainPicker,
+} from "../components/ui/CameraPickers";
 import { focusState } from "../lib/focusVerdict";
 import { FocusVerdict, AutofocusVerdict } from "../components/preview/FocusVerdict";
 import { BahtinovAid } from "../components/preview/BahtinovAid";
@@ -731,31 +734,30 @@ export default function FocusView() {
     ...(afAdvanced && afFilter !== "" ? { filter: Number(afFilter) } : {}),
   }));
 
-  // The sweep's SPEED DIALS (2026-08-07): exposure / gain / binning as
-  // cycling badges on the panel face, so the overexposure fix ("shorter
-  // exposure than 3s, less gain than 200") is actionable in two taps at the
-  // scope instead of a settings dig. A dial edits the SAME advanced state the
-  // typed fields edit — and opens the panel on first touch (seeding it from
-  // the derived values first, exactly as the gear does), because values in a
-  // closed panel are not sent and a dial that changed nothing would be the
-  // looks-applied-but-ignored control this file already deleted once.
-  const AF_DIAL_EXPOSURES = [0.5, 1, 2, 3, 4] as const;
-  const AF_DIAL_GAINS = [100, 200, 300, 400] as const;
-  const afDial = (kind: "exposure" | "gain" | "bin") => {
-    if (!afAdvanced) {
-      setAfExposure(String(afDerived.exposure_s));
-      setAfGain(String(afDerived.gain));
-      setAfStep(String(afDerived.step));
-      setAfBin(String(afDerived.binning));
-      setAfAdvanced(true);
-    }
-    if (kind === "exposure") {
-      setAfExposure(String(nextInCycle(AF_DIAL_EXPOSURES, afParams.exposure_s)));
-    } else if (kind === "gain") {
-      setAfGain(String(nextInCycle(AF_DIAL_GAINS, afParams.gain)));
-    } else {
-      setAfBin(String(nextInCycle(afBinOptions, afParams.binning)));
-    }
+  // The sweep's own settings, as the SHARED camera pickers (2026-08-07): the
+  // camera behind a focus frame is the camera behind a solve frame, so the
+  // control is the same control (components/ui/CameraPickers). This is what
+  // makes the overexposure fix ("shorter exposure than 3s, less gain than
+  // 200") actionable in two taps at the scope instead of a settings dig.
+  //
+  // A pick edits the SAME advanced state the typed fields edit — and OPENS
+  // the panel first (seeded from the derived values, exactly as the gear
+  // does), because values in a closed panel are not sent and a picker that
+  // changed nothing would be the looks-applied-but-ignored control this file
+  // already deleted once.
+  const afOpenAdvanced = () => {
+    if (afAdvanced) return;
+    setAfExposure(String(afDerived.exposure_s));
+    setAfGain(String(afDerived.gain));
+    setAfStep(String(afDerived.step));
+    setAfBin(String(afDerived.binning));
+    setAfAdvanced(true);
+  };
+  const afSet = (kind: "exposure" | "gain" | "bin", value: number) => {
+    afOpenAdvanced();
+    if (kind === "exposure") setAfExposure(String(value));
+    else if (kind === "gain") setAfGain(String(value));
+    else setAfBin(String(value));
   };
 
   // The sweep's live narration off the focus bus slice (additive fields the
@@ -1293,26 +1295,39 @@ export default function FocusView() {
                     "longer exposure, bin 1" when a field is thin. Hidden for a
                     backend (NINA) sweep, which ignores every parameter. */}
                 {afReady.basis !== "backend" && canFocus && (
-                  <div className="flex items-center gap-1.5 mb-2 flex-wrap"
-                    role="group" aria-label="sweep speed dials" data-af-dials>
-                    <button type="button" data-af-dial="exposure"
-                      className="btn tap mono !normal-case justify-center px-2 min-h-[40px] min-w-[48px]"
-                      aria-label={`Sweep exposure ${afParams.exposure_s} seconds — tap for the next preset`}
-                      onClick={() => afDial("exposure")}>
-                      {afParams.exposure_s}s
-                    </button>
-                    <button type="button" data-af-dial="gain"
-                      className="btn tap mono !normal-case justify-center px-2 min-h-[40px] min-w-[48px]"
-                      aria-label={`Sweep gain ${afParams.gain} — tap for the next preset`}
-                      onClick={() => afDial("gain")}>
-                      g{afParams.gain}
-                    </button>
-                    <button type="button" data-af-dial="bin"
-                      className="btn tap mono !normal-case justify-center px-2 min-h-[40px] min-w-[48px]"
-                      aria-label={`Sweep binning ${afParams.binning}×${afParams.binning} — tap for the next preset`}
-                      onClick={() => afDial("bin")}>
-                      b{afParams.binning}
-                    </button>
+                  <div className={`grid gap-1.5 mb-2 ${filterNames.length > 0 ? "grid-cols-4" : "grid-cols-3"}`}
+                    role="group" aria-label="sweep settings" data-af-dials>
+                    <ExposurePicker
+                      value={afParams.exposure_s}
+                      className="w-full !justify-center"
+                      onPick={(s) => afSet("exposure", s)}
+                    />
+                    <GainPicker
+                      value={afParams.gain}
+                      className="w-full !justify-center"
+                      onPick={(g) => afSet("gain", g)}
+                    />
+                    <BinningPicker
+                      value={afParams.binning}
+                      max={afMaxBin}
+                      className="w-full !justify-center"
+                      onPick={(b) => afSet("bin", b)}
+                    />
+                    {/* The wheel is shared with every other frame-shooting
+                        screen, so it gets the shared picker too: the face
+                        names the filter the sweep will run through, never an
+                        abstraction. */}
+                    <FilterPicker
+                      value={afFilter === "" ? null
+                        : filterNames[Number(afFilter)] ?? null}
+                      align="right"
+                      className="w-full !justify-center"
+                      onPick={(name) => {
+                        afOpenAdvanced();
+                        const i = name == null ? -1 : filterNames.indexOf(name);
+                        setAfFilter(i >= 0 ? String(i) : "");
+                      }}
+                    />
                   </div>
                 )}
                 {/* What the sweep will actually do, BEFORE it is tapped, and
