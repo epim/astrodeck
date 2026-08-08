@@ -217,17 +217,36 @@ test("gain and binning pick from menus too — no cycling", () => {
   });
 });
 
-test("the filter menu offers as-is and every real slot — never Dark", () => {
+test("the filter face NAMES the filter, never an abstraction", () => {
+  /* 2026-08-07 21:27: the face read "as-is" whenever nothing was pinned,
+     which is a statement about our bookkeeping — the wheel is a physical
+     object and always has SOME filter in the beam. Unpinned, the face is the
+     wheel's current slot (position 0 = "L" in this fixture). */
+  render({ ...LIVE, solve_settings: {
+    exposure_s: 0.3, gain: 200, offset: 30, binning: 1, filter: null } });
+  assert.match(picker("FILT").getAttribute("aria-label"), /FILT — L$/);
+  assert.ok(!/as-is/.test(text()), "the face must not print an abstraction");
+
+  // Pinned, the face is the pin.
+  render({ ...LIVE, solve_settings: {
+    exposure_s: 0.3, gain: 200, offset: 30, binning: 1, filter: "G" } });
+  assert.match(picker("FILT").getAttribute("aria-label"), /FILT — G$/);
+});
+
+test("the filter menu offers every real slot — never the opaque one", () => {
   render({ ...LIVE, solve_settings: {
     exposure_s: 0.3, gain: 200, offset: 30, binning: 1, filter: "B" } });
   act(() => picker("FILT").click());
   const labels = Array.from(win.document.querySelectorAll("[role='option']"))
     .map((o: any) => (o.textContent ?? "").trim());
-  assert.ok(labels.some((l: string) => l === "as-is"), String(labels));
   assert.ok(labels.some((l: string) => l === "L"), String(labels));
   assert.ok(!labels.some((l: string) => l.includes("Dark")),
     "an opaque slot in the picker would offer a dark frame as a solve");
-  act(() => option("as-is").click());
+  // Unpinning stays reachable — it is a real intent, just not the face.
+  const follow = Array.from(win.document.querySelectorAll("button"))
+    .find((b: any) => /follow the wheel/.test(b.textContent ?? ""));
+  assert.ok(follow, "no way to stop pinning a filter");
+  act(() => (follow as any).click());
   assert.deepEqual(puts.at(-1), {
     path: "/api/polar/solve-settings", body: { filter: null },
   });
