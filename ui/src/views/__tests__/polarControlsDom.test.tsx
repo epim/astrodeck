@@ -322,6 +322,50 @@ await settle();
 }
 stopFails = false;
 
+// -------------------------------------------- caveats the panel used to drop
+// Both of these were already on the wire and rendered nowhere, which is worse
+// than absent: the panel looked confident about a reading it had reason to
+// doubt, while someone was crouched at the mount acting on it.
+
+stopFails = false;
+await publish("running", {
+  phase: "adjusting", total_error: 12.0, az_error: 9, alt_error: 8,
+  flags: ["initial_error_large"],
+});
+test("a large starting error is stated, not silently tolerated", () => {
+  const node = container.querySelector("[data-polar-initial-large]");
+  assert(node != null,
+    "the engine raised initial_error_large and the panel said nothing — the live " +
+    "number re-scales approximately here, so the bolts do not move it by what it says");
+  assert(/re-run/i.test(node.textContent || ""),
+    "the caveat names no way out; 'this is approximate' without 're-run once it is " +
+    "smaller' leaves the operator turning bolts against a number they now distrust");
+});
+
+await publish("running", {
+  phase: "adjusting", total_error: 12.0, az_error: 9, alt_error: 8,
+  stale_updates: 4,
+});
+test("a frozen live number says it is frozen, while it is frozen", () => {
+  const node = container.querySelector("[data-polar-stale]");
+  assert(node != null,
+    "four failed live updates and the panel still presented the old number as current — " +
+    "this used to reach only the log, and only when the session ended");
+  assert(/4/.test(node.textContent || ""),
+    "the warning does not say HOW far behind; 'not updating' and 'not updating for " +
+    "30 seconds' are different situations at the mount");
+});
+
+await publish("running", {
+  phase: "adjusting", total_error: 11.0, az_error: 8, alt_error: 7,
+  stale_updates: 0,
+});
+test("…and it clears when the solves come back", () => {
+  assert(container.querySelector("[data-polar-stale]") == null,
+    "the staleness warning outlived the staleness — a caveat that never clears is one " +
+    "the operator learns to read past");
+});
+
 // ------------------------------------------------------------------- report
 await act(async () => { root.unmount(); });
 const total = passed + failed;

@@ -26,6 +26,23 @@ from ..imaging.stars import (OVEREXPOSED_FRAC, focus_size, median_hfr,
 #: same authority as a 900-star one and fitted the resulting noise.
 MIN_STARS_PER_POINT = 3
 
+#: How many times in a row one sweep position may be dropped before the run is
+#: refused instead of retried.
+#:
+#: The sweep engine advances ONLY when a measurement is added, so dropping a
+#: point leaves it asking for the SAME position on the next iteration — and the
+#: driver loop is a bare ``while True``. Measured on the rig 2026-08-08 during a
+#: per-filter offset run: the SII slot reached position 9077, could not measure
+#: it (frame median 237, max ~310 — a narrowband frame with almost no signal),
+#: and re-exposed that one position indefinitely. Fourteen consecutive
+#: "dropping 9077" lines in the log, the focuser stationary, the whole run
+#: unable to finish or fail, and no route that could cancel it.
+#:
+#: Three is enough to ride out a satellite, a gust or a passing cloud on one
+#: point, and short enough that a filter with no measurable stars fails while
+#: someone is still awake to read the reason.
+MAX_DROPS_PER_POSITION = 3
+
 #: Measured, but from few enough stars to be worth naming in the advice: a run
 #: that "succeeded" on a handful of these is thinner evidence than its R²
 #: suggests. What it means for the FIT depends on the company the point keeps —
