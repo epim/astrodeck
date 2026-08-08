@@ -13,7 +13,8 @@
 //
 // Single-select closes on choice (you picked, you are done). Multi-select stays
 // open, because turning on stars AND clip is one intent, not two visits.
-import { useCallback, useEffect, useRef, useState, type JSX, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState,
+         type CSSProperties, type JSX, type ReactNode } from "react";
 
 export interface PickerOption {
   id: string;
@@ -39,6 +40,7 @@ export default function PickerButton({
   onBlocked,
   className = "",
   align = "left",
+  columns = 1,
   children,
 }: {
   /** What the set IS ("Annotations", "Presets", "Filter"). */
@@ -55,12 +57,41 @@ export default function PickerButton({
   onBlocked?: (reason: string) => void;
   className?: string;
   align?: "left" | "right";
+  /** Lay the options out in N columns. Numeric sets (13 exposures, 9 gains)
+   *  read better as a grid than as a column you scroll — one glance, no
+   *  scrolling, and the tap targets stay 44px. Default 1 = the list. */
+  columns?: number;
   /** Extra content inside the open panel, below the options. */
   children?: ReactNode;
 }): JSX.Element {
   const [open, setOpen] = useState(false);
   const wrap = useRef<HTMLDivElement>(null);
+  const panel = useRef<HTMLDivElement>(null);
+  const [nudge, setNudge] = useState(0);
   const close = useCallback(() => setOpen(false), []);
+
+  /* KEEP THE PANEL ON SCREEN. Measured on a real phone (S25 Ultra,
+     2026-08-07 20:53): the Align bar's right-aligned filter picker sits near
+     the left edge, so `right-0` on a 190px panel hung it off the LEFT of the
+     viewport — the operator saw an empty black rectangle, because every
+     option's text was outside the screen. Neither `left-0` nor `right-0` is
+     right on its own; what is right is "whatever keeps it inside the
+     window". Measure after paint, then translate the minimum amount.
+
+     useLayoutEffect so the correction lands in the SAME frame the panel
+     appears — a visible jump would be its own defect. */
+  useLayoutEffect(() => {
+    if (!open) { setNudge(0); return; }
+    const el = panel.current;
+    if (!el) return;
+    setNudge(0);
+    const r = el.getBoundingClientRect();
+    const margin = 8;
+    const overRight = r.right - (window.innerWidth - margin);
+    const overLeft = margin - r.left;
+    if (overRight > 0) setNudge(-overRight);
+    else if (overLeft > 0) setNudge(overLeft);
+  }, [open]);
 
   // Escape and outside-press both dismiss. A picker you cannot get out of
   // without choosing is worse than the row of buttons it replaced.
@@ -103,12 +134,20 @@ export default function PickerButton({
       </button>
       {open && (
         <div
+          ref={panel}
           role="listbox"
           aria-multiselectable={multi || undefined}
           aria-label={label}
-          className={`absolute z-40 mt-1 min-w-[190px] max-h-[60vh] overflow-y-auto
-                      border border-line2 bg-raise p-1 flex flex-col gap-0.5
+          className={`absolute z-40 mt-1.5 max-h-[60vh] overflow-y-auto rounded-lg
+                      border border-line2 bg-raise shadow-2xl p-1.5
+                      ${columns > 1 ? "grid gap-1" : "min-w-[190px] flex flex-col gap-0.5"}
                       ${align === "right" ? "right-0" : "left-0"}`}
+          style={{
+            transform: nudge ? `translateX(${nudge}px)` : undefined,
+            ...(columns > 1
+              ? { gridTemplateColumns: `repeat(${columns}, minmax(64px, 1fr))` }
+              : {}) as CSSProperties,
+          }}
         >
           {options.map((o) => {
             const on = selected.includes(o.id);
@@ -120,8 +159,14 @@ export default function PickerButton({
                 aria-selected={on}
                 aria-disabled={o.disabled || undefined}
                 title={o.disabled ? (o.disabledReason ?? o.hint) : o.hint}
-                className={`text-left px-2 py-2 min-h-[40px] text-xs flex items-center gap-2
-                            ${on ? "text-accent" : "text-dim"} ${o.disabled ? "opacity-40" : ""}`}
+                className={`min-h-[44px] rounded border text-xs mono tabular-nums
+                            ${columns > 1
+                              ? "flex items-center justify-center px-2"
+                              : "text-left px-2 py-2 flex items-center gap-2"}
+                            ${on
+                              ? "border-accent text-accent bg-accent/10"
+                              : "border-line text-dim hover:text-ink hover:border-line2"}
+                            ${o.disabled ? "opacity-40" : ""}`}
                 onClick={() => {
                   if (o.disabled) {
                     if (o.disabledReason && onBlocked) onBlocked(o.disabledReason);
@@ -131,9 +176,13 @@ export default function PickerButton({
                   if (!multi) close();
                 }}
               >
-                {/* A glyph, not colour alone — night mode kills hue as a channel. */}
-                <span className="mono w-3 shrink-0" aria-hidden>{on ? "•" : " "}</span>
-                <span className="flex-1 truncate">{o.label}</span>
+                {/* In LIST mode the dot is the selection channel (night mode
+                    kills hue); in GRID mode the filled border+tint carries it,
+                    and a dot beside a centred number reads as noise. */}
+                {columns === 1 && (
+                  <span className="mono w-3 shrink-0" aria-hidden>{on ? "•" : " "}</span>
+                )}
+                <span className={columns > 1 ? "" : "flex-1 truncate"}>{o.label}</span>
               </button>
             );
           })}
