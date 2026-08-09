@@ -961,6 +961,16 @@ class FilterNamesBody(BaseModel):
     gains: list[int | None] | None = None
 
 
+class AcknowledgeBody(BaseModel):
+    """Body for the restricted-asset acknowledgment (#216).
+
+    ``note`` is free text the person recording it can leave for whoever reads
+    the record later — which is the point of recording it rather than flipping
+    a flag. ``withdraw`` takes it back."""
+    note: str = ""
+    withdraw: bool = False
+
+
 class GuideCameraSettingsBody(BaseModel):
     """The guide frame's own imaging settings.
 
@@ -1911,6 +1921,49 @@ def create_app() -> FastAPI:
             await asyncio.to_thread(_write_weather_tile, path, body)
             return Response(body, media_type="image/png",
                             headers=cache_headers)
+
+    # -------------------------------------------------- restricted assets (#216)
+    #
+    # Three things we are not licensed to redistribute, one mechanism. Reading
+    # is CAP_VIEW_STATUS because it is a disclosure, not a secret — the whole
+    # value of the screen is that anyone using the rig can see what we ship and
+    # on whose authority. Writing is CAP_CONFIG_BACKEND, the same gate as any
+    # other instance-wide setting: the acknowledgment is a statement ABOUT THE
+    # DEPLOYMENT, so it must come from someone who administers the deployment.
+
+    @app.get("/api/licensing/restricted",
+             dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
+    async def get_restricted_assets():
+        from ..licensing import status as _restricted_status
+        return {"assets": _restricted_status()}
+
+    @app.post("/api/licensing/restricted/{asset_id}/acknowledge",
+              dependencies=[Depends(require(CAP_CONFIG_BACKEND))])
+    @declare(CAP_CONFIG_BACKEND)
+    async def acknowledge_restricted_asset(
+            asset_id: str, body: AcknowledgeBody | None = None,
+            principal: Principal = Depends(require(CAP_CONFIG_BACKEND))):
+        """Record — or withdraw — this INSTANCE's acknowledgment.
+
+        Instance-scoped on purpose: one statement covers every user of this rig,
+        and viewers and operators are never asked. What is being asserted is a
+        fact about the deployment, not a promise by whoever is signed in.
+
+        Withdrawable, because a consent that cannot be taken back is not a
+        consent — the integration goes inert again immediately."""
+        from .. import licensing as _lic
+        if body is not None and body.withdraw:
+            return {"withdrawn": _lic.withdraw(asset_id),
+                    "assets": _lic.status()}
+        try:
+            _lic.acknowledge(asset_id,
+                             by=getattr(principal, "name", None)
+                             or getattr(principal, "subject", "") or "unknown",
+                             note=(body.note if body else ""))
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+        return {"assets": _lic.status()}
 
     @app.get("/api/survey/pack",
              dependencies=[Depends(require(CAP_VIEW_STATUS))])

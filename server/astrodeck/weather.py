@@ -284,6 +284,26 @@ class WeatherService:
 
     async def _refresh_astrospheric(self, lat: float, lon: float,
                                     api_key: str, now: float) -> None:
+        # ---- #200: THE CLIENT IS THE THING THEIR TERMS DO NOT COVER --------
+        #
+        # Astrospheric's Data API is scoped to "Astrospheric Professional
+        # members for use in personal projects", and AstroDeck is a public
+        # product. Nothing is being redistributed, so there is no file to stop
+        # shipping — the request itself is what needs to be inside their scope.
+        # So it does not go out until somebody with authority over this instance
+        # has stated on the record that this deployment is such a use.
+        #
+        # ONE acknowledgment covers the whole instance; viewers and operators
+        # inherit it and are never asked. The thing being asserted is a fact
+        # about the deployment, not a promise by whoever is logged in.
+        #
+        # Silent about it on purpose: the operator is told once, on the Credits
+        # screen, where the terms are quoted and the button is. A key that was
+        # entered and is not being used would otherwise warn every six hours
+        # forever, which is how a real signal becomes noise.
+        from .licensing import is_acknowledged
+        if not is_acknowledged("astrospheric"):
+            return
         try:
             js = await _fetch_astrospheric(lat, lon, api_key)
             times, seeing, trans, credits = _parse_astrospheric(js)
