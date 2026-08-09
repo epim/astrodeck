@@ -682,12 +682,14 @@ def load_filter_config(profile_id: str | None) -> dict:
 
 def save_filter_config(profile_id: str | None, names: list[str],
                        offsets: list[int],
-                       opaque: list[bool] | None = None) -> None:
-    """Persist filter slot names + offsets (+ blackout flags) for a profile
-    (best-effort merge into the shared store; other profiles' entries are
-    preserved). ``opaque`` is optional so an older caller keeps working; when it
-    is None the key is omitted and ``load_filter_config`` reports no blackout
-    slot, exactly as before the flag existed."""
+                       opaque: list[bool] | None = None,
+                       narrowband: list[bool] | None = None) -> None:
+    """Persist filter slot names + offsets (+ blackout and narrowband flags) for
+    a profile (best-effort merge into the shared store; other profiles' entries
+    are preserved). ``opaque`` and ``narrowband`` are optional so an older
+    caller keeps working; when one is None its key is omitted and
+    ``load_filter_config`` reports no such slot, exactly as before the flag
+    existed. Both are user-assigned — no wheel reports either."""
     data = read_json_or(FILTER_CONFIG_FILE, {})
     if not isinstance(data, dict):
         data = {}
@@ -697,6 +699,8 @@ def save_filter_config(profile_id: str | None, names: list[str],
     }
     if opaque is not None:
         entry["opaque"] = [bool(o) for o in opaque]
+    if narrowband is not None:
+        entry["narrowband"] = [bool(n) for n in narrowband]
     data[profile_id or _FILTER_DEFAULT_KEY] = entry
     write_json_atomic(FILTER_CONFIG_FILE, data)
 

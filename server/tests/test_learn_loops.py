@@ -144,3 +144,126 @@ async def test_learn_filter_offsets_keeps_prior_on_a_failed_slot(tmp_path,
             configmod.config_store.cfg().active_profile_id)["offsets"] == [0, 77, 150]
     finally:
         await h.disconnect_all()
+
+
+# ------------------------------------------- c3: narrowband slots (#148, 2026-08-08)
+# The rig's offsets run measured L, R, G and B (0, -59, -30, -28) and could not
+# focus S, Ha or Oiii at all, because one exposure ran the whole wheel. A 3-7 nm
+# passband delivers a star 40-100x fainter than luminance does.
+
+def test_narrowband_settings_are_derived_from_the_broadband_pair():
+    from astrodeck.focus.filter_offsets import (NARROWBAND_EXPOSURE_MULTIPLE,
+                                                narrowband_sweep_settings)
+    # The rig's own working broadband sweep: 10 s at gain 300.
+    exp, gain = narrowband_sweep_settings(10.0, 300)
+    assert exp == 10.0 * NARROWBAND_EXPOSURE_MULTIPLE
+    assert gain == 300, "gain moved on a rig already past its HCG knee"
+    # A camera that reports a high-conversion-gain threshold: never sweep a
+    # read-noise-limited frame BELOW it (measured 3.96 e- -> 1.36 e- at 125).
+    assert narrowband_sweep_settings(10.0, 100, hcg_threshold_gain=125)[1] == 125
+    assert narrowband_sweep_settings(10.0, 300, hcg_threshold_gain=125)[1] == 300
+    # …and a camera that reports none changes nothing at all.
+    assert narrowband_sweep_settings(4.0, 100)[1] == 100
+
+
+async def test_a_narrowband_slot_is_swept_at_its_own_exposure_and_gain(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(configmod, "FILTER_CONFIG_FILE",
+                        tmp_path / "filter_names.json")
+    h = Hub()
+    await h.connect_sim()
+    try:
+        fw = h.devices["filterwheel"]
+        fw.filter_names = ["L", "Ha", "OIII"]
+        fw.filter_offsets = [0, 0, 0]
+
+        async def fast_set_position(slot):
+            fw.rig.filter_slot = int(slot)
+        monkeypatch.setattr(fw, "set_position", fast_set_position)
+
+        seen: list[tuple[int, float, int]] = []
+
+        async def fake_af(cam, foc, **kw):
+            seen.append((fw.rig.filter_slot, kw["exposure_s"], kw["gain"]))
+            return af_module.AutofocusResult(True, 5000, 2.1, [], "ok")
+        monkeypatch.setattr(af_module, "run_autofocus", fake_af)
+
+        await h.learn_filter_offsets(
+            ref_slot=0, exposure_s=10.0, gain=300,
+            narrowband=[False, True, True])
+
+        by_slot = {s: (e, g) for s, e, g in seen}
+        assert by_slot[0] == (10.0, 300), "the broadband slot was not left alone"
+        # x4 of the broadband exposure — see NARROWBAND_EXPOSURE_MULTIPLE.
+        assert by_slot[1] == (40.0, 300), by_slot
+        assert by_slot[2] == (40.0, 300), by_slot
+
+        # An explicit pair overrides the derivation, both halves.
+        seen.clear()
+        await h.learn_filter_offsets(
+            ref_slot=0, exposure_s=10.0, gain=300,
+            nb_exposure_s=90.0, nb_gain=420)
+        by_slot = {s: (e, g) for s, e, g in seen}
+        assert by_slot[1] == (90.0, 420), by_slot
+        assert by_slot[0] == (10.0, 300), "the override leaked onto a broadband slot"
+    finally:
+        await h.disconnect_all()
+
+
+async def test_the_narrowband_marking_persists_and_survives_a_cancelled_run(
+        tmp_path, monkeypatch):
+    """It is a property of the WHEEL, not of the run.
+
+    The operator's wheel does not change between nights, so a marking that
+    lived only as long as the run would have to be re-entered every time — and
+    the run this exists for is the one that gets cancelled."""
+    monkeypatch.setattr(configmod, "FILTER_CONFIG_FILE",
+                        tmp_path / "filter_names.json")
+    h = Hub()
+    await h.connect_sim()
+    try:
+        fw = h.devices["filterwheel"]
+        fw.filter_names = ["L", "Ha", "OIII"]
+        fw.filter_offsets = [0, 0, 0]
+
+        async def fast_set_position(slot):
+            fw.rig.filter_slot = int(slot)
+        monkeypatch.setattr(fw, "set_position", fast_set_position)
+
+        async def die_on_the_second_slot(cam, foc, **kw):
+            if fw.rig.filter_slot != 0:
+                raise RuntimeError("stopped")
+            return af_module.AutofocusResult(True, 5000, 2.1, [], "ok")
+        monkeypatch.setattr(af_module, "run_autofocus", die_on_the_second_slot)
+
+        await h.learn_filter_offsets(ref_slot=0, exposure_s=0.01,
+                                     narrowband=[False, True, True])
+        saved = configmod.load_filter_config(
+            configmod.config_store.cfg().active_profile_id)
+        assert saved["narrowband"] == [False, True, True], saved
+        assert fw.is_narrowband(1) and not fw.is_narrowband(0)
+
+        # …and it comes back on the next connect, or the next night's run
+        # sweeps three narrowband slots at the broadband exposure again.
+        fw.filter_narrowband = []
+        h._seed_filter_config()
+        assert fw.filter_narrowband == [False, True, True]
+    finally:
+        await h.disconnect_all()
+
+
+async def test_a_blackout_slot_is_never_narrowband(tmp_path, monkeypatch):
+    """The two flags together would only buy a longer exposure of nothing."""
+    monkeypatch.setattr(configmod, "FILTER_CONFIG_FILE",
+                        tmp_path / "filter_names.json")
+    h = Hub()
+    await h.connect_sim()
+    try:
+        fw = h.devices["filterwheel"]
+        fw.filter_names = ["L", "Ha", "Dark"]
+        out = await h.set_filter_names(["L", "Ha", "Dark"], [0, 0, 0],
+                                       [False, False, True],
+                                       [False, True, True])
+        assert out["narrowband"] == [False, True, False], out
+    finally:
+        await h.disconnect_all()

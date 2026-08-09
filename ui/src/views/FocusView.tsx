@@ -228,6 +228,23 @@ export default function FocusView() {
   const bahtOn = status?.bahtinov_active ?? false;
   // UX-25: filter/binning for the autofocus sweep.
   const filterNames = status?.filterwheel?.names ?? [];
+  // WHICH SLOTS A SWEEP CAN RUN THROUGH — never the blackout ones.
+  //
+  // An opaque slot is a carrier with no glass: it blocks the light path so
+  // darks and bias can be shot without capping the scope. A focus sweep
+  // through it measures nothing at EVERY point, which is not a slow failure
+  // but the hang — the engine only advances when a measurement is added, so an
+  // unmeasurable position is re-exposed until something bounds it (fourteen
+  // times on the rig, 2026-08-08, before the bound existed).
+  //
+  // Everything else already knew this: `FilterPicker` excludes them by default
+  // and PolarView filters its own list. The dial over the preview and the
+  // Filter select in the settings panel were the two places still offering
+  // them, and the dial is the one a thumb reaches at the scope.
+  const filterOpaque = status?.filterwheel?.opaque ?? [];
+  const afSweepSlots = filterNames
+    .map((name, i) => ({ name, i }))
+    .filter(({ name, i }) => !!name && !(filterOpaque[i] ?? false));
   const afMaxBin = Math.min(8, Math.max(1, status?.camera?.max_bin ?? 4));
   const afBinOptions = Array.from({ length: afMaxBin }, (_, i) => i + 1);
 
@@ -775,7 +792,7 @@ export default function FocusView() {
       filter: afFilter === "" ? null : filterNames[Number(afFilter)] ?? null,
     },
     maxBin: afMaxBin,
-    filters: filterNames.filter(Boolean),
+    filters: afSweepSlots.map(({ name }) => name),
     onExposure: (s) => afSet("exposure", s),
     onGain: (g) => afSet("gain", g),
     onBinning: (b) => afSet("bin", b),
@@ -1500,7 +1517,10 @@ export default function FocusView() {
                       <select className="field" value={afFilter}
                         onChange={(e) => setAfFilter(e.target.value)}>
                         <option value="">current</option>
-                        {filterNames.map((name, i) => <option key={`${i}-${name}`} value={i}>{name}</option>)}
+                        {/* blackout slots are absent, not disabled — see
+                            afSweepSlots: a sweep through one cannot measure
+                            anything at any position. */}
+                        {afSweepSlots.map(({ name, i }) => <option key={`${i}-${name}`} value={i}>{name}</option>)}
                       </select>
                     )}
                   </Field>

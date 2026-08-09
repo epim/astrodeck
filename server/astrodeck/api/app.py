@@ -56,6 +56,7 @@ from ..catalog.survey import router as survey_router
 from ..catalog.tiles import router as tiles_router
 from ..catalog.framing import router as framing_router
 from ..catalog.visibility import router as visibility_router
+from ..catalog.region import router as region_router
 from ..config import (AlertSink, AuthConfig, CalibrationConfig,
                       ConfigVersionConflict, CoolingConfig,
                       EscalationConfig, GuideConfig, NamingConfig, Optics,
@@ -510,6 +511,19 @@ _LANE_BLOCK_REASON: dict[str, str] = {
 }
 
 
+#: How long a cancel route waits for the lane it just cancelled to unwind
+#: before halting the device and answering anyway.
+#:
+#: The wait is not politeness: both autofocus paths restore the focuser inside
+#: a SHIELDED move on their way out, and that move is the difference between a
+#: cancelled sweep leaving the drawtube at focus and leaving it wherever the
+#: sweep abandoned it. 30 s covers the widest restore a sweep can owe (a full
+#: half-span at the crawl an EAF manages under load) and is far short of the
+#: 180 s the sequencer allows a filter-offset move, which is a bound on a
+#: background step rather than on somebody holding a phone.
+_LANE_UNWIND_TIMEOUT_S = 30.0
+
+
 def _lane_conflict(name: str) -> str | None:
     """The live lane that forbids starting ``name`` right now, or None.
 
@@ -930,6 +944,11 @@ class FilterNamesBody(BaseModel):
     #: stored alone, so a client that predates the flag never clears it; a list
     #: replaces the set wholesale, which is what makes un-marking a slot possible.
     opaque: list[bool] | None = None
+    #: Per-slot "this slot is narrowband" flags. Same contract as ``opaque``:
+    #: None leaves the stored set alone, a list replaces it wholesale. What it
+    #: changes is the exposure and gain an offset-learning sweep uses on that
+    #: slot — a 3-7 nm passband delivers a star 40-100x fainter than luminance.
+    narrowband: list[bool] | None = None
 
 
 class GuideCameraSettingsBody(BaseModel):
@@ -959,6 +978,16 @@ class LearnOffsetsBody(BaseModel):
     step: int = 350
     steps_each_side: int = 4
     binning: int = 2
+    #: Which slots are narrowband. None leaves the wheel's stored marking alone
+    #: (it persists per profile); a list replaces it AND is saved before the run
+    #: starts, so ticking three boxes and pressing Start does not have to be
+    #: repeated next time — or after a cancel.
+    narrowband: list[bool] | None = None
+    #: The exposure/gain those slots sweep at. None derives them from the
+    #: broadband pair above — see focus.filter_offsets.narrowband_sweep_settings
+    #: for where the multiple comes from.
+    nb_exposure_s: float | None = None
+    nb_gain: int | None = None
 
 
 class EgainLearnBody(BaseModel):
@@ -1442,6 +1471,9 @@ def create_app() -> FastAPI:
     app.include_router(tiles_router)
     app.include_router(framing_router)
     app.include_router(visibility_router)
+    # Before create_app returns, NOT after: the trailing SPA catch-all
+    # GET /{path:path} shadows anything registered later (measured: 404).
+    app.include_router(region_router)
 
     # ---------------------------------------------------- health + version
     # /healthz is OPEN (no token, no session): the supervisor health-checks it on
@@ -4129,7 +4161,13 @@ def create_app() -> FastAPI:
             foc = hub.require("focuser")
         except DeviceError as e:
             raise _err(e)
-        for name in ("focuser", "autofocus"):
+        # `filter_offsets` is in this list because it IS a focus sweep — one per
+        # slot — and Halt is the operator's panic button for the focuser. It
+        # was missing, so the one focus operation that can run for a quarter of
+        # an hour was the one Halt could not stop (2026-08-08). The dedicated
+        # `/api/filterwheel/learn-offsets/cancel` route is the considered exit,
+        # with the unwind wait; this is the two-taps-from-anywhere one.
+        for name in ("focuser", "autofocus", "filter_offsets"):
             t = hub._busy.get(name)
             if t and not t.done():
                 t.cancel()
@@ -4262,7 +4300,7 @@ def create_app() -> FastAPI:
             raise _err(e)
         try:
             return await hub.set_filter_names(body.names, body.offsets,
-                                              body.opaque)
+                                              body.opaque, body.narrowband)
         except DeviceError as e:
             raise _err(e)
 
@@ -4286,7 +4324,60 @@ def create_app() -> FastAPI:
         return _spawn("filter_offsets", hub.learn_filter_offsets(
             ref_slot=body.ref_slot, exposure_s=body.exposure_s, gain=body.gain,
             step=body.step, steps_each_side=body.steps_each_side,
-            binning=body.binning))
+            binning=body.binning,
+            narrowband=body.narrowband,
+            nb_exposure_s=body.nb_exposure_s, nb_gain=body.nb_gain))
+
+    @app.post("/api/filterwheel/learn-offsets/cancel",
+              dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
+    async def cancel_learn_filter_offsets():
+        """Stop a per-filter offset run, and leave the focuser somewhere sane.
+
+        THE LANE HAD NO WAY OUT. A learn-offsets run drives one full autofocus
+        sweep per slot and could only be cleared by restarting the server —
+        found on 2026-08-08 when a sweep re-exposed one unmeasurable position
+        fourteen times, focuser stationary, the run unable to finish or fail.
+        The retry bound (MAX_DROPS_PER_POSITION) stops that particular spin;
+        this is the operator's answer to every other one.
+
+        Same idiom as ``/api/focuser/halt`` and ``/api/rotator/halt`` — cancel
+        the named lane, then halt the device — with one addition that matters
+        here: it WAITS for the cancelled sweep to unwind before halting. Both
+        autofocus paths restore the focuser to the position their sweep began
+        at inside a shielded move (focus/autofocus.py, focus/native.py), and
+        halting the focuser before that move has run would strand the drawtube
+        at whatever mid-sweep position the cancel happened to land on, which is
+        the thing this route exists to prevent. The wait is bounded, so a
+        driver that will not answer cannot make the route hang; when the bound
+        is hit the halt still fires and the answer says so.
+        """
+        try:
+            foc = hub.require("focuser")
+        except DeviceError as e:
+            raise _err(e)
+        task = hub._busy.get("filter_offsets")
+        if task is None or task.done():
+            # Not an error: the run may have finished between the operator
+            # deciding and pressing. Say what is true rather than 409-ing.
+            return {"cancelled": False, "reason": "no filter-offsets run is in "
+                                                  "flight",
+                    "position": await foc.get_position()}
+        task.cancel()
+        settled = True
+        try:
+            await asyncio.wait_for(asyncio.shield(task),
+                                   timeout=_LANE_UNWIND_TIMEOUT_S)
+        except Exception:
+            # Shielded, so the timeout abandons the WAIT and not the unwind:
+            # the sweep keeps putting the focuser back even though this
+            # response has stopped waiting for it. ``except Exception`` and not
+            # ``BaseException`` on purpose — a cancel of THIS request must
+            # still propagate.
+            settled = False
+        await foc.halt()
+        return {"cancelled": True, "settled": settled,
+                "position": await foc.get_position()}
 
     # --------------------------------------------------------------- switch
 

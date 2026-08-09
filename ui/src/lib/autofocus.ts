@@ -530,3 +530,41 @@ export function focusButtonState(a: {
   }
   return { disabled: false, label: "Focus my scope", reason: null, locked: false };
 }
+
+// ======================================================= NARROWBAND SWEEPS
+// The mirror of server/astrodeck/focus/filter_offsets.py
+// ``narrowband_sweep_settings`` — deliberately the same arithmetic in both
+// places, because the offsets dialog PRINTS these numbers and then sends them,
+// and a dialog whose preview and payload disagree is the "looks applied but
+// ignored" control this codebase has deleted twice.
+//
+// WHERE THE MULTIPLE COMES FROM (the long version is in the Python constant's
+// comment). A star is a continuum source, so the light a filter passes scales
+// with its passband: 3-7 nm of narrowband against ~300 nm of luminance is the
+// same star 40-100x fainter. Matching that with exposure would be 400-1000 s a
+// point — three to seven hours for three slots, which is the night. Bin is
+// already spent (the sweep runs binned) and gain is past its knee on the rig
+// that filed this. So exposure carries it, bounded by the run's own clock: the
+// 2026-08-08 run measured four broadband slots at 10 s a point, ~2 minutes a
+// filter; x4 puts three narrowband slots at ~21 minutes, the same order as the
+// broadband half that worked. It buys 1.5 magnitudes on a read-noise-limited
+// frame (SNR grows with t there, not with sqrt(t)), not parity — the operator
+// can raise it, which is why the field is editable.
+export const NARROWBAND_EXPOSURE_MULTIPLE = 4;
+
+/** `[exposure_s, gain]` for a narrowband slot, from the broadband pair.
+ *
+ *  Gain is only ever raised to the sensor's high-conversion-gain threshold
+ *  when the camera reports one (measured 3.96 e- -> 1.36 e- at gain 125 on the
+ *  IMX571): on a read-noise-limited frame — which a narrowband focus frame is
+ *  — read noise is the whole noise budget. A rig already above it sees no
+ *  change. */
+export function narrowbandSweepSettings(
+  exposureS: number, gain: number, hcgThresholdGain?: number | null,
+): [number, number] {
+  const exposure = Math.round(exposureS * NARROWBAND_EXPOSURE_MULTIPLE * 10) / 10;
+  const g = hcgThresholdGain != null && Number.isFinite(hcgThresholdGain)
+    ? Math.max(Math.round(gain), Math.round(hcgThresholdGain))
+    : Math.round(gain);
+  return [exposure, g];
+}

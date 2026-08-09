@@ -80,6 +80,227 @@ def is_flat_sweep(hfrs) -> bool:
 THIN_POINT_STARS = 10
 
 
+# --------------------------------------------------------------------------
+# WHETHER A SWEEP FOUND FOCUS IS A QUESTION ABOUT THE CURVE, NOT ABOUT R².
+#
+# The rig, 2026-08-08, Oiii slot of a per-filter offset run: HFR 1.67 px at
+# position 11173 from 321 stars, rising to 44.70 px at BOTH ends of the swept
+# range. Thrown away, with the run's record quoting hyperbolic R² 0.743 against
+# a 0.70 gate. Twelve of thirteen autofocus attempts on this rig have died with
+# a fit-statistic verdict of one kind or another.
+#
+# R² IS THE WRONG STATISTIC FOR THIS SHAPE, and the failure is systematic
+# rather than unlucky. R² is 1 − Σresid²/Σ(y−ȳ)², so it is dominated by the
+# region with the largest excursion — the WINGS, which here are 26× taller than
+# the tip and the one part of the curve nobody wants a number from. The vertex
+# sits where the residuals are smallest and contributes almost nothing to the
+# score. So the statistic rises and falls with how faithfully the model tracks
+# the far wings, while the quantity the run exists to produce is decided
+# elsewhere.
+#
+# Measured here, with the shipped engine (`fit_focus_curve`, hyperbolic), on a
+# PERFECT symmetric V whose wings saturate at 44.70 as the defocused blobs
+# outgrow what the size metric can measure — the shape that makes both ends of
+# a sweep read the same number, as this one's did:
+#
+#     wings saturate over ...   hyperbolic R²   fitted minimum
+#     no saturation                   0.996          11173
+#     the outer 1 point/side          0.850          11173
+#     the outer 2 points/side         0.406          11173
+#     the outer 3 points/side        −0.611          11173
+#
+# The fit gets the answer exactly right in every row and its score walks from
+# "excellent" to NEGATIVE. There is no threshold on this number that admits the
+# fourth row and rejects noise, because the number is not measuring the thing.
+# Driving the engine's own state machine over the second row's curve (the one
+# that reproduces all three published values) returns `failed`,
+# `r_squared_below_threshold` — the finding, reproduced without a telescope.
+# Note the 0.743 in the record is not itself the number the gate saw: the gate
+# scores the engine's own accumulated points and the log line re-fits the
+# host's list, which is one duplicate verification point longer. Two statistics
+# of the same run disagreeing about whether it succeeded is its own argument
+# for asking the curve instead.
+#
+# WHAT THIS ASKS INSTEAD is what a person reads off the chart:
+#   * a minimum INSIDE the sampled range, not extrapolated off one arm;
+#   * both wings actually rising away from it, and not falling back;
+#   * a depth large against the curve's own roughness, so the dip is structure
+#     rather than scatter;
+#   * enough stars at the tip that the best point is a measurement;
+#   * and only then a LOCAL parabola over the tip and its neighbours to place
+#     the vertex — local, because a V-curve's arms are straight and a global
+#     parabola through them is a bad model that biases the vertex.
+#
+# A PURE FUNCTION, for the reason ``is_flat_sweep`` above is one: the decision
+# it makes lives inside a Rust state machine driven by a camera and a focuser,
+# so an end-to-end test of it can only run where a rig or a wheel exists, and
+# on 2026-08-08 exactly that gap let a guard read the sign of a numerically
+# zero coefficient and pass on Linux while failing on Windows. This is the
+# decision itself, checkable anywhere, against curves this project measured.
+# --------------------------------------------------------------------------
+
+#: Fewer than this and there is not enough curve to overrule a fit statistic:
+#: four points can be fitted but they leave at most one sample on a wing, and a
+#: wing of one cannot be said to rise rather than wobble.
+MIN_ACCEPT_POINTS = 5
+
+#: How far each wing's OUTER END must stand above the minimum, as a fraction of
+#: the minimum itself, and as an absolute floor for a sweep whose focus is
+#: already sharp. Deliberately 10x ``FLAT_SWING_FRAC``: that constant asks
+#: whether a sweep carries any information at all, this one asks whether it
+#: carries enough to overrule the engine, and those are different bars. The rig
+#: Oiii curve clears it by a factor of 51 (43.03 px of rise against 0.84 needed).
+WING_RISE_FRAC = 0.5
+WING_RISE_FLOOR_PX = 0.5
+
+#: How far a wing may fall back as it travels OUTWARD from the minimum, as a
+#: fraction of that wing's own total rise, before the curve stops being a V.
+#: Not zero: one point in a real sweep can sit low for a satellite, a gust or a
+#: thinner patch of cloud, and refusing every curve with a single dip in it
+#: would put us back where the R² gate was. A quarter of the wing's rise is far
+#: more than a measurement wobble and far less than an arm turning round.
+WING_DIP_FRAC = 0.25
+
+#: How many times the curve's own roughness the minimum must be deep by.
+#: Roughness is measured as each interior point's distance from the midpoint of
+#: its two neighbours (the tip excluded — the corner of a V is real curvature,
+#: not noise), so a straight arm contributes zero however steep it is and only
+#: scatter counts. 5x is the line between a dip that is structure and one that
+#: is the noise floor arranged conveniently.
+DEPTH_OVER_ROUGHNESS = 5.0
+
+#: Half-width of the window the vertex is fitted in: the measured minimum plus
+#: up to this many neighbours on each side. Matches the legacy path's local
+#: refit, for the same reason — V-curves are hyperbolic, so a parabola is a good
+#: model only near the tip.
+LOCAL_HALF = 2
+
+
+@dataclass(frozen=True)
+class CurveVerdict:
+    """Does this sweep's curve locate a focus position, and where.
+
+    ``reason`` always states what was measured — accepted or not — because the
+    caller logs it either way and "rejected" on its own is the one-word verdict
+    this whole exercise exists to replace.
+    """
+    accepted: bool
+    best_position: float | None
+    reason: str
+    #: The smaller of the two wings' rise above the minimum (px), and the
+    #: curve's roughness (px). Carried so a caller can quote the evidence
+    #: without recomputing it.
+    depth: float = 0.0
+    roughness: float = 0.0
+
+
+def curve_verdict(points, counts=None) -> CurveVerdict:
+    """Judge a measured V-curve on its own shape. PURE — see the block above.
+
+    ``points`` is ``[(position, hfr), …]`` in any order; ``counts`` the stars
+    behind each point, parallel to ``points`` (missing/short reads as 0, which
+    fails the star test rather than passing it silently).
+    """
+    counts = list(counts or [])
+    counts += [0] * max(0, len(points) - len(counts))
+    rows = sorted((float(p), float(h), float(n))
+                  for (p, h), n in zip(points, counts))
+    n_pts = len(rows)
+    if n_pts < MIN_ACCEPT_POINTS:
+        return CurveVerdict(False, None,
+                            f"{n_pts} measured point{'' if n_pts == 1 else 's'} "
+                            f"— a curve needs {MIN_ACCEPT_POINTS} to be judged "
+                            f"on its shape")
+    xs = np.array([r[0] for r in rows], dtype=np.float64)
+    ys = np.array([r[1] for r in rows], dtype=np.float64)
+    ns = np.array([r[2] for r in rows], dtype=np.float64)
+
+    i = int(np.argmin(ys))
+    y_min = float(ys[i])
+    if i == 0 or i == n_pts - 1:
+        # Extrapolated, not measured: the sweep ran out of room before the
+        # stars stopped shrinking, so focus is outside the window.
+        side = "below" if i == 0 else "above"
+        return CurveVerdict(
+            False, None,
+            f"the smallest size measured, {y_min:.2f}px, is at {int(xs[i])} — "
+            f"the {side} end of the swept range, so focus was never bracketed")
+
+    need = max(WING_RISE_FRAC * y_min, WING_RISE_FLOOR_PX)
+    left = float(ys[0]) - y_min
+    right = float(ys[-1]) - y_min
+    if left < need or right < need:
+        return CurveVerdict(
+            False, None,
+            f"the wings rise only {left:.2f}px / {right:.2f}px above a "
+            f"{y_min:.2f}px minimum ({need:.2f}px needed on both) — too shallow "
+            f"to be a V")
+
+    for side, walk, rise in (("left", range(i, -1, -1), left),
+                             ("right", range(i, n_pts), right)):
+        seq = ys[list(walk)]
+        steps = np.diff(seq)
+        if steps.size and float(steps.min()) < -WING_DIP_FRAC * rise:
+            return CurveVerdict(
+                False, None,
+                f"the {side} wing falls back {-float(steps.min()):.2f}px on its "
+                f"way out of a {rise:.2f}px rise — an arm that turns round is "
+                f"not one arm of a V")
+
+    if ns[i] < THIN_POINT_STARS:
+        return CurveVerdict(
+            False, None,
+            f"the best point was measured from {int(ns[i])} star"
+            f"{'' if ns[i] == 1 else 's'} — under {THIN_POINT_STARS}, the tip "
+            f"is one detection's opinion however clean the curve looks")
+
+    rough = [abs(float(ys[k]) - 0.5 * (float(ys[k - 1]) + float(ys[k + 1])))
+             for k in range(1, n_pts - 1) if k != i]
+    roughness = float(np.median(rough)) if rough else 0.0
+    depth = min(left, right)
+    if roughness > 0 and depth < DEPTH_OVER_ROUGHNESS * roughness:
+        return CurveVerdict(
+            False, None,
+            f"the minimum is only {depth:.2f}px deep against {roughness:.2f}px "
+            f"of scatter between neighbouring points (x{depth / roughness:.1f}, "
+            f"x{DEPTH_OVER_ROUGHNESS:.0f} needed) — a dip in the noise",
+            depth, roughness)
+
+    i0, i1 = max(0, i - LOCAL_HALF), min(n_pts, i + LOCAL_HALF + 1)
+    xl, yl = xs[i0:i1], ys[i0:i1]
+    wl = np.sqrt(np.maximum(ns[i0:i1], 1.0))
+    if len(xl) < 3:  # pragma: no cover - unreachable while MIN_ACCEPT_POINTS ≥ 5
+        return CurveVerdict(False, None,
+                            "too few points around the minimum to place a vertex",
+                            depth, roughness)
+    a, b, _c = np.polyfit(xl, yl, 2, w=wl)
+    if a <= 0:
+        return CurveVerdict(
+            False, None,
+            "the points around the minimum do not curve upward, so they place "
+            "no vertex", depth, roughness)
+    vertex = float(-b / (2 * a))
+    if not (float(xl.min()) < vertex < float(xl.max())):
+        return CurveVerdict(
+            False, None,
+            f"the vertex fitted near the minimum lands at {int(vertex)}, "
+            f"outside the {int(xl.min())}..{int(xl.max())} points it was fitted "
+            f"to", depth, roughness)
+
+    return CurveVerdict(
+        True, vertex,
+        f"a {depth:.2f}px-deep minimum at {int(round(vertex))}, "
+        f"{depth / roughness:.0f}x the {roughness:.2f}px scatter between "
+        f"neighbouring points, bracketed by wings rising to {float(ys[0]):.2f}px "
+        f"and {float(ys[-1]):.2f}px, measured from {int(ns[i])} stars"
+        if roughness > 0 else
+        f"a {depth:.2f}px-deep minimum at {int(round(vertex))} on a curve with "
+        f"no scatter between neighbouring points, bracketed by wings rising to "
+        f"{float(ys[0]):.2f}px and {float(ys[-1]):.2f}px, measured from "
+        f"{int(ns[i])} stars",
+        depth, roughness)
+
+
 def sweep_metric(data, min_stars: int = MIN_STARS_PER_POINT
                  ) -> tuple[float | None, int, str | None]:
     """One sweep point: ``(size px | None, sources, the metric's own advice)``.

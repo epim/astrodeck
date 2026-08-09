@@ -1467,6 +1467,7 @@ export default function CaptureView() {
             names={status.filterwheel.names}
             offsets={status.filterwheel.offsets ?? []}
             opaque={status.filterwheel.opaque ?? []}
+            narrowband={status.filterwheel.narrowband ?? []}
             position={status.filterwheel.position}
             canLearn={!!status.focuser}
             learnDisabledReason={
@@ -1476,12 +1477,14 @@ export default function CaptureView() {
                     : !status.focuser ? "no focuser is connected"
                       : null
             }
-            onLearn={async (refSlot) => {
-              await api.post("/api/filterwheel/learn-offsets", { ref_slot: refSlot });
+            onLearn={async (refSlot, req) => {
+              await api.post("/api/filterwheel/learn-offsets",
+                             { ref_slot: refSlot, ...req });
               showToast("info", "Learning filter offsets…");
             }}
-            onSave={async (names, offsets, opaque) => {
-              await api.post("/api/filterwheel/names", { names, offsets, opaque });
+            onSave={async (names, offsets, opaque, narrowband) => {
+              await api.post("/api/filterwheel/names",
+                             { names, offsets, opaque, narrowband });
               showToast("success", "Filter names saved");
             }}
           />

@@ -489,3 +489,89 @@ async def test_a_single_bad_frame_does_not_fail_the_sweep():
 
     assert state["blanked"] == 1, "the bad frame never happened"
     assert result.success, f"one bad frame failed the whole sweep: {result.message}"
+
+
+# ---------------------------------------------------------------------------
+# #143 — the fit gate throws away curves a human would accept.
+# The pure criterion is proved in tests/test_focus_curve_acceptance.py; these
+# two prove the WIRING: that a sweep the engine refuses on its fit statistic
+# still ends with the focuser at the fitted optimum, and that a sweep with
+# nothing in it still fails.
+
+def _saturating_v(centre, *, tip=1.67, sat=44.70, step=350, k=1.8):
+    """The 2026-08-08 Oiii shape as a function of focuser position.
+
+    A V whose wings saturate once the defocused blobs outgrow what the size
+    metric can measure — which is what makes both ends of a sweep read the same
+    number, as that run's did (1.67 px at the tip, 44.70 px at both ends). The
+    engine refuses this curve with ``r_squared_below_threshold`` while its own
+    fit puts the minimum exactly on the measured one.
+    """
+    def size_at(pos):
+        return min(sat, tip + abs(pos - centre) * k * (sat - tip) / (4 * step))
+    return size_at
+
+
+async def test_a_curve_the_fit_gate_refuses_is_accepted_on_its_shape(monkeypatch):
+    """END TO END: the rig's Oiii sweep, and what should have happened to it.
+
+    Clean V, minimum bracketed, 300 stars at the tip, wings rising to 44.70 on
+    both sides — and `r_squared_below_threshold`, because R² scores how well
+    the model tracks wings that are 26x taller than the tip. The run must
+    finish AT the focus it found, not restored to where it started."""
+    import astrodeck.focus.native as N
+    rig, cam, foc = await _connected_sim()
+    start = await foc.get_position()
+    size_at = _saturating_v(start)
+    monkeypatch.setattr(N, "native_sweep_metric",
+                        lambda data: (size_at(rig.focuser_pos), 300))
+
+    q = bus.subscribe()
+    try:
+        res = await N.run_native_autofocus(cam, foc, exposure_s=0.05, gain=200,
+                                           step=350, steps_each_side=4,
+                                           binning=1)
+        events = _drain_focus(q)
+    finally:
+        bus.unsubscribe(q)
+
+    assert res.success, res.message
+    # The verdict has to name what overruled the gate, or a salvaged run is
+    # indistinguishable in the record from one that fitted cleanly.
+    assert "curve shape" in res.message, res.message
+    assert "r_squared_below_threshold" in res.message, res.message
+    assert abs(res.best_position - start) <= 350, res.best_position
+    # The FOCUSER, not just the number: a run that reports success and leaves
+    # the drawtube back at its starting point has shot the rest of the night
+    # out of focus.
+    assert abs(await foc.get_position() - res.best_position) <= 1
+    assert events[-1]["state"] == "done", events[-1]
+    assert events[-1]["best"]["position"] == res.best_position
+
+
+async def test_a_sweep_with_no_curve_in_it_still_fails(monkeypatch):
+    """The control for the test above. Accepting on shape must not become
+    accepting on nothing: a flat sweep has no interior minimum and no wings,
+    and it has to keep failing — with the engine's own reason, and with the
+    focuser put back."""
+    import astrodeck.focus.native as N
+    rig, cam, foc = await _connected_sim()
+    start = await foc.get_position()
+    monkeypatch.setattr(N, "native_sweep_metric", lambda data: (5.0, 300))
+
+    q = bus.subscribe()
+    try:
+        res = await N.run_native_autofocus(cam, foc, exposure_s=0.05, gain=200,
+                                           step=350, steps_each_side=4,
+                                           binning=1)
+        logs = _drain_logs(q)
+    finally:
+        bus.unsubscribe(q)
+
+    assert res.success is False
+    assert res.message == "not_enough_spread", res.message
+    assert abs(await foc.get_position() - start) <= 1
+    # The curve's own second opinion is on the record beside the engine's.
+    agrees = [l for l in logs if l["message"].startswith("curve check agrees")]
+    assert len(agrees) == 1, [l["message"] for l in logs]
+    assert "end of the swept range" in agrees[0]["message"], agrees[0]

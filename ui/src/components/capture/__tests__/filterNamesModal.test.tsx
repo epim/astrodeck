@@ -46,6 +46,7 @@ g.IS_REACT_ACT_ENVIRONMENT = true;
 const { createElement, act } = await import("react");
 const { createRoot } = await import("react-dom/client");
 const { FilterNamesModal } = await import("../FilterNamesModal");
+const { useStore } = await import("../../../store");
 
 // ------------------------------------------------------------------ harness
 let passed = 0;
@@ -61,6 +62,21 @@ const NAMES = ["L", "R", "G", "B"];
 const OFFSETS = [0, 12, -4, 7];
 const BLOCKED = "a capture loop is running";
 let learnCalls = 0;
+let lastLearn: any = null;
+let lastSave: any = null;
+/** every POST the modal made, so "the Stop button stops something" is a claim
+ *  about the wire and not about a label. */
+const posts: { path: string; body: any }[] = [];
+win.fetch = async (url: any, init: any = {}) => {
+  if ((init.method ?? "GET").toUpperCase() === "POST") {
+    posts.push({ path: String(url), body: init.body ? JSON.parse(init.body) : null });
+  }
+  return {
+    ok: true, status: 200, headers: { get: () => "application/json" },
+    json: async () => ({}), text: async () => "{}",
+  };
+};
+Object.defineProperty(g, "fetch", { value: win.fetch, writable: true, configurable: true });
 
 const container = win.document.getElementById("root") as any;
 const root = createRoot(container);
@@ -75,8 +91,8 @@ function render(reason: string | null): void {
       position: 0,
       canLearn: true,
       learnDisabledReason: reason,
-      onLearn: async () => { learnCalls++; },
-      onSave: async () => {},
+      onLearn: async (_ref: number, req: any) => { learnCalls++; lastLearn = req; },
+      onSave: async (...a: any[]) => { lastSave = a; },
     }));
   });
 }
@@ -153,6 +169,101 @@ await test("with nothing blocking it, Start is live and says nothing about being
   learnCalls = 0;
   click(start);
   assert(learnCalls === 1, `a live Start ran the learn ${learnCalls} times, expected 1`);
+});
+
+// ------------------------------------------- #148 narrowband slots (2026-08-08)
+// The offsets run measured L/R/G/B at one exposure and could not focus S, Ha
+// or Oiii at all. A 3-7 nm passband is the same star tens of times fainter, so
+// those slots need their own exposure and gain — and the marking belongs on
+// the wheel, not on the run, because a wheel does not change between nights.
+
+const nbBox = (i: number) =>
+  container.querySelector(`[aria-label="Slot ${i + 1} is a narrowband filter"]`) as any;
+const field = (label: string) =>
+  container.querySelector(`[aria-label="${label}"]`) as any;
+function typeInto(el: any, value: string): void {
+  act(() => {
+    const setter = Object.getOwnPropertyDescriptor(
+      win.HTMLInputElement.prototype, "value")!.set!;
+    setter.call(el, value);
+    el.dispatchEvent(new win.Event("input", { bubbles: true }));
+  });
+}
+
+await test("every slot can be marked narrowband, and the marking is saved with the wheel", async () => {
+  render(null);
+  assert(nbBox(0) != null, "no narrowband tick on slot 1 — the multi-select never rendered");
+  click(nbBox(2));            // G, for the sake of argument
+  const save = named("Save");
+  assert(save != null, "no Save button");
+  click(save);
+  await act(async () => { await Promise.resolve(); });
+  assert(lastSave != null, "Save never called through");
+  assert(Array.isArray(lastSave[3]),
+    "Save did not carry a narrowband list — the tick would die with the dialog");
+  assert(lastSave[3][2] === true && lastSave[3][0] === false,
+    `the wrong slot was saved as narrowband: ${JSON.stringify(lastSave[3])}`);
+});
+
+await test("a narrowband slot is swept at its own exposure, x4 the broadband one", () => {
+  render(null);
+  openLearn();
+  const exp = field("Sweep exposure seconds");
+  const gain = field("Sweep gain");
+  assert(exp != null && gain != null,
+    "the learn panel has no sweep exposure/gain fields — the run would use the "
+    + "server's 2s/120 defaults, which is the bug under this one");
+  typeInto(exp, "10");
+  typeInto(gain, "300");
+  click(nbBox(1));            // R, standing in for Ha
+  const nbExp = field("Narrowband sweep exposure seconds");
+  assert(nbExp != null, "no narrowband exposure field once a slot is marked");
+  assert(nbExp.value === "40",
+    `the narrowband exposure did not follow the sweep exposure: ${nbExp.value}`);
+  click(named("Start"));
+  assert(lastLearn != null, "Start sent no settings at all");
+  assert(lastLearn.exposure_s === 10 && lastLearn.gain === 300,
+    `the sweep settings on screen were not the ones sent: ${JSON.stringify(lastLearn)}`);
+  assert(lastLearn.narrowband[1] === true && lastLearn.narrowband[0] === false,
+    `the narrowband marking was not sent: ${JSON.stringify(lastLearn.narrowband)}`);
+  assert(lastLearn.nb_exposure_s === 40,
+    `narrowband exposure should be x4 of 10s, got ${lastLearn.nb_exposure_s}`);
+  assert(lastLearn.nb_gain === 300, `narrowband gain: ${lastLearn.nb_gain}`);
+});
+
+await test("a hand-typed narrowband exposure wins over the derived one", () => {
+  render(null);
+  openLearn();
+  typeInto(field("Sweep exposure seconds"), "10");
+  click(nbBox(1));
+  typeInto(field("Narrowband sweep exposure seconds"), "90");
+  click(named("Start"));
+  assert(lastLearn.nb_exposure_s === 90,
+    `the typed narrowband exposure was ignored: ${lastLearn.nb_exposure_s}`);
+});
+
+// --------------------------------------------- #184 the run had no way out
+await test("a run in flight can be stopped, and the stop reaches the rig", async () => {
+  render(null);
+  openLearn();
+  assert(named("Stop") == null,
+    "a Stop button is offered with nothing running — it would report a "
+    + "cancel of nothing as success");
+  await act(async () => {
+    useStore.setState({
+      filterOffsetsLearn: { state: "running", slot: 1, of: 4, name: "R" },
+    } as never);
+  });
+  const stop = named("Stop");
+  assert(stop != null,
+    "a filter-offsets run is in flight and there is no way to stop it — "
+    + "before this the only exit was restarting the server");
+  posts.length = 0;
+  click(stop);
+  await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+  assert(posts.some((p) => p.path.includes("/api/filterwheel/learn-offsets/cancel")),
+    `Stop posted nothing to the cancel route: ${posts.map((p) => p.path).join("|")}`);
+  await act(async () => { useStore.setState({ filterOffsetsLearn: null } as never); });
 });
 
 // ------------------------------------------------------------------ report

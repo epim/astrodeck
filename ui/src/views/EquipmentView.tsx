@@ -1379,6 +1379,7 @@ function RoleSlot({
           names={status.filterwheel.names}
           offsets={status.filterwheel.offsets ?? []}
           opaque={status.filterwheel.opaque ?? []}
+          narrowband={status.filterwheel.narrowband ?? []}
           position={status.filterwheel.position}
           hasFocuser={!!status.focuser}
           disabled={disabled}
@@ -1412,6 +1413,7 @@ function FilterSlotsEditor({
   names,
   offsets,
   opaque = [],
+  narrowband = [],
   position,
   hasFocuser,
   disabled,
@@ -1419,6 +1421,7 @@ function FilterSlotsEditor({
   names: string[];
   offsets: number[];
   opaque?: boolean[];
+  narrowband?: boolean[];
   position: number;
   hasFocuser: boolean;
   disabled: boolean;
@@ -1463,6 +1466,7 @@ function FilterSlotsEditor({
         names={names}
         offsets={offsets}
         opaque={opaque}
+        narrowband={narrowband}
         position={position}
         canLearn={hasFocuser}
         learnDisabledReason={
@@ -1472,13 +1476,14 @@ function FilterSlotsEditor({
               ? "no focuser is connected"
               : null
         }
-        onLearn={async (refSlot) => {
-          await api.post("/api/filterwheel/learn-offsets", { ref_slot: refSlot });
+        onLearn={async (refSlot, req) => {
+          await api.post("/api/filterwheel/learn-offsets",
+                         { ref_slot: refSlot, ...req });
           showToast("info", "Learning filter offsets…");
         }}
-        onSave={async (n, o, op) => {
+        onSave={async (n, o, op, nb) => {
           await api.post("/api/filterwheel/names",
-                         { names: n, offsets: o, opaque: op });
+                         { names: n, offsets: o, opaque: op, narrowband: nb });
           showToast("success", "Filter slots saved");
         }}
       />

@@ -34,7 +34,7 @@ from ..events import bus
 from ..providers import NATIVE_AVAILABLE
 from ..imaging.stars import OVEREXPOSED_FRAC, focus_size, saturation_fraction
 from .autofocus import (MAX_DROPS_PER_POSITION, MIN_STARS_PER_POINT,
-                        AutofocusResult, dropped_points_phrase,
+                        AutofocusResult, curve_verdict, dropped_points_phrase,
                         overexposure_levers, overexposure_phrase, sweep_levers,
                         thin_points_phrase)
 
@@ -670,6 +670,52 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
 
             elif action == "failed":
                 reason = s.get("reason") or "autofocus failed"
+
+                # THE ENGINE'S GATE IS A STATISTIC; THE CURVE IS THE EVIDENCE.
+                #
+                # `r_squared_below_threshold` is scored on how faithfully the
+                # model tracks the WINGS, which are the part of a V-curve
+                # nobody wants a number from — see the block over
+                # `curve_verdict` for the measured table where a perfect fit at
+                # exactly the right position scores anywhere from 0.996 to
+                # −0.611 depending only on how far the wings saturate. The rig
+                # threw away a 1.67 px minimum at 11173 from 321 stars on
+                # 2026-08-08 for that reason, and autofocus succeeds about one
+                # run in thirteen here.
+                #
+                # So ask the curve directly before accepting the refusal. The
+                # criterion is strict enough that a genuinely bad sweep still
+                # fails it (a flat one has no interior minimum; a starved one
+                # has no depth against its own scatter), which is why this can
+                # sit under EVERY engine failure rather than only the one
+                # reason: the shape decides, not the label.
+                salvage = curve_verdict(_result_pts(), counts)
+                if salvage.accepted and salvage.best_position is not None:
+                    best = int(round(salvage.best_position))
+                    # The smallest size the sweep MEASURED, not a fitted value
+                    # and not a re-measurement: the fitted tip of a curve whose
+                    # wings saturate is an extrapolation, and re-exposing here
+                    # would spend a frame on a number nothing acts on. The
+                    # engine's own `done` path reports its fit's `best_value`,
+                    # which is the same kind of claim; this one is at least a
+                    # reading. (`points` is non-empty — the criterion needs
+                    # five of them.)
+                    best_hfr = min(h for _p, h, _s in points)
+                    advice = _advice(ok=True)
+                    await focuser.move_to(best)
+                    bus.publish("focus", state="done", points=_pts(),
+                                best={"position": best, "hfr": best_hfr},
+                                advice=advice)
+                    bus.log("info",
+                            f"native autofocus: the engine refused this sweep "
+                            f"({reason}), but the curve locates focus at "
+                            f"{best} — {salvage.reason}", "focus")
+                    bus.log("info", vcurve_report(points, counts), "focus")
+                    return AutofocusResult(
+                        True, best, best_hfr, _result_pts(),
+                        f"accepted on curve shape after the fit gate refused it "
+                        f"({reason}): {salvage.reason}", advice=advice)
+
                 # The engine's reason names the SHAPE of the failure
                 # ("not_enough_spread"); the advice names what THIS run can do
                 # about it, from what it measured. Where the run has nothing
@@ -685,6 +731,17 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                 # diagnosable from the log alone. Second line on purpose: the
                 # verdict stays short and scannable, the evidence sits under it.
                 bus.log("warning", vcurve_report(points, counts), "focus")
+                # And why the CURVE did not rescue it either — the second
+                # opinion, in shape terms. It goes to the LOG only. Not into
+                # ``reason``: that string is a token the UI maps to human copy
+                # (ui/src/lib/autofocus.ts readFocusFailure) and the sequence
+                # engine records verbatim, so decorating it turns a recognised
+                # failure into an unrecognised one. Not into ``advice`` either:
+                # that field is what THIS RUN can change, and a run that
+                # measured everything cleanly and still failed is required to
+                # keep quiet there rather than crowd out the engine's reason
+                # (test_autofocus_advice.py).
+                bus.log("warning", f"curve check agrees: {salvage.reason}", "focus")
                 return AutofocusResult(False, start_pos, None, _result_pts(),
                                        reason, advice=advice)
 

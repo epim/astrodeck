@@ -114,9 +114,12 @@ interface Rig {
   looping: boolean;
   busyLanes: string[];
   bahtinov: boolean;
+  /** the filter wheel the rig reports, or null for a wheel-less rig */
+  wheel: { position: number; names: string[]; opaque: boolean[] } | null;
 }
 const RIG: Rig = {
   position: 12000, moving: false, looping: false, busyLanes: [], bahtinov: false,
+  wheel: null,
 };
 
 /** A connected camera and focuser, and an operator who may drive them — the only
@@ -135,6 +138,7 @@ function seed(over: Partial<Rig> = {}): void {
       focuser: {
         position: RIG.position, max: 40000, moving: RIG.moving, temperature: 5.5,
       },
+      ...(RIG.wheel ? { filterwheel: RIG.wheel } : {}),
     },
     principal: { role: "operator", email: null, caps: ["view.status", "control.capture"] },
   } as never);
@@ -531,6 +535,53 @@ await test("a dropped frame hands the shutter back instead of latching Exposing�
     + "the screen has ALREADY declared lost two lines below it");
   assert(byText(/^Single$/) != null,
     "the shutter was never handed back — the only way out was Stop or navigating away");
+});
+
+// ---------------------------- #188 the AF dial offered slots with no glass
+// A blackout slot is a carrier with no glass. A sweep through one measures
+// nothing at EVERY position — and because the engine only advances when a
+// measurement is added, that is not a slow failure but the hang: the rig
+// re-exposed one unmeasurable position fourteen times on 2026-08-08. Polar
+// excludes these slots and so does FilterPicker; the two controls below did
+// not.
+await test("neither the sweep dial nor the Filter select offers a blackout slot", async () => {
+  await statusFrame({
+    wheel: { position: 0, names: ["L", "Ha", "Dark"], opaque: [false, false, true] },
+  });
+  // Precondition: the rig really is reporting a blackout slot, or every
+  // assertion below passes on a wheel that has nothing to exclude.
+  assert((useStore.getState() as any).status.filterwheel.names.includes("Dark"),
+    "the fixture never gave the rig a blackout slot");
+
+  const dial = byLabel("Sweep settings");
+  assert(dial != null, "no sweep-settings dial over the preview");
+  click(dial);
+  await flush();
+  const cat = container.querySelector('[data-dial-item="filter"]');
+  assert(cat != null, "the dial has no filter ring");
+  click(cat);
+  await flush();
+  const rings = [...container.querySelectorAll("[data-dial-item]")]
+    .map((el: any) => el.getAttribute("data-dial-item"));
+  assert(rings.includes("L") && rings.includes("Ha"),
+    `the filter ring lost the real filters: ${rings.join("|")}`);
+  assert(!rings.includes("Dark"),
+    `the dial offers a slot with no glass to sweep through: ${rings.join("|")}`);
+  click(container.querySelector('[data-dial-item="__back"]') ?? dial);
+  await flush();
+
+  // …and the same list in the settings panel's <select>.
+  const gear = byLabel("Autofocus settings");
+  assert(gear != null, "no autofocus settings toggle");
+  click(gear);
+  await flush();
+  const sel = [...container.querySelectorAll("select")].find((s: any) =>
+    [...s.options].some((o: any) => o.textContent === "L"));
+  assert(sel != null, "the Filter select never rendered");
+  const opts = [...(sel as any).options].map((o: any) => o.textContent);
+  assert(opts.includes("Ha"), `the select lost a real filter: ${opts.join("|")}`);
+  assert(!opts.includes("Dark"),
+    `the Filter select offers a blackout slot: ${opts.join("|")}`);
 });
 
 // ------------------------------------------------------------------- report
