@@ -527,3 +527,139 @@ async def test_wind_down_survives_a_hub_without_the_routine(monkeypatch, bus_lin
     await engine._wind_down(park=False, warm=True)
     assert cam.calls == [(False, None)]
     assert any("no warm-ramp routine" in m for _l, m, _s in bus_lines)
+
+
+# ---------------------------------------------- the wind-down park (#211)
+#
+# 2026-08-08.jsonl, the night the mount's link died at 02:38:26:
+#
+#   03:48:15 [info/sequence] sequence 'NGC 7023 Iris - north, unguided'
+#                            complete: 150 frames
+#   03:48:15 [info/guide]    native guider stopped
+#
+# and nothing else. That run had park_when_done off, so the mount was left
+# tracking and NOTHING said so; it then tracked for two more hours until the
+# dawn net tried, and failed, to catch it. These pin the three ways that
+# silence happened.
+
+class _ParkTel:
+    """A telescope whose link can be dropped, like the real one's can."""
+
+    def __init__(self, *, connected=True, park_error=None, reconnects_ok=True):
+        self.connected = connected
+        self.park_calls = 0
+        self.connect_calls = 0
+        self.parked = False
+        self.park_error = park_error
+        self.reconnects_ok = reconnects_ok
+
+    async def connect(self):
+        self.connect_calls += 1
+        if not self.reconnects_ok:
+            raise OSError("cannot open COM3: the device is not present")
+        self.connected = True
+
+    async def park(self):
+        self.park_calls += 1
+        if self.park_error is not None:
+            raise self.park_error
+        self.parked = True
+
+
+async def test_the_wind_down_park_is_logged_after_it_happens(bus_lines):
+    """"parking mount" is written BEFORE the command, so on its own it proves
+    intent, not outcome. /api/mount/park documents this rule at length — "PARK
+    IS THE ONE EVENT AN UNATTENDED NIGHT MUST BE ABLE TO PROVE" — and the park
+    that actually runs at the end of every unattended night was not following
+    it."""
+    from astrodeck.sequence.engine import SequenceEngine
+
+    hub = Hub()
+    tel = _ParkTel()
+    hub.devices["telescope"] = tel
+    await SequenceEngine(hub)._wind_down(park=True, warm=False)
+
+    assert tel.parked is True, "precondition: the park really happened"
+    said = [m for _l, m, _s in bus_lines]
+    assert any("mount parked" in m for m in said), (
+        f"a completed park must leave proof, not just an intention: {said}")
+
+
+async def test_a_failed_park_leaves_no_parked_claim(bus_lines):
+    """The other half: the proof line must not appear when the park FAILED."""
+    from astrodeck.sequence.engine import SequenceEngine
+
+    hub = Hub()
+    tel = _ParkTel(park_error=RuntimeError("Gps read failed: link not open"))
+    hub.devices["telescope"] = tel
+    await SequenceEngine(hub)._wind_down(park=True, warm=False)
+
+    said = [m for _l, m, _s in bus_lines]
+    assert any("park failed during wind-down" in m for m in said), said
+    assert not any("mount parked" in m for m in said), (
+        f"the mount did NOT park; nothing may say it did: {said}")
+
+
+async def test_the_wind_down_reopens_a_dropped_mount_link_to_park(bus_lines):
+    """Since ``connected`` became a measurement (#208) this branch is reachable
+    for the first time — and skipping it quietly would have turned that fix into
+    a regression, because the wind-down park is the last thing standing between
+    a finished run and hours of unattended tracking."""
+    from astrodeck.sequence.engine import SequenceEngine
+
+    hub = Hub()
+    tel = _ParkTel(connected=False)          # the 02:38:26 state
+    hub.devices["telescope"] = tel
+    await SequenceEngine(hub)._wind_down(park=True, warm=False)
+
+    assert tel.connect_calls == 1, "the link must be reopened, not stepped over"
+    assert tel.parked is True, "and the park must then actually run"
+
+
+async def test_a_mount_that_cannot_be_reopened_says_so_loudly(bus_lines):
+    """A wind-down step must never raise (it would strand the cooler and the
+    roof behind it) — but it must not go quiet either."""
+    from astrodeck.sequence.engine import SequenceEngine
+
+    hub = Hub()
+    tel = _ParkTel(connected=False, reconnects_ok=False)
+    hub.devices["telescope"] = tel
+    await SequenceEngine(hub)._wind_down(park=True, warm=False)   # must not raise
+
+    errs = [m for lvl, m, _s in bus_lines if lvl == "error"]
+    assert any("could not reopen the mount's link" in m for m in errs), errs
+
+
+async def test_a_run_that_does_not_park_says_the_mount_is_still_tracking(bus_lines):
+    """The actual 03:48 gap. "complete: 150 frames" and silence is indis-
+    tinguishable from a run that parked."""
+    from astrodeck.sequence.engine import SequenceEngine
+
+    hub = Hub()
+    hub.devices["telescope"] = _ParkTel()
+    engine = SequenceEngine(hub)
+    engine._frames_done = 150
+    await engine._wind_down(park=False, warm=False)
+
+    said = [m for _l, m, _s in bus_lines]
+    assert any("still tracking" in m for m in said), (
+        f"a run that deliberately leaves the mount live must SAY so: {said}")
+
+
+async def test_that_line_is_a_warning_when_no_dawn_net_will_catch_it(
+        bus_lines, monkeypatch):
+    """Level follows the actual exposure. Dawn park is the net under this
+    choice; when that net cannot act, nothing at all is watching."""
+    from astrodeck import dawn_park as dp
+    from astrodeck.sequence.engine import SequenceEngine
+
+    monkeypatch.setenv(dp.NO_DAWN_PARK_ENV_VAR, "1")
+    hub = Hub()
+    hub.devices["telescope"] = _ParkTel()
+    engine = SequenceEngine(hub)
+    engine._frames_done = 150
+    await engine._wind_down(park=False, warm=False)
+
+    hit = [(lvl, m) for lvl, m, _s in bus_lines if "still tracking" in m]
+    assert hit and hit[0][0] == "warning", hit
+    assert "nothing will stop it" in hit[0][1].lower(), hit

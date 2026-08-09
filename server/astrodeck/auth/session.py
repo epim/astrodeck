@@ -58,6 +58,25 @@ DEV_DEFAULT_SECRET = "astrodeck-dev-insecure-secret-change-me"  # noqa: S105 (in
 # freshly-written file is honored without a restart.
 SECRET_FILE_NAME = "session_secret"  # noqa: S105 (a path, not a secret value)
 
+#: Did THIS process actually mint the persisted secret, as opposed to finding
+#: one already on disk? Purely for honest reporting — see ``secret_was_minted``.
+_minted_this_process = False
+
+
+def secret_was_minted() -> bool:
+    """True only if ``ensure_real_secret`` wrote a NEW secret in this process.
+
+    ``ensure_real_secret`` is idempotent: it returns early when a secret is
+    already persisted, so on all but the very first boot it writes nothing. The
+    banner that reports it did not know that, and said "a random session secret
+    was generated and persisted" on every boot AND on every ``POST
+    /api/auth/config`` — describing, in the past tense, an event that had
+    happened once. On 2026-08-09 that line appeared four times in one night log,
+    twice in the middle of a run, and reading it as "a new secret was just
+    written" produced a confident wrong diagnosis of why sessions were dropping.
+    The file's mtime settled it: 25 June, forty-five days earlier, untouched."""
+    return _minted_this_process
+
 _HEADER = {"alg": "HS256", "typ": "ADSESS"}
 _ALG = "HS256"
 # EdDSA (asymmetric) header -- same ``typ`` so only the alg distinguishes the two
@@ -171,7 +190,13 @@ def ensure_real_secret() -> bool:
         os.replace(tmp, path)
     except OSError:
         return False
-    return not secret_is_default()
+    ok = not secret_is_default()
+    if ok:
+        # Only here — the ONE path that actually writes a secret. See
+        # secret_was_minted for what reporting this wrongly cost.
+        global _minted_this_process
+        _minted_this_process = True
+    return ok
 
 
 def _current_session_epoch() -> int:

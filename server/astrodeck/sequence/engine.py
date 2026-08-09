@@ -107,6 +107,7 @@ GUIDE_START_TIMEOUT_S = 180.0   # start_guiding incl. settle
 GUIDE_OP_TIMEOUT_S = 120.0      # dither / stop-guiding / quick guider ops
 COOLER_CMD_TIMEOUT_S = 30.0     # a single set_cooler / get_temperature call
 MOUNT_QUERY_TIMEOUT_S = 30.0    # is_parked / set_tracking / time_to_meridian_flip
+MOUNT_RECONNECT_TIMEOUT_S = 30.0  # reopening a dropped link so a wind-down can park
 FILTER_MOVE_TIMEOUT_S = 90.0    # a filter-wheel slot change (incl. settle)
 FOCUSER_MOVE_TIMEOUT_S = 180.0  # a focuser offset move (a big Ha offset can crawl)
 CALIBRATOR_CMD_TIMEOUT_S = 30.0  # flat panel on/off / cover move (PRO-5)
@@ -3309,6 +3310,27 @@ class SequenceEngine:
         # never leave the flat panel lit after an abort/error.
         await self._panel_off_safe()
 
+    async def _reopen_mount_for_park(self, tel) -> None:
+        """Best-effort: bring a dropped mount link back so the park can run.
+
+        The wind-down park is the last thing standing between a finished run and
+        an unattended mount tracking until sunrise, so "the link is down" is not
+        an acceptable place to stop — reopening it is one call, and on
+        2026-08-09 that one call was what fixed a five-hour outage. Mirrors the
+        dawn-park net, which does the same thing for the same reason.
+
+        Never raises: a wind-down step that throws would strand the cooler warm
+        and the roof open behind it. A failure here falls through to the park
+        below, which logs its own refusal honestly."""
+        bus.log("warning", "the mount's link is down at wind-down — reopening "
+                           "it so the park can run", "sequence")
+        try:
+            await asyncio.wait_for(tel.connect(), MOUNT_RECONNECT_TIMEOUT_S)
+        except Exception as e:      # noqa: BLE001 — includes the timeout
+            bus.log("error", f"could not reopen the mount's link ({e}) — the "
+                             f"park below will almost certainly fail and the "
+                             f"mount may be left tracking", "sequence")
+
     async def _wind_down(self, park: bool, warm: bool,
                          close_dome: bool = False) -> None:
         # NB: every device call here is BOUNDED (P0-2) but a timeout is handled
@@ -3325,7 +3347,26 @@ class SequenceEngine:
             pass
         if park:
             tel = self.hub.devices.get("telescope")
-            if tel and tel.connected:
+            if tel is None:
+                # NEVER SILENT. This branch used to be an implicit else that
+                # wrote nothing at all, so a run whose park was skipped for
+                # want of a mount looked exactly like a run that parked.
+                bus.log("error", "PARK SKIPPED: this run asked to park when "
+                                 "done and no telescope is connected — if the "
+                                 "mount is powered it is still tracking",
+                        "sequence")
+            else:
+                if not getattr(tel, "connected", False):
+                    # A telescope OBJECT that reports not-connected is a link
+                    # that died under us, and since ``connected`` became a
+                    # measurement rather than a memory (#208) this branch is
+                    # REACHABLE for the first time — before that the stale flag
+                    # sent us into the park below, where the failure at least
+                    # got logged. Skipping quietly here would have turned that
+                    # fix into a regression: on 2026-08-09 the mount's link died
+                    # at 02:38 and the wind-down is the last thing that runs
+                    # before hours of unattended tracking.
+                    await self._reopen_mount_for_park(tel)
                 bus.log("info", "parking mount", "sequence")
                 # Motion fence (W3.7): the wind-down park is an abort -- BUMP the
                 # hub motion epoch FIRST so any in-flight (or just-accepted) slew is
@@ -3352,6 +3393,35 @@ class SequenceEngine:
                                        "during wind-down — continuing", "sequence")
                 except Exception as e:
                     bus.log("warning", f"park failed during wind-down: {e}", "sequence")
+                else:
+                    # AFTER the await, so the line means "parked" rather than
+                    # "asked to". /api/mount/park documents this rule at length
+                    # ("PARK IS THE ONE EVENT AN UNATTENDED NIGHT MUST BE ABLE
+                    # TO PROVE") and the wind-down — the park that actually runs
+                    # at the end of every unattended night — was not following
+                    # it: "parking mount" above is written BEFORE the command,
+                    # so on its own it proves only intent.
+                    bus.log("info", "mount parked", "sequence")
+        elif self._frames_done:
+            # A run that deliberately leaves the mount live must SAY so. On
+            # 2026-08-09 a 150-frame unattended run ended "complete: 150 frames"
+            # at 03:48 with park_when_done off, and nothing anywhere recorded
+            # that the mount was still tracking — it then tracked for two more
+            # hours until the dawn net tried, and failed, to catch it.
+            #
+            # Level follows the actual exposure. Dawn park is the net under this
+            # choice, so when that net can act this is ordinary information;
+            # when it cannot, nothing at all is watching and that is news.
+            from ..dawn_park import dawn_park_disabled
+            netless = (dawn_park_disabled()
+                       or bool((self.hub.site or {}).get("is_default", True)))
+            bus.log("warning" if netless else "info",
+                    "this run was set not to park when done, so the mount is "
+                    "still tracking. " + ("Dawn park is NOT active on this rig, "
+                                          "so nothing will stop it"
+                                          if netless else
+                                          "Dawn park will park it after sunrise"),
+                    "sequence")
         # PRO-4: with the mount now fenced-and-parked ABOVE, close the roof over
         # the parked gear (end-of-night or unsafe teardown). This runs AFTER the
         # park block by construction; ``close_observatory`` additionally
