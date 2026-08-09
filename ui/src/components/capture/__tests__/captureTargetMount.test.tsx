@@ -175,6 +175,31 @@ test("the dial's FILT ring offers the blackout slot, named as one", () => {
     + "with a wheel), so dropping it here loses a function.");
 });
 
+test("the dial's box does not stretch to the settings column beside it", () => {
+  // Reported from the deployed rig: "I'm not seeing the speed dials on the
+  // capture screen". The dial WAS mounted, WAS visible, and sat 1595px down a
+  // 900px viewport. Its wrapper is a GRID ITEM, so `align-items: stretch` made
+  // it as tall as the settings column (measured 1599px against a 670px
+  // preview), and CameraDial anchors its disc to `bottom: 12` of that box.
+  //
+  // THIS ASSERTION IS A CLASS CHECK ON PURPOSE, AND IT IS WEAKER THAN THE BUG.
+  // jsdom has no layout engine: the dial's ResizeObserver never fires, `box`
+  // stays null, dialRadius returns the full radius, and `fits` is true in every
+  // DOM test that has ever run here. No test in this file could have caught the
+  // defect, and this one cannot either -- it can only catch the FIX being
+  // deleted. The real check is `probe_capture_dial.py`, which drives a browser
+  // and reads getBoundingClientRect.
+  const m = mount();
+  const dial = m.dom.querySelector("[data-camera-dial]");
+  assert(dial != null, "the camera dial is not mounted on Capture at all");
+  const wrapper = (dial as any).parentElement;
+  m.close();
+  assert(/\bh-fit\b/.test(wrapper?.className ?? ""),
+    "the dial's wrapper lost h-fit, so as a grid item it stretches to the "
+    + "height of the settings column and the disc renders far below the fold. "
+    + `className was: ${JSON.stringify(wrapper?.className ?? null)}`);
+});
+
 const total = passed + failed;
 console.log(`captureTargetMount.test: ${passed}/${total} passed`);
 for (const f of failures) console.log("  " + f);

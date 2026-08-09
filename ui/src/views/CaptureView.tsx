@@ -943,7 +943,16 @@ export default function CaptureView() {
   return (
     <div className="grid gap-4 md:grid-cols-[1fr_320px] xl:grid-cols-[1fr_360px]">
       {/* live-preview overhaul: stage + zoom/pan + stretch + overlays + filmstrip */}
-      <div className="relative">
+      {/* h-fit IS LOad-BEARING. This div is a GRID ITEM, so without it the
+          default `align-items: stretch` makes it as tall as the settings column
+          beside it -- measured at 1599px against a 670px preview. CameraDial
+          anchors its disc to `bottom: 12` of this box, so the dial rendered
+          ~900px below the image, off the bottom of the screen, on every desktop
+          viewport. It was present, visible and unreachable.
+          No DOM test can catch this: jsdom has no layout, so the dial's
+          ResizeObserver never fires, `box` stays null, and dialRadius returns
+          the full radius in every test that has ever run. */}
+      <div className="relative h-fit">
         <LivePreview />
         {/* Camera settings where the thumb is while the eye is on the frame —
             the same dial the Align reticle and the Focus stage carry. */}
