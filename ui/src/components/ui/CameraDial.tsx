@@ -60,6 +60,7 @@
 import { useEffect, useLayoutEffect, useRef, useState,
          type CSSProperties, type JSX } from "react";
 import { Icon, type IconName } from "../icons";
+import { LockedChip } from "../ui";
 import RingPicker, { type RingItem } from "./RingPicker";
 import {
   DIAL_DISC_PX, DIAL_ITEM_PX, DIAL_MIN_R, DIAL_R,
@@ -98,7 +99,7 @@ export function dialPolar(frac: number, radius: number,
 }
 
 export default function CameraDial({
-  categories, label = "Camera settings", summary,
+  categories, label = "Camera settings", summary, elsewhere,
   right = 12, bottom = 12, side = "right", className = "",
 }: {
   categories: readonly DialCategory[];
@@ -106,6 +107,14 @@ export default function CameraDial({
   label?: string;
   /** One line on the disc face: the settings as they stand ("2s g120"). */
   summary?: string;
+  /**
+   * Where else THIS screen exposes these settings, for the locked face below
+   * ("on the row under the reticle"). The dial cannot know — it is used on
+   * Capture, Focus and Align, which each keep their values somewhere different
+   * — so the screen tells it, and the sentence names a place the operator can
+   * actually go instead of just refusing.
+   */
+  elsewhere?: string;
   right?: number;
   bottom?: number;
   /** Which corner the disc parks in; the arc mirrors to match. */
@@ -300,6 +309,42 @@ export default function CameraDial({
       style={{ touchAction: "none" }}
       data-camera-dial
     >
+      {/* ── THE STAGE IS TOO SHORT: SAY SO, DO NOT VANISH (#202) ────────────
+          This branch used to be nothing at all. `{fits && …}` with no `else`
+          meant that on a stage under DIAL_MIN_R the entire control — disc,
+          summary, every setting behind it — was simply absent, with no dim, no
+          glyph, no sentence, and nothing in the accessibility tree. That is the
+          shape §11.8 exists to forbid, and it is worse than a native `disabled`
+          button: at least a grey rectangle can be pointed at.
+
+          It also had a concrete cost. `PolarQuickBar`'s exp/gain/bin/filt row
+          survived #179 partly on this: "the dial deletes itself below a 124px
+          stage, i.e. on the phone polar alignment is done from", so the row had
+          to stay or offset became unreachable. A control that disappears cannot
+          be reasoned about by the screen around it.
+
+          So: the disc's own footprint, dimmed, carrying the lock glyph, the
+          summary it would have shown anyway, and a reason naming where the
+          settings ARE. Still a READOUT when it cannot be a control — which is
+          the half of the job a short stage does not actually prevent.
+          `LockedChip` brings `aria-disabled`, focusability and
+          `!pointer-events-auto`, so a touch user can tap it and hear why. */}
+      {!fits && (
+        <div
+          className="absolute pointer-events-auto"
+          style={{ ...(side === "left" ? { left: right } : { right }), bottom }}
+          data-dial-locked
+        >
+          <LockedChip
+            reason={`${label} needs a taller image area to open its arc.`
+              + (elsewhere ? ` These settings are ${elsewhere}.` : "")}
+            className="rounded-full border border-line2 bg-raise/90 px-2.5"
+          >
+            <span className="mono text-[11px] leading-none">{summary ?? label}</span>
+          </LockedChip>
+        </div>
+      )}
+
       {fits && (<>
         {open && !ringOpen && (
           <div className="absolute inset-0 pointer-events-auto" aria-hidden
