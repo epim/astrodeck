@@ -1,0 +1,13 @@
+[Unit]
+Description=AstroDeck WiFi provisioning hotspot
+After=network.target systemd-networkd.service
+Wants=systemd-networkd.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/lib/astrodeck/astrodeck-provision.py run
+Restart=no
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
