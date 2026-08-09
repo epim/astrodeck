@@ -45,6 +45,7 @@ import EscalationPanel from "./EscalationPanel";
 import AlertsPanel from "./AlertsPanel";
 import UpdatePanel from "./UpdatePanel";
 import FactoryResetPanel from "./FactoryResetPanel";
+import CreditsPanel from "./CreditsPanel";
 
 type Tab =
   | "connect"
@@ -55,7 +56,12 @@ type Tab =
   | "updates"
   | "account"
   | "users"
-  | "auth";
+  | "auth"
+  // APPENDED: third-party licences. Deliberately NOT a nav-rail destination —
+  // App.tsx records that a 15th rail entry already forced a padding change to
+  // stay above the fold at 1440x900, and this tab strip scrolls with an edge
+  // fade where the rail does not.
+  | "credits";
 
 /** The Settings tab strip. UX review #42: at tablet width the strip is 712px of
  *  content squeezed into a 698px flex slot by `Segmented`'s own
@@ -157,6 +163,9 @@ export default function SettingsView(): JSX.Element {
         ] as { value: Tab; label: string }[])
       : []),
     { value: "account", label: "Account" },
+    // Ungated on purpose: a licence notice that only an admin can read is not
+    // published. Every role sees this, including a viewer.
+    { value: "credits", label: "Credits" },
     ...(canAdminUsers
       ? ([
           { value: "users", label: "Users" },
@@ -245,6 +254,9 @@ export default function SettingsView(): JSX.Element {
 
       {/* ------------------------------------------------------------ ACCOUNT */}
       {activeTab === "account" && <AccountPanel />}
+
+      {/* ------------------------------------------------------------ CREDITS */}
+      {activeTab === "credits" && <CreditsPanel />}
 
       {/* -------------------------------------------------------------- USERS */}
       {activeTab === "users" && canAdminUsers && <UsersPanel />}
