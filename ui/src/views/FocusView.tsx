@@ -5,6 +5,7 @@ import {
   useStore,
   useStatus,
   useFocus,
+  useFrameDraft,
   useLastAutofocusResult,
   useHfrThresholds,
   useLinkDown,
@@ -28,7 +29,7 @@ import {
   plainFocusVerdict, focusButtonState, readFocusFailure,
 } from "../lib/autofocus";
 import {
-  FOCUS_DEFAULT_GAIN, FOCUS_EXPOSURE_PRESETS, focusCaptureBlocker, focusCaptureBody,
+  FOCUS_EXPOSURE_PRESETS, focusCaptureBlocker, focusCaptureBody,
   frameWaitNote, presetAction, sweepPreviewNote, sweepReadiness,
 } from "../lib/focusCapture";
 import { isExposureInvalid } from "../lib/exposure";
@@ -190,9 +191,24 @@ export default function FocusView() {
   // sweep had nothing to copy its exposure/gain/binning from. Bin 1 by default:
   // a focus frame is thrown away, and binning trades the star profile detail
   // that HFR is measured from for a download speed nobody is waiting on here.
-  const [capExposure, setCapExposure] = useState("2");
-  const [capGain, setCapGain] = useState(String(FOCUS_DEFAULT_GAIN));
-  const [capBin, setCapBin] = useState("1");
+  // --- the `focus` frame scope (#176) ----------------------------------------
+  // These were three `useState`s seeded from "2"/"200"/"1": invisible to every
+  // other screen and back to those constants on every reload. They are now the
+  // shared `focus` scope — deliberately its OWN scope, not `capture`: a focus
+  // frame is thrown away and its higher gain is a decision (lib/focusCapture),
+  // so folding it into the light-frame scope would be as wrong as the per-screen
+  // copies were. Each box keeps a local DRAFT STRING because the guards below
+  // (`capExposureInvalid`, `capGainInvalid`) read the RAW string.
+  const capExpDraft = useFrameDraft("focus", "exposure_s");
+  const capGainDraft = useFrameDraft("focus", "gain");
+  const capBinDraft = useFrameDraft("focus", "binning");
+  const capExposure = capExpDraft.text;
+  const capGain = capGainDraft.text;
+  const capBin = capBinDraft.text;
+  const setFrameSettings = useStore((s) => s.setFrameSettings);
+  /** A DECISION (a preset tap, a dial pick) rather than a keystroke. */
+  const setFocusFrame = (patch: Parameters<typeof setFrameSettings>[1]) =>
+    setFrameSettings("focus", patch);
   const [capPending, setCapPending] = useState<null | "single" | "loop">(null);
   // ms epoch when the server ACCEPTED a single exposure — cleared when a frame
   // lands. Held so the wait can be narrated (lib/focusCapture frameWaitNote).
@@ -245,6 +261,10 @@ export default function FocusView() {
   const afSweepSlots = filterNames
     .map((name, i) => ({ name, i }))
     .filter(({ name, i }) => !!name && !(filterOpaque[i] ?? false));
+  // The filter in the beam RIGHT NOW. `cameraDialCategories` requires it (#176)
+  // so a dial can never render a pin as though it were the wheel's position.
+  const afCurrentFilter = typeof status?.filterwheel?.position === "number"
+    ? filterNames[status.filterwheel.position] ?? null : null;
   const afMaxBin = Math.min(8, Math.max(1, status?.camera?.max_bin ?? 4));
   const afBinOptions = Array.from({ length: afMaxBin }, (_, i) => i + 1);
 
@@ -527,9 +547,9 @@ export default function FocusView() {
   // the highlight when the restart is actually issued.
   const applyPreset = (s: number) => {
     if (presetReason) { showToast("warning", presetReason); return; }
-    const was = capExposure;
+    const was = Number(capExposure) || 2;
     const wasWanted = loopWanted;
-    setCapExposure(String(s));
+    setFocusFrame({ exposure_s: s });
     if (!looping) return;
     // The restart is issued, so this IS what the loop is shooting from here on;
     // the frame still in flight carries the old length, and a highlight that
@@ -542,7 +562,7 @@ export default function FocusView() {
       // The loop is still shooting the old length, so the highlight goes back
       // to saying so — a lit preset over a running loop is a claim about the
       // camera, not about what is typed in a box.
-      setCapExposure(was);
+      setFocusFrame({ exposure_s: was });
       setLoopWanted(wasWanted);
       showToast("error", e.message);
     });
@@ -792,7 +812,11 @@ export default function FocusView() {
       filter: afFilter === "" ? null : filterNames[Number(afFilter)] ?? null,
     },
     maxBin: afMaxBin,
-    filters: afSweepSlots.map(({ name }) => name),
+    // The FULL slot list + the blackout flags: the builder drops the opaque
+    // ones itself now, so no caller can forget (this one did, until 2026-08-08).
+    filters: filterNames,
+    opaqueSlots: filterOpaque,
+    currentFilter: afCurrentFilter,
     onExposure: (s) => afSet("exposure", s),
     onGain: (g) => afSet("gain", g),
     onBinning: (b) => afSet("bin", b),
@@ -1199,14 +1223,20 @@ export default function FocusView() {
               five would have put the one value that mattered out of reach. */}
           <div className="grid grid-cols-2 gap-2 mb-3">
             <Field label="Exposure (s)">
-              <input className="field mono" value={capExposure} inputMode="decimal"
+              <input className="field mono" data-frame-field="exposure_s"
+                value={capExposure} inputMode="decimal"
                 readOnly={!canFocus} aria-readonly={!canFocus || undefined}
-                onChange={(e) => setCapExposure(e.target.value)} />
+                onChange={(e) => capExpDraft.setText(e.target.value)}
+                onBlur={capExpDraft.commit}
+                onKeyDown={(e) => { if (e.key === "Enter") capExpDraft.commit(); }} />
             </Field>
             <Field label={cam?.max_gain ? `Gain (max ${cam.max_gain})` : "Gain"}>
-              <input className="field mono" value={capGain} inputMode="numeric"
+              <input className="field mono" data-frame-field="gain"
+                value={capGain} inputMode="numeric"
                 readOnly={!canFocus} aria-readonly={!canFocus || undefined}
-                onChange={(e) => setCapGain(e.target.value)} />
+                onChange={(e) => capGainDraft.setText(e.target.value)}
+                onBlur={capGainDraft.commit}
+                onKeyDown={(e) => { if (e.key === "Enter") capGainDraft.commit(); }} />
             </Field>
             <Field label="Binning">
               {readOnlyReason ? (
@@ -1214,8 +1244,8 @@ export default function FocusView() {
                   {capBin}×{capBin}
                 </LockedChip>
               ) : (
-                <select className="field" value={capBin}
-                  onChange={(e) => setCapBin(e.target.value)}>
+                <select className="field" data-frame-field="binning" value={capBin}
+                  onChange={(e) => setFocusFrame({ binning: Number(e.target.value) })}>
                   {afBinOptions.map((b) => <option key={b} value={b}>{b}×{b}</option>)}
                 </select>
               )}

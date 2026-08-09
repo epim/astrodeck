@@ -390,6 +390,8 @@ const STORE_ACTIONS: string[] = [
   "setLocked", "setMonitorAwake", "setTouch",
   // photometry
   "setPhotometry",
+  // frame settings, by purpose (#176)
+  "setFrameSettings",
   // dimmer
   "setBrightness", "resetBrightness",
   // compat shims

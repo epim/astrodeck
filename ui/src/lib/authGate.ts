@@ -53,6 +53,8 @@
 import type { GuideRmsByKind } from "./guideRms";
 import type { MasterRow } from "./calibrationLibrary";
 import type {
+  FrameScope,
+  FrameSettings,
   LogLine,
   NinaHealth,
   PolarState,
@@ -160,6 +162,21 @@ export const EMPTY_POLAR: PolarState = {
   message: "",
   source: null,
 };
+/** The cold value of every frame scope, replaced by the server's the moment the
+ *  WS `hello` lands. A FUNCTION, not a const, so a cleared store can never
+ *  alias the record that was just dropped.
+ *
+ *  These numbers are also server defaults (config.py FrameSettingsConfig +
+ *  GuideConfig). They are NOT a second source of truth: nothing reads them once
+ *  the socket has spoken, and a client constant that outlives the server's
+ *  answer is the shape of the defect this scope model replaced. */
+export const EMPTY_FRAME_SETTINGS = (): Record<FrameScope, FrameSettings> => ({
+  capture: { exposure_s: 2, gain: 120, offset: 30, binning: 1, filter: null },
+  focus: { exposure_s: 2, gain: 200, offset: 30, binning: 1, filter: null },
+  solve: { exposure_s: 0.3, gain: 200, offset: 30, binning: 1, filter: null },
+  guide: { exposure_s: 2, gain: 100, offset: 30, binning: 1, filter: null },
+});
+
 export const EMPTY_NINA_HEALTH: NinaHealth = {
   active: false,
   ageMs: null,
@@ -235,6 +252,12 @@ export interface ClearedRigState {
   sequence: SequenceState;
   runBanner: null;
   polar: PolarState;
+  // What THIS rig's next frame of each purpose will be shot at, INCLUDING a
+  // pinned filter name — i.e. the observatory's filter-wheel configuration.
+  // Server state, arriving on the WS `hello` and the `frames` event, so it is
+  // rig intake like any other: a stranger at the sign-in form learns neither
+  // that the rig has an Oiii filter nor that tonight's solves run at 300 s.
+  frameSettings: Record<FrameScope, FrameSettings>;
   ninaHealth: NinaHealth;
   safety: null;
   alert: null;
@@ -304,6 +327,7 @@ export function clearedRigState(): ClearedRigState {
     sequence: EMPTY_SEQUENCE,
     runBanner: null,
     polar: EMPTY_POLAR,
+    frameSettings: EMPTY_FRAME_SETTINGS(),
     ninaHealth: EMPTY_NINA_HEALTH,
     safety: null,
     alert: null,

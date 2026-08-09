@@ -237,7 +237,7 @@ def build_native_guider(guide_camera, telescope, *,
         from ..config import config_store
         g = config_store.cfg().guide
         cam_cfg = {"exposure_s": float(g.exposure_s), "gain": int(g.gain),
-                   "binning": int(g.binning)}
+                   "offset": int(g.offset), "binning": int(g.binning)}
     except Exception:  # pragma: no cover - defensive
         pass
 
@@ -369,13 +369,19 @@ class NativeGuider(Guider):
 
     def set_camera_settings(self, *, exposure_s: float | None = None,
                             gain: int | None = None,
+                            offset: int | None = None,
                             binning: int | None = None) -> dict:
         """Apply guide-camera settings to the RUNNING guider.
 
-        Exposure and gain are read per exposure, so they apply from the very
-        next guide frame — mid-calibration, mid-guiding, whenever. That is the
-        point: when the guide star fades behind haze the fix is a longer
+        Exposure, gain and offset are read per exposure, so they apply from the
+        very next guide frame — mid-calibration, mid-guiding, whenever. That is
+        the point: when the guide star fades behind haze the fix is a longer
         exposure NOW, not a restarted session.
+
+        ``offset`` is here as of 2026-08-08 (#187). It was always APPLIED — the
+        expose calls have passed ``self._offset`` since the loop was written —
+        but no config field carried it and the route reported a literal 30, so
+        the constructor default was the only value it could ever have.
 
         Binning is the exception: the calibration measured px/ms in the
         CURRENT binning's pixels, so changing it under an active session
@@ -393,6 +399,8 @@ class NativeGuider(Guider):
             self._exposure_s = float(exposure_s)
         if gain is not None:
             self._gain = int(gain)
+        if offset is not None:
+            self._offset = int(offset)
         return self.camera_settings()
 
     # ------------------------------------------------------------- profile key

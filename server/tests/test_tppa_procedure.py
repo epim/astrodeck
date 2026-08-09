@@ -1024,7 +1024,12 @@ async def test_the_exposure_guard_wraps_the_exposure_and_releases_it(guard_rig):
     assert guard_rig.events[:3] == ["enter", "expose", "exit"], guard_rig.events
     assert result.ra_hours == 5.0
     assert geom == (1.55, 1024.0, 768.0), geom
-    assert guard_rig.cam.exposures == [(nat._SOLVE_EXPOSURE_S, 200, 30, 1)], \
+    # No session passed -> the persisted ``solve`` scope, which is where the
+    # old ``nat._SOLVE_EXPOSURE_S`` duplicate of the default went (#176).
+    from astrodeck.config import frames_payload
+    want = frames_payload()["solve"]
+    assert guard_rig.cam.exposures == [
+        (want["exposure_s"], want["gain"], want["offset"], want["binning"])], \
         guard_rig.cam.exposures
 
 

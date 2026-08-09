@@ -113,6 +113,12 @@ export default function PickerButton({
     <div className="relative" ref={wrap}>
       <button
         type="button"
+        /* Stable hooks for the cross-surface agreement test
+           (src/__tests__/cameraSettingsAgreement.test.tsx): it must read what a
+           screen DISPLAYS, off the DOM, because a test that reads React state
+           cannot catch a screen that renders something else. Matching on the
+           face's text would rot on the first copy change. */
+        data-picker={label}
         className={`btn tap min-h-[44px] !px-3 ${open ? "border-accent text-accent" : ""} ${
           disabled ? "opacity-40" : ""
         } ${className}`}
@@ -130,7 +136,7 @@ export default function PickerButton({
         }}
       >
         <span className="label !text-[9px] mr-1.5">{label}</span>
-        <span className="mono text-xs !normal-case">{summary}</span>
+        <span className="mono text-xs !normal-case" data-picker-summary>{summary}</span>
       </button>
       {open && (
         <div
