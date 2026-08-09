@@ -446,6 +446,16 @@ class FilterWheel(Device):
     #: at most one, and this reuses every loop that already walks the parallel
     #: name/offset arrays.
     filter_opaque: list[bool] = []
+    #: per-slot "this slot is narrowband" flags, parallel to filter_names.
+    #: Like the blackout flags: nothing on the wire reports it, the user marks
+    #: it, and it is persisted per profile — a wheel's filters do not change
+    #: often, and re-ticking three boxes every time you learn offsets is a
+    #: setting pretending to be a question. What it changes is the EXPOSURE and
+    #: GAIN a focus sweep uses on that slot: a 3-7 nm passband delivers a star
+    #: 40-100x fainter than luminance does, and the 2026-08-08 offsets run
+    #: measured L/R/G/B and could not focus S, Ha or Oiii at the one setting it
+    #: had. See focus/filter_offsets.narrowband_sweep_settings.
+    filter_narrowband: list[bool] = []
 
     def dark_slot(self) -> int | None:
         """The slot to shoot darks/bias through — the first opaque one, or None
@@ -460,6 +470,12 @@ class FilterWheel(Device):
         """True iff ``slot`` blocks the light path. Out-of-range is False, not an
         error: callers ask about slots that may predate an opaque list."""
         flags = self.filter_opaque or []
+        return 0 <= slot < len(flags) and bool(flags[slot])
+
+    def is_narrowband(self, slot: int) -> bool:
+        """True iff ``slot`` is marked narrowband. Out-of-range is False for the
+        same reason ``is_opaque`` says so: every wheel predates the flag."""
+        flags = self.filter_narrowband or []
         return 0 <= slot < len(flags) and bool(flags[slot])
 
     @abstractmethod
