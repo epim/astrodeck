@@ -10,10 +10,15 @@
 //      fetch decodes behind it and swaps only after decode (no half-frame flash).
 //   2. a FIXED night dimmer (0.18 when night, else 0) — the `.survey` CSS rule's
 //      red filter tames first paint, so loading no longer blacks out the frame.
-//   3. <svg viewBox="0 0 1000 1000"> — geometry only (FovOverlay + compass +
-//      scale bar). Strokes use var(--accent) with the .svg-halo black underlay.
+//   3. <svg viewBox="0 0 1000 1000"> — geometry only (FovOverlay + catalogue
+//      markers + compass + scale bar). Strokes use var(--accent) with the
+//      .svg-halo black underlay.
 //   4. HTML label layer — every text label is real CSS px (>=12px), positioned
 //      from the same projection. NO text inside the scaled viewBox (C3-A2).
+//   4b. Object labels — the same real-CSS-px rule, but as <button>s, because
+//      these name something the user can act on. Layer 4 is aria-hidden and
+//      pointer-events-none and must STAY that way (the compass letters and FOV
+//      readouts are decoration); this is a sibling, not a change to it.
 //   5. RotateHandle — its own top-level <svg>, mounted LAST so it always
 //      paints above the label layer (wave-2 G3: it used to live inside layer 3
 //      and could render behind the "Your camera" label at some canvas widths).
@@ -33,7 +38,13 @@ import {
   type MountSample, type RotatorSample,
 } from "../../lib/atlasFov";
 import { u } from "../../lib/base";
+import type { SkyRow } from "../../lib/skyRegion";
+import {
+  hitTest, placeSky, TAP_RADIUS_PX,
+  type Anchor, type Rect,
+} from "../../lib/skyMarkers";
 import { FovOverlay } from "./FovOverlay";
+import { AnnotationMarkers } from "./AnnotationMarkers";
 import { PointingFrame } from "./PointingFrame";
 import { RotateHandle } from "./RotateHandle";
 import { initTileGL } from "../../lib/tileGL";
@@ -42,6 +53,17 @@ import { TileEngine } from "./TileEngine";
 const VIEW = 1000; // SVG viewBox edge (geometry units)
 const ZOOM_MIN = 0.1;
 const ZOOM_MAX = 10;
+
+/** How far a pointer may travel and still be a tap, CSS px. */
+const TAP_SLOP_PX = 8;
+/** How long it may be held, ms. */
+const TAP_MS = 500;
+/** Advance width of one 12px monospace glyph, CSS px, used ONLY where the
+ *  browser offers no way to measure text (jsdom in the test fixtures, which
+ *  renders nothing anyway). Every real browser goes through canvas
+ *  measureText below — a hardcoded character width must never decide a layout
+ *  a user can see, which is the same line the "Your camera" label draws. */
+const MONO_FALLBACK_ADVANCE = 7.2;
 
 // One-time WebGL capability probe (spec §5): try initTileGL on a 1x1 canvas.
 // Cached so every SkyCanvas mount shares one probe result.
@@ -106,6 +128,18 @@ export interface SkyCanvasProps {
   /** The mount's own formatted position (ra_str + dec_str) for the caption. */
   pointingWhere?: string | null;
 
+  // ---- annotated sky (#111 / #183, 2026-08-08) --------------------------
+  /** What is catalogued in the patch of sky this canvas is showing, ALREADY IN
+   *  SCORE ORDER (lib/skyRegion.ts fetches it; the server ranks it). Absent or
+   *  empty draws nothing at all — an unlabelled sky is the correct state while
+   *  a region loads, and an empty region of sky is what an empty region of sky
+   *  looks like. No spinner, no empty-state chrome on the map. */
+  skyRows?: SkyRow[];
+  /** Which object's info card is open, drawn with a selection ring. */
+  selectedObjectId?: string | null;
+  /** A tap resolved to an object, or to null when it landed on empty sky. */
+  onPickObject?: (row: SkyRow | null) => void;
+
   // callbacks — AtlasView routes these into setFraming.
   onCenterChange: (ra_hours: number, dec_deg: number) => void;
   onRotate: (deg: number) => void;
@@ -151,6 +185,7 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
     mosaic, catalogTarget, night, mode, imageBrightness = 1,
     surveyDegraded = false, degradedText, onlineFetch = false,
     pointing = null, rotator = null, pointingWhere = null,
+    skyRows, selectedObjectId = null, onPickObject,
     onCenterChange, onRotate, onZoom, onSurveyError, onSurveyLoad,
   } = props;
 
@@ -404,6 +439,17 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
   // that ended.
   const [dragMode, setDragMode] = useState<"pan" | "rotate" | null>(null);
 
+  // ---- tap-to-identify (#183) ---------------------------------------------
+  // A tap is a press and release in the same place, quickly. It has to be told
+  // apart from a pan on the SAME surface with the SAME pointer, and the
+  // discrimination is deliberately the cheap one — distance and time — rather
+  // than a gesture recogniser: this canvas already owns pan, rotate and (on
+  // touch) page-scroll, and a fourth stateful recogniser competing with those
+  // is how a drag starts selecting objects. Recorded on down, killed by the
+  // first move past the slop, spent on up. `pickAt` is defined further down,
+  // with the projection it needs; this closure only runs from an event.
+  const tapRef = useRef<{ x: number; y: number; t: number } | null>(null);
+
   // Convert a CSS-px delta into a new center via tangent-plane offset.
   const panTo = useCallback(
     (dxPx: number, dyPx: number, startCenter: { ra_hours: number; dec_deg: number }) => {
@@ -466,6 +512,13 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
     // Real element hit-test on the drawn stalk handle (wave-2 §1) — correct at
     // any rotation/zoom, no duplicated geometry math.
     const onHandle = !!(e.target as Element | null)?.closest?.('[data-role="rotate-handle"]');
+    // A TAP CANDIDATE IS RECORDED BEFORE THE TOUCH GATE BELOW, deliberately.
+    // In scroll mode a finger starts no drag at all — the early return is the
+    // whole point of that mode — so recording the candidate afterwards would
+    // make objects untappable on a phone unless the user first armed "swipe
+    // moves sky". A tap does not scroll the page and cannot fight the browser
+    // for the gesture, so it is safe in both modes.
+    tapRef.current = onHandle ? null : { x: px, y: py, t: Date.now() };
     // Scroll mode: a finger on the sky is a page scroll, not a pan. Start no
     // drag at all so the sky cannot creep before the browser takes the gesture.
     // The rotate handle is exempt — it is a small deliberate target, never the
@@ -489,6 +542,19 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
   };
 
   const onPointerMove = (e: RPointerEvent<HTMLDivElement>) => {
+    // A moved pointer is no longer a tap, whether or not a drag is running —
+    // this has to happen before the `!d.mode` bail, because in touch-scroll
+    // mode there IS no drag and the finger is still moving across the sky.
+    const tap = tapRef.current;
+    if (tap) {
+      const el0 = boxRef.current;
+      if (el0) {
+        const r0 = el0.getBoundingClientRect();
+        if (Math.hypot(e.clientX - r0.left - tap.x, e.clientY - r0.top - tap.y) > TAP_SLOP_PX) {
+          tapRef.current = null;
+        }
+      }
+    }
     const d = dragRef.current;
     if (!d.mode) return;
     // Self-heal. A mouse/pen move with NO button held cannot belong to a drag,
@@ -517,6 +583,24 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
   };
 
   const onPointerUp = (e: RPointerEvent<HTMLDivElement>) => {
+    const tap = tapRef.current;
+    tapRef.current = null;
+    if (tap && Date.now() - tap.t <= TAP_MS) {
+      const el = boxRef.current;
+      const rect = el?.getBoundingClientRect();
+      if (rect) {
+        const px = e.clientX - rect.left;
+        const py = e.clientY - rect.top;
+        if (Math.hypot(px - tap.x, py - tap.y) <= TAP_SLOP_PX) pickAt(px, py);
+      }
+    }
+    endDrag(e.pointerId);
+  };
+
+  // pointercancel is the browser taking the gesture away (a scroll started, a
+  // system gesture won). It is NOT a release, so it must not fire a tap.
+  const onPointerCancel = (e: RPointerEvent<HTMLDivElement>) => {
+    tapRef.current = null;
     endDrag(e.pointerId);
   };
 
@@ -659,18 +743,130 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
   // (zoomed in) can't push the label off the TOP of the canvas either.
   const camTop = Math.max(2, ccy - frameHalfHcss - 3 - camLabelH);
 
+  // ================================================== annotated sky (#183)
+  // Label widths are MEASURED, never assumed. The same rule the "Your camera"
+  // label above records: a hardcoded character width is what a previous pass
+  // rightly refused to ship. A 2D context is the cheapest real measurement
+  // available for text that is not in the DOM yet, and the font is read off a
+  // reference span so it tracks the stylesheet rather than restating it.
+  const fontRef = useRef<HTMLSpanElement | null>(null);
+  const measureCtxRef = useRef<CanvasRenderingContext2D | null | undefined>(undefined);
+  const measureCacheRef = useRef<Map<string, number>>(new Map());
+  const measure = useCallback((text: string): number => {
+    const cache = measureCacheRef.current;
+    const hit = cache.get(text);
+    if (hit !== undefined) return hit;
+    if (measureCtxRef.current === undefined) {
+      try {
+        measureCtxRef.current =
+          document.createElement("canvas").getContext("2d") ?? null;
+      } catch {
+        measureCtxRef.current = null;
+      }
+    }
+    const ctx = measureCtxRef.current;
+    let w: number;
+    if (ctx) {
+      const el = fontRef.current;
+      const cs = el ? getComputedStyle(el) : null;
+      ctx.font = cs?.fontSize && cs.fontFamily
+        ? `${cs.fontSize} ${cs.fontFamily}`
+        : "12px monospace";
+      w = ctx.measureText(text).width;
+    } else {
+      w = text.length * MONO_FALLBACK_ADVANCE;
+    }
+    w += 8; // the plate's horizontal padding, both sides
+    cache.set(text, w);
+    return w;
+  }, []);
+
+  // Boxes the canvas's own furniture already occupies, so an object label
+  // never lands on top of the compass letters, the readouts, or the two
+  // labels that name the frames. CSS px.
+  const reservedBoxes = useMemo<Rect[]>(() => {
+    const boxes: Rect[] = [
+      { x: boxPx / 2 - 10, y: 0, w: 20, h: 20 },              // N
+      { x: boxPx - 20, y: boxPx / 2 - 10, w: 20, h: 20 },     // W
+      { x: 0, y: boxPx - 22, w: 130, h: 22 },                 // px-scale readout
+      { x: boxPx - 120, y: boxPx - 22, w: 120, h: 22 },       // scale bar
+    ];
+    if (haveOptics) {
+      boxes.push({
+        x: Math.max(0, camGuardRight - camMaxW), y: camTop,
+        w: camMaxW, h: camLabelH || 17,
+      });
+    }
+    if (pointingLabel) {
+      boxes.push({ x: pointingLabel.left - 45, y: pointingLabel.top, w: 90, h: 18 });
+    }
+    return boxes;
+  }, [boxPx, haveOptics, camGuardRight, camMaxW, camTop, camLabelH, pointingLabel]);
+
+  // Anchors chosen last frame, so a label does not flip from one side of its
+  // marker to the other while the sky moves a pixel underneath it.
+  const stickyRef = useRef<Map<string, Anchor>>(new Map());
+  const placement = useMemo(
+    () =>
+      placeSky(
+        skyRows ?? [],
+        {
+          centerRaHours: center.ra_hours,
+          centerDecDeg: center.dec_deg,
+          pxPerDeg,
+          view: VIEW,
+        },
+        {
+          boxPx,
+          measure,
+          sticky: stickyRef.current,
+          reserved: reservedBoxes,
+          // FovOverlay already draws the FRAMED object's angular extent,
+          // centred on the view. A second ellipse for the same object, at its
+          // true position, would put two different claims about one object's
+          // size on one canvas.
+          framedId: catalogTarget?.id ?? null,
+        },
+      ),
+    [skyRows, center.ra_hours, center.dec_deg, pxPerDeg, boxPx, measure,
+     reservedBoxes, catalogTarget?.id],
+  );
+  useEffect(() => {
+    stickyRef.current = placement.anchors;
+  }, [placement]);
+
+  const rowsById = useMemo(() => {
+    const m = new Map<string, SkyRow>();
+    for (const mk of placement.markers) m.set(mk.row.id, mk.row);
+    return m;
+  }, [placement]);
+
+  /** A tap at canvas CSS px (px, py) -> the object under it, or null.
+   *
+   *  The pointer is converted into viewBox units ONCE, here, and everything
+   *  downstream stays in them. Two coordinate systems on one canvas is enough;
+   *  three is where an off-by-a-scale-factor hides. */
+  const pickAt = (px: number, py: number): void => {
+    if (!onPickObject) return;
+    const toView = VIEW / boxPx;
+    const hit = hitTest(
+      placement.markers, px * toView, py * toView, TAP_RADIUS_PX * toView,
+    );
+    onPickObject(hit ? hit.row : null);
+  };
+
   return (
     <div className="flex flex-col gap-2">
       <div
         ref={boxRef}
         role="application"
-        aria-label="Sky framing canvas. Arrow keys nudge center, square-bracket keys rotate, plus and minus zoom. On touch, swiping scrolls the page until you turn on finger drag."
+        aria-label="Sky framing canvas. Tap a marked object to see what it is; its name is also a button you can reach with Tab. Arrow keys nudge center, square-bracket keys rotate, plus and minus zoom. On touch, swiping scrolls the page until you turn on finger drag."
         tabIndex={0}
         className="astro-surface relative aspect-square w-full min-w-[min(320px,calc(100vw-2rem))] mx-auto select-none outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp}
+        onPointerCancel={onPointerCancel}
         // Capture can be revoked without a pointerup (another element takes it,
         // the node moves in the DOM); idempotent with the two handlers above.
         onLostPointerCapture={() => endDrag()}
@@ -808,6 +1004,14 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
             objectSemiMinorDeg={semiMajorDeg}
             haveOptics={haveOptics}
           />
+          {/* catalogue markers — AFTER the planned box (they are backdrop, not
+              a claim about this session) and BEFORE the live footprint, for the
+              same reason the footprint is drawn last: the truth about where the
+              hardware is pointing is never hidden under anything. */}
+          <AnnotationMarkers
+            markers={placement.markers}
+            selectedId={selectedObjectId}
+          />
           {/* live pointing — drawn AFTER the planned box so the truth is never
               hidden underneath the intention when the two coincide. */}
           <PointingFrame view={VIEW} readout={pointingReadout} />
@@ -922,7 +1126,50 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
               Pointing now
             </span>
           )}
+          {/* Font reference for the label measurement above. Rendered (not
+              display:none) so getComputedStyle returns the real resolved font
+              rather than the initial value, and empty so it costs no layout. */}
+          <span ref={fontRef} className="absolute text-[12px] mono" aria-hidden />
         </div>
+
+        {/* 4b. object labels — a SIBLING of the decorative label layer above,
+              never a change to it: the compass letters and FOV readouts should
+              stay hidden from assistive tech, and these should not.
+              POINTER-EVENTS ARE OFF on purpose. A pannable canvas cannot afford
+              two dozen buttons that swallow the first 44px of every drag, so
+              pointers are served by the canvas's own hit-test (`pickAt`), which
+              knows the difference between a tap and the start of a pan.
+              `pointer-events: none` does not remove an element from the tab
+              order, so these stay the keyboard and screen-reader channel: Tab
+              to a name, Enter to open its card. Objects with a marker but no
+              label are tappable and not tabbable — the label budget is what
+              decides which objects have a name on screen at all, and a control
+              a sighted user cannot see is not a control. */}
+        {placement.labels.length > 0 && (
+          <div className="absolute inset-0 pointer-events-none z-10">
+            {placement.labels.map((l) => {
+              const row = rowsById.get(l.id);
+              const selected = selectedObjectId === l.id;
+              return (
+                <button
+                  key={l.id}
+                  type="button"
+                  data-role="object-label"
+                  data-object-id={l.id}
+                  aria-label={row ? `${l.text}. ${row.describe}` : l.text}
+                  aria-pressed={selected}
+                  className={`absolute text-[12px] mono px-1 bg-black/60 whitespace-nowrap
+                    leading-[14px] border ${selected ? "border-accent text-accent" : "border-transparent text-ink"}
+                    focus-visible:outline-none focus-visible:border-accent`}
+                  style={{ left: l.left, top: l.top, height: 16 }}
+                  onClick={() => onPickObject?.(row ?? null)}
+                >
+                  {l.text}
+                </button>
+              );
+            })}
+          </div>
+        )}
 
         {/* 5. rotate handle — mounted AFTER the HTML label layer (wave-2 G3
               fix) so it ALWAYS paints on top and stays visible/grabbable at

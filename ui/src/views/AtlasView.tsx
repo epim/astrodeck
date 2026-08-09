@@ -59,6 +59,8 @@ import {
 } from "../lib/effective";
 import { adjustedPa } from "../lib/rotation";
 import { uid } from "../lib/ids";
+import { useSkyRegion, type SkyRow } from "../lib/skyRegion";
+import { ObjectCard } from "../components/atlas/ObjectCard";
 import { SkyCanvas } from "../components/atlas/SkyCanvas";
 import { SurveyControls } from "../components/atlas/SurveyControls";
 import { VisibilityPanel } from "../components/atlas/VisibilityPanel";
@@ -571,6 +573,25 @@ export default function AtlasView(): JSX.Element {
   const onSurveyError = useCallback(() => setSurveyDegraded(true), []);
   const onSurveyLoad = useCallback(() => setSurveyDegraded(false), []);
 
+  // ---- what is actually in this patch of sky (#111 / #183) ----------------
+  // Above the `if (!framing)` return, because hooks cannot be conditional. The
+  // hook itself is gated by `enabled`, so with no session it does nothing at
+  // all — no request, no timer.
+  //
+  // One REGION per patch of sky, not one query per view: the rows are fetched
+  // for a circle 1.6x the viewport and re-projected locally on every frame, so
+  // a pan costs a gnomonic per row and no network at all until the view leaves
+  // the circle. See lib/skyRegion.ts for the whole argument.
+  const regionCenter = useMemo(
+    () => ({
+      ra_hours: framing?.center.ra_hours ?? 0,
+      dec_deg: framing?.center.dec_deg ?? 0,
+    }),
+    [framing?.center.ra_hours, framing?.center.dec_deg],
+  );
+  const region = useSkyRegion(regionCenter, framing?.fovZoomDeg ?? 0, !!framing);
+  const [selectedObject, setSelectedObject] = useState<SkyRow | null>(null);
+
   if (!framing) {
     return <AtlasEmpty onFreeRoam={onFreeRoam} onPick={openFraming} />;
   }
@@ -603,6 +624,30 @@ export default function AtlasView(): JSX.Element {
     setFraming({
       target: entry,
       center: { ra_hours: entry.ra_hours, dec_deg: entry.dec_deg },
+    });
+
+  // The same move, from a marker tapped on the map instead of a search result.
+  //
+  // `alt`/`az` are OMITTED rather than filled with a placeholder. The type
+  // declares them because /api/catalog attaches them for a caller holding
+  // view.site_derived, but nothing in the app reads them off a framing target,
+  // and the sky-region payload deliberately carries no such pair (it would make
+  // a pannable map a coordinate oracle for the rig's location). An absent field
+  // is honest; a 0 would be a claim that the object is on the horizon due
+  // north. `mag: 99` is this app's existing "unmeasured" sentinel, the same one
+  // a typed-coordinate target carries.
+  const frameRow = (row: SkyRow) =>
+    setFraming({
+      target: {
+        id: row.id,
+        name: row.label,
+        type: row.type,
+        ra_hours: row.ra_hours,
+        dec_deg: row.dec_deg,
+        mag: row.mag ?? 99,
+        size_arcmin: row.size_arcmin,
+      } as CatalogEntry,
+      center: { ra_hours: row.ra_hours, dec_deg: row.dec_deg },
     });
 
   // Recenter on the origin object, or — in free-roam — on the live mount position
@@ -1309,6 +1354,10 @@ export default function AtlasView(): JSX.Element {
             pointingWhere={
               statusMount ? `${statusMount.ra_str} ${statusMount.dec_str}` : null
             }
+            // what is out there, and which of it the card is open on
+            skyRows={region.rows}
+            selectedObjectId={selectedObject?.id ?? null}
+            onPickObject={setSelectedObject}
             onCenterChange={setCenter}
             onRotate={setRotation}
             onZoom={setZoom}
@@ -1319,6 +1368,50 @@ export default function AtlasView(): JSX.Element {
 
         {/* planners — scroll beneath the pinned canvas on phone */}
         <div className="flex flex-col gap-4 min-w-0">
+          {/* FIRST in this column, which puts it at the top of the side panel
+              on desktop and DIRECTLY UNDER THE CANVAS on a phone — the user
+              has just touched the sky, so the answer belongs where their
+              finger already is. A popover was the alternative and is the wrong
+              shape here: it would fight the gesture this canvas exists for,
+              and on a 390px phone a popover over the map IS the map. */}
+          <Panel title={selectedObject ? "This object" : "What's in view"}>
+            <div className="flex flex-col gap-2">
+              <ObjectCard
+                row={selectedObject}
+                frameFovDeg={frameFovDeg}
+                degraded={region.degraded}
+                loading={region.loading}
+                emptyRegion={!region.loading && region.rows.length === 0}
+                onFrame={(row) => {
+                  frameRow(row);
+                  setSelectedObject(null);
+                }}
+                onClose={() => setSelectedObject(null)}
+              />
+              {region.error && (
+                <p className="text-[12px] text-warn leading-snug">{region.error}</p>
+              )}
+              {/* A dense field (the Virgo cluster, the Sagittarius star clouds)
+                  holds more catalogued objects than any budget can mark. Saying
+                  so is the difference between "this is everything here" and
+                  "this is the top of a longer list" — and the marked ones are
+                  the top, not an arbitrary slice. */}
+              {region.truncated && !selectedObject && (
+                <p className="text-[12px] text-dim leading-snug">
+                  More is catalogued here than can be marked at once — these are
+                  the brightest and largest. Zoom in for the rest.
+                </p>
+              )}
+              {/* Server-side refusals that are not shaped like a row: a body
+                  whose ephemeris failed this second, the Moon withheld from a
+                  caller who cannot be told where this rig stands. Whatever this
+                  panel will not say, the screen has to invent. */}
+              {region.notes.map((n) => (
+                <p key={n} className="text-[12px] text-dim leading-snug">{n}</p>
+              ))}
+            </div>
+          </Panel>
+
           <Panel title="Survey & framing">
             <SurveyControls
               survey={survey}
