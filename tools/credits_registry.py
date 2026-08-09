@@ -387,6 +387,7 @@ OPTIONAL_UNINSTALLED: dict[str, dict] = {
         "version": "unpinned (git URL)",
         "spdx": "MIT",
         "url": "https://github.com/epim/libasi",
+        "texts": [_file("LICENSE", "libasi.txt")],
         "notes": (
             "The transport for talking to a ZWO ASIAIR. Declared by the optional "
             "`asiair` extra, not on PyPI.\n\n"

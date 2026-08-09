@@ -392,6 +392,8 @@ const STORE_ACTIONS: string[] = [
   "setPhotometry",
   // frame settings, by purpose (#176)
   "setFrameSettings",
+  // the operator's typed target name (#182)
+  "setCaptureTarget",
   // dimmer
   "setBrightness", "resetBrightness",
   // compat shims

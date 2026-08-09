@@ -549,8 +549,8 @@ test("podSlotStyle: reduced motion keeps the LAYOUT and drops only the flight", 
 const POD_PROPS: FocusPodProps = {
   hfr: 4.25, prevHfr: 4.9, hfrState: "measured",
   exposureProgress: null, exposureNote: null, exposureNoteTone: null, captureBlocked: null,
-  exposureS: 3, exposurePresets: [1, 2, 3, 5, 10], stepValues: [1, 10, 100, 1000],
-  onExposure: () => {}, onStep: () => {},
+  stepValues: [1, 10, 100, 1000],
+  onStep: () => {},
   looping: false, starting: null, exposing: false, step: 100,
   shootReason: null, loopReason: null, stopReason: null,
   focuserReason: null, autofocusReason: null,
@@ -621,8 +621,8 @@ function arcProps(over: Partial<ArcProps> = {}, actionOver: Partial<PodActionInp
   const { base } = spies();
   return {
     actions: podActions({ ...base, ...actionOver }),
-    exposureS: 3, nextExposure: 5, step: 100, nextStep: 1000, looping: false,
-    onExposure: () => {}, onStep: () => {},
+    step: 100, nextStep: 1000,
+    onStep: () => {},
     slot: (frac: number, radius: number) =>
       podSlotStyle({ frac, radius, bloom: true, reduced: false }),
     onPress: () => {},
@@ -636,14 +636,31 @@ const arcEl = (over: Partial<ArcProps> = {}, actionOver: Partial<PodActionInputs
 const arcTree = (over: Partial<ArcProps> = {}, actionOver: Partial<PodActionInputs> = {}) =>
   FocusPodArc(arcProps(over, actionOver));
 
-test("open arc: a labelled role=menu holding five chips and two cycling badges", () => {
+test("open arc: a labelled role=menu holding five chips and ONE cycling badge", () => {
   const html = renderToStaticMarkup(arcEl());
   assert(/role="menu"/.test(html), "the arc must be a menu");
   assert(/aria-label="Focus quick controls"/.test(html), "the menu needs a name");
-  eq((html.match(/role="menuitem"/g) ?? []).length, 7, "5 chips + 2 badges");
+  eq((html.match(/role="menuitem"/g) ?? []).length, 6, "5 chips + 1 badge");
   ["AF", "LOOP", "SHOOT"].forEach((f) => assert(html.includes(f), `chip ${f} missing`));
-  assert(html.includes("3s"), "the exposure badge must show the value in force");
   assert(html.includes("100"), "the step badge must show the magnitude in force");
+});
+
+// -------------------------------------------------------------------- #180
+// THE POD CARRIES NO CAMERA SETTING. It used to hold a cycling exposure badge
+// while the CameraDial in the opposite corner of the same stage held an
+// exposure ring — two radial controls over one image, both showing a bare
+// "Ns", editing two different values (the shutter's, and the sweep's). This is
+// the guard for the split: actions right, settings left.
+test("open arc: no exposure anywhere on the actions pod (#180)", () => {
+  const html = renderToStaticMarkup(arcEl());
+  assert(!html.includes('data-pod-badge="exposure"'),
+    "the exposure badge is back on the actions pod — the stage now has two "
+    + "radial controls carrying an exposure again");
+  assert(!/aria-label="Exposure/.test(html),
+    "a control on the actions pod names an exposure");
+  // …and the badge that DOES belong here is still here, so this is not passing
+  // on an empty arc.
+  assert(html.includes('data-pod-badge="step"'), "the step badge went with it");
 });
 
 test("open arc: NO native `disabled` anywhere, blocked or not (house rule §11.8)", () => {
@@ -666,11 +683,11 @@ test("open arc: a blocked chip renders the SENTENCE, not a boolean or a shrug", 
 test("open arc: every surface the ARC owns sets touch-action:none", () => {
   const html = renderToStaticMarkup(arcEl());
   const slots = (html.match(/data-pod-slot/g) ?? []).length;
-  eq(slots, 7, "one positioned slot per menu item");
-  // 7 slots + 5 chip buttons + 2 badge buttons + the menu root. Counted rather
+  eq(slots, 6, "one positioned slot per menu item");
+  // 6 slots + 5 chip buttons + 1 badge button + the menu root. Counted rather
   // than merely `>= slots` so that stripping it from the chip boxes — the
   // surface a thumb actually presses and slides on — fails this.
-  eq((html.match(/touch-action:none/g) ?? []).length, 15,
+  eq((html.match(/touch-action:none/g) ?? []).length, 13,
     "a press that starts on a chip and slides must drive the control, not scroll the page");
 });
 
@@ -684,41 +701,10 @@ test("open arc: DOM order IS arc order, so the arrow keys walk what the eye sees
     "Run an autofocus sweep",          // frac 0    — due left
     "Loop frames at this exposure until you stop", // 0.25
     "Take one focus frame",            // 0.5
-    "Exposure 3 seconds",              // 0.5, inside SHOOT
     "Move focuser -100 steps",         // 0.75
     "Focuser step 100",                // 0.875, between the nudges
     "Move focuser +100 steps",         // 1     — due up
   ].join(" | "), "arc order and DOM order have drifted apart");
-});
-
-test("open arc: the exposure badge warns that a preset RESTARTS a running loop", () => {
-  // hub.start_loop closes over the exposure it was handed, so a tap that only
-  // moved a highlight would be a control that looks applied and is ignored.
-  const running = renderToStaticMarkup(arcEl({ looping: true, nextExposure: 5 }, { looping: true }));
-  assert(running.includes("Restart the loop at 5s"),
-    "a looping rig must be told the tap restarts the loop");
-  const idle = renderToStaticMarkup(arcEl({ looping: false, nextExposure: 5 }));
-  assert(idle.includes("Use 5s for the next frame"), "an idle rig gets the plain phrasing");
-});
-
-test("open arc: a refused restart locks the exposure badge, with the rail's reason", () => {
-  // The badge does not merely write a number into a box over a running loop —
-  // it restarts the loop. When the rig will not take that restart (a sweep owns
-  // the camera, a half-typed gain, a read-only session) a live badge would go on
-  // offering an exposure the camera is not going to use, which is the same
-  // broken promise the rail's five presets carry when they light up for a
-  // dropped restart (FocusView #48).
-  const reason = "Autofocus owns the camera until the sweep finishes";
-  const html = renderToStaticMarkup(arcEl(
-    { looping: true, nextExposure: 5, exposureReason: reason }, { looping: true }));
-  assert(html.includes(reason), "the blocked badge does not carry the rail's sentence");
-  assert(!html.includes("Restart the loop at 5s"),
-    "the badge still promises a restart the rig has already refused");
-  assert(html.includes('aria-disabled="true"'),
-    "the blocked badge is not marked aria-disabled");
-  // Still shows the exposure in force: a locked control that also hides the
-  // value would cost the user the one fact they came to the corner to read.
-  assert(html.includes("3s"), "the locked badge dropped the current exposure");
 });
 
 test("open arc: the step badge names the value it will move to", () => {
@@ -727,41 +713,33 @@ test("open arc: the step badge names the value it will move to", () => {
     "a cycling badge has to say where the next tap lands");
 });
 
-test("open arc: an unset exposure reads as unset and does not fake a number", () => {
-  const html = renderToStaticMarkup(arcEl({ exposureS: null, nextExposure: 1 }));
-  assert(html.includes("Exposure not set"), "the label must admit the box is empty");
-});
-
 // ------------------------------------------------- press paths (element tree)
 test("open arc: pressing a live chip fires its handler and then closes the arc", () => {
   const { log, base } = spies();
   const closes: number[] = [];
   const el = FocusPodArc({
     actions: podActions(base),
-    exposureS: 3, nextExposure: 5, step: 100, nextStep: 1000, looping: false,
-    onExposure: () => {}, onStep: () => {},
+    step: 100, nextStep: 1000,
+    onStep: () => {},
     slot: () => ({}), onPress: () => closes.push(1),
   });
-  eq(collectByRole(el, "menuitem").length, 7, "5 chips + 2 badges");
+  eq(collectByRole(el, "menuitem").length, 6, "5 chips + 1 badge");
   (itemNamed(el, "Take one focus frame").props.onClick as () => void)();
   eq(log.join(","), "shoot", "the chip fired FocusView's shoot()");
   eq(closes.length, 1, "an action closes the arc behind itself");
 });
 
-test("open arc: a badge cycles WITHOUT closing — three taps must not cost three reopens", () => {
-  const exposures: number[] = [];
+test("open arc: the badge cycles WITHOUT closing — three taps must not cost three reopens", () => {
   const steps: number[] = [];
   const closes: number[] = [];
   const { base } = spies();
   const el = FocusPodArc({
     actions: podActions(base),
-    exposureS: 3, nextExposure: 5, step: 100, nextStep: 1000, looping: false,
-    onExposure: (s) => exposures.push(s), onStep: (v) => steps.push(v),
+    step: 100, nextStep: 1000,
+    onStep: (v) => steps.push(v),
     slot: () => ({}), onPress: () => closes.push(1),
   });
-  (itemNamed(el, "Exposure 3 seconds").props.onClick as () => void)();
   (itemNamed(el, "Focuser step 100").props.onClick as () => void)();
-  eq(exposures.join(","), "5", "the exposure badge dispatches the next preset");
   eq(steps.join(","), "1000", "the step badge dispatches the next magnitude");
   eq(closes.length, 0, "cycling must leave the arc open");
 });
@@ -770,10 +748,10 @@ test("open arc: a blocked chip is not a menuitem button — it is the locked sta
   const { base } = spies();
   const el = FocusPodArc({
     actions: podActions({ ...base, focuserReason: "No focuser is connected" }),
-    exposureS: 3, nextExposure: 5, step: 100, nextStep: 1000, looping: false,
-    onExposure: () => {}, onStep: () => {}, slot: () => ({}), onPress: () => {},
+    step: 100, nextStep: 1000,
+    onStep: () => {}, slot: () => ({}), onPress: () => {},
   });
-  eq(collectByRole(el, "menuitem").length, 5, "the two blocked nudges left the pressable set");
+  eq(collectByRole(el, "menuitem").length, 4, "the two blocked nudges left the pressable set");
 });
 
 test("open arc: the clamped radius reaches the slots, not just the layout maths", () => {
@@ -784,10 +762,10 @@ test("open arc: the clamped radius reaches the slots, not just the layout maths"
     radius: 120, badgeRadius: 73,
     slot: (frac: number, radius: number) => { placed.push({ frac, radius }); return {}; },
   }));
-  eq(placed.length, 7, "one placement per item");
+  eq(placed.length, 6, "one placement per item");
   assert(placed.every((p) => p.radius === 120 || p.radius === 73),
     `a slot ignored the clamped radii: ${JSON.stringify(placed)}`);
-  eq(placed.filter((p) => p.radius === 73).length, 2, "the two badges ride the inner ring");
+  eq(placed.filter((p) => p.radius === 73).length, 1, "the badge rides the inner ring");
 });
 
 // ==================================================== StepDial touch-action

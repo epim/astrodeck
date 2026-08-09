@@ -432,6 +432,34 @@ def region_rows(ra_hours: float, dec_deg: float, radius_deg: float, *,
     the caller is drawing (defaults to the circle's diameter) and selects the
     zoom band -- see ``offered_at_fov``.
 
+    The scores that produced the order are dropped here, because the Atlas draws
+    from the ORDER and has no use for the numbers. ``scored_region_rows`` below
+    is the same query with them kept; see its docstring for why identification
+    needs them and must not re-derive them.
+    """
+    rows, notes, truncated = scored_region_rows(
+        ra_hours, dec_deg, radius_deg, fov_deg=fov_deg, limit=limit,
+        kinds=kinds, site_derived=site_derived, when=when)
+    return [row for _, row in rows], notes, truncated
+
+
+def scored_region_rows(ra_hours: float, dec_deg: float, radius_deg: float, *,
+                       fov_deg: float | None = None,
+                       limit: int = 80,
+                       kinds: tuple[str, ...] = ("dso", "star", "solar_system"),
+                       site_derived: bool = True,
+                       when: float | None = None,
+                       ) -> tuple[list[tuple[float, dict]], list[str], bool]:
+    """``region_rows`` with each row's rank score kept beside it.
+
+    ``identify_field`` needs the scores, and the ONE thing it must not do is
+    recompute them from the finished rows: a wire row has already dropped
+    ``MAG_UNKNOWN`` to ``None`` and flattened three different kinds of object
+    into one shape, so a second expression reading it back would rank the same
+    object differently from the expression that ordered it -- two rankings of one
+    object inside one feature, which the header of ``region_rows`` was already
+    written to prevent. So the score is computed once, by ``_score``, and carried.
+
     Solar-system rows survive truncation. There are at most nine of them, they
     are what a beginner asks about first, and they are the only rows on this
     map that MOVE -- an answer that dropped Jupiter because a dense patch of
@@ -481,7 +509,321 @@ def region_rows(ra_hours: float, dec_deg: float, radius_deg: float, *,
     truncated = len(scored) > room
     merged = fixed + scored[:room]
     merged.sort(key=lambda t: (-t[0], t[1]["id"]))
-    return [row for _, row in merged], notes, truncated
+    return merged, notes, truncated
+
+
+# =============================================================================
+# A SOLVED CAMERA FRAME: which objects are in it, and which one NAMES it
+# =============================================================================
+#
+# The rectangle sibling of ``objects_in_region``, for #182. Everything here
+# takes a ``WcsSolution`` -- a PLATE SOLVE -- and nothing here takes a mount's
+# reported position, because on this rig those are not interchangeable: the AM5
+# has no brake and has been found 50 degrees from where it claimed. A caller
+# that has only reported pointing can still ask ``objects_in_region`` for a
+# guess, and hub.py labels that answer ``source="pointing"`` all the way to the
+# pixel that renders it; nothing derived that way is ever written to a file.
+#
+# WHAT THIS MODULE DELIBERATELY DOES NOT DO: it never returns a name for the
+# PLAN. ``sequence.models.Target.name`` is chosen before the mount moves, keys
+# the persisted per-target frame counter (``hub._capture_path``), gates
+# ``only_target`` instructions and groups the report -- and an identification
+# that drifts onto a neighbour between frame 3 and frame 4 would split one
+# night across two folders with two overlapping ``0001...`` runs and no error
+# anywhere. Everything below is INFORMATIONAL: a proposal for a human, a
+# provenance card in a header, a marker on a picture.
+
+#: FITS pixel coordinates are 1-based and refer to pixel CENTRES; numpy array
+#: indices are 0-based. CRPIX is FITS, ``frame.data`` is numpy, and forgetting
+#: the offset puts every marker one pixel out -- invisible on a 4000px frame and
+#: therefore exactly the kind of error that survives review.
+_FITS_PIXEL_ORIGIN = 1.0
+
+#: How much a candidate is penalised for sitting off the field centre, in the
+#: units ``_score`` already speaks: it weights magnitude at 2.0 per mag, so 6.0
+#: means "an object at the very edge of the frame must be three magnitudes more
+#: conspicuous than one at the centre to name the field instead".
+#:
+#: Expressed as a SUBTRACTION rather than the multiplication a first draft used,
+#: because ``_score`` is not a 0..1 quantity -- it runs from about -61 (an
+#: unmeasured, unnamed, tiny object) to about +14 (Sirius), and multiplying a
+#: negative score by a positive centrality factor REVERSES the ordering exactly
+#: where it matters, making the least conspicuous object in a faint field win
+#: for being nearest the middle.
+_OFF_CENTRE_PENALTY = 6.0
+
+#: The margin by which the winner must beat the runner-up to be ``confident``,
+#: in the same units: 4.0 == two magnitudes. ``confident`` is the gate on
+#: everything that WRITES (hub.py only adopts an identification into the FITS
+#: ``OBJECT`` card when it is confident, solve-derived, and the operator left
+#: the field empty), so it is deliberately a wide margin rather than a tiebreak.
+_CONFIDENT_MARGIN = 4.0
+
+
+class WcsPlate:
+    """A linear TAN plate solution, in both directions, over plain floats.
+
+    Wraps ``solve.base.WcsSolution`` rather than astropy: the solution is a
+    linear plate (CD matrix or CDELT/CROTA2 -- ``WcsSolution`` allows either and
+    ``fitsio._apply_wcs`` writes either), so world<->pixel is a 2x2 inverse
+    around the shared gnomonic in ``catalog.framing`` and needs neither the
+    astropy WCS machinery nor a FITS header round-trip. That matters because
+    this runs per preview frame on a Pi, and because the same two functions then
+    serve the marker overlay and the identification with no second convention
+    between them.
+
+    SIP DISTORTION IS NOT MODELLED. ``WcsSolution`` carries none, so there is
+    nothing to drop; at the fields this rig images the linear term is the whole
+    story to well under a pixel. Recorded here rather than discovered later.
+    """
+
+    def __init__(self, wcs) -> None:
+        cd = _cd_matrix(wcs)
+        if cd is None:
+            raise ValueError(
+                "this WCS carries no scale (no CD matrix and no CDELT): it "
+                "cannot place a pixel. A scale-less solution reads back as a "
+                "silent 1 deg/px plate, which is worse than no solution at all")
+        self.cd11, self.cd12, self.cd21, self.cd22 = cd
+        det = self.cd11 * self.cd22 - self.cd12 * self.cd21
+        if abs(det) < 1e-18:
+            raise ValueError(
+                "this WCS's CD matrix is singular (determinant 0): the two "
+                "pixel axes map onto the same direction on the sky, so no "
+                "position on it is recoverable")
+        self._det = det
+        self.crpix1 = float(wcs.crpix1)
+        self.crpix2 = float(wcs.crpix2)
+        self.ra0_hours = float(wcs.crval1) / 15.0
+        self.dec0_deg = float(wcs.crval2)
+
+    @property
+    def pixel_scale_deg(self) -> float:
+        """Degrees per pixel, as the geometric mean of the two axes. The square
+        root of |det CD| is exactly that, and it is rotation-invariant -- so a
+        rotated camera does not change the size a 10-arcminute galaxy is drawn."""
+        return math.sqrt(abs(self._det))
+
+    def to_pixel(self, ra_hours: float, dec_deg: float) -> tuple[float, float]:
+        """Sky -> ``frame.data`` pixel (column, row), 0-based, float.
+
+        Off-frame and behind-the-tangent-point positions come back as large
+        finite numbers (see ``framing.H_EPS``) rather than raising, so a caller
+        filters by the frame rectangle instead of by exceptions.
+        """
+        from .framing import project
+
+        xi, eta = project(ra_hours, dec_deg, self.ra0_hours, self.dec0_deg)
+        # invert [[cd11 cd12],[cd21 cd22]] @ (dx, dy) = (xi, eta)
+        dx = (self.cd22 * xi - self.cd12 * eta) / self._det
+        dy = (-self.cd21 * xi + self.cd11 * eta) / self._det
+        return (self.crpix1 + dx - _FITS_PIXEL_ORIGIN,
+                self.crpix2 + dy - _FITS_PIXEL_ORIGIN)
+
+    def to_sky(self, x: float, y: float) -> tuple[float, float]:
+        """``frame.data`` pixel (column, row), 0-based -> ``(ra_hours, dec_deg)``."""
+        from .framing import deproject
+
+        dx = x + _FITS_PIXEL_ORIGIN - self.crpix1
+        dy = y + _FITS_PIXEL_ORIGIN - self.crpix2
+        xi = self.cd11 * dx + self.cd12 * dy
+        eta = self.cd21 * dx + self.cd22 * dy
+        return deproject(xi, eta, self.ra0_hours, self.dec0_deg)
+
+
+def _cd_matrix(wcs) -> tuple[float, float, float, float] | None:
+    """``(cd11, cd12, cd21, cd22)`` for a solution that states either form, else
+    ``None``.
+
+    The CDELT/CROTA2 fallback is the classic AIPS rotation, and it is not
+    hypothetical: ``WcsSolution`` declares both forms and ``fitsio._apply_wcs``
+    writes whichever one the solver produced, so a plate that never carried a CD
+    matrix must still place its objects rather than silently drawing nothing.
+    """
+    if wcs is None:
+        return None
+    if getattr(wcs, "cd11", None) is not None:
+        return (float(wcs.cd11),
+                float(wcs.cd12 or 0.0),
+                float(wcs.cd21 or 0.0),
+                float(wcs.cd22 if wcs.cd22 is not None else wcs.cd11))
+    cdelt1 = getattr(wcs, "cdelt1", None)
+    if cdelt1 is None:
+        return None
+    cdelt1 = float(cdelt1)
+    cdelt2 = float(wcs.cdelt2) if getattr(wcs, "cdelt2", None) is not None else cdelt1
+    rot = math.radians(float(getattr(wcs, "crota2", None) or 0.0))
+    cos_r, sin_r = math.cos(rot), math.sin(rot)
+    return (cdelt1 * cos_r, -cdelt2 * sin_r, cdelt1 * sin_r, cdelt2 * cos_r)
+
+
+def frame_geometry(wcs, width_px: int, height_px: int) -> dict:
+    """Where a solved frame is and how big it is: centre, both field widths, and
+    the radius of the circle that CIRCUMSCRIBES it.
+
+    The circumscribing circle is what the cone query needs, and it is measured
+    from the frame's actual corners rather than assumed from the pixel scale, so
+    a rotated or slightly anisotropic plate is still fully covered. Generous
+    rather than exact is the correct error here: a cone that is too small drops
+    real objects out of a corner and nothing anywhere reports it.
+    """
+    plate = WcsPlate(wcs)
+    w = max(1, int(width_px))
+    h = max(1, int(height_px))
+    cx, cy = (w - 1) / 2.0, (h - 1) / 2.0
+    ra_c, dec_c = plate.to_sky(cx, cy)
+    corners = [plate.to_sky(0.0, 0.0), plate.to_sky(w - 1.0, 0.0),
+               plate.to_sky(0.0, h - 1.0), plate.to_sky(w - 1.0, h - 1.0)]
+    radius = max(angular_sep_deg(ra_c, dec_c, ra, dec) for ra, dec in corners)
+    scale = plate.pixel_scale_deg
+    return {
+        "ra_hours": ra_c,
+        "dec_deg": dec_c,
+        "fov_w_deg": w * scale,
+        "fov_h_deg": h * scale,
+        "radius_deg": radius,
+        "pixel_scale_deg": scale,
+        "plate": plate,
+    }
+
+
+def objects_in_frame(wcs, width_px: int, height_px: int, *,
+                     limit: int = 25,
+                     margin_frac: float = 0.10,
+                     kinds: tuple[str, ...] = ("dso", "star", "solar_system"),
+                     site_derived: bool = False,
+                     when: float | None = None) -> dict:
+    """What is in THIS frame, placed on THIS frame's pixels.
+
+    Returns ``{"center", "fov_deg", "objects", "identification", "notes",
+    "catalog_degraded"}``. ``objects`` rows are ``region_rows`` rows plus ``x``,
+    ``y`` (``frame.data`` pixel space, 0-based), ``size_px`` and ``inside``.
+
+    ``margin_frac`` keeps objects whose CENTRE is just outside the frame: a
+    galaxy half in the corner is a fact about the picture, and dropping it makes
+    the overlay disagree with what the user can plainly see. ``inside`` says
+    which is which so the renderer can decide, and only an ``inside`` object may
+    name the field.
+
+    ``site_derived=False`` by DEFAULT here, unlike ``region_rows``. This answer
+    rides the ``preview`` websocket event, which is broadcast to every connected
+    client at whatever capability each holds; the Moon's apparent position is a
+    function of where the observer is standing to about a degree, so publishing
+    it beside a WCS would hand a viewer the same location oracle
+    ``/api/catalog/region`` withholds. The withholding note comes back in
+    ``notes`` rather than as a silent hole -- but ONLY when there was something
+    to withhold. ``region_rows`` raises its note as soon as a site-derived body
+    exists at all, which is correct for a whole-sky map and wrong for a
+    half-degree frame: it would put "the Moon is not marked" under every single
+    exposure and imply the Moon was in it. So the withholding happens HERE,
+    after placement, using the same constants.
+    """
+    geom = frame_geometry(wcs, width_px, height_px)
+    plate = geom["plate"]
+    w = max(1, int(width_px))
+    h = max(1, int(height_px))
+    # The zoom band is chosen by the frame's WIDER side: an imaging frame is the
+    # neighbourhood of one object, and asking the narrow side would offer a
+    # thinner list than the picture actually shows.
+    fov_deg = max(geom["fov_w_deg"], geom["fov_h_deg"])
+    scored, notes, _truncated = scored_region_rows(
+        geom["ra_hours"], geom["dec_deg"], geom["radius_deg"],
+        fov_deg=fov_deg, limit=max(limit * 3, 60), kinds=kinds,
+        # TRUE, then withheld below: the server is entitled to the position, the
+        # broadcast is not. Asking for the rows and dropping them at the boundary
+        # is what makes the note truthful about THIS frame.
+        site_derived=True, when=when)
+    notes = [n for n in notes if n != _MOON_WITHHELD_NOTE]
+
+    mx, my = w * margin_frac, h * margin_frac
+    placed: list[tuple[float, dict]] = []
+    withheld = False
+    for score, row in scored:
+        x, y = plate.to_pixel(row["ra_hours"], row["dec_deg"])
+        if not (math.isfinite(x) and math.isfinite(y)):
+            continue
+        if x < -mx or x > w - 1 + mx or y < -my or y > h - 1 + my:
+            continue
+        if row["id"] in _SITE_DERIVED_BODIES and not site_derived:
+            withheld = True
+            continue
+        size_arcmin = float(row.get("size_arcmin") or 0.0)
+        placed.append((score, dict(
+            row,
+            x=round(x, 2), y=round(y, 2),
+            size_px=round((size_arcmin / 60.0) / geom["pixel_scale_deg"], 1),
+            inside=bool(0.0 <= x <= w - 1 and 0.0 <= y <= h - 1),
+        )))
+
+    if withheld:
+        notes.append(_MOON_WITHHELD_NOTE)
+    ident = identify_field(placed, fov_deg)
+    return {
+        "center": {"ra_hours": round(geom["ra_hours"], 6),
+                   "dec_deg": round(geom["dec_deg"], 6)},
+        "fov_w_deg": round(geom["fov_w_deg"], 5),
+        "fov_h_deg": round(geom["fov_h_deg"], 5),
+        "objects": [row for _, row in placed[:limit]],
+        "identification": ident,
+        "notes": notes,
+        "catalog_degraded": catalog_degraded(),
+    }
+
+
+def identify_field(scored_rows, fov_deg: float) -> dict | None:
+    """THE object that names this field, or ``None``.
+
+    A different question from "what is worth a marker", and it turns on two
+    things markers do not care about:
+
+      * ITS CENTRE MUST BE IN THE FRAME. A showpiece just off the corner is
+        worth drawing and is not what you are pointed at. When the rows carry
+        ``inside`` (they do when they came through ``objects_in_frame``) that
+        flag is the test, because it is the frame's real rectangle; a plain
+        cone-derived list falls back to "within half the field of the centre",
+        which is the same idea with a circle instead of a rectangle.
+      * OFF-CENTRE COSTS. See ``_OFF_CENTRE_PENALTY``.
+
+    ``confident`` -- the gate on everything that writes -- is true only when the
+    winner beats the runner-up by ``_CONFIDENT_MARGIN``, or there is no runner-up
+    at all. Two comparable objects in one frame is the normal state of a rich
+    field, and the honest answer there is "here are two", not a coin flip
+    stamped into a FITS header that every stacker downstream will believe.
+
+    Returns ``None`` when nothing qualifies -- which is a COMMON and CORRECT
+    answer (mosaic panels, calibration fields, most of the sky), not a failure.
+    """
+    if fov_deg <= 0:
+        return None
+    half = 0.5 * fov_deg
+    ranked: list[tuple[float, dict]] = []
+    for score, row in scored_rows:
+        sep = float(row.get("sep_deg") or 0.0)
+        if "inside" in row:
+            if not row["inside"]:
+                continue
+        elif sep > half:
+            continue
+        off = sep / half if half > 0 else 0.0
+        ranked.append((score - _OFF_CENTRE_PENALTY * off, row))
+    if not ranked:
+        return None
+    ranked.sort(key=lambda t: (-t[0], t[1]["id"]))
+    best_score, best = ranked[0]
+    runner = ranked[1] if len(ranked) > 1 else None
+    confident = runner is None or (best_score - runner[0]) >= _CONFIDENT_MARGIN
+    return {
+        "id": best["id"],
+        "label": best["label"],
+        "kind": best["kind"],
+        "type": best["type"],
+        "describe": best["describe"],
+        "sep_arcmin": round(float(best.get("sep_deg") or 0.0) * 60.0, 2),
+        "confident": confident,
+        # Named, not just counted: "M 27, and it is not clearly M 27 rather than
+        # NGC 6853" is a sentence a human can act on; "not confident" is not.
+        "runner_up": None if runner is None else runner[1]["id"],
+    }
 
 
 # =============================================================================

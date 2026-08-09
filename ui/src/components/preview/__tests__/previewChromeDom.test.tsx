@@ -129,6 +129,7 @@ function frame(over: Partial<PreviewInfo> = {}): PreviewInfo {
 
 const overlays: OverlayToggles = {
   stars: true, clip: true, reticle: false, centerMark: true, tilt: true, bahtinov: true,
+  objects: true,
 };
 const stretch: StretchParams = {
   auto: true, black: 0, mid: 0.5, white: 1, brightness: 0, contrast: 0, advancedOpen: false,
