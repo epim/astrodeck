@@ -12,6 +12,7 @@ the first real citizen of sub-project A's discovery mechanism.
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import datetime, timezone
 
 from ...events import bus
@@ -28,6 +29,12 @@ SLEW_TIMEOUT_S = 120.0
 SETTLE_DEG = 0.05
 #: Poll cadence during a slew.
 SETTLE_POLL_S = 0.5
+#: Floor between attempts to reopen a dropped link. An abandoned exchange can
+#: leave a worker thread parked inside a blocking read on the OS handle, and
+#: Windows refuses a second open of a COM port while that handle lives — so the
+#: first attempts are EXPECTED to fail, and without a floor the recovery becomes
+#: a hot loop hammering the port on every status poll.
+RELINK_MIN_INTERVAL_S = 5.0
 #: Poll cadence while waiting for a park to complete.
 PARK_POLL_S = 1.0
 #: Per-attempt cap on the park poll. Two attempts, so the worst case is twice
@@ -122,8 +129,106 @@ class ZwoAm5Telescope(Telescope):
         #: unreliable (no verified LX200 query for it), so get_tracking_rate
         #: returns this rather than round-tripping the mount.
         self._tracking_rate = "sidereal"
+        #: Monotonic deadline before which no further reopen will be attempted,
+        #: and a re-entrancy guard so the reopen's own handshake commands do not
+        #: recurse back into the reopen. See _relink.
+        self._relink_after = 0.0
+        self._relinking = False
+
+    # --------------------------------------------------------------- health
+
+    @property
+    def connected(self) -> bool:
+        """True only when the handshake completed AND the port is still usable.
+
+        DERIVED, NOT REMEMBERED. This used to be a plain attribute meaning
+        "connect() returned once". On 2026-08-09 the link was abandoned at
+        02:38:26 and that attribute stayed True for the next five and a half
+        hours: ``/api/status`` and ``backend_links`` both reported a healthy
+        mount while every single command failed at the transport, so the UI had
+        no way to show what was wrong. Worse, ``connect()``'s ``if
+        self.connected: return`` guard READ that stale True, which is precisely
+        why no reconnect path ever reopened the port — the one flag that should
+        have driven recovery was the flag that suppressed it.
+
+        Deriving it means the whole system inherits the fix at once: the status
+        surface goes honest, ``connect()`` becomes willing to re-handshake, and
+        the dawn-park net can finally tell a dropped link from a rig that was
+        never plugged in."""
+        # getattr: Device.__init__ assigns `connected = False` through this
+        # setter BEFORE __init__ binds _link, so the getter must survive it.
+        link = getattr(self, "_link", None)
+        if link is not None and not link.is_open:
+            return False
+        return self._connected
+
+    @connected.setter
+    def connected(self, value: bool) -> None:
+        self._connected = bool(value)
 
     # ------------------------------------------------------------ helpers
+
+    async def _request(self, cmd: str, *, reply: str = "hash",
+                       timeout: float = 1.5) -> str | None:
+        """One wire exchange, reopening a link that was dropped under us.
+
+        EVERY command goes through here rather than straight to the link,
+        because the command that most needs the reopen is the one issued by a
+        safety net at dawn: on 2026-08-09 ``park`` failed 139 times against a
+        link that a single reopen would have fixed. A read-only recovery (only
+        ``_get`` retrying) would have left exactly that case broken.
+
+        The retry is deliberately SINGLE and non-recursive: ``_relink`` raises
+        if it cannot reopen, and its own handshake is fenced by ``_relinking``,
+        so a mount that is genuinely gone produces one failed reopen and one
+        honest error rather than a retry storm.
+
+        ``disconnect()`` deliberately does NOT use this — reopening a link in
+        order to close it is not a recovery, it is a loop."""
+        try:
+            return await self._link.request(cmd, reply=reply, timeout=timeout)
+        except LinkError:
+            # "We believe we are connected, but the port is shut." Keyed on
+            # _connected (the raw flag, not the derived property) rather than on
+            # the link's abandoned flag, because a FAILED reopen has already
+            # been through close() and cleared that flag — keying on it would
+            # give up after exactly one attempt, which is one better than the
+            # zero attempts of the bug and still not a recovery.
+            if self._relinking or not self._connected or self._link.is_open:
+                raise
+            await self._relink()        # raises LinkError if it cannot
+            return await self._link.request(cmd, reply=reply, timeout=timeout)
+
+    async def _relink(self) -> None:
+        """Reopen a dropped port and bring the mount back up. Raises LinkError.
+
+        Rate-limited (see RELINK_MIN_INTERVAL_S) because the failure that drops
+        a link can leave a worker thread holding the OS handle, and Windows will
+        refuse the reopen until it lets go — those early refusals are normal and
+        must not turn every status poll into an open() attempt."""
+        now = time.monotonic()
+        if now < self._relink_after:
+            raise LinkError(
+                f"the link to {self.name} is down; the last reopen failed and "
+                f"the next attempt is in {self._relink_after - now:.0f}s")
+        self._relink_after = now + RELINK_MIN_INTERVAL_S
+        self._relinking = True
+        try:
+            await self._open_and_handshake()
+        except Exception as exc:    # noqa: BLE001 - one link error out
+            bus.log("warning",
+                    f"{self.name}: could not reopen the dropped serial link "
+                    f"({exc}) — retrying in {RELINK_MIN_INTERVAL_S:.0f}s", "mount")
+            raise LinkError(str(exc)) from exc
+        finally:
+            self._relinking = False
+        # Success clears the floor: it exists to space out FAILED attempts, and
+        # leaving it armed would make a second drop five seconds later wait for
+        # no reason.
+        self._relink_after = 0.0
+        bus.log("warning",
+                f"{self.name}: serial link reopened after it was dropped — the "
+                f"mount is answering again", "mount")
 
     async def _refused_error(self, what: str) -> DeviceError:
         """Compose an HONEST error for the mount's ``e14#`` refusal.
@@ -238,7 +343,7 @@ class ZwoAm5Telescope(Telescope):
     async def _cmd_ack(self, cmd: str, what: str) -> None:
         """Send an ack-class command; map e14 to the honest refusal error."""
         try:
-            reply = await self._link.request(cmd, reply="ack")
+            reply = await self._request(cmd, reply="ack")
         except LinkError as exc:
             raise self._link_error(what, exc) from exc
         # ANY answer — even the e14 refusal below — ends a halt window on the
@@ -261,7 +366,7 @@ class ZwoAm5Telescope(Telescope):
         # mount is slewing" would be circular and would hide a link that died
         # mid-goto. Reads keep reporting what the wire did.
         try:
-            return await self._link.request(cmd, reply="hash")
+            return await self._request(cmd, reply="hash")
         except LinkError as exc:
             raise DeviceError(f"{self.name}: {cmd} read failed: {exc}") from exc
 
@@ -270,6 +375,22 @@ class ZwoAm5Telescope(Telescope):
     async def connect(self) -> None:
         if self.connected:            # idempotent: hub re-connects (double-open would fail)
             return
+        await self._open_and_handshake()
+
+    async def _open_and_handshake(self) -> None:
+        """Open the port and bring the mount up: identify it, then assert the
+        clock and site. Shared by ``connect`` and ``_relink``.
+
+        THE RE-ASSERT IS NOT REDUNDANT ON A REOPEN. A link drops for two very
+        different reasons — our side stalled, or the MOUNT restarted — and they
+        look identical from here. If the mount restarted it is back at its
+        power-up defaults, and a bare port reopen would leave a driver happily
+        issuing coordinates against the wrong clock and site: pointing errors
+        with no error message anywhere. Four commands buys the certainty."""
+        # Only when a handle actually exists — a reopen after an abandon has
+        # none, and closing there would clear the abandoned flag for nothing.
+        if self._link.is_open:
+            await self._link.close()
         await self._link.open()
         try:
             ident = await self._get("GVP")
@@ -454,7 +575,7 @@ class ZwoAm5Telescope(Telescope):
 
     async def _send_park_and_wait(self, timeout_s: float) -> bool:
         """One ``:hP#`` and a bounded poll of the parked flag. True when parked."""
-        await self._link.request("hP", reply="none")
+        await self._request("hP", reply="none")
         deadline = asyncio.get_running_loop().time() + timeout_s
         while asyncio.get_running_loop().time() <= deadline:
             await asyncio.sleep(PARK_POLL_S)
@@ -540,7 +661,7 @@ class ZwoAm5Telescope(Telescope):
         at-scope validation item (plan Task 7)."""
         if rate not in TRACKING_RATES:
             raise DeviceError(f"{self.name}: unknown tracking rate {rate!r}")
-        await self._link.request(_TRACKING_RATE_CMD[rate], reply="none")
+        await self._request(_TRACKING_RATE_CMD[rate], reply="none")
         self._tracking_rate = rate
 
     async def get_tracking_rate(self) -> str:
@@ -557,7 +678,7 @@ class ZwoAm5Telescope(Telescope):
         CancelledError (or timeout) halts the mount with :Q# first."""
         await self._set_target(ra_hours, dec_deg)
         try:
-            reply = await self._link.request("MS", reply="ack")
+            reply = await self._request("MS", reply="ack")
         except LinkError as exc:
             # This raw ``request`` was the one ack-class send in the driver that
             # bypassed _cmd_ack, so a silent mount here escaped as a LinkError —
@@ -598,7 +719,7 @@ class ZwoAm5Telescope(Telescope):
             # the next command has every reason to time out.
             self._note_halt()
             try:
-                await self._link.request("Q", reply="none")
+                await self._request("Q", reply="none")
             except Exception:  # noqa: BLE001 - halt is best-effort on teardown
                 pass
             raise
@@ -612,7 +733,7 @@ class ZwoAm5Telescope(Telescope):
     async def sync(self, ra_hours: float, dec_deg: float) -> None:
         await self._set_target(ra_hours, dec_deg)
         try:
-            reply = await self._link.request("CM", reply="hash")
+            reply = await self._request("CM", reply="hash")
         except LinkError as exc:
             raise DeviceError(f"{self.name}: sync failed: {exc}") from exc
         if reply == lx200.REFUSED:
@@ -624,13 +745,13 @@ class ZwoAm5Telescope(Telescope):
         if rate_deg_s == 0.0:
             # stop both directions of this axis (fire-and-forget)
             for d in ("e", "w") if axis == "ra" else ("n", "s"):
-                await self._link.request(f"Q{d}", reply="none")
+                await self._request(f"Q{d}", reply="none")
             return
         for bound, rate_cmd in _RATE_TABLE:
             if abs(rate_deg_s) <= bound:
                 break
-        await self._link.request(rate_cmd, reply="none")
-        await self._link.request(_MOVE_CMD[(axis, rate_deg_s > 0)], reply="none")
+        await self._request(rate_cmd, reply="none")
+        await self._request(_MOVE_CMD[(axis, rate_deg_s > 0)], reply="none")
 
     async def pulse_guide(self, direction: str, ms: int) -> None:
         """EMULATED pulse guide (native :Mg*# is inert; :M<dir># during
@@ -652,12 +773,12 @@ class ZwoAm5Telescope(Telescope):
                 await self._cmd_ack("Te", "pulse east (resume tracking)")
             return
         rate_cmd = _PULSE_WEST_RATE_CMD if d == "w" else _PULSE_DEC_RATE_CMD
-        await self._link.request(rate_cmd, reply="none")
-        await self._link.request(_PULSE_MOVE[d], reply="none")
+        await self._request(rate_cmd, reply="none")
+        await self._request(_PULSE_MOVE[d], reply="none")
         try:
             await asyncio.sleep(secs)
         finally:
-            await self._link.request(_PULSE_STOP[d], reply="none")
+            await self._request(_PULSE_STOP[d], reply="none")
 
     async def is_slewing(self) -> bool:
         # DELIBERATELY not widened to include the halt window. "_halting" means
@@ -673,7 +794,7 @@ class ZwoAm5Telescope(Telescope):
         # The rig's own sequence: POST /api/mount/stop cancels the goto task AND
         # calls this. Both halt paths open the same window, so both note it.
         self._note_halt()
-        await self._link.request("Q", reply="none")
+        await self._request("Q", reply="none")
 
 
 # ------------------------------------------------------------------ session

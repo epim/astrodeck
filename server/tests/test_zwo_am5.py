@@ -22,12 +22,41 @@ class FakeLink:
         self.script = dict(script or {})
         self.sent: list[str] = []
         self.closed = False
+        # Mirrors SerialLink's abandoned/needs_reopen surface. Not optional:
+        # the driver consults it on every LinkError, and a double missing it
+        # would turn an honest refusal into an AttributeError.
+        self._abandoned = False
+        # Starts open so a bare FakeLink (no connect) still answers, which is
+        # what the older tests in this file assume.
+        self._open = True
+        self.opens = 0
+
+    @property
+    def is_open(self) -> bool:
+        return self._open
+
+    @property
+    def needs_reopen(self) -> bool:
+        return self._abandoned and not self._open
+
+    def drop(self) -> None:
+        """Simulate ``SerialLink._abandon``: the port died under us."""
+        self._abandoned = True
+        self._open = False
 
     async def open(self) -> None:  # parity with SerialLink
-        pass
+        self.opens += 1
+        self._open = True
+        self._abandoned = False
 
     async def request(self, cmd: str, *, reply: str = "hash",
                       timeout: float = 1.5):
+        if self._abandoned:
+            # A dropped port answers NOTHING, including fire-and-forget writes.
+            # A double that kept replying would let the reopen tests pass
+            # without a reopen ever happening.
+            raise LinkError("the link was dropped after a stalled exchange and "
+                            "has not been reopened")
         self.sent.append(cmd)
         entry = self.script.get(cmd)
         if callable(entry):
@@ -42,6 +71,8 @@ class FakeLink:
 
     async def close(self) -> None:
         self.closed = True
+        self._open = False
+        self._abandoned = False
 
 
 # ------------------------------------------------------------- link double
@@ -1010,3 +1041,166 @@ async def test_the_halt_drain_is_bounded_not_indefinite(fixed_env, monkeypatch):
 
     await asyncio.wait_for(tel.park(), 10.0)     # must not hang
     assert "hP" in fl.sent
+
+
+# ------------------------------------------------- dropped link recovery (#207/#208)
+#
+# THE OUTAGE THESE PIN. 2026-08-09, from captures/logs/2026-08-08.jsonl:
+#
+#   02:38:26 [error/mount]  serial COM3: exchange did not return — marking the
+#                           link unusable (it will be reopened)
+#   02:38:26 [info/safety]  sun watch held off: the mount will not report its
+#                           position, so this net cannot tell whether the Sun is
+#                           closing on it
+#   05:50:48 [error/safety] DAWN PARK FAILED: Gps read failed: link not open
+#                           ...and 138 more, once a minute, through sunrise
+#
+# It was never reopened. COM3 stayed enumerated and healthy the whole time —
+# only our handle was gone — and a single reconnect at 08:08 fixed it instantly.
+
+def _dropped(tel, link) -> None:
+    """Put the driver in the 02:38:26 state: handshake done, port dead."""
+    assert tel.connected, "precondition: the mount was connected and working"
+    link.drop()
+
+
+async def test_a_dropped_link_makes_the_mount_report_itself_disconnected(fixed_env):
+    """#208. ``connected`` must track the TRANSPORT, not a past success.
+
+    For five and a half hours ``/api/status`` and ``backend_links`` both said
+    this mount was connected while every command failed. Worse, ``connect()``
+    reads this same flag to decide whether to re-handshake — so the stale True
+    was not merely a cosmetic lie, it was the thing suppressing recovery."""
+    fl = FakeLink(_connect_script())
+    tel = am5.ZwoAm5Telescope(fl)
+    await tel.connect()
+    _dropped(tel, fl)
+
+    assert tel.connected is False, (
+        "a mount whose port is gone is not connected, whatever happened an "
+        "hour ago")
+    assert tel.describe()["connected"] is False, (
+        "and the status surface must say so — this is the field the UI and "
+        "backend_links render")
+
+
+async def test_a_command_reopens_a_dropped_link_and_succeeds(fixed_env):
+    """#207. The abandon path's promise, kept.
+
+    ``SerialLink._abandon``'s docstring said "the driver reopens rather than
+    the whole mount subsystem wedging until process restart". Nothing did."""
+    fl = FakeLink(_connect_script())
+    tel = am5.ZwoAm5Telescope(fl)
+    await tel.connect()
+    opens_before = fl.opens
+    _dropped(tel, fl)
+
+    ra, dec = await tel.get_position()
+
+    assert fl.opens == opens_before + 1, "the port was actually reopened"
+    assert not fl.needs_reopen and tel.connected, "and the driver is live again"
+    assert (round(ra, 4), round(dec, 4)) == (10.2322, 90.0), (
+        "the command that triggered the reopen must still return its answer, "
+        "not merely stop raising")
+
+
+async def test_park_recovers_a_dropped_link(fixed_env, monkeypatch):
+    """The command that actually mattered at dawn.
+
+    A read-only recovery would leave exactly this case broken, which is the
+    case that was broken: ``park`` failed 139 times in a row against a link one
+    reopen would have fixed, while the Sun climbed to +20°."""
+    monkeypatch.setattr(am5, "PARK_POLL_S", 0.0)
+    # Gps: "0" for the handshake and the pre-park check (unparked, so the park
+    # is really attempted), then "2" once :hP# has landed.
+    fl = FakeLink(_park_script(Gps=["0", "0", "0", "2"], Td="1", GAT=["1", "0"]))
+    tel = am5.ZwoAm5Telescope(fl)
+    await tel.connect()
+    _dropped(tel, fl)
+
+    await asyncio.wait_for(tel.park(), 10.0)
+
+    assert "hP" in fl.sent, f"the park command reached the mount: {fl.sent}"
+
+
+async def test_the_reopen_reasserts_the_clock_and_site(fixed_env):
+    """A link drops for two indistinguishable reasons: our side stalled, or the
+    MOUNT restarted. If it restarted it is back at power-up defaults, and a bare
+    port reopen would leave us issuing coordinates against the wrong clock and
+    site — pointing errors with no error message anywhere."""
+    fl = FakeLink(_connect_script())
+    tel = am5.ZwoAm5Telescope(fl)
+    await tel.connect()
+    _dropped(tel, fl)
+    fl.sent.clear()
+
+    await tel.get_position()
+
+    assert "SC07/19/26" in fl.sent and "SL22:14:58" in fl.sent, (
+        f"the reopen must re-assert the clock: {fl.sent}")
+    assert "SMGE+40*00:00&+100*30:30" in fl.sent, (
+        f"...and the site: {fl.sent}")
+
+
+async def test_a_reopen_that_fails_is_not_retried_on_every_command(fixed_env,
+                                                                   monkeypatch):
+    """Rate-limited on purpose. An abandoned exchange can leave a worker thread
+    holding the OS handle, and Windows refuses a second open until it lets go —
+    so early attempts are EXPECTED to fail. Without a floor, every status poll
+    becomes an open() on a port somebody else still owns."""
+    monkeypatch.setattr(am5, "RELINK_MIN_INTERVAL_S", 3600.0)
+    fl = FakeLink(_connect_script())
+    tel = am5.ZwoAm5Telescope(fl)
+    await tel.connect()
+
+    async def _refuse():
+        raise LinkError("cannot open COM3: port busy")
+    fl.open = _refuse
+    _dropped(tel, fl)
+
+    for _ in range(5):
+        with pytest.raises(DeviceError):
+            await tel.get_position()
+
+    assert fl.opens == 1, (
+        f"one reopen attempt, then the floor holds it off: {fl.opens} attempts")
+    assert tel.connected is False, "and the mount keeps saying it is down"
+
+
+async def test_disconnect_does_not_reopen_a_dropped_link(fixed_env):
+    """Reopening a link in order to close it is not a recovery, it is a loop."""
+    fl = FakeLink(_connect_script())
+    tel = am5.ZwoAm5Telescope(fl)
+    await tel.connect()
+    opens_before = fl.opens
+    _dropped(tel, fl)
+
+    await tel.disconnect()
+
+    assert fl.opens == opens_before, "teardown must not resurrect the port"
+    assert fl.closed and tel.connected is False
+
+
+async def test_connect_rehandshakes_a_dropped_link_instead_of_short_circuiting(
+        fixed_env):
+    """The seam between #207 and #209.
+
+    ``connect()`` returns early on ``self.connected``, and before the health
+    flag was derived that early return was the bug: a dropped link kept the
+    flag True, so every reconnect path in the system — the hub's, the API's,
+    and the dawn-park net's — quietly did nothing and reported success. This is
+    the exact call dawn park now makes at sunrise, so it has to actually
+    reconnect."""
+    fl = FakeLink(_connect_script())
+    tel = am5.ZwoAm5Telescope(fl)
+    await tel.connect()
+    opens_before = fl.opens
+    fl.drop()
+    fl.sent.clear()
+
+    await tel.connect()
+
+    assert fl.opens == opens_before + 1, "the port was reopened, not skipped"
+    assert fl.sent[:2] == ["GVP", "GV"], (
+        f"and the mount was re-identified rather than assumed: {fl.sent}")
+    assert tel.connected is True

@@ -175,6 +175,82 @@ async def test_unreturning_exchange_marks_the_link_unusable_instead_of_wedging()
     await link.close()
 
 
+async def test_an_abandoned_link_advertises_that_it_needs_reopening():
+    """The flag that makes "(it will be reopened)" a fact instead of a comment.
+
+    On 2026-08-09 this exact path fired at 02:38:26 and the mount answered
+    nothing for the next five and a half hours, through sunrise: an abandoned
+    link and a deliberately closed one both just left ``_ser`` None, so no
+    caller could tell "recover me" from "stay shut" and nothing tried. Pin the
+    distinction at the transport, where it is made."""
+    link = StuckLink(FakeSerial())
+    assert not link.needs_reopen, "precondition: a fresh link is not in recovery"
+
+    t = asyncio.create_task(link.request("GR", timeout=0.1))
+    await asyncio.sleep(0.03)
+    t.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await t
+
+    assert link.needs_reopen, (
+        "an abandoned port must ASK to be reopened — this flag is the only "
+        "thing standing between a stalled exchange and a dead mount until "
+        "somebody restarts the process")
+    # And it says which kind of shut it is. "link not open" reads as "nobody
+    # connected the mount" and sent the 2026-08-09 reader hunting cables and
+    # USB enumeration, both of which were entirely healthy.
+    with pytest.raises(LinkError, match="dropped"):
+        await link.request("GR", timeout=0.1)
+
+
+async def test_a_deliberate_close_is_not_a_fault_to_recover_from():
+    """``close`` must CLEAR the flag, or a reopen loop fights every teardown."""
+    link = StuckLink(FakeSerial())
+    t = asyncio.create_task(link.request("GR", timeout=0.1))
+    await asyncio.sleep(0.03)
+    t.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await t
+    assert link.needs_reopen, "precondition: abandoned"
+
+    await link.close()
+
+    assert not link.needs_reopen, (
+        "a close somebody asked for must stay closed; only a FAULT asks to be "
+        "reopened")
+
+
+async def test_a_failed_reopen_leaves_the_link_still_asking_to_be_reopened():
+    """``open`` clears the flag only on SUCCESS.
+
+    Clearing it up front would make one failed reopen look like a healthy link,
+    and the driver would stop trying — the same silent-give-up shape as the bug
+    this whole change exists to fix."""
+    class _Refuses:
+        Serial = staticmethod(
+            lambda *a, **k: (_ for _ in ()).throw(OSError("port busy")))
+
+    link = StuckLink(FakeSerial())
+    t = asyncio.create_task(link.request("GR", timeout=0.1))
+    await asyncio.sleep(0.03)
+    t.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await t
+    assert link.needs_reopen, "precondition: abandoned"
+    link._ser = None
+
+    import astrodeck.devices.serial_link as sl
+    old, sl.serial = sl.serial, _Refuses()
+    try:
+        with pytest.raises(LinkError):
+            await link.open()
+    finally:
+        sl.serial = old
+
+    assert link.needs_reopen, (
+        "the reopen failed, so the link is still broken and must still say so")
+
+
 async def test_request_on_a_closed_link_raises_linkerror_not_attributeerror():
     """The not-open check lives INSIDE the lock: ``close`` nulls ``_ser`` while
     holding it, so a teardown racing a poll must still surface as ``LinkError``

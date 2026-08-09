@@ -33,6 +33,32 @@ class SerialLink:
         self.baud = baud            # USB-CDC: value is a no-op on the AM5
         self._ser = None
         self._lock = asyncio.Lock()
+        #: Set by ``_abandon``, cleared by ``open``/``close``. See ``needs_reopen``.
+        self._abandoned = False
+
+    @property
+    def is_open(self) -> bool:
+        """Is there a usable handle right now? The question a driver deciding
+        whether to reopen should ask — it stays true through a FAILED reopen,
+        where ``needs_reopen`` cannot (a failed reopen has already been through
+        ``close``, which by design clears the abandoned flag)."""
+        return self._ser is not None
+
+    @property
+    def needs_reopen(self) -> bool:
+        """True when the port was ABANDONED rather than deliberately closed, so
+        it has to be reopened before it can carry anything again.
+
+        THE DISTINCTION IS THE WHOLE POINT. ``close()`` is a teardown somebody
+        asked for and must stay shut; ``_abandon`` is a fault nobody chose and
+        is supposed to be recovered from. Until 2026-08-09 the two were
+        indistinguishable from outside — both just left ``_ser`` None — so
+        ``_abandon``'s promise that "the driver reopens" had nothing to key off
+        and was never kept. That morning the link was abandoned at 02:38:26 and
+        every mount command failed for the next five and a half hours, through
+        sunrise, while the dawn-park net retried 139 times without once
+        attempting the reopen this flag now makes possible."""
+        return self._ser is None and self._abandoned
 
     async def open(self) -> None:
         if serial is None:
@@ -47,6 +73,10 @@ class SerialLink:
                 timeout=0.2, write_timeout=2.0)
         except Exception as exc:  # noqa: BLE001 - surface as one link error
             raise LinkError(f"cannot open {self.port_path}: {exc}") from exc
+        # Only on success: a failed reopen must leave the link STILL flagged as
+        # needing one, or a driver that retries would see a healthy-looking link
+        # and stop trying.
+        self._abandoned = False
 
     def _abandon(self, task) -> None:
         """The orphaned exchange outlived even the hard join bound: give up on
@@ -58,6 +88,7 @@ class SerialLink:
         retrieved" minutes later. The OS handle is deliberately NOT closed: the
         worker thread is still using it."""
         self._ser = None
+        self._abandoned = True
         task.add_done_callback(
             lambda t: None if t.cancelled() else t.exception())
         try:
@@ -120,7 +151,13 @@ class SerialLink:
             # outside would race a teardown into AttributeError (call sites catch
             # only LinkError).
             if self._ser is None:
-                raise LinkError("link not open")
+                # Say WHICH kind of shut this is. "link not open" was the only
+                # sentence available on 2026-08-09 and it reads as "nobody
+                # connected the mount", which sent the reader looking at cables
+                # and USB enumeration -- both of which were fine.
+                raise LinkError(
+                    "the link was dropped after a stalled exchange and has not "
+                    "been reopened" if self._abandoned else "link not open")
 
             def _exchange():
                 import time
@@ -157,6 +194,10 @@ class SerialLink:
         closing the OS handle under a blocking read."""
         async with self._lock:
             ser, self._ser = self._ser, None
+            # A deliberate close is not a fault to recover from: clearing this
+            # is what keeps a reopen loop from fighting a teardown. Also makes
+            # close() the safe way to reset an abandoned link before reopening.
+            self._abandoned = False
             if ser is not None:
                 try:
                     await asyncio.to_thread(ser.close)

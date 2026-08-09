@@ -469,7 +469,18 @@ async def test_a_small_spread_is_not_logged(native_rig, bus_lines, monkeypatch):
     rig = native_rig
     rig.launch()
     assert await _wait(lambda: rig.session.state.get("phase") == "adjusting")
-    assert [m for lvl, m, _s in bus_lines if lvl == "warning"] == []
+    # Scoped to the warning this test is ABOUT, by the phrase the emitter
+    # actually uses (polar/native.py: "the camera/pier angle moved N deg across
+    # the three measurement frames"). Asserting "no warnings at all" coupled the
+    # test to the wall clock: the sim mount's RA against the real local sidereal
+    # time makes the unrelated meridian-proximity warning (#140/#155) fire at
+    # some times of day and not others, so this failed only around 08:00-09:00
+    # local. Caught 2026-08-09 on a clean tree.
+    #
+    # Match the TEXT, not the field name: the message never contains the word
+    # "spread", so a filter on that reads fine and can never fail.
+    assert [m for lvl, m, _s in bus_lines
+            if lvl == "warning" and "camera/pier angle" in m] == []
 
 
 # ---------------------------------------------------------------- sim provider
