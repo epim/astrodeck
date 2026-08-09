@@ -258,6 +258,12 @@ export interface ClearedRigState {
   // rig intake like any other: a stranger at the sign-in form learns neither
   // that the rig has an Oiii filter nor that tonight's solves run at 300 s.
   frameSettings: Record<FrameScope, FrameSettings>;
+  // What the operator typed this rig is pointed at (#182). It is a sentence
+  // about tonight's observing — "Veil east", "M 27 panel 3" — and it goes on to
+  // name a folder on disk and the FITS OBJECT card of every frame in it. A
+  // stranger at the sign-in form has no business reading what this observatory
+  // chose to shoot, so it is cleared with the rest of the rig's night.
+  captureTarget: "";
   ninaHealth: NinaHealth;
   safety: null;
   alert: null;
@@ -328,6 +334,7 @@ export function clearedRigState(): ClearedRigState {
     runBanner: null,
     polar: EMPTY_POLAR,
     frameSettings: EMPTY_FRAME_SETTINGS(),
+    captureTarget: "",
     ninaHealth: EMPTY_NINA_HEALTH,
     safety: null,
     alert: null,
