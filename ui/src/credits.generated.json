@@ -139,18 +139,6 @@
      "flag": "DSS/DSS2 imagery is copyrighted All Rights Reserved (AAO Board, Caltech, AURA, UK SERC/PPARC). The only published permission is a NON-PROFIT research/teaching USE grant; third-party REDISTRIBUTION is nowhere authorised, and colour DSS is explicitly directed to archive@stsci.edu. Release builds bundle ~45 MB of these tiles. Owner decision: obtain written permission from STScI, or swap the offline pack to an openly-licensed survey."
     },
     {
-     "name": "libasi",
-     "version": "unpinned (git URL)",
-     "spdx": "LicenseRef-Unverified-libasi",
-     "tier": "redistributed-optional",
-     "requires": [],
-     "summaries": [],
-     "texts": [],
-     "url": "https://github.com/jewzaam/libasi",
-     "notes": "The transport for talking to a ZWO ASIAIR. Declared by the optional `asiair` extra, not on PyPI.\n\npyproject.toml states libasi is MIT. That could not be confirmed: the git URL the extra installs from does not resolve. A separate repository of the same name (epim/libasi) is MIT-licensed, but it is not the one declared, so this credit rests on nothing checkable until the URL is fixed.",
-     "flag": "The `asiair` extra installs libasi from git+https://github.com/jewzaam/libasi, and that repository returns 404 — the extra cannot be installed and the MIT claim in pyproject.toml cannot be verified against the URL we actually ship. Owner decision: repoint the URL at a repository that exists and confirm its licence, or drop the extra."
-    },
-    {
      "name": "Player One Camera SDK",
      "version": "3.10.1 (Windows) / 3.10.0 (Linux, macOS)",
      "spdx": "LicenseRef-PlayerOne-SDK",
@@ -241,6 +229,19 @@
      "notes": "Which constellation each catalogue object falls in. Not third-party data as such: it is computed here by astropy.coordinates.get_constellation over AstroDeck's own object list, so the rows are measurements rather than a copied table. The authority underneath is the IAU constellation boundary system defined by Eugene Delporte in 1930, which astropy carries; the code that does the lookup is Astropy, BSD-3-Clause, credited in full under Python packages. Positions are precessed from J2000 to the B1875 epoch the boundaries are drawn in — skipping that moves 1,127 of 13,369 objects into the wrong constellation."
     },
     {
+     "name": "Discoverer and discovery date (Wikidata)",
+     "version": "7,785 rows",
+     "spdx": "CC0-1.0",
+     "tier": "redistributed-data",
+     "requires": [],
+     "summaries": [
+      "No attribution required. Credited here because we ship it."
+     ],
+     "texts": [],
+     "url": "https://www.wikidata.org/",
+     "notes": "Who found each object and when. CC0 — Wikidata dedicates its structured data to the public domain, so unlike every other entry on this page THIS ONE CARRIES NO ATTRIBUTION OBLIGATION AT ALL; naming Wikidata here is a courtesy, not a requirement. That licence is exactly why this layer was built against Wikidata's P61 (discoverer) / P575 (point in time) properties instead of Wikipedia, which is CC BY-SA and reaches a smaller share of the catalogue besides.\n\nTHE JOIN. Wikidata models an NGC/IC designation as a P528 (\"catalog code\") statement qualified by P972 (\"catalog\") naming the New General Catalogue or the Index Catalogue; the code string (\"NGC 6543\") matches ngc.tsv's own id format exactly, confirmed by hand before this was built.\n\nAMBIGUOUS MATCHES ARE DROPPED, NOT GUESSED — three kinds, all excluded rather than resolved by a heuristic: a catalog code that names more than one distinct Wikidata item (100 in the live data); more than one distinct human discoverer credited on the same item (Wikidata's own data occasionally credits a non-human entity via P61, filtered out by requiring wdt:P31 wd:Q5); and conflicting discovery dates for the same (code, item) pair. See server/astrodeck/catalog/build_discoverers.py's module docstring for real examples of each.\n\nBE A CONSIDERATE CLIENT. This is fetched at build time only, paginated (~5,000 rows per request) with a pause between pages and resumable checkpointing — never queried per-object, and never queried at read time (the app itself never contacts Wikidata; see the Wikidata Query Service entry under Network Services)."
+    },
+    {
      "name": "IAU Catalog of Star Names (IAU-CSN)",
      "version": "2022-04-04 edition, cut at V <= 4.00",
      "spdx": "CC-BY-4.0",
@@ -284,6 +285,29 @@
      ],
      "url": "https://github.com/mattiaverga/OpenNGC",
      "notes": "Every deep-sky object AstroDeck can find by name. By Mattia Verga, licensed CC BY-SA 4.0 — https://creativecommons.org/licenses/by-sa/4.0/\n\nWE CHANGED IT, and CC BY-SA requires us to say how. From OpenNGC's NGC.csv we kept Name, Type, RA, Dec, V-Mag (falling back to B-Mag), MajAx, Common names and M, and dropped every other column. Right ascension was converted from sexagesimal to decimal hours and declination to decimal degrees. Object types were collapsed onto a shorter code set (the galaxy types G, GPair, GTrpl and GGroup all become GX; HII, EmN and Neb all become EN, and so on), and rows typed Dup or NonEx were dropped. Designations were renormalised from NGC0224 to NGC 224. Where an object has a Messier number that number became its primary identifier and the NGC/IC designation became an alias. Only the first of several common names was kept. Objects with no published magnitude were kept with a sentinel value rather than discarded.\n\nSHARE-ALIKE: this extract is itself CC BY-SA 4.0. Anyone redistributing AstroDeck's ngc.tsv, modified or not, is bound by the same terms.\n\nPASS-THROUGH CREDIT that OpenNGC asks redistributors to carry, for the sources it was itself compiled from:\n• \"This research has made use of the NASA/IPAC Extragalactic Database (NED) which is operated by the Jet Propulsion Laboratory, California Institute of Technology, under contract with the National Aeronautics and Space Administration.\"\n• \"We acknowledge the usage of the HyperLeda database (http://leda.univ-lyon1.fr)\"\n• \"This research has made use of the SIMBAD database, operated at CDS, Strasbourg, France\"\n• HEASARC tables, and Harold Corwin's NGC/IC Positions and Notes.\n\nReproducibility gap, stated rather than hidden: the upstream snapshot this extract was built from is not pinned to a commit and no checksum was recorded, so the exact input cannot be identified from the repository alone."
+    },
+    {
+     "name": "OpenNGC deep-sky catalogue — extra columns (Hubble type, minor axis, redshift, NED notes)",
+     "version": "extract of 12,013 objects",
+     "spdx": "CC-BY-SA-4.0",
+     "tier": "redistributed-data",
+     "requires": [
+      "attribution",
+      "license",
+      "state-changes",
+      "share-alike"
+     ],
+     "summaries": [
+      "Credit the creator, link the licence, indicate whether we changed the data, and license any adapted data under CC BY-SA 4.0 as well."
+     ],
+     "texts": [
+      {
+       "title": "CC BY-SA 4.0 legal code",
+       "hash": "925e1b06fa82e379"
+      }
+     ],
+     "url": "https://github.com/mattiaverga/OpenNGC",
+     "notes": "Four more OpenNGC columns ngc.tsv itself does not carry, used to richen the sentence describe.py composes per object. By Mattia Verga, licensed CC BY-SA 4.0 — https://creativecommons.org/licenses/by-sa/4.0/ — same source, same licence as ngc.tsv above; this is a second, separately-built extract from the same upstream, not a different dataset.\n\nWE CHANGED IT, and CC BY-SA requires us to say how. From OpenNGC's NGC.csv/addendum.csv we kept four columns beyond what ngc.tsv already carries: Hubble (galaxy subtype, e.g. \"Sb\"), MinAx (minor axis in arcminutes, paired with the major axis ngc.tsv already carries to flag an edge-on galaxy), Redshift (converted to a distance at H0=70, suppressed below ~10 Mpc so the 376 blueshifted rows never print a negative distance), and NED notes — filtered at build time to an ALLOW-LIST of two families (honest \"nothing here\" / doubtful-identification admissions, and Magellanic Cloud placements); everything else in that column, mostly HIPASS/SDSS survey cross-match trivia, was dropped rather than shipped wholesale. Rows with none of these four fields populated were not written at all. See server/astrodeck/catalog/build_ngc_extras.py for the exact logic and the allow-list regexes.\n\nSHARE-ALIKE: this extract is itself CC BY-SA 4.0, same as ngc.tsv. Anyone redistributing it, modified or not, is bound by the same terms.\n\nSame reproducibility gap as ngc.tsv: the upstream snapshot is not pinned to a commit and no checksum was recorded."
     }
    ]
   },
@@ -408,6 +432,19 @@
      "texts": [],
      "url": "https://core.telegram.org/bots/api",
      "notes": "One of the alert channels, used only if you configure a Telegram bot token. No attribution required — listed for completeness."
+    },
+    {
+     "name": "Wikidata Query Service",
+     "version": "",
+     "spdx": "LicenseRef-Terms-Of-Service",
+     "tier": "service",
+     "requires": [],
+     "summaries": [
+      "No attribution required. Listed so this page is a complete account of what AstroDeck contacts."
+     ],
+     "texts": [],
+     "url": "https://query.wikidata.org/",
+     "notes": "Where server/astrodeck/catalog/build_discoverers.py regenerates discoverers.tsv from. Build-time only — a running AstroDeck never contacts Wikidata; the data itself is CC0 and credited separately under Shipped Data."
     }
    ]
   },
@@ -963,6 +1000,21 @@
       }
      ],
      "url": "https://github.com/kjd/idna"
+    },
+    {
+     "name": "libasi",
+     "version": "unpinned (git URL)",
+     "spdx": "MIT",
+     "tier": "redistributed-optional",
+     "requires": [
+      "notice"
+     ],
+     "summaries": [
+      "Reproduce the copyright notice and permission notice with the distribution. No source-code obligation."
+     ],
+     "texts": [],
+     "url": "https://github.com/epim/libasi",
+     "notes": "The transport for talking to a ZWO ASIAIR. Declared by the optional `asiair` extra, not on PyPI.\n\nThe extra used to install from github.com/jewzaam/libasi, which returns 404, so it could not be installed by anyone following the documented path and its MIT claim rested on nothing checkable. Upstream moved to epim/libasi — identified by content (the only repository carrying CONFIRMED_FORMATS.md, with an `asiair/` package exporting ASIAIRClient) rather than by name alone, and its licence was re-verified live against the repository: public, not a fork, spdx_id MIT, verbatim MIT text. The URL is fixed everywhere it appeared, including the hint an operator is shown."
     },
     {
      "name": "numpy",
