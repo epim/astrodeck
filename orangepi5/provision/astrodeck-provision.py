@@ -33,7 +33,11 @@ RUN_DIR = "/run/astrodeck"
 STATE_DIR = "/var/lib/astrodeck"
 STATE_PATH = os.path.join(STATE_DIR, "provision-state.json")
 NETPLAN_PATH = "/etc/netplan/30-astrodeck-wifi.yaml"
-NETWORKD_PATH = "/run/systemd/network/25-astrodeck-ap.network"
+# 05- so it outranks netplan's generated 10-netplan-wlan0.network: systemd-networkd
+# applies the first file (lexicographically) that matches an interface, and after a
+# reboot with a netplan yaml present both files exist while the AP is up.
+NETWORKD_PATH = "/run/systemd/network/05-astrodeck-ap.network"
+PERSIST_LOG = "/var/lib/astrodeck/provision.log"
 WPA_CONF = os.path.join(RUN_DIR, "ap.conf")
 WPA_PID = os.path.join(RUN_DIR, "wpa-ap.pid")
 ONLINE_WAIT_S = 90
@@ -47,6 +51,14 @@ DONE = threading.Event()
 
 def log(msg: str) -> None:
     print(f"[provision] {msg}", flush=True)
+    # journald is volatile under armbian-ramlog and dies with hard resets;
+    # keep our own breadcrumb trail somewhere that survives power loss.
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        with open(PERSIST_LOG, "a") as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg}\n")
+    except OSError:
+        pass
 
 
 def run(cmd: list[str], timeout: int = 30) -> subprocess.CompletedProcess:
@@ -190,7 +202,12 @@ def scan_networks() -> list[dict]:
 
 def ap_up(ssid: str) -> None:
     os.makedirs(RUN_DIR, exist_ok=True)
-    # netplan may have left a client-mode supplicant running from a failed join
+    # netplan's own supplicant fights us for wlan0 whenever a netplan wifi yaml
+    # exists (i.e. after any previous provisioning attempt). Mask it for the
+    # lifetime of the AP so systemd cannot restart it mid-handoff, then kill
+    # whatever is currently attached to the interface.
+    run(["systemctl", "mask", "--runtime", f"netplan-wpa-{IFACE}.service"],
+        timeout=20)
     run(["systemctl", "stop", f"netplan-wpa-{IFACE}.service"], timeout=20)
     run(["pkill", "-F", WPA_PID], timeout=10)
     with open(WPA_CONF, "w") as f:
@@ -200,10 +217,18 @@ def ap_up(ssid: str) -> None:
         f.write(emit_networkd_ap())
     run(["networkctl", "reload"], timeout=20)
     run(["ip", "link", "set", IFACE, "up"], timeout=10)
-    p = run(["wpa_supplicant", "-B", "-i", IFACE, "-c", WPA_CONF, "-P", WPA_PID],
-            timeout=20)
-    if p.returncode != 0:
-        raise RuntimeError(f"wpa_supplicant AP start failed: {p.stderr.strip()}")
+    last_err = ""
+    for attempt in range(3):
+        p = run(["wpa_supplicant", "-B", "-i", IFACE, "-c", WPA_CONF,
+                 "-P", WPA_PID], timeout=20)
+        if p.returncode == 0:
+            break
+        last_err = p.stderr.strip()
+        log(f"wpa_supplicant AP start attempt {attempt + 1} failed: {last_err}")
+        run(["pkill", "-f", f"wpa_supplicant.*{IFACE}"], timeout=10)
+        time.sleep(2)
+    else:
+        raise RuntimeError(f"wpa_supplicant AP start failed: {last_err}")
     for _ in range(20):
         info = run(["iw", "dev", IFACE, "info"], timeout=10)
         if "type AP" in info.stdout:
@@ -219,6 +244,8 @@ def ap_down() -> None:
         os.remove(NETWORKD_PATH)
     except OSError:
         pass
+    run(["systemctl", "unmask", "--runtime", f"netplan-wpa-{IFACE}.service"],
+        timeout=20)
     run(["networkctl", "reload"], timeout=20)
     run(["ip", "addr", "flush", "dev", IFACE], timeout=10)
 
