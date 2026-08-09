@@ -42,6 +42,42 @@ def test_netplan_rejects_newlines():
         prov.emit_netplan("evil\nnet", "12345678")
 
 
+def test_netplan_sae():
+    y = prov.emit_netplan("W3Only", "12345678", sae=True)
+    assert "key-management: sae" in y
+    assert 'password: "12345678"' in y
+    # sae flag must be ignored for open networks
+    assert "sae" not in prov.emit_netplan("open-net", "", sae=True)
+
+
+IW_FIXTURE = (
+    "BSS 84:23:88:16:09:7c(on wlan0)\n"
+    "\tsignal: -45.0 dBm\n"
+    "\tSSID: W3Net\n"
+    "\tRSN:\t * Version: 1\n"
+    "\t\t * Authentication suites: SAE\n"
+    "BSS c8:84:8c:52:14:90(on wlan0)\n"
+    "\tsignal: -38.0 dBm\n"
+    "\tSSID: Mixed\n"
+    "\tRSN:\t * Version: 1\n"
+    "\t\t * Authentication suites: PSK SAE\n"
+    "BSS c8:84:8c:52:14:91(on wlan0)\n"
+    "\tsignal: -60.0 dBm\n"
+    "\tSSID: Legacy\n"
+    "\tRSN:\t * Version: 1\n"
+    "\t\t * Authentication suites: PSK\n"
+)
+
+
+def test_parse_scan_akm_and_order():
+    nets = prov.parse_scan(IW_FIXTURE)
+    assert [n["ssid"] for n in nets] == ["Mixed", "W3Net", "Legacy"]
+    assert prov.needs_sae("W3Net", nets)
+    assert not prov.needs_sae("Mixed", nets)
+    assert not prov.needs_sae("Legacy", nets)
+    assert not prov.needs_sae("NotSeen", nets)
+
+
 def test_wpa_ap_conf():
     c = prov.emit_wpa_ap_conf("AstroDeck-BEEF", "astrodeck")
     assert "mode=2" in c
