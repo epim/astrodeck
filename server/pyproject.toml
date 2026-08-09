@@ -1,6 +1,6 @@
 [project]
 name = "astrodeck"
-version = "0.2.69"
+version = "0.2.70"
 description = "Open, vendor-neutral astrophotography controller for your whole imaging rig"
 requires-python = ">=3.11"
 dependencies = [
