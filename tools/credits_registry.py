@@ -208,6 +208,77 @@ DATA: dict[str, dict] = {
             "boundaries are drawn in — skipping that moves 1,127 of 13,369 "
             "objects into the wrong constellation."),
     },
+    "ngc_extras.tsv": {
+        "name": "OpenNGC deep-sky catalogue — extra columns (Hubble type, "
+                "minor axis, redshift, NED notes)",
+        "version": "extract of 12,013 objects",
+        "spdx": "CC-BY-SA-4.0",
+        "url": "https://github.com/mattiaverga/OpenNGC",
+        "texts": [_file("CC BY-SA 4.0 legal code", "cc-by-sa-4.0.txt")],
+        "notes": (
+            "Four more OpenNGC columns ngc.tsv itself does not carry, used to "
+            "richen the sentence describe.py composes per object. By Mattia "
+            "Verga, licensed CC BY-SA 4.0 — "
+            "https://creativecommons.org/licenses/by-sa/4.0/ — same source, "
+            "same licence as ngc.tsv above; this is a second, separately-"
+            "built extract from the same upstream, not a different dataset.\n\n"
+            "WE CHANGED IT, and CC BY-SA requires us to say how. From "
+            "OpenNGC's NGC.csv/addendum.csv we kept four columns beyond what "
+            "ngc.tsv already carries: Hubble (galaxy subtype, e.g. \"Sb\"), "
+            "MinAx (minor axis in arcminutes, paired with the major axis "
+            "ngc.tsv already carries to flag an edge-on galaxy), Redshift "
+            "(converted to a distance at H0=70, suppressed below ~10 Mpc so "
+            "the 376 blueshifted rows never print a negative distance), and "
+            "NED notes — filtered at build time to an ALLOW-LIST of two "
+            "families (honest \"nothing here\" / doubtful-identification "
+            "admissions, and Magellanic Cloud placements); everything else in "
+            "that column, mostly HIPASS/SDSS survey cross-match trivia, was "
+            "dropped rather than shipped wholesale. Rows with none of these "
+            "four fields populated were not written at all. See "
+            "server/astrodeck/catalog/build_ngc_extras.py for the exact "
+            "logic and the allow-list regexes.\n\n"
+            "SHARE-ALIKE: this extract is itself CC BY-SA 4.0, same as "
+            "ngc.tsv. Anyone redistributing it, modified or not, is bound by "
+            "the same terms.\n\n"
+            "Same reproducibility gap as ngc.tsv: the upstream snapshot is "
+            "not pinned to a commit and no checksum was recorded."),
+    },
+    "discoverers.tsv": {
+        "name": "Discoverer and discovery date (Wikidata)",
+        "version": "7,785 rows",
+        "spdx": "CC0-1.0",
+        "url": "https://www.wikidata.org/",
+        "notes": (
+            "Who found each object and when. CC0 — Wikidata dedicates its "
+            "structured data to the public domain, so unlike every other "
+            "entry on this page THIS ONE CARRIES NO ATTRIBUTION OBLIGATION "
+            "AT ALL; naming Wikidata here is a courtesy, not a requirement. "
+            "That licence is exactly why this layer was built against "
+            "Wikidata's P61 (discoverer) / P575 (point in time) properties "
+            "instead of Wikipedia, which is CC BY-SA and reaches a smaller "
+            "share of the catalogue besides.\n\n"
+            "THE JOIN. Wikidata models an NGC/IC designation as a P528 "
+            "(\"catalog code\") statement qualified by P972 (\"catalog\") "
+            "naming the New General Catalogue or the Index Catalogue; the "
+            "code string (\"NGC 6543\") matches ngc.tsv's own id format "
+            "exactly, confirmed by hand before this was built.\n\n"
+            "AMBIGUOUS MATCHES ARE DROPPED, NOT GUESSED — three kinds, all "
+            "excluded rather than resolved by a heuristic: a catalog code "
+            "that names more than one distinct Wikidata item (100 in the "
+            "live data); more than one distinct human discoverer credited on "
+            "the same item (Wikidata's own data occasionally credits a "
+            "non-human entity via P61, filtered out by requiring "
+            "wdt:P31 wd:Q5); and conflicting discovery dates for the same "
+            "(code, item) pair. See "
+            "server/astrodeck/catalog/build_discoverers.py's module "
+            "docstring for real examples of each.\n\n"
+            "BE A CONSIDERATE CLIENT. This is fetched at build time only, "
+            "paginated (~5,000 rows per request) with a pause between pages "
+            "and resumable checkpointing — never queried per-object, and "
+            "never queried at read time (the app itself never contacts "
+            "Wikidata; see the Wikidata Query Service entry under Network "
+            "Services)."),
+    },
 }
 
 #: Product data that does NOT live under catalog/data — it is embedded in
@@ -314,23 +385,20 @@ OPTIONAL_UNINSTALLED: dict[str, dict] = {
     "libasi": {
         "name": "libasi",
         "version": "unpinned (git URL)",
-        "spdx": "LicenseRef-Unverified-libasi",
-        "url": "https://github.com/jewzaam/libasi",
-        "flag": (
-            "The `asiair` extra installs libasi from "
-            "git+https://github.com/jewzaam/libasi, and that repository returns "
-            "404 — the extra cannot be installed and the MIT claim in "
-            "pyproject.toml cannot be verified against the URL we actually ship. "
-            "Owner decision: repoint the URL at a repository that exists and "
-            "confirm its licence, or drop the extra."),
+        "spdx": "MIT",
+        "url": "https://github.com/epim/libasi",
         "notes": (
             "The transport for talking to a ZWO ASIAIR. Declared by the optional "
             "`asiair` extra, not on PyPI.\n\n"
-            "pyproject.toml states libasi is MIT. That could not be confirmed: "
-            "the git URL the extra installs from does not resolve. A separate "
-            "repository of the same name (epim/libasi) is MIT-licensed, but it "
-            "is not the one declared, so this credit rests on nothing checkable "
-            "until the URL is fixed."),
+            "The extra used to install from github.com/jewzaam/libasi, which "
+            "returns 404, so it could not be installed by anyone following the "
+            "documented path and its MIT claim rested on nothing checkable. "
+            "Upstream moved to epim/libasi — identified by content (the only "
+            "repository carrying CONFIRMED_FORMATS.md, with an `asiair/` package "
+            "exporting ASIAIRClient) rather than by name alone, and its licence "
+            "was re-verified live against the repository: public, not a fork, "
+            "spdx_id MIT, verbatim MIT text. The URL is fixed everywhere it "
+            "appeared, including the hint an operator is shown."),
     },
 }
 
@@ -474,6 +542,17 @@ SERVICES: list[dict] = [
         "notes": (
             "Where the release build downloads ASTAP and its star database "
             "from. Build-time only — a running AstroDeck never contacts it."),
+    },
+    {
+        "name": "Wikidata Query Service",
+        "spdx": "LicenseRef-Terms-Of-Service",
+        "url": "https://query.wikidata.org/",
+        "hosts": ["query.wikidata.org", "www.wikidata.org"],
+        "notes": (
+            "Where server/astrodeck/catalog/build_discoverers.py regenerates "
+            "discoverers.tsv from. Build-time only — a running AstroDeck "
+            "never contacts Wikidata; the data itself is CC0 and credited "
+            "separately under Shipped Data."),
     },
 ]
 
