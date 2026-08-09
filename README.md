@@ -68,7 +68,7 @@ over. The rotator (CAA) and filter wheel are not driven yet; those two commands
 could not be mapped to certainty without an ASIAIR on the bench, and a guess
 there would silently rotate to the wrong angle or image through the wrong
 filter. This backend needs one extra install step (`pip install -e .[asiair]`,
-which pulls in the MIT-licensed [libasi](https://github.com/jewzaam/libasi)) and
+which pulls in the MIT-licensed [libasi](https://github.com/epim/libasi)) and
 is simply absent if you skip it.
 
 If you would rather drive the gear directly, you can: native drivers ship for

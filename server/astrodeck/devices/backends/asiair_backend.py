@@ -7,7 +7,7 @@ dashboard. Nothing here replaces the ASIAIR app, and nothing here reconfigures
 the box's equipment: ``close()`` drops OUR sockets and leaves every ASIAIR-owned
 device exactly as it found it (the same bridge semantics ``nina_backend`` keeps).
 
-Transport is ``libasi`` (MIT, https://github.com/jewzaam/libasi) — JSON-RPC over
+Transport is ``libasi`` (MIT, https://github.com/epim/libasi) — JSON-RPC over
 TCP on ports 4700 (main) / 4400 (guider) / 4801 (binary image download),
 reverse-engineered from the ASIAIR Android app and validated against live
 hardware. libasi is an OPTIONAL dependency (``pip install -e .[asiair]``; it is
@@ -157,9 +157,9 @@ ARRIVAL_TOLERANCE_STEPS = 2
 
 _LIBASI_HINT = (
     "libasi is not installed. AstroDeck talks to an ASIAIR through libasi "
-    "(MIT, https://github.com/jewzaam/libasi); it is not on PyPI, so install "
+    "(MIT, https://github.com/epim/libasi); it is not on PyPI, so install "
     "it with `pip install -e .[asiair]` after cloning it, or "
-    "`pip install git+https://github.com/jewzaam/libasi`."
+    "`pip install git+https://github.com/epim/libasi`."
 )
 
 
