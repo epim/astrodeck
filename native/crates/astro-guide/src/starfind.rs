@@ -29,6 +29,17 @@
 /// this is always the whole frame.
 type Bounds = (i32, i32, i32, i32);
 
+/// Radius (pixels) of the centroid/mass/HFR aperture around the peak, AND
+/// the inner radius of the background annulus (dossier §1.3 steps 3-4;
+/// PHD2 `star.cpp`'s fixed `A = 7`). Shared by [`centroid_over_disk`] and
+/// [`annulus_background`] so the two stay locked together, and by
+/// [`FindParams::default`]'s `max_hfd` derivation below — every pixel that
+/// can ever reach [`hfr`] is within this radius of the peak, which is the
+/// geometric fact `max_hfd`'s default is built from (see that doc comment).
+/// `pub` so tests (this crate's and callers') can derive bounds from it
+/// instead of hardcoding a copy of the geometry.
+pub const CENTROID_DISK_RADIUS_PX: i32 = 7;
+
 /// Read one pixel by integer coordinates (bounds are the caller's
 /// responsibility, as in the upstream raw-pointer indexing).
 #[inline]
@@ -78,9 +89,27 @@ pub fn was_found(r: FindResult) -> bool {
 }
 
 /// `Star::Find` parameters (dossier §1.1). `Default` matches PHD2's shipped
-/// defaults: `search_region` 15 (valid 7..=50), `min_hfd` 1.5, `max_hfd`
-/// 20.0, `max_adu` 0 (unknown — use the flat-top heuristic), `pedestal` 0,
-/// `bits_per_pixel` 16.
+/// defaults: `search_region` 15 (valid 7..=50), `min_hfd` 1.5, `max_adu` 0
+/// (unknown — use the flat-top heuristic), `pedestal` 0, `bits_per_pixel` 16.
+///
+/// `max_hfd` is a deliberate DIVERGENCE from PHD2's shipped 20.0 (dossier
+/// §1.1, `/guider/StarMaxHFD`) — not a parity gap. `hfr` (below) only ever
+/// walks pixels [`centroid_over_disk`] collected, and every one of those is
+/// within [`CENTROID_DISK_RADIUS_PX`] of the peak; `hfd = 2 * hfr` therefore
+/// has a provable supremum of `2 * CENTROID_DISK_RADIUS_PX` (14 px) that is
+/// only *approached*, in the limit, by a physically-degenerate two-point-mass
+/// configuration split exactly in half across the disk — no real stellar
+/// profile gets close (the golden-vector fixtures top out at 6.2 px; a
+/// measured defocus sweep topped out at 8.95 px; see
+/// `docs/superpowers/backlog/2026-08-08-guide-scope-focus-options.md`).
+/// PHD2's own 20.0 default sits above that supremum too, given the same
+/// fixed-radius aperture (dossier §1.3 step 3-4) — this default does not
+/// carry that defect forward. `max_hfd` here is instead pinned to
+/// `CENTROID_DISK_RADIUS_PX` itself: a candidate whose half-flux point would
+/// have to reach all the way to the aperture's own radius to still be under
+/// half mass is already structurally anomalous for the geometry that
+/// measured it, and every in-focus fixture in this crate's test suite clears
+/// it with room to spare.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FindParams {
     /// half-width of the square search window, pixels.
@@ -103,7 +132,7 @@ impl Default for FindParams {
         FindParams {
             search_region: 15,
             min_hfd: 1.5,
-            max_hfd: 20.0,
+            max_hfd: CENTROID_DISK_RADIUS_PX as f64,
             max_adu: 0,
             pedestal: 0,
             bits_per_pixel: 16,
@@ -315,7 +344,7 @@ fn annulus_background(
     peak: (i32, i32),
     bounds: Bounds,
 ) -> (f64, f64, f64, u32) {
-    const A: i32 = 7;
+    const A: i32 = CENTROID_DISK_RADIUS_PX;
     const B: i32 = 12;
     const A2: i32 = A * A;
     const B2: i32 = B * B;
@@ -404,7 +433,7 @@ fn centroid_over_disk(
     mean_bg: f64,
     thresh: u16,
 ) -> DiskCentroid {
-    const A: i32 = 7;
+    const A: i32 = CENTROID_DISK_RADIUS_PX;
     const A2: i32 = A * A;
     let (peak_x, peak_y) = peak;
     let (minx, miny, maxx, maxy) = bounds;
