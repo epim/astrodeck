@@ -1213,7 +1213,16 @@ class ConfigStore:
         Values are validated against the CURRENT vocabulary (see
         ``valid_override_values``) so an unknown/typo'd driver id is rejected at
         write time (the route maps this ValueError to 422) rather than silently
-        resolving to auto forever."""
+        resolving to auto forever.
+
+        Then validated AGAIN, per capability (audit finding O). The vocabulary
+        above is capability-BLIND: it answers "is this a driver we know?", not
+        "would pinning it here change anything?". So ``solve = "astrodeck"``,
+        ``autofocus = "astap"`` and ``guide = "sim"`` used to be accepted and
+        stored, and then resolved exactly as ``auto`` — a control that silently
+        does nothing. ``providers.is_honourable`` answers the second question
+        off the same table ``resolve`` dispatches through."""
+        from . import providers as _providers   # local: providers imports config
         valid = self.valid_override_values()
         for cap in PROVIDER_CAPABILITIES:
             v = getattr(providers, cap, "auto")
@@ -1223,6 +1232,13 @@ class ConfigStore:
                     f"auto, backend (legacy), an implicit driver id "
                     f"({', '.join(IMPLICIT_DRIVER_IDS)}), or a configured "
                     f"driver id")
+            if not _providers.is_honourable(cap, v):
+                raise ValueError(
+                    f"{v!r} cannot provide {cap}: nothing resolves it, so "
+                    f"pinning it would behave exactly like 'auto'. Valid "
+                    f"choices for {cap} are "
+                    f"{', '.join(sorted(_providers.honoured_families(cap)))} "
+                    f"(or a driver id belonging to one of those families)")
         cfg = self.cfg()
         cfg.providers = providers
         return self.bump_and_save()

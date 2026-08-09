@@ -111,6 +111,18 @@ def store(tmp_path, monkeypatch):
     return s
 
 
+def _writeable(cap: str, value: str, store: ConfigStore) -> bool:
+    """Does the write layer accept ``value`` for ``cap`` at all? Since finding O
+    it does not, for a value whose family the resolver has no branch for — so a
+    pair that cannot be WRITTEN can no longer be a silently-inert control, which
+    is what the sweep below is hunting."""
+    try:
+        store.set_providers(ProvidersConfig(**{cap: value}))
+        return True
+    except ValueError:
+        return False
+
+
 def _honours(cap: str, value: str, hub: FakeHub, astap: bool,
              monkeypatch, store: ConfigStore) -> bool:
     """Would picking ``value`` for ``cap`` on this rig actually run ``value``?
@@ -121,7 +133,8 @@ def _honours(cap: str, value: str, hub: FakeHub, astap: bool,
     itself ``sim`` when it runs over simulated devices (see ``_resolve_guide``)
     — the ENGINE is what the user picked, and the badge is only saying which
     devices it is driving."""
-    store.set_providers(ProvidersConfig(**{cap: value}))
+    if not _writeable(cap, value, store):
+        return False
     monkeypatch.setattr(providers, "find_astap",
                         lambda: ("/usr/bin/astap" if astap else None))
     want = providers._override_family(value)
@@ -154,7 +167,20 @@ def _honourable_anywhere(cap: str, value: str, monkeypatch, store) -> bool:
 #: from ``offers.tasks`` (asserted below) and the guide row from
 #: ``guide_provider_options`` — so they are latent, not live. The test below
 #: refuses to let the list GROW, which is what stops the next one hiding here.
-_ACCEPTED_BUT_INERT: dict[tuple[str, str], str] = {
+#: CLOSED 2026-08-09 by the per-capability write vocabulary
+#: (``providers.HONOURED_FAMILIES``). The seven pairs that used to live here are
+#: now REJECTED at write time, so none of them can be a silently-inert control
+#: any more — they are asserted, by that former membership, in
+#: ``test_the_write_layer_rejects_a_value_its_resolver_cannot_honour`` below.
+#:
+#: The dict stays (empty) rather than being deleted, because the assertion that
+#: it does not GROW is the thing that stops the next inert value being filed as
+#: an excuse instead of being fixed.
+_ACCEPTED_BUT_INERT: dict[tuple[str, str], str] = {}
+
+#: What used to be in it — each pair with the reason no resolver branches on it.
+#: This is now the EXPECTATION for the write layer, not a list of exemptions.
+_REJECTED_AT_WRITE: dict[tuple[str, str], str] = {
     ("autofocus", "sim"):
         "there is no simulated autofocus; a sim rig focuses with the native "
         "V-curve over sim devices (the 'astrodeck' family)",
@@ -168,14 +194,55 @@ _ACCEPTED_BUT_INERT: dict[tuple[str, str], str] = {
     ("solve", "backend"):
         "NINA can plate-solve, but _resolve_solve has no backend branch: solve "
         "is ASTAP-or-simulator by design (a faked solve near real motion is "
-        "refused). Either add the branch or reject the write",
+        "refused)",
     ("guide", "astap"):
         "ASTAP is a plate solver; it does not guide",
     ("guide", "sim"):
         "documented on GUIDE_PROVIDER_VALUES: _resolve_guide has no sim branch, "
-        "so pinning it behaves exactly like auto. Never offered, but still "
-        "accepted by the write layer",
+        "so pinning it behaves exactly like auto",
 }
+
+
+@pytest.mark.parametrize("cap,value", sorted(_REJECTED_AT_WRITE))
+def test_the_write_layer_rejects_a_value_its_resolver_cannot_honour(
+        cap, value, store):
+    """Finding O. Each of these was accepted, stored, and then resolved exactly
+    as ``auto`` — a control that silently does nothing. The write layer must now
+    refuse, and the refusal must NAME what would happen (a 422 that only says
+    "invalid" teaches the caller nothing)."""
+    with pytest.raises(ValueError) as err:
+        store.set_providers(ProvidersConfig(**{cap: value}))
+    assert "auto" in str(err.value), (
+        f"the refusal of {cap}={value!r} does not tell the caller that pinning "
+        f"it would behave like auto: {err.value}")
+
+
+@pytest.mark.parametrize("cap", PROVIDER_CAPABILITIES)
+def test_every_honoured_family_reaches_its_resolver(cap, store, monkeypatch):
+    """The other direction, and the one that keeps the table LOAD-BEARING.
+
+    ``resolve`` normalises a family outside ``HONOURED_FAMILIES[cap]`` to
+    ``auto`` before dispatch. So a family listed there that no rig can actually
+    make the resolver return is a table entry with no branch behind it — and,
+    worse, an entry the write layer now uses to ACCEPT a value. Inert controls
+    would come straight back, through the mechanism installed to stop them."""
+    unreachable = [v for v in sorted(providers.honoured_families(cap))
+                   if v != "auto"
+                   and not _honourable_anywhere(cap, v, monkeypatch, store)]
+    assert unreachable == [], (
+        f"providers.HONOURED_FAMILIES[{cap!r}] lists {unreachable}, which the "
+        f"write layer therefore accepts, but no rig in the matrix makes "
+        f"{cap}'s resolver return them. Either the resolver lost a branch or "
+        f"the table gained an entry it cannot back.")
+
+
+def test_the_guide_dropdown_offers_exactly_the_honoured_guide_families():
+    """``GUIDE_PROVIDER_VALUES`` is an ORDERED tuple for the UI row, so it stays
+    hand-written — but its MEMBERSHIP is the same claim the table makes, and two
+    copies of one claim is how ``_resolve_guide`` drifted from its offer
+    predicate three times (finding L)."""
+    assert (set(providers.GUIDE_PROVIDER_VALUES)
+            == providers.honoured_families("guide"))
 
 
 def _named_families(store: ConfigStore) -> list[str]:
@@ -191,16 +258,27 @@ def _named_families(store: ConfigStore) -> list[str]:
 @pytest.mark.parametrize("cap", PROVIDER_CAPABILITIES)
 def test_every_accepted_provider_value_is_one_some_rig_can_run(
         cap, store, monkeypatch):
-    inert = [v for v in _named_families(store)
+    """The sweep, over the values the write layer accepts FOR THIS CAPABILITY.
+
+    Before finding O that qualifier did not exist — one blind vocabulary was
+    accepted for all four capabilities, and the seven pairs no resolver branches
+    on had to be excused in ``_ACCEPTED_BUT_INERT`` because the property was
+    genuinely violated. Now a value the resolver cannot honour is refused at
+    write time, so it never becomes a stored setting that does nothing, and the
+    excuse list is empty. Note this test does NOT simply re-derive the write
+    rule: ``_writeable`` asks the write layer, ``_honourable_anywhere`` drives
+    real resolvers over the rig matrix, and the assertion is that they agree.
+    """
+    accepted = [v for v in _named_families(store) if _writeable(cap, v, store)]
+    inert = [v for v in accepted
              if not _honourable_anywhere(cap, v, monkeypatch, store)]
     unexplained = [v for v in inert if (cap, v) not in _ACCEPTED_BUT_INERT]
     assert unexplained == [], (
         f"POST /api/config accepts these values for providers.{cap} and no rig "
         f"in the matrix makes the resolver honour any of them, so choosing one "
         f"silently does what 'auto' does: {unexplained}. Fix by adding the "
-        f"resolver branch, or by rejecting the value at write time in "
-        f"ConfigStore.set_providers — or, if it is genuinely inert and "
-        f"unreachable, add it to _ACCEPTED_BUT_INERT with the reason.")
+        f"resolver branch, or by removing the family from "
+        f"providers.HONOURED_FAMILIES[{cap!r}] so the write is refused.")
 
 
 @pytest.mark.parametrize("cap", PROVIDER_CAPABILITIES)
@@ -218,10 +296,13 @@ def test_auto_always_resolves_to_something(cap, store, monkeypatch):
 
 def test_the_inert_list_does_not_grow():
     """Today's inert control must not hide among yesterday's. The count is the
-    assertion: it may only move down, and only with a deliberate edit."""
-    assert len(_ACCEPTED_BUT_INERT) <= 7, (
+    assertion: it may only move down, and only with a deliberate edit. It
+    reached ZERO on 2026-08-09 (finding O), so the ratchet is now at the floor —
+    any new entry is a regression, not a smaller backlog."""
+    assert len(_ACCEPTED_BUT_INERT) == 0, (
         "a newly-inert provider value was filed here instead of being given a "
-        "resolver branch or rejected at write time")
+        "resolver branch or rejected at write time — the per-capability write "
+        "vocabulary in providers.HONOURED_FAMILIES is where it belongs")
     for (cap, value), why in _ACCEPTED_BUT_INERT.items():
         assert cap in PROVIDER_CAPABILITIES, cap
         assert why.strip(), f"{cap}/{value} is excused with no reason"
