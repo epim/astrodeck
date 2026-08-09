@@ -467,3 +467,37 @@ def test_store_create_with_no_password_makes_a_google_only_account(tmp_path):
     assert u.can_sign_in_locally is False
     assert s.verify("oidc-only", "") is None
     assert s.verify("oidc-only", "anything") is None
+
+
+def test_the_banner_distinguishes_minting_from_reusing_a_stored_secret(
+        tmp_path, monkeypatch):
+    """#212. The line said "was generated and persisted" every single time.
+
+    ``ensure_real_secret`` is idempotent — it returns early when a secret is
+    already on disk — but the banner that reported it did not know that, and
+    fired the same past-tense sentence on every boot AND on every POST
+    /api/auth/config. On 2026-08-09 it appeared four times in one night log,
+    twice mid-run with no restart beside them, and reading it as "a new key was
+    just written" produced a confident wrong diagnosis of why sessions were
+    dropping. The file's mtime settled it: 25 June, forty-five days untouched.
+
+    A log line that reports an EVENT which did not occur is the same defect
+    class as a comment that promises behaviour the code does not have."""
+    monkeypatch.delenv(session_mod.SECRET_ENV_VAR, raising=False)
+    monkeypatch.setattr(session_mod, "_secret_dir", lambda: tmp_path)
+    monkeypatch.setattr(session_mod, "_minted_this_process", False)
+    assert session_mod.secret_was_minted() is False, (
+        "precondition: nothing has been minted yet")
+
+    assert session_mod.ensure_real_secret() is True
+    assert session_mod.secret_was_minted() is True, (
+        "the first call really did write a new secret, and may say so")
+
+    # Simulate the next boot / the next auth-config POST: same file on disk,
+    # fresh process state.
+    monkeypatch.setattr(session_mod, "_minted_this_process", False)
+    assert session_mod.ensure_real_secret() is True, (
+        "precondition: the existing secret is accepted")
+    assert session_mod.secret_was_minted() is False, (
+        "NOTHING was written this time, so nothing may claim it was — this is "
+        "the whole bug")

@@ -19,6 +19,7 @@ import asyncio
 import time
 from dataclasses import dataclass
 
+from ...events import bus
 from ..base import DeviceError, FilterWheel
 
 #: The wheel's protocol minimum firmware (the INDI driver's floor; our unit's).
@@ -46,6 +47,11 @@ MOVE_TIMEOUT_S = 40.0
 MOVE_START_GRACE_S = 1.5
 #: How long connect waits for the first banner before declaring "not a Snowflake".
 FIRST_BANNER_TIMEOUT_S = 5.0
+#: Floor between attempts to reopen a wheel whose reader died. Same
+#: reasoning as the AM5's RELINK_MIN_INTERVAL_S: a refused reopen is
+#: normal for a moment after the port drops, and must not turn every
+#: filter change into an open() attempt on a port somebody still holds.
+RELINK_MIN_INTERVAL_S = 5.0
 
 
 @dataclass
@@ -97,6 +103,20 @@ class SnowflakeLink:
         self._lock = asyncio.Lock()
         self.latest: Banner | None = None
         self.last_line_at: float = 0.0
+        #: Set when the reader dies on a dead port; cleared by open/close. The
+        #: wheel's equivalent of SerialLink.needs_reopen — see _reader.
+        self._dropped = False
+
+    @property
+    def is_open(self) -> bool:
+        """Is there a usable handle AND a reader still pumping it?
+
+        Both halves matter. The handle can outlive the reader: ``_reader``
+        returns on any read failure, after which ``_ser`` is still a live object
+        and ``send`` still writes into it, but nothing will ever parse a reply
+        again — so every ``wait_banner`` times out and the wheel is dead while
+        looking connected."""
+        return self._ser is not None and not self._dropped
 
     async def open(self) -> None:
         import serial
@@ -113,13 +133,25 @@ class SnowflakeLink:
             self._ser = await asyncio.to_thread(_open)
         except Exception as exc:  # noqa: BLE001
             raise DeviceError(f"cannot open {self.port_path}: {exc}") from exc
+        self._dropped = False       # only on success; a failed reopen stays dropped
         self._task = asyncio.create_task(self._reader())
 
     async def _reader(self) -> None:
         while self._ser is not None:
             try:
                 raw = await asyncio.to_thread(self._ser.readline)
-            except Exception:  # noqa: BLE001 - port gone; reader ends quietly
+            except Exception as exc:  # noqa: BLE001 - the port died under us
+                # NOT QUIETLY. This used to be a bare `return`: the reader
+                # vanished, `_ser` stayed non-None so the wheel still reported
+                # connected, `send` still wrote into a port nobody was reading,
+                # and every wait_banner timed out with no clue why. The mount's
+                # driver had the identical shape and it cost five and a half
+                # hours of dead rig on 2026-08-09 (#207).
+                self._dropped = True
+                bus.log("error",
+                        f"filter wheel {self.port_path}: the serial reader "
+                        f"stopped ({exc}) — the link is marked unusable and "
+                        f"will be reopened on the next command", "filterwheel")
                 return
             if not raw:
                 continue
@@ -150,6 +182,8 @@ class SnowflakeLink:
 
     async def close(self) -> None:
         ser, self._ser = self._ser, None
+        # A teardown somebody asked for is not a fault to recover from.
+        self._dropped = False
         if self._task is not None:
             self._task.cancel()
             self._task = None
@@ -181,10 +215,36 @@ class SnowflakeWheel(FilterWheel):
         #: is what makes it readable (see ``is_moving``).
         self._move_target: int | None = None
         self._move_sent_at: float = 0.0
+        #: Monotonic deadline before which no further reopen is attempted.
+        self._relink_after = 0.0
+
+    @property
+    def connected(self) -> bool:
+        """True only when the handshake completed AND the link is still alive.
+
+        DERIVED, NOT REMEMBERED — the same fix as the AM5's (#208), for the same
+        reason. A plain flag meaning "connect() once returned" survives the
+        reader dying, so the wheel keeps reporting healthy while every command
+        times out, and ``connect()``'s ``if self.connected: return`` guard turns
+        that stale True into the thing that prevents recovery."""
+        # getattr: Device.__init__ assigns through this setter before _link is
+        # bound, so the getter has to survive that window.
+        link = getattr(self, "_link", None)
+        if link is not None and not link.is_open:
+            return False
+        return self._connected
+
+    @connected.setter
+    def connected(self, value: bool) -> None:
+        self._connected = bool(value)
 
     async def connect(self) -> None:
         if self.connected:            # idempotent: hub re-connects (double-open would fail)
             return
+        if self._link.is_open:
+            # A half-dead link (handle alive, reader gone) must be torn down
+            # before reopening, or open() leaks the old handle and the port.
+            await self._link.close()
         await self._link.open()
         try:
             first = await self._link.wait_banner(
@@ -262,11 +322,46 @@ class SnowflakeWheel(FilterWheel):
             return False
         return True
 
+    async def _relink(self) -> None:
+        """Reopen a wheel whose reader died. Raises DeviceError if it cannot.
+
+        Rate-limited for the same reason the mount's reopen is (see
+        RELINK_MIN_INTERVAL_S there): the port may still be held briefly, and a
+        refused reopen must not become one open() per command."""
+        now = time.monotonic()
+        if now < self._relink_after:
+            raise DeviceError(
+                f"{self.name}: the link is down; the last reopen failed and "
+                f"the next attempt is in {self._relink_after - now:.0f}s")
+        self._relink_after = now + RELINK_MIN_INTERVAL_S
+        # NOTHING to reset before connect(): ``connected`` is derived and the
+        # link is not open, so the idempotence guard is already False.
+        #
+        # This used to clear ``self.connected`` here, which looked harmless and
+        # was not: it wrote through to ``_connected``, and set_position's guard
+        # was ``self._connected and not is_open`` — so after ONE failed reopen
+        # the guard went quiet and every later filter change sailed past the
+        # dead link straight into ``send``, writing gotos into a port nobody was
+        # reading. The test asserting "no goto reaches a dead port" caught it.
+        await self.connect()            # full reopen + banner handshake
+        bus.log("warning", f"{self.name}: serial link reopened after the reader "
+                           f"stopped — the wheel is answering again",
+                "filterwheel")
+
     async def set_position(self, slot: int) -> None:
         if not (0 <= slot < self.slots):
             raise DeviceError(
                 f"{self.name}: slot {slot} out of range 0..{self.slots - 1}")
         target = slot + 1                     # wire is 1-based
+        if not self._link.is_open:
+            # "We believe we are connected, but the reader is gone." Reopening
+            # is the only thing that fixes that, and a filter change is
+            # precisely where it matters: without this the wheel sits at
+            # whatever slot it was on and every subsequent frame is written with
+            # a FILTER header naming a filter that is not in the light path —
+            # the same silent-mislabelling failure as #175's one-slot offset,
+            # arrived at from a different direction.
+            await self._relink()
         sent_at = time.monotonic()
         self._move_target = target
         self._move_sent_at = sent_at
