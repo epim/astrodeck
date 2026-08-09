@@ -79,7 +79,7 @@ backend:
 Closing AstroDeck never touches ASIAIR-owned equipment: it drops its own
 sockets and leaves the camera open, the cooler running and the heaters powered.
 
-The backend needs the MIT-licensed [libasi](https://github.com/jewzaam/libasi),
+The backend needs the MIT-licensed [libasi](https://github.com/epim/libasi),
 which is not on PyPI — install it with `pip install -e .[asiair]` from
 `server/`. Without it the backend registers nothing at all: no `asiair` row in
 the backend registry, no `asiair` driver type, no change anywhere in the UI for

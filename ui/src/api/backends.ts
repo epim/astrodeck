@@ -22,6 +22,7 @@ import type {
   Principal,
   PrincipalRole,
   Profile,
+  ProfileDevice,
   ProfileRow,
   ProvidersConfig,
   RigSpec,
@@ -53,9 +54,42 @@ export const discoverBackend = (name: string): Promise<unknown> =>
 export const listProfiles = (): Promise<ProfileRow[]> =>
   api.get<ProfileRow[]>("/api/profiles");
 
-/** GET /api/profiles/{id} → the full Profile (404 → ApiError). */
-export const getProfile = (id: string): Promise<Profile> =>
-  api.get<Profile>(`/api/profiles/${encodeURIComponent(id)}`);
+/** The addresses `GET /api/profiles/{id}` strips from a caller without
+ *  `config.backend`, and the site name it strips without `view.site_precise`
+ *  (server: `api/redact.py` `_redact_profile_for`). A viewer, and an operator
+ *  who holds neither cap, get a record with these keys ABSENT — not empty. */
+type RedactedProfileKey =
+  | "nina_host"
+  | "nina_port"
+  | "phd2_host"
+  | "phd2_port"
+  | "site_name";
+type RedactedDeviceKey = "host" | "port" | "extra";
+
+/** One `devices[]` row as the wire may actually deliver it. */
+export type RedactedProfileDevice = Omit<ProfileDevice, RedactedDeviceKey> &
+  Partial<Pick<ProfileDevice, RedactedDeviceKey>>;
+
+/** WHAT THE ROUTE RETURNS, WHICH IS NOT ALWAYS A `Profile`.
+ *
+ *  Typing this as `Profile` was a promise the server stopped keeping when the
+ *  redaction landed: the compiler told every caller that `p.nina_host` is a
+ *  string, and for a viewer it is `undefined`. Nothing breaks TODAY because the
+ *  only read-modify-write path (`ProfileList.onUpdateFromRig`) sits behind
+ *  `config.backend`, so its caller always gets the unredacted record — but that
+ *  is a runtime fact defended by nothing, and the next caller has no way to
+ *  learn it from the type. Optional here means "ask, don't assume": a holder
+ *  still gets every field, and a caller that needs one has to say what it does
+ *  when it is missing. */
+export type RedactedProfile = Omit<Profile, RedactedProfileKey | "devices"> &
+  Partial<Pick<Profile, RedactedProfileKey>> & {
+    devices: RedactedProfileDevice[];
+  };
+
+/** GET /api/profiles/{id} → the profile, minus whatever the caller's caps do not
+ *  entitle them to see (404 → ApiError). */
+export const getProfile = (id: string): Promise<RedactedProfile> =>
+  api.get<RedactedProfile>(`/api/profiles/${encodeURIComponent(id)}`);
 
 /** POST /api/profiles → upsert; the NEW id is server-minted (a client id is only
  *  honored as an upsert when a file for it already exists). Returns the row. */

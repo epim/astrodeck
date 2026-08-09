@@ -646,7 +646,11 @@ export default function EquipmentView(): JSX.Element {
               enriched = true;
               return { ...d, driver_id: a.driverId };
             });
-            if (enriched) await saveProfile({ ...captured, devices });
+            // `devices` is RedactedProfileDevice[] by type (#186 B): a viewer
+            // gets devices without host/port. Capturing and saving a profile
+            // both require config.backend, so this path only runs for a holder,
+            // who was served the full device rows.
+            if (enriched) await saveProfile({ ...captured, devices } as Profile);
           } catch {
             partial =
               "but which driver fills each role wasn't recorded, so Load won't " +
@@ -816,7 +820,9 @@ export default function EquipmentView(): JSX.Element {
       try {
         let full: Profile | null = null;
         try {
-          full = await getProfile(row.id);
+          // See the note on the capture path above: config.backend-gated, so
+          // the server sends the unredacted record.
+          full = await getProfile(row.id) as Profile;
         } catch {
           /* fall through: still confirm on the teardown, just without the
              "puts nothing back" escalation we could not verify */
