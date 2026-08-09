@@ -34,6 +34,7 @@ from ..events import bus
 from ..providers import NATIVE_AVAILABLE
 from ..imaging.stars import OVEREXPOSED_FRAC, focus_size, saturation_fraction
 from .autofocus import (MAX_DROPS_PER_POSITION, MIN_STARS_PER_POINT,
+                        over_swept_advice,
                         AutofocusResult, curve_verdict, dropped_points_phrase,
                         overexposure_levers, overexposure_phrase, sweep_levers,
                         thin_points_phrase)
@@ -597,18 +598,60 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                     if drops_here >= MAX_DROPS_PER_POSITION:
                         # The engine will keep asking for this position forever:
                         # it only advances on a measurement, and this one cannot
-                        # be measured. Fail with what was seen instead of
-                        # re-exposing it until someone notices.
+                        # be measured. Stop asking -- but do NOT throw away the
+                        # points that WERE measured.
+                        #
+                        # ASK THE CURVE BEFORE GIVING UP. Measured on NGC 5907
+                        # 2026-08-08 22:04: ten points, a textbook symmetric V,
+                        # HFR 1.90 from 460 STARS at 11173, wings rising to
+                        # 55.91 and 65.97, hyperbolic R-squared 0.996 against a
+                        # 0.70 gate -- and the whole run was discarded because
+                        # the ELEVENTH point, five half-steps out, showed 2
+                        # detectable stars where 3 are needed. The stars there
+                        # are so bloated that finding them is the thing that
+                        # fails; that is a fact about the end of the sweep, not
+                        # about the focus.
+                        #
+                        # `curve_verdict` was written for exactly this shape and
+                        # was only consulted on the engine's own `failed` path,
+                        # so this branch returned before ever reaching it.
+                        salvage = curve_verdict(_result_pts(), counts)
+                        if salvage.accepted and salvage.best_position is not None:
+                            best = int(round(salvage.best_position))
+                            best_hfr = min(h for _p, h, _s in points)
+                            advice = _advice(ok=True)
+                            await focuser.move_to(best)
+                            bus.publish("focus", state="done", points=_pts(),
+                                        best={"position": best,
+                                              "hfr": best_hfr},
+                                        advice=advice)
+                            bus.log("info",
+                                    f"native autofocus: {pos} could not be "
+                                    f"measured ({why}), but the {len(points)} "
+                                    f"points that were locate focus at {best} "
+                                    f"— {salvage.reason}", "focus")
+                            bus.log("info", vcurve_report(points, counts),
+                                    "focus")
+                            return AutofocusResult(
+                                True, best, best_hfr, _result_pts(),
+                                f"accepted on curve shape after the sweep ran "
+                                f"out of measurable range at {pos}: "
+                                f"{salvage.reason}", advice=advice)
+
                         await focuser.move_to(start_pos)
                         reason = (
                             f"the sweep could not measure {pos} on "
                             f"{drops_here} tries in a row ({why}), and the "
                             f"search cannot move on without it")
-                        advice = (
-                            f"The field through this filter is too thin to "
-                            f"focus on at these settings — {levers}. A "
-                            f"narrowband filter usually needs several times the "
-                            f"exposure a luminance sweep does.")
+                        # Two different failures wore one message. If the BEST
+                        # point of the sweep is rich, the field is fine and the
+                        # sweep simply reached past what it can measure -- say
+                        # that, and name the range that worked. Blaming the
+                        # filter there is the #114 wrong turn: it sends someone
+                        # to lengthen an exposure that was never the problem.
+                        best_n = max((n for n in counts), default=0)
+                        advice = over_swept_advice(
+                            best_n, [p for p, _h, _s in points], pos, levers)
                         bus.log("warning",
                                 f"autofocus: {reason}. {advice}", "focus")
                         bus.log("warning", vcurve_report(points, counts), "focus")
