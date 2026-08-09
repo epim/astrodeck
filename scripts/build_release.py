@@ -53,6 +53,37 @@ _IGNORE = shutil.ignore_patterns(
     ".pytest_cache", ".mypy_cache", ".ruff_cache", "config",
 )
 
+#: Vendored directories whose BINARIES we may not redistribute (#199). The
+#: directory itself still ships — its LICENSE and README are the whole point,
+#: since they are what tell the operator what to fetch and on what terms — but
+#: the libraries do not.
+#:
+#: Player One's SDK licence grants use ("You can use our company's products and
+#: this SDK to develop any products without any restrictions") and contains no
+#: distribution verb anywhere. `vendor/playerone/README.md` asserted for weeks
+#: that it "permits redistribution"; it does not, and six binaries shipped on
+#: that reading.
+_UNSHIPPABLE_VENDOR_DIRS = frozenset({"playerone"})
+_LIBRARY_SUFFIXES = (".dll", ".so", ".dylib", ".lib", ".a")
+
+
+def _package_ignore(directory: str, names: list[str]) -> set[str]:
+    """``_IGNORE`` plus the vendored libraries we have no right to pass on.
+
+    A function rather than more ``ignore_patterns`` entries because the rule is
+    path-dependent: `.dll` is fine everywhere except inside a vendor directory
+    we are not licensed to redistribute, and ``ignore_patterns`` only sees
+    basenames."""
+    skip = set(_IGNORE(directory, names))
+    parts = Path(directory).parts
+    if "vendor" in parts:
+        i = parts.index("vendor")
+        vendor_name = parts[i + 1] if i + 1 < len(parts) else ""
+        if vendor_name in _UNSHIPPABLE_VENDOR_DIRS:
+            skip |= {n for n in names
+                     if any(s in n.lower() for s in _LIBRARY_SUFFIXES)}
+    return skip
+
 # MPL-2.0 lets us redistribute the astap_cli binary inside the release as long as
 # we ship this notice (license text + source link) and the Gaia DB credit.
 _ASTAP_NOTICE = """\
@@ -192,7 +223,10 @@ def build(version: str, repo_root: Path, out_dir: Path,
     # server: the package + pyproject (enough for `pip install ./server`).
     srv = repo_root / "server"
     pkg_root = staging / "server" / "astrodeck"
-    shutil.copytree(srv / "astrodeck", pkg_root, ignore=_IGNORE)
+    # `_package_ignore`, not `_IGNORE`: it also drops the vendored libraries we
+    # are not licensed to redistribute (#199). Their LICENSE and README still
+    # ship — they are what tell the operator what to fetch and on what terms.
+    shutil.copytree(srv / "astrodeck", pkg_root, ignore=_package_ignore)
     shutil.copy2(srv / "pyproject.toml", staging / "server" / "pyproject.toml")
 
     contents = ["server"]

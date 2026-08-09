@@ -251,3 +251,57 @@ def test_build_survey_pack_needs_manifest(tmp_path):
     assert not (staging / "server" / "astrodeck" / "catalog" / "_bundled_pack").exists()
     manifest = json.loads((staging / "manifest.json").read_text())
     assert "server/astrodeck/catalog/_bundled_pack/dss2color" not in manifest["contents"]
+
+
+def test_the_player_one_binaries_never_ship_but_their_licence_does(tmp_path):
+    """#199. The SDK licence grants USE — "You can use our company's products
+    and this SDK to develop any products without any restrictions" — and
+    contains no distribution verb anywhere: not copy, publish, distribute,
+    sublicense or sell. It is MIT-SHAPED, closing with MIT's notice-retention
+    clause and warranty disclaimer verbatim, which is where the earlier reading
+    came from; the middle paragraph is Player One's own prose and is not MIT.
+
+    `vendor/playerone/README.md` asserted for weeks that it "permits
+    redistribution", and six binaries shipped on that sentence. So the release
+    carries none of them.
+
+    THE LICENCE AND README STILL SHIP, deliberately: they are what tell the
+    operator what to fetch and on what terms, and a compliance measure that
+    deletes the licence text along with the binary has made the situation
+    harder to audit, not easier.
+    """
+    repo = _fake_repo(tmp_path)
+    vend = repo / "server" / "astrodeck" / "vendor" / "playerone"
+    (vend / "linux-x86_64").mkdir(parents=True)
+    (vend / "PlayerOneCamera.dll").write_bytes(b"MZ")
+    (vend / "linux-x86_64" / "libPlayerOneCamera.so.3.10.0").write_bytes(b"ELF")
+    (vend / "LICENSE").write_text("Player One SDK licence text")
+    (vend / "README.md").write_text("what to fetch and from where")
+
+    out = tmp_path / "dist"
+    build_release.build("9.9.9", repo, out)
+    staged = out / "astrodeck-9.9.9" / "server" / "astrodeck" / "vendor" / "playerone"
+
+    assert not (staged / "PlayerOneCamera.dll").exists(), "a DLL shipped"
+    assert not (staged / "linux-x86_64" / "libPlayerOneCamera.so.3.10.0").exists(), \
+        "a versioned .so shipped — the suffix is not the last thing in the name"
+    assert (staged / "LICENSE").is_file(), "the licence text was dropped too"
+    assert (staged / "README.md").is_file()
+
+
+def test_other_vendors_libraries_are_untouched(tmp_path):
+    """The positive control, and the thing that stops this becoming "no binary
+    ever ships". ZWO's licence is verbatim MIT and grants "publish, distribute,
+    sublicense, and/or sell" in as many words — that one we may pass on, and a
+    blanket rule would have quietly stopped ZWO cameras working for a reason
+    nobody could find in any licence."""
+    repo = _fake_repo(tmp_path)
+    zwo = repo / "server" / "astrodeck" / "vendor" / "zwo"
+    zwo.mkdir(parents=True)
+    (zwo / "ASICamera2.dll").write_bytes(b"MZ")
+
+    out = tmp_path / "dist"
+    build_release.build("9.9.9", repo, out)
+    staged = out / "astrodeck-9.9.9" / "server" / "astrodeck" / "vendor" / "zwo"
+    assert (staged / "ASICamera2.dll").is_file(), (
+        "a licence we DO have was treated like one we do not")
