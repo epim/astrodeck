@@ -132,7 +132,7 @@ await testAsync("the guide settings use the SHARED pickers and PUT the pick", as
     guideCal: null,
   } as any);
   render(React.createElement(GuideQuickBar));
-  await act(async () => {});               // flush the GET seeding
+  await act(async () => {});               // flush any pending store work
   const exp = (): any =>
     Array.from(win.document.querySelectorAll("button[aria-haspopup='listbox']"))
       .find((b: any) => (b.getAttribute("aria-label") ?? "").startsWith("EXP"));
@@ -144,10 +144,43 @@ await testAsync("the guide settings use the SHARED pickers and PUT the pick", as
   assert.ok(three, "the guide exposure menu must list its presets");
   act(() => (three as any).click());
   assert.deepEqual(puts.at(-1), {
-    path: "/api/guide/camera-settings", body: { exposure_s: 3 },
+    // #176: one transport for every scope. `guide` is still its OWN scope —
+    // a guide camera's exposure is legitimately not the imaging camera's —
+    // it just no longer has its own private cache and its own route shape.
+    path: "/api/camera/frame-settings?scope=guide", body: { exposure_s: 3 },
   });
-  await act(async () => {});               // PUT answer re-seeds the face
+  // The face follows OPTIMISTICALLY off the store, so it is already right
+  // before the server answers (and rolls back if the server refuses).
   assert.match(exp().getAttribute("aria-label"), /EXP — 3s$/);
+});
+
+await testAsync("the guide camera's offset is reachable at all (#187)", async () => {
+  /* It has been applied to every guide exposure since the loop was written —
+     `guide/native.py` passes `self._offset` to each expose — while GuideConfig
+     had no field for it and the route answered a literal 30. So the
+     constructor default was the only value it could ever have: the same shape
+     as the constructor-frozen 2.0 s exposure that shipped dead beside it. */
+  useStore.setState({
+    status: { busy_lanes: [], guider: { connected: true } },
+    guide: { guiding: false, rms_ra: 0, rms_dec: 0, rms_total: 0, snr: 0,
+             recent: [], phase: "idle" },
+    guideCal: null,
+  } as any);
+  render(React.createElement(GuideQuickBar));
+  const offs = (): any =>
+    Array.from(win.document.querySelectorAll("button[aria-haspopup='listbox']"))
+      .find((b: any) => (b.getAttribute("aria-label") ?? "").startsWith("OFFS"));
+  assert.ok(offs(), "the guide bar offers no way to set the offset it applies");
+  act(() => offs().click());
+  const box: any = win.document.querySelector('input[aria-label="Offset in ADU"]');
+  assert.ok(box, "no offset field");
+  box.value = "64";
+  const setBtn = Array.from(win.document.querySelectorAll("button"))
+    .find((b: any) => (b.textContent ?? "").trim() === "Set");
+  act(() => (setBtn as any).click());
+  assert.deepEqual(puts.at(-1), {
+    path: "/api/camera/frame-settings?scope=guide", body: { offset: 64 },
+  });
 });
 
 await testAsync("the calibration walk gets a step chip, a pulse ring and the plot", async () => {

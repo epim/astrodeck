@@ -50,10 +50,6 @@ except ImportError:  # pragma: no cover
 # short enough to stay in a solvable sky region.
 _RA_STEP_HOURS = 12.0 / 15.0  # 12° expressed in hours of RA
 
-# Short exposure for the solve frames (the sim renders instantly; a real rig
-# wants just enough signal for ASTAP). Kept small so the loop stays responsive.
-_SOLVE_EXPOSURE_S = 0.3
-
 # "Aligned — stop here" threshold and the adjustment-phase cadence + safety cap
 # (the phase otherwise runs until the user stops; the cap keeps a forgotten
 # session from spinning forever).
@@ -619,13 +615,17 @@ def _engine_solve(frame: Any, result: Any) -> dict:
 
 
 def _solve_config(session: Any) -> dict:
-    """The session's effective solve-frame settings, or the historical
-    hardcoded values for a caller (tests, mostly) that passes no session."""
+    """The effective solve-frame settings.
+
+    The session's, when there is one; otherwise the persisted ``solve`` scope
+    directly — which is the SAME dict, so a caller (tests, mostly) that passes
+    no session can no longer read a second, independently-drifting copy of the
+    defaults. There used to be one here."""
     settings = getattr(session, "solve_settings", None)
     if isinstance(settings, dict) and settings:
         return settings
-    return {"exposure_s": _SOLVE_EXPOSURE_S, "gain": 200, "offset": 30,
-            "binning": 1, "filter": None}
+    from ..config import frames_payload
+    return frames_payload()["solve"]
 
 
 async def _apply_solve_filter(hub: Any, name: str | None) -> None:

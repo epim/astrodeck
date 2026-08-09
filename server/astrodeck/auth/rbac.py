@@ -89,6 +89,14 @@ FIELD_LEVEL_CAP_ROUTES: "dict[tuple[str, str], str]" = {
     ("POST", "/api/config"): "_require_config_field_caps",
     ("POST", "/api/site"): "_require_site_field_caps",
     ("PUT", "/api/site"): "_require_site_field_caps",
+    # #176: one transport for four frame-setting SCOPES, each of which keeps the
+    # cap the operator is actually reaching for -- solve settings drive an
+    # alignment (control.mount), guide settings drive the guider
+    # (control.guide), the rest are imaging (control.capture). Enforced by
+    # ``_require_scope_cap`` once the ``scope`` is parsed, rather than by
+    # widening one route dependency to the weakest of the three: unifying where
+    # a setting LIVES must not quietly unify who may move the mount.
+    ("PUT", "/api/camera/frame-settings"): "_require_scope_cap",
 }
 
 

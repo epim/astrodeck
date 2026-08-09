@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import {
   useStore, useStatus, usePolar, useLivePreviewId, useSequence, useLastLight,
-  usePhotometry, usePreview, useEgainLearn,
+  usePhotometry, usePreview, useEgainLearn, useFrameDraft,
 } from "../store";
 import { LivePreview } from "../components/preview/LivePreview";
 import CameraDial from "../components/ui/CameraDial";
@@ -151,10 +151,37 @@ export default function CaptureView() {
   const setPhotometry = useStore((s) => s.setPhotometry);
   const livePreview = usePreview();
 
-  const [exposure, setExposure] = useState("2");
-  const [gain, setGain] = useState("120");
-  const [offset, setOffset] = useState("30");
-  const [binning, setBinning] = useState("1");
+  // --- the `capture` frame scope (#176) --------------------------------------
+  // These were four `useState`s seeded from "2"/"120"/"30"/"1": invisible to
+  // every other screen, and back to those constants on every reload. They are
+  // now the shared `capture` scope — but each box keeps a local DRAFT STRING,
+  // because the guards below (`isExposureInvalid`, `gainInvalid`) read the RAW
+  // string so that "", "1e9" and "-3" can block the shutter. Bind an input to a
+  // number and all three stop guarding, and a blank box becomes a 0 s exposure:
+  // the blank frame plus the misleading "few stars" that CAP-02 was filed for.
+  //
+  // So: the draft holds the string, the store only ever holds a parsed number,
+  // and a commit (blur / Enter / before a shot) moves one to the other.
+  const expDraft = useFrameDraft("capture", "exposure_s");
+  const gainDraft = useFrameDraft("capture", "gain");
+  const offsetDraft = useFrameDraft("capture", "offset");
+  const binDraft = useFrameDraft("capture", "binning");
+  const exposure = expDraft.text;
+  const gain = gainDraft.text;
+  const offset = offsetDraft.text;
+  const binning = binDraft.text;
+  const setFrameSettings = useStore((s) => s.setFrameSettings);
+  /** A DECISION (a preset, a dial pick, a prefill) — not a keystroke — so it
+   *  goes straight to the scope and every draft follows it. */
+  const setCapture = (patch: Parameters<typeof setFrameSettings>[1]) =>
+    setFrameSettings("capture", patch);
+  /** Push every pending draft into the scope. Called before a shot so what the
+   *  shutter uses and what the rest of the app can see are the same numbers,
+   *  even when the operator never left the field they typed in. */
+  const commitDrafts = () => {
+    expDraft.commit(); gainDraft.commit();
+    offsetDraft.commit(); binDraft.commit();
+  };
   // UX #5: this defaulted to OFF, so a beginner could press FIRST LIGHT then
   // LOOP, watch pictures appear all night, and find nothing on disk in the
   // morning — the switch carried no help text, no (i), and no mention in the
@@ -240,16 +267,27 @@ export default function CaptureView() {
   // panel below does — one builder, one set of presets (components/ui/
   // CameraPickers). Offset is a text entry there too, because its useful
   // values are a continuum a preset ring cannot cover.
+  // The filter in the beam RIGHT NOW, by name. `cameraDialCategories` requires
+  // it (#176) so that no dial can render a pin as though it were the wheel.
+  const fwCurrentName = (() => {
+    const w = status?.filterwheel;
+    return typeof w?.position === "number" ? w.names?.[w.position] ?? null : null;
+  })();
   const captureDial = cameraDialCategories({
     values: {
       exposure_s: Number(exposure) || 2, gain: Number(gain) || 0,
       binning: Number(binning) || 1, offset: Number(offset) || 0,
     },
     maxBin: cam?.max_bin ?? 4,
-    onExposure: (v) => setExposure(String(v)),
-    onGain: (v) => setGain(String(v)),
-    onBinning: (v) => setBinning(String(v)),
-    onOffset: (v) => setOffset(String(v)),
+    // Capture has no FILT ring: on this screen a filter pick is a COMMAND that
+    // moves the wheel now (POST /api/filterwheel/position, below), not a pin
+    // for a later frame. Passing the wheel's position anyway so the required
+    // prop is answered honestly rather than with a placeholder.
+    currentFilter: fwCurrentName,
+    onExposure: (v) => setCapture({ exposure_s: v }),
+    onGain: (v) => setCapture({ gain: v }),
+    onBinning: (v) => setCapture({ binning: v }),
+    onOffset: (v) => setCapture({ offset: v }),
   });
 
   const cooler = cam?.cooler; // CoolerInfo | undefined (older status / no cooler)
@@ -419,7 +457,7 @@ export default function CaptureView() {
       readNoiseE: photometryProfile.readNoiseE, exposureS: livePreview.exposure_s,
     });
     if (!s.ok || s.suggestedS == null) { showToast("warning", s.reason); return; }
-    setExposure(String(s.suggestedS));
+    setCapture({ exposure_s: s.suggestedS });
     showToast("success", `Suggested ${s.suggestedS}s — ${s.reason}`);
   };
 
@@ -509,6 +547,11 @@ export default function CaptureView() {
   const armGenRef = useRef(0);
   const arm = async (kind: "single" | "loop" | "live", path: string, payload: object,
                      len: number) => {
+    // Commit any box the operator typed in and never blurred, so the numbers
+    // this shot uses are the numbers every other surface can see. Without it
+    // there is a window where Capture shoots 300 s and Focus still reads 2 s —
+    // the same disagreement, in miniature.
+    commitDrafts();
     const gen = ++armGenRef.current;
     setPending(kind);
     try {
@@ -734,10 +777,8 @@ export default function CaptureView() {
         if (!ok) return;
         const p = darkPrefillFrom(lastLight);
         setFrameType("Dark");
-        setExposure(p.exposure);
-        setGain(p.gain);
-        setOffset(p.offset);
-        setBinning(p.binning);
+        setCapture({ exposure_s: Number(p.exposure), gain: Number(p.gain),
+                     offset: Number(p.offset), binning: Number(p.binning) });
         if (p.coolerTarget) setCoolerTarget(p.coolerTarget);
         showToast("info", "Darks set up — cap the scope, then press Single or Loop.");
       });
@@ -880,11 +921,14 @@ export default function CaptureView() {
                   hard, but keeps the field focusable and announced. */}
               <input
                 className={`field ${exposureInvalid ? "border-bad" : ""}`}
+                data-frame-field="exposure_s"
                 value={exposure}
                 readOnly={!canCapture}
                 aria-readonly={!canCapture || undefined}
                 aria-invalid={exposureInvalid}
-                onChange={(e) => setExposure(e.target.value)}
+                onChange={(e) => expDraft.setText(e.target.value)}
+                onBlur={expDraft.commit}
+                onKeyDown={(e) => { if (e.key === "Enter") expDraft.commit(); }}
               />
               {exposureInvalid && (
                 <p className="text-[11px] text-bad mt-1">Exposure must be 0–3600s</p>
@@ -893,11 +937,14 @@ export default function CaptureView() {
             <Field label={`Gain${cam?.max_gain ? ` (max ${cam.max_gain})` : ""}`} hint={HELP.gain}>
               <input
                 className={`field ${gainInvalid ? "border-bad" : ""}`}
+                data-frame-field="gain"
                 value={gain}
                 readOnly={!canCapture}
                 aria-readonly={!canCapture || undefined}
                 aria-invalid={gainInvalid}
-                onChange={(e) => setGain(e.target.value)}
+                onChange={(e) => gainDraft.setText(e.target.value)}
+                onBlur={gainDraft.commit}
+                onKeyDown={(e) => { if (e.key === "Enter") gainDraft.commit(); }}
               />
               {gainInvalid && (
                 <p className="text-[11px] text-bad mt-1">
@@ -906,9 +953,11 @@ export default function CaptureView() {
               )}
             </Field>
             <Field label="Offset" hint={HELP.offset}>
-              <input className="field" value={offset} readOnly={!canCapture}
+              <input className="field" data-frame-field="offset" value={offset} readOnly={!canCapture}
                 aria-readonly={!canCapture || undefined}
-                onChange={(e) => setOffset(e.target.value)} />
+                onChange={(e) => offsetDraft.setText(e.target.value)}
+                onBlur={offsetDraft.commit}
+                onKeyDown={(e) => { if (e.key === "Enter") offsetDraft.commit(); }} />
             </Field>
             <Field label="Binning" hint={HELP.binning}>
               {/* A <select> has no `readOnly`, so the locked state swaps in the
@@ -919,7 +968,7 @@ export default function CaptureView() {
                   {binning}×{binning}
                 </LockedChip>
               ) : (
-                <select className="field" value={binning} onChange={(e) => setBinning(e.target.value)}>
+                <select className="field" data-frame-field="binning" value={binning} onChange={(e) => setCapture({ binning: Number(e.target.value) })}>
                   {binOptions.map((b) => <option key={b} value={b}>{b}×{b}</option>)}
                 </select>
               )}
@@ -947,10 +996,8 @@ export default function CaptureView() {
               onPick={(id) => {
                 const p = CAPTURE_PRESETS.find((x) => x.id === id);
                 if (!p) return;
-                setExposure(String(p.exposure_s));
-                setGain(String(p.gain));
-                setOffset(String(p.offset));
-                setBinning(String(p.binning));
+                setCapture({ exposure_s: p.exposure_s, gain: p.gain,
+                             offset: p.offset, binning: p.binning });
                 showToast("info", `Preset: ${p.label}`);
               }}
             />
@@ -1102,10 +1149,10 @@ export default function CaptureView() {
                   onClick={() => {
                     const p = darkPrefillFrom(lastLight);
                     setFrameType(p.frameType);
-                    setExposure(p.exposure);
-                    setGain(p.gain);
-                    setOffset(p.offset);
-                    setBinning(p.binning);
+                    setCapture({ exposure_s: Number(p.exposure),
+                                 gain: Number(p.gain),
+                                 offset: Number(p.offset),
+                                 binning: Number(p.binning) });
                     if (p.coolerTarget) setCoolerTarget(p.coolerTarget);
                   }}>
                   Match last lights

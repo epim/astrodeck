@@ -1,5 +1,5 @@
 import { api } from "../api";
-import { useStore, usePolar, useProviders, useStatus } from "../store";
+import { useFrameSettings, useStore, usePolar, useProviders, useStatus } from "../store";
 import { PolarReticle, knobHint, polarTier, polarInstruction, type KnobDir } from "../components/polar";
 import GuideFramePreview from "../components/GuideFramePreview";
 import { Icon } from "../components/icons";
@@ -40,8 +40,11 @@ type NativePolar = Omit<PolarState, "state"> & {
   /* what the native driver is doing THIS second — published around each solve
      frame so 15 s of ASTAP never looks like a hang (2026-08-07). */
   activity?: "exposing" | "solving" | null;
-  /* the solve frame's live imaging settings, published whenever they change */
-  solve_settings?: import("../components/PolarQuickBar").SolveSettings;
+  /* NOT solve_settings. Those left this event in #176: `start()` resets the
+     session state to `_idle()`, which carries no such key, and the client
+     applies polar events wholesale — so beginning an alignment reverted every
+     face on this screen to a default while the engine kept using the
+     operator's values. They ride their own `frames` event now. */
 };
 
 export default function PolarView() {
@@ -163,25 +166,26 @@ export default function PolarView() {
   // — 40 ms of it, or several seconds on a phone over a relay — the thing that
   // disabled the red button while the mount was still swinging. A stop is
   // idempotent server-side, so there is nothing here worth guarding against.
-  /* The solve frame's live settings + the dial that edits them. The values
-     come from the polar session (the server publishes them on the polar
-     event); the categories/presets come from the SHARED builder, so the dial
-     over the reticle and the pickers in the sticky bar can never offer
-     different numbers for the same setting. */
-  const solveSettings = {
-    exposure_s: 0.3, gain: 200, offset: 30, binning: 1, filter: null as string | null,
-    ...(polar.solve_settings ?? {}),
-  };
+  /* The solve frame's live settings + the dial that edits them. The values are
+     the `solve` SCOPE (#176) — server truth, cold-seeded by the WS hello, no
+     longer a mirrored default spread over a field of the polar event that
+     `start()` erases. The categories/presets come from the SHARED builder, so
+     the dial over the reticle and the pickers in the sticky bar can never
+     offer different numbers for the same setting. */
+  const solveSettings = useFrameSettings("solve");
+  const setFrameSettings = useStore((s) => s.setFrameSettings);
+  const putSolve = (patch: Parameters<typeof setFrameSettings>[1]) =>
+    setFrameSettings("solve", patch);
   const wheel = useStatus()?.filterwheel;
-  const putSolve = (patch: Record<string, unknown>) => {
-    void api.put("/api/polar/solve-settings", patch)
-      .catch((e) => showToast("error", (e as Error).message));
-  };
+  const currentFilter = typeof wheel?.position === "number"
+    ? wheel?.names?.[wheel.position] ?? null : null;
   const solveDial = cameraDialCategories({
     values: solveSettings,
-    filters: (wheel?.names ?? []).filter((n, i) => n && !(wheel?.opaque?.[i] ?? false)),
-    currentFilter: typeof wheel?.position === "number"
-      ? wheel?.names?.[wheel.position] ?? null : null,
+    // The FULL slot list: the builder drops the opaque ones itself now, so no
+    // caller can forget (FocusView did).
+    filters: wheel?.names ?? [],
+    opaqueSlots: wheel?.opaque ?? [],
+    currentFilter,
     onExposure: (s) => putSolve({ exposure_s: s }),
     onGain: (g) => putSolve({ gain: g }),
     onBinning: (b) => putSolve({ binning: b }),
@@ -255,7 +259,7 @@ export default function PolarView() {
             />
             <PolarSolveRing
               activity={polar.activity}
-              exposureS={polar.solve_settings?.exposure_s ?? 0.3}
+              exposureS={solveSettings.exposure_s}
             />
             {/* The solve frame's settings, as the app's one fan-out dial —
                 the same control the preview surfaces carry (2026-08-08).

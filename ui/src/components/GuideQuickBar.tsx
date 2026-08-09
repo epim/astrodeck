@@ -6,27 +6,29 @@
    honestly in their own unit, the calibration walk narrated step by step
    (leg chip + a pulse ring that fills on each pulse's own duration + the
    star's measured walk as a crosshair plot), and speed dials for the guide
-   camera's exposure / gain / binning.
+   camera's exposure / gain / offset / binning.
 
-   The dials PUT /api/guide/camera-settings, which the native guider reads
-   PER EXPOSURE — a change lands on the very next guide frame, mid-anything.
-   Before this the loop's exposure was a constructor-frozen 2.0 s no UI could
-   reach: when the guide star fades the fix is a longer exposure NOW, and
-   there was no dial to reach for (the #156-shaped trap). Binning is refused
-   server-side while active (409 with the reason); the toast relays it.
+   The dials write the `guide` SCOPE (#176), which the native guider reads PER
+   EXPOSURE — a change lands on the very next guide frame, mid-anything. Its
+   OWN scope, and that is the point: a guide camera's exposure is legitimately
+   not the imaging camera's, so these dials must never inherit Capture's
+   five-minute frame. Before any of it the loop's exposure was a
+   constructor-frozen 2.0 s no UI could reach: when the guide star fades the
+   fix is a longer exposure NOW, and there was no dial to reach for (the
+   #156-shaped trap). OFFSET was the same trap, still live, until 2026-08-08
+   (#187). Binning is refused server-side while active (409 with the reason);
+   the store rolls the face back and the toast relays it.
 
    Rendered whenever a guider is connected: the dials must be reachable
    BEFORE the first calibration, not only during a session. */
-import { useEffect, useState, type JSX } from "react";
-import { api } from "../api";
-import { useGuide, useStatus, useStore } from "../store";
+import { type JSX } from "react";
+import { useFrameSettings, useGuide, useStatus, useStore } from "../store";
 import ActivityRing from "./ui/ActivityRing";
 import {
-  BinningPicker, ExposurePicker, GainPicker, GUIDE_EXPOSURE_PRESETS_S,
+  BinningPicker, ExposurePicker, GainPicker, OffsetPicker,
+  GUIDE_EXPOSURE_PRESETS_S,
 } from "./ui/CameraPickers";
 import { useCanControlGuide } from "../lib/caps";
-
-type CamSettings = { exposure_s: number; gain: number; binning: number };
 
 /** The star's measured walk during calibration, as a crosshair plot.
  *  An orthogonal L is a mount; a smeared diagonal is flexure or a wrong
@@ -61,16 +63,16 @@ export function GuideQuickBar(): JSX.Element | null {
   const showToast = useStore((s) => s.showToast);
   const canGuide = useCanControlGuide();
 
-  // Seed the dials from the server once; every PUT answer re-seeds, so the
-  // faces always show what the next frame will actually use.
-  const [cam, setCam] = useState<CamSettings | null>(null);
-  useEffect(() => {
-    let dead = false;
-    void api.get("/api/guide/camera-settings")
-      .then((s) => { if (!dead) setCam(s as CamSettings); })
-      .catch(() => {});
-    return () => { dead = true; };
-  }, []);
+  // The `guide` SCOPE (#176) — its OWN scope, and that is the point: a guide
+  // camera's exposure is legitimately not the imaging camera's, so these dials
+  // must never inherit Capture's five-minute frame. It replaces a local cache
+  // seeded by a cold GET; the store is seeded by the WS hello and replaced by
+  // the `frames` event, so a second tab changing the guide exposure is visible
+  // here without a refetch.
+  const cam = useFrameSettings("guide");
+  const setFrameSettings = useStore((s) => s.setFrameSettings);
+  const put = (patch: Parameters<typeof setFrameSettings>[1]) =>
+    setFrameSettings("guide", patch);
 
   const stats = guide ?? status?.guider ?? null;
   const connected = !!status?.guider || !!guide;
@@ -80,12 +82,6 @@ export function GuideQuickBar(): JSX.Element | null {
   const calibrating = phase === "calibrating";
   const live = stats?.guiding || ["finding", "calibrating", "settling"].includes(phase);
   const unit = stats?.is_arcsec === true ? "″" : "px";
-
-  const put = (patch: Partial<CamSettings>) => {
-    void api.put("/api/guide/camera-settings", patch)
-      .then((s) => setCam(s as CamSettings))
-      .catch((e) => showToast("error", (e as Error).message));
-  };
 
   const lockReason = canGuide ? null
     : "Changing guide-camera settings needs guiding control access.";
@@ -153,9 +149,9 @@ export function GuideQuickBar(): JSX.Element | null {
             range. One idiom per rig, not one per screen. */}
         <div className="mt-1.5 pt-1.5 border-t border-line"
           role="group" aria-label="guide camera settings">
-          <div className="grid grid-cols-3 gap-1.5">
+          <div className="grid grid-cols-4 gap-1.5">
             <ExposurePicker
-              value={cam?.exposure_s ?? 2}
+              value={cam.exposure_s}
               presets={GUIDE_EXPOSURE_PRESETS_S}
               className="w-full !justify-center"
               disabled={!canGuide}
@@ -164,7 +160,7 @@ export function GuideQuickBar(): JSX.Element | null {
               onPick={(s) => put({ exposure_s: s })}
             />
             <GainPicker
-              value={cam?.gain ?? 100}
+              value={cam.gain}
               className="w-full !justify-center"
               disabled={!canGuide}
               disabledReason={lockReason}
@@ -172,7 +168,7 @@ export function GuideQuickBar(): JSX.Element | null {
               onPick={(g) => put({ gain: g })}
             />
             <BinningPicker
-              value={cam?.binning ?? 1}
+              value={cam.binning}
               /* The guide-camera status block carries no max_bin (types.ts);
                  4 is the picker's own ceiling and the server validates. */
               max={4}
@@ -181,6 +177,20 @@ export function GuideQuickBar(): JSX.Element | null {
               disabledReason={binReason}
               onBlocked={(r) => showToast("warning", r)}
               onPick={(b) => put({ binning: b })}
+            />
+            {/* #187: the offset the guide loop has applied to every exposure
+                since it was written. It had no config field and the route
+                answered a literal 30, so the constructor default was the only
+                value it could ever have — the same shape as the frozen 2.0 s
+                exposure that shipped dead beside it. */}
+            <OffsetPicker
+              value={cam.offset}
+              align="right"
+              className="w-full !justify-center"
+              disabled={!canGuide}
+              disabledReason={lockReason}
+              onBlocked={(r) => showToast("warning", r)}
+              onPick={(o) => put({ offset: o })}
             />
           </div>
         </div>
