@@ -81,9 +81,16 @@ _ASSETS: dict[str, tuple[str, str]] = {
            "the release would serve the API and no interface at all"),
     "astap": ("ASTAP (solver binary + star database)",
               "plate solving would need a separately-installed ASTAP on the box"),
-    "survey-pack": ("the baseline survey pack",
-                    "the Atlas would have no image source offline, which is the "
-                    "default"),
+    # The baseline survey pack USED to be here, and --strict failed without it.
+    # It is gone because a complete release now DELIBERATELY ships no DSS2
+    # tiles (#198): they are All Rights Reserved and the only published grant
+    # is for use, not for us to pass them on. Leaving the entry would have made
+    # --strict block every release on an asset we are refusing to include —
+    # a check demanding the thing the fix removed.
+    #
+    # The user-facing cost is real and is not hidden: a fresh install draws the
+    # Atlas's offline schematic sky until the operator fetches tiles, which the
+    # Atlas offers and which their own use grant covers.
 }
 
 
@@ -129,12 +136,31 @@ def _stage_astap(astap_dir: Path, pkg_root: Path) -> tuple[list[str], str | None
     return ["server/astrodeck/vendor/astap"], None
 
 
+#: Slugs whose tiles we are not licensed to hand to anybody (#198). Kept here as
+#: well as in ``astrodeck.licensing`` because this script must run without
+#: importing the package it is packaging.
+_UNSHIPPABLE_SLUGS = frozenset({"dss2color"})
+
+
 def _stage_survey_pack(pack_dir: Path, pkg_root: Path,
                        slug: str = "dss2color") -> tuple[list[str], str | None]:
     """Copy a baseline HiPS pack into the staged package at
     ``astrodeck/catalog/_bundled_pack/<slug>/`` (read by
     ``survey_pack.seed_bundled_pack`` on first boot). Requires a ``pack.json`` — the
-    seed gates on the manifest, so a pack without it would never be recognized."""
+    seed gates on the manifest, so a pack without it would never be recognized.
+
+    REFUSES A SLUG WE MAY NOT REDISTRIBUTE (#198). ``seed_bundled_pack`` already
+    declines to INSTALL DSS2 tiles, but that is the second line: shipping is the
+    infringement, and a tarball containing 45 MB of All-Rights-Reserved imagery
+    infringes whether or not anything ever unpacks it. So the refusal has to be
+    here too, where the file would actually be copied into the artifact."""
+    if slug in _UNSHIPPABLE_SLUGS:
+        return [], (
+            f"{slug} tiles are not ours to redistribute — DSS is All Rights "
+            f"Reserved and the only published grant is for USE, not for us to "
+            f"pass them on. The release ships none, and the Atlas fetches them "
+            f"on the operator's own machine, which that grant does cover. See "
+            f"astrodeck/licensing.py.")
     if not (pack_dir / "pack.json").is_file():
         return [], (f"{pack_dir} has no pack.json, and survey_pack.pack_present() "
                     "gates on it, so a pack copied without its manifest reads as "
@@ -207,18 +233,16 @@ def build(version: str, repo_root: Path, out_dir: Path,
                             "no --astap-dir was passed "
                             "(scripts/fetch_astap.py produces one)")
 
-    # baseline survey pack for first-boot seeding (UX-07).
+    # Baseline survey pack. NO LONGER A REQUIRED ASSET (#198) — if one is
+    # passed anyway, the staging refusal below is what actually keeps DSS2
+    # tiles out of the artifact, and it PRINTS rather than staying silent so a
+    # caller still passing --survey-pack learns why nothing landed instead of
+    # concluding the flag worked.
     if survey_pack_dir is not None and Path(survey_pack_dir).is_dir():
         labels, problem = _stage_survey_pack(Path(survey_pack_dir), pkg_root)
         contents += labels
         if problem:
-            missing["survey-pack"] = problem
-    else:
-        missing["survey-pack"] = (
-            f"{survey_pack_dir} is not a directory"
-            if survey_pack_dir is not None else
-            "no --survey-pack was passed (python -m "
-            "astrodeck.catalog.survey_pack fetch --order 3 --dest <dir>)")
+            print(f"survey pack not staged: {problem}")
 
     if missing:
         blocking = sorted(a for a in missing if a not in allow_missing)

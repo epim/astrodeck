@@ -23,24 +23,38 @@ def _build(tmp_path, *extra):
 
 @pytest.mark.slow
 def test_strict_refuses_when_a_requested_asset_is_absent(tmp_path):
-    """The whole point: asking for the pack and not getting it must FAIL."""
-    r = _build(tmp_path, "--strict", "--survey-pack", str(tmp_path / "nope"))
+    """The whole point: asking for an asset and not getting it must FAIL.
+
+    The survey pack was this test's example until #198 — a complete release now
+    ships no DSS2 tiles, so demanding them here would block every release on
+    the thing the fix removed. ASTAP carries the property instead: same
+    mechanism, on an asset we may actually distribute."""
+    r = _build(tmp_path, "--strict", "--astap-dir", str(tmp_path / "nope"))
     assert r.returncode != 0, r.stdout + r.stderr
     out = r.stdout + r.stderr
-    assert "survey pack" in out
+    assert "ASTAP" in out
     # It must say what the omission COSTS, not just that a path was missing.
-    assert "no image source" in out or "Atlas" in out
+    assert "plate solving" in out
+    assert "survey pack" not in out, (
+        "strict still demands the tiles #198 stopped us shipping")
 
 
 @pytest.mark.slow
-def test_strict_names_every_missing_asset_not_just_the_first(tmp_path):
-    """One rebuild per discovery is how a release takes an afternoon."""
-    r = _build(tmp_path, "--strict",
-               "--survey-pack", str(tmp_path / "nope"),
-               "--astap-dir", str(tmp_path / "also-nope"))
+def test_the_real_cli_refuses_and_says_what_the_omission_costs(tmp_path):
+    """The end-to-end half: the actual script, actual argv, actual exit code.
+
+    This used to assert TWO assets were named in one pass. It cannot any more —
+    it builds the REAL repo, which has a built ui/dist, and since #198 removed
+    the survey pack from the required set, ASTAP is the only asset that can be
+    absent here. The multi-asset property is not lost: it is covered against a
+    fake repo (where both the UI and ASTAP are genuinely missing) by
+    test_build_release.py::test_strict_names_every_missing_asset_in_one_pass.
+    What only THIS test can show is that the property survives the command
+    line, and that the process exits non-zero rather than warning."""
+    r = _build(tmp_path, "--strict", "--astap-dir", str(tmp_path / "also-nope"))
     out = r.stdout + r.stderr
-    assert r.returncode != 0
-    assert "survey pack" in out and "ASTAP" in out
+    assert r.returncode != 0, "the CLI warned instead of refusing — that is #100"
+    assert "ASTAP" in out and "plate solving" in out
 
 
 @pytest.mark.slow
