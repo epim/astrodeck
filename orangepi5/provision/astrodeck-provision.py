@@ -84,10 +84,17 @@ def valid_psk(psk: str) -> bool:
     return psk == "" or 8 <= len(psk) <= 63
 
 
-def emit_netplan(ssid: str, psk: str) -> str:
+def emit_netplan(ssid: str, psk: str, sae: bool = False) -> str:
     if "\n" in ssid or "\n" in psk:
         raise ValueError("newline in credentials")
-    if psk:
+    if psk and sae:
+        # WPA3-only network: plain `password:` emits WPA-PSK, which a
+        # WPA3-only AP rejects regardless of the password being right.
+        body = (f"          {yaml_dq(ssid)}:\n"
+                "            auth:\n"
+                "              key-management: sae\n"
+                f"              password: {yaml_dq(psk)}\n")
+    elif psk:
         body = (f"          {yaml_dq(ssid)}:\n"
                 f"            password: {yaml_dq(psk)}\n")
     else:
@@ -168,8 +175,53 @@ def wait_route(seconds: int) -> bool:
     return have_default_route()
 
 
+def parse_scan(text: str) -> list[dict]:
+    """Parse `iw dev wlan0 scan` output → [{ssid, signal, akm}] strongest first.
+
+    akm collects RSN authentication suites across all BSSes broadcasting the
+    SSID (e.g. {"PSK"}, {"SAE"}, {"PSK","SAE"} for WPA2/WPA3 mixed mode).
+    """
+    nets: dict[str, dict] = {}
+
+    def commit(ssid, sig, akm):
+        if not ssid or "\\x00" in ssid:
+            return
+        e = nets.setdefault(ssid, {"signal": -100.0, "akm": set()})
+        if sig is not None and sig > e["signal"]:
+            e["signal"] = sig
+        e["akm"] |= akm
+
+    ssid, sig, akm = None, None, set()
+    for raw in text.splitlines():
+        line = raw.strip()
+        if raw.startswith("BSS "):
+            commit(ssid, sig, akm)
+            ssid, sig, akm = None, None, set()
+        elif line.startswith("signal:"):
+            m = re.search(r"(-?\d+(?:\.\d+)?)", line)
+            sig = float(m.group(1)) if m else None
+        elif line.startswith("SSID:"):
+            ssid = line[5:].strip()
+        elif line.startswith("* Authentication suites:"):
+            akm |= set(line.split(":", 1)[1].split())
+    commit(ssid, sig, akm)
+    return [
+        {"ssid": s, "signal": v["signal"], "akm": sorted(v["akm"])}
+        for s, v in sorted(nets.items(), key=lambda kv: -kv[1]["signal"])
+    ]
+
+
+def needs_sae(ssid: str, nets: list[dict]) -> bool:
+    """True when the scanned network offers SAE but not plain PSK (WPA3-only)."""
+    for n in nets:
+        if n["ssid"] == ssid:
+            akm = set(n.get("akm", ()))
+            return "SAE" in akm and "PSK" not in akm
+    return False
+
+
 def scan_networks() -> list[dict]:
-    """Best-effort scan; returns [{ssid, signal}] sorted strongest first."""
+    """Best-effort scan; returns [{ssid, signal, akm}] sorted strongest first."""
     run(["ip", "link", "set", IFACE, "up"], timeout=10)
     try:
         p = run(["iw", "dev", IFACE, "scan"], timeout=25)
@@ -178,26 +230,7 @@ def scan_networks() -> list[dict]:
     if p.returncode != 0:
         log(f"scan failed: {p.stderr.strip()[:200]}")
         return SCAN_CACHE
-    nets: dict[str, float] = {}
-    sig = None
-    for line in p.stdout.splitlines():
-        line = line.strip()
-        if line.startswith("BSS "):
-            sig = None
-        elif line.startswith("signal:"):
-            m = re.search(r"(-?\d+(?:\.\d+)?)", line)
-            sig = float(m.group(1)) if m else None
-        elif line.startswith("SSID:"):
-            ssid = line[5:].strip()
-            if ssid and "\\x00" not in ssid:
-                best = nets.get(ssid)
-                s = sig if sig is not None else -100.0
-                if best is None or s > best:
-                    nets[ssid] = s
-    return [
-        {"ssid": s, "signal": nets[s]}
-        for s in sorted(nets, key=lambda k: -nets[k])
-    ]
+    return parse_scan(p.stdout)
 
 
 def ap_up(ssid: str) -> None:
@@ -250,9 +283,9 @@ def ap_down() -> None:
     run(["ip", "addr", "flush", "dev", IFACE], timeout=10)
 
 
-def try_join(ssid: str, psk: str) -> bool:
-    log(f"joining {ssid!r}")
-    content = emit_netplan(ssid, psk)
+def try_join(ssid: str, psk: str, sae: bool = False) -> bool:
+    log(f"joining {ssid!r} (sae={sae})")
+    content = emit_netplan(ssid, psk, sae)
     fd = os.open(NETPLAN_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
         f.write(content)
@@ -382,14 +415,16 @@ class Portal(BaseHTTPRequestHandler):
             STATUS["error"] = "WiFi passwords are 8-63 characters (or blank for open networks)."
             self._redirect_to_portal()
             return
+        sae = needs_sae(ssid, SCAN_CACHE)
         STATUS.update(phase="joining", ssid=ssid, error="")
         self._send(render_joining(ssid))
-        threading.Thread(target=self._join, args=(ssid, psk), daemon=True).start()
+        threading.Thread(target=self._join, args=(ssid, psk, sae),
+                         daemon=True).start()
 
-    def _join(self, ssid: str, psk: str):
+    def _join(self, ssid: str, psk: str, sae: bool):
         time.sleep(1.5)  # let the response reach the phone before the AP drops
         try:
-            if try_join(ssid, psk):
+            if try_join(ssid, psk, sae):
                 DONE.set()
                 return
             STATUS.update(phase="portal",
@@ -474,6 +509,13 @@ def main_selftest() -> int:
     y = emit_netplan('Cafe "42"\\home', "pass word 8")
     assert '"Cafe \\"42\\"\\\\home"' in y and "password:" in y
     assert emit_netplan("open-net", "").strip().endswith("{}")
+    assert "key-management: sae" in emit_netplan("w3", "12345678", sae=True)
+    scan = parse_scan(
+        "BSS aa:bb(on wlan0)\n\tsignal: -40.0 dBm\n\tSSID: W3Net\n"
+        "\tRSN:\n\t\t * Authentication suites: SAE\n"
+        "BSS cc:dd(on wlan0)\n\tsignal: -50.0 dBm\n\tSSID: Mixed\n"
+        "\tRSN:\n\t\t * Authentication suites: PSK SAE\n")
+    assert needs_sae("W3Net", scan) and not needs_sae("Mixed", scan)
     c = emit_wpa_ap_conf("AstroDeck-BEEF", AP_PSK)
     assert "mode=2" in c and f"frequency={AP_FREQ}" in c
     n = emit_networkd_ap()
