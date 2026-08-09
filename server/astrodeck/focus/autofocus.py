@@ -43,6 +43,49 @@ MIN_STARS_PER_POINT = 3
 #: someone is still awake to read the reason.
 MAX_DROPS_PER_POSITION = 3
 
+#: A sweep whose BEST point held at least this many stars was not short of
+#: field, whatever went wrong at its edges.
+#:
+#: Two very different failures used to share one message. A narrowband slot with
+#: almost no signal genuinely cannot be focused at those settings, and telling
+#: someone to expose longer is right. But a sweep that reached PAST its usable
+#: range fails identically at the outer point, and there the same advice is the
+#: #114 wrong turn — it sends someone to lengthen an exposure that was never the
+#: problem. Measured on NGC 5907 on 2026-08-08: 460 stars at the best point,
+#: 2 at the eleventh, and the old copy blamed the filter.
+#:
+#: 50 is an order of magnitude above the 3 a single fit point needs and an order
+#: below the 460 that run measured, so it separates the two cases without
+#: sitting near either.
+RICH_FIELD_STARS = 50
+
+
+def over_swept_advice(best_stars: int, positions, stuck_at: int,
+                      levers: str) -> str:
+    """What to tell someone whose sweep died at a position it could not measure.
+
+    PURE, for the reason ``is_flat_sweep`` and ``curve_verdict`` are: the branch
+    that chooses this text sits behind a live camera, a focuser and a Rust state
+    machine, and the end-to-end path can only reach one side of it on the sim.
+    An unreachable branch tested through the rig is an untested branch.
+
+    Two failures used to share one message. If the best point of the sweep was
+    RICH, the field was never the problem -- the sweep simply reached past what
+    it can measure, and naming a narrowband exposure there is the #114 wrong
+    turn. If it was thin, the original advice is right.
+    """
+    got = sorted(int(p) for p in positions)
+    if best_stars >= RICH_FIELD_STARS and len(got) >= 4:
+        half = max(1, (len(got) - 1) // 2)
+        return (f"The field is fine — the best point of this sweep held "
+                f"{best_stars} stars. The sweep just reached past what it can "
+                f"measure: at {stuck_at} the stars are too bloated to count. "
+                f"It measured {got[0]}..{got[-1]}, so try steps_each_side "
+                f"{half} instead.")
+    return (f"The field through this filter is too thin to focus on at these "
+            f"settings — {levers}. A narrowband filter usually needs several "
+            f"times the exposure a luminance sweep does.")
+
 #: A sweep whose HFR moves less than this FRACTION of its own minimum across the
 #: whole swept range carries no focus information, whichever way the quadratic's
 #: leading coefficient happens to round. 5% is far below any real V — the rig's
