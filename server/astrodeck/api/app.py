@@ -950,6 +950,15 @@ class FilterNamesBody(BaseModel):
     #: changes is the exposure and gain an offset-learning sweep uses on that
     #: slot — a 3-7 nm passband delivers a star 40-100x fainter than luminance.
     narrowband: list[bool] | None = None
+    #: Per-slot capture settings. Same whole-list contract as ``opaque`` — None
+    #: leaves the stored set alone, a list replaces it — but the ELEMENTS are
+    #: tri-state: ``null`` in a slot means "not pinned", which 0 cannot mean
+    #: because 0 is a real gain. These are DEFAULTS the camera dial and the plan
+    #: editor seed from; the sequence engine never reads them (a plan that gets
+    #: rewritten underneath the operator stops describing the night). The one
+    #: authoritative reader is a focus sweep, which has no plan to consult.
+    exposures: list[float | None] | None = None
+    gains: list[int | None] | None = None
 
 
 class GuideCameraSettingsBody(BaseModel):
@@ -4458,7 +4467,8 @@ def create_app() -> FastAPI:
             raise _err(e)
         try:
             return await hub.set_filter_names(body.names, body.offsets,
-                                              body.opaque, body.narrowband)
+                                              body.opaque, body.narrowband,
+                                              body.exposures, body.gains)
         except DeviceError as e:
             raise _err(e)
 

@@ -210,6 +210,73 @@ async def test_a_narrowband_slot_is_swept_at_its_own_exposure_and_gain(
         await h.disconnect_all()
 
 
+async def test_a_filters_own_saved_settings_beat_the_narrowband_derivation(
+        tmp_path, monkeypatch):
+    """#215. THE ONE PLACE a per-filter pin is authoritative rather than a
+    default.
+
+    Everywhere else in the product these are seeds — the camera dial takes them
+    when the filter changes, a new plan step is filled in from them — and the
+    sequence engine never reads them, because a plan that gets rewritten
+    underneath the operator stops describing the night.
+
+    A sweep has no plan to consult. It is a measurement that either works or
+    wastes the night, and the derivation it would otherwise use is a HEURISTIC:
+    4x the broadband exposure, applied identically to every narrowband slot. An
+    operator who has actually measured that Ha needs 60 s has better information
+    than the multiplier does, and the multiplier silently overriding them is how
+    #148 stayed open.
+
+    Note the mixed case below: pinning only ONE half must leave the other half
+    on the derivation, not reset it to the broadband value.
+    """
+    monkeypatch.setattr(configmod, "FILTER_CONFIG_FILE",
+                        tmp_path / "filter_names.json")
+    h = Hub()
+    await h.connect_sim()
+    try:
+        fw = h.devices["filterwheel"]
+        fw.filter_names = ["L", "Ha", "OIII"]
+        fw.filter_offsets = [0, 0, 0]
+        fw.filter_narrowband = [False, True, True]
+        # Ha: both halves pinned. OIII: nothing pinned, so it keeps the x4
+        # derivation. L: broadband, untouched.
+        fw.filter_exposures = [None, 60.0, None]
+        fw.filter_gains = [None, 180, None]
+
+        async def fast_set_position(slot):
+            fw.rig.filter_slot = int(slot)
+        monkeypatch.setattr(fw, "set_position", fast_set_position)
+
+        seen: list[tuple[int, float, int]] = []
+
+        async def fake_af(cam, foc, **kw):
+            seen.append((fw.rig.filter_slot, kw["exposure_s"], kw["gain"]))
+            return af_module.AutofocusResult(True, 5000, 2.1, [], "ok")
+        monkeypatch.setattr(af_module, "run_autofocus", fake_af)
+
+        await h.learn_filter_offsets(ref_slot=0, exposure_s=10.0, gain=300)
+        by_slot = {s: (e, g) for s, e, g in seen}
+        assert by_slot[1] == (60.0, 180), (
+            f"Ha's own saved settings lost to the x4 derivation: {by_slot}")
+        assert by_slot[2] == (40.0, 300), (
+            f"an UNPINNED narrowband slot must keep the derivation: {by_slot}")
+        assert by_slot[0] == (10.0, 300), (
+            f"a pin leaked onto a broadband slot: {by_slot}")
+
+        # Half-pinned: the exposure is the operator's, the gain is still the
+        # derivation's. Falling back to the BROADBAND gain here would sweep a
+        # 60 s narrowband frame at a gain chosen for luminance.
+        seen.clear()
+        fw.filter_exposures = [None, 60.0, None]
+        fw.filter_gains = [None, None, None]
+        await h.learn_filter_offsets(ref_slot=0, exposure_s=10.0, gain=300)
+        by_slot = {s: (e, g) for s, e, g in seen}
+        assert by_slot[1] == (60.0, 300), by_slot
+    finally:
+        await h.disconnect_all()
+
+
 async def test_the_narrowband_marking_persists_and_survives_a_cancelled_run(
         tmp_path, monkeypatch):
     """It is a property of the WHEEL, not of the run.
