@@ -56,16 +56,35 @@ def _wire_region(app):
     A no-op once ``app.include_router(region_router)`` is in ``app.py``, so this
     helper does not have to be removed and cannot silently mask its absence --
     ``test_route_is_registered_in_the_real_app`` is the one that will notice.
+
+    TWO THINGS BIT THIS IN CI AND BOTH ARE ENVIRONMENTAL (2026-08-08).
+
+    The "is it already registered?" test walked ``app.router.routes`` flat.
+    FastAPI 0.141 made ``include_router`` append ONE lazy ``_IncludedRouter``
+    marker instead of copying the child's routes up, so on a fresh install --
+    which CI is, and this box is not -- the real route is invisible behind the
+    marker, the helper decides it is absent, and splices a SECOND copy in.
+    ``iter_app_routes`` is the repo's existing answer to exactly this; the last
+    time it was missed it silently emptied an RBAC assertion for five routers.
+
+    And the SPA catch-all only exists when ``ui/dist`` does. The server job does
+    not build the UI, so ``next()`` with no default raised StopIteration inside
+    a fixture, which pytest-asyncio re-raised as "generator raised
+    StopIteration" -- nine errors whose message named neither the route nor the
+    missing directory. Append when there is no catch-all to sit in front of.
     """
-    routes = app.router.routes
-    if any(getattr(r, "path", "") == "/api/catalog/region" for r in routes):
+    from astrodeck.auth.rbac import iter_app_routes
+
+    if any(getattr(r, "path", "") == "/api/catalog/region"
+           for r in iter_app_routes(app)):
         return False
+    routes = app.router.routes
     mark = len(routes)
     app.include_router(region_router)
     added = routes[mark:]
     del routes[mark:]
-    idx = next(i for i, r in enumerate(routes)
-               if getattr(r, "path", "") == "/{path:path}")
+    idx = next((i for i, r in enumerate(routes)
+                if getattr(r, "path", "") == "/{path:path}"), len(routes))
     routes[idx:idx] = added
     return True
 
