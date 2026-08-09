@@ -48,8 +48,13 @@ class _FakeLink:
         self.sent: list[str] = []
         self._parked = parked
         self._tracking = tracking
+        # SerialLink's health surface. This double answers everything, so it is
+        # permanently open — but it must ANSWER the question, because the driver
+        # asks it on every transport error to decide whether to reopen.
+        self.is_open = True
+        self.needs_reopen = False
 
-    async def request(self, cmd: str, reply: str = "hash"):
+    async def request(self, cmd: str, reply: str = "hash", timeout: float = 1.5):
         self.sent.append(cmd)
         if cmd == "Gps":
             return "2" if self._parked else "1"
