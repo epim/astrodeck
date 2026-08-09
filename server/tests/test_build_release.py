@@ -36,7 +36,33 @@ def _fake_pack(tmp_path: Path) -> Path:
     return d
 
 
-def test_build_bundles_astap_and_pack(tmp_path):
+def test_build_bundles_astap(tmp_path):
+    repo = _fake_repo(tmp_path)
+    out = tmp_path / "dist"
+    build_release.build("9.9.9", repo, out,
+                        astap_dir=_fake_astap(tmp_path))
+
+    staging = out / "astrodeck-9.9.9"
+    vend = staging / "server" / "astrodeck" / "vendor" / "astap"
+    assert (vend / "astap").read_bytes() == b"ELF"
+    assert (vend / "d05.290").read_bytes() == b"db"
+    assert "MPL-2.0" in (vend / "NOTICE.txt").read_text()
+
+    manifest = json.loads((staging / "manifest.json").read_text())
+    assert "server/astrodeck/vendor/astap" in manifest["contents"]
+    assert (out / "astrodeck-9.9.9.tar.gz").is_file()
+
+
+def test_dss2_tiles_never_reach_the_artifact_even_when_handed_over(
+        tmp_path, capsys):
+    """#198, at the only layer that actually matters.
+
+    ``seed_bundled_pack`` already declines to INSTALL these tiles, but that is
+    the second line of defence: SHIPPING is the infringement, and a tarball
+    holding 45 MB of All-Rights-Reserved imagery infringes whether or not
+    anything ever unpacks it. So the refusal is here too, where the bytes would
+    be copied — and it PRINTS, because a caller still passing --survey-pack
+    would otherwise conclude the flag worked."""
     repo = _fake_repo(tmp_path)
     out = tmp_path / "dist"
     build_release.build("9.9.9", repo, out,
@@ -44,18 +70,13 @@ def test_build_bundles_astap_and_pack(tmp_path):
                         survey_pack_dir=_fake_pack(tmp_path))
 
     staging = out / "astrodeck-9.9.9"
-    vend = staging / "server" / "astrodeck" / "vendor" / "astap"
-    assert (vend / "astap").read_bytes() == b"ELF"
-    assert (vend / "d05.290").read_bytes() == b"db"
-    assert "MPL-2.0" in (vend / "NOTICE.txt").read_text()
-    bp = staging / "server" / "astrodeck" / "catalog" / "_bundled_pack" / "dss2color"
-    assert (bp / "pack.json").is_file()
-    assert (bp / "Norder0" / "Dir0" / "Npix0.jpg").is_file()
-
+    assert not (staging / "server" / "astrodeck" / "catalog"
+                / "_bundled_pack").exists(), "DSS2 tiles were staged anyway"
     manifest = json.loads((staging / "manifest.json").read_text())
-    assert "server/astrodeck/vendor/astap" in manifest["contents"]
-    assert "server/astrodeck/catalog/_bundled_pack/dss2color" in manifest["contents"]
-    assert (out / "astrodeck-9.9.9.tar.gz").is_file()
+    assert not [c for c in manifest["contents"] if "_bundled_pack" in c]
+    said = capsys.readouterr().out
+    assert "not ours to redistribute" in said, (
+        f"the builder swallowed the refusal: {said}")
 
 
 def _fake_ui(repo: Path) -> Path:
@@ -113,16 +134,24 @@ def test_an_index_without_assets_is_not_a_built_ui(tmp_path):
 
 def test_strict_fails_on_an_asset_the_command_line_never_mentioned(tmp_path, capsys):
     """#100's actual mechanism, and why turning --strict on in the workflow was
-    not by itself the fix: the UI was there, no --survey-pack was passed, and a
-    check that only inspects the assets it was handed cannot miss the one it was
-    never given. A release job has to know what a complete release contains."""
+    not by itself the fix: a check that only inspects the assets it was handed
+    cannot miss the one it was never given. A release job has to know what a
+    complete release contains.
+
+    The survey pack was the ORIGINAL example here and is deliberately no longer
+    one (#198) — a complete release now ships no DSS2 tiles. ASTAP carries the
+    property instead; it is the same mechanism with an asset we may actually
+    distribute."""
     repo = _fake_repo(tmp_path)
     _fake_ui(repo)
     with pytest.raises(SystemExit):
         build_release.build("9.9.9", repo, tmp_path / "dist", strict=True)
     out = capsys.readouterr().out
-    assert "survey pack" in out and "ASTAP" in out
-    assert "no image source" in out                 # what the omission COSTS
+    assert "ASTAP" in out
+    assert "plate solving" in out                   # what the omission COSTS
+    assert "survey pack" not in out, (
+        "strict is demanding the asset #198 removed — a check that blocks "
+        "every release on the thing the fix deleted")
 
 
 def test_an_omission_must_be_named_and_then_it_ships_in_the_manifest(tmp_path):
@@ -146,7 +175,7 @@ def test_a_waiver_that_names_no_real_asset_is_refused(tmp_path):
     _fake_ui(repo)
     with pytest.raises(SystemExit, match="no such asset"):
         build_release.build("9.9.9", repo, tmp_path / "dist", strict=True,
-                            allow_missing=["survey_pack"])   # it is survey-pack
+                            allow_missing=["astap_binary"])   # it is astap
 
 
 def test_strict_passes_when_every_requested_asset_is_present(tmp_path):
@@ -162,7 +191,6 @@ def test_strict_passes_when_every_requested_asset_is_present(tmp_path):
     assert manifest["contents"] == [
         "server", "ui/dist",
         "server/astrodeck/vendor/astap",
-        "server/astrodeck/catalog/_bundled_pack/dss2color",
     ]
     assert manifest["omitted"] == {}
 
@@ -181,7 +209,7 @@ def test_a_per_platform_astap_tree_is_not_a_solver_the_runtime_can_find(tmp_path
     with pytest.raises(SystemExit):
         build_release.build("9.9.9", repo, tmp_path / "dist", strict=True,
                             astap_dir=d, survey_pack_dir=_fake_pack(tmp_path),
-                            allow_missing=["survey-pack"])
+                            allow_missing=["ui"])
 
 
 def test_the_w08_database_counts_as_a_star_database(tmp_path):
@@ -210,7 +238,7 @@ def test_strict_names_every_missing_asset_in_one_pass(tmp_path, capsys):
                             astap_dir=tmp_path / "nope",
                             survey_pack_dir=tmp_path / "also-nope")
     out = capsys.readouterr().out
-    assert "built UI" in out and "ASTAP" in out and "survey pack" in out
+    assert "built UI" in out and "ASTAP" in out
 
 
 def test_build_survey_pack_needs_manifest(tmp_path):
