@@ -1417,11 +1417,26 @@ def _warn_insecure_session_secret() -> None:
                 "ASTRODECK_SECRET. Logins will not work.", "auth")
         bus.log("error", "=" * 70, "auth")
     elif not (os.environ.get(_session.SECRET_ENV_VAR) or "").strip():
-        # Running on the auto-generated persisted secret. Functional + safe, but
-        # note it so the operator knows a key was minted on their behalf.
-        bus.log("info",
-                "auth: a random session secret was generated and persisted "
-                "(set ASTRODECK_SECRET to manage it yourself).", "auth")
+        # Running on the auto-generated persisted secret. Functional and safe.
+        #
+        # SAY WHICH OF THE TWO THINGS HAPPENED. This used to read "a random
+        # session secret was generated and persisted" unconditionally — past
+        # tense, on every boot and on every POST /api/auth/config, for a secret
+        # that ``ensure_real_secret`` had declined to rewrite because one was
+        # already on disk. It is the shape of log line that manufactures
+        # incidents: four of them in one night log on 2026-08-09, two mid-run,
+        # read as "the signing key keeps changing, that's why we get logged
+        # out". The key had not changed since June.
+        if _session.secret_was_minted():
+            bus.log("info",
+                    "auth: no ASTRODECK_SECRET was set, so a random session "
+                    "secret has been generated and persisted just now (set "
+                    "ASTRODECK_SECRET to manage it yourself).", "auth")
+        else:
+            bus.log("info",
+                    "auth: sessions are signed with the stored auto-generated "
+                    "secret (set ASTRODECK_SECRET to manage it yourself). "
+                    "Nothing was regenerated.", "auth")
 
 
 def _present_token(*, header: str | None, authorization: str | None,
