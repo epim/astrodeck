@@ -70,7 +70,6 @@ import {
 import { Icon, type IconName } from "../icons";
 import { LockedChip, useMediaQuery } from "../ui";
 import { segmentedNextIndex } from "../ui/SegmentedControl";
-import { presetAction } from "../../lib/focusCapture";
 import { nudgeLabel } from "../../lib/stepDial";
 import type { FocusState } from "../../lib/focusVerdict";
 
@@ -555,25 +554,16 @@ export function podSlotStyle(p: {
  * can check the real placement instead of a stub of its own making.
  */
 export function FocusPodArc({
-  actions, exposureS, nextExposure, step, nextStep, looping,
+  actions, step, nextStep,
   radius = POD_CHIP_R, badgeRadius = POD_BADGE_R,
-  onExposure, onStep, slot, onPress, arcRef, onKeyDown, exposureReason = null,
+  onStep, slot, onPress, arcRef, onKeyDown,
 }: {
   actions: PodAction[];
-  exposureS: number | null;
-  nextExposure: number;
   step: number;
   nextStep: number;
-  looping: boolean;
-  /** Why the exposure cannot be changed, or null. Over a RUNNING loop this
-   *  badge does not merely write a number into a box — it restarts the loop —
-   *  so when that restart is refused the badge must be refused with it, or it
-   *  goes on printing an exposure the camera is not using. */
-  exposureReason?: string | null;
   /** Chip and badge radii for this stage, already clamped by `podLayout`. */
   radius?: number;
   badgeRadius?: number;
-  onExposure: (s: number) => void;
   onStep: (v: number) => void;
   /** Absolute placement + fly-in for one item, by arc fraction and radius. */
   slot: (frac: number, radius: number) => CSSProperties;
@@ -625,41 +615,20 @@ export function FocusPodArc({
     </button>
   ));
 
-  // The two cycling badges. Deliberately NOT menus: one target, the current
+  // THE ONE CYCLING BADGE. Deliberately NOT a menu: one target, the current
   // value on its face, and a tap moves to the next — there is nothing to open,
-  // aim into and dismiss with one thumb in the dark. The exposure badge rides at
-  // SHOOT's angle and the step badge sits between − and +, which is the same
-  // minus·value·plus silhouette the rail's thumb row already has, so the two
-  // read as the same control in two places.
-  const exposureBadge = exposureReason ? (
-    // Same locked treatment as a blocked chip (header note 3), and the same
-    // sentence the rail's presets carry — a badge that stayed live over a
-    // refused restart would light up for an exposure the loop is not using.
-    <LockedChip
-      reason={exposureReason}
-      className="btn mono !normal-case justify-center !px-2 min-w-[44px] min-h-[44px]"
-    >
-      <span className="text-[11px]">{exposureS == null ? "—" : `${exposureS}s`}</span>
-    </LockedChip>
-  ) : (
-    <button
-      type="button"
-      role="menuitem"
-      data-pod-badge="exposure"
-      className="btn tap mono !normal-case justify-center px-2"
-      style={badgeBox}
-      // presetAction is the rail's own copy for this tap, and it carries the
-      // thing that is easy to get wrong: while a loop is running a preset
-      // RESTARTS it, because hub.start_loop closed over the exposure it was
-      // handed. A badge that quietly changed a highlight would be a control
-      // that looks applied and is ignored.
-      aria-label={`Exposure ${exposureS == null ? "not set" : `${exposureS} seconds`} — `
-        + presetAction(looping, nextExposure).hint}
-      onClick={() => onExposure(nextExposure)}
-    >
-      {exposureS == null ? "—" : `${exposureS}s`}
-    </button>
-  );
+  // aim into and dismiss with one thumb in the dark. It sits between − and +,
+  // which is the same minus·value·plus silhouette the rail's thumb row has, so
+  // the two read as the same control in two places.
+  //
+  // THERE USED TO BE A SECOND ONE, carrying the exposure (#180). This pod is
+  // the ACTIONS half of the stage and the CameraDial in the opposite corner is
+  // the settings half, and while both existed the two corners showed two
+  // different numbers over one image, both spelled "Ns": the badge held the
+  // exposure the shutter would use, the dial held the sweep's. The step
+  // magnitude stayed because it is not a camera setting at all — it is the size
+  // of the move the two chips either side of it make, and it means nothing
+  // without them.
   const stepBadge = (
     <button
       type="button"
@@ -676,11 +645,11 @@ export function FocusPodArc({
 
   // DOM ORDER IS ARC ORDER, and that is an accessibility requirement rather
   // than tidiness: the arrow keys rove by DOM order (FocusPod.onArcKey), so
-  // emitting five chips and then the badges put the exposure badge — which
-  // rides at SHOOT's angle, in the MIDDLE of the arc — after the last chip, and
-  // ArrowRight from the top of the arc threw focus back down into its middle.
-  // Sorting by fraction is what makes the roving index and the eye agree.
-  // `rank` only breaks the tie at 0.5, where the badge sits inside its chip.
+  // emitting the chips and then the badge put the badge — which rides inside
+  // the arc, between the two nudges — after the last chip, and ArrowRight from
+  // the top of the arc threw focus back down into its middle. Sorting by
+  // fraction is what makes the roving index and the eye agree. `rank` breaks a
+  // tie in favour of the chip, for a badge riding at a chip's own angle.
   const items = [
     ...actions.map((a, i) => ({
       key: a.id,
@@ -689,7 +658,6 @@ export function FocusPodArc({
       rank: 0,
       node: chip(a),
     })),
-    { key: "exposure", frac: 0.5, radius: badgeRadius, rank: 1, node: exposureBadge },
     { key: "step", frac: 0.875, radius: badgeRadius, rank: 1, node: stepBadge },
   ].sort((a, b) => a.frac - b.frac || a.rank - b.rank);
 
@@ -733,22 +701,16 @@ export interface FocusPodProps extends PodActionInputs {
   exposureNoteTone: "info" | "warn" | null;
   /** What the shutter refuses for, if anything — the ring's blocked state. */
   captureBlocked: string | null;
-  /** The exposure the next frame will actually use, or null when the box is
-   *  empty/unparseable (in which case the shutter is blocked anyway and one tap
-   *  of the badge repairs it). */
-  exposureS: number | null;
-  exposurePresets: readonly number[];
   stepValues: readonly number[];
-  /** The rail's own `applyPreset` — which RESTARTS a running loop, because
-   *  hub.start_loop closes over the exposure it was handed. */
-  onExposure: (s: number) => void;
-  /** …and the rail's own reason for refusing that restart, so the badge and the
-   *  five presets two inches away are blocked by one sentence or by neither. */
-  exposureReason?: string | null;
   /** The rail's own `setStep`, so the dial in the panel and the badge here are
    *  one value and cannot drift apart. */
   onStep: (v: number) => void;
 }
+// NOTE: this pod takes NO exposure prop (#180). It is the ACTIONS half of the
+// stage; the camera's settings — exposure included — belong to the CameraDial
+// parked in the opposite corner, which writes the shared `focus` scope. Two
+// radial controls over one image, each showing a different "Ns", is what this
+// removal is for; adding an exposure back here would rebuild it.
 // NOTE: there is deliberately no `onBlocked` toast prop, unlike StepRow's dial.
 // A blocked chip here IS a LockedChip, and LockedChip's tooltip opens on TAP —
 // the reason is already reachable by the finger that pressed it. Firing a toast
@@ -757,7 +719,7 @@ export interface FocusPodProps extends PodActionInputs {
 export default function FocusPod(props: FocusPodProps): JSX.Element {
   const {
     hfr, prevHfr, hfrState, exposureProgress, exposureNote, exposureNoteTone,
-    captureBlocked, exposureS, exposurePresets, stepValues, onExposure, onStep,
+    captureBlocked, stepValues, onStep,
   } = props;
   const [open, setOpen] = useState(false);
   // The bloom is a two-frame affair: the chips mount at the disc centre and are
@@ -861,7 +823,6 @@ export default function FocusPod(props: FocusPodProps): JSX.Element {
     open, hfr: read.value, unmeasured: read.unmeasured, trend, ringLabel: ring.label,
   });
 
-  const nextExposure = nextInCycle(exposurePresets, exposureS);
   const nextStep = nextInCycle(stepValues, props.step);
 
   // Arrow keys walk the arc. `segmentedNextIndex` is the app's one navigation
@@ -948,15 +909,10 @@ export default function FocusPod(props: FocusPodProps): JSX.Element {
         {open && (
           <FocusPodArc
             actions={actions}
-            exposureS={exposureS}
-            nextExposure={nextExposure}
             step={props.step}
             nextStep={nextStep}
-            looping={props.looping}
             radius={layout.radius}
             badgeRadius={layout.badgeRadius}
-            onExposure={onExposure}
-            exposureReason={props.exposureReason ?? null}
             onStep={onStep}
             slot={slot}
             onPress={close}
