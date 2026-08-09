@@ -64,6 +64,16 @@ class FakeTel:
         self.query_error: Exception | None = None
         self.locked_during_park: list[bool] = []
         self._hub = hub
+        # Dropped-link recovery (#209): the hub keeps holding a device whose
+        # transport died, so `connected` can go False on a live object.
+        self.connect_calls = 0
+        self.connect_error: Exception | None = None
+
+    async def connect(self) -> None:
+        self.connect_calls += 1
+        if self.connect_error is not None:
+            raise self.connect_error
+        self.connected = True
 
     async def is_parked(self) -> bool:
         if self.query_error is not None:
@@ -535,3 +545,114 @@ def test_the_off_switch_announces_itself(monkeypatch, bus_lines):
     assert d._task is None, "disabled means no task at all"
     assert _said(bus_lines, "DISABLED"), (
         "a safety net that is off must say so; silence reads as working")
+
+
+# ------------------------------------------- dropped link + log volume (#209/#210)
+#
+# THE OUTAGE. 2026-08-09, from captures/logs/2026-08-08.jsonl: the mount's
+# serial link was abandoned at 02:38:26 and this net began failing at 05:50:48.
+# It then ran 139 consecutive ticks — two hours and eighteen minutes, the Sun
+# climbing from -5.9 deg to +20.1 deg — emitting the same THREE lines every
+# minute and never once attempting the reconnect that fixed it in one call at
+# 08:08. 417 lines, on a 200-entry ring: by the time anybody read the drawer,
+# the line naming the root cause had been pushed out by the retries.
+
+async def test_a_dropped_mount_link_is_reopened_rather_than_retried_forever(
+        cfg, bus_lines):
+    """#209. The action nothing took.
+
+    A telescope OBJECT reporting not-connected is a link that died under us —
+    the hub only holds devices it once opened. Reopening it is the single thing
+    that fixes that state, and it must be tried BEFORE the net gives up for the
+    tick, or the mount tracks into the daylight while the log fills up."""
+    hub = FakeHub()
+    tel = FakeTel(hub=hub)
+    hub.devices["telescope"] = tel
+    tel._hub = hub
+    tel.connected = False                    # the 02:38:26 state
+    ts, alt = _daytime()
+    assert alt > park_threshold_deg(cfg), "precondition: the Sun is really up"
+    assert not tel.parked, "precondition: the mount is tracking, not parked"
+
+    await DawnPark(hub, FakeEngine(), clock=lambda: ts).tick()
+
+    assert tel.connect_calls == 1, "the link must be reopened, not merely retried"
+    assert tel.park_calls == 1 and tel.parked is True, (
+        "and the park must then actually happen — a reconnect that does not "
+        "lead to a park leaves the mount exactly where it was")
+    assert _said(bus_lines, "reopened the mount's link"), bus_lines
+
+
+async def test_a_mount_that_is_simply_switched_off_does_not_park_or_crash(
+        cfg, bus_lines):
+    """The other side of the same branch. A reopen that fails is an ordinary
+    failed attempt: reported once, retried next tick, never fatal."""
+    hub = FakeHub()
+    tel = FakeTel(hub=hub)
+    hub.devices["telescope"] = tel
+    tel.connected = False
+    tel.connect_error = OSError("cannot open COM3: the device is not present")
+    ts, _alt = _daytime()
+
+    await DawnPark(hub, FakeEngine(), clock=lambda: ts).tick()
+
+    assert tel.park_calls == 0, "nothing to park through a link that will not open"
+    assert _said(bus_lines, "DAWN PARK FAILED"), bus_lines
+
+
+async def test_a_failing_net_stays_legible_instead_of_flooding_the_log(
+        cfg, bus_lines):
+    """#210. 139 ticks must not become 417 lines.
+
+    The ring the operator actually reads holds 200 entries. A net that writes
+    three lines a minute erases the evidence of its own root cause inside an
+    hour — which is exactly what happened, and why the 02:38:26 link-abandon
+    line was gone by morning. One line per fault, then a heartbeat."""
+    hub = FakeHub()
+    tel = FakeTel(hub=hub)
+    hub.devices["telescope"] = tel
+    tel._hub = hub
+    tel.park_error = RuntimeError("Gps read failed: link not open")
+    tel.query_error = RuntimeError("Gps read failed: link not open")
+    ts, _alt = _daytime()
+
+    d = DawnPark(hub, FakeEngine(), clock=lambda: ts)
+    for _ in range(dawn_park_mod.FAIL_LOG_EVERY - 1):
+        await d.tick()
+
+    assert tel.park_calls == dawn_park_mod.FAIL_LOG_EVERY - 1, (
+        "precondition: it really did keep TRYING — quiet must mean quiet "
+        "logging, never a net that stopped working")
+    assert len(bus_lines) <= 3, (
+        f"29 failing ticks wrote {len(bus_lines)} lines; the old code wrote "
+        f"87 of them: {bus_lines}")
+
+    # ...and it is not silent forever: the heartbeat carries the count and the
+    # elapsed time, so an operator reading at 08:00 learns it has been failing
+    # since 05:50 rather than seeing one stale line.
+    await d.tick()
+    beats = [m for _l, m, _s in bus_lines if "still failing after" in m]
+    assert len(beats) == 1, f"expected one heartbeat: {bus_lines}"
+    assert f"attempt {dawn_park_mod.FAIL_LOG_EVERY}" in beats[0], beats
+
+
+async def test_a_recovered_net_says_so_and_rearms_the_counter(cfg, bus_lines):
+    """A streak that ends must be announced, or the log's last word on the
+    subject is a failure that is no longer true."""
+    hub = FakeHub()
+    tel = FakeTel(hub=hub)
+    hub.devices["telescope"] = tel
+    tel._hub = hub
+    tel.park_error = RuntimeError("Gps read failed: link not open")
+    ts, _alt = _daytime()
+
+    d = DawnPark(hub, FakeEngine(), clock=lambda: ts)
+    await d.tick()
+    await d.tick()
+    assert d._fail_count == 2, "precondition: a streak is running"
+
+    tel.park_error = None
+    await d.tick()
+
+    assert tel.parked is True
+    assert _said(bus_lines, "recovered after 2 failed attempts"), bus_lines

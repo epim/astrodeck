@@ -54,6 +54,19 @@ MOUNT_QUERY_TIMEOUT_S = 30.0
 #: The floor under the trigger. See :func:`park_threshold_deg`.
 CIVIL_TWILIGHT_DEG = -6.0
 
+#: Consecutive identical failures logged in full before the line starts
+#: coalescing. On 2026-08-09 this net failed 139 times in a row and emitted
+#: THREE lines per attempt — 417 near-identical lines that flushed the 200-entry
+#: live ring, so the drawer an operator actually opens showed two hours of
+#: retry spam and had lost the 02:38:26 line naming the root cause. A failing
+#: safety net has to stay legible, and legible means one line per fault plus a
+#: periodic heartbeat, not one line per tick.
+FAIL_LOG_EVERY = 30
+
+#: Bound on the reconnect attempt below. Same order as the park-state read: a
+#: reopen that takes longer than this is not going to save this tick.
+RECONNECT_TIMEOUT_S = 30.0
+
 #: Operator off-switch (mirrors ``ASTRODECK_NO_AUTOCONNECT``). Setting it is
 #: announced at boot: a disabled safety net that says nothing is indistinguishable
 #: from a working one.
@@ -121,6 +134,15 @@ class DawnPark:
         # once instead of every minute.
         self._held: str | None = None
         self._warned_no_site = False
+        # Consecutive-failure bookkeeping, so a net that is failing says so
+        # once and then keeps a heartbeat instead of shouting every minute.
+        # See _fail and FAIL_LOG_EVERY.
+        self._fail_reason: str | None = None
+        self._fail_count = 0
+        self._fail_since = 0.0
+        # Same latch for the park-state read, which was the second of the three
+        # lines per tick.
+        self._read_warned: str | None = None
 
     # ------------------------------------------------------------- lifecycle
 
@@ -193,6 +215,11 @@ class DawnPark:
                                 f"to {alt:+.1f}°)", "safety")
             self._settled = False
             self._held = None
+            # Silently, not through _clear_failure: last dawn's failure streak
+            # is over because the Sun set, not because anything recovered, and
+            # saying "recovered" here would be a lie a night later.
+            self._fail_reason, self._fail_count = None, 0
+            self._read_warned = None
             return
         if self._settled:
             return
@@ -203,7 +230,7 @@ class DawnPark:
             return
 
         tel = self.hub.devices.get("telescope")
-        if tel is None or not getattr(tel, "connected", False):
+        if tel is None:
             # Nothing connected is not a hazard this can fix, but it IS worth
             # saying: if that mount is powered and tracking, it is doing it
             # where nothing can see it. Info level — a rig that is simply off
@@ -211,9 +238,12 @@ class DawnPark:
             self._hold("no telescope is connected, so if the mount is powered "
                        "and tracking, nothing here can stop it", alt)
             return
+        if not getattr(tel, "connected", False) and not await self._reopen(tel, alt):
+            return
 
         if await self._is_parked(tel):
             self._settled = True
+            self._clear_failure()
             bus.log("info", f"dawn: the Sun has reached {alt:+.1f}° and the "
                             f"mount is already parked", "safety")
             return
@@ -229,9 +259,14 @@ class DawnPark:
             self._hold(held, alt)
             return
 
-        bus.log("info", f"dawn park: the Sun is at {alt:+.1f}° (parking above "
-                        f"{threshold:+.0f}°), no run is in progress and the "
-                        f"mount is unparked — parking it now", "safety")
+        if self._fail_count == 0:
+            # Only on the first attempt of a streak. This line announces an
+            # INTENT, and repeating an intent the previous 138 attempts already
+            # announced is what turned the log into wallpaper.
+            bus.log("info", f"dawn park: the Sun is at {alt:+.1f}° (parking "
+                            f"above {threshold:+.0f}°), no run is in progress "
+                            f"and the mount is unparked — parking it now",
+                    "safety")
         try:
             # The same discipline as every other park path: bump the motion
             # fence so anything that slipped in behind the checks above is
@@ -249,17 +284,13 @@ class DawnPark:
                 await asyncio.wait_for(tel.park(), PARK_TIMEOUT_S)
         except asyncio.TimeoutError:
             # No latch: a park that did not happen must be retried next tick.
-            bus.log("error", f"DAWN PARK FAILED: the mount did not park within "
-                             f"{PARK_TIMEOUT_S:.0f}s — it may still be tracking "
-                             f"toward the Sun. Retrying every "
-                             f"{self._interval_s:.0f}s", "safety")
+            self._fail(f"the mount did not park within {PARK_TIMEOUT_S:.0f}s")
             return
         except Exception as e:      # noqa: BLE001 — a refusal to park is news, not a crash
-            bus.log("error", f"DAWN PARK FAILED: {e} — the mount may still be "
-                             f"tracking toward the Sun. Retrying every "
-                             f"{self._interval_s:.0f}s", "safety")
+            self._fail(str(e))
             return
         self._settled = True
+        self._clear_failure()
         # Logged AFTER the await, so the line means "parked", not "asked to" —
         # the same rule /api/mount/park follows. Warning level ON PURPOSE: the
         # AlertDispatcher routes warning and error to every configured sink, and
@@ -299,6 +330,64 @@ class DawnPark:
         except Exception:       # noqa: BLE001 — bookkeeping must not block a park
             return set()
 
+    async def _reopen(self, tel, alt: float) -> bool:
+        """Try to bring a dropped mount link back. True if the tick may proceed.
+
+        A telescope OBJECT that reports not-connected is a link that died under
+        us, not a rig that was never plugged in — the hub only holds a device it
+        once opened. Reopening it is the single action that fixes that state,
+        and it is the action nothing took on 2026-08-09, when this net retried a
+        dead link 139 times across two hours and eighteen minutes while the one
+        command that would have worked was never sent. A manual reconnect
+        cleared it instantly.
+
+        A failure here is an ordinary failed attempt: it goes through ``_fail``
+        and is retried next tick, so a rig that is simply switched off produces
+        one line and then a half-hourly heartbeat rather than silence OR spam.
+        """
+        try:
+            await asyncio.wait_for(tel.connect(), RECONNECT_TIMEOUT_S)
+        except Exception as e:      # noqa: BLE001 — includes the timeout
+            self._fail(f"the mount's link is down and reopening it failed ({e})")
+            return False
+        bus.log("warning", f"dawn park reopened the mount's link, which had "
+                           f"dropped — continuing with the park at Sun "
+                           f"{alt:+.1f}°", "safety")
+        return True
+
+    def _fail(self, why: str) -> None:
+        """One failed park attempt. Loud once, then a heartbeat.
+
+        Escalation is by REPETITION COUNT, not by severity: the first failure
+        and every FAIL_LOG_EVERY-th after it are logged at error, which is what
+        the AlertDispatcher routes to every configured sink. The ones between
+        are counted and swallowed. A net that has failed for two hours must
+        still be visible in a 200-line ring — and on 2026-08-09 it was not,
+        because it had written 417 lines and pushed everything else out."""
+        if why != self._fail_reason:
+            self._fail_reason = why
+            self._fail_count = 0
+            self._fail_since = self._clock()
+        self._fail_count += 1
+        n = self._fail_count
+        if n != 1 and n % FAIL_LOG_EVERY:
+            return
+        mins = (self._clock() - self._fail_since) / 60.0
+        tail = "" if n == 1 else (f" (attempt {n}, still failing after "
+                                  f"{mins:.0f} min)")
+        bus.log("error", f"DAWN PARK FAILED: {why} — the mount may still be "
+                         f"tracking toward the Sun. Retrying every "
+                         f"{self._interval_s:.0f}s{tail}", "safety")
+
+    def _clear_failure(self) -> None:
+        """Forget a failure streak once something worked."""
+        if self._fail_reason is not None and self._fail_count > 1:
+            bus.log("info", f"dawn park recovered after {self._fail_count} "
+                            f"failed attempts", "safety")
+        self._fail_reason = None
+        self._fail_count = 0
+        self._read_warned = None
+
     async def _is_parked(self, tel) -> bool:
         """Is the mount parked? A query failure answers NO, deliberately.
 
@@ -311,9 +400,15 @@ class DawnPark:
             return bool(await asyncio.wait_for(tel.is_parked(),
                                                MOUNT_QUERY_TIMEOUT_S))
         except Exception as e:  # noqa: BLE001 — includes the timeout
-            bus.log("warning", f"dawn park could not read the mount's park "
-                               f"state ({e}) — parking anyway, since parking a "
-                               f"parked mount does nothing", "safety")
+            # Latched per reason, like _hold: this was the second of the three
+            # lines this net wrote every single minute of the 2026-08-09
+            # outage, and repeating it added nothing after the first.
+            if self._read_warned != str(e):
+                self._read_warned = str(e)
+                bus.log("warning", f"dawn park could not read the mount's park "
+                                   f"state ({e}) — parking anyway, since "
+                                   f"parking a parked mount does nothing",
+                        "safety")
             return False
 
     def _hold(self, reason: str, alt: float) -> None:
