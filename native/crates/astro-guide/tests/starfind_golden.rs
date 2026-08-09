@@ -12,7 +12,9 @@
 // the 3x3-smoothed peak, 2-sigma-clipped annulus background, and mass-weighted
 // centroid recover the injected sub-pixel center to <0.05 px (dossier §17:
 // "unit test against synthetic Gaussians + hot pixels").
-use astro_guide::starfind::{star_find, was_found, FindParams, FindResult};
+use astro_guide::starfind::{
+    star_find, was_found, FindParams, FindResult, CENTROID_DISK_RADIUS_PX,
+};
 
 /// Build a WxH u16 frame: flat background `bg`, one Gaussian star at (cx,cy)
 /// with peak amplitude `amp` and sigma `sg` (background-additive).
@@ -91,9 +93,10 @@ fn saturated_star_still_found() {
     assert!(matches!(r.result, FindResult::StarSaturated));
     assert!(was_found(r.result));
     // Reviewer check: the HFD must genuinely land inside (min_hfd, max_hfd)
-    // = (1.5, 20.0) so control reaches the saturation branch
-    // (star.cpp:412-446) rather than exiting at an HFD gate.
-    assert!(r.hfd > 1.5 && r.hfd < 20.0, "hfd={}", r.hfd);
+    // so control reaches the saturation branch (star.cpp:412-446) rather
+    // than exiting at an HFD gate. Bounds read from `p` itself (not
+    // hardcoded) so this stays true if the defaults ever move.
+    assert!(r.hfd > p.min_hfd && r.hfd < p.max_hfd, "hfd={}", r.hfd);
 }
 
 #[test]
@@ -222,7 +225,8 @@ fn default_flat_top_heuristic_saturated() {
         px[oy * w + ox] = 59998;
     }
     let gf = astro_star::GrayFrame::new(&px, w, h);
-    let r = star_find(&gf, 20.0, 20.0, &FindParams::default());
+    let p = FindParams::default();
+    let r = star_find(&gf, 20.0, 20.0, &p);
     assert!(
         matches!(r.result, FindResult::StarSaturated),
         "result={:?}",
@@ -230,6 +234,102 @@ fn default_flat_top_heuristic_saturated() {
     );
     assert!(was_found(r.result));
     assert_eq!(r.peak_val, 60000);
-    // Control reached step 10: HFD passed both gates on the way.
-    assert!(r.hfd > 1.5 && r.hfd < 20.0, "hfd={}", r.hfd);
+    // Control reached step 10: HFD passed both gates on the way. Bounds
+    // read from `p` itself (not hardcoded) so this stays true if the
+    // defaults ever move.
+    assert!(r.hfd > p.min_hfd && r.hfd < p.max_hfd, "hfd={}", r.hfd);
+}
+
+#[test]
+fn oversized_star_rejected_high_hfd() {
+    // The `max_hfd` gate at the SHIPPED default actually firing. Task #191:
+    // `FindParams::default().max_hfd` used to be 20.0, a value HFD can
+    // never reach given this aperture (see the doc comment on
+    // `FindParams::max_hfd`), so `StarHiHfd` was dead code from any real
+    // input. This is a genuine, physically-plausible single-peaked star
+    // (one broad Gaussian, not a pathological multi-blob fixture) wide
+    // enough to still clear the mass/SNR gates comfortably (mass in the
+    // millions, SNR > 600) while its HFD lands past the aperture-derived
+    // default -- proving the gate rejects a real oversized/diffuse
+    // detection instead of never firing at all.
+    let (w, h) = (81usize, 81usize);
+    let px = gaussian_frame(w, h, 500, 40.0, 40.0, 20000.0, 3.2);
+    let gf = astro_star::GrayFrame::new(&px, w, h);
+    let p = FindParams::default();
+    let r = star_find(&gf, 40.0, 40.0, &p);
+    assert!(
+        matches!(r.result, FindResult::StarHiHfd),
+        "result={:?} hfd={} mass={} snr={}",
+        r.result,
+        r.hfd,
+        r.mass,
+        r.snr
+    );
+    assert!(!was_found(r.result));
+    assert!(r.hfd > p.max_hfd, "hfd={} max_hfd={}", r.hfd, p.max_hfd);
+    // Sanity: this genuinely reached the HFD gate on its own merits, not
+    // because mass or SNR were already marginal.
+    assert!(r.mass > 1_000_000.0, "mass={}", r.mass);
+    assert!(r.snr > 100.0, "snr={}", r.snr);
+}
+
+/// Detector for this bug's shape, not just this instance of it (task #191).
+/// A "guide-quality threshold" here means any `FindParams` field that gates
+/// acceptance on a value this module's own measurement produces (`min_hfd`,
+/// `max_hfd` today). Such a threshold is dead the moment it sits outside the
+/// range its own measurement can reach -- exactly what shipped for
+/// `max_hfd` (20.0, while HFD's provable ceiling given the
+/// `CENTROID_DISK_RADIUS_PX`-radius aperture is `2 * CENTROID_DISK_RADIUS_PX`
+/// = 14, itself only approached in the limit by a physically-degenerate
+/// fixture no real star produces). Whoever adds the next such threshold
+/// should add its case here alongside `max_hfd`'s.
+#[test]
+fn guide_quality_thresholds_stay_inside_their_measurement_range() {
+    let p = FindParams::default();
+    let hfd_ceiling = 2.0 * CENTROID_DISK_RADIUS_PX as f64;
+
+    // 1. Provable-bound check: a threshold at or above the ceiling its own
+    //    measurement can produce can never fire, by construction.
+    assert!(
+        p.max_hfd < hfd_ceiling,
+        "max_hfd={} is at/above HFD's provable ceiling ({} = \
+         2 * CENTROID_DISK_RADIUS_PX); a gate set there can never fire",
+        p.max_hfd,
+        hfd_ceiling
+    );
+    assert!(
+        p.min_hfd >= 0.0 && p.min_hfd < hfd_ceiling,
+        "min_hfd={} is outside HFD's reachable range [0, {})",
+        p.min_hfd,
+        hfd_ceiling
+    );
+    assert!(
+        p.min_hfd < p.max_hfd,
+        "min_hfd={} >= max_hfd={}; the acceptance window is empty",
+        p.min_hfd,
+        p.max_hfd
+    );
+
+    // 2. Reachability, not just an upper bound: the ceiling in (1) is only
+    //    approached in the limit by a fixture no real star produces, so
+    //    "under the ceiling" alone would not have caught the original bug
+    //    at a smaller but still-unreachable value. Confirm the shipped
+    //    default rejects a genuine oversized-but-measurable star via
+    //    StarHiHfd specifically, not StarLowMass/StarLowSnr arriving first
+    //    (which would mean max_hfd is still functionally unreachable).
+    let (w, h) = (81usize, 81usize);
+    let px = gaussian_frame(w, h, 500, 40.0, 40.0, 20000.0, 3.2);
+    let gf = astro_star::GrayFrame::new(&px, w, h);
+    let r = star_find(&gf, 40.0, 40.0, &p);
+    assert!(
+        matches!(r.result, FindResult::StarHiHfd),
+        "expected StarHiHfd on an oversized-but-measurable star (mass={}, \
+         snr={}) at the shipped default max_hfd={}; got {:?} (hfd={}) -- \
+         the gate cannot fire at this default",
+        r.mass,
+        r.snr,
+        p.max_hfd,
+        r.result,
+        r.hfd
+    );
 }

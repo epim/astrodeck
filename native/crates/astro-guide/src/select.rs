@@ -598,7 +598,7 @@ pub fn auto_find(frame: &astro_star::GrayFrame, p: &SelectParams) -> Vec<Candida
     // knobs (frozen interface); only search_region is threaded through to
     // `Star::Find` here, matching upstream's searchRegion argument while
     // using `FindParams::default()` for the rest (min_hfd 1.5, max_hfd
-    // 20.0, max_adu 0, pedestal 0, bpp 16).
+    // 7.0 = CENTROID_DISK_RADIUS_PX, max_adu 0, pedestal 0, bpp 16).
     let find_params = FindParams {
         search_region: p.search_region,
         ..FindParams::default()
