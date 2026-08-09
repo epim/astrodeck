@@ -383,6 +383,45 @@ class _WcsJob:
     dec: float | None
     fov_deg: float | None
     star_count: int | None
+    # Which preview these pixels were published as, and how big that array was.
+    # Carried so a solve that lands SECONDS after the picture is on screen can
+    # patch that exact frame rather than the one now showing (#182): a WCS from
+    # the previous frame drawn on this one is the green-while-wrong class.
+    preview_id: int | None = None
+    data_w: int = 0
+    data_h: int = 0
+
+
+@dataclass
+class _FieldSolve:
+    """The most recent TRUSTED plate solve, and what it says the rig is looking
+    at (#182).
+
+    This is the ONLY source an identification may come from. The mount's own
+    report is not one: this rig's AM5 has no brake and has been found 50 degrees
+    from where it claimed, so ``status.mount.ra_hours`` is a hint for a human,
+    never evidence for a file. ``hub._field_block`` will offer a pointing-derived
+    guess, labelled ``source="pointing"`` end to end, and nothing derived that
+    way is ever adopted into a header.
+
+    ``mount_ra``/``mount_dec`` are what the mount REPORTED at the moment this
+    solve was adopted -- not to be trusted as a position, but perfectly good as a
+    change detector: when the mount's report has since moved by more than half a
+    field, something slewed and this solve is describing a patch of sky the
+    camera is no longer on. That covers the slew/park/home routes in the API
+    layer without those routes having to know this feature exists.
+    """
+
+    wcs: Any
+    solved_at: float
+    preview_id: int | None
+    data_w: int
+    data_h: int
+    mount_ra: float | None
+    mount_dec: float | None
+    #: The computed answer -- identification, placed objects, notes -- cached so
+    #: a cone query runs once per solve rather than once per published preview.
+    frame: dict
 
 
 class Hub:
@@ -423,6 +462,20 @@ class Hub:
         # log-once latch for the drop-oldest notice; cleared when the backlog
         # drains, so a later backlog episode is reported again (not spammed).
         self._wcs_drop_logged = False
+        # --- what the rig is LOOKING AT (#182) ---------------------------------
+        # The most recent trusted solve, or None. Set by solve_and_sync (which
+        # every goto already pays for) and by the per-frame WCS worker; cleared
+        # by invalidate_field_solve and by the pointing-moved check below. None
+        # is the normal state on a rig that has not solved since it last slewed,
+        # and the UI says exactly that rather than "unknown".
+        self.field_solve: _FieldSolve | None = None
+        # (ra_hours, dec_deg, unix) -- the mount's own last report, recorded from
+        # reads other code was already paying for (the capture header, the solve
+        # hint) so identification never adds a device round-trip to the hot path.
+        self._last_pointing: tuple[float, float, float] | None = None
+        # (rounded ra, rounded dec) -> the pointing-derived guess, so a 60-frame
+        # loop on one target runs one cone query rather than sixty.
+        self._pointing_field_cache: tuple[tuple[float, float], dict | None] | None = None
         # --- safety monitor (Batch 4b) -----------------------------------------
         # own-cadence poller task + the latest CACHED SafetyReading. safety_reading()
         # always returns this cache (NEVER an inline is_safe()), so the 2s status
@@ -1065,6 +1118,11 @@ class Hub:
         self.stop_wcs_worker()              # per-frame-wcs R1: never outlive the hub
         self.live_stacker = None            # NOV-1: release the accumulator on teardown
         self.bahtinov = None                # NOV-12: disarm the focus aid on teardown
+        # #182: a reconnect can bring back a DIFFERENT camera, a different mount,
+        # or the same mount somewhere else entirely. Nothing solved before the
+        # rig went away describes the rig that comes back.
+        self.invalidate_field_solve("the rig disconnected")
+        self._last_pointing = None
         # Warm ramp: FINALIZE (cooler off), do not merely cancel. The devices are
         # about to be disconnected a few lines below, so a cancelled ramp would
         # leave the camera holding whatever mid-ramp setpoint it happened to be
@@ -2500,6 +2558,10 @@ class Hub:
                         ra, dec = await self.from_mount_frame(tel, ra, dec)
                 except Exception:
                     pass
+            # The identification's staleness check and its pointing fallback both
+            # ride THIS read — the one the header was already paying for — so
+            # naming the field never adds a device round-trip to the capture path.
+            self._note_pointing(ra, dec)
             # Gather header telemetry (best-effort; never fails the save) and the
             # OTA name for TELESCOP (omitted when blank). Wrapping the whole meta
             # build keeps spec §9 (a header write never fails a capture) structural,
@@ -2526,11 +2588,17 @@ class Hub:
                            if frame_type.upper() in ("DARK", "BIAS") else None)
             dark_cards = await asyncio.to_thread(
                 self._judge_dark_frame, frame, frame_type, filt, opaque_slot)
+            # WHAT THE SKY SAYS THIS IS (#182). ``object_name`` is what reaches
+            # the OBJECT card; ``local_save_path`` above was already built from
+            # the operator's string alone and is NOT recomputed here — that
+            # ordering is the invariant, not a coincidence.
+            object_name, id_cards = self._object_cards(target, frame_type)
             await asyncio.to_thread(
-                save_fits, frame, local_save_path, target=target, filter_name=filt,
+                save_fits, frame, local_save_path, target=object_name,
+                filter_name=filt,
                 frame_type=frame_type, ra_hours=ra, dec_deg=dec,
                 telescope=telescope_name, instrument=cam.name, meta=meta,
-                extra_cards=dark_cards)
+                extra_cards=(dark_cards or []) + id_cards)
             # carry the path on the frame so _publish_preview reports a correct
             # saved_path/saved_local in the very first event (no stale re-publish).
             frame.saved_path = str(local_save_path)
@@ -2571,7 +2639,13 @@ class Hub:
             # not frame.stars — the latter is only ever set by a backend that
             # measured it (NINA), so the min-stars gate would be a silent no-op
             # on exactly the local frames it exists to filter.
-            self._enqueue_wcs_stamp(local_save_path, ra, dec, info.get("stars"))
+            self._enqueue_wcs_stamp(
+                local_save_path, ra, dec, info.get("stars"),
+                # so the solution can be published back onto THIS frame's pixels
+                # when it lands, seconds after the picture is already on screen.
+                preview_id=info.get("id"),
+                data_w=int(info.get("data_width") or 0),
+                data_h=int(info.get("data_height") or 0))
         return info
 
     # ------------------------------------------------- per-frame WCS stamping
@@ -2579,7 +2653,9 @@ class Hub:
     #  shipped with PRO-2 F-B. What lives here is the OFF-the-hot-path plumbing.)
 
     def _enqueue_wcs_stamp(self, path: Path, ra: float | None, dec: float | None,
-                           star_count: int | None) -> None:
+                           star_count: int | None, *,
+                           preview_id: int | None = None,
+                           data_w: int = 0, data_h: int = 0) -> None:
         """Queue one saved light for background solve+stamp. Never blocks, never
         raises (the capture must survive any failure here), and never grows
         without bound.
@@ -2610,7 +2686,8 @@ class Hub:
             except Exception:                   # pragma: no cover - defensive
                 fov_hint = None
             q.put_nowait(_WcsJob(path=path, ra=ra, dec=dec, fov_deg=fov_hint,
-                                 star_count=star_count))
+                                 star_count=star_count, preview_id=preview_id,
+                                 data_w=data_w, data_h=data_h))
             if dropped and not self._wcs_drop_logged:
                 self._wcs_drop_logged = True
                 bus.log("warning",
@@ -2691,6 +2768,14 @@ class Hub:
         if res.success and res.wcs is not None:
             await asyncio.to_thread(write_wcs, job.path, res.wcs)
             bus.log("info", f"stamped WCS on {job.path.name}", "solve")
+            # ...and it stops being landlocked. The solution used to be written
+            # into the file and dropped on the floor: nothing published it,
+            # nothing stored it, and the browser had never seen one. This is the
+            # publish (#182). Markers only reach the frame this WCS was solved
+            # FROM, which is why the job carries the preview id.
+            if job.data_w and job.data_h:
+                await self.note_field_solve(res.wcs, preview_id=job.preview_id,
+                                            data_w=job.data_w, data_h=job.data_h)
 
     def stop_wcs_worker(self) -> None:
         """Cancel the background WCS worker and drop any pending backlog. Called
@@ -2701,6 +2786,301 @@ class Hub:
         self._wcs_task = None
         self._wcs_queue = None
         self._wcs_drop_logged = False
+
+    # ------------------------------------------- what the rig is looking at (#182)
+    #
+    # THE LINE THIS WHOLE SECTION EXISTS TO HOLD: an identification derived here
+    # never becomes a path component, a folder, or a key of the persisted
+    # per-target frame counter. ``_capture_path`` still takes the operator's (or
+    # the plan's) string and nothing else. A derived name can change between
+    # frame 3 and frame 4 -- the solve drifts onto a neighbour, the mount is
+    # nudged -- and the counter is keyed on the sanitized string, so letting one
+    # through would split a night across two folders with two overlapping
+    # ``0001...`` runs and report nothing. What a derived name MAY reach is the
+    # screen, the log, and provenance cards in the header (OBJCTID/OBJIDSRC/
+    # OBJIDSEP), plus OBJECT itself under the narrow rule in ``capture``.
+
+    #: How far the mount's OWN report may drift from what it said when a solve
+    #: was adopted, as a fraction of the field, before that solve is treated as
+    #: describing sky the camera has left. Half a frame: past that, the object
+    #: that named the field may not even be in the picture any more.
+    _FIELD_STALE_FOV_FRAC = 0.5
+    #: Floor for the same test, in degrees, for a rig with no usable optics
+    #: (``have_optics`` false) or a very narrow field. Comfortably above dither
+    #: and centering nudges, far below any real slew.
+    _FIELD_STALE_MIN_DEG = 0.25
+    #: How long the mount's last report may be reused as a pointing hint. It is
+    #: recorded from reads other paths already made, so it can be arbitrarily
+    #: old; past this it is not evidence of anything.
+    _POINTING_MAX_AGE_S = 300.0
+
+    def _note_pointing(self, ra_hours: float | None, dec_deg: float | None) -> None:
+        """Record the mount's own report, from a read somebody else already paid
+        for. Never triggers device I/O of its own."""
+        if ra_hours is None or dec_deg is None:
+            return
+        self._last_pointing = (float(ra_hours), float(dec_deg), time.time())
+
+    def invalidate_field_solve(self, reason: str) -> None:
+        """Drop the current identification because the sky under the camera may
+        have changed.
+
+        Call this from anything that moves the mount or redefines what its
+        coordinates mean -- slew, park, unpark, find home, sync, a reconnect. A
+        solve older than the last slew is stale BY DEFINITION, and an
+        identification that outlives its slew is the most confidently wrong thing
+        this feature could produce.
+
+        Deliberately public and deliberately cheap (no I/O, no raise) so callers
+        outside this module -- the mount routes in ``api/app.py``, the sequence
+        engine's slew step -- can hold the invariant without owning any of it.
+        """
+        if self.field_solve is None:
+            return
+        self.field_solve = None
+        self._pointing_field_cache = None
+        bus.log("info", f"field identification cleared: {reason}", "solve")
+        bus.publish("preview_field", preview_id=None, field=None, reason=reason)
+
+    def _field_stale_threshold_deg(self) -> float:
+        try:
+            opt = self.effective_optics()
+            fov = max(opt.get("fov_w_deg") or 0.0, opt.get("fov_h_deg") or 0.0)
+        except Exception:                       # pragma: no cover - defensive
+            fov = 0.0
+        return max(self._FIELD_STALE_MIN_DEG, fov * self._FIELD_STALE_FOV_FRAC)
+
+    def _current_field_solve(self) -> "_FieldSolve | None":
+        """The current solve, or None once the mount's own report says the rig
+        has moved off it.
+
+        This is the catch-all that does not require every motion path in the
+        codebase to remember to call ``invalidate_field_solve``: the API's slew
+        and park routes change what the mount reports, and comparing that report
+        against the one recorded at solve time notices. It is NOT a substitute
+        for the explicit invalidation -- a mount that loses steps keeps
+        reporting the old position, which is exactly the AM5 failure this rig
+        has already had -- so both exist and the explicit one is the primary.
+        """
+        fs = self.field_solve
+        if fs is None:
+            return None
+        if fs.mount_ra is None or self._last_pointing is None:
+            return fs
+        from .catalog.coords import angular_sep_deg
+
+        ra, dec, _at = self._last_pointing
+        moved = angular_sep_deg(fs.mount_ra, fs.mount_dec, ra, dec)
+        if moved > self._field_stale_threshold_deg():
+            self.invalidate_field_solve(
+                f"the mount has moved {moved:.2f}° since the last plate solve")
+            return None
+        return fs
+
+    async def note_field_solve(self, wcs, *, preview_id: int | None,
+                               data_w: int, data_h: int) -> dict | None:
+        """Adopt a plate solve as THE answer to "what is the rig looking at",
+        and publish it.
+
+        Returns the wire block (see ``_field_block``) or None when the solution
+        carries no scale / the catalog work fails -- both of which leave the
+        previous state alone rather than replacing it with a worse one. Never
+        raises into a caller: a solve that cannot be turned into a name is still
+        a perfectly good solve for everything else it was run for.
+        """
+        try:
+            from .catalog.region import objects_in_frame
+
+            frame = await asyncio.to_thread(
+                objects_in_frame, wcs, int(data_w), int(data_h))
+        except Exception as e:  # noqa: BLE001 - identification is never load-bearing
+            bus.log("warning",
+                    f"could not identify the solved field ({e}); the solve "
+                    "itself is unaffected", "solve")
+            return None
+        ra = dec = None
+        if self._last_pointing is not None:
+            ra, dec, _at = self._last_pointing
+        self.field_solve = _FieldSolve(
+            wcs=wcs, solved_at=time.time(), preview_id=preview_id,
+            data_w=int(data_w), data_h=int(data_h),
+            mount_ra=ra, mount_dec=dec, frame=frame)
+        self._pointing_field_cache = None
+        ident = frame.get("identification")
+        if ident:
+            bus.log("info",
+                    f"field identified as {ident['id']} "
+                    f"({ident['sep_arcmin']:.1f}' off centre"
+                    + ("" if ident["confident"] else
+                       f", not clearly {ident['id']} rather than {ident['runner_up']}")
+                    + ")", "solve")
+        block = self._field_block(preview_id)
+        # A LATE SOLVE PATCHES, IT DOES NOT RE-PUBLISH. _solve_and_stamp finishes
+        # seconds after the picture is already on screen; re-publishing the whole
+        # preview to carry a name would push the JPEG again over field WiFi for a
+        # 200-byte change.
+        bus.publish("preview_field", preview_id=preview_id, field=block)
+        return block
+
+    def _pointing_field(self) -> dict | None:
+        """A PROVISIONAL identification from the mount's own report -- offered,
+        never recorded.
+
+        Worth showing: it genuinely helps a human decide whether the scope is
+        roughly where they meant it to be, and on a rig with per-frame solving
+        off (the default) it is the only answer available. Worth distrusting:
+        this mount has been found 50 degrees from where it claimed. So it carries
+        ``source: "pointing"`` all the way to the pixel that renders it, it is
+        worded as what the MOUNT SAYS rather than what the sky IS, and
+        ``capture`` will not adopt it into any header card.
+
+        No markers come with it. Placing an object on the picture needs a plate,
+        and reported pointing is not one.
+        """
+        if self._last_pointing is None:
+            return None
+        ra, dec, at = self._last_pointing
+        if time.time() - at > self._POINTING_MAX_AGE_S:
+            return None
+        key = (round(ra, 3), round(dec, 3))
+        if self._pointing_field_cache and self._pointing_field_cache[0] == key:
+            return self._pointing_field_cache[1]
+        try:
+            opt = self.effective_optics()
+            fov = max(opt.get("fov_w_deg") or 0.0, opt.get("fov_h_deg") or 0.0)
+            diag = opt.get("fov_diag_deg") or 0.0
+        except Exception:                       # pragma: no cover - defensive
+            fov = diag = 0.0
+        if not fov:
+            # No optics configured: there is no field to ask about, so there is
+            # nothing honest to say. Silence beats a guessed field width.
+            self._pointing_field_cache = (key, None)
+            return None
+        from .catalog.region import identify_field, scored_region_rows
+
+        rows, _notes, _tr = scored_region_rows(
+            ra, dec, max(diag, fov) / 2.0, fov_deg=fov, limit=60,
+            kinds=("dso", "star"), site_derived=False)
+        ident = identify_field(rows, fov)
+        block = None if ident is None else {
+            "source": "pointing",
+            "solved_at": at,
+            "id": ident,
+            "objects": [],
+        }
+        self._pointing_field_cache = (key, block)
+        return block
+
+    def _field_block(self, preview_id: int | None) -> dict | None:
+        """The ``PreviewInfo.field`` block for one published preview, or None.
+
+        TWO FACTS WITH TWO DIFFERENT LIFETIMES, in one block on purpose:
+
+        * ``id`` names THE SKY THE RIG IS ON. It survives past the frame that was
+          solved, because that is what makes a goto's own solve pay for the
+          identification of every sub that follows it with per-frame solving
+          still off. It carries ``solved_at`` so the UI can age it, and it is
+          dropped the moment anything moves.
+        * ``wcs`` and ``objects`` describe THIS FRAME'S PIXELS, and are present
+          ONLY when this preview IS the frame that was solved. A WCS from the
+          previous frame drawn over this one would be markers that look right and
+          are not, which is the failure class this codebase pays for most often.
+        """
+        fs = self._current_field_solve()
+        if fs is None:
+            return self._pointing_field()
+        frame = fs.frame
+        block: dict[str, Any] = {
+            "source": "solve",
+            "solved_at": fs.solved_at,
+            "id": frame.get("identification"),
+            "center": frame.get("center"),
+            "fov_w_deg": frame.get("fov_w_deg"),
+            "fov_h_deg": frame.get("fov_h_deg"),
+            "catalog_degraded": frame.get("catalog_degraded"),
+            "objects": [],
+        }
+        notes = list(frame.get("notes") or [])
+        # F4, and free: the one condition that cost this rig a night. When the
+        # mount's report and the plate disagree by more than a field, SAY SO --
+        # the annotations must not silently agree with a pointing readout the
+        # solve contradicts.
+        if self._last_pointing is not None and frame.get("center"):
+            from .catalog.coords import angular_sep_deg
+
+            ra, dec, _at = self._last_pointing
+            c = frame["center"]
+            off = angular_sep_deg(ra, dec, c["ra_hours"], c["dec_deg"])
+            if off > self._field_stale_threshold_deg():
+                block["pointing_disagrees_deg"] = round(off, 3)
+        if preview_id is not None and fs.preview_id == preview_id:
+            w = fs.wcs
+            block["wcs"] = {
+                "crval1": float(w.crval1), "crval2": float(w.crval2),
+                "crpix1": float(w.crpix1), "crpix2": float(w.crpix2),
+                "cd11": w.cd11, "cd12": w.cd12, "cd21": w.cd21, "cd22": w.cd22,
+                "cdelt1": w.cdelt1, "cdelt2": w.cdelt2, "crota2": w.crota2,
+            }
+            block["objects"] = frame.get("objects") or []
+            block["data_width"] = fs.data_w
+            block["data_height"] = fs.data_h
+        if notes:
+            block["notes"] = notes
+        return block
+
+    def _object_cards(self, target: str, frame_type: str
+                      ) -> tuple[str, list[tuple[str, object, str]]]:
+        """``(what OBJECT should say, the provenance cards)`` for one frame.
+
+        THE ADOPTION RULE, in one place so it can be read in one breath:
+
+          * The operator's string ALWAYS wins OBJECT. It is never overwritten and
+            never merged with. If they typed "Veil east" over a field that solves
+            as NGC 6992, the file says "Veil east" and ``OBJCTID`` says NGC 6992
+            — the disagreement is recorded, not resolved.
+          * A derived identification may fill OBJECT only when all three hold:
+            the operator left it EMPTY, the identification is ``confident``
+            (§ ``region.identify_field``), and it came from a PLATE SOLVE. Today
+            an empty name writes no OBJECT card at all, so this replaces nothing
+            — it fills a hole that every stacker downstream currently reads as
+            "unknown target".
+          * ``OBJCTID``/``OBJIDSRC``/``OBJIDSEP`` are written whenever there is an
+            identification, adopted or not, so the provenance is IN THE FILE and
+            not only in a log. Omitted entirely when there is none: an absent card
+            beats a wrong one, the same rule ``_solve_and_stamp`` already applies
+            to the WCS itself.
+          * A DARK, BIAS or FLAT gets no identification of any kind. There is no
+            sky in it to have solved, and the last field's name stamped on a dark
+            is a lie the calibration library would believe.
+        """
+        typed = (target or "").strip()
+        if frame_type.upper() != "LIGHT":
+            return target, []
+        ident = self.field_identification()
+        if not ident:
+            return target, []
+        cards: list[tuple[str, object, str]] = [
+            ("OBJCTID", ident["id"], "Field identified as (derived, informational)"),
+            ("OBJIDSRC", "solve", "How OBJCTID was derived"),
+            ("OBJIDSEP", round(float(ident["sep_arcmin"]), 2),
+             "OBJCTID offset from field centre (arcmin)"),
+        ]
+        if not typed and ident["confident"]:
+            return ident["id"], cards
+        return target, cards
+
+    def field_identification(self) -> dict | None:
+        """The identification a FITS header may record, or None.
+
+        Solve-derived only. ``_pointing_field`` is deliberately not consulted:
+        a header card is permanent metadata that every stacker downstream reads,
+        and this mount's report is not evidence.
+        """
+        fs = self._current_field_solve()
+        if fs is None:
+            return None
+        ident = fs.frame.get("identification")
+        return dict(ident) if ident else None
 
     def _preview_source(self) -> str:
         """The PreviewSource label ("sim"|"alpaca"|"nina") for the event."""
@@ -2755,6 +3135,13 @@ class Hub:
             "saved_local": self._is_local_save(saved_path),
             "ts": time.time(),
         }
+        # What the rig is looking at (#182). Absent when nothing has solved since
+        # the last slew and the mount has said nothing recent either — an absence
+        # the UI reads as "not identified yet" and explains, rather than a block
+        # saying "unknown". Cached on the solve, so this costs a dict copy.
+        field = self._field_block(pid)
+        if field is not None:
+            info["field"] = field
 
         if is_nina:
             # display = NINA's rendered bytes verbatim; histogram is of the
@@ -4070,7 +4457,7 @@ class Hub:
             async with self.exposure_guard("plate solve"):
                 frame = await cam.expose(exposure_s, 200, 30, binning=2)
             self.last_frame = frame
-            await self._publish_preview(frame)
+            solve_preview = await self._publish_preview(frame)
             # Save the captured frame to a temp FITS for the local solver. Works for
             # NINA too: NinaCamera populates ``frame.data`` (a decoded grayscale copy)
             # which is enough for ASTAP star detection, and save_fits writes the
@@ -4106,6 +4493,22 @@ class Hub:
         await tel.sync(sync_ra, sync_dec)
         bus.log("info", f"solved & synced: RA {result.ra_hours:.4f}h "
                         f"Dec {result.dec_deg:+.3f}° (J2000)", "solve")
+        # THE SOLVE THAT WAS ALREADY BEING PAID FOR (#182). Every goto centres by
+        # calling this, so adopting its WCS here identifies the field for free on
+        # a rig with per-frame solving still off — which is the default and, on a
+        # Pi, the right default. Per-frame solving then buys only one extra thing:
+        # markers that stay accurate as the mount drifts.
+        #
+        # AFTER the sync, deliberately. ``_current_field_solve`` invalidates on a
+        # change in the mount's report, and a sync can move that report by degrees
+        # (measured: 4 degrees, after a restart) — recording the pointing before
+        # it would make this solve stale the instant it was adopted.
+        self._note_pointing(result.ra_hours, result.dec_deg)
+        if result.wcs is not None and isinstance(solve_preview, dict):
+            await self.note_field_solve(
+                result.wcs, preview_id=solve_preview.get("id"),
+                data_w=int(solve_preview.get("data_width") or 0),
+                data_h=int(solve_preview.get("data_height") or 0))
         return {"ra_hours": result.ra_hours, "dec_deg": result.dec_deg,
                 "solver": solver.name, "pixel_scale": result.pixel_scale_arcsec}
 
@@ -4373,6 +4776,12 @@ class Hub:
         # ``_check_solar`` too — a goto that is about to be refused for pointing
         # near the Sun has no business killing the user's Live View first.
         await self.yield_camera_for("centering (goto & plate solve)")
+        # The old field's name must not outlive the slew that leaves it (#182).
+        # Dropped BEFORE the mount moves, not after it lands: between the two
+        # there is a window in which the app would be naming a patch of sky the
+        # camera is actively swinging away from, and that is the one moment the
+        # user is most likely to be looking at the label.
+        self.invalidate_field_solve("the mount is slewing to a new target")
         async with self._motion_lock:
             if not self._motion_committed_clean(epoch):
                 bus.log("warning", "goto abandoned: aborted before motion", "mount")

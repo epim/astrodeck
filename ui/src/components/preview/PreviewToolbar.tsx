@@ -152,7 +152,10 @@ function Toggle({
 // The annotation set, as data. Availability carries its REASON, because a
 // greyed row that will not say why is the defect house rule §11.8 names.
 function annotationRows(
-  opts: { starsAvailable: boolean; clipAvailable: boolean; tilt: boolean; bahtinov: boolean },
+  opts: {
+    starsAvailable: boolean; clipAvailable: boolean; tilt: boolean;
+    bahtinov: boolean; objects: boolean;
+  },
 ): PickerOption[] {
   const rows: PickerOption[] = [
     {
@@ -177,6 +180,15 @@ function annotationRows(
     rows.push({
       id: "bahtinov", label: "Spikes",
       hint: "the fitted Bahtinov spike lines and their crossing",
+    });
+  }
+  // #182. Like Spikes, the row only EXISTS when the frame carries the data — a
+  // permanent greyed "Objects" row on every rig that has never plate-solved a
+  // light would read as a broken feature rather than an absent measurement.
+  if (opts.objects) {
+    rows.push({
+      id: "objects", label: "Objects",
+      hint: "catalogued objects marked where this frame's plate solve puts them",
     });
   }
   return rows;
@@ -272,6 +284,7 @@ export function PreviewToolbar({
     clipAvailable,
     tilt: !!preview?.tilt,
     bahtinov: !!preview?.bahtinov?.geom,
+    objects: !!preview?.field?.objects?.length,
   });
   const annotationSelected = annotationsOn(overlays, annotationOptions);
   const annotationSummary =

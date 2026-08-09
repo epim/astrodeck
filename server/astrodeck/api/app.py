@@ -3926,6 +3926,13 @@ def create_app() -> FastAPI:
                 if not hub._motion_committed_clean(epoch):
                     bus.log("warning", "goto abandoned: aborted before slew", "mount")
                     return
+                # Drop the field identification BEFORE the tube moves. The
+                # pointing-delta catch-all in hub._current_field_solve would
+                # normally notice, but it compares the mount's REPORTED
+                # position -- and a mount that loses steps keeps reporting the
+                # old one, which is this rig's actual AM5 failure mode. So the
+                # explicit call is the primary and the delta is the backstop.
+                hub.invalidate_field_solve("the mount is slewing to a new target")
                 await tel.slew(body.ra_hours, body.dec_deg)
             bus.publish("mount", action="slew_complete")
         return _spawn("goto", plain_goto())
@@ -4068,6 +4075,7 @@ def create_app() -> FastAPI:
         async def _park():
             tel = hub.require("telescope")
             async with hub._motion_lock:
+                hub.invalidate_field_solve("the mount is parking")
                 await tel.park()
             # PARK IS THE ONE EVENT AN UNATTENDED NIGHT MUST BE ABLE TO PROVE.
             #
@@ -4110,6 +4118,7 @@ def create_app() -> FastAPI:
         async def _home():
             t = hub.require("telescope")
             async with hub._motion_lock:
+                hub.invalidate_field_solve("the mount is homing")
                 await t.find_home()
             bus.log("info", "mount homed", "mount")   # see park, above
         return _spawn("goto", _home(), replace=True)
@@ -4127,6 +4136,7 @@ def create_app() -> FastAPI:
         _refuse_if_lane_blocked("goto")
         try:
             tel = hub.require("telescope")
+            hub.invalidate_field_solve("the mount was unparked")
             await tel.unpark()
             # The counterpart to the park line: without it the log shows a rig
             # that parked and then, with no entry between, is somehow moving
@@ -4181,6 +4191,7 @@ def create_app() -> FastAPI:
             async with hub._motion_lock:
                 if (tel is not None and getattr(tel, "connected", False)
                         and getattr(dome, "requires_park_before_close", True)):
+                    hub.invalidate_field_solve("the mount is parking for the roof")
                     await tel.park()
                 from ..sequence.roof import close_observatory
                 return await close_observatory(dome, tel, log=bus.log)

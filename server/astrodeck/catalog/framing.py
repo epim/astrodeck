@@ -39,6 +39,13 @@ log = logging.getLogger(__name__)
 # never ships NaN to the mount on the common "open on target, hit Send" path.
 RHO_EPS = 1e-12
 
+# h->0 guard for the FORWARD projection: h is the cosine of the angular distance
+# from the tangent point, so it reaches zero 90 degrees away and goes negative
+# behind it. Clamping to a tiny positive value yields a huge but FINITE offset
+# instead of an Infinity/NaN, which every caller then clips off-frame cleanly.
+# Same constant and same reasoning as ``ui/src/lib/framing.ts``.
+H_EPS = 1e-12
+
 
 # ----------------------------------------------------------------- request model
 
@@ -88,6 +95,49 @@ def _wrap_ra_hours(ra_hours: float) -> float:
     if r >= 24.0:
         r -= 24.0
     return r
+
+
+def project(
+    ra_hours: float, dec_deg: float, ra0_hours: float, dec0_deg: float,
+) -> tuple[float, float]:
+    """Forward gnomonic (TAN): sky ``(ra_hours, dec_deg)`` -> standard coords
+    ``(xi, eta)`` in DEGREES about the tangent point ``(ra0, dec0)``. Byte-
+    identical to ``project`` in ``ui/src/lib/framing.ts`` — the same expression,
+    the same guard, the same order of operations — and pinned to it by the golden
+    vectors shared between ``tests/test_catalog_frame_id.py`` and
+    ``ui/src/lib/__tests__/framing.test.ts``.
+
+    THE INVERSE OF ``deproject`` ABOVE, and the reason this module now carries
+    both: placing a catalogued object on a solved camera frame needs sky ->
+    plane, and until now the only forward gnomonic in the tree was in TypeScript.
+    A second one written locally inside the frame-identification code would be
+    exactly the "two projections that drift apart" defect this package's header
+    comments keep naming, so it lives here, beside its inverse, in the module
+    that already declares itself the client mirror.
+
+    ``xi`` increases with RA (East) and ``eta`` with declination (North), which
+    is the FITS intermediate-world-coordinate convention — so the pair can be fed
+    straight through an inverted CD matrix to get pixels.
+    """
+    ra = math.radians(ra_hours * 15.0)
+    dec = math.radians(dec_deg)
+    ra0 = math.radians(ra0_hours * 15.0)
+    dec0 = math.radians(dec0_deg)
+    dra = ra - ra0
+
+    sin_dec = math.sin(dec)
+    cos_dec = math.cos(dec)
+    sin_dec0 = math.sin(dec0)
+    cos_dec0 = math.cos(dec0)
+    cos_dra = math.cos(dra)
+
+    # cosine of the angular distance from the tangent point
+    h = sin_dec * sin_dec0 + cos_dec * cos_dec0 * cos_dra
+    safe_h = H_EPS if abs(h) < H_EPS else h
+
+    xi = (cos_dec * math.sin(dra)) / safe_h
+    eta = (sin_dec * cos_dec0 - cos_dec * sin_dec0 * cos_dra) / safe_h
+    return math.degrees(xi), math.degrees(eta)
 
 
 def deproject(

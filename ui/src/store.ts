@@ -16,6 +16,7 @@ import type {
   NinaHealth,
   OverlayToggles,
   PolarState,
+  PreviewField,
   PreviewInfo,
   Principal,
   RigStatus,
@@ -369,6 +370,10 @@ function defaultOverlays(): OverlayToggles {
     reticle: false,
     centerMark: true, // subtle framing aid on by default
     tilt: false, // PRO-13 tilt/aberration heatmap
+    // #182: catalogued objects marked on the frame. On by default — it only ever
+    // draws when the server has published objects placed on this exact frame, so
+    // "on" is free until there is something true to show.
+    objects: true,
     // ON by default: the Bahtinov spike overlay only draws while the aid is armed
     // and the fit is valid, so the novice gets the visual for free; this flag is
     // the expert's opt-out (polish grab-bag Decision B).
@@ -750,6 +755,18 @@ interface AppState {
   // integration/SNR estimators. All-zero (inert) until the user fills it in.
   photometry: PhotometryProfile;
 
+  // --- the operator's target name (#182) ---
+  // WHAT THE HUMAN TYPED, and only that. Lifted out of CaptureView's local
+  // useState because `App.tsx` renders <ViewBoundary key={view}/>, so every tab
+  // switch remounted the view and wiped the name back to "" — a name the
+  // operator had typed, silently gone because they looked at the Atlas.
+  //
+  // NOT the derived identification. That lives on `preview.field` and the two
+  // are never merged: this string names the FOLDER and the frame counter, and a
+  // machine-derived name reaching either would split one night across two
+  // directories with two overlapping 0001… runs.
+  captureTarget: string;
+
   // --- dimmer (Batch-3 F-dimmer; design-system §7.5) ---
   brightDay: number; // remembered day brightness (0.5..1), persisted
   brightNight: number; // remembered night brightness (0.5..1), persisted
@@ -859,6 +876,8 @@ interface AppState {
 
   // --- actions: photometry profile ---
   setPhotometry: (p: Partial<PhotometryProfile>) => void; // merges + persists to localStorage
+  /** #182 — the operator's typed target name. Survives a tab switch. */
+  setCaptureTarget: (v: string) => void;
   /** Patch one purpose scope: optimistic locally, PUT to the server, and roll
    *  BACK if the server refuses. The rollback is not defensive tidiness — the
    *  guider refuses a binning change mid-session with a 409, and a dial left
@@ -1001,6 +1020,11 @@ export const useStore = create<AppState>((set, get) => ({
 
   // --- photometry profile ---
   photometry: loadPhotometry(),
+
+  // #182 — deliberately NOT persisted. A target name is a fact about tonight;
+  // reloading in the morning and finding last night's name pre-filled over a
+  // different patch of sky is how frames get filed under the wrong object.
+  captureTarget: "",
 
   // --- dimmer (F-dimmer) ---
   brightDay: readBright(BRIGHT_DAY_KEY, 1),
@@ -1521,6 +1545,8 @@ export const useStore = create<AppState>((set, get) => ({
     set({ photometry: next });
   },
 
+  setCaptureTarget: (v) => set({ captureTarget: v }),
+
   // ------------------------------------------- frame settings, by PURPOSE (#176)
   // OPTIMISTIC, then the server's answer, then a rollback if it refused.
   //
@@ -1729,6 +1755,33 @@ export const useStore = create<AppState>((set, get) => ({
         // ring + stamp the liveness timestamp the Monitor's LIVE/STALL uses.
         set({ preview: p, lastFrameAtMs: Date.now() });
         get().pushPreview(p);
+        break;
+      }
+      // #182 — A LATE SOLVE PATCHES; IT DOES NOT RE-PUBLISH. The background WCS
+      // worker finishes seconds after the picture is already on screen, and
+      // re-sending the whole `preview` event to carry a name would push the JPEG
+      // again over field WiFi for a 200-byte change. `preview_id: null` is the
+      // invalidation (the mount moved) and clears the block from every frame.
+      case "preview_field": {
+        const d = ev.data as unknown as {
+          preview_id: number | null; field: PreviewField | null;
+        };
+        set((s) => {
+          const patch = (p: PreviewInfo): PreviewInfo => {
+            if (d.preview_id === null) {
+              if (!p.field) return p;
+              const { field: _drop, ...rest } = p;
+              return rest as PreviewInfo;
+            }
+            if (p.id !== d.preview_id) return p;
+            return d.field ? { ...p, field: d.field } : p;
+          };
+          const preview = s.preview ? patch(s.preview) : null;
+          const previews = s.previews.map(patch);
+          const changed =
+            preview !== s.preview || previews.some((p, i) => p !== s.previews[i]);
+          return changed ? { preview, previews } : {};
+        });
         break;
       }
       case "focus": {

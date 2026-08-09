@@ -394,7 +394,65 @@ export interface PreviewInfo {
   tilt?: TiltInfo; // PRO-13: present only when enough zones are populated
   livestack?: LiveStackInfo; // NOV-1: present only while Live View is armed
   bahtinov?: BahtinovInfo; // NOV-12: present only while the Bahtinov aid is armed
+  field?: PreviewField; // #182: what the rig is looking at. Absent = nothing knows.
   ts: number; // server epoch seconds (filmstrip age)
+}
+
+// ---------------------------------------------------------------- #182 field id
+// "What is the rig looking at" — published from the server's own plate solve.
+// ABSENT is a real and common state (nothing has solved since the last slew) and
+// the UI must say WHICH thing is missing rather than printing "unknown".
+
+/** The object that NAMES the field. Informational: it is never the plan's target
+ *  name, never a folder, never the key of the frame counter. See
+ *  `hub._object_cards` for the one narrow case where it may fill FITS OBJECT. */
+export interface FieldIdentification {
+  id: string; // "M 27"
+  label: string; // "Dumbbell Nebula", else == id
+  kind: "dso" | "star" | "solar_system";
+  type: string; // "Planetary Nebula"
+  describe: string; // one composed sentence — never prose from a model
+  sep_arcmin: number; // how far off the field centre it sits
+  /** The gate on everything that WRITES. False means two objects in this frame
+   *  are comparable and the app is not going to pick one for you. */
+  confident: boolean;
+  runner_up: string | null; // named, not just counted
+}
+
+/** One catalogued object placed on THIS frame's pixels. */
+export interface FieldObject extends FieldIdentification {
+  x: number; // frame.data pixel space (column), 0-based
+  y: number; // row
+  size_px: number; // angular size through this plate; 0 for a point source
+  inside: boolean; // its centre is within the frame rectangle
+  mag: number | null;
+  size_arcmin: number;
+  constellation: string | null;
+  alias: string | null;
+  sep_deg?: number;
+}
+
+export interface PreviewField {
+  /** `solve` = a plate solve, the only source anything may be recorded from.
+   *  `pointing` = the MOUNT'S OWN CLAIM, offered to a human and never written:
+   *  this rig's AM5 has no brake and has been found 50° from where it claimed. */
+  source: "solve" | "pointing";
+  solved_at: number; // unix seconds — the UI ages it
+  id: FieldIdentification | null; // null = nothing catalogued names this field
+  center?: { ra_hours: number; dec_deg: number };
+  fov_w_deg?: number;
+  fov_h_deg?: number;
+  catalog_degraded?: boolean;
+  /** Present ONLY when this preview IS the frame that was solved. A WCS from the
+   *  previous frame drawn on this one is markers that look right and are not. */
+  wcs?: Record<string, number | null>;
+  objects: FieldObject[];
+  data_width?: number;
+  data_height?: number;
+  /** Set when the mount's reported position and the plate disagree by more than
+   *  a field. This is the condition that cost this rig a night. */
+  pointing_disagrees_deg?: number;
+  notes?: string[];
 }
 
 export interface Viewport {
@@ -420,6 +478,10 @@ export interface OverlayToggles {
   reticle: boolean; // default false (full reticle)
   centerMark: boolean; // default TRUE (subtle framing aid)
   tilt: boolean; // default false — tilt/aberration heatmap (PRO-13)
+  // #182 catalogued-object markers on the frame. Default TRUE, and like
+  // `bahtinov` that costs a novice nothing: the row only exists, and the layer
+  // only draws, when the server sent objects placed on THIS frame's pixels.
+  objects: boolean;
   // Bahtinov spike overlay: default TRUE. It only ever draws while the aid is
   // armed AND the fit is valid, so "on" costs a novice nothing — this flag is
   // purely the expert's opt-out for a clean canvas.

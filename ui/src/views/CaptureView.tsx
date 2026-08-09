@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import {
   useStore, useStatus, usePolar, useLivePreviewId, useSequence, useLastLight,
-  usePhotometry, usePreview, useEgainLearn, useFrameDraft,
+  usePhotometry, usePreview, useEgainLearn, useFrameDraft, useConfig,
 } from "../store";
 import { LivePreview } from "../components/preview/LivePreview";
 import CameraDial from "../components/ui/CameraDial";
@@ -28,6 +28,8 @@ import { confirmDialog } from "../components/ConfirmDialog";
 import ReadOnlyBadge from "../components/ReadOnlyBadge";
 import { Icon } from "../components/icons";
 import { FilterNamesModal } from "../components/capture/FilterNamesModal";
+import { TargetField } from "../components/capture/TargetField";
+import { captureFilterDialCategory } from "../components/capture/captureFilterDial";
 import { filterMotion, type FilterCommand } from "../lib/filterSlots";
 import { warmReadout } from "../lib/cooling";
 import { useBusyLanes } from "../lib/useBusy";
@@ -145,6 +147,11 @@ export default function CaptureView() {
   const noteLightFrame = useStore((s) => s.noteLightFrame);
   const lastLight = useLastLight();
   const canCapture = useCanControlCapture(); // viewer => preview visible, controls read-only
+  // #182: `solve_saved_lights` is what decides WHICH "not identified yet" the
+  // target field explains — "nothing has solved since the slew" or "per-frame
+  // solving is switched off", which have different fixes.
+  const config = useConfig();
+  const setView = useStore((s) => s.setView);
 
   // --- NOV-4 photometry profile + Suggest settings (photometry/SNR design §3 Task 4) ---
   const photometryProfile = usePhotometry();
@@ -189,7 +196,13 @@ export default function CaptureView() {
   // expert case (framing/test frames you don't want to keep) is one tap away
   // and is now the thing that's explained, rather than the other way round.
   const [save, setSave] = useState(true);
-  const [target, setTarget] = useState("");
+  // #182 — the operator's typed name, IN THE STORE. It used to be
+  // `useState("")` here, and `App.tsx` renders <ViewBoundary key={view}/>, so
+  // every tab switch remounted this view and silently wiped a name the operator
+  // had typed. The derived identification is a DIFFERENT value that lives on
+  // `preview.field`; the two are never merged (see TargetField's header).
+  const target = useStore((s) => s.captureTarget);
+  const setTarget = useStore((s) => s.setCaptureTarget);
   // The cooler set-point box. It used to be a hardcoded "-10" that never looked
   // at the camera: on a rig already holding -20 the panel read "target -20.0"
   // beside a box saying -10, and Set — which reads as "apply what is shown" —
@@ -273,22 +286,35 @@ export default function CaptureView() {
     const w = status?.filterwheel;
     return typeof w?.position === "number" ? w.names?.[w.position] ?? null : null;
   })();
+  // Capture's own FILT ring (#181/#179) — a COMMAND that moves the wheel now,
+  // and the one filter control in the app that offers the blackout slots. Both
+  // rules, and why they are exceptions rather than oversights, live in
+  // components/capture/captureFilterDial.ts beside their tests.
+  //
+  // The Filter Wheel panel below is NOT removed: the operator has accepted the
+  // duplication for now, and the panel additionally carries the slot-name editor
+  // the dial has no room for.
+  const captureFilterCategory = captureFilterDialCategory(
+    status?.filterwheel, (slot) => moveFilterTo(slot));
+
   const captureDial = cameraDialCategories({
     values: {
       exposure_s: Number(exposure) || 2, gain: Number(gain) || 0,
       binning: Number(binning) || 1, offset: Number(offset) || 0,
     },
     maxBin: cam?.max_bin ?? 4,
-    // Capture has no FILT ring: on this screen a filter pick is a COMMAND that
-    // moves the wheel now (POST /api/filterwheel/position, below), not a pin
-    // for a later frame. Passing the wheel's position anyway so the required
-    // prop is answered honestly rather than with a placeholder.
+    // No `filters`/`onFilter` here: the shared builder DROPS blackout slots, on
+    // purpose and for a good reason (a focus sweep through a carrier with no
+    // glass hangs). Capture is the one screen where parking on the blackout slot
+    // is a deliberate workflow — it is how you shoot darks with a wheel — so its
+    // FILT ring is built below instead, from the full slot list, with the
+    // blackout slots NAMED as such.
     currentFilter: fwCurrentName,
     onExposure: (v) => setCapture({ exposure_s: v }),
     onGain: (v) => setCapture({ gain: v }),
     onBinning: (v) => setCapture({ binning: v }),
     onOffset: (v) => setCapture({ offset: v }),
-  });
+  }).concat(captureFilterCategory ? [captureFilterCategory] : []);
 
   const cooler = cam?.cooler; // CoolerInfo | undefined (older status / no cooler)
   // Warm-down ramp (2026-08-04). Warming now takes ~10 minutes instead of being
@@ -467,6 +493,27 @@ export default function CaptureView() {
     } catch (e) {
       showToast("error", (e as Error).message);
     }
+  };
+
+  /** Move the wheel to `slot`, and hold the request so BOTH controls that can
+   *  issue it — the dial's FILT ring and the Filter Wheel panel — narrate the
+   *  same move. Two copies of this would be two `filterCmd` writers disagreeing
+   *  about which slot is in flight; there is one, and they share it. */
+  const moveFilterTo = (slot: number) => {
+    const w = status?.filterwheel;
+    if (!w) return;
+    setFilterCmd({ slot, startedAt: Date.now(), from: w.position });
+    setFilterNow(Date.now());
+    act(async () => {
+      try {
+        await api.post("/api/filterwheel/position", { position: slot });
+      } catch (e) {
+        // The command never reached the wheel, so there is no move to narrate —
+        // leaving it would pulse "→ L" over a request the server refused.
+        setFilterCmd(null);
+        throw e;
+      }
+    });
   };
 
   // What the server knows about the guide preview right now:
@@ -1116,12 +1163,19 @@ export default function CaptureView() {
           </div>
           {save && (
             <div className="mt-2">
-              <Field label="Target name"
-                hint="Names the folder and the files on disk. Leave it blank and the frames still save, just without a target name.">
-                <input className="field" placeholder="M42" value={target}
-                  readOnly={!canCapture} aria-readonly={!canCapture || undefined}
-                  onChange={(e) => setTarget(e.target.value)} />
-              </Field>
+              {/* #182 — was a bare text box that was the app's ONLY way of ever
+                  knowing what it was pointed at. Now an override over a value
+                  the sky proposes; the three states live in lib/fieldIdentity. */}
+              <TargetField
+                value={target}
+                onChange={setTarget}
+                field={livePreview?.field}
+                perFrameSolving={!!config?.solve_saved_lights}
+                frameType={frameType}
+                readOnly={!canCapture}
+                readOnlyReason={readOnlyReason}
+                onOpenSolveSettings={() => setView("settings")}
+              />
             </div>
           )}
 
@@ -1478,24 +1532,7 @@ export default function CaptureView() {
               disabled={!!readOnlyReason}
               disabledReason={readOnlyReason}
               onBlocked={(r) => showToast("warning", r)}
-              onPick={(id) => {
-                const slot = Number(id);
-                setFilterCmd({
-                  slot, startedAt: Date.now(), from: status.filterwheel!.position,
-                });
-                setFilterNow(Date.now());
-                act(async () => {
-                  try {
-                    await api.post("/api/filterwheel/position", { position: slot });
-                  } catch (e) {
-                    // The command never reached the wheel, so there is no move
-                    // to narrate — leaving it would pulse "→ L" over a request
-                    // the server refused outright.
-                    setFilterCmd(null);
-                    throw e;
-                  }
-                });
-              }}
+              onPick={(id) => moveFilterTo(Number(id))}
             />
             {/* prefers-reduced-motion kills .blink, so the pulse alone is not
                 allowed to be the only cue: the summary above reads "→ L" while

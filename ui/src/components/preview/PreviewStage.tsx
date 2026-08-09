@@ -30,6 +30,7 @@ import { ScaleBar } from "./ScaleBar";
 import { StarOverlay } from "./StarOverlay";
 import { ClipMaskLayer, type ClipCropPixels } from "./ClipMaskLayer";
 import { TiltOverlay } from "./TiltOverlay";
+import { FieldOverlay } from "./FieldOverlay";
 import { BahtinovOverlay } from "./BahtinovAid";
 import { bahtinovAid } from "../../lib/bahtinov";
 import { SnrChip } from "./SnrChip";
@@ -639,6 +640,21 @@ export function PreviewStage(props: Props) {
           {overlays.tilt && tiltAvailable && (
             <TiltOverlay tilt={preview.tilt!} dispW={dispW} dispH={dispH} />
           )}
+          {/* #182 — catalogued objects, from THIS frame's own plate solve.
+              Drawn UNDER the star rings on purpose: the stars are the measured
+              truth about this exposure and must never be hidden beneath a
+              catalogue outline. `field.objects` is non-empty only when the
+              server matched this preview's id to the frame it solved. */}
+          {overlays.objects !== false && preview.field?.objects?.length ? (
+            <FieldOverlay
+              objects={preview.field.objects}
+              dispW={dispW}
+              dispH={dispH}
+              dataW={dataW}
+              dataH={dataH}
+              scale={viewport.scale}
+            />
+          ) : null}
           {overlays.stars && starsAvailable && (
             <g style={{ pointerEvents: "auto" }}>
               <StarOverlay
