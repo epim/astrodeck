@@ -10,11 +10,12 @@ for focusing and star counts; not a photometry tool.
 
 Two size measurements live here and they are NOT interchangeable:
 
-* ``detect_stars`` measures each star in a fixed ``box`` px cutout. Cheap,
+* ``detect_stars`` measures each star in a fixed ``HFR_BOX_PX`` cutout. Cheap,
   per-star, and correct while the star fits — the overlay, the star count, the
   cloud detector and the preview HFR readout all want that. Its HFR SATURATES
-  around 0.77 * box/2 and it is not a focus metric off-focus; see
-  HFR_BOX_CEILING_FRACTION for why growing the box does not rescue it.
+  around 0.77 * HFR_BOX_PX/2 and it is not a focus metric off-focus; see
+  HFR_BOX_CEILING_FRACTION for why growing the box does not rescue it, and
+  HFR_BOX_PX_CEILING for what the arithmetic can produce at all.
 * ``star_size`` / ``focus_size`` measure ONE number for the frame, by finding
   sources on a pyramid of downsampled copies and measuring each on its own
   azimuthally-median radial profile — an aperture set by the SOURCE, and
@@ -78,10 +79,43 @@ MIN_NEIGHBOUR_FLUX_RATIO = 0.75
 #: stars. Being in sigma, it needs no per-rig recalibration.
 MIN_APERTURE_SNR = 8.0
 
+#: The cutout ``detect_stars`` measures each star in. A MODULE CONSTANT, not a
+#: parameter: it was a caller-settable ``box=`` argument that no caller in the
+#: tree ever set, and the one thing moving it visibly did was move a rejection
+#: threshold (``hfr > box // 2``) that could not fire — see HFR_BOX_PX_CEILING.
+#: The comment below already records that growing it was tried and is wrong, so
+#: what it offered was the appearance of a tuning dial over a decision this
+#: module has made.
+HFR_BOX_PX = 15
+
+#: WHAT THE MEASUREMENT CAN ARITHMETICALLY PRODUCE, derived from the geometry
+#: rather than from a threshold somebody picked (#192; the guide crate's twin is
+#: 131d446).
+#:
+#: ``hfr`` is Σ(r·cut)/Σ(cut) — the flux-weighted MEAN distance from the
+#: flux-weighted centroid — evaluated over a square cutout of side
+#: L = HFR_BOX_PX - 1 = 14 px. The centroid is mass-weighted, so it lies in the
+#: convex hull of the support, i.e. inside that square; the mean distance from a
+#: point inside a square to mass inside the same square is maximised by putting
+#: half the mass in each of two OPPOSITE CORNERS, which puts the centroid at the
+#: centre and every unit of mass at half the diagonal. So
+#:
+#:     sup(hfr) = L / sqrt(2) = 9.90 px
+#:
+#: and, exactly as in the guide crate, it is approached only by a degenerate
+#: two-point-mass configuration no stellar profile resembles.
+HFR_BOX_PX_CEILING = (HFR_BOX_PX - 1) / math.sqrt(2)
+
 #: What ``detect_stars``' HFR can and cannot say, so that no caller mistakes it
-#: for a focus metric off-focus. Inside a box of half-width h the flux-weighted
-#: mean radius cannot exceed ~0.77h — that is what a box of pure background
-#: reads — so the default box=15 saturates near 5 px, and it does so long
+#: for a focus metric off-focus. A flat cutout of half-width h — pure
+#: background, the most spread-out thing that can still pass the "peak is at the
+#: centre" test — reads (sqrt2 + ln(1+sqrt2))/3 = 0.765h, and a real star reads
+#: less, so the measurement SATURATES near 0.77h rather than being bounded
+#: there: the arithmetic bound is HFR_BOX_PX_CEILING, nearly twice as far away,
+#: and real detections do creep past 0.77h (measured maximum over the whole
+#: fixture sweep: 0.789h, because ``local_bg`` is the border MEDIAN and the
+#: clip at zero leaves the corners — the largest radii — systematically
+#: positive). So the default box=15 saturates near 5 px, and it does so long
 #: before that. Measured here on Gaussians of known width, box=15:
 #:
 #:     sigma  1.6 -> HFR 2.00   (true 2.00)
@@ -122,7 +156,8 @@ def _ecc_theta(ixx: float, iyy: float, ixy: float) -> tuple[float, float]:
 
 
 def detect_stars(data: np.ndarray, k_sigma: float = 5.0,
-                 max_stars: int = DEFAULT_MAX_STARS, box: int = 15) -> list[Star]:
+                 max_stars: int = DEFAULT_MAX_STARS) -> list[Star]:
+    box = HFR_BOX_PX
     img = data.astype(np.float64)
     # Robust background: median + MAD
     bg = float(np.median(img))
@@ -200,13 +235,29 @@ def detect_stars(data: np.ndarray, k_sigma: float = 5.0,
         cy = float((yy * cut).sum() / total)
         r = np.hypot(xx - cx, yy - cy)
         hfr = float((r * cut).sum() / total)
-        # `hfr > half` looks like the silent sample cut that would explain the
-        # off-focus collapse, and it is not: measured over the whole 2026-07-31
-        # fixture sweep it rejects 0 of 647 detections, because a 15 px box
-        # CANNOT produce an HFR above ~5.4 in the first place (see
-        # HFR_BOX_CEILING_FRACTION). Kept as-is; the ceiling is the defect and
-        # star_size is where it is fixed.
-        if hfr <= 0.05 or hfr > half:
+        # THERE IS NO UPPER GATE HERE ANY MORE, and that is the fix rather than
+        # an omission (#192). It used to read `hfr > half` — reject anything
+        # bigger than the cutout's half-width, 7.0 px — and it had never
+        # rejected a detection. Two independent reasons, and the second is why
+        # it was deleted instead of being re-derived downward:
+        #
+        #   * IT SAT ABOVE EVERYTHING REACHABLE. Over the real focus sweep
+        #     (4900..14900, plus the star-field and overcast frames) 204
+        #     detections span 3.52..5.52 px. The gate was above all of it.
+        #   * NO VALUE BELOW IT SEPARATES ANYTHING EITHER. A near-focus frame
+        #     produces 3.52..4.99 and a frame 1000 steps off focus produces
+        #     4.26..5.52 — the two populations OVERLAP across 4.26..4.99,
+        #     because this measurement saturates (HFR_BOX_CEILING_FRACTION)
+        #     long before the star stops growing. Any threshold that rejected a
+        #     bloated star would reject sharp ones from the same frame. "Too
+        #     big to be a star" is not a question a saturating measurement can
+        #     answer, so the honest thing is not to pretend to ask it; the
+        #     question belongs to `star_size`, whose aperture is set by the
+        #     source.
+        #
+        # The floor stays: `total` can be dominated by one pixel, and an HFR of
+        # ~0 is a division artefact rather than an infinitely sharp star.
+        if hfr <= 0.05:
             continue
         # Second moments on the same background-subtracted cutout → real
         # eccentricity + major-axis PA (~5 cheap reductions, arrays already

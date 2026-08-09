@@ -2339,11 +2339,24 @@ def create_app() -> FastAPI:
         (url/token/chat_id/kind) changed vs. the stored copy, so a re-pointed
         channel must be re-tested before its "verified" badge returns (C1-16).
         A brand-new id keeps whatever ``verified`` it arrived with (False by the
-        model default)."""
+        model default).
+
+        AN OMITTED KEY IS NOT A FALSE. ``AlertSink.verified`` is ``bool = False``,
+        so pydantic fills the default and a client that never mentioned the field
+        is indistinguishable, downstream, from one that asked to clear it — the
+        badge went out on a PATCH that only meant to rename the sink. The real
+        client echoes the flag (AlertsPanel spreads the stored sink), which is
+        why this was never the reported bug and is still wrong: ``verified`` is
+        SERVER-OWNED state, earned by a delivery test, and the only two things
+        entitled to change it are that test and the identity check below.
+        ``model_fields_set`` is what tells the two apart, and it is the same
+        "empty means unchanged" rule the token already gets."""
         existing = {s.id: s for s in config_store.cfg().alerts}
         out: list[AlertSink] = []
         for sink in incoming:
             old = existing.get(sink.id)
+            if old is not None and "verified" not in sink.model_fields_set:
+                sink = sink.model_copy(update={"verified": old.verified})
             # an empty (redacted) token on update means "unchanged" — never blank
             # a stored secret just because the client echoed back the blanked
             # token. Restore it BEFORE the identity-change check so an empty token
@@ -5148,15 +5161,39 @@ def create_app() -> FastAPI:
         hub._busy.pop("polar", None)
         return {"ok": True}
 
+    #: Pause/Resume with no session behind them. ``PolarSession.pause`` returns
+    #: silently in that case, and it must keep doing so — publishing a pause
+    #: state with no driver is what stranded the UI (#19). But a route that
+    #: swallows the same call and answers 200 {"ok": true} is claiming an action
+    #: happened, and every REST client (the UI's own included) reads that as
+    #: "the mount is stopping". The refusal belongs at the door.
+    #:
+    #: SAFE FOR THE UI AS IT STANDS: both buttons are already
+    #: `disabled={!canMount || !running || busy}` in PolarView.tsx, so this can
+    #: only fire when the client's view of `running` is staler than the server's
+    #: — and PolarView routes every failure through `run()`, which turns an
+    #: ApiError into an error toast. Nothing throws uncaught, and nothing else
+    #: in ui/src posts these two paths. STOP is deliberately NOT given the same
+    #: treatment: it is a never-disabled HonestButton whose whole job is to be
+    #: pressable when the user is unsure, and it already says "No alignment is
+    #: running — nothing to stop" for itself.
+    def _polar_live_or_409(action: str) -> None:
+        if not hub.polar.running:
+            raise _lane_409(
+                f"No polar alignment is running — nothing to {action}.",
+                code="not_running", lane="polar")
+
     @app.post("/api/polar/pause", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
     @declare(CAP_CONTROL_MOUNT)
     async def polar_pause():
+        _polar_live_or_409("pause")
         await hub.polar.pause()
         return {"ok": True}
 
     @app.post("/api/polar/resume", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
     @declare(CAP_CONTROL_MOUNT)
     async def polar_resume():
+        _polar_live_or_409("resume")
         await hub.polar.resume()
         return {"ok": True}
 
@@ -5178,9 +5215,10 @@ def create_app() -> FastAPI:
         Sun withheld by the sun-avoidance gate (a query for "sun" still returns
         M63, the Sunflower Galaxy, so an explanation that waited for an empty
         result set never appeared at all), a body whose ephemeris failed this
-        second, a body deliberately not carried. Anything not sent here the
-        browser has to guess, and its guess — "Planets aren't supported yet" —
-        is the failure this whole search change exists to end.
+        second, a body deliberately not carried, the MOON withheld from a caller
+        without ``view.site_derived``. Anything not sent here the browser has to
+        guess, and its guess — "Planets aren't supported yet" — is the failure
+        this whole search change exists to end.
         """
         from ..catalog import altaz
         # OFF the event loop. search() now evaluates astropy ephemerides inline:
@@ -5190,7 +5228,17 @@ def create_app() -> FastAPI:
         # loop it would stall the 2s status poll and the relay behind it — half a
         # second of frozen telemetry for one keystroke. Same offload the hub
         # already uses for detect_stars and measure_blob.
-        found = await asyncio.to_thread(search, q)
+        #
+        # THE MOON IS WITHHELD without view.site_derived, and it is withheld
+        # INSIDE search() rather than filtered out of `found.rows` here. Its
+        # topocentric RA/Dec moves ~1 degree with the observer (and 0.55" between
+        # two sites 1.1 km apart), so the row IS the site — as are its
+        # distance_km and size_arcmin, which is why no field-name filter can do
+        # this job. The Atlas marker layer has gated the same body on the same
+        # capability since it shipped (catalog/region.py _SITE_DERIVED_BODIES);
+        # this is that gate, on the higher-precision half of the same oracle.
+        found = await asyncio.to_thread(
+            search, q, 25, None, principal.has(CAP_VIEW_SITE_DERIVED))
         # alt/az ONLY for a holder of view.site_derived. Each row is
         # f(site, target), and the caller chooses the target — so a search box
         # is a coordinate oracle with as many samples as the caller cares to
@@ -5609,12 +5657,20 @@ def create_app() -> FastAPI:
     # ConfigPatchBody forbids auth/remote blocks).
 
     @app.get("/api/me", dependencies=[Depends(require(CAP_VIEW_STATUS))])
-    @declare(CAP_VIEW_STATUS)
+    @declare(CAP_VIEW_STATUS, identity=True)
     async def whoami(principal: Principal = Depends(get_principal)):
         """The genuinely-resolved caller identity (W2.5). FAIL-CLOSED: a None
         resolution is a 401 (``get_principal``), never a default-admin. Under the
         open ``none`` provider this returns admin/ALL_CAPS as today; under a real
-        provider it returns the caller's actual ``{role, email, caps}``."""
+        provider it returns the caller's actual ``{role, email, caps}``.
+
+        ``identity=True`` is belt and braces. RBAC invariant (4) — an
+        identity-disclosing GET must carry an auth dependency — already covered
+        this route through ``IDENTITY_PATHS``, a frozenset of literal paths. That
+        is a coupling nothing enforces: rename the path here and the route keeps
+        working, keeps disclosing who you are, and quietly stops being graded.
+        The flag travels WITH the declaration, so the invariant survives the
+        rename; the path membership stays as the second belt."""
         return principal.to_public()
 
     def _reconfigure_provider() -> None:

@@ -166,7 +166,13 @@ export default function ProfileList(): JSX.Element {
       // already this panel's rule for the actions that can hurt.
       let full: Profile | null = null;
       try {
-        full = await getProfile(row.id);
+        // `getProfile` is typed RedactedProfile because a VIEWER or OPERATOR
+        // receives a PARTIAL record -- no host/port, no nina_*/phd2_*, no
+        // site_name (#186 B). Every action in this panel is config.backend-gated
+        // and every profile WRITE requires that capability, so a caller who
+        // reaches here holds it and the server sends the whole record. The cast
+        // asserts the capability the type cannot see; it is not a shortcut.
+        full = await getProfile(row.id) as Profile;
       } catch {
         /* fall back to the row's mode heuristic below */
       }
@@ -370,10 +376,12 @@ export default function ProfileList(): JSX.Element {
     setBusyId(row.id);
     let scratchId: string | null = null;
     try {
-      const target = await getProfile(row.id);
+      // Both casts: see the note above -- this read-modify-write can only run
+      // for a config.backend holder, who is served the unredacted profile.
+      const target = await getProfile(row.id) as Profile;
       const captured = await captureProfile(`__update_scratch__${row.id}`);
       scratchId = captured.id;
-      const fresh = await getProfile(captured.id);
+      const fresh = await getProfile(captured.id) as Profile;
       const merged: Profile = {
         ...target,
         devices: fresh.devices,

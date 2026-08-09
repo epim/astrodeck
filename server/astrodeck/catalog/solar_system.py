@@ -84,6 +84,45 @@ BY_KEY: dict[str, Body] = {b.key: b for b in BODIES}
 
 SUN_KEY = "sun"
 
+#: Bodies whose PUBLISHED ROW IS A LOCATION ORACLE, and which therefore ride the
+#: same ``view.site_derived`` capability alt/az does. Every row here is computed
+#: for ``_observer()``, so every field in it is f(site) to some degree; this set
+#: is the line between "the shift is smaller than the number we print" and "the
+#: shift is the number we print".
+#:
+#: MEASURED, not assumed (2026-08-08, this ephemeris, one fixed instant, two
+#: sites 15,000 km apart — 51.5N/0.0 vs 33.9S/151.2E):
+#:
+#:     body      RA/Dec shift   distance_km shift
+#:     Moon         2567"            11,473        <- withheld
+#:     Venus          19.2"            6,322
+#:     Sun            16.6"            2,241
+#:     Mercury        15.7"            5,573
+#:     Mars            5.8"            9,590
+#:     Jupiter         2.7"            3,371
+#:     Saturn          1.3"            8,240
+#:     Uranus          0.7"           11,022
+#:     Neptune         0.4"            6,882
+#:
+#: The Moon is in a class of its own on position: 0.71 degrees between those two
+#: sites, and 0.55" between two sites 1.1 km apart, so its RA/Dec alone locates
+#: the observer to within a kilometre or two. That is the same shape as the
+#: confirmed finding where a viewer recovered this rig's site to 2.9 km, and it
+#: is why the Moon is withheld whole rather than having fields stripped off it:
+#: its ``distance_km`` and ``size_arcmin`` carry the parallax just as plainly as
+#: its RA/Dec does, and a filter written against field NAMES cannot withhold
+#: f(lat, lon).
+#:
+#: THE REST ARE NOT ZERO AND THIS SET DOES NOT CLAIM THEY ARE. Six of the eight
+#: shift by more than an arcsecond, and every ``distance_km`` above resolves the
+#: observer along that body's line of sight to ~1 km (measured: 0-1 km of
+#: difference between two sites 1.1 km apart). Withholding them too is a
+#: judgement call that spans this module, ``objects.search`` and
+#: ``region.region_rows`` at once and is filed rather than made here; what is NOT
+#: acceptable is a comment asserting the residual is under an arcsecond, because
+#: it measurably is not.
+SITE_DERIVED_BODIES: frozenset[str] = frozenset({"Moon"})
+
 
 # Bodies a user WILL type that this ephemeris deliberately does not carry, each
 # with the reason it does not. Saying nothing is what put the wrong words on the

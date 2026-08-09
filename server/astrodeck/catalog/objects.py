@@ -371,8 +371,19 @@ def _names_body(qs: str, keys: Iterable[str]) -> bool:
     return rank is not None and rank <= RANK_PREFIX
 
 
-def _solar_system_hits(q: str, qs: str,
-                       when: float | None) -> tuple[list[tuple[int, dict]], list[str]]:
+#: What a caller without ``view.site_derived`` is told instead of the Moon's
+#: row. Deliberately not "no results": a refusal that cannot be told apart from
+#: an empty catalogue is the same failure ``SearchResult.notes`` exists to end.
+_MOON_WITHHELD_NOTE = (
+    "The Moon is not offered here: where it appears in the sky depends on "
+    "where you are standing — up to about 1°, a hundred times its own disc — "
+    "so its position would give away this rig's location. Sign in with a role "
+    "that can see site-derived data to search for it.")
+
+
+def _solar_system_hits(q: str, qs: str, when: float | None,
+                       site_derived: bool = True,
+                       ) -> tuple[list[tuple[int, dict]], list[str]]:
     """Ephemeris rows for the bodies this query names, and the reasons for the
     ones it could not return.
 
@@ -382,6 +393,16 @@ def _solar_system_hits(q: str, qs: str,
     SILENCE: until this returned a reason, a transient failure reached the user
     as "Planets aren't supported yet" — the browser's guess — while the true
     cause sat in the server log where nobody at a telescope will ever read it.
+
+    ``site_derived=False`` (a caller without ``view.site_derived``) withholds
+    every body in ``solar_system.SITE_DERIVED_BODIES``, which is the Moon —
+    whose published position is a function of the observer's latitude and
+    longitude to within a kilometre or two. See that constant for the
+    measurements. The Atlas marker layer (``region.region_rows``) has gated the
+    same body on the same capability since it shipped; a search box is the same
+    oracle, so it is the same gate. The body is skipped BEFORE the ephemeris is
+    evaluated: a withheld body must not be computable-and-then-dropped, or the
+    timing says what the row would not.
     """
     from . import solar_system
 
@@ -391,6 +412,9 @@ def _solar_system_hits(q: str, qs: str,
         type_rank = RANK_TYPE if q and q in body.type_name.lower() else None
         rank = _best(_rank_keys(qs, solar_system.search_keys(body)), type_rank)
         if rank is None:
+            continue
+        if not site_derived and body.label in solar_system.SITE_DERIVED_BODIES:
+            notes.append(_MOON_WITHHELD_NOTE)
             continue
         try:
             hits.append((rank, solar_system.row(body.key, when)))
@@ -495,8 +519,8 @@ def parse_coordinates(text: str) -> dict | None:
     }
 
 
-def search(query: str, limit: int = 25,
-           when: float | None = None) -> SearchResult:
+def search(query: str, limit: int = 25, when: float | None = None,
+           site_derived: bool = True) -> SearchResult:
     """Search deep-sky objects, named stars and solar-system bodies at once.
 
     An EMPTY query browses the deep-sky list alone, unchanged. That is not an
@@ -505,6 +529,12 @@ def search(query: str, limit: int = 25,
     would bury it. Stars and planets answer a question that is always typed.
 
     ``when`` (unix seconds) pins the solar-system ephemeris; None means now.
+
+    ``site_derived`` is the caller's ``view.site_derived`` capability. False
+    withholds the Moon (see ``_solar_system_hits``): its topocentric RA/Dec is
+    f(latitude, longitude) at kilometre resolution, so publishing it to a
+    viewer is publishing the site. Defaults True so every internal caller —
+    none of which is answering an untrusted request — is unchanged.
     """
     q = query.strip().lower()
     # The DESIGNATION is matched with separators removed from both sides, so
@@ -533,7 +563,7 @@ def search(query: str, limit: int = 25,
             scored.append((rank, o.mag, o.id, o))
     notes: list[str] = []
     if q:
-        body_hits, notes = _solar_system_hits(q, qs, when)
+        body_hits, notes = _solar_system_hits(q, qs, when, site_derived)
         for rank, r in _star_hits(q, qs) + body_hits:
             scored.append((rank, r["mag"], r["id"], r))
     # id breaks the remaining ties so the order is stable run to run.
@@ -568,11 +598,11 @@ def search(query: str, limit: int = 25,
     return SearchResult(rows=rows, notes=notes)
 
 
-def search_catalog(query: str, limit: int = 25,
-                   when: float | None = None) -> list[dict]:
+def search_catalog(query: str, limit: int = 25, when: float | None = None,
+                   site_derived: bool = True) -> list[dict]:
     """Rows only — the shape every caller that just wants targets expects.
 
     Kept as the plain-list entry point so a caller that renders a target list
     is not forced to think about refusals; ``search`` is the one to call when
     the screen has somewhere to PUT a refusal."""
-    return search(query, limit, when).rows
+    return search(query, limit, when, site_derived).rows

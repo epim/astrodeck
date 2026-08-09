@@ -30,7 +30,27 @@ comhost = ["comtypes>=1.4.0; sys_platform == 'win32'"]
 # module still imports, `register_all()` registers nothing, and `asiair` is
 # simply not an offered backend or driver type (import guards, same idiom as
 # comhost/comtypes above).
-asiair = ["libasi @ git+https://github.com/jewzaam/libasi"]
+#
+# THE URL MOVED, AND THE OLD ONE 404s (#201, corrected 2026-08-08). It pointed at
+# github.com/jewzaam/libasi, which no longer exists — verified against the GitHub
+# API, not the browser, so a private repo would have looked different from a
+# deleted one. For however long that was true, `pip install -e .[asiair]` failed
+# outright: the ASIAIR backend was undeployable by the documented path, and the
+# "libasi is MIT" claim beside it could not be checked against anything.
+#
+# Upstream is github.com/epim/libasi. Identified by what it contains rather than
+# by its name: it is the only repository carrying CONFIRMED_FORMATS.md (the file
+# asiair_backend.py's docstring cites), its package directory is `asiair/`
+# exporting the `ASIAIRClient` the backend imports, and its own
+# [project.urls] Repository still points at the dead jewzaam URL — which is where
+# the stale address in this file came from.
+#
+# LICENCE RE-VERIFIED FROM THE LIVE SOURCE, which is the half of this that a
+# 404 made impossible: github.com/epim/libasi is public, not a fork, and its
+# LICENSE is a verbatim MIT text ("Copyright (c) 2026 libasi contributors").
+# The GitHub API reports spdx_id "MIT". tools/licence_texts/libasi.txt already
+# carries that identical text.
+asiair = ["libasi @ git+https://github.com/epim/libasi"]
 
 [project.entry-points."astrodeck.backends"]
 # Native drivers register through the SAME entry-point path an external plugin
