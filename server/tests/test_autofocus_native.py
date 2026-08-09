@@ -575,3 +575,104 @@ async def test_a_sweep_with_no_curve_in_it_still_fails(monkeypatch):
     agrees = [l for l in logs if l["message"].startswith("curve check agrees")]
     assert len(agrees) == 1, [l["message"] for l in logs]
     assert "end of the swept range" in agrees[0]["message"], agrees[0]
+
+
+# ----------------------------------------------- running out of measurable range
+#
+# NGC 5907, 2026-08-08 22:04, on the rig: ten points, a textbook symmetric V,
+# HFR 1.90 from 460 STARS at 11173, both wings rising to 55.91 and 65.97,
+# hyperbolic R-squared 0.996 against a 0.70 gate. The whole run was discarded
+# because the ELEVENTH position, five half-steps out, showed 2 detectable stars
+# where a fit point needs 3. The stars there are so bloated that FINDING them is
+# what fails -- a fact about the end of the sweep, not about the focus.
+#
+# `curve_verdict` was written for exactly this and was only reachable from the
+# engine's own `failed` path, so the drop-abort returned before anything asked
+# the curve. These use the REAL engine, blanking only the outermost position, so
+# a genuine curve exists by the time the abort fires -- the distinction the
+# `_StuckSweep` tests above cannot make, because a stuck sweep never measures
+# anything to salvage.
+
+
+def _blank_beyond(cam, foc, limit: int):
+    """Flat noise once the sweep reaches past `limit`; everything nearer measures.
+
+    Keyed on a THRESHOLD rather than an exact position because the engine picks
+    its own positions and does not sweep the symmetric range the caller asks
+    for: with step 350 and steps_each_side 4 the sim visits start-700 through
+    start+2100. An exact-position fixture silently blanked nothing, and the
+    `seen["n"] > 0` assertion below is what caught that rather than the test
+    passing for the wrong reason.
+    """
+    import numpy as np
+    real = cam.expose
+    rng = np.random.default_rng(11)
+    seen = {"n": 0}
+
+    async def fake(*a, **kw):
+        frame = await real(*a, **kw)
+        if await foc.get_position() >= limit:
+            seen["n"] += 1
+            data = np.asarray(frame.data)
+            frame.data = rng.integers(230, 250, size=data.shape).astype(data.dtype)
+        return frame
+
+    cam.expose = fake
+    return seen
+
+
+async def test_a_curve_that_ran_out_of_range_is_accepted_not_discarded(monkeypatch):
+    rig, cam, foc = await _connected_sim()
+    start = await foc.get_position()
+    step, side = 350, 4
+    # The far end of what this sweep reaches, so the curve is complete before
+    # the unmeasurable point arrives.
+    seen = _blank_beyond(cam, foc, start + step * 6)
+
+    result = await run_native_autofocus(
+        cam, foc, exposure_s=0.05, gain=200, step=step,
+        steps_each_side=side, binning=1)
+
+    assert seen["n"] > 0, (
+        "the sweep never reached the blanked position, so this test proves "
+        "nothing about the drop-abort — pick an endpoint the sweep visits")
+    assert result.success, (
+        f"a sweep with a measured V was thrown away because one endpoint could "
+        f"not be measured: {result.message}")
+    assert result.best_position is not None
+    # It must land on the curve's TIP, not on the position it gave up at and
+    # not back at the start. Anchored to the measured minimum rather than to
+    # `start`, because the sim's focus is not at the start position and an
+    # assertion that assumed it was failed on a correct answer.
+    tip = min(result.points, key=lambda p: p[1])[0]
+    assert abs(result.best_position - tip) <= step, (
+        f"salvaged to {result.best_position}, but the measured minimum is at "
+        f"{tip}")
+    assert result.best_position < start + step * 6, (
+        "the vertex landed at the end the sweep could not measure")
+
+
+async def test_the_range_refusal_does_not_blame_a_field_that_is_rich(monkeypatch):
+    """When the salvage cannot save it, the advice still has to be true.
+
+    A rich field that merely over-swept must not be told to expose longer for a
+    narrowband filter — that is the #114 wrong turn, and it was the copy this
+    exact run produced.
+    """
+    from astrodeck.focus.autofocus import RICH_FIELD_STARS
+    rig, cam, foc = await _connected_sim()
+    start = await foc.get_position()
+    made = _stick_the_sweep(monkeypatch, start + 700)
+    _starless_once_sweeping(cam, made)
+
+    result = await run_native_autofocus(
+        cam, foc, exposure_s=0.05, gain=200, step=350,
+        steps_each_side=4, binning=1)
+
+    assert not result.success
+    rich = max((s for _p, _h, s in (result.points or [])), default=0)
+    if rich >= RICH_FIELD_STARS:
+        assert "narrowband" not in (result.advice or "").lower(), (
+            f"the field's best point held {rich} stars and the advice still "
+            f"blames the filter: {result.advice!r}")
+        assert "steps_each_side" in (result.advice or ""), result.advice

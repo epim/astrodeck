@@ -270,3 +270,93 @@ def test_the_depth_threshold_is_the_one_that_decides_a_borderline_curve():
     v2 = curve_verdict(list(zip(xs, ys2)), [100] * 5)
     assert v2.accepted, v2.reason
     assert v2.depth / max(v2.roughness, 1e-9) > DEPTH_OVER_ROUGHNESS
+
+
+# ------------------------------------------------- the NGC 5907 run, 2026-08-08
+
+#: The ten points the rig actually measured on NGC 5907 at 22:04 local, 5 s at
+#: gain 120, bin 2, L. The ELEVENTH — 9423, five half-steps out — showed 2
+#: detectable stars where a fit point needs 3, three times in a row, and the
+#: whole run was discarded for it.
+NGC5907_POSITIONS = [9773, 10123, 10473, 10823, 11173,
+                     11523, 11873, 12223, 12573, 12923]
+NGC5907 = list(zip(NGC5907_POSITIONS,
+                   [55.91, 42.71, 28.64, 14.20, 1.90,
+                    13.83, 27.68, 41.07, 54.68, 65.97]))
+NGC5907_STARS = [3, 3, 7, 12, 460, 18, 6, 4, 3, 4]
+
+
+def test_the_5907_curve_survives_losing_the_point_that_killed_the_run():
+    """A sweep that runs out of measurable range still measured a V.
+
+    The engine never rejected this fit — hyperbolic R² was 0.996 against a 0.70
+    gate. The run died because ONE planned position could not be measured, and
+    the drop-abort returned before anything asked the curve. Ten points, a
+    minimum 64 px deep sitting on 460 stars, both wings rising monotonically:
+    the failure was at the end of the sweep, not at the focus.
+    """
+    v = curve_verdict(NGC5907, NGC5907_STARS)
+    assert v.accepted, v.reason
+    assert abs(v.best_position - 11173) <= 70, v.best_position
+
+
+def test_the_5907_tip_is_where_the_stars_are():
+    """Guard the specific inversion that would make this dangerous.
+
+    Accepting on shape must not accept a tip nobody could measure. 5907's tip
+    carries 460 stars and its wings carry 3 or 4 — if the criterion ever keyed
+    on the wings it would still 'pass' this curve while locating focus in the
+    wrong place, so pin the vertex to the rich end.
+    """
+    tip = max(range(len(NGC5907_STARS)), key=lambda i: NGC5907_STARS[i])
+    assert NGC5907_POSITIONS[tip] == 11173
+    v = curve_verdict(NGC5907, NGC5907_STARS)
+    assert v.accepted and abs(v.best_position - NGC5907_POSITIONS[tip]) <= 70
+
+
+def test_a_thin_field_that_really_cannot_focus_is_still_refused():
+    """The counterpart, so the salvage cannot swallow the SII case it was
+    bounded for. Same shape, but nothing anywhere had stars to fit."""
+    thin = list(zip(NGC5907_POSITIONS,
+                    [55.91, 42.71, 28.64, 14.20, 1.90,
+                     13.83, 27.68, 41.07, 54.68, 65.97]))
+    v = curve_verdict(thin, [3, 3, 3, 3, 4, 3, 3, 3, 3, 3])
+    assert not v.accepted, v.reason
+
+
+# --------------------------------------- what a sweep that over-reached is told
+
+def test_a_rich_field_is_not_told_to_expose_longer_for_narrowband():
+    """The #114 wrong turn, in the copy this exact run produced.
+
+    NGC 5907 held 460 stars at its best point and the refusal blamed the filter
+    and recommended a narrowband exposure. The field was never the problem.
+    """
+    from astrodeck.focus.autofocus import over_swept_advice
+    a = over_swept_advice(460, NGC5907_POSITIONS, 9423, "a longer exposure")
+    assert "narrowband" not in a.lower(), a
+    assert "460 stars" in a, a
+    # It has to name the range that DID work and the setting that gets there.
+    assert "9773..12923" in a, a
+    assert "steps_each_side 4" in a, a
+
+
+def test_a_genuinely_thin_field_still_gets_the_exposure_advice():
+    """The counterpart. The SII slot this bound was built for really cannot be
+    focused at those settings, and telling someone to expose longer is right."""
+    from astrodeck.focus.autofocus import over_swept_advice
+    a = over_swept_advice(4, NGC5907_POSITIONS, 9423, "a longer exposure")
+    assert "narrowband" in a.lower(), a
+    assert "too thin" in a, a
+
+
+def test_the_threshold_is_what_separates_them():
+    """Pin the constant itself: it is the whole decision, and an end-to-end test
+    cannot reach both sides of it on the sim."""
+    from astrodeck.focus.autofocus import RICH_FIELD_STARS, over_swept_advice
+    just_under = over_swept_advice(RICH_FIELD_STARS - 1, NGC5907_POSITIONS,
+                                   9423, "a longer exposure")
+    just_over = over_swept_advice(RICH_FIELD_STARS, NGC5907_POSITIONS,
+                                  9423, "a longer exposure")
+    assert "narrowband" in just_under.lower(), just_under
+    assert "narrowband" not in just_over.lower(), just_over
