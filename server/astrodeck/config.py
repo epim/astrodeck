@@ -457,6 +457,88 @@ class GuideConfig(BaseModel):
     exposure_s: float = Field(2.0, gt=0, le=15)
     gain: int = Field(100, ge=0, le=1000)
     binning: int = Field(1, ge=1, le=4)
+    #: #187 (2026-08-08): the guide loop has ALWAYS applied an offset —
+    #: ``guide/native.py`` reads ``cfg["offset"]`` and passes it to every
+    #: ``cam.expose`` — but ``GuideConfig`` had no field for it, so the
+    #: constructor default was the only value it could ever have and the route
+    #: answered with a LITERAL 30 that nothing could change. Same shape as the
+    #: constructor-frozen exposure above; same fix.
+    offset: int = Field(30, ge=0, le=255)
+
+
+# ------------------------------------------------- frame settings, by PURPOSE
+#
+# THE FOUR SCOPES. Until 2026-08-08 every camera setting had one home per
+# SCREEN — four React ``useState``s seeded from hardcoded constants, plus a
+# server-side polar pin — so "what filter is the rig using?" had a different
+# answer on the Align screen (a pin nothing had acted on) and the Capture
+# screen (the wheel). The operator set R on one and shot Oiii.
+#
+# The fix is not one global setting: a guide frame's exposure legitimately is
+# not a light frame's, and a 0.3 s plate-solve frame is not either. What was
+# missing was anything SAYING which is which. So the axis is PURPOSE, not
+# screen — every surface that shoots a frame for a given purpose reads and
+# writes the same scope, and a surface that needs a different number has to
+# name a different scope rather than growing a private copy:
+#
+#   capture  imaging camera, the light frame the operator is composing
+#   focus    imaging camera, thrown-away frames (higher gain is deliberate)
+#   solve    imaging camera, plate-solve frames (polar TPPA + centring)
+#   guide    the GUIDE camera — lives in ``GuideConfig`` above, because the
+#            native guider already reads it per exposure and that model works.
+#            Projected into the same ``frames`` payload so every client has one
+#            vocabulary; see ``api/app.py::_frames_payload``.
+#
+# Plan steps stay per-step (``store.plan``): those are genuinely per-row.
+
+
+class FrameSettings(BaseModel):
+    """One purpose's frame settings on the IMAGING camera.
+
+    ``filter`` is deliberately not like the others. Exposure/gain/offset/
+    binning are settings; the wheel is a single physical resource, so a
+    scope's ``filter`` is an INTENT to move it, and None means "leave the
+    wheel wherever it is" — which is what every one of these code paths did
+    before there was a field at all. The UI must render that intent as a
+    transition (``Oiii → R``) and never as the wheel's position; see
+    ``ui/src/components/ui/CameraPickers.tsx``.
+    """
+    exposure_s: float = Field(2.0, gt=0, le=3600)
+    gain: int = Field(120, ge=0, le=1000)
+    offset: int = Field(30, ge=0, le=255)
+    binning: int = Field(1, ge=1, le=4)
+    filter: str | None = None
+
+
+class FrameSettingsConfig(BaseModel):
+    """The imaging camera's three purpose scopes. Every default is the value
+    the corresponding screen used to hardcode, so an existing rig's first load
+    behaves exactly as it did — the change is where the number LIVES, not what
+    it is."""
+    #: CaptureView's old useState seeds ("2"/"120"/"30"/"1").
+    capture: FrameSettings = Field(
+        default_factory=lambda: FrameSettings(
+            exposure_s=2.0, gain=120, offset=30, binning=1))
+    #: FocusView's old capExposure/capGain/capBin ("2"/"200"/"1"). The higher
+    #: gain is deliberate (lib/focusCapture.ts): a focus frame is thrown away.
+    focus: FrameSettings = Field(
+        default_factory=lambda: FrameSettings(
+            exposure_s=2.0, gain=200, offset=30, binning=1))
+    #: PolarAlignSession.SOLVE_DEFAULTS, which were themselves the values
+    #: hardcoded at ``polar/native.py``'s capture call until 2026-08-07.
+    solve: FrameSettings = Field(
+        default_factory=lambda: FrameSettings(
+            exposure_s=0.3, gain=200, offset=30, binning=1))
+
+
+#: The scopes a client may name on ``/api/camera/frame-settings``. "guide" is
+#: included and is NOT in ``FrameSettingsConfig``: it is stored in
+#: ``GuideConfig`` (which the native guider already reads per exposure) and
+#: projected into the same payload, so the client has one vocabulary and the
+#: server keeps one home per value.
+FRAME_SCOPES: tuple[str, ...] = ("capture", "focus", "solve", "guide")
+#: The scopes that live in ``AppConfig.frames``.
+IMAGING_FRAME_SCOPES: tuple[str, ...] = tuple(FrameSettingsConfig.model_fields)
 
 
 class RotatorConfig(BaseModel):
@@ -638,6 +720,10 @@ class AppConfig(BaseModel):
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     # --- native guider algorithm selection (spec §3.5; appended — old configs load fine) ---
     guide: GuideConfig = Field(default_factory=GuideConfig)
+    # --- per-purpose imaging-camera frame settings (#176, 2026-08-08; appended —
+    #     old configs load fine and every default is the constant the screen it
+    #     replaces used to hardcode) ---
+    frames: FrameSettingsConfig = Field(default_factory=FrameSettingsConfig)
     # --- backend drivers (equipment-drivers spec; appended — old configs load fine) ---
     drivers: list[DriverEntry] = Field(default_factory=list)
     # --- rotator ROM/tolerance (rotator/CAA spec §3.2; appended — old configs load fine) ---
@@ -1182,6 +1268,31 @@ class ConfigStore:
         cfg.guide = guide
         return self.bump_and_save()
 
+    # -- per-purpose frame settings (#176) -------------------------------------
+
+    def set_frames(self, frames: "FrameSettingsConfig") -> AppConfig:
+        """Persist the imaging camera's three purpose scopes.
+
+        Every numeric bound is declared on ``FrameSettings`` (pydantic
+        ``Field`` ge/le), so the route 422s an out-of-range value before it
+        reaches here. What is left is the FILTER, which pydantic cannot check:
+        it is a name, and a name that no wheel slot carries is a pin that will
+        silently do nothing on the next frame — the exact class of failure this
+        whole model exists to close. The route validates it against the
+        connected wheel (it is the only thing that knows the slot names); this
+        setter's job is to reject the shapes that are wrong with no wheel at
+        all, so a scripted caller cannot store ``""`` and have it read back as
+        "a filter is pinned"."""
+        for scope in IMAGING_FRAME_SCOPES:
+            fs: FrameSettings = getattr(frames, scope)
+            if fs.filter is not None and not fs.filter.strip():
+                raise ValueError(
+                    f"{scope}: a blank filter name is not 'no filter' — send "
+                    "null to leave the wheel where it is")
+        cfg = self.cfg()
+        cfg.frames = frames
+        return self.bump_and_save()
+
     # -- rotator ROM/tolerance mutation (rotator/CAA spec §3.2) -----------------
 
     def set_rotator(self, rotator: "RotatorConfig") -> AppConfig:
@@ -1565,3 +1676,104 @@ def redacted(cfg: AppConfig) -> dict:
 
 
 config_store = ConfigStore()
+
+
+# ------------------------------------------------- frame settings: one seam
+#
+# Declared AFTER the singleton because that is what they operate on. Both the
+# REST route and ``PolarAlignSession`` go through these, so there is exactly
+# one place that knows how a scope is merged, where it is stored and who is
+# told about it. Two writers with two merge rules is how the Align screen and
+# the Capture screen came to answer the same question differently.
+
+
+def frames_payload(guider: object = None) -> dict[str, dict]:
+    """Every scope's EFFECTIVE settings, in one dict.
+
+    The shape carried by the WS ``hello`` (``hub.summary()``), by the ``frames``
+    bus event and by ``GET /api/camera/frame-settings`` — one shape, so a client
+    has one thing to apply from three doors.
+
+    ``guider``, when given, overlays the guide scope with the RUNNING guider's
+    live values. They can legitimately differ from the file: a binning change
+    is refused mid-session, so the file may promise what the loop refused, and
+    the loop is the thing that decides what the next frame looks like.
+    """
+    cfg = config_store.cfg()
+    out: dict[str, dict] = {
+        scope: getattr(cfg.frames, scope).model_dump()
+        for scope in IMAGING_FRAME_SCOPES
+    }
+    g = cfg.guide
+    # The guide camera has no wheel; ``filter`` is present and always null so
+    # every scope has the same keys and no client needs a special case.
+    out["guide"] = {"exposure_s": g.exposure_s, "gain": g.gain,
+                    "offset": g.offset, "binning": g.binning, "filter": None}
+    live = None
+    if guider is not None and hasattr(guider, "camera_settings"):
+        try:
+            live = guider.camera_settings()
+        except Exception:  # pragma: no cover - defensive; the file still answers
+            live = None
+    if isinstance(live, dict):
+        for k in ("exposure_s", "gain", "offset", "binning"):
+            if live.get(k) is not None:
+                out["guide"][k] = live[k]
+    return out
+
+
+def publish_frames(guider: object = None) -> dict[str, dict]:
+    """Announce the current frame settings to every connected client.
+
+    Its OWN event, not a field on ``polar``. Piggybacking the solve settings on
+    the polar event is what made ``PolarAlignSession.start()`` — which resets
+    ``state`` to ``_idle()`` — wipe them off every Align screen the instant an
+    alignment began, while the engine went on solving at the operator's values.
+    A setting's lifetime is not a session's.
+    """
+    payload = frames_payload(guider)
+    bus.publish("frames", **payload)
+    return payload
+
+
+def set_frame_settings(scope: str, patch: dict) -> dict:
+    """Merge ``patch`` into one scope, persist it, and return that scope's
+    effective settings. A ``None`` value CLEARS the field back to its default
+    (the contract ``/api/polar/solve-settings`` has always had). Unknown keys
+    are ignored — the route validates, this is the second wall.
+
+    Does NOT publish: the caller decides, because the route has to apply a
+    guide change to the live guider first and must not announce a value the
+    guider is about to refuse.
+    """
+    if scope not in FRAME_SCOPES:
+        raise ValueError(f"unknown frame scope: {scope!r} — valid scopes are "
+                         f"{', '.join(FRAME_SCOPES)}")
+    fields = ("exposure_s", "gain", "offset", "binning", "filter")
+    if scope == "guide":
+        # The guide camera has no wheel. Accepting a filter here would store an
+        # intent nothing will ever act on — the shipped-dead-setting shape.
+        if patch.get("filter") is not None:
+            raise ValueError("the guide camera has no filter wheel")
+        gc = config_store.cfg().guide
+        update = {k: v for k, v in patch.items()
+                  if k in ("exposure_s", "gain", "offset", "binning")
+                  and v is not None}
+        config_store.set_guide(gc.model_copy(update=update))
+        return frames_payload()["guide"]
+    defaults = FrameSettingsConfig()
+    current: FrameSettings = getattr(config_store.cfg().frames, scope)
+    update: dict = {}
+    for key in fields:
+        if key not in patch:
+            continue
+        value = patch[key]
+        if value is None:
+            update[key] = getattr(getattr(defaults, scope), key)
+        else:
+            update[key] = value
+    merged = FrameSettings.model_validate(
+        {**current.model_dump(), **update})
+    frames = config_store.cfg().frames.model_copy(update={scope: merged})
+    config_store.set_frames(frames)
+    return getattr(config_store.cfg().frames, scope).model_dump()

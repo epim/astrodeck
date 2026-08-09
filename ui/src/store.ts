@@ -1,3 +1,4 @@
+import { useCallback, useEffect, useRef, useState } from "react";
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 import type { ReactNode } from "react";
@@ -7,6 +8,8 @@ import type {
   BackendLink,
   CatalogEntry,
   FocusEvent,
+  FrameScope,
+  FrameSettings,
   FramingSession,
   GuideStats,
   LogLine,
@@ -48,6 +51,7 @@ import {
   clearedRigState,
   gateEngaged,
   intakeBlocked,
+  EMPTY_FRAME_SETTINGS,
   EMPTY_NINA_HEALTH,
   EMPTY_POLAR,
   EMPTY_SEQUENCE,
@@ -65,6 +69,7 @@ import { tagGuideRms, type GuideRmsByKind } from "./lib/guideRms";
 import { notifyAndBeep, requestNotifyPermission } from "./lib/notify";
 import { haptics } from "./lib/haptics";
 import { ensurePlanIds } from "./lib/ids";
+import { isExposureValueInvalid } from "./lib/exposure";
 import { api, ApiError } from "./api";
 import { getMe, getAuthMethods } from "./api/backends";
 
@@ -156,6 +161,37 @@ export interface ConfirmRequest {
 // EMPTY_SEQUENCE / EMPTY_POLAR / EMPTY_NINA_HEALTH now live in lib/authGate.ts
 // (imported above): they are both the cold-boot value and the value the auth
 // gate clears back to, and two copies of that would drift.
+
+// ------------------------------------------------ frame settings, by PURPOSE
+// One home per (camera, purpose) — not per screen. Mirrors
+// server/astrodeck/config.py FrameSettings / FRAME_SCOPES.
+//
+// The night this closes (2026-08-08): FILT=R on Align, Oiii on Capture. Every
+// setting behind those screens was a private useState seeded from a constant,
+// so no two surfaces could agree and a reload recovered none of them.
+//
+// The scopes stay SEPARATE on purpose — a guide camera's exposure is not the
+// imaging camera's and a 0.3 s solve frame is not a light frame. What was
+// missing was a name for which is which.
+/** Re-exported so a component reads one module. The canonical declarations are
+ *  in types.ts (shared with lib/authGate, which owns the cleared value). */
+export type { FrameScope, FrameSettings };
+
+/** Normalize a server payload into the full record, ignoring unknown scopes and
+ *  keeping any scope the server did not mention. */
+function mergeFrames(
+  current: Record<FrameScope, FrameSettings>,
+  incoming: unknown,
+): Record<FrameScope, FrameSettings> {
+  if (!incoming || typeof incoming !== "object") return current;
+  const next = { ...current };
+  for (const scope of Object.keys(current) as FrameScope[]) {
+    const raw = (incoming as Record<string, unknown>)[scope];
+    if (!raw || typeof raw !== "object") continue;
+    next[scope] = { ...current[scope], ...(raw as Partial<FrameSettings>) };
+  }
+  return next;
+}
 
 const PLAN_KEY = "astrodeck-plan";
 
@@ -571,6 +607,17 @@ interface AppState {
     | null;
   sequence: SequenceState;
   polar: PolarState;
+  // --- frame settings, by PURPOSE (#176) -------------------------------------
+  // Server truth for what the next frame of each KIND will be shot at. Seeded
+  // by the WS `hello` (hub.summary().frames) and replaced by the `frames`
+  // event, so every surface that shoots a frame of a given purpose reads the
+  // same numbers and a reload recovers them.
+  //
+  // Before this each screen kept its own useState seeded from a constant, and
+  // the Align screen's solve settings rode the `polar` event — which start()
+  // resets — so beginning an alignment reverted every face to a default while
+  // the engine went on using the operator's values. See FrameSettings.
+  frameSettings: Record<FrameScope, FrameSettings>;
   logs: LogLine[];
   // Snapshot of the last-shot batch of Light frames (calibration-capture spec
   // §1.3), accumulated by noteLightFrame each time a light frame lands. Drives
@@ -812,6 +859,11 @@ interface AppState {
 
   // --- actions: photometry profile ---
   setPhotometry: (p: Partial<PhotometryProfile>) => void; // merges + persists to localStorage
+  /** Patch one purpose scope: optimistic locally, PUT to the server, and roll
+   *  BACK if the server refuses. The rollback is not defensive tidiness — the
+   *  guider refuses a binning change mid-session with a 409, and a dial left
+   *  showing a value the rig rejected is this defect in a new place. */
+  setFrameSettings: (scope: FrameScope, patch: Partial<FrameSettings>) => void;
 
   // --- actions: dimmer ---
   setBrightness: (v: number) => void; // sets ACTIVE mode's brightness, persists, applies CSS vars
@@ -874,6 +926,7 @@ export const useStore = create<AppState>((set, get) => ({
   mountOp: null,
   sequence: EMPTY_SEQUENCE,
   polar: EMPTY_POLAR,
+  frameSettings: EMPTY_FRAME_SETTINGS(),
   logs: [],
   lastLight: null,
   masters: [],
@@ -1468,6 +1521,37 @@ export const useStore = create<AppState>((set, get) => ({
     set({ photometry: next });
   },
 
+  // ------------------------------------------- frame settings, by PURPOSE (#176)
+  // OPTIMISTIC, then the server's answer, then a rollback if it refused.
+  //
+  // The write goes through the server on purpose. A store-only write would make
+  // every surface agree with every other surface and with nothing on the rig —
+  // which is the failure this replaced, wearing a tidier hat.
+  setFrameSettings: (scope, patch) => {
+    const before = get().frameSettings[scope];
+    set((s) => ({
+      frameSettings: { ...s.frameSettings, [scope]: { ...before, ...patch } },
+    }));
+    void api
+      .put(`/api/camera/frame-settings?scope=${encodeURIComponent(scope)}`, patch)
+      .then((r) => {
+        // The server is the authority the moment it speaks: it clamps, and for
+        // the guide scope it answers with the RUNNING guider's values.
+        const body = r as { settings?: FrameSettings; frames?: unknown };
+        if (body?.frames) {
+          set((s) => ({ frameSettings: mergeFrames(s.frameSettings, body.frames) }));
+        } else if (body?.settings) {
+          set((s) => ({
+            frameSettings: { ...s.frameSettings, [scope]: body.settings! },
+          }));
+        }
+      })
+      .catch((e) => {
+        set((s) => ({ frameSettings: { ...s.frameSettings, [scope]: before } }));
+        get().showToast("error", (e as Error).message);
+      });
+  },
+
   // -------------------------------------------------------------------- dimmer
   // Single source for the brightness dimmer (F-dimmer). Writes the ACTIVE mode's
   // remembered value + its localStorage key, then applies the CSS vars itself —
@@ -1560,8 +1644,16 @@ export const useStore = create<AppState>((set, get) => ({
           site?: SiteInfo;
           safety?: SafetyReading | null;
           config?: AppConfig;
+          frames?: unknown;
         };
         if (summary.site) set({ site: summary.site });
+        // COLD-SEED the frame settings (#176). Half the R-vs-Oiii defect was
+        // that no client ever learned the server's values: the Align screen's
+        // numbers arrived only on a `polar` event, so a reload over a live pin
+        // rendered mirrored defaults while the engine used something else.
+        if (summary.frames) {
+          set((s) => ({ frameSettings: mergeFrames(s.frameSettings, summary.frames) }));
+        }
         if (summary.mode !== undefined) {
           set({ equipConnected: summary.mode !== "none" });
         }
@@ -1804,6 +1896,14 @@ export const useStore = create<AppState>((set, get) => ({
       case "polar":
         set({ polar: ev.data as unknown as PolarState });
         break;
+      case "frames":
+        // Its OWN event, not a field of `polar` (#176). The solve settings used
+        // to ride the polar event, which the client applies wholesale — and
+        // `start()` resets the session state to a dict with no solve_settings
+        // key, so beginning an alignment reverted every Align face to mirrored
+        // defaults while the engine kept solving at the operator's values.
+        set((s) => ({ frameSettings: mergeFrames(s.frameSettings, ev.data) }));
+        break;
       case "log": {
         const line = ev as unknown as LogLine;
         const level = (ev.data.level as string) ?? "info";
@@ -1869,6 +1969,58 @@ export const useLastAutofocusResult = () => useStore((s) => s.lastAutofocusResul
 export const usePreview = () => useStore((s) => s.preview);
 export const usePhotometry = () => useStore((s) => s.photometry);
 export const usePolar = () => useStore((s) => s.polar);
+/** What the next frame of this PURPOSE will be shot at — server truth, shared
+ *  by every surface that shoots one. `useShallow` so an unrelated scope's
+ *  update (the guide loop's, say) does not re-render the Capture panel. */
+export const useFrameSettings = (scope: FrameScope): FrameSettings =>
+  useStore(useShallow((s) => s.frameSettings[scope]));
+
+/** A TEXT DRAFT over one numeric frame setting.
+ *
+ *  The single highest-risk part of moving these settings into the store, and
+ *  the reason this exists rather than binding an input straight to a number:
+ *  Capture's fields are strings ON PURPOSE. `isExposureInvalid` and the gain
+ *  guard operate on the RAW string so that "", "1e9" and "-3" can block the
+ *  shutter and mark the field. Bind those inputs to a number and all three
+ *  guards silently stop guarding — a blank box becomes 0, and 0 s is the
+ *  blank frame plus the misleading "few stars" that CAP-02 was filed for.
+ *
+ *  So: the draft holds the string, the store only ever holds a parsed number,
+ *  and the two are reconciled at a COMMIT (blur / Enter / before a shot). The
+ *  draft follows the server whenever the server moves and the box is not being
+ *  fought over — same shape as the cooler set-point box.
+ */
+export function useFrameDraft(
+  scope: FrameScope,
+  field: "exposure_s" | "gain" | "offset" | "binning",
+): { text: string; setText: (raw: string) => void; commit: () => void } {
+  const server = useFrameSettings(scope)[field];
+  const setFrameSettings = useStore((s) => s.setFrameSettings);
+  const [text, setTextRaw] = useState(() => String(server));
+  // What this box last agreed with the store about. Compared against the
+  // server value so OUR OWN commit doesn't read as "the server moved".
+  const agreed = useRef<number>(server);
+  useEffect(() => {
+    if (server !== agreed.current) {
+      agreed.current = server;
+      setTextRaw(String(server));
+    }
+  }, [server]);
+  const commit = useCallback(() => {
+    const n = Number(text);
+    // An out-of-bounds draft is NOT committed and NOT reverted: the guards want
+    // it on screen, marked, blocking the shutter. The bound is the SAME one the
+    // shutter refuses on (`isExposureInvalid`, which exists because "1e9"
+    // parses to a perfectly finite number), so a value this rejects and a value
+    // the shot rejects can never be different values.
+    if (text.trim() === "" || !Number.isFinite(n) || n < 0) return;
+    if (field === "exposure_s" && isExposureValueInvalid(n)) return;
+    if (n === agreed.current) return;
+    agreed.current = n;
+    setFrameSettings(scope, { [field]: n } as Partial<FrameSettings>);
+  }, [text, scope, field, setFrameSettings]);
+  return { text, setText: setTextRaw, commit };
+}
 export const useLogs = () => useStore((s) => s.logs);
 export const useLastLight = () => useStore((s) => s.lastLight);
 

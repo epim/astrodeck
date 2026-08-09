@@ -594,6 +594,30 @@ export interface LogLine {
   ts: number;
 }
 
+/* --------------------------------------- frame settings, by PURPOSE (#176)
+   Mirrors server/astrodeck/config.py FrameSettings / FRAME_SCOPES.
+
+   ONE home per (camera, purpose), not per screen. On 2026-08-08 the operator
+   set FILT=R on the Align screen and Capture said Oiii: every camera setting
+   behind those screens was a private useState seeded from a constant, so no two
+   surfaces could agree and a reload recovered none of them.
+
+   The scopes stay SEPARATE on purpose — a guide camera's exposure is not the
+   imaging camera's, and a 0.3 s solve frame is not a light frame. What was
+   missing was a name for which is which. */
+export type FrameScope = "capture" | "focus" | "solve" | "guide";
+
+export interface FrameSettings {
+  exposure_s: number;
+  gain: number;
+  offset: number;
+  binning: number;
+  /** A filter NAME, or null for "leave the wheel where it is". An INTENT to
+   *  move the wheel, never a claim about where the wheel is — which is why the
+   *  UI renders it as a transition ("Oiii -> R") and never on its own. */
+  filter: string | null;
+}
+
 export interface PolarState {
   state: "idle" | "running" | "paused" | "done" | "error";
   az_error: number;   // signed arcmin

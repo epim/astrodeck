@@ -34,7 +34,15 @@ export const FOCUS_EXPOSURE_PRESETS = [1, 2, 3, 5, 10] as const;
 /** The gain a focus frame starts at. Deliberately higher than Capture's 120:
  *  a focus frame is thrown away, so its noise costs nothing and its job is
  *  purely to show as many stars as possible to measure. 120 is what the sweep
- *  guessed on 2026-07-31 and 8 stars is what it got. */
+ *  guessed on 2026-07-31 and 8 stars is what it got.
+ *
+ *  DOCUMENTATION ONLY since #176 (2026-08-08). The live value is the `focus`
+ *  SCOPE (server/astrodeck/config.py FrameSettingsConfig.focus), which starts
+ *  at this same 200; nothing reads this constant to render or send a frame any
+ *  more, because a client-side default is exactly what made every screen
+ *  disagree with the rig after a reload. Kept because the REASON the focus
+ *  scope's gain is not the capture scope's belongs somewhere a reader of this
+ *  module will find it. */
 export const FOCUS_DEFAULT_GAIN = 200;
 
 // ------------------------------------------------------------------ the POST

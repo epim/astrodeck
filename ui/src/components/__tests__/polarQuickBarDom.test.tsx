@@ -72,6 +72,18 @@ const { api } = await import("../../api");
 const { useStore } = await import("../../store");
 const { PolarQuickBar } = await import("../PolarQuickBar");
 
+/** Seed the `solve` SCOPE — where the strip's numbers live since #176. They
+ *  used to arrive as a `solve_settings` field on the polar prop, which is
+ *  exactly what `PolarAlignSession.start()` erased mid-alignment. */
+const seedSolve = (patch: Record<string, unknown>) =>
+  useStore.setState((s: any) => ({
+    frameSettings: {
+      ...s.frameSettings,
+      solve: { ...s.frameSettings.solve, ...patch },
+    },
+  }) as any);
+const SOLVE_PATH = "/api/camera/frame-settings?scope=solve";
+
 // PUT recorder — the strip's only write path.
 const puts: Array<{ path: string; body: unknown }> = [];
 (api as any).put = async (path: string, body?: unknown) => {
@@ -162,33 +174,33 @@ test("the number AND the az/alt split ride the strip at every width", () => {
 });
 
 test("a picker opens a menu and one tap PUTs the chosen preset", () => {
-  render({ ...LIVE, solve_settings: {
-    exposure_s: 0.3, gain: 200, offset: 30, binning: 1, filter: null } });
+  seedSolve({ exposure_s: 0.3, gain: 200, offset: 30, binning: 1, filter: null });
+  render(LIVE);
   act(() => picker("EXP").click());
   assert.ok(option("2s"), "the exposure menu must list the presets");
   act(() => option("2s").click());
   assert.deepEqual(puts.at(-1), {
-    path: "/api/polar/solve-settings", body: { exposure_s: 2 },
+    path: SOLVE_PATH, body: { exposure_s: 2 },
   });
   assert.ok(!option("2s"), "single-select closes on choice");
 });
 
 test("the long tail exists — narrowband-over-OSC solves at minutes per frame", () => {
-  render({ ...LIVE, solve_settings: {
-    exposure_s: 0.3, gain: 200, offset: 30, binning: 1, filter: null } });
+  seedSolve({ exposure_s: 0.3, gain: 200, offset: 30, binning: 1, filter: null });
+  render(LIVE);
   act(() => picker("EXP").click());
   for (const label of ["10s", "30s", "1m", "2m", "5m"]) {
     assert.ok(option(label), `preset ${label} missing`);
   }
   act(() => option("5m").click());
   assert.deepEqual(puts.at(-1), {
-    path: "/api/polar/solve-settings", body: { exposure_s: 300 },
+    path: SOLVE_PATH, body: { exposure_s: 300 },
   });
 });
 
 test("the custom exposure box PUTs an arbitrary value and closes the menu", () => {
-  render({ ...LIVE, solve_settings: {
-    exposure_s: 0.3, gain: 200, offset: 30, binning: 1, filter: null } });
+  seedSolve({ exposure_s: 0.3, gain: 200, offset: 30, binning: 1, filter: null });
+  render(LIVE);
   act(() => picker("EXP").click());
   const input = win.document.querySelector(
     'input[aria-label="Custom exposure in seconds"]');
@@ -198,22 +210,22 @@ test("the custom exposure box PUTs an arbitrary value and closes the menu", () =
     .find((b: any) => (b.textContent ?? "").trim() === "Set");
   act(() => (setBtn as any).click());
   assert.deepEqual(puts.at(-1), {
-    path: "/api/polar/solve-settings", body: { exposure_s: 45 },
+    path: SOLVE_PATH, body: { exposure_s: 45 },
   });
 });
 
 test("gain and binning pick from menus too — no cycling", () => {
-  render({ ...LIVE, solve_settings: {
-    exposure_s: 0.3, gain: 200, offset: 30, binning: 1, filter: null } });
+  seedSolve({ exposure_s: 0.3, gain: 200, offset: 30, binning: 1, filter: null });
+  render(LIVE);
   act(() => picker("GAIN").click());
   act(() => option("400").click());
   assert.deepEqual(puts.at(-1), {
-    path: "/api/polar/solve-settings", body: { gain: 400 },
+    path: SOLVE_PATH, body: { gain: 400 },
   });
   act(() => picker("BIN").click());
   act(() => option("2×2").click());
   assert.deepEqual(puts.at(-1), {
-    path: "/api/polar/solve-settings", body: { binning: 2 },
+    path: SOLVE_PATH, body: { binning: 2 },
   });
 });
 
@@ -222,20 +234,50 @@ test("the filter face NAMES the filter, never an abstraction", () => {
      which is a statement about our bookkeeping — the wheel is a physical
      object and always has SOME filter in the beam. Unpinned, the face is the
      wheel's current slot (position 0 = "L" in this fixture). */
-  render({ ...LIVE, solve_settings: {
-    exposure_s: 0.3, gain: 200, offset: 30, binning: 1, filter: null } });
+  seedSolve({ exposure_s: 0.3, gain: 200, offset: 30, binning: 1, filter: null });
+  render(LIVE);
   assert.match(picker("FILT").getAttribute("aria-label"), /FILT — L$/);
   assert.ok(!/as-is/.test(text()), "the face must not print an abstraction");
+});
 
-  // Pinned, the face is the pin.
-  render({ ...LIVE, solve_settings: {
-    exposure_s: 0.3, gain: 200, offset: 30, binning: 1, filter: "G" } });
-  assert.match(picker("FILT").getAttribute("aria-label"), /FILT — G$/);
+test("a pin that has not moved the wheel is a TRANSITION, never the wheel", () => {
+  /* 2026-08-08, the whole reason for #176: the operator set FILT=R here and
+     Capture showed Oiii. Both were honest — this face read the PIN, Capture
+     read the wheel — and neither said which. On the Align screen a pin is
+     applied inside a solve frame (polar/native.py::_apply_solve_filter), so
+     with the session idle NOTHING has moved and "R" is a claim about the light
+     path that the light path does not make.
+
+     The wheel is on L in this fixture. Pinning G must read "L → G". */
+  seedSolve({ filter: "G" });
+  render(LIVE);
+  const face = picker("FILT").getAttribute("aria-label");
+  assert.match(face, /FILT — L → G$/,
+    `the face says "${face}" — a pin the wheel has not reached must never be ` +
+    "rendered as the wheel's position");
+
+  // ...and once the wheel HAS reached it, there is no transition left to show.
+  const prev = useStore.getState().status;
+  useStore.setState({ status: { ...(prev as any),
+    filterwheel: { ...(prev as any).filterwheel, position: 2 } } } as any);
+  render(LIVE);
+  assert.match(picker("FILT").getAttribute("aria-label"), /FILT — G$/,
+    "an arrow pointing at where the wheel already is, is noise");
+  useStore.setState({ status: prev } as any);
+});
+
+test("the pin names WHO will move the wheel, not just that it has not moved", () => {
+  seedSolve({ filter: "G" });
+  render(LIVE);
+  act(() => picker("FILT").click());
+  assert.match(text(), /alignment takes its next solve frame/i,
+    "the arrow says the wheel has not moved; nothing said what would move it");
+  act(() => picker("FILT").click());
 });
 
 test("the filter menu offers every real slot — never the opaque one", () => {
-  render({ ...LIVE, solve_settings: {
-    exposure_s: 0.3, gain: 200, offset: 30, binning: 1, filter: "B" } });
+  seedSolve({ filter: "B" });
+  render(LIVE);
   act(() => picker("FILT").click());
   const labels = Array.from(win.document.querySelectorAll("[role='option']"))
     .map((o: any) => (o.textContent ?? "").trim());
@@ -248,7 +290,7 @@ test("the filter menu offers every real slot — never the opaque one", () => {
   assert.ok(follow, "no way to stop pinning a filter");
   act(() => (follow as any).click());
   assert.deepEqual(puts.at(-1), {
-    path: "/api/polar/solve-settings", body: { filter: null },
+    path: SOLVE_PATH, body: { filter: null },
   });
 });
 
@@ -258,8 +300,8 @@ test("an open menu is nudged back inside the viewport", () => {
      left of the window — the operator saw an empty black rectangle, because
      every option's text was outside the screen. PickerButton now measures
      after paint and translates the minimum amount to fit. */
-  render({ ...LIVE, solve_settings: {
-    exposure_s: 0.3, gain: 200, offset: 30, binning: 1, filter: null } });
+  seedSolve({ exposure_s: 0.3, gain: 200, offset: 30, binning: 1, filter: null });
+  render(LIVE);
   // jsdom reports zero-size rects, so the panel's geometry is stubbed at the
   // PROTOTYPE (React mounts a fresh node on every open, so a per-node stub
   // would measure the previous panel). 120px off the left edge + the 8px

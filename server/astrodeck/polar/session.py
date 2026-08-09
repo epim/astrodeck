@@ -12,6 +12,8 @@ import math
 import random
 from typing import Any
 
+from ..config import FrameSettingsConfig, frames_payload, publish_frames, \
+    set_frame_settings
 from ..devices.nina import pick
 from ..devices.sim import _sim_delay
 from ..events import bus
@@ -63,10 +65,17 @@ class PolarAlignSession:
         # The imaging settings the NATIVE driver's solve frames use, mutable at
         # any time (a PUT mid-run applies from the next frame — that is the
         # point: when solves fail behind thin cloud, the fix is a longer
-        # exposure NOW, not after abandoning the session). Read via
-        # ``solve_settings`` below so a missing/partial dict can never take the
-        # capture path down. NINA and the simulator ignore these.
-        self._solve_settings: dict[str, Any] = {}
+        # exposure NOW, not after abandoning the session). NINA and the
+        # simulator ignore these.
+        #
+        # THEY NO LONGER LIVE HERE. Until 2026-08-08 this was a private dict on
+        # the session: it died with the process, no client ever read it back
+        # (``GET /api/polar/solve-settings`` existed and nothing called it), and
+        # it was published as a field of the ``polar`` event — which ``start()``
+        # resets to ``_idle()``, so beginning an alignment wiped the numbers off
+        # every Align screen while the engine went on using them. It is now the
+        # ``solve`` scope of the persisted frame settings (config.py), read
+        # through the property below so this class still owns the vocabulary.
         # Pause flag polled by the FIRST-PARTY drivers — the native TPPA engine
         # (``polar/native.py``) and ``_run_sim`` below — via ``wait_if_paused``.
         # NINA has its own mechanism (a ws "pause-alignment" action), so this
@@ -92,30 +101,28 @@ class PolarAlignSession:
     #: The native solve frame's imaging defaults — the values that were
     #: hardcoded at the capture call until 2026-08-07. ``filter`` None means
     #: "leave the wheel where it is", which is what the code always did.
-    SOLVE_DEFAULTS: dict[str, Any] = {"exposure_s": 0.3, "gain": 200,
-                                      "offset": 30, "binning": 1, "filter": None}
+    #: Derived from the config model so there is ONE copy of each number
+    #: (``polar/native.py`` used to keep a second one).
+    SOLVE_DEFAULTS: dict[str, Any] = FrameSettingsConfig().solve.model_dump()
 
     @property
     def solve_settings(self) -> dict[str, Any]:
-        """The effective solve-frame settings: defaults overlaid with whatever
-        the operator has set. Always complete — a reader never needs a guard."""
-        return {**self.SOLVE_DEFAULTS,
-                **{k: v for k, v in self._solve_settings.items()
-                   if v is not None}}
+        """The effective solve-frame settings — the persisted ``solve`` scope.
+        Always complete, so a reader never needs a guard."""
+        return frames_payload()["solve"]
 
     def set_solve_settings(self, **kw: Any) -> dict[str, Any]:
         """Merge operator-set solve settings (None values clear back to the
-        default) and publish them on the polar event so every client renders
-        the same numbers. Takes effect on the next frame; safe mid-run."""
-        for key, value in kw.items():
-            if key not in self.SOLVE_DEFAULTS:
-                continue
-            if value is None:
-                self._solve_settings.pop(key, None)
-            else:
-                self._solve_settings[key] = value
-        eff = self.solve_settings
-        self._publish(solve_settings=eff)
+        default) and announce them on the ``frames`` event, so every client
+        renders the same numbers. Takes effect on the next frame; safe mid-run.
+
+        The announcement is its OWN event, not a field on ``polar``: a setting
+        outlives the session that reads it, and publishing it as session state
+        meant ``start()`` erased it from every screen.
+        """
+        patch = {k: v for k, v in kw.items() if k in self.SOLVE_DEFAULTS}
+        eff = set_frame_settings("solve", patch)
+        publish_frames(getattr(self.hub, "guider", None) if self.hub else None)
         return eff
 
     @property

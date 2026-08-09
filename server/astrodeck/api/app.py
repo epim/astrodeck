@@ -57,12 +57,13 @@ from ..catalog.tiles import router as tiles_router
 from ..catalog.framing import router as framing_router
 from ..catalog.visibility import router as visibility_router
 from ..catalog.region import router as region_router
-from ..config import (AlertSink, AuthConfig, CalibrationConfig,
+from ..config import (FRAME_SCOPES, AlertSink, AuthConfig, CalibrationConfig,
                       ConfigVersionConflict, CoolingConfig,
                       EscalationConfig, GuideConfig, NamingConfig, Optics,
                       ProvidersConfig, RotatorConfig, SafetyConfig, Site,
                       SurveyConfig, UpdateConfig, WcsStampConfig, WeatherConfig,
-                      config_store, redacted)
+                      config_store, frames_payload, publish_frames, redacted,
+                      set_frame_settings)
 from ..locations import (LocationLibraryFull, LocationNameCollision,
                          location_store)
 from .. import __version__
@@ -966,7 +967,33 @@ class GuideCameraSettingsBody(BaseModel):
     declared out here; keep new ones out here too."""
     exposure_s: float | None = Field(None, gt=0, le=15)
     gain: int | None = Field(None, ge=0, le=1000)
+    #: #187: applied to every guide exposure since the loop was written, and
+    #: settable by nothing until 2026-08-08 — the route answered a literal 30.
+    offset: int | None = Field(None, ge=0, le=255)
     binning: int | None = Field(None, ge=1, le=4)
+
+
+class FrameSettingsBody(BaseModel):
+    """A partial update to ONE frame-settings scope (#176).
+
+    All optional, ``exclude_unset`` semantics: only the fields the client SENDS
+    change, and an explicit null clears that field back to its default — the
+    contract ``/api/polar/solve-settings`` has always had, kept because that
+    route is now a delegate onto this one.
+
+    MODULE SCOPE, like ``GuideCameraSettingsBody`` above and for the same
+    reason: ``app.py`` runs under ``from __future__ import annotations``, so a
+    body model declared inside ``create_app`` is not in the globals FastAPI
+    resolves signatures against and the parameter silently degrades to a query
+    field. Keep new body models out here.
+    """
+    exposure_s: float | None = Field(None, gt=0, le=3600)
+    gain: int | None = Field(None, ge=0, le=1000)
+    offset: int | None = Field(None, ge=0, le=255)
+    binning: int | None = Field(None, ge=1, le=4)
+    #: A filter NAME, or null for "leave the wheel where it is". Never a slot
+    #: index: the index is a property of how the wheel was wired this session.
+    filter: str | None = None
 
 
 class LearnOffsetsBody(BaseModel):
@@ -3666,6 +3693,98 @@ def create_app() -> FastAPI:
             black=black, mid=mid, white=white)
         return Response(png, media_type="image/png", headers=_PREVIEW_CACHE)
 
+    # -------------------------------------------- frame settings, by PURPOSE
+    # ONE home per (camera, purpose) pair — capture / focus / solve on the
+    # imaging camera, guide on the guide camera — instead of one per SCREEN.
+    #
+    # The night this closes: the operator set FILT=R on the Align screen and
+    # the Capture screen said Oiii. Both were internally honest — Align was
+    # showing a server-side pin the polar session only acts on inside a solve
+    # frame, Capture was showing the wheel — and neither said which question it
+    # was answering. Every setting behind those screens had the same shape: a
+    # private copy per surface, seeded from a hardcoded constant, that no other
+    # surface could see and no reload could recover.
+    #
+    # The scopes stay SEPARATE on purpose. A guide camera's exposure is
+    # legitimately not the imaging camera's, and a 0.3 s plate-solve frame is
+    # not a light frame. Folding them would be as wrong as splitting them per
+    # screen. What was missing was a name for which is which.
+
+    def _require_scope_cap(scope: str, principal: Principal) -> None:
+        """The cap a scope's WRITE needs, kept at the scope the operator is
+        actually reaching for: solve settings drive an alignment (mount), guide
+        settings drive the guider, the rest are imaging. Enforced here rather
+        than by widening one route dependency, so unifying the transport did
+        not quietly widen who can move the mount."""
+        need = {"solve": CAP_CONTROL_MOUNT,
+                "guide": CAP_CONTROL_GUIDE}.get(scope, CAP_CONTROL_CAPTURE)
+        if not principal.has(need):
+            raise HTTPException(403, f"{scope} frame settings need {need}")
+        return
+
+    @app.get("/api/camera/frame-settings",
+             dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
+    async def frame_settings_get():
+        """Every scope's effective settings.
+
+        The COLD-START read the old model never had. ``GET
+        /api/polar/solve-settings`` existed and no client had ever called it,
+        so after a reload the Align screen rendered mirrored defaults over a
+        live server-side pin that would drive the wheel on the next run. The
+        WS ``hello`` carries the same block (``hub.summary()``), so a client
+        that connects normally does not need this at all — it is here for the
+        cold GET and for scripted callers."""
+        return {"frames": frames_payload(hub.guider)}
+
+    @app.put("/api/camera/frame-settings",
+             dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS, CAP_CONTROL_CAPTURE, CAP_CONTROL_MOUNT,
+             CAP_CONTROL_GUIDE)
+    async def frame_settings_put(
+            body: FrameSettingsBody,
+            scope: str = Query(..., description="capture | focus | solve | guide"),
+            principal: Principal = Depends(require(CAP_VIEW_STATUS))):
+        """Patch one scope. Accepted at ANY time, including mid-run: every
+        consumer reads its scope per frame, so when solves start failing behind
+        thin cloud the fix is a longer exposure NOW."""
+        if scope not in FRAME_SCOPES:
+            raise HTTPException(
+                422, f"unknown scope {scope!r} — valid scopes are "
+                     f"{', '.join(FRAME_SCOPES)}")
+        _require_scope_cap(scope, principal)
+        patch = body.model_dump(exclude_unset=True)
+        if not patch:
+            raise HTTPException(422, "nothing to set")
+        # A pin naming a filter this wheel does not have is a pin that will
+        # silently do nothing on the next frame — rejected at the door, where
+        # the operator is still looking at the screen that sent it.
+        if patch.get("filter"):
+            fw = hub.devices.get("filterwheel")
+            names = list(getattr(fw, "filter_names", []) or []) if fw else []
+            if patch["filter"] not in names:
+                have = ", ".join(names) if names else "no wheel connected"
+                raise HTTPException(
+                    422, f"no filter named {patch['filter']!r} ({have})")
+        # LIVE FIRST, persist second — for the guide scope the running guider
+        # can REFUSE (binning mid-session), and persisting before asking would
+        # leave the file promising what the loop refused.
+        if scope == "guide":
+            live = {k: v for k, v in patch.items()
+                    if k != "filter" and v is not None}
+            g = hub.guider
+            if live and g is not None and hasattr(g, "set_camera_settings"):
+                try:
+                    g.set_camera_settings(**live)
+                except DeviceError as e:
+                    raise HTTPException(409, str(e))
+        try:
+            eff = await asyncio.to_thread(set_frame_settings, scope, patch)
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+        frames = publish_frames(hub.guider)
+        return {"scope": scope, "settings": eff, "frames": frames}
+
     @app.post("/api/camera/cooler", dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
     @declare(CAP_CONTROL_CAPTURE)
     async def cooler(body: CoolerBody):
@@ -4540,17 +4659,19 @@ def create_app() -> FastAPI:
              dependencies=[Depends(require(CAP_VIEW_STATUS))])
     @declare(CAP_VIEW_STATUS)
     async def guide_camera_settings_get():
-        g = hub.guider
-        if g is not None and hasattr(g, "camera_settings"):
-            return g.camera_settings()          # the LIVE values, not the file
-        gc = config_store.cfg().guide
-        return {"exposure_s": gc.exposure_s, "gain": gc.gain,
-                "offset": 30, "binning": gc.binning}
+        # A delegate onto the ``guide`` scope (#176): the LIVE guider's values
+        # when one is running, the persisted config otherwise. The literal
+        # ``"offset": 30`` this used to return was #187 — a value applied to
+        # every guide exposure, reported as a constant that was not necessarily
+        # it, and settable by nothing.
+        return frames_payload(hub.guider)["guide"]
 
     @app.put("/api/guide/camera-settings",
              dependencies=[Depends(require(CAP_CONTROL_GUIDE))])
     @declare(CAP_CONTROL_GUIDE)
     async def guide_camera_settings_put(body: GuideCameraSettingsBody):
+        """A delegate onto the ``guide`` scope (#176) — same store, same
+        announcement. Kept because clients and tests name this path."""
         settings = {k: v for k, v in body.model_dump().items() if v is not None}
         if not settings:
             raise HTTPException(422, "nothing to set")
@@ -4560,21 +4681,17 @@ def create_app() -> FastAPI:
         # promising a binning the running guider refused, and the next
         # construction would apply it silently.
         g = hub.guider
-        eff = None
         if g is not None and hasattr(g, "set_camera_settings"):
             try:
-                eff = g.set_camera_settings(**settings)
+                g.set_camera_settings(**settings)
             except DeviceError as e:
                 raise HTTPException(409, str(e))
-        gc = config_store.cfg().guide.model_copy(update=settings)
         try:
-            cfg = await asyncio.to_thread(config_store.set_guide, gc)
+            await asyncio.to_thread(set_frame_settings, "guide", settings)
         except ValueError as e:
             raise HTTPException(422, str(e))
-        bus.publish("config", config=redacted(cfg))
-        gc2 = config_store.cfg().guide
-        return eff or {"exposure_s": gc2.exposure_s, "gain": gc2.gain,
-                       "offset": 30, "binning": gc2.binning}
+        bus.publish("config", config=redacted(config_store.cfg()))
+        return publish_frames(hub.guider)["guide"]
 
     # ---------------------------------------------------- guiding assistant
     # A guided ~1-2 min measurement session (drift / periodic error / seeing +
@@ -4979,7 +5096,14 @@ def create_app() -> FastAPI:
         offset, binning, filter. Accepted at ANY time, including mid-run: the
         driver reads them per frame, so when solves start failing behind thin
         cloud the fix is a longer exposure NOW, not a restarted session. A null
-        field clears back to its default. NINA/sim runs ignore these."""
+        field clears back to its default. NINA/sim runs ignore these.
+
+        A THIN DELEGATE onto the ``solve`` scope of
+        ``PUT /api/camera/frame-settings`` since #176 (2026-08-08) — same store,
+        same validation, same ``frames`` announcement. The path stays because
+        clients and tests name it, and because "the solve frame's settings" is
+        a true description of what it edits; what it no longer is, is a second
+        place where those settings LIVE."""
         settings = body.model_dump(exclude_unset=True)
         if settings.get("filter"):
             fw = hub.devices.get("filterwheel")

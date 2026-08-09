@@ -5,19 +5,37 @@ Until 2026-08-07 every solve frame was hardcoded at the capture call:
 marginal solves — six failures in eleven minutes on 2026-08-06 — the operator
 had no move at all: not a longer exposure, not more gain, not the L filter.
 
-The settings live on the session and are read PER FRAME, so a PUT mid-run
-applies to the very next solve. That is the point: when solves start failing
-behind thin cloud, the fix is a longer exposure NOW, not a restarted session.
+The settings are read PER FRAME, so a PUT mid-run applies to the very next
+solve. That is the point: when solves start failing behind thin cloud, the fix
+is a longer exposure NOW, not a restarted session.
+
+2026-08-08 (#176): they no longer live on the SESSION. They are the ``solve``
+scope of the persisted frame settings, and the session is one reader of them —
+because a private dict on a session object died with the process, was published
+as a field of the ``polar`` event (which ``start()`` resets), and was never read
+back by any client. The route and its contract are unchanged; this file still
+grades that contract, and now also grades that the value survives the session.
 """
 from __future__ import annotations
 
 import numpy as np
 import pytest
 
+from astrodeck.config import FrameSettingsConfig, config_store
+from astrodeck.events import bus
 from astrodeck.polar import native as nat
 from astrodeck.polar.session import PolarAlignSession
 
 pytestmark = pytest.mark.asyncio
+
+
+@pytest.fixture(autouse=True)
+def _fresh_frames():
+    """The scope is PERSISTED now, so a test that sets it would otherwise leak
+    into whatever runs next in this worker. Reset before and after."""
+    config_store.set_frames(FrameSettingsConfig())
+    yield
+    config_store.set_frames(FrameSettingsConfig())
 
 
 class _Frame:
@@ -138,11 +156,48 @@ def test_unknown_keys_are_ignored_not_stored():
     assert "roi" not in s.solve_settings
 
 
-def test_setting_publishes_so_every_client_renders_the_same_numbers():
+async def test_setting_publishes_so_every_client_renders_the_same_numbers():
+    """On the ``frames`` event, NOT as a field of ``polar``.
+
+    Piggybacking on the session event is what made ``start()`` — which resets
+    ``state`` to ``_idle()``, a dict with no ``solve_settings`` key — wipe the
+    numbers off every Align screen the instant an alignment began, while the
+    engine went on solving at the operator's values. A setting outlives the
+    session that reads it, so it gets its own event.
+    """
+    q = bus.subscribe()
+    try:
+        s = _Session()
+        s.set_solve_settings(gain=250)
+        events = []
+        while not q.empty():
+            events.append(q.get_nowait())
+        frames = [e for e in events if e.type == "frames"]
+        assert frames, [e.type for e in events]
+        assert frames[-1].data["solve"]["gain"] == 250, frames[-1].data
+        assert not any(
+            "solve_settings" in p for p in s.published), (
+            "solve settings rode the polar event again — start() erases that")
+    finally:
+        bus.unsubscribe(q)
+
+
+def test_the_setting_outlives_the_session_object():
+    """The reload half of the defect. A pin set in one session was invisible to
+    the next one and to every client that reconnected — the server-side value
+    was alive and driving the wheel while the screen showed a default."""
+    _Session().set_solve_settings(exposure_s=7.5, gain=333)
+    assert _Session().solve_settings["exposure_s"] == 7.5
+    assert _Session().solve_settings["gain"] == 333
+
+
+def test_starting_a_run_does_not_erase_the_settings():
+    """``start()`` resets ``state`` to ``_idle()``. That used to take the
+    solve settings with it, on every client, mid-alignment."""
     s = _Session()
-    s.set_solve_settings(gain=250)
-    assert any(p.get("solve_settings", {}).get("gain") == 250
-               for p in s.published), s.published
+    s.set_solve_settings(exposure_s=4.0, filter=None)
+    s.state = s._idle()          # exactly what start() does before dispatch
+    assert s.solve_settings["exposure_s"] == 4.0
 
 
 # ------------------------------------------------------------ the capture path

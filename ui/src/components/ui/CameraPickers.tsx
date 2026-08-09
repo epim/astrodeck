@@ -16,7 +16,7 @@
 
    Built on PickerButton, so they inherit its viewport-clamping and its grid
    layout for free. */
-import type { JSX } from "react";
+import { useRef, type JSX } from "react";
 import PickerButton from "./PickerButton";
 import type { DialCategory } from "./CameraDial";
 import { useStatus } from "../../store";
@@ -129,26 +129,110 @@ export function BinningPicker({
   );
 }
 
+/** The sensor's ADU pedestal.
+ *
+ *  A CONTINUUM, not a list — its useful values depend on the sensor and it is
+ *  set once and forgotten — so this is one field and a Set button rather than a
+ *  preset grid, matching the radial dial's `kind: "entry"` ring.
+ *
+ *  It exists because offset was unreachable on three of the five surfaces that
+ *  claimed to offer it: the Align bar rendered four pickers and this was not
+ *  one of them, so the ONLY way to change a solve frame's offset was the radial
+ *  dial over the reticle — which hides itself entirely below 124 px of stage.
+ */
+export function OffsetPicker({
+  value, onPick, className = "", align = "left",
+  disabled = false, disabledReason, onBlocked,
+}: {
+  value: number;
+  onPick: (offset: number) => void;
+  className?: string;
+  align?: "left" | "right";
+  disabled?: boolean;
+  disabledReason?: string | null;
+  onBlocked?: (reason: string) => void;
+}): JSX.Element {
+  const box = useRef<HTMLInputElement>(null);
+  const apply = () => {
+    const v = Number(box.current?.value ?? "");
+    if (!Number.isFinite(v) || v < 0 || v > 255) return;
+    onPick(Math.round(v));
+    if (box.current) box.current.value = "";
+    // PickerButton owns its open state and listens for Escape at the window —
+    // the one way a child can ask the panel to close.
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+  };
+  return (
+    <PickerButton
+      label="OFFS"
+      summary={String(value)}
+      className={className}
+      align={align}
+      disabled={disabled}
+      disabledReason={disabledReason}
+      onBlocked={onBlocked}
+      options={[]}
+      selected={[]}
+      onPick={() => {}}
+    >
+      <div className="flex items-center gap-1.5 min-w-[190px]">
+        <input
+          ref={box}
+          className="field flex-1 min-w-0 mono text-xs"
+          inputMode="numeric"
+          placeholder={String(value)}
+          aria-label="Offset in ADU"
+          defaultValue=""
+          onKeyDown={(e) => { if (e.key === "Enter") apply(); }}
+        />
+        <button type="button" className="btn min-h-[40px] text-[11px] !px-3"
+          onClick={apply}>
+          Set
+        </button>
+      </div>
+      <p className="text-[10px] text-faint mt-1 max-w-[190px] leading-snug">
+        ADU pedestal — set once per camera.
+      </p>
+    </PickerButton>
+  );
+}
+
+/** The FILT face, given the wheel's actual slot and this scope's pin.
+ *
+ *  ONE PHYSICAL RESOURCE, so a pin is not a setting — it is an INTENT to move
+ *  the wheel, and until something acts on it the wheel is somewhere else. The
+ *  face renders that as a transition (`Oiii → R`) and never as `R` alone.
+ *
+ *  Exported so the radial dial's summary and the test can read the same rule.
+ */
+export function filterFace(
+  current: string | null, pin: string | null,
+): { face: string; pending: boolean } {
+  if (!pin) return { face: current ?? "—", pending: false };
+  if (pin === current) return { face: current, pending: false };
+  return { face: `${current ?? "—"} → ${pin}`, pending: true };
+}
+
 /**
- * THE FILTER IN THE LIGHT PATH — always named, never an abstraction.
+ * THE FILTER IN THE LIGHT PATH — always named, never an abstraction, and never
+ * a claim about where the wheel is that the wheel does not make.
  *
  * The face used to read "as-is" whenever nothing was pinned, which is a
- * statement about our own bookkeeping, not about the rig: the wheel is a
- * physical object and it always has SOME filter in the beam (operator,
- * 2026-08-07 21:27 — "filt should never show as-is, it should show the
- * current filter"). So the face answers the only question worth asking —
- * what will the next frame shoot through? — which is the pinned filter when
- * one is pinned, and the wheel's actual current slot when none is.
+ * statement about our own bookkeeping, not about the rig (operator,
+ * 2026-08-07 21:27). It then read the PIN, unconditionally and unlabelled —
+ * `value ?? currentName` — which is worse: on 2026-08-08 the operator set FILT
+ * to R on the Align screen, where a pin is applied only inside a solve frame,
+ * and this face said "R" over a wheel parked on Oiii. Capture, reading the
+ * wheel, said Oiii and was right. Two surfaces, one wheel, two answers.
  *
- * `value` is the PIN (null = not pinned). The distinction still exists and
- * still matters (a pinned filter is re-asserted before every frame, an
- * unpinned one follows whatever the wheel is doing) — it is carried by the
- * menu's selection dot and the "follow the wheel" row, not by hiding the
- * filter's name.
+ * So the face carries BOTH, always in the same order: what is in the beam now,
+ * then what this scope will move it to. A pin that has not yet moved the wheel
+ * must never look like the wheel.
  */
 export function FilterPicker({
   value, onPick, className = "", align = "left",
   excludeOpaque = true, disabled = false, disabledReason, onBlocked,
+  pendingNote,
 }: {
   value: string | null;
   onPick: (name: string | null) => void;
@@ -160,6 +244,11 @@ export function FilterPicker({
   disabled?: boolean;
   disabledReason?: string | null;
   onBlocked?: (reason: string) => void;
+  /** WHEN this scope's pin reaches the wheel, in the operator's words — e.g.
+   *  "applied when the alignment runs". Shown whenever the pin and the wheel
+   *  disagree, because "the wheel has not moved yet" is inferable from the
+   *  arrow but "and here is what would move it" is not. */
+  pendingNote?: string;
 }): JSX.Element | null {
   const wheel = useStatus()?.filterwheel;
   const names = wheel?.names ?? [];
@@ -171,9 +260,7 @@ export function FilterPicker({
 
   const currentName = typeof wheel?.position === "number"
     ? names[wheel.position] ?? null : null;
-  // What the NEXT frame shoots through: the pin if pinned, else what is in
-  // the beam right now. Always a real filter name when the wheel can say.
-  const face = value ?? currentName ?? "—";
+  const { face, pending } = filterFace(currentName, value);
 
   return (
     <PickerButton
@@ -193,6 +280,11 @@ export function FilterPicker({
       selected={value ? [value] : []}
       onPick={(id) => onPick(id)}
     >
+      {pending && pendingNote && (
+        <p className="col-span-2 text-[10px] text-warn leading-snug px-1 pt-1">
+          The wheel is on {currentName ?? "an unknown slot"}. {pendingNote}
+        </p>
+      )}
       {/* Unpinning is a real intent — "stop re-asserting a filter, just use
           whatever the wheel is on" — so it keeps a row. It is NOT the face. */}
       <div className="col-span-2 border-t border-line mt-1 pt-1.5">
@@ -227,9 +319,14 @@ export function FilterPicker({
    existed, when three screens grew three vocabularies for four controls.
 
    `filters` is passed in rather than read from the store here: a caller with no
-   wheel (the guide camera) must not be handed one, and the ring must never
-   offer an opaque slot — a solve or focus frame through a carrier with no glass
-   is a dark frame. */
+   wheel (the guide camera) must not be handed one. What the builder does NOT
+   leave to the caller any more is DROPPING THE OPAQUE SLOTS — a focus or solve
+   frame through a carrier with no glass measures nothing at every point, which
+   on 2026-08-08 was not a slow failure but a hang (fourteen re-exposures at one
+   focuser position). `FilterPicker` had always dropped them internally;
+   `PolarView` dropped them at the call site; `FocusView` did not, and offered a
+   blackout slot as a sweep filter. One of three callers getting it right is
+   what a caller-side rule looks like from the inside. */
 export interface CameraDialValues {
   exposure_s: number;
   gain: number;
@@ -243,11 +340,17 @@ export function cameraDialCategories(p: {
   exposures?: readonly number[];
   gains?: readonly number[];
   maxBin?: number;
-  filters?: readonly string[];
-  /** The filter actually in the beam, so FILT names a real filter rather than
-   *  an abstraction (2026-08-07: "as-is" described our bookkeeping, not the
-   *  rig). */
-  currentFilter?: string | null;
+  /** The wheel's FULL slot list, opaque slots included — the builder drops
+   *  them. Pass `status.filterwheel.names` straight through. */
+  filters?: readonly (string | null | undefined)[];
+  /** Per-slot blackout flags, index-aligned with `filters`
+   *  (`status.filterwheel.opaque`). */
+  opaqueSlots?: readonly boolean[];
+  /** REQUIRED: the filter actually in the beam right now. Not optional, because
+   *  `values.filter` is a PIN — an intent to move the wheel — and a dial that
+   *  renders a pin without the wheel is the 2026-08-08 R-vs-Oiii defect. A
+   *  caller with no wheel passes null and says so. */
+  currentFilter: string | null;
   onExposure: (s: number) => void;
   onGain: (g: number) => void;
   onBinning?: (b: number) => void;
@@ -265,7 +368,10 @@ export function cameraDialCategories(p: {
       onPick: (id) => p.onExposure(Number(id)),
     },
     {
-      id: "gain", label: "GAIN",
+      // Every hub needs its own glyph: the ring renders the icon at the centre
+      // and falls back to label text without one, so three of the four hubs
+      // read as unfinished beside EXP's.
+      id: "gain", label: "GAIN", icon: "brightness",
       options: gains.map((g) => ({ id: String(g), label: String(g) })),
       selected: String(p.values.gain),
       onPick: (id) => p.onGain(Number(id)),
@@ -273,7 +379,7 @@ export function cameraDialCategories(p: {
   ];
   if (p.onBinning) {
     out.push({
-      id: "binning", label: "BIN",
+      id: "binning", label: "BIN", icon: "grid",
       options: bins.map((b) => ({ id: String(b), label: `${b}×${b}` })),
       selected: String(p.values.binning ?? 1),
       onPick: (id) => p.onBinning!(Number(id)),
@@ -294,10 +400,23 @@ export function cameraDialCategories(p: {
       },
     });
   }
-  if (p.onFilter && (p.filters?.length ?? 0) > 0) {
+  // OPAQUE SLOTS ARE DROPPED HERE, once, for every caller. A blackout slot is
+  // a carrier with no glass: a focus sweep through one measures nothing at
+  // every position, and the engine only advances when a measurement lands — so
+  // it is a hang, not a bad result (fourteen re-exposures at one position on
+  // the rig, 2026-08-08). Blank slot names go too: an unnamed slot is not an
+  // option, it is a gap in the wheel's configuration.
+  const usable = (p.filters ?? [])
+    .map((name, i) => ({ name, i }))
+    .filter(({ name, i }) => !!name && !(p.opaqueSlots?.[i] ?? false))
+    .map(({ name }) => name as string);
+  if (p.onFilter && usable.length > 0) {
     out.push({
-      id: "filter", label: "FILT",
-      options: (p.filters ?? []).map((f) => ({ id: f, label: f })),
+      id: "filter", label: "FILT", icon: "frame",
+      options: usable.map((f) => ({ id: f, label: f })),
+      // The pin when pinned, else the wheel's real slot — so the ring's mark
+      // is never on a filter that is neither where the wheel is nor where it
+      // is going.
       selected: p.values.filter ?? p.currentFilter ?? undefined,
       onPick: (id) => p.onFilter!(id),
     });

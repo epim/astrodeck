@@ -48,6 +48,22 @@ _NO_UI_CALLER = {
         "button, since a UI that can fake 'unsafe' can also fake 'safe'",
     "/api/remote/config":
         "written by the relay pairing flow and the installer, not by hand",
+    "/api/guide/camera-settings":
+        "as /api/polar/solve-settings below — a compatibility alias onto "
+        "PUT /api/camera/frame-settings?scope=guide, which the UI calls "
+        "(GuideQuickBar -> store.setFrameSettings). NOTE: this was NOT flagged "
+        "when the UI stopped calling it, because a stale comment in "
+        "GuideQuickBar.tsx still named the path and `_is_referenced` matches "
+        "the whole file, comments included. A detector that a comment can "
+        "satisfy is one a comment can also blind",
+    "/api/polar/solve-settings":
+        "a COMPATIBILITY ALIAS, not an unreachable feature: since #176 it is a "
+        "thin delegate onto PUT /api/camera/frame-settings?scope=solve, which "
+        "the UI does call (ui/src/store.ts setFrameSettings). Same store, same "
+        "validation, same `frames` announcement — so the feature behind this "
+        "path is reachable, and test_frame_settings.py asserts the two doors "
+        "open onto one room. The path stays because external clients and "
+        "test_polar_solve_settings.py name it",
 }
 
 #: Routes that are UNREACHABLE AND SHOULD NOT BE — found by this test on

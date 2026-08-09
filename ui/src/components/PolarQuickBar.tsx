@@ -1,9 +1,8 @@
 import { useRef } from "react";
-import { api } from "../api";
-import { useStatus, useStore } from "../store";
+import { useFrameSettings, useStatus, useStore } from "../store";
 import { polarTier } from "./polar";
 import {
-  BinningPicker, ExposurePicker, FilterPicker, GainPicker,
+  BinningPicker, ExposurePicker, FilterPicker, GainPicker, OffsetPicker,
 } from "./ui/CameraPickers";
 import { useCanControlMount } from "../lib/caps";
 
@@ -33,23 +32,19 @@ type QuickBarPolar = {
   az_error: number;
   alt_error: number;
   activity?: "exposing" | "solving" | null;
-  solve_settings?: SolveSettings;
 };
 
-export type SolveSettings = {
-  exposure_s: number;
-  gain: number;
-  offset: number;
-  binning: number;
-  filter: string | null;
-};
+/* The solve frame's settings are no longer a field on the polar event and no
+   longer mirrored here (#176). They are the `solve` SCOPE, seeded by the WS
+   hello and replaced by the `frames` event, because:
 
-/* The server's defaults, mirrored so the pickers render sane values before
-   the first polar event carries `solve_settings`. The server remains the
-   authority the moment it speaks. */
-const DEFAULTS: SolveSettings = {
-  exposure_s: 0.3, gain: 200, offset: 30, binning: 1, filter: null,
-};
+     - a mirrored DEFAULTS const is a second source of truth, and after a
+       reload it was the only one on screen — the server's live pin, which
+       would drive the wheel on the next run, was invisible;
+     - `PolarAlignSession.start()` resets its state to `_idle()`, which carries
+       no solve_settings, and the client applies polar events wholesale — so
+       the instant an alignment began every face here reverted to those
+       defaults while the engine went on solving at the operator's values. */
 
 /* Presets, formatting and the controls themselves are SHARED (CameraPickers):
    the camera behind a solve frame is the camera behind a focus frame, and a
@@ -63,6 +58,9 @@ export function PolarQuickBar({ polar }: { polar: QuickBarPolar }) {
   const showToast = useStore((s) => s.showToast);
   const status = useStatus();
   const canMount = useCanControlMount();
+  const settings = useFrameSettings("solve");
+  const put = useStore((s) => s.setFrameSettings);
+  const setSolve = (patch: Parameters<typeof put>[1]) => put("solve", patch);
   /* Uncontrolled on purpose: the value is read ONCE, at Set — there is no
      render that depends on the keystrokes, so controlling it would only buy
      re-renders of the whole bar per character. */
@@ -97,15 +95,9 @@ export function PolarQuickBar({ polar }: { polar: QuickBarPolar }) {
         ? { text: "tracking your adjustments", blink: false }
         : { text: polar.state, blink: polar.state === "running" || polar.state === "pausing" };
 
-  const settings = { ...DEFAULTS, ...(polar.solve_settings ?? {}) };
   /* Whether the rig HAS a wheel decides the grid width; which slots are
      offerable is FilterPicker's own business (it drops the opaque ones). */
   const hasWheel = (status?.filterwheel?.names ?? []).length > 0;
-
-  const put = (patch: Partial<SolveSettings>) => {
-    void api.put("/api/polar/solve-settings", patch).catch(
-      (e) => showToast("error", (e as Error).message));
-  };
 
   const applyCustomExposure = () => {
     const v = Number(customExp.current?.value ?? "");
@@ -114,7 +106,7 @@ export function PolarQuickBar({ polar }: { polar: QuickBarPolar }) {
         `Custom exposure must be between 0 and ${EXPOSURE_MAX_S} seconds.`);
       return;
     }
-    put({ exposure_s: v });
+    setSolve({ exposure_s: v });
     if (customExp.current) customExp.current.value = "";
     // PickerButton closes on Escape (its own window listener) — the one way a
     // child can ask the panel to close without a new prop contract.
@@ -160,7 +152,7 @@ export function PolarQuickBar({ polar }: { polar: QuickBarPolar }) {
               <ExposurePicker
                 value={settings.exposure_s}
                 className="w-full !justify-center"
-                onPick={(s) => put({ exposure_s: s })}
+                onPick={(s) => setSolve({ exposure_s: s })}
               >
                 {/* narrowband-over-OSC rigs need values no list predicts */}
                 <div className="col-span-3 border-t border-line mt-1 pt-2 flex items-center gap-1.5">
@@ -182,19 +174,35 @@ export function PolarQuickBar({ polar }: { polar: QuickBarPolar }) {
               <GainPicker
                 value={settings.gain}
                 className="w-full !justify-center"
-                onPick={(g) => put({ gain: g })}
+                onPick={(g) => setSolve({ gain: g })}
               />
               <BinningPicker
                 value={settings.binning}
                 max={status?.camera?.max_bin ?? 4}
                 className="w-full !justify-center"
-                onPick={(b) => put({ binning: b })}
+                onPick={(b) => setSolve({ binning: b })}
               />
               <FilterPicker
                 value={settings.filter}
                 align="right"
                 className="w-full !justify-center"
-                onPick={(name) => put({ filter: name })}
+                /* The ONE surface in the app where picking a filter does not
+                   move the wheel: the pin is applied by _apply_solve_filter,
+                   inside a solve frame. With the session idle nothing moves,
+                   and on 2026-08-08 this face said "R" over a wheel on Oiii.
+                   It now reads "Oiii → R" and says who will close the gap. */
+                pendingNote="It moves when the alignment takes its next solve frame."
+                onPick={(name) => setSolve({ filter: name })}
+              />
+              {/* Offset had no picker here at all: the only way to change a
+                  solve frame's offset was the radial dial on the reticle,
+                  which hides itself entirely on a stage under 124 px. It
+                  wraps to a second row rather than squeezing five controls
+                  onto a 412 px phone. */}
+              <OffsetPicker
+                value={settings.offset}
+                className="w-full !justify-center"
+                onPick={(o) => setSolve({ offset: o })}
               />
             </div>
           </div>

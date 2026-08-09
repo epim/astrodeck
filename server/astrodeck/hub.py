@@ -19,7 +19,8 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from . import cooling
-from .config import config_store, fov_deg, image_scale_arcsec_px, redacted
+from .config import (config_store, fov_deg, frames_payload,
+                     image_scale_arcsec_px, redacted)
 from .persist import read_json_or, write_json_atomic
 from .devices.base import (
     Camera,
@@ -1565,6 +1566,14 @@ class Hub:
             # per-role boot-LED tri-state (W1.6); [] for the legacy connect_* paths.
             "backend_links": self.backend_links(),
             "config": redacted(config_store.cfg()),
+            # Every frame-setting scope, so the WS `hello` COLD-SEEDS each
+            # client (#176). Half of the R-vs-Oiii defect was that no client
+            # ever learned the server's values: the Align screen's numbers
+            # arrived only on a `polar` event, so a reload over a live pin
+            # showed mirrored defaults while the engine used something else.
+            # A screen that has to be told by an event it may never receive is
+            # a screen that shows a constant.
+            "frames": frames_payload(self.guider),
         }
 
     @staticmethod
@@ -4325,9 +4334,17 @@ class Hub:
     async def goto_and_center(self, ra_hours: float, dec_deg: float,
                               tolerance_deg: float = 0.02,
                               max_attempts: int = 3,
-                              solve_exposure_s: float = 3.0,
+                              solve_exposure_s: float | None = None,
                               rotation_deg: float | None = None) -> dict:
-        """Slew, then iterate solve→sync→re-slew until on target."""
+        """Slew, then iterate solve→sync→re-slew until on target.
+
+        ``solve_exposure_s`` None (the default) means "the ``solve`` scope" —
+        the same persisted setting the Align screen's dial edits. It was a
+        frozen ``3.0`` that GotoStrip rendered read-only and nothing could
+        change: a centring solve and a polar solve are the same frame off the
+        same camera, and there is no reason for the rig to hold two answers."""
+        if solve_exposure_s is None:
+            solve_exposure_s = float(frames_payload()["solve"]["exposure_s"])
         tel: Telescope = self.require("telescope")
         # Sun-exclusion cone (W1.10) at the MOTION boundary, so every re-slew
         # path -- /api/mount/goto?center, each sequence per-target slew, and
