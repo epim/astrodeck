@@ -89,6 +89,9 @@ export interface RigStatus {
     current?: string;
     /** per-slot blackout flags (no glass, blocks the light path) */
     opaque?: boolean[];
+    /** per-slot narrowband flags — a focus sweep gives these slots their own
+     *  exposure and gain (a 3-7 nm passband is a star tens of times fainter) */
+    narrowband?: boolean[];
     /** first blackout slot, or null when the wheel has none */
     dark_slot?: number | null;
     /** Is the carousel turning right now? ABSENT means the backend cannot say

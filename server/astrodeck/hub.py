@@ -2984,6 +2984,17 @@ class Hub:
             n = len(fw.filter_names)
             fw.filter_opaque = [bool(opaque[i]) if i < len(opaque) else False
                                 for i in range(n)]
+        # Narrowband flags restore on exactly the same terms as the blackout
+        # ones — user-assigned, no hardware fallback, padded to the wheel's real
+        # slot count. Without this the marking would survive the file and not
+        # the reconnect, and a learn run the morning after would sweep three
+        # narrowband slots at the broadband exposure again.
+        narrowband = saved.get("narrowband")
+        if isinstance(narrowband, list) and fw.filter_names:
+            n = len(fw.filter_names)
+            fw.filter_narrowband = [
+                bool(narrowband[i]) if i < len(narrowband) else False
+                for i in range(n)]
 
     # ------------------------------------------------- learned camera EGAIN
     def _seed_egain_config(self) -> None:
@@ -3497,14 +3508,29 @@ class Hub:
     async def learn_filter_offsets(self, ref_slot: int | None = None,
                                    exposure_s: float = 2.0, gain: int = 120,
                                    step: int = 350, steps_each_side: int = 4,
-                                   binning: int = 2) -> dict:
+                                   binning: int = 2,
+                                   narrowband: list[bool] | None = None,
+                                   nb_exposure_s: float | None = None,
+                                   nb_gain: int | None = None) -> dict:
         """Autofocus every filter slot and persist the ref-relative offsets.
 
         A slot whose autofocus FAILS (a starless narrowband slot is the usual
         cause) KEEPS its prior offset and is reported in ``kept`` — writing a
-        bogus 0 there would defocus that filter on every future exposure."""
+        bogus 0 there would defocus that filter on every future exposure.
+
+        NARROWBAND SLOTS GET THEIR OWN EXPOSURE AND GAIN. On 2026-08-08 this
+        run measured L, R, G and B and could not focus S, Ha or Oiii, because
+        one exposure was used for the whole wheel and a 3-7 nm passband
+        delivers a star 40-100x fainter than luminance does. ``narrowband``
+        (when given) marks the slots and is PERSISTED before the run starts —
+        the wheel does not change often, and a marking that evaporated when the
+        run was cancelled would have to be re-entered every time. ``nb_exposure_s``
+        / ``nb_gain`` override the derived pair (see
+        ``focus.filter_offsets.narrowband_sweep_settings``)."""
         from .focus.autofocus import run_autofocus
-        from .focus.filter_offsets import default_ref_slot, offsets_from_positions
+        from .focus.filter_offsets import (default_ref_slot,
+                                           narrowband_sweep_settings,
+                                           offsets_from_positions)
         fw = self.require("filterwheel")
         foc = self.require("focuser")
         cam: Camera = self.require("camera")
@@ -3532,21 +3558,47 @@ class Hub:
                 "light, so offsets cannot be measured against it")
         prior = list(fw.filter_offsets) if fw.filter_offsets else [0] * n_slots
 
+        # The marking is persisted BEFORE anything is swept. It is a property of
+        # the wheel, not of this run, and the operator who ticked three boxes
+        # and then cancelled should not have to tick them again.
+        if narrowband is not None:
+            await self.set_filter_names(names, None, None, list(narrowband))
+        nb_exp, nb_g = narrowband_sweep_settings(
+            exposure_s, gain,
+            hcg_threshold_gain=getattr(cam, "hcg_threshold_gain", None))
+        if nb_exposure_s is not None:
+            nb_exp = float(nb_exposure_s)
+        if nb_gain is not None:
+            nb_g = int(nb_gain)
+        nb_slots = [i for i in range(n_slots) if fw.is_narrowband(i)]
+        if nb_slots:
+            bus.log("info",
+                    f"filter offsets: {len(nb_slots)} narrowband slot"
+                    f"{'' if len(nb_slots) == 1 else 's'} "
+                    f"({', '.join(names[i] or str(i) for i in nb_slots)}) will "
+                    f"sweep at {nb_exp:g}s / gain {nb_g} instead of "
+                    f"{exposure_s:g}s / gain {gain}", "filter_offsets")
+
         best_by_slot: dict[int, int] = {}
         bus.publish("filter_offsets", state="running", slot=None, of=n_slots,
-                    done_slots=[])
+                    done_slots=[], narrowband=list(fw.filter_narrowband),
+                    nb_exposure_s=nb_exp, nb_gain=nb_g)
         try:
             # Reference first: without it there is nothing to measure against,
             # so a failed reference aborts before burning time on the rest.
             for i in [ref_slot] + [s for s in range(n_slots)
                                    if s != ref_slot and s not in blackout]:
+                nb = fw.is_narrowband(i)
+                slot_exp = nb_exp if nb else exposure_s
+                slot_gain = nb_g if nb else gain
                 bus.publish("filter_offsets", state="running", slot=i,
                             of=n_slots, name=names[i],
-                            done_slots=sorted(best_by_slot))
+                            done_slots=sorted(best_by_slot),
+                            narrowband=nb, exposure_s=slot_exp, gain=slot_gain)
                 await fw.set_position(i)
                 try:
                     res = await run_autofocus(
-                        cam, foc, exposure_s=exposure_s, gain=gain, step=step,
+                        cam, foc, exposure_s=slot_exp, gain=slot_gain, step=step,
                         steps_each_side=steps_each_side, binning=binning,
                         expose_guard=self.exposure_guard, hub=self)
                 except asyncio.CancelledError:
@@ -3598,11 +3650,12 @@ class Hub:
 
     async def set_filter_names(self, names: list[str],
                                offsets: list[int] | None = None,
-                               opaque: list[bool] | None = None) -> dict:
-        """Apply + persist user filter slot names (and optional focuser offsets
-        and blackout flags) for the active profile (UX-05). Blank names keep the
-        hardware fallback for that slot. Returns the resulting names/offsets/
-        opaque flags."""
+                               opaque: list[bool] | None = None,
+                               narrowband: list[bool] | None = None) -> dict:
+        """Apply + persist user filter slot names (and optional focuser offsets,
+        blackout flags and narrowband flags) for the active profile (UX-05).
+        Blank names keep the hardware fallback for that slot. Returns the
+        resulting names/offsets/opaque/narrowband flags."""
         fw = self.require("filterwheel")
         base = list(fw.filter_names) if fw.filter_names else [""] * len(names)
         for i in range(len(base)):
@@ -3629,12 +3682,27 @@ class Hub:
             if fw.filter_offsets:
                 fw.filter_offsets = [0 if fw.is_opaque(i) else o
                                      for i, o in enumerate(fw.filter_offsets)]
+        if narrowband is not None:
+            # Sent whole, like ``opaque``: the caller owns the full list, so
+            # un-marking the last narrowband slot has to be expressible.
+            fw.filter_narrowband = [
+                bool(narrowband[i]) if i < len(narrowband) else False
+                for i in range(len(base))]
+        if fw.filter_narrowband:
+            # A slot with no light path is not narrowband, whatever was ticked:
+            # the two flags would otherwise combine into a longer exposure of
+            # nothing. Applied on every save, not only when narrowband is sent,
+            # so marking a slot blackout later also clears it.
+            fw.filter_narrowband = [False if fw.is_opaque(i) else n
+                                    for i, n in enumerate(fw.filter_narrowband)]
         from .config import config_store, save_filter_config
         save_filter_config(config_store.cfg().active_profile_id,
                            fw.filter_names, fw.filter_offsets,
-                           list(fw.filter_opaque) or None)
+                           list(fw.filter_opaque) or None,
+                           list(fw.filter_narrowband) or None)
         return {"names": fw.filter_names, "offsets": fw.filter_offsets,
-                "opaque": list(fw.filter_opaque)}
+                "opaque": list(fw.filter_opaque),
+                "narrowband": list(fw.filter_narrowband)}
 
     def _counter_file(self) -> Path:
         # under CAPTURE_DIR (the persistent image library; auto-isolated by the
@@ -4804,6 +4872,11 @@ class Hub:
                     # keep an opaque slot out of Light/Flat pickers and to say
                     # why the current frame is unfiltered.
                     "opaque": list(fw.filter_opaque or []),
+                    # Narrowband flags, parallel to names. The offsets dialog
+                    # reads these back so the marking it persisted is visible
+                    # and editable where filters are configured, rather than
+                    # being a setting only the run that wrote it can see.
+                    "narrowband": list(fw.filter_narrowband or []),
                     "dark_slot": fw.dark_slot(),
                 }
             except Exception:
@@ -4865,6 +4938,14 @@ class Hub:
                     # the backend knows it (native adapters only); 0.0 = unknown.
                     # Additive/default-inert — old clients simply ignore the field.
                     "egain": getattr(cam, "egain", 0.0),
+                    # The gain at which this sensor drops its read noise (high
+                    # conversion gain). Additive, null when the backend cannot
+                    # say. Published because the offsets dialog derives a
+                    # narrowband sweep gain from it and must show the SAME
+                    # number the server would use — see
+                    # focus/filter_offsets.narrowband_sweep_settings.
+                    "hcg_threshold_gain": getattr(cam, "hcg_threshold_gain",
+                                                  None),
                     # Additive: MEASURED e-/ADU per gain setting (auto-learn).
                     # Advanced-UI only; the driver value above always wins.
                     "egain_learned": {str(g): v
