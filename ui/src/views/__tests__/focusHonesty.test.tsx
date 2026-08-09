@@ -544,7 +544,7 @@ await test("a dropped frame hands the shutter back instead of latching Exposingâ
 // re-exposed one unmeasurable position fourteen times on 2026-08-08. Polar
 // excludes these slots and so does FilterPicker; the two controls below did
 // not.
-await test("neither the sweep dial nor the Filter select offers a blackout slot", async () => {
+await test("neither the settings dial nor the Filter select offers a blackout slot", async () => {
   await statusFrame({
     wheel: { position: 0, names: ["L", "Ha", "Dark"], opaque: [false, false, true] },
   });
@@ -553,8 +553,12 @@ await test("neither the sweep dial nor the Filter select offers a blackout slot"
   assert((useStore.getState() as any).status.filterwheel.names.includes("Dark"),
     "the fixture never gave the rig a blackout slot");
 
-  const dial = byLabel("Sweep settings");
-  assert(dial != null, "no sweep-settings dial over the preview");
+  // The dial is "Focus frame settings" since #180 â€” it carries the CAMERA's
+  // exposure/gain/binning (the shared `focus` scope) rather than a private copy
+  // of the sweep's, and the FILT ring it has always had is still the sweep's
+  // pin. The label moved; what this test grades did not.
+  const dial = byLabel("Focus frame settings");
+  assert(dial != null, "no camera-settings dial over the preview");
   click(dial);
   await flush();
   const cat = container.querySelector('[data-dial-item="filter"]');

@@ -25,7 +25,7 @@ import {
 import type { FocusEvent } from "../types";
 import { VCurve, type FocusFit } from "../components/graphs";
 import {
-  AF_DEFAULT_GAIN, AF_FALLBACK_BIN, afResultAgeLabel, deriveAutofocusParams,
+  afResultAgeLabel, deriveAutofocusParams,
   plainFocusVerdict, focusButtonState, readFocusFailure,
 } from "../lib/autofocus";
 import {
@@ -38,10 +38,7 @@ import { PreviewStage, type StageControls } from "../components/preview/PreviewS
 import FocusPod, { POD_BOTTOM_PX, POD_DISC_PX, POD_MIN_STAGE_H } from "../components/focus/FocusPod";
 import ActivityRing from "../components/ui/ActivityRing";
 import CameraDial from "../components/ui/CameraDial";
-import {
-  BinningPicker, ExposurePicker, FilterPicker, GainPicker,
-  cameraDialCategories,
-} from "../components/ui/CameraPickers";
+import { cameraDialCategories } from "../components/ui/CameraPickers";
 import { focusState } from "../lib/focusVerdict";
 import { FocusVerdict, AutofocusVerdict } from "../components/preview/FocusVerdict";
 import { BahtinovAid } from "../components/preview/BahtinovAid";
@@ -61,6 +58,21 @@ import { useBusy } from "../lib/useBusy";
 /** The magnitudes the dial offers. 1 for a final twiddle, 1000 to cross the
  *  whole critical zone on a 30k-step EAF. */
 const STEP_VALUES = [1, 10, 100, 1000] as const;
+
+/**
+ * Where the camera-settings dial parks, as data rather than two literals in
+ * the JSX — because a test has to be able to ask whether it FITS.
+ *
+ * This screen now keeps its only over-the-preview exposure, gain and binning
+ * on that dial (#180), and `CameraDial` deletes itself rather than draw an
+ * overlapping arc below DIAL_MIN_R (124px). This app already shipped a control
+ * reachable only through a dial that did that — i.e. reachable on a desktop and
+ * gone on a phone — so the fit is arithmetic, not hope: FocusView floors the
+ * stage at POD_MIN_STAGE_H (230px) for the pod's arc, and
+ * `dialRadius({h: 230}, {bottom: 38})` is exactly 140, the full radius.
+ * focusDialSplit.test.tsx grades that, reading THESE numbers.
+ */
+export const FOCUS_DIAL_INSET = { right: 12, bottom: 38 } as const;
 
 /** How long the Bahtinov button waits for `status.bahtinov_active` to agree
  *  with the tap before it gives up and shows the rig's own answer again. Three
@@ -168,21 +180,21 @@ export default function FocusView() {
   // The dial's magnitude. 100 is the useful default on a 30k-step EAF: 10 is a
   // twiddle, 1000 crosses the whole critical zone.
   const [step, setStep] = useState<number>(100);
-  const [afExposure, setAfExposure] = useState("2");
+  // THE SWEEP'S OWN PARAMETER, and the only one left here (#180/#179).
+  // Exposure, gain and binning used to be three more `useState`s beside it —
+  // a second, private copy of the three settings the Camera panel below
+  // already holds, so this screen carried TWO exposures and TWO gains and
+  // offered both over the same preview. They are the `focus` scope now: a
+  // sweep frame IS a focus frame, off the same camera, measured for the same
+  // thing, so "the sweep's exposure" was never a different quantity from "the
+  // exposure this screen shoots at". Step has no such counterpart — nothing
+  // else on the rig moves the focuser by a sweep's step — so it stays.
   const [afStep, setAfStep] = useState("350");
-  // The sweep's gain had no field at all until now: the manual branch posted
-  // the DERIVED gain even when the user was steering everything else. With no
-  // live frame to copy that derived gain is 120, which is the number two sweeps
-  // died on. A setting that decides whether the run can work needs a box.
-  const [afGain, setAfGain] = useState(String(AF_DEFAULT_GAIN));
-  // UX-25: per-filter / per-binning autofocus. "" filter = leave the wheel where
-  // it is. Binning options track the camera's reported ceiling (UX-27 shape).
+  // UX-25: per-filter autofocus. "" = leave the wheel where it is. Stays local
+  // because it is a PIN on a sweep, not a setting of a frame: a manual focus
+  // frame sends no filter, so folding it into the shared scope would be a
+  // promise the shutter does not keep.
   const [afFilter, setAfFilter] = useState("");
-  // Seeded from the derivation the moment the panel opens (toggleAfAdvanced), so
-  // this initial value is only ever a placeholder — but it used to be "2", the
-  // policy this file no longer holds, and a stale duplicate of a superseded
-  // default is how the old value creeps back.
-  const [afBin, setAfBin] = useState(String(AF_FALLBACK_BIN));
   const [afAdvanced, setAfAdvanced] = useState(false);
 
   // ------------------------------------------------------------ #113 camera
@@ -726,17 +738,27 @@ export default function FocusView() {
     const n = Number(raw);
     return Number.isFinite(n) && n > 0 ? n : fallback;
   };
-  const numOr = (raw: string, fallback: number) => {
-    const n = Number(raw);
-    // 0 is a legitimate gain on plenty of sensors, so this cannot use `||`.
-    return raw.trim() !== "" && Number.isFinite(n) && n >= 0 ? n : fallback;
-  };
+  // WHAT THE NEXT FOCUS FRAME WILL BE SHOT AT, as numbers. The three boxes hold
+  // DRAFT STRINGS (see capExpDraft) so that "", "-3" and "1e9" can be marked and
+  // can block the shutter — which means a half-typed value must never become the
+  // dial's mark or a sweep parameter either. An unusable box falls back to the
+  // derivation, exactly as `shoot` falls back for the exposure.
+  const frameExposureS = capExposureInvalid ? afDerived.exposure_s : capExposureS;
+  const frameGain = capGainInvalid ? afDerived.gain : capGainNum;
+  const frameBinning = posOr(capBin, afDerived.binning);
+  // With the settings panel OPEN the user is steering, so the CAMERA PANEL's
+  // settings win — the same three numbers the dial over the preview edits and
+  // the same ones Single would shoot at. They used to be a private trio of
+  // `useState`s (afExposure/afGain/afBin) that nothing else on the rig could
+  // see, which is how one screen came to carry two exposures and two gains.
+  // Closed, the sweep still DERIVES from the last frame, which is a different
+  // claim and stays a different code path.
   const afParams = afAdvanced
     ? {
-        exposure_s: posOr(afExposure, afDerived.exposure_s),
-        gain: numOr(afGain, afDerived.gain),
+        exposure_s: frameExposureS,
+        gain: frameGain,
         step: posOr(afStep, afDerived.step),
-        binning: posOr(afBin, afDerived.binning),
+        binning: frameBinning,
         steps_each_side: afDerived.steps_each_side,
       }
     : {
@@ -748,16 +770,14 @@ export default function FocusView() {
     params: afParams, source: afDerived.source, paramsSent: afParamsSent,
     captureBlocked: frameBlocker,
   });
-  // Opening the settings panel seeds it from what the button WOULD have done —
-  // otherwise "these override what the button above would have chosen" is a
-  // claim about numbers the panel isn't showing.
+  // Opening the settings panel seeds the ONE field it still owns from what the
+  // button would have chosen — otherwise "the sweep uses these" is a claim about
+  // a number the panel isn't showing. Exposure, gain and binning are NOT seeded
+  // here any more, and must not be: they are the shared `focus` scope now, and
+  // writing the derivation into them would make opening a disclosure change what
+  // the next Single shoots at, on the rig and in every other tab.
   const toggleAfAdvanced = () => {
-    if (!afAdvanced) {
-      setAfExposure(String(afDerived.exposure_s));
-      setAfGain(String(afDerived.gain));
-      setAfStep(String(afDerived.step));
-      setAfBin(String(afDerived.binning));
-    }
+    if (!afAdvanced) setAfStep(String(afDerived.step));
     setAfAdvanced(!afAdvanced);
   };
 
@@ -772,43 +792,41 @@ export default function FocusView() {
     // lane, and a tab opened mid-run has no `focus` event to know that.
     canFocus, hasFocuser: !!foc, running: sweeping, sweepBlock: afReady.block,
   });
+  // The pin rides along whether or not the settings panel is open. It used to
+  // be gated on `afAdvanced`, so a filter picked from the dial over the preview
+  // — which did not open the panel — was a pin nothing ever sent. A pick is a
+  // decision; the only honest question is whether the request carries it.
   const runAutofocus = () => act(() => api.post("/api/focuser/autofocus", {
     ...afParams,
-    ...(afAdvanced && afFilter !== "" ? { filter: Number(afFilter) } : {}),
+    ...(afFilter !== "" ? { filter: Number(afFilter) } : {}),
   }));
 
-  // The sweep's own settings, as the SHARED camera pickers (2026-08-07): the
-  // camera behind a focus frame is the camera behind a solve frame, so the
-  // control is the same control (components/ui/CameraPickers). This is what
-  // makes the overexposure fix ("shorter exposure than 3s, less gain than
-  // 200") actionable in two taps at the scope instead of a settings dig.
+  // ------------------------------------------------ #180: SETTINGS LEFT
+  // ONE camera-settings control on this screen, and this is it. It edits the
+  // `focus` SCOPE — the exposure, gain and binning of every frame this screen
+  // shoots, which is also what the sweep copies (through the frame when the
+  // settings panel is closed, directly when it is open). The pod in the
+  // opposite corner owns ACTIONS and nothing else; between them they used to
+  // carry two different exposures 200px apart over one image, both reading
+  // "Ns", and the operator had no way to tell which was which.
   //
-  // A pick edits the SAME advanced state the typed fields edit — and OPENS
-  // the panel first (seeded from the derived values, exactly as the gear
-  // does), because values in a closed panel are not sent and a picker that
-  // changed nothing would be the looks-applied-but-ignored control this file
-  // already deleted once.
-  const afOpenAdvanced = () => {
-    if (afAdvanced) return;
-    setAfExposure(String(afDerived.exposure_s));
-    setAfGain(String(afDerived.gain));
-    setAfStep(String(afDerived.step));
-    setAfBin(String(afDerived.binning));
-    setAfAdvanced(true);
-  };
-  const afSet = (kind: "exposure" | "gain" | "bin", value: number) => {
-    afOpenAdvanced();
-    if (kind === "exposure") setAfExposure(String(value));
-    else if (kind === "gain") setAfGain(String(value));
-    else setAfBin(String(value));
-  };
-
-  // The dial over the preview edits exactly what the panel's pickers edit —
-  // one builder, one set of presets, two places to reach them.
-  const afDialCategories = cameraDialCategories({
+  // Exposure goes through `applyPreset`, not a bare store write: over a running
+  // loop a new exposure RESTARTS the loop (hub.start_loop closes over the value
+  // it was handed), and a control that only moved a number would be applied in
+  // the box and ignored by the camera. `applyPreset` also refuses — with the
+  // rail's own sentence — when that restart cannot be issued.
+  //
+  // FILT is the SWEEP's pin, not a wheel move: a manual focus frame carries no
+  // filter. It is the only filter control this screen has, and the ring's mark
+  // sits on the wheel's real slot until something is pinned (the builder's
+  // `currentFilter` contract), so it never claims the wheel has moved.
+  const focusDialCategories = cameraDialCategories({
     values: {
-      exposure_s: afParams.exposure_s, gain: afParams.gain,
-      binning: afParams.binning, offset: 30,
+      // The exposure the CAMERA is using, not the one in the box — while a loop
+      // runs, that is the loop's own frames talking (see `shownExposureS`).
+      exposure_s: shownExposureS ?? frameExposureS,
+      gain: frameGain,
+      binning: frameBinning,
       filter: afFilter === "" ? null : filterNames[Number(afFilter)] ?? null,
     },
     maxBin: afMaxBin,
@@ -817,11 +835,10 @@ export default function FocusView() {
     filters: filterNames,
     opaqueSlots: filterOpaque,
     currentFilter: afCurrentFilter,
-    onExposure: (s) => afSet("exposure", s),
-    onGain: (g) => afSet("gain", g),
-    onBinning: (b) => afSet("bin", b),
+    onExposure: applyPreset,
+    onGain: (g) => setFocusFrame({ gain: g }),
+    onBinning: (b) => setFocusFrame({ binning: b }),
     onFilter: (name) => {
-      afOpenAdvanced();
       const i = name == null ? -1 : filterNames.indexOf(name);
       setAfFilter(i >= 0 ? String(i) : "");
     },
@@ -959,18 +976,14 @@ export default function FocusView() {
                 exposureNote={frameWait?.text ?? null}
                 exposureNoteTone={frameWait?.tone ?? null}
                 captureBlocked={captureReason}
-                // The exposure the CAMERA is using, not the one in the box —
-                // the badge sits over the picture, which makes it the most
-                // load-bearing claim on the screen. null = nothing can be
-                // claimed (the box is empty or not a number, or a loop is
-                // running whose first frame has not landed); the badge then
-                // reads "—" and its first tap writes a real preset into the box,
-                // which is also the repair for the blocker that state causes.
-                exposureS={shownExposureS}
-                exposurePresets={FOCUS_EXPOSURE_PRESETS}
+                // NO exposure here any more (#180). The pod carried a cycling
+                // exposure badge while the dial in the opposite corner carried
+                // an exposure ring, over one image, both reading "Ns" — two
+                // controls with one face and two meanings. Exposure is a camera
+                // SETTING and settings are the dial's; the pod keeps the step
+                // magnitude, which is not a camera setting at all but the size
+                // of the move the two chips either side of it make.
                 stepValues={STEP_VALUES}
-                onExposure={applyPreset}
-                exposureReason={presetReason}
                 onStep={setStep}
                 looping={looping}
                 starting={capPending}
@@ -991,21 +1004,28 @@ export default function FocusView() {
                 onNudge={(d) => moveTo(pos + d)}
                 onAutofocus={runAutofocus}
               />
-              {/* THE SWEEP'S CAMERA SETTINGS, over the frame they produce
-                  (2026-08-08). The same fan-out dial the Align reticle
-                  carries, fed by the same builder — tap the disc, the
-                  categories bloom, tap one and its values replace them;
-                  offset is a field because its useful values are a continuum.
+              {/* THE CAMERA SETTINGS FOR EVERY FRAME THIS SCREEN SHOOTS, over
+                  the frames themselves. The same fan-out dial the Align
+                  reticle carries, fed by the same builder — tap the disc, the
+                  categories bloom, tap one and its values replace them.
                   Parked on the LEFT so it cannot collide with the FocusPod
-                  disc in the lower-right corner. */}
-              {canFocus && afReady.basis !== "backend" && (
+                  disc in the lower-right corner: settings left, actions right.
+
+                  It is NOT gated on the sweep's provider any more. It used to
+                  hide for a backend (NINA) sweep, which ignores every
+                  parameter — correct while it was the SWEEP's dial, and wrong
+                  now that it is the camera's: Single and Loop still shoot from
+                  this screen whoever runs the sweep, and hiding the only
+                  over-the-preview settings control because of who autofocuses
+                  would take the exposure away from the frames it does own. */}
+              {canFocus && (
                 <CameraDial
-                  label="Sweep settings"
-                  summary={`${afParams.exposure_s}s g${afParams.gain}`}
+                  label="Focus frame settings"
+                  summary={`${shownExposureS ?? frameExposureS}s g${frameGain}`}
                   side="left"
-                  right={12}
-                  bottom={38}
-                  categories={afDialCategories}
+                  right={FOCUS_DIAL_INSET.right}
+                  bottom={FOCUS_DIAL_INSET.bottom}
+                  categories={focusDialCategories}
                 />
               )}
             </div>
@@ -1419,50 +1439,17 @@ export default function FocusView() {
                     </span>
                   </div>
                 )}
-                {/* Speed dials for the sweep itself — the two-tap path to
-                    "shorter exposure, less gain" when a sweep clips, and to
-                    "longer exposure, bin 1" when a field is thin. Hidden for a
-                    backend (NINA) sweep, which ignores every parameter. */}
-                {/* The flat pickers stay on the PANEL (a settled list, read at
-                    a glance); the same settings are also on the fan-out dial
-                    over the preview, which is where a thumb is while focusing.
-                    One builder feeds both — see components/ui/CameraPickers. */}
-                {afReady.basis !== "backend" && canFocus && (
-                  <div className={`grid gap-1.5 mb-2 ${filterNames.length > 0 ? "grid-cols-4" : "grid-cols-3"}`}
-                    role="group" aria-label="sweep settings" data-af-dials>
-                    <ExposurePicker
-                      value={afParams.exposure_s}
-                      className="w-full !justify-center"
-                      onPick={(s) => afSet("exposure", s)}
-                    />
-                    <GainPicker
-                      value={afParams.gain}
-                      className="w-full !justify-center"
-                      onPick={(g) => afSet("gain", g)}
-                    />
-                    <BinningPicker
-                      value={afParams.binning}
-                      max={afMaxBin}
-                      className="w-full !justify-center"
-                      onPick={(b) => afSet("bin", b)}
-                    />
-                    {/* The wheel is shared with every other frame-shooting
-                        screen, so it gets the shared picker too: the face
-                        names the filter the sweep will run through, never an
-                        abstraction. */}
-                    <FilterPicker
-                      value={afFilter === "" ? null
-                        : filterNames[Number(afFilter)] ?? null}
-                      align="right"
-                      className="w-full !justify-center"
-                      onPick={(name) => {
-                        afOpenAdvanced();
-                        const i = name == null ? -1 : filterNames.indexOf(name);
-                        setAfFilter(i >= 0 ? String(i) : "");
-                      }}
-                    />
-                  </div>
-                )}
+                {/* THE FOUR FLAT PICKERS THAT USED TO SIT HERE ARE GONE (#179).
+                    EXP / GAIN / BIN / FILT, in a panel whose own settings
+                    disclosure held the same four fields 200px below, over a
+                    preview whose dial holds the same four again. Three copies
+                    of one row. The two that remain are the ones that are not
+                    copies: the dial over the frame (a thumb's reach, at the
+                    scope) and the Camera panel's typed boxes (a value no preset
+                    list has — the exposure that worked on 2026-07-31 was 4s,
+                    and the gain that found 2100 stars was 220). The FILT pin
+                    kept its <select> in the panel below, beside the button that
+                    sends it. */}
                 {/* What the sweep will actually do, BEFORE it is tapped, and
                     where those numbers came from. Two four-minute runs on
                     2026-07-31 swept at 2s / gain 120 / bin 2 — copied from a
@@ -1514,25 +1501,21 @@ export default function FocusView() {
 
           {afAdvanced && (
             <>
+              {/* WHAT IS LEFT HERE IS WHAT IS NOT SOMEWHERE ELSE (#179).
+                  Exposure, gain and binning had a box each in this grid AND a
+                  picker each in the row above AND a ring each on the dial over
+                  the preview — three controls per setting, and the two here
+                  wrote a private copy that only the sweep could see. They are
+                  the Camera panel's boxes now, one panel up, which is where the
+                  shutter that uses them lives. Step size stays because nothing
+                  else on this screen or on the dial moves a focuser by a
+                  sweep's step; the filter stays because it is a pin on the
+                  sweep, sent by the button beside it and by nothing else. */}
               <div className="grid grid-cols-2 gap-3 mb-4">
-                <Field label="Exposure (s)">
-                  <input className="field" value={afExposure}
-                    readOnly={!canFocus} aria-readonly={!canFocus || undefined}
-                    onChange={(e) => setAfExposure(e.target.value)} />
-                </Field>
                 <Field label="Step size" hint={HELP.stepSize}>
                   <input className="field" value={afStep}
                     readOnly={!canFocus} aria-readonly={!canFocus || undefined}
                     onChange={(e) => setAfStep(e.target.value)} />
-                </Field>
-                {/* Gain had no field at all: the manual branch posted the
-                    DERIVED gain even with every other value hand-typed, and
-                    with no live frame that derived gain is 120 — the number
-                    that found 8 stars where 220 finds 2100. */}
-                <Field label={cam?.max_gain ? `Gain (max ${cam.max_gain})` : "Gain"}>
-                  <input className="field" value={afGain} inputMode="numeric"
-                    readOnly={!canFocus} aria-readonly={!canFocus || undefined}
-                    onChange={(e) => setAfGain(e.target.value)} />
                 </Field>
                 {filterNames.length > 0 && (
                   <Field label="Filter">
@@ -1555,18 +1538,6 @@ export default function FocusView() {
                     )}
                   </Field>
                 )}
-                <Field label="Binning">
-                  {readOnlyReason ? (
-                    <LockedChip reason={readOnlyReason} className="btn w-full">
-                      {afBin}×{afBin}
-                    </LockedChip>
-                  ) : (
-                    <select className="field" value={afBin}
-                      onChange={(e) => setAfBin(e.target.value)}>
-                      {afBinOptions.map((b) => <option key={b} value={b}>{b}×{b}</option>)}
-                    </select>
-                  )}
-                </Field>
               </div>
               {/* NO second run button here. There used to be one an inch below
                   the hero, and two buttons that both say "run autofocus" is a
@@ -1578,8 +1549,10 @@ export default function FocusView() {
                   deliver is the same failure as a button that does nothing. */}
               {afParamsSent ? (
                 <p className="text-[11px] text-dim leading-snug">
-                  These override what the button above would have chosen. Close this
-                  panel to go back to automatic settings.
+                  With this panel open the sweep uses the Camera panel&rsquo;s
+                  exposure, gain and binning — the ones the dial over the frame
+                  sets — at this step size. Close it and the sweep goes back to
+                  copying the last frame it can measure.
                 </p>
               ) : (
                 <LockedNote

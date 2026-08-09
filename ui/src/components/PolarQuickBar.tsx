@@ -52,6 +52,34 @@ type QuickBarPolar = {
    the next screen. Only the ceiling is restated, because the route enforces
    it and a client that offered more would be promising what the server
    refuses. */
+
+/* WHY THIS ROW SURVIVED #179 (2026-08-08).
+   Asked for directly: "the exp, gain, bin, and filt still exist above the tppa
+   bullseye, and are now obviated by the speed dial. Remove those there." Three
+   of the four are indeed on the dial over the reticle. The row stays anyway,
+   and here is the whole of the argument, so it is not re-litigated blind:
+
+     1. IT IS A READOUT, NOT ONLY A CONTROL. The dial's closed face carries the
+        exposure and the gain and nothing else, so deleting this row would put
+        binning, filter and offset two taps deep on the screen whose whole job
+        is "is the solve frame working?". cameraSettingsAgreement.test.tsx
+        grades exactly that — every surface must SHOW the server's exposure,
+        gain and binning — and it reads this row's faces.
+     2. OFFSET IS HERE BY NAME because of a defect from the day before: the
+        dial was the only way to reach it, and `CameraDial` deletes itself
+        below a 124px stage, i.e. on the phone polar alignment is done from.
+        There is a test called "the Align screen's offset is REACHABLE, not
+        just stored".
+     3. THE CUSTOM EXPOSURE BOX has no equivalent on the dial. An OSC camera
+        behind a narrowband filter legitimately solves at minutes per frame,
+        and the dial's EXP ring is presets only.
+     4. FilterPicker's `pendingNote` — "It moves when the alignment takes its
+        next solve frame" — is the 2026-08-08 repair for a face that said "R"
+        over a wheel parked on Oiii. The dial's FILT ring cannot say it.
+
+   (1) and (4) are the ones that would need work elsewhere to lift: a dial
+   whose face carried all five values, and a ring that could narrate a pending
+   pin. Both live in CameraDial/RingPicker, not here. */
 const EXPOSURE_MAX_S = 300;
 
 export function PolarQuickBar({ polar }: { polar: QuickBarPolar }) {
