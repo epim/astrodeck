@@ -549,6 +549,47 @@ _RESOLVERS = {
     "guide": _resolve_guide,
 }
 
+#: The override FAMILIES each resolver above actually branches on — the
+#: per-capability WRITE VOCABULARY (audit finding O).
+#:
+#: Until this existed, ``set_providers`` validated against one capability-BLIND
+#: set, so ``providers.solve = "astrodeck"``, ``autofocus = "astap"``,
+#: ``guide = "sim"`` and four more pairs were accepted, stored, and then
+#: resolved exactly as if the user had never touched the control — with nothing
+#: anywhere saying the pick had been discarded.
+#:
+#: This is ONE declaration with TWO readers, deliberately: ``resolve`` below
+#: normalises an unhonoured family to ``auto`` before dispatch, and
+#: ``ConfigStore.set_providers`` / ``ProfileStore.set_providers`` reject it at
+#: write time through ``is_honourable``. That is the lesson of finding L, where
+#: ``_resolve_guide`` RESTATED the offer predicate's terms instead of calling it
+#: and drifted from it three separate times: a table both sides read cannot
+#: disagree with itself. It also makes the table load-bearing rather than
+#: documentary — add an ``if override == "sim"`` branch to a resolver without
+#: adding ``sim`` here and the branch is dead code, which
+#: ``test_every_honoured_family_reaches_its_resolver`` fails on.
+HONOURED_FAMILIES: dict[str, frozenset[str]] = {
+    "autofocus": frozenset({"auto", "astrodeck", "backend"}),
+    "polar_align": frozenset({"auto", "astrodeck", "backend", "sim"}),
+    "solve": frozenset({"auto", "astap", "sim"}),
+    "guide": frozenset({"auto", "astrodeck", "backend"}),
+}
+
+
+def honoured_families(cap: Capability) -> frozenset[str]:
+    """The families ``cap``'s resolver has a branch for. Unknown capability →
+    empty, so a caller that mistypes one rejects everything rather than
+    accepting everything."""
+    return HONOURED_FAMILIES.get(cap, frozenset())
+
+
+def is_honourable(cap: Capability, value: str) -> bool:
+    """Would pinning ``value`` for ``cap`` change anything? A concrete driver id
+    is mapped to its family first, so pinning a NINA driver id for a capability
+    whose resolver honours ``backend`` is accepted — it is the FAMILY the
+    resolver branches on, not the id."""
+    return _override_family(value) in honoured_families(cap)
+
 
 def resolve(cap: Capability, hub: object) -> ProviderChoice:
     """Resolve who performs ``cap`` for the hub's current rig.
@@ -559,7 +600,15 @@ def resolve(cap: Capability, hub: object) -> ProviderChoice:
     resolver = _RESOLVERS.get(cap)
     if resolver is None:
         raise DeviceError(f"unknown capability: {cap!r}")
-    return resolver(hub, _override_family(_override(cap, hub)))
+    family = _override_family(_override(cap, hub))
+    # A family this resolver has no branch for is NOT passed through as itself:
+    # the write layer rejects those now, but a profile stored before it did
+    # still holds one, and §3.4's resolve-time rule is that an unusable stored
+    # value degrades to auto rather than raising. Normalising here (not inside
+    # four resolvers) is what keeps the table load-bearing.
+    if family not in honoured_families(cap):
+        family = "auto"
+    return resolver(hub, family)
 
 
 def resolve_all(hub: object) -> dict[str, dict[str, str]]:

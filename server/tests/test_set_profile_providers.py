@@ -85,14 +85,17 @@ def test_the_global_block_is_left_alone(client):
     falls back to when the pin is later cleared, so a silent edit here would
     show up as a value nobody chose, weeks later, with no trail."""
     c, store, lib = client
-    store.set_providers(ProvidersConfig(polar_align="astap"))
+    # ``backend``, not ``astap``: polar align's resolver has no ASTAP branch
+    # (ASTAP is the solver polar align USES, not a polar-align provider), and
+    # since finding O the write layer refuses a family nothing resolves.
+    store.set_providers(ProvidersConfig(polar_align="backend"))
     pid = _active_profile(lib, store, providers={"polar_align": "sim"})
 
     c.post(f"/api/profiles/{pid}/set-providers",
            json={"providers": {"polar_align": "astrodeck"}})
 
-    assert store.cfg().providers.polar_align == "astap"
-    assert _effective(c, "providers.polar_align")["config"] == "astap"
+    assert store.cfg().providers.polar_align == "backend"
+    assert _effective(c, "providers.polar_align")["config"] == "backend"
 
 
 def test_a_capability_not_named_in_the_body_is_untouched(client):

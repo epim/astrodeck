@@ -432,12 +432,24 @@ class ProfileLibrary:
             raise ValueError(
                 f"unknown capability: {', '.join(sorted(unknown))} — valid "
                 f"capabilities are {', '.join(PROVIDER_CAPABILITIES)}")
+        from . import providers as _providers   # local: providers imports config
         valid = config_store.valid_override_values()
         for cap, value in providers.items():
             if not isinstance(value, str) or value not in valid:
                 raise ValueError(
                     f"unknown provider for {cap}: {value!r} — valid values are "
                     f"{', '.join(sorted(valid))}")
+            # Per-capability, off the same table ``resolve`` dispatches through
+            # (audit finding O). A profile override is the layer that BEATS
+            # global config, so an inert value stored here is the worse of the
+            # two: it looks like the winning answer and does nothing.
+            if not _providers.is_honourable(cap, value):
+                raise ValueError(
+                    f"{value!r} cannot provide {cap}: nothing resolves it, so "
+                    f"pinning it would behave exactly like 'auto'. Valid "
+                    f"choices for {cap} are "
+                    f"{', '.join(sorted(_providers.honoured_families(cap)))} "
+                    f"(or a driver id belonging to one of those families)")
 
         # A profile with no ``providers`` dict yet gets one; existing keys the
         # body does not name survive untouched.

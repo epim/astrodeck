@@ -94,10 +94,32 @@ OVERRIDABLE_KEYS = ([f"providers.{c}" for c in PROVIDER_CAPABILITIES]
                     + [f"optics.{k}" for k in OPTICS_KEYS])
 
 
+#: Two DISTINCT non-auto families each capability's resolver actually branches
+#: on, derived from ``providers.HONOURED_FAMILIES`` rather than hardcoded.
+#:
+#: These tests only ever needed "some pinned value" and used a blanket
+#: ``{c: "astrodeck"}`` / ``{c: "sim"}`` for all four capabilities. Since finding
+#: O the write layer rejects a family whose resolver has no branch for it, and
+#: neither blanket is honourable everywhere (there is no native plate solver, and
+#: no simulated autofocus or guider). Deriving the pair keeps the fixture honest
+#: as the table changes instead of pinning a value the product would refuse.
+def _pins(cap: str) -> tuple[str, str]:
+    """``(global_pin, profile_pin)`` for ``cap`` — distinct where the capability
+    honours two or more families, so the layer under test is the only thing
+    distinguishing them."""
+    fams = sorted(providers_mod.honoured_families(cap) - {"auto"})
+    assert fams, f"{cap} honours no concrete family — nothing to pin"
+    return fams[0], fams[-1]
+
+
+def _global_pins() -> dict[str, str]:
+    return {c: _pins(c)[0] for c in PROVIDER_CAPABILITIES}
+
+
 def _overriding_profile() -> Profile:
     """A profile that overrides EVERY overridable key at once."""
     return Profile(name="override rig", optics=PROFILE_OPTICS,
-                   providers={c: "astrodeck" for c in PROVIDER_CAPABILITIES})
+                   providers={c: _pins(c)[1] for c in PROVIDER_CAPABILITIES})
 
 
 # ------------------------------------------------- the layer identity contract
@@ -115,7 +137,7 @@ def test_every_overridable_key_is_covered(store):
 
 @pytest.mark.parametrize("key", OVERRIDABLE_KEYS)
 def test_profile_named_as_winner_for_every_overridable_key(store, key):
-    store.set_providers(ProvidersConfig(**{c: "sim" for c in PROVIDER_CAPABILITIES}))
+    store.set_providers(ProvidersConfig(**_global_pins()))
     store.set_optics(GLOBAL_OPTICS)
     prof = _overriding_profile()
     entry = effective_config(FakeHub(profile=prof))[key]
@@ -133,7 +155,7 @@ def test_profile_named_as_winner_for_every_overridable_key(store, key):
 @pytest.mark.parametrize("key", OVERRIDABLE_KEYS)
 def test_global_named_as_winner_when_no_profile_override(store, key):
     """Same rig, same keys, profile carrying NEITHER override block."""
-    store.set_providers(ProvidersConfig(**{c: "sim" for c in PROVIDER_CAPABILITIES}))
+    store.set_providers(ProvidersConfig(**_global_pins()))
     store.set_optics(GLOBAL_OPTICS)
     entry = effective_config(
         FakeHub(profile=Profile(name="plain rig")))[key]
@@ -147,7 +169,7 @@ def test_global_named_as_winner_when_no_profile_override(store, key):
 def test_winning_value_matches_what_the_rig_actually_runs(store, key):
     """The value column is not decorative: it must equal what the resolvers
     return, or the layer would be right about a number nobody uses."""
-    store.set_providers(ProvidersConfig(**{c: "sim" for c in PROVIDER_CAPABILITIES}))
+    store.set_providers(ProvidersConfig(**_global_pins()))
     store.set_optics(GLOBAL_OPTICS)
     prof = _overriding_profile()
     hub = FakeHub(profile=prof)
