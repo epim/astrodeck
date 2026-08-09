@@ -29,6 +29,7 @@ import { PreflightModal } from "../components/PreflightModal";
 import { confirmDialog } from "../components/ConfirmDialog";
 import { accessPhrase, useCanControlMount } from "../lib/caps";
 import { EXPOSURE_MAX_S, isStepExposureInvalid } from "../lib/exposure";
+import { filterSettingsPatchByName } from "../lib/filterSettings";
 import {
   integrationByFilter, skyElectronsPerSub, skyRateEPerSec, skyLimitedSubSeconds,
   subLengthVerdict, type SubVerdict,
@@ -1228,7 +1229,19 @@ export default function SequenceView() {
                         <select className="field !py-1"
                           aria-label={`Filter — step ${si + 1} of ${t.name}`}
                           value={s.filter ?? ""}
-                          onChange={(e) => patchStep(ti, si, { filter: e.target.value || null })}>
+                          /* #215: picking a filter that has its own saved
+                             exposure/gain fills them into THIS step, right
+                             here, where they are visible and editable before
+                             anything is saved. That is the whole contract for
+                             per-filter settings — they seed a value as it is
+                             CHOSEN, and nothing rewrites a plan later. The
+                             engine never reads them, so what you review on this
+                             row is what the night runs. */
+                          onChange={(e) => patchStep(ti, si, {
+                            filter: e.target.value || null,
+                            ...filterSettingsPatchByName(
+                              status?.filterwheel, e.target.value || null),
+                          })}>
                           <option value="">
                             {darkSlotName &&
                              ["Dark", "Bias"].includes(s.frame_type ?? "Light")

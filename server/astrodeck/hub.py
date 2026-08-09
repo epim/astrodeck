@@ -3391,6 +3391,20 @@ class Hub:
             fw.filter_narrowband = [
                 bool(narrowband[i]) if i < len(narrowband) else False
                 for i in range(n)]
+        # Per-filter capture settings restore on the same terms as the two flag
+        # lists: user-assigned, no hardware fallback, padded to the wheel's real
+        # slot count. Without this they would survive the file and not the
+        # reconnect — and the reconnect is the event that erases everything else
+        # the wheel does not report, which is exactly why this function exists.
+        from .config import _opt_num
+        for key, attr, cast in (("exposures", "filter_exposures", float),
+                                ("gains", "filter_gains", int)):
+            pinned = saved.get(key)
+            if isinstance(pinned, list) and fw.filter_names:
+                n = len(fw.filter_names)
+                setattr(fw, attr, [
+                    _opt_num(pinned[i], cast) if i < len(pinned) else None
+                    for i in range(n)])
 
     # ------------------------------------------------- learned camera EGAIN
     def _seed_egain_config(self) -> None:
@@ -3966,7 +3980,38 @@ class Hub:
             nb_exp = float(nb_exposure_s)
         if nb_gain is not None:
             nb_g = int(nb_gain)
-        nb_slots = [i for i in range(n_slots) if fw.is_narrowband(i)]
+        # ---- what each slot will actually sweep at -------------------------
+        #
+        # Three sources, most specific first:
+        #   1. the slot's OWN pinned exposure/gain, when the operator has set
+        #      one. This is the only place in the product where a per-filter pin
+        #      is AUTHORITATIVE rather than a default, and the reason is that
+        #      there is no plan here to read it off — a sweep is not a reviewable
+        #      artifact, it is a measurement that either works or wastes the
+        #      night. The 2026-08-08 run measured L/R/G/B and could not focus S,
+        #      Ha or Oiii at the single setting it had.
+        #   2. the narrowband heuristic (or this run's override of it), for a
+        #      slot marked narrowband with no pin of its own.
+        #   3. the run's broadband exposure/gain.
+        #
+        # Computed UP FRONT rather than inside the loop so the summary below can
+        # describe what will really happen. A line claiming every narrowband
+        # slot sweeps at nb_exp, while three of them quietly used their own
+        # pins, is the defect class this repo keeps finding in its own copy.
+        def _slot_settings(i: int) -> tuple[float, int, bool]:
+            """``(exposure_s, gain, from_pin)`` for slot ``i``."""
+            p_exp, p_gain = fw.slot_capture_settings(i)
+            nb = fw.is_narrowband(i)
+            base_exp, base_gain = (nb_exp, nb_g) if nb else (exposure_s, gain)
+            # Either HALF may be pinned independently: an operator who knows Ha
+            # needs 30 s but is happy with the run's gain pins only the exposure.
+            return (float(p_exp) if p_exp is not None else base_exp,
+                    int(p_gain) if p_gain is not None else base_gain,
+                    p_exp is not None or p_gain is not None)
+
+        pinned = [i for i in range(n_slots) if _slot_settings(i)[2]]
+        nb_slots = [i for i in range(n_slots)
+                    if fw.is_narrowband(i) and i not in pinned]
         if nb_slots:
             bus.log("info",
                     f"filter offsets: {len(nb_slots)} narrowband slot"
@@ -3974,6 +4019,14 @@ class Hub:
                     f"({', '.join(names[i] or str(i) for i in nb_slots)}) will "
                     f"sweep at {nb_exp:g}s / gain {nb_g} instead of "
                     f"{exposure_s:g}s / gain {gain}", "filter_offsets")
+        if pinned:
+            bus.log("info",
+                    "filter offsets: "
+                    + "; ".join(
+                        f"{names[i] or i} at {_slot_settings(i)[0]:g}s / gain "
+                        f"{_slot_settings(i)[1]}" for i in pinned)
+                    + " — each from that filter's own saved settings",
+                    "filter_offsets")
 
         best_by_slot: dict[int, int] = {}
         bus.publish("filter_offsets", state="running", slot=None, of=n_slots,
@@ -3985,8 +4038,7 @@ class Hub:
             for i in [ref_slot] + [s for s in range(n_slots)
                                    if s != ref_slot and s not in blackout]:
                 nb = fw.is_narrowband(i)
-                slot_exp = nb_exp if nb else exposure_s
-                slot_gain = nb_g if nb else gain
+                slot_exp, slot_gain, _ = _slot_settings(i)
                 bus.publish("filter_offsets", state="running", slot=i,
                             of=n_slots, name=names[i],
                             done_slots=sorted(best_by_slot),
@@ -4047,11 +4099,14 @@ class Hub:
     async def set_filter_names(self, names: list[str],
                                offsets: list[int] | None = None,
                                opaque: list[bool] | None = None,
-                               narrowband: list[bool] | None = None) -> dict:
+                               narrowband: list[bool] | None = None,
+                               exposures: list | None = None,
+                               gains: list | None = None) -> dict:
         """Apply + persist user filter slot names (and optional focuser offsets,
-        blackout flags and narrowband flags) for the active profile (UX-05).
-        Blank names keep the hardware fallback for that slot. Returns the
-        resulting names/offsets/opaque/narrowband flags."""
+        blackout flags, narrowband flags and per-filter capture settings) for the
+        active profile (UX-05). Blank names keep the hardware fallback for that
+        slot. Returns the resulting names/offsets/opaque/narrowband/exposures/
+        gains."""
         fw = self.require("filterwheel")
         base = list(fw.filter_names) if fw.filter_names else [""] * len(names)
         for i in range(len(base)):
@@ -4091,14 +4146,42 @@ class Hub:
             # so marking a slot blackout later also clears it.
             fw.filter_narrowband = [False if fw.is_opaque(i) else n
                                     for i, n in enumerate(fw.filter_narrowband)]
+        # Per-filter capture settings. Sent whole like the two flag lists, and
+        # for the same reason: the caller owns the list, so CLEARING a pin has
+        # to be expressible. A cleared slot is None, not 0 — 0 is a real gain.
+        from .config import _opt_num
+        if exposures is not None:
+            fw.filter_exposures = [
+                _opt_num(exposures[i], float) if i < len(exposures) else None
+                for i in range(len(base))]
+        if gains is not None:
+            fw.filter_gains = [
+                _opt_num(gains[i], int) if i < len(gains) else None
+                for i in range(len(base))]
+        if fw.filter_exposures or fw.filter_gains:
+            # A blackout slot carries no light path, so an exposure and gain
+            # "for that filter" describe nothing — cleared on every save, on the
+            # same terms as its focus offset above and its narrowband flag,
+            # so marking a slot blackout later also clears these.
+            n = len(base)
+            def _blank(seq):
+                seq = list(seq) + [None] * (n - len(seq))
+                return [None if fw.is_opaque(i) else v
+                        for i, v in enumerate(seq[:n])]
+            fw.filter_exposures = _blank(fw.filter_exposures)
+            fw.filter_gains = _blank(fw.filter_gains)
         from .config import config_store, save_filter_config
         save_filter_config(config_store.cfg().active_profile_id,
                            fw.filter_names, fw.filter_offsets,
                            list(fw.filter_opaque) or None,
-                           list(fw.filter_narrowband) or None)
+                           list(fw.filter_narrowband) or None,
+                           list(fw.filter_exposures) or None,
+                           list(fw.filter_gains) or None)
         return {"names": fw.filter_names, "offsets": fw.filter_offsets,
                 "opaque": list(fw.filter_opaque),
-                "narrowband": list(fw.filter_narrowband)}
+                "narrowband": list(fw.filter_narrowband),
+                "exposures": list(fw.filter_exposures),
+                "gains": list(fw.filter_gains)}
 
     def _counter_file(self) -> Path:
         # under CAPTURE_DIR (the persistent image library; auto-isolated by the
@@ -5303,6 +5386,14 @@ class Hub:
                     # and editable where filters are configured, rather than
                     # being a setting only the run that wrote it can see.
                     "narrowband": list(fw.filter_narrowband or []),
+                    # Per-filter capture settings, parallel to names, with None
+                    # in every unpinned slot. These are the DEFAULTS the camera
+                    # dial seeds from when the filter changes and the plan
+                    # editor fills a new step with — so they have to be on the
+                    # status the client already polls, not behind a second
+                    # fetch that a filter change would have to wait for.
+                    "exposures": list(fw.filter_exposures or []),
+                    "gains": list(fw.filter_gains or []),
                     "dark_slot": fw.dark_slot(),
                 }
             except Exception:

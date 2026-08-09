@@ -92,6 +92,13 @@ export interface RigStatus {
     /** per-slot narrowband flags — a focus sweep gives these slots their own
      *  exposure and gain (a 3-7 nm passband is a star tens of times fainter) */
     narrowband?: boolean[];
+    /** Per-slot capture settings, parallel to `names`. `null` in a slot means
+     *  NOT PINNED — which cannot be 0, because 0 is a real gain. They are
+     *  DEFAULTS: picking the filter seeds the camera dial and fills a new plan
+     *  step, and nothing rewrites a running sequence from them. The single
+     *  authoritative reader is an offsets sweep, which has no plan to consult. */
+    exposures?: (number | null)[];
+    gains?: (number | null)[];
     /** first blackout slot, or null when the wheel has none */
     dark_slot?: number | null;
     /** Is the carousel turning right now? ABSENT means the backend cannot say

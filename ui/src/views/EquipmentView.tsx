@@ -1386,6 +1386,8 @@ function RoleSlot({
           offsets={status.filterwheel.offsets ?? []}
           opaque={status.filterwheel.opaque ?? []}
           narrowband={status.filterwheel.narrowband ?? []}
+          exposures={status.filterwheel.exposures ?? []}
+          gains={status.filterwheel.gains ?? []}
           position={status.filterwheel.position}
           hasFocuser={!!status.focuser}
           disabled={disabled}
@@ -1420,6 +1422,8 @@ function FilterSlotsEditor({
   offsets,
   opaque = [],
   narrowband = [],
+  exposures = [],
+  gains = [],
   position,
   hasFocuser,
   disabled,
@@ -1428,6 +1432,8 @@ function FilterSlotsEditor({
   offsets: number[];
   opaque?: boolean[];
   narrowband?: boolean[];
+  exposures?: (number | null)[];
+  gains?: (number | null)[];
   position: number;
   hasFocuser: boolean;
   disabled: boolean;
@@ -1473,6 +1479,8 @@ function FilterSlotsEditor({
         offsets={offsets}
         opaque={opaque}
         narrowband={narrowband}
+        exposures={exposures}
+        gains={gains}
         position={position}
         canLearn={hasFocuser}
         learnDisabledReason={
@@ -1487,9 +1495,10 @@ function FilterSlotsEditor({
                          { ref_slot: refSlot, ...req });
           showToast("info", "Learning filter offsets…");
         }}
-        onSave={async (n, o, op, nb) => {
+        onSave={async (n, o, op, nb, exp, g) => {
           await api.post("/api/filterwheel/names",
-                         { names: n, offsets: o, opaque: op, narrowband: nb });
+                         { names: n, offsets: o, opaque: op, narrowband: nb,
+                           exposures: exp, gains: g });
           showToast("success", "Filter slots saved");
         }}
       />

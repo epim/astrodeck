@@ -456,6 +456,34 @@ class FilterWheel(Device):
     #: measured L/R/G/B and could not focus S, Ha or Oiii at the one setting it
     #: had. See focus/filter_offsets.narrowband_sweep_settings.
     filter_narrowband: list[bool] = []
+    #: Per-slot capture settings, parallel to filter_names. ``None`` in a slot
+    #: means "not pinned" — NOT zero, which is a real gain and would be a real
+    #: (if useless) exposure. See ``config._opt_num``.
+    #:
+    #: WHAT THESE ARE AND ARE NOT. They are DEFAULTS, consumed where a value is
+    #: being CHOSEN: the camera dial seeds from them when the filter changes,
+    #: and a new plan step created with this filter is filled in from them. They
+    #: are NOT applied at capture time, and the sequence engine never reads
+    #: them. A plan is a reviewable artifact; rewriting its exposures underneath
+    #: the operator would make the plan on screen stop describing the night,
+    #: which is the same invisible-wrong-config shape as the profile provider
+    #: override that ran a simulated polar aligner for twelve days.
+    #:
+    #: The ONE authoritative consumer is a focus sweep (``focus/filter_offsets``)
+    #: — there is no plan there to look at, and a sweep at the wrong exposure is
+    #: how the 2026-08-08 offsets run measured L/R/G/B and failed on S/Ha/Oiii.
+    filter_exposures: list[float | None] = []
+    filter_gains: list[int | None] = []
+
+    def slot_capture_settings(self, slot: int) -> tuple[float | None, int | None]:
+        """``(exposure_s, gain)`` pinned for ``slot``, either half possibly None.
+
+        Out-of-range is ``(None, None)`` rather than an error, matching
+        ``is_opaque``: a wheel that reports fewer slots than the store holds is
+        a reconnect artifact, not a caller mistake."""
+        def pick(seq, i):
+            return seq[i] if 0 <= i < len(seq or []) else None
+        return pick(self.filter_exposures, slot), pick(self.filter_gains, slot)
 
     def dark_slot(self) -> int | None:
         """The slot to shoot darks/bias through — the first opaque one, or None

@@ -766,16 +766,38 @@ def load_filter_config(profile_id: str | None) -> dict:
     return entry if isinstance(entry, dict) else {}
 
 
+def _opt_num(value: object, cast) -> object | None:
+    """``cast(value)``, or None when the slot carries no pin.
+
+    Per-filter exposure and gain are TRI-STATE, unlike offsets: 0 is a real
+    focuser offset meaning "no shift", but a 0-second exposure and a 0 gain are
+    not "unset" — they are values, and a broadband slot legitimately wants
+    gain 0. So "not pinned" has to be its own state, and it is ``None``
+    end-to-end: in the file, on the device, over the API, and in the picker."""
+    if value is None or value == "":
+        return None
+    try:
+        return cast(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def save_filter_config(profile_id: str | None, names: list[str],
                        offsets: list[int],
                        opaque: list[bool] | None = None,
-                       narrowband: list[bool] | None = None) -> None:
-    """Persist filter slot names + offsets (+ blackout and narrowband flags) for
-    a profile (best-effort merge into the shared store; other profiles' entries
-    are preserved). ``opaque`` and ``narrowband`` are optional so an older
-    caller keeps working; when one is None its key is omitted and
-    ``load_filter_config`` reports no such slot, exactly as before the flag
-    existed. Both are user-assigned — no wheel reports either."""
+                       narrowband: list[bool] | None = None,
+                       exposures: list | None = None,
+                       gains: list | None = None) -> None:
+    """Persist filter slot names + offsets (+ blackout and narrowband flags, and
+    per-filter capture settings) for a profile (best-effort merge into the shared
+    store; other profiles' entries are preserved). Every argument after
+    ``offsets`` is optional so an older caller keeps working; when one is None
+    its key is omitted and ``load_filter_config`` reports no such slot, exactly
+    as before the field existed. All of them are user-assigned — no wheel
+    reports any of them.
+
+    ``exposures``/``gains`` hold ``None`` per unpinned slot rather than a
+    sentinel number (see ``_opt_num``)."""
     data = read_json_or(FILTER_CONFIG_FILE, {})
     if not isinstance(data, dict):
         data = {}
@@ -787,6 +809,10 @@ def save_filter_config(profile_id: str | None, names: list[str],
         entry["opaque"] = [bool(o) for o in opaque]
     if narrowband is not None:
         entry["narrowband"] = [bool(n) for n in narrowband]
+    if exposures is not None:
+        entry["exposures"] = [_opt_num(e, float) for e in exposures]
+    if gains is not None:
+        entry["gains"] = [_opt_num(g, int) for g in gains]
     data[profile_id or _FILTER_DEFAULT_KEY] = entry
     write_json_atomic(FILTER_CONFIG_FILE, data)
 
