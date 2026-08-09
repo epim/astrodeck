@@ -70,6 +70,13 @@ type QuickBarPolar = {
         below a 124px stage, i.e. on the phone polar alignment is done from.
         There is a test called "the Align screen's offset is REACHABLE, not
         just stored".
+        CLOSED 2026-08-09 (#202): the dial no longer deletes itself. Below
+        DIAL_MIN_R it renders an honest-disabled face — dimmed, lock glyph,
+        `aria-disabled`, still showing the summary — whose reason names THIS
+        row ("on the solve-frame row above the reticle"). So the argument this
+        point made is spent; offset staying here is now a reach preference, not
+        a reachability requirement. (1), (3) and (4) below still stand on their
+        own, which is why the row stays.
      3. THE CUSTOM EXPOSURE BOX has no equivalent on the dial. An OSC camera
         behind a narrowband filter legitimately solves at minutes per frame,
         and the dial's EXP ring is presets only.

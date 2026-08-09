@@ -1022,6 +1022,7 @@ export default function FocusView() {
                 <CameraDial
                   label="Focus frame settings"
                   summary={`${shownExposureS ?? frameExposureS}s g${frameGain}`}
+                  elsewhere="in the Camera panel on this screen"
                   side="left"
                   right={FOCUS_DIAL_INSET.right}
                   bottom={FOCUS_DIAL_INSET.bottom}

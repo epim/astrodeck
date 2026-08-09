@@ -960,6 +960,7 @@ export default function CaptureView() {
           <CameraDial
             label="Camera settings"
             summary={`${exposure}s g${gain}`}
+            elsewhere="in the Exposure panel beside the preview"
             categories={captureDial}
           />
         )}
