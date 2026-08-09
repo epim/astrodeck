@@ -266,6 +266,43 @@ await test("a run in flight can be stopped, and the stop reaches the rig", async
   await act(async () => { useStore.setState({ filterOffsetsLearn: null } as never); });
 });
 
+// --------------------------------- per-filter exposure and gain (#215)
+//
+// The point of these is REACHABILITY. A store, a device field, an API body and
+// a status key are all in place, and none of it is worth anything if the one
+// screen that can write them does not actually send them — the shape that put
+// "no UI calls it, unreachable from the app" on the backlog for a route that
+// had shipped weeks earlier.
+
+const findInput = (label: RegExp): any =>
+  [...container.querySelectorAll("input")]
+    .find((el: any) => label.test(el.getAttribute("aria-label") ?? ""));
+
+await test("the editor has an exposure and a gain per slot", () => {
+  render(null);
+  assert(findInput(/^Slot 2 exposure in seconds/) != null,
+    "no per-slot exposure field — the feature has no way in");
+  assert(findInput(/^Slot 2 gain/) != null, "no per-slot gain field");
+});
+
+await test("what is typed is what is saved, and blank stays unpinned", async () => {
+  render(null);
+  typeInto(findInput(/^Slot 2 exposure in seconds/), "30");
+  typeInto(findInput(/^Slot 2 gain/), "100");
+  lastSave = null;
+  click(named("Save"));
+  await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+  assert(lastSave != null, "Save called nothing");
+  const [, , , , exposures, gains] = lastSave;
+  assert(exposures?.[1] === 30, `slot 2 exposure did not reach save: ${JSON.stringify(exposures)}`);
+  assert(gains?.[1] === 100, `slot 2 gain did not reach save: ${JSON.stringify(gains)}`);
+  // Every OTHER slot must go out as null, not 0. A 0 here would be indis-
+  // tinguishable from a deliberate gain-0 pin, and the whole tri-state — file,
+  // device, API and picker — collapses at whichever end blinks first.
+  assert(exposures?.[0] === null && gains?.[0] === null,
+    `an untouched slot was sent as a pin: ${JSON.stringify([exposures?.[0], gains?.[0]])}`);
+});
+
 // ------------------------------------------------------------------ report
 act(() => { root.unmount(); });
 const total = passed + failed;

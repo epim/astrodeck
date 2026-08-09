@@ -47,6 +47,12 @@ function defaultRefSlot(names: string[], current: number,
   return first >= 0 ? first : current;
 }
 
+/** One column template, shared by the header and every row. Two copies of a
+ *  seven-column grid drift the moment one gains a column, and the header
+ *  drifting off the rows is a table that lies about which value is which. */
+const FILTER_ROW_COLS =
+  "grid-cols-[1.5rem_1fr_3.5rem_3.5rem_3.25rem_2.5rem_2.25rem]";
+
 export function FilterNamesModal({
   open,
   onClose,
@@ -54,6 +60,8 @@ export function FilterNamesModal({
   offsets,
   opaque = [],
   narrowband = [],
+  exposures = [],
+  gains = [],
   position = 0,
   canLearn = false,
   learnDisabledReason = null,
@@ -68,6 +76,10 @@ export function FilterNamesModal({
   opaque?: boolean[];
   /** per-slot narrowband flags, parallel to `names` */
   narrowband?: boolean[];
+  /** per-slot capture settings, parallel to `names`. `null` = not pinned,
+   *  which is NOT 0 — 0 is a real gain, so the two cannot share a value. */
+  exposures?: (number | null)[];
+  gains?: (number | null)[];
   /** current wheel slot — the reference-picker fallback */
   position?: number;
   /** show the auto-learn disclosure at all (a focuser is present) */
@@ -76,7 +88,8 @@ export function FilterNamesModal({
   learnDisabledReason?: string | null;
   onLearn?: (refSlot: number, req: LearnOffsetsRequest) => Promise<void>;
   onSave: (names: string[], offsets: number[], opaque: boolean[],
-           narrowband: boolean[]) => Promise<void>;
+           narrowband: boolean[], exposures: (number | null)[],
+           gains: (number | null)[]) => Promise<void>;
 }): JSX.Element | null {
   const panelRef = useRef<HTMLDivElement>(null);
   const openerRef = useRef<HTMLElement | null>(null);
@@ -84,6 +97,13 @@ export function FilterNamesModal({
   const [draftOffsets, setDraftOffsets] = useState<string[]>(offsets.map(String));
   const [draftOpaque, setDraftOpaque] = useState<boolean[]>(names.map((_, i) => !!opaque[i]));
   const [draftNarrow, setDraftNarrow] = useState<boolean[]>(names.map((_, i) => !!narrowband[i]));
+  // Strings, like every other numeric field here, so a half-typed "1" is not
+  // read as a one-second exposure. EMPTY STRING is the unpinned state and maps
+  // to null on save — it cannot map to 0, because 0 is a real gain.
+  const [draftExp, setDraftExp] = useState<string[]>(
+    names.map((_, i) => (exposures[i] == null ? "" : String(exposures[i]))));
+  const [draftGain, setDraftGain] = useState<string[]>(
+    names.map((_, i) => (gains[i] == null ? "" : String(gains[i]))));
   // What each slot was called before blackout renamed it, so unticking can
   // put it back rather than leaving DARK on a slot that now passes light.
   const priorNames = useRef<(string | undefined)[]>([]);
@@ -136,6 +156,8 @@ export function FilterNamesModal({
     setDraftOffsets(names.map((_, i) => String(offsets[i] ?? 0)));
     setDraftOpaque(names.map((_, i) => !!opaque[i]));
     setDraftNarrow(names.map((_, i) => !!narrowband[i]));
+    setDraftExp(names.map((_, i) => (exposures[i] == null ? "" : String(exposures[i]))));
+    setDraftGain(names.map((_, i) => (gains[i] == null ? "" : String(gains[i]))));
     setRefSlot(defaultRefSlot(names, position, opaque));
     setLearnExposure(String(derived.exposure_s));
     setLearnGain(String(derived.gain));
@@ -283,9 +305,22 @@ export function FilterNamesModal({
         const n = Number(o);
         return Number.isFinite(n) ? Math.round(n) : 0;
       });
+      // "" and anything unparseable become null — NOT 0. A blackout slot has
+      // no light path, so it carries no capture settings either, on the same
+      // terms as its focus offset above.
+      const pin = (raw: string, i: number, round: boolean): number | null => {
+        if (draftOpaque[i]) return null;
+        const t = raw.trim();
+        if (!t) return null;
+        const n = Number(t);
+        if (!Number.isFinite(n) || n < 0) return null;
+        return round ? Math.round(n) : n;
+      };
       await onSave(draftNames.map((n) => n.trim()), cleanOffsets,
                    [...draftOpaque],
-                   draftNarrow.map((n, i) => n && !draftOpaque[i]));
+                   draftNarrow.map((n, i) => n && !draftOpaque[i]),
+                   draftExp.map((v, i) => pin(v, i, false)),
+                   draftGain.map((v, i) => pin(v, i, true)));
       onClose();
     } catch (e) {
       setErr((e as Error).message);
@@ -315,15 +350,23 @@ export function FilterNamesModal({
         </header>
 
         <div className="overflow-y-auto p-4 grow flex flex-col gap-2">
-          <div className="grid grid-cols-[1.5rem_1fr_4rem_2.75rem_2.75rem] gap-2 label !text-[9px]">
+          {/* SEVEN COLUMNS DO NOT FIT A PHONE, so the grid scrolls inside its
+              own box rather than widening the modal (house rule: wide content
+              scrolls in an overflow-x container, the page never does). The
+              min-width is what gives it something to scroll. */}
+          <div className="overflow-x-auto -mx-1 px-1">
+          <div className="min-w-[27rem]">
+          <div className={`grid ${FILTER_ROW_COLS} gap-2 label !text-[9px]`}>
             <span>#</span>
             <span>name</span>
             <span>offset</span>
+            <span>exp s</span>
+            <span>gain</span>
             <span className="text-center">dark</span>
             <span className="text-center">nb</span>
           </div>
           {draftNames.map((name, i) => (
-            <div key={i} className="grid grid-cols-[1.5rem_1fr_4rem_2.75rem_2.75rem] gap-2 items-center">
+            <div key={i} className={`grid ${FILTER_ROW_COLS} gap-2 items-center`}>
               <span className="mono text-xs text-dim">{i + 1}</span>
               <input
                 className="field"
@@ -349,6 +392,45 @@ export function FilterNamesModal({
                   inputMode="numeric"
                   aria-label={`Slot ${i + 1} focuser offset`}
                   onChange={(e) => setOffset(i, e.target.value)}
+                />
+              )}
+              {/* PER-FILTER CAPTURE SETTINGS (#215). Blank = not pinned, which
+                  is why the placeholder is an em dash and not a number: a "0"
+                  sitting in an empty field reads as a pinned zero, and for gain
+                  a pinned zero is a real, different thing.
+
+                  These are DEFAULTS. Picking this filter seeds the camera dial
+                  and fills a new plan step; nothing rewrites a plan at capture
+                  time. The one place they are authoritative is an offset sweep,
+                  which has no plan to read — stated in the note below the grid,
+                  because a rule the operator cannot see is a rule they will be
+                  surprised by. */}
+              {draftOpaque[i] ? (
+                <span className="mono text-xs text-dim opacity-60 text-center"
+                  aria-label={`Slot ${i + 1} exposure — not applicable, blackout slot`}>—</span>
+              ) : (
+                <input
+                  className="field"
+                  value={draftExp[i] ?? ""}
+                  inputMode="decimal"
+                  placeholder="—"
+                  aria-label={`Slot ${i + 1} exposure in seconds, blank for none`}
+                  onChange={(e) => setDraftExp(
+                    (p) => p.map((v, j) => (j === i ? e.target.value : v)))}
+                />
+              )}
+              {draftOpaque[i] ? (
+                <span className="mono text-xs text-dim opacity-60 text-center"
+                  aria-label={`Slot ${i + 1} gain — not applicable, blackout slot`}>—</span>
+              ) : (
+                <input
+                  className="field"
+                  value={draftGain[i] ?? ""}
+                  inputMode="numeric"
+                  placeholder="—"
+                  aria-label={`Slot ${i + 1} gain, blank for none`}
+                  onChange={(e) => setDraftGain(
+                    (p) => p.map((v, j) => (j === i ? e.target.value : v)))}
                 />
               )}
               <label className="flex min-h-11 items-center justify-center cursor-pointer">
@@ -385,9 +467,20 @@ export function FilterNamesModal({
               )}
             </div>
           ))}
+          </div>
+          </div>
           <p className="text-[11px] text-dim leading-snug mt-1">
             Names appear in FITS headers and saved filenames. Offsets are the
             per-filter focuser step delta autofocus applies when switching filters.
+          </p>
+          <p className="text-[11px] text-dim leading-snug">
+            <span className="text-ink">exp</span> and{" "}
+            <span className="text-ink">gain</span> are what this filter usually
+            needs. Leave them blank to keep using whatever the screen is set to.
+            Picking the filter fills them in on the camera dial and on a new
+            sequence step — a running sequence is never changed, so a plan you
+            reviewed is the plan that runs. An offsets sweep is the one thing
+            that uses them outright, in place of its narrowband estimate.
           </p>
           <p className="text-[11px] text-dim leading-snug">
             Tick <span className="text-ink">dark</span> for a blackout slot — a

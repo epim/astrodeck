@@ -31,6 +31,7 @@ import { FilterNamesModal } from "../components/capture/FilterNamesModal";
 import { TargetField } from "../components/capture/TargetField";
 import { captureFilterDialCategory } from "../components/capture/captureFilterDial";
 import { filterMotion, type FilterCommand } from "../lib/filterSlots";
+import { filterSettingsPatch, filterSettingsSummary } from "../lib/filterSettings";
 import { warmReadout } from "../lib/cooling";
 import { useBusyLanes } from "../lib/useBusy";
 import { HELP } from "../help";
@@ -502,6 +503,20 @@ export default function CaptureView() {
   const moveFilterTo = (slot: number) => {
     const w = status?.filterwheel;
     if (!w) return;
+    // #215: this filter's own settings, if it has any, become the screen's —
+    // at the moment of the PICK, which is the only moment the operator is
+    // looking. Applied before the request so the dial face never shows the
+    // outgoing filter's exposure beside the incoming filter's name.
+    //
+    // Announced, not silent: a control that changes two things you did not
+    // touch is indistinguishable from a bug until you find it in a header.
+    const pins = filterSettingsPatch(w, slot);
+    if (Object.keys(pins).length) {
+      setCapture(pins);
+      showToast("info",
+        `${w.names?.[slot] || `slot ${slot + 1}`}: `
+        + `${filterSettingsSummary(w, slot)} (its saved settings)`);
+    }
     setFilterCmd({ slot, startedAt: Date.now(), from: w.position });
     setFilterNow(Date.now());
     act(async () => {
@@ -1562,6 +1577,8 @@ export default function CaptureView() {
             offsets={status.filterwheel.offsets ?? []}
             opaque={status.filterwheel.opaque ?? []}
             narrowband={status.filterwheel.narrowband ?? []}
+            exposures={status.filterwheel.exposures ?? []}
+            gains={status.filterwheel.gains ?? []}
             position={status.filterwheel.position}
             canLearn={!!status.focuser}
             learnDisabledReason={
@@ -1576,9 +1593,11 @@ export default function CaptureView() {
                              { ref_slot: refSlot, ...req });
               showToast("info", "Learning filter offsets…");
             }}
-            onSave={async (names, offsets, opaque, narrowband) => {
+            onSave={async (names, offsets, opaque, narrowband,
+                           exposures, gains) => {
               await api.post("/api/filterwheel/names",
-                             { names, offsets, opaque, narrowband });
+                             { names, offsets, opaque, narrowband,
+                               exposures, gains });
               showToast("success", "Filter names saved");
             }}
           />
