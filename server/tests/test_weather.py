@@ -174,6 +174,7 @@ def test_config_weather_409_body_never_leaks_key(tmp_path, monkeypatch):
 
 import httpx  # noqa: E402  (section import, mirrors test_survey.py style)
 
+import astrodeck.licensing as licensing_mod  # noqa: E402
 import astrodeck.weather as weather_mod  # noqa: E402
 from astrodeck.weather import (ASTROSPHERIC_INTERVAL_S,  # noqa: E402
                                OPEN_METEO_INTERVAL_S, OPEN_METEO_STALE_S,
@@ -297,6 +298,15 @@ def svc(tmp_path, monkeypatch):
     _FakeWxClient.om_calls = _FakeWxClient.astro_calls = 0
     _FakeWxClient.last_astro_body = None
     monkeypatch.setattr(WeatherService, "_tonight", lambda self, t: None)
+    # #200: the Astrospheric client is inert until this instance has
+    # acknowledged their terms. Isolated to tmp_path (a developer's real
+    # acknowledgment must never decide a test, in either direction) and granted
+    # here, so every test below keeps measuring what it was written to measure —
+    # cadence, body shape, fail-soft. The GATE itself is tested separately, on a
+    # fixture with no acknowledgment.
+    monkeypatch.setattr(licensing_mod, "CONSENT_FILE",
+                        tmp_path / "restricted_consent.json")
+    licensing_mod.acknowledge("astrospheric", by="test")
     now = {"t": BASE}
     return WeatherService(clock=lambda: now["t"]), now, store, rec
 
@@ -330,6 +340,49 @@ async def test_astrospheric_six_hourly_key_gated_exact_body(svc):
     now["t"] += ASTROSPHERIC_INTERVAL_S
     await s.tick()
     assert _FakeWxClient.astro_calls == 2
+
+
+async def test_astrospheric_never_calls_out_until_this_instance_agrees(
+        svc, monkeypatch, tmp_path):
+    """#200. Their Data API is scoped to "Astrospheric Professional members for
+    use in personal projects" and AstroDeck is a public product.
+
+    Nothing is being REDISTRIBUTED here, so unlike DSS2 there is no file to stop
+    shipping — the REQUEST is the thing outside their scope. So a configured key
+    is not enough on its own: the request does not go out until somebody with
+    authority over this deployment has stated, on the record, that this is such
+    a use. Open-Meteo is untouched, because the weather panel must still work.
+    """
+    s, now, store, rec = svc
+    licensing_mod.withdraw("astrospheric")
+    store.cfg().weather.astrospheric_api_key = "k-123"
+    await s.tick()
+    now["t"] += ASTROSPHERIC_INTERVAL_S
+    await s.tick()
+    assert _FakeWxClient.astro_calls == 0, (
+        "a request went to Astrospheric with no acknowledgment on record")
+    assert _FakeWxClient.om_calls > 0, (
+        "Open-Meteo was collateral damage — the forecast must still work")
+
+    # …and the moment it IS acknowledged, on the next due tick, it works.
+    licensing_mod.acknowledge("astrospheric", by="test")
+    now["t"] += ASTROSPHERIC_INTERVAL_S
+    await s.tick()
+    assert _FakeWxClient.astro_calls == 1
+
+
+async def test_an_acknowledgment_can_be_taken_back(svc, monkeypatch):
+    """A consent you cannot withdraw is not a consent. The integration has to go
+    inert again, not merely stop being advertised."""
+    s, now, store, rec = svc
+    store.cfg().weather.astrospheric_api_key = "k-123"
+    now["t"] += ASTROSPHERIC_INTERVAL_S
+    await s.tick()
+    assert _FakeWxClient.astro_calls == 1
+    assert licensing_mod.withdraw("astrospheric") is True
+    now["t"] += ASTROSPHERIC_INTERVAL_S
+    await s.tick()
+    assert _FakeWxClient.astro_calls == 1, "withdrawing did not stop the client"
 
 
 async def test_disabled_zero_httpx_and_flip_within_one_tick(svc, monkeypatch):

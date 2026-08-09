@@ -183,6 +183,26 @@ def seed_bundled_pack(slug: str = DEFAULT_SLUG, log=None) -> bool:
     src = bundled_pack_dir(slug)
     if read_manifest(src) is None:
         return False                        # no baseline bundled in this build
+    # ---- #198: WE ARE NOT LICENSED TO HAND THESE TILES TO ANYONE ----------
+    #
+    # DSS is All Rights Reserved. STScI grants USE for non-profit activity and
+    # says nothing about third-party redistribution; CDS permit mirroring only
+    # where the original copyright authorises it, which here cannot be
+    # established. A release that bundles ~45 MB of these and copies them onto
+    # the operator's disk at first boot is us distributing them.
+    #
+    # Refused HERE, not only in the packaging step, because a build that
+    # accidentally includes the directory would otherwise ship silently. The
+    # fetch path (``start_fetch``) is untouched and is the supported route: the
+    # operator pulling tiles from the survey's own publisher is squarely inside
+    # the use grant that we cannot pass on.
+    from ..licensing import RESTRICTED_SURVEY_ID
+    if PACK_SLUGS.get(RESTRICTED_SURVEY_ID) == slug:
+        if log:
+            log(f"not seeding the bundled '{slug}' pack: AstroDeck is not "
+                f"licensed to redistribute DSS2 imagery. Fetch it from the "
+                f"Atlas instead — that is permitted, and it is the same tiles.")
+        return False
     try:
         dest.mkdir(parents=True, exist_ok=True)
         for item in sorted(src.iterdir()):
