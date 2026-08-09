@@ -328,7 +328,23 @@ export default function SkyConditionsPanel() {
         <div className="flex items-center gap-2 flex-wrap text-[11px]">
           <span className={weather.stale ? "text-warn" : "text-dim"}>
             {weather.stale && <Icon name="alert" size={11} className="inline mr-1" />}
-            {weatherSourceLabel(!!weather.astrospheric)} · {agoLabel(weather.fetched_ts, nowTs)}
+            {/* Open-Meteo's CC BY 4.0 terms do not just ask to be named, they ask
+                for a LINK: "You must include a link next to any location
+                Open-Meteo data are displayed". The label alone was the naming
+                half of that and not the link half, so the anchor is the
+                compliance, not decoration. It wraps the whole source label
+                because Astrospheric is only ever an ADDITION to Open-Meteo —
+                weatherSourceLabel returns "Open-Meteo" or "Open-Meteo +
+                Astrospheric", never Astrospheric alone. */}
+            <a
+              href="https://open-meteo.com/"
+              target="_blank"
+              rel="noreferrer"
+              className="underline decoration-dotted underline-offset-2"
+            >
+              {weatherSourceLabel(!!weather.astrospheric)}
+            </a>{" "}
+            · {agoLabel(weather.fetched_ts, nowTs)}
           </span>
           {seeingNow !== null && (
             <span className="text-dim border border-line px-1.5 py-0.5">seeing {seeingNow}</span>
