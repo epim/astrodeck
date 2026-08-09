@@ -8,12 +8,38 @@
 - `PlayerOneCamera.dll` — the x64 SDK runtime (`lib/x64/` in the SDK zip).
 - `LICENSE` — the SDK's `license.txt`, verbatim.
 
-## Licensing
-The SDK license is MIT-style and **permits redistribution**: it grants use "to
-develop any products without any restrictions" and carries the standard MIT
-copyright-notice-retention clause and warranty disclaimer. Bundling `.dll`
-copies is allowed provided this LICENSE travels with them. Full analysis:
-`docs/hardware/player-one-sdk-licensing.md`.
+## Licensing — READ THIS BEFORE SHIPPING ANY OF THESE FILES
+
+**We do not have a stated right to redistribute these binaries.** Corrected
+2026-08-09; the previous version of this paragraph asserted that the licence
+"permits redistribution", which is an interpretation and was read as a fact for
+weeks while six binaries shipped on it.
+
+What the licence actually says, in its own words:
+
+> This SDK is only used for the secondary development of our company's cameras
+> or other equipment. You can use our company's products and this SDK to
+> develop any products without any restrictions.
+
+That is the whole grant, and it contains **no distribution verb** — not copy,
+publish, distribute, sublicense or sell. The document is MIT-*shaped*: it closes
+with MIT's notice-retention clause and MIT's warranty disclaimer word for word,
+which is where the earlier reading came from. The middle paragraph is Player
+One's own prose and is not MIT.
+
+A reasonable person may well conclude redistribution is intended — a runtime
+library is useless unless it ships, and a retained-notice clause presupposes
+copies. Intended is not granted.
+
+**So:** releases carry no Player One binary. A machine that needs one fetches
+the SDK from the vendor (`server/astrodeck/licensing.py`, remedy `fetch`), which
+is squarely inside the grant above. The copies in this directory are for
+development on this checkout.
+
+Written confirmation has been requested from support@player-one-astronomy.com.
+When it arrives, record it here beside the quote — not instead of it. Full
+analysis: `docs/hardware/player-one-sdk-licensing.md`; audit:
+`docs/superpowers/backlog/2026-08-08-third-party-licences.md` §1.3.
 
 ## Bindings + verification
 `astrodeck/devices/cameras/player_one_sdk.py` binds this DLL via ctypes. The

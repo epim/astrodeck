@@ -46,6 +46,7 @@ import AlertsPanel from "./AlertsPanel";
 import UpdatePanel from "./UpdatePanel";
 import FactoryResetPanel from "./FactoryResetPanel";
 import CreditsPanel from "./CreditsPanel";
+import RestrictedAssetsPanel from "./RestrictedAssetsPanel";
 
 type Tab =
   | "connect"
@@ -256,6 +257,11 @@ export default function SettingsView(): JSX.Element {
       {activeTab === "account" && <AccountPanel />}
 
       {/* ------------------------------------------------------------ CREDITS */}
+      {/* The restricted assets sit ABOVE the credits list, not inside it. The
+          credits page answers "what are we built on"; this answers "what are we
+          not entitled to hand you, and what is AstroDeck doing about it" —
+          which is the only part of the page that carries an action. */}
+      {activeTab === "credits" && <RestrictedAssetsPanel />}
       {activeTab === "credits" && <CreditsPanel />}
 
       {/* -------------------------------------------------------------- USERS */}
