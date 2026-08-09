@@ -254,7 +254,23 @@ export default function GuideView() {
   return (
     <div className="flex flex-col gap-3">
     {/* sticky glance + guide-camera speed dials — state, RMS, and the
-        calibration walk, visible from any scroll position */}
+        calibration walk, visible from any scroll position.
+
+        NO RADIAL DIAL ON THIS SCREEN, and that is a measurement rather than an
+        omission (#179, 2026-08-08). `CameraDial` needs a stage of at least
+        DIAL_MIN_R + inset + disc/2 + item/2 ≈ 188px in its SHORTER dimension
+        and renders nothing at all below it. Every candidate stage here is
+        under that at phone width: the guide-error graph is a 420×140 viewBox
+        at `w-full`, so ~117px tall in a 350px column; GuideFramePreview's box
+        is h-28/h-40 (112/160px) and is collapsed by default; the scatter is
+        140×140. A dial mounted on any of them would exist on a desktop and be
+        gone on the phone a guide session is watched from — which is the
+        recorded defect that put the offset picker in the bar below.
+
+        So the guide camera's controls are the STRIP, which is sticky at every
+        width, and which can also do the one thing a dial cannot: refuse a
+        binning change mid-session with the reason (the server 409s it). Its
+        pickers are graded by components/__tests__/opStripsDom.test.tsx. */}
     <GuideQuickBar />
     <div className="grid gap-4 lg:grid-cols-[1fr_300px]">
       <Panel title={`Guide Error · ${unitWord}`}
