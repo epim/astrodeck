@@ -270,6 +270,7 @@ export default function PolarView() {
               <CameraDial
                 label="Solve frame settings"
                 summary={`${solveSettings.exposure_s}s g${solveSettings.gain}`}
+                elsewhere="on the solve-frame row above the reticle"
                 categories={solveDial}
               />
             )}

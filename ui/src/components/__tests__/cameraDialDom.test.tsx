@@ -51,10 +51,13 @@ g.IS_REACT_ACT_ENVIRONMENT = true;
 if (!("oninput" in win.document)) win.document.oninput = null;
 // The dial sizes its arc from a ResizeObserver; jsdom has none. Report a stage
 // big enough for the full radius so `fits` is true.
+// Mutable so the too-short-stage case (#202) can shrink it. Default is a stage
+// big enough for the full radius, so `fits` is true for every other case.
+const stage = { width: 420, height: 300 };
 g.ResizeObserver = class {
   cb: any;
   constructor(cb: any) { this.cb = cb; }
-  observe() { this.cb([{ contentRect: { width: 420, height: 300 } }]); }
+  observe() { this.cb([{ contentRect: { ...stage } }]); }
   disconnect() {}
 };
 
@@ -468,6 +471,71 @@ test("the ring is a menu of menuitems, and the scrim is not a control", () => {
     "every control in the ring must be a menuitem");
   assert.ok(buttons.every((b: any) => (b.getAttribute("aria-label") ?? "").length > 0),
     "an unnamed control in the dark is an unnamed control");
+});
+
+// ------------------------------- a stage too short to open the arc (#202)
+//
+// The dial used to render NOTHING below DIAL_MIN_R — no disc, no dim, no glyph,
+// no sentence, nothing in the accessibility tree. That is the vanishing the
+// house honest-disabled rule (§11.8) exists to forbid, and it had a cost beyond
+// the rule: PolarQuickBar's exp/gain/bin/filt row could not be retired while
+// the control that replaced it might silently not be there.
+//
+// These drive the REAL CameraDial at a real short stage. A double supplying its
+// own `fits` would prove nothing about the branch under test — the mistake that
+// made a filterwheel sabotage come back MISSED on 2026-08-09.
+
+const lockedFace = (): any => win.document.querySelector("[data-dial-locked]");
+
+test("a stage too short for the arc says so instead of vanishing", () => {
+  stage.height = 90;
+  try {
+    render();
+    assert.equal(disc(), null, "the disc cannot open at this height");
+    const face = lockedFace();
+    assert.ok(face, "the dial rendered NOTHING — no disc and no locked face");
+    const trigger = face.querySelector('[aria-disabled="true"]');
+    assert.ok(trigger, "the locked face carries no aria-disabled");
+    assert.equal(face.querySelector("[disabled]"), null,
+      "native `disabled` strips the reason from the a11y tree (§11.8)");
+  } finally {
+    stage.height = 300;
+  }
+});
+
+test("the locked face names a place the settings can still be reached", () => {
+  stage.height = 90;
+  try {
+    if (root) act(() => root!.unmount());
+    win.document.getElementById("root").innerHTML = "";
+    root = createRoot(win.document.getElementById("root"));
+    act(() => root!.render(React.createElement(CameraDial, {
+      categories: cats, label: "Solve frame settings", summary: "2s g120",
+      elsewhere: "on the solve-frame row above the reticle",
+    })));
+    const named = lockedFace().querySelector("[aria-label]")
+      ?.getAttribute("aria-label") ?? "";
+    assert.ok(/solve-frame row/.test(named),
+      `the reason must send the operator somewhere, got: ${named}`);
+    // A refusal that only says "no" is the copy defect this repo already has a
+    // rule about: name the fix, not the symptom.
+    assert.ok(/taller/.test(named),
+      `the reason must state WHY it cannot open, got: ${named}`);
+  } finally {
+    stage.height = 300;
+  }
+});
+
+test("the locked face is still a READOUT — it shows the summary", () => {
+  stage.height = 90;
+  try {
+    render();
+    assert.ok(/2s g120/.test(lockedFace().textContent ?? ""),
+      "a short stage stops the dial being a CONTROL; it does not stop it "
+      + "being a readout, and the values are what the screen is for");
+  } finally {
+    stage.height = 300;
+  }
 });
 
 // ------------------------------------------------------------------- report
