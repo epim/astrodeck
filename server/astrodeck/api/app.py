@@ -5805,7 +5805,23 @@ def create_app() -> FastAPI:
         and broadcasts the REDACTED config so the UI updates without a restart.
 
         Blank secrets in the body mean "unchanged" (the UI only ever sees the
-        redacted block), so a method/TTL toggle never wipes a stored credential."""
+        redacted block), so a method/TTL toggle never wipes a stored credential.
+
+        THAT SENTENCE WAS A LIE FOR WEEKS. It described `_preserve_auth_secrets`
+        — and this route never called it. The call was added to the SIBLING
+        route (`/api/remote/config`) when the same bug was found there, and its
+        docstring even says "'Exactly like /api/auth/config' was true of the
+        sentence and not of the code" — while the route it was quoting stayed
+        broken. The fixer patched the route that had visibly failed and left the
+        one whose docstring already claimed the fix, which is the hardest place
+        to look, because reading it tells you it is already handled.
+
+        The cost was a full lockout of the rig, twice. Saving anything in the
+        auth panel echoed the redacted block back, wiping `google_client_secret`
+        (so Google resolved unconfigured) and `session_private_key` (so every
+        live session died). With local not enabled and no break-glass token,
+        that left no way to sign in at all."""
+        auth = _preserve_auth_secrets(auth)
         try:
             cfg = await asyncio.to_thread(config_store.set_auth, auth)
         except ValueError as e:
