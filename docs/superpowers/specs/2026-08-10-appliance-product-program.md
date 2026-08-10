@@ -100,6 +100,24 @@ These are product-blocking and become issues in their own right.
 | `write_json_atomic` sets no file mode | `server/astrodeck/persist.py:158` **[v]** | Session secret, relay device token and OIDC secret land at umask default (0644 on stock Armbian) on removable storage. |
 | Coordinate frame gated on a backend string: `if getattr(tel, "backend", "") != "alpaca": return False` | `server/astrodeck/hub.py:2291`; `devices/backends/zwo_am5.py:103`; no epoch handling in `devices/lx200.py` **[v]** | Every non-Alpaca mount silently receives J2000 where it may expect JNOW. **Suspected live on the AM5** — ~0.36° in 2026, absorbed by the plate-solve centring loop so nothing looks wrong. Confirm the AM5's epoch convention on the rig. |
 | No time synchronisation anywhere, on a board with no RTC | **[r]** — verify | Dawn-park, sun watchdog, solar exclusion, resume windows and the polar fit all read the same clock with no cross-check, so a wrong clock is silently self-consistent and can pass a slew toward the real Sun. The only finding with a path to destroyed hardware. |
+| The onboarding portal runs **once at boot** and never again | `orangepi5/provision/astrodeck-provision.service` (`Restart=no`); observed live 2026-08-10 **[v]** | Observed on the reference board: powered on continuously, absent from a full `/24` sweep, and **not broadcasting its hotspot**. Once online at boot the provisioner exits, so a later WiFi drop, channel change, password change or failed lease renewal leaves the box with no route in and no way to ask for help. |
+
+### The recurring defect class
+
+The WiFi failure above is the **third** appearance of one shape in this
+project, after the AM5 serial link (5.5 h dead through sunrise) and the
+Wanderer filterwheel: *a cached `connected` belief standing in for a
+measurement, so the flag that should drive recovery is the flag suppressing
+it.* Treat it as a class-level requirement rather than three bugs — **every
+link the appliance depends on needs a liveness measurement and an
+unconditional recovery path that does not consult a cached belief.** That
+covers WiFi, serial, USB and the relay.
+
+This also settles the shape of requirement 7. A box that cannot reach the
+network is by definition the box that cannot report that it cannot reach the
+network, so "offline, needs attention" is the **canonical** case for the
+physical indicator — the justification for exception-based LEDs rather than a
+nice-to-have.
 
 ## Cross-cutting architecture
 
@@ -225,7 +243,7 @@ humidity, dewpoint, wind, sky brightness) alongside it, not a safety verdict.
 | # | Sub-project | Covers | Depends on | Size |
 |---|---|---|---|---|
 | 1 | Appliance image foundation — bake, systemd units, non-root user, udev + usbfs, storage layout, **time subsystem**, free-space/retention guard | prereq for 2,3,4,6,7,9 | — | XL |
-| 2 | Naming, discovery, first-boot handoff | 2 | 1 | M |
+| 2 | Naming, discovery, first-boot handoff, **network watchdog** | 2 | 1 | M |
 | 3 | Secure-by-default first run + per-device credential | 3 | 1 | M |
 | 4 | Privilege containment — app fixes + OS confinement + broker | 6 | 3 | L |
 | 5 | Licence compliance for a sold box | 1 | — | L |
