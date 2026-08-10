@@ -84,6 +84,7 @@ from .. import hub as hub_module
 from .. import config as config_module
 from .. import factory_reset as factory_reset_module
 from .. import gallery as gallery_module
+from ..sync import manifest as sync_manifest_mod
 from ..hub import CAPTURE_DIR, TOUCH_MAX_RATE_DEG_S, hub
 from ..calibration import CalibrationLibrary, MatchTolerance
 from ..imaging import build_caption, compose_share_jpeg, fmt_share_date, to_png
@@ -132,6 +133,14 @@ resume_arm = ResumeArm(engine, hub, weather=weather_service)
 # AlertDispatcher's wall-clock loop: that loop drives the external dead-man's
 # switch, and a directory walk that stalls it would fire a false "rig is down".
 trash_keeper = gallery_module.TrashKeeper()
+
+#: Content hashes for /api/sync/manifest, keyed (path, size, mtime_ns). Module
+#: scope so it survives across requests — the whole point is that a night is
+#: read once, not once per poll, and an agent polling every 30 s for six hours
+#: would otherwise re-read 9 GB seven hundred times. Unbounded is deliberate and
+#: safe here: one entry is ~120 bytes and the library is bounded by
+#: gallery.SCAN_MAX_FILES, so the worst case is a few MB of strings.
+_SYNC_HASH_CACHE: dict = {}
 
 # Dawn park (backlog K / task #139). EVERY other park lives inside the sequence
 # engine's run lifecycle, so a night that ended without a run — which is what a
@@ -5739,6 +5748,69 @@ def create_app() -> FastAPI:
         if not body.paths:
             raise HTTPException(422, "no paths given (send all=true to empty the trash)")
         return await asyncio.to_thread(gallery_module.purge_paths, body.paths)
+
+    # ------------------------------------------------------------------ sync
+
+    @app.get("/api/sync/manifest", dependencies=[Depends(require(CAP_VIEW_MEDIA))])
+    @declare(CAP_VIEW_MEDIA)
+    async def sync_manifest(night: str = "", night_from: str = "",
+                            night_to: str = ""):
+        """What this rig currently holds, with a content hash per file.
+
+        The other half of a sync is ``/api/gallery/file``, and this route is
+        gated at ``view.media`` to MATCH it rather than at the looser
+        ``view.preview`` the listing routes use. Two reasons, and the second is
+        the real one. A manifest exists for exactly one purpose — to drive a
+        bulk copy of the files that route gates — so a principal who cannot
+        fetch the bytes has no use for their hashes. And keeping plan and
+        perform behind ONE capability means there is a single decision to get
+        right; two gates on halves of the same operation are two things that can
+        drift, and only one of them gets the next review.
+
+        ``night``/``night_from``/``night_to`` are the gallery's own vocabulary
+        and reach the gallery's own filter, so "that one night" means the same
+        set of frames here as it does on screen — including the noon rollover
+        that keeps a 23:50 and a 00:10 frame together.
+
+        FIRST CALL FOR A NIGHT IS SLOW ON PURPOSE. Nothing is hashed until it is
+        asked for, so the first manifest over ~9 GB spends ~25 s reading the
+        library; afterwards the (path, size, mtime) cache answers instantly and
+        only genuinely-changed files are re-read. The work is on a worker
+        thread, so a guiding loop and an exposure in flight never wait for it.
+        The cache is in memory and is deliberately NOT persisted yet: a restart
+        pays the read again, which is a known 25 s cost rather than a new file
+        format to keep correct.
+        """
+        for value in (night, night_from, night_to):
+            if value and not gallery_module.valid_night(value):
+                raise HTTPException(422, "night must be YYYY-MM-DD")
+        lo = night or night_from
+        hi = night or night_to
+        rows, truncated = await asyncio.to_thread(gallery_module.scan)
+        rows = gallery_module.filter_rows(rows, night_from=lo, night_to=hi)
+        facts = [
+            sync_manifest_mod.FileFacts(
+                relpath=r["path"], size=int(r["bytes"]),
+                # gallery reports mtime as float seconds; the hash cache wants
+                # an integer key. Derived the same way on every call, so the
+                # key is stable even though the precision is not the stat's.
+                mtime_ns=int(float(r["mtime"]) * 1e9),
+                night=r.get("night", ""),
+                kind=(r.get("frame_type") or "frame").lower())
+            for r in rows
+        ]
+        man = await asyncio.to_thread(
+            sync_manifest_mod.build, facts,
+            root=gallery_module.capture_root(), now=time.time(),
+            cache=_SYNC_HASH_CACHE)
+        out = man.to_json()
+        out.update({
+            "truncated": truncated,
+            "settle_s": sync_manifest_mod.DEFAULT_SETTLE_S,
+            "count": len(man.entries),
+            "bytes": man.bytes,
+        })
+        return out
 
     # ----------------------------------------------------- identity / auth admin
     # W2.5 client seam + the admin.users-gated auth/remote/revoke surface. These
