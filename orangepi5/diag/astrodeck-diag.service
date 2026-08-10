@@ -1,0 +1,23 @@
+[Unit]
+Description=AstroDeck temporary telemetry collector (headless debug)
+Documentation=file:///usr/local/lib/astrodeck/diag/collect.sh
+After=network.target
+# Deliberately nothing depends on this unit and it orders Before= nothing.
+# A bug in the collector must never be able to hold up or break a boot.
+#
+# StartLimitIntervalSec lives in [Unit], not [Service] -- systemd silently
+# ignores it in [Service], which would let a crash loop rate-limit itself into a
+# permanently failed state. On a headless box a dead collector is
+# indistinguishable from a dead board, so this must never stop retrying.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/local/lib/astrodeck/diag/collect.sh
+Restart=always
+RestartSec=10
+Nice=10
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=multi-user.target
