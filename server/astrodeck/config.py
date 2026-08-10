@@ -936,6 +936,66 @@ class ConfigVersionConflict(ValueError):
 
 # ------------------------------------------------------------------------- store
 
+def usable_login_methods(auth: "AuthConfig") -> list[str]:
+    """Which enabled methods could ACTUALLY sign somebody in, right now.
+
+    Not "which are ticked" — which would work if you loaded the login page. The
+    difference is the whole of #205: ``methods: ["google"]`` with a blank
+    ``google_client_secret`` is a ticked method that resolves to nothing, and
+    the login page correctly renders no form at all.
+
+    A break-glass ``admin_token`` counts wherever it is set — it bypasses the
+    provider entirely and is exactly the escape hatch this situation calls for.
+    """
+    out: list[str] = []
+    enabled = set(auth.methods_effective() or ())
+    # Local is usable whenever it is enabled: either a user exists, or the
+    # first-run form creates one. Both end with somebody signed in.
+    if "local" in enabled:
+        out.append("local")
+    # Google needs BOTH halves of the client credential. An id with no secret
+    # is the exact state that locked the rig out.
+    if "google" in enabled and (auth.google_client_id or "").strip() \
+            and (auth.google_client_secret or "").strip():
+        out.append("google")
+    if (auth.admin_token or "").strip():
+        out.append("admin_token")
+    return out
+
+
+def _refuse_lockout(auth: "AuthConfig") -> None:
+    """Refuse a config that would leave NOBODY able to sign in.
+
+    #205, and the reason it is enforced HERE rather than at one route: the rig
+    locked itself out twice, and both times the write that did it was a
+    perfectly ordinary save that happened to carry a blanked secret. No caller
+    intended it, so no caller was going to check for it. This is the one place
+    every auth write funnels through.
+
+    THE EMPTY SET IS NOT A LOCKOUT. ``methods == []`` means authentication is
+    OFF — every caller resolves to the open-default admin — which is the
+    shipped default for a LAN rig with no exposure. Turning auth off is a
+    decision someone can make; being unable to sign in after turning it ON is
+    never one. So the guard fires only when auth is ENFORCED and nothing behind
+    it works.
+
+    The error names the three ways out, because the person reading it is by
+    definition looking at a screen that will not let them in.
+    """
+    if not auth.methods_effective():
+        return                       # auth off: open by design, not locked out
+    if usable_login_methods(auth):
+        return
+    raise ValueError(
+        "this would leave nobody able to sign in: authentication is enabled "
+        "but no method can actually complete a login. Fix one of: enable the "
+        "'local' method (existing accounts, or the first-run form), supply "
+        "BOTH google_client_id and google_client_secret, or set a break-glass "
+        "admin_token. (A blank google_client_secret with an id set is the "
+        "usual cause — the UI only ever shows a redacted secret, so echoing "
+        "that block back used to wipe it.)")
+
+
 class ConfigStore:
     """Module singleton (like ``hub``) owning the persisted ``AppConfig``.
 
@@ -1167,6 +1227,7 @@ class ConfigStore:
         SHRINK the append-only ``revoked_jti`` registry.
         """
         validate_auth_config(auth, current=self.cfg().auth)
+        _refuse_lockout(auth)
         cfg = self.cfg()
         old = cfg.auth
         # Session-epoch invariant (R4B-AUTH-01). The epoch is SERVER-owned: a

@@ -353,7 +353,14 @@ def _store(tmp_path):
 def test_set_auth_roundtrip(tmp_path):
     store = _store(tmp_path)
     v0 = store.cfg().version
-    store.set_auth(AuthConfig(provider="google", google_client_id="cid"))
+    # A client SECRET as well as an id, because `_migrate_legacy_provider` turns
+    # `provider="google"` into `methods == ["google"]`, and an id with no secret
+    # is a config nobody can sign in through — which `set_auth` now refuses
+    # (#205: that exact state locked the rig out twice). What this test is about
+    # is the round-trip and the version bump, so it gets a COMPLETE credential
+    # rather than a weakened guard.
+    store.set_auth(AuthConfig(provider="google", google_client_id="cid",
+                              google_client_secret="csecret"))
     assert store.cfg().auth.provider == "google"
     assert store.cfg().version == v0 + 1
     # persisted: a fresh store reads it back
