@@ -99,25 +99,47 @@ These are product-blocking and become issues in their own right.
 | Factory reset touches only `CONFIG_DIR` and `CAPTURE_DIR` | `server/astrodeck/factory_reset.py` **[v]** | A customer who sells or returns the box hands over their home SSID and WPA2 passphrase. `reset_auth` also restores `methods` to `[]` — "factory reset" currently means "unauthenticate the box". |
 | `write_json_atomic` sets no file mode | `server/astrodeck/persist.py:158` **[v]** | Session secret, relay device token and OIDC secret land at umask default (0644 on stock Armbian) on removable storage. |
 | Coordinate frame gated on a backend string: `if getattr(tel, "backend", "") != "alpaca": return False` | `server/astrodeck/hub.py:2291`; `devices/backends/zwo_am5.py:103`; no epoch handling in `devices/lx200.py` **[v]** | Every non-Alpaca mount silently receives J2000 where it may expect JNOW. **Suspected live on the AM5** — ~0.36° in 2026, absorbed by the plate-solve centring loop so nothing looks wrong. Confirm the AM5's epoch convention on the rig. |
-| No time synchronisation anywhere, on a board with no RTC | **[r]** — verify | Dawn-park, sun watchdog, solar exclusion, resume windows and the polar fit all read the same clock with no cross-check, so a wrong clock is silently self-consistent and can pass a slew toward the real Sun. The only finding with a path to destroyed hardware. |
-| The onboarding portal runs **once at boot** and never again | `orangepi5/provision/astrodeck-provision.service` (`Restart=no`); observed live 2026-08-10 **[v]** | Observed on the reference board: powered on continuously, absent from a full `/24` sweep, and **not broadcasting its hotspot**. Once online at boot the provisioner exits, so a later WiFi drop, channel change, password change or failed lease renewal leaves the box with no route in and no way to ask for help. |
+| No pinned time source and no clock-confidence gate | `systemd-timesyncd` enabled and `fake-hwclock` running on the reference card **[v]**; nothing in the repo configures or checks either **[v]** | Armbian supplies time sync, so an earlier claim that "no time synchronisation exists" was **wrong** — see the correction below. What is missing is ours: no NTP source is pinned (it falls back to Debian's pool, which must be reachable through the customer's network), and no code gates on clock confidence. Dawn-park, sun watchdog, solar exclusion, resume windows and the polar fit all read one clock with no cross-check, so a wrong clock stays silently self-consistent. |
+| The onboarding portal runs **once at boot** and never again | `orangepi5/provision/astrodeck-provision.service` is `Restart=no`; `provision.log` carries one block per boot and none since 2026-08-09 11:48 **[v]** | Once online at boot the provisioner exits. A later WiFi drop, channel change, password change or failed lease renewal leaves the box with no route in and no way to ask for help. |
+| The appliance has no stable name, so a DHCP change makes it unfindable | no mDNS responder anywhere in the repo **[v]** | The customer's only handle on the box is an address their router chose and can change at any renewal. This is requirement 2's real justification. |
+
+### The 2026-08-10 incident — and what it did not show
+
+The reference board was unreachable at its last known address. I swept the
+`/24`, found five hosts and none of them the Pi, saw no hotspot broadcasting,
+and concluded the WiFi had dropped with no recovery. **That conclusion was
+wrong, and the instrument was bad.** 254 concurrent pings fired from WSL under
+mirrored networking is precisely the probe that yields false negatives under
+rate limiting, and I read its silence as evidence.
+
+The SD card settled it. The board had **not** rebooted since 2026-08-09 11:48
+and was still writing to the rootfs at 2026-08-10 00:21, a minute or two
+before the card was pulled. It was alive and working throughout. What is
+actually established is narrower: it was not at its previous address. The
+likely explanation is a DHCP change — the appliance did not fail, it became
+**unfindable**, which is a stronger argument for the mDNS responder than the
+one it replaced.
+
+Recorded because the failure mode generalises: a probe that cannot fail
+loudly reads as evidence. Re-run any such sweep sequentially or with
+`arp-scan` before drawing a conclusion from a negative result.
 
 ### The recurring defect class
 
-The WiFi failure above is the **third** appearance of one shape in this
-project, after the AM5 serial link (5.5 h dead through sunrise) and the
-Wanderer filterwheel: *a cached `connected` belief standing in for a
-measurement, so the flag that should drive recovery is the flag suppressing
-it.* Treat it as a class-level requirement rather than three bugs — **every
+The boot-only provisioner is structurally the **third** appearance of one shape
+in this project, after the AM5 serial link (5.5 h dead through sunrise) and the
+Wanderer filterwheel: *a cached belief standing in for a measurement, so the
+flag that should drive recovery is the flag suppressing it.* The 2026-08-10
+incident did not demonstrate it — but the gap is real and verified in the unit
+file. Treat it as a class-level requirement rather than three bugs: **every
 link the appliance depends on needs a liveness measurement and an
 unconditional recovery path that does not consult a cached belief.** That
 covers WiFi, serial, USB and the relay.
 
-This also settles the shape of requirement 7. A box that cannot reach the
-network is by definition the box that cannot report that it cannot reach the
-network, so "offline, needs attention" is the **canonical** case for the
-physical indicator — the justification for exception-based LEDs rather than a
-nice-to-have.
+It also settles the shape of requirement 7. A box that cannot reach the network
+is by definition the box that cannot report that it cannot reach the network,
+so "offline, needs attention" is the **canonical** case for the physical
+indicator rather than a nice-to-have.
 
 ## Cross-cutting architecture
 
@@ -265,3 +287,9 @@ coordinate-frame capability seam lands **before** any INDI mount connects.
   Settles whether the coordinate-frame defect is live today.
 - **arm64 vendor blobs on RK3588**: nothing substitutes for plugging a camera
   into the real board.
+- **The previous boot's network events**: `/var/log` lives on the eMMC, so it
+  was not on the card. After the next boot, read `/var/log.hdd/` on the board
+  for wpa_supplicant and networkd records — that is what shows whether the
+  address changed, the link dropped, or neither. Note journald is volatile
+  under `armbian-ramlog` (zram), so only what the periodic rsync flushed
+  survived the card being pulled from a running system.
