@@ -1,0 +1,27 @@
+{
+  // Declaration emit for the design-system library entry (src/design-system.ts).
+  //
+  // A SEPARATE config, not a flag on the app's tsconfig, because the two want
+  // opposite things: the app sets `noEmit` and `allowImportingTsExtensions`
+  // (which REQUIRES noEmit), and this one has to actually write files. Turning
+  // emit on in the shared config would break `npm run build`.
+  //
+  // Declarations only — Vite produces the JS. `tsc` here exists purely so the
+  // published entry has real `.d.ts` contracts rather than synthesized ones.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "allowImportingTsExtensions": false,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "declarationDir": "dist-lib/types",
+    "rootDir": "src",
+    // The app tsconfig is strict about unused locals/params, which is right for
+    // application code and wrong here: this pass only walks the import graph
+    // reachable from the barrel, and a shared module's unused-in-this-graph
+    // symbol is not a defect worth failing a declaration build over.
+    "noUnusedLocals": false,
+    "noUnusedParameters": false
+  },
+  "include": ["src/design-system.ts"]
+}

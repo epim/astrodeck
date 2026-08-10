@@ -1,0 +1,9 @@
+{
+  "projectId": "cd466e63-1d00-46be-b8b2-af610ce36e18",
+  "shape": "package",
+  "pkg": "astrodeck-ui",
+  "globalName": "AstroDeckUI",
+  "srcDir": "src",
+  "tsconfig": "tsconfig.json",
+  "buildCmd": "npm run build:lib"
+}

@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "test": "node --import tsx run-tests.mjs"
+    "test": "node --import tsx run-tests.mjs",
+    "build:lib": "vite build -c vite.lib.config.ts && tsc -p tsconfig.lib.json"
   },
   "dependencies": {
     "@fontsource/chakra-petch": "^5.1.0",
@@ -28,5 +29,14 @@
     "tsx": "^4.23.1",
     "typescript": "~5.6.2",
     "vite": "^6.0.3"
+  },
+  "module": "./dist-lib/index.es.js",
+  "types": "./dist-lib/types/design-system.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist-lib/types/design-system.d.ts",
+      "import": "./dist-lib/index.es.js"
+    },
+    "./style.css": "./dist-lib/style.css"
   }
 }
