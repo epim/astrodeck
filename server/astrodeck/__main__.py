@@ -109,6 +109,23 @@ def create_admin(username: str, password: str | None = None) -> dict:
         if not existing.enabled:
             user_store.set_enabled(existing.id, True)
         user = user_store.get(existing.id)
+
+    # …AND MAKE THE ACCOUNT REACHABLE. Creating a local admin while ``local``
+    # is not an enabled method produces a perfectly good user that the login
+    # page will not offer a form for — the break-glass hands you a key to a
+    # door it does not unlock. That is exactly the state the rig was found in
+    # on 2026-08-09 (#205): one local admin in the store, ``methods:
+    # ["google"]``, Google unconfigured, and a login page saying no sign-in
+    # method was available.
+    #
+    # Enabling ``local`` is the smallest change that makes this account usable
+    # and it takes nothing else away: other methods stay exactly as they were.
+    from .config import config_store
+    auth = config_store.cfg().auth
+    if auth.methods_effective() and "local" not in set(auth.methods_effective()):
+        config_store.set_auth(
+            auth.model_copy(update={"methods": [*auth.methods_effective(), "local"]}))
+        print("enabled the 'local' sign-in method so this account can be used.")
     return user.to_public()
 
 
