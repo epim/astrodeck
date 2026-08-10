@@ -184,3 +184,62 @@ def test_create_admin_also_makes_the_account_reachable(tmp_path, monkeypatch):
         "the break-glass made an account nobody can sign in as")
     # …and it took nothing else away.
     assert "google" in store.cfg().auth.methods_effective()
+
+
+# --------------------------------- the break-glass has to reach a LIVE server
+
+def test_a_user_written_by_another_process_is_seen_without_a_restart(tmp_path):
+    """The second half of #205, found while probing the rig.
+
+    `python -m astrodeck create-admin` runs in a SEPARATE process. It rewrote
+    users.json correctly and printed "admin user 'x' ready", while the running
+    server kept serving a cache from before the account existed — so signing in
+    as it returned "invalid username or password", with nothing anywhere
+    explaining why. The documented recovery path for a locked-out operator
+    appeared to work and did nothing.
+
+    `reload()` existed the whole time and was called from NOWHERE; its own
+    docstring said "(tests)". A capability nothing invokes is not a capability.
+    """
+    from astrodeck.auth.users import UserStore
+
+    path = tmp_path / "users.json"
+    server = UserStore(path=path)          # the long-lived process
+    server.create(username="existing", password="a-long-enough-password",
+                  role="admin", enabled=True, require_email=False)
+    assert server.get_by_username("existing") is not None
+
+    # A DIFFERENT process — the CLI break-glass — adds an account.
+    cli = UserStore(path=path)
+    cli.create(username="breakglass", password="another-long-password",
+               role="admin", enabled=True, require_email=False)
+
+    got = server.get_by_username("breakglass")
+    assert got is not None, (
+        "the running server cannot see the account the break-glass just "
+        "created — signing in as it fails with 'invalid username or password'")
+    assert got.role == "admin"
+    # …and the account it already had is still there (a reload must not lose
+    # state, which is the obvious way to get this wrong).
+    assert server.get_by_username("existing") is not None
+
+
+def test_a_password_reset_in_another_process_takes_effect(tmp_path):
+    """The same-second, same-length case — which is exactly what a password
+    reset looks like on disk, and what a stamp keyed on mtime alone would miss
+    on a filesystem with one-second granularity."""
+    from astrodeck.auth.users import UserStore
+
+    path = tmp_path / "users.json"
+    server = UserStore(path=path)
+    u = server.create(username="op", password="original-password-here",
+                      role="admin", enabled=True, require_email=False)
+    assert server.verify("op", "original-password-here") is not None
+
+    cli = UserStore(path=path)
+    cli.set_password(u.id, "the-replacement-password")
+
+    assert server.verify("op", "the-replacement-password") is not None, (
+        "the reset did not reach the running server")
+    assert server.verify("op", "original-password-here") is None, (
+        "the OLD password still works — the server is serving a stale cache")

@@ -157,6 +157,8 @@ class UserStore:
     def __init__(self, path: Path | None = None):
         self._path = Path(path) if path is not None else _default_store_path()
         self._users: dict[str, User] | None = None   # id -> User (lazy)
+        #: (mtime_ns, size) of the file as of the last load — see ``_cache``.
+        self._stamp: tuple[int, int] | None = None
 
     # -- loading / persistence -------------------------------------------------
 
@@ -177,9 +179,37 @@ class UserStore:
             users[u.id] = u
         return users
 
+    def _file_stamp(self) -> tuple[int, int] | None:
+        """``(mtime_ns, size)`` of the store file, or None when it is absent."""
+        try:
+            st = self._path.stat()
+            return (st.st_mtime_ns, st.st_size)
+        except OSError:
+            return None
+
     def _cache(self) -> dict[str, User]:
-        if self._users is None:
+        """The in-memory users, RE-READ when the file changed underneath us.
+
+        Until 2026-08-09 this was load-once-and-keep, and that quietly broke the
+        documented break-glass. ``python -m astrodeck create-admin`` runs in a
+        SEPARATE process: it rewrote ``users.json`` correctly and printed
+        "admin user 'x' ready", while the running server went on serving a cache
+        from before the account existed — so signing in as it returned "invalid
+        username or password" with nothing anywhere explaining why. The recovery
+        path for a locked-out operator appeared to work and did nothing.
+
+        ``reload()`` existed the whole time and was called from NOWHERE (its own
+        docstring said "(tests)"). A capability nothing invokes is not a
+        capability.
+
+        Keyed on (mtime_ns, size) rather than mtime alone: a same-second rewrite
+        of a same-length file is exactly what a password reset looks like, and
+        one-second mtime granularity on some filesystems would miss it. Cheap —
+        one stat per access, against a file that changes a few times a year."""
+        stamp = self._file_stamp()
+        if self._users is None or stamp != self._stamp:
             self._users = self._load()
+            self._stamp = stamp
         return self._users
 
     def _save(self) -> None:
@@ -190,10 +220,18 @@ class UserStore:
                 "users": [u.model_dump() for u in
                           sorted(users.values(), key=lambda x: x.created)]}
         write_json_atomic(self._path, data)
+        # Stamp our OWN write so the staleness check in ``_cache`` doesn't read
+        # back the bytes we just produced on the very next access.
+        self._stamp = self._file_stamp()
 
     def reload(self) -> None:
-        """Drop the in-memory cache and re-read from disk (tests)."""
+        """Drop the in-memory cache and re-read from disk.
+
+        No longer "(tests)": ``_cache`` re-reads on its own when the file
+        changes, so this is the explicit form of the same thing for a caller
+        that knows it wants fresh data."""
         self._users = None
+        self._stamp = None
         self._cache()
 
     # -- queries ---------------------------------------------------------------
