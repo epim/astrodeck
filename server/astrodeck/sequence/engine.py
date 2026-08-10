@@ -105,6 +105,15 @@ PARK_TIMEOUT_S = 240.0          # park / unpark
 FLIP_TIMEOUT_S = 420.0          # meridian flip = re-slew + solve + restart guiding
 GUIDE_START_TIMEOUT_S = 180.0   # start_guiding incl. settle
 GUIDE_OP_TIMEOUT_S = 120.0      # dither / stop-guiding / quick guider ops
+
+#: Guider phases in which the guider is DELIBERATELY COMMANDING THE MOUNT, so a
+#: shutter must stay shut. Calibration is the one that cost frames on sky
+#: (2026-08-10): it pulses the mount a measured distance on each axis, which is
+#: a slew under any other name. "finding" and "guiding" are NOT here — finding
+#: only reads frames, and guiding's whole job is to hold the star still.
+GUIDE_MOUNT_BUSY_PHASES = frozenset({"calibrating", "settling"})
+GUIDE_QUIET_TIMEOUT_S = 240.0   # cap on waiting for the guider to stop pulsing
+GUIDE_QUIET_POLL_S = 2.0
 COOLER_CMD_TIMEOUT_S = 30.0     # a single set_cooler / get_temperature call
 MOUNT_QUERY_TIMEOUT_S = 30.0    # is_parked / set_tracking / time_to_meridian_flip
 MOUNT_RECONNECT_TIMEOUT_S = 30.0  # reopening a dropped link so a wind-down can park
@@ -1600,7 +1609,7 @@ class SequenceEngine:
             # heal a dropped device before the exposure that needs it
             await self._reconnect_gate()
             await self._maybe_meridian_flip(target, step.exposure_s)
-            await self._maybe_recover_guiding()
+            await self._maybe_recover_guiding(target)
 
             if plan.dither_every and self._frames_since_dither >= plan.dither_every \
                     and self.hub.guider and self.hub.guider.connected:
@@ -1620,6 +1629,15 @@ class SequenceEngine:
             if await self._refocus_due():
                 await self._autofocus("refocus")
                 self._frame_had_event = True
+
+            # LAST GATE BEFORE THE SHUTTER. The recovery path above already
+            # waits, so in the ordinary run this is a no-op that returns on its
+            # first check. It is here for the calibration this engine did NOT
+            # start — an operator pressing "calibrate" on the Guide screen while
+            # a plan is running — which no amount of care inside the recovery
+            # path can see coming. Cheap to ask, and the frame it saves is one
+            # nobody would have known to look for.
+            await self._await_guider_quiet("this frame")
 
             self._begin_frame(ti, si, step.exposure_s)
             shown = (self._session.accepted(step.id) + 1
@@ -3008,7 +3026,64 @@ class SequenceEngine:
             # floor so we don't busy-spin as the countdown approaches zero.
             await asyncio.sleep(max(0.2, min(FLIP_WAIT_STEP_S, ttf_h * 3600.0)))
 
-    async def _maybe_recover_guiding(self) -> None:
+    def _guider_phase(self) -> str:
+        """The guider's own narration phase, or "" when it cannot be read.
+
+        Never raises: this is consulted on the path to opening a shutter, and a
+        guider that cannot answer must not be able to stall or crash a run."""
+        g = self.hub.guider
+        if not g:
+            return ""
+        try:
+            return str(getattr(g.stats(), "phase", "") or "")
+        except Exception:
+            return ""
+
+    async def _await_guider_quiet(self, why: str,
+                                  timeout_s: float = GUIDE_QUIET_TIMEOUT_S) -> bool:
+        """Block until the guider is not DELIBERATELY MOVING THE MOUNT.
+
+        MEASURED ON SKY 2026-08-10, and the reason this exists. After the
+        meridian flip the guider's flipped calibration diverged, the engine's
+        recovery called ``start_guiding()`` — which RETURNS AS SOON AS THE LOOP
+        STARTS, not when it has settled — and the caller opened the shutter on
+        the next line. Calibration's whole job is to pulse the mount a known
+        distance and measure the star, so every one of those exposures was taken
+        while the mount was being deliberately slewed. The frames came out with
+        ~35-pixel diagonal streaks and the galaxy smeared into a blob.
+
+        The invariant is physical, not procedural: **never open the shutter
+        while something is commanding the mount on purpose.** Phrased that way
+        it also covers a calibration the OPERATOR starts from the UI mid-run,
+        which a "wait for recovery to finish" guard would have missed.
+
+        Bounded, and a timeout is NOT fatal: it returns False and the caller
+        decides. A guider stuck in ``calibrating`` forever (tonight's case, when
+        the guide star was too faint at gain 20) must not freeze the night — the
+        run continues unguided, having said so, which is worth strictly more
+        than nothing.
+        """
+        if not self._guider_phase():
+            return True
+        deadline = time.monotonic() + max(0.0, timeout_s)
+        announced = False
+        while self._guider_phase() in GUIDE_MOUNT_BUSY_PHASES:
+            if time.monotonic() >= deadline:
+                bus.log("warning",
+                        f"guider still {self._guider_phase()} after "
+                        f"{timeout_s:.0f}s — continuing {why} without waiting "
+                        f"further; frames may be affected", "sequence")
+                return False
+            if not announced:
+                bus.log("info",
+                        f"holding {why}: the guider is {self._guider_phase()} "
+                        f"and is moving the mount", "sequence")
+                self._set_state(detail="waiting for the guider")
+                announced = True
+            await asyncio.sleep(GUIDE_QUIET_POLL_S)
+        return True
+
+    async def _maybe_recover_guiding(self, target=None) -> None:
         if not (self.plan.guide and self.plan.recover_guiding):
             return
         g = self.hub.guider
@@ -3021,10 +3096,39 @@ class SequenceEngine:
             return
         bus.log("warning", "guiding lost — attempting recovery", "sequence")
         self._set_state(detail="recovering guiding")
+
+        # RE-CENTRE BEFORE RESUMING, not after. While guiding was down the field
+        # was free to walk, and on 2026-08-10 it walked 128 ARCMIN (2.1°) — the
+        # target left a 101'x67' frame entirely and the run kept dutifully
+        # exposing an empty patch of Cepheus. Nothing noticed, because centring
+        # only ever ran at target start and after a flip.
+        #
+        # ``target.center`` is the existing statement of intent — "this target is
+        # to be plate-solved onto the sensor" — so honouring it again here adds
+        # no new policy and no new plan field. A target that opted out of
+        # centring still opts out. The re-centre goes FIRST because it slews, and
+        # a slew would tear down guiding we had just paid to restart.
+        if target is not None and getattr(target, "center", False) \
+                and not getattr(target, "calibration", False):
+            try:
+                self._set_state(detail="re-centring after guiding loss")
+                await self.hub.goto_and_center(target.ra_hours, target.dec_deg,
+                                               rotation_deg=target.rotation_deg)
+            except Exception as e:
+                # Non-fatal by design: a failed re-centre leaves the mount where
+                # it was, which is exactly where it would have been without this
+                # block. Recovery still proceeds.
+                bus.log("warning",
+                        f"re-centring after guiding loss failed ({e}); "
+                        f"resuming guiding at the current pointing", "sequence")
+
         try:
             await g.start_guiding()
         except Exception as e:
             bus.log("warning", f"guiding recovery failed: {e}", "sequence")
+            return
+        # ...and do not hand control back until the guider has stopped pulsing.
+        await self._await_guider_quiet("the next frame")
 
     async def _refocus_due(self) -> bool:
         plan = self.plan
