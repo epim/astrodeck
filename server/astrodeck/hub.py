@@ -2642,6 +2642,12 @@ class Hub:
             # a small disk read. Fire-and-forget by design: a gap is harmless
             # because the route still renders on demand.
             self._enqueue_thumb(local_save_path)
+            # And tell the file-sync runner a frame landed. Two assignments and
+            # no I/O — it decides on its own time whether that warrants a pass,
+            # and does nothing at all unless a destination is configured. Only
+            # on the LOCAL-save branch, because the push reads from this box's
+            # capture root and a NINA/remote save is not on it.
+            self._note_frame_saved()
 
         # Opt-in (default OFF): hand the saved light to the BACKGROUND WCS worker
         # so its plate solve stamps astrometry into the header without the
@@ -4526,6 +4532,19 @@ class Hub:
             if self._thumb_task is None or self._thumb_task.done():
                 self._thumb_task = asyncio.create_task(self._thumb_worker())
         except Exception:  # noqa: BLE001 - warming must never fail a capture
+            pass
+
+    def _note_frame_saved(self) -> None:
+        """Poke the file-sync push runner. Never blocks, never raises.
+
+        Imported at call time rather than at module scope: ``sync.runner`` reads
+        the config store and this module is imported by half the server, so a
+        top-level import here would add a cycle for the sake of one attribute.
+        """
+        try:
+            from .sync.runner import runner as _sync_runner
+            _sync_runner.note_saved()
+        except Exception:  # noqa: BLE001 - a capture must never fail for this
             pass
 
     async def _thumb_worker(self) -> None:

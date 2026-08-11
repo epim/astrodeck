@@ -1005,6 +1005,50 @@ export interface AppConfig {
   //     predates them. ---
   solve_saved_lights?: boolean;
   wcs_stamp?: WcsStampConfig;
+  // --- file-sync push destination (Phase 2; appended). Optional: an old WS
+  //     `hello` bootstrap predates the field. ---
+  sync_push?: SyncPushConfig;
+}
+
+// ------------------------------------------------------ file-sync push (Phase 2)
+// Mirrors server/astrodeck/config.py SyncPushConfig. `path` is a plain
+// filesystem path this rig can write to — on Windows that means a mapped drive
+// or a UNC share (\\nas\astro). It is NOT redacted server-side: a local path
+// carries no credential, and a panel that may not say where frames are going
+// cannot honestly claim they are going anywhere.
+export interface SyncPushConfig {
+  enabled: boolean;
+  kind: "local_dir";
+  path: string;
+  label: string;
+  limit_per_pass: number;                  // 0 = "no config bound" (server caps)
+}
+
+// GET /api/sync/push — the runner's own view of itself. Everything below
+// `configured` is an OBSERVATION of passes that already ran; nothing here
+// decides what gets sent, which is always a fresh diff (see sync/push.py).
+export interface SyncPushStatus extends SyncPushConfig {
+  configured: boolean;                     // enabled AND a usable destination
+  running: boolean;                        // a pass is in flight right now
+  debounce_s: number;
+  sweep_interval_s: number;
+  passes: number;
+  total_sent: number;
+  total_bytes: number;
+  last_attempt_at: number | null;
+  last_ok_at: number | null;
+  consecutive_failures: number;
+  alarm: boolean;                          // failing enough to be shouted about
+  last: {
+    sent: number;
+    failed: number;
+    bytes_sent: number;
+    already_there: number;
+    extra_at_destination: number;
+    elapsed_s: number;
+    error: string;
+    summary: string;
+  } | null;
 }
 
 // ---------------------------------------------------------- rotator config

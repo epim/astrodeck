@@ -32,6 +32,7 @@ import OpticsPanel from "./OpticsPanel";
 import SkyAtlasPanel from "./SkyAtlasPanel";
 import NamingPanel from "./NamingPanel";
 import WcsStampPanel from "./WcsStampPanel";
+import SyncPanel from "./SyncPanel";
 import WeatherPanel from "./WeatherPanel";
 import ProfileList from "./ProfileList";
 import CalibrationLibraryPanel from "./CalibrationLibraryPanel";
@@ -294,6 +295,7 @@ export default function SettingsView(): JSX.Element {
             <SkyAtlasPanel />
             <NamingPanel />
             <WcsStampPanel />
+            <SyncPanel />
           </div>
           <div className="order-2 flex flex-col gap-4">
             <Panel title="Connection Status">

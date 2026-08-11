@@ -90,6 +90,8 @@ class PushResult:
 def push_once(source_root: Path, dest: Destination, *,
               settle_s: float = _manifest.DEFAULT_SETTLE_S,
               limit: int = 0,
+              facts=None,
+              cache: dict | None = None,
               now: float | None = None) -> PushResult:
     """One reconciliation pass. Never raises: a destination that is unreachable
     is a fact to report, not an exception to unwind a capture through.
@@ -98,13 +100,26 @@ def push_once(source_root: Path, dest: Destination, *,
     9 GB backlog can be spread over several passes instead of holding the disk
     for twenty minutes straight. What is left is simply still missing next pass
     — no bookkeeping is required to resume, which is the point.
+
+    ``facts`` is WHAT TO OFFER, and on the rig it must be
+    ``manifest.rig_facts(gallery rows)`` — the same list ``/api/sync/manifest``
+    answers a pull agent with. It defaults to a directory walk so this function is
+    usable against any tree (and so the unit tests can drive a bare temp dir),
+    but a walk of the capture root would sweep in the trash bin, the thumbnail
+    cache, the session records and the logs, none of which are frames and none
+    of which a pull agent is ever offered.
+
+    ``cache`` is the shared (path, size, mtime_ns) hash cache. Passing
+    ``manifest.SHARED_HASH_CACHE`` is what stops a 15-minute sweep re-reading
+    the whole library every time.
     """
     t0 = time.time()
     out = PushResult()
     try:
         t_now = time.time() if now is None else now
-        src = _manifest.build(_manifest.walk_facts(source_root),
-                              root=source_root, now=t_now, settle_s=settle_s)
+        src_facts = _manifest.walk_facts(source_root) if facts is None else facts
+        src = _manifest.build(src_facts, root=source_root, now=t_now,
+                              settle_s=settle_s, cache=cache)
         have = dest.manifest()
     except Exception as e:  # noqa: BLE001 — an offline destination is data
         out.error = f"{type(e).__name__}: {e}"
