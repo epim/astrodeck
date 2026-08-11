@@ -291,6 +291,47 @@ def diff(source: Manifest, dest: Manifest) -> Diff:
     return out
 
 
+#: Content hashes shared by EVERY rig-side consumer, keyed (path, size,
+#: mtime_ns). Module scope so it survives across requests and across the push
+#: runner's passes — the whole point is that a night is read once, not once per
+#: poll. A pull agent polling every 30 s for six hours and a push runner sweeping
+#: every 15 minutes are otherwise two independent reasons to re-read 9 GB.
+#:
+#: ONE cache for both directions, not one each, because they hash the same files
+#: with the same function; two caches would halve the hit rate for no benefit.
+#: Unbounded is deliberate and safe: one entry is ~120 bytes and the library is
+#: bounded by ``gallery.SCAN_MAX_FILES``, so the worst case is a few MB.
+SHARED_HASH_CACHE: dict = {}
+
+
+def rig_facts(rows: Iterable[dict]) -> list[FileFacts]:
+    """Gallery rows -> ``FileFacts``. **The rig's only source of file facts.**
+
+    Both directions go through here: ``/api/sync/manifest`` answers a pull agent
+    with it, and the push runner decides what to send with it. That is the point
+    — the two directions must agree about what the library contains, and the
+    surest way to keep them agreeing is to give them one function rather than
+    two correct-looking loops.
+
+    Using the gallery scan rather than a directory walk is what keeps "that
+    night" meaning the same thing here as it does on screen (noon rollover
+    included), and what keeps the trash bin, the thumbnail cache, the session
+    records and the logs out of a sync — none of them are frames, and none of
+    them appear in a gallery row.
+    """
+    return [
+        FileFacts(
+            relpath=r["path"], size=int(r["bytes"]),
+            # gallery reports mtime as float seconds; the hash cache wants an
+            # integer key. Derived the same way on every call, so the key is
+            # stable even though the precision is not the stat's.
+            mtime_ns=int(float(r["mtime"]) * 1e9),
+            night=r.get("night", ""),
+            kind=(r.get("frame_type") or "frame").lower())
+        for r in rows
+    ]
+
+
 def walk_facts(root: Path, *, suffixes: frozenset[str] | None = None,
                skip_top: frozenset[str] | None = None) -> list[FileFacts]:
     """Describe a destination directory. Used by the PULL AGENT, not the rig.

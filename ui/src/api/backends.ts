@@ -31,6 +31,8 @@ import type {
   EscalationConfig,
   CalibrationConfig,
   SurveyConfig,
+  SyncPushConfig,
+  SyncPushStatus,
   UpdateConfig,
   UpdateStatus,
   User,
@@ -554,6 +556,23 @@ export const setNamingConfig = (naming: NamingConfig): Promise<AppConfig> =>
 export const setWcsStampConfig = (
   body: { solve_saved_lights: boolean; wcs_stamp: WcsStampConfig },
 ): Promise<AppConfig> => api.post<AppConfig>("/api/config/wcs", body);
+
+// ------------------------------------------------------ file-sync push (Phase 2)
+/** POST /api/config/sync → config payload. config.site_optics.
+ *  422 when `enabled` is set with no `path` — the server refuses a destination
+ *  that is on and goes nowhere rather than letting the panel claim it syncs. */
+export const setSyncPushConfig = (sync_push: SyncPushConfig): Promise<AppConfig> =>
+  api.post<AppConfig>("/api/config/sync", { sync_push });
+
+/** GET /api/sync/push → what the push runner has been doing. view.media. */
+export const getSyncPushStatus = (): Promise<SyncPushStatus> =>
+  api.get<SyncPushStatus>("/api/sync/push");
+
+/** POST /api/sync/push/now → run one pass immediately, return the new status.
+ *  view.media (it MOVES science frames off the rig). This is how an operator
+ *  finds out a UNC path is unwritable while they are still looking at it. */
+export const pushSyncNow = (): Promise<SyncPushStatus> =>
+  api.post<SyncPushStatus>("/api/sync/push/now", {});
 
 /** POST /api/survey/pack/fetch → 202 {started} | 200 {already} | 507 no space. config.site_optics. */
 export const startPackFetch = (order = 4): Promise<{ started: boolean; already?: boolean }> =>

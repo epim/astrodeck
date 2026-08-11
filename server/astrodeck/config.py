@@ -588,6 +588,33 @@ class WcsStampConfig(BaseModel):
     queue_max: int = Field(4, ge=1, le=64)      # bounded backlog, drop-oldest
 
 
+class SyncPushConfig(BaseModel):
+    """Where this rig pushes frames to, while the night is still going
+    (file-sync Phase 2 — see ``astrodeck/sync/push.py``).
+
+    OFF by default and inert with an empty ``path``: the runner reads this block
+    every tick and does nothing at all until someone names a destination, so an
+    upgrade adds no traffic and no disk cost to a rig nobody configures.
+
+    ``path`` is whatever this machine can write to — the realistic Windows target
+    is a mapped drive or a UNC share exported by the box that runs PixInsight.
+    It is NOT redacted over the wire: a local path carries no credential, and the
+    panel cannot honestly report where frames are going if it may not say where.
+
+    ``limit_per_pass`` bounds one pass, so a first run against a 9 GB backlog is
+    spread over several passes instead of holding the disk for twenty minutes.
+    **0 means "use the runner's own cap"** (``runner.DEFAULT_PASS_LIMIT``), NOT
+    unbounded: a genuinely unbounded first pass would hold the disk for the whole
+    backlog with a guider running, and what a pass does not send this time it
+    simply still owes next time — no bookkeeping, no lost frames.
+    """
+    enabled: bool = False
+    kind: Literal["local_dir"] = "local_dir"
+    path: str = ""
+    label: str = ""                              # optional, for logs and the UI
+    limit_per_pass: int = Field(0, ge=0, le=100000)
+
+
 class CalibrationConfig(BaseModel):
     """PRO-1 master-library matching + stacking tolerances (appended — old
     configs load fine). ``exposure_tol_pct``/``temp_tol_c`` control how
@@ -746,6 +773,9 @@ class AppConfig(BaseModel):
     # --- per-frame-WCS advanced knobs (per-frame-wcs spec §3; appended — old
     #     configs load fine, and every field defaults to today's behaviour) ---
     wcs_stamp: WcsStampConfig = Field(default_factory=WcsStampConfig)
+    # --- file-sync push destination (Phase 2; appended — old configs load fine
+    #     and the default is OFF, so nothing changes for anyone who ignores it) ---
+    sync_push: SyncPushConfig = Field(default_factory=SyncPushConfig)
 
 
 # ------------------------------------------------------- filter slot-name store
@@ -1469,6 +1499,30 @@ class ConfigStore:
         cfg = self.cfg()
         cfg.solve_saved_lights = bool(solve_saved_lights)
         cfg.wcs_stamp = wcs_stamp
+        return self.bump_and_save()
+
+    # -- file-sync push destination (Phase 2) ----------------------------------
+
+    def set_sync_push(self, sync_push: "SyncPushConfig") -> AppConfig:
+        """Persist the push destination.
+
+        ONE write-time rule, and it is the honesty rule: **enabled with no path
+        is refused** (route maps ValueError -> 422). A destination that is on and
+        goes nowhere is the exact shape this feature is supposed to remove — the
+        panel would show "syncing", the runner would find nothing to write to,
+        and the night would sit on the rig anyway. Better to make it impossible
+        to save than to explain it in a tooltip.
+
+        The path is NOT checked for existence here. A NAS that is asleep at
+        06:00 and awake at 22:00 is normal, and a config write that fails
+        because the far end happens to be down would teach the operator to
+        configure this at exactly the wrong time of day. Reachability is a fact
+        the runner reports every pass, not a precondition for saving.
+        """
+        if sync_push.enabled and not sync_push.path.strip():
+            raise ValueError("a sync destination path is required to enable push")
+        cfg = self.cfg()
+        cfg.sync_push = sync_push
         return self.bump_and_save()
 
     def set_weather(self, weather: "WeatherConfig",
