@@ -1,0 +1,68 @@
+# AstroDeck appliance dependency pins -- linux aarch64, CPython 3.13
+#
+# PROVENANCE: generated 2026-08-11 by resolving server/pyproject.toml's eleven
+# declared runtime dependencies ON THE REFERENCE BOARD itself (Orange Pi 5 Pro,
+# Armbian trixie, Python 3.13.5, glibc 2.41) with:
+#
+#     python3 -m venv /tmp/dtest
+#     /tmp/dtest/bin/pip install --only-binary=:all: <the eleven>
+#     /tmp/dtest/bin/pip freeze | sort
+#
+# All 34 distributions installed from wheels. Zero source builds. The appliance
+# therefore needs no compiler, which is what makes an offline wheelhouse viable.
+#
+# WHY THIS FILE IS GENERATED ON THE TARGET AND NOT CROSS-PLATFORM:
+# pip evaluates environment markers against the HOST, not against --platform.
+# The same resolution run from Windows omits uvloop (linux-only) and adds
+# colorama (win32-only). Cross-resolving proves wheels EXIST; it does not
+# produce a shippable set. Regenerate this in an arm64 debian:trixie container,
+# never on a developer's machine.
+#
+# WHY PINS AND NOT >= FLOORS:
+# pyproject declares eleven unbounded floors. They resolve today to fastapi
+# 0.141.1 -- the version family that made include_router lazy and silently
+# stopped the RBAC boot assertion grading five routers while CI stayed green.
+# An appliance in a customer's hands must not re-resolve.
+#
+# NOT INCLUDED, and required at bake time in addition to these:
+#   setuptools, wheel  -- server/pyproject.toml has no [build-system] table, so
+#                         PEP 517 build isolation reaches for PyPI without them
+#   astrodeck_native   -- built separately by maturin for aarch64
+#
+# ALSO MISSING FROM THE ARMBIAN MINIMAL IMAGE (install in the bake):
+#   python3-venv, python3-pip
+#
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anyio==4.14.2
+astropy==8.0.1
+astropy-healpix==2.0.1
+astropy-iers-data==0.2026.8.10.0.32.39
+bcrypt==5.0.0
+certifi==2026.7.22
+cffi==2.1.1
+click==8.4.2
+cryptography==50.0.0
+fastapi==0.141.1
+h11==0.16.0
+httpcore==1.0.9
+httptools==0.8.0
+httpx==0.28.1
+idna==3.18
+numpy==2.5.2
+packaging==26.3
+pillow==12.3.0
+pycparser==3.0
+pydantic==2.13.4
+pydantic-core==2.46.4
+pyerfa==2.0.1.5
+pyserial==3.5
+python-dotenv==1.2.2
+PyYAML==6.0.3
+starlette==1.6.0
+typing-extensions==4.16.0
+typing-inspection==0.4.3
+uvicorn==0.52.1
+uvloop==0.22.1
+watchfiles==1.2.0
+websockets==17.0.1
