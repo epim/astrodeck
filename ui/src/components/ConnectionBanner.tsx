@@ -1,7 +1,32 @@
+import { useEffect, useState } from "react";
 import { useStore } from "../store";
 import { useAuthRequiredForBanner } from "../lib/caps";
 import { bannerState, isConnecting } from "../lib/connection";
+import { telemetryStaleNotice } from "../lib/telemetry";
 import { Icon } from "./icons";
+
+/**
+ * Milliseconds since the last frame arrived, re-read once a second WHILE STALE.
+ *
+ * A hook rather than a store field on purpose: this is the one number in the app
+ * that has to keep changing when nothing is happening. Every other value updates
+ * because a message arrived, and during an outage no message arrives — so a
+ * banner that rendered the age once would freeze at "20 seconds" and stay there
+ * for two hours, which is the same lie in a new costume.
+ *
+ * The interval only runs while `active`, so a healthy session pays nothing.
+ */
+function useStaleAgeMs(active: boolean): number {
+  const last = useStore((s) => s.wsLastEvent);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    setNow(Date.now());
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [active]);
+  return Math.max(0, now - last);
+}
 
 /**
  * Full-width strip under the header, driven by store wsPhase + telemetryStale.
@@ -38,6 +63,8 @@ export default function ConnectionBanner() {
   const authRequired = useAuthRequiredForBanner();
 
   const kind = bannerState({ phase, stale, equipConnected, view, authRequired });
+  // Hooks are unconditional — the early returns below must not sit above it.
+  const ageMs = useStaleAgeMs(kind === "stale");
 
   if (kind === "hidden") return null;
 
@@ -76,27 +103,49 @@ export default function ConnectionBanner() {
   }
 
   const connecting = isConnecting(phase);
+  // THE AGE, IN WORDS, WHEN THE DATA IS STALE. "TELEMETRY CATCHING UP" is
+  // equally true of a 20-second gap and of the two-hour one reported on
+  // 2026-08-10, and the operator has no way to tell which they are reading —
+  // which is how a frozen screen got mistaken for a rig that had stopped
+  // imaging at 3am. A number cannot be misread that way. Recomputed on a tick
+  // rather than at render, because nothing else re-renders during an outage
+  // (that is what an outage IS).
+  const notice = kind === "stale" ? telemetryStaleNotice(ageMs) : null;
+  const severe = notice?.level === "error";
+
   const label =
     kind === "down"
       ? connecting
         ? "CONNECTING…"
         : "DISPLAY DISCONNECTED"
-      : "TELEMETRY CATCHING UP";
+      : notice?.title ?? "TELEMETRY CATCHING UP";
   const detail =
     kind === "down"
       ? "Your view lost the AstroDeck server — the rig keeps running. Reconnecting…"
-      : "Waiting for fresh telemetry — values may be a few seconds old.";
+      : notice?.detail ?? "Waiting for fresh telemetry — values may be a few seconds old.";
 
   return (
     <div
       role="status"
-      aria-live="polite"
-      className="flex items-center gap-2 px-4 min-h-9 border-b border-line bg-raise/80 backdrop-blur shrink-0"
+      // A two-hour-old screen is an assertive announcement, not a polite one:
+      // a screen reader must interrupt rather than wait to be asked.
+      aria-live={severe ? "assertive" : "polite"}
+      className={
+        "flex items-center gap-2 px-4 min-h-9 border-b shrink-0 backdrop-blur "
+        + (severe
+          ? "border-bad/60 bg-bad/15"
+          : "border-line bg-raise/80")
+      }
     >
-      <span className={`led led-warn ${connecting ? "blink" : "blink-alert"} shrink-0`} />
-      <Icon name="alert" size={14} className="text-warn shrink-0" />
+      <span className={`led ${severe ? "led-bad" : "led-warn"} ${connecting ? "blink" : "blink-alert"} shrink-0`} />
+      <Icon name="alert" size={14} className={severe ? "text-bad shrink-0" : "text-warn shrink-0"} />
       <span className="label !text-[11px] text-ink shrink-0">{label}</span>
-      <span className="text-[11px] text-dim hidden sm:inline truncate">{detail}</span>
+      {/* NOT `hidden sm:inline` when severe: the sentence that says the data is
+          hours old is the entire message, and hiding it on a phone hides it on
+          the device most likely to be checked from bed. */}
+      <span className={
+        "text-[11px] truncate " + (severe ? "text-ink" : "text-dim hidden sm:inline")
+      }>{detail}</span>
     </div>
   );
 }

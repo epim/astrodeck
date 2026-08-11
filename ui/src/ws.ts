@@ -1,7 +1,7 @@
 import { useStore } from "./store";
 import { api } from "./api";
 import { BASE } from "./lib/base";
-import { computeTelemetryStale } from "./lib/telemetry";
+import { HARD_STALE_MS, computeTelemetryStale } from "./lib/telemetry";
 import type { LogLine, MonitorSnapshot } from "./types";
 
 let socket: WebSocket | null = null;
@@ -172,14 +172,35 @@ function tickStale(): void {
   if (s.wsPhase !== "up") return;
   // Stale ONLY if a rig is connected, the socket is up, frames stopped, AND the
   // backend is not in a known long op (slew/solve/AF/capture legitimately block
-  // the 2s poll). The connected gate matters because the server's status poller
-  // only runs WHILE a rig is connected — with nothing connected the socket goes
-  // quiet by design, so without this gate the age timer would falsely alarm.
+  // the 2s poll) — EXCEPT past HARD_STALE_MS, where nothing legitimises the
+  // quiet. See lib/telemetry.ts: `busy` is read from the last message received,
+  // so an outage that starts mid-capture freezes it at "capture" and used to
+  // disarm this check permanently.
+  const ageMs = Date.now() - s.wsLastEvent;
   const stale = computeTelemetryStale({
     connected: s.equipConnected,
     busy: s.status?.busy ?? null,
-    ageMs: Date.now() - s.wsLastEvent,
+    ageMs,
     staleMs: STALE_MS,
   });
   if (s.telemetryStale !== stale) s.setTelemetryStale(stale);
+
+  // A SOCKET THAT HAS SAID NOTHING FOR THIS LONG IS NOT A SLOW SOCKET.
+  //
+  // `readyState === OPEN` is not evidence that anything is on the other end: a
+  // relay restart, a sleeping tab's resumed-but-orphaned connection, or a NAT
+  // idle-timeout all leave a half-open socket that reads OPEN forever and
+  // delivers nothing. Nobody else will notice, because every other reconnect
+  // path is driven by onclose — the event a zombie never fires.
+  //
+  // So tear it down and let the normal retry ladder rebuild it. Bounded by
+  // `zombieKickedAt` to one kick per outage: reconnect resets wsLastEvent, so
+  // without the latch a link that comes back empty would be kicked every second.
+  if (ageMs > HARD_STALE_MS && Date.now() - zombieKickedAt > HARD_STALE_MS) {
+    zombieKickedAt = Date.now();
+    reconnectWs();
+  }
 }
+
+/** When the zombie-socket kick last fired, so one outage costs one teardown. */
+let zombieKickedAt = 0;
