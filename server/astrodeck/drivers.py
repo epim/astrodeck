@@ -201,6 +201,7 @@ def _implicit_rows() -> list[dict]:
     """The detected (non-configured) drivers, fixed ids ``sim`` / ``astrodeck``
     / ``astap`` (spec §3.1): always appended after the configured rows so the
     UI can render "built-ins" under the user's own drivers."""
+    from . import providers as providers_mod
     from .providers import NATIVE_AVAILABLE
     from .solve import find_astap
 
@@ -220,8 +221,18 @@ def _implicit_rows() -> list[dict]:
     }]
 
     if NATIVE_AVAILABLE:
-        import astrodeck_native
-        detail = str(getattr(astrodeck_native, "__version__", "installed"))
+        # Re-importing here would make this row's truth depend on a SECOND
+        # import succeeding, and the two can disagree: a test that sets
+        # NATIVE_AVAILABLE to exercise the native offer path then hits a hard
+        # ImportError on a machine without the wheel. That is what reddened CI
+        # on 2026-08-09 while passing on a developer box that had built it —
+        # the flag said available, the import said otherwise, and the row
+        # believed the flag right up until it crashed.
+        #
+        # providers.py already imported the module to DERIVE the flag, so ask
+        # it for the handle instead of importing again. One import, one truth.
+        native = getattr(providers_mod, "astrodeck_native", None)
+        detail = str(getattr(native, "__version__", "installed"))
         status = {"reachable": True, "error": None, "detail": detail,
                   "probed_at": now}
         tasks = ["autofocus", "polar_align"]

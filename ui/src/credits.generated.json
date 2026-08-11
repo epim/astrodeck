@@ -2,7 +2,7 @@
  "generator": "tools/gen_credits.py",
  "project": {
   "name": "AstroDeck",
-  "version": "0.2.69",
+  "version": "0.2.72",
   "spdx": "Apache-2.0"
  },
  "scope": "Every component whose bytes ship inside an AstroDeck release or are compiled into one, plus every external program and network service AstroDeck depends on at runtime. Build-time-only tooling (vite, tailwindcss, typescript, pytest) is not listed: none of it places its own licensed code in a shipped artifact.",
@@ -1357,6 +1357,28 @@
       }
      ],
      "url": "https://uvicorn.dev/"
+    },
+    {
+     "name": "uvloop",
+     "version": ">=0.21 (Linux/macOS only)",
+     "spdx": "Apache-2.0",
+     "tier": "redistributed-optional",
+     "requires": [
+      "license",
+      "notice-file",
+      "state-changes"
+     ],
+     "summaries": [
+      "Ship the full Apache-2.0 text, carry forward any upstream NOTICE file, and state prominently if we changed the files. No source-code obligation."
+     ],
+     "texts": [
+      {
+       "title": "LICENSE-APACHE",
+       "hash": "283ea6cc2997a1a7"
+      }
+     ],
+     "url": "https://github.com/MagicStack/uvloop",
+     "notes": "A faster asyncio event loop, pulled in transitively by `uvicorn[standard]` on Linux and macOS. It is NOT a Windows dependency — uvicorn's marker excludes win32 — which is exactly why it needs an entry here rather than being discovered by the generator: a credits file generated on Windows would never see it, and the Linux bundle that DOES ship it would go uncredited. uvloop is dual-licensed MIT OR Apache-2.0; the Apache-2.0 text is reproduced above to satisfy the notice obligation."
     },
     {
      "name": "watchfiles",
