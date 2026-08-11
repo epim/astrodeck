@@ -531,6 +531,42 @@ export const ThermometerBar = memo(function ThermometerBar({
 });
 
 // ============================================================ PREVIEW TILE
+
+/**
+ * WHICH ASSET THE LIVE TILE SHOWS, and why it is not the thumb (#221).
+ *
+ * Reported 2026-08-10: "the live view option while the plan runs shows a really
+ * pixelated image — like a digital zoom, or an ultra-compressed thumbnail being
+ * shown as the full image", and then the telling detail, "until I click on it
+ * anyway".
+ *
+ * That is exactly what it was. The server publishes each frame at two sizes:
+ *
+ *     /api/preview/{id}            display bytes, to_jpeg max_width 1400 q85,
+ *                                  retained PREVIEW_DISPLAY_KEEP = 8 frames
+ *     /api/preview/{id}/thumb.jpg  to_thumb max_width 160 q70,
+ *                                  retained PREVIEW_THUMB_KEEP = 50 frames
+ *
+ * This tile asked for the 160 px one and stretched it across a `w-full`
+ * `aspect-[16/10]` box — around 700 px on a desktop, a 4x upscale of an image
+ * that has 8.75x less resolution than the one sitting right beside it. Clicking
+ * through to Capture opened PreviewStage, which uses the display bytes, so the
+ * picture "fixed itself" on interaction.
+ *
+ * The thumb was not chosen carelessly: the original note says it keeps NINA
+ * frames and evicted older frames live instead of 404-ing to STALE, and that is
+ * a real property — only 8 display frames are kept against 50 thumbs. So the
+ * order is inverted rather than the thumb removed. The newest frame, which is
+ * what a LIVE tile shows, is always inside the display window; anything older
+ * or backend-supplied falls back on 404 and behaves exactly as before.
+ */
+type PreviewTier = "display" | "thumb";
+
+function previewUrlFor(id: number, tier: PreviewTier): string {
+  return tier === "display"
+    ? `/api/preview/${id}`
+    : `/api/preview/${id}/thumb.jpg`;
+}
 /** Last-frame thumbnail. Double-buffered (no per-frame flash) with an onError
  *  guard (evicted/decoded-fail keeps the previous frame and flips to STALE,
  *  resolves F3). Per-tile night brightness dimmer (resolves D1, applied as an
@@ -574,10 +610,15 @@ export const PreviewTile = memo(function PreviewTile({
   // of the incoming id. On error we keep the old frame and report stale upward.
   const [shownId, setShownId] = useState<number | null>(previewId);
   const [loadError, setLoadError] = useState(false);
+  // Which asset this frame is being fetched from. See PREVIEW_TIERS: the tile
+  // asks for the FULL display bytes first and only falls back to the thumb,
+  // rather than starting at the thumb and never leaving it (#221).
+  const [tier, setTier] = useState<PreviewTier>("display");
 
   useEffect(() => {
     if (previewId == null) return;
     setLoadError(false);
+    setTier("display");
   }, [previewId]);
 
   const showStale = stale || loadError;
@@ -603,12 +644,12 @@ export const PreviewTile = memo(function PreviewTile({
           </span>
         ) : (
           <>
-            {/* incoming buffer (hidden until it loads) drives the swap. Canonical
-                server thumb (/thumb.jpg — always JPEG, kept ~50 frames) so NINA
-                frames + evicted older sim frames stay live, not 404→STALE. */}
+            {/* Incoming buffer (hidden until it loads) drives the swap.
+                DISPLAY BYTES FIRST, thumb only as a fallback — see
+                PREVIEW_TIERS. */}
             <img
-              key={previewId}
-              src={u(`/api/preview/${previewId}/thumb.jpg`)}
+              key={`${previewId}:${tier}`}
+              src={u(previewUrlFor(previewId, tier))}
               alt=""
               className="astro absolute inset-0 w-full h-full object-contain"
               style={{ filter: `brightness(${brightness})` }}
@@ -616,7 +657,13 @@ export const PreviewTile = memo(function PreviewTile({
                 setShownId(previewId);
                 setLoadError(false);
               }}
-              onError={() => setLoadError(true)}
+              onError={() => {
+                // A 404 here means the display bytes were evicted (only ~8 are
+                // kept) or the backend never made any — the exact case the tile
+                // used to start at the thumb for. Step down ONCE, then report.
+                if (tier === "display") setTier("thumb");
+                else setLoadError(true);
+              }}
             />
             {/* fallback: last good frame stays visible if the new one failed */}
             {loadError && shownId != null && shownId !== previewId && (
