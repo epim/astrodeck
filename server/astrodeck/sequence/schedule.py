@@ -138,6 +138,107 @@ def _night_dusk(lat: float, lon: float, twilight_deg: float,
     return prev_sun_event(lat, lon, twilight_deg, dawn, rising=False)
 
 
+def observing_night(site: "dict | Any", twilight_deg: float | None = None,
+                    now: float | None = None) -> tuple[float, float] | None:
+    """``(dusk, dawn)`` for the current-or-imminent night, or None.
+
+    **The one answer to "when is tonight?"** — for the auto-resume bound, for
+    the cloud-forecast scan, and for anything that quotes a window to a human.
+    Three callers each resolving their own horizon is how they came to disagree
+    (2026-08-11: the boot banner, the modal and the veto described the same
+    forecast three different ways).
+
+    None means there is no night to speak of: a site still at its default
+    coordinates (we do not know where the observer is, so we must not pretend
+    to know when their night is) or a latitude in polar day.
+
+    ``twilight_deg`` defaults to ``cfg.safety.twilight_deg`` — the operator's
+    own definition of dark enough to image, not a constant, because a
+    narrowband rig in a city and a broadband rig under Bortle 2 do not agree
+    about when the night starts.
+
+    NOT the dawn-park threshold. That daemon deliberately waits for a LATER sun
+    angle (civil, -6°) because it is a hardware safety net, not a schedule: it
+    must fire after imaging should already have stopped, never before. Merging
+    the two would move the net earlier and make it fight the run it exists to
+    survive. Two thresholds, two jobs, on purpose.
+    """
+    from ..config import config_store
+    # hub.site is a dict, cfg.site is a pydantic Site. Both callers exist and
+    # neither should have to convert, so read either shape here — once.
+    get = site.get if isinstance(site, dict) else (
+        lambda k, d=None: getattr(site, k, d))
+    if get("is_default", False):
+        return None
+    try:
+        lat = float(get("latitude", 0.0) or 0.0)
+        lon = float(get("longitude", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return None
+    if twilight_deg is None:
+        cfg = config_store.cfg()
+        twilight_deg = cfg.safety.twilight_deg if cfg else -12.0
+    t_now = time.time() if now is None else now
+    dawn = _night_dawn(lat, lon, twilight_deg, t_now)
+    dusk = _night_dusk(lat, lon, twilight_deg, t_now)
+    if dusk is None or dawn is None:
+        return None
+    return dusk, dawn
+
+
+def dark_enough(site: "dict | Any", twilight_deg: float | None = None,
+                now: float | None = None) -> bool:
+    """Is the Sun below the operator's imaging twilight RIGHT NOW?
+
+    A MEASUREMENT, not arithmetic on a resolved window — and the first draft of
+    this got that wrong in a way worth recording. It asked ``now >= dawn`` from
+    :func:`observing_night`, which can never be true: that function anchors to
+    the "current or imminent" night, so the moment you step past dawn it hands
+    back TOMORROW's pair and the comparison resets. A bound that cannot fire is
+    the same defect as the unbounded loop it was written to close.
+
+    Reading the sun's altitude has no such edge. It is also the honest question:
+    "can this rig image?" is a fact about the sky at this instant, not about
+    which side of a boundary a stored timestamp falls on.
+
+    Bounds BOTH ends. The afternoon has the same problem the morning did — a
+    default ``Schedule`` says ``start_mode="now"``, so a session armed at 15:00
+    was equally "open" — and one predicate closes both.
+
+    TRUE when the site is unset. "We cannot tell" must not stand every
+    automation down; the per-target schedule and the weather veto still apply.
+    Fail-open here, fail-closed in the gates that actually move hardware.
+    """
+    from ..config import config_store
+    get = site.get if isinstance(site, dict) else (
+        lambda k, d=None: getattr(site, k, d))
+    if get("is_default", False):
+        return True
+    if twilight_deg is None:
+        cfg = config_store.cfg()
+        twilight_deg = cfg.safety.twilight_deg if cfg else -12.0
+    try:
+        lat = float(get("latitude", 0.0) or 0.0)
+        lon = float(get("longitude", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return True
+    t_now = time.time() if now is None else now
+    return sun_altitude(lat, lon, t_now) < twilight_deg
+
+
+# There is deliberately NO `night_has_ended` here. One was written, to let the
+# stand-down line say "the night is over" after dawn and something else in the
+# afternoon — and it hit the SAME re-anchoring trap twice: past dawn,
+# observing_night returns tomorrow's pair, so no comparison against dusk or
+# dawn can tell the morning-after from the afternoon-before. Discriminating
+# them properly needs the sun's direction of travel, which is real work in
+# service of one word.
+#
+# The message was reworded instead, to something true at any not-dark hour:
+# "it is not dark, and this session still owes N frames." A predicate that
+# exists only to pick an adjective is not worth a function that can be wrong.
+
+
 def _refine_crossing(lat: float, lon: float, alt_deg: float,
                      lo_t: float, hi_t: float) -> float:
     """Bisect a bracketed sun-altitude crossing to ~second precision."""

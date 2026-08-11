@@ -98,13 +98,31 @@ class ResumeArm:
     def _window_open(self, session: Session, now: float) -> bool:
         """True when tonight's window for ANY of the session's targets is open
         (calibration targets shoot any time). Reuses schedule.resolve_window —
-        the same resolution a run's scheduler freezes at start."""
+        the same resolution a run's scheduler freezes at start.
+
+        A DARK SKY IS THE OUTER BOUND, and it has to be checked here rather
+        than left to the per-target schedule. The default ``Schedule`` is
+        ``start_mode="now"`` / ``stop_mode="none"``, so ``resolve_window``
+        returns ``(now, None)`` and the test below reduces to ``now <= now and
+        True`` — open, unconditionally, forever. On 2026-08-11 that had
+        auto-resume burning a 4 s exposure and a full ASTAP run every ten
+        minutes at 07:36, ninety minutes after sunrise, on a mount the dawn
+        daemon had already parked. The refusal it kept logging was correct; the
+        retrying was not.
+
+        Calibration is exempt on purpose and stays first: darks and flats are
+        SUPPOSED to be shot in daylight with the mount parked, and the dark-plan
+        test harness depends on passing this gate at any hour.
+        """
         cfg = config_store.cfg()
         site = self.hub.site
         twilight = cfg.safety.twilight_deg if cfg else -12.0
         for t in session.plan.targets:
             if t.calibration:
                 return True
+        if not schedule.dark_enough(site, twilight, now):
+            return False
+        for t in session.plan.targets:
             start, stop = schedule.resolve_window(t.schedule, site, twilight, now)
             if start is not None and start <= now and (stop is None or now < stop):
                 return True
@@ -153,6 +171,32 @@ class ResumeArm:
                 bus.log("error", f"auto-resume gave up for tonight: "
                                  f"'{armed.name}' window closed before a "
                                  "successful start", "sequence")
+            elif self._gave_up_for != armed.id:
+                # THE RUN DID NOT FINISH AND NOTHING ELSE WOULD SAY SO. The
+                # give-up line above only fires mid-backoff — a session vetoed
+                # all night by cloud, or one that simply never got its chance,
+                # went quiet at dawn with frames still owed and no line
+                # anywhere admitting it.
+                #
+                # Worded to be true at ANY not-dark hour rather than claiming
+                # "the night is over": this also fires on an afternoon boot,
+                # where it is a useful thing to read (the rig knows it has work
+                # pending) and where "the night is over" would be a small lie.
+                # Latched per session and cleared when the window opens, so it
+                # is at most one line per session per side of the night.
+                self._gave_up_for = armed.id
+                self._retry_at = 0.0
+                owed = sum(armed.remaining().values())
+                if owed:
+                    bus.log("warning",
+                            f"auto-resume is standing by: it is not dark, and "
+                            f"'{armed.name}' still owes {owed} frame"
+                            f"{'' if owed == 1 else 's'}. It stays armed and "
+                            f"starts when the window opens.", "sequence")
+                else:
+                    bus.log("info",
+                            f"auto-resume is standing by: '{armed.name}' has "
+                            f"every frame it asked for.", "sequence")
             return
         self._gave_up_for = None            # window open (again): fresh night
         if now < self._retry_at:
