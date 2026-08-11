@@ -42,6 +42,15 @@ const note = (step, ok, detail) => {
   console.log(`${ok ? "PASS" : "FAIL"}  ${step}${detail ? " — " + detail : ""}`);
 };
 
+/** The library's own count, off the "N frames, X GB · showing M" strip. Reading
+ *  the SERVER's number rather than counting tiles: the grid is paged (200 of
+ *  642), so tile counts cannot tell a narrowed filter from a shorter page. */
+async function readShowing(page) {
+  const txt = await page.locator("body").innerText();
+  const m = txt.match(/([\d,]+)\s+frames?,/i);
+  return m ? Number(m[1].replace(/,/g, "")) : null;
+}
+
 const browser = await chromium.launch({ headless: true });
 // A desktop viewport is the whole point: the stall was reported on desktop,
 // where a wide grid puts far more tiles on screen than a phone does.
@@ -162,32 +171,41 @@ try {
 
   await page.screenshot({ path: path.join(OUT, "gallery-grid.png"), fullPage: false });
 
-  // FILTERS. The ask names them explicitly, so exercise one and prove the grid
-  // actually changed rather than that a control merely accepted a click.
-  const before = await page.locator("img[src*='gallery/thumb']").count();
+  // FILTERS. The gallery filters through a SEARCH box (target / filter /
+  // filename) and a night range, not a dropdown — so exercise the real control
+  // and prove the RESULT SET changed, not merely that a control took a click.
   const filterName = args.filter || "Ha";
-  const combo = page.locator("select").filter({ visible: true });
+  const totalBefore = await readShowing(page);
+  const search = page.getByPlaceholder(/target, filter, filename/i).first();
   let filtered = false;
-  if (await combo.count()) {
-    for (let i = 0; i < await combo.count(); i++) {
-      const opts = await combo.nth(i).locator("option").allTextContents();
-      if (opts.some((o) => o.trim() === filterName)) {
-        await combo.nth(i).selectOption({ label: filterName });
-        filtered = true;
-        break;
-      }
-    }
+  if (await search.count()) {
+    await search.fill(filterName);
+    // The search is debounced (SEARCH_DEBOUNCE_MS = 300) and then walks the
+    // library on the far end; give it the round trip.
+    await page.waitForTimeout(8000);
+    filtered = true;
   }
-  if (!filtered) {
-    const chip = page.getByRole("button", { name: new RegExp(`^${filterName}$`) })
-      .filter({ visible: true }).first();
-    if (await chip.count()) { await chip.click(); filtered = true; }
-  }
-  await page.waitForTimeout(6000);
-  const after = await page.locator("img[src*='gallery/thumb']").count();
-  note(`filter '${filterName}' changes the grid`, filtered && after !== before,
-       filtered ? `${before} tiles -> ${after}` : "no filter control found");
+  const totalAfter = await readShowing(page);
+  note(`search '${filterName}' narrows the library`,
+       filtered && totalAfter !== null && totalBefore !== null
+         && totalAfter < totalBefore && totalAfter > 0,
+       filtered ? `${totalBefore} frames -> ${totalAfter}` : "no search box found");
+
+  // And the narrowed grid must still RENDER — a filter that returns the right
+  // count over a wall of broken tiles is not a working filter.
+  await page.waitForTimeout(3000);
+  const fImgs = await page.locator("img").evaluateAll((els) =>
+    els.filter((e) => e.src && e.src.includes("gallery/thumb"))
+       .map((e) => ({ ok: e.complete && e.naturalWidth > 0 })));
+  const fLoaded = fImgs.filter((i) => i.ok).length;
+  note("the filtered grid renders too", fImgs.length > 0 && fLoaded === fImgs.length,
+       `${fLoaded}/${fImgs.length} decoded`);
   await page.screenshot({ path: path.join(OUT, "gallery-filtered.png") });
+
+  // Clear it again, so the run leaves the app as it found it.
+  const clear = page.getByRole("button", { name: /clear filter/i })
+    .filter({ visible: true }).first();
+  if (await clear.count()) await clear.click();
 
   note("no uncaught page errors", report.errors.length === 0,
        report.errors.length ? report.errors[0] : "");
