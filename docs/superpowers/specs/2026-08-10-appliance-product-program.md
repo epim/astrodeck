@@ -38,6 +38,19 @@ and are *not yet* independently verified — verify before acting on them.
 | D7 | HAT downstream USB: **4× USB-A + 2× USB-C**. |
 | D8 | Storage: **OS stays on SD**; eMMC carries `/var/log` and `/data`. Captures default to eMMC; NVMe and external USB are optional. Whole-OS-on-eMMC is a later move. |
 | D9 | Bootloader stays **unlocked**; the owner keeps root and SSH. Harden the software boundary only. |
+| D10 | **Non-redistributable assets are fetched, not bundled.** Anything we may not lawfully convey stays out of the image; the software detects the user's hardware, discloses what it found and why it cannot drive it, and offers to fetch the vendor's asset on the user's behalf with consent. One mechanism for all of them — Player One SDK, QHY, the DSS2 replacement pack, INDI 3rdparty blobs — expressed as data, not per-vendor code. Assets with a real distribution grant (ZWO's verbatim MIT) stay bundled. |
+
+D10 rationale and consequences: this converts the Player One launch blocker from
+a legal dead end into a product flow, and it generalises the decision already
+taken for DSS2 (D5). It also fixes a silent-failure path — today a missing
+vendor library means no backend, no device offered and **no log line**, so a
+camera the customer owns simply does not appear. Detection must therefore work
+*without* the vendor library (raw USB identity), so the box can name hardware it
+cannot yet drive. Two hard constraints on the mechanism: the web application must
+never write an executable it then loads (that is the primitive the containment
+work exists to remove, so fetch/verify/install goes through the privileged
+broker), and fetched assets must survive both an application update and an OS
+re-flash — which means they live on `/data`, not in the release directory.
 
 D9 rationale: shipping GPL-3 userland to a consumer makes the appliance a User
 Product under GPL-3 §6, so Installation Information is owed the moment anyone
