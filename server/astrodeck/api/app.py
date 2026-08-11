@@ -61,7 +61,8 @@ from ..config import (FRAME_SCOPES, AlertSink, AuthConfig, CalibrationConfig,
                       ConfigVersionConflict, CoolingConfig,
                       EscalationConfig, GuideConfig, NamingConfig, Optics,
                       ProvidersConfig, RotatorConfig, SafetyConfig, Site,
-                      SurveyConfig, UpdateConfig, WcsStampConfig, WeatherConfig,
+                      SurveyConfig, SyncPushConfig, UpdateConfig, WcsStampConfig,
+                      WeatherConfig,
                       config_store, frames_payload, publish_frames, redacted,
                       set_frame_settings)
 from ..locations import (LocationLibraryFull, LocationNameCollision,
@@ -85,6 +86,7 @@ from .. import config as config_module
 from .. import factory_reset as factory_reset_module
 from .. import gallery as gallery_module
 from ..sync import manifest as sync_manifest_mod
+from ..sync.runner import runner as sync_push_runner
 from ..hub import CAPTURE_DIR, TOUCH_MAX_RATE_DEG_S, hub
 from ..calibration import CalibrationLibrary, MatchTolerance
 from ..imaging import build_caption, compose_share_jpeg, fmt_share_date, to_png
@@ -134,13 +136,13 @@ resume_arm = ResumeArm(engine, hub, weather=weather_service)
 # switch, and a directory walk that stalls it would fire a false "rig is down".
 trash_keeper = gallery_module.TrashKeeper()
 
-#: Content hashes for /api/sync/manifest, keyed (path, size, mtime_ns). Module
-#: scope so it survives across requests — the whole point is that a night is
-#: read once, not once per poll, and an agent polling every 30 s for six hours
-#: would otherwise re-read 9 GB seven hundred times. Unbounded is deliberate and
-#: safe here: one entry is ~120 bytes and the library is bounded by
-#: gallery.SCAN_MAX_FILES, so the worst case is a few MB of strings.
-_SYNC_HASH_CACHE: dict = {}
+#: Content hashes for /api/sync/manifest, keyed (path, size, mtime_ns). THE SAME
+#: OBJECT the push runner uses (``manifest.SHARED_HASH_CACHE``) — a pull agent
+#: polling this route and a push sweeping to a NAS hash the same files with the
+#: same function, so giving them one cache halves the disk reads instead of
+#: giving each of them a cold one. Aliased rather than re-exported so the name
+#: existing tests clear still works.
+_SYNC_HASH_CACHE: dict = sync_manifest_mod.SHARED_HASH_CACHE
 
 # Dawn park (backlog K / task #139). EVERY other park lives inside the sequence
 # engine's run lifecycle, so a night that ended without a run — which is what a
@@ -352,6 +354,11 @@ async def _lifespan(app: "FastAPI"):
     # costs one device read and a handful of trig, and it is armed the moment a
     # mount is connected and left somewhere.
     sun_watch.start()
+    # File-sync push (Phase 2) — its own 5 s asyncio loop. Started
+    # UNCONDITIONALLY for the same reason as the two above: a tick with no
+    # destination configured is one attribute read, and it is armed the moment
+    # someone saves one, with no restart.
+    sync_push_runner.start()
     # W3 scope-side relay dial-out (OPT-IN). Launches ONLY when
     # ``RemoteConfig.enabled`` and a ``relay_url`` are set, so the default config
     # does NOTHING (LAN-only is byte-for-byte today). ISOLATED: the client's run
@@ -408,6 +415,7 @@ async def _lifespan(app: "FastAPI"):
         await trash_keeper.stop()
         await dawn_park.stop()
         await sun_watch.stop()
+        await sync_push_runner.stop()
         await dispatcher.stop()
         task.cancel()
         try:
@@ -1347,6 +1355,15 @@ class WcsStampBody(BaseModel):
     wcs_stamp: WcsStampConfig = Field(default_factory=WcsStampConfig)
 
 
+class SyncPushBody(BaseModel):
+    """POST /api/config/sync body (file-sync Phase 2). One block, one save.
+
+    MUST be module-level like every other ``*Body`` here — see
+    ``IgnoreTonightBody`` for why a class defined inside ``create_app()``
+    silently degrades to an unresolvable query param under PEP 563."""
+    sync_push: SyncPushConfig = Field(default_factory=SyncPushConfig)
+
+
 class GalleryPathsBody(BaseModel):
     """Body for the gallery's delete / restore routes: relative frame paths.
 
@@ -1791,6 +1808,53 @@ def create_app() -> FastAPI:
             raise HTTPException(422, str(e))
         bus.publish("config", config=redacted(cfg))
         return _config_payload(principal)
+
+    # ------------------------------------------- file-sync push config (Phase 2)
+    # CAP_CONFIG_SITE_OPTICS matches the settings-panel neighbourhood (survey /
+    # naming / wcs), and in the shipped role map that means ADMIN ONLY — no
+    # operator and no viewer can point this anywhere. That is the property that
+    # matters: the block names a filesystem path every science frame gets copied
+    # to, so it belongs with the config caps rather than the control ones.
+
+    @app.post("/api/config/sync")
+    @declare(CAP_CONFIG_SITE_OPTICS)
+    async def set_sync_push_config(
+            body: SyncPushBody,
+            principal: Principal = Depends(require(CAP_CONFIG_SITE_OPTICS))):
+        """Point file-sync at a destination (or turn it off).
+
+        Takes effect within one runner tick — there is no restart and no
+        re-arm, because the runner re-reads this block every time rather than
+        capturing it at start."""
+        try:
+            cfg = await asyncio.to_thread(config_store.set_sync_push, body.sync_push)
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+        bus.publish("config", config=redacted(cfg))
+        return _config_payload(principal)
+
+    @app.get("/api/sync/push", dependencies=[Depends(require(CAP_VIEW_MEDIA))])
+    @declare(CAP_VIEW_MEDIA)
+    async def sync_push_status():
+        """What the push runner has been doing.
+
+        Gated at ``view.media`` for the same reason ``/api/sync/manifest`` is:
+        this reports how much science data has left the rig and where it went,
+        which is a fact about the media, not about the rig's health."""
+        return sync_push_runner.status()
+
+    @app.post("/api/sync/push/now", dependencies=[Depends(require(CAP_VIEW_MEDIA))])
+    @declare(CAP_VIEW_MEDIA)
+    async def sync_push_now():
+        """Run one pass right now instead of waiting for the cadence.
+
+        This is what makes the settings panel honest: an operator who has just
+        typed a UNC path finds out whether the rig can write to it while they
+        are still looking at the screen, rather than at 02:00 with nobody
+        watching. Gated at ``view.media`` — the same "plan and perform behind
+        ONE capability" rule the manifest route explains — because this MOVES
+        science frames off the rig."""
+        return await sync_push_runner.push_now()
 
     # ---------------------------------------------------- weather config (weather spec §2)
     # Same cap/broadcast shape as the survey route above, PLUS the optimistic-
@@ -5813,17 +5877,10 @@ def create_app() -> FastAPI:
         hi = night or night_to
         rows, truncated = await asyncio.to_thread(gallery_module.scan)
         rows = gallery_module.filter_rows(rows, night_from=lo, night_to=hi)
-        facts = [
-            sync_manifest_mod.FileFacts(
-                relpath=r["path"], size=int(r["bytes"]),
-                # gallery reports mtime as float seconds; the hash cache wants
-                # an integer key. Derived the same way on every call, so the
-                # key is stable even though the precision is not the stat's.
-                mtime_ns=int(float(r["mtime"]) * 1e9),
-                night=r.get("night", ""),
-                kind=(r.get("frame_type") or "frame").lower())
-            for r in rows
-        ]
+        # THE SAME builder the push runner uses (sync/manifest.py). Both
+        # directions have to agree about what the library contains, and one
+        # function is how that stays true.
+        facts = sync_manifest_mod.rig_facts(rows)
         man = await asyncio.to_thread(
             sync_manifest_mod.build, facts,
             root=gallery_module.capture_root(), now=time.time(),
