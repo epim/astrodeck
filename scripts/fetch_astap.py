@@ -61,8 +61,8 @@ DATABASES = {
     "d50": (f"{SF}/star_databases/d50_star_database.zip/download", 901.3),
 }
 
-#: platform key -> (download url, name of the executable inside the archive).
-#: Keys match sdk_paths' convention so one layout covers every vendored binary.
+#: DOWNLOAD SELECTOR key -> (download url, name of the executable inside the
+#: archive). These keys are NOT the vendored-directory names — see ``_OUT_TAG``.
 #: Filenames verified against the SourceForge listings 2026-07-30 — note the
 #: HYPHEN in "command-line" and the space in the macOS folder name; both are
 #: easy to guess wrong and both give a bare 404.
@@ -85,6 +85,29 @@ BINARIES = {
     "macos-aarch64": (
         f"{SF}/macOS%20installer/astap_command-line_version_macOS_M1.zip/download",
         "astap_cli"),
+}
+
+#: Download selector -> the vendored SUBDIRECTORY name, which MUST match
+#: ``devices/sdk_paths.platform_tag()`` because that is the only path
+#: ``solve/astap.py::_bundled_candidates`` looks in.
+#:
+#: These are two different namespaces and conflating them was a real bug. The
+#: download key has to tell macOS x86_64 from macOS arm64 (separate archives);
+#: platform_tag returns one ``macos`` for both (universal binaries). Of the six
+#: selectors, exactly ONE — ``linux-x86_64`` — happened to spell the same as its
+#: tag, and that is the platform CI and the dev box run, so the divergence was
+#: invisible. On arm64 the binary landed in ``vendor/astap/linux-aarch64/``
+#: while the loader read ``vendor/astap/linux-arm64/``, found nothing, fell
+#: through to the flat path, found nothing, and silently used a system install
+#: — which on an appliance image is no install at all. The star database, which
+#: extracts flat, was found the whole time, so the bundle looked half-present.
+_OUT_TAG = {
+    "windows-x86_64": "win-x64",
+    "windows-aarch64": "win-x64",   # platform_tag maps win/arm64 -> win-x64 too
+    "linux-x86_64": "linux-x86_64",
+    "linux-aarch64": "linux-arm64",
+    "macos-x86_64": "macos",
+    "macos-aarch64": "macos",
 }
 
 VENDOR = Path(__file__).resolve().parents[1] / "server" / "astrodeck" / "vendor" / "astap"
@@ -126,6 +149,21 @@ def _extract(archive: Path, into: Path) -> list[str]:
 def fetch(platforms: list[str], db: str, out: Path) -> int:
     if db not in DATABASES:
         raise SystemExit(f"unknown database {db!r}; pick one of {', '.join(DATABASES)}")
+    missing = [p for p in BINARIES if p not in _OUT_TAG]
+    if missing:                                  # a new selector with no tag
+        raise SystemExit(f"_OUT_TAG has no entry for {', '.join(missing)}")
+    # Two selectors can share a tag (both macOS builds -> "macos"), which is
+    # correct for a universal binary and WRONG for two different ones: the
+    # second extraction would overwrite the first and the manifest would record
+    # a sha256 for a file that is no longer there. Refuse rather than clobber.
+    tags: dict[str, str] = {}
+    for p in platforms:
+        t = _OUT_TAG.get(p)
+        if t in tags:
+            raise SystemExit(
+                f"{p} and {tags[t]} both install to {t!r}; fetch them separately")
+        if t:
+            tags[t] = p
     out.mkdir(parents=True, exist_ok=True)
     manifest: dict = {"source": "https://www.hnsky.org/astap.htm",
                       "program_license": "MPL-2.0",
@@ -145,7 +183,9 @@ def fetch(platforms: list[str], db: str, out: Path) -> int:
             url, exe = BINARIES[plat]
             print(f"{plat}:")
             arc = _download(url, tmp / f"{plat}.zip")
-            dest = out / plat
+            # The directory is named for the LOADER's convention, not the
+            # download selector's -- see _OUT_TAG.
+            dest = out / _OUT_TAG[plat]
             _extract(arc, dest)
             found = next((p for p in dest.rglob(exe)), None)
             if found is None:
