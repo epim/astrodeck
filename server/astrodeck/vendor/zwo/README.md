@@ -39,15 +39,31 @@ Notes:
 
 `macos/libASICamera2.dylib` is the macOS build of the camera SDK.
 
-**There is no Linux `libASICamera2.so` here yet.** The upstream reference tree
-carries only `libASICamera2.a`, a *static* archive, which `ctypes.CDLL` cannot
-load at runtime — it exists for projects that link at build time. ZWO's own SDK
-download does ship `libASICamera2.so` for armv7/armv8/x64; that file is what is
-needed to make ZWO cameras work on Linux and the Raspberry Pi.
+`linux-arm64/` carries the aarch64 builds of all three libraries we load —
+`libASICamera2.so`, `libEAFFocuser.so`, `libCAARotator.so` — taken byte-for-byte
+from `indilib/indi-3rdparty` `libasi/armv8/`, where they ship renamed to `.bin`
+so distribution tooling does not strip them. Verified as AArch64 ELF and loaded
+on an RK3588S (Orange Pi 5 Pro) 2026-08-11.
 
-`EAF_focuser` (focuser) and `CAARotator` (rotator) are Windows-only here for the
-same reason: the upstream tree we vendored from does not carry them at all, since
-it is a guiding application that drives neither. ZWO ships separate EAF and CAA
-Linux SDKs.
+> An earlier version of this file said no Linux build existed, because "the
+> upstream reference tree carries only `libASICamera2.a`, a static archive". That
+> was true of *one* upstream tree and was read for months as though it were true
+> of ZWO's Linux support generally. It is the same shape as the Player One
+> "permits redistribution" claim: a conclusion about a source, recorded as a fact
+> about the world. The shared objects were always there.
+
+Two integration details that are not obvious from the files:
+
+* **`libCAARotator.so` needs libudev already loaded.** It calls
+  `udev_device_get_devnode` without declaring libudev in its `DT_NEEDED`, so
+  `ldd` reports every dependency satisfied and `dlopen` still fails with
+  `undefined symbol`. `zwo_sdk._preload_libudev()` loads it `RTLD_GLOBAL` first.
+* **The focuser is the aliased name.** ZWO's Windows `EAF_focuser.dll` is
+  `libEAFFocuser.so` on Linux; `sdk_paths._POSIX_STEM_ALIASES` carries that, and
+  `candidates()` must join the alias to the per-platform directory or the file is
+  invisible where it sits.
+
+`vendor/zwo/*.dll` remain the Windows builds. There is no ZWO filter-wheel
+library here because nothing in this codebase loads one.
 
 **Linux needs `libusb-1.0-0` installed** for any of these once added.

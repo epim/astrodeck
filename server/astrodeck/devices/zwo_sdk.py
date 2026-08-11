@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import sys
 from pathlib import Path
 
 _VENDOR_DIR = Path(__file__).resolve().parent.parent / "vendor" / "zwo"
@@ -101,10 +102,32 @@ def _loads_with_exports(path: Path, exports: list[str]):
     return None
 
 
+def _preload_libudev() -> None:
+    """Put libudev's symbols in the process before a ZWO accessory library loads.
+
+    ZWO's Linux ``libCAARotator.so`` calls ``udev_device_get_devnode`` but does
+    NOT list libudev in its DT_NEEDED, so ``ldd`` reports every dependency
+    satisfied and ``dlopen`` then fails with ``undefined symbol``. Loading
+    libudev RTLD_GLOBAL first satisfies it. Verified on an RK3588S: without this
+    the rotator is simply absent; with it, ``CAAGetNum`` resolves.
+
+    Best-effort and silent -- on Windows and macOS there is nothing to do, and a
+    missing libudev must not stop the camera library from loading."""
+    if not sys.platform.startswith("linux"):
+        return
+    for soname in ("libudev.so.1", "libudev.so.0", "libudev.so"):
+        try:
+            ctypes.CDLL(soname, mode=ctypes.RTLD_GLOBAL)
+            return
+        except OSError:
+            continue
+
+
 def _find_dll(basename: str):
     """Locate + load the SDK for THIS platform. `basename` stays the Windows
     filename because it keys _DLL_SPECS; the resolver derives the real name."""
     from .sdk_paths import candidates
+    _preload_libudev()
     alternatives, exports = _DLL_SPECS[basename]
     stem = basename.rsplit(".", 1)[0]
     for c in candidates("zwo", stem, env_var="ASTRODECK_ZWO_SDK_DIR",

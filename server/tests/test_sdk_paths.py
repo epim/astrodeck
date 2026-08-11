@@ -164,3 +164,33 @@ def test_an_unknown_platform_degrades_instead_of_raising(fake_platform):
     fake_platform("freebsd13", "riscv64")
     assert platform_tag() == "freebsd13"
     candidates("playerone", "PlayerOneCamera")   # must not raise
+
+
+def test_an_aliased_library_is_found_in_the_per_platform_directory(
+        fake_platform, tmp_path, monkeypatch):
+    """The alias map and per-platform vendoring must work TOGETHER.
+
+    ``candidates`` sweeps the per-platform directory by substring on the RAW
+    stem, and "EAF_focuser" is not a substring of "libEAFFocuser.so". The alias
+    names were only ever joined to the FLAT directory, so the two mechanisms
+    were mutually exclusive and ZWO's focuser — the single library the alias map
+    exists for — could never be found in ``vendor/zwo/linux-arm64/``.
+
+    Caught by vendoring the real arm64 libraries onto an Orange Pi: the camera
+    and the rotator resolved, the focuser reported "not found" with the file
+    sitting right beside them.
+    """
+    fake_platform("linux", "aarch64")
+    plat = tmp_path / "zwo" / "linux-arm64"
+    plat.mkdir(parents=True)
+    real = plat / "libEAFFocuser.so"          # ZWO's actual POSIX basename
+    real.write_bytes(b"\x7fELF")
+    monkeypatch.setattr(sdk_paths, "VENDOR_ROOT", tmp_path)
+
+    got = candidates("zwo", "EAF_focuser")
+    assert real in got, (
+        "the aliased POSIX name is never joined to the per-platform directory")
+    # and the un-aliased case must keep working from the same directory
+    asi = plat / "libASICamera2.so"
+    asi.write_bytes(b"\x7fELF")
+    assert asi in candidates("zwo", "ASICamera2")
