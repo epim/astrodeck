@@ -249,6 +249,16 @@ ROTATE_MIN_GAIN_DEG = 0.5
 #: tiny thumbnails it keeps for the filmstrip, and how many linear arrays it
 #: retains for /crop and /render (a 6200 frame is ~125 MB, so only the latest
 #: 1–2 — live-preview spec finding #18 / §6).
+#: Backlog bound for gallery thumbnail warming (#225). Small on purpose: frames
+#: arrive every ~60 s and one render takes ~1.5 s, so a backlog this deep only
+#: forms if the box is already in trouble — and a dropped warm costs nothing but
+#: a lazy render later.
+THUMB_WARM_QUEUE_MAX = 8
+#: How long the warm worker waits for another frame before retiring. Longer than
+#: any realistic sub, so a normal run keeps one worker rather than churning a
+#: task per frame.
+THUMB_WARM_IDLE_S = 600.0
+
 PREVIEW_DISPLAY_KEEP = 8
 PREVIEW_THUMB_KEEP = 50
 PREVIEW_LINEAR_KEEP = 2
@@ -462,6 +472,11 @@ class Hub:
         # log-once latch for the drop-oldest notice; cleared when the backlog
         # drains, so a later backlog episode is reported again (not spammed).
         self._wcs_drop_logged = False
+        # Gallery thumbnail warming (#225). Same shape as the WCS queue and for
+        # the same reasons; see _enqueue_thumb. The task retires when idle, so a
+        # rig that never captures never carries one.
+        self._thumb_queue: asyncio.Queue | None = None
+        self._thumb_task: asyncio.Task | None = None
         # --- what the rig is LOOKING AT (#182) ---------------------------------
         # The most recent trusted solve, or None. Set by solve_and_sync (which
         # every goto already pays for) and by the per-frame WCS worker; cleared
@@ -2619,6 +2634,14 @@ class Hub:
                 bus.log("info", "NINA saved the frame", "capture")
         elif local_save_path is not None:
             bus.log("info", f"saved {local_save_path.name}", "capture")
+            # WARM THE GALLERY THUMBNAIL NOW, while nobody is waiting for it.
+            # Rendering one costs ~1.5 s (auto_stretch over 26 megapixels), and
+            # a desktop grid asks for forty at once — measured 2026-08-10: the
+            # relay's per-IP bucket answered 19 of 41 with 429 and the gallery
+            # showed nothing at all. Doing it here turns every later view into
+            # a small disk read. Fire-and-forget by design: a gap is harmless
+            # because the route still renders on demand.
+            self._enqueue_thumb(local_save_path)
 
         # Opt-in (default OFF): hand the saved light to the BACKGROUND WCS worker
         # so its plate solve stamps astrometry into the header without the
@@ -4475,6 +4498,66 @@ class Hub:
         return {"active": False}
 
     # -------------------------------------------------------- solve & center
+
+    def _enqueue_thumb(self, path: "Path") -> None:
+        """Queue one saved frame for background thumbnail rendering.
+
+        Never blocks, never raises, never grows without bound — the same three
+        promises ``_enqueue_wcs_stamp`` makes, for the same reason: this runs
+        inside a capture, and a capture must not be able to fail because a
+        convenience did.
+
+        Overflow is DROP-OLDEST, and here that is close to free: a dropped warm
+        is not a lost thumbnail, it is a thumbnail that renders on demand the
+        first time someone scrolls to it. The lazy route is the fallback this
+        whole path is an optimisation over.
+        """
+        try:
+            if self._thumb_queue is None:
+                self._thumb_queue = asyncio.Queue()
+            q = self._thumb_queue
+            while q.qsize() >= THUMB_WARM_QUEUE_MAX:
+                try:
+                    q.get_nowait()
+                except asyncio.QueueEmpty:      # pragma: no cover - defensive
+                    break
+                q.task_done()
+            q.put_nowait(Path(path))
+            if self._thumb_task is None or self._thumb_task.done():
+                self._thumb_task = asyncio.create_task(self._thumb_worker())
+        except Exception:  # noqa: BLE001 - warming must never fail a capture
+            pass
+
+    async def _thumb_worker(self) -> None:
+        """Render queued thumbnails off the event loop, one at a time.
+
+        Serial on purpose. The work is CPU-bound (a 26-megapixel stretch), the
+        box also has to guide, and a pool would win nothing on a Pi while
+        costing the whole machine's responsiveness at exactly the wrong moment.
+        Frames arrive every 60 s and one takes ~1.5 s.
+        """
+        from . import gallery as _gallery
+        q = self._thumb_queue
+        if q is None:                           # pragma: no cover - defensive
+            return
+        while True:
+            try:
+                path = await asyncio.wait_for(q.get(), timeout=THUMB_WARM_IDLE_S)
+            except asyncio.TimeoutError:
+                return                          # idle: let the task retire
+            except asyncio.CancelledError:      # pragma: no cover
+                raise
+            try:
+                rel = Path(path).resolve().relative_to(
+                    _gallery.capture_root().resolve()).as_posix()
+                made = await asyncio.to_thread(_gallery.precompute, rel)
+                if made:
+                    bus.log("debug", f"warmed {made} thumbnail(s) for "
+                                     f"{Path(path).name}", "gallery")
+            except Exception:                   # noqa: BLE001 - warming is optional
+                pass                            # the lazy route still covers it
+            finally:
+                q.task_done()
 
     async def _borrow_wheel_for_solve(self) -> int | None:
         """Drive the wheel to a slot a plate solve can actually see through.
