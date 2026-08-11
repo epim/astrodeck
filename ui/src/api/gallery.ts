@@ -78,3 +78,22 @@ export const purgeTrashed = (paths: string[]): Promise<GalleryPurgeResult> =>
 
 export const purgeAllTrashed = (): Promise<GalleryPurgeResult> =>
   api.post<GalleryPurgeResult>("/api/gallery/trash/purge", { all: true });
+
+/** What a thumbnail backfill did. `truncated` means the library was longer than
+ *  one scan — run it again to continue, because a partial pass that reported
+ *  itself complete would leave frames permanently cold. */
+export type ThumbBackfillResult = {
+  frames: number;
+  rendered: number;
+  unrenderable: number;
+  truncated?: boolean;
+};
+
+/** Render every missing gallery thumbnail up front.
+ *
+ *  Captures warm their own thumbnails from 0.2.72 on, so this is for the frames
+ *  shot before that, and for any gap left by a restart mid-night. Idempotent
+ *  and safe to repeat; slow the first time on a large library (a cold render is
+ *  a ~1.5 s stretch over 26 megapixels). */
+export const backfillThumbs = (): Promise<ThumbBackfillResult> =>
+  api.post<ThumbBackfillResult>("/api/gallery/thumbs/backfill", {});

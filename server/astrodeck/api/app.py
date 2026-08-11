@@ -5620,6 +5620,31 @@ def create_app() -> FastAPI:
         # at the same path produces a different URL rather than a stale image.
         return Response(jpeg, media_type="image/jpeg", headers=_PREVIEW_CACHE)
 
+    @app.post("/api/gallery/thumbs/backfill",
+              dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
+    async def gallery_thumbs_backfill(limit: int = 0):
+        """Warm every listable frame's thumbnails, and report what it did.
+
+        Gated at ``control.capture`` rather than ``view.preview``, which is what
+        merely READING one of these needs. It discloses nothing new — the caller
+        could already fetch every one of them one at a time — but it can occupy
+        a core for twenty minutes on a large library, and spending the imaging
+        machine's CPU is an operational act, not a browse.
+
+        Runs in a worker thread and is idempotent: an already-warm library costs
+        one stat per frame per width."""
+        result = await asyncio.to_thread(gallery_module.backfill, limit=limit)
+        bus.log("info",
+                f"gallery thumbnails: warmed {result['rendered']} across "
+                f"{result['frames']} frames"
+                + (f", {result['unrenderable']} could not be rendered"
+                   if result["unrenderable"] else "")
+                + (" (list truncated — run again to continue)"
+                   if result.get("truncated") else ""),
+                "gallery")
+        return result
+
     @app.get("/api/gallery/file", dependencies=[Depends(require(CAP_VIEW_MEDIA))])
     @declare(CAP_VIEW_MEDIA)
     async def gallery_file(path: str):

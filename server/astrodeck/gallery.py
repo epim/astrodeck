@@ -165,6 +165,22 @@ THUMB_CACHE_MAX_BYTES = 256 * 1024 * 1024
 #: over-cap cache trims it without waiting for 200 more.
 THUMB_PRUNE_EVERY = 200
 
+#: The largest thumbnail the route will render. 768 rather than the old 512
+#: because the grid is `minmax(140px, 1fr)` and a HiDPI desktop asks for ~2x the
+#: CSS width — at 256 the picture arrived with fewer pixels than the tile had,
+#: which is what "a pixelated mess" was. Keep in step with
+#: `ui/src/lib/gallery.ts::THUMB_WIDTH_STEPS`, whose last step this clamps.
+THUMB_MAX_WIDTH = 768
+
+#: The widths WARMED on capture and by the backfill.
+#:
+#: Only the two a real client asks for. Rendering every step would triple the
+#: work for widths nothing requests: a 1x desktop asks 256, a 2x desktop asks
+#: 512, and those two cover every tile the grid actually draws. A width outside
+#: this list still WORKS — it renders on demand exactly as before — it is simply
+#: not pre-warmed, which is the difference between "slow once" and "broken".
+PRECOMPUTE_WIDTHS: tuple[int, ...] = (256, 512)
+
 _NIGHT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
@@ -737,7 +753,7 @@ def thumbnail(rel: str, *, width: int = 256) -> bytes:
             or path.suffix.lower() not in FRAME_SUFFIXES):
         raise KeyError(rel)
     st = path.stat()                         # FileNotFoundError -> 404
-    width = max(32, min(int(width), 512))
+    width = max(32, min(int(width), THUMB_MAX_WIDTH))
     cached = _thumb_cache_path(rel, st.st_mtime, width)
     try:
         return cached.read_bytes()
@@ -767,6 +783,85 @@ def thumbnail(rel: str, *, width: int = 256) -> bytes:
     except OSError:
         pass                                 # cache miss forever beats a 500
     return jpeg
+
+
+def thumb_is_cached(rel: str, width: int) -> bool:
+    """True iff the thumbnail for ``rel`` at ``width`` is already on disk.
+
+    Derived from the file, never from a flag: the cache key carries the frame's
+    mtime, so a re-captured frame at the same path answers False without anyone
+    having to remember to invalidate anything.
+    """
+    try:
+        root = capture_root()
+        rel = (rel or "").replace("\\", "/")
+        path = safe_subpath(root, rel)
+        width = max(32, min(int(width), THUMB_MAX_WIDTH))
+        return _thumb_cache_path(rel, path.stat().st_mtime, width).exists()
+    except (KeyError, OSError):
+        return False
+
+
+def precompute(rel: str, widths: "tuple[int, ...] | None" = None) -> int:
+    """Render and cache ``rel``'s thumbnails ahead of anyone asking. Returns how
+    many were actually rendered (0 when they were all already cached).
+
+    Calls ``thumbnail`` rather than reimplementing it, deliberately: the writer
+    and the reader must agree about the cache key, and the only way to guarantee
+    that forever is for there to be one function that computes it. A private
+    fast path here would be a second renderer whose output the route could not
+    find — a warm cache that never gets read looks exactly like a cold one.
+
+    Never raises. A frame that cannot be rendered (an ``.xisf`` we can list but
+    not decode) is not an error at warm time; it is a tile that will say "no
+    preview" when someone eventually looks at it, which is already handled.
+    """
+    made = 0
+    for w in (widths or PRECOMPUTE_WIDTHS):
+        if thumb_is_cached(rel, w):
+            continue
+        try:
+            thumbnail(rel, width=w)
+            made += 1
+        except Exception:                    # noqa: BLE001 — warming is optional
+            break                            # a frame that fails one width fails all
+    return made
+
+
+def backfill(*, widths: "tuple[int, ...] | None" = None,
+             limit: int = 0,
+             progress=None) -> dict:
+    """Warm every listable frame's thumbnails. Returns a summary dict.
+
+    This is the "suspenders" half of the belt-and-suspenders: capture warms new
+    frames from now on, and this closes the gap for everything shot before the
+    write-through existed — or during any window where it was skipped, dropped
+    or interrupted. Safe to run repeatedly; already-cached widths cost a stat.
+
+    ``progress(done, total, made)`` is called every 25 frames when supplied, so
+    a long run over a 642-frame library can say something rather than appear
+    hung for twenty minutes.
+    """
+    rows, truncated = scan()
+    if limit > 0:
+        rows = rows[:limit]
+    total, made, failed = len(rows), 0, 0
+    for i, r in enumerate(rows, 1):
+        rel = r.get("path") or ""
+        try:
+            n = precompute(rel, widths)
+            made += n
+            if n == 0 and not thumb_is_cached(rel, (widths or PRECOMPUTE_WIDTHS)[0]):
+                failed += 1
+        except Exception:                    # noqa: BLE001 — one bad frame is not a run
+            failed += 1
+        if progress is not None and (i % 25 == 0 or i == total):
+            progress(i, total, made)
+    # SAY WHEN THE COVERAGE WAS BOUNDED. A backfill that quietly stopped at
+    # SCAN_MAX_FILES reads exactly like one that finished, and the frames past
+    # the cap stay cold forever while the summary says everything is warm.
+    return {"frames": total, "rendered": made, "unrenderable": failed,
+            "truncated": bool(truncated) or (limit > 0 and limit < total)}
 
 
 # ----------------------------------------------------------------------- trash

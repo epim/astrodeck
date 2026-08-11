@@ -34,7 +34,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { JSX } from "react";
 import { ApiError } from "../api";
-import { listFrames, listNights, listTrash, trashFrames } from "../api/gallery";
+import {
+  backfillThumbs, listFrames, listNights, listTrash, trashFrames,
+} from "../api/gallery";
 import { useStore } from "../store";
 import { BASE } from "../lib/base";
 import { accessPhrase, useCan, useCanControlCapture } from "../lib/caps";
@@ -113,6 +115,39 @@ export default function GalleryView(): JSX.Element {
   /** Bumped to force a re-read after anything mutates the library. */
   const [gen, setGen] = useState(0);
   const refresh = useCallback(() => setGen((g) => g + 1), []);
+
+  // Rebuilding previews is minutes of CPU on a big library, so it carries an
+  // in-flight state rather than a click that appears to do nothing. It reports
+  // TRUNCATION explicitly: a partial pass that said "done" would leave frames
+  // permanently cold while claiming otherwise.
+  const [warming, setWarming] = useState(false);
+  const rebuildPreviews = useCallback(async () => {
+    if (warming) return;
+    setWarming(true);
+    try {
+      const r = await backfillThumbs();
+      enqueueToast({
+        level: r.truncated ? "warning" : "info",
+        title: r.rendered
+          ? `Rebuilt ${r.rendered} preview${r.rendered === 1 ? "" : "s"}`
+          : "Every preview was already built",
+        detail: [
+          `${r.frames} frame${r.frames === 1 ? "" : "s"} checked`,
+          r.unrenderable ? `${r.unrenderable} could not be rendered` : "",
+          r.truncated ? "the library was longer than one pass — run it again" : "",
+        ].filter(Boolean).join(" · "),
+      });
+      refresh();
+    } catch (e) {
+      enqueueToast({
+        level: "error",
+        title: "Could not rebuild previews",
+        detail: e instanceof ApiError ? e.message : undefined,
+      });
+    } finally {
+      setWarming(false);
+    }
+  }, [warming, refresh]);
   /** Bumped on every listing REQUEST. The effect below has its own `alive`
    *  flag, but "Load more" is fired from a click and outlives no effect, so it
    *  needs this: it APPENDS, so a page fetched under the previous filter does
@@ -421,6 +456,20 @@ export default function GalleryView(): JSX.Element {
             <button className={`btn ${actionBtn}`} onClick={refresh} title="Re-read the library from disk">
               <Icon name="refresh" size={13} /> Refresh
             </button>
+            {/* Frames captured from 0.2.72 on warm their own preview as they
+                land. This is for everything shot before that, and for any gap a
+                restart left mid-night — without it those frames are only ever
+                rendered the first time somebody scrolls past them, which on a
+                desktop grid is forty at once. */}
+            <HonestButton
+              className={`btn ${actionBtn}`}
+              reason={warming ? "Already rebuilding previews." : null}
+              onClick={rebuildPreviews}
+              onExplain={explain}
+            >
+              <Icon name="gallery" size={13} />
+              {warming ? "Rebuilding previews…" : "Rebuild previews"}
+            </HonestButton>
           </div>
         </div>
 

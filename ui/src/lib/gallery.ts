@@ -265,8 +265,43 @@ export type ThumbFailure = "missing" | "unrenderable" | "error";
 export function thumbFailure(status: number): ThumbFailure {
   if (status === 404) return "missing";
   if (status === 422) return "unrenderable";
+  // 429 is deliberately NOT here. It is the one status that says nothing about
+  // the frame — the relay's per-IP bucket pushed back and the picture is fine.
+  // Rendering "PREVIEW FAILED" for it told the operator their library was
+  // broken when the truth was "ask again in a second"; see `retryableThumb`
+  // and lib/thumbQueue.ts. Measured 2026-08-10: 19 of 41 desktop tiles.
   return "error";
 }
+
+/** True for a status the tile should WAIT on rather than report as a verdict.
+ *  429 (rate limited) and 503 (busy) both mean "later", not "broken". */
+export function retryableThumb(status: number): boolean {
+  return status === 429 || status === 503;
+}
+
+/**
+ * The thumbnail width to ask for, given the tile's CSS width.
+ *
+ * A tile is ~147 CSS px in the desktop grid (`minmax(140px, 1fr)`), and on a
+ * HiDPI display that is ~294 REAL pixels — so the 256 px this used to request
+ * was upscaled on the exact screens most likely to be looking at it. That is
+ * the "pixelated mess": not the resampling filter (Pillow's reduction is
+ * area-weighted and fine), just too few pixels.
+ *
+ * Rounded up to a step so the server's path+mtime+width cache key takes a
+ * handful of values instead of one per viewport width — a continuously-sized
+ * request would miss the cache on every window resize and re-render a 26 MP
+ * frame each time.
+ */
+export function thumbWidthFor(cssWidth: number, dpr = 1): number {
+  const want = Math.ceil(Math.max(1, cssWidth) * Math.max(1, dpr));
+  for (const step of THUMB_WIDTH_STEPS) if (want <= step) return step;
+  return THUMB_WIDTH_STEPS[THUMB_WIDTH_STEPS.length - 1];
+}
+
+/** The widths the server will render and cache. Kept in step with
+ *  `gallery.THUMB_MAX_WIDTH` on the server, which clamps to the last one. */
+export const THUMB_WIDTH_STEPS = [256, 384, 512, 768] as const;
 
 /** The words on a failed tile. `label` is the chip drawn over the empty frame;
  *  `hint` is the sentence under it. `downloadable` decides whether the tile

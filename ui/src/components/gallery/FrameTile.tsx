@@ -30,12 +30,27 @@ import {
   fmtBytes,
   frameSubtitle,
   nightVsFilename,
+  retryableThumb,
   thumbFailure,
   thumbPath,
+  thumbWidthFor,
   tileFailureCopy,
   type ThumbFailure,
 } from "../../lib/gallery";
+import { acquire, noteRateLimited, noteSucceeded } from "../../lib/thumbQueue";
 import type { GalleryFrame } from "../../types";
+
+/** The grid is `minmax(140px, 1fr)`, so a tile is ~140-200 CSS px depending on
+ *  how the row divides. Asking off a fixed hint rather than a measured width is
+ *  deliberate: the server caches on path+mtime+width, and a width that tracked
+ *  every viewport pixel would miss that cache on every resize and re-render a
+ *  26-megapixel frame to answer it. `thumbWidthFor` rounds to a step anyway. */
+const TILE_CSS_WIDTH_HINT = 200;
+
+/** How many times a tile re-queues after a 429 before it reports the failure.
+ *  Four attempts against the queue's escalating backoff spans ~20 s, which is
+ *  far longer than any burst the grid itself can create. */
+const MAX_RATE_RETRIES = 4;
 
 /** How far outside the viewport a tile starts loading. One screen-ish: far
  *  enough that a normal scroll never shows an empty tile, near enough that a
@@ -227,9 +242,22 @@ export default function FrameTile(props: {
   // below). It rides in the URL so React mounts a FRESH <img> rather than
   // reusing the element the browser has already recorded as failed.
   const [attempt, setAttempt] = useState(0);
+  // Bumped on every RETRYABLE failure (429/503). Separate from `attempt`,
+  // which is the one-shot img-vs-probe disagreement: a rate limit is not a
+  // disagreement and must not consume that single retry.
+  const [rateRetry, setRateRetry] = useState(0);
+  // `null` until the queue hands this tile a slot. Gating the SRC (rather than
+  // the fetch) keeps the happy path a plain <img> — no Blob to revoke, and
+  // HTTP caching still applies. See lib/thumbQueue.ts for why a desktop grid
+  // must not set forty-one of these at once.
+  const [slotted, setSlotted] = useState(false);
+  const releaseRef = useRef<(() => void) | null>(null);
   const { frame } = props;
-  const src = `${BASE}${thumbPath(frame.path, 256, frame.mtime)}`
-    + (attempt ? `&r=${attempt}` : "");
+  const dpr = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
+  const width = thumbWidthFor(TILE_CSS_WIDTH_HINT, dpr);
+  const src = `${BASE}${thumbPath(frame.path, width, frame.mtime)}`
+    + (attempt ? `&r=${attempt}` : "")
+    + (rateRetry ? `&q=${rateRetry}` : "");
 
   // A new path (or a re-capture at the same path) is a new picture: reset, so a
   // recycled tile never keeps the previous frame's verdict.
@@ -237,37 +265,92 @@ export default function FrameTile(props: {
     setState("loading");
     setStatus(undefined);
     setAttempt(0);
+    setRateRetry(0);
   }, [frame.path, frame.mtime]);
+
+  // Take a queue slot once the tile is in view, and give it back on unmount so
+  // a fast scroll past a hundred tiles cannot leak the whole cap away.
+  useEffect(() => {
+    if (!inView) return;
+    const { slot, cancel } = acquire();
+    let alive = true;
+    void slot.then((release) => {
+      releaseRef.current = release;
+      if (!alive) { release(); return; }
+      setSlotted(true);
+    });
+    return () => {
+      alive = false;
+      cancel();
+      releaseRef.current?.();
+      releaseRef.current = null;
+    };
+    // `rateRetry` re-queues the tile behind everyone else, which is the point:
+    // a rate-limited tile must not jump the queue it just overflowed.
+  }, [inView, frame.path, frame.mtime, rateRetry]);
 
   // The probe. One request whose only product is a status code — see the header:
   // 404 and 422 are opposite verdicts and <img> reports neither. Guarded on
   // `alive` because a fast scroll unmounts tiles mid-flight.
   const probe = () => {
     let alive = true;
+    // EVERY path out of this probe must give the slot back. A terminal tile
+    // that keeps its slot shrinks the cap permanently, and enough of them
+    // deadlock the grid — the same wall of empty boxes this whole change
+    // exists to remove, arrived at from the opposite direction.
+    const settle = (next: TileState, code?: number) => {
+      releaseRef.current?.();
+      releaseRef.current = null;
+      setStatus(code);
+      setState(next);
+    };
     void fetch(src, { credentials: "same-origin" })
       .then((res) => {
         if (!alive) return;
-        setStatus(res.status);
-        if (!res.ok) {
-          setState(thumbFailure(res.status));
+        // "LATER" IS NOT A VERDICT. A 429 says the relay's per-IP bucket is
+        // empty, which is a fact about the page, not about this frame. Tell
+        // the queue (so every other pending tile also backs off — the bucket
+        // is shared) and re-queue rather than painting PREVIEW FAILED over a
+        // picture that is perfectly fine.
+        if (retryableThumb(res.status)) {
+          const ra = Number(res.headers.get("Retry-After"));
+          noteRateLimited(Number.isFinite(ra) ? ra : null);
+          if (rateRetry < MAX_RATE_RETRIES) {
+            releaseRef.current?.();
+            releaseRef.current = null;
+            setStatus(undefined);
+            setState("loading");
+            setSlotted(false);
+            setRateRetry((n) => n + 1);   // re-queues via the effect below
+          } else {
+            // Bounded: a link that is still saying no after this many tries is
+            // reported honestly rather than retried forever, which is how a
+            // grid ends up hammering a Pi.
+            settle("error", res.status);
+          }
           return;
         }
+        if (!res.ok) {
+          settle(thumbFailure(res.status), res.status);
+          return;
+        }
+        noteSucceeded();
         // The image failed but the server is serving it — a transient drop on
         // field WiFi. Retry ONCE with a changed URL; a second disagreement is
         // reported as the failure it is rather than looped over, which is how a
-        // grid ends up hammering a Pi.
+        // grid ends up hammering a Pi. The slot is HELD across that retry: it
+        // is the same tile asking for the same bytes.
         if (attempt === 0) {
+          setStatus(res.status);
           setAttempt(1);
           setState("loading");
         } else {
-          setStatus(undefined);
-          setState("error");
+          settle("error", undefined);
         }
       })
       .catch(() => {
         if (!alive) return;
-        setStatus(undefined);
-        setState("error");
+        settle("error", undefined);
       });
     return () => { alive = false; };
   };
@@ -281,9 +364,19 @@ export default function FrameTile(props: {
           {...props}
           state={state}
           status={status}
-          thumbSrc={src}
-          onImgLoad={() => setState("ok")}
+          // Empty until the queue says go: an <img> with no src makes no
+          // request, which is the whole mechanism.
+          thumbSrc={slotted ? src : ""}
+          onImgLoad={() => {
+            noteSucceeded();
+            releaseRef.current?.();
+            releaseRef.current = null;
+            setState("ok");
+          }}
           onImgError={() => {
+            // Hold the slot through the probe: it is the same request, and
+            // releasing here would let another tile start while this one is
+            // still occupying the link.
             cancelProbe.current?.();
             cancelProbe.current = probe();
           }}
