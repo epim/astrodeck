@@ -3014,8 +3014,12 @@ def create_app() -> FastAPI:
         if report is None:
             raise HTTPException(404, "report not found")
         buf = io.StringIO()
-        # A CSV export is not a loophole around the JSON route's redaction —
-        # same holder rule, same field, applied to the column list.
+        # A CSV export is not a loophole around the JSON route — SAME FUNCTION,
+        # not a parallel rule. Each row goes through the externalizer the JSON
+        # route uses, so `saved_path` here is the same capture-root-relative
+        # value it is there. Two hand-written implementations of one disclosure
+        # rule is exactly how the report route ended up shipping absolute paths
+        # while the session route stripped them.
         cols = report_csv_columns(
             ["ts", "ts_utc", "target", "filter", "frame_type", "exposure_s",
              "gain", "offset", "binning", "accepted", "hfr", "ecc",
@@ -3024,8 +3028,11 @@ def create_app() -> FastAPI:
         import csv
         w = csv.writer(buf)
         w.writerow(cols)
-        for fr in report.frames:
-            d = fr.model_dump()
+        rows = _redact_report_for(
+            {"frames": [fr.model_dump() for fr in report.frames]}, principal
+        )["frames"]
+        for d in rows:
+            d = dict(d)
             d["ts_utc"] = _iso_utc(d.get("ts"))
             w.writerow(["" if d.get(c) is None else d.get(c) for c in cols])
         # Use the sanitized slug (not the raw path param) so the response header

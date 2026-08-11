@@ -37,7 +37,7 @@ import { Panel, EmptyState, Toggle } from "../ui";
 import { Icon } from "../icons";
 import { confirmDialog } from "../ConfirmDialog";
 
-const ROLES: PrincipalRole[] = ["viewer", "operator", "admin"];
+const ROLES: PrincipalRole[] = ["viewer", "syncer", "operator", "admin"];
 
 function errText(e: unknown, fallback: string): string {
   if (e instanceof ApiError) {

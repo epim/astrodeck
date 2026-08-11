@@ -96,6 +96,24 @@ ROLES_CAP: dict[str, frozenset[str]] = {
     # operator holds view.weather even though it still lacks
     # view.site_precise. Still NOT control.power/config.*/view.media/
     # view.site_precise (the exact GPS fix stays admin-only everywhere else).
+    # A HEADLESS DATA MOVER, and nothing else (2026-08-11). The job is: hold a
+    # /ws subscription, notice a frame landed, fetch the bytes. That is exactly
+    # view.status + view.media, and the point of the role is everything it does
+    # NOT carry — no control.*, so a compromised sync script cannot slew the
+    # mount or start an exposure; no config.*, so it cannot repoint the push
+    # destination at itself; no view.site_precise, so a process that ships every
+    # frame off-site never learns where the site is.
+    #
+    # It exists because the alternative was worse in both directions. Handing a
+    # fetch script an ADMIN token gives a background process the whole rig; and
+    # the owner's rule is that a VIEWER — the link you hand someone to let them
+    # watch — must never be able to pull raw science data down. Those two facts
+    # leave no existing role that fits, so this is the role.
+    #
+    # NOT an operator superset and NOT an operator subset: the two are
+    # orthogonal. An operator drives the rig and cannot have the FITS; a syncer
+    # takes the FITS and cannot drive anything.
+    "syncer": frozenset({CAP_VIEW_STATUS, CAP_VIEW_MEDIA}),
     "operator": frozenset({
         CAP_VIEW_STATUS, CAP_VIEW_PREVIEW, CAP_VIEW_WEATHER,
         CAP_VIEW_SITE_DERIVED,
@@ -106,7 +124,15 @@ ROLES_CAP: dict[str, frozenset[str]] = {
 }
 
 # Ordering = privilege rank (viewer is the ceiling for an untrusted default_role).
-ROLES = ("viewer", "operator", "admin")
+#
+# `syncer` sits ABOVE viewer deliberately, and the rank is doing real work: the
+# only thing it gates is `default_role`, which decides what a stranger who signs
+# in with Google gets by default. A syncer can download every raw frame, so
+# auto-granting that to a whole Google population must be refused the same way
+# auto-granting operator is — being narrow is not the same as being safe to
+# hand out. It sits BELOW operator only because rank here is a single ordered
+# line and something has to; the two roles are not comparable in capability.
+ROLES = ("viewer", "syncer", "operator", "admin")
 
 
 def caps_for_role(role: str) -> frozenset[str]:

@@ -101,6 +101,12 @@ const operator: Principal = {
 const viewer: Principal = {
   role: "viewer", email: "v@x.io", caps: ["view.status", "view.preview"],
 };
+// 2026-08-11: a headless data mover. Everything it does NOT hold is the point,
+// so the fixture is exactly the server's ROLES_CAP["syncer"] — no preview, no
+// control, no config, no site.
+const syncer: Principal = {
+  role: "syncer", email: null, caps: ["view.status", "view.media"],
+};
 const viewerSentinel: Principal = { role: "viewer", email: null, caps: [] };
 
 // ============================================================ capAllowed (fail-closed)
@@ -278,9 +284,32 @@ test("rolesHolding: admin-only caps resolve to exactly [admin]", () => {
   for (const c of [
     "control.power", "config.backend", "config.safety",
     "config.solar_override", "config.site_optics", "config.alerts",
-    "admin.users", "system.update", "view.media", "view.site_precise",
+    "admin.users", "system.update", "view.site_precise",
   ] as Capability[]) {
     eq(rolesHolding(c).join(","), "admin", `${c} →`);
+  }
+});
+
+test("view.media is the syncer's whole reason to exist — and NOT a viewer's", () => {
+  // 2026-08-11 owner ruling: a viewer (the link you hand someone to let them
+  // watch) must never pull raw science data; a fetch script must not need an
+  // admin token. So view.media is held by exactly these two, and the ORDER
+  // matters — lock-note copy reads the first role named.
+  eq(rolesHolding("view.media").join(","), "syncer,admin", "media →");
+  assert(!rolesHolding("view.media").includes("viewer"),
+    "a viewer can pull raw FITS — the syncer role exists to prevent this");
+  assert(!rolesHolding("view.media").includes("operator"),
+    "operator holds view.media; the role table drifted from the server");
+});
+
+test("a syncer holds NOTHING that moves the rig or changes it", () => {
+  for (const c of ALL_CAPS) {
+    if (c.startsWith("control.") || c.startsWith("config.")
+        || c.startsWith("admin.") || c === "system.update"
+        || c === "view.site_precise" || c === "view.site_derived") {
+      assert(!rolesHolding(c).includes("syncer"),
+        `syncer holds ${c} — it is a data mover, not an operator`);
+    }
   }
 });
 
@@ -295,7 +324,11 @@ test("rolesHolding: operator caps resolve to [operator, admin]", () => {
 });
 
 test("rolesHolding: view caps are held by every role", () => {
-  eq(rolesHolding("view.status").join(","), "viewer,operator,admin", "status →");
+  // view.status reaches everything with a /ws subscription — the syncer needs
+  // it to hear that a frame landed. view.preview does NOT: nothing about
+  // fetching raw FITS needs a JPEG, so the syncer is deliberately not a
+  // superset of viewer.
+  eq(rolesHolding("view.status").join(","), "viewer,syncer,operator,admin", "status →");
   eq(rolesHolding("view.preview").join(","), "viewer,operator,admin", "preview →");
 });
 
@@ -317,7 +350,7 @@ test("accessPhrase: operator-held caps say 'operator or admin access'", () => {
 test("accessPhrase mirror never promises a cap the principal model denies", () => {
   // Cross-check the mirror against the SAME fixtures capAllowed uses: if the
   // phrase names a role, a principal of that role must actually hold the cap.
-  const byRole: Record<string, Principal> = { viewer, operator, admin };
+  const byRole: Record<string, Principal> = { viewer, syncer, operator, admin };
   for (const c of ALL_CAPS) {
     for (const r of rolesHolding(c)) {
       assert(capAllowed(byRole[r], c), `${r} must hold ${c} (phrase promised it)`);
