@@ -371,6 +371,22 @@ DATA_EXTRA: list[dict] = [
 # ---------------------------------------------------------------------------
 
 OPTIONAL_UNINSTALLED: dict[str, dict] = {
+    "uvloop": {
+        "name": "uvloop",
+        "version": ">=0.21 (Linux/macOS only)",
+        "spdx": "Apache-2.0",
+        "url": "https://github.com/MagicStack/uvloop",
+        "texts": [_file("LICENSE-APACHE", "apache-2.0.txt")],
+        "notes": (
+            "A faster asyncio event loop, pulled in transitively by "
+            "`uvicorn[standard]` on Linux and macOS. It is NOT a Windows "
+            "dependency — uvicorn's marker excludes win32 — which is exactly "
+            "why it needs an entry here rather than being discovered by the "
+            "generator: a credits file generated on Windows would never see "
+            "it, and the Linux bundle that DOES ship it would go uncredited. "
+            "uvloop is dual-licensed MIT OR Apache-2.0; the Apache-2.0 text is "
+            "reproduced above to satisfy the notice obligation."),
+    },
     "comtypes": {
         "name": "comtypes",
         "version": ">=1.4.0 (Windows only)",

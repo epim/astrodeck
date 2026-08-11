@@ -321,7 +321,17 @@ def _python_url(dist) -> str:
 def collect_python(pool: TextPool) -> list[Entry]:
     closure = _python_closure()
     out: list[Entry] = []
-    for name in closure["missing"]:
+    # EVERY registry entry, not just the ones this platform noticed were
+    # missing. A dependency whose marker excludes this OS is not "missing"
+    # here — it simply never appears — so a credits file generated on Windows
+    # silently omitted uvloop, which the Linux bundle ships, and CI caught it
+    # only because CI runs on Linux. The registry is the authority on what
+    # ships but may not be installed locally; honouring all of it makes the
+    # generated file the same on every platform.
+    emit = sorted(set(closure["missing"]) | set(registry.OPTIONAL_UNINSTALLED))
+    for name in emit:
+        if name.lower() in {k.lower() for k in closure["dists"]}:
+            continue                      # installed here; credited from disk
         spec = registry.OPTIONAL_UNINSTALLED[name.lower()]
         out.append(_entry(
             pool, name=spec["name"], version=spec.get("version", ""),
