@@ -101,12 +101,87 @@ def narrowband_sweep_settings(exposure_s: float, gain: int, *,
     return nb_exposure, nb_gain
 
 
+#: The slot names that pass a broad visual passband, lower-cased.
+LUMINANCE_NAMES = frozenset(
+    {"l", "lum", "luminance", "clear", "lp", "uv/ir cut", "uvir"})
+
+
+def luminance_slot(names: list | None) -> int | None:
+    """The first luminance-class slot on the wheel, or None if it has none."""
+    for i, n in enumerate(names or []):
+        if str(n).strip().lower() in LUMINANCE_NAMES:
+            return i
+    return None
+
+
 def default_ref_slot(names: list | None, current_position: int = 0) -> int:
     """The reference slot to pre-select: a luminance-class slot when the wheel
     has one (case-insensitive ``L`` / ``Lum`` / ``Luminance`` / ``Clear``), else
     the wheel's current position. Always user-overridable in the picker."""
-    lum = {"l", "lum", "luminance", "clear", "lp", "uv/ir cut", "uvir"}
-    for i, n in enumerate(names or []):
-        if str(n).strip().lower() in lum:
-            return i
-    return int(current_position)
+    slot = luminance_slot(names)
+    return int(current_position) if slot is None else slot
+
+
+def solve_filter_slot(names: list | None, *,
+                      narrowband: list | None = None,
+                      opaque: list | None = None,
+                      current_slot: int = 0,
+                      configured: str | None = None) -> int | None:
+    """Which slot a PLATE SOLVE should shoot through — ``None`` to stay put.
+
+    A plate solve needs stars, and a 3-7 nm passband delivers them 40-100x
+    fainter than luminance does (see ``NARROWBAND_EXPOSURE_MULTIPLE``). An
+    OPAQUE slot delivers none at all. So a solve that inherits whatever the
+    wheel happens to be on is a solve that fails whenever the run is on
+    narrowband — which is exactly the unattended path, because the meridian
+    flip fires wherever the cycle reached.
+
+    MEASURED, 2026-08-10: the NGC 6946 flip landed on an Ha step, the centring
+    solve shot 0.3 s through 3 nm, and the frame came back with a maximum of
+    1218 ADU out of 65535. ASTAP returned no solution, centring fell back to a
+    raw GoTo, and the pointing landed 66' off — a third of the frame away from
+    the target, unattended, with the next four filters' frames shot there.
+
+    Three rules, in order:
+
+    1. An operator who NAMED a filter for the solve scope gets it, always. The
+       explicit setting is a decision, not a hint, and this function must never
+       overrule one — that is the invisible-wrong-config shape.
+    2. A current slot that already passes broad light is left alone. Most
+       solves happen mid-L/R/G/B and must stay free.
+    3. Otherwise prefer a luminance-class slot, if the wheel has one.
+
+    Returns ``None`` for "do not move the wheel", which is also the answer when
+    the wheel has nothing better than the slot it is already on — a wheel of
+    nothing but narrowband has no move that helps, and inventing one would
+    trade a bad solve for a bad solve plus two wheel moves. The caller says so
+    rather than pretending it did something.
+
+    Pure, so the rule can be tested without a wheel, and shared so the centring
+    path and the polar path cannot drift apart. They already did once: polar
+    honoured the configured filter from 2026-08-07 and ``solve_and_sync`` never
+    did, which is what made the 66' miss possible.
+    """
+    names = list(names or [])
+    if not names:
+        return None
+    if configured:
+        want = str(configured).strip().lower()
+        for i, n in enumerate(names):
+            if str(n).strip().lower() == want:
+                return i
+        # A named filter that is not on the wheel is a stale setting, not an
+        # instruction. Fall through to the automatic rules rather than failing.
+
+    def flagged(flags, i):
+        flags = flags or []
+        return 0 <= i < len(flags) and bool(flags[i])
+
+    unusable = (flagged(narrowband, current_slot)
+                or flagged(opaque, current_slot))
+    if not unusable:
+        return None
+    lum = luminance_slot(names)
+    if lum is None or lum == current_slot:
+        return None
+    return lum
