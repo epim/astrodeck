@@ -4476,6 +4476,80 @@ class Hub:
 
     # -------------------------------------------------------- solve & center
 
+    async def _borrow_wheel_for_solve(self) -> int | None:
+        """Drive the wheel to a slot a plate solve can actually see through.
+
+        Returns the slot to RESTORE afterwards, or None when nothing moved.
+
+        The wheel is borrowed rather than taken: a centring solve fires in the
+        middle of a filter cycle, and the sequence engine's ``_apply_filter``
+        derives its focuser offset delta from the wheel's REAL position at the
+        start of each frame. Moving the wheel and leaving it moved would make
+        that delta cross a slot boundary the focuser never travelled, and the
+        focuser would end the frame offset by one filter's worth of steps. So
+        the borrow is symmetric and the engine sees no change at all.
+
+        Best-effort throughout: a wheel that will not answer must not turn a
+        solve — the thing that RECOVERS pointing — into an exception. Every
+        failure path here leaves the solve to run on whatever is loaded, which
+        is exactly what it did before this existed.
+        """
+        from .focus.filter_offsets import solve_filter_slot
+        fw = self.devices.get("filterwheel")
+        if fw is None or not getattr(fw, "connected", False):
+            return None
+        try:
+            names = list(getattr(fw, "filter_names", []) or [])
+            if not names:
+                return None
+            current = await fw.get_position()
+            configured = (frames_payload()["solve"] or {}).get("filter")
+            want = solve_filter_slot(
+                names,
+                narrowband=getattr(fw, "filter_narrowband", []),
+                opaque=getattr(fw, "filter_opaque", []),
+                current_slot=int(current),
+                configured=configured)
+            if want is None or want == current:
+                # Say so when the wheel is parked somewhere a solve cannot see
+                # through and there is no better slot to move to. Silence here
+                # is what made the 66' miss look like a solver problem.
+                if want is None and names:
+                    blocked = (fw.is_narrowband(int(current))
+                               or fw.is_opaque(int(current)))
+                    if blocked:
+                        bus.log("warning",
+                                f"plate solve is shooting through "
+                                f"{names[int(current)]!r}, which passes little "
+                                f"or no light, and this wheel has no "
+                                f"luminance-class slot to move to — expect the "
+                                f"solve to fail", "solve")
+                return None
+            bus.log("info", f"plate solve: filter {names[int(current)]!r} → "
+                            f"{names[want]!r}", "solve")
+            await fw.set_position(want)
+            return int(current)
+        except Exception as e:  # noqa: BLE001 — a solve must still be attempted
+            bus.log("warning", f"plate solve: could not choose a filter ({e}); "
+                               f"solving through whatever is loaded", "solve")
+            return None
+
+    async def _return_wheel_after_solve(self, slot: int | None) -> None:
+        """Put the wheel back where ``_borrow_wheel_for_solve`` found it."""
+        if slot is None:
+            return
+        fw = self.devices.get("filterwheel")
+        if fw is None or not getattr(fw, "connected", False):
+            return
+        try:
+            await fw.set_position(int(slot))
+        except Exception as e:  # noqa: BLE001
+            names = list(getattr(fw, "filter_names", []) or [])
+            label = names[slot] if 0 <= slot < len(names) else f"slot {slot}"
+            bus.log("warning", f"plate solve: could not return the wheel to "
+                               f"{label} ({e}) — the next frame's filter move "
+                               f"will correct it", "solve")
+
     async def solve_and_sync(self, exposure_s: float = 3.0, *,
                              blind: bool = False) -> dict:
         """Plate-solve the current pointing and sync the mount to it.
@@ -4536,9 +4610,16 @@ class Hub:
         # solve must not leave "solving" blinking over an idle rig.
         bus.publish("mount", action="solve_activity", activity="exposing",
                     exposure_s=exposure_s)
+        # A solve needs STARS, so it must not inherit whatever filter the run
+        # happens to be on (#222). Borrowed and returned around the exposure
+        # only — see ``_borrow_wheel_for_solve`` for why it is symmetric.
+        borrowed_slot = await self._borrow_wheel_for_solve()
         try:
-            async with self.exposure_guard("plate solve"):
-                frame = await cam.expose(exposure_s, 200, 30, binning=2)
+            try:
+                async with self.exposure_guard("plate solve"):
+                    frame = await cam.expose(exposure_s, 200, 30, binning=2)
+            finally:
+                await self._return_wheel_after_solve(borrowed_slot)
             self.last_frame = frame
             solve_preview = await self._publish_preview(frame)
             # Save the captured frame to a temp FITS for the local solver. Works for

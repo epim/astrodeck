@@ -629,27 +629,45 @@ def _solve_config(session: Any) -> dict:
 
 
 async def _apply_solve_filter(hub: Any, name: str | None) -> None:
-    """Drive the wheel to the named filter, if there is one and it is not
-    already there. Runs BEFORE the exposure, so a mid-run settings change takes
-    effect on the very next frame — the point of live settings is that when
-    solves fail behind thin cloud, switching to L or a longer exposure fixes
-    the session NOW instead of after abandoning it. Best-effort: a wheel
-    problem must not end an alignment that never needed the wheel."""
-    if not name:
-        return
-    fw = hub.devices.get("filterwheel")
+    """Drive the wheel to the filter a TPPA solve should shoot through.
+
+    Runs BEFORE the exposure, so a mid-run settings change takes effect on the
+    very next frame — the point of live settings is that when solves fail
+    behind thin cloud, switching to L or a longer exposure fixes the session
+    NOW instead of after abandoning it. Best-effort: a wheel problem must not
+    end an alignment that never needed the wheel.
+
+    The slot comes from the SHARED resolver (#222), not from ``name`` alone, so
+    a session that names no filter still gets moved off a narrowband or opaque
+    slot rather than solving through 3 nm. Unlike the centring path this does
+    NOT put the wheel back: a polar run owns the camera for its whole arc and
+    has no interleaved science frame to hand it back to.
+    """
+    # A hub with no device map has no wheel, which is the same answer as a hub
+    # whose wheel is absent — and is what the bare hubs in the polar tests are.
+    fw = (getattr(hub, "devices", None) or {}).get("filterwheel")
     if fw is None or not getattr(fw, "connected", False):
         return
     try:
+        from ..focus.filter_offsets import solve_filter_slot
         names = list(getattr(fw, "filter_names", []) or [])
-        if name not in names:
+        if not names:
             return
-        slot = names.index(name)
-        if await fw.get_position() != slot:
-            await fw.set_position(slot)
+        current = await fw.get_position()
+        slot = solve_filter_slot(
+            names,
+            narrowband=getattr(fw, "filter_narrowband", []),
+            opaque=getattr(fw, "filter_opaque", []),
+            current_slot=int(current),
+            configured=name)
+        if slot is None or slot == current:
+            return
+        bus.log("info", f"native TPPA: filter {names[int(current)]!r} → "
+                        f"{names[slot]!r} for the solve", "polar")
+        await fw.set_position(slot)
     except Exception as e:  # noqa: BLE001 - the solve can proceed either way
-        bus.log("warning", f"native TPPA: could not move the filter wheel to "
-                           f"{name}: {e}", "polar")
+        bus.log("warning", f"native TPPA: could not move the filter wheel "
+                           f"for the solve: {e}", "polar")
 
 
 def _publish_activity(session: Any, activity: str | None) -> None:
