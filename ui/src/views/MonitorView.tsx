@@ -294,7 +294,14 @@ export default function MonitorView() {
   // ----- derived liveness -----
   const frameAgeMs = liveness.frame != null ? now - liveness.frame : null;
   const guideAgeMs = liveness.guide != null ? now - liveness.guide : null;
-  const frameAgeS = frameAgeMs != null ? frameAgeMs / 1000 : null;
+  // TWO CLOCKS, on purpose (#206). `frameAge` is how long since a PREVIEW
+  // arrived here — the right input for a LIVE badge, which is a claim about
+  // pictures. `captureAge` is how long since the RIG's frames_done advanced —
+  // the right input for a stall alarm, which is a claim about the camera. They
+  // used to be the same number, so a slow relay dropping preview JPEGs read as
+  // CAPTURE STALLED while every sub was landing on disk.
+  const captureAgeMs = liveness.capture != null ? now - liveness.capture : null;
+  const captureAgeS = captureAgeMs != null ? captureAgeMs / 1000 : null;
   const live = frameAgeMs != null && frameAgeMs < LIVE_WINDOW_S * 1000;
   const guideStale = guideAgeMs != null && guideAgeMs > GUIDE_STALE_S * 1000;
 
@@ -410,7 +417,7 @@ export default function MonitorView() {
     pausing && frameElapsedS != null ? Math.max(0, curExp - frameElapsedS) : null;
 
   // ----- stall detection (resolves A5; gated to running-only — R3-MON-01) -----
-  const stallLvl = stallLevel(state, frameAgeS, curExp);
+  const stallLvl = stallLevel(state, captureAgeS, curExp);
   const stallSoft = stallLvl !== "none";
   const stallHard = stallLvl === "red";
   const vibratedStall = useRef(false);
@@ -830,15 +837,17 @@ export default function MonitorView() {
 
                     {seq.detail && !failed && <p className="text-xs text-dim">{seq.detail}</p>}
 
-                    {/* stall line — non-motion liveness channel (resolves A5/B9) */}
-                    {frameAgeS != null && (
+                    {/* stall line — non-motion liveness channel (resolves A5/B9).
+                        Reads the RIG's frame counter, not preview arrival (#206),
+                        so "last frame" now means the frame, not its picture. */}
+                    {captureAgeS != null && (
                       <p
                         className={`text-xs mono ${
                           stallHard ? "text-bad font-semibold" : stallSoft ? "text-warn" : "text-dim"
                         }`}
                       >
                         {stallHard && "CAPTURE STALLED? "}
-                        last frame {fmtDuration(frameAgeS)} ago
+                        last frame {fmtDuration(captureAgeS)} ago
                       </p>
                     )}
 

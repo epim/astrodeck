@@ -713,6 +713,7 @@ class Hub:
         self.mode = "sim"                               # derived from primary backend
         bus.log("info", "simulator rig connected", "hub")
         self.ensure_status_poller()
+        await self.restore_cooling()                    # #204
         return self.summary()
 
     async def connect_nina(self, host: str, port: int = 1888) -> dict:
@@ -1077,6 +1078,9 @@ class Hub:
         connected = [r for r in ROLES if r in self.devices]
         roles = ", ".join(connected) or "no equipment connected"
         bus.log("info", f"rig connected ({self.mode}) -- {roles}", "hub")
+        # A fresh camera object has a cooler that is OFF and a target of 0.0,
+        # whatever the operator asked for before. Put it back (#204).
+        await self.restore_cooling()
         return self.summary()
 
     @staticmethod
@@ -3634,10 +3638,69 @@ class Hub:
         """Cool to ``target_c``. Cancels any warm ramp FIRST so the two cannot
         fight: without the cancel, the ramp's next scheduled step (≤15 s away)
         would quietly overwrite the setpoint the user just chose, and the Capture
-        screen would show a target the camera was not holding."""
+        screen would show a target the camera was not holding.
+
+        Records the target as the STANDING request (``cooling.setpoint_c``) so a
+        reconnect or a process restart can put it back. Recorded only after the
+        camera accepts it — a target the hardware refused is not a promise worth
+        keeping across a restart."""
         cam: Camera = self.require("camera")
         await self.cancel_warm("cooling was requested", finalize=False)
         await cam.set_cooler(True, target_c)
+        self._remember_cooling(target_c)
+
+    def _remember_cooling(self, target_c: float | None) -> None:
+        """Persist (or clear) the standing cooling request. Never raises: a
+        config write that fails must not fail the cooling command that already
+        succeeded on the hardware."""
+        try:
+            config_store.set_cooling_setpoint(target_c)
+        except Exception as e:      # noqa: BLE001 - the TEC is already set
+            bus.log("warning", f"could not record the cooling setpoint "
+                               f"({e}); it will not survive a restart", "camera")
+
+    async def restore_cooling(self) -> bool:
+        """Re-apply the standing cooling request after a connect. True if it did.
+
+        WHY THIS EXISTS. On 2026-08-09 a reconnect — issued to recover a dead
+        mount link — took the camera from cooler-on/-10.0 °C to cooler-off with
+        the target reset to 0.0 °C, and by 08:39 the sensor read +26.6 °C.
+        Nothing logged the change and nothing restored it, so the *target itself*
+        was lost: even a later "resume cooling" would have aimed at the wrong
+        number, and any run started afterwards would have shot warm frames
+        against a stale SET-TEMP (#153, the same failure one layer down).
+
+        The camera cannot be asked what it was doing before it was reopened, so
+        the operator's intent has to come from config. This is the one place that
+        reads it back.
+
+        SAYS SO EITHER WAY. Silence is what made the original event invisible:
+        a restore that happens is worth a line, and a restore that FAILS is worth
+        a louder one, because the alternative is a night of warm frames nobody
+        was told about.
+        """
+        target = getattr(config_store.cfg().cooling, "setpoint_c", None)
+        if target is None:
+            return False
+        cam = self.devices.get("camera")
+        if cam is None or not getattr(cam, "connected", False):
+            return False
+        if not hasattr(cam, "set_cooler"):
+            return False
+        try:
+            await asyncio.wait_for(cam.set_cooler(True, float(target)),
+                                   cooling.WARM_CMD_TIMEOUT_S)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:      # noqa: BLE001 - report it, never crash connect
+            bus.log("error",
+                    f"cooling was NOT restored to {target:g} °C after connecting "
+                    f"({e}) — the camera is warm and any frames taken now will "
+                    f"carry the wrong SET-TEMP", "camera")
+            return False
+        bus.log("info", f"cooling restored to {target:g} °C after connecting",
+                "camera")
+        return True
 
     async def cancel_warm(self, reason: str, *, finalize: bool) -> bool:
         """Stop an in-flight warm ramp. Returns True if one was actually running.
@@ -3647,6 +3710,12 @@ class Hub:
         for a caller taking ownership of the cooler in the very next statement
         (``cool_camera``); it is the ONLY case where leaving the TEC on is a
         defined state, because the caller is about to define it."""
+        if finalize:
+            # Same reasoning as warm_camera: finalize=True means "off, now" —
+            # teardown, or an operator stopping the ramp — so the standing
+            # request goes with it. finalize=False is cool_camera taking
+            # ownership in its very next statement, which records its own.
+            self._remember_cooling(None)
         async with self._warm_lock:
             was_running = await self._cancel_warm_locked(reason)
             if was_running and finalize:
@@ -3700,6 +3769,13 @@ class Hub:
         It DOES raise DeviceError when there is no camera at all, so the route can
         answer 400 rather than silently succeeding at nothing."""
         cam: Camera = self.require("camera")
+        # THE INTENT FLIPS HERE, not at each of the five `set_cooler(False)`
+        # calls below it. "Warm" is the moment somebody — the operator, the
+        # dawn wind-down, a safety abort — stops asking for cooling, and one
+        # seam is what keeps the standing request from surviving as a stale
+        # order to re-cool at 08:00. Clearing it per cooler-off site would be
+        # five places to remember and one to forget.
+        self._remember_cooling(None)
         if not getattr(cam, "can_cool", False):
             return self._warm_finished_state(source, f"{cam.name} has no cooler",
                                              ramped=False)

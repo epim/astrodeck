@@ -648,6 +648,21 @@ class CoolingConfig(BaseModel):
     warm_ramp: bool = True
     warm_rate_c_per_min: float = Field(2.0, gt=0, le=20)
     warm_ambient_c: float | None = Field(None, ge=-50, le=60)
+    #: THE STANDING COOLING REQUEST. None = nobody has asked for cooling (or the
+    #: last thing that happened was a warm). A number is the operator's target,
+    #: and it OUTLIVES the process — which is the point.
+    #:
+    #: Deliberately persisted rather than derived, unlike almost everything else
+    #: here. "Is the cooler on?" is a question to ask the camera; "what did the
+    #: operator ask for?" is not knowable from any device, and on 2026-08-09 a
+    #: reconnect took the camera from -10 °C to cooler-off/target 0.0 °C with
+    #: nothing logged and nothing left to restore from. The camera forgot, and
+    #: so did we.
+    #:
+    #: Written by ``hub.cool_camera`` and cleared by every path that turns the
+    #: cooler off, so it tracks INTENT and never drifts into a stale order to
+    #: re-cool at dawn.
+    setpoint_c: float | None = Field(None, ge=-60, le=40)
 
 
 class WeatherConfig(BaseModel):
@@ -1227,11 +1242,30 @@ class ConfigStore:
         return self.bump_and_save()
 
     def set_cooling(self, cooling: "CoolingConfig") -> AppConfig:
-        """Persist the cooler warm-down policy (rate / assumed ambient / whether
+        """Persist the cooler warm-down POLICY (rate / assumed ambient / whether
         the ramp runs at all). Wholesale-replace, like set_safety — the UI echoes
-        the full block back with its edit applied."""
+        the full block back with its edit applied.
+
+        ``setpoint_c`` is EXEMPT from the replace and is carried over from the
+        stored config. It is not policy — it is the live "cool to X" the operator
+        asked the camera for, written by ``hub.cool_camera`` — and the settings
+        panel neither shows it nor owns it. Without this carry-over, editing the
+        warm rate at 21:00 would silently cancel the standing cooling request,
+        because the panel would POST a block whose ``setpoint_c`` defaulted to
+        None. Same shape as the alert-token guard in the config route: a client
+        that never had the value must not be able to erase it by omission."""
         cfg = self.cfg()
-        cfg.cooling = cooling
+        cfg.cooling = cooling.model_copy(
+            update={"setpoint_c": cfg.cooling.setpoint_c})
+        return self.bump_and_save()
+
+    def set_cooling_setpoint(self, setpoint_c: float | None) -> AppConfig:
+        """Record (or clear) the standing cooling request — see
+        ``CoolingConfig.setpoint_c``. Separate from ``set_cooling`` precisely so
+        the two cannot overwrite each other."""
+        cfg = self.cfg()
+        cfg.cooling = cfg.cooling.model_copy(
+            update={"setpoint_c": None if setpoint_c is None else float(setpoint_c)})
         return self.bump_and_save()
 
     def set_alerts(self, alerts: list[AlertSink]) -> AppConfig:
