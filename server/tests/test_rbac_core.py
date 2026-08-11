@@ -62,12 +62,54 @@ def test_has_capability_matrix():
 def test_role_map_pins():
     assert ROLES_CAP["viewer"] == VIEWER_LINK_CAPS
     assert ROLES_CAP["admin"] == ALL_CAPS
-    assert ROLES == ("viewer", "operator", "admin")
+    assert ROLES == ("viewer", "syncer", "operator", "admin")
     assert "view.media" not in ROLES_CAP["viewer"]
     assert "view.site_precise" not in ROLES_CAP["viewer"]
     # operator excludes the escalation surface
-    assert role_rank("viewer") < role_rank("operator") < role_rank("admin")
+    assert role_rank("viewer") < role_rank("syncer") < role_rank("operator") \
+        < role_rank("admin")
     assert role_rank("nobody") == -1
+
+
+def test_syncer_can_take_the_data_and_do_nothing_else():
+    """The whole point of the role is its absences (2026-08-11 owner ruling: a
+    viewer must never pull raw science data, and a fetch script must never get
+    an admin token). Each assertion below is a thing a compromised sync process
+    would otherwise be able to do."""
+    caps = ROLES_CAP["syncer"]
+    assert caps == frozenset({CAP_VIEW_STATUS, "view.media"})
+    # it can subscribe to /ws and download the bytes...
+    assert CAP_VIEW_STATUS in caps and "view.media" in caps
+    # ...and that is ALL. No motion, no imaging, no settings.
+    assert not any(c.startswith("control.") for c in caps), caps
+    assert not any(c.startswith("config.") for c in caps), caps
+    assert not any(c.startswith("admin.") for c in caps), caps
+    assert "system.update" not in caps
+    # A process that ships every frame off-site never learns where the site is.
+    assert "view.site_precise" not in caps
+    assert "view.site_derived" not in caps
+
+
+def test_a_viewer_still_cannot_pull_raw_data():
+    """The rule the syncer role exists to protect. If view.media ever lands in
+    the viewer set, the link you hand a stranger downloads the science."""
+    assert "view.media" not in ROLES_CAP["viewer"]
+    assert "view.media" not in VIEWER_LINK_CAPS
+
+
+def test_syncer_is_not_a_default_role_without_a_pinned_domain():
+    """role_rank's only job is gating `default_role`. A syncer can download
+    every raw frame, so auto-granting it to a whole Google population must be
+    refused exactly as operator is — narrow is not the same as safe to give
+    away."""
+    from astrodeck.config import AuthConfig, validate_auth_config
+    with pytest.raises(ValueError, match="google_hd"):
+        validate_auth_config(AuthConfig(provider="google", default_role="syncer",
+                                        google_hd=""))
+    # ...and IS allowed once a domain is pinned (otherwise the assertion above
+    # would pass for the wrong reason — e.g. "syncer" not being a known role).
+    validate_auth_config(AuthConfig(provider="google", default_role="syncer",
+                                    google_hd="example.com"))
 
 
 def test_caps_for_role_fail_closed():

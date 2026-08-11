@@ -372,61 +372,78 @@ def _redact_profile_for(payload: dict, principal: Principal | None) -> dict:
     return out
 
 
-# ---------------------------------------------------- session frame-path redaction
+# ------------------------------------------------------- frame-path externalizing
+#
+# THE RULE, and it is not a cap: **no absolute path leaves this process, for
+# anybody.** Not a viewer, not an operator, not an admin, not a syncer.
+#
+# It used to be a holder rule — ``config.backend`` saw the real on-disk location
+# and everyone else saw the field removed. That is the wrong shape twice over.
+# It treats the observatory's filesystem layout (account name, drive, directory
+# scheme) as a privilege to be granted rather than an implementation detail
+# nobody outside needs; and it left the two halves of one idea — a session's
+# ``path`` and a report's ``saved_path`` — as two functions that had already
+# drifted once, with the report side handing the layout to a plain viewer for
+# months.
+#
+# So both now CONVERT rather than gate: every caller gets the capture-root-
+# relative path, which is the only form any client can use anyway (it is what
+# ``/api/gallery/file`` and the sync manifest accept; the absolute one is
+# rejected everywhere). A frame outside this box's library — a NINA save on the
+# imaging host — has no relative path, so the field is ABSENT. That is a true
+# statement; a fabricated relpath would not be.
+
+
+def _externalize_frame_paths(payload: dict, key: str) -> dict:
+    """Rewrite ``key`` on every frame row to a capture-root-relative path,
+    dropping it where no such path exists. Copies rows; never mutates in place.
+
+    ``principal`` is deliberately NOT a parameter. There is no caller for whom
+    the absolute path is the right answer, so there is no branch here to get
+    wrong later.
+    """
+    if not isinstance(payload, dict):
+        return payload
+    frames = payload.get("frames")
+    if not isinstance(frames, list):
+        return payload
+    from .. import gallery as _gallery
+    scrubbed = []
+    for row in frames:
+        if isinstance(row, dict) and key in row:
+            row = dict(row)
+            rel = _gallery.relpath_under_capture(row.get(key))
+            if rel is None:
+                row.pop(key, None)
+            else:
+                row[key] = rel
+        scrubbed.append(row)
+    return {**payload, "frames": scrubbed}
+
+
 def _redact_session_for(payload: dict, principal: Principal | None) -> dict:
-    """Strip the filesystem ``path`` from every session-ledger frame unless the
-    caller holds ``config.backend`` (sessions spec §8) — the same holder rule
-    as ``_redact_drivers_for``: endpoint identity == filesystem identity.
-    Copies rows; never mutates ``payload`` in place."""
-    if principal is not None and principal.has(CAP_CONFIG_BACKEND):
-        return payload
-    if not isinstance(payload, dict):
-        return payload
-    frames = payload.get("frames")
-    if not isinstance(frames, list):
-        return payload
-    scrubbed = []
-    for row in frames:
-        if isinstance(row, dict):
-            row = dict(row)
-            row.pop("path", None)
-        scrubbed.append(row)
-    return {**payload, "frames": scrubbed}
+    """Session-ledger frames: ``path`` becomes capture-root-relative (sessions
+    spec §8, tightened — see the block comment above)."""
+    return _externalize_frame_paths(payload, "path")
 
 
-# ---------------------------------------------------- report frame-path redaction
 def _redact_report_for(payload: dict, principal: Principal | None) -> dict:
-    """The same holder rule as ``_redact_session_for``, for session REPORTS.
+    """Session REPORT frames: ``saved_path`` becomes capture-root-relative.
 
-    Reports predate that rule and were never brought under it: ``FrameRecord``
-    calls the field ``saved_path`` rather than ``path`` and carries the absolute
-    on-disk location, so ``GET /api/reports/{id}`` handed the observatory's
-    filesystem layout to any holder of ``view.status`` — a plain viewer — while
-    the session endpoint serving the same frames stripped it. One name, two
-    answers. Copies rows; never mutates ``payload`` in place."""
-    if principal is not None and principal.has(CAP_CONFIG_BACKEND):
-        return payload
-    if not isinstance(payload, dict):
-        return payload
-    frames = payload.get("frames")
-    if not isinstance(frames, list):
-        return payload
-    scrubbed = []
-    for row in frames:
-        if isinstance(row, dict):
-            row = dict(row)
-            row.pop("saved_path", None)
-        scrubbed.append(row)
-    return {**payload, "frames": scrubbed}
+    ``FrameRecord`` calls the field ``saved_path`` rather than ``path`` and
+    carried the absolute on-disk location, so ``GET /api/reports/{id}`` handed
+    the observatory's filesystem layout to any holder of ``view.status`` — a
+    plain viewer — while the session endpoint serving the same frames stripped
+    it. One name, two answers. Now one answer, and it is relative."""
+    return _externalize_frame_paths(payload, "saved_path")
 
 
 def report_csv_columns(cols: list[str], principal: Principal | None) -> list[str]:
-    """Column list for the frames CSV, minus ``saved_path`` for a caller without
-    ``config.backend``. Same rule as ``_redact_report_for``; a CSV export is not
-    a loophole around it."""
-    if principal is not None and principal.has(CAP_CONFIG_BACKEND):
-        return cols
-    return [c for c in cols if c != "saved_path"]
+    """Column list for the frames CSV. ``saved_path`` STAYS for every caller —
+    the value written under it is relative (the route externalizes each row the
+    same way the JSON route does), so the column is no longer a disclosure and
+    dropping it would only make the CSV less useful than the JSON."""
+    return list(cols)
 
 
 __all__ = [

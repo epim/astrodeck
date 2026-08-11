@@ -2,6 +2,8 @@
 id-merge, frame regrade + metrics merge, path redaction, thumb cap.
 
 Harness mirrors tests/test_rbac_enforcement.py (FakeAuthProvider + TestClient)."""
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -65,13 +67,19 @@ def _session(status="dormant", count=2) -> Session:
     return s
 
 
-def test_list_and_detail_admin_sees_paths(client):
+def test_list_and_detail_no_absolute_path_even_for_an_admin(client):
+    """TIGHTENED 2026-08-11 (owner ruling): an admin used to receive the frame's
+    absolute on-disk location here. Nobody does now — a path outside the capture
+    root has no relative form, so the field is absent rather than absolute.
+    ``C:/secret/f.fits`` is exactly such a path, and its disappearance is the
+    assertion."""
     s = _session()
     rows = client.get("/api/sessions").json()["sessions"]
     assert [r["id"] for r in rows] == [s.id]
     assert rows[0]["accepted"] == 2 and rows[0]["total"] == 2
-    detail = client.get(f"/api/sessions/{s.id}").json()
-    assert detail["frames"][0]["path"] == "C:/secret/f.fits"   # open default = admin
+    detail = client.get(f"/api/sessions/{s.id}").json()          # open default = admin
+    assert "path" not in detail["frames"][0]
+    assert "C:/secret" not in json.dumps(detail)
 
 
 def test_viewer_reads_but_paths_stripped_and_mutations_403(client):

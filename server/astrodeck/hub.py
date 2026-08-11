@@ -434,6 +434,37 @@ class _FieldSolve:
     frame: dict
 
 
+def external_preview(info: dict) -> dict:
+    """The `preview` event as it may leave this process.
+
+    ``_publish_preview`` builds ONE dict that serves two audiences: the caller
+    (the sequence engine and the bundle builder, which need the real on-disk
+    location to record and copy the file) and every WebSocket client on the
+    planet. Those wants are not the same, and the absolute path belongs only to
+    the first — it names the observatory's account, drive and directory scheme
+    to anyone holding ``view.status``, which is the least-privileged thing we
+    issue.
+
+    So the absolute path is REPLACED here, at the seam where the event enters
+    the bus, rather than stripped on the way out of each of the two /ws lanes.
+    That ordering is the point: a value that never reaches the bus cannot be
+    forgotten by a redactor, and there is no third lane to remember later.
+
+    ``path`` (capture-root-relative) goes out in its place — strictly more use
+    to a client than the absolute one, because it is the handle
+    ``/api/gallery/file`` and the sync manifest actually accept. A frame that
+    is not in this box's library carries no path at all; ``saved_local: false``
+    already says why, and inventing one would be worse than saying nothing.
+    """
+    from . import gallery as _gallery
+    out = dict(info)
+    abs_path = out.pop("saved_path", None)
+    rel = _gallery.relpath_under_capture(abs_path)
+    if rel is not None:
+        out["path"] = rel
+    return out
+
+
 class Hub:
     def __init__(self) -> None:
         self.devices: dict[str, Any] = {}     # role -> Device
@@ -3320,19 +3351,26 @@ class Hub:
         self.previews[pid] = entry
         self.preview_thumbs[pid] = entry.thumb
         self._trim_previews()
-        bus.publish("preview", **info)
+        bus.publish("preview", **external_preview(info))
         return info
 
     @staticmethod
     def _is_local_save(saved_path: str | None) -> bool:
         """True only when ``saved_path`` is a real file under CAPTURE_DIR, so the
         UI never offers a FITS download that will 404 (spec honesty rule #5).
-        NINA saves on the imaging host → not local → no FITS download offered."""
+        NINA saves on the imaging host → not local → no FITS download offered.
+
+        Containment is decided by ``gallery.relpath_under_capture`` so that "is
+        it in the library?" and "what is its relative path?" can never disagree
+        — they were two separate `is_relative_to` calls, which is one edit away
+        from a path this says is local and the relpath helper cannot express."""
         if not saved_path:
             return False
+        from . import gallery as _gallery
+        if _gallery.relpath_under_capture(saved_path) is None:
+            return False
         try:
-            p = Path(saved_path).resolve()
-            return p.is_relative_to(CAPTURE_DIR.resolve()) and p.exists()
+            return Path(saved_path).resolve().exists()
         except (OSError, ValueError):
             return False
 

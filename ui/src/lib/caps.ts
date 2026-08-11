@@ -50,6 +50,11 @@ export const ROLE_DESCRIPTIONS: Record<PrincipalRole, string> = {
   // raw FITS (view.media) and no precise coordinates (view.site_precise).
   viewer:
     "Live status and preview frames only — no raw FITS, no precise site location, no device control.",
+  // ROLES_CAP["syncer"] = {view.status, view.media}: a headless data mover. It
+  // can watch the event stream and download raw frames, and it can do NOTHING
+  // else — no control, no settings, and not even the site location.
+  syncer:
+    "Downloads raw FITS and watches the live event stream — for an automated copy to another machine. No device control, no settings, no site location.",
   // ROLES_CAP["operator"] = viewer caps + control.capture + control.guide +
   // control.mount (2026-07-17 decisions wave I1: operators run sequences —
   // future telescope-rental interface) + view.weather (same wave, I2: full
@@ -74,18 +79,22 @@ export const ROLE_DESCRIPTIONS: Record<PrincipalRole, string> = {
 const ROLE_CAPS: Record<PrincipalRole, readonly Capability[]> = {
   // VIEWER_LINK_CAPS: live-watch only.
   viewer: ["view.status", "view.preview"],
+  // ROLES_CAP["syncer"]: a headless data mover — the event stream and the raw
+  // bytes, and nothing else. Deliberately NOT a viewer superset: it has no
+  // view.preview, because nothing about fetching FITS needs a JPEG.
+  syncer: ["view.status", "view.media"],
   // ROLES_CAP["operator"]: viewer caps + capture + guide + mount (2026-07-17
   // decisions wave I1: operators run sequences) + view.weather (same wave,
-  // I2: full weather incl. radar map is visible to operators) — explicitly
-  // NOT power/config.*/media/view.site_precise.
+  // I2: full weather incl. radar map is visible to operators) +
+  // view.site_derived — explicitly NOT power/config.*/media/view.site_precise.
   operator: [
-    "view.status", "view.preview", "view.weather",
+    "view.status", "view.preview", "view.weather", "view.site_derived",
     "control.capture", "control.guide", "control.mount",
   ],
   // ALL_CAPS.
   admin: [
     "view.status", "view.preview", "view.media", "view.site_precise",
-    "view.weather",
+    "view.site_derived", "view.weather",
     "control.capture", "control.mount", "control.guide", "control.power",
     "config.safety", "config.solar_override", "config.backend",
     "config.site_optics", "config.alerts", "admin.users", "system.update",
@@ -94,7 +103,7 @@ const ROLE_CAPS: Record<PrincipalRole, readonly Capability[]> = {
 
 /** The roles that hold `cap`, in ascending privilege order. */
 export function rolesHolding(cap: Capability): PrincipalRole[] {
-  return (["viewer", "operator", "admin"] as const).filter((r) =>
+  return (["viewer", "syncer", "operator", "admin"] as const).filter((r) =>
     ROLE_CAPS[r].includes(cap),
   );
 }

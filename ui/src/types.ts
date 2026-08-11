@@ -1836,6 +1836,7 @@ export type Capability =
   | "view.preview"
   | "view.media"
   | "view.site_precise"
+  | "view.site_derived"
   | "view.weather"
   | "control.capture"
   | "control.mount"
@@ -1849,7 +1850,7 @@ export type Capability =
   | "admin.users"
   | "system.update";
 
-export type PrincipalRole = "viewer" | "operator" | "admin";
+export type PrincipalRole = "viewer" | "syncer" | "operator" | "admin";
 
 // GET /api/me — auth/principal.Principal.to_public(). FAIL-CLOSED on the server:
 // 401 on any resolution failure (never default-admin). Under provider="none"
