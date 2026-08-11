@@ -172,6 +172,20 @@ THUMB_PRUNE_EVERY = 200
 #: `ui/src/lib/gallery.ts::THUMB_WIDTH_STEPS`, whose last step this clamps.
 THUMB_MAX_WIDTH = 768
 
+#: JPEG quality for gallery thumbnails.
+#:
+#: Higher than the 70 the live filmstrip uses, because these are different
+#: pictures for a different job: a filmstrip thumb is glanced at for a second
+#: and thrown away, while a gallery tile is what someone scans a night's work
+#: through. Measured on a real 26 MP frame at 256 px: 70 gives 4.4 KB, 85 gives
+#: 6.5 KB — two kilobytes to stop the faint stuff turning to mush, on files the
+#: browser caches immutably (the key carries mtime).
+#:
+#: BOTH render paths use this. The warm path and the lazy path producing
+#: different bytes for the same frame would mean a tile changed appearance
+#: depending on whether anyone had scrolled past it before.
+THUMB_QUALITY = 85
+
 #: The widths WARMED on capture and by the backfill.
 #:
 #: Only the two a real client asks for. Rendering every step would triple the
@@ -766,7 +780,7 @@ def thumbnail(rel: str, *, width: int = 256) -> bytes:
             data = hdul[0].data
         if data is None:
             raise ValueError("frame has no image data")
-        jpeg = to_thumb(data, max_width=width)
+        jpeg = to_thumb(data, max_width=width, quality=THUMB_QUALITY)
     except ValueError:
         raise
     except Exception as e:                   # noqa: BLE001 — unreadable == no preview
@@ -806,25 +820,57 @@ def precompute(rel: str, widths: "tuple[int, ...] | None" = None) -> int:
     """Render and cache ``rel``'s thumbnails ahead of anyone asking. Returns how
     many were actually rendered (0 when they were all already cached).
 
-    Calls ``thumbnail`` rather than reimplementing it, deliberately: the writer
-    and the reader must agree about the cache key, and the only way to guarantee
-    that forever is for there to be one function that computes it. A private
-    fast path here would be a second renderer whose output the route could not
-    find — a warm cache that never gets read looks exactly like a cold one.
+    ONE READ AND ONE STRETCH FOR ALL THE WIDTHS. The expensive part is not the
+    disk or the JPEG: it is ``auto_stretch`` over 26 megapixels, measured at
+    1.44 s of the 1.49 s a cold thumbnail costs. Calling ``thumbnail`` once per
+    width would pay that per width, and this runs over a whole library.
+
+    The cache KEY still comes from ``_thumb_cache_path``, the same function the
+    route reads through, because that is the property that actually matters: a
+    warm cache the reader cannot find is indistinguishable from a cold one. What
+    is shared is the key, not the loop.
 
     Never raises. A frame that cannot be rendered (an ``.xisf`` we can list but
     not decode) is not an error at warm time; it is a tile that will say "no
     preview" when someone eventually looks at it, which is already handled.
     """
+    want = [w for w in (widths or PRECOMPUTE_WIDTHS)
+            if not thumb_is_cached(rel, w)]
+    if not want:
+        return 0
+    try:
+        root = capture_root()
+        rel_n = (rel or "").replace("\\", "/")
+        path = safe_subpath(root, rel_n)
+        if (rel_n.split("/")[0] in SKIP_TOP_DIRS
+                or path.suffix.lower() not in FRAME_SUFFIXES):
+            return 0
+        st = path.stat()
+        from astropy.io import fits
+        from .imaging.processing import auto_stretch, _encode
+        import numpy as _np
+        with fits.open(path, memmap=False) as hdul:
+            data = hdul[0].data
+        if data is None:
+            return 0
+        img01 = auto_stretch(_np.asarray(data))      # the 1.44 s, paid once
+    except Exception:                        # noqa: BLE001 — warming is optional
+        return 0
     made = 0
-    for w in (widths or PRECOMPUTE_WIDTHS):
-        if thumb_is_cached(rel, w):
-            continue
+    for w in want:
         try:
-            thumbnail(rel, width=w)
+            w = max(32, min(int(w), THUMB_MAX_WIDTH))
+            jpeg = _encode(img01, max_width=w, fmt="JPEG", quality=THUMB_QUALITY)[0]
+            if not jpeg:
+                continue
+            cached = _thumb_cache_path(rel_n, st.st_mtime, w)
+            cached.parent.mkdir(parents=True, exist_ok=True)
+            tmp = cached.with_suffix(f".{w}.tmp")
+            tmp.write_bytes(jpeg)
+            tmp.replace(cached)              # atomic: never serve a partial
             made += 1
-        except Exception:                    # noqa: BLE001 — warming is optional
-            break                            # a frame that fails one width fails all
+        except Exception:                    # noqa: BLE001
+            continue
     return made
 
 
