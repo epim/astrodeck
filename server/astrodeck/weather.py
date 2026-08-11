@@ -319,19 +319,15 @@ class WeatherService:
     # -- tonight / ignore-tonight (spec §4) -----------------------------------
 
     def _tonight(self, now: float) -> tuple[float, float] | None:
-        """Tonight's [dusk, dawn] via the ResumeArm definition (spec §5):
-        schedule._night_dusk/_night_dawn with cfg.safety.twilight_deg. None
-        when no night resolves (polar day) or the site is default."""
+        """Tonight's [dusk, dawn]. Delegates to ``schedule.observing_night`` —
+        THE definition, shared with the auto-resume bound.
+
+        This used to inline the same four lines (``_night_dusk``/``_night_dawn``
+        + the is_default check). Two copies of "when is tonight?" is how three
+        surfaces came to describe one forecast three different ways; one of them
+        is now a call, so there is nothing left to drift."""
         cfg = config_store.cfg()
-        site = cfg.site
-        if site.is_default:
-            return None
-        twilight = cfg.safety.twilight_deg
-        dusk = schedule._night_dusk(site.latitude, site.longitude, twilight, now)
-        dawn = schedule._night_dawn(site.latitude, site.longitude, twilight, now)
-        if dusk is None or dawn is None:
-            return None
-        return dusk, dawn
+        return schedule.observing_night(cfg.site, cfg.safety.twilight_deg, now)
 
     def _ignore_active(self, now: float) -> bool:
         if self._ignore_night_key is None:
@@ -458,10 +454,19 @@ class WeatherService:
         }
         self._alert_dawn_ts = dawn
         self._alert_night_key = key
-        start_hhmm = datetime.fromtimestamp(
-            start_ts, tz=timezone.utc).strftime("%H:%M")
-        end_hhmm = datetime.fromtimestamp(
-            end_ts, tz=timezone.utc).strftime("%H:%M")
+        # LOCAL time, not UTC. This line said "09:15–12:15" for a window the
+        # modal (which renders start_iso/end_iso in the browser) correctly
+        # showed as 02:15–05:15 — the same window, seven hours apart, because
+        # this one formatted UTC and labelled it "tonight". At a glance it read
+        # as a mid-MORNING peak, which is not a thing an observer can act on,
+        # and it sat beside a log stamp that events.py renders in LOCAL time.
+        # Two clocks in one line is worse than either clock.
+        #
+        # `time.localtime` (not `datetime.utcnow`), matching events.py: the rig
+        # runs in the observatory's own timezone, so its local time IS the
+        # operator's wall clock.
+        start_hhmm = time.strftime("%H:%M", time.localtime(start_ts))
+        end_hhmm = time.strftime("%H:%M", time.localtime(end_ts))
         bus.log("warning",
                 f"high cloud forecast tonight: peak {peak}% ({dominant} layer) "
                 f"{start_hhmm}–{end_hhmm}", "weather")
