@@ -200,23 +200,32 @@ class _P:
         return cap in self._caps
 
 
-def test_report_frames_strip_saved_path_for_a_plain_viewer():
-    """`/api/sessions/{id}` strips frame paths for a caller without
-    config.backend — "endpoint identity == filesystem identity". Reports carry
-    the same frames under a different field name (`saved_path`), predate that
-    rule, and were never brought under it."""
+def test_report_frames_never_carry_an_absolute_path_for_anyone():
+    """TIGHTENED 2026-08-11 (owner ruling): this used to be a HOLDER rule —
+    config.backend saw the real on-disk location, everyone else saw the field
+    removed. An absolute path is not a privilege to grant; no external client
+    should ever hold one. So the rule is now unconditional, and the field
+    carries the capture-root-relative form instead.
+
+    A path outside the library (a NINA save on the imaging host) has no
+    relative form, so the field is absent — which is what this fixture is."""
     payload = {"frames": [{"ts": 1.0, "saved_path": "C:\\obs\\M42\\f_0001.fits"}]}
-    viewer = _redact_report_for(payload, _P([CAP_VIEW_STATUS]))
-    assert "saved_path" not in viewer["frames"][0]
-    assert viewer["frames"][0]["ts"] == 1.0, "only the path is stripped"
-    admin = _redact_report_for(payload, _P([CAP_VIEW_STATUS, CAP_CONFIG_BACKEND]))
-    assert admin["frames"][0]["saved_path"] == "C:\\obs\\M42\\f_0001.fits"
+    for principal in (_P([CAP_VIEW_STATUS]),
+                      _P([CAP_VIEW_STATUS, CAP_CONFIG_BACKEND])):
+        out = _redact_report_for(payload, principal)
+        assert "saved_path" not in out["frames"][0], (
+            "an absolute path reached a client; config.backend is no longer an "
+            "exemption")
+        assert out["frames"][0]["ts"] == 1.0, "only the path is touched"
     # the input must not be mutated in place
     assert payload["frames"][0]["saved_path"]
 
 
-def test_report_csv_drops_the_path_column_for_a_plain_viewer():
-    """A CSV export is not a loophole around the JSON route's redaction."""
+def test_report_csv_carries_the_same_value_as_the_json():
+    """A CSV export is not a loophole — and no longer needs to drop the column
+    to avoid being one. The value written under `saved_path` is relative for
+    every caller (the route runs each row through the same externalizer the
+    JSON route uses), so keeping the column is both safe and more useful."""
     cols = ["ts", "target", "saved_path"]
-    assert report_csv_columns(cols, _P([CAP_VIEW_STATUS])) == ["ts", "target"]
+    assert report_csv_columns(cols, _P([CAP_VIEW_STATUS])) == cols
     assert report_csv_columns(cols, _P([CAP_VIEW_STATUS, CAP_CONFIG_BACKEND])) == cols

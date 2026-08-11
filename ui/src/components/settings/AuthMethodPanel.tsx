@@ -26,7 +26,7 @@ import { Icon } from "../icons";
 import { AddUserForm } from "./UsersPanel";
 import { setupCardState, SETUP_CARD_DISMISSED_KEY } from "../../lib/setupCard";
 
-const ROLES: (PrincipalRole | "deny")[] = ["deny", "viewer", "operator", "admin"];
+const ROLES: (PrincipalRole | "deny")[] = ["deny", "viewer", "syncer", "operator", "admin"];
 
 export default function AuthMethodPanel(): JSX.Element {
   const config = useConfig();

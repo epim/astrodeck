@@ -208,6 +208,30 @@ def capture_root() -> Path:
     return hub_module.CAPTURE_DIR
 
 
+def relpath_under_capture(abs_path: str | Path | None) -> str | None:
+    """The capture-root-relative POSIX path for ``abs_path``, or None.
+
+    **This is the only form of a frame's location that may leave the process.**
+    An absolute path names the observatory's filesystem layout — the account
+    name, the drive, the directory scheme — to whoever receives it, and none of
+    that is any client's business. The relative path is strictly more useful to
+    them anyway: it is the handle ``/api/gallery/file`` and the sync manifest
+    both take, while the absolute one is not accepted anywhere.
+
+    None means "not in the library": a NINA/remote save on another host, a path
+    outside the capture root, or nothing at all. Callers surface that as an
+    ABSENT field — never as a fabricated relative path, and never by falling
+    back to the absolute one.
+    """
+    if not abs_path:
+        return None
+    try:
+        p = Path(abs_path).resolve()
+        return p.relative_to(capture_root().resolve()).as_posix()
+    except (OSError, ValueError):
+        return None
+
+
 def trash_root() -> Path:
     return capture_root() / TRASH_DIRNAME
 
