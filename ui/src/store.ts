@@ -739,7 +739,16 @@ interface AppState {
   hfrWarn: number; // default 4.0
 
   // --- monitor (Batch-2; master §A.2 + monitor §3.2) ---
-  lastFrameAtMs: number | null; // set on each preview event (stall/LIVE detection)
+  // Set on each PREVIEW event. This is a picture-arrived clock and nothing
+  // more — it drives the LIVE badge, which is exactly a claim about pictures.
+  // It is NOT the stall clock; see lastCaptureAtMs and #206.
+  lastFrameAtMs: number | null;
+  // Set when the SERVER'S frames_done advances (or a run starts). "When did a
+  // frame last actually land on the rig" — the question CAPTURE STALLED is
+  // asking, and the one a dropped preview JPEG must not be able to answer.
+  // null whenever no run is in flight, so nothing can be overdue.
+  lastCaptureAtMs: number | null;
+  lastFramesDone: number | null; // previous frames_done, to spot the advance
   lastGuideAtMs: number | null; // set on each guide event
   autoMonitor: boolean; // localStorage pref, default false (auto-SELECT only)
   runBanner: RunBanner; // persistent "Sequence running — open Live" banner
@@ -1008,6 +1017,8 @@ export const useStore = create<AppState>((set, get) => ({
 
   // --- monitor ---
   lastFrameAtMs: null,
+  lastCaptureAtMs: null,
+  lastFramesDone: null,
   lastGuideAtMs: null,
   autoMonitor: localStorage.getItem(AUTO_MONITOR_KEY) === "1",
   runBanner: null,
@@ -1904,7 +1915,34 @@ export const useStore = create<AppState>((set, get) => ({
           // idle / complete / aborted / error / nina_native → clear the banner.
           runBanner = null;
         }
-        set({ sequence: seq, runBanner });
+        // CAPTURE LIVENESS, from the SERVER'S OWN COUNTER (#206).
+        //
+        // The stall check used to time `lastFrameAtMs`, which is stamped in the
+        // `preview` handler — so it measured the arrival of preview JPEGs at
+        // this browser, not the capture of frames on the rig. Reported from the
+        // rig 2026-08-09 02:12: a run saving a frame every 71 s, 70/150 done, 0
+        // rejected, reading CAPTURE STALLED. It is worst exactly where it
+        // matters least — over the relay a preview JPEG is the heaviest payload
+        // and the first thing a slow link drops, so the alarm fired because the
+        // network was slow, not because capture was.
+        //
+        // `frames_done` is computed on the rig and rides the tiny sequence
+        // payload. Stamping the moment it ADVANCES gives "when did a frame last
+        // actually land", which is the question the alarm is asking. Seeded on
+        // the rising edge into `running` so the first frame of a run has an
+        // anchor to be late against.
+        const doneNow = seq.progress?.frames_done ?? null;
+        const prevDone = get().lastFramesDone;
+        let lastCaptureAtMs = get().lastCaptureAtMs;
+        if (seq.state === "running"
+            && (RUN_RISING_FROM.has(prevState)
+                || (doneNow != null && prevDone != null && doneNow > prevDone))) {
+          lastCaptureAtMs = Date.now();
+        } else if (seq.state !== "running" && seq.state !== "paused"
+                   && seq.state !== "aborting") {
+          lastCaptureAtMs = null;          // no run: nothing can be overdue
+        }
+        set({ sequence: seq, runBanner, lastCaptureAtMs, lastFramesDone: doneNow });
 
         if (seq.state === "error" && prevState !== "error") {
           // NOV-9: the focal sequence-fatal toast now surfaces a plain cause +
@@ -2185,8 +2223,15 @@ export const useGuideRms = () => useStore(useShallow((s) => s.guide ?? s.status?
 export const useCamera = () => useStore(useShallow((s) => s.status?.camera ?? null));
 export const useMeridian = () => useStore(useShallow((s) => s.status?.meridian ?? null));
 export const useMount = () => useStore(useShallow((s) => s.status?.mount ?? null));
+/** `frame` = a PREVIEW arrived (the LIVE badge). `capture` = the rig's own
+ *  frames_done advanced (the stall check). Two clocks, deliberately, because
+ *  conflating them made a slow relay look like a dead camera (#206). */
 export const useLiveness = () =>
-  useStore(useShallow((s) => ({ frame: s.lastFrameAtMs, guide: s.lastGuideAtMs })));
+  useStore(useShallow((s) => ({
+    frame: s.lastFrameAtMs,
+    capture: s.lastCaptureAtMs,
+    guide: s.lastGuideAtMs,
+  })));
 export const useRunBanner = () => useStore(useShallow((s) => s.runBanner));
 export const useAutoMonitor = () => useStore((s) => s.autoMonitor);
 

@@ -236,6 +236,12 @@ export interface ClearedRigState {
   selectedPreviewId: null;
   livePreviewId: null;
   lastFrameAtMs: null;
+  // The capture clock and the counter behind it (#206). Both describe THIS
+  // rig's run — when a frame last landed on it, and how many it has taken —
+  // so they go with lastFrameAtMs rather than surviving to tell a stranger at
+  // the sign-in form that something is imaging.
+  lastCaptureAtMs: null;
+  lastFramesDone: null;
   focus: null;
   lastAutofocusResult: null;
   guide: null;
@@ -320,6 +326,8 @@ export function clearedRigState(): ClearedRigState {
     selectedPreviewId: null,
     livePreviewId: null,
     lastFrameAtMs: null,
+    lastCaptureAtMs: null,
+    lastFramesDone: null,
     focus: null,
     lastAutofocusResult: null,
     guide: null,
