@@ -92,17 +92,70 @@ def test_bundled_binary_is_found_in_the_platform_subdirectory(tmp_path, monkeypa
     to a system install, which on an appliance image is no install at all.
 
     Written with a fake platform tag rather than the host's so the test means
-    the same thing on every machine that runs it."""
+    the same thing on every machine that runs it. The tag below is DELIBERATELY
+    not a real one: this test's job is only "the loader honours whatever tag it
+    is given". It used to patch in ``linux-aarch64``, which looks real, is a
+    value ``platform_tag()`` never returns, and happened to be the exact wrong
+    name the fetcher wrote — so this test passed while arm64 bundles resolved to
+    nothing. Whether the two sides AGREE is a different question, asserted by
+    ``test_fetcher_writes_where_the_loader_reads``."""
     monkeypatch.setattr(astap, "_VENDOR_ASTAP", tmp_path)
     import astrodeck.devices.sdk_paths as sdk_paths
-    monkeypatch.setattr(sdk_paths, "platform_tag", lambda: "linux-aarch64")
+    monkeypatch.setattr(sdk_paths, "platform_tag", lambda: "not-a-real-tag")
 
-    assert astap._bundled_candidates()[0].parent.name == "linux-aarch64"
+    assert astap._bundled_candidates()[0].parent.name == "not-a-real-tag"
 
-    plat_dir = tmp_path / "linux-aarch64"
+    plat_dir = tmp_path / "not-a-real-tag"
     plat_dir.mkdir()
     (plat_dir / "astap_cli").write_bytes(b"#!/bin/sh\n")
     assert plat_dir / "astap_cli" in astap._bundled_candidates()
+
+
+def test_fetcher_writes_where_the_loader_reads():
+    """The contract between scripts/fetch_astap.py and solve/astap.py.
+
+    The fetcher's keys are DOWNLOAD SELECTORS (macOS needs two archives); the
+    loader reads ``devices/sdk_paths.platform_tag()``. Only ``linux-x86_64``
+    ever spelled the same in both namespaces — which is what CI and the dev box
+    run, so five of six platforms diverged unnoticed. On arm64 the binary landed
+    in ``linux-aarch64/`` while the loader read ``linux-arm64/``, missed the flat
+    fallback too, and silently used a system install: on an appliance, none.
+
+    Asserted against the REAL ``platform_tag()`` for a real machine shape, so a
+    future rename on either side fails here instead of in a customer's dome."""
+    import sys
+    from pathlib import Path as _P
+    sys.path.insert(0, str(_P(__file__).resolve().parents[2] / "scripts"))
+    import fetch_astap  # noqa: E402
+    import astrodeck.devices.sdk_paths as sdk_paths
+
+    # every selector must map to a directory name
+    assert set(fetch_astap.BINARIES) <= set(fetch_astap._OUT_TAG)
+
+    # and the linux/arm64 mapping must equal what platform_tag() really returns
+    # on that machine shape -- the case the appliance actually is.
+    real = _platform_tag_for(sdk_paths, "linux", "aarch64")
+    assert fetch_astap._OUT_TAG["linux-aarch64"] == real, (
+        f"fetcher writes {fetch_astap._OUT_TAG['linux-aarch64']!r} but the "
+        f"loader reads {real!r}")
+
+    # x86_64 linux is the one that always worked; keep it honest too.
+    assert fetch_astap._OUT_TAG["linux-x86_64"] == _platform_tag_for(
+        sdk_paths, "linux", "x86_64")
+
+
+def _platform_tag_for(sdk_paths, plat: str, machine: str) -> str:
+    """``platform_tag()`` as it would answer on another machine shape."""
+    import platform as _plat
+    import sys as _sys
+    real_machine, real_platform = _plat.machine, _sys.platform
+    try:
+        _plat.machine = lambda: machine
+        _sys.platform = plat
+        return sdk_paths.platform_tag()
+    finally:
+        _plat.machine = real_machine
+        _sys.platform = real_platform
 
 
 def test_the_flat_layout_still_resolves(tmp_path, monkeypatch):
