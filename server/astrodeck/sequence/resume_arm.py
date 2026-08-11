@@ -59,6 +59,9 @@ class ResumeArm:
         self._task: asyncio.Task | None = None
         self._retry_at: float = 0.0        # refusal backoff: no attempt before this
         self._gave_up_for: str | None = None   # session id we give-up-alerted on
+        #: session id we have already said "dormant but not armed" about, so the
+        #: notice appears once per session rather than once per minute.
+        self._quiet_note_for: str | None = None
 
     def start(self) -> None:
         if self._task is None or self._task.done():
@@ -115,6 +118,32 @@ class ResumeArm:
         if armed is None:
             self._retry_at = 0.0            # disarmed from the UI: stop instantly
             self._gave_up_for = None
+            # SAY SO WHEN THERE IS AN INTERRUPTED RUN NOBODY WILL RESTART.
+            #
+            # This used to be a bare return, and on 2026-08-11 that cost 25
+            # minutes of a clear night and most of an hour of diagnosis. A
+            # restart at 01:42 left session 810d46ee dormant with 165 frames and
+            # 15 still to shoot; ``armed()`` ANDs status=="dormant" with
+            # auto_resume, the second was False, and the tick returned without a
+            # word. Nothing on any screen or in any log said the night was over.
+            #
+            # An unarmed dormant session is a legitimate state — it is what
+            # "disarmed from the UI" looks like — so this is not a warning. But
+            # it must be VISIBLE, once, or the difference between "deliberately
+            # not resuming" and "silently broken" cannot be told apart at 2am.
+            stalled = [s for s in session_store.load_all()
+                       if s.status == "dormant" and not s.auto_resume]
+            if stalled:
+                newest = max(stalled, key=lambda s: s.updated_ts)
+                if self._quiet_note_for != newest.id:
+                    self._quiet_note_for = newest.id
+                    bus.log("info",
+                            f"auto-resume is NOT armed: '{newest.name}' is "
+                            f"dormant with auto-resume off, so nothing will "
+                            f"restart it. Arm it from the session list to "
+                            f"resume tonight.", "sequence")
+            else:
+                self._quiet_note_for = None
             return
         if not self._window_open(armed, now):
             if self._retry_at and self._gave_up_for != armed.id:

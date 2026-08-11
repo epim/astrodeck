@@ -342,26 +342,42 @@ class SequenceEngine:
         self.plan = plan
         resume = session is not None
         if session is None:
-            # ARMED BY DEFAULT. An opt-in flag that must be remembered before
-            # every night is a flag that is not set on the night it was needed
-            # -- and the night it is needed is the one where the PC restarts at
-            # 2am and nobody is awake to arm anything. Armed here rather than in
-            # the start route so every fresh-run path inherits it.
-            #
-            # Honours the same server-enforced singleton as the PATCH route:
-            # arming this one disarms the rest.
             session = Session(name=plan.name or "Tonight",
-                              created_ts=time.time(), status="active", plan=plan,
-                              auto_resume=True)
-            try:
-                for other in session_store.load_all():
-                    if other.id != session.id and other.auto_resume:
-                        other.auto_resume = False
-                        session_store.save(other)
-            except Exception:  # noqa: BLE001 - never block a run over bookkeeping
-                pass
+                              created_ts=time.time(), status="active", plan=plan)
         else:
             session.status = "active"
+
+        # ARMED BY DEFAULT, AND THE RULE IS ABOUT THE ACTIVE SESSION, NOT ABOUT
+        # HOW IT GOT THERE. An opt-in flag that must be remembered before every
+        # night is a flag that is not set on the night it was needed — and the
+        # night it is needed is the one where the PC restarts at 2am and nobody
+        # is awake to arm anything.
+        #
+        # This used to sit inside the `session is None` branch, so only a FRESH
+        # run was armed and a RESUMED one inherited whatever flag it happened to
+        # carry. Combined with the singleton below, that is worse than it
+        # sounds: starting any new session disarms every other one, so a session
+        # that was superseded once stayed disarmed forever, and resuming it
+        # never put the flag back. A multi-night run — the mode this rig is
+        # actually used in — could therefore never auto-resume after its first
+        # night.
+        #
+        # MEASURED 2026-08-11: session 810d46ee was disarmed on 08-10 when a
+        # fresh session started, resumed on 08-11 to shoot 165 frames, and after
+        # a 01:42 restart sat dormant and unarmed for 25 minutes. resume_arm's
+        # tick returns silently when session_store.armed() is None, so there was
+        # not even a log line to notice — the whole feature was absent, quietly,
+        # on exactly the path it exists for.
+        session.auto_resume = True
+        try:
+            # Server-enforced singleton, same rule as the PATCH route: the
+            # active session is THE armed one, so arming it disarms the rest.
+            for other in session_store.load_all():
+                if other.id != session.id and other.auto_resume:
+                    other.auto_resume = False
+                    session_store.save(other)
+        except Exception:  # noqa: BLE001 - never block a run over bookkeeping
+            pass
         self._session = session
         self._done = dict(session.done_map()) if resume else {}
         self._frames_done = sum(self._done.values())
