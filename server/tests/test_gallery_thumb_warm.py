@@ -74,6 +74,19 @@ class TestPrecompute:
             REL, (cap / REL).stat().st_mtime, 256).read_bytes()
         assert served == cached
 
+    def test_the_two_render_paths_produce_identical_bytes(self, cap):
+        """precompute stretches ONCE for all widths (the 1.44 s is the stretch,
+        not the encode) while the lazy route goes through to_thumb. Two encoders
+        for one picture is only safe while they agree — otherwise a tile changes
+        appearance depending on whether anyone scrolled past it first."""
+        _write(cap, REL, size=512)
+        gallery.precompute(REL, (256,))
+        warm = gallery.thumbnail(REL, width=256)      # reads the warm cache
+        # Now force the lazy path for the same frame+width by clearing the cache.
+        gallery._thumb_cache_path(REL, (cap / REL).stat().st_mtime, 256).unlink()
+        lazy = gallery.thumbnail(REL, width=256)      # renders through to_thumb
+        assert warm == lazy, "the warm and lazy renderers disagree"
+
     def test_warms_every_width_the_grid_asks_for(self, cap):
         _write(cap, REL)
         assert gallery.precompute(REL) == len(gallery.PRECOMPUTE_WIDTHS)
