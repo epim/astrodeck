@@ -125,6 +125,13 @@ def candidates(vendor: str, stem: str, *, env_var: str | None = None,
              if p.is_file() and stem.lower() in p.name.lower()),
             key=lambda p: len(p.name), reverse=True)
         out.extend(matched)
+        # The substring sweep above keys on the RAW stem, so it cannot find a
+        # library whose POSIX basename is not a transformation of its Windows
+        # one -- "EAF_focuser" is not a substring of "libEAFFocuser.so". Without
+        # this line the alias mechanism and per-platform vendoring were mutually
+        # exclusive, and ZWO's focuser (the one library _POSIX_STEM_ALIASES
+        # exists for) could never be found in vendor/zwo/linux-arm64/ at all.
+        out.extend(plat / n for n in names)
     out.extend(vdir / n for n in names)
     out.extend(Path(p) for p in (extra or []))
     return out
