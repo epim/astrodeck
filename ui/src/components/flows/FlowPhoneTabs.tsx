@@ -40,7 +40,21 @@ export default function FlowPhoneTabs(): JSX.Element {
     <nav
       role="tablist"
       aria-label="Flow editor"
-      className="flex-none flex border-t border-line bg-raise/80 backdrop-blur-[10px]"
+      // STICKY, not merely flex-none. MEASURED at 390x844 with the M16 example
+      // open: this bar sat at y=1401 in an 844px viewport - off the bottom of
+      // the screen, unreachable.
+      //
+      // The cause is the app's scroll model, not this component. `main` is the
+      // scroller (`flex-1 overflow-y-auto`), views are content that grows inside
+      // it, and the phone auto-graph is ~1600px tall - so the whole Flows view
+      // measured 1773px and the bar went with it. flex-none only keeps it out of
+      // the FLEX sizing; it does nothing about a page taller than the viewport.
+      //
+      // `sticky bottom-0` pins it to the bottom of the scrollport instead, which
+      // is what the reference capture shows and what the do-not list means by
+      // "footer actions pinned". z-30 clears the canvas but stays under the
+      // overlay host (z-45) so a sheet still covers it.
+      className="flex-none sticky bottom-0 z-30 flex border-t border-line bg-raise/80 backdrop-blur-[10px]"
       // The bar sits on the home-indicator edge; without this the last row of
       // pixels is under the gesture area on every modern phone.
       style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}
