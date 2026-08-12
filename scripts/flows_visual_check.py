@@ -257,7 +257,7 @@ NAV_FLOWS = ("nav", "Flows")
 
 STATES: list[State] = [
     State("01-library", "01-library.png", DESKTOP,
-          marker="[data-view='flows'] [data-flows-tab='library']",
+          marker="[data-flows-tab='library']",
           steps=[NAV_FLOWS],
           note="search + folder chips, MY FLOWS with the NEW FLOW card, EXAMPLES"),
     State("02-editor-m16-full-service", "02-editor-m16-full-service.png", DESKTOP,
@@ -305,13 +305,13 @@ STATES: list[State] = [
                  ("hover-node", "capture")],
           note="desktop hover affordances; compared against the plain editor "
                "reference for layout, not for the hover state itself"),
-    State("13-edit-sheet-open", "03-inspector-calibration-queue-matrix.png", DESKTOP,
+    State("13-edit-sheet-open", "03-inspector-calibration-queue-matrix.png", TABLET,
           marker="[data-flows-editsheet]",
           steps=[NAV_FLOWS, ("open-flow", "example-m16"),
                  ("edit-node-type", "capture")]),
-    State("14-palette-sheet-open", "01-library.png", DESKTOP,
+    State("14-palette-sheet-open", "01-library.png", TABLET,
           marker="[data-flows-palette]",
-          steps=[NAV_FLOWS, ("open-flow", "example-m16"), ("click", "ADD NODE")]),
+          steps=[NAV_FLOWS, ("open-flow", "example-m16"), ("click", "ADD STAGE")]),
     State("15-wire-selected", "02-editor-m16-full-service.png", DESKTOP,
           marker="[data-flows-wire-selected]",
           steps=[NAV_FLOWS, ("open-flow", "example-m16"), ("fit", ""),
@@ -322,7 +322,7 @@ STATES: list[State] = [
     # though screenshots/ has no tablet reference - so these are compared for
     # overflow, collision and reachability rather than against a picture.
     State("20-tablet-library", "01-library.png", TABLET,
-          marker="[data-view='flows'] [data-flows-tab='library']",
+          marker="[data-flows-tab='library']",
           steps=[NAV_FLOWS],
           note="no picture to match; the gate is that nothing overflows or "
                "collides at 820px"),
@@ -422,14 +422,25 @@ async def _run_step(page, action: str, arg: str) -> None:
             page.get_by_role("button", name=arg)).filter(visible=True).first.click()
     elif action == "click":
         await page.get_by_role("button", name=arg).filter(visible=True).first.click()
-    elif action == "select-node-type" or action == "edit-node-type":
+    elif action == "select-node-type":
         node = page.locator(f"[data-node-type='{arg}']").filter(visible=True)
         if await node.count() == 0:
             raise CaptureFailed(f"no node of type {arg!r} on the canvas")
-        if action == "select-node-type":
-            await node.first.click()
-        else:
-            await node.first.dblclick()
+        await node.first.click()
+    elif action == "edit-node-type":
+        # The edit GLYPH on the node opens the sheet. Double-click was mine and
+        # appears nowhere in the prototype — and the sheet only exists below the
+        # desktop tier at all, where the inspector is a docked column instead.
+        node = page.locator(f"[data-node-type='{arg}']").filter(visible=True)
+        if await node.count() == 0:
+            raise CaptureFailed(f"no node of type {arg!r} on the canvas")
+        await node.first.hover()
+        pencil = node.first.locator("[data-flows-edit]")
+        if await pencil.count() == 0:
+            raise CaptureFailed(
+                f"the {arg!r} node exposes no [data-flows-edit] control — the "
+                f"edit sheet has no opener the harness can find")
+        await pencil.first.click()
     elif action == "hover-node":
         await page.locator(f"[data-node-type='{arg}']").first.hover()
     elif action == "select-wire":
@@ -438,11 +449,22 @@ async def _run_step(page, action: str, arg: str) -> None:
             raise CaptureFailed("no wires on the canvas to select")
         await wire.first.click()
     elif action == "fit":
-        await page.keyboard.press("f")            # fit-to-view, per the editor
+        # A BUTTON in the zoom cluster. The prototype contains the string "FIT"
+        # and no keyboard fit; pressing "f" was mine, and a step that silently
+        # does nothing leaves the graph unfitted in a capture claiming to be
+        # "fitted".
+        await page.get_by_role("button", name="FIT").filter(
+            visible=True).first.click()
     elif action == "night-mode":
+        # A CLASS, not an attribute. index.css defines night at `:root.night`
+        # (line 105) and store.ts toggles it with
+        # `document.documentElement.classList.toggle("night", night)`.
+        # The first version of this set data-night, which matches nothing —
+        # so the "night mode" capture would have been a daylight render that
+        # nobody could tell apart from the real thing.
         await page.evaluate(
-            "(on) => document.documentElement.setAttribute("
-            "'data-night', on === 'on' ? 'true' : 'false')", arg)
+            "(on) => document.documentElement.classList.toggle('night', on === 'on')",
+            arg)
     elif action == "arm-wire":
         port = page.locator("[data-port][data-port-dir='out']").filter(visible=True)
         if await port.count() == 0:
