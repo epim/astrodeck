@@ -36,7 +36,25 @@ from dataclasses import dataclass
 
 from .models import Condition, Instruction
 
-_LEVEL_TRIGGERS = ("on_hfr_above", "on_guide_rms_above")
+# LEVEL triggers are edge-triggered: they fire on the rising crossing and re-arm
+# when the condition goes decisively false.
+#
+# The four SKY/RIG conditions are levels too, and putting them here is what gives
+# them the right behaviour for free. "It is cloudy" is a state, not an event: a
+# rule that fired on every frame while the cloud sat overhead would hold, hold,
+# hold, and a resume rule that fired every clear frame would fight it. Edge means
+# each transition acts once.
+#
+# It also gives them the STALENESS rule at no cost. `_eval_predicate` returns
+# None when a metric is unreadable, and the level branch leaves `armed` untouched
+# on None - so a cloud reading that has gone stale fires nothing and re-arms
+# nothing. A stale "clear" resuming a run into an overcast is the failure this
+# design has to prevent, and it prevents it by treating "I do not know" as
+# neither.
+_LEVEL_TRIGGERS = (
+    "on_hfr_above", "on_guide_rms_above",
+    "on_clouds_in", "on_clouds_clear", "on_unsafe", "on_panel_ready",
+)
 
 # flat TriggerKind -> compound PredicateKind. ONE leaf implementation serves
 # both paths (`_eval_predicate`), so the two can never drift.
@@ -46,6 +64,11 @@ _PREDICATE_OF = {
     "on_frame_rejected": "frame_rejected",
     "on_target_complete": "target_complete",
     "at_time": "at_time",
+    # --- sky / rig conditions (ADDITIVE) ---------------------------------
+    "on_clouds_in": "clouds_in",
+    "on_clouds_clear": "clouds_clear",
+    "on_unsafe": "unsafe",
+    "on_panel_ready": "panel_ready",
 }
 
 
@@ -57,6 +80,23 @@ class TriggerContext:
     frame_rejected: bool = False
     target_complete: bool = False
     active_target: str | None = None
+    # --- sky / rig conditions (ADDITIVE) ---------------------------------
+    #
+    # ALL THREE ARE TRI-STATE, and None is the whole point: it means "nobody
+    # can currently say", not "no". The engine sets None when a reading is
+    # absent or older than its freshness budget, and the level branch below
+    # treats None as indeterminate - fires nothing, re-arms nothing.
+    #
+    # The alternative, defaulting an unknown sky to False, would mean a rig that
+    # had stopped judging its frames looked exactly like a clear night, and a
+    # cloud hold would resume into an overcast on the strength of a reading
+    # nobody took.
+    #
+    # `cloudy` carries BOTH cloud triggers. One metric, two edges - so they can
+    # never disagree with each other, only with the sky.
+    cloudy: bool | None = None
+    unsafe: bool | None = None
+    panel_ready: bool | None = None
 
 
 @dataclass
@@ -125,6 +165,20 @@ def _eval_predicate(kind: str, threshold: float, at_time: str | None,
     if kind == "at_time":
         t = parse_hhmm(at_time, ctx.now_ts)
         return None if t is None else ctx.now_ts >= t
+    # Sky and rig conditions. Each passes an unknown straight through as None so
+    # the caller's level branch leaves the rule armed - the reading, not the
+    # rule, is what is missing.
+    if kind == "clouds_in":
+        return None if ctx.cloudy is None else ctx.cloudy
+    if kind == "clouds_clear":
+        # The SAME metric as clouds_in, negated. Deriving it rather than giving
+        # "clear" its own input is what stops the two triggers reading different
+        # skies: with one source, a hold and its resume cannot both be armed.
+        return None if ctx.cloudy is None else (not ctx.cloudy)
+    if kind == "unsafe":
+        return None if ctx.unsafe is None else ctx.unsafe
+    if kind == "panel_ready":
+        return None if ctx.panel_ready is None else ctx.panel_ready
     return None                              # unknown kind — never eligible
 
 

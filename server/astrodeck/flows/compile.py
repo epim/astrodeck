@@ -30,34 +30,28 @@ from ..devices.base import DomePolicy
 from .models import FlowGraph, FlowNode
 from .nodes import port_kind
 
-#: Trigger vocabulary — and a WARNING about how much of it the engine accepts
-#: today, which is less than this module emits.
+#: Trigger vocabulary, and what the engine can now do with it.
 #:
-#: The README says "New TriggerKinds are additive to the existing closed enum:
-#: on_clouds_in, on_clouds_clear". THAT WIDENING HAS NOT HAPPENED. Measured
-#: against ``sequence/models.py`` on 2026-08-12, ``TriggerKind`` is exactly:
+#: HISTORY WORTH KEEPING, because this comment has been wrong in both
+#: directions. It first claimed the README's additive widening was already in
+#: place when it was not. That was corrected to say the widening had not
+#: happened. As of 2026-08-12 it HAS: ``sequence/models.py`` carries
+#: ``on_clouds_in``, ``on_clouds_clear``, ``on_unsafe`` and ``on_panel_ready``,
+#: ``TriggerContext`` carries the tri-state readings they evaluate against, and
+#: the engine holds for weather and releases itself.
 #:
-#:     on_hfr_above, on_guide_rms_above, on_frame_rejected,
-#:     on_target_complete, at_time
+#: The lesson is not about clouds. A comment that states what ANOTHER module
+#: contains is a claim nothing keeps, and this one was wrong twice before it was
+#: right. The durable version is the test: ``to_plan.LEGAL_TRIGGERS`` reads
+#: ``TriggerKind.__args__`` rather than restating it, so the vocabulary cannot
+#: drift from the engine's without a test failing.
 #:
-#: So of everything ``_trigger_for`` can mint, only the ``on_<when>`` strings
-#: that happen to land on that list are runnable. ``on_clouds_in``,
-#: ``on_clouds_clear``, ``on_unsafe``, ``on_frame_graded``, ``on_panel_ready``
-#: and the ``type.port`` fallback are all REFUSED by ``Instruction``, and
-#: ``TriggerContext`` has no field a cloud predicate could even be evaluated
-#: against.
-#:
-#: An earlier version of this comment claimed the additive widening was already
-#: in place. It was not, and a comment asserting a property nothing keeps is the
-#: exact defect class this codebase names as its dominant one — so it is
-#: corrected here rather than left to mislead the next reader.
-#:
-#: THIS IS NOT A REASON TO STOP EMITTING THEM. The compiled dict is the README's
-#: documented contract and the PLAN tab renders it verbatim; silently dropping a
-#: rule the operator drew would be worse than emitting one the engine has yet to
-#: learn. The adapter that hands a compiled plan to the engine is where the gap
-#: becomes visible — it reports every rule that will not run, by name, instead of
-#: letting ``extra="ignore"`` swallow it.
+#: WHAT IS STILL NOT RUNNABLE: ``on_frame_graded`` and the ``type.port``
+#: fallback have no engine trigger, and ``calib``/``report`` have no engine
+#: action. Those are still emitted - the compiled dict is the README's
+#: documented contract and the PLAN tab renders it verbatim, so silently
+#: dropping a rule the operator drew would be worse than emitting one the engine
+#: has yet to learn. ``flows/to_plan.py`` is where that gap is made visible.
 TRIGGER_CLOUDS_IN = "on_clouds_in"
 TRIGGER_CLOUDS_CLEAR = "on_clouds_clear"
 
@@ -262,8 +256,21 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
         if src is None or port_kind(src.type, e.fromPort, "out") != "event":
             continue
         dst = graph.node(e.to)
+        # THE DESTINATION PORT IS PART OF THE RULE, not decoration.
+        #
+        # A HOLD / RESUME node has two inputs, `pause` and `resume`, and the M16
+        # example wires both cloud edges into it: clouds-in to pause,
+        # clouds-clear to resume. Emitting only `dst.type` made those two edges
+        # produce the SAME rule - action "holdresume", twice - so the graph the
+        # operator drew as "stop, then start again" compiled to "stop, then
+        # stop". The port is the entire difference between them.
+        #
+        # Additive: `to_port` is a new key on the rule. Nothing that reads the
+        # compiled plan today looks for it, and the PLAN tab renders the dict
+        # verbatim, so the operator now simply sees which input a rule lands on.
         rule: dict = {"when": _trigger_for(src, e.fromPort),
-                      "action": dst.type if dst is not None else "?"}
+                      "action": dst.type if dst is not None else "?",
+                      "to_port": e.toPort}
         thr = src.params.get("threshold")
         if thr is not None:
             rule["threshold"] = _num(thr)

@@ -145,7 +145,11 @@ class TestInstructions:
                    _n("r", "refocus")],
             edges=[_e("k", "fire", "r", "do")])
         rule = compile_plan(g, "n")["instructions"][0]
-        assert rule == {"when": "on_hfr_above", "action": "refocus", "threshold": 3.2}
+        # `to_port` rides along now: a HOLD/RESUME node is two different actions
+        # depending on which input a rule lands on, and the node type alone
+        # cannot tell them apart.
+        assert rule == {"when": "on_hfr_above", "action": "refocus",
+                        "to_port": "do", "threshold": 3.2}
 
     def test_safety_and_capture_map_to_their_situations(self):
         g = FlowGraph(

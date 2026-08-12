@@ -50,10 +50,34 @@ LEGAL_ACTIONS: frozenset[str] = frozenset(ActionKind.__args__)
 COMPILED_NODE_TYPES: frozenset[str] = frozenset(
     {"target", "pool", "capture", "dusk", "dome", "duskflats", "calib"})
 
-#: ``holdresume`` is the flow vocabulary's word for what the engine calls
-#: ``pause``. The only rename in either direction; everything else either
-#: matches or has no counterpart.
-ACTION_ALIASES: dict[str, str] = {"holdresume": "pause"}
+#: Flow-vocabulary action -> engine ActionKind, keyed by (node type, INPUT PORT).
+#:
+#: The port is in the key because a HOLD / RESUME node is two different actions
+#: depending on which of its inputs a rule lands on, and the node type alone
+#: cannot tell them apart. Mapping on type alone turned "stop on cloud, start
+#: again when it clears" into "stop on cloud, stop again when it clears".
+#:
+#: `holdresume.pause` becomes `hold_for_clear` rather than `pause`, and that is
+#: the substantive decision here rather than a rename. The engine's `pause()`
+#: blocks the frame loop above the dawn boundary, the safety gate and the
+#: dead-man ping, and a paused loop has no frame boundaries for a resume rule to
+#: be evaluated at - so a hold built from pause/resume would sit through sunrise
+#: with the watchdog silent, waiting for a rule that can never fire.
+#: `hold_for_clear` is the self-releasing hold that keeps all three armed.
+PORTED_ACTIONS: dict[tuple[str, str], str] = {
+    ("holdresume", "pause"): "hold_for_clear",
+    ("condition", "events"): "condition",     # the pass-through, dropped below
+}
+
+#: Rules whose destination port makes them REDUNDANT rather than unsupported -
+#: the capability exists, it is simply not driven from here. Reported at `note`
+#: weight rather than as a loss, because telling an operator their resume wire
+#: "will not run" would be a lie: the run does resume, the hold does it itself.
+REDUNDANT_PORTS: dict[tuple[str, str], str] = {
+    ("holdresume", "resume"): (
+        "the hold releases itself when the sky clears, so this wire is not "
+        "needed - it is kept in the graph and does no harm"),
+}
 
 #: The four ``schedule`` keys ``compile_plan`` emits are field-for-field
 #: identical to ``Schedule``'s. They are simply at the wrong NESTING LEVEL:
@@ -181,8 +205,13 @@ def _instructions(compiled: dict, out: list[dict]) -> list[dict]:
     rules: list[dict] = []
     for rule in compiled.get("instructions") or []:
         trigger = str(rule.get("when") or "")
-        action = ACTION_ALIASES.get(str(rule.get("action") or ""),
-                                    str(rule.get("action") or ""))
+        raw = str(rule.get("action") or "")
+        port = str(rule.get("to_port") or "")
+        if (raw, port) in REDUNDANT_PORTS:
+            out.append(_note(f"instructions[{trigger} -> {raw}.{port}]",
+                             REDUNDANT_PORTS[(raw, port)]))
+            continue
+        action = PORTED_ACTIONS.get((raw, port), raw)
         if action == "condition":
             # NOT a lost capability. The CONDITION node is a pass-through: its
             # inbound edge compiles to this row and its outbound edges compile
