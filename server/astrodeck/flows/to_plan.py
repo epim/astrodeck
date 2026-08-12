@@ -1,0 +1,379 @@
+"""A compiled flow, as something ``SequenceEngine`` can actually run.
+
+``compile_plan`` produces the README's documented five-key dict — the shape the
+PLAN tab renders verbatim and ``resolve_tonight`` reads. ``SequencePlan`` is a
+different shape entirely. This module is the seam between them, and it exists as
+its own module rather than inside either one because both ``/compile`` and
+``/run`` need it and because reshaping ``compile_plan``'s output would take the
+whole Tonight surface with it.
+
+THE SECOND RETURN VALUE IS THE POINT
+------------------------------------
+``SequencePlan``, ``Target``, ``ExposureStep`` and ``Instruction`` set no
+``model_config``, so pydantic's default ``extra="ignore"`` applies: **unknown
+keys are dropped in silence, never rejected.** That turns most of the gap
+between the two shapes invisible. Measured against the five shipped examples,
+a naive hand-off produces a plan that validates *clean* and starts a run
+immediately, in daylight, with no altitude gate, no dawn stop, no dome policy
+and none of the cloud rules the operator drew. Green start, wrong night, no
+error anywhere.
+
+So every dropped thing is reported. The operator finds out that their cloud rule
+is not running now, from a list on screen, instead of at 3 a.m. from a mount
+that kept shooting through an overcast.
+
+WHAT IS NOT DECIDED HERE
+------------------------
+Whether an unmapped item should BLOCK a run. This function is pure — it has no
+devices, no config and no clock beyond the one passed in — and "is there
+actually a roof over this telescope" is not a question it can answer. It
+classifies and reports; the route decides. See ``blocking_reasons``.
+"""
+from __future__ import annotations
+
+from typing import Any, Literal
+
+from ..catalog.coords import parse_dec, parse_ra
+from ..sequence.models import ActionKind, SequencePlan, TriggerKind
+from .models import FlowGraph
+from .tonight import catalog_coords
+
+#: The engine's real vocabularies, read off the ``Literal`` types rather than
+#: retyped. A hand-copied list is a claim that silently stops being true the
+#: day the enum is widened, which is the failure this module exists to surface.
+LEGAL_TRIGGERS: frozenset[str] = frozenset(TriggerKind.__args__)
+LEGAL_ACTIONS: frozenset[str] = frozenset(ActionKind.__args__)
+
+#: Flow node types that ``compile_plan`` reads. Everything else in a graph is
+#: walked by ``flow_order`` and contributes nothing to the compiled dict, so its
+#: parameters are inert — see :func:`inert_nodes`.
+COMPILED_NODE_TYPES: frozenset[str] = frozenset(
+    {"target", "pool", "capture", "dusk", "dome", "duskflats", "calib"})
+
+#: ``holdresume`` is the flow vocabulary's word for what the engine calls
+#: ``pause``. The only rename in either direction; everything else either
+#: matches or has no counterpart.
+ACTION_ALIASES: dict[str, str] = {"holdresume": "pause"}
+
+#: The four ``schedule`` keys ``compile_plan`` emits are field-for-field
+#: identical to ``Schedule``'s. They are simply at the wrong NESTING LEVEL:
+#: ``SequencePlan`` has no schedule, ``Target`` does.
+SCHEDULE_KEYS = ("start_mode", "start_offset_min", "stop_mode", "min_altitude_deg")
+
+#: A pool member's constraints are also real ``Schedule`` fields.
+POOL_SCHEDULE_KEYS = {"min_altitude_deg": "min_altitude_deg",
+                      "min_moon_sep_deg": "min_moon_sep_deg",
+                      "max_hour_angle_h": "max_hour_angle_h"}
+
+Level = Literal["warn", "danger"]
+
+
+def _note(key: str, detail: str, level: Level = "warn") -> dict:
+    """One reported loss.
+
+    ``level`` reuses ``doctor.Issue``'s vocabulary so the editor has ONE
+    severity scale — an operator should not have to learn that a doctor warning
+    and an adapter warning mean different things.
+    """
+    return {"key": key, "detail": detail, "level": level}
+
+
+class GraphNotRunnable(ValueError):
+    """The graph cannot become a plan at all — an operator error, not a bug.
+
+    Distinct from an unmapped item: unmapped means "this ran without that",
+    while this means "there is nothing here to run". The route maps it to a 422
+    with ``code="invalid_graph"`` so the editor can say which node is at fault
+    rather than showing a server error.
+    """
+
+    def __init__(self, message: str, code: str = "invalid_graph"):
+        super().__init__(message)
+        self.code = code
+
+
+# --------------------------------------------------------------------- pieces
+
+def _target_schedule(base: dict, entry: dict, *, is_pool: bool) -> dict:
+    """The ``Schedule`` block for one target.
+
+    Two sources merge here. The DUSK WINDOW node's block applies to the whole
+    night; a POOL member's constraints apply to that member. WHERE THEY
+    DISAGREE THE POOL WINS, because it is the more specific statement — an
+    operator who set a 30 degree floor on the night and 40 on one candidate
+    meant 40 for that candidate.
+    """
+    sched = dict(base)
+    for src, dst in POOL_SCHEDULE_KEYS.items():
+        if entry.get(src) is not None:
+            sched[dst] = entry[src]
+    if is_pool:
+        # The closest honest approximation of "best of several" the existing
+        # model can express. Under the default "wait", member 1 blocks the whole
+        # night waiting for a window it may never get, and members 2-4 - the
+        # entire point of a pool - never run at all. Under "skip" each member is
+        # attempted and passed over when its window is missed.
+        sched["on_missed"] = "skip"
+    return sched
+
+
+def _coords(entry: dict, when: float | None) -> tuple[float, float] | None:
+    """``(ra_hours, dec_deg)`` for one compiled target entry, or ``None``.
+
+    A plain TARGET carries sexagesimal text; a POOL member carries only a name
+    and is resolved against the shipped catalogue.
+
+    NEVER INVENTS (0, 0). ``Target`` accepts it happily and ``calibration``
+    defaults to False, so the engine would slew there - and 0h/0deg is below
+    the horizon at most sites, which means the operator gets a horizon refusal
+    naming a target they never entered.
+    """
+    ra_text, dec_text = entry.get("ra"), entry.get("dec")
+    if ra_text and dec_text:
+        try:
+            return parse_ra(str(ra_text)), parse_dec(str(dec_text))
+        except (TypeError, ValueError):
+            return None
+    name = str(entry.get("name") or "").strip()
+    return catalog_coords(name, when) if name else None
+
+
+def _steps(entry: dict, target_name: str, out: list[dict]) -> list[dict]:
+    steps: list[dict] = []
+    for i, step in enumerate(entry.get("steps") or []):
+        exposure = step.get("exposure_s")
+        count = step.get("count")
+        # gt=0 on both. _num() returns 0 for a missing or garbled node param, so
+        # this is the shape a half-filled CAPTURE node arrives in - a graph
+        # error the editor can point at, not a 500 and not a silent zero-frame
+        # step that reports "complete" having shot nothing.
+        if not exposure or float(exposure) <= 0:
+            raise GraphNotRunnable(
+                f"{target_name}: a CAPTURE step has no exposure time - "
+                f"set one on the capture node")
+        if not count or int(count) <= 0:
+            raise GraphNotRunnable(
+                f"{target_name}: a CAPTURE step has a frame count of "
+                f"{count!r} - set how many frames to take")
+        clean = {k: v for k, v in step.items() if k != "integration_goal_h"}
+        goal = step.get("integration_goal_h")
+        if goal:
+            # The Tonight panel's "banked vs goal" bar draws THIS, and the run
+            # does not enforce it - nothing in SequencePlan expresses an
+            # integration goal, and mapping it onto `count` would silently
+            # change the frame count the operator typed.
+            out.append(_note(
+                f"targets[{target_name}].steps[{i}].integration_goal_h",
+                f"the {goal} h integration goal is a Tonight budget, not a run "
+                f"quota - this run stops at {count} frames regardless"))
+        steps.append(clean)
+    return steps
+
+
+def _instructions(compiled: dict, out: list[dict]) -> list[dict]:
+    """Compiled rules, as the subset the engine can actually evaluate.
+
+    Every compiled rule fails validation twice as-emitted: the compiler's
+    ``when`` is a STRING and is semantically the model's ``trigger``, while the
+    model's own ``when`` is a bounded compound predicate. The names collide with
+    opposite meanings, so this is a rename, not a coincidence.
+    """
+    rules: list[dict] = []
+    for rule in compiled.get("instructions") or []:
+        trigger = str(rule.get("when") or "")
+        action = ACTION_ALIASES.get(str(rule.get("action") or ""),
+                                    str(rule.get("action") or ""))
+        if action == "condition":
+            # NOT a lost capability. The CONDITION node is a pass-through: its
+            # inbound edge compiles to this row and its outbound edges compile
+            # to the real rules, which are already present. Reporting it would
+            # train operators to ignore the list.
+            continue
+        bad = []
+        if trigger not in LEGAL_TRIGGERS:
+            bad.append(f"the engine has no {trigger!r} trigger")
+        if action not in LEGAL_ACTIONS:
+            bad.append(f"the engine has no {action!r} action")
+        if bad:
+            # Weather and safety rules are the ones whose absence has physical
+            # consequences, so they are called out louder than a lost notify.
+            danger = trigger in ("on_clouds_in", "on_clouds_clear", "on_unsafe")
+            out.append(_note(
+                f"instructions[{trigger} -> {action}]",
+                f"this rule will not run: {'; '.join(bad)}. "
+                f"It stays in the graph and in the compiled plan, and starts "
+                f"working the day the engine learns the trigger",
+                "danger" if danger else "warn"))
+            continue
+        legal = {"trigger": trigger, "action": action}
+        if rule.get("threshold") is not None:
+            legal["threshold"] = rule["threshold"]
+        rules.append(legal)
+    if rules:
+        # A rule carries its destination node's TYPE and nothing else, so a
+        # NOTIFY node's text, an ABORT node's reason and a CONDITION node's
+        # `once` are gone before this function ever sees them.
+        out.append(_note(
+            "instructions[*].message",
+            "rule text, severity and 'only once' are not carried through the "
+            "compile, so alerts from this flow use the engine's default wording"))
+    return rules
+
+
+def _automation(compiled: dict, out: list[dict]) -> None:
+    """Report the automation blocks, none of which ``SequencePlan`` can hold.
+
+    These are NOT equivalent losses and are not reported as if they were.
+    Losing ``dusk_flats`` means no flats. Losing ``calibration_queue`` means the
+    library does not top up. Losing ``dome`` means a shutter the graph promised
+    would close on unsafe does not exist at run time - and ``DomePolicy``'s own
+    docstring is emphatic that the roof must never be talked out of shutting.
+    That one is ``danger``, and :func:`blocking_reasons` picks it up.
+    """
+    auto = compiled.get("automation") or {}
+    if "dome" in auto:
+        out.append(_note(
+            "automation.dome",
+            "the dome policy compiled correctly but the engine cannot act on "
+            "it yet, so nothing will slave the dome or close it on an unsafe "
+            "reading during this run", "danger"))
+    if "dusk_flats" in auto:
+        out.append(_note("automation.dusk_flats",
+                         "the dusk-flats stage is not wired into the engine "
+                         "yet - this run will not take flats"))
+    if "calibration_queue" in auto:
+        out.append(_note("automation.calibration_queue",
+                         "the calibration queue is not wired into the engine "
+                         "yet - the library will not top up during this run"))
+
+
+def inert_nodes(graph: FlowGraph | None) -> list[dict]:
+    """Nodes whose parameters reach nothing, reported FROM THE GRAPH.
+
+    They have to come from the graph because they leave no trace in the
+    compiled dict: ``compile_plan`` branches on target/pool/capture and walks
+    past the rest, so by the time a plan exists there is nothing left to notice
+    a GUIDE node's settle time was discarded.
+
+    This is the honest surface for a whole class of dead control. A SLEW node's
+    tolerance, an AUTOFOCUS node's step size, an ABORT+PARK node's "park: Yes"
+    - all of them are editable, all of them look live, and none of them reaches
+    the engine. The last is the one that bites: ``park_when_done`` stays False,
+    so a flow that says park and warm leaves the mount tracking and the TEC cold.
+    """
+    if graph is None:
+        return []
+    seen: set[str] = set()
+    out: list[dict] = []
+    for node in graph.nodes:
+        if node.type in COMPILED_NODE_TYPES or node.type in seen:
+            continue
+        seen.add(node.type)
+        if not node.params:
+            continue
+        out.append(_note(
+            f"nodes.{node.type}",
+            f"the {node.type.upper()} node's settings do not reach the run - "
+            f"the compiler does not carry them into the plan"))
+    return out
+
+
+# ---------------------------------------------------------------- the adapter
+
+def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
+                     when: float | None = None
+                     ) -> tuple[SequencePlan, list[dict]]:
+    """``(plan, unmapped)`` for a compiled flow.
+
+    ``graph`` is optional but strongly wanted: without it the inert-node class
+    cannot be reported at all, because it is invisible in ``compiled``.
+    ``when`` is the timestamp pool names are resolved against.
+
+    Raises :class:`GraphNotRunnable` when there is nothing runnable here - no
+    targets at all, or a capture step with no exposure or no frames.
+    """
+    unmapped: list[dict] = []
+    base_schedule = {k: v for k, v in (compiled.get("schedule") or {}).items()
+                     if k in SCHEDULE_KEYS}
+
+    targets: list[dict] = []
+    pooled = 0
+    for entry in compiled.get("targets") or []:
+        name = str(entry.get("name") or "").strip()
+        is_pool = entry.get("pool_rank") is not None
+        coords = _coords(entry, when)
+        if coords is None:
+            unmapped.append(_note(
+                f"targets[{name or '?'}]",
+                "dropped: no usable coordinates. A pool member has to be a "
+                "name this catalogue knows; a target needs an RA and Dec that "
+                "parse", "danger"))
+            continue
+        ra_hours, dec_deg = coords
+
+        # 0 is what an untouched rotation field compiles to, and Target treats
+        # None as "no constraint". Passing the 0 through commands the rotator to
+        # PA 0 and adds 300 s of goto timeout on EVERY target, every night. The
+        # asymmetry decides it: a wrong None costs an operator who really wanted
+        # PA 0 an unconstrained angle - which on a rig with no rotator is the
+        # same behaviour anyway.
+        rotation = entry.get("rotation_deg")
+        if not rotation:
+            if rotation == 0 and "rotation_deg" in entry:
+                unmapped.append(_note(
+                    f"targets[{name}].rotation_deg",
+                    "a rotation of 0 is read as 'no angle constraint'. If you "
+                    "meant position angle 0 exactly, the rotator will not be "
+                    "commanded to it"))
+            rotation = None
+
+        target = {"name": name, "ra_hours": ra_hours, "dec_deg": dec_deg,
+                  "rotation_deg": rotation,
+                  "schedule": _target_schedule(base_schedule, entry,
+                                               is_pool=is_pool),
+                  "steps": _steps(entry, name or "?", unmapped)}
+        targets.append(target)
+        pooled += 1 if is_pool else 0
+
+    if not targets:
+        raise GraphNotRunnable(
+            "this flow has no target the run could point at - add a TARGET "
+            "node with coordinates, or a POOL whose members are catalogue names")
+
+    if pooled:
+        # Counted as targets are BUILT, not zipped against the compiled list
+        # afterwards: a dropped member shifts the two lists out of step, and the
+        # count would then describe candidates that are not in this plan.
+        unmapped.append(_note(
+            "targets[*].pool_rank",
+            f"'best of several' is not something the engine can do yet: all "
+            f"{pooled} candidates run in rank order, each skipped if its "
+            f"window is missed, rather than one being chosen", "warn"))
+
+    _automation(compiled, unmapped)
+    unmapped.extend(inert_nodes(graph))
+
+    plan = SequencePlan.model_validate({
+        "name": compiled.get("name") or "Flow",
+        "targets": targets,
+        "instructions": _instructions(compiled, unmapped),
+    })
+    return plan, unmapped
+
+
+def blocking_reasons(unmapped: list[dict], *, dome_connected: bool) -> list[dict]:
+    """The subset of ``unmapped`` that should stop a run from starting.
+
+    ONE ENTRY QUALIFIES TODAY: a dome policy that the engine cannot act on,
+    when a dome is actually connected. A roof is the only thing in this list
+    whose absence can damage equipment - everything else costs frames.
+
+    ``dome_connected`` is why this is not decided inside
+    :func:`to_sequence_plan`. If no dome is attached there is no roof to leave
+    open, and refusing would block the shipped M16 example from ever running on
+    the simulator - which the handoff's definition of done explicitly requires.
+    The refusal is about a physical shutter, so it is gated on there being one.
+    """
+    if not dome_connected:
+        return []
+    return [u for u in unmapped if u["key"] == "automation.dome"]
