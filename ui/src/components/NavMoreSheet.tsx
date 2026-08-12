@@ -60,6 +60,12 @@ export const OVERFLOW_VIEWS: { id: ViewName; label: string; icon: IconName }[] =
   // the library costs two taps — stated rather than papered over, exactly as the
   // Tonight entry above states its own two-tap cost.
   { id: "gallery", label: "Gallery", icon: "gallery" },
+  // Flows (milestone 2). Same standing as Gallery, Reports and Help: a
+  // first-class rail destination on desktop, and HERE because this sheet is the
+  // phone's copy of that rail, not a duplicate of it. The five primary slots
+  // stay the setup-critical tabs (touch spec R14), so building a flow on a
+  // phone costs two taps — stated, not papered over.
+  { id: "flows", label: "Flows", icon: "bridge" },
 ];
 
 const SIZING: { id: "auto" | "on" | "off"; label: string }[] = [

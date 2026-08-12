@@ -83,6 +83,13 @@ const LOADERS: Partial<Record<ViewName, Loader>> = {
   report: () => import("../views/ReportView"),
   help: () => import("../views/HelpView"),
   gallery: () => import("../views/GalleryView"),
+  // Flows lives under components/, not views/ — the same shape as `settings`
+  // above. The contract's §A.1 pencilled it in at `views/FlowsView.tsx`, but the
+  // whole surface is one directory of ~25 co-located files and a one-line
+  // re-export in views/ would exist only to satisfy a path convention that
+  // `settings` already breaks. `lazyViews.test.ts` fs.existsSync-checks this
+  // specifier, so it is the real module or nothing.
+  flows: () => import("../components/flows/FlowsView"),
 };
 
 /** Views this build code-splits, in preload order. */

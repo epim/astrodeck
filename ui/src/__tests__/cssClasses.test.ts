@@ -103,6 +103,8 @@ const COMPONENT_CLASSES = [
   "tap",
   "tap-lg",
   "confirmhold-fill",
+  // Flows: the live-wire dash march (contract A.2 (7)).
+  "flow-wire-march",
 ];
 
 test("F-C1: every authored component class has a CSS definition in index.css", () => {
