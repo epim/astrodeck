@@ -158,3 +158,37 @@ class TestStore:
             store.delete_folder(EXAMPLES_FOLDER)
         with pytest.raises(ReadOnlyFlow):
             store.rename_folder("My flows", EXAMPLES_FOLDER)
+
+
+class TestAFlowCannotClaimARunItNeverHad:
+    """Found by LOOKING at the rendered library, not by a failing assertion.
+
+    Four of the five shipped fixtures carried ``last_result="ok"`` while their
+    ``last_run`` was None, so every example card rendered "never run" on one
+    line and a green "COMPLETED CLEAN" badge on the next. The card component was
+    faithful - it maps last_result exactly - which is precisely why nothing
+    caught it: the lie was in the DATA, and both halves of it were rendered
+    correctly.
+
+    That pairing is the broken-promise class in miniature: a green badge is the
+    one thing an operator scanning a library actually reads, and it was saying a
+    night had completed cleanly for a flow that had never been started.
+    """
+
+    def test_no_example_reports_a_result_without_a_run(self):
+        from astrodeck.flows.examples import examples
+        for ex in examples():
+            if ex.last_run is None:
+                assert ex.last_result == "", (
+                    f"{ex.name!r} has never run (last_run is None) but claims "
+                    f"last_result={ex.last_result!r} - the library card renders "
+                    f"that as COMPLETED CLEAN")
+
+    def test_the_pairing_holds_for_anything_the_store_returns(self):
+        """The same invariant over load_all(), so a saved flow cannot be given
+        one either - the route re-derives both fields from the stored record and
+        this is what says the two must agree."""
+        from astrodeck.flows.store import FlowStore
+        for rec in FlowStore().load_all():
+            if rec.last_run is None:
+                assert rec.last_result == "", rec.name

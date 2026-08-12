@@ -37,7 +37,6 @@ def _m31() -> FlowRecord:
         name="M31 — LRGB two-night",
         tagline="Dusk-gated deep-sky run: center, focus, guide, 24×120s L with an "
                 "HFR watchdog that refocuses and notifies.",
-        last_result="ok",
         graph=_graph(
             [("n1", "dusk", 30, 70), ("n2", "target", 30, 230), ("n3", "safety", 30, 420),
              ("n4", "slew", 280, 180), ("n5", "autofocus", 510, 90), ("n6", "guide", 510, 260),
@@ -66,7 +65,6 @@ def _m16() -> FlowRecord:
         tagline="Dome opens at dusk, lens-cap flats in the twilight window, lights "
                 "until clouds — then black slot, darks→bias→flats until quota, and "
                 "a clean resume (filter back, re-center, refocus if drifted).",
-        last_result="ok",
         graph=_graph(
             [("n1", "dusk", 30, 50), ("n16", "dome", 260, 50), ("n17", "duskflats", 490, 50),
              ("n2", "target", 720, 50), ("n4", "slew", 950, 50),
@@ -98,7 +96,6 @@ def _pool() -> FlowRecord:
         tagline="One lane, four candidates — the pool hands the flow whichever "
                 "target scores best on altitude × moon separation, and re-evaluates "
                 "when one completes.",
-        last_result="ok",
         graph=_graph(
             [("n1", "dusk", 30, 80), ("n20", "pool", 260, 80), ("n4", "slew", 500, 80),
              ("n5", "autofocus", 730, 80), ("n6", "guide", 960, 80),
@@ -118,7 +115,6 @@ def _nb() -> FlowRecord:
         name="NGC 7000 — Ha narrowband",
         tagline="Moon-tolerant Ha: longer subs, guide-RMS rule pauses for wind "
                 "gusts instead of wasting 300s frames.",
-        last_result="ok",
         graph=_graph(
             [("n1", "dusk", 30, 90), ("n2", "target", 30, 260), ("n4", "slew", 280, 170),
              ("n5", "autofocus", 520, 100), ("n6", "guide", 520, 270),
