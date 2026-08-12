@@ -121,6 +121,15 @@ FILTER_MOVE_TIMEOUT_S = 90.0    # a filter-wheel slot change (incl. settle)
 FOCUSER_MOVE_TIMEOUT_S = 180.0  # a focuser offset move (a big Ha offset can crawl)
 CALIBRATOR_CMD_TIMEOUT_S = 30.0  # flat panel on/off / cover move (PRO-5)
 FLAT_METER_MAX_S = 8            # trial metering captures cap (belt-and-braces)
+
+#: Re-meter a flat set every N frames when the light source is NOT a panel.
+#: A panel is constant and one solve holds for the whole set; the sky is not.
+#: Twilight changes brightness by roughly a factor of two every few minutes, so
+#: an exposure solved for frame 1 is wrong by frame 20 — the set drifts from
+#: correctly exposed to saturated (dawn) or to noise (dusk), and every frame in
+#: between is a different flat. 5 keeps the drift inside the solver's own target
+#: band without spending more time metering than exposing.
+FLAT_RESOLVE_EVERY = 5
 DOME_OPEN_TIMEOUT_S = 180.0    # roll-off roof reopen (PRO-4 D3); mirrors roof.py's
                                # DOME_CLOSE_TIMEOUT_S — a real motor run is minutes
 DOME_QUERY_TIMEOUT_S = 30.0    # a single shutter_state query during reopen
@@ -1471,13 +1480,24 @@ class SequenceEngine:
                              save=True, target=target.name, frame_type=step.frame_type),
             budget, f"capture {exp:g}s")
 
-    async def _solve_flat_exposure(self, step, target: Target) -> tuple[float, bool]:
-        """Meter the panel to ``step.adu_target`` (PRO-5). Returns
+    async def _solve_flat_exposure(self, step, target: Target,
+                                   start_exposure_s: float | None = None
+                                   ) -> tuple[float, bool]:
+        """Meter the light source to ``step.adu_target`` (PRO-5). Returns
         ``(exposure_s, converged)``. Trial captures are ``save=False`` (never
         written to disk); each is bounded like any device I/O. The measurement is
-        the frame ``median`` — robust to the stars/dust a flat renders in."""
+        the frame ``median`` — robust to the stars/dust a flat renders in.
+
+        ``start_exposure_s`` seeds the solver for a RE-solve mid-set: the sky has
+        drifted a little since the last one, so the previous answer is the best
+        guess available and converges in a capture or two. Starting from the
+        plan's original number instead would re-walk the whole ladder every five
+        frames and spend more of the twilight window metering than exposing."""
         from ..imaging.flats import FlatExposureSolver
-        solver = FlatExposureSolver(step.adu_target, initial_exposure_s=step.exposure_s)
+        solver = FlatExposureSolver(
+            step.adu_target,
+            initial_exposure_s=(step.exposure_s if start_exposure_s is None
+                                else start_exposure_s))
         st = solver.first()
         exp = st.exposure_s
         for _ in range(FLAT_METER_MAX_S):
@@ -1534,8 +1554,20 @@ class SequenceEngine:
                 # recovery does not move the wheel for frames it will not shoot.
                 if self._done.get(key, 0) < step.count:
                     await self._apply_filter(step)
-                if flat_auto and "covercalibrator" in self.hub.devices:
-                    if step.panel_brightness is not None:
+                if flat_auto:
+                    # METERING IS NOT THE PANEL'S JOB. This whole block used to
+                    # sit behind `"covercalibrator" in self.hub.devices`, so on
+                    # a rig with no panel a step that ASKED for ADU metering
+                    # silently shot `step.exposure_s` instead and said nothing.
+                    # That is backwards: a panel is a constant light source and
+                    # barely needs metering, while the sky — which is what a
+                    # panel-less rig actually shoots flats against, through a
+                    # translucent cap or at twilight — changes by the minute and
+                    # needs it most.
+                    #
+                    # Only the panel COMMANDS stay gated on a panel existing.
+                    if ("covercalibrator" in self.hub.devices
+                            and step.panel_brightness is not None):
                         await _bounded(self.hub.calibrator_on(step.panel_brightness),
                                        CALIBRATOR_CMD_TIMEOUT_S, "calibrator on")
                         panel_lit = True
@@ -1571,6 +1603,23 @@ class SequenceEngine:
                     await self._frame_alerts_tick()
                     # heal a dropped device before the exposure that needs it
                     await self._reconnect_gate()
+                    # RE-METER A SKY FLAT AS THE SKY MOVES. With a panel the
+                    # source is constant and the opening solve holds for the
+                    # whole set; without one the source is the twilight sky,
+                    # which changes by roughly a factor of two every few
+                    # minutes. Solving once would give a set whose first frame
+                    # is correctly exposed and whose last is saturated or noise,
+                    # with every frame in between a different flat — and nothing
+                    # in the FITS to say so.
+                    #
+                    # Skipped entirely when a panel is lit, and when the set is
+                    # short enough not to drift.
+                    if (flat_auto and not panel_lit and i > 0
+                            and i % FLAT_RESOLVE_EVERY == 0):
+                        self._set_state(detail=f"{target.name}: re-metering flat "
+                                               f"(the sky has moved)")
+                        solved_exp, _ = await self._solve_flat_exposure(
+                            step, target, start_exposure_s=solved_exp)
                     exp = solved_exp if solved_exp is not None else step.exposure_s
                     self._begin_frame(ti, si, exp)
                     self._set_state(state="running",
