@@ -72,11 +72,36 @@ _HHMM_RE = re.compile(r"^(\d{2}):(\d{2})$")
 TriggerKind = Literal[
     "on_hfr_above", "on_guide_rms_above", "on_frame_rejected",
     "on_target_complete", "at_time",
+    # --- sky / rig conditions (ADDITIVE; a plan without them is unchanged) ---
+    # Each is a LEVEL, edge-triggered by the evaluator, and each is fed from a
+    # TRI-STATE reading where None means "unreadable" and fires nothing. See
+    # instructions.TriggerContext for why that distinction is load-bearing.
+    "on_clouds_in", "on_clouds_clear", "on_unsafe", "on_panel_ready",
 ]
 ActionKind = Literal[
     "notify", "pause", "refocus", "dither", "abort",
     # --- control-flow expansion (ADDITIVE): target jumps. Both need target_arg.
     "run_target", "skip_target",
+    # --- the self-releasing weather hold (ADDITIVE) -----------------------
+    # DELIBERATELY NOT one half of a pause/resume pair, and the reason is
+    # structural rather than stylistic.
+    #
+    # `pause()` blocks the frame loop at `await self._checkpoint()`, which is the
+    # FIRST line of that loop - above _enforce_stop_boundary (the dawn/stop
+    # window), above _safety_gate, and above _frame_alerts_tick (the dead-man
+    # ping). A rule-fired pause therefore disarms the dawn stop, the safety gate
+    # and the watchdog heartbeat together, and a run held for weather would sit
+    # through sunrise with nothing left to end it and nothing feeding the
+    # deadman.
+    #
+    # And a `resume` RULE could never release it anyway: rules are evaluated at
+    # frame boundaries, and a paused loop has none. The run would wait forever
+    # for a rule that cannot fire.
+    #
+    # So the hold owns its own release, exactly as _park_hold_pause already does
+    # for the meridian: it polls the sky itself, keeps the boundaries armed, and
+    # comes back through the target's own setup.
+    "hold_for_clear",
 ]
 
 # Leaf predicate vocabulary for the bounded compound grammar. Deliberately the
@@ -84,6 +109,7 @@ ActionKind = Literal[
 # a composition of the existing bounded predicate set, never a scripting runtime.
 PredicateKind = Literal[
     "hfr_above", "guide_rms_above", "frame_rejected", "target_complete", "at_time",
+    "clouds_in", "clouds_clear", "unsafe", "panel_ready",
 ]
 
 
