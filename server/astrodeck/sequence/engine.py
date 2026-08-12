@@ -444,7 +444,19 @@ class SequenceEngine:
         self._paused.clear()
         if self._pause_started_at is None:
             self._pause_started_at = time.time()
-        self._set_state(state="paused")
+        # SAY WHO PAUSED IT. This used to pass state alone, and `_set_state`
+        # merges — so a manual pause kept whatever sentence was already on
+        # screen. Reported from the rig 2026-08-11, and the misleading case is
+        # not the harmless one: `_pause_unsafe` writes "paused (unsafe): <reason>",
+        # so pressing Pause after a weather hold had cleared left a rig that is
+        # waiting for a PERSON reading as one waiting for the SKY. The natural
+        # response to that sentence is to go to bed and let it recover itself,
+        # and it never will.
+        #
+        # "you" rather than "the operator": whoever is reading this is the one
+        # who pressed it, and a run does not resume until they say so.
+        self._set_state(state="paused", detail="paused by you — it waits here "
+                                               "until you resume it")
 
     def resume(self) -> None:
         # Same window, worse consequence: a resume during the teardown would
@@ -457,7 +469,11 @@ class SequenceEngine:
             self._paused_accum_s += time.time() - self._pause_started_at
             self._pause_started_at = None
         self._paused.set()
-        self._set_state(state="running")
+        # And clear it on the way out: a reason must not outlive the pause it
+        # explains, or a running rig carries "paused by you" until the next
+        # frame boundary overwrites it. Same discipline `schedule=None` already
+        # has — an explicit clear, not a hope that something else will.
+        self._set_state(state="running", detail="")
 
     # ------------------------------------------------------- elapsed / ETA math
 
