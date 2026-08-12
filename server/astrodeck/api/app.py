@@ -25,7 +25,8 @@ from fastapi import (Depends, FastAPI, HTTPException, Query, Request, WebSocket,
 from fastapi.responses import (FileResponse, JSONResponse, Response,
                                StreamingResponse)
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import (BaseModel, ConfigDict, Field, ValidationError,
+                      field_validator)
 
 from ..alerting import AlertDispatcher
 from ..auth import (ALL_CAPS, CAP_ADMIN_USERS, CAP_CONFIG_ALERTS,
@@ -89,11 +90,22 @@ from ..sync import manifest as sync_manifest_mod
 from ..sync.runner import runner as sync_push_runner
 from ..hub import CAPTURE_DIR, TOUCH_MAX_RATE_DEG_S, hub
 from ..calibration import CalibrationLibrary, MatchTolerance
+from ..calibration.matcher import LightNeed
 from ..imaging import build_caption, compose_share_jpeg, fmt_share_date, to_png
 from ..naming import sanitize_component
 from ..plans import PLAN_SCHEMA, plan_library
 from ..profiles import Profile, profiles, redact_profile
 from ..provenance import effective_config
+# The flows package is imported by SUBMODULE. flows/__init__ re-exports only
+# doctor/models/nodes — it predates five of the nine modules — so
+# `from ..flows import compile_plan` is an ImportError, not a style choice.
+from ..flows.calibration_health import CalNeed, DEFAULT_QUOTA, KIND_ORDER, health_matrix
+from ..flows.compile import compile_plan
+from ..flows.doctor import check as flow_doctor
+from ..flows.models import MY_FLOWS_FOLDER, FlowGraph, FlowRecord
+from ..flows.store import FlowLibraryFull, ReadOnlyFlow, flow_store
+from ..flows.to_plan import GraphNotRunnable, blocking_reasons, to_sequence_plan
+from ..flows.tonight import banked_hours_from_reports, resolve_tonight
 from ..rotation import angle_equals, map_sky_target, mod360
 from ..sequence import SequenceEngine, SequencePlan
 from ..sequence import schedule as schedule_mod
@@ -1245,6 +1257,46 @@ class PlanSaveBody(BaseModel):
     plan: SequencePlan
     id: str | None = None
     overwrite: bool = False
+
+
+class FlowSaveBody(BaseModel):
+    """The record to persist.
+
+    Server-owned fields on it are IGNORED rather than trusted — see
+    ``_persist_flow``. The store refuses ``readonly=True``, but nothing in it
+    stops a client forging ``last_result: "ok"`` onto a flow that has never run,
+    and that field is what the library card draws.
+    """
+    flow: FlowRecord
+
+
+class FlowFolderRenameBody(BaseModel):
+    """Re-parent every flow in ``name`` to ``new_name``. Not a directory
+    rename — a folder is a field on the record, so this is the only thing
+    "renaming a folder" can mean."""
+    name: str = Field(min_length=1, max_length=200)
+    new_name: str = Field(min_length=1, max_length=200)
+
+
+class FlowCompileBody(BaseModel):
+    """An unsaved graph to compile — the editor's live doctor.
+
+    ``graph`` is optional so the empty canvas has an answer too: a new flow
+    should get the doctor's "nothing to run yet", not a 422."""
+    graph: FlowGraph | None = None
+    name: str = ""
+
+
+class FlowRunBody(BaseModel):
+    """``accept_unmapped`` is the operator saying "yes, I know some of this
+    graph will not be honoured — run the rest anyway".
+
+    It deliberately does NOT clear the dome refusal. Everything else on the
+    unmapped list costs frames; a roof that will not close costs equipment, and
+    a checkbox that can wave that through is a checkbox that will be ticked
+    once and never read again."""
+    accept_unmapped: bool = False
+    force: bool = False
 
 
 class SessionPatchBody(BaseModel):
@@ -3423,7 +3475,388 @@ def create_app() -> FastAPI:
         except Exception as e:
             raise HTTPException(422, detail={"detail": str(e), "code": "invalid"})
 
+    # -------------------------------------------------------------------- flows
+    #
+    # The graph is the source of truth and the plan is derived — so nothing here
+    # persists a compiled plan, and every read compiles fresh. ORDERING MATTERS
+    # twice below; both places say so where they sit.
+
+    async def _persist_flow(record: FlowRecord) -> FlowRecord:
+        """One writer for POST and PUT, because the field-ownership policy is
+        the thing that must not drift between them.
+
+        FlowRecord carries four fields the store does not defend: ``created_ts``
+        (nothing writes it), ``last_run`` and ``last_result`` (nothing on the
+        server writes them either), and ``readonly`` (refused, but only by
+        exception). The library cards RENDER last_run/last_result — so a client
+        that PUTs ``last_result: "ok"`` onto a flow that has never run gets a
+        green card for free. All four are re-derived from the stored record.
+        """
+        try:
+            prior = await asyncio.to_thread(flow_store.get, record.id)
+        except KeyError:
+            prior = None
+        record = record.model_copy(update={
+            "readonly": False,
+            "created_ts": prior.created_ts if prior else time.time(),
+            "last_run": prior.last_run if prior else None,
+            "last_result": prior.last_result if prior else "",
+        })
+        try:
+            return await asyncio.to_thread(flow_store.save, record)
+        except ReadOnlyFlow as e:
+            raise HTTPException(403, detail={"detail": str(e), "code": e.code})
+        except FlowLibraryFull as e:
+            raise HTTPException(409, detail={"detail": str(e), "code": e.code})
+        except KeyError:
+            # safe_id_path's refusal for '..', separators, NUL, a drive prefix,
+            # a reserved device name or a trailing dot. A traversal id is a
+            # miss, not a server error.
+            raise HTTPException(404, detail={"code": "not_found"})
+        except ValueError as e:
+            raise HTTPException(422, detail={"detail": str(e),
+                                             "code": getattr(e, "code", "invalid")})
+
+    def _compile_payload(graph: FlowGraph, name: str) -> dict:
+        """``{plan, structural, issues, unmapped}``.
+
+        FOUR lists, not one, because four different things can be wrong with a
+        graph and collapsing them takes away the operator's ability to act:
+
+        * ``structural`` — edges to nodes that do not exist, an input wired
+          twice, a flow output feeding an event input. NOT run by model
+          construction; only ``FlowStore.save`` calls it. ``compile_plan``
+          validates NOTHING and will happily emit ``action: "?"`` for an edge
+          whose destination is missing, so a compile route that does not call
+          this itself compiles nonsense without complaint.
+        * ``issues`` — the doctor's ten advisory rules.
+        * ``unmapped`` — what the compile emits that ``SequencePlan`` cannot
+          carry. This is the list that stops a graph feature being silently
+          inert, and it is the reason this endpoint is worth calling before a
+          run rather than after one.
+        """
+        structural = graph.validation_errors()
+        compiled = compile_plan(graph, name)
+        unmapped: list[dict] = []
+        try:
+            _plan, unmapped = to_sequence_plan(compiled, graph)
+        except GraphNotRunnable as e:
+            # Not an error response: a half-built graph is the NORMAL state of
+            # an editor, and the canvas asks for a compile on every edit. The
+            # refusal is reported in the same list as every other loss.
+            unmapped = [{"key": "plan", "detail": str(e), "level": "danger"}]
+        return {"plan": compiled, "structural": structural,
+                "issues": [i.to_json() for i in flow_doctor(graph)],
+                "unmapped": unmapped}
+
+    @app.get("/api/flows", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
+    async def list_flows():
+        """The card projection, never the graphs. A library of 30 flows at up
+        to 400 nodes each is megabytes of wires to draw a card wall."""
+        records = await asyncio.to_thread(flow_store.load_all)
+        return [r.card() for r in records]
+
+    @app.post("/api/flows", dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
+    async def save_flow(body: FlowSaveBody):
+        """Upsert. CAP_CONTROL_CAPTURE, not admin, matching POST /api/plans —
+        an operator who may compose a sequence may compose the graph that
+        compiles into one."""
+        return await _persist_flow(body.flow)
+
+    # ORDERING: every static /api/flows/<segment> route MUST be declared before
+    # /api/flows/{flow_id}, or Starlette matches the parameterised route first
+    # and "folders" arrives as a flow id — a 404 on a route that exists.
+    @app.get("/api/flows/folders", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
+    async def list_flow_folders():
+        """``{name, count, readonly}`` rows. "My flows" and "Examples" are
+        seeded even at count 0, and the sort rank lives in the store."""
+        return await asyncio.to_thread(flow_store.folders)
+
+    @app.post("/api/flows/folders",
+              dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
+    async def rename_flow_folder(body: FlowFolderRenameBody):
+        """Re-parent, not rename — a folder is a field on the record.
+
+        THE STORE DOES NOT VALIDATE THE TARGET NAME. ``rename_folder`` uses
+        ``model_copy``, which runs no validators, so ``FlowRecord``'s own folder
+        rule never sees the new name and a path-shaped string would be persisted
+        into every moved record. Validated here THROUGH THE MODEL rather than
+        against a second copy of the rule, so the two cannot drift.
+        """
+        try:
+            FlowRecord(name="_", folder=body.new_name)
+        except ValidationError:
+            raise HTTPException(422, detail={
+                "detail": "a folder name is 1-4 segments of letters, numbers, "
+                          "spaces or dashes",
+                "code": "invalid_folder"})
+        try:
+            moved = await asyncio.to_thread(
+                flow_store.rename_folder, body.name, body.new_name)
+        except ReadOnlyFlow as e:
+            raise HTTPException(403, detail={"detail": str(e), "code": e.code})
+        return {"moved": moved, "folder": body.new_name}
+
+    @app.delete("/api/flows/folders/{name}",
+                dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
+    async def delete_flow_folder(name: str):
+        """Never deletes a flow — it re-parents them into My flows.
+
+        Losing a night's automation because a folder was tidied away is not a
+        trade anybody would choose. The destination is FIXED rather than a query
+        param: it would reach ``rename_folder`` — and therefore ``model_copy`` —
+        unvalidated, and one unvalidated path into that is enough. A caller who
+        wants somewhere else can rename first.
+        """
+        try:
+            moved = await asyncio.to_thread(flow_store.delete_folder, name)
+        except ReadOnlyFlow as e:
+            raise HTTPException(403, detail={"detail": str(e), "code": e.code})
+        return {"moved": moved, "reparented_to": MY_FLOWS_FOLDER}
+
+    @app.post("/api/flows/compile",
+              dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
+    async def compile_draft(body: FlowCompileBody):
+        """The editor's live doctor: compile work in progress without saving it.
+
+        Also static-before-parameterised, though only for symmetry — there is no
+        POST /api/flows/{flow_id} for it to collide with today, and relying on
+        that absence is how the next route added here breaks this one."""
+        return _compile_payload(body.graph or FlowGraph(), body.name or "")
+
+    @app.get("/api/flows/{flow_id}", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
+    async def get_flow(flow_id: str):
+        """Returns the RECORD OBJECT, deliberately.
+
+        FlowEdge's source field is ``from_`` with ``alias="from"``, and FastAPI
+        serialises response models by alias. Hand-building this with
+        ``model_dump()`` instead would emit ``from_``, and every wire in the
+        canvas would vanish with no error anywhere."""
+        try:
+            return await asyncio.to_thread(flow_store.get, flow_id)
+        except KeyError:
+            raise HTTPException(404, detail={"code": "not_found"})
+
+    @app.put("/api/flows/{flow_id}",
+             dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
+    async def put_flow(flow_id: str, body: FlowSaveBody):
+        """The PATH id wins over the body id. A body that disagrees is either a
+        stale client or an attempt to write elsewhere under cover of a legal
+        path; either way the URL is what the caller asked for."""
+        return await _persist_flow(body.flow.model_copy(update={"id": flow_id}))
+
+    @app.delete("/api/flows/{flow_id}",
+                dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
+    async def delete_flow(flow_id: str):
+        try:
+            removed = await asyncio.to_thread(flow_store.delete, flow_id)
+        except ReadOnlyFlow as e:
+            raise HTTPException(403, detail={"detail": str(e), "code": e.code})
+        except KeyError:
+            raise HTTPException(404, detail={"code": "not_found"})
+        if not removed:
+            # delete() returns False for an absent file rather than raising, so
+            # without this the route answers "deleted" for something it did not.
+            raise HTTPException(404, detail={"code": "not_found"})
+        return {"deleted": flow_id}
+
+    @app.post("/api/flows/{flow_id}/compile",
+              dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
+    async def compile_flow(flow_id: str):
+        try:
+            rec = await asyncio.to_thread(flow_store.get, flow_id)
+        except KeyError:
+            raise HTTPException(404, detail={"code": "not_found"})
+        return _compile_payload(rec.graph, rec.name)
+
+    @app.get("/api/flows/{flow_id}/tonight",
+             dependencies=[Depends(require(CAP_VIEW_SITE_DERIVED))])
+    @declare(CAP_VIEW_SITE_DERIVED)
+    async def flow_tonight(flow_id: str):
+        """CAP_VIEW_SITE_DERIVED, NOT CAP_VIEW_STATUS.
+
+        Every value here — dark-window boundaries, altitude curves, transit
+        times, the meridian-flip instant — is f(latitude, longitude). A key-name
+        filter cannot withhold that, because the function carries the coordinate
+        without carrying the key; an audit of this codebase recovered the
+        observatory to 2.9 km from three viewer-legal requests. Same call as
+        /api/framing/mosaic.
+
+        THE GRAPH IS PASSED, NOT THE COMPILED DICT. Given a dict, resolve_tonight
+        ignores ``name`` and the dawn story cannot mention the session report,
+        because a report sink compiles to nothing and a plan alone cannot know
+        one existed.
+
+        Off the event loop: this runs one astropy ephemeris pass PER RESOLVED
+        TARGET, so a four-member pool is four passes and the first call also pays
+        the lazy astropy import.
+        """
+        try:
+            rec = await asyncio.to_thread(flow_store.get, flow_id)
+        except KeyError:
+            raise HTTPException(404, detail={"code": "not_found"})
+        return await asyncio.to_thread(
+            resolve_tonight, rec.graph, hub.site, name=rec.name,
+            banked=lambda: banked_hours_from_reports(
+                SessionReporter.list_reports()))
+
+    @app.post("/api/flows/{flow_id}/run",
+              dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
+    @declare(CAP_CONTROL_MOUNT, reaches={"SequenceEngine.start"})
+    async def run_flow(flow_id: str, body: FlowRunBody):
+        """Compile the stored graph and hand it to the engine.
+
+        The guards below are the SAME five /api/sequence/start applies, in the
+        same order, because a second start path that quietly omits one is how a
+        guard stops being a guard.
+        """
+        try:
+            rec = await asyncio.to_thread(flow_store.get, flow_id)
+        except KeyError:
+            raise HTTPException(404, detail={"code": "not_found"})
+
+        structural = rec.graph.validation_errors()
+        if structural:
+            raise HTTPException(422, detail={
+                "detail": "; ".join(structural), "code": "invalid_graph"})
+
+        compiled = compile_plan(rec.graph, rec.name)
+        try:
+            plan, unmapped = to_sequence_plan(compiled, rec.graph)
+        except GraphNotRunnable as e:
+            raise HTTPException(422, detail={"detail": str(e), "code": e.code})
+
+        # (0) FAIL CLOSED ON THE DOME, and only on the dome. A DOME CONTROL node
+        # compiles a real DomePolicy that SequencePlan has nowhere to put, so it
+        # is dropped — and unlike a lost flat panel, that means a shutter which
+        # was promised to close on unsafe and will not. NOT clearable by
+        # accept_unmapped: nobody should be able to click past a roof.
+        #
+        # Gated on a dome being CONNECTED. With no dome attached there is no
+        # roof to leave open, and refusing anyway would stop the shipped M16
+        # example running on the simulator — which the handoff requires.
+        dome_dev = hub.devices.get("dome")
+        blocking = blocking_reasons(
+            unmapped, dome_connected=bool(dome_dev is not None
+                                          and dome_dev.connected))
+        if blocking:
+            raise HTTPException(409, detail={
+                "detail": "this flow's DOME CONTROL node cannot be honoured "
+                          "yet — the plan carries no dome policy, so nothing "
+                          "would close the shutter on an unsafe reading. "
+                          "Remove the dome node to run the rest of the flow.",
+                "code": "dome_unmapped", "unmapped": blocking})
+        if unmapped and not body.accept_unmapped:
+            raise HTTPException(409, detail={
+                "detail": "parts of this flow do not survive the compile",
+                "code": "unmapped", "unmapped": unmapped})
+
+        if not plan.targets or plan.total_frames() == 0:
+            raise HTTPException(422, "plan has no frames")
+        if quota_unbounded(plan):
+            raise HTTPException(400, "count_mode=accepted with both reject "
+                                     "guards disabled and no stop boundary can "
+                                     "run unbounded — set a frame count, a stop "
+                                     "time, or a reject guard")
+        if not body.force:
+            for t in plan.targets:
+                if t.calibration:
+                    continue
+                blocked = _horizon_block(t.ra_hours, t.dec_deg)
+                if blocked is not None:
+                    raise HTTPException(409, detail={**blocked, "target": t.name})
+        # Sun exclusion is checked REGARDLESS of force. Everything else on this
+        # list costs you a night; this one costs you a sensor.
+        for t in plan.targets:
+            if t.calibration:
+                continue
+            solar = _solar_block(t.ra_hours, t.dec_deg)
+            if solar is not None:
+                raise HTTPException(409, detail={**solar, "target": t.name})
+        if hub.looping:
+            # Awaited, not fired: the preview loop must have released the camera
+            # before the engine's first exposure.
+            await hub.stop_loop_and_wait()
+        try:
+            hub.require("camera")
+            # Synchronous, and it owns its own task — do not await it, and do
+            # not wrap it in a busy lane. "Already running" is raised in here.
+            engine.start(plan)
+        except DeviceError as e:
+            raise _err(e)
+
+        bus.log("info",
+                f"flow '{rec.name}' started: {plan.total_frames()} frames"
+                + (f" — {len(unmapped)} graph feature(s) are not honoured by "
+                   f"this run" if unmapped else ""), "flow")
+        return {"started": True, "flow_id": flow_id,
+                "frames": plan.total_frames(), "unmapped": unmapped}
+
     # ------------------------------------------------ calibration library (PRO-1)
+
+    @app.get("/api/calibration/health",
+             dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
+    async def calibration_health(flow_id: str | None = Query(None)):
+        """The calibration matrix: what tonight needs against what we have.
+
+        CAP_VIEW_STATUS matches GET /api/calibration/masters — a row carries
+        exposure/gain/temp/filter/rotation and counts, nothing site-derived.
+
+        THE ROWS ARE THE DEMAND, so with no flow named there is no demand and
+        the answer is an empty list. ``planned: false`` is what says so:
+        an empty matrix MUST NOT be drawn as healthy, it must say there are no
+        lights planned yet.
+
+        TWO HONEST HOLES, reported rather than papered over:
+        ``counts_masters_only`` — there is no frame walk to feed ``frames=``,
+        so ``have`` counts stacked masters and reads MISSING where raw subs
+        exist on disk. ``assumed`` — the node vocabulary has no offset param and
+        the compiler never emits a cooling setpoint, so offset is the shipped
+        default and sensor temperature is unknown. Both are invented values if
+        you do not say they are assumptions.
+        """
+        needs: list[CalNeed] = []
+        quota: int = DEFAULT_QUOTA
+        if flow_id is not None:
+            try:
+                rec = await asyncio.to_thread(flow_store.get, flow_id)
+            except KeyError:
+                raise HTTPException(404, detail={"code": "not_found"})
+            compiled = compile_plan(rec.graph, rec.name)
+            seen: set[tuple] = set()
+            for target in compiled.get("targets") or []:
+                for step in target.get("steps") or []:
+                    key = (step.get("exposure_s"), step.get("gain"),
+                           step.get("binning"), step.get("filter"))
+                    if key in seen or not step.get("exposure_s"):
+                        continue
+                    seen.add(key)
+                    needs.append(CalNeed(LightNeed(
+                        exposure_s=float(step.get("exposure_s") or 0),
+                        gain=int(step.get("gain") or 0), offset=30,
+                        temp_c=None, binning=int(step.get("binning") or 1),
+                        filter=str(step.get("filter") or ""))))
+            cq = (compiled.get("automation") or {}).get("calibration_queue") or {}
+            quota = int(cq.get("quota") or DEFAULT_QUOTA)
+        c = config_store.cfg().calibration
+        rows = await asyncio.to_thread(
+            health_matrix, needs, masters=cal_library.list_masters(),
+            quota=quota, kinds=KIND_ORDER,
+            tol=MatchTolerance(c.exposure_tol_pct, c.temp_tol_c))
+        return {"rows": [r.to_json() for r in rows], "planned": bool(needs),
+                "counts_masters_only": True,
+                "assumed": {"offset": 30, "temp_c": None}}
 
     @app.get("/api/calibration/masters", dependencies=[Depends(require(CAP_VIEW_STATUS))])
     @declare(CAP_VIEW_STATUS)
