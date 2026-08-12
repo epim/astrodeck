@@ -413,6 +413,17 @@ export function createFlowsActions(set: SetFn, get: GetFn): FlowsActions {
              { id: ++logSeq, ts: Date.now(), msg, tone }].slice(-LOG_RING),
     })),
 
-    flowsSetUi: (p) => set((s) => patch(s, { ui: { ...s.flows.ui, ...p } })),
+    flowsSetUi: (p) => set((s) => patch(s, {
+      ui: { ...s.flows.ui, ...p },
+      // Leaving the phone FLOW tab CANCELS a half-made wire (§C.15: "switching
+      // tabs clears tapWire"). An arm is a half-finished sentence only that tab
+      // can finish; carried across to MONITOR it means the next port touched,
+      // minutes later, silently completes a wire the operator forgot starting.
+      // Done here rather than in the tab bar so the CANVAS tab's own drag
+      // wiring and any future caller inherit it.
+      ...(p.phoneTab !== undefined && p.phoneTab !== s.flows.ui.phoneTab
+        ? { tapWire: null }
+        : {}),
+    })),
   };
 }

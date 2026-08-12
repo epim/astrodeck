@@ -113,6 +113,26 @@ const NAV: { id: ViewName; label: string; icon: IconName }[] = [
   // with no visible affordance is an entry nobody finds. The padding change
   // there is part of THIS change; do not revert one without the other.
   { id: "gallery", label: "Gallery", icon: "gallery" },
+  // APPENDED (Flows milestone 2, MILESTONE2-CONTRACT §A.2 (3) — the sixth
+  // instance of the Risk-10 append rule, not an exception to it).
+  //
+  // Deliberately NOT in the GATED table below, on the `sequence` precedent
+  // whose comment says why: "the builder stays usable offline, just Run is
+  // disabled". A flow library and a flow editor need no rig at all; only RUN
+  // does, and that nuance lives inside the view as an honest-disabled button
+  // with the reason on it. Sending someone to the not-connected interstitial to
+  // edit a graph would be a lie about what is required.
+  //
+  // ⚠ THE ICON IS UNSETTLED (contract §G-9). The shipped 42-name set has no
+  // node-graph glyph; `bridge` is the contract's own placeholder and is used
+  // verbatim rather than invented, because `PATHS` is a total record and
+  // nav.test.ts:133-141 greps it ("a name in the union with no path renders an
+  // empty <svg>, which on a 72px rail reads as a missing tab").
+  //
+  // ⚠ THE RAIL HEIGHT MOVED AGAIN, EXACTLY AS THE GALLERY NOTE ABOVE WARNED IT
+  // WOULD. 16 entries do not fit at py-1.5; see the padding note below. That
+  // change is part of THIS change; do not revert one without the other.
+  { id: "flows", label: "Flows", icon: "bridge" },
 ];
 
 // ROUTING + CODE SPLITTING. Every destination except Equipment is a lazily
@@ -660,7 +680,21 @@ export default function App() {
                   // 50px tall — above the 44px touch floor (touch spec R14). (A
                   // rotated tablet, 1180x820, is tighter still and scrolls; it
                   // did before this change too, at 13 entries.)
-                  className={`flex flex-col items-center gap-1 py-1.5 transition-colors relative cursor-pointer
+                  //
+                  // py-1, not py-1.5, as of Flows (16 entries). Same arithmetic
+                  // continued from the measured 62px-at-py-3 cost: py-1.5 gives
+                  // a 50px entry and 16x50 + 16 = 816, which leaves NO room for
+                  // a 50px entry against the 818px rail — the last one lands at
+                  // the fold again. py-1 gives 46px: 16x46 + 16 = 752, with 66px
+                  // of headroom, and 46 >= the 44px touch floor with 2px to
+                  // spare. ⚠ THIS IS A PREDICTION, NOT A MEASUREMENT. It is the
+                  // same formula that predicted 772 where 765 was measured (a
+                  // ~7px optimistic error), so the 66px of headroom absorbs it —
+                  // but contract §G-8 asks for a real re-measure at 1440x900,
+                  // and this change shrinks all SIXTEEN tabs by 2px each on
+                  // every screen. If the re-measure says otherwise, the fix is
+                  // an overflow affordance on the rail, not a 17th squeeze.
+                  className={`flex flex-col items-center gap-1 py-1 transition-colors relative cursor-pointer
                     ${view === n.id ? "text-accent" : gated ? "text-dim/60 hover:text-ink" : "text-dim hover:text-ink"}`}
                 >
                   {view === n.id && <span className="absolute left-0 top-2 bottom-2 w-[2px] bg-accent shadow-[0_0_8px_var(--glow)]" />}
