@@ -193,6 +193,27 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
 
     automation: dict = {}
     if any(n.type == "dome" for n in graph.nodes):
+        # TODO(flows-handoff): this block is TRANSCRIBED FAITHFULLY and is, I
+        # think, a defect in the spec — flagged rather than fixed, per ground
+        # rule 2 ("note it in your summary and implement as specified anyway
+        # unless the user says otherwise").
+        #
+        # `compilePlan()` hardcodes exactly this pair, so the DOME CONTROL
+        # node's own `slave` field (which offers "Slave to mount" | "Manual")
+        # and its `timeout` field never reach the server. Picking Manual in the
+        # editor therefore compiles to slaved, and a shutter timeout the
+        # operator typed is discarded — two controls that look live and do
+        # nothing, which is the broken-promise class this codebase has a
+        # detector suite for.
+        #
+        # `on_unsafe` is NOT part of the complaint: the node offers one option
+        # and DomePolicy deliberately has no field for it, because a value that
+        # can arrive is a value that can say "don't close".
+        #
+        # The fix, when the owner rules on it, is one line:
+        #     DomePolicy.from_node_params(node.params).to_plan()
+        # Same question applies to FLAT PANEL, which has no `automation` block
+        # at all, so its placement/ADU/solve params do not survive the compile.
         automation["dome"] = {"slave": True, "on_unsafe": "close"}
     if flats is not None:
         automation["dusk_flats"] = {
