@@ -40,6 +40,7 @@ from ..guide.base import rms_total_arcsec
 from ..hub import Hub
 from ..imaging.processing import to_jpeg
 from . import schedule
+from .cloudstate import CloudState, verdict_from_info
 from .instructions import (
     FireRecord, FiredAction, TriggerContext, evaluate_instructions,
 )
@@ -69,6 +70,24 @@ _TERMINAL_STATES = frozenset({"complete", "aborted", "error"})
 
 # --- safety/scheduling constants (Batch 4b §1.9) ---------------------------
 SAFETY_PAUSE_POLL_S = 5.0       # re-read cadence while paused-for-safety
+
+# --- weather hold (Flows cloud dodge) --------------------------------------
+# How long between probe frames while holding for cloud. 120 s is a compromise:
+# short enough that a clearing sky is noticed within a couple of minutes, long
+# enough that a two-hour hold costs sixty exposures rather than a thousand.
+CLOUD_PROBE_EVERY_S = 120.0
+# The probe exposure. Short on purpose - the cloud verdict comes from bright
+# stars and contrast, both of which a 10 s sub shows plainly, and a held run
+# should not be quietly taking science-length exposures nobody asked for.
+CLOUD_PROBE_EXPOSURE_S = 10.0
+# Consecutive CLEAR probes before the run goes back to work. The frame-level
+# debounce in CloudState already suppresses a single lucky gap; this is the
+# second, slower gate - it is the difference between resuming on a hole in the
+# cloud and resuming on a clearing.
+CLOUD_RESUME_CLEAR_PROBES = 2
+# Default cap on a hold, in minutes. The HOLD/RESUME node ships 45 with
+# "Abort + park" as its timeout action, and that is what this honours.
+CLOUD_MAX_HOLD_MIN = 45.0
 SAFETY_SEED_WAIT_S = 1.0        # max wait for the own-cadence poller's first read
 SAFETY_SEED_STEP_S = 0.05       # poll-cache step while seeding
 SLEW_PROJECT_S = 180.0          # pre-slew floor projection margin (slew+solve)
@@ -311,6 +330,16 @@ class SequenceEngine:
         # once/cooldown state), keyed by instruction id. Empty + never touched
         # when plan.instructions == [] (the byte-identical no-op path).
         self._fire_state: dict[str, FireRecord] = {}
+        # The debounced sky verdict. Fed by every linear science frame (each one
+        # already carries a CloudResult from hub._publish_preview) and by the
+        # probe frames a hold takes while the science camera is otherwise idle.
+        self._clouds = CloudState()
+        self._holding_for_clear = False
+        # The step a cloud probe borrows its filter/gain/binning from. Set on
+        # every frame so a hold entered mid-step probes the sky through the SAME
+        # optics the science frames used - a probe through a different filter
+        # scores differently and the debounced state would read that as weather.
+        self._hold_step = None
         # Executed target-jumps this run (control-flow expansion). Inert at 0
         # unless a run_target/skip_target action actually fires; capped by
         # MAX_JUMPS so a mutual-jump cycle can never spin forever.
@@ -429,6 +458,8 @@ class SequenceEngine:
         self._frozen = {}
         self._retakes_per_target = {}
         self._fire_state = {}
+        self._clouds = CloudState()
+        self._holding_for_clear = False
         self._jumps_spent = 0
         self._pending_skips = set()
         self._dawn_cutoff = False
@@ -1726,6 +1757,7 @@ class SequenceEngine:
             self._set_state(state="running",
                             detail=f"{target.name}: {step.filter or 'no filter'} "
                                    f"{step.exposure_s:g}s  [{shown}/{step.count}]")
+            self._hold_step = step
             info = await self._capture(step, target)
             self._frames_since_dither += 1
             self._frames_since_focus += 1
@@ -1733,17 +1765,30 @@ class SequenceEngine:
             # advances. EVERY frame goes in the report.
             accepted = self._check_quality(info)
             self._reporter_record(target, step, info, accepted=accepted)
+            # Every linear sub is already a cloud measurement - hub's preview
+            # path runs cloud_score on it and puts the verdict in info["cloud"].
+            # Reading it here costs nothing and makes the sky verdict exactly as
+            # fresh as the last frame. A frame with NO verdict (a stretched one)
+            # feeds nothing rather than counting as clear.
+            self._observe_clouds(info)
             # PRO-3: per-frame instruction eval (accepted + info["hfr"] known).
             # Guarded so an empty instruction list makes this path dead —
             # byte-identical to the pre-PRO-3 loop.
             if plan.instructions:
+                _now = time.time()
                 ctx = TriggerContext(
-                    now_ts=time.time(),
+                    now_ts=_now,
                     frame_hfr=(info.get("hfr") if isinstance(info, dict) else None),
                     guide_rms=self._guide_rms(),
                     frame_rejected=(not accepted),
                     target_complete=False,
-                    active_target=target.name)
+                    active_target=target.name,
+                    # Tri-state, all three. None means nobody can currently say,
+                    # and the evaluator treats that as indeterminate rather than
+                    # as a "no" - see instructions.TriggerContext.
+                    cloudy=self._clouds.cloudy(_now),
+                    unsafe=await self._unsafe_now(),
+                    panel_ready=self._panel_ready_now())
                 await self._run_instructions(ctx, target, step)
             if accepted:
                 step_rejects = 0
@@ -2514,6 +2559,181 @@ class SequenceEngine:
                 raise SafetyAbort(
                     f"unsafe for over {cfg.safety.max_pause_min} min "
                     f"(roof stays closed): {reason}")
+
+    # ------------------------------------------------- sky / rig conditions
+
+    def _observe_clouds(self, info: dict) -> None:
+        """Feed one frame's cloud verdict into the debounced state.
+
+        A frame that carries NO verdict feeds nothing. That happens for a
+        stretched frame - the contrast metric needs unstretched pixels - and the
+        distinction matters: "nobody judged this frame" must not decay into "the
+        sky was clear", or a rig whose preview path changed would shoot happily
+        through an overcast while the state quietly aged out.
+        """
+        got = verdict_from_info(info if isinstance(info, dict) else {})
+        if got is None:
+            return
+        cloudy, score, reason = got
+        now = time.time()
+        before = self._clouds.cloudy(now)
+        after = self._clouds.observe(cloudy, now, score=score, reason=reason)
+        if after is not before and after is not None:
+            # Only on a CHANGE, and only to a definite state. Logging every
+            # frame's verdict would bury the night log; logging the transitions
+            # is what a human reading it back actually wants.
+            bus.log("warning" if after else "info",
+                    f"sky verdict: {self._clouds.describe(now)}", "sequence")
+
+    async def _unsafe_now(self) -> bool | None:
+        """Tri-state safety, for the ``on_unsafe`` trigger only.
+
+        Deliberately does NOT re-implement the safety policy. ``_safety_gate``
+        still owns what happens on an unsafe reading, including the fail-closed
+        rule for a stale one. This is a read for RULE EVALUATION, and a reading
+        that is missing or stale reports None so a rule fires on evidence rather
+        than on silence.
+        """
+        try:
+            reading = await self.hub.safety_reading()
+        except Exception:
+            return None
+        if reading is None or bool(getattr(reading, "stale", False)):
+            return None
+        return not bool(getattr(reading, "is_safe", True))
+
+    def _panel_ready_now(self) -> bool | None:
+        """Tri-state flat-panel readiness. None when there is no panel to ask."""
+        cc = self.hub.devices.get("covercalibrator")
+        if cc is None or not getattr(cc, "connected", False):
+            return None
+        try:
+            ready = getattr(cc, "ready", None)
+        except Exception:
+            return None
+        return None if ready is None else bool(ready)
+
+    async def _hold_for_clear(self, reason: str, target: Target | None) -> None:
+        """Hold the run until the sky clears, and release itself.
+
+        A TWIN OF ``_park_hold_pause``, NOT of ``pause()``. ``pause()`` blocks
+        the frame loop at ``_checkpoint`` - the FIRST line of that loop, above
+        ``_enforce_stop_boundary``, ``_safety_gate`` and ``_frame_alerts_tick``.
+        A weather hold built on it would disarm the dawn stop, the safety gate
+        and the dead-man ping together, and sit through sunrise with the
+        watchdog silent. It could not release itself either: rules are evaluated
+        at frame boundaries and a paused loop has none, so a "clouds clear" rule
+        would wait for a boundary that never comes.
+
+        So this loop keeps those three armed itself, and owns its release.
+
+        WHAT IT DOES TO THE RIG, per the HOLD/RESUME node's own defaults
+        ("Keep tracking, park guider"):
+
+        * guiding stops - there is nothing to guide on through cloud, and a
+          guider hunting a star it cannot see walks the mount;
+        * TRACKING STAYS ON, the deliberate difference from the safety hold. The
+          target is still up and still ours, and parking would cost a re-slew
+          and a re-solve for weather that may pass in ten minutes.
+          ``_enforce_stop_boundary`` still ends the night at dawn and
+          ``_safety_gate`` still parks the rig if conditions turn genuinely
+          unsafe, so "keep tracking" is not "keep tracking no matter what".
+
+        HOW IT SEES THE SKY. It takes a short probe frame every
+        ``CLOUD_PROBE_EVERY_S``. That is not an optimisation, it is the whole
+        mechanism: the cloud verdict comes from frames, and a hold that took
+        none would age its last reading out to "unknown" and then hold forever
+        on no evidence at all.
+        """
+        max_hold_s = 60.0 * CLOUD_MAX_HOLD_MIN
+        started = time.time()
+        clear_streak = 0
+        self._holding_for_clear = True
+        try:
+            await self._stand_down_guider()
+            bus.log("warning", f"holding for clear sky: {reason}", "sequence")
+            self._set_state(
+                state="holding", hold="clouds",
+                detail=(f"held for cloud - {reason}. Probing every "
+                        f"{CLOUD_PROBE_EVERY_S / 60:.0f} min; parks after "
+                        f"{max_hold_s / 60:.0f} min"))
+            while True:
+                # THE THREE THINGS A PAUSE WOULD HAVE DISARMED, kept armed.
+                await self._checkpoint()             # a manual pause still works
+                self._enforce_stop_boundary(target)  # dawn still ends the night
+                await self._safety_gate(context="frame", target=target)
+                await self._frame_alerts_tick()      # the deadman still gets fed
+
+                if max_hold_s > 0 and (time.time() - started) >= max_hold_s:
+                    # The node's own default is Abort + park, and SafetyAbort is
+                    # the engine's existing shielded wind-down: it parks, warms
+                    # and finalises the report rather than merely stopping.
+                    raise SafetyAbort(
+                        f"cloud hold exceeded {max_hold_s / 60:.0f} min - parking")
+
+                await asyncio.sleep(CLOUD_PROBE_EVERY_S)
+                verdict = await self._cloud_probe(target)
+                if verdict is None or verdict:
+                    clear_streak = 0            # unknown is not clear
+                    continue
+                clear_streak += 1
+                if clear_streak < CLOUD_RESUME_CLEAR_PROBES:
+                    continue
+
+                held_min = (time.time() - started) / 60.0
+                bus.log("info", f"sky cleared after {held_min:.0f} min - "
+                                "re-acquiring the target", "sequence")
+                if target is not None and not target.calibration:
+                    # The same restore the safety hold uses, for the same
+                    # reason: the sky moved while we sat. _setup_target
+                    # re-centres by plate solve and restarts guiding per plan.
+                    await self._setup_target(self._index_of_target(target), target)
+                self._set_state(state="running", hold=None,
+                                detail=f"resumed after {held_min:.0f} min of cloud")
+                return
+        finally:
+            self._holding_for_clear = False
+
+    async def _stand_down_guider(self) -> None:
+        """Stop guiding, leave the mount tracking. Best-effort and never raises:
+        a wedged guider must not be able to prevent a weather hold."""
+        try:
+            if self.hub.guider and self.hub.guider.connected:
+                await asyncio.wait_for(self.hub.guider.stop_guiding(),
+                                       GUIDE_OP_TIMEOUT_S)
+        except (asyncio.TimeoutError, Exception):
+            pass
+
+    async def _cloud_probe(self, target: Target | None) -> bool | None:
+        """One short exposure, judged. Returns cloudy / clear / unknown.
+
+        A failure returns None rather than raising: a probe that could not be
+        taken is not a clear sky, and a hold that aborted because one exposure
+        failed would turn a passing cloud into a lost night.
+        """
+        step = self._probe_step()
+        if step is None:
+            return None
+        try:
+            info = await self._capture(step, target,
+                                       exposure_s=CLOUD_PROBE_EXPOSURE_S)
+        except Exception as e:                    # noqa: BLE001 - reported
+            bus.log("warning", f"cloud probe failed ({e}) - still holding",
+                    "sequence")
+            return None
+        self._observe_clouds(info)
+        got = verdict_from_info(info if isinstance(info, dict) else {})
+        return None if got is None else got[0]
+
+    def _probe_step(self):
+        """The step a probe frame is taken with.
+
+        The CURRENT step, so the probe sees the sky through the same filter the
+        science frames do. A probe through a different filter would score
+        differently and the debounced state would read an optical change as
+        weather.
+        """
+        return self._hold_step
 
     async def _park_hold(self) -> None:
         """Stop tracking (park-hold) when pausing for safety so the mount isn't
@@ -3303,6 +3523,13 @@ class SequenceEngine:
                     bus.log("warning", fa.message or "paused by sequence instruction",
                             "sequence")
                     self.pause()
+                elif fa.action == "hold_for_clear":
+                    # The self-releasing weather hold. Runs INLINE - it does not
+                    # return until the sky clears, the night ends at the stop
+                    # boundary, or the hold times out into an abort+park - so the
+                    # frame loop simply continues underneath it afterwards.
+                    await self._hold_for_clear(
+                        fa.message or "clouds", target)
                 elif fa.action == "refocus":
                     if "focuser" in self.hub.devices:
                         await self._autofocus("triggered refocus")

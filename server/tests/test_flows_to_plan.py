@@ -155,8 +155,9 @@ class TestInstructions:
         assert plan.instructions[0].action == "refocus"
         assert plan.instructions[0].threshold == 3.2
 
-    def test_holdresume_is_the_engines_pause(self):
-        """The one rename. Everything else either matches or has no home."""
+    def test_holdresume_pause_becomes_the_SELF_RELEASING_hold(self):
+        """It used to map to `pause`, and that was the wrong engine capability
+        rather than merely the wrong word — see the note on PORTED_ACTIONS."""
         g = FlowGraph(
             nodes=[_n("t", "target", name="M31", ra="00h 42m 44s",
                       dec="+41 16 09"),
@@ -165,12 +166,16 @@ class TestInstructions:
                    _n("h", "holdresume", x=300)],
             edges=[_e("t", "target", "c", "run"), _e("k", "fire", "h", "pause")])
         plan, _ = to_sequence_plan(compile_plan(g, "n"))
-        assert [i.action for i in plan.instructions] == ["pause"]
+        assert [i.action for i in plan.instructions] == ["hold_for_clear"]
 
-    def test_a_cloud_rule_is_dropped_LOUDLY(self):
-        """``on_clouds_in`` is not in ``TriggerKind`` and ``TriggerContext`` has
-        no cloud field to evaluate it against. Passing it through would 422 the
-        whole flow; dropping it silently is how an operator finds out at 3 a.m."""
+    def test_a_cloud_rule_now_REACHES_THE_ENGINE(self):
+        """This test used to assert the opposite, and the change is the feature.
+
+        Until the engine learned the sky, `on_clouds_in` was refused by
+        `Instruction` and this adapter dropped it with a danger note. The
+        trigger exists now, `TriggerContext` carries a tri-state `cloudy`, and
+        the hold is a real engine action - so the rule the operator drew is the
+        rule that runs."""
         g = FlowGraph(
             nodes=[_n("t", "target", name="M31", ra="00h 42m 44s",
                       dec="+41 16 09"),
@@ -178,9 +183,41 @@ class TestInstructions:
                    _n("w", "cloudwatch", x=200), _n("h", "holdresume", x=300)],
             edges=[_e("t", "target", "c", "run"), _e("w", "in", "h", "pause")])
         plan, un = to_sequence_plan(compile_plan(g, "n"))
-        assert plan.instructions == []
-        cloud = [u for u in un if "on_clouds_in" in u["key"]]
-        assert cloud and cloud[0]["level"] == "danger"
+        assert [(i.trigger, i.action) for i in plan.instructions] \
+            == [("on_clouds_in", "hold_for_clear")]
+        assert not [u for u in un if "on_clouds_in" in u["key"]], \
+            "nothing should still be warning about a rule that now runs"
+
+    def test_the_hold_is_NOT_compiled_to_a_plain_pause(self):
+        """`pause()` blocks the frame loop above the dawn boundary, the safety
+        gate and the dead-man ping, and a paused loop has no frame boundaries
+        for a resume rule to fire at. A cloud rule compiled to `pause` would
+        sit through sunrise with the watchdog silent."""
+        g = FlowGraph(
+            nodes=[_n("t", "target", name="M31", ra="00h 42m 44s",
+                      dec="+41 16 09"),
+                   _n("c", "capture", x=100, exposure=60, count=5),
+                   _n("w", "cloudwatch", x=200), _n("h", "holdresume", x=300)],
+            edges=[_e("t", "target", "c", "run"), _e("w", "in", "h", "pause")])
+        plan, _ = to_sequence_plan(compile_plan(g, "n"))
+        assert plan.instructions[0].action != "pause"
+
+    def test_the_resume_wire_is_reported_as_REDUNDANT_not_broken(self):
+        """The hold releases itself. Telling an operator their resume wire "will
+        not run" would be a lie - the run does resume, the hold does it - so it
+        is a note, not a loss."""
+        g = FlowGraph(
+            nodes=[_n("t", "target", name="M31", ra="00h 42m 44s",
+                      dec="+41 16 09"),
+                   _n("c", "capture", x=100, exposure=60, count=5),
+                   _n("w", "cloudwatch", x=200), _n("h", "holdresume", x=300)],
+            edges=[_e("t", "target", "c", "run"),
+                   _e("w", "clear", "h", "resume")])
+        _, un = to_sequence_plan(compile_plan(g, "n"))
+        note = [u for u in un if "holdresume.resume" in u["key"]]
+        assert note, "the wire must be acknowledged, not ignored"
+        assert note[0]["level"] == "warn"
+        assert "releases itself" in note[0]["detail"]
 
     def test_a_condition_passthrough_row_is_NOT_reported(self):
         """The capture->condition edge compiles to a bogus ``action:"condition"``
@@ -199,13 +236,18 @@ class TestInstructions:
 
     def test_the_legal_vocabularies_are_READ_from_the_engine(self):
         """Not retyped. A hand-copied list is a claim that stops being true the
-        day the enum is widened — and widening it is the whole point of the
-        cloud-trigger work this adapter is reporting around."""
+        day the enum is widened — and it was widened, which is exactly why this
+        assertion changed rather than the code around it.
+
+        The earlier version asserted `on_clouds_in` was ABSENT and carried a
+        message telling its future reader to delete the adapter's reporting when
+        that stopped being true. It stopped being true today."""
         assert "on_hfr_above" in LEGAL_TRIGGERS
-        assert "on_clouds_in" not in LEGAL_TRIGGERS, (
-            "TriggerKind has been widened — the cloud rules can now run, and "
-            "this adapter's reporting for them should be removed")
-        assert {"pause", "refocus", "abort", "notify"} <= LEGAL_ACTIONS
+        assert {"on_clouds_in", "on_clouds_clear", "on_unsafe",
+                "on_panel_ready"} <= LEGAL_TRIGGERS, (
+            "the sky triggers must be read from TriggerKind, never restated")
+        assert {"pause", "refocus", "abort", "notify",
+                "hold_for_clear"} <= LEGAL_ACTIONS
 
 
 class TestRefusals:
@@ -340,14 +382,23 @@ class TestTheShippedExamples:
         assert all(u["key"] and u["detail"] and u["level"] in ("warn", "danger")
                    for u in unmapped)
 
-    def test_the_m16_example_loses_its_entire_cloud_dodge(self):
-        """Named explicitly because the handoff's definition of done requires
-        that choreography to run from real engine events. It cannot yet, and
-        this test is what stops that being discovered on a cloudy night."""
+    def test_the_m16_example_holds_for_cloud_and_aborts_on_unsafe(self):
+        """The handoff's definition of done asks for this choreography to run
+        from real engine events. The weather half does now.
+
+        What is still missing is named in the same breath rather than left to
+        be discovered: the calibration-during-hold rules (-> calib) have no
+        engine action, so they are still reported as losses."""
         m16 = next(e for e in examples() if e.id == "example-m16")
         plan, un = to_sequence_plan(compile_plan(m16.graph, m16.name), m16.graph)
-        assert plan.instructions == []
-        assert len([u for u in un if u["key"].startswith("instructions[on_")]) >= 6
+        got = {(i.trigger, i.action) for i in plan.instructions}
+        assert ("on_clouds_in", "hold_for_clear") in got, "the hold runs"
+        assert ("on_unsafe", "abort") in got, "the safety abort runs"
+        assert ("on_clouds_in", "notify") in got, "the alert runs"
+        still_lost = [u for u in un if "-> calib" in u["key"]]
+        assert still_lost, (
+            "the calibration-during-hold half has no engine action yet and must "
+            "keep saying so")
 
     def test_the_eaa_example_starts_now_and_keeps_its_short_subs(self):
         eaa = next(e for e in examples() if e.id == "example-eaa")
