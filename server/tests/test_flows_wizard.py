@@ -23,7 +23,8 @@ from astrodeck.flows.doctor import check
 from astrodeck.flows.wizard import (
     AUTOMATION_OPTIONS, DEFAULT_OPTIONS, KIND_DEEP_SKY, KIND_EAA, KIND_POOL,
     KINDS, OPT_CLOUD_DODGE, OPT_DOME, OPT_DUSK_FLATS, OPT_GUIDING, OPT_NOTIFY,
-    OPT_WATCHDOG, flow_name, generate, generate_record)
+    OPT_WATCHDOG, UNGUIDED_EXPOSURE_DEFAULT, flow_name, generate,
+    generate_record)
 
 #: A node card is 188px wide (README §3); the generator's rows are 200px apart.
 NODE_W, NODE_H = 188.0, 160.0
@@ -167,6 +168,49 @@ class TestTheFlowLane:
         guided = _one(generate(KIND_DEEP_SKY, {OPT_GUIDING}), "capture")
         assert unguided.params["exposure"] < 120
         assert guided.params["exposure"] == 120, "guided subs keep the default"
+
+    def test_the_unguided_default_is_30s(self):
+        """Owner's call, 2026-08-12. Pinned because it is a DECISION and not a
+        derivation — the generator cannot see focal length, polar alignment or
+        periodic error, so the number's only justification is that it is
+        conservative enough to be defensible at most focal lengths and short
+        enough to stay well under the doctor's 120s line. A silent drift would
+        turn a stated default into an accident."""
+        assert UNGUIDED_EXPOSURE_DEFAULT == 30
+        assert _one(generate(KIND_DEEP_SKY, set()), "capture"
+                    ).params["exposure"] == 30
+
+    def test_the_operator_can_override_the_unguided_sub_length(self):
+        """The whole reason it is an argument: what a mount can hold unguided is
+        a property of the rig, and the operator knows theirs."""
+        graph = generate(KIND_DEEP_SKY, set(), unguided_exposure_s=90)
+        assert _one(graph, "capture").params["exposure"] == 90
+
+    @pytest.mark.parametrize("bad", [0, -30, "sixty", None, ""])
+    def test_an_unusable_override_falls_back_to_the_default(self, bad):
+        """An exposure of 0 compiles to a step that captures nothing, and the
+        wizard's whole promise is that its output runs."""
+        graph = generate(KIND_DEEP_SKY, set(), unguided_exposure_s=bad)
+        assert _one(graph, "capture").params["exposure"] == UNGUIDED_EXPOSURE_DEFAULT
+
+    def test_the_override_does_not_touch_a_guided_night(self):
+        """It answers 'how long can you go WITHOUT a guider'. A guided lane has
+        a guider, so the question does not apply and the 120s default stands."""
+        graph = generate(KIND_DEEP_SKY, {OPT_GUIDING}, unguided_exposure_s=45)
+        assert _one(graph, "capture").params["exposure"] == 120
+
+    def test_the_override_survives_generate_record(self):
+        """The route will call generate_record, not generate — a parameter that
+        stops at the wrapper is the same dead control this change removed."""
+        rec = generate_record(KIND_DEEP_SKY, set(), "M31", unguided_exposure_s=45)
+        assert _one(rec.graph, "capture").params["exposure"] == 45
+
+    def test_an_integer_override_stays_an_integer(self):
+        """The param is rendered into a field the operator reads. '45' is a sub
+        length; '45.0' is a float that escaped."""
+        graph = generate(KIND_DEEP_SKY, set(), unguided_exposure_s=45.0)
+        assert graph.nodes and _one(graph, "capture").params["exposure"] == 45
+        assert isinstance(_one(graph, "capture").params["exposure"], int)
 
     def test_a_typed_target_names_the_target_node(self):
         graph = generate(KIND_DEEP_SKY, DEFAULT_OPTIONS, "  NGC 6946  ")

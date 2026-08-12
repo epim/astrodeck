@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import pytest
 
+from astrodeck.devices.base import DEFAULT_SHUTTER_TIMEOUT_S
 from astrodeck.flows.compile import compile_plan, flow_order
 from astrodeck.flows.examples import examples
 from astrodeck.flows.models import FlowEdge, FlowGraph, FlowNode
@@ -165,7 +166,41 @@ class TestAutomation:
     def test_a_dome_is_always_fail_closed(self):
         g = FlowGraph(nodes=[_n("d", "dome")])
         assert compile_plan(g, "n")["automation"]["dome"] == {
-            "slave": True, "on_unsafe": "close"}
+            "slave": True, "on_unsafe": "close",
+            "shutter_timeout_s": DEFAULT_SHUTTER_TIMEOUT_S}
+
+    def test_the_dome_nodes_own_settings_reach_the_plan(self):
+        """The prototype hardcoded {slave: true, on_unsafe: close}, so the
+        node's Azimuth dropdown and its shutter timeout never left the editor —
+        two controls that looked live and did nothing. Owner authorised wiring
+        them through on 2026-08-12."""
+        g = FlowGraph(nodes=[_n("d", "dome", slave="Manual", timeout=45)])
+        dome = compile_plan(g, "n")["automation"]["dome"]
+        assert dome["slave"] is False
+        assert dome["shutter_timeout_s"] == 45.0
+
+    @pytest.mark.parametrize("params", [
+        {"slave": "Manual", "timeout": 45},        # everything overridden
+        {"slave": "Slave to mount"},               # the default, said out loud
+        {"timeout": 0},                            # a timeout that cannot work
+        {"on_unsafe": "leave open"},               # what an edited plan may say
+        {},                                        # nothing set at all
+    ])
+    def test_on_unsafe_is_a_constant_whatever_the_node_says(self, params):
+        """DomePolicy has no on_unsafe FIELD on purpose: a value that can arrive
+        is a value that can say 'don't close', and the roof would still be open
+        in the rain having been talked out of shutting by an old client or a
+        hand-edited plan."""
+        g = FlowGraph(nodes=[_n("d", "dome", **params)])
+        assert compile_plan(g, "n")["automation"]["dome"]["on_unsafe"] == "close"
+
+    @pytest.mark.parametrize("timeout", [0, -5, "soon", None])
+    def test_an_unusable_timeout_becomes_the_default_not_itself(self, timeout):
+        """Zero would make open_and_confirm give up before the roof could
+        physically have moved, turning 'the sky is above you' into a coin toss."""
+        g = FlowGraph(nodes=[_n("d", "dome", timeout=timeout)])
+        assert compile_plan(g, "n")["automation"]["dome"][
+            "shutter_timeout_s"] == DEFAULT_SHUTTER_TIMEOUT_S
 
     def test_the_queue_states_its_order_and_that_flats_need_a_panel(self):
         g = FlowGraph(nodes=[_n("q", "calib", quota=20)])
