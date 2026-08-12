@@ -98,7 +98,7 @@ const NAV_IDS = NAV.map((n) => n.id);
 const LANDED_ORDER = [
   "connect", "polar", "mount", "focus", "capture", "guide", "atlas",
   "sequence", "power", "monitor", "tonight", "settings", "report", "help",
-  "gallery",
+  "gallery", "flows",
 ];
 
 // ---------------------------------------------------------------- tests
@@ -117,8 +117,8 @@ test("APPEND-ONLY: the landed rail order is byte-for-byte unchanged", () => {
     "If this is a deliberate append, add the new id to the END of LANDED_ORDER here too");
 });
 
-test("APPEND-ONLY: Gallery is the newest entry and sits last", () => {
-  eq(NAV_IDS[NAV_IDS.length - 1], "gallery");
+test("APPEND-ONLY: Flows is the newest entry and sits last", () => {
+  eq(NAV_IDS[NAV_IDS.length - 1], "flows");
 });
 
 test("every rail entry is a real ViewName", () => {

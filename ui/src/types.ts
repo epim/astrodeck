@@ -31,7 +31,13 @@ export type ViewName =
   // rewritten, new destinations go on the end). Browsing what the rig has
   // already written to disk is not an equipment-dependent task, so this one is
   // deliberately absent from App's GATED table.
-  | "gallery";
+  | "gallery"
+  // APPENDED (Flows milestone 2, MILESTONE2-CONTRACT §A.2 — the same Risk-10
+  // precedent as every entry above it). The node-graph automation surface: its
+  // library and editor need no rig at all, so like "gallery" it is deliberately
+  // absent from App's GATED table; only RUN needs equipment, and that nuance
+  // lives inside the view (the "sequence" precedent, App.tsx:150).
+  | "flows";
 
 // NOV-9: the failure→topic / browsable-guide anchor set shared by
 // lib/troubleshoot.ts (diagnoseFailure + TROUBLESHOOTING), Toast.action's
