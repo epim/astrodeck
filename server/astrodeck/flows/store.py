@@ -1,0 +1,160 @@
+"""Flow persistence — one ``flows/<id>.json`` per flow, atomically written.
+
+Mirrors ``plans.PlanLibrary`` deliberately, down to ``safe_id_path``: the flow id
+is client-controllable (request body AND path param, including the ``..%5C``
+backslash vector on Windows), and a value like ``"../../astrodeck"`` would
+otherwise let a PUT overwrite the server's own config. That defence is not
+re-derived here; it is the same call, so the two stores cannot drift apart on
+the one property that matters most.
+
+THE EXAMPLES ARE NOT ON DISK. They are code fixtures, merged into every read and
+refused by every write. Writing them out at first boot would mean an operator's
+edit could silently become the shipped example, and a later release "fixing" an
+example would collide with a file the user believes is theirs.
+"""
+from __future__ import annotations
+
+import time
+from pathlib import Path
+
+from ..config import CONFIG_DIR
+from ..persist import ensure_dir, list_json, read_json_or, safe_id_path, write_json_atomic
+from .examples import examples
+from .models import EXAMPLES_FOLDER, MY_FLOWS_FOLDER, FlowRecord
+
+FLOW_SCHEMA = 1
+FLOWS_DIR = CONFIG_DIR / "flows"
+
+#: Soft quota, same reasoning as PlanLibrary's: a client must not be able to
+#: fill the disk and make every list linear-slow. Upserting an existing id is
+#: always allowed.
+MAX_FLOWS = 500
+
+
+class FlowLibraryFull(ValueError):
+    def __init__(self, message: str, code: str = "library_full"):
+        super().__init__(message)
+        self.code = code
+
+
+class ReadOnlyFlow(ValueError):
+    """A write aimed at one of the shipped Examples."""
+
+    def __init__(self, message: str, code: str = "readonly"):
+        super().__init__(message)
+        self.code = code
+
+
+class FlowStore:
+    def __init__(self, directory: Path | None = None):
+        self._dir = directory
+
+    @property
+    def dir(self) -> Path:
+        # Resolved LIVE, never bound at import: a test monkeypatches CONFIG_DIR
+        # and every other store in this codebase honours that (see gallery's
+        # capture_root note). Binding it here is how a maintenance path ends up
+        # reading a different directory from the server.
+        return self._dir if self._dir is not None else CONFIG_DIR / "flows"
+
+    def _path(self, flow_id: str) -> Path:
+        return safe_id_path(self.dir, flow_id)
+
+    # ------------------------------------------------------------------ read
+
+    def _on_disk(self) -> list[FlowRecord]:
+        out: list[FlowRecord] = []
+        for path in list_json(self.dir):
+            raw = read_json_or(path)
+            if not isinstance(raw, dict):
+                continue
+            try:
+                out.append(FlowRecord(**(raw.get("flow") or {})))
+            except Exception:
+                # A corrupt or future-schema file is SKIPPED, not fatal: one bad
+                # file must not make the whole library unopenable.
+                continue
+        return out
+
+    def load_all(self) -> list[FlowRecord]:
+        """Every flow: the operator's, plus the read-only Examples.
+
+        A user flow that somehow carries an example's id wins, so a corrupted
+        fixture can be shadowed rather than bricking the library."""
+        mine = self._on_disk()
+        taken = {r.id for r in mine}
+        return mine + [e for e in examples() if e.id not in taken]
+
+    def get(self, flow_id: str) -> FlowRecord:
+        for r in self.load_all():
+            if r.id == flow_id:
+                return r
+        raise KeyError(flow_id)
+
+    def folders(self) -> list[dict]:
+        """Folder rows with counts, for the library's section headers."""
+        counts: dict[str, int] = {}
+        for r in self.load_all():
+            counts[r.folder] = counts.get(r.folder, 0) + 1
+        for seed in (MY_FLOWS_FOLDER, EXAMPLES_FOLDER):
+            counts.setdefault(seed, 0)
+        # My flows first (it leads the grid and carries the + NEW FLOW card),
+        # Examples last, anything the user made in between, alphabetically.
+        def rank(name: str) -> tuple[int, str]:
+            return ({MY_FLOWS_FOLDER: 0, EXAMPLES_FOLDER: 2}.get(name, 1), name.lower())
+        return [{"name": n, "count": counts[n], "readonly": n == EXAMPLES_FOLDER}
+                for n in sorted(counts, key=rank)]
+
+    # ----------------------------------------------------------------- write
+
+    def save(self, record: FlowRecord) -> FlowRecord:
+        if record.readonly or any(e.id == record.id for e in examples()):
+            raise ReadOnlyFlow("the shipped examples are read-only — "
+                               "duplicate one into My flows to edit it")
+        existing = {r.id for r in self._on_disk()}
+        if record.id not in existing and len(existing) >= MAX_FLOWS:
+            raise FlowLibraryFull(f"the flow library is full ({MAX_FLOWS})")
+        errors = record.graph.validation_errors()
+        if errors:
+            raise ValueError("; ".join(errors))
+        ensure_dir(self.dir)
+        record = record.model_copy(update={"updated_ts": time.time()})
+        write_json_atomic(self._path(record.id),
+                          {"schema_version": FLOW_SCHEMA, "id": record.id,
+                           "flow": record.model_dump(by_alias=True)})
+        return record
+
+    def delete(self, flow_id: str) -> bool:
+        if any(e.id == flow_id for e in examples()):
+            raise ReadOnlyFlow("the shipped examples cannot be deleted")
+        path = self._path(flow_id)
+        if not path.exists():
+            return False
+        path.unlink()
+        return True
+
+    def rename_folder(self, old: str, new: str) -> int:
+        """Move every flow in ``old`` to ``new``. Returns how many moved.
+
+        RE-PARENTING, not a rename of a directory — folders are a field on the
+        record, so this is the only thing "renaming a folder" can mean. The
+        Examples folder refuses, because its members are code."""
+        if old == EXAMPLES_FOLDER or new == EXAMPLES_FOLDER:
+            raise ReadOnlyFlow("the Examples folder is fixed")
+        moved = 0
+        for r in self._on_disk():
+            if r.folder == old:
+                self.save(r.model_copy(update={"folder": new}))
+                moved += 1
+        return moved
+
+    def delete_folder(self, name: str, reparent_to: str = MY_FLOWS_FOLDER) -> int:
+        """Remove a folder by re-parenting its flows. Never deletes a flow —
+        losing a night's automation because a folder was tidied away is not a
+        trade anybody would choose."""
+        if name in (EXAMPLES_FOLDER, MY_FLOWS_FOLDER):
+            raise ReadOnlyFlow(f"{name} cannot be deleted")
+        return self.rename_folder(name, reparent_to)
+
+
+flow_store = FlowStore()
