@@ -50,7 +50,7 @@ def _m31() -> FlowRecord:
              ("n7", "frame", "n8", "events"), ("n8", "fire", "n9", "do"),
              ("n8", "fire", "n10", "do"), ("n3", "unsafe", "n11", "do")],
             {"n2": {"name": "M31 — Andromeda", "ra": "00h 42m 44s",
-                    "dec": "+41° 16′ 09″", "rotation": 23.4}}))
+                    "dec": "+41° 16' 09\"", "rotation": 23.4}}))
 
 
 def _m16() -> FlowRecord:
@@ -85,7 +85,7 @@ def _m16() -> FlowRecord:
              ("n13", "clear", "n15", "stop"), ("n18", "ready", "n15", "panel"),
              ("n3", "unsafe", "n19", "do")],
             {"n2": {"name": "M16 — Eagle", "ra": "18h 18m 48s",
-                    "dec": "−13° 49′ 00″", "rotation": 0},
+                    "dec": "-13° 49' 00\"", "rotation": 0},
              "n7": {"filter": "Ha", "exposure": 180, "gain": 100, "bin": "1",
                     "count": 20, "reject": 3.5, "goal": 12},
              "n10": {"sink": "ntfy", "channel": "rig-alerts", "level": "info"}}))
@@ -129,7 +129,7 @@ def _nb() -> FlowRecord:
              ("n6", "guiding", "n7", "run"), ("n7", "complete", "n12", "session"),
              ("n7", "frame", "n8", "events"), ("n8", "fire", "n10", "do")],
             {"n2": {"name": "NGC 7000 — North America", "ra": "20h 59m 17s",
-                    "dec": "+44° 31′ 44″", "rotation": 0},
+                    "dec": "+44° 31' 44\"", "rotation": 0},
              "n7": {"filter": "Ha", "exposure": 300, "gain": 100, "bin": "1",
                     "count": 12, "reject": 3.5},
              "n8": {"when": "Guide RMS above", "threshold": 1.8,
@@ -150,7 +150,7 @@ def _eaa() -> FlowRecord:
             [("n2", "target", "n4", "run"), ("n4", "centered", "n5", "run"),
              ("n5", "focused", "n7", "run"), ("n7", "complete", "n12", "session")],
             {"n2": {"name": "M27 — Dumbbell", "ra": "19h 59m 36s",
-                    "dec": "+22° 43′ 16″", "rotation": 0},
+                    "dec": "+22° 43' 16\"", "rotation": 0},
              "n7": {"filter": "L", "exposure": 4, "gain": 300, "bin": "2",
                     "count": 60, "reject": 5, "goal": 0}}))
 

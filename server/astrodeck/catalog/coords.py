@@ -5,10 +5,37 @@ import math
 import re
 import time
 
+#: Typographic characters that mean the same thing as an ASCII one, mapped to
+#: it before any parsing happens.
+#:
+#: Coordinates are COPIED. They arrive from Stellarium, from SIMBAD, from a
+#: forum post, from a design tool that auto-substitutes as you type — and every
+#: one of those sources may render a prime as U+2032 or a minus as U+2212. Those
+#: are the correct characters for the job typographically; they are simply not
+#: the ones the regexes below match. Refusing them makes the operator hunt for
+#: an invisible difference between two decs that look identical on screen, which
+#: is the worst kind of error message to be handed at 2am.
+#:
+#: NOT a general Unicode fold: only characters whose ASCII meaning is
+#: unambiguous. A digit that merely looks like a digit (fullwidth, Devanagari)
+#: is left alone to fail loudly, because silently reading it would be guessing.
+_TYPOGRAPHIC = str.maketrans({
+    "′": "'",    # ′ prime — arcminutes
+    "″": '"',    # ″ double prime — arcseconds
+    "’": "'",    # ’ right single quote, what most editors autocorrect ' into
+    "”": '"',    # ” right double quote, likewise for "
+    "‘": "'",    # ‘ left single quote
+    "“": '"',    # “ left double quote
+    "−": "-",    # − true minus sign
+    "–": "-",    # – en dash, seen in pasted coordinate tables
+    "—": "-",    # — em dash, ditto
+    " ": " ",    # non-breaking space, which HTML copy-paste is full of
+})
+
 
 def parse_ra(text: str) -> float:
     """Parse RA to hours. Accepts '5h 35m 17s', '05:35:17', '5.5883' (hours)."""
-    text = text.strip()
+    text = text.translate(_TYPOGRAPHIC).strip()
     m = re.match(r"^(\d+)[h:\s]+(\d+)[m:\s]+([\d.]+)s?$", text)
     if m:
         h, mn, s = float(m[1]), float(m[2]), float(m[3])
@@ -20,8 +47,14 @@ def parse_ra(text: str) -> float:
 
 
 def parse_dec(text: str) -> float:
-    """Parse Dec to degrees. Accepts \"-5° 23' 28\"\", '-05:23:28', '-5.391'."""
-    text = text.strip().replace("°", " ").replace("'", " ").replace('"', " ")
+    """Parse Dec to degrees. Accepts \"-5° 23' 28\"\", '-05:23:28', '-5.391'.
+
+    Typographic primes and a true minus sign are accepted too — see
+    ``_TYPOGRAPHIC``. That matters more here than for RA: a dec is the one
+    coordinate that carries a sign, and U+2212 is what a well-set table uses
+    for it."""
+    text = (text.translate(_TYPOGRAPHIC).strip()
+            .replace("°", " ").replace("'", " ").replace('"', " "))
     sign = -1.0 if text.lstrip().startswith("-") else 1.0
     body = text.strip("+- \t")
     m = re.match(r"^(\d+)[:\s]+(\d+)[:\s]+([\d.]+)$", body)

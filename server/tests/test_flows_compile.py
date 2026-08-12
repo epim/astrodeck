@@ -189,6 +189,25 @@ class TestTheExamplesCompile:
         for t in plan["targets"]:
             assert t["steps"], f"{ex.name}: target {t['name']} has no steps"
 
+    @pytest.mark.parametrize("ex", examples(), ids=lambda e: e.id)
+    def test_every_example_targets_coordinates_can_actually_be_READ(self, ex):
+        """A compiled target carries ra/dec as the operator typed them, and the
+        run turns those strings into numbers. So "it compiles" is not the bar —
+        the strings have to survive parse_ra/parse_dec too.
+
+        This is here because they did not. All four example decs shipped with
+        typographic primes and a Unicode minus (they were authored in a design
+        tool that substitutes as you type), which meant every example compiled
+        to a plan that could not be pointed at. The compile was clean; the night
+        would have failed at the slew.
+        """
+        from astrodeck.catalog.coords import parse_dec, parse_ra
+        for t in compile_plan(ex.graph, ex.name)["targets"]:
+            if t.get("ra") is None:      # a pool names members, not coordinates
+                continue
+            assert -90.0 <= parse_dec(t["dec"]) <= 90.0, t
+            assert 0.0 <= parse_ra(t["ra"]) < 24.0, t
+
     def test_the_compile_is_deterministic(self):
         """The timeline is a rendering of THIS; two answers would let the
         timeline and the run disagree with neither being wrong."""
