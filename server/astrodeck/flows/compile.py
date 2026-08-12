@@ -30,9 +30,34 @@ from ..devices.base import DomePolicy
 from .models import FlowGraph, FlowNode
 from .nodes import port_kind
 
-#: Trigger vocabulary. The first four already exist in the engine's closed
-#: enum; the two cloud ones are the README's named ADDITIONS ("New TriggerKinds
-#: are additive to the existing closed enum: on_clouds_in, on_clouds_clear").
+#: Trigger vocabulary — and a WARNING about how much of it the engine accepts
+#: today, which is less than this module emits.
+#:
+#: The README says "New TriggerKinds are additive to the existing closed enum:
+#: on_clouds_in, on_clouds_clear". THAT WIDENING HAS NOT HAPPENED. Measured
+#: against ``sequence/models.py`` on 2026-08-12, ``TriggerKind`` is exactly:
+#:
+#:     on_hfr_above, on_guide_rms_above, on_frame_rejected,
+#:     on_target_complete, at_time
+#:
+#: So of everything ``_trigger_for`` can mint, only the ``on_<when>`` strings
+#: that happen to land on that list are runnable. ``on_clouds_in``,
+#: ``on_clouds_clear``, ``on_unsafe``, ``on_frame_graded``, ``on_panel_ready``
+#: and the ``type.port`` fallback are all REFUSED by ``Instruction``, and
+#: ``TriggerContext`` has no field a cloud predicate could even be evaluated
+#: against.
+#:
+#: An earlier version of this comment claimed the additive widening was already
+#: in place. It was not, and a comment asserting a property nothing keeps is the
+#: exact defect class this codebase names as its dominant one — so it is
+#: corrected here rather than left to mislead the next reader.
+#:
+#: THIS IS NOT A REASON TO STOP EMITTING THEM. The compiled dict is the README's
+#: documented contract and the PLAN tab renders it verbatim; silently dropping a
+#: rule the operator drew would be worse than emitting one the engine has yet to
+#: learn. The adapter that hands a compiled plan to the engine is where the gap
+#: becomes visible — it reports every rule that will not run, by name, instead of
+#: letting ``extra="ignore"`` swallow it.
 TRIGGER_CLOUDS_IN = "on_clouds_in"
 TRIGGER_CLOUDS_CLEAR = "on_clouds_clear"
 
