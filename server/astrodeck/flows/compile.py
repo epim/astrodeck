@@ -26,6 +26,7 @@ unrunnable night look runnable.
 """
 from __future__ import annotations
 
+from ..devices.base import DomePolicy
 from .models import FlowGraph, FlowNode
 from .nodes import port_kind
 
@@ -192,29 +193,29 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
         schedule = {"start_mode": "now"}
 
     automation: dict = {}
-    if any(n.type == "dome" for n in graph.nodes):
-        # TODO(flows-handoff): this block is TRANSCRIBED FAITHFULLY and is, I
-        # think, a defect in the spec — flagged rather than fixed, per ground
-        # rule 2 ("note it in your summary and implement as specified anyway
-        # unless the user says otherwise").
+    dome = next((n for n in graph.nodes if n.type == "dome"), None)
+    if dome is not None:
+        # DEVIATION FROM THE PROTOTYPE, authorised by the owner 2026-08-12.
         #
-        # `compilePlan()` hardcodes exactly this pair, so the DOME CONTROL
-        # node's own `slave` field (which offers "Slave to mount" | "Manual")
-        # and its `timeout` field never reach the server. Picking Manual in the
-        # editor therefore compiles to slaved, and a shutter timeout the
-        # operator typed is discarded — two controls that look live and do
-        # nothing, which is the broken-promise class this codebase has a
-        # detector suite for.
+        # `compilePlan()` hardcodes `{slave: true, on_unsafe: "close"}`, so the
+        # DOME CONTROL node's own `slave` field ("Slave to mount" | "Manual")
+        # and its `timeout` never reached the server. Picking Manual in the
+        # editor compiled to slaved, and a shutter timeout the operator typed
+        # was discarded — two controls that look live and do nothing, which is
+        # the broken-promise class this codebase has a detector suite for.
         #
-        # `on_unsafe` is NOT part of the complaint: the node offers one option
-        # and DomePolicy deliberately has no field for it, because a value that
-        # can arrive is a value that can say "don't close".
+        # `on_unsafe` is NOT part of the change and stays a constant: DomePolicy
+        # deliberately has no field for it, because a value that can arrive is a
+        # value that can say "don't close", and the roof would still be open in
+        # the rain having been talked out of shutting.
         #
-        # The fix, when the owner rules on it, is one line:
-        #     DomePolicy.from_node_params(node.params).to_plan()
-        # Same question applies to FLAT PANEL, which has no `automation` block
-        # at all, so its placement/ADU/solve params do not survive the compile.
-        automation["dome"] = {"slave": True, "on_unsafe": "close"}
+        # STILL OUTSTANDING — FLAT PANEL has no `automation` block at all, so
+        # its placement/ADU/solve params do not survive the compile either. Not
+        # fixed here because the README's compile-output spec defines exactly
+        # three automation keys (dome, dusk_flats, calibration_queue), and
+        # minting a fourth would be inventing a contract rather than connecting
+        # an existing one. Raised as an open question instead.
+        automation["dome"] = DomePolicy.from_node_params(dome.params).to_plan()
     if flats is not None:
         automation["dusk_flats"] = {
             "method": flats.params.get("method"),
