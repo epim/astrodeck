@@ -1,0 +1,561 @@
+{
+  "base_url": "http://127.0.0.1:8899",
+  "results": [
+    {
+      "state": "01-library",
+      "reference": "01-library.png",
+      "viewport": [
+        1440,
+        900
+      ],
+      "note": "search + folder chips, MY FLOWS with the NEW FLOW card, EXAMPLES",
+      "fonts": {
+        "ready": "loaded",
+        "families": [
+          "Chakra Petch",
+          "IBM Plex Sans",
+          "IBM Plex Mono"
+        ]
+      },
+      "path": "artifacts\\flows-parity\\01-library.png",
+      "pixels": {
+        "distinct": 6240,
+        "stdev": 21.44,
+        "ink": 0.8996,
+        "modal_share": 0.1004
+      },
+      "compare_against": {
+        "path": "design_handoff_astrodeck_flows\\screenshots\\01-library.png",
+        "format": "JPEG",
+        "size": [
+          924,
+          540
+        ],
+        "how": "BY EYE. Different dimensions and (for the JPEGs) lossy artifacts make a numeric diff meaningless \u2014 protocol step 3."
+      },
+      "ok": true
+    },
+    {
+      "state": "02-editor-m16-full-service",
+      "reference": "02-editor-m16-full-service.png",
+      "viewport": [
+        1440,
+        900
+      ],
+      "note": "flow lane top, rules lane below, event wires dashed amber",
+      "fonts": {
+        "ready": "loaded",
+        "families": [
+          "Chakra Petch",
+          "IBM Plex Sans",
+          "IBM Plex Mono"
+        ]
+      },
+      "path": "artifacts\\flows-parity\\02-editor-m16-full-service.png",
+      "pixels": {
+        "distinct": 10380,
+        "stdev": 20.46,
+        "ink": 0.9421,
+        "modal_share": 0.0579
+      },
+      "compare_against": {
+        "path": "design_handoff_astrodeck_flows\\screenshots\\02-editor-m16-full-service.png",
+        "format": "JPEG",
+        "size": [
+          924,
+          540
+        ],
+        "how": "BY EYE. Different dimensions and (for the JPEGs) lossy artifacts make a numeric diff meaningless \u2014 protocol step 3."
+      },
+      "ok": true
+    },
+    {
+      "state": "03-inspector-calibration-queue-matrix",
+      "reference": "03-inspector-calibration-queue-matrix.png",
+      "viewport": [
+        1440,
+        900
+      ],
+      "note": "",
+      "fonts": {
+        "ready": "loaded",
+        "families": [
+          "Chakra Petch",
+          "IBM Plex Sans",
+          "IBM Plex Mono"
+        ]
+      },
+      "path": "artifacts\\flows-parity\\03-inspector-calibration-queue-matrix.png",
+      "pixels": {
+        "distinct": 10290,
+        "stdev": 24.13,
+        "ink": 0.9335,
+        "modal_share": 0.0665
+      },
+      "compare_against": {
+        "path": "design_handoff_astrodeck_flows\\screenshots\\03-inspector-calibration-queue-matrix.png",
+        "format": "JPEG",
+        "size": [
+          924,
+          540
+        ],
+        "how": "BY EYE. Different dimensions and (for the JPEGs) lossy artifacts make a numeric diff meaningless \u2014 protocol step 3."
+      },
+      "ok": true
+    },
+    {
+      "state": "04-tonight-timeline",
+      "reference": "04-tonight-timeline.png",
+      "viewport": [
+        1440,
+        900
+      ],
+      "note": "",
+      "fonts": {
+        "ready": "loaded",
+        "families": [
+          "Chakra Petch",
+          "IBM Plex Sans",
+          "IBM Plex Mono"
+        ]
+      },
+      "path": "artifacts\\flows-parity\\04-tonight-timeline.png",
+      "pixels": {
+        "distinct": 2832,
+        "stdev": 12.05,
+        "ink": 0.9126,
+        "modal_share": 0.0874
+      },
+      "compare_against": {
+        "path": "design_handoff_astrodeck_flows\\screenshots\\04-tonight-timeline.png",
+        "format": "JPEG",
+        "size": [
+          924,
+          540
+        ],
+        "how": "BY EYE. Different dimensions and (for the JPEGs) lossy artifacts make a numeric diff meaningless \u2014 protocol step 3."
+      },
+      "ok": true
+    },
+    {
+      "state": "05-tonight-story",
+      "reference": "05-tonight-story.png",
+      "viewport": [
+        1440,
+        900
+      ],
+      "note": "",
+      "fonts": {
+        "ready": "loaded",
+        "families": [
+          "Chakra Petch",
+          "IBM Plex Sans",
+          "IBM Plex Mono"
+        ]
+      },
+      "path": "artifacts\\flows-parity\\05-tonight-story.png",
+      "pixels": {
+        "distinct": 3133,
+        "stdev": 18.83,
+        "ink": 0.7586,
+        "modal_share": 0.2414
+      },
+      "compare_against": {
+        "path": "design_handoff_astrodeck_flows\\screenshots\\05-tonight-story.png",
+        "format": "JPEG",
+        "size": [
+          924,
+          540
+        ],
+        "how": "BY EYE. Different dimensions and (for the JPEGs) lossy artifacts make a numeric diff meaningless \u2014 protocol step 3."
+      },
+      "ok": true
+    },
+    {
+      "state": "06-tonight-plan-json",
+      "reference": "06-tonight-plan-json.png",
+      "viewport": [
+        1440,
+        900
+      ],
+      "note": "",
+      "fonts": {
+        "ready": "loaded",
+        "families": [
+          "Chakra Petch",
+          "IBM Plex Sans",
+          "IBM Plex Mono"
+        ]
+      },
+      "path": "artifacts\\flows-parity\\06-tonight-plan-json.png",
+      "pixels": {
+        "distinct": 2653,
+        "stdev": 12.53,
+        "ink": 0.6779,
+        "modal_share": 0.3221
+      },
+      "compare_against": {
+        "path": "design_handoff_astrodeck_flows\\screenshots\\06-tonight-plan-json.png",
+        "format": "JPEG",
+        "size": [
+          924,
+          540
+        ],
+        "how": "BY EYE. Different dimensions and (for the JPEGs) lossy artifacts make a numeric diff meaningless \u2014 protocol step 3."
+      },
+      "ok": true
+    },
+    {
+      "state": "07-run-cloud-dodge-hold",
+      "ok": false,
+      "reference": "07-run-cloud-dodge-hold.png",
+      "error": "TimeoutError: Locator.click: Timeout 30000ms exceeded.\nCall log:\n  - waiting for get_by_role(\"button\", name=\"RUN\").filter(visible=True).first\n    - locator resolved to <button type=\"button\" aria-disabled=\"true\" class=\"btn shrink-0 !border-accent2 !bg-accent-fill !text-accent opacity-50 pointer-events-none select-none !pointer-events-auto\">\u2026</button>\n  - attempting click action\n    2 \u00d7 waiting for element to be visible, enabled and stable\n      - element is not enabled\n    - retrying click action\n    - waiting 20ms\n    2 \u00d7 waiting for element to be visible, enabled and stable\n      - element is not enabled\n    - retrying click action\n      - waiting 100ms\n    58 \u00d7 waiting for element to be visible, enabled and stable\n       - element is not enabled\n     - retrying click action\n       - waiting 500ms\n"
+    },
+    {
+      "state": "08-night-mode",
+      "reference": "08-night-mode.png",
+      "viewport": [
+        1440,
+        900
+      ],
+      "note": "production is a token swap, NOT the prototype's CSS filter - grep cannot prove that, so this capture is the evidence",
+      "fonts": {
+        "ready": "loaded",
+        "families": [
+          "Chakra Petch",
+          "IBM Plex Sans",
+          "IBM Plex Mono"
+        ]
+      },
+      "path": "artifacts\\flows-parity\\08-night-mode.png",
+      "pixels": {
+        "distinct": 2249,
+        "stdev": 14.51,
+        "ink": 0.8539,
+        "modal_share": 0.1461
+      },
+      "compare_against": {
+        "path": "design_handoff_astrodeck_flows\\screenshots\\08-night-mode.png",
+        "format": "JPEG",
+        "size": [
+          924,
+          540
+        ],
+        "how": "BY EYE. Different dimensions and (for the JPEGs) lossy artifacts make a numeric diff meaningless \u2014 protocol step 3."
+      },
+      "ok": true
+    },
+    {
+      "state": "09-wizard-new-flow",
+      "reference": "09-wizard-new-flow.png",
+      "viewport": [
+        1440,
+        900
+      ],
+      "note": "",
+      "fonts": {
+        "ready": "loaded",
+        "families": [
+          "Chakra Petch",
+          "IBM Plex Sans",
+          "IBM Plex Mono"
+        ]
+      },
+      "path": "artifacts\\flows-parity\\09-wizard-new-flow.png",
+      "pixels": {
+        "distinct": 1684,
+        "stdev": 15.19,
+        "ink": 0.8214,
+        "modal_share": 0.1786
+      },
+      "compare_against": {
+        "path": "design_handoff_astrodeck_flows\\screenshots\\09-wizard-new-flow.png",
+        "format": "JPEG",
+        "size": [
+          924,
+          540
+        ],
+        "how": "BY EYE. Different dimensions and (for the JPEGs) lossy artifacts make a numeric diff meaningless \u2014 protocol step 3."
+      },
+      "ok": true
+    },
+    {
+      "state": "12-editor-hover",
+      "reference": "02-editor-m16-full-service.png",
+      "viewport": [
+        1440,
+        900
+      ],
+      "note": "desktop hover affordances; compared against the plain editor reference for layout, not for the hover state itself",
+      "fonts": {
+        "ready": "loaded",
+        "families": [
+          "Chakra Petch",
+          "IBM Plex Sans",
+          "IBM Plex Mono"
+        ]
+      },
+      "path": "artifacts\\flows-parity\\12-editor-hover.png",
+      "pixels": {
+        "distinct": 10545,
+        "stdev": 25.11,
+        "ink": 0.9414,
+        "modal_share": 0.0586
+      },
+      "compare_against": {
+        "path": "design_handoff_astrodeck_flows\\screenshots\\02-editor-m16-full-service.png",
+        "format": "JPEG",
+        "size": [
+          924,
+          540
+        ],
+        "how": "BY EYE. Different dimensions and (for the JPEGs) lossy artifacts make a numeric diff meaningless \u2014 protocol step 3."
+      },
+      "ok": true
+    },
+    {
+      "state": "13-edit-sheet-open",
+      "reference": "03-inspector-calibration-queue-matrix.png",
+      "viewport": [
+        820,
+        1180
+      ],
+      "note": "",
+      "fonts": {
+        "ready": "loaded",
+        "families": [
+          "Chakra Petch",
+          "IBM Plex Sans",
+          "IBM Plex Mono"
+        ]
+      },
+      "path": "artifacts\\flows-parity\\13-edit-sheet-open.png",
+      "pixels": {
+        "distinct": 1081,
+        "stdev": 13.3,
+        "ink": 0.6167,
+        "modal_share": 0.3833
+      },
+      "compare_against": {
+        "path": "design_handoff_astrodeck_flows\\screenshots\\03-inspector-calibration-queue-matrix.png",
+        "format": "JPEG",
+        "size": [
+          924,
+          540
+        ],
+        "how": "BY EYE. Different dimensions and (for the JPEGs) lossy artifacts make a numeric diff meaningless \u2014 protocol step 3."
+      },
+      "ok": true
+    },
+    {
+      "state": "14-palette-sheet-open",
+      "reference": "01-library.png",
+      "viewport": [
+        820,
+        1180
+      ],
+      "note": "",
+      "fonts": {
+        "ready": "loaded",
+        "families": [
+          "Chakra Petch",
+          "IBM Plex Sans",
+          "IBM Plex Mono"
+        ]
+      },
+      "path": "artifacts\\flows-parity\\14-palette-sheet-open.png",
+      "pixels": {
+        "distinct": 1093,
+        "stdev": 17.95,
+        "ink": 0.5345,
+        "modal_share": 0.4655
+      },
+      "compare_against": {
+        "path": "design_handoff_astrodeck_flows\\screenshots\\01-library.png",
+        "format": "JPEG",
+        "size": [
+          924,
+          540
+        ],
+        "how": "BY EYE. Different dimensions and (for the JPEGs) lossy artifacts make a numeric diff meaningless \u2014 protocol step 3."
+      },
+      "ok": true
+    },
+    {
+      "state": "15-wire-selected",
+      "reference": "02-editor-m16-full-service.png",
+      "viewport": [
+        1440,
+        900
+      ],
+      "note": "the selected wire's remove control must be visible",
+      "fonts": {
+        "ready": "loaded",
+        "families": [
+          "Chakra Petch",
+          "IBM Plex Sans",
+          "IBM Plex Mono"
+        ]
+      },
+      "path": "artifacts\\flows-parity\\15-wire-selected.png",
+      "pixels": {
+        "distinct": 10095,
+        "stdev": 25.43,
+        "ink": 0.9511,
+        "modal_share": 0.0489
+      },
+      "compare_against": {
+        "path": "design_handoff_astrodeck_flows\\screenshots\\02-editor-m16-full-service.png",
+        "format": "JPEG",
+        "size": [
+          924,
+          540
+        ],
+        "how": "BY EYE. Different dimensions and (for the JPEGs) lossy artifacts make a numeric diff meaningless \u2014 protocol step 3."
+      },
+      "ok": true
+    },
+    {
+      "state": "20-tablet-library",
+      "reference": "01-library.png",
+      "viewport": [
+        820,
+        1180
+      ],
+      "note": "no picture to match; the gate is that nothing overflows or collides at 820px",
+      "fonts": {
+        "ready": "loaded",
+        "families": [
+          "Chakra Petch",
+          "IBM Plex Sans",
+          "IBM Plex Mono"
+        ]
+      },
+      "path": "artifacts\\flows-parity\\20-tablet-library.png",
+      "pixels": {
+        "distinct": 6110,
+        "stdev": 23.8,
+        "ink": 0.8834,
+        "modal_share": 0.1166
+      },
+      "compare_against": {
+        "path": "design_handoff_astrodeck_flows\\screenshots\\01-library.png",
+        "format": "JPEG",
+        "size": [
+          924,
+          540
+        ],
+        "how": "BY EYE. Different dimensions and (for the JPEGs) lossy artifacts make a numeric diff meaningless \u2014 protocol step 3."
+      },
+      "ok": true
+    },
+    {
+      "state": "21-tablet-editor",
+      "reference": "02-editor-m16-full-service.png",
+      "viewport": [
+        820,
+        1180
+      ],
+      "note": "",
+      "fonts": {
+        "ready": "loaded",
+        "families": [
+          "Chakra Petch",
+          "IBM Plex Sans",
+          "IBM Plex Mono"
+        ]
+      },
+      "path": "artifacts\\flows-parity\\21-tablet-editor.png",
+      "pixels": {
+        "distinct": 6411,
+        "stdev": 19.33,
+        "ink": 0.9345,
+        "modal_share": 0.0655
+      },
+      "compare_against": {
+        "path": "design_handoff_astrodeck_flows\\screenshots\\02-editor-m16-full-service.png",
+        "format": "JPEG",
+        "size": [
+          924,
+          540
+        ],
+        "how": "BY EYE. Different dimensions and (for the JPEGs) lossy artifacts make a numeric diff meaningless \u2014 protocol step 3."
+      },
+      "ok": true
+    },
+    {
+      "state": "10-phone-flow-autograph",
+      "reference": "10-phone-flow-autograph-390px.png",
+      "viewport": [
+        390,
+        844
+      ],
+      "note": "auto-laid zigzag graph, compact nodes, real wires, bottom FLOW/CANVAS/MONITOR bar, truncating header title",
+      "fonts": {
+        "ready": "loaded",
+        "families": [
+          "Chakra Petch",
+          "IBM Plex Sans",
+          "IBM Plex Mono"
+        ]
+      },
+      "path": "artifacts\\flows-parity\\10-phone-flow-autograph.png",
+      "pixels": {
+        "distinct": 2893,
+        "stdev": 24.24,
+        "ink": 0.8293,
+        "modal_share": 0.1707
+      },
+      "compare_against": {
+        "path": "design_handoff_astrodeck_flows\\screenshots\\10-phone-flow-autograph-390px.png",
+        "format": "PNG",
+        "size": [
+          392,
+          540
+        ],
+        "how": "BY EYE. Different dimensions and (for the JPEGs) lossy artifacts make a numeric diff meaningless \u2014 protocol step 3."
+      },
+      "ok": true
+    },
+    {
+      "state": "10b-phone-tap-to-wire-armed",
+      "reference": "10b-phone-tap-to-wire-armed.png",
+      "viewport": [
+        390,
+        844
+      ],
+      "note": "filled source port + accent hint bar + CANCEL",
+      "fonts": {
+        "ready": "loaded",
+        "families": [
+          "Chakra Petch",
+          "IBM Plex Sans",
+          "IBM Plex Mono"
+        ]
+      },
+      "path": "artifacts\\flows-parity\\10b-phone-tap-to-wire-armed.png",
+      "pixels": {
+        "distinct": 2599,
+        "stdev": 25.74,
+        "ink": 0.8195,
+        "modal_share": 0.1805
+      },
+      "compare_against": {
+        "path": "design_handoff_astrodeck_flows\\screenshots\\10b-phone-tap-to-wire-armed.png",
+        "format": "PNG",
+        "size": [
+          392,
+          540
+        ],
+        "how": "BY EYE. Different dimensions and (for the JPEGs) lossy artifacts make a numeric diff meaningless \u2014 protocol step 3."
+      },
+      "ok": true
+    },
+    {
+      "state": "11-phone-monitor",
+      "ok": false,
+      "reference": "11-phone-monitor-390px.png",
+      "error": "TimeoutError: Locator.click: Timeout 30000ms exceeded.\nCall log:\n  - waiting for locator(\"[data-view='flows'], #ad-overlay-root\").get_by_role(\"tab\", name=\"MONITOR\", exact=True).or_(locator(\"[data-view='flows'], #ad-overlay-root\").get_by_role(\"button\", name=\"MONITOR\", exact=True)).filter(visible=True).first\n    - locator resolved to <button role=\"tab\" type=\"button\" tabindex=\"-1\" aria-selected=\"false\" class=\"flex-1 h-[50px] flex items-center justify-center cursor-pointer\u21b5              border-t-2 font-display font-semibold text-[10px] tracking-[0.16em]\u21b5              border-transparent text-dim\">MONITOR</button>\n  - attempting click action\n    2 \u00d7 waiting for element to be visible, enabled and stable\n      - element is visible, enabled and stable\n      - scrolling into view if needed\n      - done scrolling\n      - <div class=\"flex items-center gap-1.5\">\u2026</div> from <div id=\"ad-overlay-root\" class=\"overlay-host\">\u2026</div> subtree intercepts pointer events\n    - retrying click action\n    - waiting 20ms\n    2 \u00d7 waiting for element to be visible, enabled and stable\n      - element is visible, enabled and stable\n      - scrolling into view if needed\n      - done scrolling\n      - <div class=\"flex items-center gap-1.5\">\u2026</div> from <div id=\"ad-overlay-root\" class=\"overlay-host\">\u2026</div> subtree intercepts pointer events\n    - retrying click action\n      - waiting 100ms\n    58 \u00d7 waiting for element to be visible, enabled and stable\n       - element is visible, enabled and stable\n       - scrolling into view if needed\n       - done scrolling\n       - <div class=\"flex items-center gap-1.5\">\u2026</div> from <div id=\"ad-overlay-root\" class=\"overlay-host\">\u2026</div> subtree intercepts pointer events\n     - retrying click action\n       - waiting 500ms\n"
+    }
+  ]
+}

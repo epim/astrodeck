@@ -56,6 +56,20 @@ import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+# The console this runs on is cp1252, and Playwright's error text is full of
+# characters it cannot encode (U+21B5 alone killed a whole run). A reporter that
+# dies while printing a failure destroys the report for every state after it -
+# the run had captured real results and lost them to its own stdout.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(errors="replace")
+    sys.stderr.reconfigure(errors="replace")
+
+
+def _say(text: str) -> None:
+    """Print without ever raising on an unencodable character."""
+    enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+    print(text.encode(enc, "replace").decode(enc, "replace"), flush=True)
+
 REPO = Path(__file__).resolve().parent.parent
 OUT_DIR = REPO / "artifacts" / "flows-parity"
 REF_DIR = REPO / "design_handoff_astrodeck_flows" / "screenshots"
@@ -405,8 +419,24 @@ async def _run_step(page, action: str, arg: str) -> None:
         # visible=True matters: the desktop rail is present-but-hidden on
         # phone widths and its labels duplicate the bottom bar's, so a plain
         # text match can resolve to an element nobody can click.
-        target = page.get_by_role("button", name=arg).or_(
-            page.get_by_role("link", name=arg)).filter(visible=True)
+        #
+        # AND SO DOES exact=True. Playwright matches an accessible name as a
+        # case-insensitive SUBSTRING by default, which is how a step asking for
+        # "Flows" could resolve to something merely containing it.
+        #
+        # At phone widths the desktop rail is `hidden sm:flex` and Flows is not
+        # in the bottom bar's primary set - it lives in the More sheet, so the
+        # sheet has to be opened before the control exists at all. Without this
+        # the three phone captures cannot be taken, which is not a UI defect: it
+        # is where the app actually puts the destination.
+        vw = page.viewport_size or {}
+        if vw.get("width", 9999) < 640:
+            more = page.get_by_role("button", name="More").filter(visible=True)
+            if await more.count():
+                await more.first.click()
+                await page.wait_for_timeout(350)
+        target = page.get_by_role("button", name=arg, exact=True).or_(
+            page.get_by_role("link", name=arg, exact=True)).filter(visible=True)
         if await target.count() == 0:
             raise CaptureFailed(
                 f"no visible nav control named {arg!r} - is the Flows surface "
@@ -418,8 +448,37 @@ async def _run_step(page, action: str, arg: str) -> None:
             raise CaptureFailed(f"no flow card for id {arg!r} in the library")
         await card.first.click()
     elif action == "tab" or action == "phone-tab":
-        await page.get_by_role("tab", name=arg).or_(
-            page.get_by_role("button", name=arg)).filter(visible=True).first.click()
+        # SCOPED TO THE FLOWS SURFACE, and exact.
+        #
+        # The unscoped version photographed the wrong screen: Playwright matches
+        # an accessible name as a case-insensitive substring, `.or_()` returns
+        # DOM order, and App.tsx renders the nav rail (which has its own
+        # "Tonight" and "Plan" buttons) BEFORE <main>. So ("tab", "TONIGHT")
+        # resolved to the rail, navigated away from Flows, and captured the old
+        # TonightView under a filename claiming to be the Flows timeline.
+        #
+        # Overlay portals to a body-level host outside [data-view], so a panel
+        # already open is searched for separately rather than being missed.
+        # The overlay host is a body-level portal target, so a panel's controls
+        # are NOT inside [data-view='flows']. Each Flows overlay carries its own
+        # marker, and those are what make it findable without widening the scope
+        # back to the whole page - which is what let the nav rail win.
+        # #ad-overlay-root is the portal host every Overlay renders into. It is
+        # the right scope because it contains the whole panel INCLUDING its
+        # header pills - scoping to [data-flows-tonight] instead excluded them,
+        # since that marker sits on the panel's CONTENT area and the tabs are
+        # above it. The nav rail is not inside the host, which is the property
+        # that matters: the rail's own Tonight and Plan buttons cannot win.
+        root = page.locator("[data-view='flows'], #ad-overlay-root")
+        scoped = root.get_by_role("tab", name=arg, exact=True).or_(
+            root.get_by_role("button", name=arg, exact=True)).filter(visible=True)
+        if await scoped.count() == 0:
+            raise CaptureFailed(
+                f"no {arg!r} control inside the Flows surface. It is NOT enough "
+                f"for one to exist on the page - the nav rail has its own "
+                f"Tonight and Plan buttons, and clicking those navigates away "
+                f"from what this capture is meant to show")
+        await scoped.first.click()
     elif action == "click":
         await page.get_by_role("button", name=arg).filter(visible=True).first.click()
     elif action == "select-node-type":
@@ -573,12 +632,13 @@ async def main_async(args) -> int:
                 results.append(await capture(page, state, OUT_DIR,
                                              args.user, args.password,
                                              args.base_url))
-                print(f"  ok   {state.name}")
+                _say(f"  ok   {state.name}")
             except Exception as exc:                    # noqa: BLE001 - reported
                 results.append({"state": state.name, "ok": False,
                                 "reference": state.reference,
                                 "error": f"{type(exc).__name__}: {exc}"})
-                print(f"  FAIL {state.name}: {type(exc).__name__}: {exc}")
+                _say(f"  FAIL {state.name}: {type(exc).__name__}: "
+                     f"{str(exc)[:400]}")
         await browser.close()
 
     report = OUT_DIR / "report.json"
