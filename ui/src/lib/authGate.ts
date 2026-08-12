@@ -51,6 +51,7 @@
 // read them and one place to test them.
 
 import type { GuideRmsByKind } from "./guideRms";
+import { FLOWS_INIT, type FlowsState } from "../components/flows/flowsSlice";
 import type { MasterRow } from "./calibrationLibrary";
 import type {
   FrameScope,
@@ -217,6 +218,17 @@ export const EMPTY_NINA_HEALTH: NinaHealth = {
  *     and whether the socket is up. Neither says anything about the rig.
  */
 export interface ClearedRigState {
+  // A flow is not a neutral document. Its graph names TARGETS this observatory
+  // shoots, the equipment it has (a dome node means there is a roof), the
+  // filters in its wheel and the hours already banked against each — and the
+  // library card wall lists every flow by name and last result. A stranger at
+  // the sign-in form seeing that learns what this rig is and what it did last
+  // night, which is the same disclosure #117 closed for `weather`.
+  //
+  // Cleared to the INITIAL slice rather than null: `flows` is a required field
+  // whose consumers read `flows.ui.screen` and `flows.graph.nodes` without
+  // guarding, so nulling it would trade a disclosure for a crash on sign-out.
+  flows: FlowsState;
   status: null;
   site: null;
   config: null;
@@ -315,6 +327,11 @@ export interface ClearedRigState {
  */
 export function clearedRigState(): ClearedRigState {
   return {
+    // Back to the cold-boot slice: library empty, no flow open, the editor
+    // closed. FLOWS_INIT is reused rather than restated so this cannot drift
+    // from the real initial state and leave one field behind.
+    flows: { ...FLOWS_INIT, graph: { nodes: [], edges: [] },
+             ui: { ...FLOWS_INIT.ui } },
     status: null,
     site: null,
     config: null,

@@ -398,6 +398,17 @@ const STORE_ACTIONS: string[] = [
   "setBrightness", "resetBrightness",
   // compat shims
   "setWsConnected", "showToast",
+  // flows — the node-graph automation surface. Listed by name like every other
+  // action so the walk can tell them from slices; `flows` itself is a slice and
+  // is classified in ClearedRigState, not here.
+  "flowsLoadLibrary", "flowsOpen", "flowsCloseEditor", "flowsSave",
+  "flowsAddNode", "flowsMoveNode", "flowsSetParam", "flowsDeleteSel",
+  "flowsConnect", "flowsSetName",
+  "flowsSelect", "flowsSetEditNode",
+  "flowsSetPan", "flowsSetZoom", "flowsFit",
+  "flowsBeginWire", "flowsMoveWire", "flowsEndWire", "flowsTapPort",
+  "flowsCompile", "flowsFetchTonight", "flowsFetchCalHealth", "flowsRun",
+  "flowsAppendLog", "flowsSetUi",
 ];
 
 /** The store's data slices as they actually are at cold boot: every member that

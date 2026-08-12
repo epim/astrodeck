@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
+// Flows lives in its own slice module: store.ts is shared by every surface and
+// a 300-line domain addition here is 300 lines of merge surface for anyone else
+// working in ui/. See components/flows/flowsSlice.ts for the write discipline
+// that makes a node-status tick re-render one node instead of the canvas.
+import {
+  createFlowsActions, FLOWS_INIT,
+  type FlowsActions, type FlowsState,
+} from "./components/flows/flowsSlice";
 import type { ReactNode } from "react";
 import type {
   AppConfig,
@@ -542,7 +550,7 @@ function applyBrightnessVars(v: number): void {
   d.style.setProperty("--scrim-opacity", String(Math.max(0, 0.5 - b)));
 }
 
-interface AppState {
+interface AppState extends FlowsActions {
   // --- core view/session ---
   view: ViewName;
   // NOV-9: the troubleshooting topic to scroll-into-view + highlight when
@@ -900,6 +908,9 @@ interface AppState {
   // --- actions: compat shims ---
   setWsConnected: (ok: boolean) => void;
   showToast: (level: string, message: string) => void;
+
+  // --- flows (the node-graph automation surface) ---
+  flows: FlowsState;
 }
 
 let toastId = 0;
@@ -937,6 +948,11 @@ const TOUCH_INIT = loadTouch();
 haptics.enabled = TOUCH_INIT.hapticsEnabled;
 
 export const useStore = create<AppState>((set, get) => ({
+  // Flows. The actions come from the slice module and are spread flat, like
+  // every other action here; `flows` is the one nested field, matching the
+  // `sequence` / `polar` grouping convention.
+  flows: FLOWS_INIT,
+  ...createFlowsActions(set, get),
   // --- core ---
   view: "connect",
   helpTopic: null,
