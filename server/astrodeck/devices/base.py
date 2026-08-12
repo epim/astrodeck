@@ -739,3 +739,320 @@ class Dome(Device):
             "can_slave": self.can_slave,
             "requires_park_before_close": self.requires_park_before_close,
         }
+
+
+# ---------------------------------------------------------------------------
+# Flows equipment: DOME CONTROL and FLAT PANEL
+# (design_handoff_astrodeck_flows, README §"Node vocabulary", backend item 6)
+#
+# RECONCILED, NOT DUPLICATED. Item 6 asks for "new device roles Dome, FlatPanel";
+# both are already above — ``Dome`` (PRO-4) and ``CoverCalibrator`` (PRO-5), each
+# with an Alpaca client and a sim. Minting a second pair would give the hub two
+# keys for one piece of hardware, and the night where the calibration queue holds
+# one panel handle while the dusk-flats stage holds the other is not a night
+# anyone would enjoy debugging. So ``FlatPanel`` is an alias, and what is
+# genuinely new lives here: the two nodes' PARAMETERS, as values the server can
+# act on. The roles could always open a shutter and light a panel; nothing could
+# say "confirm it opened within 120 s" or "this panel is not in the light path".
+#
+# These are policy VALUES over the vendor-neutral roles, so they work unchanged
+# over Alpaca (``AlpacaDome`` / ``AlpacaCoverCalibrator``) and the simulator —
+# there is no transport-specific work left to do for either node.
+# ---------------------------------------------------------------------------
+
+#: The FLAT PANEL node's role. Not a subclass and not a second ABC: a flat panel
+#: with an optional motorized cover IS ``CoverCalibrator``. The alias exists so
+#: the Flows vocabulary can name the thing it wires without a parallel class to
+#: keep in step. Backends: ``sim.SimCoverCalibrator``,
+#: ``alpaca.AlpacaCoverCalibrator``, and the hub key stays ``"covercalibrator"``.
+FlatPanel = CoverCalibrator
+
+#: DOME CONTROL's "Shutter timeout" default, seconds (prototype ``DEFS.dome``).
+DEFAULT_SHUTTER_TIMEOUT_S: float = 120.0
+#: How often ``DomePolicy.open_and_confirm`` re-reads a travelling shutter. Read
+#: through the module global on every wait so a test can shorten it.
+SHUTTER_POLL_S: float = 0.5
+
+
+class FlatPanelPlacement(enum.Enum):
+    """Where the panel sits relative to the light path — the FLAT PANEL node's
+    ``position`` field ("Dust-cover panel" / "Dome-mounted" / "Handheld").
+
+    Not cosmetic: it is the whole of what "panel ready" MEANS. A dust-cover panel
+    illuminates the aperture only with the cover SHUT; a dome-mounted one only
+    with the cover OPEN and the mount aimed at it; a handheld one only while a
+    person is holding it there. Three different questions over one identical
+    ICoverCalibratorV1 surface, and the device cannot tell them apart on its own.
+    """
+
+    DUST_COVER = "dust_cover"
+    DOME_MOUNTED = "dome_mounted"
+    HANDHELD = "handheld"
+
+    @classmethod
+    def parse(cls, text: Any) -> "FlatPanelPlacement":
+        """Read the node's ``position`` string.
+
+        Anything unrecognised — a graph saved by another build, a hand-edited
+        flow — becomes ``DUST_COVER``, which is the STRICTEST of the three: it is
+        the only placement that refuses to call the panel ready while the cover
+        is open. An unknown placement must not resolve to the reading that lets
+        the queue photograph the open sky and file the result as a flat.
+        """
+        t = str(text or "").strip().lower()
+        if "dome" in t:
+            return cls.DOME_MOUNTED
+        if "hand" in t:
+            return cls.HANDHELD
+        return cls.DUST_COVER
+
+
+@dataclass(frozen=True)
+class FlatPanelReadiness:
+    """Whether flats can be shot through the panel right now.
+
+    ``reason`` carries the sentence an operator reads when ``ready`` is False.
+    ``unverifiable`` is the other half of honesty: it names the part of "ready"
+    that no sensor on this device reports (a person holding a panel, a mount
+    aimed at a dome wall), so a ready-but-blind verdict is never mistaken for a
+    measured one. Both empty on a fully-confirmed panel."""
+
+    ready: bool
+    reason: str = ""
+    unverifiable: str = ""
+
+
+@dataclass(frozen=True)
+class FlatPanelPolicy:
+    """The FLAT PANEL node's three parameters, as something the server can act on.
+
+    ``solve_per_filter`` is the node's "Brightness" select: solve the panel level
+    against ``adu_target`` for EVERY filter, versus hold one fixed level. Ha and
+    L are two orders of magnitude apart in throughput, so a fixed level that
+    lands mid-well on L clips on nothing and barely registers on Ha; the default
+    is to solve, and the flag exists for panels too coarse to be solved.
+    """
+
+    placement: FlatPanelPlacement = FlatPanelPlacement.DUST_COVER
+    adu_target: int = 28500
+    solve_per_filter: bool = True
+
+    @classmethod
+    def from_node_params(cls, params: dict) -> "FlatPanelPolicy":
+        """Build from a FLAT PANEL node's ``params`` dict.
+
+        A garbled or missing ADU target falls back to the default rather than to
+        zero. Zero is a number the solver would happily chase: it would drive the
+        panel to black, converge, and hand back a stack of flats that divide real
+        frames by noise."""
+        try:
+            adu = int(float(params.get("adu")))
+        except (TypeError, ValueError):
+            adu = 28500
+        if adu <= 0:
+            adu = 28500
+        # The select's two options are "Solve per filter" and "Fixed"; only the
+        # explicit "fixed" turns solving off, so an unrecognised value keeps the
+        # measuring behaviour rather than silently freezing the brightness.
+        solve = "fixed" not in str(params.get("solve") or "").strip().lower()
+        return cls(
+            placement=FlatPanelPlacement.parse(params.get("position")),
+            adu_target=adu,
+            solve_per_filter=solve,
+        )
+
+    async def readiness(self, panel: CoverCalibrator | None) -> FlatPanelReadiness:
+        """Can the calibration queue shoot flats through ``panel`` right now?
+
+        This is the node's "panel ready" event, COMPUTED rather than assumed. No
+        panel at all is a legitimate answer — the queue's ``panel`` input is
+        optional and a queue without one simply skips flats (doctor rule 7) — so
+        every failure here is a skip rather than an error. It has to be a loud
+        skip, though: a flat taken with the light off or the path blocked is not
+        a poor flat, it is a WRONG one, and it will keep dividing real data by
+        garbage for as long as the library holds it.
+        """
+        if panel is None or not getattr(panel, "connected", False):
+            return FlatPanelReadiness(
+                False, "no flat panel connected — flats will be skipped")
+        state = await panel.get_calibrator_state()
+        if state != "ready":
+            return FlatPanelReadiness(
+                False, f"flat panel reports '{state}', not lit")
+        cover = await panel.get_cover_state()
+        if cover in (CoverState.MOVING, CoverState.UNKNOWN, CoverState.ERROR):
+            # Mid-travel or unreadable is NOT ready. The queue can ask again in a
+            # second; a frame taken through a half-open cover cannot be un-taken.
+            return FlatPanelReadiness(
+                False, f"flat panel cover is {cover.value} — not settled")
+
+        if self.placement is FlatPanelPlacement.DUST_COVER:
+            if cover is CoverState.CLOSED:
+                return FlatPanelReadiness(True)
+            if cover is CoverState.NOT_PRESENT:
+                # A translucent flat CAP is a dust-cover panel with no motor —
+                # the DUSK FLATS node's default method. It is genuinely ready,
+                # and genuinely unwitnessed.
+                return FlatPanelReadiness(
+                    True, unverifiable="nothing motorised holds this panel over "
+                    "the aperture — someone has to have capped the scope")
+            return FlatPanelReadiness(
+                False, "dust-cover panel is lit but the cover is open — a flat "
+                       "taken now is a picture of the sky")
+
+        # Dome-mounted and handheld panels both sit OUTSIDE the tube, so a shut
+        # cover is a lid between them and the sensor.
+        if cover is CoverState.CLOSED:
+            return FlatPanelReadiness(
+                False, "the cover is shut between the scope and the panel")
+        if self.placement is FlatPanelPlacement.DOME_MOUNTED:
+            return FlatPanelReadiness(
+                True, unverifiable="the mount has to be aimed at the dome panel "
+                "— nothing here can see where it is pointed")
+        return FlatPanelReadiness(
+            True, unverifiable="someone has to be holding the panel over the "
+            "aperture — no sensor reports that")
+
+
+@dataclass(frozen=True)
+class DomePolicy:
+    """The DOME CONTROL node's parameters, as something the server can act on.
+
+    THERE IS NO on-unsafe FIELD, and that is the design. The README calls the
+    behaviour non-negotiable ("dome closes on unsafe regardless of flow state"),
+    and the prototype's "On unsafe" select accordingly offers exactly one option.
+    A field would be a place for a "don't close" to arrive from — an older
+    client, a hand-edited plan JSON, a config merge — and the roof would still be
+    open in the rain, having been talked out of shutting by a value it should
+    never have accepted. ``ON_UNSAFE`` is a constant; ``from_plan`` reads plans
+    that carry the key and ignores what it says.
+
+    Closing itself is NOT done here: ``sequence/roof.close_observatory`` owns it,
+    because a roll-off roof must never travel through an unparked mount and that
+    ordering has one implementation. This type owns the OPEN half (which had
+    none) and the slaving decision.
+    """
+
+    slave_to_mount: bool = True
+    shutter_timeout_s: float = DEFAULT_SHUTTER_TIMEOUT_S
+
+    #: Not a field (deliberately un-annotated): what an unsafe — or STALE —
+    #: safety reading does to the shutter, whatever the flow is doing.
+    ON_UNSAFE = "close"
+
+    # TODO(flows-handoff): the engine half of this invariant is backend item 7.
+    # When it lands, the unsafe path must route EVERY connected dome through
+    # ``sequence/roof.close_observatory``, whether or not the running flow
+    # contains a DOME CONTROL node — a dome that is absent from the graph still
+    # gets rained on, and doctor rule 9 only warns about the graph.
+
+    @classmethod
+    def from_node_params(cls, params: dict) -> "DomePolicy":
+        """Build from a DOME CONTROL node's ``params`` dict.
+
+        A missing, zero, negative or garbled timeout becomes the 120 s default
+        rather than being honoured. Zero would make ``open_and_confirm`` give up
+        before the roof could possibly have moved — turning the one promise this
+        stage makes ("the sky is above you") into a coin toss on every run.
+        """
+        try:
+            timeout = float(params.get("timeout"))
+        except (TypeError, ValueError):
+            timeout = DEFAULT_SHUTTER_TIMEOUT_S
+        if timeout <= 0:
+            timeout = DEFAULT_SHUTTER_TIMEOUT_S
+        # "Azimuth" has two options, "Slave to mount" and "Manual". Only an
+        # explicit Manual gives up slaving: an unrecognised value keeps the
+        # node's own default, and an unslaved dome vignettes the night rather
+        # than endangering anything.
+        manual = str(params.get("slave") or "").strip().lower().startswith("manual")
+        return cls(slave_to_mount=not manual, shutter_timeout_s=timeout)
+
+    @classmethod
+    def from_plan(cls, block: dict) -> "DomePolicy":
+        """Build from a compiled plan's ``automation["dome"]`` block.
+
+        Any ``on_unsafe`` the block carries is READ AND DISCARDED — see the class
+        docstring. The plan is data that arrives from disk and from clients; it
+        does not get a vote on whether the roof shuts in the rain."""
+        try:
+            timeout = float(block.get("shutter_timeout_s"))
+        except (TypeError, ValueError):
+            timeout = DEFAULT_SHUTTER_TIMEOUT_S
+        if timeout <= 0:
+            timeout = DEFAULT_SHUTTER_TIMEOUT_S
+        return cls(slave_to_mount=bool(block.get("slave", True)),
+                   shutter_timeout_s=timeout)
+
+    def to_plan(self) -> dict:
+        """The ``automation["dome"]`` block for a compiled plan."""
+        return {"slave": self.slave_to_mount,
+                "on_unsafe": self.ON_UNSAFE,
+                "shutter_timeout_s": self.shutter_timeout_s}
+
+    async def open_and_confirm(self, dome: Dome) -> None:
+        """Open the shutter and do not return until it is CONFIRMED open.
+
+        ``Dome.open_shutter`` is fire-and-forget by contract — it waits until the
+        motion is commanded, not until it finishes — and the DOME CONTROL node's
+        only flow output is "shutter open", which the run cursor leaves through
+        on its way to SLEW + CENTER. Without a confirmation the cursor departs
+        the moment the driver ACCEPTS the command, and a stalled motor produces a
+        night of black frames with nothing anywhere saying the roof never moved.
+
+        Already-open is a no-op: the stage may be re-entered, and re-commanding a
+        shutter sends some drivers through another full travel cycle.
+
+        Raises ``DeviceError`` on timeout or a faulted shutter. Raising is the
+        fail-closed answer — every stage after this one assumes sky, so an
+        unconfirmed roof has to stop the flow rather than be assumed open.
+        """
+        import asyncio
+
+        if (await dome.shutter_state()) is DomeShutterState.OPEN:
+            return
+        await dome.open_shutter()
+        deadline = time.monotonic() + self.shutter_timeout_s
+        while True:
+            state = await dome.shutter_state()
+            if state is DomeShutterState.OPEN:
+                return
+            if state is DomeShutterState.ERROR:
+                # Fail fast rather than spend the whole timeout on a shutter that
+                # has already reported it cannot do this. A driver that reports a
+                # stale fault for a moment after the command costs one refused
+                # stage; assuming the fault is stale costs the night.
+                raise DeviceError(
+                    f"{dome.name}: shutter faulted while opening — the roof did "
+                    f"not open")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise DeviceError(
+                    f"{dome.name}: shutter did not confirm open within "
+                    f"{self.shutter_timeout_s:g}s (last state: {state.value}) — "
+                    f"refusing to image under a roof that may be shut")
+            await asyncio.sleep(min(SHUTTER_POLL_S, remaining))
+
+    async def apply_slaving(self, dome: Dome) -> str:
+        """Put the dome's azimuth under the mount, and return the log line.
+
+        A dome that CANNOT slave is not an error. A roll-off roof has no azimuth
+        to slave and reports ``can_slave = False`` truthfully — including the
+        simulator's, which is the rig the whole Flows surface has to demo on. If
+        the node's DEFAULT parameter refused to run against the default sim dome,
+        every example flow with a dome in it would fail on a machine with no
+        hardware. So: honest-disabled, and the returned line says the setting had
+        no effect rather than pretending it took.
+
+        A dome that CLAIMS ``can_slave`` and then refuses the write is a
+        different animal, and its ``DeviceError`` propagates — the alternative is
+        an OTA that spends the night photographing the inside of the dome wall
+        while every status readout says slaved.
+        """
+        if not self.slave_to_mount:
+            return "dome azimuth left in manual"
+        if not getattr(dome, "can_slave", False):
+            return (f"{dome.name} has no slaved azimuth (roll-off roof) — "
+                    f"'Slave to mount' has no effect")
+        await dome.set_slaved(True)
+        return "dome azimuth slaved to the mount"

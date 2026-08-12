@@ -1299,6 +1299,43 @@ class SimDome(Dome):
         self._halt.set()
 
 
+# TODO(flows-handoff): ``build_sim_rig`` still wires the roll-off ``SimDome``, so
+# this class is reachable only by direct construction (tests, a future sim
+# profile). Which dome shape the default sim rig presents is a product decision
+# — the roof exercises the park-before-close guard, the dome exercises slaving —
+# so it is left to whoever wires the Flows sim profile rather than changed here.
+class SimRotatingDome(SimDome):
+    """A simulated ROTATING dome — the sim that can actually slave.
+
+    ``SimDome`` is a roll-off ROOF: it has no azimuth, so ``can_slave`` is False
+    and DOME CONTROL's DEFAULT parameter ("Slave to mount") has nothing to run
+    against on a machine with no hardware. The Flows handoff requires the whole
+    surface to demo on the simulator, and "the default setting is only reachable
+    with a real dome bolted to the building" is not that.
+
+    Slaving here is the boolean the ``Dome`` role actually defines — ASCOM's
+    ``Slaved`` is a flag the driver acts on, and nothing in this codebase asks a
+    dome for an azimuth in degrees. No geometry is invented to fill a gap the
+    role does not have.
+
+    ``requires_park_before_close`` stays True (inherited), even though a real
+    rotating dome whose shutter clears the OTA may set it False: the sim models
+    no dome/OTA geometry, so the fail-safe flag is the only honest one, and the
+    inherited collision model keeps protecting this class too.
+    """
+
+    def __init__(self, rig: SimRig, name: str = "Sim Rotating Dome") -> None:
+        super().__init__(rig, name)
+        self.can_slave = True
+        self._slaved = False
+
+    async def get_slaved(self) -> bool:
+        return self._slaved
+
+    async def set_slaved(self, on: bool) -> None:
+        self._slaved = bool(on)
+
+
 def build_sim_rig() -> dict[str, object]:
     """One coherent simulated observatory."""
     rig = SimRig()
