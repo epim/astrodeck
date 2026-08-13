@@ -34,6 +34,8 @@ import numpy as np
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
 
+from .coords import round_az_deg
+
 import astropy.units as u
 import warnings
 
@@ -308,7 +310,7 @@ def _moon_info(
         "illumination": round(illum, 3),
         "phase_name": _moon_phase_name(illum, waxing),
         "alt": round(alt, 1),
-        "az": round(az, 1),
+        "az": round_az_deg(az),
         "separation_deg": round(sep, 1),
         "rise_unix": rise_unix,
         "set_unix": set_unix,
@@ -329,7 +331,7 @@ def _moon_info_at(sc: dict, i: int, sep_deg: float) -> dict[str, Any]:
         "illumination": round(illum, 3),
         "phase_name": _moon_phase_name(illum, bool(sc["waxing"][i])),
         "alt": round(float(sc["moon_alt"][i]), 1),
-        "az": round(float(sc["moon_az"][i]), 1),
+        "az": round_az_deg(float(sc["moon_az"][i])),
         "separation_deg": round(sep_deg, 1),
         "rise_unix": sc["moon_rise_unix"],
         "set_unix": sc["moon_set_unix"],
