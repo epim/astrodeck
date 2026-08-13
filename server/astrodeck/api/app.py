@@ -2484,7 +2484,7 @@ def create_app() -> FastAPI:
     def _preflight_alt(ra_hours: float, dec_deg: float) -> dict:
         """Live altitude verdict for a target from the current site. Returns
         ``unknown`` when the site is still the default (no trustworthy answer)."""
-        from ..catalog import altaz
+        from ..catalog import altaz, round_az_deg
         site = hub.site
         is_default = bool(site.get("is_default", True))
         horizon_min = float(site.get("horizon_min_deg", 15.0))
@@ -2497,7 +2497,7 @@ def create_app() -> FastAPI:
             verdict = "low"
         else:
             verdict = "ok"
-        return {"alt": round(alt, 1), "az": round(az, 1), "verdict": verdict,
+        return {"alt": round(alt, 1), "az": round_az_deg(az), "verdict": verdict,
                 "horizon_min_deg": horizon_min, "site_is_default": is_default}
 
     def _horizon_block(ra_hours: float, dec_deg: float) -> dict | None:
@@ -5861,7 +5861,7 @@ def create_app() -> FastAPI:
         guess, and its guess — "Planets aren't supported yet" — is the failure
         this whole search change exists to end.
         """
-        from ..catalog import altaz
+        from ..catalog import altaz, round_az_deg
         # OFF the event loop. search() now evaluates astropy ephemerides inline:
         # ~6ms per planet, ~27ms for the Moon, and ~512ms on the first
         # solar-system query of the process (astropy import + IERS init). This
@@ -5891,7 +5891,7 @@ def create_app() -> FastAPI:
                 alt, az = altaz(r["ra_hours"], r["dec_deg"],
                                 hub.site["latitude"], hub.site["longitude"])
                 r["alt"] = round(alt, 1)
-                r["az"] = round(az, 1)
+                r["az"] = round_az_deg(az)
         if explain:
             return {"results": found.rows, "notes": found.notes}
         return found.rows
