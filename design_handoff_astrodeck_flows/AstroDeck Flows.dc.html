@@ -1,0 +1,1630 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous">
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600&amp;family=IBM+Plex+Mono:wght@400;500&amp;family=IBM+Plex+Sans:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#06070B;color:#e8ecf7;font-family:"IBM Plex Sans",sans-serif;font-size:14px;overflow:hidden}
+a{color:#00D2FF}a:hover{color:#9B51E0}
+*{scrollbar-width:thin;scrollbar-color:rgba(140,160,220,0.35) transparent;box-sizing:border-box}
+input,select,button{font:inherit}
+@keyframes pp-pulse{0%,100%{opacity:1}50%{opacity:0.4}}
+@keyframes pp-sweep{0%{clip-path:inset(0 50% 0 0)}50%{clip-path:inset(0 0 0 50%)}100%{clip-path:inset(0 50% 0 0)}}
+@keyframes pp-dash{to{stroke-dashoffset:-24}}
+@keyframes pp-toast{from{transform:translateY(-6px);opacity:0}to{transform:none;opacity:1}}
+@keyframes pp-sheet{from{transform:translateY(100%)}to{transform:none}}
+</style>
+</helmet>
+<div ref="{{ rootRef }}" data-screen-label="AstroDeck Flows" style="width:100vw;height:100dvh;display:flex;flex-direction:column;background:#06070B;color:#e8ecf7;filter:{{ rootFilter }};user-select:none">
+
+  <header style="flex:none;height:54px;display:flex;align-items:center;gap:10px;padding:0 12px;border-bottom:1px solid rgba(120,140,200,0.18);background:rgba(6,7,11,0.75);backdrop-filter:blur(10px);z-index:20">
+    <sc-if value="{{ isEditor }}" hint-placeholder-val="{{ false }}">
+      <button onClick="{{ onBack }}" style="font-family:'Chakra Petch',sans-serif;font-weight:600;font-size:10.5px;letter-spacing:0.12em;border-radius:10px;border:1px solid rgba(140,160,220,0.35);background:#12141C;color:#e8ecf7;padding:7px 10px;cursor:pointer" style-hover="border-color:#00D2FF;color:#00D2FF">‹ LIBRARY</button>
+    </sc-if>
+    <sc-if value="{{ phoneTitleShow }}" hint-placeholder-val="{{ false }}">
+      <div style="flex:1;min-width:0;font-family:'IBM Plex Mono',monospace;font-size:11px;color:#e8ecf7;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ pipeName }}</div>
+    </sc-if>
+    <sc-if value="{{ showWordmark }}" hint-placeholder-val="{{ true }}">
+    <svg width="26" height="26" viewBox="0 0 64 64" fill="none" stroke="#9aa6c2" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-label="AstroDeck">
+      <circle cx="32" cy="32" r="27" stroke-opacity="0.55"></circle>
+      <g stroke="#7683a5" stroke-width="1.5"><path d="M32 3.5v4M32 56.5v4M3.5 32h4M56.5 32h4"></path></g>
+      <g stroke-width="2.4"><path d="M20 44 L41 23"></path><path d="M16 40 L37 19"></path><path d="M37 19 L41 23"></path><path d="M16 40 L20 44"></path></g>
+      <g stroke-width="2" stroke-opacity="0.85"><path d="M18 42 L14 54M18 42 L24 52"></path><path d="M12 54h16"></path></g>
+      <g stroke="#00D2FF" stroke-width="2.2"><path d="M47 17 L47 11M47 17 L47 23M47 17 L41 17M47 17 L53 17"></path></g>
+      <circle cx="47" cy="17" r="1.6" fill="#00D2FF" stroke="none"></circle>
+      <circle cx="32" cy="32" r="1.6" fill="#00D2FF" stroke="none"></circle>
+    </svg>
+    <div style="display:flex;flex-direction:column;gap:1px;min-width:0">
+      <div style="font-family:'Chakra Petch',sans-serif;font-weight:600;font-size:11px;letter-spacing:0.22em;color:#e8ecf7;white-space:nowrap">ASTRODECK <span style="color:#00D2FF">FLOWS</span></div>
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#7683a5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ subTitle }}</div>
+    </div>
+    <div style="flex:1"></div>
+    </sc-if>
+    <sc-if value="{{ showProv }}" hint-placeholder-val="{{ false }}">
+      <span title="Built-in simulator rig — dashed border and hollow dot mean simulated, per the provider-badge shape rule" style="display:inline-flex;align-items:center;gap:6px;font-family:'IBM Plex Mono',monospace;font-size:10.5px;line-height:1;padding:4px 9px 4px 7px;border-radius:999px;border:1px dashed #00D2FF;color:#00D2FF;background:transparent;white-space:nowrap">
+        <span style="width:6px;height:6px;border-radius:999px;box-shadow:inset 0 0 0 2px currentColor"></span>SIMULATOR
+      </span>
+    </sc-if>
+    <sc-if value="{{ showValid }}" hint-placeholder-val="{{ false }}">
+      <span title="{{ validTitle }}" style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:0.06em;padding:4px 8px;border-radius:3px;border:1px solid {{ validColor }};color:{{ validColor }};white-space:nowrap">{{ validText }}</span>
+    </sc-if>
+    <sc-if value="{{ running }}" hint-placeholder-val="{{ false }}">
+      <span style="font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums;font-size:11px;color:#9aa6c2;white-space:nowrap">ETA <span style="color:#e8ecf7">{{ etaText }}</span></span>
+    </sc-if>
+    <sc-if value="{{ isEditor }}" hint-placeholder-val="{{ false }}">
+      <button onClick="{{ onTonight }}" title="Tonight: timeline, plain-English brief, compiled plan" style="font-family:'Chakra Petch',sans-serif;font-weight:600;font-size:11px;letter-spacing:0.12em;border-radius:10px;border:1px solid rgba(140,160,220,0.35);background:#12141C;color:#e8ecf7;padding:7px 11px;cursor:pointer;white-space:nowrap" style-hover="border-color:#00D2FF;color:#00D2FF">{{ tonightLabel }}</button>
+    </sc-if>
+    <sc-if value="{{ isEditor }}" hint-placeholder-val="{{ false }}">
+      <button onClick="{{ onRun }}" style="font-family:'Chakra Petch',sans-serif;font-weight:600;font-size:11px;letter-spacing:0.12em;border-radius:10px;border:1px solid {{ runBorder }};background:{{ runBg }};color:{{ runColor }};padding:7px 14px;cursor:pointer;white-space:nowrap">{{ runLabel }}</button>
+    </sc-if>
+    <button onClick="{{ onNight }}" title="Night mode — red LUT for dark adaptation" style="font-family:'Chakra Petch',sans-serif;font-weight:600;font-size:11px;letter-spacing:0.12em;border-radius:10px;border:1px solid rgba(140,160,220,0.35);background:{{ nightBg }};color:{{ nightColor }};padding:7px 11px;cursor:pointer" style-hover="border-color:#00D2FF">☾</button>
+    <button onClick="{{ onInfo }}" title="Design notes and assumptions" style="font-family:'IBM Plex Mono',monospace;font-size:12px;border-radius:10px;border:1px solid rgba(140,160,220,0.35);background:#12141C;color:#9aa6c2;padding:7px 11px;cursor:pointer" style-hover="border-color:#00D2FF;color:#00D2FF">i</button>
+  </header>
+
+  <sc-if value="{{ isLibrary }}" hint-placeholder-val="{{ true }}">
+    <div data-screen-label="Flow library" style="flex:1;overflow-y:auto;background-image:linear-gradient(rgba(6,7,11,0.82),rgba(6,7,11,0.94)),url('assets/bg_nebula.png');background-size:cover;background-position:center">
+      <div style="max-width:1020px;margin:0 auto;padding:38px 20px 60px">
+        <div style="font-family:'Chakra Petch',sans-serif;font-weight:600;font-size:22px;letter-spacing:0.14em">FLOWS</div>
+        <div style="color:#9aa6c2;font-size:13px;margin-top:6px;max-width:560px;text-wrap:pretty">Visual automation for the rig. Wire targets, windows and sensors into capture stages and rules — a flow compiles to a sequence plan plus when/then instructions and runs on the engine, fail-closed.</div>
+        <div style="display:flex;align-items:center;gap:10px;margin-top:22px;flex-wrap:wrap">
+          <div style="position:relative;flex:1;min-width:200px;max-width:340px">
+            <span style="position:absolute;left:10px;top:50%;transform:translateY(-50%);pointer-events:none">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#7683a5" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.8-3.8"></path></svg>
+            </span>
+            <input value="{{ libQuery }}" onChange="{{ onQuery }}" placeholder="Filter flows…" style="background:#06070B;border:1px solid rgba(120,140,200,0.18);color:#e8ecf7;font-family:'IBM Plex Mono',monospace;font-size:12px;padding:9px 10px 9px 30px;width:100%;min-height:40px;outline:none;border-radius:10px" style-focus="border-color:#9B51E0">
+          </div>
+          <div style="display:flex;gap:7px;flex-wrap:wrap">
+            <sc-for list="{{ folderChips }}" as="fc" hint-placeholder-count="3">
+              <button onClick="{{ fc.onClick }}" style="min-height:40px;padding:7px 14px;border-radius:999px;border:1px solid {{ fc.border }};background:{{ fc.bg }};color:{{ fc.color }};font-family:'IBM Plex Mono',monospace;font-size:11px;cursor:pointer">{{ fc.label }}</button>
+            </sc-for>
+          </div>
+        </div>
+        <sc-if value="{{ libEmpty }}" hint-placeholder-val="{{ false }}">
+          <div style="margin-top:40px;display:flex;flex-direction:column;align-items:center;gap:8px;color:#9aa6c2;opacity:0.75">
+            <span style="font-family:'IBM Plex Mono',monospace;font-size:12px">{{ libEmptyMsg }}</span>
+            <span style="font-size:11px;color:#7683a5">Try a target name, filter, or technique — or clear the search.</span>
+          </div>
+        </sc-if>
+        <sc-for list="{{ libSections }}" as="sec" hint-placeholder-count="2">
+          <div style="margin-top:26px">
+            <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:12px">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#7683a5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="transform:translateY(1px)"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"></path></svg>
+              <span style="font-family:'Chakra Petch',sans-serif;font-weight:600;font-size:10px;letter-spacing:0.22em;color:#9aa6c2">{{ sec.name }}</span>
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#7683a5">{{ sec.count }}</span>
+            </div>
+            <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(232px,1fr));gap:14px">
+              <sc-if value="{{ sec.hasNew }}" hint-placeholder-val="{{ false }}">
+                <button onClick="{{ onNewPipe }}" style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;min-height:150px;background:transparent;border:1px dashed rgba(140,160,220,0.35);border-radius:16px;cursor:pointer;color:#9aa6c2" style-hover="border-color:#00D2FF;color:#00D2FF">
+                  <span style="font-size:22px;line-height:1">+</span>
+                  <span style="font-family:'Chakra Petch',sans-serif;font-weight:600;font-size:11px;letter-spacing:0.14em">NEW FLOW</span>
+                </button>
+              </sc-if>
+              <sc-for list="{{ sec.cards }}" as="c" hint-placeholder-count="3">
+                <button onClick="{{ c.onOpen }}" style="text-align:left;display:flex;flex-direction:column;gap:8px;padding:16px;min-height:150px;background:rgba(12,14,22,0.85);border:1px solid rgba(120,140,200,0.18);border-radius:16px;backdrop-filter:blur(14px);box-shadow:inset 0 1px 1px rgba(255,255,255,0.05);cursor:pointer;color:#e8ecf7" style-hover="border-color:#00D2FF;box-shadow:0 0 14px rgba(0,210,255,0.25)">
+                  <div style="font-family:'Chakra Petch',sans-serif;font-weight:600;font-size:12.5px;letter-spacing:0.1em;text-transform:uppercase">{{ c.name }}</div>
+                  <div style="font-size:12px;color:#9aa6c2;line-height:1.45;flex:1;text-wrap:pretty">{{ c.tag }}</div>
+                  <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#7683a5">{{ c.meta }}</div>
+                  <div style="display:flex;align-items:center;gap:7px;font-family:'IBM Plex Mono',monospace;font-size:10px;color:{{ c.ledColor }}">
+                    <span style="{{ c.ledStyle }}"></span>{{ c.status }}
+                  </div>
+                </button>
+              </sc-for>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ showCanvasRow }}" hint-placeholder-val="{{ false }}">
+    <div data-screen-label="Flow editor" style="flex:1;display:flex;min-height:0">
+
+      <sc-if value="{{ showRail }}" hint-placeholder-val="{{ false }}">
+        <div style="flex:none;width:192px;border-right:1px solid rgba(120,140,200,0.18);overflow-y:auto;padding:12px 10px;display:flex;flex-direction:column;gap:14px;background:rgba(9,10,16,0.6)">
+          <sc-for list="{{ palette }}" as="g" hint-placeholder-count="4">
+            <div style="display:flex;flex-direction:column;gap:4px">
+              <div style="font-family:'Chakra Petch',sans-serif;font-size:9.5px;font-weight:600;letter-spacing:0.2em;color:#7683a5;padding:0 4px 2px">{{ g.name }}</div>
+              <sc-for list="{{ g.items }}" as="it" hint-placeholder-count="3">
+                <button onClick="{{ it.onAdd }}" title="{{ it.desc }}" style="display:flex;align-items:center;gap:8px;padding:7px 8px;border-radius:8px;border:1px solid transparent;background:transparent;color:#e8ecf7;cursor:pointer;text-align:left;width:100%" style-hover="border-color:rgba(140,160,220,0.35);background:#12141C">
+                  <span style="flex:none;width:7px;height:7px;border-radius:2px;background:{{ it.color }};box-shadow:0 0 5px {{ it.color }}"></span>
+                  <span style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;letter-spacing:0.03em">{{ it.label }}</span>
+                </button>
+              </sc-for>
+            </div>
+          </sc-for>
+          <div style="font-size:10.5px;color:#7683a5;line-height:1.5;padding:2px 4px;border-top:1px solid rgba(120,140,200,0.18);padding-top:10px">Click to drop a stage on the canvas, then drag from a port to wire it.</div>
+        </div>
+      </sc-if>
+
+      <div ref="{{ canvasRef }}" onWheel="{{ onWheel }}" style="flex:1;position:relative;overflow:hidden;min-width:0;touch-action:none;background-image:linear-gradient(rgba(6,7,11,0.86),rgba(6,7,11,0.93)),url('assets/bg_nebula.png');background-size:cover;background-position:center">
+        <div onPointerDown="{{ onBgDown }}" onClick="{{ onBgClick }}" style="position:absolute;inset:0;background-image:repeating-linear-gradient(0deg,rgba(120,140,200,0.06) 0 1px,transparent 1px 36px),repeating-linear-gradient(90deg,rgba(120,140,200,0.06) 0 1px,transparent 1px 36px);cursor:grab"></div>
+
+        <div style="position:absolute;left:0;top:0;transform:{{ worldT }};transform-origin:0 0">
+          <svg width="10" height="10" style="position:absolute;left:0;top:0;overflow:visible;pointer-events:none">
+            <sc-for list="{{ edgeList }}" as="e" hint-placeholder-count="3">
+              <g>
+                <path d="{{ e.d }}" fill="none" stroke="transparent" stroke-width="14" style="pointer-events:stroke;cursor:pointer" onClick="{{ e.onSelect }}"></path>
+                <path d="{{ e.d }}" fill="none" stroke="{{ e.stroke }}" stroke-width="{{ e.width }}" stroke-linecap="round" style="{{ e.style }}"></path>
+              </g>
+            </sc-for>
+            <sc-if value="{{ pendShow }}" hint-placeholder-val="{{ false }}">
+              <path d="{{ pendD }}" fill="none" stroke="#00D2FF" stroke-width="2" stroke-dasharray="5 5" opacity="0.8"></path>
+            </sc-if>
+          </svg>
+
+          <sc-for list="{{ nodeList }}" as="n" hint-placeholder-count="4">
+            <div onClick="{{ n.onClick }}" style="position:absolute;left:0;top:0;width:{{ n.w }}px;transform:translate3d({{ n.x }}px,{{ n.y }}px,0);background:rgba(12,14,22,0.92);border:1px solid {{ n.border }};border-radius:12px;box-shadow:{{ n.shadow }};backdrop-filter:blur(8px)">
+              <div onPointerDown="{{ n.onDown }}" style="display:flex;align-items:center;gap:7px;height:32px;padding:0 9px;cursor:grab;border-bottom:1px solid rgba(120,140,200,0.14)">
+                <span style="flex:none;width:7px;height:7px;border-radius:2px;background:{{ n.color }};box-shadow:0 0 6px {{ n.color }}"></span>
+                <span style="flex:1;font-family:'Chakra Petch',sans-serif;font-weight:600;font-size:9.5px;letter-spacing:0.14em;color:#e8ecf7;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ n.label }}</span>
+                <span style="{{ n.statusStyle }}" title="{{ n.statusName }}"></span>
+                <button onClick="{{ n.onEdit }}" onPointerDown="{{ n.onEditDown }}" title="Edit parameters" style="flex:none;width:20px;height:20px;display:flex;align-items:center;justify-content:center;border:0;background:transparent;color:#7683a5;cursor:pointer;padding:0;border-radius:5px" style-hover="color:#00D2FF;background:rgba(0,210,255,0.1)">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.8 2.8 0 0 1 4 4L7.5 20.5 2 22l1.5-5.5Z"></path></svg>
+                </button>
+              </div>
+              <div style="padding:5px 0 2px">
+                <sc-for list="{{ n.ins }}" as="p" hint-placeholder-count="1">
+                  <div style="display:flex;align-items:center;gap:7px;height:20px">
+                    <span data-port="{{ p.key }}" style="flex:none;width:20px;height:20px;margin-left:-10px;display:flex;align-items:center;justify-content:center;cursor:crosshair">
+                      <span style="width:9px;height:9px;border-radius:50%;border:1.5px solid {{ p.color }};background:{{ p.fill }}"></span>
+                    </span>
+                    <span style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;color:#9aa6c2">{{ p.label }}</span>
+                  </div>
+                </sc-for>
+                <sc-for list="{{ n.outs }}" as="p" hint-placeholder-count="1">
+                  <div style="display:flex;flex-direction:row-reverse;align-items:center;gap:7px;height:20px">
+                    <span data-port="{{ p.key }}" onPointerDown="{{ p.onDown }}" style="flex:none;width:20px;height:20px;margin-right:-10px;display:flex;align-items:center;justify-content:center;cursor:crosshair">
+                      <span style="width:9px;height:9px;border-radius:50%;border:1.5px solid {{ p.color }};background:{{ p.fill }}"></span>
+                    </span>
+                    <span style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;color:#9aa6c2">{{ p.label }}</span>
+                  </div>
+                </sc-for>
+              </div>
+              <sc-if value="{{ n.showSum }}" hint-placeholder-val="{{ true }}">
+                <div style="padding:3px 10px 8px;font-family:'IBM Plex Mono',monospace;font-size:9.5px;color:#7683a5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ n.summary }}</div>
+              </sc-if>
+            </div>
+          </sc-for>
+
+          <sc-if value="{{ selEdgeShow }}" hint-placeholder-val="{{ false }}">
+            <button onClick="{{ onDeleteSel }}" title="Delete wire" style="position:absolute;left:0;top:0;transform:translate3d({{ selEdgeX }}px,{{ selEdgeY }}px,0) translate(-50%,-50%);width:22px;height:22px;border-radius:50%;border:1px solid #ff5470;background:#12141C;color:#ff5470;font-size:11px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center">✕</button>
+          </sc-if>
+        </div>
+
+        <div style="position:absolute;left:12px;bottom:44px;display:flex;gap:6px;z-index:5">
+          <button onClick="{{ onZoomOut }}" style="min-width:34px;height:34px;border:1px solid rgba(140,160,220,0.35);background:#12141C;color:#e8ecf7;font-family:'IBM Plex Mono',monospace;font-size:15px;border-radius:8px;cursor:pointer" style-hover="border-color:#00D2FF;color:#00D2FF">−</button>
+          <span style="height:34px;display:flex;align-items:center;padding:0 8px;font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:#9aa6c2;border:1px solid rgba(120,140,200,0.18);border-radius:8px;background:rgba(12,14,22,0.85)">{{ zoomPct }}</span>
+          <button onClick="{{ onZoomIn }}" style="min-width:34px;height:34px;border:1px solid rgba(140,160,220,0.35);background:#12141C;color:#e8ecf7;font-family:'IBM Plex Mono',monospace;font-size:15px;border-radius:8px;cursor:pointer" style-hover="border-color:#00D2FF;color:#00D2FF">+</button>
+          <button onClick="{{ onZoomFit }}" style="height:34px;border:1px solid rgba(140,160,220,0.35);background:#12141C;color:#e8ecf7;font-family:'Chakra Petch',sans-serif;font-weight:600;font-size:9.5px;letter-spacing:0.12em;border-radius:8px;cursor:pointer;padding:0 10px" style-hover="border-color:#00D2FF;color:#00D2FF">FIT</button>
+        </div>
+
+        <sc-if value="{{ showAddFloat }}" hint-placeholder-val="{{ false }}">
+          <button onClick="{{ onOpenPalette }}" style="position:absolute;right:12px;bottom:44px;z-index:5;height:44px;padding:0 16px;border-radius:10px;border:1px solid #9B51E0;background:rgba(0,210,255,0.12);color:#00D2FF;font-family:'Chakra Petch',sans-serif;font-weight:600;font-size:11px;letter-spacing:0.12em;cursor:pointer">+ ADD STAGE</button>
+        </sc-if>
+
+        <div style="position:absolute;left:0;right:0;bottom:0;z-index:6;display:flex;flex-direction:column">
+          <sc-if value="{{ logOpen }}" hint-placeholder-val="{{ false }}">
+            <div style="max-height:170px;overflow-y:auto;background:rgba(6,7,11,0.92);border-top:1px solid rgba(120,140,200,0.18);padding:8px 12px;display:flex;flex-direction:column;gap:3px">
+              <sc-for list="{{ logs }}" as="l" hint-placeholder-count="3">
+                <div style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:{{ l.color }}"><span style="color:#7683a5">{{ l.time }}</span>  {{ l.msg }}</div>
+              </sc-for>
+            </div>
+          </sc-if>
+          <button onClick="{{ onToggleLog }}" style="display:flex;align-items:center;gap:8px;height:30px;padding:0 12px;background:rgba(6,7,11,0.85);border:0;border-top:1px solid rgba(120,140,200,0.18);color:#9aa6c2;cursor:pointer;text-align:left;width:100%">
+            <span style="font-family:'Chakra Petch',sans-serif;font-weight:600;font-size:9px;letter-spacing:0.2em;color:#7683a5">LOG</span>
+            <span style="flex:1;font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:{{ lastLogColor }};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ lastLog }}</span>
+            <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#7683a5">{{ logChevron }}</span>
+          </button>
+        </div>
+      </div>
+
+      <sc-if value="{{ showInspCol }}" hint-placeholder-val="{{ false }}">
+        <div style="flex:none;width:284px;border-left:1px solid rgba(120,140,200,0.18);overflow-y:auto;background:rgba(9,10,16,0.6)">
+          <div style="padding:14px 14px 24px;display:flex;flex-direction:column;gap:12px">
+            <sc-if value="{{ inspShow }}" hint-placeholder-val="{{ false }}">
+              <div style="display:flex;align-items:center;gap:8px">
+                <span style="flex:none;width:7px;height:7px;border-radius:2px;background:{{ insp.color }};box-shadow:0 0 6px {{ insp.color }}"></span>
+                <span style="flex:1;font-family:'Chakra Petch',sans-serif;font-weight:600;font-size:11px;letter-spacing:0.16em">{{ insp.label }}</span>
+                <span style="font-family:'IBM Plex Mono',monospace;font-size:9px;padding:3px 6px;border-radius:3px;border:1px dashed rgba(140,160,220,0.35);color:#9aa6c2">{{ insp.cat }}</span>
+              </div>
+              <div style="font-size:11.5px;color:#9aa6c2;line-height:1.5;text-wrap:pretty">{{ insp.desc }}</div>
+              <sc-if value="{{ insp.hasMatrix }}" hint-placeholder-val="{{ false }}">
+                <div style="display:flex;flex-direction:column;gap:6px;border:1px solid rgba(120,140,200,0.18);border-radius:10px;padding:10px;background:rgba(6,7,11,0.5)">
+                  <div style="font-family:'Chakra Petch',sans-serif;font-size:9px;font-weight:600;letter-spacing:0.2em;color:#7683a5">LIBRARY HEALTH</div>
+                  <sc-for list="{{ insp.matrix }}" as="m" hint-placeholder-count="4">
+                    <div style="display:grid;grid-template-columns:44px 1fr 42px 56px;gap:6px;align-items:center;font-family:'IBM Plex Mono',monospace;font-size:9.5px">
+                      <span style="color:#7683a5">{{ m.k }}</span><span style="color:#9aa6c2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ m.v }}</span><span style="color:#e8ecf7;text-align:right">{{ m.q }}</span><span style="color:{{ m.c }};text-align:right">{{ m.s }}</span>
+                    </div>
+                  </sc-for>
+                  <div style="font-size:10px;color:#7683a5;line-height:1.45">Drives the queue's 'if stale' decisions — mirrors the calibration library.</div>
+                </div>
+              </sc-if>
+              <sc-for list="{{ insp.fields }}" as="f" hint-placeholder-count="3">
+                <label style="display:flex;flex-direction:column;gap:4px">
+                  <span style="font-family:'Chakra Petch',sans-serif;font-size:9.5px;font-weight:500;letter-spacing:0.18em;text-transform:uppercase;color:#9aa6c2">{{ f.label }}</span>
+                  <sc-if value="{{ f.isSelect }}" hint-placeholder-val="{{ false }}">
+                    <select value="{{ f.value }}" onChange="{{ f.onChange }}" style="background:#06070B;border:1px solid rgba(120,140,200,0.18);color:#e8ecf7;font-family:'IBM Plex Mono',monospace;font-size:12px;padding:7px 9px;width:100%;border-radius:0;appearance:auto">
+                      <sc-for list="{{ f.options }}" as="opt" hint-placeholder-count="2"><option value="{{ opt }}">{{ opt }}</option></sc-for>
+                    </select>
+                  </sc-if>
+                  <sc-if value="{{ f.isText }}" hint-placeholder-val="{{ true }}">
+                    <div style="display:flex;align-items:center;gap:6px">
+                      <input value="{{ f.value }}" onChange="{{ f.onChange }}" style="background:#06070B;border:1px solid rgba(120,140,200,0.18);color:#e8ecf7;font-family:'IBM Plex Mono',monospace;font-size:12px;padding:7px 9px;width:100%;outline:none" style-focus="border-color:#9B51E0">
+                      <sc-if value="{{ f.hasUnit }}" hint-placeholder-val="{{ false }}"><span style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:#7683a5;flex:none">{{ f.unit }}</span></sc-if>
+                    </div>
+                  </sc-if>
+                </label>
+              </sc-for>
+              <button onClick="{{ onDeleteSel }}" style="margin-top:6px;font-family:'Chakra Petch',sans-serif;font-weight:600;font-size:10.5px;letter-spacing:0.12em;border-radius:10px;border:1px solid rgba(255,84,112,0.45);background:transparent;color:#ff5470;padding:8px 12px;cursor:pointer" style-hover="border-color:#ff5470;box-shadow:0 0 12px rgba(255,84,112,0.28)">DELETE STAGE</button>
+            </sc-if>
+            <sc-if value="{{ inspOverview }}" hint-placeholder-val="{{ true }}">
+              <div style="font-family:'Chakra Petch',sans-serif;font-weight:600;font-size:10px;letter-spacing:0.22em;color:#9aa6c2">FLOW</div>
+              <label style="display:flex;flex-direction:column;gap:4px">
+                <span style="font-family:'Chakra Petch',sans-serif;font-size:9.5px;letter-spacing:0.18em;text-transform:uppercase;color:#9aa6c2">NAME</span>
+                <input value="{{ pipeName }}" onChange="{{ onRename }}" style="background:#06070B;border:1px solid rgba(120,140,200,0.18);color:#e8ecf7;font-family:'IBM Plex Mono',monospace;font-size:12px;padding:7px 9px;width:100%;outline:none" style-focus="border-color:#9B51E0">
+              </label>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+                <div style="display:flex;flex-direction:column;gap:2px"><span style="font-family:'Chakra Petch',sans-serif;font-size:9.5px;letter-spacing:0.18em;color:#9aa6c2">STAGES</span><span style="font-family:'IBM Plex Mono',monospace;font-size:13px">{{ statNodes }}</span></div>
+                <div style="display:flex;flex-direction:column;gap:2px"><span style="font-family:'Chakra Petch',sans-serif;font-size:9.5px;letter-spacing:0.18em;color:#9aa6c2">WIRES</span><span style="font-family:'IBM Plex Mono',monospace;font-size:13px">{{ statEdges }}</span></div>
+              </div>
+              <div style="display:flex;flex-direction:column;gap:5px">
+                <span style="font-family:'Chakra Petch',sans-serif;font-size:9.5px;letter-spacing:0.18em;color:#9aa6c2">CHECKS</span>
+                <sc-for list="{{ issueList }}" as="iss" hint-placeholder-count="1">
+                  <div style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:{{ iss.color }};line-height:1.45">{{ iss.text }}</div>
+                </sc-for>
+              </div>
+              <div style="font-size:11px;color:#7683a5;line-height:1.55;border-top:1px solid rgba(120,140,200,0.18);padding-top:10px;text-wrap:pretty">Select a stage to edit its parameters. Drag from a right-side port onto a left-side port to wire. Cyan ports carry the run cursor; amber ports carry events.</div>
+            </sc-if>
+          </div>
+        </div>
+      </sc-if>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ phoneContentShow }}" hint-placeholder-val="{{ false }}">
+    <div data-screen-label="Flow editor (phone)" style="flex:1;display:flex;flex-direction:column;min-height:0">
+      <sc-if value="{{ phoneFlowTab }}" hint-placeholder-val="{{ true }}">
+        <div style="flex:1;overflow-y:auto;overflow-x:hidden;position:relative;background-image:linear-gradient(rgba(6,7,11,0.86),rgba(6,7,11,0.93)),url('assets/bg_nebula.png');background-size:cover;background-position:center">
+          <div style="position:relative;height:{{ autoH }}px">
+            <svg width="10" height="10" style="position:absolute;left:0;top:0;overflow:visible;pointer-events:none">
+              <sc-for list="{{ edgeList }}" as="ae" hint-placeholder-count="3">
+                <g>
+                  <path d="{{ ae.d }}" fill="none" stroke="transparent" stroke-width="16" style="pointer-events:stroke;cursor:pointer" onClick="{{ ae.onSelect }}"></path>
+                  <path d="{{ ae.d }}" fill="none" stroke="{{ ae.stroke }}" stroke-width="{{ ae.width }}" stroke-linecap="round" style="{{ ae.style }}"></path>
+                </g>
+              </sc-for>
+            </svg>
+            <sc-for list="{{ nodeList }}" as="an" hint-placeholder-count="4">
+              <div onClick="{{ an.onClick }}" style="position:absolute;left:0;top:0;width:{{ an.w }}px;transform:translate3d({{ an.x }}px,{{ an.y }}px,0);background:rgba(12,14,22,0.92);border:1px solid {{ an.border }};border-radius:12px;box-shadow:{{ an.shadow }}">
+                <div style="display:flex;align-items:center;gap:7px;height:32px;padding:0 9px;border-bottom:1px solid rgba(120,140,200,0.14)">
+                  <span style="flex:none;width:7px;height:7px;border-radius:2px;background:{{ an.color }};box-shadow:0 0 6px {{ an.color }}"></span>
+                  <span style="flex:1;font-family:'Chakra Petch',sans-serif;font-weight:600;font-size:9.5px;letter-spacing:0.14em;color:#e8ecf7;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ an.label }}</span>
+                  <span style="{{ an.statusStyle }}" title="{{ an.statusName }}"></span>
+                  <button onClick="{{ an.onEdit }}" title="Edit parameters" style="flex:none;width:24px;height:24px;display:flex;align-items:center;justify-content:center;border:0;background:transparent;color:#7683a5;cursor:pointer;padding:0;border-radius:5px">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.8 2.8 0 0 1 4 4L7.5 20.5 2 22l1.5-5.5Z"></path></svg>
+                  </button>
+                </div>
+                <div style="padding:5px 0 4px">
+                  <sc-for list="{{ an.ins }}" as="ap" hint-placeholder-count="1">
+                    <div style="display:flex;align-items:center;gap:7px;height:20px">
+                      <span data-port="{{ ap.key }}" onClick="{{ ap.onTap }}" style="flex:none;width:{{ ap.hit }}px;height:{{ ap.hit }}px;margin-left:-13px;display:flex;align-items:center;justify-content:center;cursor:pointer">
+                        <span style="width:10px;height:10px;border-radius:50%;border:1.5px solid {{ ap.color }};background:{{ ap.fill }};box-shadow:{{ ap.ring }}"></span>
+                      </span>
+                      <span style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;color:#9aa6c2">{{ ap.label }}</span>
+                    </div>
+                  </sc-for>
+                  <sc-for list="{{ an.outs }}" as="ap" hint-placeholder-count="1">
+                    <div style="display:flex;flex-direction:row-reverse;align-items:center;gap:7px;height:20px">
+                      <span data-port="{{ ap.key }}" onClick="{{ ap.onTap }}" style="flex:none;width:{{ ap.hit }}px;height:{{ ap.hit }}px;margin-right:-13px;display:flex;align-items:center;justify-content:center;cursor:pointer">
+                        <span style="width:10px;height:10px;border-radius:50%;border:1.5px solid {{ ap.color }};background:{{ ap.fill }};box-shadow:{{ ap.ring }}"></span>
+                      </span>
+                      <span style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;color:#9aa6c2">{{ ap.label }}</span>
+                    </div>
+                  </sc-for>
+                </div>
+              </div>
+            </sc-for>
+            <sc-if value="{{ selEdgeShow }}" hint-placeholder-val="{{ false }}">
+              <button onClick="{{ onDeleteSel }}" title="Delete wire" style="position:absolute;left:0;top:0;transform:translate3d({{ selEdgeX }}px,{{ selEdgeY }}px,0) translate(-50%,-50%);width:26px;height:26px;border-radius:50%;border:1px solid #ff5470;background:#12141C;color:#ff5470;font-size:12px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center">✕</button>
+            </sc-if>
+            <button onClick="{{ onOpenPalette }}" style="position:absolute;left:14px;right:14px;bottom:10px;height:48px;border-radius:12px;border:1px dashed rgba(140,160,220,0.35);background:rgba(6,7,11,0.6);color:#00D2FF;font-family:'Chakra Petch',sans-serif;font-weight:600;font-size:11px;letter-spacing:0.14em;cursor:pointer">+ ADD STAGE</button>
+          </div>
+        </div>
+        <sc-if value="{{ tapWireOn }}" hint-placeholder-val="{{ false }}">
+          <div style="flex:none;display:flex;align-items:center;gap:10px;padding:10px 14px;border-top:1px solid rgba(0,210,255,0.4);background:rgba(0,210,255,0.08)">
+            <span style="flex:1;min-width:0;font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:#00D2FF;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ tapHint }}</span>
+            <button onClick="{{ onCancelTap }}" style="flex:none;min-height:36px;padding:0 12px;border-radius:8px;border:1px solid rgba(140,160,220,0.35);background:transparent;color:#9aa6c2;font-family:'Chakra Petch',sans-serif;font-weight:600;font-size:9.5px;letter-spacing:0.12em;cursor:pointer">CANCEL</button>
+          </div>
+        </sc-if>
+        <div style="display:none">
+          <sc-for list="{{ stageCards }}" as="s" hint-placeholder-count="4">
+            <div style="display:flex;flex-direction:column">
+              <sc-if value="{{ s.connector }}" hint-placeholder-val="{{ false }}">
+                <div style="width:2px;height:16px;margin-left:24px;background:rgba(0,210,255,0.4)"></div>
+              </sc-if>
+              <button onClick="{{ s.onOpen }}" style="display:flex;align-items:center;gap:11px;padding:12px;min-height:56px;background:rgba(12,14,22,0.85);border:1px solid {{ s.border }};border-radius:12px;cursor:pointer;color:#e8ecf7;text-align:left;width:100%">
+                <span style="flex:none;width:8px;height:8px;border-radius:2px;background:{{ s.color }};box-shadow:0 0 6px {{ s.color }}"></span>
+                <span style="flex:1;min-width:0;display:flex;flex-direction:column;gap:2px">
+                  <span style="font-family:'Chakra Petch',sans-serif;font-weight:600;font-size:10.5px;letter-spacing:0.14em">{{ s.label }}</span>
+                  <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#7683a5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ s.summary }}</span>
+                </span>
+                <span style="{{ s.statusStyle }}"></span>
+                <span onClick="{{ s.onEdit }}" title="Edit parameters" style="flex:none;width:36px;height:36px;display:flex;align-items:center;justify-content:center;border:1px solid rgba(140,160,220,0.25);border-radius:8px;color:#9aa6c2">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.8 2.8 0 0 1 4 4L7.5 20.5 2 22l1.5-5.5Z"></path></svg>
+                </span>
+              </button>
+            </div>
+          </sc-for>
+          <sc-if value="{{ hasRules }}" hint-placeholder-val="{{ false }}">
+            <div style="font-family:'Chakra Petch',sans-serif;font-weight:600;font-size:9.5px;letter-spacing:0.22em;color:#7683a5;margin:20px 0 8px">EVENT RULES — WHEN ▸ THEN</div>
+            <sc-for list="{{ ruleTrees }}" as="rt" hint-placeholder-count="2">
+              <div style="border:1px dashed rgba(255,180,84,0.4);border-radius:12px;padding:10px 12px 12px;margin-bottom:10px;background:rgba(12,14,22,0.6)">
+                <div style="display:flex;align-items:center;gap:9px">
+                  <span style="flex:none;width:8px;height:8px;border-radius:2px;background:{{ rt.color }};box-shadow:0 0 6px {{ rt.color }}"></span>
+                  <span style="flex:1;min-width:0;display:flex;flex-direction:column;gap:1px">
+                    <span style="font-family:'Chakra Petch',sans-serif;font-weight:600;font-size:10.5px;letter-spacing:0.14em">{{ rt.label }}</span>
+                    <span style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;color:#7683a5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ rt.sum }}</span>
+                  </span>
+                  <span onClick="{{ rt.onEdit }}" style="flex:none;width:36px;height:36px;display:flex;align-items:center;justify-content:center;border:1px solid rgba(140,160,220,0.25);border-radius:8px;color:#9aa6c2;cursor:pointer">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.8 2.8 0 0 1 4 4L7.5 20.5 2 22l1.5-5.5Z"></path></svg>
+                  </span>
+                </div>
+                <sc-for list="{{ rt.ports }}" as="pp" hint-placeholder-count="1">
+                  <div style="margin-top:9px">
+                    <div style="display:flex;align-items:center;gap:7px">
+                      <span style="flex:none;width:7px;height:7px;border-radius:50%;border:1.5px solid #ffb454;margin-left:1px"></span>
+                      <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#ffb454">{{ pp.label }}</span>
+                    </div>
+                    <div style="margin-left:4px;border-left:1px dashed rgba(255,180,84,0.35);display:flex;flex-direction:column;padding:2px 0">
+                      <sc-for list="{{ pp.targets }}" as="tg" hint-placeholder-count="2">
+                        <div style="display:flex;flex-direction:column">
+                          <button onClick="{{ tg.onOpen }}" style="display:flex;align-items:center;gap:8px;min-height:40px;padding:4px 6px;background:transparent;border:0;border-radius:8px;cursor:pointer;color:#e8ecf7;text-align:left;width:100%">
+                            <span style="flex:none;width:12px;height:1px;border-top:1px dashed rgba(255,180,84,0.5)"></span>
+                            <span style="flex:none;width:7px;height:7px;border-radius:2px;background:{{ tg.color }};box-shadow:0 0 5px {{ tg.color }}"></span>
+                            <span style="flex:1;min-width:0;font-family:'IBM Plex Mono',monospace;font-size:10.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ tg.label }}</span>
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#7683a5" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><path d="M17 3a2.8 2.8 0 0 1 4 4L7.5 20.5 2 22l1.5-5.5Z"></path></svg>
+                          </button>
+                          <sc-if value="{{ tg.hasSubs }}" hint-placeholder-val="{{ false }}">
+                            <div style="margin-left:30px;border-left:1px dashed rgba(255,180,84,0.35);display:flex;flex-direction:column">
+                              <sc-for list="{{ tg.subs }}" as="sb" hint-placeholder-count="1">
+                                <button onClick="{{ sb.onOpen }}" style="display:flex;align-items:center;gap:8px;min-height:40px;padding:4px 6px;background:transparent;border:0;border-radius:8px;cursor:pointer;color:#e8ecf7;text-align:left;width:100%">
+                                  <span style="flex:none;width:12px;height:1px;border-top:1px dashed rgba(255,180,84,0.5)"></span>
+                                  <span style="flex:none;width:7px;height:7px;border-radius:2px;background:{{ sb.color }};box-shadow:0 0 5px {{ sb.color }}"></span>
+                                  <span style="flex:1;min-width:0;font-family:'IBM Plex Mono',monospace;font-size:10.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ sb.label }}</span>
+                                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#7683a5" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><path d="M17 3a2.8 2.8 0 0 1 4 4L7.5 20.5 2 22l1.5-5.5Z"></path></svg>
+                                </button>
+                              </sc-for>
+                            </div>
+                          </sc-if>
+                        </div>
+                      </sc-for>
+                    </div>
+                  </div>
+                </sc-for>
+              </div>
+            </sc-for>
+          </sc-if>
+          <sc-if value="{{ hasOrphans }}" hint-placeholder-val="{{ false }}">
+            <div style="margin-top:16px;font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:#ffb454;line-height:1.5">{{ orphanNote }}</div>
+          </sc-if>
+          <button onClick="{{ onOpenPalette }}" style="margin-top:18px;width:100%;height:48px;border-radius:12px;border:1px dashed rgba(140,160,220,0.35);background:transparent;color:#00D2FF;font-family:'Chakra Petch',sans-serif;font-weight:600;font-size:11px;letter-spacing:0.14em;cursor:pointer">+ ADD STAGE</button>
+        </div>
+      </sc-if>
+      <sc-if value="{{ phoneMonTab }}" hint-placeholder-val="{{ false }}">
+        <div style="flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:12px">
+          <div style="background:rgba(12,14,22,0.85);border:1px solid rgba(120,140,200,0.18);border-radius:16px;padding:16px;display:grid;grid-template-columns:1fr 1fr;gap:14px">
+            <div style="display:flex;flex-direction:column;gap:3px"><span style="font-family:'Chakra Petch',sans-serif;font-size:9.5px;letter-spacing:0.18em;color:#9aa6c2">STATE</span><span style="font-family:'IBM Plex Mono',monospace;font-size:14px;color:{{ monStateColor }}">{{ monState }}</span></div>
+            <div style="display:flex;flex-direction:column;gap:3px"><span style="font-family:'Chakra Petch',sans-serif;font-size:9.5px;letter-spacing:0.18em;color:#9aa6c2">ETA</span><span style="font-family:'IBM Plex Mono',monospace;font-size:14px">{{ etaText }}</span></div>
+            <div style="display:flex;flex-direction:column;gap:3px"><span style="font-family:'Chakra Petch',sans-serif;font-size:9.5px;letter-spacing:0.18em;color:#9aa6c2">STAGE</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ monStage }}</span></div>
+            <div style="display:flex;flex-direction:column;gap:3px"><span style="font-family:'Chakra Petch',sans-serif;font-size:9.5px;letter-spacing:0.18em;color:#9aa6c2">FRAMES</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12px">{{ monFrames }}</span></div>
+          </div>
+          <div style="flex:1;background:rgba(12,14,22,0.85);border:1px solid rgba(120,140,200,0.18);border-radius:16px;padding:12px;overflow-y:auto;display:flex;flex-direction:column;gap:4px;min-height:120px">
+            <sc-for list="{{ logs }}" as="l" hint-placeholder-count="3">
+              <div style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:{{ l.color }};line-height:1.5"><span style="color:#7683a5">{{ l.time }}</span>  {{ l.msg }}</div>
+            </sc-for>
+          </div>
+          <button onClick="{{ onRun }}" style="flex:none;height:56px;border-radius:12px;border:1px solid {{ runBorder }};background:{{ runBg }};color:{{ runColor }};font-family:'Chakra Petch',sans-serif;font-weight:600;font-size:13px;letter-spacing:0.16em;cursor:pointer">{{ runLabel }}</button>
+        </div>
+      </sc-if>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ isPhoneEditor }}" hint-placeholder-val="{{ false }}">
+    <div style="flex:none;display:flex;border-top:1px solid rgba(120,140,200,0.18);background:rgba(6,7,11,0.9);padding-bottom:env(safe-area-inset-bottom,0px)">
+      <sc-for list="{{ phoneTabs }}" as="pt" hint-placeholder-count="3">
+        <button onClick="{{ pt.onClick }}" style="flex:1;height:50px;background:transparent;border:0;border-top:2px solid {{ pt.border }};color:{{ pt.color }};font-family:'Chakra Petch',sans-serif;font-weight:600;font-size:10.5px;letter-spacing:0.16em;cursor:pointer">{{ pt.label }}</button>
+      </sc-for>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ sheetShow }}" hint-placeholder-val="{{ false }}">
+    <div style="position:fixed;inset:0;z-index:40">
+      <button onClick="{{ onCloseSheet }}" style="position:absolute;inset:0;background:rgba(0,0,0,0.6);border:0;cursor:default"></button>
+      <div style="position:absolute;left:0;right:0;bottom:0;max-height:76dvh;background:#12141C;border-top:1px solid rgba(140,160,220,0.35);box-shadow:0 -12px 40px rgba(0,0,0,0.6);display:flex;flex-direction:column;animation:pp-sheet 0.2s ease backwards">
+        <div style="flex:none;display:flex;align-items:center;gap:8px;padding:13px 16px;border-bottom:1px solid rgba(120,140,200,0.18)">
+          <span style="flex:none;width:7px;height:7px;border-radius:2px;background:{{ insp.color }};box-shadow:0 0 6px {{ insp.color }}"></span>
+          <span style="flex:1;font-family:'Chakra Petch',sans-serif;font-weight:600;font-size:11px;letter-spacing:0.16em">{{ insp.label }}</span>
+          <button onClick="{{ onCloseSheet }}" style="min-width:44px;min-height:36px;border-radius:8px;border:1px solid rgba(140,160,220,0.35);background:transparent;color:#9aa6c2;cursor:pointer">✕</button>
+        </div>
+        <div style="flex:1;overflow-y:auto;padding:14px 16px calc(20px + env(safe-area-inset-bottom,0px));display:flex;flex-direction:column;gap:12px">
+          <div style="font-size:11.5px;color:#9aa6c2;line-height:1.5;text-wrap:pretty">{{ insp.desc }}</div>
+          <sc-if value="{{ insp.hasMatrix }}" hint-placeholder-val="{{ false }}">
+            <div style="display:flex;flex-direction:column;gap:6px;border:1px solid rgba(120,140,200,0.18);border-radius:10px;padding:10px;background:rgba(6,7,11,0.5)">
+              <div style="font-family:'Chakra Petch',sans-serif;font-size:9px;font-weight:600;letter-spacing:0.2em;color:#7683a5">LIBRARY HEALTH</div>
+              <sc-for list="{{ insp.matrix }}" as="m" hint-placeholder-count="4">
+                <div style="display:grid;grid-template-columns:44px 1fr 42px 56px;gap:6px;align-items:center;font-family:'IBM Plex Mono',monospace;font-size:10px">
+                  <span style="color:#7683a5">{{ m.k }}</span><span style="color:#9aa6c2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ m.v }}</span><span style="color:#e8ecf7;text-align:right">{{ m.q }}</span><span style="color:{{ m.c }};text-align:right">{{ m.s }}</span>
+                </div>
+              </sc-for>
+              <div style="font-size:10px;color:#7683a5;line-height:1.45">Drives the queue's 'if stale' decisions — mirrors the calibration library.</div>
+            </div>
+          </sc-if>
+          <sc-for list="{{ insp.fields }}" as="f" hint-placeholder-count="3">
+            <label style="display:flex;flex-direction:column;gap:4px">
+              <span style="font-family:'Chakra Petch',sans-serif;font-size:9.5px;letter-spacing:0.18em;text-transform:uppercase;color:#9aa6c2">{{ f.label }}</span>
+              <sc-if value="{{ f.isSelect }}" hint-placeholder-val="{{ false }}">
+                <select value="{{ f.value }}" onChange="{{ f.onChange }}" style="background:#06070B;border:1px solid rgba(120,140,200,0.18);color:#e8ecf7;font-family:'IBM Plex Mono',monospace;font-size:13px;padding:10px;width:100%;min-height:44px;appearance:auto">
+                  <sc-for list="{{ f.options }}" as="opt" hint-placeholder-count="2"><option value="{{ opt }}">{{ opt }}</option></sc-for>
+                </select>
+              </sc-if>
+              <sc-if value="{{ f.isText }}" hint-placeholder-val="{{ true }}">
+                <div style="display:flex;align-items:center;gap:6px">
+                  <input value="{{ f.value }}" onChange="{{ f.onChange }}" style="background:#06070B;border:1px solid rgba(120,140,200,0.18);color:#e8ecf7;font-family:'IBM Plex Mono',monospace;font-size:13px;padding:10px;width:100%;min-height:44px;outline:none" style-focus="border-color:#9B51E0">
+                  <sc-if value="{{ f.hasUnit }}" hint-placeholder-val="{{ false }}"><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#7683a5;flex:none">{{ f.unit }}</span></sc-if>
+                </div>
+              </sc-if>
+            </label>
+          </sc-for>
+          <button onClick="{{ onDeleteSel }}" style="margin-top:4px;min-height:44px;font-family:'Chakra Petch',sans-serif;font-weight:600;font-size:11px;letter-spacing:0.12em;border-radius:10px;border:1px solid rgba(255,84,112,0.45);background:transparent;color:#ff5470;cursor:pointer">DELETE STAGE</button>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ paletteOpen }}" hint-placeholder-val="{{ false }}">
+    <div style="position:fixed;inset:0;z-index:41">
+      <button onClick="{{ onClosePalette }}" style="position:absolute;inset:0;background:rgba(0,0,0,0.6);border:0;cursor:default"></button>
+      <div style="position:absolute;left:0;right:0;bottom:0;max-height:72dvh;background:#12141C;border-top:1px solid rgba(140,160,220,0.35);display:flex;flex-direction:column;animation:pp-sheet 0.2s ease backwards">
+        <div style="flex:none;display:flex;align-items:center;justify-content:space-between;padding:13px 16px;border-bottom:1px solid rgba(120,140,200,0.18)">
+          <span style="font-family:'Chakra Petch',sans-serif;font-weight:600;font-size:11px;letter-spacing:0.2em">ADD STAGE</span>
+          <button onClick="{{ onClosePalette }}" style="min-width:44px;min-height:36px;border-radius:8px;border:1px solid rgba(140,160,220,0.35);background:transparent;color:#9aa6c2;cursor:pointer">✕</button>
+        </div>
+        <div style="flex:1;overflow-y:auto;padding:12px 16px calc(20px + env(safe-area-inset-bottom,0px));display:flex;flex-direction:column;gap:14px">
+          <sc-for list="{{ palette }}" as="g" hint-placeholder-count="4">
+            <div style="display:flex;flex-direction:column;gap:4px">
+              <div style="font-family:'Chakra Petch',sans-serif;font-size:9.5px;font-weight:600;letter-spacing:0.2em;color:#7683a5">{{ g.name }}</div>
+              <sc-for list="{{ g.items }}" as="it" hint-placeholder-count="3">
+                <button onClick="{{ it.onAdd }}" style="display:flex;align-items:center;gap:10px;padding:11px 10px;min-height:48px;border-radius:10px;border:1px solid rgba(120,140,200,0.18);background:rgba(6,7,11,0.6);color:#e8ecf7;cursor:pointer;text-align:left;width:100%">
+                  <span style="flex:none;width:8px;height:8px;border-radius:2px;background:{{ it.color }};box-shadow:0 0 6px {{ it.color }}"></span>
+                  <span style="display:flex;flex-direction:column;gap:2px;min-width:0">
+                    <span style="font-family:'IBM Plex Mono',monospace;font-size:11.5px">{{ it.label }}</span>
+                    <span style="font-size:10.5px;color:#7683a5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ it.desc }}</span>
+                  </span>
+                </button>
+              </sc-for>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ showNotes }}" hint-placeholder-val="{{ false }}">
+    <div style="position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;padding:18px">
+      <button onClick="{{ onCloseNotes }}" style="position:absolute;inset:0;background:rgba(0,0,0,0.72);border:0;cursor:default"></button>
+      <div style="position:relative;width:min(620px,100%);max-height:86dvh;background:#12141C;border:1px solid rgba(140,160,220,0.35);box-shadow:0 18px 48px rgba(0,0,0,0.66);display:flex;flex-direction:column">
+        <div style="flex:none;display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid rgba(120,140,200,0.18)">
+          <span style="font-family:'Chakra Petch',sans-serif;font-weight:600;font-size:11px;letter-spacing:0.22em;color:#9aa6c2">DESIGN NOTES — FLOWS</span>
+          <button onClick="{{ onCloseNotes }}" style="min-width:44px;min-height:36px;border-radius:8px;border:1px solid rgba(140,160,220,0.35);background:transparent;color:#9aa6c2;cursor:pointer">✕</button>
+        </div>
+        <div style="flex:1;overflow-y:auto;padding:16px 18px;display:flex;flex-direction:column;gap:10px;font-size:12.5px;line-height:1.6;color:#9aa6c2">
+          <div><span style="color:#e8ecf7">Grounding.</span> A flow compiles 1:1 to what the engine already runs: the flow lane is a SequencePlan (targets → slew/center → autofocus → guide → exposure steps → report), and amber event wires are the Instruction grammar (when-trigger-do-action: on_hfr_above, on_guide_rms_above → notify / refocus / abort). No node invents a capability the server lacks.</div>
+          <div><span style="color:#e8ecf7">Port grammar.</span> Cyan = control flow; exactly one run cursor travels it. Amber = events; they can fire at any time while the flow runs. Kind mismatches refuse to wire and say why.</div>
+          <div><span style="color:#e8ecf7">Shape, not color.</span> Status LEDs keep the app's silhouettes (dash = idle, sweep = busy, check = ok, halo = warn, square = alarm); the simulator badge stays dashed-with-hollow-dot. Everything survives the night LUT.</div>
+          <div><span style="color:#e8ecf7">Night mode</span> here is approximated with a red LUT over the whole surface — the shipped app swaps the full token ladder with measured AA contrast per rung.</div>
+          <div><span style="color:#e8ecf7">Phone.</span> Three bottom tabs. CANVAS is the same read/write graph with compact nodes — drag, wire, pinch-to-zoom. LIST is the graph linearized for gloved one-thumb use: the flow rail plus when▸then rule trees. MONITOR runs the night. Params and RUN are full-fidelity everywhere; LIST stays the calmest way to edit in the dark.</div>
+          <div><span style="color:#e8ecf7">Open questions.</span> Mosaic panels as a node or a Target detail? Should a live-stack sink appear before the engine ships it? Parallel target lanes vs. the scheduler's own ordering?</div>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ tonightOpen }}" hint-placeholder-val="{{ false }}">
+    <div style="position:fixed;inset:0;z-index:48;display:flex;align-items:center;justify-content:center;padding:14px">
+      <button onClick="{{ onCloseTonight }}" style="position:absolute;inset:0;background:rgba(0,0,0,0.72);border:0;cursor:default"></button>
+      <div style="position:relative;width:min(880px,100%);max-height:90dvh;background:#12141C;border:1px solid rgba(140,160,220,0.35);box-shadow:0 18px 48px rgba(0,0,0,0.66);display:flex;flex-direction:column">
+        <div style="flex:none;display:flex;align-items:center;gap:8px;padding:12px 16px;border-bottom:1px solid rgba(120,140,200,0.18);flex-wrap:wrap">
+          <span style="font-family:'Chakra Petch',sans-serif;font-weight:600;font-size:11px;letter-spacing:0.22em;color:#e8ecf7">◷ TONIGHT</span>
+          <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#7683a5">{{ pipeName }}</span>
+          <div style="flex:1"></div>
+          <sc-for list="{{ tTabs }}" as="tb" hint-placeholder-count="3">
+            <button onClick="{{ tb.onClick }}" style="font-family:'Chakra Petch',sans-serif;font-weight:600;font-size:9.5px;letter-spacing:0.14em;padding:6px 10px;border-radius:8px;border:1px solid {{ tb.border }};background:transparent;color:{{ tb.color }};cursor:pointer">{{ tb.label }}</button>
+          </sc-for>
+          <button onClick="{{ onCloseTonight }}" style="min-width:40px;min-height:34px;border-radius:8px;border:1px solid rgba(140,160,220,0.35);background:transparent;color:#9aa6c2;cursor:pointer">✕</button>
+        </div>
+        <div style="flex:1;overflow-y:auto;padding:14px 16px calc(16px + env(safe-area-inset-bottom,0px))">
+          <sc-if value="{{ tShowTl }}" hint-placeholder-val="{{ true }}">
+            <div style="position:relative">
+              <svg viewBox="0 0 1000 150" width="100%" style="display:block" preserveAspectRatio="none">
+                <line x1="0" y1="118" x2="1000" y2="118" stroke="rgba(140,160,220,0.35)" stroke-width="1"></line>
+                <sc-for list="{{ tn.times }}" as="tm" hint-placeholder-count="4">
+                  <line x1="{{ tm.x }}" x2="{{ tm.x }}" y1="114" y2="122" stroke="rgba(140,160,220,0.35)" stroke-width="1"></line>
+                </sc-for>
+                <sc-for list="{{ tn.blocks }}" as="b" hint-placeholder-count="3">
+                  <rect x="{{ b.x }}" y="{{ b.y }}" width="{{ b.w }}" height="{{ b.h }}" fill="{{ b.fill }}" opacity="{{ b.op }}" rx="3"></rect>
+                </sc-for>
+                <sc-for list="{{ tn.curves }}" as="c" hint-placeholder-count="1">
+                  <path d="{{ c.d }}" fill="none" stroke="{{ c.stroke }}" stroke-width="1.3"></path>
+                </sc-for>
+                <sc-for list="{{ tn.ticks }}" as="k" hint-placeholder-count="3">
+                  <line x1="{{ k.x }}" x2="{{ k.x }}" y1="28" y2="118" stroke="{{ k.color }}" stroke-width="1" stroke-dasharray="3 3"></line>
+                </sc-for>
+              </svg>
+              <div style="position:absolute;inset:0;pointer-events:none">
+                <sc-for list="{{ tn.labels }}" as="lb" hint-placeholder-count="6">
+                  <div style="position:absolute;left:{{ lb.l }}%;top:{{ lb.t }}%;transform:translate(-50%,-50%);font-family:'IBM Plex Mono',monospace;font-size:9.5px;line-height:1;color:{{ lb.color }};white-space:nowrap">{{ lb.label }}</div>
+                </sc-for>
+              </div>
+            </div>
+            <div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:10px;font-family:'IBM Plex Mono',monospace;font-size:9.5px;color:#7683a5">
+              <span><span style="color:#00D2FF">■</span> imaging window + altitude arc</span>
+              <span><span style="color:#4d7cff">■</span> twilight / flats</span>
+              <span><span style="color:#ffb454">┆</span> meridian flip</span>
+              <span><span style="color:#7683a5">▬</span> moon up (71%)</span>
+            </div>
+            <div style="margin-top:10px;font-size:10.5px;color:#7683a5;line-height:1.5">Simulated ephemeris for the saved site — the shipped app renders this from tonight's visibility math, live.</div>
+          </sc-if>
+          <sc-if value="{{ tShowSt }}" hint-placeholder-val="{{ false }}">
+            <div style="display:flex;flex-direction:column;gap:8px">
+              <sc-for list="{{ tn.story }}" as="ln" hint-placeholder-count="6">
+                <div style="display:grid;grid-template-columns:60px 1fr;gap:10px;align-items:baseline">
+                  <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#7683a5;text-align:right">{{ ln.t }}</span>
+                  <span style="font-size:12px;line-height:1.5;color:{{ ln.color }};text-wrap:pretty">{{ ln.msg }}</span>
+                </div>
+              </sc-for>
+            </div>
+          </sc-if>
+          <sc-if value="{{ tShowPl }}" hint-placeholder-val="{{ false }}">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px">
+              <span style="font-size:11px;color:#9aa6c2;line-height:1.45;text-wrap:pretty">The literal plan this graph compiles to — SequencePlan targets + steps, automation, and when/then instructions. Nothing here the engine can't run.</span>
+              <button onClick="{{ onCopyPlan }}" style="flex:none;font-family:'Chakra Petch',sans-serif;font-weight:600;font-size:9.5px;letter-spacing:0.14em;padding:7px 11px;border-radius:8px;border:1px solid #9B51E0;background:rgba(0,210,255,0.08);color:#00D2FF;cursor:pointer">COPY JSON</button>
+            </div>
+            <div style="white-space:pre;overflow:auto;font-family:'IBM Plex Mono',monospace;font-size:10px;line-height:1.55;color:#9aa6c2;background:#06070B;border:1px solid rgba(120,140,200,0.18);border-radius:8px;padding:12px;max-height:56dvh">{{ planJson }}</div>
+          </sc-if>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ wizOpen }}" hint-placeholder-val="{{ false }}">
+    <div style="position:fixed;inset:0;z-index:49;display:flex;align-items:center;justify-content:center;padding:14px">
+      <button onClick="{{ onCloseWiz }}" style="position:absolute;inset:0;background:rgba(0,0,0,0.72);border:0;cursor:default"></button>
+      <div style="position:relative;width:min(560px,100%);max-height:90dvh;background:#12141C;border:1px solid rgba(140,160,220,0.35);box-shadow:0 18px 48px rgba(0,0,0,0.66);display:flex;flex-direction:column">
+        <div style="flex:none;display:flex;align-items:center;justify-content:space-between;padding:13px 18px;border-bottom:1px solid rgba(120,140,200,0.18)">
+          <span style="font-family:'Chakra Petch',sans-serif;font-weight:600;font-size:11px;letter-spacing:0.22em">NEW FLOW — GUIDED</span>
+          <button onClick="{{ onCloseWiz }}" style="min-width:40px;min-height:34px;border-radius:8px;border:1px solid rgba(140,160,220,0.35);background:transparent;color:#9aa6c2;cursor:pointer">✕</button>
+        </div>
+        <div style="flex:1;overflow-y:auto;padding:16px 18px;display:flex;flex-direction:column;gap:16px">
+          <div style="display:flex;flex-direction:column;gap:6px">
+            <span style="font-family:'Chakra Petch',sans-serif;font-size:9.5px;font-weight:600;letter-spacing:0.18em;color:#9aa6c2">WHAT ARE WE DOING TONIGHT?</span>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <sc-for list="{{ wizKinds }}" as="k" hint-placeholder-count="3">
+                <button onClick="{{ k.onPick }}" style="flex:1;min-width:140px;min-height:44px;padding:8px 10px;border-radius:10px;border:1px solid {{ k.border }};background:{{ k.bg }};color:{{ k.color }};font-family:'IBM Plex Mono',monospace;font-size:11px;cursor:pointer">{{ k.label }}</button>
+              </sc-for>
+            </div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:6px">
+            <span style="font-family:'Chakra Petch',sans-serif;font-size:9.5px;font-weight:600;letter-spacing:0.18em;color:#9aa6c2">ADD AUTOMATION</span>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <sc-for list="{{ wizChips }}" as="c" hint-placeholder-count="6">
+                <button onClick="{{ c.onToggle }}" style="min-height:38px;padding:7px 12px;border-radius:999px;border:1px solid {{ c.border }};background:{{ c.bg }};color:{{ c.color }};font-family:'IBM Plex Mono',monospace;font-size:10.5px;cursor:pointer">{{ c.label }}</button>
+              </sc-for>
+            </div>
+          </div>
+          <label style="display:flex;flex-direction:column;gap:5px">
+            <span style="font-family:'Chakra Petch',sans-serif;font-size:9.5px;font-weight:600;letter-spacing:0.18em;color:#9aa6c2">TARGET (OR CANDIDATES, COMMA-SEPARATED)</span>
+            <input value="{{ wizTarget }}" onChange="{{ onWizTarget }}" placeholder="M16    ·    or: M16, M17, M8, NGC 6946" style="background:#06070B;border:1px solid rgba(120,140,200,0.18);color:#e8ecf7;font-family:'IBM Plex Mono',monospace;font-size:13px;padding:10px;width:100%;min-height:44px;outline:none" style-focus="border-color:#9B51E0">
+          </label>
+          <div style="font-size:11px;color:#7683a5;line-height:1.5;text-wrap:pretty">Generates a complete, valid graph — then everything is just stages and wires you can rearrange. The doctor will flag anything risky.</div>
+        </div>
+        <div style="flex:none;display:flex;gap:10px;padding:13px 18px calc(13px + env(safe-area-inset-bottom,0px));border-top:1px solid rgba(120,140,200,0.18)">
+          <button onClick="{{ onWizGenerate }}" style="flex:1;min-height:46px;border-radius:10px;border:1px solid #9B51E0;background:rgba(0,210,255,0.12);color:#00D2FF;font-family:'Chakra Petch',sans-serif;font-weight:600;font-size:12px;letter-spacing:0.14em;cursor:pointer">GENERATE FLOW</button>
+          <button onClick="{{ onWizBlank }}" style="flex:none;min-height:46px;padding:0 14px;border-radius:10px;border:1px solid transparent;background:transparent;color:#9aa6c2;font-family:'Chakra Petch',sans-serif;font-weight:600;font-size:11px;letter-spacing:0.12em;cursor:pointer" style-hover="border-color:rgba(140,160,220,0.35)">START BLANK</button>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+  <div style="position:fixed;top:64px;right:12px;z-index:60;display:flex;flex-direction:column;gap:8px;pointer-events:none;max-width:min(340px,86vw)">
+    <sc-for list="{{ toasts }}" as="t" hint-placeholder-count="1">
+      <div style="pointer-events:auto;background:#12141C;border:1px solid {{ t.color }};border-radius:10px;padding:10px 13px;font-family:'IBM Plex Mono',monospace;font-size:11px;color:{{ t.color }};box-shadow:0 6px 20px rgba(0,0,0,0.55);animation:pp-toast 0.18s ease backwards">{{ t.msg }}</div>
+    </sc-for>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;night&quot;: {&quot;editor&quot;: &quot;boolean&quot;, &quot;default&quot;: false, &quot;tsType&quot;: &quot;boolean&quot;, &quot;section&quot;: &quot;Display&quot;}, &quot;device&quot;: {&quot;editor&quot;: &quot;enum&quot;, &quot;options&quot;: [&quot;auto&quot;, &quot;phone&quot;, &quot;tablet&quot;, &quot;desktop&quot;], &quot;default&quot;: &quot;auto&quot;, &quot;tsType&quot;: &quot;string&quot;, &quot;section&quot;: &quot;Display&quot;}}">
+class Component extends DCLogic {
+  constructor(p) {
+    super(p);
+    this.W = 188;
+    this.DEFS = {
+      dusk: { label: "DUSK WINDOW", cat: "SOURCE", color: "#00D2FF", ins: [], outs: [{ id: "window", label: "window opens", kind: "flow" }],
+        desc: "Autorun window from the scheduler: sun-altitude dusk/dawn events at the configured site, with a per-target altitude gate.",
+        fields: [["start", "Start", "select", ["Astro dusk", "Nautical dusk", "Civil dusk", "Clock time"]], ["offset", "Offset", "text", null, "min"], ["stop", "Stop", "select", ["Dawn", "Clock time", "None"]], ["minAlt", "Min target altitude", "text", null, "°"]],
+        params: { start: "Astro dusk", offset: -30, stop: "Dawn", minAlt: 30 },
+        sum: (p) => p.start + " " + (p.offset >= 0 ? "+" : "") + p.offset + "m → " + p.stop.toLowerCase() },
+      target: { label: "TARGET", cat: "SOURCE", color: "#00D2FF", ins: [{ id: "arm", label: "arm", kind: "flow" }], outs: [{ id: "target", label: "target", kind: "flow" }],
+        desc: "A plan target from the Sky Atlas: coordinates, camera angle, and identity for the multi-night session ledger.",
+        fields: [["name", "Name", "text"], ["ra", "RA", "text"], ["dec", "Dec", "text"], ["rotation", "Camera angle", "text", null, "°"]],
+        params: { name: "M31 — Andromeda", ra: "00h 42m 44s", dec: "+41° 16′ 09″", rotation: 23.4 },
+        sum: (p) => p.name },
+      safety: { label: "SAFETY MONITOR", cat: "SOURCE", color: "#00D2FF", ins: [], outs: [{ id: "unsafe", label: "unsafe", kind: "event" }],
+        desc: "Fail-closed safety gate. A stale or timed-out reading is treated as UNSAFE — never as safe.",
+        fields: [["source", "Source", "select", ["Cloud + rain sensor", "Weather API", "Manual switch"]], ["stale", "Stale reading is", "select", ["Unsafe (fail closed)"]]],
+        params: { source: "Cloud + rain sensor", stale: "Unsafe (fail closed)" },
+        sum: (p) => p.source + " · fail closed" },
+      cloudwatch: { label: "CLOUD WATCH", cat: "SOURCE", color: "#00D2FF", ins: [], outs: [{ id: "in", label: "clouds in", kind: "event" }, { id: "clear", label: "clouds clear", kind: "event" }],
+        desc: "Transient-weather sensor, distinct from the fail-closed safety monitor: 'clouds in' fires when cover crosses the threshold; 'clouds clear' fires after the sky has stayed clear for the debounce time.",
+        fields: [["source", "Source", "select", ["Sky quality sensor", "Weather API", "IR all-sky camera"]], ["threshold", "Clouds in above", "text", null, "% cover"], ["clearFor", "Clear must hold", "text", null, "min"]],
+        params: { source: "Sky quality sensor", threshold: 40, clearFor: 4 },
+        sum: (p) => "in >" + p.threshold + "% · clear " + p.clearFor + "m" },
+      holdresume: { label: "HOLD / RESUME", cat: "ACTION", color: "#ffb454", ins: [{ id: "pause", label: "pause", kind: "event" }, { id: "resume", label: "resume", kind: "event" }], outs: [],
+        desc: "Pauses the capture loop at the next frame boundary; on resume it restores the active filter, re-centers per policy, refocuses only if called for, then continues the loop in place — the engine's pause action, not an abort.",
+        fields: [["whilePaused", "While paused", "select", ["Keep tracking, park guider", "Keep tracking + guiding", "Stop tracking"]], ["maxHold", "Max hold", "text", null, "min"], ["onTimeout", "If exceeded", "select", ["Abort + park", "Keep holding"]], ["recenter", "On resume, pointing", "select", ["Re-center (plate solve)", "Trust tracking"]], ["refocus", "On resume, focus", "select", ["If HFR drifted", "Always", "Never"]]],
+        params: { whilePaused: "Keep tracking, park guider", maxHold: 45, onTimeout: "Abort + park", recenter: "Re-center (plate solve)", refocus: "If HFR drifted" },
+        sum: (p) => "resume: re-center · refocus " + p.refocus.toLowerCase() },
+      calib: { label: "CALIBRATION QUEUE", cat: "RIG", color: "#4d7cff", ins: [{ id: "do", label: "do", kind: "event" }, { id: "stop", label: "stop", kind: "event" }, { id: "panel", label: "panel", kind: "event" }], outs: [],
+        desc: "Opportunistic calibration while the sky is unusable. Rotates the wheel to the black slot, then fills the library in order — darks if needed, bias if needed, flats if needed AND a flat panel is wired to 'panel' — until each quota is met, then waits. A 'stop' mid-queue exits cleanly at the frame boundary.",
+        fields: [["darks", "Darks", "select", ["If library stale", "Always", "Skip"]], ["bias", "Bias", "select", ["If library stale", "Always", "Skip"]], ["flats", "Flats", "select", ["If stale + panel wired", "Skip"]], ["blackSlot", "Cover method", "select", ["Rotate to black slot", "Close dome shutter", "Leave in place"]], ["quota", "Sufficient quantity", "text", null, "frames each"], ["dest", "Destination", "text"]],
+        params: { darks: "If library stale", bias: "If library stale", flats: "If stale + panel wired", blackSlot: "Rotate to black slot", quota: 20, dest: "captures/Calibration/" },
+        sum: (p) => "darks → bias → flats · ×" + p.quota + " each, then wait" },
+      dome: { label: "DOME CONTROL", cat: "RIG", color: "#4d7cff", ins: [{ id: "run", label: "open", kind: "flow" }], outs: [{ id: "open", label: "shutter open", kind: "flow" }],
+        desc: "Opens the shutter and slaves the dome to the mount. Closing is fail-closed: an unsafe or stale safety reading closes the shutter regardless of pipe state.",
+        fields: [["slave", "Azimuth", "select", ["Slave to mount", "Manual"]], ["onUnsafe", "On unsafe", "select", ["Close (fail closed)"]], ["timeout", "Shutter timeout", "text", null, "s"]],
+        params: { slave: "Slave to mount", onUnsafe: "Close (fail closed)", timeout: 120 },
+        sum: (p) => p.slave.toLowerCase() + " · fail closed" },
+      flatpanel: { label: "FLAT PANEL", cat: "RIG", color: "#4d7cff", ins: [], outs: [{ id: "ready", label: "panel ready", kind: "event" }],
+        desc: "A dimmable flat panel (dust-cover, dome-mounted or handheld). Wire 'panel ready' into a calibration queue to unlock flats; brightness is solved per filter to the ADU target.",
+        fields: [["position", "Position", "select", ["Dust-cover panel", "Dome-mounted", "Handheld"]], ["adu", "ADU target", "text"], ["solve", "Brightness", "select", ["Solve per filter", "Fixed"]]],
+        params: { position: "Dust-cover panel", adu: 28500, solve: "Solve per filter" },
+        sum: (p) => p.position.toLowerCase() + " · " + p.adu + " ADU" },
+      duskflats: { label: "DUSK FLATS", cat: "RIG", color: "#4d7cff", ins: [{ id: "run", label: "run", kind: "flow" }], outs: [{ id: "done", label: "flats done", kind: "flow" }],
+        desc: "Holds the flow until the twilight window (sun altitude band), then shoots the flat set — translucent lens cap, panel, or twilight sky — solving exposure to the ADU target per filter before darkness is wasted on it.",
+        fields: [["method", "Method", "select", ["Translucent lens cap", "Flat panel", "Twilight sky"]], ["window", "Wait for", "select", ["Sun −2° … −8°", "Sun 0° … −6°", "Now"]], ["filters", "Filters", "select", ["All in wheel", "Tonight's plan only"]], ["adu", "ADU target", "text"], ["count", "Count per filter", "text"]],
+        params: { method: "Translucent lens cap", window: "Sun −2° … −8°", filters: "Tonight's plan only", adu: 28500, count: 15 },
+        sum: (p) => p.method.toLowerCase() + " · " + p.window + " · ×" + p.count },
+      slew: { label: "SLEW + CENTER", cat: "RIG", color: "#4d7cff", ins: [{ id: "run", label: "run", kind: "flow" }], outs: [{ id: "centered", label: "centered", kind: "flow" }],
+        desc: "Slew to the target, then plate-solve and iterate until pointing is within tolerance (ASTAP).",
+        fields: [["tol", "Tolerance", "text", null, "′"], ["retries", "Max iterations", "text"], ["solver", "Solver", "select", ["ASTAP", "NINA (bridge)", "Simulator"]]],
+        params: { tol: 0.5, retries: 3, solver: "ASTAP" },
+        sum: (p) => "±" + p.tol + "′ · " + p.solver },
+      autofocus: { label: "AUTOFOCUS", cat: "RIG", color: "#4d7cff", ins: [{ id: "run", label: "run", kind: "flow" }], outs: [{ id: "focused", label: "focused", kind: "flow" }],
+        desc: "V-curve sweep: measure median HFR per step, fit a parabola, approach best focus from below for backlash consistency.",
+        fields: [["method", "Method", "select", ["V-curve sweep", "Native (delegate)"]], ["step", "Step size", "text"], ["samples", "Samples", "text"]],
+        params: { method: "V-curve sweep", step: 12, samples: 9 },
+        sum: (p) => p.method + " · " + p.samples + " pts" },
+      guide: { label: "GUIDE", cat: "RIG", color: "#4d7cff", ins: [{ id: "run", label: "run", kind: "flow" }], outs: [{ id: "guiding", label: "guiding", kind: "flow" }],
+        desc: "Start guiding and wait for settle. RMS is reported in arcseconds; dither cadence is applied between frames.",
+        fields: [["provider", "Provider", "select", ["PHD2", "NINA (bridge)", "Simulator"]], ["settle", "Settle below", "text", null, "″"], ["dither", "Dither every", "text", null, "frames"]],
+        params: { provider: "PHD2", settle: 1.5, dither: 3 },
+        sum: (p) => p.provider + " · settle " + p.settle + "″" },
+      capture: { label: "CAPTURE LOOP", cat: "RIG", color: "#4d7cff", ins: [{ id: "run", label: "run", kind: "flow" }], outs: [{ id: "complete", label: "complete", kind: "flow" }, { id: "frame", label: "frame graded", kind: "event" }],
+        desc: "An exposure step: loop count frames through the filter with per-filter focus offsets. Each frame is graded (HFR) and emits an event.",
+        fields: [["filter", "Filter", "select", ["L", "R", "G", "B", "Ha", "OIII", "SII"]], ["exposure", "Exposure", "text", null, "s"], ["gain", "Gain", "text"], ["bin", "Binning", "select", ["1", "2", "4"]], ["count", "Count", "text", null, "frames"], ["reject", "Reject HFR above", "text", null, "″"], ["goal", "Integration goal", "text", null, "h (0 = none)"]],
+        params: { filter: "L", exposure: 120, gain: 100, bin: "1", count: 24, reject: 3.5, goal: 12 },
+        sum: (p) => p.filter + " · " + p.exposure + "s · g" + p.gain + " · ×" + p.count },
+      pool: { label: "TARGET POOL", cat: "LOGIC", color: "#9B51E0", ins: [{ id: "arm", label: "arm", kind: "flow" }], outs: [{ id: "target", label: "best target", kind: "flow" }],
+        desc: "Holds several candidates and hands the flow whichever is best right now — altitude × moon separation × hour angle, per the scheduler's constraint math. Re-evaluates when a target completes or drops below its floor.",
+        fields: [["members", "Candidates", "text"], ["strategy", "Strategy", "select", ["Best available (alt × moon)", "Priority order", "Round robin"]], ["minAlt", "Min altitude", "text", null, "°"], ["moonSep", "Min moon separation", "text", null, "°"], ["maxHA", "Max hour angle", "text", null, "h"]],
+        params: { members: "M16, M17, M8, NGC 6946", strategy: "Best available (alt × moon)", minAlt: 30, moonSep: 40, maxHA: 4 },
+        sum: (p) => String(p.members).split(",").length + " candidates · " + (p.strategy.indexOf("Best") === 0 ? "best available" : p.strategy.toLowerCase()) },
+      condition: { label: "CONDITION", cat: "LOGIC", color: "#9B51E0", ins: [{ id: "events", label: "events", kind: "event" }], outs: [{ id: "fire", label: "fire", kind: "event" }],
+        desc: "A bounded when-clause over the closed predicate set — no scripting runtime. Fires its action wires when the clause holds.",
+        fields: [["when", "When", "select", ["HFR above", "Guide RMS above", "Frame rejected", "Target complete"]], ["threshold", "Threshold", "text"], ["window", "Within", "select", ["1 frame", "3 frames", "5 frames"]], ["once", "Fire", "select", ["Every time", "Once per run"]]],
+        params: { when: "HFR above", threshold: 3.2, window: "3 frames", once: "Every time" },
+        sum: (p) => p.when.toLowerCase() + " " + p.threshold + " · " + p.window },
+      notify: { label: "NOTIFY", cat: "ACTION", color: "#ffb454", ins: [{ id: "do", label: "do", kind: "event" }],  outs: [],
+        desc: "Push through a configured alert sink. Severity picks the channel escalation.",
+        fields: [["sink", "Sink", "select", ["ntfy", "Telegram", "Webhook"]], ["channel", "Channel", "text"], ["level", "Level", "select", ["info", "warning", "error"]]],
+        params: { sink: "ntfy", channel: "rig-alerts", level: "warning" },
+        sum: (p) => p.sink + " · " + p.channel },
+      refocus: { label: "REFOCUS", cat: "ACTION", color: "#ffb454", ins: [{ id: "do", label: "do", kind: "event" }], outs: [],
+        desc: "Interrupt the loop at the next frame boundary, run autofocus, resume where it left off.",
+        fields: [["boundary", "Interrupt at", "select", ["Next frame boundary"]]],
+        params: { boundary: "Next frame boundary" },
+        sum: () => "autofocus, then resume" },
+      abort: { label: "ABORT + PARK", cat: "ACTION", color: "#ff5470", ins: [{ id: "do", label: "do", kind: "event" }], outs: [],
+        desc: "Stop the sequence, park the mount, warm the camera. The reason is written to the session report.",
+        fields: [["park", "Park mount", "select", ["Yes", "No"]], ["warm", "Warm camera", "select", ["Yes", "No"]], ["message", "Reason", "text"]],
+        params: { park: "Yes", warm: "Yes", message: "Safety monitor unsafe" },
+        sum: (p) => "park " + p.park.toLowerCase() + " · warm " + p.warm.toLowerCase() },
+      report: { label: "SESSION REPORT", cat: "SINK", color: "#3ddc97", ins: [{ id: "session", label: "session", kind: "flow" }], outs: [],
+        desc: "Append-only session ledger: per-filter integration, accepted/rejected counts, median HFR, safety events, end reason.",
+        fields: [["format", "Format", "select", ["JSON + FITS index", "JSON only"]], ["dest", "Destination", "text"]],
+        params: { format: "JSON + FITS index", dest: "captures/sessions/" },
+        sum: (p) => p.dest },
+    };
+    this.PRESETS = {
+      m31: { name: "M31 — LRGB two-night", tag: "Dusk-gated deep-sky run: center, focus, guide, 24×120s L with an HFR watchdog that refocuses and notifies.", lastRun: "last run 2026-08-08 · 04:52", led: "ok",
+        nodes: [
+          ["n1", "dusk", 30, 70], ["n2", "target", 30, 230], ["n3", "safety", 30, 420],
+          ["n4", "slew", 280, 180], ["n5", "autofocus", 510, 90], ["n6", "guide", 510, 260],
+          ["n7", "capture", 745, 160], ["n8", "condition", 745, 400], ["n9", "refocus", 995, 380],
+          ["n10", "notify", 995, 520], ["n11", "abort", 280, 430], ["n12", "report", 995, 140]],
+        edges: [["n1", "window", "n2", "arm"], ["n2", "target", "n4", "run"], ["n4", "centered", "n5", "run"], ["n5", "focused", "n6", "run"], ["n6", "guiding", "n7", "run"], ["n7", "complete", "n12", "session"], ["n7", "frame", "n8", "events"], ["n8", "fire", "n9", "do"], ["n8", "fire", "n10", "do"], ["n3", "unsafe", "n11", "do"]],
+        over: { n2: { name: "M31 — Andromeda", ra: "00h 42m 44s", dec: "+41° 16′ 09″", rotation: 23.4 } } },
+      cal: { name: "M16 — full-service night", tag: "Dome opens at dusk, lens-cap flats in the twilight window, lights until clouds — then black slot, darks→bias→flats until quota, and a clean resume (filter back, re-center, refocus if drifted).", lastRun: "last run 2026-08-09 · 02:37", led: "ok",
+        nodes: [
+          ["n1", "dusk", 30, 50], ["n16", "dome", 260, 50], ["n17", "duskflats", 490, 50], ["n2", "target", 720, 50], ["n4", "slew", 950, 50],
+          ["n5", "autofocus", 160, 320], ["n6", "guide", 390, 320], ["n7", "capture", 620, 320], ["n12", "report", 870, 320],
+          ["n13", "cloudwatch", 30, 560], ["n14", "holdresume", 330, 590], ["n15", "calib", 620, 540], ["n18", "flatpanel", 330, 780], ["n10", "notify", 870, 620], ["n3", "safety", 30, 860], ["n19", "abort", 620, 880]],
+        edges: [["n1", "window", "n16", "run"], ["n16", "open", "n17", "run"], ["n17", "done", "n2", "arm"], ["n2", "target", "n4", "run"], ["n4", "centered", "n5", "run"], ["n5", "focused", "n6", "run"], ["n6", "guiding", "n7", "run"], ["n7", "complete", "n12", "session"],
+          ["n13", "in", "n14", "pause"], ["n13", "in", "n15", "do"], ["n13", "in", "n10", "do"], ["n13", "clear", "n14", "resume"], ["n13", "clear", "n15", "stop"], ["n18", "ready", "n15", "panel"], ["n3", "unsafe", "n19", "do"]],
+        over: { n2: { name: "M16 — Eagle", ra: "18h 18m 48s", dec: "−13° 49′ 00″", rotation: 0 }, n7: { filter: "Ha", exposure: 180, gain: 100, bin: "1", count: 20, reject: 3.5, goal: 12 }, n10: { sink: "ntfy", channel: "rig-alerts", level: "info" } } },
+      pool: { name: "Best-of-four pool night", tag: "One lane, four candidates — the pool hands the flow whichever target scores best on altitude × moon separation, and re-evaluates when one completes.", lastRun: "last run 2026-08-05 · 03:58", led: "ok",
+        nodes: [["n1", "dusk", 30, 80], ["n20", "pool", 260, 80], ["n4", "slew", 500, 80], ["n5", "autofocus", 730, 80], ["n6", "guide", 960, 80], ["n7", "capture", 500, 330], ["n12", "report", 960, 350], ["n8", "condition", 500, 560], ["n9", "refocus", 750, 580]],
+        edges: [["n1", "window", "n20", "arm"], ["n20", "target", "n4", "run"], ["n4", "centered", "n5", "run"], ["n5", "focused", "n6", "run"], ["n6", "guiding", "n7", "run"], ["n7", "complete", "n12", "session"], ["n7", "frame", "n8", "events"], ["n8", "fire", "n9", "do"]],
+        over: { n7: { filter: "Ha", exposure: 180, gain: 100, bin: "1", count: 20, reject: 3.5, goal: 12 } } },
+      nb: { name: "NGC 7000 — Ha narrowband", tag: "Moon-tolerant Ha: longer subs, guide-RMS rule pauses for wind gusts instead of wasting 300s frames.", lastRun: "last run 2026-08-02 · 03:10", led: "ok",
+        nodes: [["n1", "dusk", 30, 90], ["n2", "target", 30, 260], ["n4", "slew", 280, 170], ["n5", "autofocus", 520, 100], ["n6", "guide", 520, 270], ["n7", "capture", 760, 170], ["n8", "condition", 760, 400], ["n10", "notify", 1000, 400], ["n12", "report", 1000, 150]],
+        edges: [["n1", "window", "n2", "arm"], ["n2", "target", "n4", "run"], ["n4", "centered", "n5", "run"], ["n5", "focused", "n6", "run"], ["n6", "guiding", "n7", "run"], ["n7", "complete", "n12", "session"], ["n7", "frame", "n8", "events"], ["n8", "fire", "n10", "do"]],
+        over: { n2: { name: "NGC 7000 — North America", ra: "20h 59m 17s", dec: "+44° 31′ 44″", rotation: 0 }, n7: { filter: "Ha", exposure: 300, gain: 100, bin: "1", count: 12, reject: 3.5 }, n8: { when: "Guide RMS above", threshold: 1.8, window: "3 frames", once: "Every time" } } },
+      eaa: { name: "EAA quick look", tag: "No guiding, no rules: slew, focus, short subs for a live view of tonight's picks.", lastRun: "never run", led: "idle",
+        nodes: [["n2", "target", 30, 160], ["n4", "slew", 280, 140], ["n5", "autofocus", 520, 120], ["n7", "capture", 760, 140], ["n12", "report", 1000, 160]],
+        edges: [["n2", "target", "n4", "run"], ["n4", "centered", "n5", "run"], ["n5", "focused", "n7", "run"], ["n7", "complete", "n12", "session"]],
+        over: { n2: { name: "M27 — Dumbbell", ra: "19h 59m 36s", dec: "+22° 43′ 16″", rotation: 0 }, n7: { filter: "L", exposure: 4, gain: 300, bin: "2", count: 60, reject: 5, goal: 0 } } },
+    };
+    this.rootRef = React.createRef();
+    this.canvasRef = React.createRef();
+    this.touches = new Map();
+    this.pinch = null;
+    this.runTimers = [];
+    this.etaTimer = null;
+    this.idc = 100;
+    this.state = {
+      screen: "library", pipeKey: null, pipeName: "", nodes: [], edges: [],
+      sel: null, pan: { x: 24, y: 12 }, zoom: 0.92, vw: 1280,
+      nightOn: null, running: false, statuses: {}, logs: [], toasts: [], eta: 0,
+      editNode: null,
+      libQuery: "", libFolder: "All", userFlows: [],
+      compact: false,
+      tonightOpen: false, tonightTab: "timeline",
+      wizOpen: false, wizKind: "Deep-sky target", wizOpts: ["Guiding", "HFR watchdog"], wizTarget: "",
+      wire: null, mouse: { x: 0, y: 0 }, logOpen: false, showNotes: false,
+      paletteOpen: false, phoneTab: "flow", tapWire: null, frames: 0, curStage: "—",
+    };
+  }
+
+  componentDidMount() {
+    this.ro = new ResizeObserver((es) => { const w = es[0].contentRect.width; if (Math.abs(w - this.state.vw) > 2) this.setState({ vw: w }); });
+    if (this.rootRef.current) this.ro.observe(this.rootRef.current);
+    this.onMove = (e) => this.pointerMove(e);
+    this.onUp = (e) => this.pointerUp(e);
+    this.onKey = (e) => {
+      const tag = (e.target.tagName || "").toLowerCase();
+      if (tag === "input" || tag === "select" || tag === "textarea") return;
+      if ((e.key === "Delete" || e.key === "Backspace") && this.state.sel) { e.preventDefault(); this.deleteSel(); }
+    };
+    window.addEventListener("pointermove", this.onMove);
+    window.addEventListener("pointerup", this.onUp);
+    window.addEventListener("pointercancel", this.onUp);
+    window.addEventListener("keydown", this.onKey);
+  }
+  componentWillUnmount() {
+    if (this.ro) this.ro.disconnect();
+    window.removeEventListener("pointermove", this.onMove);
+    window.removeEventListener("pointerup", this.onUp);
+    window.removeEventListener("pointercancel", this.onUp);
+    window.removeEventListener("keydown", this.onKey);
+    this.clearRun();
+  }
+
+  device() {
+    const o = this.props.device;
+    if (o && o !== "auto") return o;
+    const w = this.state.vw;
+    return w < 700 ? "phone" : w < 1080 ? "tablet" : "desktop";
+  }
+  night() { return this.state.nightOn != null ? this.state.nightOn : (this.props.night ?? false); }
+  nodeW() { return this.device() === "phone" ? 150 : 188; }
+  autoMode() { const s = this.state; return s.screen === "editor" && this.device() === "phone" && s.phoneTab === "flow"; }
+  positionOf(node) { return (this.autoMode() && this.autoPos && this.autoPos[node.id]) || { x: node.x, y: node.y }; }
+  computeAutoLayout() {
+    const s = this.state; const nw = this.nodeW(); const pad = 14;
+    const Wc = Math.max(300, Math.min(s.vw, 700));
+    const colL = pad, colR = Math.max(colL + 56, Wc - pad - nw);
+    const H = (n) => 37 + this.nodeRows(n) * 20 + 8;
+    const pos = {}; let y = pad + 4;
+    this.flowOrder().forEach((n, i) => { pos[n.id] = { x: i % 2 ? colR : colL, y }; y += H(n) + 34; });
+    const evE = s.edges.filter((e) => this.portKind(e.from, e.fromPort, "out") === "event");
+    const srcs = [...new Set(evE.map((e) => e.from))].map((id) => this.nodeById(id)).filter(Boolean)
+      .sort((a, b) => (pos[a.id] ? pos[a.id].y : 1e9 + a.y) - (pos[b.id] ? pos[b.id].y : 1e9 + b.y));
+    srcs.forEach((src) => {
+      if (!pos[src.id]) pos[src.id] = { x: colL, y };
+      const tx = pos[src.id].x === colL ? colR : colL;
+      let ty = Math.max(y, pos[src.id].y);
+      const tgts = [...new Set(evE.filter((e) => e.from === src.id).map((e) => e.to))].map((id) => this.nodeById(id)).filter((t) => t && !pos[t.id]);
+      tgts.forEach((t) => { pos[t.id] = { x: tx, y: ty }; ty += H(t) + 22; });
+      y = Math.max(ty, pos[src.id].y + H(src) + 22);
+    });
+    s.nodes.filter((n) => !pos[n.id]).forEach((n) => { pos[n.id] = { x: colL, y }; y += H(n) + 22; });
+    this.autoPos = pos; this.autoH = y + 90;
+  }
+  tapPort(nid, pid, dir) {
+    const tw = this.state.tapWire;
+    if (dir === "out") {
+      if (tw && tw.from === nid && tw.fromPort === pid) this.setState({ tapWire: null });
+      else this.setState({ tapWire: { from: nid, fromPort: pid } });
+      return;
+    }
+    if (!tw) { this.toast("Tap an output (right-side) port first", "warn"); return; }
+    if (nid === tw.from) { this.toast("Can't wire a stage to itself", "warn"); return; }
+    const kOut = this.portKind(tw.from, tw.fromPort, "out"), kIn = this.portKind(nid, pid, "in");
+    if (kOut && kIn && kOut !== kIn) { this.toast((kOut === "flow" ? "Flow" : "Event") + " output can't feed " + (kIn === "flow" ? "a flow" : "an event") + " input", "warn"); return; }
+    this.setState((x) => ({ tapWire: null, edges: x.edges.filter((e) => !(e.to === nid && e.toPort === pid)).concat([{ id: "e" + (++this.idc), from: tw.from, fromPort: tw.fromPort, to: nid, toPort: pid }]) }));
+    this.toast("Wired ✓", "good");
+  }
+
+  saveUserFlow() {
+    const s = this.state;
+    if (!String(s.pipeKey).startsWith("u")) return;
+    this.setState((x) => ({ userFlows: x.userFlows.map((f) => f.id === s.pipeKey ? { ...f, name: s.pipeName, nodes: s.nodes, edges: s.edges } : f) }));
+  }
+  newUserFlow(name, nodes, edges, tag) {
+    const id = "u" + (++this.idc);
+    this.setState((x) => ({ userFlows: [...x.userFlows, { id, name, tag: tag || "—", lastRun: "never run", led: "idle", nodes, edges }] }));
+    return id;
+  }
+  loadPipe(key) {
+    const uf = this.state.userFlows.find((f) => f.id === key);
+    if (uf) { this.setState({ screen: "editor", pipeKey: uf.id, pipeName: uf.name, nodes: uf.nodes.map((n) => ({ ...n, params: { ...n.params } })), edges: [...uf.edges], sel: null, statuses: {}, logs: [], pan: { x: 24, y: 12 }, zoom: 0.92 }, () => this.fit()); return; }
+    const P = this.PRESETS[key];
+    if (!P) {
+      const nodes = [this.mkNode("target", 60, 120), this.mkNode("slew", 320, 120)];
+      const id = this.newUserFlow("Untitled flow", nodes, [], "Started blank");
+      this.setState({ screen: "editor", pipeKey: id, pipeName: "Untitled flow", nodes, edges: [], sel: null, statuses: {}, logs: [], pan: { x: 24, y: 12 }, zoom: 0.95 });
+      return;
+    }
+    const nodes = P.nodes.map(([id, type, x, y]) => ({ id, type, x, y, params: Object.assign({}, this.DEFS[type].params, (P.over || {})[id] || {}) }));
+    const edges = P.edges.map(([a, ap, b, bp], i) => ({ id: "e" + i, from: a, fromPort: ap, to: b, toPort: bp }));
+    this.setState({ screen: "editor", pipeKey: key, pipeName: P.name, nodes, edges, sel: null, statuses: {}, logs: [], pan: { x: 24, y: 12 }, zoom: 0.92 }, () => this.fit());
+  }
+  mkNode(type, x, y) { return { id: "n" + (++this.idc), type, x, y, params: Object.assign({}, this.DEFS[type].params) }; }
+
+  nodeById(id) { return this.state.nodes.find((n) => n.id === id); }
+  ports(node) { const d = this.DEFS[node.type]; return { ins: d.ins, outs: d.outs }; }
+  nodeRows(node) { const d = this.DEFS[node.type]; return d.ins.length + d.outs.length; }
+  portPos(node, portId) {
+    const d = this.DEFS[node.type];
+    const P = this.positionOf(node);
+    let idx = d.ins.findIndex((p) => p.id === portId);
+    if (idx >= 0) return { x: P.x, y: P.y + 37 + idx * 20 + 10 };
+    idx = d.outs.findIndex((p) => p.id === portId);
+    return { x: P.x + this.nodeW(), y: P.y + 37 + (d.ins.length + idx) * 20 + 10 };
+  }
+  portKind(nodeId, portId, dir) {
+    const n = this.nodeById(nodeId); if (!n) return null;
+    const d = this.DEFS[n.type];
+    const list = dir === "in" ? d.ins : d.outs;
+    const p = list.find((q) => q.id === portId);
+    return p ? p.kind : null;
+  }
+  edgePath(e) {
+    const a = this.nodeById(e.from), b = this.nodeById(e.to);
+    if (!a || !b) return "";
+    const p1 = this.portPos(a, e.fromPort), p2 = this.portPos(b, e.toPort);
+    if (this.autoMode()) {
+      const vy = Math.max(24, Math.min(70, Math.abs(p2.y - p1.y) * 0.4));
+      return "M" + p1.x + " " + p1.y + " C" + (p1.x + 18) + " " + (p1.y + vy) + "," + (p2.x - 18) + " " + (p2.y - vy) + "," + p2.x + " " + p2.y;
+    }
+    const c = Math.max(46, Math.abs(p2.x - p1.x) * 0.5);
+    return "M" + p1.x + " " + p1.y + " C" + (p1.x + c) + " " + p1.y + "," + (p2.x - c) + " " + p2.y + "," + p2.x + " " + p2.y;
+  }
+  toCanvas(cx, cy) {
+    const el = this.canvasRef.current;
+    const r = el ? el.getBoundingClientRect() : { left: 0, top: 0 };
+    const { pan, zoom } = this.state;
+    return { x: (cx - r.left - pan.x) / zoom, y: (cy - r.top - pan.y) / zoom };
+  }
+
+  // ------------------------------------------------ pointer interactions
+  startNodeDrag(id, e) {
+    e.stopPropagation();
+    const n = this.nodeById(id); if (!n) return;
+    const pt = this.toCanvas(e.clientX, e.clientY);
+    this.dragN = { id, dx: pt.x - n.x, dy: pt.y - n.y };
+    this.setState({ sel: { kind: "node", id } });
+  }
+  startPan(e) {
+    this.touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (this.touches.size === 2) {
+      const [a, b] = [...this.touches.values()];
+      const el = this.canvasRef.current; const r = el ? el.getBoundingClientRect() : { left: 0, top: 0 };
+      this.panD = null;
+      this.pinch = { d0: Math.hypot(a.x - b.x, a.y - b.y) || 1, z0: this.state.zoom, pan0: { ...this.state.pan }, mid0: { x: (a.x + b.x) / 2 - r.left, y: (a.y + b.y) / 2 - r.top } };
+    } else {
+      this.panD = { sx: e.clientX, sy: e.clientY, px: this.state.pan.x, py: this.state.pan.y };
+    }
+  }
+  startWire(nodeId, portId, e) {
+    e.stopPropagation(); e.preventDefault();
+    const pt = this.toCanvas(e.clientX, e.clientY);
+    this.setState({ wire: { from: nodeId, fromPort: portId }, mouse: pt });
+  }
+  pointerMove(e) {
+    if (this.touches.has(e.pointerId)) this.touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (this.pinch && this.touches.size >= 2) {
+      const [a, b] = [...this.touches.values()];
+      const el = this.canvasRef.current; const r = el ? el.getBoundingClientRect() : { left: 0, top: 0 };
+      const d = Math.hypot(a.x - b.x, a.y - b.y) || 1;
+      const z = Math.min(1.6, Math.max(0.35, this.pinch.z0 * d / this.pinch.d0));
+      const k = z / this.pinch.z0;
+      const mid = { x: (a.x + b.x) / 2 - r.left, y: (a.y + b.y) / 2 - r.top };
+      this.setState({ zoom: z, pan: { x: mid.x - (this.pinch.mid0.x - this.pinch.pan0.x) * k, y: mid.y - (this.pinch.mid0.y - this.pinch.pan0.y) * k } });
+      return;
+    }
+    if (this.dragN) {
+      const pt = this.toCanvas(e.clientX, e.clientY);
+      const { id, dx, dy } = this.dragN;
+      this.setState((s) => ({ nodes: s.nodes.map((n) => n.id === id ? { ...n, x: Math.round(pt.x - dx), y: Math.round(pt.y - dy) } : n) }));
+    } else if (this.panD) {
+      const { sx, sy, px, py } = this.panD;
+      this.setState({ pan: { x: px + e.clientX - sx, y: py + e.clientY - sy } });
+    } else if (this.state.wire) {
+      this.setState({ mouse: this.toCanvas(e.clientX, e.clientY) });
+    }
+  }
+  pointerUp(e) {
+    this.touches.delete(e.pointerId);
+    if (this.touches.size < 2) this.pinch = null;
+    if (this.state.wire) {
+      const el = document.elementFromPoint(e.clientX, e.clientY);
+      const host = el && el.closest ? el.closest("[data-port]") : null;
+      if (host) {
+        const [nid, pid, dir] = host.getAttribute("data-port").split("|");
+        const w = this.state.wire;
+        if (dir === "in" && nid !== w.from) {
+          const kOut = this.portKind(w.from, w.fromPort, "out");
+          const kIn = this.portKind(nid, pid, "in");
+          if (kOut && kIn && kOut !== kIn) {
+            this.toast((kOut === "flow" ? "Flow" : "Event") + " output can't feed " + (kIn === "flow" ? "a flow" : "an event") + " input", "warn");
+          } else {
+            this.setState((s) => ({
+              edges: s.edges.filter((x) => !(x.to === nid && x.toPort === pid)).concat([{ id: "e" + (++this.idc), from: w.from, fromPort: w.fromPort, to: nid, toPort: pid }]),
+            }));
+          }
+        }
+      }
+      this.setState({ wire: null });
+    }
+    this.dragN = null; this.panD = null;
+  }
+  wheel(e) {
+    const dir = e.deltaY < 0 ? 1.1 : 0.9;
+    const el = this.canvasRef.current; if (!el) return;
+    const r = el.getBoundingClientRect();
+    const mx = e.clientX - r.left, my = e.clientY - r.top;
+    this.setState((s) => {
+      const z = Math.min(1.6, Math.max(0.35, s.zoom * dir));
+      const k = z / s.zoom;
+      return { zoom: z, pan: { x: mx - (mx - s.pan.x) * k, y: my - (my - s.pan.y) * k } };
+    });
+  }
+  zoomBy(f) { this.setState((s) => ({ zoom: Math.min(1.6, Math.max(0.35, s.zoom * f)) })); }
+  fit() {
+    const el = this.canvasRef.current; const ns = this.state.nodes;
+    if (!el || !ns.length) return;
+    const hs = ns.map((n) => 37 + this.nodeRows(n) * 20 + 26);
+    const x0 = Math.min(...ns.map((n) => n.x)) - 30, y0 = Math.min(...ns.map((n) => n.y)) - 30;
+    const x1 = Math.max(...ns.map((n) => n.x + this.nodeW())) + 30, y1 = Math.max(...ns.map((n, i) => n.y + hs[i])) + 30;
+    const r = el.getBoundingClientRect();
+    const z = Math.min(1.15, Math.max(0.35, Math.min(r.width / (x1 - x0), (r.height - 40) / (y1 - y0))));
+    this.setState({ zoom: z, pan: { x: (r.width - (x1 - x0) * z) / 2 - x0 * z, y: (r.height - 34 - (y1 - y0) * z) / 2 - y0 * z } });
+  }
+
+  // ------------------------------------------------ graph ops
+  addNode(type) {
+    const el = this.canvasRef.current;
+    let x = 120, y = 120;
+    if (el) { const r = el.getBoundingClientRect(); const c = this.toCanvas(r.left + r.width / 2, r.top + r.height / 2.4); x = Math.round(c.x - this.nodeW() / 2); y = Math.round(c.y); }
+    if (this.device() === "phone" && this.state.phoneTab !== "canvas") { const mx = this.state.nodes.length ? Math.max(...this.state.nodes.map((n) => n.x)) : 0; x = mx + 250; y = 160; }
+    const n = this.mkNode(type, x, y);
+    this.setState((s) => ({ nodes: [...s.nodes, n], sel: { kind: "node", id: n.id }, paletteOpen: false }));
+  }
+  deleteSel() {
+    const sel = this.state.sel; if (!sel) return;
+    if (sel.kind === "node") this.setState((s) => ({ nodes: s.nodes.filter((n) => n.id !== sel.id), edges: s.edges.filter((e) => e.from !== sel.id && e.to !== sel.id), sel: null, editNode: null }));
+    else this.setState((s) => ({ edges: s.edges.filter((e) => e.id !== sel.id), sel: null }));
+  }
+  setParam(nodeId, key, raw) {
+    this.setState((s) => ({ nodes: s.nodes.map((n) => {
+      if (n.id !== nodeId) return n;
+      const base = this.DEFS[n.type].params[key];
+      let v = raw;
+      if (typeof base === "number") { const f = parseFloat(raw); v = isNaN(f) ? base : f; }
+      return { ...n, params: { ...n.params, [key]: v } };
+    }) }));
+  }
+
+  flowOrder() {
+    const flowEdges = this.state.edges.filter((e) => this.portKind(e.from, e.fromPort, "out") === "flow");
+    const nodes = this.state.nodes.filter((n) => { const d = this.DEFS[n.type]; return d.ins.concat(d.outs).some((p) => p.kind === "flow"); });
+    const indeg = {}; nodes.forEach((n) => indeg[n.id] = 0);
+    flowEdges.forEach((e) => { if (indeg[e.to] != null) indeg[e.to]++; });
+    const q = nodes.filter((n) => indeg[n.id] === 0).sort((a, b) => a.x - b.x || a.y - b.y);
+    const out = []; const seen = {};
+    while (q.length) {
+      const n = q.shift(); if (seen[n.id]) continue; seen[n.id] = 1; out.push(n);
+      flowEdges.filter((e) => e.from === n.id).forEach((e) => { const m = this.nodeById(e.to); if (m && !seen[m.id]) { indeg[m.id]--; if (indeg[m.id] <= 0) q.push(m); } });
+    }
+    return out;
+  }
+  issues() {
+    const out = []; const s = this.state;
+    const push = (text, color) => out.push({ text, color });
+    s.nodes.forEach((n) => {
+      const d = this.DEFS[n.type];
+      d.ins.forEach((p) => {
+        if (p.id === "panel") return; // optional by design
+        if (!s.edges.some((e) => e.to === n.id && e.toPort === p.id)) push("▸ " + d.label + " — '" + p.label + "' input unwired", "#ffb454");
+      });
+    });
+    const upTypes = (id) => {
+      const seen = new Set(); const st = [id];
+      while (st.length) { const c = st.pop(); s.edges.filter((e) => e.to === c && this.portKind(e.from, e.fromPort, "out") === "flow").forEach((e) => { if (!seen.has(e.from)) { seen.add(e.from); st.push(e.from); } }); }
+      return new Set([...seen].map((x) => { const n = this.nodeById(x); return n && n.type; }));
+    };
+    s.nodes.filter((n) => n.type === "capture").forEach((n) => {
+      const up = upTypes(n.id); const exp = parseFloat(n.params.exposure) || 0;
+      if (exp >= 120 && !up.has("guide")) push("▸ " + exp + "s subs with no GUIDE upstream — stars will trail at any real focal length. Add Guide, or shorten the subs.", "#ffb454");
+      if (exp >= 60 && !up.has("autofocus")) push("▸ no AUTOFOCUS before the loop — focus drift goes uncorrected all night", "#ffb454");
+      if (!up.has("slew")) push("▸ CAPTURE with no SLEW + CENTER upstream — the loop shoots wherever the mount happens to point", "#ffb454");
+    });
+    s.nodes.filter((n) => n.type === "condition").forEach((n) => {
+      if (!s.edges.some((e) => e.from === n.id)) push("▸ CONDITION fires into nothing — wire an action", "#ffb454");
+      const cap = s.nodes.find((x) => x.type === "capture" && s.edges.some((e) => e.from === x.id && e.to === n.id));
+      if (cap && n.params.when === "HFR above" && parseFloat(n.params.threshold) > parseFloat(cap.params.reject)) push("▸ watchdog threshold " + n.params.threshold + "″ sits above the grader's reject " + cap.params.reject + "″ — frames get rejected before the rule can ever fire", "#ffb454");
+    });
+    s.nodes.filter((n) => n.type === "calib").forEach((n) => {
+      if (n.params.flats !== "Skip" && !s.edges.some((e) => e.to === n.id && e.toPort === "panel")) push("▸ QUEUE wants flats but nothing is wired to 'panel' — flats will be skipped", "#ffb454");
+      const triggered = s.edges.some((e) => e.to === n.id && e.toPort === "do");
+      const heldToo = s.nodes.some((x) => x.type === "holdresume" && s.edges.some((e) => e.to === x.id));
+      if (triggered && !heldToo) push("▸ queue runs but nothing HOLDS the light loop — wire HOLD / RESUME from the same trigger", "#ffb454");
+    });
+    if (s.nodes.some((n) => n.type === "dome") && !s.nodes.some((n) => n.type === "safety")) push("▸ DOME with no SAFETY MONITOR — nothing closes the shutter on rain. Add one; it fails closed.", "#ff5470");
+    if (!s.nodes.some((n) => n.type === "report")) push("▸ no session report sink — the night leaves no ledger", "#7683a5");
+    return out;
+  }
+
+  // ------------------------------------------------ run simulation
+  toast(msg, tone) {
+    const id = ++this.idc;
+    const color = tone === "bad" ? "#ff5470" : tone === "warn" ? "#ffb454" : tone === "good" ? "#3ddc97" : "#00D2FF";
+    this.setState((s) => ({ toasts: [...s.toasts, { id, msg, color }] }));
+    setTimeout(() => this.setState((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })), 4200);
+  }
+  log(msg, tone) {
+    const color = tone === "bad" ? "#ff5470" : tone === "warn" ? "#ffb454" : tone === "good" ? "#3ddc97" : "#9aa6c2";
+    const time = new Date().toLocaleTimeString("en-GB", { hour12: false });
+    this.setState((s) => ({ logs: [...s.logs.slice(-120), { msg, color, time }] }));
+  }
+  setStatus(id, v) { this.setState((s) => ({ statuses: { ...s.statuses, [id]: v } })); }
+  clearRun() { this.runTimers.forEach(clearTimeout); this.runTimers = []; if (this.etaTimer) clearInterval(this.etaTimer); this.etaTimer = null; }
+  S(t, fn) { this.runTimers.push(setTimeout(fn, t)); }
+
+  toggleRun() {
+    if (this.state.running) {
+      this.clearRun();
+      this.setState({ running: false, curStage: "—" });
+      this.log("Run stopped by user — engine parks nothing on manual stop", "warn");
+      return;
+    }
+    const order = this.flowOrder();
+    if (!order.length) { this.toast("Nothing to run — wire a flow lane first", "warn"); return; }
+    const DUR = { dusk: 1500, target: 1000, slew: 2300, autofocus: 2700, guide: 1700, capture: 0, report: 1300, dome: 1800, duskflats: 2800, pool: 1500 };
+    const MSG = {
+      dusk: ["Waiting for window… (simulated dusk)", "Window open — sun at −18.2°"],
+      target: ["Arming target", "Target locked"],
+      slew: ["Slewing… plate-solving with ASTAP", "Centered within tolerance (0.3′, 2 iterations)"],
+      autofocus: ["Autofocus: V-curve sweep 9 points", "Best focus 14 212 — HFR 1.94″"],
+      guide: ["Starting guiding — waiting for settle", "Guiding settled at 0.62″ RMS"],
+      capture: ["Capture loop started", "Capture loop complete"],
+      report: ["Writing session report", "Session report appended"],
+      pool: ["Evaluating pool — altitude × moon separation × hour angle…", "Selected M16: alt 42°, moon 68°, HA −1.2h (best of 4)"],
+      dome: ["Opening dome shutter — slaving azimuth to mount", "Dome open, shutter confirmed, slaved"],
+      duskflats: ["Waiting for flats window (sun −2°…−8°)… (simulated)", "Flats done: 15 per filter via translucent cap, ADU on target"],
+    };
+    this.setState({ running: true, statuses: {}, logs: [], frames: 0 });
+    this.log("Run started on SIMULATOR — dry run, nothing moves", "good");
+    let t = 300;
+    order.forEach((n) => {
+      const d = this.DEFS[n.type];
+      const m = MSG[n.type] || ["Running " + d.label, d.label + " done"];
+      this.S(t, () => { this.setStatus(n.id, "busy"); this.setState({ curStage: d.label }); this.log(m[0]); });
+      if (n.type === "capture") {
+        const F = Math.min(8, Math.max(3, parseInt(n.params.count) || 8));
+        const spikeAt = F > 4 ? 5 : 0;
+        const cw = this.state.nodes.find((nn) => nn.type === "cloudwatch" && this.state.edges.some((e) => e.from === nn.id));
+        const holdMs = cw ? 8600 : 0;
+        if (cw) this.S(t + 350 + 3 * 640 + 200, () => this.fireClouds(cw, n, holdMs));
+        for (let i = 1; i <= F; i++) {
+          const fi = i;
+          const extra = cw && i > 3 ? holdMs : 0;
+          this.S(t + 350 + i * 640 + extra, () => {
+            const hfr = fi === spikeAt ? 3.6 : (1.9 + Math.random() * 0.4);
+            this.setState({ frames: fi });
+            this.log(n.params.filter + " " + n.params.exposure + "s — HFR " + hfr.toFixed(2) + "″ " + (fi === spikeAt ? "✗ rejected" : "✓") + "  " + fi + "/" + n.params.count, fi === spikeAt ? "warn" : undefined);
+            if (fi === spikeAt) this.fireRules(n);
+          });
+        }
+        t += 350 + F * 640 + holdMs + 500;
+      } else { t += DUR[n.type] || 1400; }
+      this.S(t, () => { this.setStatus(n.id, "ok"); this.log(m[1], "good"); });
+      t += 150;
+    });
+    this.S(t + 250, () => {
+      this.setState({ running: false, curStage: "—" });
+      this.log("Sequence complete — report written, mount tracking", "good");
+      this.toast("Sequence complete ✓", "good");
+    });
+    const total = Math.ceil((t + 250) / 1000);
+    this.setState({ eta: total });
+    this.etaTimer = setInterval(() => this.setState((s) => ({ eta: Math.max(0, s.eta - 1) })), 1000);
+  }
+  fireClouds(cw, capNode, holdMs) {
+    const tgt = (port, type) => this.state.edges.filter((e) => e.from === cw.id && e.fromPort === port).map((e) => this.nodeById(e.to)).filter((n) => n && (!type || n.type === type));
+    const holds = tgt("in", "holdresume"), cals = tgt("in", "calib"), notes = tgt("in", "notify");
+    this.setStatus(cw.id, "warn");
+    this.setStatus(capNode.id, "warn");
+    this.log("CLOUD WATCH: cover 74% > " + cw.params.threshold + "% — 'clouds in' fired", "warn");
+    this.toast("Clouds in — holding loop, running calibration queue", "warn");
+    holds.forEach((h) => { this.setStatus(h.id, "busy"); this.log("→ HOLD: paused at frame boundary · " + h.params.whilePaused.toLowerCase(), "warn"); });
+    notes.forEach((nn) => { this.setStatus(nn.id, "ok"); this.log("→ NOTIFY via " + nn.params.sink + ": rig holding for clouds", "warn"); });
+    cals.forEach((c) => {
+      const panelNode = this.state.edges.filter((e) => e.to === c.id && e.toPort === "panel").map((e) => this.nodeById(e.from))[0];
+      const match = capNode.params.exposure + "s g" + capNode.params.gain;
+      this.setStatus(c.id, "busy");
+      this.S(300, () => this.log("QUEUE: EFW → slot 8 (black) · library check: darks STALE (sensor −10→−5°C), bias OK, flats MISSING"));
+      this.S(1100, () => this.log("DARK " + match + " — 1/2 needed (temp-matched)"));
+      this.S(2100, () => this.log("DARK " + match + " — 2/2 · dark quota met", "good"));
+      this.S(2800, () => this.log("BIAS: library sufficient — skipped"));
+      if (panelNode) {
+        this.S(3400, () => { this.setStatus(panelNode.id, "busy"); this.log("FLAT PANEL on — solved to " + panelNode.params.adu + " ADU · FLAT 1/…"); });
+        this.S(4600, () => this.log("FLAT 2/… — queue will wait when quota met"));
+      } else {
+        this.S(3400, () => this.log("FLATS: needed, but no panel wired to 'panel' — skipped", "warn"));
+      }
+    });
+    this.S(holdMs - 3000, () => {
+      this.setStatus(cw.id, "ok");
+      this.log("CLOUD WATCH: clear for " + cw.params.clearFor + " min — 'clouds clear' fired mid-queue", "good");
+      this.toast("Sky clear — resuming lights", "good");
+      cals.forEach((c) => {
+        const pn = this.state.edges.filter((e) => e.to === c.id && e.toPort === "panel").map((e) => this.nodeById(e.from))[0];
+        this.setStatus(c.id, "ok");
+        if (pn) this.setStatus(pn.id, "ok");
+        this.log("Queue stopped clean at frame boundary — 2 darks + 2 flats banked to " + c.params.dest, "good");
+      });
+    });
+    this.S(holdMs - 2400, () => this.log("RESUME: EFW → " + capNode.params.filter + " (restore active filter)"));
+    this.S(holdMs - 1700, () => this.log("RESUME: re-center — solved, offset 0.4′ ≤ tolerance", "good"));
+    this.S(holdMs - 1000, () => this.log("RESUME: HFR 2.31″ within band — refocus skipped (policy: if drifted)"));
+    this.S(holdMs - 300, () => {
+      holds.forEach((h) => this.setStatus(h.id, "ok"));
+      this.setStatus(capNode.id, "busy");
+      this.log("Loop resumed — frame cadence continues", "good");
+    });
+  }
+  fireRules(captureNode) {
+    const condEdges = this.state.edges.filter((e) => e.from === captureNode.id && this.portKind(e.from, e.fromPort, "out") === "event");
+    condEdges.forEach((ce) => {
+      const cond = this.nodeById(ce.to); if (!cond || cond.type !== "condition") return;
+      this.setStatus(cond.id, "warn");
+      this.log("RULE: " + (cond.params.when || "HFR above").toLowerCase() + " " + cond.params.threshold + " — fired", "warn");
+      this.toast("Rule fired: " + cond.params.when + " " + cond.params.threshold, "warn");
+      const acts = this.state.edges.filter((e) => e.from === cond.id);
+      acts.forEach((ae, i) => {
+        const act = this.nodeById(ae.to); if (!act) return;
+        this.S(400 + i * 250, () => { this.setStatus(act.id, "busy"); this.log("→ " + this.DEFS[act.type].label + (act.type === "notify" ? " via " + act.params.sink : ""), "warn"); });
+        this.S(1800 + i * 250, () => { this.setStatus(act.id, "ok"); if (act.type === "refocus") this.log("Refocus done — HFR back to 2.02″, loop resumed", "good"); });
+      });
+      this.S(2400, () => this.setStatus(cond.id, "ok"));
+    });
+  }
+
+  // ------------------------------------------------ tonight / compile / wizard
+  tonight() {
+    const s = this.state; const order = this.flowOrder();
+    const has = (t) => s.nodes.some((n) => n.type === t);
+    const X = (t) => Math.round(t / 570 * 1000);
+    const blocks = [], ticks = [], curves = [], times = [], story = [], labels = [];
+    for (let t = 0; t <= 540; t += 60) { const h = (20 + t / 60) % 24; times.push({ x: X(t) }); labels.push({ l: X(t) / 10, t: 88, label: String(h).padStart(2, "0") + ":00", color: "#7683a5" }); }
+    const blk = (x, w, y, h, fill, op, label) => {
+      blocks.push({ x, w, y, h, fill, op });
+      if (label) labels.push({ l: (x + w / 2) / 10, t: (y + h / 2) / 1.5, label, color: "#e8ecf7" });
+    };
+    blk(0, X(118), 36, 70, "#4d7cff", 0.08);
+    blk(X(500), 1000 - X(500), 36, 70, "#4d7cff", 0.08);
+    blk(X(217), 1000 - X(217), 22, 8, "#7683a5", 0.25);
+    const tick = (x, color, label) => { ticks.push({ x, color }); labels.push({ l: x / 10, t: 6, label, color }); };
+    tick(X(41), "#00D2FF", "DUSK");
+    tick(X(118), "#7683a5", "DARK");
+    story.push({ t: "20:41", msg: "Autorun window opens (sun −12°, −30 min offset applied)", color: "#e8ecf7" });
+    if (has("dome")) story.push({ t: "20:41", msg: "Dome shutter opens, azimuth slaved to the mount — any unsafe or stale safety reading closes it, whatever the flow is doing", color: "#9aa6c2" });
+    if (has("duskflats")) { blk(X(52), X(66) - X(52), 36, 70, "#4d7cff", 0.4, "FLATS"); story.push({ t: "20:52", msg: "Flats window (sun −2°…−8°): translucent-cap flats, exposure solved to 28 500 ADU per filter — done by 21:06", color: "#9aa6c2" }); }
+    story.push({ t: "21:58", msg: "Astronomical darkness", color: "#7683a5" });
+    const pool = s.nodes.find((n) => n.type === "pool");
+    let names = pool ? String(pool.params.members).split(/\s*,\s*/).slice(0, 6) : order.filter((n) => n.type === "target").map((n) => String(n.params.name).split(" —")[0]);
+    if (!names.length) names = ["TARGET"];
+    const a0 = 130, a1 = 505, N = names.length, w = (a1 - a0 - (N - 1) * 6) / N;
+    names.forEach((nm, i) => {
+      const x0 = a0 + i * (w + 6);
+      blk(X(x0), X(x0 + w) - X(x0), 36, 70, "#00D2FF", 0.16, nm);
+      curves.push({ d: "M" + X(x0) + " 100 Q " + X(x0 + w / 2) + " 48 " + X(x0 + w) + " 100", stroke: "rgba(0,210,255,0.6)" });
+    });
+    if (pool) story.push({ t: "22:10", msg: "Pool re-scores " + N + " candidates each cycle (altitude × moon separation × hour angle) — best available wins; re-evaluates on completion or an altitude floor", color: "#e8ecf7" });
+    else story.push({ t: "22:10", msg: names.join(", ") + " above 30° — slew, center, focus, guide, loop", color: "#e8ecf7" });
+    tick(X(217), "#7683a5", "☾ 71%");
+    story.push({ t: "23:37", msg: "Moon rises, 71% illuminated — Ha shrugs it off; broadband candidates get penalized in the pool score", color: "#7683a5" });
+    tick(X(324), "#ffb454", "FLIP");
+    story.push({ t: "01:24", msg: "Meridian flip — engine flips, re-centers via plate solve, restarts guiding; worst case one frame lost", color: "#ffb454" });
+    if (has("cloudwatch")) story.push({ t: "ANY", msg: "IF clouds in → hold loop · calibration queue (black slot → darks → bias → flats-if-panel) · clean resume when clear holds 4 min", color: "#ffb454" });
+    if (has("condition")) story.push({ t: "ANY", msg: "IF the watchdog condition holds → its wired actions fire at the next frame boundary", color: "#ffb454" });
+    if (has("safety")) story.push({ t: "ANY", msg: "IF unsafe (or a stale reading) → abort, park, warm, close — fail closed", color: "#ff5470" });
+    s.nodes.filter((n) => n.type === "capture").forEach((n) => {
+      const goal = parseFloat(n.params.goal) || 0;
+      if (goal > 0) {
+        const tn = (parseFloat(n.params.exposure) || 0) * (parseInt(n.params.count) || 0) / 3600;
+        const banked = Math.round(goal * 0.35 * 10) / 10;
+        story.push({ t: "BUDGET", msg: n.params.filter + ": " + banked + " h banked / " + goal + " h goal — tonight adds ≈" + (Math.round(tn * 10) / 10) + " h; the session ledger resumes the remainder next clear night", color: "#3ddc97" });
+      }
+    });
+    tick(X(500), "#3ddc97", "DAWN");
+    story.push({ t: "04:40", msg: "Dawn: loop ends, mount parks, camera warms" + (has("dome") ? ", dome closes" : "") + (has("report") ? ", session report appended" : ""), color: "#e8ecf7" });
+    return { blocks, ticks, curves, times, story, labels };
+  }
+  compilePlan() {
+    const s = this.state; const order = this.flowOrder();
+    const targets = [];
+    order.forEach((n) => {
+      if (n.type === "target") targets.push({ name: n.params.name, ra: n.params.ra, dec: n.params.dec, rotation_deg: n.params.rotation, steps: [] });
+      if (n.type === "pool") String(n.params.members).split(/\s*,\s*/).forEach((m, i) => targets.push({ name: m, pool_rank: i + 1, min_altitude_deg: +n.params.minAlt, min_moon_sep_deg: +n.params.moonSep, max_hour_angle_h: +n.params.maxHA, steps: [] }));
+      if (n.type === "capture") {
+        const step = { filter: n.params.filter, exposure_s: +n.params.exposure, gain: +n.params.gain, binning: +n.params.bin, count: +n.params.count, frame_type: "Light" };
+        targets.forEach((t) => t.steps.push(step));
+      }
+    });
+    const dusk = s.nodes.find((n) => n.type === "dusk");
+    const cq = s.nodes.find((n) => n.type === "calib");
+    const df = s.nodes.find((n) => n.type === "duskflats");
+    const plan = {
+      name: s.pipeName,
+      schedule: dusk ? { start_mode: "dusk", start_offset_min: +dusk.params.offset, stop_mode: dusk.params.stop === "Dawn" ? "dawn" : "none", min_altitude_deg: +dusk.params.minAlt } : { start_mode: "now" },
+      targets,
+      automation: {
+        dome: s.nodes.some((n) => n.type === "dome") ? { slave: true, on_unsafe: "close" } : undefined,
+        dusk_flats: df ? { method: df.params.method, window: df.params.window, adu_target: +df.params.adu, count: +df.params.count } : undefined,
+        calibration_queue: cq ? { order: ["dark", "bias", "flat"], policy: "if_stale", quota: +cq.params.quota, flats_require_panel: true } : undefined,
+      },
+      instructions: s.edges.filter((e) => this.portKind(e.from, e.fromPort, "out") === "event").map((e) => {
+        const a = this.nodeById(e.from), b = this.nodeById(e.to);
+        const trig = !a ? "?" : a.type === "cloudwatch" ? "on_clouds_" + e.fromPort : a.type === "condition" ? "on_" + String(a.params.when || "").toLowerCase().replace(/ /g, "_") : a.type === "safety" ? "on_unsafe" : a.type === "capture" ? "on_frame_graded" : a.type + "." + e.fromPort;
+        const o = { when: trig, action: b ? b.type : "?" };
+        if (a && a.params.threshold != null) o.threshold = +a.params.threshold;
+        return o;
+      }),
+    };
+    return JSON.stringify(plan, null, 2);
+  }
+  genWizard() {
+    const opts = this.state.wizOpts; const has = (k) => opts.includes(k);
+    const kind = this.state.wizKind;
+    const flowTypes = ["dusk"];
+    if (has("Dome")) flowTypes.push("dome");
+    if (has("Dusk flats")) flowTypes.push("duskflats");
+    flowTypes.push(kind === "Best of several" ? "pool" : "target", "slew", "autofocus");
+    if (kind !== "EAA quick look" && has("Guiding")) flowTypes.push("guide");
+    flowTypes.push("capture", "report");
+    const nodes = flowTypes.map((t, i) => this.mkNode(t, 30 + i * 228, 60));
+    const tname = this.state.wizTarget.trim();
+    nodes.forEach((n) => {
+      if (n.type === "target" && tname) n.params = { ...n.params, name: tname };
+      if (n.type === "pool" && tname && tname.indexOf(",") > 0) n.params = { ...n.params, members: tname };
+      if (n.type === "capture" && kind === "EAA quick look") n.params = { ...n.params, exposure: 4, gain: 300, bin: "2", count: 60, goal: 0 };
+    });
+    const edges = []; let eid = 0;
+    const wire = (a, ap, b, bp) => edges.push({ id: "we" + (eid++), from: a.id, fromPort: ap, to: b.id, toPort: bp });
+    for (let i = 0; i < nodes.length - 1; i++) {
+      const a = nodes[i], b = nodes[i + 1];
+      const op = this.DEFS[a.type].outs.find((p) => p.kind === "flow"), ip = this.DEFS[b.type].ins.find((p) => p.kind === "flow");
+      if (op && ip) wire(a, op.id, b, ip.id);
+    }
+    let rx = 30; const ry = 380; const rNodes = [];
+    const add = (t, y) => { const n = this.mkNode(t, rx, y || ry); rx += 250; rNodes.push(n); return n; };
+    const cap = nodes.find((n) => n.type === "capture");
+    let cw = null, cond = null;
+    if (has("Cloud-dodge calibration")) {
+      cw = add("cloudwatch"); const hold = add("holdresume"); const cq = add("calib");
+      wire(cw, "in", hold, "pause"); wire(cw, "in", cq, "do"); wire(cw, "clear", hold, "resume"); wire(cw, "clear", cq, "stop");
+      if (has("Dusk flats")) { const fp = this.mkNode("flatpanel", cq.x, ry + 200); rNodes.push(fp); wire(fp, "ready", cq, "panel"); }
+    }
+    if (has("HFR watchdog")) {
+      cond = add("condition"); const rf = add("refocus");
+      if (cap) wire(cap, "frame", cond, "events");
+      wire(cond, "fire", rf, "do");
+    }
+    if (has("Notify my phone")) {
+      const ntf = add("notify");
+      const src = cond || cw;
+      if (src) wire(src, src === cond ? "fire" : "in", ntf, "do");
+      else { const sf = this.mkNode("safety", 30, ry + 200); rNodes.push(sf); const ab = this.mkNode("abort", 280, ry + 200); rNodes.push(ab); wire(sf, "unsafe", ntf, "do"); wire(sf, "unsafe", ab, "do"); }
+    }
+    const name = (kind === "EAA quick look" ? "EAA — " : "") + (tname || { "Deep-sky target": "New deep-sky run", "Best of several": "Pool night", "EAA quick look": "quick look" }[kind]);
+    const all = [...nodes, ...rNodes];
+    const id = this.newUserFlow(name, all, edges, "Generated by the wizard — " + kind.toLowerCase());
+    this.setState({ screen: "editor", pipeKey: id, pipeName: name, nodes: all, edges, sel: null, statuses: {}, logs: [], wizOpen: false }, () => this.fit());
+    this.toast("Flow generated — every stage is editable", "good");
+  }
+
+  // ------------------------------------------------ render
+  statusStyleOf(st) {
+    if (st === "busy") return "flex:none;width:9px;height:9px;border-radius:50%;background:#00D2FF;animation:pp-sweep 1.4s linear infinite";
+    if (st === "ok") return "flex:none;width:9px;height:9px;border-radius:50%;background:#3ddc97;box-shadow:0 0 6px #3ddc97";
+    if (st === "warn") return "flex:none;width:9px;height:9px;border-radius:50%;background:#ffb454;outline:1.5px solid #ffb454;outline-offset:2px";
+    if (st === "bad") return "flex:none;width:9px;height:9px;border-radius:1px;background:#ff5470;animation:pp-pulse 1s ease-in-out infinite";
+    return "flex:none;width:10px;height:2px;border-radius:1px;background:#7683a5";
+  }
+
+  renderVals() {
+    const s = this.state;
+    const dev = this.device();
+    const night = this.night();
+    const isEditor = s.screen === "editor";
+    const isPhone = dev === "phone";
+    const iss = isEditor ? this.issues() : [];
+    const sel = s.sel;
+    const selNode = sel && sel.kind === "node" ? this.nodeById(sel.id) : null;
+    const selEdge = sel && sel.kind === "edge" ? s.edges.find((e) => e.id === sel.id) : null;
+
+    const auto = this.autoMode();
+    if (auto) this.computeAutoLayout(); else this.autoPos = null;
+    const tw = s.tapWire;
+    const nodeList = s.nodes.map((n) => {
+      const d = this.DEFS[n.type];
+      const isSel = selNode && selNode.id === n.id;
+      const st = s.statuses[n.id] || "idle";
+      const P = this.positionOf(n);
+      const mkPort = (p, dir) => {
+        const connected = s.edges.some((e) => dir === "in" ? (e.to === n.id && e.toPort === p.id) : (e.from === n.id && e.fromPort === p.id));
+        const color = p.kind === "flow" ? "#00D2FF" : "#ffb454";
+        const armed = auto && tw && dir === "out" && tw.from === n.id && tw.fromPort === p.id;
+        return { key: n.id + "|" + p.id + "|" + dir, label: p.label, color, fill: connected || armed ? color : "#06070B",
+          ring: armed ? "0 0 0 3px rgba(0,210,255,0.25), 0 0 10px " + color : "none",
+          hit: auto ? 26 : 20,
+          onTap: auto ? (e) => { e.stopPropagation(); this.tapPort(n.id, p.id, dir); } : () => {},
+          onDown: !auto && dir === "out" ? (e) => this.startWire(n.id, p.id, e) : () => {} };
+      };
+      return {
+        id: n.id, x: P.x, y: P.y, label: d.label, color: d.color,
+        border: isSel ? "#00D2FF" : (st === "busy" ? "rgba(0,210,255,0.55)" : "rgba(120,140,200,0.22)"),
+        shadow: isSel ? "0 0 16px rgba(0,210,255,0.35)" : (st === "busy" ? "0 0 14px rgba(0,210,255,0.25)" : "0 4px 14px rgba(0,0,0,0.45)"),
+        statusStyle: this.statusStyleOf(st), statusName: st,
+        ins: d.ins.map((p) => mkPort(p, "in")), outs: d.outs.map((p) => mkPort(p, "out")),
+        w: this.nodeW(), showSum: !isPhone,
+        summary: d.sum(n.params),
+        onDown: auto ? () => {} : (e) => this.startNodeDrag(n.id, e),
+        onClick: (e) => { e.stopPropagation(); this.setState({ sel: { kind: "node", id: n.id } }); },
+        onEdit: (e) => { e.stopPropagation(); this.setState({ sel: { kind: "node", id: n.id }, editNode: n.id }); },
+        onEditDown: (e) => e.stopPropagation(),
+      };
+    });
+
+    const edgeList = s.edges.map((e) => {
+      const kind = this.portKind(e.from, e.fromPort, "out") || "flow";
+      const active = s.running && ["busy", "ok"].includes(s.statuses[e.from]);
+      const isSel = selEdge && selEdge.id === e.id;
+      const base = kind === "flow" ? "#00D2FF" : "#ffb454";
+      return {
+        id: e.id, d: this.edgePath(e),
+        stroke: isSel ? "#e8ecf7" : (active ? base : (kind === "flow" ? "rgba(0,210,255,0.45)" : "rgba(255,180,84,0.45)")),
+        width: isSel || active ? 2.5 : 1.8,
+        style: active ? "stroke-dasharray:7 6;animation:pp-dash 0.6s linear infinite" : (kind === "event" ? "stroke-dasharray:4 5" : ""),
+        onSelect: (ev) => { ev.stopPropagation(); this.setState({ sel: { kind: "edge", id: e.id } }); },
+      };
+    });
+
+    let selEdgeShow = false, selEdgeX = 0, selEdgeY = 0;
+    if (selEdge) {
+      const a = this.nodeById(selEdge.from), b = this.nodeById(selEdge.to);
+      if (a && b) { const p1 = this.portPos(a, selEdge.fromPort), p2 = this.portPos(b, selEdge.toPort); selEdgeShow = true; selEdgeX = (p1.x + p2.x) / 2; selEdgeY = (p1.y + p2.y) / 2; }
+    }
+
+    let pendShow = false, pendD = "";
+    if (s.wire) {
+      const a = this.nodeById(s.wire.from);
+      if (a) { const p1 = this.portPos(a, s.wire.fromPort); const c = Math.max(46, Math.abs(s.mouse.x - p1.x) * 0.5); pendShow = true; pendD = "M" + p1.x + " " + p1.y + " C" + (p1.x + c) + " " + p1.y + "," + (s.mouse.x - c) + " " + s.mouse.y + "," + s.mouse.x + " " + s.mouse.y; }
+    }
+
+    const groups = [["SOURCES", ["dusk", "target", "safety", "cloudwatch"]], ["EQUIPMENT", ["dome", "flatpanel"]], ["RIG OPS", ["slew", "autofocus", "guide", "capture", "duskflats", "calib"]], ["LOGIC", ["condition", "pool"]], ["ACTIONS + SINKS", ["notify", "refocus", "holdresume", "abort", "report"]]];
+    const palette = groups.map(([name, types]) => ({ name, items: types.map((t) => ({ label: this.DEFS[t].label, color: this.DEFS[t].color, desc: this.DEFS[t].desc, onAdd: () => this.addNode(t) })) }));
+
+    const mkFields = (n) => this.DEFS[n.type].fields.map(([key, label, kind, options, unit]) => ({
+      key, label, isSelect: kind === "select", isText: kind !== "select",
+      value: String(n.params[key] ?? ""), options: options || [], unit: unit || "", hasUnit: !!unit,
+      onChange: (e) => this.setParam(n.id, key, e.target.value),
+    }));
+    const editN = s.editNode ? this.nodeById(s.editNode) : null;
+    const inspNode = dev === "desktop" ? selNode : editN;
+    const MATRIX = [
+      { k: "DARKS", v: "180s g100 · −5°C", q: "14/20", s: "STALE", c: "#ffb454" },
+      { k: "BIAS", v: "g100 · set of 40", q: "40/40", s: "OK", c: "#3ddc97" },
+      { k: "FLATS", v: "Ha · this rotation", q: "0/20", s: "MISSING", c: "#ff5470" },
+      { k: "FLATS", v: "OIII", q: "20/20", s: "OK", c: "#3ddc97" },
+    ];
+    const insp = inspNode ? { label: this.DEFS[inspNode.type].label, cat: this.DEFS[inspNode.type].cat, color: this.DEFS[inspNode.type].color, desc: this.DEFS[inspNode.type].desc, fields: mkFields(inspNode), hasMatrix: inspNode.type === "calib", matrix: MATRIX } : { label: "", cat: "", color: "#7683a5", desc: "", fields: [], hasMatrix: false, matrix: [] };
+
+    const order = isEditor ? this.flowOrder() : [];
+    const orderIds = order.map((n) => n.id);
+    const stageCards = order.map((n, i) => {
+      const d = this.DEFS[n.type]; const st = s.statuses[n.id] || "idle";
+      return { label: d.label, summary: d.sum(n.params), color: d.color, statusStyle: this.statusStyleOf(st), connector: i > 0,
+        border: selNode && selNode.id === n.id ? "#00D2FF" : "rgba(120,140,200,0.18)",
+        onOpen: () => this.setState({ sel: { kind: "node", id: n.id } }),
+        onEdit: (e) => { e.stopPropagation(); this.setState({ sel: { kind: "node", id: n.id }, editNode: n.id }); } };
+    });
+    const eventEdges = s.edges.filter((e) => this.portKind(e.from, e.fromPort, "out") === "event");
+    const nestedConds = new Set(eventEdges.filter((e) => { const t = this.nodeById(e.to); return t && t.type === "condition"; }).map((e) => e.to));
+    const openEd = (id) => () => this.setState({ sel: { kind: "node", id }, editNode: id });
+    const mkTarget = (e, depth) => {
+      const t = this.nodeById(e.to); if (!t) return null;
+      const d = this.DEFS[t.type];
+      const evIns = d.ins.filter((p) => p.kind === "event");
+      const inPort = d.ins.find((p) => p.id === e.toPort);
+      const o = { label: d.label + (evIns.length > 1 && inPort ? " · " + inPort.label : ""), color: d.color, onOpen: openEd(t.id), subs: [], hasSubs: false };
+      if (t.type === "condition" && depth < 1) {
+        o.label = d.label + " — " + d.sum(t.params);
+        o.subs = s.edges.filter((x) => x.from === t.id).map((x) => mkTarget(x, depth + 1)).filter(Boolean);
+        o.hasSubs = o.subs.length > 0;
+      }
+      return o;
+    };
+    const bySrc = {};
+    eventEdges.forEach((e) => { (bySrc[e.from] = bySrc[e.from] || []).push(e); });
+    const ruleTrees = Object.keys(bySrc).filter((id) => !nestedConds.has(id)).map((id) => {
+      const n = this.nodeById(id); if (!n) return null;
+      const d = this.DEFS[n.type];
+      const ports = d.outs.filter((p) => p.kind === "event").map((p) => ({
+        label: p.label,
+        targets: bySrc[id].filter((e) => e.fromPort === p.id).map((e) => mkTarget(e, 0)).filter(Boolean),
+      })).filter((pp) => pp.targets.length);
+      return { id, y: n.y, label: d.label, color: d.color, sum: d.sum(n.params), onEdit: (ev) => { ev.stopPropagation(); openEd(n.id)(); }, ports };
+    }).filter(Boolean).sort((a, b) => a.y - b.y);
+    const orphans = s.nodes.filter((n) => { const d = this.DEFS[n.type]; const hasFlow = d.ins.concat(d.outs).some((p) => p.kind === "flow"); return hasFlow && !orderIds.includes(n.id); });
+
+    const q = s.libQuery.trim().toLowerCase();
+    const hit = (f) => !q || (f.name + " " + f.tag).toLowerCase().includes(q);
+    const mkCard = (k, P) => ({ name: P.name, tag: P.tag, meta: P.nodes.length + " stages · " + P.edges.length + " wires · " + P.lastRun,
+      status: P.led === "ok" ? "COMPLETED CLEAN" : "NEVER RUN",
+      ledColor: P.led === "ok" ? "#3ddc97" : "#7683a5", ledStyle: this.statusStyleOf(P.led === "ok" ? "ok" : "idle"),
+      onOpen: () => this.loadPipe(k) });
+    const exCards = ["m31", "cal", "pool", "nb", "eaa"].map((k) => ({ ...mkCard(k, this.PRESETS[k]), tag: this.PRESETS[k].tag })).filter(hit);
+    const myCards = s.userFlows.map((f) => ({ ...mkCard(f.id, { ...f, nodes: f.nodes, edges: f.edges }) })).filter(hit);
+    const showMy = s.libFolder === "All" || s.libFolder === "My flows";
+    const showEx = s.libFolder === "All" || s.libFolder === "Examples";
+    const libSections = [];
+    if (showMy) libSections.push({ name: "MY FLOWS", count: myCards.length + "", cards: myCards, hasNew: !q, emptyNote: myCards.length || !q ? "" : "", showEmpty: false });
+    if (showEx) libSections.push({ name: "EXAMPLES", count: exCards.length + "", cards: exCards, hasNew: false, showEmpty: false });
+    const libEmpty = q && !myCards.length && !exCards.length;
+    const folderChips = ["All", "My flows", "Examples"].map((f) => ({
+      label: f, border: s.libFolder === f ? "#00D2FF" : "rgba(140,160,220,0.35)", color: s.libFolder === f ? "#00D2FF" : "#9aa6c2",
+      bg: s.libFolder === f ? "rgba(0,210,255,0.1)" : "transparent",
+      onClick: () => this.setState({ libFolder: f }),
+    }));
+
+    const eta = s.eta; const etaText = Math.floor(eta / 60) + ":" + String(eta % 60).padStart(2, "0");
+    const lastL = s.logs[s.logs.length - 1];
+    const capN = s.nodes.find((n) => n.type === "capture");
+
+    return {
+      rootRef: this.rootRef, canvasRef: this.canvasRef,
+      rootFilter: night ? "grayscale(0.3) sepia(1) hue-rotate(-38deg) saturate(2.4) brightness(0.82)" : "none",
+      isLibrary: s.screen === "library", isEditor,
+      showCanvasRow: isEditor && (!isPhone || s.phoneTab === "canvas"), isPhoneEditor: isEditor && isPhone,
+      phoneContentShow: isEditor && isPhone && s.phoneTab !== "canvas",
+      showRail: isEditor && dev === "desktop", showInspCol: isEditor && dev === "desktop",
+      showAddFloat: isEditor && (dev === "tablet" || (isPhone && s.phoneTab === "canvas")),
+      sheetShow: isEditor && dev !== "desktop" && !!editN,
+      subTitle: isEditor ? s.pipeName : "Automation library · " + (Object.keys(this.PRESETS).length + s.userFlows.length) + " saved flows",
+      showProv: !isPhone, showValid: isEditor && !isPhone && !s.running,
+      validText: iss.length ? iss.length + " OPEN " + (iss.length === 1 ? "CHECK" : "CHECKS") : "GRAPH VALID",
+      validColor: iss.length ? "#ffb454" : "#3ddc97",
+      validTitle: iss.length ? iss.map((i) => i.text).join("\n") : "All inputs wired; rules have actions",
+      running: s.running, etaText,
+      runLabel: s.running ? "■ STOP" : "▶ RUN", 
+      runBorder: s.running ? "#ff5470" : "#9B51E0",
+      runBg: s.running ? "rgba(255,84,112,0.12)" : "rgba(0,210,255,0.12)",
+      runColor: s.running ? "#ff5470" : "#00D2FF",
+      onRun: () => this.toggleRun(),
+      onBack: () => { this.clearRun(); this.saveUserFlow(); this.setState({ screen: "library", running: false, sel: null, editNode: null, tapWire: null }); },
+      onNight: () => this.setState({ nightOn: !night }),
+      nightBg: night ? "rgba(0,210,255,0.15)" : "#12141C", nightColor: night ? "#00D2FF" : "#9aa6c2",
+      onInfo: () => this.setState({ showNotes: true }), showNotes: s.showNotes, onCloseNotes: () => this.setState({ showNotes: false }),
+      libSections, libEmpty, folderChips, libQuery: s.libQuery,
+      onQuery: (e) => this.setState({ libQuery: e.target.value }),
+      libEmptyMsg: "No flows match \u201C" + s.libQuery + "\u201D",
+      onNewPipe: () => this.setState({ wizOpen: true }),
+      palette, paletteOpen: s.paletteOpen, onOpenPalette: () => this.setState({ paletteOpen: true }), onClosePalette: () => this.setState({ paletteOpen: false }),
+      worldT: "translate3d(" + s.pan.x + "px," + s.pan.y + "px,0) scale(" + s.zoom + ")",
+      onBgDown: (e) => this.startPan(e), onBgClick: () => this.setState({ sel: null }),
+      onWheel: (e) => this.wheel(e),
+      nodeList, edgeList, pendShow, pendD, selEdgeShow, selEdgeX, selEdgeY,
+      onDeleteSel: () => this.deleteSel(),
+      zoomPct: Math.round(s.zoom * 100) + "%",
+      onZoomIn: () => this.zoomBy(1.15), onZoomOut: () => this.zoomBy(0.87), onZoomFit: () => this.fit(),
+      logs: s.logs.slice(-60).reverse(), logOpen: s.logOpen, onToggleLog: () => this.setState((x) => ({ logOpen: !x.logOpen })),
+      lastLog: lastL ? lastL.msg : "Idle — no events yet", lastLogColor: lastL ? lastL.color : "#7683a5",
+      logChevron: s.logOpen ? "▾" : "▴",
+      insp, inspShow: !!selNode, inspOverview: !selNode,
+      onCloseSheet: () => this.setState({ editNode: null }),
+      pipeName: s.pipeName, onRename: (e) => this.setState({ pipeName: e.target.value }),
+      statNodes: String(s.nodes.length), statEdges: String(s.edges.length),
+      issueList: iss.length ? iss : [{ text: "✓ all inputs wired", color: "#3ddc97" }],
+      phoneFlowTab: s.phoneTab === "flow", phoneMonTab: s.phoneTab === "mon",
+      phoneTabs: [["flow", "FLOW"], ["canvas", "CANVAS"], ["mon", "MONITOR"]].map(([k, label]) => ({
+        label, border: s.phoneTab === k ? "#00D2FF" : "transparent", color: s.phoneTab === k ? "#00D2FF" : "#9aa6c2",
+        onClick: () => this.setState({ phoneTab: k, tapWire: null }),
+      })),
+      autoH: this.autoH || 400,
+      tapWireOn: !!tw,
+      tapHint: (() => { if (!tw) return ""; const tn = this.nodeById(tw.from); const td = tn && this.DEFS[tn.type]; const tp = td && td.outs.find((p) => p.id === tw.fromPort); return "WIRING: " + (td ? td.label : "?") + " · " + (tp ? tp.label : "") + " — tap an input port"; })(),
+      onCancelTap: () => this.setState({ tapWire: null }),
+      stageCards, ruleTrees, hasRules: ruleTrees.length > 0,
+      showWordmark: !(isPhone && isEditor), phoneTitleShow: isPhone && isEditor,
+      hasOrphans: orphans.length > 0,
+      orphanNote: orphans.length + " stage" + (orphans.length === 1 ? "" : "s") + " not wired into the flow — wire them in the CANVAS tab.",
+      monState: s.running ? "RUNNING" : "IDLE", monStateColor: s.running ? "#00D2FF" : "#9aa6c2",
+      monStage: s.curStage, monFrames: capN ? s.frames + " / " + capN.params.count : "—",
+      tonightOpen: s.tonightOpen,
+      onTonight: () => this.setState({ tonightOpen: true }),
+      onCloseTonight: () => this.setState({ tonightOpen: false }),
+      tonightLabel: isPhone ? "◷" : "◷ TONIGHT",
+      tTabs: ["timeline", "story", "plan"].map((k) => ({
+        label: k.toUpperCase(), on: s.tonightTab === k,
+        border: s.tonightTab === k ? "#00D2FF" : "rgba(140,160,220,0.35)",
+        color: s.tonightTab === k ? "#00D2FF" : "#9aa6c2",
+        onClick: () => this.setState({ tonightTab: k }),
+      })),
+      tShowTl: s.tonightTab === "timeline", tShowSt: s.tonightTab === "story", tShowPl: s.tonightTab === "plan",
+      tn: s.tonightOpen ? this.tonight() : { blocks: [], ticks: [], curves: [], times: [], story: [], labels: [] },
+      planJson: s.tonightOpen && s.tonightTab === "plan" ? this.compilePlan() : "",
+      onCopyPlan: () => { try { navigator.clipboard.writeText(this.compilePlan()); this.toast("Plan JSON copied", "good"); } catch (e) { this.toast("Copy blocked by browser", "warn"); } },
+      wizOpen: s.wizOpen,
+      onCloseWiz: () => this.setState({ wizOpen: false }),
+      wizKinds: ["Deep-sky target", "Best of several", "EAA quick look"].map((k) => ({
+        label: k, border: s.wizKind === k ? "#00D2FF" : "rgba(140,160,220,0.35)", color: s.wizKind === k ? "#00D2FF" : "#9aa6c2",
+        bg: s.wizKind === k ? "rgba(0,210,255,0.1)" : "transparent",
+        onPick: () => this.setState({ wizKind: k }),
+      })),
+      wizChips: ["Guiding", "Dusk flats", "Dome", "Cloud-dodge calibration", "HFR watchdog", "Notify my phone"].map((k) => {
+        const on = s.wizOpts.includes(k);
+        return { label: k, border: on ? "#00D2FF" : "rgba(140,160,220,0.35)", color: on ? "#00D2FF" : "#9aa6c2", bg: on ? "rgba(0,210,255,0.1)" : "transparent",
+          onToggle: () => this.setState((x) => ({ wizOpts: x.wizOpts.includes(k) ? x.wizOpts.filter((q) => q !== k) : [...x.wizOpts, k] })) };
+      }),
+      wizTarget: s.wizTarget, onWizTarget: (e) => this.setState({ wizTarget: e.target.value }),
+      onWizGenerate: () => this.genWizard(),
+      onWizBlank: () => { this.setState({ wizOpen: false }); this.loadPipe("new"); },
+      toasts: s.toasts,
+    };
+  }
+}
+</script>
+</body>
+</html>
