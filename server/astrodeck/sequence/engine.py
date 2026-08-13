@@ -1160,8 +1160,7 @@ class SequenceEngine:
                         await self._run_calibration(ti, ready)
                     else:
                         await self._setup_target(ti, ready)
-                        for si, step in enumerate(ready.steps):
-                            await self._run_step(ti, si, ready, step)
+                        await self._run_steps(ti, ready)
                         # PRO-3: on_target_complete eval for a finished
                         # non-calibration target. Guarded (no-op when empty).
                         if self.plan and self.plan.instructions:
@@ -1735,10 +1734,87 @@ class SequenceEngine:
                 if panel_lit:
                     await self._panel_off_safe()
 
-    async def _run_step(self, ti: int, si: int, target: Target, step) -> None:
+    def _step_complete(self, target: Target, step) -> bool:
+        """Has this step got everything it asked for?
+
+        The two count modes disagree about what "everything" means, and the
+        cycle driver must not have to know which is in force: ``accepted``
+        counts the ledger's accepted frames, ``attempts`` counts frames taken.
+        Asking the wrong one is how a night either stops early or never stops.
+        """
+        plan = self.plan
+        if plan is not None and plan.count_mode == "accepted" \
+                and not target.calibration and self._session is not None:
+            return self._session.accepted(step.id) >= step.count
+        return self._done.get(f"{target.id}:{step.id}", 0) >= step.count
+
+    async def _run_steps(self, ti: int, target: Target) -> None:
+        """Drive a target's steps, in blocks or round-robin.
+
+        BLOCKS is what this engine has always done and stays the default:
+        each step runs to completion, then the next.
+
+        CYCLE visits each step in turn, ``per_visit`` frames deep, and keeps
+        going round until every step has its count. L R G B S Ha O3, forty-five
+        times over. Two reasons, and neither is cosmetic: every filter samples
+        the SAME sky, so the channels combine without one of them carrying the
+        hour the seeing went soft; and a night cut short at 60 percent leaves
+        60 percent of every channel instead of three finished filters and four
+        empty ones.
+
+        The filter change is not extra work bolted on here — ``_run_step``
+        already applies the step's filter on entry, so a visit moves the wheel
+        by construction. Dither and refocus cadence are plan-level counters that
+        span steps, so they keep their meaning across a cycle rather than
+        resetting seven times a pass.
+
+        A pass that manages to shoot NOTHING ends the loop. Without that, a step
+        that can never complete — a filter the wheel does not have, a quota the
+        night cannot reach — would spin this loop forever between frames,
+        which is the one failure a driver like this must not have.
+        """
+        steps = list(enumerate(target.steps))
+        if target.acquisition != "cycle":
+            for si, step in steps:
+                await self._run_step(ti, si, target, step)
+            return
+
+        rounds = 0
+        while True:
+            pending = [(si, s) for si, s in steps
+                       if not self._step_complete(target, s)]
+            if not pending:
+                return
+            rounds += 1
+            before = self._frames_done
+            for si, step in pending:
+                await self._run_step(ti, si, target, step,
+                                     max_frames=max(1, int(step.per_visit or 1)))
+            if self._frames_done == before:
+                names = ", ".join(s.filter or "no filter" for _, s in pending)
+                bus.log("warning",
+                        f"{target.name}: a full pass took no frames with "
+                        f"{len(pending)} step(s) still short ({names}) — "
+                        f"stopping the cycle rather than spinning", "sequence")
+                return
+
+    async def _run_step(self, ti: int, si: int, target: Target, step,
+                        max_frames: int | None = None) -> None:
+        """Shoot this step. ``max_frames`` bounds ONE VISIT, not the step.
+
+        Interleaved acquisition is built on the fact that this method was
+        already resumable: ``i`` starts from the persisted ``_done`` count, so a
+        step can be left half-finished and picked up later without knowing it
+        was interrupted. Bounding a visit therefore needs no new bookkeeping —
+        the cycle driver simply calls back until every step reports complete.
+
+        ``None`` means run to completion, which is what block acquisition does
+        and what every existing caller gets.
+        """
         plan = self.plan
         assert plan is not None
         key = f"{target.id}:{step.id}"
+        taken_this_visit = 0
         # accepted-frame quota mode (spec §3): the predicate is the LEDGER's
         # effective-accepted count, not the attempt index. Attempts are
         # unbounded within the night; window/dawn/max_run still end it.
@@ -1757,7 +1833,15 @@ class SequenceEngine:
 
         step_rejects = 0                 # per-step consecutive guard (spec §3)
         i = self._done.get(key, 0)
-        while (not _quota_met()) if quota else (i < step.count):
+
+        def _visit_done() -> bool:
+            # BOUNDED BY ATTEMPTS, not by accepted frames. A step whose frames
+            # keep getting rejected must not hold the cycle: the next pass comes
+            # back to it anyway, and every other filter is waiting.
+            return max_frames is not None and taken_this_visit >= max_frames
+
+        while (((not _quota_met()) if quota else (i < step.count))
+                and not _visit_done()):
             await self._checkpoint()
             # stop the target the instant its FROZEN window closes (dawn / stop_mode
             # time / max_run_min) — checked between frames so the in-flight exposure
@@ -1844,6 +1928,7 @@ class SequenceEngine:
                 self._night_rejects = 0            # resets on ANY accepted frame
                 self._record_frame(key, i, target, step, info)
                 i += 1
+                taken_this_visit += 1
                 continue
             if quota:
                 # accepted mode (spec §3): rejects are ALWAYS kept on disk and
@@ -1872,6 +1957,7 @@ class SequenceEngine:
             if not await self._handle_reject(info, key, i, target, step):
                 self._record_frame(key, i, target, step, info, accepted=False)
             i += 1
+            taken_this_visit += 1
 
     @staticmethod
     def _effective_filter(step, info: dict) -> str | None:

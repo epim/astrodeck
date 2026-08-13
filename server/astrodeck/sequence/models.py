@@ -22,6 +22,14 @@ class ExposureStep(BaseModel):
     # --- PRO-5 flat auto-exposure (additive; 0/None = off => back-compat) ---
     adu_target: int = Field(0, ge=0, le=65535)     # >0 + Flat ⇒ solve exposure to this ADU
     panel_brightness: int | None = Field(None, ge=0)  # flat-panel level while shooting; None = don't touch
+    # --- interleaved acquisition (additive; ignored unless the TARGET asks for
+    # `acquisition="cycle"`, so every existing plan is unchanged) -------------
+    #
+    # How many frames to take on each VISIT to this step while cycling. The
+    # night keeps returning until `count` is reached, so this is the width of
+    # one pass, not a total: count=45, per_visit=1 means "one L every time
+    # round, forty-five times".
+    per_visit: int = Field(1, gt=0, le=1000)
 
 
 class Schedule(BaseModel):
@@ -60,6 +68,19 @@ class Target(BaseModel):
     autofocus_first: bool = True
     calibration: bool = False          # darks/bias/flats — skip slew/center/AF/guide
     steps: list[ExposureStep] = []
+    # --- acquisition order (additive; "blocks" is what every existing plan does)
+    #
+    # "blocks" runs each step to completion before the next: 45 L, then 45 R,
+    # then 45 G. Simple, and the way this engine has always worked.
+    #
+    # "cycle" round-robins: one visit to each step in turn, `per_visit` frames
+    # deep, until every step has its `count`. L R G B S Ha O3, forty-five times.
+    # Two reasons an imager wants it, and neither is cosmetic: every filter then
+    # samples the SAME sky — the same seeing, the same transparency, the same
+    # altitude — so the channels combine without one of them carrying the hour
+    # the sky went soft; and a night cut short at 60% yields 60% of every
+    # channel instead of three finished filters and four empty ones.
+    acquisition: Literal["blocks", "cycle"] = "blocks"
     # --- atlas (additive; both nullable — existing plans deserialize unchanged) ---
     rotation_deg: float | None = None  # target camera angle (PA) — enforced when a rotator is connected; guidance otherwise
     mosaic_group: str | None = None    # groups mosaic panels in the Plan UI
