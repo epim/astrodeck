@@ -135,6 +135,31 @@ class CloudState:
             return (f"cloud reading is {age:.0f}s old — too stale to act on "
                     f"(budget {self.max_age_s:.0f}s)")
         word = "cloudy" if v else "clear"
+        # THE VERDICT AND THE LAST FRAME CAN DISAGREE, and saying so is the
+        # whole job of this line.
+        #
+        # `_state` is debounced — it takes `consecutive` agreeing frames to move
+        # — while `last_reason` is whatever the MOST RECENT frame said. So a
+        # single disagreeing frame during a settled state produced, verbatim on
+        # the rig at 04:06: "cloudy, from a reading 0s old — clear (12 bright
+        # stars, 9x noise)". A sentence that says cloudy and clear at once tells
+        # an operator nothing, and it is worse at 4 a.m. than at any other hour.
+        #
+        # The disagreement is not noise, it is the most useful thing on the
+        # line: it means the sky is turning and how close the verdict is to
+        # following. Naming the vote turns a contradiction into a countdown.
+        if self._pending is not None and self._pending is not v:
+            other = "cloudy" if self._pending else "clear"
+            said = (self.last_reason or "").strip()
+            # The reason already opens with its own verdict — "clear (12 bright
+            # stars)", "cloudy: 2 bright stars" — so naming it again gives
+            # "says clear (clear (12 bright stars))". Read the composed line
+            # before believing the test.
+            phrase = (said if said.lower().startswith(other)
+                      else (f"{other} ({said})" if said else other))
+            return (f"{word}, from a reading {age:.0f}s old — but the latest "
+                    f"frame says {phrase}, {self._votes} of "
+                    f"{self.consecutive} needed to change it")
         detail = f" — {self.last_reason}" if self.last_reason else ""
         return f"{word}, from a reading {age:.0f}s old{detail}"
 
