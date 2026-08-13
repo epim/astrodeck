@@ -750,9 +750,36 @@ class SequenceEngine:
 
     # ------------------------------------------------------------------- state
 
+    def _sky_state(self) -> dict:
+        """The sky verdict, as the UI is allowed to see it.
+
+        PUBLISHED BECAUSE IT IS OTHERWISE INVISIBLE. The verdict lives in the
+        capture payload and in this engine's CloudState, and nothing carried it
+        anywhere a client could read - so a run that held for cloud could say
+        "holding" and give the operator no way to see WHY, or to tell a hold
+        that is watching a real overcast from one sitting on a reading that went
+        stale twenty minutes ago.
+
+        `cloudy` is tri-state and null means UNKNOWN, never "clear". `age_s` is
+        published beside it precisely so a client can render the difference; a
+        UI that showed a bare "clear" for a reading nobody had taken would be
+        the same lie in a different place.
+        """
+        now = time.time()
+        return {
+            "cloudy": self._clouds.cloudy(now),
+            "age_s": (round(a) if (a := self._clouds.age_s(now)) is not None
+                      else None),
+            "score": self._clouds.last_score,
+            "reason": self._clouds.last_reason,
+            "text": self._clouds.describe(now),
+            "holding": self._holding_for_clear,
+        }
+
     def _set_state(self, **kw: Any) -> None:
         if self.plan:
             total = self.plan.total_frames()
+            kw.setdefault("sky", self._sky_state())
             progress = {
                 "frames_done": self._frames_done,
                 "frames_total": total,
