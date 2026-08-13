@@ -325,7 +325,22 @@ def plan_extras(compiled: dict) -> dict:
     """
     auto = compiled.get("automation") or {}
     cq = auto.get("calibration_queue") or {}
-    out: dict = {}
+    # THE NIGHT ENDS PARKED AND WARM, ALWAYS.
+    #
+    # Not a policy invented here: the Tonight timeline has always closed with
+    # "Dawn: loop ends, mount parks, camera warms", unconditionally, for every
+    # flow. The plan just never carried it, so the preview promised a park that
+    # `park_when_done=False` guaranteed would not happen — a claim nothing
+    # keeps, told to the one operator who is asleep when it comes due.
+    #
+    # Unconditional because the flow vocabulary has no node for "deliberately
+    # leave the mount tracking", and the safe reading of silence is the one that
+    # does not point a tube at the ground through sunrise. The engine already
+    # treats the opposite choice as something a run must SAY out loud.
+    #
+    # `test_the_preview_cannot_promise_what_the_plan_drops` binds the two
+    # together, so the next edit to either has to move both.
+    out: dict = {"park_when_done": True, "warm_cooler_when_done": True}
     quota = cq.get("quota")
     if isinstance(quota, (int, float)) and quota > 0:
         # The queue's quota is "how many of each kind the library wants". A hold
