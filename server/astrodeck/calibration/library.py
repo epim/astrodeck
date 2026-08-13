@@ -14,7 +14,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterator
 
 import numpy as np
 
@@ -184,19 +184,30 @@ class CalibrationLibrary:
     def _manifest_path(self) -> Path:
         return self.masters_dir() / MANIFEST_NAME
 
-    def _bucket_raw(self, temp_bin_width: float
-                    ) -> tuple[dict[str, _Bucket], list[tuple[Path, str]]]:
-        """``(buckets, rejected)`` — the frames that will be stacked, and the
-        ones the dark check contradicted, each with the evidence sentence off
-        its own header. The rejects are RETURNED rather than dropped so the
-        caller can say what it left out; a scanner that silently indexes fewer
-        frames than the folder holds is how a bad library looks healthy."""
+    def iter_cal_headers(self) -> Iterator[tuple[Path, object, float]]:
+        """Every calibration frame under the capture root: ``(path, header, ts)``.
+
+        THE ONE WALK. ``calibration_health.frame_from_header`` asked for this by
+        name — "please extend one rather than adding a third rglob over the
+        capture root" — because the matrix needs the same files ``_bucket_raw``
+        stacks, and a second traversal with its own idea of which directories to
+        skip is how two views of one library start disagreeing.
+
+        CONTRADICTED FRAMES ARE YIELDED. ``_bucket_raw`` drops them because they
+        must not be stacked; the matrix counts them, because "you have 40 darks
+        and the check threw 12 out" and "you have 28 darks" are different facts
+        and only the first tells the operator what to do. The verdict is on the
+        header either way, so each caller decides for itself and neither has to
+        trust the other's filtering.
+
+        A frame whose header will not parse is skipped rather than raised on: a
+        single truncated file in a capture folder must not blind the whole
+        matrix, and the file is still on disk for anyone looking.
+        """
         from astropy.io import fits
         root = self._capture_dir()
-        buckets: dict[str, _Bucket] = {}
-        rejected: list[tuple[Path, str]] = []
         if not root.exists():
-            return buckets, rejected
+            return
         for p in sorted(root.rglob("*.fits")):
             rel = p.relative_to(root)
             if any(part in EXCLUDE_DIRS for part in rel.parts):
@@ -204,10 +215,29 @@ class CalibrationLibrary:
             try:
                 header = fits.getheader(p)
                 key = key_from_header(header)
+                ts = p.stat().st_mtime
             except Exception:
                 continue
             if key is None or key.frame_type not in CAL_FRAME_TYPES:
                 continue
+            yield p, header, float(ts)
+
+    def _bucket_raw(self, temp_bin_width: float
+                    ) -> tuple[dict[str, _Bucket], list[tuple[Path, str]]]:
+        """``(buckets, rejected)`` — the frames that will be stacked, and the
+        ones the dark check contradicted, each with the evidence sentence off
+        its own header. The rejects are RETURNED rather than dropped so the
+        caller can say what it left out; a scanner that silently indexes fewer
+        frames than the folder holds is how a bad library looks healthy."""
+        buckets: dict[str, _Bucket] = {}
+        rejected: list[tuple[Path, str]] = []
+        for p, header, _ts in self.iter_cal_headers():
+            key = key_from_header(header)
+            # Re-derived rather than carried out of the walk: the walk's job is
+            # to find calibration frames, and THIS function's job is to decide
+            # which of them may be stacked. Two callers now want the same files
+            # and disagree about the contradicted ones.
+            #
             # The dark check's verdict, read off the file — no extra I/O, since
             # the header is already open. See DARK_OK_CARD: absent = usable.
             if _rejected_by_dark_check(header):

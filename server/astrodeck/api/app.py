@@ -99,7 +99,8 @@ from ..provenance import effective_config
 # The flows package is imported by SUBMODULE. flows/__init__ re-exports only
 # doctor/models/nodes — it predates five of the nine modules — so
 # `from ..flows import compile_plan` is an ImportError, not a style choice.
-from ..flows.calibration_health import CalNeed, DEFAULT_QUOTA, KIND_ORDER, health_matrix
+from ..flows.calibration_health import (CalNeed, DEFAULT_QUOTA, KIND_ORDER,
+                                        frame_from_header, health_matrix)
 from ..flows.compile import compile_plan
 from ..flows.doctor import check as flow_doctor
 from ..flows.models import MY_FLOWS_FOLDER, FlowGraph, FlowRecord
@@ -3832,16 +3833,27 @@ def create_app() -> FastAPI:
         an empty matrix MUST NOT be drawn as healthy, it must say there are no
         lights planned yet.
 
-        TWO HONEST HOLES, reported rather than papered over:
-        ``counts_masters_only`` — there is no frame walk to feed ``frames=``,
-        so ``have`` counts stacked masters and reads MISSING where raw subs
-        exist on disk. ``assumed`` — the node vocabulary has no offset param and
-        the compiler never emits a cooling setpoint, so offset is the shipped
-        default and sensor temperature is unknown. Both are invented values if
-        you do not say they are assumptions.
+        BOTH HOLES ARE NOW CLOSED, and the flags stay so a client can tell.
+
+        ``counts_masters_only`` is False: ``CalibrationLibrary.iter_cal_headers``
+        walks the capture root and ``have`` counts RAW SUBS, not only stacked
+        masters. Before this the matrix read MISSING beside a folder holding
+        hundreds of usable darks — a library browser that reported the opposite
+        of the truth, which is worse than reporting nothing.
+
+        ``assumed.temp_c`` is the rig's standing cooling setpoint instead of
+        None, because the run now carries one (``to_sequence_plan(cool_to=…)``).
+        It stays under ``assumed`` rather than moving out: the setpoint is what
+        the night INTENDS to reach, and a sensor that never got there would make
+        every temperature-matched row optimistic. Offset is still the shipped
+        default — the node vocabulary has no offset param — and still says so.
         """
         needs: list[CalNeed] = []
         quota: int = DEFAULT_QUOTA
+        # The night's intended sensor temperature. Darks are indexed by it, so a
+        # matrix that matched on None would count a +20 °C dark as cover for a
+        # -5 °C light.
+        setpoint = getattr(config_store.cfg().cooling, "setpoint_c", None)
         if flow_id is not None:
             try:
                 rec = await asyncio.to_thread(flow_store.get, flow_id)
@@ -3859,18 +3871,31 @@ def create_app() -> FastAPI:
                     needs.append(CalNeed(LightNeed(
                         exposure_s=float(step.get("exposure_s") or 0),
                         gain=int(step.get("gain") or 0), offset=30,
-                        temp_c=None, binning=int(step.get("binning") or 1),
+                        temp_c=setpoint, binning=int(step.get("binning") or 1),
                         filter=str(step.get("filter") or ""))))
             cq = (compiled.get("automation") or {}).get("calibration_queue") or {}
             quota = int(cq.get("quota") or DEFAULT_QUOTA)
         c = config_store.cfg().calibration
+
+        def scan_frames() -> list:
+            # Passed as a CALLABLE so the capture-root walk happens inside
+            # health_matrix, on the worker thread below — its own docstring asks
+            # for exactly this. Frames that will not parse are already dropped by
+            # the walk rather than sinking the whole matrix.
+            out = []
+            for path, header, ts in cal_library.iter_cal_headers():
+                frame = frame_from_header(header, ts=ts, path=str(path))
+                if frame is not None:
+                    out.append(frame)
+            return out
+
         rows = await asyncio.to_thread(
-            health_matrix, needs, masters=cal_library.list_masters(),
+            health_matrix, needs, scan_frames, masters=cal_library.list_masters(),
             quota=quota, kinds=KIND_ORDER,
             tol=MatchTolerance(c.exposure_tol_pct, c.temp_tol_c))
         return {"rows": [r.to_json() for r in rows], "planned": bool(needs),
-                "counts_masters_only": True,
-                "assumed": {"offset": 30, "temp_c": None}}
+                "counts_masters_only": False,
+                "assumed": {"offset": 30, "temp_c": setpoint}}
 
     @app.get("/api/calibration/masters", dependencies=[Depends(require(CAP_VIEW_STATUS))])
     @declare(CAP_VIEW_STATUS)

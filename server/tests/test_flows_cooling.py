@@ -81,24 +81,32 @@ class TestTheRouteActuallyPassesIt:
         rendered a night that differed from the one that ran — the same
         preview-outruns-the-plan shape as the park defect, one layer up.
 
-        Matched on the keyword within a window, so ordinary reformatting passes
-        and deletion fails.
+        PARSED, NOT GREPPED. The first version matched the source text and
+        promptly failed on a DOCSTRING that mentioned ``to_sequence_plan(…)`` in
+        prose — the same way test_routes_have_callers was once fooled by a path
+        inside a comment (#197). A detector that cannot tell code from the
+        writing about it will keep finding the writing, so this walks the AST
+        and only real call nodes count.
         """
+        import ast
         import pathlib
-        import re
 
         import astrodeck.api.app as app_mod
-        src = pathlib.Path(app_mod.__file__).read_text(encoding="utf-8")
-        sites = [m.start() for m in re.finditer(r"to_sequence_plan\(", src)]
-        assert len(sites) >= 2, (
+        tree = ast.parse(pathlib.Path(app_mod.__file__).read_text(encoding="utf-8"))
+        calls = [n for n in ast.walk(tree)
+                 if isinstance(n, ast.Call)
+                 and isinstance(n.func, ast.Name)
+                 and n.func.id == "to_sequence_plan"]
+        assert len(calls) >= 2, (
             f"expected the compile and run routes to both build a plan; "
-            f"found {len(sites)} call site(s)")
-        for i in sites:
-            window = src[i:i + 400]
-            assert "cool_to=" in window, (
-                f"a to_sequence_plan call at offset {i} does not pass cool_to — "
-                f"if it is the run, the night shoots at whatever the sensor "
-                f"drifted to; if it is the preview, it shows a different night")
-            assert "setpoint_c" in window, (
-                f"the call at offset {i} no longer sources cool_to from the "
-                f"rig's standing setpoint")
+            f"found {len(calls)} call(s)")
+        for call in calls:
+            kw = {k.arg: k for k in call.keywords if k.arg}
+            assert "cool_to" in kw, (
+                f"the to_sequence_plan call on line {call.lineno} does not pass "
+                f"cool_to — if it is the run, the night shoots at whatever the "
+                f"sensor drifted to; if it is the preview, it renders a "
+                f"different night from the one that runs")
+            assert "setpoint_c" in ast.unparse(kw["cool_to"].value), (
+                f"the call on line {call.lineno} no longer sources cool_to from "
+                f"the rig's standing setpoint")

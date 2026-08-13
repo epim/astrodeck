@@ -299,11 +299,22 @@ class TestCalibrationHealth:
         assert {r["kind"] for r in out["rows"]} == {"DARK", "BIAS", "FLAT"}
 
     def test_the_assumptions_are_declared_rather_than_hidden(self, client):
-        """Offset and sensor temperature are not in the graph vocabulary at all.
-        A row that quietly used a default would be inventing the very values the
-        matrix is supposed to be matching on."""
+        """Offset is not in the graph vocabulary at all, so a row that quietly
+        used a default would be inventing the very value the matrix matches on.
+
+        `counts_masters_only` is now FALSE: the route walks the capture root and
+        counts raw subs. It read True while the matrix reported MISSING beside a
+        folder holding hundreds of usable darks — a supply report that stated the
+        opposite of the truth, which is worse than reporting nothing.
+
+        `temp_c` follows the rig's standing cooling setpoint, and is None here
+        only because this fixture's rig has not been given one. It stays under
+        `assumed` either way: a setpoint is the temperature the night INTENDS to
+        reach, and a sensor that never got there would make every
+        temperature-matched row optimistic.
+        """
         out = client.get("/api/calibration/health").json()
-        assert out["counts_masters_only"] is True
+        assert out["counts_masters_only"] is False
         assert out["assumed"] == {"offset": 30, "temp_c": None}
 
     def test_an_absent_flow_is_a_404(self, client):
