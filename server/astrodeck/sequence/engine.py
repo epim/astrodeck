@@ -3393,7 +3393,38 @@ class SequenceEngine:
         action = (cfg.escalation.cooling_action if cfg else "warn")
 
         cam = self.hub.devices.get("camera")
-        if not cam or not cam.connected or not getattr(cam, "can_cool", False):
+        # THREE DIFFERENT SITUATIONS, and one `return True` used to cover all of
+        # them in silence. Measured cost on the rig, 2026-08-12: a redeploy at
+        # 23:39 restarted the server, the run was started seconds later while
+        # the camera was still connecting, this guard answered "nothing to wait
+        # on", and 53 of the night's 83 frames were shot at +16 °C against a
+        # -5 °C dark library. Nothing in the log said cooling had been skipped,
+        # because the log line sat BELOW this return.
+        if cam is not None and cam.connected \
+                and not getattr(cam, "can_cool", False):
+            # A camera that genuinely has no cooler. Proceeding is right; doing
+            # it silently is not, because the plan asked for a temperature.
+            bus.log("info", f"this camera cannot cool — shooting at ambient "
+                            f"though the plan asked for {target_c:g}°C",
+                    "sequence")
+            return True
+        if cam is None or not cam.connected:
+            # NOT the same thing, and the difference is the whole defect: a
+            # camera that has not finished connecting is a TRANSIENT state,
+            # commonest in the first seconds after a restart — exactly when a
+            # resumed or restarted run begins. Heal it the way every frame
+            # boundary does, then look again.
+            await self._reconnect_gate()
+            cam = self.hub.devices.get("camera")
+        if cam is None or not cam.connected:
+            return self._cooling_failed(
+                require, action,
+                f"the plan asked to cool to {target_c:g}°C and the camera is "
+                f"not connected")
+        if not getattr(cam, "can_cool", False):
+            bus.log("info", f"this camera cannot cool — shooting at ambient "
+                            f"though the plan asked for {target_c:g}°C",
+                    "sequence")
             return True
         self._set_state(state="running", detail=f"cooling to {target_c:g}°C")
         bus.log("info", f"cooling camera to {target_c:g}°C", "sequence")
