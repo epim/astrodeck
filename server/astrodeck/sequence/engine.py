@@ -340,7 +340,10 @@ class SequenceEngine:
         # optics the science frames used - a probe through a different filter
         # scores differently and the debounced state would read that as weather.
         self._hold_step = None
-        self._hold_darks_done = False
+        # Measured ONCE per hold and counted down, so the library walk happens
+        # once rather than before every frame. None = not yet measured.
+        self._hold_darks_want: int | None = None
+        self._hold_darks_taken = 0
         # Executed target-jumps this run (control-flow expansion). Inert at 0
         # unless a run_target/skip_target action actually fires; capped by
         # MAX_JUMPS so a mutual-jump cycle can never spin forever.
@@ -2677,7 +2680,8 @@ class SequenceEngine:
         started = time.time()
         clear_streak = 0
         self._holding_for_clear = True
-        self._hold_darks_done = False
+        self._hold_darks_want = None
+        self._hold_darks_taken = 0
         try:
             await self._stand_down_guider()
             bus.log("warning", f"holding for clear sky: {reason}", "sequence")
@@ -2704,9 +2708,25 @@ class SequenceEngine:
                 # cooled sensor under a closed sky, which is the condition darks
                 # want - and darks matched to the step this hold interrupted are
                 # the ones tonight's frames will actually be calibrated by.
-                await self._hold_darks(target)
+                #
+                # ONE FRAME PER ITERATION, never a batch. The first version shot
+                # the whole shortfall in a single call, and at 180 s x 20 that is
+                # sixty minutes inside ONE pass of this loop: the timeout above
+                # could not fire (so "parks after 45 min", which this hold tells
+                # the operator in its own detail line, was not a bound anything
+                # kept), and worse, the sky went unwatched for an hour - so a sky
+                # that cleared in minute five would not have been noticed until
+                # minute sixty, which is the opposite of what a self-releasing
+                # hold is for.
+                #
+                # The guards and the timeout are re-evaluated between every
+                # frame, and the exposure itself becomes the wait: a 180 s dark
+                # already exceeds the probe interval, so sleeping afterwards
+                # would only delay the next look at the sky.
+                took_dark = await self._hold_darks(target)
 
-                await asyncio.sleep(CLOUD_PROBE_EVERY_S)
+                if not took_dark:
+                    await asyncio.sleep(CLOUD_PROBE_EVERY_S)
                 verdict = await self._cloud_probe(target)
                 if verdict is None or verdict:
                     clear_streak = 0            # unknown is not clear
@@ -2774,32 +2794,47 @@ class SequenceEngine:
                     "sequence")
             return quota, 0
 
-    async def _hold_darks(self, target: Target | None) -> None:
-        """Shoot darks matched to the interrupted step, once per hold.
+    async def _hold_darks(self, target: Target | None) -> bool:
+        """Shoot ONE dark matched to the interrupted step. ``True`` if it did.
 
-        Runs at most ONCE - `_hold_darks_done` - because a hold that re-shot the
-        set on every probe cycle would fill the disk on a cloudy night and leave
-        no time to notice the sky had cleared.
+        ONE FRAME, NOT THE SET. The caller runs this once per pass of the hold
+        loop, so the hold's timeout and all four guards are re-evaluated between
+        every frame and the sky is probed between every frame. A batch call here
+        (the first version) put the whole shortfall inside a single loop pass:
+        at 180 s x 20 that is an hour in which the 45-minute cap could not fire
+        and nothing looked up.
 
-        Everything is best-effort: a failure here logs and returns, because the
+        The shortfall is measured ONCE per hold and then counted down, so the
+        library is read once rather than re-walked before every frame.
+
+        Everything is best-effort: a failure logs and returns False, because the
         hold's job is to survive the weather and a calibration hiccup must not
         turn a passing cloud into an aborted night.
         """
         quota = int(getattr(self.plan, "cloud_hold_darks", 0) or 0)
         step = self._hold_step
-        if quota <= 0 or step is None or self._hold_darks_done:
-            return
-        self._hold_darks_done = True
-        want, have = self._hold_darks_shortfall(step, quota)
-        if want <= 0:
-            # THE QUEUE'S "if library stale" HALF. Shooting the full quota every
-            # hold would spend a cloudy night re-taking darks we already own, on
-            # a disk that fills and against a sky we stopped watching.
-            bus.log("info", f"cloud hold: the library already holds {have} darks "
-                            f"at {step.exposure_s:g}s g{step.gain} - holding "
-                            f"without shooting", "sequence")
-            self._set_state(detail="held for cloud - dark library already full")
-            return
+        if quota <= 0 or step is None:
+            return False
+
+        if self._hold_darks_want is None:
+            want, have = self._hold_darks_shortfall(step, quota)
+            self._hold_darks_want = want
+            if want <= 0:
+                # THE QUEUE'S "if library stale" HALF. Shooting the quota on
+                # every hold would spend a cloudy night re-taking darks the rig
+                # already owns, on a disk that fills.
+                bus.log("info", f"cloud hold: the library already holds {have} "
+                                f"darks at {step.exposure_s:g}s g{step.gain} - "
+                                f"holding without shooting", "sequence")
+                self._set_state(detail="held for cloud - dark library already full")
+            else:
+                bus.log("info", f"cloud hold: building {want} darks at "
+                                f"{step.exposure_s:g}s g{step.gain} one at a "
+                                f"time ({have} of {quota} already banked)",
+                        "sequence")
+
+        if self._hold_darks_taken >= (self._hold_darks_want or 0):
+            return False
         try:
             dark = Target(
                 name=f"cloud-hold darks {step.exposure_s:g}s g{step.gain}",
@@ -2809,20 +2844,24 @@ class SequenceEngine:
                     # MATCHED TO THE STEP THIS HOLD INTERRUPTED. A dark library
                     # is indexed by exposure, gain, offset, binning and
                     # temperature; anything else is a dark for a different night.
+                    # No filter named, which is what drives the wheel to the
+                    # blackout slot - see _apply_filter.
                     exposure_s=step.exposure_s, gain=step.gain,
                     offset=step.offset, binning=step.binning,
-                    count=want, frame_type="Dark")])
-            bus.log("info", f"cloud hold: shooting {want} darks at "
-                            f"{step.exposure_s:g}s g{step.gain} while we wait "
-                            f"({have} of {quota} already banked)", "sequence")
-            self._set_state(detail=f"held for cloud - taking {want} matched darks")
+                    count=1, frame_type="Dark")])
+            self._hold_darks_taken += 1
+            self._set_state(
+                detail=f"held for cloud - dark {self._hold_darks_taken}"
+                       f"/{self._hold_darks_want} at {step.exposure_s:g}s")
             await self._run_calibration(self._index_of_target(target)
                                         if target is not None else 0, dark)
+            return True
         except SafetyAbort:
             raise
         except Exception as exc:                  # noqa: BLE001 - reported
             bus.log("warning", f"cloud-hold darks failed ({exc}) - still holding",
                     "sequence")
+            return False
 
     async def _stand_down_guider(self) -> None:
         """Stop guiding, leave the mount tracking. Best-effort and never raises:
