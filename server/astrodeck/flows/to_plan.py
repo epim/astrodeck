@@ -351,13 +351,26 @@ def plan_extras(compiled: dict) -> dict:
 
 
 def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
-                     when: float | None = None
+                     when: float | None = None,
+                     cool_to: float | None = None
                      ) -> tuple[SequencePlan, list[dict]]:
     """``(plan, unmapped)`` for a compiled flow.
 
     ``graph`` is optional but strongly wanted: without it the inert-node class
     cannot be reported at all, because it is invisible in ``compiled``.
     ``when`` is the timestamp pool names are resolved against.
+
+    ``cool_to`` is THE RIG'S OWN STANDING SETPOINT, injected by the caller -
+    never read from config here, so this stays a pure function of the compile.
+    The flow vocabulary has no cooling node, so without it every flow-driven
+    night shot at whatever temperature the sensor happened to be, against a dark
+    library indexed by a temperature it never matched. Passing it also buys the
+    stabilize-before-lights wait, which is the half a standing setpoint alone
+    cannot give: the cooler may still be ramping when the first sub opens.
+
+    ``None`` leaves ``cool_to`` unset and the run behaves exactly as before -
+    the rig with no configured setpoint has expressed no intent to cool, and
+    inventing one here would be picking a number on the operator's behalf.
 
     Raises :class:`GraphNotRunnable` when there is nothing runnable here - no
     targets at all, or a capture step with no exposure or no frames.
@@ -423,12 +436,15 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
     _automation(compiled, unmapped)
     unmapped.extend(inert_nodes(graph))
 
-    plan = SequencePlan.model_validate({
+    fields: dict = {
         "name": compiled.get("name") or "Flow",
         "targets": targets,
         "instructions": _instructions(compiled, unmapped),
         **plan_extras(compiled),
-    })
+    }
+    if cool_to is not None:
+        fields["cool_to"] = float(cool_to)
+    plan = SequencePlan.model_validate(fields)
     return plan, unmapped
 
 
