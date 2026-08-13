@@ -117,3 +117,25 @@ class TestTheSetMatchesTheEvaluator:
             lo = _eval_predicate(kind, 0.0, None, ctx)
             hi = _eval_predicate(kind, 1e9, None, ctx)
             assert lo == hi, f"{kind} reads its threshold after all"
+
+
+class TestTheNoteIsSaidOnce:
+    def test_two_rules_off_one_cloudwatch_produce_one_note(self):
+        """Seen in the live run output: the shipped graph wires CLOUD WATCH's
+        `in` port to BOTH the hold and the notify, so the identical sentence
+        printed twice. A list whose value is that every line is news cannot
+        afford to repeat itself — that is how operators learn to skim it."""
+        g = FlowGraph(
+            nodes=[_n("t", "target", name="M31", ra="00h 42m 44s",
+                      dec="+41 16 09"),
+                   _n("c", "capture", x=100, exposure=180, count=10),
+                   _n("cw", "cloudwatch", y=300, threshold=40),
+                   _n("h", "holdresume", x=200, y=300),
+                   _n("nf", "notify", x=400, y=300)],
+            edges=[_e("t", "target", "c", "run"),
+                   _e("cw", "in", "h", "pause"),
+                   _e("cw", "in", "nf", "do")])
+        _, un = to_sequence_plan(compile_plan(g, "n"))
+        notes = [u for u in un
+                 if u["key"] == "instructions[on_clouds_in].threshold"]
+        assert len(notes) == 1, f"the dead-dial note printed {len(notes)} times"
