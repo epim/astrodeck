@@ -14,6 +14,8 @@ pinning needed, and the default-site case proves site-independence.
 """
 from __future__ import annotations
 
+import time
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -74,14 +76,23 @@ def _reset_provider_after():
 # Build a target a fixed angular distance from the current Sun by offsetting in
 # Dec (a Dec offset of X deg IS X deg of true separation when RA is unchanged).
 
-def _sun_now():
-    return sun_radec()
+def _sun_now(when: float | None = None):
+    # `when` exists so a caller that needs the Sun TWICE gets the same Sun both
+    # times. sun_radec falls through to the live clock, and the Sun moves
+    # 3.5e-6 deg/s — invisible against the 30 deg cone these fixtures usually
+    # compare, but not against the one assertion that checks a separation to
+    # 1e-6 deg. Measured failure rate there is ~1 in 6 million, so this is
+    # hygiene rather than a bug; it is worth taking because it is one argument
+    # and because the same double-read shape with no margin at all is what
+    # broke test_polar_meridian_guard in CI.
+    return sun_radec(when)
 
 
-def _target_at_sep(sep_deg: float) -> tuple[float, float]:
-    """A (ra_hours, dec_deg) exactly ``sep_deg`` from the current Sun. Offset in
-    Dec, clamped to [-89, 89] and flipped if the Sun is near a pole."""
-    sun_ra, sun_dec = _sun_now()
+def _target_at_sep(sep_deg: float, when: float | None = None
+                   ) -> tuple[float, float]:
+    """A (ra_hours, dec_deg) exactly ``sep_deg`` from the Sun at ``when``.
+    Offset in Dec, clamped to [-89, 89] and flipped if the Sun is near a pole."""
+    sun_ra, sun_dec = _sun_now(when)
     dec = sun_dec + sep_deg
     if dec > 89.0:
         dec = sun_dec - sep_deg
@@ -177,8 +188,9 @@ def test_site_independent_default_site_still_protected(tmp_path, monkeypatch):
 def test_sep_matches_ang_sep_deg(tmp_path):
     """Sanity: the Dec-offset target really is the intended separation from the
     Sun (so the in/out fixtures are geometrically honest)."""
-    sun_ra, sun_dec = _sun_now()
-    ra, dec = _target_at_sep(IN_CONE)
+    when = time.time()          # one Sun, read once, used by both calls
+    sun_ra, sun_dec = _sun_now(when)
+    ra, dec = _target_at_sep(IN_CONE, when)
     sep = _ang_sep_deg(ra, dec, sun_ra, sun_dec)
     assert abs(sep - IN_CONE) < 1e-6
 
