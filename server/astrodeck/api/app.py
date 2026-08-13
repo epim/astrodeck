@@ -3539,7 +3539,13 @@ def create_app() -> FastAPI:
         compiled = compile_plan(graph, name)
         unmapped: list[dict] = []
         try:
-            _plan, unmapped = to_sequence_plan(compiled, graph)
+            # SAME ARGUMENTS AS THE RUN. A preview compiled differently from the
+            # run is a preview of a different night — the defect the park/warm
+            # binding was written for, one layer up. Whatever the run would cool
+            # to, the PLAN tab has to show.
+            _plan, unmapped = to_sequence_plan(
+                compiled, graph,
+                cool_to=getattr(config_store.cfg().cooling, "setpoint_c", None))
         except GraphNotRunnable as e:
             # Not an error response: a half-built graph is the NORMAL state of
             # an editor, and the canvas asks for a compile on every edit. The
@@ -3732,7 +3738,15 @@ def create_app() -> FastAPI:
 
         compiled = compile_plan(rec.graph, rec.name)
         try:
-            plan, unmapped = to_sequence_plan(compiled, rec.graph)
+            # THE RIG'S STANDING SETPOINT BECOMES THE RUN'S. `cooling.setpoint_c`
+            # is the operator's expressed intent (the same field the hub restores
+            # on every camera connect, #153/#204); a flow has no cooling node, so
+            # without this the night shoots at whatever the sensor drifted to and
+            # no dark in the library matches it. None means no intent, and the
+            # run then behaves exactly as it always has.
+            plan, unmapped = to_sequence_plan(
+                compiled, rec.graph,
+                cool_to=getattr(config_store.cfg().cooling, "setpoint_c", None))
         except GraphNotRunnable as e:
             raise HTTPException(422, detail={"detail": str(e), "code": e.code})
 
