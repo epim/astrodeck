@@ -809,7 +809,8 @@ def _refuse_if_it_flipped(prev_pa: float | None, prev_index: int,
         f"already on, and start again.")
 
 
-def _ra_step_hours(hub: Any, cur_ra_hours: float, pier_side: Any = None) -> float:
+def _ra_step_hours(hub: Any, cur_ra_hours: float, pier_side: Any = None,
+                   *, now: float | None = None) -> float:
     """One RA step, SIGNED so the measurement arc moves AWAY from the meridian.
 
     The direction is not cosmetic, it decides whether the run is measurable at
@@ -858,8 +859,19 @@ def _ra_step_hours(hub: Any, cur_ra_hours: float, pier_side: Any = None) -> floa
     ``unknown``) falls back to the hour-angle rule, which is what shipped
     before and is right everywhere except that band. Fork mounts cannot flip at
     all, so they lose nothing.
+
+    ``now`` states the instant the decision is made at, defaulting to the clock.
+    Both functions underneath already take one — ``hour_angle_h`` and
+    ``lst_hours`` — and this was the only link in the chain that did not, which
+    made the rule's own BOUNDARY untestable: a caller building an RA that sits
+    exactly on the meridian has to read the clock to do it, and by the time this
+    function read the clock again sidereal time had moved on, so HA had tipped
+    to the far side of the ``> 0`` comparison. CI caught it as
+    ``assert -0.8 == 0.8``. Production is unaffected — it reads the sky when it
+    means to — but a safety rule whose edge cannot be pinned is a rule nobody
+    can check.
     """
-    ha = hour_angle_h(cur_ra_hours, hub.site["longitude"])
+    ha = hour_angle_h(cur_ra_hours, hub.site["longitude"], now)
     # HA > 0 => west of the meridian, so step further west, which is RA DOWN.
     # HA <= 0 => east (or exactly on it), so step further east, which is RA UP.
     ha_step = -_RA_STEP_HOURS if ha > 0.0 else _RA_STEP_HOURS
