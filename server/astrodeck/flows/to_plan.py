@@ -262,12 +262,21 @@ def _instructions(compiled: dict, out: list[dict]) -> list[dict]:
                 # real cloudy frame. Inventing a mapping between them would
                 # replace a validated decision with a guess, and the handoff's
                 # rule is to report ambiguity rather than resolve it.
-                out.append(_note(
-                    f"instructions[{trigger}].threshold",
-                    f"the {trigger.replace('on_', '').replace('_', ' ')} rule's "
-                    f"threshold ({rule['threshold']:g}) does not reach the "
-                    f"engine: this trigger fires on the detector's own verdict, "
-                    f"so moving the dial changes nothing"))
+                key = f"instructions[{trigger}].threshold"
+                # ONCE PER TRIGGER, not once per rule. A CLOUD WATCH node's
+                # `in` port usually feeds several destinations — the hold AND
+                # the notify, in the shipped example — and each compiles to its
+                # own rule carrying the same dead dial. Printed per rule, the
+                # operator sees the identical sentence twice and learns to skim
+                # a list whose whole value is that every line is news.
+                if not any(u["key"] == key for u in out):
+                    out.append(_note(
+                        key,
+                        f"the {trigger.replace('on_', '').replace('_', ' ')} "
+                        f"rule's threshold ({rule['threshold']:g}) does not "
+                        f"reach the engine: this trigger fires on the "
+                        f"detector's own verdict, so moving the dial changes "
+                        f"nothing"))
         rules.append(legal)
     if rules:
         # A rule carries its destination node's TYPE and nothing else, so a
