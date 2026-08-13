@@ -271,9 +271,16 @@ def _automation(compiled: dict, out: list[dict]) -> None:
                          "the dusk-flats stage is not wired into the engine "
                          "yet - this run will not take flats"))
     if "calibration_queue" in auto:
-        out.append(_note("automation.calibration_queue",
-                         "the calibration queue is not wired into the engine "
-                         "yet - the library will not top up during this run"))
+        # PARTIALLY honoured now. The darks half reaches the engine as
+        # `cloud_hold_darks` (see plan_extras) - a hold spends its dead time
+        # shooting darks matched to the step it interrupted. What does NOT
+        # reach it is the ORDER, the if_stale policy, the bias half and the
+        # flats-if-panel half, so this still reports rather than going quiet.
+        out.append(_note(
+            "automation.calibration_queue",
+            "darks will be taken during a cloud hold, matched to the step it "
+            "interrupts. The queue's order, its if-stale policy, and the bias "
+            "and flat legs are not wired into the engine yet"))
 
 
 def inert_nodes(graph: FlowGraph | None) -> list[dict]:
@@ -308,6 +315,25 @@ def inert_nodes(graph: FlowGraph | None) -> list[dict]:
 
 
 # ---------------------------------------------------------------- the adapter
+
+def plan_extras(compiled: dict) -> dict:
+    """Plan-level fields the compiled automation blocks DO reach.
+
+    Small and explicit rather than a general merge: every key here is one the
+    engine acts on, and a merge would let a future automation block set a plan
+    field nobody reviewed.
+    """
+    auto = compiled.get("automation") or {}
+    cq = auto.get("calibration_queue") or {}
+    out: dict = {}
+    quota = cq.get("quota")
+    if isinstance(quota, (int, float)) and quota > 0:
+        # The queue's quota is "how many of each kind the library wants". A hold
+        # is bounded and cannot deliver a whole quota, so it is capped: the hold
+        # tops the library up, it does not fill it.
+        out["cloud_hold_darks"] = min(int(quota), 40)
+    return out
+
 
 def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
                      when: float | None = None
@@ -386,6 +412,7 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
         "name": compiled.get("name") or "Flow",
         "targets": targets,
         "instructions": _instructions(compiled, unmapped),
+        **plan_extras(compiled),
     })
     return plan, unmapped
 

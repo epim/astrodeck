@@ -226,6 +226,19 @@ class SequencePlan(BaseModel):
     # wind-down
     park_when_done: bool = False
     warm_cooler_when_done: bool = False
+    # --- cloud-hold calibration (ADDITIVE; default off = every existing plan
+    # behaves byte-identically) ---------------------------------------------
+    #
+    # A weather hold is dead time with a cooled sensor and a closed sky, which
+    # is exactly the condition darks want. When this is on, the hold spends its
+    # waiting shooting darks that MATCH TONIGHT'S LIGHTS - same exposure, gain,
+    # offset and binning as the step it interrupted - so the library grows in
+    # the one dimension the night actually needs.
+    #
+    # An int, not a bool, because "how many" is the whole decision: it bounds
+    # what a hold can spend and makes the intent visible in the plan the PLAN
+    # tab renders. 0 means do not.
+    cloud_hold_darks: int = Field(0, ge=0, le=200)
     # --- conditional sequencer (PRO-3; ADDITIVE — [] => byte-identical run) ---
     # An author-editable when-trigger-do-action layer on top of the fixed
     # targets×steps plan. Empty by default so existing plans deserialize
