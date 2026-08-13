@@ -96,13 +96,21 @@ class TestTheModelBounds:
 class TestTheQueueStillReportsWhatItCannotDo:
     def test_the_note_names_the_legs_that_are_still_missing(self):
         """Half a feature reported as a whole one is the broken-promise class.
-        The darks leg works; order, the if-stale policy, bias and flats do not,
-        and the note has to keep saying so."""
+        The darks leg works and so does the if-stale policy — a hold now tops the
+        library up to the quota instead of re-shooting it. Order, bias and flats
+        do not, and the note has to keep saying so.
+
+        The if-stale claim moved from the missing list to the working half, which
+        is the one direction this note is allowed to move: a feature earns its
+        way out of here by being implemented, never by the sentence being
+        trimmed."""
         m16 = next(e for e in examples() if e.id == "example-m16")
         _, un = to_sequence_plan(compile_plan(m16.graph, m16.name), m16.graph)
         note = [u for u in un if u["key"] == "automation.calibration_queue"]
         assert note, "the queue must still be reported"
         d = note[0]["detail"]
         assert "darks will be taken" in d
-        for missing in ("order", "if-stale", "bias", "flat"):
+        assert "what the library still needs" in d, (
+            "the note no longer says the hold tops up rather than re-shoots")
+        for missing in ("order", "bias", "flat"):
             assert missing in d, f"the note stops mentioning {missing}"

@@ -2729,6 +2729,51 @@ class SequenceEngine:
         finally:
             self._holding_for_clear = False
 
+    def _hold_darks_shortfall(self, step, quota: int) -> tuple[int, int]:
+        """``(to_shoot, already_banked)`` for a hold at ``step``'s settings.
+
+        THE QUEUE'S if-stale POLICY, and the reason it can exist at all: the
+        calibration matrix counts RAW SUBS now, not just stacked masters, so
+        "what does the library already have at exactly these settings" is finally
+        an answerable question. Asked through ``health_matrix`` — the same call
+        the Calibration Matrix panel renders — so the panel and the engine cannot
+        give the operator two different answers about one library.
+
+        Matched on ``plan.cool_to``, because a dark is indexed by temperature and
+        a warm one is cover for nothing.
+
+        FAILS TO THE OLD BEHAVIOUR, not to zero. If the library cannot be read —
+        no walk, a broken header, a missing hub attribute — this returns the full
+        quota, because a hold that cannot count is still a hold that should build
+        darks. Returning 0 would let one unreadable file quietly cancel the
+        feature, which is the silent-loss shape this codebase keeps finding.
+        """
+        lib = getattr(self.hub, "master_library", None)
+        if lib is None:
+            return quota, 0
+        try:
+            from ..calibration.matcher import LightNeed
+            from ..flows.calibration_health import (CalNeed, frame_from_header,
+                                                    health_matrix)
+            need = CalNeed(LightNeed(
+                exposure_s=float(step.exposure_s), gain=int(step.gain),
+                offset=int(step.offset),
+                temp_c=getattr(self.plan, "cool_to", None),
+                binning=int(step.binning), filter=str(step.filter or "")))
+            frames = [f for f in (frame_from_header(h, ts=ts, path=str(p))
+                                  for p, h, ts in lib.iter_cal_headers())
+                      if f is not None]
+            rows = health_matrix([need], frames, masters=lib.list_masters(),
+                                 quota=quota, kinds=("DARK",))
+            if not rows:
+                return quota, 0
+            return max(0, rows[0].need - rows[0].have), rows[0].have
+        except Exception as exc:                  # noqa: BLE001 - reported
+            bus.log("warning", f"cloud hold: could not read the dark library "
+                               f"({exc}) - shooting the full quota of {quota}",
+                    "sequence")
+            return quota, 0
+
     async def _hold_darks(self, target: Target | None) -> None:
         """Shoot darks matched to the interrupted step, once per hold.
 
@@ -2740,11 +2785,21 @@ class SequenceEngine:
         hold's job is to survive the weather and a calibration hiccup must not
         turn a passing cloud into an aborted night.
         """
-        want = int(getattr(self.plan, "cloud_hold_darks", 0) or 0)
+        quota = int(getattr(self.plan, "cloud_hold_darks", 0) or 0)
         step = self._hold_step
-        if want <= 0 or step is None or self._hold_darks_done:
+        if quota <= 0 or step is None or self._hold_darks_done:
             return
         self._hold_darks_done = True
+        want, have = self._hold_darks_shortfall(step, quota)
+        if want <= 0:
+            # THE QUEUE'S "if library stale" HALF. Shooting the full quota every
+            # hold would spend a cloudy night re-taking darks we already own, on
+            # a disk that fills and against a sky we stopped watching.
+            bus.log("info", f"cloud hold: the library already holds {have} darks "
+                            f"at {step.exposure_s:g}s g{step.gain} - holding "
+                            f"without shooting", "sequence")
+            self._set_state(detail="held for cloud - dark library already full")
+            return
         try:
             dark = Target(
                 name=f"cloud-hold darks {step.exposure_s:g}s g{step.gain}",
@@ -2758,8 +2813,8 @@ class SequenceEngine:
                     offset=step.offset, binning=step.binning,
                     count=want, frame_type="Dark")])
             bus.log("info", f"cloud hold: shooting {want} darks at "
-                            f"{step.exposure_s:g}s g{step.gain} while we wait",
-                    "sequence")
+                            f"{step.exposure_s:g}s g{step.gain} while we wait "
+                            f"({have} of {quota} already banked)", "sequence")
             self._set_state(detail=f"held for cloud - taking {want} matched darks")
             await self._run_calibration(self._index_of_target(target)
                                         if target is not None else 0, dark)

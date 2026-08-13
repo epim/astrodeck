@@ -279,8 +279,9 @@ def _automation(compiled: dict, out: list[dict]) -> None:
         out.append(_note(
             "automation.calibration_queue",
             "darks will be taken during a cloud hold, matched to the step it "
-            "interrupts. The queue's order, its if-stale policy, and the bias "
-            "and flat legs are not wired into the engine yet"))
+            "interrupts, and only up to what the library still needs at those "
+            "settings. The queue's order, and its bias and flat legs, are not "
+            "wired into the engine yet"))
 
 
 def inert_nodes(graph: FlowGraph | None) -> list[dict]:
