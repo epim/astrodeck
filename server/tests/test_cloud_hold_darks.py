@@ -58,19 +58,24 @@ class TestTheQueueReachesThePlan:
         what it takes is capped. Promising the full quota would be a claim the
         clock cannot keep."""
         assert plan_extras({"automation": {"calibration_queue": {"quota": 500}}}) \
-            == {"cloud_hold_darks": 40}
+            ["cloud_hold_darks"] == 40
 
     def test_a_zero_or_missing_quota_asks_for_nothing(self):
-        assert plan_extras({"automation": {"calibration_queue": {"quota": 0}}}) == {}
-        assert plan_extras({"automation": {"calibration_queue": {}}}) == {}
-        assert plan_extras({"automation": {}}) == {}
-        assert plan_extras({}) == {}
+        # ASKS FOR NOTHING = the key is absent, not zero. `plan_extras` also
+        # carries the end-of-night park/warm fields, so these assert on the
+        # darks key alone rather than on the whole dict - an equality against
+        # {} would fail the day any other plan field earns its way in, which is
+        # a test that breaks on unrelated correct work.
+        for compiled in ({"automation": {"calibration_queue": {"quota": 0}}},
+                         {"automation": {"calibration_queue": {}}},
+                         {"automation": {}},
+                         {}):
+            assert "cloud_hold_darks" not in plan_extras(compiled)
 
     def test_a_garbled_quota_does_not_raise_or_smuggle_a_value(self):
-        assert plan_extras({"automation": {"calibration_queue":
-                                           {"quota": "twenty"}}}) == {}
-        assert plan_extras({"automation": {"calibration_queue":
-                                           {"quota": None}}}) == {}
+        for junk in ("twenty", None):
+            assert "cloud_hold_darks" not in plan_extras(
+                {"automation": {"calibration_queue": {"quota": junk}}})
 
 
 class TestTheModelBounds:
