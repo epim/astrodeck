@@ -59,7 +59,8 @@ BOOLEAN_TRIGGERS: frozenset[str] = frozenset(
 #: walked by ``flow_order`` and contributes nothing to the compiled dict, so its
 #: parameters are inert — see :func:`inert_nodes`.
 COMPILED_NODE_TYPES: frozenset[str] = frozenset(
-    {"target", "pool", "capture", "dusk", "dome", "duskflats", "calib"})
+    {"target", "pool", "capture", "dusk", "dome", "duskflats", "calib",
+     "cycle"})
 
 #: Flow-vocabulary action -> engine ActionKind, keyed by (node type, INPUT PORT).
 #:
@@ -456,6 +457,12 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
                   "schedule": _target_schedule(base_schedule, entry,
                                                is_pool=is_pool),
                   "steps": _steps(entry, name or "?", unmapped)}
+        if entry.get("acquisition") == "cycle":
+            # The FILTER CYCLE reaches the engine. `per_visit` already rode in
+            # on each step from the compile; this is the field the engine
+            # branches on, and without it those per_visit values would be inert
+            # decoration on a plan that still shot in blocks.
+            target["acquisition"] = "cycle"
         targets.append(target)
         pooled += 1 if is_pool else 0
 

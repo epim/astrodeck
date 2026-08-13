@@ -151,6 +151,20 @@ NODE_DEFS: dict[str, NodeDef] = {
         params={"members": "M16, M17, M8, NGC 6946",
                 "strategy": "Best available (alt × moon)", "minAlt": 30,
                 "moonSep": 40, "maxHA": 4}),
+    "cycle": NodeDef(
+        type="cycle", label="FILTER CYCLE", cat="LOGIC",
+        # ONE PASS PER VISIT, many passes per night. The captures on this
+        # target become one round: L R G B S Ha O3, and `cycles` says how many
+        # times to go round. Each capture's own `count` is what it takes ON
+        # each pass, so "1" and 45 cycles is forty-five subs of every filter.
+        #
+        # It applies to the target's whole capture chain rather than to a
+        # sub-graph, because the graph model is flat — there is no container to
+        # put a body inside. That is a real limit and `to_plan` reports it
+        # rather than letting a second CYCLE node look like it does something.
+        ins=(_f("run", "run"),),
+        outs=(_f("body", "each pass"), _f("complete", "all passes")),
+        params={"cycles": 45, "order": "As drawn"}),
     "condition": NodeDef(
         type="condition", label="CONDITION", cat="LOGIC",
         ins=(_e("events", "events"),), outs=(_e("fire", "fire"),),
@@ -186,7 +200,7 @@ PALETTE_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("SOURCES", ("dusk", "target", "safety", "cloudwatch")),
     ("EQUIPMENT", ("dome", "flatpanel")),
     ("RIG OPS", ("slew", "autofocus", "guide", "capture", "duskflats", "calib")),
-    ("LOGIC", ("pool", "condition")),
+    ("LOGIC", ("pool", "cycle", "condition")),
     ("ACTIONS + SINKS", ("holdresume", "notify", "refocus", "abort", "report")),
 )
 
