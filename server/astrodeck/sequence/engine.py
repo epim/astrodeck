@@ -780,6 +780,24 @@ class SequenceEngine:
         }
 
     def _set_state(self, **kw: Any) -> None:
+        # A HOLD OUTRANKS A ROUTINE "running" PUBLISH.
+        #
+        # Observed live on 2026-08-12 23:15, under solid overcast: the run read
+        # `state: running` while it was holding for cloud and shooting hold
+        # darks. `_hold_for_clear` had published state="holding", and then the
+        # calibration frame loop's own per-frame publish overwrote it — so the
+        # ONE field every client keys off said the night was proceeding
+        # normally. Only the `sky.holding` flag disagreed, and a watchdog
+        # watching `state` for a hold could never have fired.
+        #
+        # Gated on the caller NOT naming `hold`: the deliberate resume passes
+        # `hold=None` to say the hold is over, and that has to get through while
+        # `_holding_for_clear` is still True (it is cleared in a `finally`).
+        # A publish that says nothing about the hold is not entitled to end it.
+        if (getattr(self, "_holding_for_clear", False)
+                and kw.get("state") == "running" and "hold" not in kw):
+            kw["state"] = "holding"
+            kw.setdefault("hold", "clouds")
         if self.plan:
             total = self.plan.total_frames()
             kw.setdefault("sky", self._sky_state())
