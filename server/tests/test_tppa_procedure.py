@@ -271,7 +271,17 @@ class _Rig:
         return [p.get("message", "") for p in self.session.published]
 
     def measured_hour_angles(self) -> list[float]:
-        return [hour_angle_h(ra, _LON) for ra, _dec in self.solved[:3]]
+        # ONE CLOCK READ FOR ALL THREE. Without the shared `t` each element
+        # takes its own, so the arc's spacing carries the skew between them —
+        # and the assertion downstream compares that spacing at abs=1e-6 h,
+        # which is 3.6 ms of sidereal drift. Measured, the window is under a
+        # microsecond and the real failure rate is ~1 in 50,000 CI runs, so
+        # this is hygiene rather than a bug being fixed. It is worth taking
+        # because it is one line, because the sibling _Run.hour_angles in
+        # test_tppa_meridian_e2e.py already does it, and because the same shape
+        # with ZERO margin is what broke test_polar_meridian_guard in CI.
+        t = time.time()
+        return [hour_angle_h(ra, _LON, t) for ra, _dec in self.solved[:3]]
 
 
 @pytest.fixture
