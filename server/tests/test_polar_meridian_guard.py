@@ -38,14 +38,31 @@ class _Hub:
         self.site = {"latitude": lat, "longitude": lon, "elevation_m": 0.0}
 
 
-def _ra_at_hour_angle(ha_hours: float, lon_deg: float) -> float:
-    """The RA a target must have RIGHT NOW to sit at hour angle ``ha_hours``.
+#: One fixed instant for every geometry test in this file.
+#:
+#: THE CLOCK IS THE TEST'S ENEMY HERE. These assertions are about a rule with a
+#: DISCONTINUITY at HA == 0, and the only way to sit a target exactly on it is to
+#: invert the sidereal-time formula — which needs an instant. Reading the clock
+#: once to build the RA and letting the code read it again to judge the RA puts
+#: the two reads microseconds apart, and sidereal time moves: HA tips from 0.0 to
+#: barely-positive and ``ha > 0.0`` answers the other way.
+#:
+#: CI found it, as ``assert -0.8 == 0.8`` on the [0.0] case, and it had been
+#: passing locally by luck on a faster machine. The fix is to state the instant
+#: instead of racing it — the value is arbitrary, only its FIXEDNESS matters.
+WHEN = 1_772_000_000.0
 
-    Derived by inverting ``hour_angle_h`` against the live clock rather than
-    hard-coding an RA, so the test asserts on the geometry it means instead of
-    on whatever the sidereal time happens to be when CI runs it."""
+
+def _ra_at_hour_angle(ha_hours: float, lon_deg: float,
+                      when: float = WHEN) -> float:
+    """The RA a target must have AT ``when`` to sit at hour angle ``ha_hours``.
+
+    Derived by inverting ``hour_angle_h`` rather than hard-coding an RA, so the
+    test asserts on the geometry it means instead of on a magic number — but
+    against a STATED instant, which is what makes the boundary case decidable.
+    """
     from astrodeck.catalog.coords import lst_hours
-    return (lst_hours(lon_deg) - ha_hours) % 24.0
+    return (lst_hours(lon_deg, when) - ha_hours) % 24.0
 
 
 # ------------------------------------------------------- the step direction
@@ -56,7 +73,7 @@ async def test_west_of_the_meridian_steps_further_west(ha):
     meridian, so the step must be negative."""
     hub = _Hub()
     ra = _ra_at_hour_angle(ha, _LON)
-    assert _ra_step_hours(hub, ra) == -_RA_STEP_HOURS
+    assert _ra_step_hours(hub, ra, now=WHEN) == -_RA_STEP_HOURS
 
 
 @pytest.mark.parametrize("ha", [-0.1, -0.69, -2.0, -5.0, -11.0, 0.0])
@@ -64,7 +81,7 @@ async def test_east_of_the_meridian_steps_further_east(ha):
     """HA <= 0 is before transit; the tube must keep moving east (RA up)."""
     hub = _Hub()
     ra = _ra_at_hour_angle(ha, _LON)
-    assert _ra_step_hours(hub, ra) == _RA_STEP_HOURS
+    assert _ra_step_hours(hub, ra, now=WHEN) == _RA_STEP_HOURS
 
 
 # ------------------------------------------------- the pier side, which wins
@@ -82,8 +99,8 @@ async def test_just_past_the_meridian_the_pier_side_decides():
     one that knows, so the step goes back east and the side is preserved."""
     hub = _Hub()
     ra = _ra_at_hour_angle(0.057, _LON)
-    assert _ra_step_hours(hub, ra) == -_RA_STEP_HOURS, "precondition: sky says west"
-    assert _ra_step_hours(hub, ra, "west") == _RA_STEP_HOURS
+    assert _ra_step_hours(hub, ra, now=WHEN) == -_RA_STEP_HOURS, "precondition: sky says west"
+    assert _ra_step_hours(hub, ra, "west", now=WHEN) == _RA_STEP_HOURS
 
 
 async def test_just_before_the_meridian_the_pier_side_decides_too():
@@ -91,8 +108,8 @@ async def test_just_before_the_meridian_the_pier_side_decides_too():
     early reports the western-target side while the sky still says east."""
     hub = _Hub()
     ra = _ra_at_hour_angle(-0.057, _LON)
-    assert _ra_step_hours(hub, ra) == _RA_STEP_HOURS, "precondition: sky says east"
-    assert _ra_step_hours(hub, ra, "east") == -_RA_STEP_HOURS
+    assert _ra_step_hours(hub, ra, now=WHEN) == _RA_STEP_HOURS, "precondition: sky says east"
+    assert _ra_step_hours(hub, ra, "east", now=WHEN) == -_RA_STEP_HOURS
 
 
 @pytest.mark.parametrize("ha,side", [(2.0, "west"), (-2.0, "east"),
@@ -107,7 +124,7 @@ async def test_far_from_the_meridian_a_contradicting_pier_side_is_ignored(ha, si
     hub = _Hub()
     ra = _ra_at_hour_angle(ha, _LON)
     expected = -_RA_STEP_HOURS if ha > 0 else _RA_STEP_HOURS
-    assert _ra_step_hours(hub, ra, side) == expected
+    assert _ra_step_hours(hub, ra, side, now=WHEN) == expected
 
 
 @pytest.mark.parametrize("side", [None, "", "unknown", "none"])
@@ -116,7 +133,7 @@ async def test_a_mount_that_will_not_name_a_side_keeps_the_old_rule(side):
     nothing; anything else that cannot say falls back to what shipped before."""
     hub = _Hub()
     ra = _ra_at_hour_angle(0.057, _LON)
-    assert _ra_step_hours(hub, ra, side) == -_RA_STEP_HOURS
+    assert _ra_step_hours(hub, ra, side, now=WHEN) == -_RA_STEP_HOURS
 
 
 @pytest.mark.parametrize("ha,side", [(0.2, "east"), (-0.2, "west")])
@@ -126,7 +143,7 @@ async def test_inside_the_band_an_agreeing_pier_side_changes_nothing(ha, side):
     hub = _Hub()
     ra = _ra_at_hour_angle(ha, _LON)
     expected = -_RA_STEP_HOURS if ha > 0 else _RA_STEP_HOURS
-    assert _ra_step_hours(hub, ra, side) == expected
+    assert _ra_step_hours(hub, ra, side, now=WHEN) == expected
 
 
 @pytest.mark.parametrize("start_ha", [0.05, 0.69, 1.5, -0.05, -0.69, -1.5])
@@ -141,10 +158,10 @@ async def test_the_whole_three_point_arc_stays_on_one_side(start_ha):
     ra = _ra_at_hour_angle(start_ha, _LON)
     # The driver re-reads position and re-decides before each of the two steps,
     # exactly as _drive does.
-    hour_angles = [hour_angle_h(ra, _LON)]
+    hour_angles = [hour_angle_h(ra, _LON, WHEN)]
     for _ in range(2):
-        ra = (ra + _ra_step_hours(hub, ra)) % 24.0
-        hour_angles.append(hour_angle_h(ra, _LON))
+        ra = (ra + _ra_step_hours(hub, ra, now=WHEN)) % 24.0
+        hour_angles.append(hour_angle_h(ra, _LON, WHEN))
 
     signs = {math.copysign(1.0, h) for h in hour_angles}
     assert len(signs) == 1, (
@@ -160,10 +177,10 @@ async def test_the_arc_moves_away_from_the_meridian_not_toward_it():
     hub = _Hub()
     for start_ha in (0.69, -0.69):
         ra = _ra_at_hour_angle(start_ha, _LON)
-        previous = abs(hour_angle_h(ra, _LON))
+        previous = abs(hour_angle_h(ra, _LON, WHEN))
         for _ in range(2):
-            ra = (ra + _ra_step_hours(hub, ra)) % 24.0
-            now = abs(hour_angle_h(ra, _LON))
+            ra = (ra + _ra_step_hours(hub, ra, now=WHEN)) % 24.0
+            now = abs(hour_angle_h(ra, _LON, WHEN))
             assert now > previous, f"stepped toward the meridian: {previous} -> {now}"
             previous = now
 
@@ -231,14 +248,27 @@ async def test_the_arc_is_projected_where_the_sky_WILL_be_not_where_it_is():
     than passing a decorative argument: with the per-leg cost inflated to an
     hour, a geometry that is comfortably legal right now must be refused.
     """
+    import time
+
     from astrodeck.polar.native import _refuse_low_arc
 
     hub = _Hub()
+    # THE ONE TEST IN THIS FILE THAT WANTS THE LIVE CLOCK, and it is worth saying
+    # why. Everything above asserts pure geometry, so it pins the instant to kill
+    # the boundary race. This one calls `_refuse_low_arc`, which measures
+    # altitude at "now" — so its precondition ("legal as measured right now")
+    # is only meaningful if the target is genuinely up right now. Building the RA
+    # against a fixed instant five months away put the arc 45 degrees below the
+    # horizon and the precondition raised before the test could begin.
+    #
+    # Safe on the live clock because HA +2.0 is nowhere near the discontinuity:
+    # the race only exists where an epsilon of sidereal drift changes the sign.
+    when = time.time()
     # A western start (positive HA) high enough to pass instantly, and a Dec low
     # enough that an hour of extra sky rotation matters.
-    ra = _ra_at_hour_angle(2.0, _LON)
+    ra = _ra_at_hour_angle(2.0, _LON, when)
     result = type("R", (), {"ra_hours": ra, "dec_deg": 5.0})()
-    step = _ra_step_hours(hub, ra)
+    step = _ra_step_hours(hub, ra, now=when)
     assert step < 0, "precondition: a western start must step west"
 
     # PRECONDITION: legal as measured right now, so the refusal below can only
