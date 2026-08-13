@@ -142,6 +142,26 @@ def altaz(ra_hours: float, dec_deg: float, lat_deg: float, lon_deg: float,
     return math.degrees(alt), math.degrees(az)
 
 
+def round_az_deg(az_deg: float, ndigits: int = 1) -> float:
+    """Round an azimuth and keep it inside ``[0, 360)``.
+
+    ROUNDING IS WHAT BREAKS THE RANGE. ``altaz`` never returns 360 — but it
+    happily returns 359.97, and ``round(359.97, 1)`` is ``360.0``, which is
+    outside the half-open interval every consumer is told to expect.
+
+    Found by CI as ``assert 360.0 < 360.0`` on Polaris from Greenwich. It only
+    reaches the boundary for something sitting due north, and only at the times
+    of day when it is within a twentieth of a degree of it — so it appears and
+    disappears with the sidereal clock, which is why it had never been seen
+    before and passed again on the next commit.
+
+    Wrapping rather than clamping to 359.9: 360 and 0 are the SAME direction,
+    and 0 is the one inside the range.
+    """
+    r = round(az_deg % 360.0, ndigits)
+    return 0.0 if r >= 360.0 else r
+
+
 # --------------------------------------------------------------- solar position
 
 def sun_radec(unix_time: float | None = None) -> tuple[float, float]:
