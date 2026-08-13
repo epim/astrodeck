@@ -150,6 +150,12 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
     graph = graph.with_defaults()
     order = flow_order(graph)
 
+    # THE CYCLE, read before the walk because it rewrites what a capture means.
+    # With one present, a capture's `count` stops being "how many in total" and
+    # becomes "how many on each pass" — so the walk below has to know.
+    cyc = next((n for n in order if n.type == "cycle"), None)
+    cycles = max(1, int(_num(cyc.params.get("cycles"), 1) or 1)) if cyc else 1
+
     targets: list[dict] = []
     for n in order:
         if n.type == "target":
@@ -179,14 +185,22 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
             # and one capture loop means all four are shot the same way, which
             # is the only reading under which "best available" can substitute
             # one for another mid-night.
+            per_pass = _num(n.params.get("count"))
             step = {
                 "filter": n.params.get("filter"),
                 "exposure_s": _num(n.params.get("exposure")),
                 "gain": _num(n.params.get("gain")),
                 "binning": _num(n.params.get("bin"), 1),
-                "count": _num(n.params.get("count")),
+                # Under a FILTER CYCLE the node's count is PER PASS and the
+                # total is what the night owes: 1 x 45 cycles = 45 subs. Said
+                # the other way round, the number on the card never changes
+                # meaning for the operator — it is always "how many I take here
+                # before moving on".
+                "count": per_pass * cycles if cyc else per_pass,
                 "frame_type": "Light",
             }
+            if cyc:
+                step["per_visit"] = per_pass
             goal = _num(n.params.get("goal"))
             if goal:
                 step["integration_goal_h"] = goal
@@ -194,6 +208,14 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
                 # a copy per target: they are independently editable downstream,
                 # and a shared dict would make one target's edit rewrite them all
                 t["steps"].append(dict(step))
+
+    if cyc:
+        # Stated on the TARGET, not inferred later from a step carrying
+        # per_visit. The engine branches on this one field, and a plan where the
+        # steps imply one order and the target names another is a plan nobody
+        # can read.
+        for t in targets:
+            t["acquisition"] = "cycle"
 
     dusk = next((n for n in graph.nodes if n.type == "dusk"), None)
     calib = next((n for n in graph.nodes if n.type == "calib"), None)
