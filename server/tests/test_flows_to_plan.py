@@ -185,8 +185,13 @@ class TestInstructions:
         plan, un = to_sequence_plan(compile_plan(g, "n"))
         assert [(i.trigger, i.action) for i in plan.instructions] \
             == [("on_clouds_in", "hold_for_clear")]
-        assert not [u for u in un if "on_clouds_in" in u["key"]], \
-            "nothing should still be warning about a rule that now runs"
+        # Scoped to the RULE, not to the string "on_clouds_in" anywhere in a
+        # key. The broad version also swallowed the note about the CLOUD WATCH
+        # node's dead threshold dial — a different and still-true loss — so it
+        # would have kept that quiet as the price of asserting this one.
+        assert not [u for u in un if u["key"] == "instructions[on_clouds_in]"
+                    or "will not run" in u.get("detail", "")], \
+            "nothing should still be warning that this rule does not run"
 
     def test_the_hold_is_NOT_compiled_to_a_plain_pause(self):
         """`pause()` blocks the frame loop above the dawn boundary, the safety

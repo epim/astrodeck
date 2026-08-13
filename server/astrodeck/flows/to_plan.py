@@ -44,6 +44,17 @@ from .tonight import catalog_coords
 LEGAL_TRIGGERS: frozenset[str] = frozenset(TriggerKind.__args__)
 LEGAL_ACTIONS: frozenset[str] = frozenset(ActionKind.__args__)
 
+#: Triggers that answer with a VERDICT, not a measurement — so a threshold means
+#: nothing to them.
+#:
+#: `_eval_predicate` reads ``threshold`` for ``hfr_above`` and
+#: ``guide_rms_above`` and for nothing else; these four return a boolean the
+#: detector or the safety monitor already decided. Listed here so the loss is
+#: reported at the one place a threshold is copied into the plan, rather than
+#: being a fact about the evaluator that this module has to remember.
+BOOLEAN_TRIGGERS: frozenset[str] = frozenset(
+    {"on_clouds_in", "on_clouds_clear", "on_unsafe", "on_panel_ready"})
+
 #: Flow node types that ``compile_plan`` reads. Everything else in a graph is
 #: walked by ``flow_order`` and contributes nothing to the compiled dict, so its
 #: parameters are inert — see :func:`inert_nodes`.
@@ -237,6 +248,26 @@ def _instructions(compiled: dict, out: list[dict]) -> list[dict]:
         legal = {"trigger": trigger, "action": action}
         if rule.get("threshold") is not None:
             legal["threshold"] = rule["threshold"]
+            if trigger in BOOLEAN_TRIGGERS:
+                # A DIAL WIRED TO NOTHING. `_eval_predicate` reads `threshold`
+                # for the MEASURED triggers (hfr_above, guide_rms_above) and
+                # ignores it for these, which answer with a verdict the detector
+                # already reached: `clouds_in` returns ctx.cloudy and nothing
+                # else. The CLOUD WATCH node still offers a threshold, still
+                # stores it, and still shows it back on the canvas.
+                #
+                # Reported rather than wired, deliberately. The node's dial is a
+                # 0-100 number and the detector's answer is a boolean it reached
+                # from bright-star density and contrast, calibrated against a
+                # real cloudy frame. Inventing a mapping between them would
+                # replace a validated decision with a guess, and the handoff's
+                # rule is to report ambiguity rather than resolve it.
+                out.append(_note(
+                    f"instructions[{trigger}].threshold",
+                    f"the {trigger.replace('on_', '').replace('_', ' ')} rule's "
+                    f"threshold ({rule['threshold']:g}) does not reach the "
+                    f"engine: this trigger fires on the detector's own verdict, "
+                    f"so moving the dial changes nothing"))
         rules.append(legal)
     if rules:
         # A rule carries its destination node's TYPE and nothing else, so a
