@@ -8,9 +8,9 @@ import type { FlowCompileResult, FlowUnmapped } from "../../lib/flowsApi";
 export type FlowNodeType =
   | "dusk" | "target" | "safety" | "cloudwatch"
   | "dome" | "flatpanel"
-  | "slew" | "autofocus" | "guide" | "capture" | "duskflats" | "calib"
-  | "pool" | "cycle" | "condition"
-  | "holdresume" | "notify" | "refocus" | "abort" | "report";
+  | "slew" | "autofocus" | "guide" | "capture" | "cycle" | "duskflats" | "calib"
+  | "pool" | "condition"
+  | "notify" | "refocus" | "holdresume" | "parkclose" | "abort" | "report";
 
 export type PortKind = "flow" | "event";
 export type FlowNodeStatus = "idle" | "busy" | "ok" | "warn" | "bad";

@@ -66,7 +66,7 @@ function near(a: number, b: number, tol: number, msg = ""): void {
 // input count of the same node, so a table with the right ports in the wrong
 // order would put every output wire on the wrong row.
 const PORTS: PortTable = {
-  dusk: { ins: [], outs: [{ id: "window" }] },
+  dusk: { ins: [], outs: [{ id: "window" }, { id: "nightend" }] },
   target: { ins: [{ id: "arm" }], outs: [{ id: "target" }] },
   safety: { ins: [], outs: [{ id: "unsafe" }] },
   cloudwatch: { ins: [], outs: [{ id: "in" }, { id: "clear" }] },
@@ -84,14 +84,18 @@ const PORTS: PortTable = {
     ins: [{ id: "do" }, { id: "stop" }, { id: "panel" }],
     outs: [],
   },
-  pool: { ins: [{ id: "arm" }], outs: [{ id: "target" }] },
-  cycle: { ins: [{ id: "run" }], outs: [{ id: "body" }, { id: "complete" }] },
+  cycle: { ins: [{ id: "run" }], outs: [{ id: "complete" }, { id: "frame" }] },
+  pool: {
+    ins: [{ id: "arm" }, { id: "advance" }],
+    outs: [{ id: "target" }, { id: "floor" }],
+  },
   condition: { ins: [{ id: "events" }], outs: [{ id: "fire" }] },
   holdresume: { ins: [{ id: "pause" }, { id: "resume" }], outs: [] },
   notify: { ins: [{ id: "do" }], outs: [] },
   refocus: { ins: [{ id: "do" }], outs: [] },
+  parkclose: { ins: [{ id: "do" }], outs: [{ id: "closed" }] },
   abort: { ins: [{ id: "do" }], outs: [] },
-  report: { ins: [{ id: "session" }], outs: [] },
+  report: { ins: [{ id: "session" }], outs: [{ id: "done" }] },
 };
 
 // The table above is a hand copy, and a hand copy is exactly the thing that
@@ -183,14 +187,14 @@ test("nodeW is device-based: 188 desktop/tablet, 150 phone", () => {
 });
 
 test("nodeRows counts inputs THEN outputs, never interleaved", () => {
-  eq(nodeRows(byId("n1"), PORTS), 1, "dusk: 0 in + 1 out");
+  eq(nodeRows(byId("n1"), PORTS), 2, "dusk: 0 in + 2 out");
   eq(nodeRows(byId("n4"), PORTS), 2, "slew: 1 in + 1 out");
   eq(nodeRows(byId("n7"), PORTS), 3, "capture: 1 in + 2 out");
   eq(nodeRows(byId("n15"), PORTS), 3, "calib: 3 in + 0 out");
 });
 
 test("nodeLayoutHeight is 37 + rows·20 + 26 (the FIT budget, not the DOM)", () => {
-  eq(nodeLayoutHeight(byId("n1"), PORTS), 83, "1 row");
+  eq(nodeLayoutHeight(byId("n1"), PORTS), 103, "2 rows (dusk gained `night ends`)");
   eq(nodeLayoutHeight(byId("n4"), PORTS), 103, "2 rows");
   eq(nodeLayoutHeight(byId("n7"), PORTS), 123, "3 rows");
   // The +8 sibling formula belongs to autoLayout.ts; if this file ever drifts
