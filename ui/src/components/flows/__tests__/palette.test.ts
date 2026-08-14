@@ -45,15 +45,16 @@ const UNION = nodeTypeUnion();
 
 // ------------------------------------------------ the extractor is trustworthy
 
-test("FlowNodeType parses to exactly 20 members", () => {
-  // §C.7 and the contract's file plan both say 19; FILTER CYCLE is the 20th and
-  // post-dates them. The number is deliberately hard-coded: if it changes, the
-  // vocabulary changed, and every group below needs a deliberate re-read rather
-  // than a silently widened palette. That is exactly what happened here — the
-  // node was added server-side and CI caught the UI still at 19, which is the
-  // difference between a capability and a capability the operator can reach.
-  eq(UNION.length, 20, "FlowNodeType member count:");
-  eq(new Set(UNION).size, 20, "the union itself lists a type twice:");
+test("FlowNodeType parses to exactly 21 members", () => {
+  // §C.7 and the contract's file plan both say 19. FILTER CYCLE was the 20th;
+  // PARK + CLOSE is the 21st, from the 2026-08-14 export. The number is
+  // deliberately hard-coded: if it changes, the vocabulary changed, and every
+  // group below needs a deliberate re-read rather than a silently widened
+  // palette. That is exactly what it caught last time — a node was added
+  // server-side and CI found the UI still at 19, which is the difference
+  // between a capability and a capability the operator can reach.
+  eq(UNION.length, 21, "FlowNodeType member count:");
+  eq(new Set(UNION).size, 21, "the union itself lists a type twice:");
 });
 
 // ------------------------------------------------------------- exhaustiveness
@@ -108,11 +109,15 @@ test("no group label repeats", () => {
 
 // --------------------------------------------- item order: the agreed groups
 
-test("SOURCES, EQUIPMENT and RIG OPS are verbatim from all three sources", () => {
+test("SOURCES, EQUIPMENT and RIG OPS are verbatim from the sources", () => {
+  // FILTER CYCLE joins RIG OPS between CAPTURE LOOP and DUSK FLATS, which is
+  // where the 2026-08-14 prototype puts it and where it belongs: it is a capture
+  // stage, not a loop construct. It sat in LOGIC while it was modelled as a
+  // container, and that placement read as though the graph had a loop primitive.
   const by = (label: string) => PALETTE_GROUPS.find((g) => g.label === label)!.types;
   eqList(by("SOURCES"), ["dusk", "target", "safety", "cloudwatch"]);
   eqList(by("EQUIPMENT"), ["dome", "flatpanel"]);
-  eqList(by("RIG OPS"), ["slew", "autofocus", "guide", "capture", "duskflats", "calib"]);
+  eqList(by("RIG OPS"), ["slew", "autofocus", "guide", "capture", "cycle", "duskflats", "calib"]);
 });
 
 // ------------------------------------------- item order: the §G-3 dispute
@@ -173,9 +178,9 @@ test("LOGIC and ACTIONS + SINKS are exactly the types no other group claims", ()
   // Guards the dispute record against drifting away from the shipped palette:
   // these are the two groups whose contents nobody may quietly edit.
   const by = (label: string) => PALETTE_GROUPS.find((g) => g.label === label)!.types;
-  eqList([...by("LOGIC")].sort(), ["condition", "cycle", "pool"]);
+  eqList([...by("LOGIC")].sort(), ["condition", "pool"]);
   eqList([...by("ACTIONS + SINKS")].sort(),
-         ["abort", "holdresume", "notify", "refocus", "report"]);
+         ["abort", "holdresume", "notify", "parkclose", "refocus", "report"]);
 });
 
 console.log(`palette.test.ts: ${passed} passed, ${failed} failed`);

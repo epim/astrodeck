@@ -218,6 +218,24 @@ test("a cycle downstream of a real root keeps the root and drops the loop", () =
 // (content y 18 / 117 / 236 / 355 → screen y 72 / 171 / 290 / 409; measured
 // 72 / 169-172 / 290 / 409)".
 //
+// ⚠ EVERY ROW BELOW THE FIRST NOW SITS 20px LOWER, and the reference capture is
+// what is out of date, not this file. The 2026-08-14 export gave DUSK WINDOW a
+// second output — `night ends`, the campaign shutdown trigger — and a card's
+// height is `37 + rows·20 + 8`. One more port row is 20 more pixels, and every
+// card after it in the lane inherits the shift.
+//
+// The capture in `screenshots/` was NOT re-taken for the new vocabulary (the
+// export changed no PNG), so it shows a one-port DUSK card and cannot speak for
+// a two-port one. The published four y's are kept in the comment above as the
+// provenance of the FORMULA, which is unchanged and still verified against them:
+// 18 is still the first row, the gap is still FLOW_LANE_GAP, and the only input
+// that moved is a port count read from NODE_DEFS.
+//
+// So this is a known visual delta with a stated cause, per the README's "call
+// out any known visual deltas with justification". Do NOT special-case DUSK
+// back to one row to make the pixels match the old PNG - that would hide a real
+// port behind a stale screenshot.
+//
 // The width is 392, which is the reference PNG's own pixel width. §C.15 labels
 // the same capture "vw=390" and quotes columns 14 / 228 — and 228 is only
 // reachable at 392 (`392 - 14 - 150`). At a literal 390 the formula gives 226,
@@ -232,15 +250,18 @@ test("columns sit at 14 and 228 — the contract's published pair", () => {
      [14, 228, 14, 228], "the lane zigzags left/right/left/right");
 });
 
-test("content rows land on 18 / 117 / 236 / 355", () => {
+test("content rows land on 18 / 137 / 256 / 375", () => {
   eq([M16_392.pos.n1.y, M16_392.pos.n16.y, M16_392.pos.n17.y, M16_392.pos.n2.y],
-     [18, 117, 236, 355], "the contract's four content y's");
+     [18, 137, 256, 375],
+     "the contract's four content y's, each +20 below the first for DUSK's "
+     + "second port row");
 });
 
-test("…which is screen 72 / 171 / 290 / 409 under the 54px phone header", () => {
+test("…which is screen 72 / 191 / 310 / 429 under the 54px phone header", () => {
   eq([M16_392.pos.n1.y, M16_392.pos.n16.y, M16_392.pos.n17.y, M16_392.pos.n2.y]
        .map((y) => y + PHONE_HEADER_H),
-     [72, 171, 290, 409], "screen y as measured off the capture");
+     [72, 191, 310, 429],
+     "screen y; the capture measured 72 / 171 / 290 / 409 with a one-port DUSK");
 });
 
 // The same layout at a literal 390px container. Documented, not preferred:
@@ -251,20 +272,20 @@ test("at a literal 390px container the right column is 226 — the measured rend
   eq(at390.pos.n16.x, 226, "right column at 390");
   // Only the columns move; the whole y-series is width-independent.
   eq([at390.pos.n1.y, at390.pos.n16.y, at390.pos.n17.y, at390.pos.n2.y],
-     [18, 117, 236, 355], "rows do not depend on width");
+     [18, 137, 256, 375], "rows do not depend on width");
 });
 
 test("the whole flow lane, card by card", () => {
   eq(M16_LANE.map((id) => M16_392.pos[id]), [
-    { x: 14, y: 18 },    // dusk        1 port row
-    { x: 228, y: 117 },  // dome        2
-    { x: 14, y: 236 },   // dusk flats  2
-    { x: 228, y: 355 },  // target      2
-    { x: 14, y: 474 },   // slew        2
-    { x: 228, y: 593 },  // autofocus   2
-    { x: 14, y: 712 },   // guide       2
-    { x: 228, y: 831 },  // capture     3 (complete + frame)
-    { x: 14, y: 970 },   // report      1
+    { x: 14, y: 18 },    // dusk        2 port rows (window + night ends)
+    { x: 228, y: 137 },  // dome        2
+    { x: 14, y: 256 },   // dusk flats  2
+    { x: 228, y: 375 },  // target      2
+    { x: 14, y: 494 },   // slew        2
+    { x: 228, y: 613 },  // autofocus   2
+    { x: 14, y: 732 },   // guide       2
+    { x: 228, y: 851 },  // capture     3 (complete + frame)
+    { x: 14, y: 990 },   // report      1
   ], "flow lane");
 });
 
@@ -287,10 +308,10 @@ test("a rule cluster fans out into the opposite column at 22px, not 34", () => {
   // CLOUD WATCH is the first source (unplaced sources sort by canvas y, and it
   // is the topmost of the three), so it opens the cluster pass at the left
   // column and stacks HOLD / QUEUE / NOTIFY on the right.
-  eq(M16_392.pos.n13, { x: 14, y: 1069 }, "CLOUD WATCH");
-  eq(M16_392.pos.n14, { x: 228, y: 1069 }, "HOLD / RESUME level with its source");
-  eq(M16_392.pos.n15, { x: 228, y: 1176 }, "CALIBRATION QUEUE");
-  eq(M16_392.pos.n10, { x: 228, y: 1303 }, "NOTIFY");
+  eq(M16_392.pos.n13, { x: 14, y: 1109 }, "CLOUD WATCH");
+  eq(M16_392.pos.n14, { x: 228, y: 1109 }, "HOLD / RESUME level with its source");
+  eq(M16_392.pos.n15, { x: 228, y: 1216 }, "CALIBRATION QUEUE");
+  eq(M16_392.pos.n10, { x: 228, y: 1343 }, "NOTIFY");
   eq(CLUSTER_GAP, 22, "the cluster gap — a literal, for the same reason as above");
   eq(M16_392.pos.n15.y - M16_392.pos.n14.y,
      layoutHeight(M16.nodes.find((n) => n.id === "n14")!, NODE_DEFS) + CLUSTER_GAP,
@@ -301,17 +322,17 @@ test("a rule cluster fans out into the opposite column at 22px, not 34", () => {
 test("a target another cluster already placed gets no second position", () => {
   // FLAT PANEL's only edge feeds `calib.panel`, and CLOUD WATCH placed calib
   // first. The panel still gets a slot of its own; the queue does not move.
-  eq(M16_392.pos.n18, { x: 14, y: 1390 }, "FLAT PANEL opens its own cluster");
-  eq(M16_392.pos.n15, { x: 228, y: 1176 }, "CALIBRATION QUEUE stays where it was");
-  eq(M16_392.pos.n3, { x: 14, y: 1477 }, "SAFETY MONITOR");
-  eq(M16_392.pos.n19, { x: 228, y: 1477 }, "ABORT + PARK, level with its source");
+  eq(M16_392.pos.n18, { x: 14, y: 1430 }, "FLAT PANEL opens its own cluster");
+  eq(M16_392.pos.n15, { x: 228, y: 1216 }, "CALIBRATION QUEUE stays where it was");
+  eq(M16_392.pos.n3, { x: 14, y: 1517 }, "SAFETY MONITOR");
+  eq(M16_392.pos.n19, { x: 228, y: 1517 }, "ABORT + PARK, level with its source");
 });
 
 test("every node is placed exactly once, and the height covers the last card", () => {
   eq(Object.keys(M16_392.pos).length, M16.nodes.length, "one position per node");
   const lowest = Math.max(...Object.values(M16_392.pos).map((p) => p.y));
   assert(M16_392.height > lowest, `height ${M16_392.height} must clear the last card ${lowest}`);
-  eq(M16_392.height, 1654, "M16 total scroll height");
+  eq(M16_392.height, 1694, "M16 total scroll height");
 });
 
 test("unwired nodes stack in the left column at the bottom", () => {
@@ -355,9 +376,9 @@ test("the left column is the pad, at every width", () => {
 // §C.5: two card heights exist and they disagree by 18px. Reproducing both is
 // the contract; collapsing them would move either the fit zoom or this layout.
 test("layoutHeight is 37 + rows·20 + 8, and is NOT geometry's fit height", () => {
-  const dusk = M16.nodes.find((n) => n.id === "n1")!;      // 1 port row
+  const dusk = M16.nodes.find((n) => n.id === "n1")!;      // 2 port rows
   const capture = M16.nodes.find((n) => n.id === "n7")!;   // 3 port rows
-  eq(layoutHeight(dusk, NODE_DEFS), 37 + 1 * 20 + 8, "dusk");
+  eq(layoutHeight(dusk, NODE_DEFS), 37 + 2 * 20 + 8, "dusk");
   eq(layoutHeight(capture, NODE_DEFS), 37 + 3 * 20 + 8, "capture");
   eq(nodeLayoutHeight(dusk, NODE_DEFS) - layoutHeight(dusk, NODE_DEFS), 18,
      "the fit height is 18px taller — both are reproduced, in their own call sites");

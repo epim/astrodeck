@@ -216,16 +216,16 @@ const defOf = (t: FlowNodeType): NodeDef => NODE_DEFS[t];
 
 // The parser is itself a thing that can be wrong, and a parser that silently
 // matched nothing would make every comparison below vacuously true.
-test("parser sanity: nodes.py yielded 20 entries with ports and params", () => {
-  eq(Object.keys(PY).length, 20, "entries parsed out of nodes.py");
+test("parser sanity: nodes.py yielded 21 entries with ports and params", () => {
+  eq(Object.keys(PY).length, 21, "entries parsed out of nodes.py");
   eq(PY.capture.outs.length, 2, "capture outs parsed");
   eq(PY.dusk.params.offset, -30, "a negative numeric default survived parsing");
   eq(Object.keys(PY_CATEGORY_TOKEN).length, 5, "CATEGORY_TOKEN entries");
 });
 
 // ------------------------------------------------------- the type set itself
-test("exactly 20 node types, and the set matches nodes.py's NODE_DEFS keys", () => {
-  eq(TYPES.length, 20, "NODE_DEFS entry count");
+test("exactly 21 node types, and the set matches nodes.py's NODE_DEFS keys", () => {
+  eq(TYPES.length, 21, "NODE_DEFS entry count");
   const mine = [...TYPES].sort().join(",");
   const theirs = Object.keys(PY).sort().join(",");
   eq(mine, theirs,
@@ -243,7 +243,7 @@ test("each entry's `type` field equals its key", () => {
 });
 
 // ------------------------------------------------------------ label and cat
-test("label and cat match nodes.py for all 20", () => {
+test("label and cat match nodes.py for all 21", () => {
   for (const t of TYPES) {
     eq(defOf(t).label, PY[t].label, `${t}.label`);
     eq(defOf(t).cat, PY[t].cat, `${t}.cat`);
@@ -341,7 +341,14 @@ test("non-ASCII defaults are preserved codepoint-for-codepoint", () => {
   // These are the characters an editor or a well-meaning "fix" silently
   // replaces. The server matches these strings literally.
   eq(defOf("target").params.dec, "+41° 16′ 09″", "target dec keeps ′ (U+2032) and ″ (U+2033)");
-  eq(defOf("target").params.name, "M31 — Andromeda", "target name keeps the em dash");
+  // THE ONE THIS TEST WAS WATCHING FOR, changed on purpose. It used to pin an
+  // em dash here precisely because an editor would swap it for a hyphen behind
+  // your back. The 2026-08-14 do-not list then banned em dashes from every
+  // shipped string, so the export itself writes "M31 - Andromeda" and nodes.py
+  // follows. The assertion did its job either way: this could not change
+  // silently, and the hyphen is now pinned as hard as the em dash was.
+  eq(defOf("target").params.name, "M31 - Andromeda",
+    "target name uses a HYPHEN - the do-not list bans em dashes in shipped strings");
   eq(defOf("duskflats").params.window, "Sun −2° … −8°",
     "dusk-flats window keeps U+2212 MINUS and U+2026 ELLIPSIS, not '-' and '...'");
   eq(defOf("pool").params.strategy, "Best available (alt × moon)",
@@ -393,19 +400,35 @@ test("fields cover the params exactly — same keys, same order", () => {
   }
 });
 
-test("select fields carry options; text fields carry none", () => {
+test("every control is one of the three, and only selects carry options", () => {
+  // `cycleplan` is the third, added by the 2026-08-14 export. It carries no
+  // `options` for the same reason `text` does not: its choices are the rig's
+  // filter wheel, read at render time, not a list frozen into this file.
   for (const t of TYPES) {
     for (const f of defOf(t).fields) {
       if (f.control === "select") {
         assert(!!f.options && f.options.length > 0,
-          `${t}.${f.key} is a select with no options — an empty <select> cannot `
+          `${t}.${f.key} is a select with no options - an empty <select> cannot `
           + `even show the current value`);
       } else {
-        eq(f.control, "text", `${t}.${f.key} control`);
-        eq(f.options, undefined, `${t}.${f.key} is text but carries options`);
+        assert(f.control === "text" || f.control === "cycleplan",
+          `${t}.${f.key} control is ${JSON.stringify(f.control)}, which is not one `
+          + `of select / text / cycleplan - FlowFieldRow renders nothing for it`);
+        eq(f.options, undefined,
+          `${t}.${f.key} is ${f.control} but carries options`);
       }
     }
   }
+});
+
+test("exactly one field in the whole vocabulary is a cycleplan", () => {
+  // Pinned because the control is bespoke: it reads the rig's filter wheel and
+  // writes a comma-separated slot string. A second one appearing means somebody
+  // reused it for a field that is not a slot table, and it would write garbage
+  // into that param.
+  const found = TYPES.flatMap((t) =>
+    defOf(t).fields.filter((f) => f.control === "cycleplan").map((f) => `${t}.${f.key}`));
+  eq(found.join(","), "cycle.plan", "cycleplan fields");
 });
 
 test("every select's DEFAULT is one of its own options", () => {
@@ -433,10 +456,14 @@ test("field labels and units are non-empty when present", () => {
   }
 });
 
-test("the units in use are the ten the contract lists", () => {
+test("the units in use are the twelve on record", () => {
+  // Ten from the contract, plus `passes` and `cycles` from the 2026-08-14
+  // export (FILTER CYCLE's total, TARGET POOL's per-target quota). Pinned as a
+  // set so a thirteenth is a deliberate act: units are the one place this
+  // surface prints an unlocalised word next to a number.
   const units = new Set<string>();
   for (const t of TYPES) for (const f of defOf(t).fields) if (f.unit) units.add(f.unit);
-  const expected = ["% cover", "frames", "frames each", "h", "h (0 = none)", "min", "s", "°", "′", "″"];
+  const expected = ["% cover", "cycles", "frames", "frames each", "h", "h (0 = none)", "min", "passes", "s", "°", "′", "″"];
   eq([...units].sort().join(" | "), expected.sort().join(" | "), "distinct unit suffixes");
 });
 
@@ -459,10 +486,10 @@ test("every node has a one-line description", () => {
 test("sum() over the defaults renders the prototype's footer lines verbatim", () => {
   const want: Record<FlowNodeType, string> = {
     dusk: "Astro dusk -30m → dawn",
-    target: "M31 — Andromeda",
-    safety: "Cloud + rain sensor · fail closed",
+    target: "M31 - Andromeda",
+    safety: "clouds/rain/wind · fail closed",
     cloudwatch: "in >40% · clear 4m",
-    dome: "slave to mount · fail closed",
+    dome: "bind to mount · fail closed",
     flatpanel: "dust-cover panel · 28500 ADU",
     slew: "±0.5′ · ASTAP",
     autofocus: "V-curve sweep · 9 pts",
@@ -470,14 +497,13 @@ test("sum() over the defaults renders the prototype's footer lines verbatim", ()
     capture: "L · 120s · g100 · ×24",
     duskflats: "translucent lens cap · Sun −2° … −8° · ×15",
     calib: "darks → bias → flats · ×20 each, then wait",
-    pool: "4 candidates · best available",
-    // Not from the prototype — FILTER CYCLE post-dates it. Held to the
-    // same shape as its neighbours so the footer column stays uniform.
-    cycle: "45 passes · as drawn",
+    pool: "4 candidates · best available · quota ×45",
+    cycle: "7 filters · 1/pass · ×45",
     condition: "hfr above 3.2 · 3 frames",
     holdresume: "resume: re-center · refocus if hfr drifted",
     notify: "ntfy · rig-alerts",
     refocus: "autofocus, then resume",
+    parkclose: "dust flap + dome · hold cold",
     abort: "park yes · warm yes",
     report: "captures/sessions/",
   };
@@ -492,7 +518,12 @@ test("sum() tracks changed params", () => {
   eq(defOf("dusk").sum({ ...defOf("dusk").params, offset: 15 }),
     "Astro dusk +15m → dawn", "a non-negative offset gains the + sign");
   eq(defOf("pool").sum({ ...defOf("pool").params, members: "M8", strategy: "Round robin" }),
-    "1 candidates · round robin", "pool counts comma-separated members");
+    "1 candidates · round robin · quota ×45", "pool counts comma-separated members");
+  eq(defOf("dusk").sum({ ...defOf("dusk").params, repeat: "Nightly ×30" }),
+    "Astro dusk -30m → dawn · nightly",
+    "a repeat turns the window into a campaign, and the footer says so");
+  eq(defOf("cycle").sum({ ...defOf("cycle").params, plan: "Ha 300, OIII 300", cycles: 12 }),
+    "2 filters · 1/pass · ×12", "the cycle footer counts its own slots");
 });
 
 test("KNOWN PROTOTYPE BUG, reproduced on purpose: holdresume ignores p.recenter", () => {

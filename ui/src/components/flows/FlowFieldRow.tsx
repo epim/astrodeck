@@ -1,9 +1,14 @@
 // FlowFieldRow.tsx — one editable parameter of one node. §C.8.
 //
-// Exactly two controls exist in the design: a `select` over a closed option list
-// and a free `text` box with an optional unit suffix. There is no validation, no
-// min/max and no disabled state anywhere in the design's inspector (§C.8 spells
-// that out twice) — none is added here.
+// THREE controls exist. `select` is a closed option list and `text` is a free
+// box with an optional unit suffix; there is no validation, no min/max and no
+// disabled state anywhere in the design's inspector (§C.8 spells that out
+// twice) and none is added here.
+//
+// `cycleplan` is the third, from the 2026-08-14 export, and it is delegated
+// whole to FlowCyclePlan. It is not a general-purpose control: it renders the
+// rig's filter wheel and writes a slot table, which is why it takes the field
+// KEY rather than a value-and-onChange pair.
 //
 // THE `!` PREFIXES ARE MANDATORY, not stylistic. `index.css` is UNLAYERED, so
 // `.field { font-size: 13px; width: 100% }` beats any Tailwind utility on the
@@ -20,6 +25,7 @@
 import { useState } from "react";
 import { useStore } from "../../store";
 import type { FieldDef } from "./nodeDefs";
+import FlowCyclePlan from "./FlowCyclePlan";
 
 /** Desktop's 284px column vs the tablet/phone sheet. §C.8's control table. */
 export type FieldVariant = "column" | "sheet";
@@ -95,7 +101,9 @@ export default function FlowFieldRow({ nodeId, field, value, variant = "column" 
   return (
     <label className="flex flex-col gap-1 min-w-0">
       <span className="label">{field.label}</span>
-      {field.control === "select" ? (
+      {field.control === "cycleplan" ? (
+        <FlowCyclePlan nodeId={nodeId} fieldKey={field.key} value={value} />
+      ) : field.control === "select" ? (
         <select
           className={`field ${CONTROL[variant]}`}
           value={stored}
