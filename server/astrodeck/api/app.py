@@ -106,7 +106,9 @@ from ..flows.doctor import check as flow_doctor
 from ..flows.models import MY_FLOWS_FOLDER, FlowGraph, FlowRecord
 from ..flows.store import FlowLibraryFull, ReadOnlyFlow, flow_store
 from ..flows.to_plan import GraphNotRunnable, blocking_reasons, to_sequence_plan
-from ..flows.tonight import banked_hours_from_reports, resolve_tonight
+from ..flows.tonight import (banked_hours_from_reports,
+                             frames_by_target_from_reports,
+                             resolve_tonight)
 from ..rotation import angle_equals, map_sky_target, mod360
 from ..sequence import SequenceEngine, SequencePlan
 from ..sequence import schedule as schedule_mod
@@ -3715,6 +3717,12 @@ def create_app() -> FastAPI:
         return await asyncio.to_thread(
             resolve_tonight, rec.graph, hub.site, name=rec.name,
             banked=lambda: banked_hours_from_reports(
+                SessionReporter.list_reports()),
+            # The CAMPAIGN tab's per-member progress. Same ledger, different
+            # fold: BUDGET wants hours per filter across everything, a campaign
+            # wants accepted frames per filter PER TARGET, because a pool member
+            # is retired by its own quota and nobody else's.
+            frames_by_target=lambda: frames_by_target_from_reports(
                 SessionReporter.list_reports()))
 
     @app.post("/api/flows/{flow_id}/run",

@@ -104,6 +104,16 @@ const OK_PAYLOAD: Record<string, unknown> = {
     { t_unix: DUSK, label: "", msg: "Autorun window opens", tone: "text" },
     { t_unix: null, label: "ANY", msg: "IF unsafe → abort, park, warm, close", tone: "bad" },
   ],
+  brief: "This flow arms at astronomical dusk (−30 min). It captures Ha 180 s × 20.",
+  campaign: {
+    is_campaign: true, has_pool: true, has_ledger: true, quota: 45,
+    members: [
+      { name: "M33", banked: 45, quota: 45, done: true, pct: 100 },
+      { name: "NGC 7331", banked: 23, quota: 45, done: false, pct: 51 },
+      { name: "M45", banked: 0, quota: 45, done: false, pct: 0 },
+    ],
+    note: "135 cycles left across the pool. Nights to finish are not forecast.",
+  },
 };
 
 const NO_SITE_REASON =
@@ -157,10 +167,14 @@ function clickTab(label: string): void {
 
 // ─────────────────────────────────────────────────── 1. the harness contract
 
-test("the three pills are role=tab with the harness's exact names", () => {
+test("the four pills are role=tab with the harness's exact names", () => {
+  // CAMPAIGN is the 2026-08-14 export's fourth tab and it goes LAST, because it
+  // is the only one of the four that describes something other than tonight.
+  // The order is pinned rather than the count: the parity harness clicks these
+  // by their visible text, so a reorder silently re-points every capture step.
   render({ tonight: OK_PAYLOAD });
   const names = qa("[role=tab]").map((t) => t.textContent.trim());
-  assert.equal(names.join("|"), "TIMELINE|STORY|PLAN",
+  assert.equal(names.join("|"), "TIMELINE|STORY|PLAN|CAMPAIGN",
     `pills verbatim and in order, got ${names.join("|")}`);
   // A role=radio (what SegmentedControl emits) matches neither of the two roles
   // the harness tries, and the capture step would fail with no useful message.
@@ -284,6 +298,93 @@ test("PLAN shows the compiled plan alone, and says so when there is none", () =>
   assert.ok(pre.textContent.includes("\"name\": \"M16\""), "pretty-printed plan");
   assert.ok(!pre.textContent.includes("unmapped"),
     "payload.plan ONLY — the doctor's lists are not part of what the engine runs");
+});
+
+// ───────────────────────────────────────── 4. the campaign tab and the brief
+
+test("CAMPAIGN draws a row per pool member, with its own status word", () => {
+  render({ tonight: OK_PAYLOAD });
+  clickTab("CAMPAIGN");
+  const body = q("[data-flows-tonight='campaign']");
+  assert.ok(body, "the fourth tab has a marker like the other three");
+  assert.ok(body.childElementCount > 0, "…and drew something into it");
+
+  const rows = qa("[data-campaign-member]");
+  assert.equal(rows.length, 3, "one row per member");
+  const text = body.textContent;
+  assert.ok(text.includes("45/45 cycles · DONE"), `a finished member says DONE: ${text}`);
+  assert.ok(text.includes("23/45 cycles"), "a partial member shows its count");
+  assert.ok(text.includes("0/45 cycles"), "and a member with nothing banked shows a real zero");
+});
+
+test("a null banked figure is NOT drawn as zero", () => {
+  // "0 of 45 banked" says the rig looked and found nothing; "no ledger" says
+  // nobody looked. Only one of those should make an operator re-plan a month,
+  // and an empty bar at 0% would tell them the wrong one.
+  render({
+    tonight: {
+      ...OK_PAYLOAD,
+      campaign: {
+        is_campaign: true, has_pool: true, has_ledger: false, quota: 45,
+        members: [{ name: "M33", banked: null, quota: 45, done: false, pct: null }],
+        note: "No session ledger available, so nothing here claims a banked figure.",
+      },
+    },
+    ui: { ...FLOWS_INIT.ui, tonightOpen: true, tonightTab: "campaign" },
+  });
+  const body = q("[data-flows-tonight='campaign']");
+  assert.ok(body.textContent.includes("not counted"), body.textContent);
+  assert.ok(!body.textContent.includes("0/45"), "a missing figure was rendered as zero");
+  const bar = body.querySelector("[role=progressbar]");
+  assert.ok(bar, "the bar is still drawn");
+  assert.equal(bar.getAttribute("aria-valuenow"), null,
+    "…with no value, because there is no value");
+  assert.equal(bar.childElementCount, 0, "and no fill");
+});
+
+test("CAMPAIGN survives a refusal, because it does not depend on the ephemeris", () => {
+  // `_campaign` reads the GRAPH. A tab that blanked when the SITE is unset
+  // would look like a broken campaign rather than a missing site.
+  render({
+    tonight: {
+      ...REFUSAL_PAYLOAD,
+      campaign: {
+        is_campaign: false, has_pool: true, has_ledger: false, quota: 45,
+        members: [{ name: "M33", banked: null, quota: 45, done: false, pct: null }],
+        note: "Single-night flow - set DUSK WINDOW → Repeat to make this a campaign.",
+      },
+    },
+    ui: { ...FLOWS_INIT.ui, tonightOpen: true, tonightTab: "campaign" },
+  });
+  const body = q("[data-flows-tonight='campaign']");
+  assert.ok(body.textContent.includes("set DUSK WINDOW"), body.textContent);
+});
+
+test("STORY leads with the generated brief", () => {
+  render({ tonight: OK_PAYLOAD });
+  clickTab("STORY");
+  const brief = q("[data-tonight-brief]");
+  assert.ok(brief, "the brief block is rendered");
+  assert.ok(brief.textContent.includes("BRIEF - GENERATED FROM THE GRAPH"),
+    "with the export's heading, verbatim");
+  assert.ok(brief.textContent.includes("Ha 180 s × 20"),
+    "and the server's prose, not a second generator's");
+
+  // It leads: the brief must come BEFORE the first timed row in document order.
+  const body = q("[data-flows-tonight='story']");
+  const pos = body.textContent.indexOf("BRIEF");
+  assert.ok(pos >= 0 && pos < body.textContent.indexOf("Autorun window opens"),
+    "the brief opens the tab");
+});
+
+test("no brief means no empty bordered box", () => {
+  // A plan dict has no graph, so the server sends "". An empty box with a
+  // heading and nothing under it reads as a failed load.
+  render({
+    tonight: { ...OK_PAYLOAD, brief: "" },
+    ui: { ...FLOWS_INIT.ui, tonightOpen: true, tonightTab: "story" },
+  });
+  assert.ok(!q("[data-tonight-brief]"), "nothing drawn for an absent brief");
 });
 
 // ------------------------------------------------------------------- report

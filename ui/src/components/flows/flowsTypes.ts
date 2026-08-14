@@ -83,7 +83,7 @@ export interface FlowLogLine {
 
 export type FlowScreen = "library" | "editor";
 export type FlowPhoneTab = "flow" | "canvas" | "monitor";
-export type TonightTab = "timeline" | "story" | "plan";
+export type TonightTab = "timeline" | "story" | "plan" | "campaign";
 
 /** Drives the `[data-flows-run]` marker the parity harness looks for.
  *
