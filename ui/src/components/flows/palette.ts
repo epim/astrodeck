@@ -49,14 +49,18 @@ export interface PaletteGroup {
  */
 export const PALETTE_ITEM_ORDER_SOURCES = {
   LOGIC: {
+    // FILTER CYCLE post-dates every source below — it is not in the prototype,
+    // the README prose or the README table, because it did not exist when they
+    // were written. It is listed only where a source can actually speak for it:
+    // nodes.py, which is the authority the resolver already prefers.
     /** "AstroDeck Flows.dc.html" line 1456 — `["LOGIC", ["condition", "pool"]]`. */
     prototype: ["condition", "pool"],
     /** README.md line 30 — "logic (condition, target pool)". */
     readmeProse: ["condition", "pool"],
     /** README.md node-vocabulary table — TARGET POOL row precedes CONDITION. */
     readmeTable: ["pool", "condition"],
-    /** nodes.py `PALETTE_GROUPS` — `("pool", "condition")`. */
-    server: ["pool", "condition"],
+    /** nodes.py `PALETTE_GROUPS` — `("pool", "cycle", "condition")`. */
+    server: ["pool", "cycle", "condition"],
   },
   "ACTIONS + SINKS": {
     /** "AstroDeck Flows.dc.html" line 1456. */
@@ -109,7 +113,7 @@ export const PALETTE_GROUPS = [
   { label: "EQUIPMENT", types: ["dome", "flatpanel"] },
   { label: "RIG OPS", types: ["slew", "autofocus", "guide", "capture", "duskflats", "calib"] },
   // ⚠ §G-3 — provisional, see above.
-  { label: "LOGIC", types: ["pool", "condition"] },
+  { label: "LOGIC", types: ["pool", "cycle", "condition"] },
   // ⚠ §G-3 — provisional, see above.
   { label: "ACTIONS + SINKS", types: ["notify", "refocus", "holdresume", "abort", "report"] },
 ] as const satisfies readonly PaletteGroup[];
