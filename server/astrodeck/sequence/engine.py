@@ -54,6 +54,22 @@ from .session import Session, SessionFrame, session_store
 # never drift. The mirror is exported to the UI via lib/eta.ts.
 COOLER_AT_TARGET_C = 1.0
 
+#: How long the sensor must STAY inside the band before capture may start.
+#:
+#: The 2026-08-14 handoff: "no capture stage (loop or cycle) may start or resume
+#: unless the sensor is at setpoint and stable (tolerance e.g. ±0.5°C held
+#: ~2 min)". The tolerance stays at the measured 1.0 above - the handoff hedges
+#: it with "e.g." and that number was tuned against this rig - but the HOLD is
+#: the part that was missing, and it is the part that matters: a camera on its
+#: way down crosses the band, and a check that returned on the first in-band
+#: sample declared "stable" about a sensor still falling.
+COOLER_STABLE_S = 120.0
+#: How long a sensor may bounce in and out of the band before the settle is
+#: declared a failure rather than waited on for ever.
+COOLER_SETTLE_MAX_S = 900.0
+#: Seconds between temperature probes while cooling.
+COOLER_PROBE_EVERY_S = 5.0
+
 ETA_MIN_FRAMES = 3          # ETA stays low-confidence (~) below this
 OVERHEAD_EMA_ALPHA = 0.1    # per-frame overhead EMA (low α: one slow frame
                             # doesn't whipsaw the finish clock)
@@ -2557,6 +2573,11 @@ class SequenceEngine:
                     # (goto_and_center) or re-slew, and restart guiding per plan —
                     # exactly as if we were acquiring the target fresh. For a
                     # calibration target (no mount) there is nothing to restore.
+                    #
+                    # THE COOLER FIRST, same rule as the cloud hold. A safety
+                    # pause is exactly as long as the weather says, and every
+                    # reason one lasts is a reason the sensor may have drifted.
+                    await self._cooler_gate("resumed after a safety pause")
                     if target is not None and not target.calibration:
                         ti = self._index_of_target(target)
                         bus.log("info", f"re-acquiring {target.name} after pause "
@@ -2842,6 +2863,12 @@ class SequenceEngine:
                 held_min = (time.time() - started) / 60.0
                 bus.log("info", f"sky cleared after {held_min:.0f} min - "
                                 "re-acquiring the target", "sequence")
+                # THE COOLER FIRST, before the mount moves. The handoff's resume
+                # checklist is ordered, and this is its head: a hold long enough
+                # to matter is long enough for the sensor to have drifted, and
+                # re-centring a warm camera just points it accurately at frames
+                # no dark will match.
+                await self._cooler_gate(f"resumed after {held_min:.0f} min of cloud")
                 if target is not None and not target.calibration:
                     # The same restore the safety hold uses, for the same
                     # reason: the sky moved while we sat. _setup_target
@@ -3446,21 +3473,101 @@ class SequenceEngine:
             bus.log("warning", f"cooler command failed: {e}", "sequence")
             return self._cooling_failed(require, action,
                                         f"cooler command failed: {e}")
+        # TWO CLOCKS, because "reached the band" and "stayed in it" are different
+        # questions and one deadline cannot ask both. `deadline` bounds the
+        # descent, which is what `cool_timeout_s` was always about. Entering the
+        # band then buys COOLER_STABLE_S of settle on its own budget - otherwise
+        # a tight cool_timeout_s would make the settle unsatisfiable and the gate
+        # would fail runs that were doing exactly the right thing.
         deadline = time.time() + timeout_s
-        while time.time() < deadline:
+        in_band_since: float | None = None
+        # A SENSOR THAT WAS NEVER OUT OF BAND NEVER CROSSED IT. The settle exists
+        # to catch a camera sampled mid-descent; if every probe since the cooler
+        # was commanded has read in-band, there was no descent to be caught in
+        # the middle of, and a full two minutes of waiting proves nothing that
+        # the readings have not already shown.
+        #
+        # This is what keeps an already-cold rig - and every simulator run, which
+        # reports the setpoint immediately - from paying two minutes per run and
+        # two more per cloud hold. It does not weaken the #204 case: the cooler
+        # is commanded ON before the first probe, so a warm-but-still-cold sensor
+        # after a restart is actively cooling by the time it reads in band.
+        saw_out_of_band = False
+        while True:
+            now = time.time()
+            if in_band_since is None and now >= deadline:
+                return self._cooling_failed(require, action,
+                                            "cooler did not reach its band in time")
+            if in_band_since is not None and now - in_band_since >= COOLER_SETTLE_MAX_S:
+                # In the band, but bouncing across it for longer than any real
+                # settle takes. Reporting stable would be a guess.
+                return self._cooling_failed(require, action,
+                                            "cooler reached its band but never settled")
             await self._checkpoint()
             try:
                 t = await asyncio.wait_for(cam.get_temperature(), COOLER_CMD_TIMEOUT_S)
             except (asyncio.TimeoutError, Exception):
                 t = None
             if t is not None and abs(t - target_c) <= COOLER_AT_TARGET_C:
-                bus.log("info", f"cooler stable at {t:.1f}°C", "sequence")
-                return True
-            self._set_state(detail=f"cooling: {t:.1f}°C → {target_c:g}°C" if t is not None
-                            else "cooling…")
-            await asyncio.sleep(5.0)
-        return self._cooling_failed(require, action,
-                                    "cooler did not stabilize in time")
+                if in_band_since is None:
+                    in_band_since = now
+                held = now - in_band_since
+                # STABLE MEANS HELD, NOT TOUCHED. A sensor on its way down
+                # crosses the band, and the old check returned on that first
+                # sample - so "cooler stable at -5.0°C" could be printed about a
+                # camera still falling through -5 towards -12, and the frames
+                # that followed carried a SET-TEMP nothing had settled at.
+                need = COOLER_STABLE_S if saw_out_of_band else 0.0
+                if held >= need:
+                    bus.log("info",
+                            f"cooler stable at {t:.1f}°C"
+                            + (f" (held {held:.0f}s)" if saw_out_of_band
+                               else " (never left the band)"),
+                            "sequence")
+                    return True
+                self._set_state(
+                    detail=f"cooler settling at {t:.1f}°C "
+                           f"({held:.0f}/{need:.0f}s)")
+            else:
+                # Left the band again: the settle starts over, because a
+                # half-completed hold either side of an excursion is not a hold.
+                saw_out_of_band = True
+                in_band_since = None
+                self._set_state(
+                    detail=(f"waiting on cooler: {t:.1f}°C → {target_c:g}°C"
+                            if t is not None else "waiting on cooler"))
+            await asyncio.sleep(COOLER_PROBE_EVERY_S)
+
+    async def _cooler_gate(self, why: str) -> None:
+        """Block until the sensor is back at setpoint and stable. THE gate.
+
+        The handoff's HOLD / RESUME checklist leads with this, and the order is
+        the point: cooler, then filter, then re-center, then refocus, then
+        guiding. Pointing and focus are worth nothing on a frame the temperature
+        already ruined, and a night's darks are indexed by temperature - a warm
+        light has no matching dark in the library and never will.
+
+        WHY A HOLD NEEDS ITS OWN GATE AT ALL. A run cools once at start, and
+        every reason a hold exists is also a reason cooling might have stopped
+        inside it: a daybreak park warms the camera BY DESIGN, a power cycle
+        drops the TEC, a cooler fault drifts. The hold ends and the loop resumes
+        into whatever the sensor happens to read. That is not hypothetical: on
+        2026-08-12 this rig put 63 frames on disk at +16 °C against a -5 °C
+        library, and nothing in the night log said cooling had stopped.
+
+        NO-OP WITHOUT COOLING INTENT. A plan with `cool_to=None` never asked for
+        a temperature, and blocking such a run on a cooler it does not use would
+        stop uncooled rigs dead. `_cool_and_wait` owns every other decision,
+        including the escalation policy, so this cannot disagree with the
+        start-of-run gate about what "cool enough" means.
+        """
+        target = getattr(self.plan, "cool_to", None) if self.plan else None
+        if target is None:
+            return
+        bus.log("info", f"cooler gate ({why}): checking the sensor before capture",
+                "sequence")
+        await self._cool_and_wait(
+            target, getattr(self.plan, "cool_timeout_s", 900))
 
     def _cooling_failed(self, require: bool, action: str, reason: str) -> bool:
         """Apply ``cfg.escalation.cooling_action`` on a cooling failure (P1-7).
