@@ -32,12 +32,15 @@ import TonightTimeline, {
   type TonightFlats, type TonightMoon, type TonightNight, type TonightTarget,
 } from "./TonightTimeline";
 import TonightStory, { type TonightStoryRow } from "./TonightStory";
+import TonightCampaign, { type CampaignMember, type CampaignRead } from "./TonightCampaign";
 import TonightPlan from "./TonightPlan";
 
-/** In this order and verbatim (§C.11); TIMELINE is the default tab. */
-const TABS: TonightTab[] = ["timeline", "story", "plan"];
+/** In this order and verbatim (§C.11 + the 2026-08-14 export's fourth tab);
+ *  TIMELINE is the default. CAMPAIGN goes last because it is the only tab
+ *  that describes something OTHER than tonight. */
+const TABS: TonightTab[] = ["timeline", "story", "plan", "campaign"];
 const TAB_LABEL: Record<TonightTab, string> = {
-  timeline: "TIMELINE", story: "STORY", plan: "PLAN",
+  timeline: "TIMELINE", story: "STORY", plan: "PLAN", campaign: "CAMPAIGN",
 };
 
 // ───────────────────────────────────────────────────── reading the payload
@@ -62,6 +65,36 @@ interface TonightRead {
   moon: TonightMoon | null;
   targets: TonightTarget[];
   story: TonightStoryRow[];
+  /** The graph read back as prose. "" when the server had no graph. */
+  brief: string;
+  campaign: CampaignRead | null;
+}
+
+/** The campaign block, read totally.
+ *
+ *  `banked`/`pct` come back null unless the server sent a FINITE NUMBER, which
+ *  is the whole point: a missing figure and a zero are different answers, and
+ *  `num()` already refuses to invent one. A payload with no `campaign` key at
+ *  all returns null and the tab says so rather than drawing an empty pool. */
+function readCampaign(raw: Record<string, unknown> | null): CampaignRead | null {
+  if (!raw) return null;
+  return {
+    is_campaign: raw.is_campaign === true,
+    has_pool: raw.has_pool === true,
+    has_ledger: raw.has_ledger === true,
+    quota: num(raw.quota) ?? 0,
+    note: str(raw.note),
+    members: arr(raw.members).map((m): CampaignMember => {
+      const r = rec(m);
+      return {
+        name: r ? str(r.name) : "",
+        banked: r ? num(r.banked) : null,
+        quota: (r ? num(r.quota) : null) ?? 0,
+        done: r ? r.done === true : false,
+        pct: r ? num(r.pct) : null,
+      };
+    }).filter((m) => m.name !== ""),
+  };
 }
 
 function readTonight(payload: Record<string, unknown> | null): TonightRead | null {
@@ -90,6 +123,8 @@ function readTonight(payload: Record<string, unknown> | null): TonightRead | nul
           set_unix: num(moon.set_unix),
         }
       : null,
+    brief: str(payload.brief),
+    campaign: readCampaign(rec(payload.campaign)),
     targets: arr(payload.targets).map((raw): TonightTarget => {
       const t = rec(raw) ?? {};
       const w = rec(t.window);
@@ -247,11 +282,17 @@ export function TonightPanel(): JSX.Element {
           : "Tonight has not been resolved for this flow yet."}
       </TonightNote>
     );
+  } else if (tab === "campaign") {
+    // CAMPAIGN, like STORY, survives a refusal: `_campaign` reads the GRAPH,
+    // not the ephemeris, so "no site is set" does not stop it saying which
+    // members owe what. A tab that blanked on a refusal it does not depend on
+    // would look like a bug in the campaign rather than in the site.
+    body = <TonightCampaign campaign={read.campaign} />;
   } else if (tab === "story") {
     // On a refusal the server already carries `reason` as a story row (label
     // "—", tone warn), so STORY needs no special case: the sentence arrives
     // through the same path as every other one.
-    body = <TonightStory story={read.story} />;
+    body = <TonightStory story={read.story} brief={read.brief} />;
   } else if (!read.ok) {
     body = <TonightNote>{read.reason}</TonightNote>;
   } else {
