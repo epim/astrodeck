@@ -85,6 +85,7 @@ const PORTS: PortTable = {
     outs: [],
   },
   pool: { ins: [{ id: "arm" }], outs: [{ id: "target" }] },
+  cycle: { ins: [{ id: "run" }], outs: [{ id: "body" }, { id: "complete" }] },
   condition: { ins: [{ id: "events" }], outs: [{ id: "fire" }] },
   holdresume: { ins: [{ id: "pause" }, { id: "resume" }], outs: [] },
   notify: { ins: [{ id: "do" }], outs: [] },

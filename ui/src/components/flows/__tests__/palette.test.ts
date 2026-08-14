@@ -45,12 +45,15 @@ const UNION = nodeTypeUnion();
 
 // ------------------------------------------------ the extractor is trustworthy
 
-test("FlowNodeType parses to exactly 19 members", () => {
-  // §C.7 and the contract's file plan both say 19. If this number changes, the
-  // vocabulary changed, and every group below needs a deliberate re-read — not
-  // a silently widened palette.
-  eq(UNION.length, 19, "FlowNodeType member count:");
-  eq(new Set(UNION).size, 19, "the union itself lists a type twice:");
+test("FlowNodeType parses to exactly 20 members", () => {
+  // §C.7 and the contract's file plan both say 19; FILTER CYCLE is the 20th and
+  // post-dates them. The number is deliberately hard-coded: if it changes, the
+  // vocabulary changed, and every group below needs a deliberate re-read rather
+  // than a silently widened palette. That is exactly what happened here — the
+  // node was added server-side and CI caught the UI still at 19, which is the
+  // difference between a capability and a capability the operator can reach.
+  eq(UNION.length, 20, "FlowNodeType member count:");
+  eq(new Set(UNION).size, 20, "the union itself lists a type twice:");
 });
 
 // ------------------------------------------------------------- exhaustiveness
@@ -139,14 +142,30 @@ test("each disputed group ships an order some source actually states", () => {
   }
 });
 
-test("a disputed group's readings all cover the same set of types", () => {
-  // If two sources disagree about MEMBERSHIP rather than order, picking either
-  // one would drop a node type from the palette entirely — and the
-  // exhaustiveness test above would only catch it for whichever reading is
-  // currently shipped.
+test("no source claims a type nodes.py does not, and the older ones may only LAG", () => {
+  // The original form of this test demanded every source name the identical
+  // SET, for a good reason: two sources disagreeing about membership means
+  // picking either one drops a node from the palette, and the exhaustiveness
+  // test above would only catch it for whichever reading happens to ship.
+  //
+  // FILTER CYCLE broke it honestly. The node post-dates the prototype and both
+  // README readings, so those three cannot name it without inventing
+  // provenance they do not have. What must NOT happen is the dangerous
+  // direction — a source naming a type the server does not have, which would
+  // put a node in the rail that no run can execute.
+  //
+  // So: nodes.py is the authority and every other reading must be a SUBSET of
+  // it. A source that lags is a source that predates a feature; a source that
+  // leads is a bug.
   for (const [label, readings] of Object.entries(PALETTE_ITEM_ORDER_SOURCES)) {
-    const sets = Object.values(readings).map((o) => [...(o as readonly string[])].sort().join("|"));
-    eq(new Set(sets).size, 1, `${label}: sources disagree about which types belong, not just their order:`);
+    const server = new Set(readings.server as readonly string[]);
+    for (const [src, order] of Object.entries(readings)) {
+      for (const t of order as readonly string[]) {
+        ok(server.has(t),
+           `${label}: source "${src}" names ${t}, which nodes.py does not — ` +
+           `that is a palette entry no run could execute`);
+      }
+    }
   }
 });
 
@@ -154,7 +173,7 @@ test("LOGIC and ACTIONS + SINKS are exactly the types no other group claims", ()
   // Guards the dispute record against drifting away from the shipped palette:
   // these are the two groups whose contents nobody may quietly edit.
   const by = (label: string) => PALETTE_GROUPS.find((g) => g.label === label)!.types;
-  eqList([...by("LOGIC")].sort(), ["condition", "pool"]);
+  eqList([...by("LOGIC")].sort(), ["condition", "cycle", "pool"]);
   eqList([...by("ACTIONS + SINKS")].sort(),
          ["abort", "holdresume", "notify", "refocus", "report"]);
 });

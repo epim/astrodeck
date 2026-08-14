@@ -391,6 +391,21 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
     sum: (p) => String(txt(p.members).split(",").length) + " candidates · "
       + (txt(p.strategy).indexOf("Best") === 0 ? "best available" : low(p.strategy)),
   },
+  cycle: {
+    type: "cycle",
+    label: "FILTER CYCLE",
+    cat: "LOGIC",
+    colorVar: "--accent-dim",
+    ins: [_f("run", "run")],
+    outs: [_f("body", "each pass"), _f("complete", "all passes")],
+    params: { cycles: 45, order: "As drawn" },
+    fields: [
+      { key: "cycles", label: "Passes", control: "text" },
+      { key: "order", label: "Order", control: "select", options: ["As drawn", "Reverse", "Broadband first"] },
+    ],
+    desc: "Goes round the capture chain instead of through it: L R G B S Ha O3, then again. Each capture's own count is what it takes on EACH pass, so 1 frame × 45 passes is 45 subs of every filter. Every channel then samples the same sky, and a night cut short leaves 60% of everything rather than three finished filters and four empty ones.",
+    sum: (p) => txt(p.cycles) + " passes · " + low(p.order),
+  },
   condition: {
     type: "condition",
     label: "CONDITION",

@@ -216,16 +216,16 @@ const defOf = (t: FlowNodeType): NodeDef => NODE_DEFS[t];
 
 // The parser is itself a thing that can be wrong, and a parser that silently
 // matched nothing would make every comparison below vacuously true.
-test("parser sanity: nodes.py yielded 19 entries with ports and params", () => {
-  eq(Object.keys(PY).length, 19, "entries parsed out of nodes.py");
+test("parser sanity: nodes.py yielded 20 entries with ports and params", () => {
+  eq(Object.keys(PY).length, 20, "entries parsed out of nodes.py");
   eq(PY.capture.outs.length, 2, "capture outs parsed");
   eq(PY.dusk.params.offset, -30, "a negative numeric default survived parsing");
   eq(Object.keys(PY_CATEGORY_TOKEN).length, 5, "CATEGORY_TOKEN entries");
 });
 
 // ------------------------------------------------------- the type set itself
-test("exactly 19 node types, and the set matches nodes.py's NODE_DEFS keys", () => {
-  eq(TYPES.length, 19, "NODE_DEFS entry count");
+test("exactly 20 node types, and the set matches nodes.py's NODE_DEFS keys", () => {
+  eq(TYPES.length, 20, "NODE_DEFS entry count");
   const mine = [...TYPES].sort().join(",");
   const theirs = Object.keys(PY).sort().join(",");
   eq(mine, theirs,
@@ -243,7 +243,7 @@ test("each entry's `type` field equals its key", () => {
 });
 
 // ------------------------------------------------------------ label and cat
-test("label and cat match nodes.py for all 19", () => {
+test("label and cat match nodes.py for all 20", () => {
   for (const t of TYPES) {
     eq(defOf(t).label, PY[t].label, `${t}.label`);
     eq(defOf(t).cat, PY[t].cat, `${t}.cat`);
@@ -471,6 +471,9 @@ test("sum() over the defaults renders the prototype's footer lines verbatim", ()
     duskflats: "translucent lens cap · Sun −2° … −8° · ×15",
     calib: "darks → bias → flats · ×20 each, then wait",
     pool: "4 candidates · best available",
+    // Not from the prototype — FILTER CYCLE post-dates it. Held to the
+    // same shape as its neighbours so the footer column stays uniform.
+    cycle: "45 passes · as drawn",
     condition: "hfr above 3.2 · 3 frames",
     holdresume: "resume: re-center · refocus if hfr drifted",
     notify: "ntfy · rig-alerts",
