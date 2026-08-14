@@ -28,7 +28,7 @@ from __future__ import annotations
 
 from ..devices.base import DomePolicy
 from .models import FlowGraph, FlowNode
-from .nodes import port_kind
+from .nodes import parse_cycle_plan, port_kind
 
 #: Trigger vocabulary, and what the engine can now do with it.
 #:
@@ -138,10 +138,21 @@ def _trigger_for(node: FlowNode, from_port: str) -> str:
         return f"on_{when}" if when else "on_condition"
     if node.type == "safety":
         return "on_unsafe"
-    if node.type == "capture":
+    if node.type in ("capture", "cycle"):
         return "on_frame_graded"
     if node.type == "flatpanel":
         return "on_panel_ready"
+    # The four campaign kinds. Each names a MOMENT the engine can recognise
+    # without the graph having to describe it: the night is ending, this target
+    # has what it owes, the shutdown finished, the active target sank.
+    if node.type == "dusk" and from_port == "nightend":
+        return "on_night_end"
+    if node.type == "report" and from_port == "done":
+        return "on_target_complete"
+    if node.type == "parkclose" and from_port == "closed":
+        return "on_shutdown_complete"
+    if node.type == "pool" and from_port == "floor":
+        return "on_altitude_floor"
     return f"{node.type}.{from_port}"
 
 
@@ -149,12 +160,6 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
     """The compiled plan: schedule + targets + automation + instructions."""
     graph = graph.with_defaults()
     order = flow_order(graph)
-
-    # THE CYCLE, read before the walk because it rewrites what a capture means.
-    # With one present, a capture's `count` stops being "how many in total" and
-    # becomes "how many on each pass" — so the walk below has to know.
-    cyc = next((n for n in order if n.type == "cycle"), None)
-    cycles = max(1, int(_num(cyc.params.get("cycles"), 1) or 1)) if cyc else 1
 
     targets: list[dict] = []
     for n in order:
@@ -174,6 +179,10 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
             for i, m in enumerate([x for x in members if x]):
                 targets.append({
                     "name": m, "pool_rank": i + 1,
+                    # HOW MUCH EACH MEMBER OWES BEFORE IT COUNTS AS DONE. Without
+                    # it "advance" has nothing to compare against and a campaign
+                    # can never finish a target, only stop working on one.
+                    "quota_cycles": _num(n.params.get("quota")),
                     "min_altitude_deg": _num(n.params.get("minAlt")),
                     "min_moon_sep_deg": _num(n.params.get("moonSep")),
                     "max_hour_angle_h": _num(n.params.get("maxHA")),
@@ -185,22 +194,14 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
             # and one capture loop means all four are shot the same way, which
             # is the only reading under which "best available" can substitute
             # one for another mid-night.
-            per_pass = _num(n.params.get("count"))
             step = {
                 "filter": n.params.get("filter"),
                 "exposure_s": _num(n.params.get("exposure")),
                 "gain": _num(n.params.get("gain")),
                 "binning": _num(n.params.get("bin"), 1),
-                # Under a FILTER CYCLE the node's count is PER PASS and the
-                # total is what the night owes: 1 x 45 cycles = 45 subs. Said
-                # the other way round, the number on the card never changes
-                # meaning for the operator — it is always "how many I take here
-                # before moving on".
-                "count": per_pass * cycles if cyc else per_pass,
+                "count": _num(n.params.get("count")),
                 "frame_type": "Light",
             }
-            if cyc:
-                step["per_visit"] = per_pass
             goal = _num(n.params.get("goal"))
             if goal:
                 step["integration_goal_h"] = goal
@@ -208,14 +209,29 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
                 # a copy per target: they are independently editable downstream,
                 # and a shared dict would make one target's edit rewrite them all
                 t["steps"].append(dict(step))
-
-    if cyc:
-        # Stated on the TARGET, not inferred later from a step carrying
-        # per_visit. The engine branches on this one field, and a plan where the
-        # steps imply one order and the target names another is a plan nobody
-        # can read.
-        for t in targets:
-            t["acquisition"] = "cycle"
+        elif n.type == "cycle":
+            # ONE STEP, NOT ONE PER SLOT. The handoff's compile spec is explicit:
+            # a FILTER CYCLE stage becomes a single object carrying its whole
+            # slot table, because the interleaving is the STAGE's behaviour and
+            # not a property of any one filter. Seven separate steps would say
+            # "shoot 45 L, then 45 R", which is the arrangement this node exists
+            # to avoid.
+            slots = [{"filter": f, "exposure_s": exp}
+                     for f, exp in parse_cycle_plan(n.params.get("plan"))]
+            cycles = max(1, int(_num(n.params.get("cycles"), 1) or 1))
+            per_cycle = max(1, int(_num(n.params.get("perCycle"), 1) or 1))
+            step = {
+                "strategy": "cycle",
+                "cycles": cycles,
+                "per_cycle": per_cycle,
+                "gain": _num(n.params.get("gain")),
+                "binning": _num(n.params.get("bin"), 1),
+                "reject_hfr": _num(n.params.get("reject")),
+                "slots": slots,
+                "frame_type": "Light",
+            }
+            for t in targets:
+                t["steps"].append({**step, "slots": [dict(s) for s in slots]})
 
     dusk = next((n for n in graph.nodes if n.type == "dusk"), None)
     calib = next((n for n in graph.nodes if n.type == "calib"), None)
@@ -272,12 +288,40 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
             "flats_require_panel": True,
         }
 
+    if dusk is not None:
+        repeat = str(dusk.params.get("repeat") or "Single night")
+        if repeat != "Single night":
+            # A CAMPAIGN, and the three keys say the three things that make one:
+            # it comes back (`repeat`), it knows when to stop (`until`), and it
+            # picks up where it left off rather than starting the night again
+            # (`resume`). `until` is derived from the operator's own phrasing so
+            # a future option cannot silently compile to "run for ever".
+            plan_campaign = {
+                "repeat": "nightly",
+                "until": ("pool_complete" if "pool" in repeat.lower()
+                          else "nights_30"),
+                "resume": "cursor",
+            }
+        else:
+            plan_campaign = None
+    else:
+        plan_campaign = None
+
     instructions: list[dict] = []
     for e in graph.edges:
         src = graph.node(e.from_)
         if src is None or port_kind(src.type, e.fromPort, "out") != "event":
             continue
         dst = graph.node(e.to)
+        # EQUIPMENT TOPOLOGY IS NOT AN INSTRUCTION. A FLAT PANEL wired to a
+        # CALIBRATION QUEUE's `panel` input is the operator saying "there is a
+        # panel on this rig", not "when the panel is ready, do something". It is
+        # already carried as `automation.calibration_queue.flats_require_panel`,
+        # and emitting a rule for it as well would put a when/then in the plan
+        # that fires on a fact rather than on an event.
+        if (src.type == "flatpanel" and dst is not None
+                and dst.type == "calib" and e.toPort == "panel"):
+            continue
         # THE DESTINATION PORT IS PART OF THE RULE, not decoration.
         #
         # A HOLD / RESUME node has two inputs, `pause` and `resume`, and the M16
@@ -298,10 +342,16 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
             rule["threshold"] = _num(thr)
         instructions.append(rule)
 
-    return {
+    out = {
         "name": name,
         "schedule": schedule,
         "targets": targets,
         "automation": automation,
         "instructions": instructions,
     }
+    # ABSENT, not None, on a single night. A `campaign: null` key would make
+    # every reader test for two falsy shapes, and the PLAN tab renders this dict
+    # verbatim — a null there reads as "campaign: broken" to an operator.
+    if plan_campaign is not None:
+        out["campaign"] = plan_campaign
+    return out

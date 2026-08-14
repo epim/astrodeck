@@ -118,13 +118,25 @@ class FlowGraph(BaseModel):
                     f"{k_out.capitalize()} output can't feed an {k_in} input "
                     f"({src.type}.{e.fromPort} → {dst.type}.{e.toPort})")
                 continue
-            # ONE WIRE PER INPUT. The editor enforces this by REPLACING on drop,
-            # so two edges into one input means the graph was assembled
-            # somewhere else and is not a graph the editor can represent.
-            key = (e.to, e.toPort)
-            if key in seen_inputs:
-                out.append(f"input {dst.type}.{e.toPort} is wired twice")
-            seen_inputs.add(key)
+            # THE FAN-IN RULE, and it differs by lane.
+            #
+            # A FLOW input takes exactly one wire, because a flow edge means
+            # "then" and there is exactly one run cursor: two predecessors would
+            # ask it to arrive twice. The editor enforces this by REPLACING on
+            # drop, so two flow edges into one input means the graph was
+            # assembled somewhere else and is not a graph the editor can draw.
+            #
+            # An EVENT input takes as many as you like, because an event edge
+            # means "whenever" and several unrelated things can legitimately
+            # cause one action. The campaign example needs it twice over: the
+            # calibration queue starts when clouds roll in AND when the night's
+            # shutdown finishes, and a rule that allowed only the first would
+            # make the day-darks lane undrawable.
+            if k_in != "event":
+                key = (e.to, e.toPort)
+                if key in seen_inputs:
+                    out.append(f"input {dst.type}.{e.toPort} is wired twice")
+                seen_inputs.add(key)
 
         if len(known) != len(self.nodes):
             pass        # already reported as duplicates

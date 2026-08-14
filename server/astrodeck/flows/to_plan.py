@@ -174,9 +174,58 @@ def _coords(entry: dict, when: float | None) -> tuple[float, float] | None:
     return catalog_coords(name, when) if name else None
 
 
+def _cycle_steps(step: dict, target_name: str, index: int) -> list[dict]:
+    """Expand one compiled FILTER CYCLE object into engine ``ExposureStep``s.
+
+    The compile keeps the stage whole (``{strategy: "cycle", slots: […]}``)
+    because that is what the operator drew. ``SequencePlan`` has no such shape:
+    it has a flat list of steps and a per-TARGET ``acquisition`` mode. So the
+    slot table becomes one step per filter, each carrying
+
+        count     = cycles x per_cycle     (what the night owes for that filter)
+        per_visit = per_cycle              (what one pass takes before moving on)
+
+    and the target is marked ``acquisition="cycle"``, which is the field the
+    engine's round-robin driver branches on. Both halves are needed: per_visit
+    alone would sit inert on a target the engine still walks block-by-block.
+
+    AN EMPTY SLOT TABLE IS A REFUSAL, not an empty list. A cycle stage that
+    compiles to nothing would let a graph carrying a visibly-configured capture
+    node produce a plan with no frames, and the run would report "complete"
+    having shot none.
+    """
+    slots = step.get("slots") or []
+    if not slots:
+        raise GraphNotRunnable(
+            f"{target_name}: the FILTER CYCLE has no filters selected - "
+            f"tick at least one row of the cycle plan")
+    cycles = max(1, int(step.get("cycles") or 1))
+    per_cycle = max(1, int(step.get("per_cycle") or 1))
+    out: list[dict] = []
+    for slot in slots:
+        exposure = slot.get("exposure_s")
+        if not exposure or float(exposure) <= 0:
+            raise GraphNotRunnable(
+                f"{target_name}: cycle slot {slot.get('filter')!r} has no "
+                f"exposure time - set one on the cycle plan row")
+        out.append({
+            "filter": slot.get("filter"),
+            "exposure_s": exposure,
+            "gain": step.get("gain"),
+            "binning": step.get("binning", 1),
+            "count": cycles * per_cycle,
+            "per_visit": per_cycle,
+            "frame_type": step.get("frame_type", "Light"),
+        })
+    return out
+
+
 def _steps(entry: dict, target_name: str, out: list[dict]) -> list[dict]:
     steps: list[dict] = []
     for i, step in enumerate(entry.get("steps") or []):
+        if step.get("strategy") == "cycle":
+            steps.extend(_cycle_steps(step, target_name, i))
+            continue
         exposure = step.get("exposure_s")
         count = step.get("count")
         # gt=0 on both. _num() returns 0 for a missing or garbled node param, so
@@ -457,11 +506,17 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
                   "schedule": _target_schedule(base_schedule, entry,
                                                is_pool=is_pool),
                   "steps": _steps(entry, name or "?", unmapped)}
-        if entry.get("acquisition") == "cycle":
-            # The FILTER CYCLE reaches the engine. `per_visit` already rode in
-            # on each step from the compile; this is the field the engine
-            # branches on, and without it those per_visit values would be inert
-            # decoration on a plan that still shot in blocks.
+        if any((s or {}).get("strategy") == "cycle"
+               for s in (entry.get("steps") or [])):
+            # The FILTER CYCLE reaches the engine. `_cycle_steps` put `per_visit`
+            # on every expanded step; THIS is the field the engine branches on,
+            # and without it those per_visit values would be inert decoration on
+            # a plan that still shot in blocks.
+            #
+            # Read off the STEPS rather than a separate `acquisition` key on the
+            # target: one fact, one place. A plan whose steps say interleave and
+            # whose target says blocks is a plan nobody can read, and keeping two
+            # keys in step is how that happens.
             target["acquisition"] = "cycle"
         targets.append(target)
         pooled += 1 if is_pool else 0

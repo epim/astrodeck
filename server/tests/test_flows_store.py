@@ -24,8 +24,13 @@ def store(tmp_path, monkeypatch):
 
 
 class TestTheShippedExamples:
-    def test_there_are_five(self):
-        assert len(examples()) == 5
+    def test_there_are_seven(self):
+        """Pinned, not counted loosely. The seed library IS the acceptance
+        corpus: an example that quietly disappears takes its coverage with it,
+        and one that quietly appears has never been looked at by a human."""
+        assert [e.id for e in examples()] == [
+            "example-campaign", "example-m31", "example-m16", "example-cycle",
+            "example-pool", "example-nb", "example-eaa"]
 
     @pytest.mark.parametrize("ex", examples(), ids=lambda e: e.id)
     def test_each_one_is_structurally_valid(self, ex):
@@ -63,7 +68,7 @@ class TestTheShippedExamples:
         visual run is never nagged about a guider it does not want."""
         eaa = next(e for e in examples() if e.id == "example-eaa")
         found = [i.text for i in check(eaa.graph) if i.level in ("warn", "danger")]
-        assert found == ["▸ TARGET — 'arm' input unwired"], found
+        assert found == ["▸ TARGET - 'arm' input unwired"], found
         assert not any("stars will trail" in t for t in found)
         assert not any("focus drift" in t for t in found)
 
@@ -90,7 +95,7 @@ class TestTheShippedExamples:
 
 class TestStore:
     def test_a_fresh_store_still_lists_the_examples(self, store):
-        assert len(store.load_all()) == 5
+        assert len(store.load_all()) == len(examples())
         assert all(r.readonly for r in store.load_all())
 
     def test_save_and_reload(self, store):
