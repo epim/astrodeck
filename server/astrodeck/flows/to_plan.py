@@ -349,12 +349,31 @@ def _automation(compiled: dict, out: list[dict]) -> None:
     docstring is emphatic that the roof must never be talked out of shutting.
     That one is ``danger``, and :func:`blocking_reasons` picks it up.
     """
+    # THE CAMPAIGN BLOCK REACHES NOTHING, and saying so is the point. The
+    # compile emits `campaign: {repeat, until, resume}` for a DUSK WINDOW set to
+    # repeat, `SequencePlan` has nowhere to put it, and the run therefore ends at
+    # dawn like any other - it does not come back, the cursor is not persisted,
+    # and no target is ever marked done in the ledger.
+    #
+    # An operator who drew a month-long campaign and got one night with no
+    # warning is the exact defect this whole list exists to prevent, and this
+    # entry was missing when the block was added: the plan dropped it in silence.
+    if compiled.get("campaign"):
+        camp = compiled["campaign"]
+        out.append(_note(
+            "campaign",
+            f"this flow is a campaign (repeat {camp.get('repeat')}, until "
+            f"{camp.get('until')}), and the engine cannot run one yet: this run "
+            f"images ONE night and stops at dawn. The capture cursor is not "
+            f"persisted, no target is marked done, and the flow will not re-arm "
+            f"at the next dusk", "danger"))
+
     auto = compiled.get("automation") or {}
     if "dome" in auto:
         out.append(_note(
             "automation.dome",
             "the dome policy compiled correctly but the engine cannot act on "
-            "it yet, so nothing will slave the dome or close it on an unsafe "
+            "it yet, so nothing will bind the dome or close it on an unsafe "
             "reading during this run", "danger"))
     if "dusk_flats" in auto:
         out.append(_note("automation.dusk_flats",

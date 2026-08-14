@@ -5719,7 +5719,7 @@ class Hub:
                     "shutter": st.value,
                     "requires_park_before_close": bool(
                         getattr(dome, "requires_park_before_close", True)),
-                    "can_slave": bool(getattr(dome, "can_slave", False)),
+                    "can_bind": bool(getattr(dome, "can_bind", False)),
                 }
             except Exception:
                 pass

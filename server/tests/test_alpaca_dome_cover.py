@@ -122,26 +122,26 @@ async def test_abort_puts_abortslew(dome):
 
 
 @pytest.mark.asyncio
-async def test_get_slaved_reads_driver(dome):
+async def test_get_bound_reads_driver(dome):
     dome.conn.responses["slaved"] = True
-    assert await dome.get_slaved() is True
+    assert await dome.get_bound() is True
 
 
 @pytest.mark.asyncio
-async def test_get_slaved_degrades_to_false_on_error(dome):
+async def test_get_bound_degrades_to_false_on_error(dome):
     async def boom(dev_type, dev_num, method, **params):
         raise DeviceError("no slaved")
     dome.conn.get = boom
-    assert await dome.get_slaved() is False
+    assert await dome.get_bound() is False
 
 
 @pytest.mark.asyncio
-async def test_set_slaved_gated_on_canslave(dome):
-    dome.can_slave = False
+async def test_set_bound_gated_on_canslave(dome):
+    dome.can_bind = False
     with pytest.raises(DeviceError):
-        await dome.set_slaved(True)
-    dome.can_slave = True
-    await dome.set_slaved(True)
+        await dome.set_bound(True)
+    dome.can_bind = True
+    await dome.set_bound(True)
     assert ("put", "slaved", {"Slaved": True}) in dome.conn.calls
 
 
@@ -150,7 +150,7 @@ async def test_connect_probes_canslave(dome):
     dome.conn.responses["canslave"] = True
     await dome.connect()
     assert dome.connected is True
-    assert dome.can_slave is True
+    assert dome.can_bind is True
     assert ("get", "canslave", {}) in dome.conn.calls
     # connected=True was PUT by the base connect().
     assert ("put", "connected", {"Connected": True}) in dome.conn.calls
@@ -162,7 +162,7 @@ async def test_connect_survives_missing_canslave(dome):
         raise DeviceError("no canslave")
     dome.conn.get = boom
     await dome.connect()
-    assert dome.can_slave is False
+    assert dome.can_bind is False
 
 
 def test_requires_park_before_close_stays_true(dome):

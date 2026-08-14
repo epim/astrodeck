@@ -36,7 +36,7 @@ def test_kind_and_capability_defaults():
     assert Dome.kind == "dome"
     # FAIL-SAFE default: assume the roof can collide with the mount.
     assert d.requires_park_before_close is True
-    assert d.can_slave is False
+    assert d.can_bind is False
 
 
 @pytest.mark.asyncio
@@ -50,11 +50,11 @@ async def test_is_closed_is_open_derive_from_shutter_state():
 
 
 @pytest.mark.asyncio
-async def test_slaved_defaults_raise_and_false():
+async def test_bound_defaults_raise_and_false():
     d = FakeDome()
-    assert await d.get_slaved() is False
+    assert await d.get_bound() is False
     with pytest.raises(DeviceError):
-        await d.set_slaved(True)
+        await d.set_bound(True)
     # abort is a safe no-op by default.
     assert await d.abort() is None
 
@@ -63,5 +63,5 @@ def test_describe_carries_kind_and_capabilities():
     d = FakeDome()
     desc = d.describe()
     assert desc["kind"] == "dome"
-    assert desc["can_slave"] is False
+    assert desc["can_bind"] is False
     assert desc["requires_park_before_close"] is True

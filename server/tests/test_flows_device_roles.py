@@ -45,13 +45,13 @@ class _ScriptedDome(Dome):
     always completes its travel) and the hardware that costs a night.
     """
 
-    def __init__(self, states, *, can_slave: bool = False,
+    def __init__(self, states, *, can_bind: bool = False,
                  name: str = "Scripted Dome") -> None:
         super().__init__(name)
         self._states = list(states)
         self.open_commands = 0
-        self.slaved = False
-        self.can_slave = can_slave
+        self.bound = False
+        self.can_bind = can_bind
 
     async def connect(self) -> None:
         self.connected = True
@@ -68,11 +68,11 @@ class _ScriptedDome(Dome):
     async def close_shutter(self) -> None:
         self._states = [DomeShutterState.CLOSED]
 
-    async def set_slaved(self, on: bool) -> None:
-        self.slaved = bool(on)
+    async def set_bound(self, on: bool) -> None:
+        self.bound = bool(on)
 
-    async def get_slaved(self) -> bool:
-        return self.slaved
+    async def get_bound(self) -> bool:
+        return self.bound
 
 
 @pytest.fixture
@@ -261,7 +261,7 @@ def test_the_dome_policy_has_no_field_that_could_stop_it_closing_on_unsafe():
     assert "on_unsafe" not in {f.name for f in dataclasses.fields(DomePolicy)}
     assert DomePolicy().to_plan()["on_unsafe"] == "close"
     # a plan that says otherwise is read and overruled, not honoured
-    talked_out_of_it = DomePolicy.from_plan({"slave": True, "on_unsafe": "ignore"})
+    talked_out_of_it = DomePolicy.from_plan({"bind": True, "on_unsafe": "ignore"})
     assert talked_out_of_it.to_plan()["on_unsafe"] == "close"
 
 
@@ -269,11 +269,19 @@ def test_the_dome_policy_reads_the_nodes_azimuth_and_timeout_fields():
     """Manual azimuth is a deliberate choice an operator makes when they are
     doing something by hand at the dome; ignoring it moves machinery around
     somebody's cabling."""
-    slaved = DomePolicy.from_node_params(
-        {"slave": "Slave to mount", "onUnsafe": "Close (fail closed)", "timeout": 120})
-    assert slaved.slave_to_mount is True and slaved.shutter_timeout_s == 120.0
-    manual = DomePolicy.from_node_params({"slave": "Manual", "timeout": "90"})
-    assert manual.slave_to_mount is False and manual.shutter_timeout_s == 90.0
+    bound = DomePolicy.from_node_params(
+        {"bind": "Bind to mount", "onUnsafe": "Close (fail closed)", "timeout": 120})
+    assert bound.bind_to_mount is True and bound.shutter_timeout_s == 120.0
+    manual = DomePolicy.from_node_params({"bind": "Manual", "timeout": "90"})
+    assert manual.bind_to_mount is False and manual.shutter_timeout_s == 90.0
+
+    # BACK-COMPAT: the param was `slave` until 2026-08-14, and every flow
+    # saved before then still carries that name on disk. Reading only the new
+    # key would silently re-bind a dome the operator had set to Manual.
+    old = DomePolicy.from_node_params({"slave": "Manual", "timeout": "90"})
+    assert old.bind_to_mount is False, "a graph saved before the rename changed meaning"
+    old_plan = DomePolicy.from_plan({"slave": False})
+    assert old_plan.bind_to_mount is False, "a plan compiled before the rename changed meaning"
 
 
 def test_a_zero_or_garbled_shutter_timeout_becomes_the_default_not_no_wait():
@@ -350,7 +358,7 @@ async def test_opening_the_real_sim_roof_confirms_it(fast_poll):
 # ---------------------------------------------------------------- slave-to-mount
 
 
-async def test_slaving_a_roll_off_roof_says_so_instead_of_failing_the_night():
+async def test_binding_a_roll_off_roof_says_so_instead_of_failing_the_night():
     """"Slave to mount" is the node's DEFAULT and the default sim dome is a roll-
     off roof with no azimuth. If that combination raised, every example flow with
     a dome in it would be unrunnable on a machine with no hardware — which is the
@@ -358,22 +366,22 @@ async def test_slaving_a_roll_off_roof_says_so_instead_of_failing_the_night():
     rig = build_sim_rig()
     roof = rig["dome"]
     await roof.connect()
-    assert isinstance(roof, SimDome) and roof.can_slave is False
+    assert isinstance(roof, SimDome) and roof.can_bind is False
 
-    note = await DomePolicy(slave_to_mount=True).apply_slaving(roof)
+    note = await DomePolicy(bind_to_mount=True).apply_binding(roof)
     assert "no effect" in note
-    assert await roof.get_slaved() is False
+    assert await roof.get_bound() is False
 
 
-async def test_slaving_a_rotating_dome_actually_slaves_it():
+async def test_binding_a_rotating_dome_actually_binds_it():
     """The other half: on hardware that HAS an azimuth the setting must take.
     A note-and-carry-on for every dome would make the parameter decorative."""
     dome = SimRotatingDome(build_sim_rig()["_rig"])
     await dome.connect()
-    assert dome.can_slave is True
-    note = await DomePolicy(slave_to_mount=True).apply_slaving(dome)
-    assert await dome.get_slaved() is True
-    assert "slaved" in note
+    assert dome.can_bind is True
+    note = await DomePolicy(bind_to_mount=True).apply_binding(dome)
+    assert await dome.get_bound() is True
+    assert "bound" in note
 
 
 async def test_manual_azimuth_never_touches_the_dome(monkeypatch):
@@ -384,25 +392,25 @@ async def test_manual_azimuth_never_touches_the_dome(monkeypatch):
 
     async def _refuse(on):
         raise AssertionError("Manual azimuth commanded the dome to slave")
-    monkeypatch.setattr(dome, "set_slaved", _refuse)
+    monkeypatch.setattr(dome, "set_bound", _refuse)
 
-    note = await DomePolicy(slave_to_mount=False).apply_slaving(dome)
+    note = await DomePolicy(bind_to_mount=False).apply_binding(dome)
     assert "manual" in note
-    assert await dome.get_slaved() is False
+    assert await dome.get_bound() is False
 
 
-async def test_a_dome_that_claims_it_can_slave_and_then_refuses_fails_loudly():
+async def test_a_dome_that_claims_it_can_bind_and_then_refuses_fails_loudly():
     """Degrading here would leave the OTA photographing the inside of the dome
-    wall all night while the status readout said slaved — the shape of bug this
+    wall all night while the status readout said bound - the shape of bug this
     project keeps paying for, where the flag is a memory rather than a
     measurement."""
     class _Liar(_ScriptedDome):
-        async def set_slaved(self, on: bool) -> None:
+        async def set_bound(self, on: bool) -> None:
             raise DeviceError("dome refused Slaved")
 
-    liar = _Liar([DomeShutterState.OPEN], can_slave=True)
+    liar = _Liar([DomeShutterState.OPEN], can_bind=True)
     with pytest.raises(DeviceError):
-        await DomePolicy(slave_to_mount=True).apply_slaving(liar)
+        await DomePolicy(bind_to_mount=True).apply_binding(liar)
 
 
 async def test_the_rotating_sim_dome_keeps_the_park_before_close_guard():

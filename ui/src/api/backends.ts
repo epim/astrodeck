@@ -320,7 +320,7 @@ export interface DomeState {
   connected: boolean;
   shutter: DomeShutter;
   requires_park_before_close: boolean;
-  can_slave: boolean;
+  can_bind: boolean;
 }
 
 /** GET /api/dome/state → the roof shutter status + capabilities. Honest defaults

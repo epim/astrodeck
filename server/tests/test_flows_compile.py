@@ -170,7 +170,7 @@ class TestAutomation:
     def test_a_dome_is_always_fail_closed(self):
         g = FlowGraph(nodes=[_n("d", "dome")])
         assert compile_plan(g, "n")["automation"]["dome"] == {
-            "slave": True, "on_unsafe": "close",
+            "bind": True, "on_unsafe": "close",
             "shutter_timeout_s": DEFAULT_SHUTTER_TIMEOUT_S}
 
     def test_the_dome_nodes_own_settings_reach_the_plan(self):
@@ -178,14 +178,14 @@ class TestAutomation:
         node's Azimuth dropdown and its shutter timeout never left the editor —
         two controls that looked live and did nothing. Owner authorised wiring
         them through on 2026-08-12."""
-        g = FlowGraph(nodes=[_n("d", "dome", slave="Manual", timeout=45)])
+        g = FlowGraph(nodes=[_n("d", "dome", bind="Manual", timeout=45)])
         dome = compile_plan(g, "n")["automation"]["dome"]
-        assert dome["slave"] is False
+        assert dome["bind"] is False
         assert dome["shutter_timeout_s"] == 45.0
 
     @pytest.mark.parametrize("params", [
-        {"slave": "Manual", "timeout": 45},        # everything overridden
-        {"slave": "Slave to mount"},               # the default, said out loud
+        {"bind": "Manual", "timeout": 45},         # everything overridden
+        {"bind": "Bind to mount"},                 # the default, said out loud
         {"timeout": 0},                            # a timeout that cannot work
         {"on_unsafe": "leave open"},               # what an edited plan may say
         {},                                        # nothing set at all
@@ -271,3 +271,24 @@ class TestTheExamplesCompile:
         assert plan["schedule"] == {"start_mode": "now"}
         step = plan["targets"][0]["steps"][0]
         assert step["exposure_s"] == 4 and step["gain"] == 300 and step["binning"] == 2
+
+
+class TestTheDomeParamRename:
+    """`slave` became `bind` on 2026-08-14, and a flow is stored as the graph the
+    operator drew - so the rename is a data migration whether or not anyone calls
+    it one."""
+
+    def test_a_graph_saved_before_the_rename_still_means_Manual(self):
+        # The failure this prevents: `with_defaults` merges the NEW key's
+        # default over the top of the OLD key's value, the default wins, and a
+        # dome the operator set to Manual in July comes back bound to the mount.
+        g = FlowGraph(nodes=[_n("d", "dome", slave="Manual", timeout=45)])
+        dome = compile_plan(g, "n")["automation"]["dome"]
+        assert dome["bind"] is False, "a July flow silently re-bound its dome"
+        assert dome["shutter_timeout_s"] == 45.0
+
+    def test_the_new_key_wins_when_a_graph_carries_both(self):
+        """Only possible from a hand-edited file, and the newer name is the one
+        the editor writes - so it is the one the operator last saw."""
+        g = FlowGraph(nodes=[_n("d", "dome", slave="Manual", bind="Bind to mount")])
+        assert compile_plan(g, "n")["automation"]["dome"]["bind"] is True

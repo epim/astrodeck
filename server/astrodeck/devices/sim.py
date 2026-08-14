@@ -1266,7 +1266,7 @@ class SimDome(Dome):
         self.rig = rig
         self._state = DomeShutterState.OPEN     # a roll-off roof starts OPEN (imaging)
         self.requires_park_before_close = True
-        self.can_slave = False
+        self.can_bind = False
         self._halt = asyncio.Event()
 
     async def connect(self) -> None:
@@ -1305,9 +1305,9 @@ class SimDome(Dome):
 # — the roof exercises the park-before-close guard, the dome exercises slaving —
 # so it is left to whoever wires the Flows sim profile rather than changed here.
 class SimRotatingDome(SimDome):
-    """A simulated ROTATING dome — the sim that can actually slave.
+    """A simulated ROTATING dome — the sim that can actually bind.
 
-    ``SimDome`` is a roll-off ROOF: it has no azimuth, so ``can_slave`` is False
+    ``SimDome`` is a roll-off ROOF: it has no azimuth, so ``can_bind`` is False
     and DOME CONTROL's DEFAULT parameter ("Slave to mount") has nothing to run
     against on a machine with no hardware. The Flows handoff requires the whole
     surface to demo on the simulator, and "the default setting is only reachable
@@ -1326,14 +1326,14 @@ class SimRotatingDome(SimDome):
 
     def __init__(self, rig: SimRig, name: str = "Sim Rotating Dome") -> None:
         super().__init__(rig, name)
-        self.can_slave = True
-        self._slaved = False
+        self.can_bind = True
+        self._bound = False
 
-    async def get_slaved(self) -> bool:
-        return self._slaved
+    async def get_bound(self) -> bool:
+        return self._bound
 
-    async def set_slaved(self, on: bool) -> None:
-        self._slaved = bool(on)
+    async def set_bound(self, on: bool) -> None:
+        self._bound = bool(on)
 
 
 def build_sim_rig() -> dict[str, object]:

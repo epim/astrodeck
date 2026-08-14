@@ -54,7 +54,7 @@ def test_state_reports_open_on_a_connected_sim_rig(client):
     assert body["connected"] is True
     assert body["shutter"] == "open"
     assert body["requires_park_before_close"] is True
-    assert body["can_slave"] is False
+    assert body["can_bind"] is False
 
 
 def test_state_honest_when_no_dome(client):

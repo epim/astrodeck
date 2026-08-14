@@ -25,6 +25,21 @@ from pydantic import BaseModel, Field, field_validator
 
 from .nodes import NODE_DEFS, default_params, port_kind
 
+#: Params that changed NAME, per node type: ``{type: ((old, new), …)}``.
+#:
+#: A flow is stored on disk as the graph the operator drew, so a param rename is
+#: a data migration whether or not anyone calls it one. Every entry here is a
+#: promise that a graph saved before the rename still MEANS what it meant.
+#:
+#: `dome.slave` -> `dome.bind` (2026-08-14): the export's do-not list bans the
+#: word from code identifiers and API fields, not just from labels. Without this
+#: table a July flow with the azimuth set to "Manual" would come back bound to
+#: the mount, because `with_defaults` would merge the new key's default over the
+#: top of the old key's value and the default wins.
+RENAMED_PARAMS: dict[str, tuple[tuple[str, str], ...]] = {
+    "dome": (("slave", "bind"),),
+}
+
 #: Folder path: one or more segments of word characters, spaces and dashes.
 #: No dots, no slashes at the ends, no traversal — this becomes a display path
 #: and (for the Examples fixtures) a lookup key, never a filesystem path, but a
@@ -54,9 +69,22 @@ class FlowNode(BaseModel):
 
         Merged rather than replaced so that a graph saved by an older build —
         before a param existed — loads with the new default instead of a
-        KeyError somewhere in the compiler."""
+        KeyError somewhere in the compiler.
+
+        RENAMED PARAMS ARE MIGRATED FIRST, and the order is the whole reason
+        this is not a one-liner. A saved graph carrying the OLD key would
+        otherwise have the NEW key's default merged in on top of it, and the
+        default would win — so a dome an operator set to "Manual" in July would
+        silently come back bound to the mount, because the word for it changed.
+        Migrating before the merge means the operator's value survives the
+        rename; migrating after would be indistinguishable from not migrating.
+        """
+        raw = dict(self.params or {})
+        for old, new in RENAMED_PARAMS.get(self.type, ()):
+            if old in raw and new not in raw:
+                raw[new] = raw.pop(old)
         merged = default_params(self.type)
-        merged.update(self.params or {})
+        merged.update(raw)
         return self.model_copy(update={"params": merged})
 
 

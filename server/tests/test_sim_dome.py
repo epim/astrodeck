@@ -44,7 +44,7 @@ async def test_close_while_unparked_raises_and_faults():
 
 
 @pytest.mark.asyncio
-async def test_derived_accessors_and_slaved_raise():
+async def test_derived_accessors_and_binding_raise():
     rig = build_sim_rig()
     d = rig["dome"]
     await d.connect()
@@ -55,4 +55,4 @@ async def test_derived_accessors_and_slaved_raise():
     assert await d.is_closed() is True
     assert await d.is_open() is False
     with pytest.raises(DeviceError):
-        await d.set_slaved(True)
+        await d.set_bound(True)
