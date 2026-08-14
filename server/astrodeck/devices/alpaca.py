@@ -978,7 +978,7 @@ class AlpacaDome(_AlpacaDevice, Dome):
 
     Mirrors ``AlpacaRotator`` (motion + halt) and ``AlpacaSafetyMonitor`` (a
     single tolerant state read): ``shutter_state`` NEVER raises out of the read,
-    degrading any error/unreachable driver to ``UNKNOWN``. ``set_slaved`` is
+    degrading any error/unreachable driver to ``UNKNOWN``. ``set_bound`` is
     gated on the probed ``CanSlave`` exactly like ``AlpacaRotator.set_reverse``.
 
     ``requires_park_before_close`` is intentionally LEFT at its fail-safe True
@@ -992,13 +992,17 @@ class AlpacaDome(_AlpacaDevice, Dome):
 
     async def connect(self) -> None:
         await _AlpacaDevice.connect(self)
-        # Probe CanSlave ONCE at connect so set_slaved is correctly gated before
-        # the first call. Best-effort: a roll-off roof that can't slave (or any
+        # Probe CanSlave ONCE at connect so set_bound is correctly gated before
+        # the first call. THE URL SEGMENTS BELOW ARE ASCOM'S SPELLING, not
+        # ours: `canslave` and `slaved` are the Alpaca wire names and renaming
+        # them would talk to a device that does not exist. The do-not list
+        # governs what WE call things.
+        # Best-effort: a roll-off roof that cannot bind (or any
         # transport error) leaves the flag at its False default.
         try:
-            self.can_slave = bool(await self._get("canslave"))
+            self.can_bind = bool(await self._get("canslave"))
         except (DeviceError, httpx.HTTPError, OSError):
-            self.can_slave = False
+            self.can_bind = False
 
     async def shutter_state(self) -> DomeShutterState:
         # A state read must NEVER raise (dossier: like PierSide/CoverState): any
@@ -1021,15 +1025,15 @@ class AlpacaDome(_AlpacaDevice, Dome):
     async def abort(self) -> None:
         await self._put("abortslew")
 
-    async def get_slaved(self) -> bool:
+    async def get_bound(self) -> bool:
         try:
             return bool(await self._get("slaved"))
         except (DeviceError, httpx.HTTPError, OSError):
             return False
 
-    async def set_slaved(self, on: bool) -> None:
-        if not self.can_slave:
-            raise DeviceError(f"{self.name} cannot slave to the mount")
+    async def set_bound(self, on: bool) -> None:
+        if not self.can_bind:
+            raise DeviceError(f"{self.name} cannot bind to the mount")
         await self._put("slaved", Slaved=bool(on))
 
 

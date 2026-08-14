@@ -223,3 +223,32 @@ class TestTheLedgerFold:
     def test_no_reports_is_an_empty_mapping(self):
         assert frames_by_target_from_reports([]) == {}
         assert frames_by_target_from_reports(None) == {}
+
+
+class TestTheCampaignBlockIsNotDroppedInSilence:
+    """`SequencePlan` has nowhere to put `campaign`, so the run images ONE night.
+
+    That is a fine interim state; dropping it WITHOUT SAYING SO is not. An
+    operator who drew a month-long campaign and got a single night with no
+    warning is the defect the whole unmapped list exists to prevent, and this
+    entry was missing when the compile first started emitting the block.
+    """
+
+    def test_a_campaign_flow_reports_what_it_will_not_do(self):
+        from astrodeck.flows.compile import compile_plan
+        from astrodeck.flows.to_plan import to_sequence_plan
+        g = _ex("example-campaign")
+        _, un = to_sequence_plan(compile_plan(g, "camp"), g)
+        hits = [u for u in un if u["key"] == "campaign"]
+        assert hits, [u["key"] for u in un]
+        detail = hits[0]["detail"]
+        assert "images ONE night" in detail, detail
+        assert "will not re-arm" in detail, detail
+        assert hits[0]["level"] == "danger", hits[0]
+
+    def test_a_single_night_flow_says_nothing_about_campaigns(self):
+        from astrodeck.flows.compile import compile_plan
+        from astrodeck.flows.to_plan import to_sequence_plan
+        g = _ex("example-m16")
+        _, un = to_sequence_plan(compile_plan(g, "m16"), g)
+        assert not [u for u in un if u["key"] == "campaign"]

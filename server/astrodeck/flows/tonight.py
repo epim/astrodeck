@@ -915,7 +915,7 @@ def _story(out: dict, plan: dict, graph: FlowGraph | None) -> list[dict]:
     # 2. the dome, which is not the flow's to countermand
     if automation.get("dome"):
         timed.append(row(night["window_start_unix"],
-                         "Dome shutter opens, azimuth slaved to the mount — any "
+                         "Dome shutter opens, azimuth bound to the mount - any "
                          "unsafe or stale safety reading closes it, whatever the "
                          "flow is doing", TONE_DIM))
 
