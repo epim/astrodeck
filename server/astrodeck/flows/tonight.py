@@ -51,6 +51,7 @@ from ..sequence.schedule import (hours_to_meridian_flip, observing_night,
                                  prev_sun_event)
 from .compile import compile_plan
 from .models import FlowGraph
+from .nodes import parse_cycle_plan
 
 #: Fallback imaging twilight when neither the caller nor the config has one.
 #: Same number ``schedule.observing_night`` falls back to; duplicated rather
@@ -329,6 +330,8 @@ def resolve_tonight(plan: dict | FlowGraph, site: Any, *,
                     now: float | None = None,
                     twilight_deg: float | None = None,
                     banked: Callable[[], Mapping[str, float]] | None = None,
+                    frames_by_target: Callable[
+                        [], Mapping[str, Mapping[str, int]]] | None = None,
                     resolve_name: Callable[[str], tuple[float, float] | None] | None = None,
                     step_min: int = CURVE_STEP_MIN) -> dict:
     """Everything the Tonight panel draws, for one flow, at one instant.
@@ -460,6 +463,11 @@ def resolve_tonight(plan: dict | FlowGraph, site: Any, *,
         "moon": moon,
         "targets": targets,
         "budget": budget,
+        # The CAMPAIGN tab and the STORY tab's brief. Both read the GRAPH, not
+        # the compile, so both are empty when a caller hands in a plan dict -
+        # the same rule the dawn story already follows for the report sink.
+        "campaign": _campaign(graph, frames_by_target),
+        "brief": brief(graph),
     }
     out["story"] = _story(out, plan_dict, graph)
     return out
@@ -548,6 +556,331 @@ def _budget(plan: dict, banked: Callable[[], Mapping[str, float]] | None
 
 
 # ------------------------------------------------------------------- the story
+
+def _first(graph: FlowGraph | None, node_type: str):
+    """The first node of a type, or None. The brief asks this fifteen times."""
+    if graph is None:
+        return None
+    for n in graph.nodes:
+        if n.type == node_type:
+            return n
+    return None
+
+
+def _wired(graph: FlowGraph | None, *, frm=None, from_port: str | None = None,
+           to=None, to_port: str | None = None) -> bool:
+    """Is there an edge matching every constraint given?"""
+    if graph is None:
+        return False
+    for e in graph.edges:
+        if frm is not None and e.from_ != frm.id:
+            continue
+        if to is not None and e.to != to.id:
+            continue
+        if from_port is not None and e.fromPort != from_port:
+            continue
+        if to_port is not None and e.toPort != to_port:
+            continue
+        return True
+    return False
+
+
+#: How the DUSK WINDOW's `start` reads inside a sentence.
+_START_PROSE = {
+    "Astro dusk": "astronomical dusk",
+    "Nautical dusk": "nautical dusk",
+    "Civil dusk": "civil dusk",
+    "Clock time": "the set clock time",
+}
+
+
+def _join_and(parts: list[str]) -> str:
+    """``a, b and c``. The prototype's regex, spelled out."""
+    if len(parts) <= 1:
+        return "".join(parts)
+    return ", ".join(parts[:-1]) + ", and " + parts[-1]
+
+
+def brief(graph: FlowGraph | None) -> str:
+    """The STORY tab's mechanical brief: the graph, read back as prose.
+
+    "Generated deterministically from the graph, sentence per capability, params
+    inlined verbatim" - so edit a param and the sentence changes, and a sentence
+    appears only when the node that earns it exists.
+
+    WHY IT EARNS ITS PLACE next to a canvas that already shows the same thing:
+    the canvas shows the SHAPE and the inspector shows ONE node's params. Nothing
+    else puts every number the night will actually use into one paragraph an
+    operator can read at 21:00 and disagree with. A graph that reads wrong out
+    loud usually is wrong.
+
+    IT IS NOT A SUMMARY OF THE COMPILE, and that distinction is the honest one:
+    it describes what the GRAPH says, which is what the operator drew. Where the
+    compile drops something (the `unmapped` list), the brief will still describe
+    it - that gap is the compile's to report, and it does, rather than this
+    quietly omitting a stage the operator can plainly see on the canvas.
+    """
+    if graph is None:
+        return ""
+    g = graph.with_defaults()
+    n = lambda t: _first(g, t)                                   # noqa: E731
+    dusk, pool, tgt = n("dusk"), n("pool"), n("target")
+    cyc, cap, rep = n("cycle"), n("capture"), n("report")
+    cw, hold, cq, pc = n("cloudwatch"), n("holdresume"), n("calib"), n("parkclose")
+    saf, dome, df = n("safety"), n("dome"), n("duskflats")
+    guide, af, slew = n("guide"), n("autofocus"), n("slew")
+    seg: list[str] = []
+
+    if dusk is not None:
+        p = dusk.params
+        off = int(_num(p.get("offset")))
+        start = _START_PROSE.get(str(p.get("start")), str(p.get("start")))
+        t = f"This flow arms at {start}"
+        if off:
+            t += f" ({_signed(off, '+.0f')} min)"
+        if dome is not None:
+            t += ", opens the dome and binds it to the mount"
+        if df is not None:
+            t += (f", and shoots {df.params.get('count')} flats per filter "
+                  f"({str(df.params.get('method')).lower()}) in the twilight window")
+        seg.append(t + ".")
+
+    # "IT THEN" NEEDS SOMETHING TO FOLLOW. The prototype opens this sentence
+    # with a fixed "It then", which reads correctly after the arming sentence
+    # and is broken English without one - the EAA example has no DUSK WINDOW, so
+    # its brief began "It then arms M27 - Dumbbell." with no antecedent. Same
+    # sentence, same content, correct connective; noted in the milestone summary
+    # as a prototype defect rather than a design change.
+    lead = "It then " if seg else "This flow "
+    if pool is not None:
+        p = pool.params
+        seg.append(f"{lead}selects the best of {p.get('members')} - above "
+                   f"{p.get('minAlt')}°, at least {p.get('moonSep')}° from the "
+                   f"moon (if up), within {p.get('maxHA')} h of the meridian.")
+    elif tgt is not None:
+        seg.append(f"{lead}arms {tgt.params.get('name')}.")
+
+    rig: list[str] = []
+    if slew is not None:
+        rig.append(f"slews and plate-solves to within {slew.params.get('tol')}′ "
+                   f"({slew.params.get('solver')})")
+    if af is not None:
+        rig.append(f"autofocuses ({str(af.params.get('method')).lower()})")
+    if guide is not None:
+        rig.append(f"guides with {guide.params.get('provider')} (settle below "
+                   f"{guide.params.get('settle')}″, dither every "
+                   f"{guide.params.get('dither')} frames)")
+    if rig:
+        seg.append("For each target it " + ", ".join(rig) + ".")
+
+    if cyc is not None:
+        slots = parse_cycle_plan(cyc.params.get("plan"))
+        table = ", ".join(f"{f} {e} s × {cyc.params.get('cycles')}"
+                          for f, e in slots)
+        seg.append(f"Capture interleaves one sub per filter per pass - {table} - "
+                   f"so every channel grows evenly; a sub is graded and only "
+                   f"counts below HFR {cyc.params.get('reject')}″.")
+    elif cap is not None:
+        p = cap.params
+        seg.append(f"It captures {p.get('filter')} {p.get('exposure')} s × "
+                   f"{p.get('count')} (gain {p.get('gain')}, bin {p.get('bin')}); "
+                   f"subs grading above HFR {p.get('reject')}″ don't count.")
+
+    advances = pool is not None and _wired(g, to=pool, to_port="advance")
+    if rep is not None and advances:
+        seg.append("When a target's quota is met, a session report is cut and "
+                   "the pool advances to the next best - finished targets are "
+                   "never re-selected.")
+    elif rep is not None:
+        seg.append("A session report is appended when the run ends.")
+
+    if pool is not None and (_wired(g, frm=pool, from_port="floor")
+                             or str(pool.params.get("onFloor") or "")
+                             .startswith("Advance")):
+        seg.append(f"If the active target sinks to the "
+                   f"{pool.params.get('minAlt')}° floor, it is set aside - "
+                   f"resumed the next night, not retried tonight - and the next "
+                   f"best takes over.")
+
+    if cw is not None:
+        t = (f"If cloud cover above {cw.params.get('threshold')}% is detected, "
+             f"imaging pauses at the frame boundary")
+        if cq is not None:
+            t += (" and the calibration queue banks whatever the library lacks "
+                  "(darks → bias → flats-if-panel)")
+        t += (f"; once the sky holds clear for {cw.params.get('clearFor')} min it")
+        steps: list[str] = []
+        if hold is not None:
+            hp = hold.params
+            # THE COOLER SENTENCE COMES FIRST because the checklist does, and
+            # the brief's job is to let an operator notice that it is missing.
+            if str(hp.get("cooler") or "").startswith("Re-cool"):
+                steps.append("re-cools the sensor to setpoint and waits for it "
+                             "to stabilize")
+            steps.append("restores the filter")
+            if str(hp.get("recenter") or "").startswith("Re-center"):
+                steps.append("re-centers")
+            if hp.get("refocus") != "Never":
+                steps.append("refocuses" if hp.get("refocus") == "Always"
+                             else "refocuses if drifted")
+            steps.append("resumes at the same slot")
+        else:
+            steps.append("resumes")
+        seg.append(f"{t} {_join_and(steps)}.")
+
+    if (pc is not None and dusk is not None
+            and _wired(g, frm=dusk, from_port="nightend", to=pc)):
+        t = (f"When astronomical night ends, the mount parks and the "
+             f"{str(pc.params.get('closure')).lower()} closes")
+        if str(pc.params.get("cooler") or "").startswith("Hold"):
+            t += " with the cooler held cold"
+        if cq is not None and _wired(g, frm=pc, to=cq):
+            t += ", banking capped day darks"
+        if str(dusk.params.get("repeat") or "Single night") != "Single night":
+            t += ("; the flow re-arms at the next dusk and resumes mid-cycle "
+                  "from the ledger")
+        seg.append(t + ".")
+
+    if saf is not None:
+        seg.append("Rain, wind, or power failure aborts and parks "
+                   "unconditionally - a stale reading counts as unsafe.")
+
+    if (dusk is not None and pool is not None
+            and dusk.params.get("repeat") == "Nightly until pool complete"):
+        members = [m for m in str(pool.params.get("members") or "").split(",")
+                   if m.strip()]
+        seg.append(f"Once all {len(members)} targets hold their "
+                   f"{pool.params.get('quota')}-cycle quota, the rig stays parked.")
+
+    return " ".join(seg)
+
+
+def frames_by_target_from_reports(reports: Iterable[Any]
+                                  ) -> dict[str, dict[str, int]]:
+    """``{target: {filter: accepted_frames}}``, summed over the ledger.
+
+    The pure half of the CAMPAIGN tab's progress, matching
+    ``banked_hours_from_reports`` in shape and for the same reason: the route
+    supplies the impure half and this module stays callable without a disk.
+
+    ACCEPTED FRAMES, not captured. A rejected sub is one the night has to shoot
+    again, so counting it toward a quota would retire a target that still owes
+    work - and on a campaign that error compounds across every remaining night.
+    """
+    out: dict[str, dict[str, int]] = {}
+    for rep in reports or ():
+        for tb in _field(rep, "targets") or ():
+            name = str(_field(tb, "name", "") or "")
+            if not name:
+                continue
+            bucket = out.setdefault(name, {})
+            for fb in _field(tb, "by_filter") or ():
+                filt = _field(fb, "filter")
+                if not filt:
+                    continue
+                bucket[str(filt)] = bucket.get(str(filt), 0) + int(
+                    _num(_field(fb, "frames", 0)))
+    return out
+
+
+def _campaign(graph: FlowGraph | None,
+              frames_by_target: Callable[[], Mapping[str, Mapping[str, int]]] | None
+              ) -> dict:
+    """The CAMPAIGN tab: how much of the pool's quota each member has banked.
+
+    Returns ``{is_campaign, has_pool, has_ledger, quota, members[], note}``.
+    A member row is ``{name, banked, quota, done, pct}``.
+
+    A CYCLE IS THE UNIT, and it is complete only when EVERY slot in the table
+    has its subs. So a member's banked cycles is the MINIMUM over the slots of
+    (accepted frames ÷ subs-per-pass), not the total frame count: forty-five L
+    and no Ha is zero complete cycles of an LRGBSHO table, and reporting it as
+    "45/45 - DONE" would retire a target that has one channel.
+
+    NO LEDGER MEANS NO NUMBER. `has_ledger` false and every `banked` is None -
+    NOT zero. "0 of 45 banked" and "nobody has looked" are different sentences,
+    and only one of them should make an operator re-plan a month.
+
+    NO PROJECTED COMPLETION DATE. The design asks for "pool complete in ~6 clear
+    nights, weather-modelled" and the prototype hardcodes the 6; nothing on this
+    server forecasts clear nights that far out, and the weather integration is a
+    tonight-scale nowcast. A number invented here would be the most quotable
+    thing on the screen and the least true, so the note states the work
+    REMAINING - which is known exactly - and says the nights are not forecast.
+    """
+    g = graph.with_defaults() if graph is not None else None
+    pool = _first(g, "pool")
+    dusk = _first(g, "dusk")
+    cyc = _first(g, "cycle")
+    is_campaign = bool(
+        pool is not None and dusk is not None
+        and str(dusk.params.get("repeat") or "Single night") != "Single night")
+
+    if pool is None:
+        return {"is_campaign": False, "has_pool": False, "has_ledger": False,
+                "quota": 0, "members": [],
+                "note": "No target pool in this flow - campaigns need one."}
+
+    quota = max(1, int(_num(pool.params.get("quota"), 45)))
+    names = [m.strip() for m in str(pool.params.get("members") or "").split(",")
+             if m.strip()]
+    slots = parse_cycle_plan(cyc.params.get("plan")) if cyc is not None else []
+    per_pass = (max(1, int(_num(cyc.params.get("perCycle"), 1)))
+                if cyc is not None else 1)
+
+    bank: Mapping[str, Mapping[str, int]] = {}
+    has_ledger = frames_by_target is not None
+    if frames_by_target is not None:
+        try:
+            bank = frames_by_target() or {}
+        except Exception:
+            has_ledger = False
+
+    def cycles_for(name: str) -> int | None:
+        if not has_ledger:
+            return None
+        got = bank.get(name) or {}
+        if not slots:
+            # No cycle stage: there is no "pass" to count, so the only honest
+            # answer is that this flow's progress is not measured in cycles.
+            return None
+        return min(int(got.get(f, 0)) // per_pass for f, _ in slots)
+
+    members = []
+    for name in names:
+        banked = cycles_for(name)
+        members.append({
+            "name": name,
+            "banked": banked,
+            "quota": quota,
+            "done": banked is not None and banked >= quota,
+            "pct": (min(100, round(100 * banked / quota)) if banked is not None
+                    else None),
+        })
+
+    if not is_campaign:
+        note = ("Single-night flow - set DUSK WINDOW → Repeat to make this a "
+                "campaign.")
+    elif not has_ledger:
+        note = ("No session ledger available, so nothing here claims a banked "
+                "figure. Dawn parks + closes; the cooler stays cold for day "
+                "darks; each dusk resumes mid-cycle.")
+    elif not slots:
+        note = ("This campaign's capture stage is not a FILTER CYCLE, so "
+                "progress is not counted in cycles. Dawn parks + closes; each "
+                "dusk resumes where the ledger left off.")
+    else:
+        left = sum(max(0, quota - (m["banked"] or 0)) for m in members)
+        passes = left * per_pass * len(slots)
+        note = (f"{left} cycles left across the pool ({passes} subs). Nights to "
+                f"finish are not forecast - clear-sky prediction that far out is "
+                f"not something this rig models. Dawn parks + closes; the cooler "
+                f"stays cold for day darks; each dusk resumes mid-cycle.")
+
+    return {"is_campaign": is_campaign, "has_pool": True,
+            "has_ledger": has_ledger, "quota": quota, "members": members,
+            "note": note}
+
 
 def _story(out: dict, plan: dict, graph: FlowGraph | None) -> list[dict]:
     """The STORY tab: the night as sentences, in the prototype's order.

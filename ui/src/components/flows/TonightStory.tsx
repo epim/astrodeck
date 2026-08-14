@@ -37,17 +37,55 @@ const TONE_CLASS: Record<string, string> = {
   bad: "text-bad",
 };
 
-export function TonightStory({ story }: { story: TonightStoryRow[] }): JSX.Element {
+/** The mechanical brief: the graph read back as one paragraph of prose.
+ *
+ *  Generated on the SERVER (tonight.py::brief), for the same reason the story
+ *  rows are: a second generator in the browser would be a second reading of the
+ *  same graph, and the two would drift into describing different nights.
+ *
+ *  It is bordered and it leads the tab because it is the one thing on this
+ *  surface that puts every number the night will use into a single sentence
+ *  sequence. The canvas shows the shape; the inspector shows one node. A graph
+ *  that reads wrong out loud usually is wrong, and this is where that is
+ *  noticeable at 21:00 rather than at 03:00.
+ */
+function Brief({ text }: { text: string }): JSX.Element | null {
+  if (!text) return null;
+  return (
+    <section
+      className="border border-line rounded-[10px] p-3 flex flex-col gap-2"
+      aria-label="Brief generated from the graph"
+      data-tonight-brief=""
+    >
+      <h3 className="font-display font-semibold text-[9.5px] tracking-[0.22em] text-faint">
+        BRIEF - GENERATED FROM THE GRAPH
+      </h3>
+      <p className="text-[12.5px] leading-[1.65] [text-wrap:pretty]">{text}</p>
+    </section>
+  );
+}
+
+export function TonightStory({ story, brief = "" }: {
+  story: TonightStoryRow[];
+  /** "" when the server had no graph to read — a plan dict alone cannot
+   *  produce this, the same rule the dawn story's report sink follows. */
+  brief?: string;
+}): JSX.Element {
   if (story.length === 0) {
     return (
-      <p className="text-[12px] leading-[1.5] text-dim [text-wrap:pretty]">
-        The server resolved this night and had nothing to say about it.
-      </p>
+      <div className="flex flex-col gap-4">
+        <Brief text={brief} />
+        <p className="text-[12px] leading-[1.5] text-dim [text-wrap:pretty]">
+          The server resolved this night and had nothing to say about it.
+        </p>
+      </div>
     );
   }
 
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex flex-col gap-4">
+      <Brief text={brief} />
+      <div className="flex flex-col gap-2">
       {story.map((row, i) => (
         <div
           key={`${i}-${row.t_unix ?? row.label}`}
@@ -66,8 +104,9 @@ export function TonightStory({ story }: { story: TonightStoryRow[] }): JSX.Eleme
           >
             {row.msg}
           </span>
-        </div>
-      ))}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
