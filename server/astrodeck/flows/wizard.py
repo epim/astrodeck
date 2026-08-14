@@ -148,15 +148,29 @@ class _Canvas:
         return FlowGraph(nodes=self.nodes, edges=self.edges)
 
 
-def _safety_pair(canvas: _Canvas) -> FlowNode:
+#: How SAFETY MONITOR is scoped when a CLOUD WATCH shares the graph with it.
+#: Verbatim from the node's `watch` option list — the two tiers must not both
+#: claim clouds (doctor rule 13).
+_WATCH_PAIRED = "Rain + wind + power (pair with Cloud Watch)"
+
+
+def _safety_pair(canvas: _Canvas, *, paired_with_cloudwatch: bool = False) -> FlowNode:
     """A safety monitor with something wired to it. Returns the monitor.
 
     Never a bare monitor. SAFETY MONITOR has no inputs, so doctor rule 1 cannot
     see one whose `unsafe` event goes nowhere — it would satisfy rule 9's "add a
     monitor" while closing nothing on rain, which is the precise shape of a
     promise nothing keeps.
+
+    SCOPED AWAY FROM CLOUDS when the same flow has a CLOUD WATCH. The default is
+    the standalone reading, which is right for a rig with no transient tier; put
+    both on the same graph unscoped and safety aborts the night that the hold was
+    there to ride out. The wizard knows which graph it just drew, so it is the
+    one thing that can set this without asking.
     """
     safety = canvas.add("safety", _RULES_X0, _RULES_Y2)
+    if paired_with_cloudwatch:
+        safety.params["watch"] = _WATCH_PAIRED
     abort = canvas.add("abort", _RULES_X0 + _RULES_DX, _RULES_Y2)
     canvas.wire(safety, "unsafe", abort, "do")
     return safety
@@ -313,7 +327,7 @@ def generate(kind: str = KIND_DEEP_SKY,
         # picking Dome without Notify generated a graph that opens a shutter
         # nothing will close. Built here, before notify, so the two branches
         # share one monitor instead of racing to create two.
-        safety = _safety_pair(canvas)
+        safety = _safety_pair(canvas, paired_with_cloudwatch=cloudwatch is not None)
 
     if OPT_NOTIFY in opts:
         notify = rule("notify")
@@ -327,7 +341,8 @@ def generate(kind: str = KIND_DEEP_SKY,
             # Nothing else in this graph fires an event, so the phone would
             # never buzz. A safety monitor is the honest thing to hang it on.
             if safety is None:
-                safety = _safety_pair(canvas)
+                safety = _safety_pair(
+                    canvas, paired_with_cloudwatch=cloudwatch is not None)
             canvas.wire(safety, "unsafe", notify, "do")
 
     return canvas.graph()

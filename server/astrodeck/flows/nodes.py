@@ -27,10 +27,17 @@ keeps a graph from promising a night it cannot deliver.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Literal
 
 PortKind = Literal["flow", "event"]
+
+#: One FILTER CYCLE slot: a filter name, whitespace, whole seconds. Anchored at
+#: the start and deliberately tolerant of trailing text, matching the
+#: prototype's ``/^(\S+)\s+(\d+)/`` exactly — the parser must not become stricter
+#: than the thing that writes the string.
+_CYCLE_SLOT_RE = re.compile(r"^(\S+)\s+(\d+)")
 
 #: Category -> the token the UI colours it with (README §"Design tokens"). Kept
 #: here beside the node table so a new node cannot be added without one.
@@ -60,9 +67,14 @@ class NodeDef:
     ins: tuple[Port, ...] = ()
     outs: tuple[Port, ...] = ()
     params: dict = field(default_factory=dict)
-    #: Inputs that may be left unwired without the doctor complaining. Only
-    #: ``panel`` today — the calibration queue works fine without a flat panel,
-    #: it simply skips flats, and the doctor says THAT separately (rule 7).
+    #: Inputs that may be left unwired without the doctor complaining. Two of
+    #: them, and for the same reason in both cases: the node works without the
+    #: wire, and there is a SEPARATE rule that says so in its own words rather
+    #: than as an "unwired input" complaint that would read like a mistake.
+    #:
+    #: * ``calib.panel`` — a queue with no flat panel skips flats (rule 7).
+    #: * ``pool.advance`` — a single-night pool never advances (rule 11 fires
+    #:   only once the DUSK WINDOW is set to repeat, i.e. once it is a campaign).
     optional_ins: frozenset[str] = frozenset()
 
     def port(self, port_id: str, direction: str) -> Port | None:
@@ -84,17 +96,29 @@ NODE_DEFS: dict[str, NodeDef] = {
     # ---------------------------------------------------------------- SOURCES
     "dusk": NodeDef(
         type="dusk", label="DUSK WINDOW", cat="SOURCE",
-        outs=(_f("window", "window opens"),),
-        params={"start": "Astro dusk", "offset": -30, "stop": "Dawn", "minAlt": 30}),
+        # `nightend` is what makes a CAMPAIGN differ from a night: it fires
+        # BEFORE dawn so a shutdown lane can run while there is still time to
+        # run it. With `repeat` set, dawn stops being the end of the run and
+        # becomes a scheduled hold — the capture cursor survives it and the flow
+        # re-arms at the next dusk, mid-cycle.
+        outs=(_f("window", "window opens"), _e("nightend", "night ends")),
+        params={"start": "Astro dusk", "offset": -30, "stop": "Dawn",
+                "minAlt": 30, "repeat": "Single night"}),
     "target": NodeDef(
         type="target", label="TARGET", cat="SOURCE",
         ins=(_f("arm", "arm"),), outs=(_f("target", "target"),),
-        params={"name": "M31 — Andromeda", "ra": "00h 42m 44s",
+        params={"name": "M31 - Andromeda", "ra": "00h 42m 44s",
                 "dec": "+41° 16′ 09″", "rotation": 23.4}),
     "safety": NodeDef(
         type="safety", label="SAFETY MONITOR", cat="SOURCE",
         outs=(_e("unsafe", "unsafe"),),
-        params={"source": "Cloud + rain sensor", "stale": "Unsafe (fail closed)"}),
+        # `watch` SCOPES the fail-closed tier away from clouds. Safety aborts and
+        # never holds; CLOUD WATCH holds and never aborts. A safety monitor also
+        # watching clouds beats the hold to the punch every time, so the two
+        # tiers race and the recoverable one always loses (doctor rule 13).
+        params={"source": "Cloud + rain sensor",
+                "watch": "Clouds + rain + wind (standalone)",
+                "stale": "Unsafe (fail closed)"}),
     "cloudwatch": NodeDef(
         type="cloudwatch", label="CLOUD WATCH", cat="SOURCE",
         outs=(_e("in", "clouds in"), _e("clear", "clouds clear")),
@@ -103,7 +127,10 @@ NODE_DEFS: dict[str, NodeDef] = {
     "dome": NodeDef(
         type="dome", label="DOME CONTROL", cat="RIG",
         ins=(_f("run", "open"),), outs=(_f("open", "shutter open"),),
-        params={"slave": "Slave to mount", "onUnsafe": "Close (fail closed)",
+        # BIND, never "slave" — the handoff's do-not list names the word in UI
+        # labels, code identifiers, API fields and comments alike, and a param
+        # key is all four at once.
+        params={"bind": "Bind to mount", "onUnsafe": "Close (fail closed)",
                 "timeout": 120}),
     "flatpanel": NodeDef(
         type="flatpanel", label="FLAT PANEL", cat="RIG",
@@ -129,6 +156,28 @@ NODE_DEFS: dict[str, NodeDef] = {
         outs=(_f("complete", "complete"), _e("frame", "frame graded")),
         params={"filter": "L", "exposure": 120, "gain": 100, "bin": "1",
                 "count": 24, "reject": 3.5, "goal": 12}),
+    "cycle": NodeDef(
+        type="cycle", label="FILTER CYCLE", cat="RIG",
+        # A SIBLING OF `capture`, NOT A LOOP CONTAINER. The 2026-08-14 handoff
+        # is explicit: "no loop construct exists at graph level — the graph stays
+        # acyclic, loops live inside stages, and campaign loops are event wires".
+        # So this is one capture stage that happens to interleave: it shoots its
+        # slot table one sub per filter per pass and repeats until every slot has
+        # its cycle count.
+        #
+        # WHY INTERLEAVE AT ALL: channels grow evenly, so a night cut short by
+        # cloud still stacks. Forty-five L followed by nothing else is a mono
+        # image; one of each, forty-five times, is an image at every prefix.
+        ins=(_f("run", "run"),),
+        outs=(_f("complete", "complete"), _e("frame", "frame graded")),
+        # `plan` is the slot table, stored as the prototype's `parsePlan` text:
+        # "<filter> <seconds>" comma-separated, in wheel order. The INSPECTOR
+        # never lets it be typed — the handoff requires one row per filter in the
+        # rig's actual wheel, so a filter name that is not in the wheel cannot be
+        # entered. The string is the storage format, not the input method.
+        params={"plan": "L 60, R 60, G 60, B 60, Ha 180, OIII 180, SII 180",
+                "cycles": 45, "perCycle": 1, "gain": 100, "bin": "1",
+                "reject": 3.5}),
     "duskflats": NodeDef(
         type="duskflats", label="DUSK FLATS", cat="RIG",
         ins=(_f("run", "run"),), outs=(_f("done", "flats done"),),
@@ -147,24 +196,21 @@ NODE_DEFS: dict[str, NodeDef] = {
     # ------------------------------------------------------------------ LOGIC
     "pool": NodeDef(
         type="pool", label="TARGET POOL", cat="LOGIC",
-        ins=(_f("arm", "arm"),), outs=(_f("target", "best target"),),
+        # `advance` is the campaign's loop-back. It is an EVENT input, and it is
+        # optional, because a single-night pool never needs one: the flow lane
+        # stays acyclic and the loop is drawn as SESSION REPORT 'target done' ->
+        # here, which is an event wire and so may legally point backwards.
+        ins=(_f("arm", "arm"), _e("advance", "advance")),
+        optional_ins=frozenset({"advance"}),
+        # `floor` is the other half of an unattended campaign: when the active
+        # target sinks to the altitude floor the scheduler suspends THAT target's
+        # cursor — suspended, not done, so it is retried next night — and hands
+        # out the next best member.
+        outs=(_f("target", "best target"), _e("floor", "floor hit")),
         params={"members": "M16, M17, M8, NGC 6946",
-                "strategy": "Best available (alt × moon)", "minAlt": 30,
+                "strategy": "Best available (alt × moon)", "quota": 45,
+                "minAlt": 30, "onFloor": "Advance now; retry it next night",
                 "moonSep": 40, "maxHA": 4}),
-    "cycle": NodeDef(
-        type="cycle", label="FILTER CYCLE", cat="LOGIC",
-        # ONE PASS PER VISIT, many passes per night. The captures on this
-        # target become one round: L R G B S Ha O3, and `cycles` says how many
-        # times to go round. Each capture's own `count` is what it takes ON
-        # each pass, so "1" and 45 cycles is forty-five subs of every filter.
-        #
-        # It applies to the target's whole capture chain rather than to a
-        # sub-graph, because the graph model is flat — there is no container to
-        # put a body inside. That is a real limit and `to_plan` reports it
-        # rather than letting a second CYCLE node look like it does something.
-        ins=(_f("run", "run"),),
-        outs=(_f("body", "each pass"), _f("complete", "all passes")),
-        params={"cycles": 45, "order": "As drawn"}),
     "condition": NodeDef(
         type="condition", label="CONDITION", cat="LOGIC",
         ins=(_e("events", "events"),), outs=(_e("fire", "fire"),),
@@ -174,8 +220,20 @@ NODE_DEFS: dict[str, NodeDef] = {
     "holdresume": NodeDef(
         type="holdresume", label="HOLD / RESUME", cat="ACTION",
         ins=(_e("pause", "pause"), _e("resume", "resume")),
+        # THE COOLER GATE COMES FIRST, and the ordering is the whole point. A
+        # hold can outlive the thing that was keeping the sensor cold: a daybreak
+        # park warms it by design, a power cycle drops the TEC, a cooler fault
+        # leaves it drifting. Resuming into that shoots warm subs against a cold
+        # dark library, which is exactly what happened on 2026-08-12 — 63 frames
+        # at ambient because a restart raced the camera's connect.
+        #
+        # So the checklist is: re-cool and stabilize -> restore the filter ->
+        # re-center -> refocus -> re-settle the guider -> same slot. Pointing and
+        # focus are worth nothing on a frame the temperature already ruined.
         params={"whilePaused": "Keep tracking, park guider", "maxHold": 45,
-                "onTimeout": "Abort + park", "recenter": "Re-center (plate solve)",
+                "onTimeout": "Abort + park",
+                "cooler": "Re-cool + stabilize before capture",
+                "recenter": "Re-center (plate solve)",
                 "refocus": "If HFR drifted"}),
     "notify": NodeDef(
         type="notify", label="NOTIFY", cat="ACTION",
@@ -185,6 +243,16 @@ NODE_DEFS: dict[str, NodeDef] = {
         type="refocus", label="REFOCUS", cat="ACTION",
         ins=(_e("do", "do"),),
         params={"boundary": "Next frame boundary"}),
+    "parkclose": NodeDef(
+        type="parkclose", label="PARK + CLOSE", cat="ACTION",
+        # A SCHEDULED SHUTDOWN, NOT AN ABORT, and the difference is the campaign
+        # cursor. ABORT + PARK ends a run; this ends a NIGHT and leaves the run
+        # able to pick up where it stopped. `closed` then chains into a
+        # CALIBRATION QUEUE so the day is spent on darks that match the night —
+        # which is only true if the cooler was held cold, hence the param.
+        ins=(_e("do", "do"),), outs=(_e("closed", "closed"),),
+        params={"closure": "Dust flap + dome", "cooler": "Hold cold (day darks)",
+                "tracking": "Park"}),
     "abort": NodeDef(
         type="abort", label="ABORT + PARK", cat="ACTION",
         ins=(_e("do", "do"),),
@@ -192,16 +260,29 @@ NODE_DEFS: dict[str, NodeDef] = {
     "report": NodeDef(
         type="report", label="SESSION REPORT", cat="SINK",
         ins=(_f("session", "session"),),
+        # `done` is what closes a campaign's loop: it fires when the ACTIVE
+        # target's quota is met, and wiring it back to a pool's `advance` is the
+        # whole mechanism. It is an event, so the backward wire is legal and the
+        # flow lane stays a DAG.
+        outs=(_e("done", "target done"),),
         params={"format": "JSON + FITS index", "dest": "captures/sessions/"}),
 }
 
 #: Palette grouping, in the order the rail renders them (README §3).
+#:
+#: ITEM ORDER inside LOGIC and ACTIONS + SINKS was the handoff's §G-3 dispute:
+#: three sources, no two agreeing. The 2026-08-14 prototype settles it by being
+#: the only source that names every current type — it is authority level 3, and
+#: the README (level 1) still specifies group names and group order only. So
+#: these five rows are the prototype's `groups` array, verbatim.
 PALETTE_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("SOURCES", ("dusk", "target", "safety", "cloudwatch")),
     ("EQUIPMENT", ("dome", "flatpanel")),
-    ("RIG OPS", ("slew", "autofocus", "guide", "capture", "duskflats", "calib")),
-    ("LOGIC", ("pool", "cycle", "condition")),
-    ("ACTIONS + SINKS", ("holdresume", "notify", "refocus", "abort", "report")),
+    ("RIG OPS", ("slew", "autofocus", "guide", "capture", "cycle",
+                 "duskflats", "calib")),
+    ("LOGIC", ("condition", "pool")),
+    ("ACTIONS + SINKS", ("notify", "refocus", "holdresume", "parkclose",
+                         "abort", "report")),
 )
 
 
@@ -218,6 +299,27 @@ def port_kind(node_type: str, port_id: str, direction: str) -> PortKind | None:
         return None
     p = d.port(port_id, direction)
     return None if p is None else p.kind
+
+
+def parse_cycle_plan(plan) -> list[tuple[str, int]]:
+    """Decode a FILTER CYCLE slot table into ``[(filter, exposure_s), …]``.
+
+    The storage format is the prototype's ``parsePlan``: comma-separated
+    ``"<filter> <seconds>"`` in wheel order, e.g.
+    ``"L 60, R 60, G 60, B 60, Ha 180, OIII 180, SII 180"``.
+
+    UNPARSEABLE ENTRIES ARE DROPPED, not defaulted, and that is deliberate. A
+    slot nobody can read is a slot nobody can shoot; inventing an exposure for it
+    would put frames on disk under a filter the operator never asked for. An
+    empty result makes the stage contribute nothing, which the doctor and the
+    compile both notice — silence here would not be noticed by either.
+    """
+    out: list[tuple[str, int]] = []
+    for chunk in str(plan or "").split(","):
+        m = _CYCLE_SLOT_RE.match(chunk.strip())
+        if m:
+            out.append((m.group(1), int(m.group(2))))
+    return out
 
 
 def default_params(node_type: str) -> dict:

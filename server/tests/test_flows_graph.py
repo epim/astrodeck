@@ -57,18 +57,40 @@ class TestVocabulary:
     def test_port_kinds_match_the_handoff(self, ntype, port, direction, kind):
         assert port_kind(ntype, port, direction) == kind
 
-    def test_capture_is_the_node_that_bridges_the_two_lanes(self):
-        """CAPTURE LOOP is the only node with a flow output AND an event output.
-        That is what lets a frame grade drive a rule without the run cursor
-        leaving the lane."""
-        both = [t for t, d in NODE_DEFS.items()
-                if any(p.kind == "flow" for p in d.outs)
-                and any(p.kind == "event" for p in d.outs)]
-        assert both == ["capture"], both
+    def test_the_lane_bridges_are_named_and_each_has_a_reason(self):
+        """A node with BOTH a flow output and an event output is a bridge: it
+        lets something be observed without the run cursor leaving the lane.
 
-    def test_panel_is_the_only_optional_input(self):
+        The set is pinned rather than counted, because every member is a design
+        decision and a new one arriving silently is how a graph starts promising
+        a night it cannot deliver. Four, and each earns it:
+
+        * ``dusk``     — `window opens` is the lane; `night ends` is the campaign
+                         shutdown, which must fire while there is still time.
+        * ``capture``  — `complete` is the lane; `frame graded` drives watchdogs.
+        * ``cycle``    — same pair, same reason. It is a capture stage.
+        * ``pool``     — `best target` is the lane; `floor hit` says the active
+                         target sank, which the lane itself cannot express.
+        """
+        both = {t for t, d in NODE_DEFS.items()
+                if any(p.kind == "flow" for p in d.outs)
+                and any(p.kind == "event" for p in d.outs)}
+        assert both == {"dusk", "capture", "cycle", "pool"}, both
+
+    def test_the_optional_inputs_are_the_two_with_a_rule_of_their_own(self):
+        """An input may only be optional when a NAMED doctor rule explains the
+        absence in its own words. Otherwise the graph is quietly incomplete and
+        nothing says so."""
         opt = {(t, p) for t, d in NODE_DEFS.items() for p in d.optional_ins}
-        assert opt == {("calib", "panel")}
+        assert opt == {("calib", "panel"),     # rule 7 — flats get skipped
+                       ("pool", "advance")}    # rule 11 — only campaigns need it
+
+    def test_every_optional_input_is_a_real_port(self):
+        """A typo in `optional_ins` would silently exempt nothing, and the
+        doctor would go on demanding a wire the operator cannot see is optional."""
+        for t, d in NODE_DEFS.items():
+            for pid in d.optional_ins:
+                assert d.port(pid, "in") is not None, f"{t}.{pid} is not an input"
 
     def test_an_unknown_node_type_types_no_port(self):
         """Fail-closed: an older or newer client naming a type we lack must get
@@ -121,7 +143,7 @@ class TestTheDoctor:
 
     def test_1_an_unwired_required_input_is_named(self):
         out = check(FlowGraph(nodes=[_n("s", "slew")]))
-        assert any("SLEW + CENTER — 'run' input unwired" in i.text for i in out)
+        assert any("SLEW + CENTER - 'run' input unwired" in i.text for i in out)
 
     def test_1b_the_panel_input_is_exempt(self):
         out = check(FlowGraph(nodes=[_n("q", "calib")]))
@@ -184,13 +206,99 @@ class TestTheDoctor:
         hit = [i for i in out if "leaves no ledger" in i.text]
         assert hit and hit[0].level == "note", out
 
-    def test_every_issue_explains_why(self):
-        """The handoff calls out the wording tone specifically: each check says
-        why, not just what. An em-dash clause is how each of them does it."""
+    def test_11_a_campaign_with_nothing_to_advance_the_pool(self):
+        g = FlowGraph(
+            nodes=[_n("d", "dusk", repeat="Nightly until pool complete"),
+                   _n("p", "pool"), _n("r", "report")],
+            edges=[_e("d", "window", "p", "arm")])
+        assert any("nothing advances the POOL" in i.text for i in check(g))
+
+    def test_11b_a_single_night_pool_is_not_nagged_about_advance(self):
+        """`advance` is optional, and rule 11 only speaks once the DUSK WINDOW
+        says this comes back tomorrow. A one-night pool that never advances is a
+        correct graph, not an incomplete one."""
+        g = FlowGraph(nodes=[_n("d", "dusk"), _n("p", "pool")],
+                      edges=[_e("d", "window", "p", "arm")])
+        text = " ".join(i.text for i in check(g))
+        assert "advances the POOL" not in text
+        assert "'advance' input unwired" not in text
+
+    def test_11c_the_wire_that_settles_it_is_an_event_pointing_BACKWARDS(self):
+        """The campaign loop is SESSION REPORT 'target done' -> POOL 'advance'.
+        It points back up the graph, which is legal precisely because it is an
+        event wire: the flow lane stays acyclic and the cursor never revisits."""
+        g = FlowGraph(
+            nodes=[_n("d", "dusk", repeat="Nightly until pool complete"),
+                   _n("p", "pool"), _n("r", "report"), _n("pc", "parkclose")],
+            edges=[_e("d", "window", "p", "arm"),
+                   _e("r", "done", "p", "advance"),
+                   _e("d", "nightend", "pc", "do")])
+        text = " ".join(i.text for i in check(g))
+        assert "advances the POOL" not in text
+        assert "no shutdown lane" not in text
+
+    def test_12_a_campaign_with_no_shutdown_lane(self):
+        g = FlowGraph(nodes=[_n("d", "dusk", repeat="Nightly ×30"), _n("r", "report")])
+        assert any("no shutdown lane" in i.text for i in check(g))
+
+    def test_13_safety_and_cloud_watch_racing_over_the_same_sky(self):
+        """Safety aborts and never holds; CLOUD WATCH holds and never aborts. If
+        safety is also watching clouds it wins every race, and the hold that
+        would have ridden the cloud out never runs."""
+        g = FlowGraph(nodes=[_n("s", "safety", watch="Clouds + rain + wind (standalone)"),
+                             _n("cw", "cloudwatch")])
+        assert any("they race, and safety aborts" in i.text for i in check(g))
+
+    def test_13b_scoping_safety_away_from_clouds_settles_it(self):
+        g = FlowGraph(
+            nodes=[_n("s", "safety", watch="Rain + wind + power (pair with Cloud Watch)"),
+                   _n("cw", "cloudwatch")])
+        assert not any("they race" in i.text for i in check(g))
+
+    def test_13c_safety_alone_may_still_watch_clouds(self):
+        """With no CLOUD WATCH there is nothing to race, and a standalone safety
+        monitor watching clouds is the correct configuration for a rig with no
+        transient tier at all."""
+        g = FlowGraph(nodes=[_n("s", "safety", watch="Clouds + rain + wind (standalone)")])
+        assert not any("they race" in i.text for i in check(g))
+
+    def test_a_judgement_call_explains_itself(self):
+        """The handoff calls out the wording tone specifically: a check that
+        makes a JUDGEMENT says why, not just what.
+
+        Rule 1 is excluded and that is not a loophole: naming an unwired port is
+        a statement of fact with nothing to justify. Every other rule is an
+        opinion about the night, and an opinion with no reason attached is one
+        nobody acts on at 21:00.
+        """
         g = FlowGraph(nodes=[_n("c", "capture", exposure=180), _n("d", "dome")])
-        for issue in check(g):
+        judged = [i for i in check(g) if "input unwired" not in i.text]
+        assert judged, "the fixture stopped producing judgement-call issues"
+        for issue in judged:
             assert issue.text.startswith("▸"), issue.text
-            assert "—" in issue.text, f"no reason given: {issue.text}"
+            assert " - " in issue.text or ". " in issue.text, \
+                f"no reason given: {issue.text}"
+
+    def test_no_issue_ships_an_em_dash(self):
+        """The 2026-08-14 do-not list bans em-dashes from every shipped string,
+        and these are shipped twice: the header chip and the compile response.
+
+        Checked across a graph that fires every rule rather than one at a time,
+        because a single new rule written with the old separator is exactly the
+        way this decays.
+        """
+        g = FlowGraph(
+            nodes=[_n("d", "dusk", repeat="Nightly ×30"),
+                   _n("s", "safety", watch="Clouds + rain + wind (standalone)"),
+                   _n("cw", "cloudwatch"), _n("dm", "dome"), _n("q", "calib"),
+                   _n("p", "pool"), _n("k", "condition", threshold=9.0),
+                   _n("c", "capture", exposure=300, reject=3.0),
+                   _n("cy", "cycle")],
+            edges=[_e("cw", "in", "q", "do"), _e("c", "frame", "k", "events")])
+        issues = check(g)
+        assert len(issues) > 8, f"the fixture stopped firing most rules: {issues}"
+        for issue in issues:
+            assert "—" not in issue.text and "–" not in issue.text, issue.text
 
 
 class TestLibraryRecord:
