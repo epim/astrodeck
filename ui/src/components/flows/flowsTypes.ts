@@ -9,7 +9,7 @@ export type FlowNodeType =
   | "dusk" | "target" | "safety" | "cloudwatch"
   | "dome" | "flatpanel"
   | "slew" | "autofocus" | "guide" | "capture" | "duskflats" | "calib"
-  | "pool" | "condition"
+  | "pool" | "cycle" | "condition"
   | "holdresume" | "notify" | "refocus" | "abort" | "report";
 
 export type PortKind = "flow" | "event";
