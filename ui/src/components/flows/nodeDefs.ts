@@ -49,13 +49,22 @@ export interface PortDef {
 
 /** One editable row in the inspector / edit sheet.
  *
- *  Exactly two controls exist in the design — a `select` over a closed option
- *  list and a free `text` box. There is no validation, no min/max and no
- *  disabled state anywhere in the design's inspector (§C.8); do not add one. */
+ *  THREE controls exist, and the third arrived with the 2026-08-14 export.
+ *  `select` is a closed option list, `text` is a free box, and neither has
+ *  validation, min/max or a disabled state anywhere in the design's inspector
+ *  (§C.8) — do not add one.
+ *
+ *  `cycleplan` is the exception, and it earns it by REMOVING a way to be wrong.
+ *  The export requires the FILTER CYCLE's slot table to be "one row per filter
+ *  in the RIG'S WHEEL (from the equipment panel - never a hand-typed filter
+ *  name)". A text box there lets an operator type `Hα` or `OIII` on a rig whose
+ *  wheel says `Oiii`, and the mismatch surfaces at 21:00 as a filter change that
+ *  never happens. Rows come from the wheel, so an unreachable filter cannot be
+ *  entered — the storage format stays the same string either way. */
 export interface FieldDef {
   key: string;
   label: string;
-  control: "select" | "text";
+  control: "select" | "text" | "cycleplan";
   /** Present iff `control === "select"`. The closed set of choices. */
   options?: readonly string[];
   /** Suffix rendered after the control, e.g. `min`, `°`, `h (0 = none)`. */
@@ -114,6 +123,39 @@ const low = (v: string | number | undefined): string => txt(v).toLowerCase();
 const num = (v: string | number | undefined): number =>
   typeof v === "number" ? v : parseFloat(txt(v));
 
+/** One slot of a FILTER CYCLE plan: which filter, and for how long. */
+export interface CycleSlot { filter: string; exposure_s: number }
+
+/** Decode the FILTER CYCLE slot table.
+ *
+ *  Mirrors the server's `nodes.parse_cycle_plan` and the prototype's
+ *  `parsePlan`, INCLUDING the tolerant regex: anchored at the start, whole
+ *  seconds, trailing text ignored. A parser stricter than the writer would
+ *  silently empty a table that the server reads perfectly well, and the card
+ *  footer would announce "0 filters" for a cycle that runs seven.
+ *
+ *  Unparseable entries are DROPPED rather than defaulted, for the same reason
+ *  the server drops them: a slot nobody can read is a slot nobody can shoot, and
+ *  inventing an exposure for it puts frames on disk under a filter the operator
+ *  never asked for. */
+export function parseCyclePlan(plan: string | number | undefined): CycleSlot[] {
+  const out: CycleSlot[] = [];
+  for (const chunk of txt(plan).split(",")) {
+    const m = /^(\S+)\s+(\d+)/.exec(chunk.trim());
+    if (m) out.push({ filter: m[1], exposure_s: Number(m[2]) });
+  }
+  return out;
+}
+
+/** Re-encode a slot table, preserving the caller's order.
+ *
+ *  The editor always hands these in WHEEL order, because the row order is the
+ *  shooting order and re-sorting here would re-plan the night from a place
+ *  nobody would think to look. */
+export function formatCyclePlan(slots: readonly CycleSlot[]): string {
+  return slots.map((s) => `${s.filter} ${s.exposure_s}`).join(", ");
+}
+
 /** The whole vocabulary. Grouped and ordered as nodes.py declares them
  *  (SOURCES → EQUIPMENT → RIG OPS → LOGIC → ACTIONS + SINKS); note this is a
  *  declaration order for reading, NOT the palette's item order, which is
@@ -127,18 +169,22 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
     cat: "SOURCE",
     colorVar: "--accent",
     ins: [],
-    outs: [_f("window", "window opens")],
-    params: { start: "Astro dusk", offset: -30, stop: "Dawn", minAlt: 30 },
+    outs: [_f("window", "window opens"), _e("nightend", "night ends")],
+    params: { start: "Astro dusk", offset: -30, stop: "Dawn", minAlt: 30, repeat: "Single night" },
     fields: [
       { key: "start", label: "Start", control: "select", options: ["Astro dusk", "Nautical dusk", "Civil dusk", "Clock time"] },
       { key: "offset", label: "Offset", control: "text", unit: "min" },
       { key: "stop", label: "Stop", control: "select", options: ["Dawn", "Clock time", "None"] },
       { key: "minAlt", label: "Min target altitude", control: "text", unit: "°" },
+      { key: "repeat", label: "Repeat", control: "select", options: ["Single night", "Nightly until pool complete", "Nightly ×30"] },
     ],
-    desc: "Autorun window from the scheduler: sun-altitude dusk/dawn events at the configured site, with a per-target altitude gate.",
+    desc: "Autorun window from the scheduler: sun-altitude dusk/dawn events at the configured site, with a per-target altitude gate. 'Night ends' fires before dawn; with Repeat set, dawn is a scheduled hold - the capture cursor persists and the flow re-arms at the next dusk, mid-cycle.",
     // The "+" is printed only for a non-negative offset, so the default -30
-    // reads "Astro dusk -30m → dawn" rather than "+-30m".
-    sum: (p) => txt(p.start) + " " + (num(p.offset) >= 0 ? "+" : "") + txt(p.offset) + "m → " + low(p.stop),
+    // reads "Astro dusk -30m → dawn" rather than "+-30m". The "· nightly" tail
+    // appears only for a repeat, because on a single night it would be noise on
+    // every card in the library.
+    sum: (p) => txt(p.start) + " " + (num(p.offset) >= 0 ? "+" : "") + txt(p.offset) + "m → " + low(p.stop)
+      + (p.repeat && txt(p.repeat) !== "Single night" ? " · nightly" : ""),
   },
   target: {
     type: "target",
@@ -150,7 +196,7 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
     // RA/Dec are TEXT, in the sexagesimal forms the server's parser accepts —
     // including the typographic prime/double-prime and U+2212 minus that these
     // very defaults carry. (parse_dec could not read them until 136be93.)
-    params: { name: "M31 — Andromeda", ra: "00h 42m 44s", dec: "+41° 16′ 09″", rotation: 23.4 },
+    params: { name: "M31 - Andromeda", ra: "00h 42m 44s", dec: "+41° 16′ 09″", rotation: 23.4 },
     fields: [
       { key: "name", label: "Name", control: "text" },
       { key: "ra", label: "RA", control: "text" },
@@ -167,16 +213,23 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
     colorVar: "--accent",
     ins: [],
     outs: [_e("unsafe", "unsafe")],
-    params: { source: "Cloud + rain sensor", stale: "Unsafe (fail closed)" },
+    params: { source: "Cloud + rain sensor", watch: "Clouds + rain + wind (standalone)", stale: "Unsafe (fail closed)" },
     fields: [
       { key: "source", label: "Source", control: "select", options: ["Cloud + rain sensor", "Weather API", "Manual switch"] },
+      // WHAT THIS TIER CLAIMS. Safety aborts and never holds; CLOUD WATCH holds
+      // and never aborts. Both watching clouds means they race and the
+      // recoverable one always loses, so this scopes safety off clouds when a
+      // CLOUD WATCH is present (doctor rule 13).
+      { key: "watch", label: "Watch for", control: "select", options: ["Rain + wind + power (pair with Cloud Watch)", "Clouds + rain + wind (standalone)"] },
       // A one-option select, on purpose: fail-closed is not negotiable, and a
       // control that shows the rule and offers no way out says so louder than
       // no control at all.
       { key: "stale", label: "Stale reading is", control: "select", options: ["Unsafe (fail closed)"] },
     ],
-    desc: "Fail-closed safety gate. A stale or timed-out reading is treated as UNSAFE — never as safe.",
-    sum: (p) => txt(p.source) + " · fail closed",
+    desc: "Fail-closed safety gate for NON-RECOVERABLE conditions - it aborts, it never holds. Scope it to rain/wind/power and let CLOUD WATCH ride out clouds; watching clouds here too makes them race, and safety always wins. A stale reading is UNSAFE, never safe.",
+    // The scope, not the source: which sensor it reads matters less on a 188px
+    // card than which failures it will end the night for.
+    sum: (p) => (txt(p.watch).indexOf("Rain") === 0 ? "rain/wind/power" : "clouds/rain/wind") + " · fail closed",
   },
   cloudwatch: {
     type: "cloudwatch",
@@ -209,14 +262,16 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
     // orphan every saved edge that targets `dome|run`.
     ins: [_f("run", "open")],
     outs: [_f("open", "shutter open")],
-    params: { slave: "Slave to mount", onUnsafe: "Close (fail closed)", timeout: 120 },
+    // BIND, never "slave" — the 2026-08-14 do-not list names UI labels, code
+    // identifiers, API fields and comments, and a param key is all four at once.
+    params: { bind: "Bind to mount", onUnsafe: "Close (fail closed)", timeout: 120 },
     fields: [
-      { key: "slave", label: "Azimuth", control: "select", options: ["Slave to mount", "Manual"] },
+      { key: "bind", label: "Azimuth", control: "select", options: ["Bind to mount", "Manual"] },
       { key: "onUnsafe", label: "On unsafe", control: "select", options: ["Close (fail closed)"] },
       { key: "timeout", label: "Shutter timeout", control: "text", unit: "s" },
     ],
-    desc: "Opens the shutter and slaves the dome to the mount. Closing is fail-closed: an unsafe or stale safety reading closes the shutter regardless of pipe state.",
-    sum: (p) => low(p.slave) + " · fail closed",
+    desc: "Opens the shutter and binds the dome to the mount. Closing is fail-closed: an unsafe or stale safety reading closes the shutter regardless of pipe state.",
+    sum: (p) => low(p.bind) + " · fail closed",
   },
   flatpanel: {
     type: "flatpanel",
@@ -311,6 +366,32 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
     desc: "An exposure step: loop count frames through the filter with per-filter focus offsets. Each frame is graded (HFR) and emits an event.",
     sum: (p) => txt(p.filter) + " · " + txt(p.exposure) + "s · g" + txt(p.gain) + " · ×" + txt(p.count),
   },
+  cycle: {
+    type: "cycle",
+    label: "FILTER CYCLE",
+    cat: "RIG",
+    colorVar: "--sky",
+    // A SIBLING OF CAPTURE LOOP, not a container around one. The 2026-08-14
+    // export: "no loop construct exists at graph level - the graph stays
+    // acyclic, loops live inside stages". So the same port pair as `capture`,
+    // and the interleaving is inside the stage where the graph cannot see it.
+    ins: [_f("run", "run")],
+    outs: [_f("complete", "complete"), _e("frame", "frame graded")],
+    // `plan` is the slot table in the server's storage format: "<filter>
+    // <seconds>", comma separated, wheel order. NOTHING TYPES IT — see the
+    // cycleplan control below.
+    params: { plan: "L 60, R 60, G 60, B 60, Ha 180, OIII 180, SII 180", cycles: 45, perCycle: 1, gain: 100, bin: "1", reject: 3.5 },
+    fields: [
+      { key: "plan", label: "Cycle plan - rig filter wheel", control: "cycleplan" },
+      { key: "cycles", label: "Total cycles", control: "text", unit: "passes" },
+      { key: "perCycle", label: "Subs per filter per pass", control: "text" },
+      { key: "gain", label: "Gain", control: "text" },
+      { key: "bin", label: "Binning", control: "select", options: ["1", "2", "4"] },
+      { key: "reject", label: "Reject HFR above", control: "text", unit: "″" },
+    ],
+    desc: "Interleaved capture: shoots the slot table in order - one sub per filter per pass - and repeats until every slot hits the cycle count. Channels grow evenly, so a half night still stacks. Per-filter focus offsets apply on each change; a hold resumes at the same slot mid-pass.",
+    sum: (p) => String(parseCyclePlan(p.plan).length) + " filters · 1/pass · ×" + txt(p.cycles),
+  },
   duskflats: {
     type: "duskflats",
     label: "DUSK FLATS",
@@ -329,7 +410,7 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
       { key: "adu", label: "ADU target", control: "text" },
       { key: "count", label: "Count per filter", control: "text" },
     ],
-    desc: "Holds the flow until the twilight window (sun altitude band), then shoots the flat set — translucent lens cap, panel, or twilight sky — solving exposure to the ADU target per filter before darkness is wasted on it.",
+    desc: "Holds the flow until the twilight window (sun altitude band), then shoots the flat set - translucent lens cap, panel, or twilight sky - solving exposure to the ADU target per filter before darkness is wasted on it.",
     // `window` is NOT lowercased: it starts with "Sun", a proper noun here.
     sum: (p) => low(p.method) + " · " + txt(p.window) + " · ×" + txt(p.count),
   },
@@ -359,7 +440,7 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
       { key: "quota", label: "Sufficient quantity", control: "text", unit: "frames each" },
       { key: "dest", label: "Destination", control: "text" },
     ],
-    desc: "Opportunistic calibration while the sky is unusable. Rotates the wheel to the black slot, then fills the library in order — darks if needed, bias if needed, flats if needed AND a flat panel is wired to 'panel' — until each quota is met, then waits. A 'stop' mid-queue exits cleanly at the frame boundary.",
+    desc: "Opportunistic calibration while the sky is unusable. Rotates the wheel to the black slot, then fills the library in order - darks if needed, bias if needed, flats if needed AND a flat panel is wired to 'panel' - until each quota is met, then waits. A 'stop' mid-queue exits cleanly at the frame boundary.",
     // The order is fixed by the engine, so it is stated rather than derived
     // from the three policy params — those decide IF each kind runs, not when.
     sum: (p) => "darks → bias → flats · ×" + txt(p.quota) + " each, then wait",
@@ -370,41 +451,33 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
     label: "TARGET POOL",
     cat: "LOGIC",
     colorVar: "--accent-dim",
-    ins: [_f("arm", "arm")],
-    outs: [_f("target", "best target")],
+    // OPTIONAL — nodes.py `optional_ins=frozenset({"advance"})`. A single-night
+    // pool never advances; doctor rule 11 asks for the wire only once the DUSK
+    // WINDOW says the night comes back.
+    ins: [_f("arm", "arm"), { id: "advance", label: "advance", kind: "event", optional: true }],
+    outs: [_f("target", "best target"), _e("floor", "floor hit")],
     params: {
       members: "M16, M17, M8, NGC 6946",
       strategy: "Best available (alt × moon)",
-      minAlt: 30, moonSep: 40, maxHA: 4,
+      quota: 45, minAlt: 30, onFloor: "Advance now; retry it next night",
+      moonSep: 40, maxHA: 4,
     },
     fields: [
       { key: "members", label: "Candidates", control: "text" },
       { key: "strategy", label: "Strategy", control: "select", options: ["Best available (alt × moon)", "Priority order", "Round robin"] },
+      { key: "quota", label: "Per-target quota", control: "text", unit: "cycles" },
       { key: "minAlt", label: "Min altitude", control: "text", unit: "°" },
+      { key: "onFloor", label: "At altitude floor", control: "select", options: ["Advance now; retry it next night", "Keep imaging (not recommended)"] },
       { key: "moonSep", label: "Min moon separation", control: "text", unit: "°" },
       { key: "maxHA", label: "Max hour angle", control: "text", unit: "h" },
     ],
-    desc: "Holds several candidates and hands the flow whichever is best right now — altitude × moon separation × hour angle, per the scheduler's constraint math. Re-evaluates when a target completes or drops below its floor.",
+    desc: "Holds candidates and hands the flow whichever scores best right now - altitude × moon separation × hour angle. 'Advance' marks the active target done and re-scores the REMAINING members; done targets are never re-selected. The scheduler watches the active target's altitude: at the floor it fires 'floor hit', suspends that target's cursor (NOT done - it retries next night), and hands out the next best.",
     // "Best available (alt × moon)" lowercased would print the "×" formula in
     // the footer and overflow a 188px card, so that one strategy gets a short
     // form and the other two are lowercased whole.
     sum: (p) => String(txt(p.members).split(",").length) + " candidates · "
-      + (txt(p.strategy).indexOf("Best") === 0 ? "best available" : low(p.strategy)),
-  },
-  cycle: {
-    type: "cycle",
-    label: "FILTER CYCLE",
-    cat: "LOGIC",
-    colorVar: "--accent-dim",
-    ins: [_f("run", "run")],
-    outs: [_f("body", "each pass"), _f("complete", "all passes")],
-    params: { cycles: 45, order: "As drawn" },
-    fields: [
-      { key: "cycles", label: "Passes", control: "text" },
-      { key: "order", label: "Order", control: "select", options: ["As drawn", "Reverse", "Broadband first"] },
-    ],
-    desc: "Goes round the capture chain instead of through it: L R G B S Ha O3, then again. Each capture's own count is what it takes on EACH pass, so 1 frame × 45 passes is 45 subs of every filter. Every channel then samples the same sky, and a night cut short leaves 60% of everything rather than three finished filters and four empty ones.",
-    sum: (p) => txt(p.cycles) + " passes · " + low(p.order),
+      + (txt(p.strategy).indexOf("Best") === 0 ? "best available" : low(p.strategy))
+      + " · quota ×" + txt(p.quota),
   },
   condition: {
     type: "condition",
@@ -418,12 +491,12 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
       // A CLOSED predicate set, deliberately. nodes.py's docstring: the graph
       // compiles to what the engine already runs, so "just add a script node"
       // is refused by construction.
-      { key: "when", label: "When", control: "select", options: ["HFR above", "Guide RMS above", "Frame rejected", "Target complete"] },
+      { key: "when", label: "When", control: "select", options: ["HFR above", "FWHM above", "Guide RMS above", "Guide star lost", "Frame rejected", "Star count below", "Sky background above", "Wind gust above", "Dew margin below", "Sensor temp off setpoint", "Disk space below", "Airmass above", "Meridian flip within", "Target complete"] },
       { key: "threshold", label: "Threshold", control: "text" },
       { key: "window", label: "Within", control: "select", options: ["1 frame", "3 frames", "5 frames"] },
       { key: "once", label: "Fire", control: "select", options: ["Every time", "Once per run"] },
     ],
-    desc: "A bounded when-clause over the closed predicate set — no scripting runtime. Fires its action wires when the clause holds.",
+    desc: "A bounded when-clause over the closed predicate set - no scripting runtime. Fires its action wires when the clause holds.",
     sum: (p) => low(p.when) + " " + txt(p.threshold) + " · " + txt(p.window),
   },
   // -------------------------------------------------------- ACTIONS + SINKS
@@ -436,17 +509,23 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
     outs: [],
     params: {
       whilePaused: "Keep tracking, park guider", maxHold: 45,
-      onTimeout: "Abort + park", recenter: "Re-center (plate solve)",
+      onTimeout: "Abort + park",
+      cooler: "Re-cool + stabilize before capture",
+      recenter: "Re-center (plate solve)",
       refocus: "If HFR drifted",
     },
     fields: [
       { key: "whilePaused", label: "While paused", control: "select", options: ["Keep tracking, park guider", "Keep tracking + guiding", "Stop tracking"] },
       { key: "maxHold", label: "Max hold", control: "text", unit: "min" },
       { key: "onTimeout", label: "If exceeded", control: "select", options: ["Abort + park", "Keep holding"] },
+      // FIRST IN THE RESUME CHECKLIST, and the row order is the run order. A
+      // hold can outlive whatever was keeping the sensor cold; pointing and
+      // focus are worth nothing on a frame the temperature already ruined.
+      { key: "cooler", label: "On resume, cooler", control: "select", options: ["Re-cool + stabilize before capture", "Skip check"] },
       { key: "recenter", label: "On resume, pointing", control: "select", options: ["Re-center (plate solve)", "Trust tracking"] },
       { key: "refocus", label: "On resume, focus", control: "select", options: ["If HFR drifted", "Always", "Never"] },
     ],
-    desc: "Pauses the capture loop at the next frame boundary; on resume it restores the active filter, re-centers per policy, refocuses only if called for, then continues the loop in place — the engine's pause action, not an abort.",
+    desc: "Pauses the capture loop at the next frame boundary; on resume the cooler gate runs first: if cooling stopped or drifted (daybreak park, power cycle), capture is BLOCKED until the sensor is back at setpoint and stable (ramp-limited). Then filter restore, re-center per policy, refocus if called for, and the loop continues in place.",
     // ⚠ PROTOTYPE BUG, REPRODUCED DELIBERATELY. "re-center" is hardcoded and
     // `p.recenter` is ignored, so a node set to "Trust tracking" still claims
     // it will re-center. The handoff (§C.0) names this and says reproduce it —
@@ -490,6 +569,29 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
     // Takes no params — the prototype's body is a constant.
     sum: () => "autofocus, then resume",
   },
+  parkclose: {
+    type: "parkclose",
+    label: "PARK + CLOSE",
+    cat: "ACTION",
+    // --warn, NOT --bad. It sits beside ABORT + PARK and does much of the same
+    // physical work, but the colour is the difference between "the night ended"
+    // and "the night went wrong", and an operator scanning a canvas at 04:00
+    // reads the colour before the label.
+    colorVar: "--warn",
+    ins: [_e("do", "do")],
+    outs: [_e("closed", "closed")],
+    params: { closure: "Dust flap + dome", cooler: "Hold cold (day darks)", tracking: "Park" },
+    fields: [
+      { key: "closure", label: "Closure", control: "select", options: ["Dust flap + dome", "Dome shutter", "Dust flap", "Roll-off roof"] },
+      // HOLD COLD is the default because of what `closed` chains into: a day of
+      // darks is only worth taking if the sensor is at the temperature the
+      // night's lights were shot at.
+      { key: "cooler", label: "Camera cooler", control: "select", options: ["Hold cold (day darks)", "Warm up"] },
+      { key: "tracking", label: "Mount", control: "select", options: ["Park"] },
+    ],
+    desc: "Scheduled end-of-night shutdown - not an abort. Parks the mount, closes the closure, and either warms the camera or holds it cold so capped day-darks stay matched. The campaign cursor is preserved for the next window; safety can still slam everything shut independently.",
+    sum: (p) => low(p.closure) + " · " + (txt(p.cooler).indexOf("Hold") === 0 ? "hold cold" : "warm up"),
+  },
   abort: {
     type: "abort",
     label: "ABORT + PARK",
@@ -515,13 +617,16 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
     cat: "SINK",
     colorVar: "--good",
     ins: [_f("session", "session")],
-    outs: [],
+    // The campaign's loop-back source. It fires when the ACTIVE target's quota
+    // is met, and wiring it to a pool's `advance` is the whole mechanism — an
+    // event, so the backward wire is legal and the flow lane stays a DAG.
+    outs: [_e("done", "target done")],
     params: { format: "JSON + FITS index", dest: "captures/sessions/" },
     fields: [
       { key: "format", label: "Format", control: "select", options: ["JSON + FITS index", "JSON only"] },
       { key: "dest", label: "Destination", control: "text" },
     ],
-    desc: "Append-only session ledger: per-filter integration, accepted/rejected counts, median HFR, safety events, end reason.",
+    desc: "Append-only session ledger: per-filter integration, accepted/rejected counts, median HFR, safety events, end reason. 'Target done' fires when the active target's quota is met - wire it back to a pool's 'advance' to run a campaign.",
     sum: (p) => txt(p.dest),
   },
 };
