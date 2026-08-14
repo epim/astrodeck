@@ -254,10 +254,10 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
     if dome is not None:
         # DEVIATION FROM THE PROTOTYPE, authorised by the owner 2026-08-12.
         #
-        # `compilePlan()` hardcodes `{slave: true, on_unsafe: "close"}`, so the
-        # DOME CONTROL node's own `slave` field ("Slave to mount" | "Manual")
+        # `compilePlan()` hardcodes `{bind: true, on_unsafe: "close"}`, so the
+        # DOME CONTROL node's own azimuth field ("Bind to mount" | "Manual")
         # and its `timeout` never reached the server. Picking Manual in the
-        # editor compiled to slaved, and a shutter timeout the operator typed
+        # editor compiled to bound, and a shutter timeout the operator typed
         # was discarded — two controls that look live and do nothing, which is
         # the broken-promise class this codebase has a detector suite for.
         #

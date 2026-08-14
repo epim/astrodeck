@@ -356,7 +356,7 @@ await test("Escalation: a typed watchdog survives a config reload", async () => 
 
 const domeOpen = () => ({
   status: 200,
-  body: { connected: true, shutter: "open", requires_park_before_close: true, can_slave: false },
+  body: { connected: true, shutter: "open", requires_park_before_close: true, can_bind: false },
 });
 
 await test("Roof: a caller without config.safety cannot flip the interlocks at all", async () => {
@@ -493,7 +493,7 @@ await test("Roof: 'Close roof now' reports the LANE, not the 40ms POST", async (
 
   routes["GET /api/dome/state"] = () => ({
     status: 200,
-    body: { connected: true, shutter: "closed", requires_park_before_close: true, can_slave: false },
+    body: { connected: true, shutter: "closed", requires_park_before_close: true, can_bind: false },
   });
   await setLanes([]);
   await flush();
@@ -638,7 +638,7 @@ await test("Roof: the shutter badge follows a poll, not the page-load snapshot",
 
   routes["GET /api/dome/state"] = () => ({
     status: 200,
-    body: { connected: true, shutter: "closed", requires_park_before_close: true, can_slave: false },
+    body: { connected: true, shutter: "closed", requires_park_before_close: true, can_bind: false },
   });
   await act(async () => {
     for (const i of intervals) i.fn();

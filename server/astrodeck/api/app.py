@@ -4789,18 +4789,18 @@ def create_app() -> FastAPI:
     @app.get("/api/dome/state", dependencies=[Depends(require(CAP_VIEW_STATUS))])
     @declare(CAP_VIEW_STATUS)
     async def dome_state():
-        """``{connected, shutter, requires_park_before_close, can_slave}`` for the
+        """``{connected, shutter, requires_park_before_close, can_bind}`` for the
         Settings→Safety roof widget. Mirrors ``/api/safety/state``: honest defaults
         when no dome is connected (v1 is sim-only — a real Alpaca/COM Dome client is
         a follow-up)."""
         dome = hub.devices.get("dome")
         if dome is None:
             return {"connected": False, "shutter": "unknown",
-                    "requires_park_before_close": True, "can_slave": False}
+                    "requires_park_before_close": True, "can_bind": False}
         return {"connected": bool(getattr(dome, "connected", False)),
                 "shutter": (await dome.shutter_state()).value,
                 "requires_park_before_close": bool(dome.requires_park_before_close),
-                "can_slave": bool(dome.can_slave)}
+                "can_bind": bool(dome.can_bind)}
 
     @app.post("/api/dome/close", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
     @declare(CAP_CONTROL_MOUNT, reaches={"Dome.close_shutter", "Telescope.park"})

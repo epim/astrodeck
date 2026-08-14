@@ -674,11 +674,12 @@ class DomeShutterState(enum.Enum):
 class Dome(Device):
     """A roll-off roof / dome — the observatory-close role (PRO-4).
 
-    Vendor-neutral, modeled on ASCOM IDomeV2's shutter/slaved surface but with
+    Vendor-neutral, modeled on ASCOM IDomeV2's shutter/slaved surface (their
+    word, kept only where it names their wire) but with
     AstroDeck-style string states. ``shutter_state``/``open_shutter``/
     ``close_shutter`` are the required core; ``abort`` (halt motion),
-    ``set_slaved``/``get_slaved`` (dome-follows-mount) degrade gracefully for a
-    roll-off roof that doesn't slave (``can_slave=False`` → default raise /
+    ``set_bound``/``get_bound`` (dome-follows-mount) degrade gracefully for a
+    roll-off roof that cannot bind (``can_bind=False`` → default raise /
     False), exactly the ``Focuser.get_temperature`` / ``Rotator.set_reverse``
     idiom. ``is_open``/``is_closed`` derive off ``shutter_state``.
 
@@ -697,8 +698,11 @@ class Dome(Device):
     #: default (assume a collision is possible). A classic rotating dome whose
     #: shutter clears the OTA at any orientation may set this False.
     requires_park_before_close: bool = True
-    #: whether the dome can slave its azimuth to the mount (rotating domes only).
-    can_slave: bool = False
+    #: whether the dome can BIND its azimuth to the mount (rotating domes only).
+    #: Named `bind`, not `slave`: the 2026-08-14 do-not list covers code
+    #: identifiers and API fields, not only labels. The ASCOM/Alpaca WIRE
+    #: words stay as the vendor spells them - see alpaca.py.
+    can_bind: bool = False
 
     @abstractmethod
     async def shutter_state(self) -> DomeShutterState: ...
@@ -719,10 +723,10 @@ class Dome(Device):
         """Halt any in-progress shutter motion. Default no-op."""
         return None
 
-    async def set_slaved(self, on: bool) -> None:
-        raise DeviceError(f"{self.name} cannot slave to the mount")
+    async def set_bound(self, on: bool) -> None:
+        raise DeviceError(f"{self.name} cannot bind to the mount")
 
-    async def get_slaved(self) -> bool:
+    async def get_bound(self) -> bool:
         return False
 
     async def is_closed(self) -> bool:
@@ -736,7 +740,7 @@ class Dome(Device):
         # from the ``/api/dome/state`` accessor.
         return {
             **super().describe(),
-            "can_slave": self.can_slave,
+            "can_bind": self.can_bind,
             "requires_park_before_close": self.requires_park_before_close,
         }
 
@@ -930,10 +934,10 @@ class DomePolicy:
     Closing itself is NOT done here: ``sequence/roof.close_observatory`` owns it,
     because a roll-off roof must never travel through an unparked mount and that
     ordering has one implementation. This type owns the OPEN half (which had
-    none) and the slaving decision.
+    none) and the binding decision.
     """
 
-    slave_to_mount: bool = True
+    bind_to_mount: bool = True
     shutter_timeout_s: float = DEFAULT_SHUTTER_TIMEOUT_S
 
     #: Not a field (deliberately un-annotated): what an unsafe — or STALE —
@@ -961,12 +965,18 @@ class DomePolicy:
             timeout = DEFAULT_SHUTTER_TIMEOUT_S
         if timeout <= 0:
             timeout = DEFAULT_SHUTTER_TIMEOUT_S
-        # "Azimuth" has two options, "Slave to mount" and "Manual". Only an
-        # explicit Manual gives up slaving: an unrecognised value keeps the
-        # node's own default, and an unslaved dome vignettes the night rather
+        # "Azimuth" has two options, "Bind to mount" and "Manual". Only an
+        # explicit Manual gives up binding: an unrecognised value keeps the
+        # node's own default, and an unbound dome vignettes the night rather
         # than endangering anything.
-        manual = str(params.get("slave") or "").strip().lower().startswith("manual")
-        return cls(slave_to_mount=not manual, shutter_timeout_s=timeout)
+        #
+        # BOTH KEYS ARE READ. The param was called `slave` until 2026-08-14 and
+        # every flow saved before then still carries that name on disk. Reading
+        # only the new one would silently re-bind a dome the operator had set to
+        # Manual - a saved graph must not change meaning because a word did.
+        azimuth = params.get("bind", params.get("slave"))
+        manual = str(azimuth or "").strip().lower().startswith("manual")
+        return cls(bind_to_mount=not manual, shutter_timeout_s=timeout)
 
     @classmethod
     def from_plan(cls, block: dict) -> "DomePolicy":
@@ -981,12 +991,15 @@ class DomePolicy:
             timeout = DEFAULT_SHUTTER_TIMEOUT_S
         if timeout <= 0:
             timeout = DEFAULT_SHUTTER_TIMEOUT_S
-        return cls(slave_to_mount=bool(block.get("slave", True)),
+        # Same back-compat as `from_node_params`: a plan compiled before
+        # 2026-08-14 spells the key `slave`.
+        bind = block.get("bind", block.get("slave", True))
+        return cls(bind_to_mount=bool(bind),
                    shutter_timeout_s=timeout)
 
     def to_plan(self) -> dict:
         """The ``automation["dome"]`` block for a compiled plan."""
-        return {"slave": self.slave_to_mount,
+        return {"bind": self.bind_to_mount,
                 "on_unsafe": self.ON_UNSAFE,
                 "shutter_timeout_s": self.shutter_timeout_s}
 
@@ -1033,26 +1046,26 @@ class DomePolicy:
                     f"refusing to image under a roof that may be shut")
             await asyncio.sleep(min(SHUTTER_POLL_S, remaining))
 
-    async def apply_slaving(self, dome: Dome) -> str:
+    async def apply_binding(self, dome: Dome) -> str:
         """Put the dome's azimuth under the mount, and return the log line.
 
-        A dome that CANNOT slave is not an error. A roll-off roof has no azimuth
-        to slave and reports ``can_slave = False`` truthfully — including the
+        A dome that CANNOT bind is not an error. A roll-off roof has no azimuth
+        to bind and reports ``can_bind = False`` truthfully — including the
         simulator's, which is the rig the whole Flows surface has to demo on. If
         the node's DEFAULT parameter refused to run against the default sim dome,
         every example flow with a dome in it would fail on a machine with no
         hardware. So: honest-disabled, and the returned line says the setting had
         no effect rather than pretending it took.
 
-        A dome that CLAIMS ``can_slave`` and then refuses the write is a
+        A dome that CLAIMS ``can_bind`` and then refuses the write is a
         different animal, and its ``DeviceError`` propagates — the alternative is
         an OTA that spends the night photographing the inside of the dome wall
-        while every status readout says slaved.
+        while every status readout says bound.
         """
-        if not self.slave_to_mount:
+        if not self.bind_to_mount:
             return "dome azimuth left in manual"
-        if not getattr(dome, "can_slave", False):
-            return (f"{dome.name} has no slaved azimuth (roll-off roof) — "
+        if not getattr(dome, "can_bind", False):
+            return (f"{dome.name} has no bindable azimuth (roll-off roof) - "
                     f"'Slave to mount' has no effect")
-        await dome.set_slaved(True)
-        return "dome azimuth slaved to the mount"
+        await dome.set_bound(True)
+        return "dome azimuth bound to the mount"
