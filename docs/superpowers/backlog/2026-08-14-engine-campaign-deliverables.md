@@ -45,14 +45,37 @@ Full suite 5920 passed, 24 skipped.
 
 ## B. #241 — engine campaign execution
 
+**The premise was wrong, and finding that out was the work.** A campaign was
+reported at DANGER as something "the engine cannot run yet". Three of that
+note's four clauses were false and had been since the multi-night session
+machinery landed. What a campaign flow actually does today:
+
+| the note said | what runs |
+|---|---|
+| images ONE night and stops at dawn | ends at its stop boundary, goes dormant |
+| the capture cursor is not persisted | `_done` seeds from `Session.done_map()` |
+| no target is marked done | finished targets log "already complete - skipping" |
+| will not re-arm at the next dusk | `engine.start` arms unconditionally; `ResumeArm.tick` restarts it |
+
+- [x] B3. Cursor persistence: already delivered by `Session`. Proven by
+      `test_campaign_across_nights.py` - member A finishes night one, is skipped
+      on night two, B gets the night, session goes `complete` and stops arming.
+- [x] B4. The note now says what runs and names the one thing that does not:
+      `until: nights_30` counts no nights. Bound by two tests.
+- [x] B6 (new). The CAMPAIGN tab told operators "Dawn parks + closes; the cooler
+      stays cold for day darks" in three places. The dome is not driven and
+      `plan_extras` sets `warm_cooler_when_done=True`, so two thirds of that
+      sentence was false. Now one `_DAWN` constant, bound to the PLAN by test so
+      it cannot go stale.
 - [ ] B1. Triggers `on_night_end` / `on_altitude_floor` / `on_shutdown_complete`
-      executable in the engine, THEN legal in the enum.
-- [ ] B2. Actions `parkclose` / `pool_advance` — same order.
-- [ ] B3. Capture cursor persisted across restarts.
-- [ ] B4. `to_plan` stops reporting `campaign` as danger only when the engine
-      really runs one. Until then the note stays.
-- [ ] B5. `parkclose` is gated behind dome integration, itself unmapped. If it
-      stays gated, say so out loud rather than shipping a half action.
+      executable in the engine, THEN legal in the enum. NOT DONE, deliberately:
+      each still reports "will not run", which is accurate.
+- [ ] B2. Actions `parkclose` / `pool_advance` - same order, same reason.
+      `pool_advance` may not be needed at all now that the skip-if-complete path
+      is the advance; decide before building one.
+- [ ] B5. `parkclose` stays gated behind dome integration. The design also wants
+      the cooler to stay cold for day darks, which is a change to what the RUN
+      does (`plan_extras`), not to what the copy claims. Both open.
 
 ## C. #231 — filter slot 7 is flagged blackout but never blanked
 
