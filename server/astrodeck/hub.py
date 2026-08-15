@@ -2434,6 +2434,47 @@ class Hub:
             bus.log("warning", f"dark check skipped: {e}", "capture")
             return None
 
+    def _blackout_light_cards(self, frame_type: str, opaque_slot: int | None,
+                              filter_name: str) -> list[tuple]:
+        """Cards for a LIGHT taken through a slot flagged blackout.
+
+        The dark check asks "is this dark frame actually dark". This asks the
+        mirror question nobody was asking: is this LIGHT frame actually going
+        through glass. A light exposure commanded with a blackout slot in the
+        beam is wrong however it happened - either the wheel is not where the
+        run thinks it is, or the slot is not what the operator ticked - and
+        unlike a white dark it is not visible in the pixels: on a slot that is
+        an empty carrier rather than a blanked one, the frame looks like a
+        perfectly good unfiltered sub.
+
+        MEASURED, 2026-08-12. A cloud hold drove the wheel to slot 7 for its
+        darks and nothing put it back, so eighteen 180 s subs of NGC 6946 were
+        taken through it and written FILTER='Dark'. The headers were not even
+        wrong - that IS what happened - and precisely because they were true,
+        nothing in the pipeline had a reason to object. The engine seam is
+        fixed (``SequenceEngine._restore_beam``); this is the detector that
+        would have caught it the same night, and catches the next cause of it.
+
+        A CARD RATHER THAN A REFUSAL. The run is already exposing when this is
+        known, and aborting a night on a wheel-position read is a worse failure
+        than carding the frames: ``BEAMOK=False`` makes them findable forever,
+        which is what the operator actually needs at 3 a.m. and in March.
+        """
+        if opaque_slot is None or frame_type.upper() in ("DARK", "BIAS"):
+            return []
+        from .imaging.darks import _ascii_card
+        why = (f"{frame_type} exposed with slot {opaque_slot} "
+               f"({filter_name or 'unnamed'}) in the beam, and that slot is "
+               f"flagged blackout")
+        bus.log("error",
+                f"{why} - this frame has no usable signal. Either the wheel is "
+                f"not where the run believes, or the blackout flag on that slot "
+                f"is wrong", "capture")
+        return [
+            ("BEAMOK", False, "Light path was clear of a blackout slot"),
+            ("BEAMWHY", _ascii_card(why), "Blackout-slot check evidence"),
+        ]
+
     async def _opaque_slot_in_beam(self) -> int | None:
         """The wheel's current slot when the operator has flagged it opaque,
         else None. Never raises: no wheel, an unreadable position or a missing
@@ -2634,10 +2675,14 @@ class Hub:
             # was EMPTY, and three daylight darks at median 65535 filed as a
             # dark library — and until now nothing called it. A detector with no
             # caller protects nothing; this is that caller.
-            opaque_slot = (await self._opaque_slot_in_beam()
+            in_beam = await self._opaque_slot_in_beam()
+            opaque_slot = (in_beam
                            if frame_type.upper() in ("DARK", "BIAS") else None)
             dark_cards = await asyncio.to_thread(
                 self._judge_dark_frame, frame, frame_type, filt, opaque_slot)
+            # AND THE OTHER DIRECTION, which cost fifty-four minutes of a clear
+            # night before anyone looked. See _blackout_light_cards.
+            beam_cards = self._blackout_light_cards(frame_type, in_beam, filt)
             # WHAT THE SKY SAYS THIS IS (#182). ``object_name`` is what reaches
             # the OBJECT card; ``local_save_path`` above was already built from
             # the operator's string alone and is NOT recomputed here — that
@@ -2648,7 +2693,7 @@ class Hub:
                 filter_name=filt,
                 frame_type=frame_type, ra_hours=ra, dec_deg=dec,
                 telescope=telescope_name, instrument=cam.name, meta=meta,
-                extra_cards=(dark_cards or []) + id_cards)
+                extra_cards=(dark_cards or []) + beam_cards + id_cards)
             # carry the path on the frame so _publish_preview reports a correct
             # saved_path/saved_local in the very first event (no stale re-publish).
             frame.saved_path = str(local_save_path)

@@ -77,18 +77,52 @@ machinery landed. What a campaign flow actually does today:
       the cooler to stay cold for day darks, which is a change to what the RUN
       does (`plan_extras`), not to what the copy claims. Both open.
 
-## C. #231 — filter slot 7 is flagged blackout but never blanked
+## C + D. #231 and #240 are ONE event chain
 
-- [ ] C1. Reproduce: where does a dark/bias select its slot, and what makes
-      slot 7 opaque in name only?
-- [ ] C2. Fix so a blackout slot is actually dark for darks and bias.
-- [ ] C3. Sabotage-verify.
+They were filed as two problems and they are two ends of one night.
 
-## D. #240 — 18 frames shot through the blackout slot say IMAGETYP=Light
+**What the rig says.** `filter_names.json` on astrotown: slot 7 named "Dark",
+`opaque: true`. The slot is flagged blanked; physically it is an open carrier.
 
-- [ ] D1. Find the 18 frames on the rig, confirm the header.
-- [ ] D2. Decide relabel vs quarantine. Never rewrite science headers silently.
-- [ ] D3. Stop the next 18: whatever wrote Light for a blackout slot.
+**What the night log says** (2026-08-12.jsonl, the durable record):
+
+```
+04:05 cloud hold: building 16 darks at 180s g125 one at a time (4 of 20 banked)
+04:05 saved Dark_cloud-hold darks 180s g125_Dark_...0007.fits     <- wheel -> slot 7
+04:05 saved Light_NGC 6946_Dark_...0517.fits                      <- the PROBE, still slot 7
+04:09 plate solve: filter 'Dark' -> 'L'
+04:15 saved Light_NGC 6946_Dark_...0519.fits                      <- and 17 more, all slot 7
+```
+
+**The chain.** `_apply_filter` runs once, at the top of `_run_step`, above the
+frame loop. The cloud hold is dispatched from inside that loop and drives the
+wheel to the blackout slot for its darks. Nothing put it back. So the probe that
+decides whether the sky cleared was taken through slot 7, and so were the
+eighteen 180 s subs after it: 54 minutes of a clear night on NGC 6946.
+
+On a rig whose blackout slot really is blanked this is worse, not better: the
+probe sees a black frame, reads cloud, and the hold NEVER releases - the whole
+night goes to the 45-minute abort. Slot 7 being an open hole is the only reason
+the run resumed at all.
+
+- [x] C1/D1. Root-caused from the night log, not guessed. 28 frames on disk have
+      `FILTER=Dark` with `IMAGETYP` not DARK/BIAS: 20 from the NGC 6946 night
+      (18 x 180 s + 2 probes) and 8 test artifacts from 2026-08-02.
+- [x] D3. `SequenceEngine._restore_beam`, called unconditionally after every
+      `_hold_darks` (so the failure path is covered too) and again after
+      `_setup_target` on release. Sabotage-verified: 3 of 5 tests fail without it.
+- [x] C2. The inverse detector: `Hub._blackout_light_cards` cards any LIGHT or
+      FLAT exposed with a blackout slot in the beam (`BEAMOK=False` + `BEAMWHY`)
+      and logs at error. The dark check asked "is this dark actually dark";
+      nothing asked "is this light actually going through glass".
+- [ ] C3/D2. TWO DECISIONS THAT ARE THE USER'S, not mine:
+      1. slot 7 physically - fit a real blank, or untick `opaque` in the wheel
+         config. Every dark and bias the library holds from that slot is
+         suspect either way.
+      2. the 28 frames on disk - their headers are TRUE (they really were lights
+         through slot 7), so there is nothing to relabel. The question is whether
+         to quarantine them and whether the 18 should be un-counted from the
+         session ledger, which currently credits them to the step's quota.
 
 ## Standing constraints
 
