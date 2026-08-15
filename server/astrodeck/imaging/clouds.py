@@ -85,13 +85,39 @@ def frame_contrast(data: np.ndarray) -> float:
     return (p_high - bg) / noise
 
 
+#: THE CALIBRATION SET behind ``cloud_score``'s two clear references, measured
+#: on this project's 26 MP rig on 2026-08-15: one frame through every slot of
+#: the filter wheel, same field, same night, including slot 7 which carries no
+#: glass and is therefore a guaranteed-black control.
+#:
+#:     filter   bright stars   contrast   truth
+#:     L            200          67x      clear sky
+#:     R            200          54x      clear sky
+#:     G            200          34x      clear sky
+#:     B            200          33x      clear sky
+#:     S            200          22x      clear sky
+#:     Ha           200          18x      clear sky
+#:     Oiii         200          19x      clear sky
+#:     Dark          29          14x      NO LIGHT AT ALL
+#:
+#: Every real frame saturates the detector's 200-star cap; the blind one sits at
+#: 29, which is its hot-pixel floor. The references sit in that gap with room on
+#: both sides: at 4.0/MP and 25x, the faintest real frame (Ha) scores 0.13 and
+#: every black frame scores 0.59-0.67, against a 0.5 threshold.
+#:
+#: A genuinely CLOUDED frame lands below the black one, not above it - the
+#: 2026-08-13 log records "cloudy: 5 bright stars" - so raising these bars moves
+#: cloud further into "cloudy", never towards clear.
+CALIBRATION_NOTE = "2026-08-15, 26 MP, 8-slot wheel sweep incl. a blanked slot"
+
+
 def cloud_score(
     data: np.ndarray,
     *,
     stars: list[Star] | None = None,
     bright_sigma: float = 8.0,
-    clear_bright_density: float = 0.5,
-    clear_contrast: float = 12.0,
+    clear_bright_density: float = 4.0,
+    clear_contrast: float = 25.0,
     star_weight: float = 0.55,
     threshold: float = 0.5,
 ) -> CloudResult:
@@ -107,9 +133,17 @@ def cloud_score(
             this many noise-sigma above background. Noise peaks sit ~5-6 sigma;
             real stars clear this by a wide margin.
         clear_bright_density: bright stars per megapixel at/above which the star
-            signal is fully clear. Per-rig calibration knob.
+            signal is fully clear. Per-rig calibration knob, and the defaults
+            here were WRONG for a large sensor until 2026-08-15: at 0.5/MP a
+            26 MP frame reaches "fully clear" on 13 bright detections, and a
+            frame with NO LIGHT IN IT yields 29 hot-pixel detections (1.11/MP,
+            more than twice the bar). Both sub-signals therefore saturated to
+            clear on a black frame, which is how a blind probe released a cloud
+            hold on 2026-08-13.
         clear_contrast: peak-to-noise contrast at/above which the contrast signal
-            is fully clear.
+            is fully clear. Raised with the density for the same reason: a black
+            frame's noise is tiny, so its hot pixels stand 10-14x above it and
+            cleared the old 12.0 bar.
         star_weight: blend weight on the bright-star signal vs contrast (0..1).
         threshold: ``score`` at/above which ``cloudy`` is True.
 
