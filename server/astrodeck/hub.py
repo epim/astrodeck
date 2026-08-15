@@ -3351,9 +3351,28 @@ class Hub:
             # contrast metric needs unstretched pixels. Complements the
             # forecast-based cloud cover in weather.py with what the camera sees.
             if data_is_linear:
-                cloud = await asyncio.to_thread(
-                    cloud_score, sub, stars=stars)
-                info["cloud"] = cloud.to_dict()
+                # A FRAME TAKEN THROUGH A BLACKOUT SLOT SAYS NOTHING ABOUT THE
+                # SKY, and this is knowable exactly rather than by heuristic:
+                # the wheel is parked on a slot the operator flagged as carrying
+                # no glass, so no photon from the sky reached this sensor.
+                #
+                # MEASURED, 2026-08-13. A cloud hold's probe frames went through
+                # slot 7 because the hold had parked the wheel there. They are
+                # black - median 241 against a 240 dark floor - and `cloud_score`
+                # judged them "clear (12 bright stars, 9x noise)", twice. That
+                # verdict is what released the hold and sent the run back out.
+                #
+                # Omitting the key is the honest answer, not a fabricated
+                # "cloudy": `cloudstate.verdict_from_info` returns None when
+                # `cloud` is absent, and the evaluator treats None as
+                # indeterminate - fires nothing, re-arms nothing. A hold whose
+                # probes are blind therefore keeps holding, which is the only
+                # safe reading of "I cannot see".
+                blocked = await self._opaque_slot_in_beam()
+                if blocked is None:
+                    cloud = await asyncio.to_thread(
+                        cloud_score, sub, stars=stars)
+                    info["cloud"] = cloud.to_dict()
             # NOV-12: additive Bahtinov focus verdict, only while the aid is armed
             # and only on linear subs (the Radon fit needs unstretched pixels).
             # Reuses the single detect_stars pass above (center on the brightest
