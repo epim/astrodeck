@@ -301,11 +301,21 @@ class SnowflakeWheel(FilterWheel):
         happens to name the slot being asked for therefore CANCELS the move --
         silently, since skipping is the normal fast path -- and every frame
         after it is written with a FILTER header naming a filter that is not in
-        the light path. On 2026-08-13 eighteen 180 s subs of NGC 6946 were
-        written FILTER='Dark' while the beam was demonstrably open: their
-        brightest pixels share 73% with a genuine Ha sub of the same target and
-        4% with a real dark. Something told the run the wheel was on slot 7
-        when it was not.
+        the light path.
+
+        THIS IS A LATENT HAZARD, NOT A DIAGNOSED INCIDENT, and the distinction
+        is recorded because this guard was first written believing otherwise.
+        The eighteen mislabelled subs of 2026-08-13 were cited here as proof the
+        wheel had lied; they were not. Those frames sit on the dark floor
+        (median 247 against 263 for a real frame through the step's filter at
+        the same sensor temperature) -- the wheel was on slot 7, exactly as the
+        header said, because a cloud hold parked it there and nothing put it
+        back. That is ``SequenceEngine._restore_beam``'s bug, not this one.
+
+        The guard stays on its own merits: ``latest`` genuinely never expires,
+        the wheel genuinely goes quiet when its reader dies, and the early-return
+        above genuinely turns a stale read into a cancelled move. It has simply
+        never been caught doing it.
 
         A refusal is the right answer rather than a stale number, and it is
         cheap: the Snowflake streams a banner continuously and only goes quiet

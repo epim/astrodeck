@@ -285,9 +285,14 @@ async def test_a_frozen_banner_stops_answering_where_the_wheel_is(monkeypatch):
     `new_slot == old_slot`. A frozen banner naming the slot being asked for
     therefore CANCELS the move, on the normal fast path, in silence - and every
     later frame is written with a FILTER header for glass that is not in the
-    beam. On 2026-08-13 eighteen 180 s subs of NGC 6946 carried FILTER='Dark'
-    while the beam was open: their brightest pixels share 73% with a genuine Ha
-    sub of the same target and 4% with a real dark.
+    beam.
+
+    LATENT, not diagnosed. This docstring first cited the eighteen mislabelled
+    subs of 2026-08-13 as proof the wheel had lied. It had not: those frames sit
+    on the dark floor, so the wheel really was on slot 7 and the header was
+    honest - a cloud hold parked it there and nothing put it back
+    (`test_cloud_hold_restores_the_beam.py`). The guard is kept because the
+    staleness is real, not because it has been caught.
     """
     fl = FakeStreamLink()
     fl.feed(LIVE_LINE)

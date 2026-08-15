@@ -1,33 +1,38 @@
 """A cloud hold must put the science filter back before the run resumes.
 
-THE HAZARD, and what it is not. The first version of this file said eighteen
-180 s subs of NGC 6946 on 2026-08-12 were taken through the blackout slot and
-called it fifty-four minutes of a clear night lost. That was wrong, and the
-pixels say so: those frames share 73% of their brightest pixels with a genuine
-Ha sub of the same target and 4% with a real dark. Light reached the sensor.
-What wrote FILTER='Dark' on them was the wheel reporting a slot it was not on -
-see `SnowflakeWheel.get_position` and `test_filter_moving.py`.
+MEASURED, on the night of 2026-08-12. A hold fired at 04:01, shot its darks,
+released eight minutes later, and the run went straight back to NGC 6946 for
+EIGHTEEN more 180 s subs. Every one was taken through the blackout slot and
+written FILTER='Dark'. Fifty-four minutes of a clear night, on a target the rig
+had been building for days.
 
-What IS true, and is why every test below stays:
+    hold darks through slot 7   n=2    median 247   15.8 C
+    the eighteen subs           n=18   median 247   15.9 C
+    real S, same step, 03:5x    n=2    median 263   16.0 C
+    real Ha                     n=6    median 259   17.5 C
 
-  * the hold drives the wheel to the blackout slot on purpose, because a
-    filterless calibration step is exactly how `_apply_filter` is told to go
-    there;
-  * that slot demonstrably BLANKS - the six hold darks from that night are
-    black, sharing 4% of their brightest pixels with any light frame and 10%
-    with each other, which is noise agreeing with noise;
-  * `_apply_filter` runs ONCE, at the top of `_run_step`, above the frame loop,
-    and the hold is dispatched from inside it.
+The subs sit exactly on the dark floor. A real frame of the same target through
+the same step's filter, twenty minutes earlier at the same sensor temperature,
+sits 16 ADU above it. They are black, and the FILTER header was honest.
 
-So whoever moves the wheel from inside that loop owns putting it back, and
-nobody did. Had the wheel obeyed the goto, every remaining sub of the step
-would have been a black frame - and the run would have reported them as taken.
+THIS FILE ONCE SAID THE OPPOSITE, and how it got there is worth keeping. A
+top-N brightest-pixel comparison appeared to show the subs sharing 73% with a
+real Ha frame and 4% with a dark - so, light. But the darks in that comparison
+came from five hours earlier at a colder sensor, and what changed was the
+HOT-PIXEL POPULATION, not the signal. Against darks from the same hour, every
+frame on this sensor shares ~72% with every other one, dark-to-dark included:
+the test had no discriminating power at all and the 4% was a temperature
+artifact. Control the temperature and use the median.
 
-There is a second casualty in the same place. `_cloud_probe` is what decides
-whether the sky has cleared, and it too was taken through whatever the hold left
-in the beam. Through a blanked slot that probe reads a black frame as cloud and
-the hold NEVER RELEASES, so the cost is not eighteen frames but the whole night
-to the 45-minute abort.
+The mechanism is a seam. `_apply_filter` is called ONCE, at the top of
+`_run_step`, above the frame loop. The hold is dispatched from INSIDE that loop
+and drives the wheel to the blackout slot on purpose - a filterless calibration
+step is exactly how `_apply_filter` is told to go there. Whoever moves the wheel
+from inside the loop owns putting it back, and nobody did.
+
+There is a second casualty in the same place. `_cloud_probe` decides whether the
+sky has cleared, and it too was taken through whatever the hold left in the
+beam - so the hold released on the strength of a frame with no sky in it.
 """
 from __future__ import annotations
 
