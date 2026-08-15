@@ -2869,6 +2869,22 @@ class SequenceEngine:
                 # already exceeds the probe interval, so sleeping afterwards
                 # would only delay the next look at the sky.
                 took_dark = await self._hold_darks(target)
+                # PUT THE SCIENCE FILTER BACK BEFORE ANYTHING LOOKS UP.
+                #
+                # The dark drives the wheel to the blackout slot, and the probe
+                # below is what decides whether the sky has cleared. Judged
+                # through a blanked slot it sees a black frame, reads cloud, and
+                # the hold never releases: the feature meant to spend dead time
+                # productively would end every cloudy night in the 45-minute
+                # abort instead.
+                #
+                # UNCONDITIONAL, not gated on `took_dark`. `_hold_darks` catches
+                # its own failures and returns False, and the wheel may already
+                # have moved before whatever failed - so the one path that most
+                # needs the beam put back is the one that reports it took no
+                # dark. `_apply_filter` is a no-op when the slot already
+                # matches, which is what makes an unconditional call cheap.
+                await self._restore_beam("cloud-hold dark")
 
                 if not took_dark:
                     await asyncio.sleep(CLOUD_PROBE_EVERY_S)
@@ -2894,11 +2910,53 @@ class SequenceEngine:
                     # reason: the sky moved while we sat. _setup_target
                     # re-centres by plate solve and restarts guiding per plan.
                     await self._setup_target(self._index_of_target(target), target)
+                # AND AGAIN, AFTER `_setup_target`, because that is the last
+                # thing that touches the wheel: its plate solve switches to a
+                # broadband filter and puts back whatever it found, which after
+                # a hold that shot darks is the blackout slot.
+                #
+                # MEASURED, on the night of 2026-08-12. A cloud hold shot its
+                # darks, released, and the run went straight back to NGC 6946
+                # for eighteen more 180 s subs - every one of them through the
+                # blackout slot, every one written FILTER='Dark'. Fifty-four
+                # minutes of a clear night, on a target the rig had been
+                # building for days. `_apply_filter` is called once at the top
+                # of `_run_step`, and the hold happens INSIDE that step's frame
+                # loop, so nothing was ever going to put the beam back.
+                await self._restore_beam(f"{held_min:.0f} min cloud hold")
                 self._set_state(state="running", hold=None,
                                 detail=f"resumed after {held_min:.0f} min of cloud")
                 return
         finally:
             self._holding_for_clear = False
+
+    async def _restore_beam(self, why: str) -> None:
+        """Put the interrupted step's filter back in the light path.
+
+        ``_apply_filter`` runs ONCE, at the top of ``_run_step``, above the
+        frame loop. Anything that moves the wheel from inside that loop
+        therefore owns putting it back, and until this existed nothing did: a
+        cloud hold's darks drive to the blackout slot (a filterless calibration
+        step is exactly how ``_apply_filter`` is told to go there), and the wheel
+        simply stayed there for the rest of the step.
+
+        NOT best-effort, deliberately, and that is the difference between this
+        and ``_stand_down_guider``. A wedged guider costs tracking accuracy; a
+        wheel stuck on the blackout slot costs EVERY REMAINING FRAME of the
+        night, silently, while the run reports itself healthy and the report
+        counts the frames as taken. ``_apply_filter``'s bounded awaits escalate
+        through the SafetyAbort wind-down, which is the right answer: better a
+        night that ends and says why than one that fills a disk with black.
+
+        A step that names no filter, or a rig with no wheel, is a no-op -
+        ``_apply_filter`` already returns early for both.
+        """
+        step = self._hold_step
+        if step is None or not getattr(step, "filter", ""):
+            return
+        bus.log("info", f"restoring filter '{step.filter}' after {why}",
+                "sequence")
+        await self._apply_filter(step)
 
     def _hold_darks_shortfall(self, step, quota: int) -> tuple[int, int]:
         """``(to_shoot, already_banked)`` for a hold at ``step``'s settings.
