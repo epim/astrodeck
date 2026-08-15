@@ -50,7 +50,7 @@ import TrashPanel from "../components/gallery/TrashPanel";
 import {
   TRASH_BATCH_CAP, downloadPlan, fmtBytes, fmtCount, fmtFrameCost,
   nightOptionLabel, nightRangeLabel, partialFailureNote, pickedTotals, scanNote,
-  togglePath, tonightHasFrames, trashBatchReason, trashConfirmCopy,
+  selectRange, togglePath, tonightHasFrames, trashBatchReason, trashConfirmCopy,
   truncatedNote, type GallerySelection,
 } from "../lib/gallery";
 import type { GalleryFrame, GalleryFramesPage, GalleryNightsResponse } from "../types";
@@ -106,6 +106,10 @@ export default function GalleryView(): JSX.Element {
   const [err, setErr] = useState<string | null>(null);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [allInFilter, setAllInFilter] = useState(false);
+  /** The last tile ticked by a PLAIN click. A shift+click selects from here to
+   *  the tile clicked, so a bad run is two clicks rather than forty. It stays
+   *  put across range selects, so the span can be re-extended. */
+  const [anchor, setAnchor] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [trashCount, setTrashCount] = useState<number | null>(null);
   // The bin's real TTL, read from the server rather than assumed: the
@@ -637,16 +641,26 @@ export default function GalleryView(): JSX.Element {
                     selected={allInFilter || picked.has(f.path)}
                     selectable={canDelete || canMedia}
                     canDownload={canMedia}
-                    onToggle={() => {
+                    onToggle={(shift) => {
                       if (allInFilter) {
                         // Un-ticking one tile out of "everything" means "all of
                         // them except this" — which the URL form cannot express,
                         // so it collapses to an explicit list of what is loaded.
                         setAllInFilter(false);
                         setPicked(new Set(rows.map((r) => r.path).filter((p) => p !== f.path)));
+                        setAnchor(f.path);
+                        return;
+                      }
+                      // A shift+click with somewhere to reach from sweeps the
+                      // span. Everything else is a plain toggle AND moves the
+                      // anchor — including un-ticking, so the next sweep starts
+                      // from the tile last touched rather than a stale one.
+                      if (shift && anchor && anchor !== f.path) {
+                        setPicked((p) => selectRange(p, rows.map((r) => r.path), anchor, f.path));
                         return;
                       }
                       setPicked((p) => togglePath(p, f.path));
+                      setAnchor(f.path);
                     }}
                   />
                 ))}

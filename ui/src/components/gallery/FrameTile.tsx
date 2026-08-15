@@ -113,7 +113,11 @@ export function TileSurface({
   selectable: boolean;
   /** view.media. Without it there is no FITS download to offer at all. */
   canDownload: boolean;
-  onToggle: () => void;
+  /** ``shift`` is true for a shift+click, which the grid turns into a range
+   *  select. Read off the native event rather than tracked separately: React
+   *  backs a checkbox's change with the click, so the modifier is right there,
+   *  and a keyboard space carries shift=false, which is the right answer. */
+  onToggle: (shift: boolean) => void;
   /** Absent until the tile has scrolled into reach; that IS the lazy load. */
   thumbSrc?: string;
   onImgLoad?: () => void;
@@ -187,7 +191,10 @@ export function TileSurface({
             <input
               type="checkbox"
               checked={selected}
-              onChange={onToggle}
+              onChange={(e) => {
+                const native = e.nativeEvent as Partial<MouseEvent>;
+                onToggle(native?.shiftKey === true);
+              }}
               aria-label={`Select ${frame.name}`}
               className="w-4 h-4 accent-[var(--accent)]"
             />
@@ -233,7 +240,11 @@ export default function FrameTile(props: {
   selected: boolean;
   selectable: boolean;
   canDownload: boolean;
-  onToggle: () => void;
+  /** ``shift`` is true for a shift+click, which the grid turns into a range
+   *  select. Read off the native event rather than tracked separately: React
+   *  backs a checkbox's change with the click, so the modifier is right there,
+   *  and a keyboard space carries shift=false, which is the right answer. */
+  onToggle: (shift: boolean) => void;
 }): JSX.Element {
   const [ref, inView] = useInView<HTMLDivElement>();
   const [state, setState] = useState<TileState>("loading");
