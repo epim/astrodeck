@@ -1180,10 +1180,30 @@ class SequenceEngine:
                         # PRO-3: on_target_complete eval for a finished
                         # non-calibration target. Guarded (no-op when empty).
                         if self.plan and self.plan.instructions:
+                            # THE SKY READINGS BELONG HERE TOO, and leaving them
+                            # off was not a neutral omission. A context built
+                            # without them says `cloudy=None` — "nobody can
+                            # say" — at the one boundary where `target_complete`
+                            # is ever True. The evaluator honours that: a
+                            # compound rule reading `all(target complete, sky
+                            # clear)` is indeterminate every time it is
+                            # evaluated, so it can never fire once, on any
+                            # night, for any sky. The engine knew the sky; it
+                            # simply was not asked.
+                            #
+                            # Filling them in costs one safety read at a target
+                            # boundary and keeps the tri-state honest in the
+                            # other direction as well: a rig with no monitor
+                            # still reports None here, so nothing fires on a
+                            # reading nobody took.
+                            _now = time.time()
                             await self._run_instructions(
-                                TriggerContext(now_ts=time.time(),
+                                TriggerContext(now_ts=_now,
                                                target_complete=True,
-                                               active_target=ready.name),
+                                               active_target=ready.name,
+                                               cloudy=self._clouds.cloudy(_now),
+                                               unsafe=await self._unsafe_now(),
+                                               panel_ready=self._panel_ready_now()),
                                 ready, None)
                 except StopTarget as e:
                     # scheduling-only stop: skip this target, keep the night going.
