@@ -29,7 +29,7 @@ import {
   fmtFrameCost, frameSubtitle, framesQuery, framesPath,
   nightOptionLabel, nightRangeLabel, nightVsFilename, partialFailureNote,
   pickedTotals, purgeConfirmCopy, purgesIn, scanNote, selectionQuery,
-  thumbFailure, thumbPath, tileFailureCopy, togglePath,
+  selectRange, thumbFailure, thumbPath, tileFailureCopy, togglePath,
   tonightHasFrames, trashBatchReason, trashConfirmCopy, truncatedNote,
   type GallerySelection,
 } from "../gallery";
@@ -211,6 +211,41 @@ test("togglePath adds then removes, and never mutates its input", () => {
   eq(a.size, 1, "the input set must not be mutated");
   eq(b.has("y"), true);
   eq(togglePath(b, "y").has("y"), false);
+});
+
+test("selectRange ticks everything between the two ends, inclusive", () => {
+  const order = ["a", "b", "c", "d", "e"];
+  const got = selectRange(new Set<string>(), order, "b", "d");
+  eq([...got].sort().join(","), "b,c,d");
+});
+
+test("selectRange works in either direction", () => {
+  const order = ["a", "b", "c", "d", "e"];
+  eq([...selectRange(new Set<string>(), order, "d", "b")].sort().join(","), "b,c,d");
+});
+
+test("selectRange is ADDITIVE - it never clears ticks outside the range", () => {
+  // The flow this exists for is "sweep the bad run, then untick the good ones".
+  // A range that replaced the selection would throw away the earlier sweep.
+  const order = ["a", "b", "c", "d", "e"];
+  const got = selectRange(new Set(["a"]), order, "c", "d");
+  eq([...got].sort().join(","), "a,c,d");
+});
+
+test("selectRange follows RENDERED order, not the order the paths arrived in", () => {
+  // The grid is filtered and sorted; "everything in between" means between on
+  // screen. Reversing the rendered order must reverse which rows are caught.
+  const got = selectRange(new Set<string>(), ["e", "d", "c", "b", "a"], "e", "c");
+  eq([...got].sort().join(","), "c,d,e");
+});
+
+test("selectRange leaves the set alone when an endpoint is not on screen", () => {
+  // A row that scrolled out of a re-filtered page has no position, and a span
+  // guessed from one endpoint would tick rows the operator never saw.
+  const before = new Set(["a"]);
+  const got = selectRange(before, ["a", "b"], "zzz", "b");
+  eq([...got].sort().join(","), "a");
+  eq(before.size, 1, "the input set must not be mutated");
 });
 
 test("pickedTotals sums only the ticked rows", () => {

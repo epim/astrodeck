@@ -229,6 +229,36 @@ export function togglePath(picked: ReadonlySet<string>, path: string): Set<strin
   return next;
 }
 
+/** Tick everything from ``anchor`` to ``path`` inclusive, in RENDERED order.
+ *
+ *  The gallery's whole purpose after a bad night is culling, and culling one
+ *  checkbox at a time is what stops people doing it. A run that went wrong went
+ *  wrong CONTIGUOUSLY - the cloud rolled in at frame 40 and never left - so the
+ *  unit the operator actually wants to name is a range.
+ *
+ *  ADDITIVE, and that is the difference from a file manager. Windows Explorer
+ *  REPLACES the selection on shift+click; here the flow is "sweep the bad run,
+ *  then untick the two that came out fine", so a range must never clear ticks
+ *  made outside it. Unticking afterwards is plain `togglePath`.
+ *
+ *  ``order`` is the rendered row order, not insertion order: "everything in
+ *  between" means between on SCREEN, and the grid is filtered and sorted. Either
+ *  endpoint missing from ``order`` (a row that scrolled out of a re-filtered
+ *  page) leaves the set untouched rather than guessing at a span. */
+export function selectRange(
+  picked: ReadonlySet<string>,
+  order: readonly string[],
+  anchor: string,
+  path: string,
+): Set<string> {
+  const a = order.indexOf(anchor);
+  const b = order.indexOf(path);
+  if (a < 0 || b < 0) return new Set(picked);
+  const next = new Set(picked);
+  for (let i = Math.min(a, b); i <= Math.max(a, b); i++) next.add(order[i]);
+  return next;
+}
+
 /** Count + bytes of the ticked paths, summed from the rows already on screen.
  *  Rows the grid has not loaded contribute nothing, which is correct: a path can
  *  only be ticked from a row that was rendered. */
