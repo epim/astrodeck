@@ -783,6 +783,30 @@ def frames_by_target_from_reports(reports: Iterable[Any]
     return out
 
 
+#: What every campaign note says about the end of a night, in ONE place because
+#: it was said three times and two of the three clauses were untrue.
+#:
+#: It read "Dawn parks + closes; the cooler stays cold for day darks; each dusk
+#: resumes mid-cycle."
+#:
+#: * PARKS is true - `plan_extras` sets `park_when_done=True` for every flow.
+#: * CLOSES is not. No dome action reaches the engine; `to_plan` reports that
+#:   separately at danger weight, and this line was quietly contradicting it.
+#: * THE COOLER STAYS COLD is not either, and it is the expensive one to
+#:   believe: `plan_extras` also sets `warm_cooler_when_done=True`, so the TEC
+#:   ramps up at dawn. An operator who read this and left the rig expecting a
+#:   cold sensor for day darks would come back to a warm one and a dark library
+#:   indexed at a temperature the frames do not have.
+#: * RESUMES MID-CYCLE is true - the session ledger seeds the next night.
+#:
+#: The design asks for the cooler to stay cold, and that is a real request, but
+#: answering it means changing what the run does rather than what this sentence
+#: claims. Recorded on the campaign item; the copy tells the truth meanwhile.
+_DAWN = ("Dawn parks the mount and warms the camera - the dome is not driven "
+         "and the cooler does not stay cold for day darks. Each dusk resumes "
+         "where the ledger left off.")
+
+
 def _campaign(graph: FlowGraph | None,
               frames_by_target: Callable[[], Mapping[str, Mapping[str, int]]] | None
               ) -> dict:
@@ -863,19 +887,16 @@ def _campaign(graph: FlowGraph | None,
                 "campaign.")
     elif not has_ledger:
         note = ("No session ledger available, so nothing here claims a banked "
-                "figure. Dawn parks + closes; the cooler stays cold for day "
-                "darks; each dusk resumes mid-cycle.")
+                f"figure. {_DAWN}")
     elif not slots:
         note = ("This campaign's capture stage is not a FILTER CYCLE, so "
-                "progress is not counted in cycles. Dawn parks + closes; each "
-                "dusk resumes where the ledger left off.")
+                f"progress is not counted in cycles. {_DAWN}")
     else:
         left = sum(max(0, quota - (m["banked"] or 0)) for m in members)
         passes = left * per_pass * len(slots)
         note = (f"{left} cycles left across the pool ({passes} subs). Nights to "
                 f"finish are not forecast - clear-sky prediction that far out is "
-                f"not something this rig models. Dawn parks + closes; the cooler "
-                f"stays cold for day darks; each dusk resumes mid-cycle.")
+                f"not something this rig models. {_DAWN}")
 
     return {"is_campaign": is_campaign, "has_pool": True,
             "has_ledger": has_ledger, "quota": quota, "members": members,

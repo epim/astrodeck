@@ -387,24 +387,48 @@ def _automation(compiled: dict, out: list[dict]) -> None:
     docstring is emphatic that the roof must never be talked out of shutting.
     That one is ``danger``, and :func:`blocking_reasons` picks it up.
     """
-    # THE CAMPAIGN BLOCK REACHES NOTHING, and saying so is the point. The
-    # compile emits `campaign: {repeat, until, resume}` for a DUSK WINDOW set to
-    # repeat, `SequencePlan` has nowhere to put it, and the run therefore ends at
-    # dawn like any other - it does not come back, the cursor is not persisted,
-    # and no target is ever marked done in the ledger.
+    # THE CAMPAIGN BLOCK REACHES MORE THAN THIS NOTE USED TO ADMIT, and
+    # over-reporting a loss is the same defect as hiding one. It said the run
+    # "images ONE night and stops at dawn", that "the capture cursor is not
+    # persisted", that "no target is marked done" and that the flow "will not
+    # re-arm at the next dusk". Three of those four are false, and had been
+    # since the multi-night session machinery landed:
     #
-    # An operator who drew a month-long campaign and got one night with no
-    # warning is the exact defect this whole list exists to prevent, and this
-    # entry was missing when the block was added: the plan dropped it in silence.
+    #   * a run that ends at its stop boundary leaves the session DORMANT with
+    #     `auto_resume` set (engine.start arms it unconditionally), and
+    #     `ResumeArm.tick` restarts it the next time the window opens;
+    #   * the cursor IS the frame ledger - `_done` seeds from `done_map()` on
+    #     resume, which is what makes night two shoot the remainder rather than
+    #     the whole count again;
+    #   * a target whose frames are all in the ledger is reported "already
+    #     complete - skipping" by the scheduler, so the pool advances across
+    #     nights without anything having to mark it.
+    #
+    # `test_window_dormant_then_resume_exact_remaining` and
+    # `test_a_campaign_advances_across_nights` hold those three up.
+    #
+    # What is genuinely not honoured is the STOP CONDITION, and only for one of
+    # its two forms - so that is what this says now.
     if compiled.get("campaign"):
         camp = compiled["campaign"]
-        out.append(_note(
-            "campaign",
-            f"this flow is a campaign (repeat {camp.get('repeat')}, until "
-            f"{camp.get('until')}), and the engine cannot run one yet: this run "
-            f"images ONE night and stops at dawn. The capture cursor is not "
-            f"persisted, no target is marked done, and the flow will not re-arm "
-            f"at the next dusk", "danger"))
+        until = str(camp.get("until") or "")
+        runs = ("It images until its window closes, goes dormant with "
+                "auto-resume armed, and comes back the next night picking up "
+                "from the frame ledger - targets already finished are skipped "
+                "rather than reshot")
+        if until == "nights_30":
+            out.append(_note(
+                "campaign",
+                f"{runs}. Nothing counts NIGHTS, though: the campaign ends when "
+                f"every target has the frames it asked for, however many nights "
+                f"that takes, so 'until {until}' is not a limit the run "
+                f"enforces"))
+        else:
+            out.append(_note(
+                "campaign",
+                f"{runs}. It ends when every target has the FRAME COUNT it asked "
+                f"for - the integration-goal hours are a Tonight budget, not the "
+                f"thing that closes the campaign"))
 
     auto = compiled.get("automation") or {}
     if "dome" in auto:
