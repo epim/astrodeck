@@ -616,15 +616,21 @@ class TestTheStarTestKnowsWhereItAppliesnt:
     26 MP sensor compares a big frame's source count against a small frame's
     bar.
 
-    MEASURED on the rig, 2026-08-14. Six consecutive 180 s frames whose
-    background was identical to four decimal places (median 240.0, spread
-    4.4478) produced source counts 6, 8, 9, 19, 10, 13 - and the two that
-    happened to land above 12 were condemned as light leaks. They are black:
-    their brightest pixels share 4% with any real sub, and 10% with each other,
-    which is noise agreeing with noise.
+    MEASURED 2026-08-15, one frame through every slot of the rig's wheel on one
+    field in one night:
 
-    The DARKOK=False those verdicts wrote makes `CalibrationLibrary` exclude
-    the frames, so the check was quietly throwing away good darks.
+        L 184/16   R 200/16   G 199/16   B 200/16
+        S  49/10   Ha   7/5   Oiii 65/14   Dark 17/9
+
+    The test is wrong in BOTH directions on this sensor. The blackout slot, with
+    no light in it at all, scores 17 sources over 9 zones and is CONDEMNED. A
+    real Ha frame of the same field scores 7 over 5 and PASSES. The
+    distributions are inverted; no threshold on this number separates them.
+
+    The cost of the false positive is not cosmetic: DARKOK=False makes
+    `CalibrationLibrary` exclude the frame, so the check was throwing away good
+    darks. Four archival darks that render as pure noise were condemned this
+    way.
     """
 
     def test_the_floor_scales_with_the_frame(self):
