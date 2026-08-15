@@ -264,6 +264,28 @@ class TestInstructions:
         note = [u for u in un if "-> calib" in u["key"]]
         assert note and "will not run" in note[0]["detail"]
 
+    def test_the_campaign_note_does_not_claim_a_loss_that_is_not_one(self):
+        """It said the run "images ONE night and stops at dawn", that "the
+        capture cursor is not persisted", that "no target is marked done" and
+        that the flow "will not re-arm at the next dusk". Three of those four
+        were false when they were written.
+
+        `test_campaign_across_nights.py` runs the machinery and shows the
+        opposite: dormant + armed, ledger-seeded, finished targets skipped. An
+        operator told their campaign will not work does not run it, so an
+        over-reported loss costs exactly as much as a hidden one."""
+        camp = next(e for e in examples() if "Campaign" in e.name)
+        _, un = to_sequence_plan(compile_plan(camp.graph, camp.name), camp.graph)
+        note = [u for u in un if u["key"] == "campaign"]
+        assert note, "a campaign must still be called out"
+        detail = note[0]["detail"]
+        assert note[0]["level"] == "warn", (
+            "the campaign runs; only its stop condition is approximate")
+        for lie in ("cursor is not persisted", "will not re-arm",
+                    "images ONE night", "no target is marked done"):
+            assert lie not in detail, f"the note still claims {lie!r}"
+        assert "picking up from the frame ledger" in detail
+
     def test_a_calib_fired_by_something_OTHER_than_cloud_is_still_a_loss(self):
         """The campaign's day-darks lane hangs off `on_shutdown_complete`, and
         no hold covers that. Keying the redundancy on the node type alone would
@@ -416,18 +438,27 @@ class TestBlockingReasons:
         assert len(blocking_reasons(un, dome_connected=True)) == 1
 
     def test_nothing_else_blocks_however_bad_it_is(self):
-        """A month-long campaign the engine cannot run is a danger the operator
-        must SEE, not a reason to refuse tonight's imaging.
+        """A lost weather rule is a danger the operator must SEE, not a reason
+        to refuse a night's imaging. Only the roof blocks.
 
-        This used the M16 example until the cloud-wired calib rules stopped
-        being reported as losses - correctly, since the hold takes their darks -
-        which left M16 with a single danger and nothing for this test to prove.
-        The campaign example carries two unrelated ones, so the property is
-        still demonstrated by a graph rather than by a contrivance."""
-        camp = next(e for e in examples() if "Campaign" in e.name)
-        _, un = to_sequence_plan(compile_plan(camp.graph, camp.name), camp.graph)
+        Built from a graph rather than borrowed from an example, and that is the
+        point of the rewrite. It leaned on M16 and then on the campaign example,
+        and both stopped carrying a second danger as their notes got more
+        accurate - so a test about `blocking_reasons` kept failing for reasons
+        that had nothing to do with `blocking_reasons`. The graph below states
+        its own two dangers and cannot drift."""
+        g = FlowGraph(
+            nodes=[_n("d", "dome"),
+                   _n("t", "target", x=100, name="M31", ra="00h 42m 44s",
+                      dec="+41 16 09"),
+                   _n("c", "capture", x=200, exposure=60, count=5),
+                   _n("w", "cloudwatch", x=300),
+                   # No engine action: a cloud-triggered loss, reported danger.
+                   _n("p", "parkclose", x=400)],
+            edges=[_e("t", "target", "c", "run"), _e("w", "in", "p", "do")])
+        _, un = to_sequence_plan(compile_plan(g, "n"))
         dangers = [u["key"] for u in un if u["level"] == "danger"]
-        assert len(dangers) > 1 and "campaign" in dangers
+        assert len(dangers) > 1, f"the graph must carry two dangers, got {dangers}"
         assert [u["key"] for u in blocking_reasons(un, dome_connected=True)] == \
                ["automation.dome"]
 

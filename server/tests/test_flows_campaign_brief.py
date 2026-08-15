@@ -226,15 +226,22 @@ class TestTheLedgerFold:
 
 
 class TestTheCampaignBlockIsNotDroppedInSilence:
-    """`SequencePlan` has nowhere to put `campaign`, so the run images ONE night.
+    """`SequencePlan` has nowhere to put `campaign`, so the block is reported.
 
-    That is a fine interim state; dropping it WITHOUT SAYING SO is not. An
-    operator who drew a month-long campaign and got a single night with no
-    warning is the defect the whole unmapped list exists to prevent, and this
-    entry was missing when the compile first started emitting the block.
+    Dropping it without saying so would be the defect the whole unmapped list
+    exists to prevent. But so is the opposite, and this class used to require
+    it: it asserted the note says "images ONE night" and "will not re-arm" at
+    DANGER weight, and neither had been true since the multi-night session
+    machinery landed. A test that demands a false sentence keeps the sentence
+    alive through every review, which is how this one survived.
+
+    What the note must do is say what actually happens - the run comes back and
+    picks up - and name the part that really is approximate, the stop condition.
+    `test_campaign_across_nights.py` runs the machinery that makes the first
+    half true.
     """
 
-    def test_a_campaign_flow_reports_what_it_will_not_do(self):
+    def test_a_campaign_flow_reports_what_it_WILL_do(self):
         from astrodeck.flows.compile import compile_plan
         from astrodeck.flows.to_plan import to_sequence_plan
         g = _ex("example-campaign")
@@ -242,9 +249,39 @@ class TestTheCampaignBlockIsNotDroppedInSilence:
         hits = [u for u in un if u["key"] == "campaign"]
         assert hits, [u["key"] for u in un]
         detail = hits[0]["detail"]
-        assert "images ONE night" in detail, detail
-        assert "will not re-arm" in detail, detail
-        assert hits[0]["level"] == "danger", hits[0]
+        assert "comes back the next night" in detail, detail
+        assert "frame ledger" in detail, detail
+        assert "skipped rather than reshot" in detail, detail
+        assert hits[0]["level"] == "warn", hits[0]
+
+    @pytest.mark.parametrize("has_ledger", [True, False])
+    def test_the_dawn_sentence_matches_the_PLAN_not_the_design(self, has_ledger):
+        """The tab said "Dawn parks + closes; the cooler stays cold for day
+        darks", three times, and two thirds of it was false.
+
+        Parking is real. Closing is not - no dome action reaches the engine, and
+        `to_plan` reports that at danger weight, so this line was contradicting
+        a warning on the same screen. The cooler clause is the expensive one:
+        `plan_extras` sets `warm_cooler_when_done=True`, so the TEC ramps up at
+        dawn. Someone who read that sentence and walked away expecting a cold
+        sensor for day darks gets a warm one, and a dark library indexed at a
+        temperature the frames were never at.
+
+        Bound to the PLAN rather than to a fixed string, so the sentence cannot
+        be right today and quietly wrong after the next change to `plan_extras`.
+        The design does ask for a cold cooler; delivering it means changing the
+        run, not the copy."""
+        from astrodeck.flows.compile import compile_plan
+        from astrodeck.flows.to_plan import to_sequence_plan
+        g = _ex("example-campaign")
+        plan, _ = to_sequence_plan(compile_plan(g, "camp"), g)
+        frames = {"M16": {"L": 40}} if has_ledger else {}
+        note = _campaign(g, frames)["note"]
+        if plan.warm_cooler_when_done:
+            assert "cooler stays cold" not in note, note
+            assert "warms the camera" in note, note
+        if plan.park_when_done:
+            assert "parks the mount" in note, note
 
     def test_a_single_night_flow_says_nothing_about_campaigns(self):
         from astrodeck.flows.compile import compile_plan
