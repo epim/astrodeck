@@ -2915,14 +2915,22 @@ class SequenceEngine:
                 # broadband filter and puts back whatever it found, which after
                 # a hold that shot darks is the blackout slot.
                 #
-                # MEASURED, on the night of 2026-08-12. A cloud hold shot its
-                # darks, released, and the run went straight back to NGC 6946
-                # for eighteen more 180 s subs - every one of them through the
-                # blackout slot, every one written FILTER='Dark'. Fifty-four
-                # minutes of a clear night, on a target the rig had been
-                # building for days. `_apply_filter` is called once at the top
-                # of `_run_step`, and the hold happens INSIDE that step's frame
-                # loop, so nothing was ever going to put the beam back.
+                # THE HAZARD IS STRUCTURAL, and the first account of it here
+                # was wrong. It said eighteen 180 s subs of NGC 6946 on
+                # 2026-08-12 were taken through the blackout slot. They were
+                # not: those frames share 73% of their brightest pixels with a
+                # genuine Ha sub of the same target and 4% with a real dark, so
+                # light reached the sensor. What put FILTER='Dark' on them was
+                # the wheel reporting a slot it was not on (see
+                # SnowflakeWheel.get_position), not this loop.
+                #
+                # What IS true here, and is why the restore stays: the hold
+                # drives the wheel to a slot that demonstrably blanks - six
+                # consecutive hold darks that night are black, sharing nothing
+                # with any light frame - and `_apply_filter` runs ONCE, at the
+                # top of `_run_step`, above this loop. Had the wheel obeyed,
+                # every remaining sub of the step would have been a black
+                # frame.
                 await self._restore_beam(f"{held_min:.0f} min cloud hold")
                 self._set_state(state="running", hold=None,
                                 detail=f"resumed after {held_min:.0f} min of cloud")
