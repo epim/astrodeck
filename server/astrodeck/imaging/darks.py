@@ -176,6 +176,28 @@ SOURCE_ZONE_FRAC_MIN = 0.5
 #: dark-frame pathology (five hot columns and three hot rows) kept 5 over 4.
 SOURCE_MIN = 12
 
+#: THE AREA THOSE MEASUREMENTS WERE MADE ON, and the reason the constant above
+#: is not a number that travels.
+#:
+#: Every figure quoted for SOURCE_MIN, SOURCE_SPREAD_MIN_PX and SOURCE_ECC_MAX
+#: came off 1024x1024 fixtures. `SOURCE_MIN` is therefore a count PER THIS MANY
+#: PIXELS, and applying it unscaled to a bigger sensor compares a 26-megapixel
+#: frame's source count against a one-megapixel frame's bar.
+#:
+#: MEASURED on the rig, 2026-08-14, on six consecutive 180 s frames whose
+#: background was identical to four decimal places (median 240.0, spread
+#: 4.4478):
+#:
+#:     sources   6   8   9  19  10  13
+#:     zones     5   6   5  11  10  10
+#:     verdict   .   .   .  STARS  .  STARS
+#:
+#: Two genuinely black frames were condemned as light leaks by a detector
+#: whose count was drifting with noise, and the DARKOK=False card that put on
+#: them makes the calibration library EXCLUDE them. The check was throwing away
+#: good darks.
+SOURCE_REF_PIXELS = 1024 * 1024
+
 #: Verdicts that mean LIGHT REACHED THE SENSOR, as opposed to the readout being
 #: broken ("clipped", "constant", "empty"), which says nothing about the light
 #: path. Only these can contradict an operator's ``filter_opaque`` tick — see
@@ -378,6 +400,31 @@ def _light_clause(slot: int | None, filter_name: str) -> str:
             f"the wheel never reached it.")
 
 
+def source_floor(n_pixels: int, per_ref: int = SOURCE_MIN) -> int | None:
+    """Sources a leak must reach on a frame of ``n_pixels``, or ``None`` when
+    the star test cannot be applied to a frame this big at all.
+
+    ``None`` IS THE POINT, and it is why this returns an Optional rather than a
+    bigger number. Scaling the floor by area is only half an answer, because
+    ``detect_stars`` stops at ``DEFAULT_MAX_STARS``: past about seventeen
+    megapixels the scaled bar is above the most sources the detector can ever
+    return, so the test could not fire however bright the leak. A test that
+    cannot fire must SAY it is not testing, not sit there looking like a pass.
+
+    That the two numbers cross is not a coincidence to be tuned away. Measured
+    on the rig's 26 MP sensor, ``detect_stars`` returns 36 sources on a frame
+    that is genuinely black and 19 on a real 180 s Ha sub of NGC 6946 - after
+    the spread and roundness filters, 19 and 15. The detector is nearly blind
+    at this size, so the star verdict has no discriminating power in EITHER
+    direction here: it cannot catch a real leak and it was condemning good
+    darks. Abstaining is the only honest reading of that, and the blindness
+    itself is a separate defect against ``imaging.stars``.
+    """
+    from .stars import DEFAULT_MAX_STARS
+    floor = max(per_ref, int(round(per_ref * n_pixels / SOURCE_REF_PIXELS)))
+    return None if floor > DEFAULT_MAX_STARS else floor
+
+
 def _sky_sources(fimg: np.ndarray, level: float, stars: list[Star] | None,
                  spread_min: float, ecc_max: float,
                  grid: int) -> tuple[int | None, int | None]:
@@ -565,7 +612,11 @@ def judge_dark(
     n_src, n_zones = _sky_sources(fimg, level, stars, SOURCE_SPREAD_MIN_PX,
                                   SOURCE_ECC_MAX, SOURCE_ZONE_GRID)
     zone_total = SOURCE_ZONE_GRID * SOURCE_ZONE_GRID
-    if (n_src is not None and n_src >= source_min
+    # SCALED TO THIS FRAME, and None when it cannot be scaled at all. Every
+    # source number here was measured on a 1024x1024 fixture; `source_min` is a
+    # count per that area, not a constant that travels to a 26 MP sensor.
+    floor = source_floor(fimg.size, source_min)
+    if (floor is not None and n_src is not None and n_src >= floor
             and n_zones >= SOURCE_ZONE_FRAC_MIN * zone_total):
         return _result(
             False, "stars",
@@ -578,8 +629,19 @@ def judge_dark(
 
     # Nothing contradicts a dark. "plausible", not "verified": see the module
     # docstring on what one frame cannot settle.
-    found = ("no star-like sources" if n_src is not None
-             else "no source test on a frame this shape")
+    # THE ABSTENTION IS SAID OUT LOUD. A frame too big for the star test to
+    # mean anything reads exactly like a frame that passed it, and the operator
+    # who later finds a leaked dark in their library deserves to know which of
+    # the two this was.
+    if n_src is None:
+        found = "no source test on a frame this shape"
+    elif floor is None:
+        found = (f"{n_src} source(s), but the star test does not apply at "
+                 f"{fimg.size / 1e6:.0f} MP - it is calibrated on 1 MP frames "
+                 f"and the detector cannot return enough sources to clear the "
+                 f"scaled bar")
+    else:
+        found = "no star-like sources"
     return _result(
         True, "dark",
         f"plausible dark: median {level:.0f} ADU ({_pct(level_frac)} of full "

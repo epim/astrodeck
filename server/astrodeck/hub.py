@@ -2447,13 +2447,20 @@ class Hub:
         an empty carrier rather than a blanked one, the frame looks like a
         perfectly good unfiltered sub.
 
-        MEASURED, 2026-08-12. A cloud hold drove the wheel to slot 7 for its
-        darks and nothing put it back, so eighteen 180 s subs of NGC 6946 were
-        taken through it and written FILTER='Dark'. The headers were not even
-        wrong - that IS what happened - and precisely because they were true,
-        nothing in the pipeline had a reason to object. The engine seam is
-        fixed (``SequenceEngine._restore_beam``); this is the detector that
-        would have caught it the same night, and catches the next cause of it.
+        MEASURED, 2026-08-13. Eighteen 180 s subs of NGC 6946 were written
+        FILTER='Dark' - the wheel reported a blackout slot for every one of
+        them. The pixels say light reached the sensor anyway (73% of their
+        brightest pixels are shared with a genuine Ha sub of the same target,
+        4% with a real dark), so the wheel was NOT where it claimed. Either
+        way the run spent an hour believing it was imaging through a slot that
+        blanks, and nothing objected, because a true-looking header gives the
+        pipeline no reason to.
+
+        This is the card that would have said so the same night. The two
+        underlying causes are fixed separately - ``SequenceEngine._restore_beam``
+        for a hold that leaves the wheel parked, and
+        ``SnowflakeWheel.get_position`` for a wheel that answers from a frozen
+        banner - and this catches whatever causes it next.
 
         A CARD RATHER THAN A REFUSAL. The run is already exposing when this is
         known, and aborting a night on a wheel-position read is a worse failure

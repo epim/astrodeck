@@ -94,16 +94,40 @@ They were filed as two problems and they are two ends of one night.
 04:15 saved Light_NGC 6946_Dark_...0519.fits                      <- and 17 more, all slot 7
 ```
 
-**The chain.** `_apply_filter` runs once, at the top of `_run_step`, above the
-frame loop. The cloud hold is dispatched from inside that loop and drives the
-wheel to the blackout slot for its darks. Nothing put it back. So the probe that
-decides whether the sky cleared was taken through slot 7, and so were the
-eighteen 180 s subs after it: 54 minutes of a clear night on NGC 6946.
+**CORRECTED 2026-08-14, after actually measuring the pixels.** The first
+account here said the 18 subs were taken through the blackout slot and cost 54
+minutes of a clear night. Both halves were wrong, and the correction matters
+more than the original claim.
 
-On a rig whose blackout slot really is blanked this is worse, not better: the
-probe sees a black frame, reads cloud, and the hold NEVER releases - the whole
-night goes to the 45-minute abort. Slot 7 being an open hole is the only reason
-the run resumed at all.
+Threshold-free comparison, top 20000 brightest pixels, shared fraction:
+
+|            | dark_1 | dark_2 | slot7_L1 | Ha_L1 |
+|------------|--------|--------|----------|-------|
+| dark_1     | 100    | 10.6   | 4.2      | 4.2   |
+| slot7_L1   | 4.2    | 4.3    | 100      | 72.8  |
+| Ha_L1      | 4.2    | 4.2    | 72.8     | 100   |
+
+* **The blackout slot BLANKS.** Two darks share 10.6% (noise with noise) and
+  4.2% with any light. #231's premise - "flagged blackout but is not blanked" -
+  is contradicted. The four "not a dark: stars" verdicts were false positives.
+* **The 18 subs got light.** They share 72.8% with a genuine Ha sub of the same
+  target, identical to Ha-vs-Ha at 73.0%. They contain the real star field.
+
+So the wheel was NOT on slot 7 while reporting that it was. Three separate
+defects, all now fixed:
+
+1. **The hold leaves the wheel parked** (`_restore_beam`). Structural, and the
+   hazard is real even though it did not fire that night: had the wheel obeyed,
+   every remaining sub would have been black, and the cloud probe through a
+   blanked slot reads cloud forever so the hold could never release.
+2. **`judge_dark`'s star test does not scale** (`source_floor`). Every source
+   constant was measured on 1024x1024 fixtures; `SOURCE_MIN=12` is a count per
+   megapixel applied unscaled to 26 MP. Past the detector's own cap it now
+   abstains and says so.
+3. **`SnowflakeWheel.get_position` answered from a frozen banner.** `latest`
+   never expires, so a stopped reader kept naming the last slot forever - and
+   `_apply_filter` returns early on `new_slot == old_slot`, so a stale read
+   naming the requested slot CANCELS the move in silence.
 
 - [x] C1/D1. Root-caused from the night log, not guessed. 28 frames on disk have
       `FILTER=Dark` with `IMAGETYP` not DARK/BIAS: 20 from the NGC 6946 night
@@ -115,14 +139,29 @@ the run resumed at all.
       FLAT exposed with a blackout slot in the beam (`BEAMOK=False` + `BEAMWHY`)
       and logs at error. The dark check asked "is this dark actually dark";
       nothing asked "is this light actually going through glass".
-- [ ] C3/D2. TWO DECISIONS THAT ARE THE USER'S, not mine:
-      1. slot 7 physically - fit a real blank, or untick `opaque` in the wheel
-         config. Every dark and bias the library holds from that slot is
-         suspect either way.
-      2. the 28 frames on disk - their headers are TRUE (they really were lights
-         through slot 7), so there is nothing to relabel. The question is whether
-         to quarantine them and whether the 18 should be un-counted from the
-         session ledger, which currently credits them to the step's quota.
+- [x] C3. Slot 7 needs NOTHING. It blanks. The task's premise was wrong and the
+      dark library from it is sound - what was unsound was the check condemning
+      four of its frames.
+- [ ] D2. ONE DECISION LEFT, and it is the user's: the 18 subs on disk carry a
+      real star field under a `FILTER='Dark'` header. They are usable data with
+      a wrong label, not junk. Relabel them to the filter that was actually in
+      the beam (which needs establishing - the run believed slot 7), or leave
+      them and exclude by header. The ledger credits them to the step's quota
+      either way.
+
+## E. Two defects this investigation turned up on its own
+
+- [x] E1. `judge_dark` condemned genuinely black frames. `SOURCE_MIN` is a
+      count per megapixel measured on 1024x1024 fixtures and was applied
+      unscaled to 26 MP. `source_floor` scales it and returns None - abstain,
+      and say so in the operator sentence - past the detector's own cap.
+- [x] E2. `SnowflakeWheel.get_position` answered from a banner that never
+      expires, so a stopped reader named its last slot forever. Same class as
+      #208 and #213. It now refuses on a stale banner and mid-move.
+- [ ] E3. NOT FIXED, needs its own task: `detect_stars` returns 19 sources on a
+      real 180 s Ha sub of NGC 6946 and 36 on a black frame. It is nearly blind
+      at 26 MP, and the cloud detector, the preview star count and the HFR
+      readout all sit on it.
 
 ## Standing constraints
 
