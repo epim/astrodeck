@@ -411,14 +411,29 @@ def source_floor(n_pixels: int, per_ref: int = SOURCE_MIN) -> int | None:
     return, so the test could not fire however bright the leak. A test that
     cannot fire must SAY it is not testing, not sit there looking like a pass.
 
-    That the two numbers cross is not a coincidence to be tuned away. Measured
-    on the rig's 26 MP sensor, ``detect_stars`` returns 36 sources on a frame
-    that is genuinely black and 19 on a real 180 s Ha sub of NGC 6946 - after
-    the spread and roundness filters, 19 and 15. The detector is nearly blind
-    at this size, so the star verdict has no discriminating power in EITHER
-    direction here: it cannot catch a real leak and it was condemning good
-    darks. Abstaining is the only honest reading of that, and the blindness
-    itself is a separate defect against ``imaging.stars``.
+    That the two numbers cross is not a coincidence to be tuned away. MEASURED
+    on 2026-08-15: one frame through every slot of the rig's wheel, same field,
+    same night, 26 MP sensor. Filtered source count and zones:
+
+        L 184/16   R 200/16   G 199/16   B 200/16
+        S  49/10   Ha   7/5   Oiii 65/14   Dark 17/9
+
+    The star test is wrong in BOTH directions here. The blackout slot - a frame
+    with no light in it at all - scores 17 sources over 9 zones and is CONDEMNED
+    as a leak. A real Ha frame of the same field scores 7 over 5 and PASSES as a
+    plausible dark. The distributions are inverted, so no threshold on this
+    number separates them.
+
+    NOT because the detector is blind, which is what this docstring first said.
+    ``detect_stars`` returns its full 200 on every one of those real frames; it
+    is the spread and roundness filter in ``_sky_sources`` that collapses the
+    count, and it collapses hardest exactly where a frame has few BRIGHT stars -
+    which is what narrowband looks like. The earlier "19 sources on a real Ha
+    sub" reading came from a night whose own log records failed autofocus,
+    failed guiding and a plate solve refused for "Not enough stars": a bad
+    frame, generalized into a bad detector.
+
+    So the abstention stands, on stronger evidence than it was written with.
     """
     from .stars import DEFAULT_MAX_STARS
     floor = max(per_ref, int(round(per_ref * n_pixels / SOURCE_REF_PIXELS)))
