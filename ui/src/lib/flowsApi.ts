@@ -40,7 +40,11 @@ export interface FlowFolder {
 export interface FlowUnmapped {
   key: string;
   detail: string;
-  level: "warn" | "danger";
+  /** `note` is not a quieter `warn`. It says the thing drawn on the canvas IS
+   *  honoured, by some other part of the engine than the one the wire names —
+   *  the cloud hold releases itself, the scheduler advances the pool. `/start`
+   *  does not make the operator accept these (server: `to_plan.losses`). */
+  level: "warn" | "danger" | "note";
 }
 
 export interface FlowIssue {

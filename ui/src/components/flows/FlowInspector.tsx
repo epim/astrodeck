@@ -11,6 +11,7 @@
 // Two blocks, and they are separate components so their subscriptions are too:
 // while a node is selected nothing here is subscribed to the doctor's issue
 // list, and while nothing is selected nothing is subscribed to a node record.
+import { useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useStore } from "../../store";
 import { Field, LockedNote } from "../ui";
@@ -166,6 +167,13 @@ function InspectorOverview() {
   const issues = useStore(useShallow((s) => s.flows.compiled?.issues ?? EMPTY_ISSUES));
   const unmapped = useStore(useShallow((s) => s.flows.compiled?.unmapped ?? EMPTY_UNMAPPED));
   const structural = useStore(useShallow((s) => s.flows.compiled?.structural ?? EMPTY_STRUCTURAL));
+  // Two lists off one field, because they make opposite statements. A `note`
+  // entry is not a quieter loss - it says the drawn thing DOES happen, by some
+  // other part of the engine - and `/start` does not gate on one either
+  // (to_plan.losses). Partitioned here rather than in the store so the split
+  // sits beside the two headings it feeds.
+  const losses = useMemo(() => unmapped.filter((u) => u.level !== "note"), [unmapped]);
+  const notes = useMemo(() => unmapped.filter((u) => u.level === "note"), [unmapped]);
 
   return (
     <>
@@ -230,7 +238,7 @@ function InspectorOverview() {
           drawn on the canvas will not happen. to_plan.py exists so "the
           operator finds out that their cloud rule is not running now, from a
           list on screen, instead of at 3 a.m." */}
-      {(unmapped.length > 0 || structural.length > 0) && (
+      {(losses.length > 0 || structural.length > 0) && (
         <div className="flex flex-col gap-1.5">
           <span className="label">NOT HONOURED BY A RUN</span>
           {structural.map((text, i) => (
@@ -238,13 +246,30 @@ function InspectorOverview() {
               <span>⚠ DANGER </span>{text}
             </div>
           ))}
-          {unmapped.map((u) => (
+          {losses.map((u) => (
             <div
               key={u.key}
               className={`font-mono text-[10.5px] leading-[1.45] ${
-                u.level === "danger" ? "text-bad" : "text-warn"}`}
+                ISSUE_INK[u.level] ?? "text-warn"}`}
             >
               {u.level === "danger" && <span>⚠ DANGER </span>}
+              {u.detail}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* ANSWERED ANOTHER WAY — the `note` level, and it needed its own heading
+          rather than a dimmer line under the one above. Every row here says the
+          thing an operator drew DOES happen, by some other part of the engine:
+          the cloud hold releases itself, the scheduler advances the pool. Under
+          a heading reading NOT HONOURED BY A RUN each one read as its own
+          contradiction, and the start route made them click past it. */}
+      {notes.length > 0 && (
+        <div className="flex flex-col gap-1.5">
+          <span className="label">ANSWERED ANOTHER WAY</span>
+          {notes.map((u) => (
+            <div key={u.key} className="font-mono text-[10.5px] leading-[1.45] text-dim">
               {u.detail}
             </div>
           ))}
