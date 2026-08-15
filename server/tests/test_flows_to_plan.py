@@ -233,7 +233,11 @@ class TestInstructions:
         _, un = to_sequence_plan(compile_plan(g, "n"))
         note = [u for u in un if "holdresume.resume" in u["key"]]
         assert note, "the wire must be acknowledged, not ignored"
-        assert note[0]["level"] == "warn"
+        assert note[0]["level"] == "note", (
+            "this docstring has said 'a note, not a loss' since it was "
+            "written, while the assertion under it pinned 'warn' - the level "
+            "did not exist in to_plan until the campaign's own loop-back wire "
+            "needed it too")
         assert "releases itself" in note[0]["detail"]
 
     def test_a_cloud_wired_calib_is_HONOURED_by_the_hold_not_lost(self):
@@ -249,7 +253,7 @@ class TestInstructions:
         assert plan.cloud_hold_darks > 0, "the darks the note is about"
         note = [u for u in un if u["key"] == "instructions[on_clouds_in -> calib.do]"]
         assert note, "the wire must still be acknowledged, not silently dropped"
-        assert note[0]["level"] == "warn", "not a danger: the darks are taken"
+        assert note[0]["level"] == "note", "not a loss at all: the darks are taken"
         assert "will not run" not in note[0]["detail"]
         assert "bias and flat legs are not" in note[0]["detail"], (
             "the half that IS lost has to stay in the sentence")
@@ -472,7 +476,10 @@ class TestTheShippedExamples:
         for t in plan.targets:
             assert t.steps, f"{ex.name}: {t.name} has no steps"
             assert -90 <= t.dec_deg <= 90 and 0 <= t.ra_hours < 24
-        assert all(u["key"] and u["detail"] and u["level"] in ("warn", "danger")
+        # All three of the doctor's levels. `note` is not a quieter warning: it
+        # says the drawn thing IS honoured, somewhere else in the engine.
+        assert all(u["key"] and u["detail"]
+                   and u["level"] in ("warn", "danger", "note")
                    for u in unmapped)
 
     def test_the_m16_example_holds_for_cloud_and_aborts_on_unsafe(self):

@@ -105,7 +105,8 @@ from ..flows.compile import compile_plan
 from ..flows.doctor import check as flow_doctor
 from ..flows.models import MY_FLOWS_FOLDER, FlowGraph, FlowRecord
 from ..flows.store import FlowLibraryFull, ReadOnlyFlow, flow_store
-from ..flows.to_plan import GraphNotRunnable, blocking_reasons, to_sequence_plan
+from ..flows.to_plan import (GraphNotRunnable, blocking_reasons, losses,
+                             to_sequence_plan)
 from ..flows.tonight import (banked_hours_from_reports,
                              frames_by_target_from_reports,
                              resolve_tonight)
@@ -3779,7 +3780,13 @@ def create_app() -> FastAPI:
                           "would close the shutter on an unsafe reading. "
                           "Remove the dome node to run the rest of the flow.",
                 "code": "dome_unmapped", "unmapped": blocking})
-        if unmapped and not body.accept_unmapped:
+        # `losses`, not `unmapped`: a note-level entry says the drawn thing IS
+        # honoured elsewhere in the engine, so gating on it would make the
+        # operator accept "parts of this flow do not survive the compile" about
+        # parts that do. They stay in the 409 body when a real loss holds the
+        # start, and in the /compile response either way.
+        real = losses(unmapped)
+        if real and not body.accept_unmapped:
             raise HTTPException(409, detail={
                 "detail": "parts of this flow do not survive the compile",
                 "code": "unmapped", "unmapped": unmapped})
@@ -3820,8 +3827,8 @@ def create_app() -> FastAPI:
 
         bus.log("info",
                 f"flow '{rec.name}' started: {plan.total_frames()} frames"
-                + (f" — {len(unmapped)} graph feature(s) are not honoured by "
-                   f"this run" if unmapped else ""), "flow")
+                + (f" — {len(real)} graph feature(s) are not honoured by "
+                   f"this run" if real else ""), "flow")
         return {"started": True, "flow_id": flow_id,
                 "frames": plan.total_frames(), "unmapped": unmapped}
 

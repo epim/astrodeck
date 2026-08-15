@@ -89,6 +89,23 @@ REDUNDANT_PORTS: dict[tuple[str, str], str] = {
     ("holdresume", "resume"): (
         "the hold releases itself when the sky clears, so this wire is not "
         "needed - it is kept in the graph and does no harm"),
+    # THE CAMPAIGN LOOP-BACK, and the engine has done this all along. SESSION
+    # REPORT `done` -> POOL `advance` asks for one thing: when the active
+    # target has the frames it wanted, hand out the next member. The scheduler
+    # already does exactly that, from the frame ledger rather than from a rule
+    # - `_target_complete` is true, it logs "already complete - skipping", and
+    # the next candidate gets the night. Across nights too, because `_done`
+    # seeds from `done_map()` on resume.
+    #
+    # So "the engine has no 'pool' action" was true about the enum and false
+    # about the run, and it is the campaign's own loop-back wire - the one an
+    # operator would look at first to decide whether a month-long flow works.
+    # `test_a_campaign_advances_across_nights` is the evidence.
+    ("pool", "advance"): (
+        "the scheduler advances the pool itself: a target whose frames are all "
+        "in the ledger is skipped and the next member gets the night, on this "
+        "night and on every night after - so this wire is not needed, and it "
+        "is kept in the graph and does no harm"),
 }
 
 #: Rules the hold ALREADY HONOURS, keyed by (trigger, node type, input port).
@@ -130,11 +147,21 @@ POOL_SCHEDULE_KEYS = {"min_altitude_deg": "min_altitude_deg",
                       "min_moon_sep_deg": "min_moon_sep_deg",
                       "max_hour_angle_h": "max_hour_angle_h"}
 
-Level = Literal["warn", "danger"]
+#: ``doctor.Issue``'s vocabulary, all three members of it.
+#:
+#: ``note`` was missing here while two tables below documented themselves as
+#: emitting it, which made their central claim unkeepable: the whole argument
+#: for :data:`REDUNDANT_PORTS` and :data:`HOLD_HONOURED` is that calling those
+#: wires losses would be a lie, and they were then reported at the same weight
+#: as the losses, under a heading that reads NOT HONOURED BY A RUN. The doctor
+#: has emitted ``note`` since it shipped and the editor already inks it dim, so
+#: the level existed everywhere except the one module that needed it.
+Level = Literal["warn", "danger", "note"]
 
 
 def _note(key: str, detail: str, level: Level = "warn") -> dict:
-    """One reported loss.
+    """One reported loss, or - at ``note`` - one thing an operator drew that is
+    answered by some other part of the engine.
 
     ``level`` reuses ``doctor.Issue``'s vocabulary so the editor has ONE
     severity scale — an operator should not have to learn that a doctor warning
@@ -303,12 +330,12 @@ def _instructions(compiled: dict, out: list[dict]) -> list[dict]:
         port = str(rule.get("to_port") or "")
         if (raw, port) in REDUNDANT_PORTS:
             out.append(_note(f"instructions[{trigger} -> {raw}.{port}]",
-                             REDUNDANT_PORTS[(raw, port)]))
+                             REDUNDANT_PORTS[(raw, port)], "note"))
             continue
         honoured = HOLD_HONOURED.get((trigger, raw, port))
         if honoured and hold_darks > 0:
             out.append(_note(f"instructions[{trigger} -> {raw}.{port}]",
-                             honoured))
+                             honoured, "note"))
             continue
         action = PORTED_ACTIONS.get((raw, port), raw)
         if action == "condition":
@@ -648,3 +675,19 @@ def blocking_reasons(unmapped: list[dict], *, dome_connected: bool) -> list[dict
     if not dome_connected:
         return []
     return [u for u in unmapped if u["key"] == "automation.dome"]
+
+
+def losses(unmapped: list[dict]) -> list[dict]:
+    """The subset of ``unmapped`` that is actually a LOSS.
+
+    ``/api/flows/{id}/start`` refuses with "parts of this flow do not survive
+    the compile" until the operator passes ``accept_unmapped``, and a ``note``
+    entry is the one kind that contradicts that sentence: it says the drawn
+    thing IS honoured, by some other part of the engine. Asking an operator to
+    accept a statement the same list disproves teaches them the whole list is
+    noise - which is expensive, because the rest of it is not.
+
+    The notes still travel in the response. They are worth reading; they are
+    just not worth blocking on.
+    """
+    return [u for u in unmapped if u.get("level") != "note"]
