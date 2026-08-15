@@ -53,6 +53,14 @@ FIRST_BANNER_TIMEOUT_S = 5.0
 #: filter change into an open() attempt on a port somebody still holds.
 RELINK_MIN_INTERVAL_S = 5.0
 
+#: How old the newest status banner may be and still answer "where is the
+#: wheel". The Snowflake streams continuously and goes quiet only for the
+#: duration of a physical move, which ``get_position`` handles separately, so
+#: silence past this budget is the reader having stopped rather than the
+#: carousel turning. Generous next to the stream's own cadence and far below
+#: MOVE_TIMEOUT_S, so a slow move can never be mistaken for a dead link.
+POSITION_MAX_AGE_S = 10.0
+
 
 @dataclass
 class Banner:
@@ -280,9 +288,50 @@ class SnowflakeWheel(FilterWheel):
         return d
 
     async def get_position(self) -> int:
+        """Where the carousel IS, or a refusal. Never a remembered slot.
+
+        THE SAME DEFECT AS #208 AND #213, arrived at from a third direction: a
+        value that was a measurement when it was taken and is a memory by the
+        time it is read. ``latest`` is the newest parsed banner and it never
+        expires, so a wheel whose reader has stopped keeps answering with
+        wherever it was when the stream died, forever, with no error anywhere.
+
+        WHAT THAT COSTS, precisely: ``SequenceEngine._apply_filter`` reads this
+        and returns early on ``new_slot == old_slot``. A frozen banner that
+        happens to name the slot being asked for therefore CANCELS the move --
+        silently, since skipping is the normal fast path -- and every frame
+        after it is written with a FILTER header naming a filter that is not in
+        the light path. On 2026-08-13 eighteen 180 s subs of NGC 6946 were
+        written FILTER='Dark' while the beam was demonstrably open: their
+        brightest pixels share 73% with a genuine Ha sub of the same target and
+        4% with a real dark. Something told the run the wheel was on slot 7
+        when it was not.
+
+        A refusal is the right answer rather than a stale number, and it is
+        cheap: the Snowflake streams a banner continuously and only goes quiet
+        for the duration of a physical move, so an old banner with no move
+        outstanding is positive evidence the link has stopped talking.
+        ``_apply_filter`` puts this behind ``_bounded``, so the refusal
+        escalates through the normal wind-down instead of quietly shooting the
+        rest of the night through the wrong glass.
+        """
         b = self._link.latest
         if b is None:
             raise DeviceError(f"{self.name}: no status banner yet")
+        if self._move_target is not None:
+            # Mid-goto the stream pauses, so `latest` is the slot we are LEAVING.
+            # `set_position` waits for the landing banner before it returns, so
+            # anyone reaching here during a move is asking a question that does
+            # not have an answer yet.
+            raise DeviceError(
+                f"{self.name}: the carousel is moving to slot "
+                f"{self._move_target} - its position is not known until it lands")
+        age = time.monotonic() - b.at
+        if age > POSITION_MAX_AGE_S:
+            raise DeviceError(
+                f"{self.name}: the newest status banner is {age:.0f}s old "
+                f"(budget {POSITION_MAX_AGE_S:.0f}s) - the wheel has stopped "
+                f"reporting, so slot {b.slot} is a memory, not a measurement")
         return b.slot - 1
 
     async def is_moving(self) -> bool:

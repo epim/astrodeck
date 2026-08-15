@@ -157,7 +157,15 @@ async def test_the_snowflake_reports_motion_the_instant_the_goto_goes_out():
     task = asyncio.create_task(w.set_position(3))
     await asyncio.sleep(0.05)
     assert await w.is_moving()
-    assert await w.get_position() == 0, "the stale banner still names the old slot"
+    # AND THE POSITION IS REFUSED, not answered from the stale banner. This
+    # line used to assert `get_position() == 0` and called it "the stale banner
+    # still names the old slot" in its own comment - documenting the defect and
+    # then requiring it. `_apply_filter` returns early on
+    # `new_slot == old_slot`, so a stale read naming the requested slot cancels
+    # a move and every later frame carries a FILTER header for glass that is
+    # not in the beam.
+    with pytest.raises(DeviceError):
+        await w.get_position()
 
     fl.feed("WSFW508A20260124A4.00ALXXXXXXXA0A0A0A0A0A0A0A0A0A")
     await task
@@ -261,3 +269,49 @@ async def test_a_wheel_that_raises_on_is_moving_keeps_its_names_and_position(fil
         assert fwst["dark_slot"] == 7
     finally:
         await h.disconnect_all()
+
+
+# ---------------------------------------- a slot is a measurement, not a memory
+
+async def test_a_frozen_banner_stops_answering_where_the_wheel_is(monkeypatch):
+    """`latest` never expires, so a wheel whose reader stopped kept answering
+    with wherever it was when the stream died - forever, with no error.
+
+    The same defect as the mount's `connected` (#208) and this wheel's own link
+    check (#213), reached from a third direction: a value that was a
+    measurement when taken and is a memory when read.
+
+    WHAT IT COSTS. `SequenceEngine._apply_filter` returns early on
+    `new_slot == old_slot`. A frozen banner naming the slot being asked for
+    therefore CANCELS the move, on the normal fast path, in silence - and every
+    later frame is written with a FILTER header for glass that is not in the
+    beam. On 2026-08-13 eighteen 180 s subs of NGC 6946 carried FILTER='Dark'
+    while the beam was open: their brightest pixels share 73% with a genuine Ha
+    sub of the same target and 4% with a real dark.
+    """
+    fl = FakeStreamLink()
+    fl.feed(LIVE_LINE)
+    w = ws.SnowflakeWheel(fl)
+    await w.connect()
+    assert await w.get_position() == 0, "a fresh banner answers normally"
+
+    # The reader stops. Nothing else changes: the handle is open, `connected`
+    # is True, and `latest` still holds a perfectly well-formed banner.
+    monkeypatch.setattr(ws, "POSITION_MAX_AGE_S", 0.05)
+    await asyncio.sleep(0.08)
+    with pytest.raises(DeviceError) as e:
+        await w.get_position()
+    assert "memory, not a measurement" in str(e.value)
+
+
+async def test_a_fresh_banner_still_answers(monkeypatch):
+    """The guard must not have made the wheel unusable. A stream that is still
+    talking answers, and answers with the slot it names."""
+    fl = FakeStreamLink()
+    w = ws.SnowflakeWheel(fl)
+    fl.feed(LIVE_LINE)
+    await w.connect()
+    monkeypatch.setattr(ws, "POSITION_MAX_AGE_S", 0.05)
+    await asyncio.sleep(0.08)
+    fl.feed(LIVE_LINE)                       # the stream resumes
+    assert await w.get_position() == 0

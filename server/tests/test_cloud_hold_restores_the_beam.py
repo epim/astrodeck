@@ -1,27 +1,33 @@
 """A cloud hold must put the science filter back before the run resumes.
 
-MEASURED, on the night of 2026-08-12. A hold fired at 04:05, shot its darks,
-released two probes later, and the run went straight back to NGC 6946 for
-EIGHTEEN more 180 s subs. Every one of them was taken through the blackout slot
-and written ``FILTER='Dark'``. Fifty-four minutes of a clear night, on a target
-the rig had been building for days, and nothing anywhere said so: the run
-reported healthy, the report counted the frames as taken, and the defect is
-visible only in a header nobody reads until stacking.
+THE HAZARD, and what it is not. The first version of this file said eighteen
+180 s subs of NGC 6946 on 2026-08-12 were taken through the blackout slot and
+called it fifty-four minutes of a clear night lost. That was wrong, and the
+pixels say so: those frames share 73% of their brightest pixels with a genuine
+Ha sub of the same target and 4% with a real dark. Light reached the sensor.
+What wrote FILTER='Dark' on them was the wheel reporting a slot it was not on -
+see `SnowflakeWheel.get_position` and `test_filter_moving.py`.
 
-The mechanism is a seam, and it is the kind this codebase keeps finding.
-``_apply_filter`` is called ONCE, at the top of ``_run_step``, above the frame
-loop. The hold is dispatched from INSIDE that loop, and it drives the wheel to
-the blackout slot on purpose - a filterless calibration step is exactly how
-``_apply_filter`` is told to go there. Whoever moves the wheel from inside the
-loop owns putting it back, and nobody did.
+What IS true, and is why every test below stays:
 
-There is a second casualty in the same place. ``_cloud_probe`` is what decides
+  * the hold drives the wheel to the blackout slot on purpose, because a
+    filterless calibration step is exactly how `_apply_filter` is told to go
+    there;
+  * that slot demonstrably BLANKS - the six hold darks from that night are
+    black, sharing 4% of their brightest pixels with any light frame and 10%
+    with each other, which is noise agreeing with noise;
+  * `_apply_filter` runs ONCE, at the top of `_run_step`, above the frame loop,
+    and the hold is dispatched from inside it.
+
+So whoever moves the wheel from inside that loop owns putting it back, and
+nobody did. Had the wheel obeyed the goto, every remaining sub of the step
+would have been a black frame - and the run would have reported them as taken.
+
+There is a second casualty in the same place. `_cloud_probe` is what decides
 whether the sky has cleared, and it too was taken through whatever the hold left
-in the beam. On a wheel whose blackout slot is genuinely blanked that probe sees
-a black frame, reads cloud, and the hold NEVER RELEASES - so on a properly
-equipped rig this bug does not lose 18 frames, it loses the whole night to the
-45-minute abort. The rig it was found on has slot 7 flagged opaque but not
-actually blanked (#231), which is the only reason the hold released at all.
+in the beam. Through a blanked slot that probe reads a black frame as cloud and
+the hold NEVER RELEASES, so the cost is not eighteen frames but the whole night
+to the 45-minute abort.
 """
 from __future__ import annotations
 

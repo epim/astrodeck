@@ -606,3 +606,62 @@ def test_every_verdict_card_is_ascii():
             if isinstance(value, str):
                 assert value.isascii() and value.isprintable(), \
                     f"{label}/{keyword} is not header-safe: {value!r}"
+
+
+# ------------------------------------------- the star test does not scale up
+
+class TestTheStarTestKnowsWhereItAppliesnt:
+    """Every source constant in this module was measured on 1024x1024 frames.
+    `SOURCE_MIN = 12` is a count PER MEGAPIXEL, and applying it unscaled to a
+    26 MP sensor compares a big frame's source count against a small frame's
+    bar.
+
+    MEASURED on the rig, 2026-08-14. Six consecutive 180 s frames whose
+    background was identical to four decimal places (median 240.0, spread
+    4.4478) produced source counts 6, 8, 9, 19, 10, 13 - and the two that
+    happened to land above 12 were condemned as light leaks. They are black:
+    their brightest pixels share 4% with any real sub, and 10% with each other,
+    which is noise agreeing with noise.
+
+    The DARKOK=False those verdicts wrote makes `CalibrationLibrary` exclude
+    the frames, so the check was quietly throwing away good darks.
+    """
+
+    def test_the_floor_scales_with_the_frame(self):
+        from astrodeck.imaging.darks import SOURCE_MIN, source_floor
+        assert source_floor(1024 * 1024) == SOURCE_MIN
+        assert source_floor(4 * 1024 * 1024) == 4 * SOURCE_MIN
+
+    def test_it_never_scales_BELOW_the_measured_bar(self):
+        """A small frame keeps the measured constant. Scaling down would invent
+        a bar looser than anything that was ever tested."""
+        from astrodeck.imaging.darks import SOURCE_MIN, source_floor
+        assert source_floor(256 * 256) == SOURCE_MIN
+
+    def test_past_the_detectors_own_cap_it_ABSTAINS(self):
+        """`detect_stars` stops at DEFAULT_MAX_STARS, so above about 17 MP the
+        scaled bar is higher than the most sources it can ever return. The test
+        could not fire however bright the leak, and a test that cannot fire has
+        to say so rather than sit there looking like a pass."""
+        from astrodeck.imaging.darks import source_floor
+        from astrodeck.imaging.stars import DEFAULT_MAX_STARS
+        assert source_floor(26 * 1024 * 1024) is None
+        assert source_floor(int(DEFAULT_MAX_STARS / 12 * 1024 * 1024)) is not None
+
+    def test_a_frame_it_cannot_judge_is_called_dark_and_SAYS_WHY(self, monkeypatch):
+        """The abstention has to reach the operator sentence. A frame the star
+        test skipped reads exactly like one that passed it, and the person who
+        later finds a leaked dark in their library deserves to know which."""
+        import astrodeck.imaging.stars as stars_mod
+        monkeypatch.setattr(stars_mod, "DEFAULT_MAX_STARS", 5)
+        r = judge_dark(real_frame("star_field"))
+        assert r.is_dark, "it must not condemn a frame it admits it cannot judge"
+        assert "does not apply" in r.reason, r.reason
+        assert "MP" in r.reason
+
+    def test_the_star_verdict_STILL_FIRES_where_it_was_measured(self):
+        """The guard must not have deleted the feature. The real star field
+        is the fixture the whole star branch was built on, and at its own
+        size it is still condemned."""
+        r = judge_dark(real_frame("star_field"))
+        assert not r.is_dark and r.verdict == "stars", r.reason
