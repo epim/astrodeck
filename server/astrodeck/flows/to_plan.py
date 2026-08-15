@@ -91,6 +91,35 @@ REDUNDANT_PORTS: dict[tuple[str, str], str] = {
         "needed - it is kept in the graph and does no harm"),
 }
 
+#: Rules the hold ALREADY HONOURS, keyed by (trigger, node type, input port).
+#:
+#: The engine has no ``calib`` action, so a CLOUD WATCH wired to a CALIBRATION
+#: QUEUE was reported as "this rule will not run" at DANGER weight. Measured
+#: against the shipped M16 example that sentence is false: the queue's quota
+#: reaches the plan as ``cloud_hold_darks`` (see :func:`plan_extras`), and
+#: ``_hold_for_clear`` spends the hold shooting darks matched to the step it
+#: interrupted. The operator's wire is answered - by the hold rather than by a
+#: rule.
+#:
+#: Keyed on the TRIGGER as well as the port, because the same CALIB node fed
+#: from a different edge is a different promise. ``on_shutdown_complete ->
+#: calib.do`` is the campaign's day-darks lane and it genuinely does not run;
+#: collapsing both onto "calib" would trade one wrong sentence for another.
+#:
+#: Guarded by ``hold_darks`` at the call site: with a quota of 0 no darks are
+#: taken, and calling the wire redundant then would be the same overclaim in
+#: reverse.
+HOLD_HONOURED: dict[tuple[str, str, str], str] = {
+    ("on_clouds_in", "calib", "do"): (
+        "the cloud hold takes darks itself, matched to the step it interrupts "
+        "and capped at what the library still needs, so the darks leg of this "
+        "wire is already honoured. Its bias and flat legs are not - see the "
+        "calibration-queue note above"),
+    ("on_clouds_clear", "calib", "stop"): (
+        "the hold ends when the sky clears and its darks stop with it, so this "
+        "wire is not needed - it is kept in the graph and does no harm"),
+}
+
 #: The four ``schedule`` keys ``compile_plan`` emits are field-for-field
 #: identical to ``Schedule``'s. They are simply at the wrong NESTING LEVEL:
 #: ``SequencePlan`` has no schedule, ``Target`` does.
@@ -264,6 +293,10 @@ def _instructions(compiled: dict, out: list[dict]) -> list[dict]:
     opposite meanings, so this is a rename, not a coincidence.
     """
     rules: list[dict] = []
+    # What the hold will actually spend on darks, from the SAME function the
+    # plan is built with. Recomputing the rule here would be a second copy of
+    # the quota policy, free to drift from the one the engine obeys.
+    hold_darks = int(plan_extras(compiled).get("cloud_hold_darks") or 0)
     for rule in compiled.get("instructions") or []:
         trigger = str(rule.get("when") or "")
         raw = str(rule.get("action") or "")
@@ -271,6 +304,11 @@ def _instructions(compiled: dict, out: list[dict]) -> list[dict]:
         if (raw, port) in REDUNDANT_PORTS:
             out.append(_note(f"instructions[{trigger} -> {raw}.{port}]",
                              REDUNDANT_PORTS[(raw, port)]))
+            continue
+        honoured = HOLD_HONOURED.get((trigger, raw, port))
+        if honoured and hold_darks > 0:
+            out.append(_note(f"instructions[{trigger} -> {raw}.{port}]",
+                             honoured))
             continue
         action = PORTED_ACTIONS.get((raw, port), raw)
         if action == "condition":

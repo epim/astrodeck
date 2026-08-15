@@ -56,6 +56,18 @@ def _one_target(rotation=0, **capture):
     return g
 
 
+def _calib_on_cloud(quota: int = 20) -> FlowGraph:
+    """The M16 shape, reduced to the wire under test: clouds-in starts the
+    calibration queue, clouds-clear stops it."""
+    return FlowGraph(
+        nodes=[_n("t", "target", name="M31", ra="00h 42m 44s", dec="+41 16 09"),
+               _n("c", "capture", x=100, exposure=60, count=5),
+               _n("w", "cloudwatch", x=200),
+               _n("q", "calib", x=300, quota=quota)],
+        edges=[_e("t", "target", "c", "run"), _e("w", "in", "q", "do"),
+               _e("w", "clear", "q", "stop")])
+
+
 def _keys(unmapped):
     return {u["key"] for u in unmapped}
 
@@ -224,6 +236,44 @@ class TestInstructions:
         assert note[0]["level"] == "warn"
         assert "releases itself" in note[0]["detail"]
 
+    def test_a_cloud_wired_calib_is_HONOURED_by_the_hold_not_lost(self):
+        """It was reported at DANGER as "this rule will not run", and that
+        sentence was false on the shipped M16 example.
+
+        The queue's quota reaches the plan as `cloud_hold_darks`, and the hold
+        spends its dead time shooting darks matched to the step it interrupted.
+        So the operator's wire IS answered - by the hold rather than by a rule -
+        and calling it broken sends someone to debug a feature that works."""
+        g = _calib_on_cloud()
+        plan, un = to_sequence_plan(compile_plan(g, "n"))
+        assert plan.cloud_hold_darks > 0, "the darks the note is about"
+        note = [u for u in un if u["key"] == "instructions[on_clouds_in -> calib.do]"]
+        assert note, "the wire must still be acknowledged, not silently dropped"
+        assert note[0]["level"] == "warn", "not a danger: the darks are taken"
+        assert "will not run" not in note[0]["detail"]
+        assert "bias and flat legs are not" in note[0]["detail"], (
+            "the half that IS lost has to stay in the sentence")
+
+    def test_the_same_wire_with_NO_QUOTA_is_still_a_loss(self):
+        """The redundancy claim is only true because darks get taken. At quota 0
+        the hold shoots nothing, and repeating "already honoured" there would be
+        the same overclaim in the other direction."""
+        g = _calib_on_cloud(quota=0)
+        plan, un = to_sequence_plan(compile_plan(g, "n"))
+        assert plan.cloud_hold_darks == 0
+        note = [u for u in un if "-> calib" in u["key"]]
+        assert note and "will not run" in note[0]["detail"]
+
+    def test_a_calib_fired_by_something_OTHER_than_cloud_is_still_a_loss(self):
+        """The campaign's day-darks lane hangs off `on_shutdown_complete`, and
+        no hold covers that. Keying the redundancy on the node type alone would
+        have traded one wrong sentence for another."""
+        camp = next(e for e in examples() if "Campaign" in e.name)
+        _, un = to_sequence_plan(compile_plan(camp.graph, camp.name), camp.graph)
+        shutdown = [u for u in un
+                    if u["key"].startswith("instructions[on_shutdown_complete")]
+        assert shutdown and "will not run" in shutdown[0]["detail"]
+
     def test_a_condition_passthrough_row_is_NOT_reported(self):
         """The capture->condition edge compiles to a bogus ``action:"condition"``
         row that duplicates edges already represented. Listing it would train
@@ -366,11 +416,18 @@ class TestBlockingReasons:
         assert len(blocking_reasons(un, dome_connected=True)) == 1
 
     def test_nothing_else_blocks_however_bad_it_is(self):
-        """Losing every cloud rule is a danger the operator must SEE, not a
-        reason to refuse a night's imaging."""
-        m16 = next(e for e in examples() if e.id == "example-m16")
-        _, un = to_sequence_plan(compile_plan(m16.graph, m16.name), m16.graph)
-        assert len([u for u in un if u["level"] == "danger"]) > 1
+        """A month-long campaign the engine cannot run is a danger the operator
+        must SEE, not a reason to refuse tonight's imaging.
+
+        This used the M16 example until the cloud-wired calib rules stopped
+        being reported as losses - correctly, since the hold takes their darks -
+        which left M16 with a single danger and nothing for this test to prove.
+        The campaign example carries two unrelated ones, so the property is
+        still demonstrated by a graph rather than by a contrivance."""
+        camp = next(e for e in examples() if "Campaign" in e.name)
+        _, un = to_sequence_plan(compile_plan(camp.graph, camp.name), camp.graph)
+        dangers = [u["key"] for u in un if u["level"] == "danger"]
+        assert len(dangers) > 1 and "campaign" in dangers
         assert [u["key"] for u in blocking_reasons(un, dome_connected=True)] == \
                ["automation.dome"]
 
@@ -391,19 +448,26 @@ class TestTheShippedExamples:
         """The handoff's definition of done asks for this choreography to run
         from real engine events. The weather half does now.
 
-        What is still missing is named in the same breath rather than left to
-        be discovered: the calibration-during-hold rules (-> calib) have no
-        engine action, so they are still reported as losses."""
+        The calibration-during-hold half is answered too, by the hold rather
+        than by a rule: the queue's quota becomes `cloud_hold_darks` and the
+        hold shoots darks matched to the step it interrupted. This assertion
+        used to demand those wires be reported as LOSSES, which made a false
+        sentence a test-enforced requirement. What is genuinely still missing -
+        the queue's order, and its bias and flat legs - is reported once, on the
+        automation block, where it belongs."""
         m16 = next(e for e in examples() if e.id == "example-m16")
         plan, un = to_sequence_plan(compile_plan(m16.graph, m16.name), m16.graph)
         got = {(i.trigger, i.action) for i in plan.instructions}
         assert ("on_clouds_in", "hold_for_clear") in got, "the hold runs"
         assert ("on_unsafe", "abort") in got, "the safety abort runs"
         assert ("on_clouds_in", "notify") in got, "the alert runs"
-        still_lost = [u for u in un if "-> calib" in u["key"]]
-        assert still_lost, (
-            "the calibration-during-hold half has no engine action yet and must "
-            "keep saying so")
+        assert plan.cloud_hold_darks > 0, "the hold has darks to shoot"
+        assert not [u for u in un
+                    if "-> calib" in u["key"] and "will not run" in u["detail"]], (
+            "no cloud-wired calib rule may claim it will not run while the hold "
+            "is taking its darks")
+        assert [u for u in un if u["key"] == "automation.calibration_queue"], (
+            "the bias and flat legs are still lost and must keep saying so")
 
     def test_the_eaa_example_starts_now_and_keeps_its_short_subs(self):
         eaa = next(e for e in examples() if e.id == "example-eaa")
