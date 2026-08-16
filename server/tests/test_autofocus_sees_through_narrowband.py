@@ -74,9 +74,21 @@ def af_calls(monkeypatch):
     return calls
 
 
+#: The BROADBAND base this file measures against. Pinned explicitly rather
+#: than assumed: since the focus frame-settings scope was wired through
+#: (#233) the base is the OPERATOR SETTING, not a constant, so a test that
+#: hardcoded 2 s / gain 120 would now be asserting the old bug.
+BASE_EXP, BASE_GAIN, BASE_BIN = 2.0, 120, 2
+
+
 async def _focus_through(sim_hub, slot: int, *, narrowband: list[bool],
-                         hcg: int | None = 125):
+                         hcg: int | None = 125, monkeypatch=None):
     """Park the wheel on ``slot``, mark the wheel up, and run one autofocus."""
+    if monkeypatch is not None:
+        focus = hub_module.config_store.cfg().frames.focus
+        monkeypatch.setattr(focus, "exposure_s", BASE_EXP)
+        monkeypatch.setattr(focus, "gain", BASE_GAIN)
+        monkeypatch.setattr(focus, "binning", BASE_BIN)
     fw = sim_hub.devices["filterwheel"]
     fw.filter_names = ["L", "R", "G", "B", "S", "Ha", "Oiii", "Dark"]
     fw.filter_narrowband = narrowband
@@ -90,61 +102,67 @@ async def _focus_through(sim_hub, slot: int, *, narrowband: list[bool],
 
 class TestTheSweepIsToldWhatItIsLookingThrough:
     async def test_a_narrowband_slot_gets_a_longer_exposure(
-            self, sim_hub, af_calls):
+            self, sim_hub, af_calls, monkeypatch):
         await _focus_through(sim_hub, 5,          # Ha
-                             narrowband=[False] * 4 + [True] * 3 + [False])
+                             narrowband=[False] * 4 + [True] * 3 + [False],
+                             monkeypatch=monkeypatch)
         assert af_calls, "run_autofocus was never called"
         got = af_calls[0]
-        assert got.get("exposure_s") == pytest.approx(2.0 * NARROWBAND_EXPOSURE_MULTIPLE), (
+        assert got.get("exposure_s") == pytest.approx(BASE_EXP * NARROWBAND_EXPOSURE_MULTIPLE), (
             f"the sweep still runs at the broadband exposure through a "
             f"narrowband filter: {got}")
 
-    async def test_the_gain_clears_the_read_noise_knee(self, sim_hub, af_calls):
+    async def test_the_gain_clears_the_read_noise_knee(self, sim_hub, af_calls,
+                                                       monkeypatch):
         await _focus_through(sim_hub, 5,
                              narrowband=[False] * 4 + [True] * 3 + [False],
-                             hcg=125)
+                             hcg=125, monkeypatch=monkeypatch)
         assert af_calls[0].get("gain") == 125
 
     async def test_the_numbers_are_the_shared_ones_not_re_derived(
-            self, sim_hub, af_calls):
+            self, sim_hub, af_calls, monkeypatch):
         """Guard against the sequencer growing its own copy of the arithmetic
         and drifting from what the offsets dialog shows."""
         await _focus_through(sim_hub, 6,          # Oiii
                              narrowband=[False] * 4 + [True] * 3 + [False],
-                             hcg=125)
-        want_exp, want_gain = narrowband_sweep_settings(2.0, 120,
-                                                        hcg_threshold_gain=125)
+                             hcg=125, monkeypatch=monkeypatch)
+        want_exp, want_gain = narrowband_sweep_settings(
+            BASE_EXP, BASE_GAIN, hcg_threshold_gain=125)
         assert af_calls[0].get("exposure_s") == pytest.approx(want_exp)
         assert af_calls[0].get("gain") == want_gain
 
     async def test_a_camera_that_cannot_report_a_knee_keeps_its_gain(
-            self, sim_hub, af_calls):
+            self, sim_hub, af_calls, monkeypatch):
         """Honest absence: no reported threshold means no basis to raise the
         gain, but the exposure scaling still applies."""
         await _focus_through(sim_hub, 5,
                              narrowband=[False] * 4 + [True] * 3 + [False],
-                             hcg=None)
+                             hcg=None, monkeypatch=monkeypatch)
         got = af_calls[0]
-        assert got.get("gain") == 120
-        assert got.get("exposure_s") == pytest.approx(2.0 * NARROWBAND_EXPOSURE_MULTIPLE)
+        assert got.get("gain") == BASE_GAIN
+        assert got.get("exposure_s") == pytest.approx(BASE_EXP * NARROWBAND_EXPOSURE_MULTIPLE)
 
 
 class TestBroadbandIsUntouched:
-    async def test_a_broadband_slot_uses_the_defaults(self, sim_hub, af_calls):
+    async def test_a_broadband_slot_uses_the_defaults(self, sim_hub, af_calls,
+                                                      monkeypatch):
         """THE POSITIVE CONTROL. Without it the change could scale every sweep
         and every test above would still pass - and a 4x luminance sweep would
         quadruple the cost of the common case."""
         await _focus_through(sim_hub, 0,          # L
-                             narrowband=[False] * 4 + [True] * 3 + [False])
+                             narrowband=[False] * 4 + [True] * 3 + [False],
+                             monkeypatch=monkeypatch)
         got = af_calls[0]
-        assert got.get("exposure_s") in (None, 2.0), got
-        assert got.get("gain") in (None, 120), got
+        assert got.get("exposure_s") == pytest.approx(BASE_EXP), got
+        assert got.get("gain") == BASE_GAIN, got
 
-    async def test_an_unmarked_wheel_is_all_broadband(self, sim_hub, af_calls):
+    async def test_an_unmarked_wheel_is_all_broadband(self, sim_hub, af_calls,
+                                                       monkeypatch):
         """A wheel nobody has ticked must behave exactly as it did before."""
-        await _focus_through(sim_hub, 5, narrowband=[])
+        await _focus_through(sim_hub, 5, narrowband=[],
+                             monkeypatch=monkeypatch)
         got = af_calls[0]
-        assert got.get("exposure_s") in (None, 2.0), got
+        assert got.get("exposure_s") == pytest.approx(BASE_EXP), got
 
 
 class TestItNeverCostsTheFocus:
@@ -172,7 +190,8 @@ class TestItNeverCostsTheFocus:
 
 
 class TestItSaysWhatItChose:
-    async def test_the_longer_sweep_is_announced(self, sim_hub, af_calls):
+    async def test_the_longer_sweep_is_announced(self, sim_hub, af_calls,
+                                                 monkeypatch):
         """The 34-vs-1277 star collapse was only diagnosable because the sweep
         logs its settings. A silent change of exposure would make the next
         forensic pass harder, not easier."""
@@ -180,7 +199,8 @@ class TestItSaysWhatItChose:
         q = bus.subscribe()
         try:
             await _focus_through(sim_hub, 5,
-                                 narrowband=[False] * 4 + [True] * 3 + [False])
+                                 narrowband=[False] * 4 + [True] * 3 + [False],
+                                 monkeypatch=monkeypatch)
             msgs = []
             while not q.empty():
                 ev = q.get_nowait()

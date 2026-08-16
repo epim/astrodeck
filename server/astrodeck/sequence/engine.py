@@ -32,7 +32,7 @@ from pathlib import Path
 from statistics import median
 from typing import Any
 
-from ..config import config_store
+from ..config import config_store, frames_payload
 from ..devices.base import DeviceError, DomeShutterState, PierSide
 from ..events import bus
 from ..focus import run_autofocus
@@ -4399,6 +4399,31 @@ class SequenceEngine:
         except Exception:
             pass
 
+    def _focus_scope_frame(self) -> tuple[float, int, int]:
+        """``(exposure_s, gain, binning)`` the operator set for FOCUS frames.
+
+        `PUT /api/camera/frame-settings?scope=focus` accepted a value, persisted
+        it, echoed it back and broadcast it on the bus — and the in-run sweep
+        read none of it, running at the `run_autofocus` signature defaults
+        forever. Measured 2026-08-11: focus set to 6 s / gain 200 / bin 1, three
+        sweeps logged "2s at gain 120, bin 2", all three failed.
+
+        BINNING IS THE ONE THAT BROKE THEM. At 0.97"/px a bin-2 star is one or
+        two pixels across, so it is DETECTED and then discarded as having "no
+        usable size" — which is the exact sentence the failed sweeps logged.
+
+        Falls back to the documented broadband pair when the config cannot be
+        read: a sweep on default numbers beats no focus at all.
+        """
+        try:
+            f = frames_payload()["focus"]
+            return (float(f["exposure_s"]), int(f["gain"]), int(f["binning"]))
+        except Exception as e:      # noqa: BLE001 — never cost the focus run
+            bus.log("debug", f"focus frame settings unreadable ({e}); using "
+                             f"{SWEEP_EXPOSURE_S:g}s gain {SWEEP_GAIN}",
+                    "sequence")
+            return SWEEP_EXPOSURE_S, SWEEP_GAIN, 2
+
     async def _sweep_settings_for_current_filter(
             self, label: str) -> tuple[float, int]:
         """``(exposure_s, gain)`` for a sweep through whatever is in the beam.
@@ -4420,8 +4445,8 @@ class SequenceEngine:
         whose link just dropped falls back to the broadband pair, which is
         exactly what every sweep used before this existed.
         """
-        exposure_s: float = SWEEP_EXPOSURE_S
-        gain: int = SWEEP_GAIN
+        exposure_s, gain, _binning = self._focus_scope_frame()
+        base_exp, base_gain = exposure_s, gain
         try:
             fw = self.hub.devices.get("filterwheel")
             if fw is None or not getattr(fw, "connected", False):
@@ -4440,14 +4465,14 @@ class SequenceEngine:
             bus.log("info",
                     f"{label}: {name!r} is narrowband, so the sweep runs at "
                     f"{exposure_s:g}s gain {gain} instead of "
-                    f"{SWEEP_EXPOSURE_S:g}s gain {SWEEP_GAIN} — a broadband "
+                    f"{base_exp:g}s gain {base_gain} — a broadband "
                     f"exposure through this filter does not reach enough stars "
                     f"to fit a curve", "sequence")
         except Exception as e:      # noqa: BLE001 — a wheel must never cost focus
             bus.log("debug", f"{label}: could not read the filter for the "
-                             f"sweep settings ({e}); using the broadband pair",
-                    "sequence")
-            return SWEEP_EXPOSURE_S, SWEEP_GAIN
+                             f"sweep settings ({e}); using the focus scope "
+                             f"unscaled", "sequence")
+            return base_exp, base_gain
         return exposure_s, gain
 
     async def _autofocus(self, label: str) -> None:
@@ -4458,8 +4483,13 @@ class SequenceEngine:
             cam = self.hub.require("camera")
             foc = self.hub.require("focuser")
             exposure_s, gain = await self._sweep_settings_for_current_filter(label)
-            result = await run_autofocus(cam, foc, hub=self.hub,
-                                         exposure_s=exposure_s, gain=gain)
+            _e, _g, binning = self._focus_scope_frame()
+            # `expose_guard` was missing here alone of the three callers:
+            # it is what stops a sweep frame and a sequence frame
+            # interleaving their imageready polls on one camera.
+            result = await run_autofocus(
+                cam, foc, hub=self.hub, exposure_s=exposure_s, gain=gain,
+                binning=binning, expose_guard=self.hub.exposure_guard)
             if not result.success:
                 bus.log("warning", f"{label} failed: {result.message}", "sequence")
                 failed_reason = result.message or "autofocus failed"
