@@ -169,7 +169,23 @@ async def test_warm_ramps_the_setpoint_and_switches_off_only_at_the_end(
     setpoints = [c[1] for c in ons]
     assert setpoints == sorted(setpoints), "setpoints must climb monotonically"
     assert setpoints[0] == pytest.approx(-9.5)          # first 15 s step at 2 °C/min
-    assert setpoints[-1] <= cooling.WARM_FALLBACK_AMBIENT_C + 1e-6
+    # UPDATED 2026-08-16, deliberately. This used to assert the ramp stops at
+    # the FALLBACK ambient - which is the pre-#154 behaviour, and asserting it
+    # meant asserting the bug: an ASSUMED ambient the sensor is still
+    # following is simply wrong and must be walked past. `_warm_ramp` could
+    # never do that (it raised NameError on `ambient_from`, fixed with this
+    # change), so this assertion held for the wrong reason.
+    #
+    # This fake TEC follows every setpoint perfectly, so it has no real
+    # ambient to stop at and the ramp climbs until the SAFETY CEILING bounds
+    # it. On real hardware the sensor stops following at the real air
+    # temperature and the lead check ends the ramp there - which is what
+    # `test_ramp_finishes_when_the_sensor_stops_following` covers.
+    assert setpoints[-1] <= cooling.WARM_AMBIENT_CEILING_C + 1e-6, (
+        f"the ramp climbed past its safety ceiling: {setpoints[-1]}")
+    assert setpoints[-1] > cooling.WARM_FALLBACK_AMBIENT_C, (
+        f"the ramp stopped at the assumed {cooling.WARM_FALLBACK_AMBIENT_C} C "
+        f"ambient while the sensor was still following it - #154 unreachable")
     # …and the whole climb, not a token step or two: -10 -> 20 in 0.5 °C steps.
     assert len(setpoints) >= 55, f"only {len(setpoints)} steps — ramp cut short"
     assert any("warming camera" in m for _l, m, _s in bus_lines)

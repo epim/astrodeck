@@ -3996,6 +3996,15 @@ class Hub:
         state = self._warm_state or {}
         start_c = float(state.get("start_c") or 0.0)
         ambient_c = float(state.get("ambient_c") or 0.0)
+        # FROM THE STATE, because it is computed in the routine that STARTS
+        # the warm, not here. It was used below as if it were a local and
+        # was not one, so the ramp raised NameError the instant it reached
+        # its assumed ambient and tried to extend - killing the whole ramp
+        # and falling back to switching the TEC off, which is precisely the
+        # plunge #134 and #154 exist to prevent. Caught on the rig
+        # 2026-08-16 09:48, never by a test: the extend logic is covered
+        # thoroughly as a PURE FUNCTION and had no caller-level test.
+        ambient_from = str(state.get("ambient_from") or "assumed")
         rate = float(state.get("rate_c_per_min") or cooling.WARM_RATE_C_PER_MIN)
         setpoint = start_c
         lagging = 0
