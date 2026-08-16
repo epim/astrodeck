@@ -99,13 +99,23 @@ export function pickSeries(
 
 export interface EndReasonMeta { word: string; tone: "good" | "warn" | "bad"; }
 
-/** Maps the engine's real end reasons (engine.py:621-690: complete, dawn_cutoff,
+/** Maps the engine's real end reasons (complete, dawn_cutoff, incomplete,
  *  aborted, error, quality, cooling_skip, unsafe) to a labelled tone. Unknown/
- *  null reasons fall back to an honest "IN PROGRESS" / uppercased-word warn. */
+ *  null reasons fall back to an honest "IN PROGRESS" / uppercased-word warn.
+ *
+ *  `incomplete` reads UNFINISHED rather than INCOMPLETE deliberately. It sits
+ *  next to COMPLETE in a list of reports and the two mean opposite things, so a
+ *  word differing by one glanced-over prefix is the wrong word — and the
+ *  fallback below would render exactly that one by uppercasing, which would
+ *  make the case dead code behind a test that could not fail. */
 export function endReasonMeta(reason: string | null): EndReasonMeta {
   switch (reason) {
     case "complete":     return { word: "COMPLETE", tone: "good" };
     case "dawn_cutoff":  return { word: "DAWN CUTOFF", tone: "good" };
+    // Warn, not good: a dawn cutoff is the sky running out and needs no
+    // attention, while this one means the run set targets aside and the
+    // operator may want to know why.
+    case "incomplete":   return { word: "UNFINISHED", tone: "warn" };
     case "aborted":      return { word: "ABORTED", tone: "warn" };
     case "quality":      return { word: "QUALITY STOP", tone: "warn" };
     case "cooling_skip": return { word: "COOLING SKIP", tone: "warn" };

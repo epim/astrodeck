@@ -132,6 +132,14 @@ test("endReasonMeta: null -> IN PROGRESS/warn", () => {
 test('endReasonMeta: unknown "weird" -> uppercased word/warn', () => {
   deepEq(endReasonMeta("weird"), { word: "WEIRD", tone: "warn" });
 });
+// A night that set targets aside and still owes frames (#252). The word is
+// UNFINISHED and not INCOMPLETE for two reasons: COMPLETE and INCOMPLETE differ
+// by a prefix nobody reads at a glance, and these two chips mean opposite
+// things; and the fallback above would already render "INCOMPLETE" by
+// uppercasing, so asserting that word would be a test that cannot fail.
+test("endReasonMeta: incomplete -> UNFINISHED/warn", () => {
+  deepEq(endReasonMeta("incomplete"), { word: "UNFINISHED", tone: "warn" });
+});
 
 // ------------------------------------------------- trendGeomTimed (grab-bag d)
 // x by REAL time, with every degenerate series degrading safely (no NaN, no
