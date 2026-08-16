@@ -104,6 +104,36 @@ async def test_the_dawn_cut_is_reported_as_a_dawn_cut(sim_hub):
     assert eng.state.get("end_reason") == "dawn_cutoff"
 
 
+async def test_the_terminal_line_says_how_short_the_night_was(sim_hub, bus_lines):
+    """The log is where an operator finds this out, hours later, in the dark.
+
+    At 05:25 on 2026-08-16 the entire record of a 58-frame shortfall was
+    `sequence 'NGC 7129 - LRGB+SHO cycle' complete: 117 frames` - a sentence
+    with no shortfall in it and the wrong verb.
+
+    NB `bus_lines` yields (level, message, source) TUPLES: `"text" in line` is
+    whole-ELEMENT matching and matches nothing, ever. Read the message field.
+    """
+    plan = _plan("shortfall", [_target("A", 8)])
+    eng = SequenceEngine(sim_hub)
+    eng.start(plan)
+    assert await wait_for(lambda: eng._frames_done >= 2)
+    _close_the_window(eng, plan.targets[0])
+    assert await wait_for(lambda: eng.state.get("state") == "complete")
+
+    shot = eng._frames_done
+    ends = [m for (_lvl, m, _src) in bus_lines
+            if m.startswith("sequence 'shortfall'")]
+    assert ends, "the night ended and said nothing"
+    line = ends[-1]
+    print("\nTERMINAL LINE: " + line)
+    assert "stopped at dawn" in line
+    assert f"{shot} of 8 frames" in line, "how much of the plan is in the bag"
+    assert f"{8 - shot} still owed" in line, "how much is not"
+    assert "resumes when the window opens" in line, (
+        "and that nobody has to do anything about it tonight")
+
+
 async def test_a_target_set_aside_leaves_the_night_incomplete(sim_hub):
     """Not every short night is a dawn cut. A target the run set aside for its
     own reasons - here ``on_missed="skip"`` - still owes its frames, and
