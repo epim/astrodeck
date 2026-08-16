@@ -2426,19 +2426,41 @@ class SequenceEngine:
         esc = cfg.escalation
         sinks = [s for s in (getattr(cfg, "alerts", None) or [])
                  if getattr(s, "enabled", True)]
-        deadman = (getattr(esc, "deadman_url", "") or "").strip()
-        if sinks or deadman:
+        # ON THE AppConfig, NOT ON escalation. This read used to be
+        # `getattr(esc, "deadman_url", "")`, and EscalationConfig has no such
+        # field — so it returned "" for every rig that has ever run, and an
+        # operator WITH a deadman was told they had none.
+        deadman = (getattr(cfg, "deadman_url", "") or "").strip()
+        if sinks and deadman:
             return
         watchdog_s = int(getattr(esc, "no_progress_watchdog_s", 0) or 0)
         extra = ("" if watchdog_s else
                  " The no-progress watchdog is also off (0), so a run that "
                  "stops producing frames will not even be noticed.")
-        bus.log("warning",
-                "nothing can report a failure tonight: no alert sinks are "
-                "configured and no dead-man's-switch URL is set, so if this run "
-                "aborts, stalls or is paused by weather, it will say so only in "
-                "this log." + extra,
-                "alert")
+        # THE TWO ARE NOT SUBSTITUTES, so having one is not having both.
+        # An alert sink is a push FROM this process: it reports a failed run
+        # well, and cannot report its own death at all. The dead-man's-switch
+        # is the only mechanism whose signal is ABSENCE, so it is the only one
+        # that survives the process, or the machine, going away. Treating them
+        # as interchangeable is what left this rig — a verified ntfy sink, no
+        # deadman — hearing nothing about the exact failure that has bitten it.
+        if sinks:
+            msg = ("no dead-man's-switch URL is set, so nothing will notice if "
+                   "this machine stops. Alerts are pushed BY this process, "
+                   "which makes its own death the one failure they cannot "
+                   "report: a crash, a power cut or a hung box looks exactly "
+                   "like a quiet, successful night.")
+        elif deadman:
+            msg = ("no alert sinks are configured, so a missed dead-man's ping "
+                   "will tell you the rig went quiet but never which thing "
+                   "failed — no detail on an abort, a stall or a weather "
+                   "pause, only silence to investigate in the morning.")
+        else:
+            msg = ("nothing can report a failure tonight: no alert sinks are "
+                   "configured and no dead-man's-switch URL is set, so if this "
+                   "run aborts, stalls or is paused by weather, it will say so "
+                   "only in this log.")
+        bus.log("warning", msg + extra, "alert")
 
     async def _no_safety_source(self, target: Target | None) -> None:
         """Armed safety with no monitor assigned at all.
