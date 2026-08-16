@@ -126,12 +126,29 @@ REDUNDANT_PORTS: dict[tuple[str, str], str] = {
 #: Guarded by ``hold_darks`` at the call site: with a quota of 0 no darks are
 #: taken, and calling the wire redundant then would be the same overclaim in
 #: reverse.
+#: Which ``plan_extras`` key funds each honoured wire, so "already honoured" is
+#: never claimed for a lane with nothing to spend. Keyed the same way as
+#: :data:`HOLD_HONOURED`; a missing entry there means the guard reads 0 and the
+#: wire falls through to the ordinary loss report, which is the safe direction.
+HONOURED_BY: dict[tuple[str, str, str], str] = {
+    ("on_clouds_in", "calib", "do"): "cloud_hold_darks",
+    ("on_clouds_clear", "calib", "stop"): "cloud_hold_darks",
+    ("on_shutdown_complete", "calib", "do"): "day_darks",
+}
+
 HOLD_HONOURED: dict[tuple[str, str, str], str] = {
     ("on_clouds_in", "calib", "do"): (
         "the cloud hold takes darks itself, matched to the step it interrupts "
         "and capped at what the library still needs, so the darks leg of this "
         "wire is already honoured. Its bias and flat legs are not - see the "
         "calibration-queue note above"),
+    ("on_shutdown_complete", "calib", "do"): (
+        "the wind-down takes these darks itself, in the window between the park "
+        "and the warm ramp - the one moment the mount is stowed, the cover is "
+        "shut and the sensor is still at setpoint. They are matched to the "
+        "lights this plan actually shot and capped at what the library still "
+        "needs, and only a night that ended normally takes them: an abort, an "
+        "unsafe trip or a cooling skip goes straight to the warm"),
     ("on_clouds_clear", "calib", "stop"): (
         "the hold ends when the sky clears and its darks stop with it, so this "
         "wire is not needed - it is kept in the graph and does no harm"),
@@ -328,7 +345,13 @@ def _instructions(compiled: dict, out: list[dict]) -> list[dict]:
     # What the hold will actually spend on darks, from the SAME function the
     # plan is built with. Recomputing the rule here would be a second copy of
     # the quota policy, free to drift from the one the engine obeys.
-    hold_darks = int(plan_extras(compiled).get("cloud_hold_darks") or 0)
+    # From the SAME function the plan is built with. Recomputing either quota
+    # here would be a second copy of the policy, free to drift from the one the
+    # engine obeys - and each note is gated on ITS OWN key, because a wire is
+    # only "already honoured" if the lane that honours it has frames to spend.
+    # The two came from one quota and would usually agree, which is exactly the
+    # kind of coincidence that stops being true later.
+    extras = plan_extras(compiled)
     for rule in compiled.get("instructions") or []:
         trigger = str(rule.get("when") or "")
         raw = str(rule.get("action") or "")
@@ -338,7 +361,8 @@ def _instructions(compiled: dict, out: list[dict]) -> list[dict]:
                              REDUNDANT_PORTS[(raw, port)], "note"))
             continue
         honoured = HOLD_HONOURED.get((trigger, raw, port))
-        if honoured and hold_darks > 0:
+        funded = int(extras.get(HONOURED_BY.get((trigger, raw, port), "")) or 0)
+        if honoured and funded > 0:
             out.append(_note(f"instructions[{trigger} -> {raw}.{port}]",
                              honoured, "note"))
             continue
@@ -584,6 +608,21 @@ def plan_extras(compiled: dict) -> dict:
         # is bounded and cannot deliver a whole quota, so it is capped: the hold
         # tops the library up, it does not fill it.
         out["cloud_hold_darks"] = min(int(quota), 40)
+        # THE DAY-DARKS LANE, and it is keyed on the OPERATOR'S OWN WIRE rather
+        # than on the queue existing. A CALIBRATION QUEUE fed only from a CLOUD
+        # WATCH is asking for hold darks; one fed from SHUTDOWN COMPLETE is
+        # asking for day darks; a lot of flows want the first and not the
+        # second, and holding a camera cold for an extra hour on a night nobody
+        # asked for it is a real cost in power and TEC life.
+        #
+        # The compiled instruction is where that wire survives - `automation`
+        # records the queue's settings but not who feeds it - so this reads the
+        # rule the operator drew. Same cap as the hold: the lane tops the
+        # library up, it does not fill it.
+        if any(str(r.get("when") or "") == "on_shutdown_complete"
+               and str(r.get("action") or "") == "calib"
+               for r in (compiled.get("instructions") or [])):
+            out["day_darks"] = min(int(quota), 40)
     return out
 
 
