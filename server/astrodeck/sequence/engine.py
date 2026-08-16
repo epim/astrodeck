@@ -983,9 +983,15 @@ class SequenceEngine:
                                 + (f", {self._rejected} flagged" if self._rejected else ""),
                         "sequence")
                 self._finalize_report("complete")
+            # THE ONLY CALLER THAT ASKS FOR DAY DARKS. The night ended the way
+            # it was meant to - every target complete, or every window closed at
+            # dawn - so the dead time before the warm ramp is free. The abort,
+            # unsafe, quality-stop and cooling-skip wind-downs deliberately do
+            # not, and neither does the give-up-after-crashes stow.
             await self._wind_down(
                 plan.park_when_done, plan.warm_cooler_when_done,
-                close_dome=bool(self._cfg and self._cfg.safety.close_dome_when_done))
+                close_dome=bool(self._cfg and self._cfg.safety.close_dome_when_done),
+                day_darks=True)
         except SafetyAbort as e:
             # UNSAFE teardown (§1.9-G): aborted + end_reason=unsafe, finalize the
             # report, then a SHIELDED park/warm that ACTUALLY COMPLETES before the
@@ -3169,6 +3175,108 @@ class SequenceEngine:
                     "sequence")
             return False
 
+    def _day_dark_recipes(self) -> list[ExposureStep]:
+        """One dark recipe per distinct LIGHT setting this plan shot.
+
+        A dark is indexed by exposure, gain, offset, binning and temperature, so
+        the darks worth taking are exactly the ones matching the lights that
+        just went in the ledger - not a fixed list, and not "whatever the
+        library is short of" in the abstract. A campaign that shot 180 s
+        narrowband all night needs 180 s darks; the 30 s LRGB darks it does not
+        have are nobody's problem tonight.
+
+        Calibration targets are skipped: their frames are already darks, flats
+        or bias, and covering a dark with a dark is not a thing.
+        """
+        seen: dict[tuple, ExposureStep] = {}
+        for t in (self.plan.targets if self.plan else []):
+            if t.calibration:
+                continue
+            for s in t.steps:
+                if str(getattr(s, "frame_type", "Light") or "Light") != "Light":
+                    continue
+                key = (float(s.exposure_s), int(s.gain), int(s.offset),
+                       int(s.binning))
+                seen.setdefault(key, s)
+        return list(seen.values())
+
+    async def _day_darks(self) -> None:
+        """Top the dark library up after the night, before the warm ramp.
+
+        BOUNDED THREE WAYS, and it needs all three because this runs unattended
+        with nobody awake to stop it: by the queue's quota (``plan.day_darks``),
+        by what the library is actually short of at each recipe
+        (``_hold_darks_shortfall``, the same call the Calibration Matrix panel
+        renders, so the panel and the engine cannot disagree about one library),
+        and by the safety gate between frames.
+
+        Best-effort throughout. These frames are a bonus taken after the night's
+        real work is safely in the ledger; a calibration hiccup must never stop
+        the warm ramp below from running, which is what actually protects the
+        sensor.
+        """
+        quota = int(getattr(self.plan, "day_darks", 0) or 0)
+        recipes = self._day_dark_recipes()
+        if quota <= 0 or not recipes:
+            return
+        cam = self.hub.devices.get("camera")
+        if cam is None or not cam.connected:
+            bus.log("warning", "day darks skipped - no camera connected",
+                    "sequence")
+            return
+        taken = 0
+        for step in recipes:
+            if taken >= quota:
+                break
+            want, have = self._hold_darks_shortfall(step, quota - taken)
+            if want <= 0:
+                bus.log("info",
+                        f"day darks: the library already holds {have} at "
+                        f"{step.exposure_s:g}s g{step.gain} - skipping",
+                        "sequence")
+                continue
+            bus.log("info",
+                    f"day darks: {want} at {step.exposure_s:g}s g{step.gain} "
+                    f"({have} already banked)", "sequence")
+            for _ in range(want):
+                if taken >= quota:
+                    break
+                try:
+                    # THE SAFETY GATE STAYS ARMED. The mount is parked and the
+                    # cover shut, so there is nothing to point at the Sun - but
+                    # an unsafe reading during an hour of unattended darks is
+                    # still a reason to stop, and SafetyAbort must propagate to
+                    # the caller's teardown rather than be swallowed as a
+                    # "calibration hiccup".
+                    await self._safety_gate(context="frame", target=None)
+                    dark = Target(
+                        name=f"day darks {step.exposure_s:g}s g{step.gain}",
+                        ra_hours=0.0, dec_deg=0.0,
+                        calibration=True, center=False, autofocus_first=False,
+                        steps=[ExposureStep(
+                            exposure_s=step.exposure_s, gain=step.gain,
+                            offset=step.offset, binning=step.binning,
+                            # No filter named, which is what sends the wheel to
+                            # the blackout slot - see _apply_filter.
+                            count=1, frame_type="Dark")])
+                    taken += 1
+                    self._set_state(
+                        detail=f"day darks - {taken}/{quota} at "
+                               f"{step.exposure_s:g}s")
+                    await self._run_calibration(0, dark)
+                except SafetyAbort:
+                    raise
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:          # noqa: BLE001 - reported
+                    bus.log("warning",
+                            f"day darks stopped after {taken} frame(s): {exc}",
+                            "sequence")
+                    return
+        if taken:
+            bus.log("info", f"day darks: {taken} frame(s) banked before the "
+                            f"warm ramp", "sequence")
+
     async def _stand_down_guider(self) -> None:
         """Stop guiding, leave the mount tracking. Best-effort and never raises:
         a wedged guider must not be able to prevent a weather hold."""
@@ -4342,7 +4450,15 @@ class SequenceEngine:
                              f"mount may be left tracking", "sequence")
 
     async def _wind_down(self, park: bool, warm: bool,
-                         close_dome: bool = False) -> None:
+                         close_dome: bool = False,
+                         day_darks: bool = False) -> None:
+        # ``day_darks`` DEFAULTS OFF and only the two normal end-of-night
+        # terminals pass it True. A wind-down also runs on a rain trip, a safety
+        # abort, a cooling skip and a give-up-after-repeated-crashes, and
+        # spending an hour shooting calibration frames in the middle of any of
+        # those would be absurd - the rig is being put away because something is
+        # wrong. Making it a parameter rather than reading the plan here is what
+        # keeps that distinction at the call site where the reason is known.
         # NB: every device call here is BOUNDED (P0-2) but a timeout is handled
         # LOCALLY (log + continue), never re-raised as SafetyAbort — we are
         # already tearing down, and a hung park must not stop the cooler from
@@ -4461,6 +4577,16 @@ class SequenceEngine:
                     # reaches the user without a bespoke dispatcher call.
                     bus.log("error", "AUTOMATED ROOF CLOSE FAILED — gear may be "
                                      "exposed", "safety")
+        # BETWEEN THE PARK AND THE WARM, which is the only window this can
+        # occupy. Above it the mount is stowed and the cover is shut; below it
+        # `warm_camera` starts a background ramp that runs on regardless, and a
+        # dark taken on a warming sensor is indexed to a temperature it will
+        # never be asked for again. The design called this "hold cold for day
+        # darks"; holding cold is not a separate setting, it is simply where in
+        # the wind-down the frames are taken.
+        if day_darks:
+            await self._day_darks()
+
         if warm:
             cam = self.hub.devices.get("camera")
             if cam and cam.connected and getattr(cam, "can_cool", False):

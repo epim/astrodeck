@@ -290,15 +290,30 @@ class TestInstructions:
             assert lie not in detail, f"the note still claims {lie!r}"
         assert "picking up from the frame ledger" in detail
 
-    def test_a_calib_fired_by_something_OTHER_than_cloud_is_still_a_loss(self):
-        """The campaign's day-darks lane hangs off `on_shutdown_complete`, and
-        no hold covers that. Keying the redundancy on the node type alone would
-        have traded one wrong sentence for another."""
-        camp = next(e for e in examples() if "Campaign" in e.name)
-        _, un = to_sequence_plan(compile_plan(camp.graph, camp.name), camp.graph)
-        shutdown = [u for u in un
-                    if u["key"].startswith("instructions[on_shutdown_complete")]
-        assert shutdown and "will not run" in shutdown[0]["detail"]
+    def test_a_calib_fired_by_a_trigger_WITH_NO_LANE_is_still_a_loss(self):
+        """The reason HOLD_HONOURED is keyed on the TRIGGER as well as the port:
+        the same CALIB node fed from a different edge is a different promise,
+        and keying on node type alone would trade one wrong sentence for
+        another.
+
+        This used to use `on_shutdown_complete` as its example, because nothing
+        covered that edge. The day-darks lane now does - it runs between the
+        park and the warm - so the example moved to a trigger with no lane
+        behind it rather than the assertion being relaxed. What is being pinned
+        is the DISCRIMINATION, not any particular trigger's fate.
+        """
+        g = _calib_on_cloud()
+        compiled = compile_plan(g, "n")
+        # Re-point the calib wire at a trigger no lane answers.
+        for rule in compiled.get("instructions") or []:
+            if rule.get("action") == "calib":
+                rule["when"] = "on_frame_rejected"
+        _, un = to_sequence_plan(compiled, g)
+        rows = [u for u in un
+                if u["key"].startswith("instructions[on_frame_rejected")]
+        assert rows and "will not run" in rows[0]["detail"], (
+            f"a calib wired to a trigger with no lane behind it was called "
+            f"honoured: {rows}")
 
     def test_a_condition_passthrough_row_is_NOT_reported(self):
         """The capture->condition edge compiles to a bogus ``action:"condition"``
