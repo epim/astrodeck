@@ -470,8 +470,18 @@ class AutofocusResult:
     advice: str | None = None
 
 
+#: The BROADBAND sweep pair. Named rather than left in the signature because a
+#: caller that scales them for a narrowband filter has to start from the same
+#: numbers — see ``focus.filter_offsets.narrowband_sweep_settings`` and the
+#: sequence engine's ``_autofocus``. Two copies of "2 s at gain 120" is how the
+#: sequencer and the offsets dialog would come to disagree.
+SWEEP_EXPOSURE_S = 2.0
+SWEEP_GAIN = 120
+
+
 async def run_autofocus(camera: Camera, focuser: Focuser, *,
-                        exposure_s: float = 2.0, gain: int = 120,
+                        exposure_s: float = SWEEP_EXPOSURE_S,
+                        gain: int = SWEEP_GAIN,
                         step: int = 350, steps_each_side: int = 4,
                         binning: int = 2, expose_guard=None,
                         hub=None, provider=None) -> AutofocusResult:
