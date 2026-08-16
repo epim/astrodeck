@@ -1069,13 +1069,25 @@ class SequenceEngine:
             rid = self.reporter.id
         bus.publish("report", id=rid)
         # ---- session terminal transition (spec §4) ---------------------------
-        # 'complete' ONLY when the run finished naturally with no unmet quota
-        # (in accepted mode); EVERY other cause — dawn_cutoff / window_closed /
-        # max_run (both surface as dawn_cutoff here) / aborted / error / unsafe
-        # / cooling_skip / quality — leaves unmet work -> dormant + resumable.
+        # 'complete' ONLY when the run finished naturally AND the ledger holds
+        # every frame the plan asked for. EVERY other cause — dawn_cutoff /
+        # window_closed / max_run (both surface as dawn_cutoff here) /
+        # incomplete / aborted / error / unsafe / cooling_skip / quality —
+        # leaves unmet work -> dormant + resumable.
+        #
+        # THIS USED TO ASK ONLY IN ACCEPTED MODE (`quota and any(...)`), and
+        # since `attempts` is the default and what every plan on the rig uses,
+        # `unmet` was False by construction — the question was never really
+        # asked. On 2026-08-16 that stamped 'complete' on a session holding 117
+        # of 175 frames with auto_resume set: armed, finished and unreachable,
+        # because `armed()` only ever returns a DORMANT session. Two other
+        # sessions on the same rig had been closed the same way, 60 and 9
+        # frames short.
+        #
+        # `owed()` is mode-aware on the session's own frozen plan, so accepted
+        # mode still counts accepted frames and nothing about it changes.
         if self._session is not None:
-            quota = getattr(self._session.plan, "count_mode", "attempts") == "accepted"
-            unmet = quota and any(v > 0 for v in self._session.remaining().values())
+            unmet = self._session.owed() > 0
             self._session.status = ("complete"
                                     if reason == "complete" and not unmet
                                     else "dormant")
