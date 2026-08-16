@@ -290,7 +290,7 @@ test("port ids are unique within each direction", () => {
   }
 });
 
-test("optional inputs match nodes.py's optional_ins exactly (only calib.panel)", () => {
+test("optional inputs match nodes.py's optional_ins exactly", () => {
   for (const t of TYPES) {
     const mine = defOf(t).ins.filter((p) => p.optional === true).map((p) => p.id).sort();
     const theirs = [...PY[t].optionalIns].sort();
@@ -299,8 +299,11 @@ test("optional inputs match nodes.py's optional_ins exactly (only calib.panel)",
       + `rule 1 for a wire the run actually needs; wrongly required makes a `
       + `working calibration queue look broken`);
   }
+  // Spot-check the original one by name as well. It was "the one optional
+  // input in the vocabulary" until the doctor stopped demanding four wires the
+  // engine does not consult; the loop above is what keeps that list honest now.
   eq(defOf("calib").ins.find((p) => p.id === "panel")?.optional, true,
-    "calib.panel is the one optional input in the vocabulary");
+    "calib.panel is optional — a flat panel is not required to fill a library");
   // No output is ever optional — `optional` describes the doctor's unwired-input
   // rule, and an unwired OUTPUT is normal everywhere.
   for (const t of TYPES) {

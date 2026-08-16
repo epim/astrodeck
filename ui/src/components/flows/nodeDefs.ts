@@ -419,11 +419,15 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
     label: "CALIBRATION QUEUE",
     cat: "RIG",
     colorVar: "--sky",
+    // ALL THREE OPTIONAL — nodes.py `optional_ins={"panel","do","stop"}`.
+    // `do` and `stop` joined `panel` when the doctor stopped demanding four
+    // wires the engine does not consult: the calibration queue starts itself on
+    // a cloud hold and exits at the frame boundary, so neither wire is what
+    // makes it run. Doctor rule 1 (unwired input) skips them; rule 7 still
+    // explains the missing flats.
     ins: [
-      _e("do", "do"),
-      _e("stop", "stop"),
-      // OPTIONAL — nodes.py `optional_ins=frozenset({"panel"})`. Doctor rule 1
-      // (unwired input) must skip it; rule 7 explains the missing flats.
+      { id: "do", label: "do", kind: "event", optional: true },
+      { id: "stop", label: "stop", kind: "event", optional: true },
       { id: "panel", label: "panel", kind: "event", optional: true },
     ],
     outs: [],
@@ -505,7 +509,11 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
     label: "HOLD / RESUME",
     cat: "ACTION",
     colorVar: "--warn",
-    ins: [_e("pause", "pause"), _e("resume", "resume")],
+    // OPTIONAL `resume` — nodes.py `optional_ins=frozenset({"resume"})`. The
+    // hold releases itself when the sky clears, so the wire is redundant rather
+    // than missing (to_plan.REDUNDANT_PORTS says so in the same words).
+    ins: [_e("pause", "pause"),
+          { id: "resume", label: "resume", kind: "event", optional: true }],
     outs: [],
     params: {
       whilePaused: "Keep tracking, park guider", maxHold: 45,
@@ -578,7 +586,11 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
     // and "the night went wrong", and an operator scanning a canvas at 04:00
     // reads the colour before the label.
     colorVar: "--warn",
-    ins: [_e("do", "do")],
+    // OPTIONAL `do` — nodes.py `optional_ins=frozenset({"do"})`. Every
+    // flow-derived plan sets `park_when_done` and every wind-down closes the
+    // cover, so the night ends parked and shut whether or not anything is wired
+    // here.
+    ins: [{ id: "do", label: "do", kind: "event", optional: true }],
     outs: [_e("closed", "closed")],
     params: { closure: "Dust flap + dome", cooler: "Hold cold (day darks)", tracking: "Park" },
     fields: [
