@@ -24,6 +24,8 @@ All math reuses :mod:`astrodeck.catalog.coords` (``lst_hours``/``altaz``/
 """
 from __future__ import annotations
 
+import math
+
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -449,6 +451,60 @@ def hour_angle_h(ra_hours: float, lon_deg: float, now: float | None = None) -> f
     (:func:`constraint_gate`)."""
     lst = lst_hours(lon_deg, now)
     return ((lst - ra_hours + 12.0) % 24.0) - 12.0    # HA in [-12, 12)
+
+
+#: Degrees of clearance the tube must keep above the horizon at its LOWEST point
+#: before a meridian flip is judged unnecessary. This is real clearance, not a
+#: rounding allowance: skipping a flip is the one direction of this decision that
+#: can put a tube into a pier, so the margin has to cover a mount whose geometry
+#: we do not model.
+MERIDIAN_POLE_CLEARANCE_DEG = 10.0
+
+
+def lower_culmination_deg(dec_deg: float, lat_deg: float) -> float:
+    """Altitude of a target at LOWER culmination (hour angle 12h), in degrees.
+
+    ``sin(alt) = sin(lat)sin(dec) + cos(lat)cos(dec)cos(180) = -cos(lat + dec)``,
+    so this is ``asin(-cos(lat + dec))`` — exact in both hemispheres and for a
+    target on the wrong side of the equator (which lands far below the horizon,
+    as it should). It reduces to the familiar ``lat + dec - 90`` whenever that
+    sum lies in ``[0, 180]``, which is every circumpolar northern case.
+
+    Why this number: the tube sits ``90 - dec`` degrees off the polar axis and
+    sweeps a cone of that half-angle as the mount turns, so the lowest altitude
+    the tube ever reaches over a full rotation IS the target's lower culmination.
+    """
+    return math.degrees(math.asin(
+        max(-1.0, min(1.0, -math.cos(math.radians(lat_deg + dec_deg))))))
+
+
+def flip_unnecessary_over_pole(
+        dec_deg: float | None, lat_deg: float | None,
+        clearance_deg: float = MERIDIAN_POLE_CLEARANCE_DEG) -> bool:
+    """Whether a meridian flip is pointless for this target from this site.
+
+    True only when the tube never points below the horizon ANYWHERE in the
+    mount's rotation — i.e. the target's lower culmination clears
+    ``clearance_deg``. A tube that never points down cannot be pointing at the
+    pier, the tripod or the ground, so the meridian crossing at the top of the
+    circle is just the top of a circle the mount can follow the whole way round.
+
+    NOT ``dec > lat``. That only says the target crosses on the pole side of the
+    zenith, which is weaker and wrong at low latitudes: from the equator a
+    dec +15 target culminates north of the zenith while its tube sweeps a
+    75-degree cone reaching 75 degrees BELOW the horizon.
+
+    HONEST ABSENCE FAILS SAFE. An unreadable declination or latitude means the
+    geometry is unknown, and not knowing has to mean taking the flip.
+    """
+    try:
+        dec = float(dec_deg)              # type: ignore[arg-type]
+        lat = float(lat_deg)              # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return False
+    if math.isnan(dec) or math.isnan(lat) or math.isinf(dec) or math.isinf(lat):
+        return False
+    return lower_culmination_deg(dec, lat) >= float(clearance_deg)
 
 
 def hours_to_meridian_flip(ra_hours: float, lon_deg: float,

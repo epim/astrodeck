@@ -631,6 +631,7 @@ export interface WarmInfo {
 
 export type MeridianStatus =
   | "n_a_fork" // mount reports no flip needed (fork/non-GEM): informational
+  | "n_a_over_pole" // GEM, flip asked for, but this target never needs one: informational
   | "flip_disabled" // plan.meridian_flip === false on a GEM: WARNING (pier risk)
   | "counting" // hours_to_flip is a real positive number
   | "due" // hours_to_flip <= 0
