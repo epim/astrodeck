@@ -90,6 +90,60 @@ async def test_a_dawn_cut_mid_target_leaves_the_session_resumable(sim_hub):
         "reason the status matters")
 
 
+async def test_the_dawn_cut_is_reported_as_a_dawn_cut(sim_hub):
+    """The run's own ending has to match the session's. On 2026-08-16 the log
+    read `sequence 'NGC 7129 - LRGB+SHO cycle' complete: 117 frames` over a
+    night that owed 58 - the word "complete" was the entire record of it."""
+    plan = _plan("dawncut2", [_target("A", 8)])
+    eng = SequenceEngine(sim_hub)
+    eng.start(plan)
+    assert await wait_for(lambda: eng._frames_done >= 2)
+    _close_the_window(eng, plan.targets[0])
+    assert await wait_for(lambda: eng.state.get("state") == "complete")
+
+    assert eng.state.get("end_reason") == "dawn_cutoff"
+
+
+async def test_a_target_set_aside_leaves_the_night_incomplete(sim_hub):
+    """Not every short night is a dawn cut. A target the run set aside for its
+    own reasons - here ``on_missed="skip"`` - still owes its frames, and
+    reporting COMPLETE over it is the same lie in a smaller font."""
+    past = time.strftime("%H:%M", time.localtime(time.time() - 3 * 3600))
+    b = _target("B", 2, Schedule(start_mode="time", start_time=past,
+                                 on_missed="skip"))
+    plan = _plan("missed", [_target("A", 2), b])
+    a_step, b_step = plan.targets[0].steps[0], plan.targets[1].steps[0]
+    eng = SequenceEngine(sim_hub)
+    eng.start(plan)
+    sid = eng._session.id
+    assert await wait_for(lambda: eng.state.get("state") == "complete")
+
+    assert eng.state.get("end_reason") == "incomplete"
+    s = session_store.load(sid)
+    assert s.status == "dormant"
+    assert s.accepted(a_step.id) == 2
+    assert s.accepted(b_step.id) == 0
+    assert s.owed() == 2
+
+
+async def test_a_mixed_night_owes_only_the_target_that_was_cut(sim_hub):
+    """A cut on one target must not drag a finished one back into the debt."""
+    plan = _plan("mixed", [_target("A", 8), _target("B", 2)])
+    a_step, b_step = plan.targets[0].steps[0], plan.targets[1].steps[0]
+    eng = SequenceEngine(sim_hub)
+    eng.start(plan)
+    sid = eng._session.id
+    assert await wait_for(lambda: eng._frames_done >= 2)
+    _close_the_window(eng, plan.targets[0])
+    assert await wait_for(lambda: eng.state.get("state") == "complete")
+
+    assert eng.state.get("end_reason") == "dawn_cutoff"
+    s = session_store.load(sid)
+    assert s.status == "dormant"
+    assert s.accepted(b_step.id) == 2, "B had an open window and its own frames"
+    assert s.owed() == 8 - s.accepted(a_step.id)
+
+
 async def test_a_finished_run_still_completes(sim_hub):
     """The other direction. Over-correcting into false dormancy would re-arm
     every finished session and re-shoot it at the next dusk."""
