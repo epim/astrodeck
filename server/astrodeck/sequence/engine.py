@@ -3970,6 +3970,34 @@ class SequenceEngine:
             ttf_h = schedule.hours_to_meridian_flip(target.ra_hours, lon)
         except Exception:
             return
+        # A FLIP THIS TARGET DOES NOT NEED IS PURE COST. The countdown above is
+        # hour-angle only and has no idea WHERE on the sky the crossing happens.
+        # For a target whose lower culmination clears the horizon the tube never
+        # points down anywhere in the mount's rotation, so there is nothing for
+        # it to hit and the crossing at the top is just the top of a circle the
+        # mount can follow all the way round. Skipping it saves the stop-guide /
+        # re-slew / re-solve / re-centre / restart-guide sequence AND the
+        # 180-degree field rotation in the middle of the stack.
+        #
+        # Said out loud, once per target, because this is the one direction of
+        # this decision that can put a tube into a pier: a declined flip that
+        # was actually needed must leave evidence, not silence.
+        try:
+            lat = self.hub.site["latitude"]
+        except Exception:
+            lat = None
+        if schedule.flip_unnecessary_over_pole(target.dec_deg, lat):
+            if self._flip_armed:
+                self._flip_armed = False
+                bus.log("info",
+                        f"{target.name}: no meridian flip needed — at dec "
+                        f"{target.dec_deg:+.1f} from this site the target's "
+                        f"lowest point is "
+                        f"{schedule.lower_culmination_deg(target.dec_deg, lat):.0f}"
+                        f"° above the horizon, so the tube never swings down "
+                        f"toward the pier and the mount tracks straight "
+                        f"through the meridian", "sequence")
+            return
         # fold in the device's own value ONLY when it reports a sooner positive
         # countdown (a mount enforcing a tighter minutes-after-meridian limit
         # must be allowed to flip earlier — never later, so a wrapped ~12h device

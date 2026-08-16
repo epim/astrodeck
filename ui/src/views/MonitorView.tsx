@@ -1268,8 +1268,16 @@ function MeridianCountdown({
       </div>
     );
   }
+  // `n_a_over_pole` reads calm on purpose. It is not a disabled flip and not a
+  // mount that cannot answer: it is a target whose tube never swings down toward
+  // the pier, so there is nothing owed and nothing at risk. Saying WHY keeps it
+  // from looking like the flip quietly stopped working.
   const word =
-    status === "n_a_fork" ? "no flip needed (fork mount)" : "flip n/a (mount doesn't report)";
+    status === "n_a_fork"
+      ? "no flip needed (fork mount)"
+      : status === "n_a_over_pole"
+        ? "no flip needed — target stays above the pole"
+        : "flip n/a (mount doesn't report)";
   return (
     <div className="flex items-center gap-3">
       <Icon name="info" size={22} className="text-dim shrink-0" />
