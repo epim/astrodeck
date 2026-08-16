@@ -144,6 +144,39 @@ async def test_a_mixed_night_owes_only_the_target_that_was_cut(sim_hub):
     assert s.owed() == 8 - s.accepted(a_step.id)
 
 
+async def test_no_ending_may_stamp_complete_over_owed_frames(sim_hub):
+    """The backstop, tested head-on at the method that writes the status.
+
+    ``_run`` now picks ``dawn_cutoff``/``incomplete`` whenever frames are owed,
+    so nothing in the engine reaches ``_finalize_report("complete")`` with an
+    unfinished ledger any more - which is exactly why this calls it directly.
+    The rule being guarded is that the writer of the status does not take its
+    caller's word for it, and #252 is why that rule exists: a caller got it
+    wrong, and a correct-looking ``remaining()`` sat one line away unasked.
+
+    Reverting the ledger check in ``_finalize_report`` must turn this red. If
+    it does not, the check is unguarded and should be deleted rather than kept
+    as decoration.
+    """
+    plan = _plan("owing", [_target("A", 4)])
+    eng = SequenceEngine(sim_hub)
+    eng.start(plan)
+    sid = eng._session.id
+    assert await wait_for(lambda: eng._frames_done >= 1)
+    await eng.abort()
+
+    owing = session_store.load(sid)
+    assert owing.owed() > 0, "the session has to be short for this to test anything"
+
+    # A fresh engine, that same unfinished session, and the one ending that
+    # claims the plan is finished.
+    eng2 = SequenceEngine(sim_hub)
+    eng2._session = owing
+    eng2._finalize_report("complete")
+
+    assert session_store.load(sid).status == "dormant"
+
+
 async def test_a_finished_run_still_completes(sim_hub):
     """The other direction. Over-correcting into false dormancy would re-arm
     every finished session and re-shoot it at the next dusk."""
