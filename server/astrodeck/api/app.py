@@ -3549,7 +3549,9 @@ def create_app() -> FastAPI:
             # to, the PLAN tab has to show.
             _plan, unmapped = to_sequence_plan(
                 compiled, graph,
-                cool_to=getattr(config_store.cfg().cooling, "setpoint_c", None))
+                cool_to=getattr(config_store.cfg().cooling, "setpoint_c", None),
+                closes_on_unsafe=bool(
+                    config_store.cfg().safety.close_dome_on_unsafe))
         except GraphNotRunnable as e:
             # Not an error response: a half-built graph is the NORMAL state of
             # an editor, and the canvas asks for a compile on every edit. The
@@ -3756,7 +3758,9 @@ def create_app() -> FastAPI:
             # run then behaves exactly as it always has.
             plan, unmapped = to_sequence_plan(
                 compiled, rec.graph,
-                cool_to=getattr(config_store.cfg().cooling, "setpoint_c", None))
+                cool_to=getattr(config_store.cfg().cooling, "setpoint_c", None),
+                closes_on_unsafe=bool(
+                    config_store.cfg().safety.close_dome_on_unsafe))
         except GraphNotRunnable as e:
             raise HTTPException(422, detail={"detail": str(e), "code": e.code})
 
@@ -3770,15 +3774,20 @@ def create_app() -> FastAPI:
         # roof to leave open, and refusing anyway would stop the shipped M16
         # example running on the simulator — which the handoff requires.
         dome_dev = hub.devices.get("dome")
+        _safety = config_store.cfg().safety
         blocking = blocking_reasons(
             unmapped, dome_connected=bool(dome_dev is not None
-                                          and dome_dev.connected))
+                                          and dome_dev.connected),
+            closes_on_unsafe=bool(_safety.close_dome_on_unsafe))
         if blocking:
             raise HTTPException(409, detail={
                 "detail": "this flow's DOME CONTROL node cannot be honoured "
-                          "yet — the plan carries no dome policy, so nothing "
-                          "would close the shutter on an unsafe reading. "
-                          "Remove the dome node to run the rest of the flow.",
+                          "yet — the plan carries no dome policy, and this "
+                          "rig's safety settings do not close the roof on an "
+                          "unsafe reading either, so nothing would shut the "
+                          "shutter in the rain. Turn on 'close dome on unsafe' "
+                          "in Settings > Safety (the Remote preset sets it), "
+                          "or remove the dome node to run without a roof.",
                 "code": "dome_unmapped", "unmapped": blocking})
         # `losses`, not `unmapped`: a note-level entry says the drawn thing IS
         # honoured elsewhere in the engine, so gating on it would make the

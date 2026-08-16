@@ -119,13 +119,20 @@ REDUNDANT_PORTS: dict[tuple[str, str], str] = {
 #: rule.
 #:
 #: Keyed on the TRIGGER as well as the port, because the same CALIB node fed
-#: from a different edge is a different promise. ``on_shutdown_complete ->
-#: calib.do`` is the campaign's day-darks lane and it genuinely does not run;
-#: collapsing both onto "calib" would trade one wrong sentence for another.
+#: from a different edge is a different promise, and the two are answered by
+#: different lanes: ``on_clouds_in`` by the hold, ``on_shutdown_complete`` by
+#: the wind-down's day-darks phase between the park and the warm. Collapsing
+#: both onto "calib" would trade one wrong sentence for another - a rig with no
+#: day-darks quota would be told its shutdown wire was covered by a cloud hold
+#: that never ran.
 #:
-#: Guarded by ``hold_darks`` at the call site: with a quota of 0 no darks are
-#: taken, and calling the wire redundant then would be the same overclaim in
-#: reverse.
+#: (This note used to end "``on_shutdown_complete -> calib.do`` genuinely does
+#: not run". It does now. A comment that outlives the behaviour it describes is
+#: the same defect this module exists to catch.)
+#:
+#: Guarded per entry by :data:`HONOURED_BY` at the call site: with a quota of 0
+#: the lane takes nothing, and calling the wire redundant then would be the same
+#: overclaim in reverse.
 #: Which ``plan_extras`` key funds each honoured wire, so "already honoured" is
 #: never claimed for a lane with nothing to spend. Keyed the same way as
 #: :data:`HOLD_HONOURED`; a missing entry there means the guard reads 0 and the
@@ -433,7 +440,8 @@ def _instructions(compiled: dict, out: list[dict]) -> list[dict]:
     return rules
 
 
-def _automation(compiled: dict, out: list[dict]) -> None:
+def _automation(compiled: dict, out: list[dict], *,
+                closes_on_unsafe: bool = False) -> None:
     """Report the automation blocks, none of which ``SequencePlan`` can hold.
 
     These are NOT equivalent losses and are not reported as if they were.
@@ -488,11 +496,31 @@ def _automation(compiled: dict, out: list[dict]) -> None:
 
     auto = compiled.get("automation") or {}
     if "dome" in auto:
-        out.append(_note(
-            "automation.dome",
-            "the dome policy compiled correctly but the engine cannot act on "
-            "it yet, so nothing will bind the dome or close it on an unsafe "
-            "reading during this run", "danger"))
+        # SPLIT ON WHAT THE RIG WILL ACTUALLY DO. This said "nothing will bind
+        # the dome or close it on an unsafe reading" at DANGER, unconditionally.
+        # The close half is false on any rig with `close_dome_on_unsafe` set
+        # (the Remote preset sets it): the engine routes a connected dome
+        # through `roof.close_observatory` on the unsafe teardown, so the node's
+        # one non-negotiable promise is kept - by config rather than by the
+        # node. Saying otherwise sends someone out to a roof that shut hours ago.
+        #
+        # What is genuinely lost either way is the node's own azimuth binding
+        # and shutter timeout: `DomePolicy.apply_binding` and
+        # `DomePolicy.from_plan` have no callers anywhere in the server.
+        if closes_on_unsafe:
+            out.append(_note(
+                "automation.dome",
+                "the roof WILL close on an unsafe reading - this rig's safety "
+                "settings do that for every run, over a parked mount. What "
+                "this node adds does not reach the engine: its azimuth binding "
+                "and shutter timeout are dropped, so a dome that tracks the "
+                "mount will not be told to"))
+        else:
+            out.append(_note(
+                "automation.dome",
+                "the dome policy compiled correctly but the engine cannot act "
+                "on it yet, so nothing will bind the dome or close it on an "
+                "unsafe reading during this run", "danger"))
     if "dusk_flats" in auto:
         out.append(_note("automation.dusk_flats",
                          "the dusk-flats stage is not wired into the engine "
@@ -628,7 +656,8 @@ def plan_extras(compiled: dict) -> dict:
 
 def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
                      when: float | None = None,
-                     cool_to: float | None = None
+                     cool_to: float | None = None,
+                     closes_on_unsafe: bool = False
                      ) -> tuple[SequencePlan, list[dict]]:
     """``(plan, unmapped)`` for a compiled flow.
 
@@ -721,7 +750,7 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
             f"{pooled} candidates run in rank order, each skipped if its "
             f"window is missed, rather than one being chosen", "warn"))
 
-    _automation(compiled, unmapped)
+    _automation(compiled, unmapped, closes_on_unsafe=closes_on_unsafe)
     unmapped.extend(inert_nodes(graph))
 
     fields: dict = {
@@ -736,7 +765,8 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
     return plan, unmapped
 
 
-def blocking_reasons(unmapped: list[dict], *, dome_connected: bool) -> list[dict]:
+def blocking_reasons(unmapped: list[dict], *, dome_connected: bool,
+                     closes_on_unsafe: bool = False) -> list[dict]:
     """The subset of ``unmapped`` that should stop a run from starting.
 
     ONE ENTRY QUALIFIES TODAY: a dome policy that the engine cannot act on,
@@ -750,6 +780,22 @@ def blocking_reasons(unmapped: list[dict], *, dome_connected: bool) -> list[dict
     The refusal is about a physical shutter, so it is gated on there being one.
     """
     if not dome_connected:
+        return []
+    if closes_on_unsafe:
+        # THE ROOF WILL CLOSE, so refusing the run protects nothing.
+        #
+        # The plan still cannot carry the compiled DomePolicy - that part of the
+        # refusal was true - but the sentence that followed it was not: the
+        # engine passes `cfg.safety.close_dome_on_unsafe` into the unsafe
+        # wind-down, which routes a connected dome through
+        # `roof.close_observatory` (never over an unparked mount). So on a rig
+        # with that setting on, the DOME CONTROL node's one non-negotiable
+        # promise IS kept - by config rather than by the node.
+        #
+        # Blocking anyway made the advice actively wrong: "remove the dome node"
+        # changes nothing about whether the roof closes and throws away the
+        # operator's stated intent. What remains unhonoured is the node's
+        # azimuth binding and shutter timeout, and that is a note, not a wall.
         return []
     return [u for u in unmapped if u["key"] == "automation.dome"]
 
