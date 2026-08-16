@@ -168,22 +168,31 @@ def check(graph: FlowGraph) -> list[Issue]:
                 "▸ queue runs but nothing HOLDS the light loop - wire "
                 "HOLD / RESUME from the same trigger", "warn"))
 
-    # 11-12. a campaign's two missing halves. Both are silent on a single night,
-    # which is why they need saying: the graph looks finished either way, and the
-    # failure only shows up on night two.
-    dusk = _is_campaign(graph)
-    if dusk is not None:
-        pool = next((x for x in graph.nodes if x.type == "pool"), None)
-        if pool is not None and not any(e.to == pool.id and e.toPort == "advance"
-                                        for e in graph.edges):
-            out.append(Issue(
-                "▸ campaign repeats nightly but nothing advances the POOL - "
-                "wire SESSION REPORT 'target done' → 'advance'", "warn"))
-        if not any(e.from_ == dusk.id and e.fromPort == "nightend"
-                   for e in graph.edges):
-            out.append(Issue(
-                "▸ campaign has no shutdown lane - wire 'night ends' → "
-                "PARK + CLOSE", "warn"))
+    # 11-12. REMOVED 2026-08-16, and deliberately not replaced.
+    #
+    # They told a campaign to draw the two wires that `to_plan.REDUNDANT_PORTS`
+    # documents as doing nothing:
+    #
+    #   "nothing advances the POOL - wire SESSION REPORT 'target done' ->
+    #    'advance'"   vs   "the scheduler advances the pool itself: a target
+    #    whose frames are all in the ledger is skipped and the next member gets
+    #    the night, on this night and on every night after"
+    #
+    #   "campaign has no shutdown lane - wire 'night ends' -> PARK + CLOSE"
+    #   vs   "the night already ends parked with the dust cover shut, whether or
+    #    not this wire is here - every flow's plan carries park-when-done and
+    #    the wind-down closes the cover"
+    #
+    # An operator who followed this advice drew a wire the very next panel told
+    # them was redundant. The ROOF, which is the one part that does depend on
+    # something outside the graph, is rule 9's job and still fires.
+    #
+    # `_is_campaign` is kept: it is the only place that reads `repeat` and says
+    # what a campaign IS, and the next rule that needs the distinction should
+    # not have to rediscover it.
+    #
+    # `test_flows_doctor_agrees_with_the_engine` asserts both stay gone, and
+    # asserts structurally that no REDUNDANT_PORTS entry can be demanded here.
 
     # 13. the two weather tiers racing. Safety is non-recoverable and always
     # wins; a hold that would have ridden the cloud out never gets the chance.
