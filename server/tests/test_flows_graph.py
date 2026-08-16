@@ -77,13 +77,25 @@ class TestVocabulary:
                 and any(p.kind == "event" for p in d.outs)}
         assert both == {"dusk", "capture", "cycle", "pool"}, both
 
-    def test_the_optional_inputs_are_the_two_with_a_rule_of_their_own(self):
-        """An input may only be optional when a NAMED doctor rule explains the
-        absence in its own words. Otherwise the graph is quietly incomplete and
-        nothing says so."""
+    def test_the_optional_inputs_are_exactly_these(self):
+        """An input may be optional only when its absence is HARMLESS, or is
+        explained somewhere in the operator's own words. Anything else is a
+        graph that is quietly incomplete with nothing saying so.
+
+        The list grew on 2026-08-16 because the doctor had gone stale against
+        the engine: it demanded four wires that `to_plan.REDUNDANT_PORTS`
+        documents as doing nothing, so an operator who followed the advice
+        drew a wire the very next panel called redundant. Each entry below
+        names why its absence costs nothing."""
         opt = {(t, p) for t, d in NODE_DEFS.items() for p in d.optional_ins}
-        assert opt == {("calib", "panel"),     # rule 7 — flats get skipped
-                       ("pool", "advance")}    # rule 11 — only campaigns need it
+        assert opt == {
+            ("calib", "panel"),        # rule 7 — flats get skipped, and it says so
+            ("calib", "do"),           # quota alone funds the hold darks
+            ("calib", "stop"),         # the hold ends when the sky clears
+            ("holdresume", "resume"),  # the hold releases itself
+            ("parkclose", "do"),       # the night ends parked+shut regardless
+            ("pool", "advance"),       # the scheduler advances the pool itself
+        }, opt
 
     def test_every_optional_input_is_a_real_port(self):
         """A typo in `optional_ins` would silently exempt nothing, and the
@@ -206,12 +218,21 @@ class TestTheDoctor:
         hit = [i for i in out if "leaves no ledger" in i.text]
         assert hit and hit[0].level == "note", out
 
-    def test_11_a_campaign_with_nothing_to_advance_the_pool(self):
+    def test_11_the_pool_advance_rule_is_GONE(self):
+        """RULE REMOVED 2026-08-16, and this assertion is inverted rather
+        than deleted so the removal is deliberate and stays that way.
+
+        It told a campaign to wire SESSION REPORT 'target done' ->
+        'advance'. `to_plan.REDUNDANT_PORTS` says of that same wire: "the
+        scheduler advances the pool itself: a target whose frames are all
+        in the ledger is skipped and the next member gets the night, on
+        this night and on every night after". An operator who followed
+        the advice drew a wire the next panel called redundant."""
         g = FlowGraph(
             nodes=[_n("d", "dusk", repeat="Nightly until pool complete"),
                    _n("p", "pool"), _n("r", "report")],
             edges=[_e("d", "window", "p", "arm")])
-        assert any("nothing advances the POOL" in i.text for i in check(g))
+        assert not any("advances the POOL" in i.text for i in check(g))
 
     def test_11b_a_single_night_pool_is_not_nagged_about_advance(self):
         """`advance` is optional, and rule 11 only speaks once the DUSK WINDOW
@@ -237,9 +258,14 @@ class TestTheDoctor:
         assert "advances the POOL" not in text
         assert "no shutdown lane" not in text
 
-    def test_12_a_campaign_with_no_shutdown_lane(self):
+    def test_12_the_shutdown_lane_rule_is_GONE(self):
+        """RULE REMOVED 2026-08-16, same reason as 11. The night already
+        ends parked with the dust cover shut whether or not the wire is
+        there - every flow's plan carries park-when-done and the wind-down
+        closes the cover. The ROOF is the only part that depends on
+        anything outside the graph, and rule 9 is what speaks about it."""
         g = FlowGraph(nodes=[_n("d", "dusk", repeat="Nightly ×30"), _n("r", "report")])
-        assert any("no shutdown lane" in i.text for i in check(g))
+        assert not any("shutdown lane" in i.text for i in check(g))
 
     def test_13_safety_and_cloud_watch_racing_over_the_same_sky(self):
         """Safety aborts and never holds; CLOUD WATCH holds and never aborts. If
