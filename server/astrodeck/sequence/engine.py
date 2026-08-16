@@ -1071,6 +1071,22 @@ class SequenceEngine:
             self._session.status = ("complete"
                                     if reason == "complete" and not unmet
                                     else "dormant")
+            # COUNT THE CRASHES, AND ONLY THE CRASHES. `dormant` is the right
+            # status for a crash - it is what lets auto-resume pick the night
+            # back up, which is the behaviour we want - but a run that keeps
+            # crashing and keeps being resumed will do that all night, and the
+            # mount is tracking the whole time.
+            #
+            # Reset on ANY other ending: a night that got as far as dawn, or was
+            # stopped, or completed, is not the failing loop this guards.
+            if reason == "error":
+                self._session.crash_resumes += 1
+                bus.log("warning",
+                        f"'{self._session.name}': crash "
+                        f"{self._session.crash_resumes} of this session",
+                        "sequence")
+            else:
+                self._session.crash_resumes = 0
             try:
                 session_store.save(self._session)
             except Exception as e:

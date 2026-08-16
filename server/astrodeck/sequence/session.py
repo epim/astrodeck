@@ -64,6 +64,16 @@ class Session(BaseModel):
     nights: list[str] = Field(default_factory=list)           # report ids, in order
     frames: list[SessionFrame] = Field(default_factory=list)
     auto_resume: bool = False
+    # CONSECUTIVE CRASHES OF THIS SESSION, and it lives here rather than in
+    # ResumeArm because a crash can take the process with it - a counter in
+    # memory would reset on exactly the restart it is meant to be counting.
+    #
+    # Incremented when a run of this session ends with end_reason="error", reset
+    # to 0 by ANY other ending. A weather veto, a recovery hold or a refusal to
+    # start is NOT a crash and must never land here: those are the system
+    # working, and counting them would park the mount three cloudy holds into a
+    # night that was going to clear.
+    crash_resumes: int = 0
 
     # ---- derived helpers (mode-aware per the FROZEN plan's count_mode) -------
     def accepted_by_step(self) -> dict[str, int]:

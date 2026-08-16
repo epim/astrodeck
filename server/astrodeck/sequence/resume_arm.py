@@ -43,6 +43,14 @@ from .session import Session, session_store
 CHECK_INTERVAL_S = 60.0
 RETRY_INTERVAL_S = 600.0
 
+#: Consecutive crashes of ONE session before auto-resume stops trying and stows
+#: the rig. Three, because two is inside the range of genuinely transient faults
+#: this ladder already recovers from - a USB re-enumeration, a driver that
+#: dropped its link between frames - and the point is to distinguish those from
+#: a fault that will still be there on the next attempt. At ten minutes a retry
+#: this gives roughly half an hour of trying before the night is called.
+RESUME_GIVE_UP_AFTER = 3
+
 #: Exposure for the post-restart blind solve. Deliberately longer than
 #: solve_and_sync's 3 s default -- see the call site for the measurement.
 RECOVERY_SOLVE_EXPOSURE_S = 12.0
@@ -62,6 +70,12 @@ class ResumeArm:
         #: session id we have already said "dormant but not armed" about, so the
         #: notice appears once per session rather than once per minute.
         self._quiet_note_for: str | None = None
+        #: session id we have already stowed the rig for. The disarm below is
+        #: the real latch - it is what stops the next tick reaching the
+        #: give-up branch at all - and this is the belt to its braces, so a
+        #: session whose disarm failed to save cannot park the mount once a
+        #: minute for the rest of the night.
+        self._stowed_for: str | None = None
 
     def start(self) -> None:
         if self._task is None or self._task.done():
@@ -199,6 +213,27 @@ class ResumeArm:
                             f"every frame it asked for.", "sequence")
             return
         self._gave_up_for = None            # window open (again): fresh night
+        # A SESSION THAT KEEPS CRASHING IS NOT A SESSION TO KEEP RESTARTING.
+        #
+        # Continuity is the right default and it is what the rest of this tick
+        # is for: a run that dies should come back and finish the night. But
+        # restarting into the same fault forever is not continuity, it is a
+        # loop - and the whole time it runs, the mount is tracking, the camera
+        # is cold and nothing is being recorded.
+        #
+        # So after RESUME_GIVE_UP_AFTER consecutive crashes we stop, and we do
+        # not merely stop: we put the rig away. Leaving it disarmed and live
+        # would trade a crash loop for an idle mount tracking into whatever is
+        # east of it until dawn-park notices at -6 degrees, which is the failure
+        # this whole ladder exists to avoid.
+        #
+        # The counter lives on the SESSION, not here, because a crash can take
+        # the process with it and a counter in memory would reset on exactly the
+        # restart it is counting. It counts crashes only - a veto, a recovery
+        # hold or a refusal to start leaves it untouched.
+        if armed.crash_resumes >= RESUME_GIVE_UP_AFTER:
+            await self._give_up_and_stow(armed)
+            return
         if now < self._retry_at:
             return
         # HARD REQUIREMENT: engine.start is unguarded here, so refuse an
@@ -250,6 +285,47 @@ class ResumeArm:
             return
         self._retry_at = 0.0
         bus.log("info", f"auto-resume: '{armed.name}' resumed", "sequence")
+
+    async def _give_up_and_stow(self, session) -> None:
+        """Stop resuming this session, and PUT THE RIG AWAY.
+
+        The stowing is the point. Disarming alone would end the crash loop and
+        leave the mount tracking, the camera cold and the cover open until
+        dawn-park notices at -6 degrees - which on a fault at 22:00 is eight
+        hours of an unattended telescope following a sky nobody is recording.
+        Trading a loop for a silent idle is not a fix.
+
+        Idempotent by construction: disarming is what stops the next tick
+        reaching here, and it is written to disk before the wind-down so a
+        crash DURING the stow cannot re-enter the loop.
+        """
+        if self._stowed_for == session.id:
+            return
+        self._stowed_for = session.id
+        bus.log("error",
+                f"auto-resume GIVING UP on '{session.name}': "
+                f"{session.crash_resumes} consecutive crashes. Something is "
+                f"wrong that restarting does not fix. Parking and warming the "
+                f"rig; resume it by hand once the cause is found.", "sequence")
+        session.auto_resume = False
+        try:
+            session_store.save(session)
+        except Exception as e:
+            # Say so LOUDLY: an unsaved disarm means the next tick tries again,
+            # and the operator needs to know the latch did not hold.
+            bus.log("error", f"could not disarm '{session.name}' — auto-resume "
+                             f"may retry the crash loop: {e}", "sequence")
+        try:
+            # The LIVE config, not a run's frozen snapshot: there is no run here
+            # to have taken one, and the operator's current roof setting is the
+            # one that should decide whether the shutter moves.
+            cfg = config_store.cfg()
+            await self.engine._wind_down(
+                park=True, warm=True,
+                close_dome=bool(cfg and cfg.safety.close_dome_when_done))
+        except Exception as e:
+            bus.log("error", f"could not stow the rig after giving up: {e} — "
+                             f"THE MOUNT MAY STILL BE TRACKING", "sequence")
 
     async def _recover(self, session) -> str | None:
         """Re-establish what the rig cannot simply assume after a restart.
