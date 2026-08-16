@@ -155,10 +155,15 @@ those as `complete` is the same lie in a smaller font.
 
 - `report.py:101` - extend the reason comment.
 - `ui/src/types.ts:590` - add to the `end_reason` union.
-- `ui/src/lib/reportChart.ts:105` - `case "incomplete": { word: "INCOMPLETE",
+- `ui/src/lib/reportChart.ts:105` - `case "incomplete": { word: "UNFINISHED",
   tone: "warn" }`. Warn, not good: `dawn_cutoff` is the sky running out, which
   is nobody's fault and needs no attention; this one means the run set targets
-  aside and the operator may want to know why.
+  aside and the operator may want to know why. The word is "UNFINISHED" rather
+  than "INCOMPLETE" because these two chips mean opposite things and COMPLETE /
+  INCOMPLETE differ by a prefix nobody reads at a glance - and because
+  `endReasonMeta`'s fallback arm already uppercases unknown reasons into
+  "INCOMPLETE", so that case would be dead code guarded by a test that cannot
+  fail.
 - `alerting.py:275` - `f"Run {state}: {reason}"` would emit "Run complete:
   incomplete". Reword to `f"Run ended: {reason}"`, which reads correctly for
   every existing reason too. No test asserts the current wording.
