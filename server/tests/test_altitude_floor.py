@@ -216,11 +216,22 @@ class TestTheRealFrameLoopCallsIt:
             return 5.0 if getattr(target, "name", "") == "SINKING" else 61.0
 
         monkeypatch.setattr(engine_mod, "_frame_altitude", _alt)
+        # Both targets are always selectable: this test is about what the FRAME
+        # LOOP does once a target is running, not about window resolution, and
+        # leaving the real gate in made it a clock-dependent coin flip.
+        monkeypatch.setattr(
+            engine_mod.schedule, "gating_status",
+            lambda target, site, twilight, now, window=None: {"state": "ready"})
 
         e = SequenceEngine(sim_hub)
         plan = SequencePlan(targets=[sunk, rises])
         e.start(plan)
-        deadline = time.monotonic() + 60.0
+        # Generous on purpose: with the floor check REMOVED both targets shoot
+        # their full quota, which is roughly double the work, and a deadline
+        # tight enough to trip on that turns a semantic failure into a
+        # timeout - the assertion below should be what fails, and it should
+        # say which target shot through its floor.
+        deadline = time.monotonic() + 180.0
         while e.running and time.monotonic() < deadline:
             await asyncio.sleep(0.05)
         assert not e.running, "the run never finished"
@@ -233,6 +244,12 @@ class TestTheRealFrameLoopCallsIt:
             return sum(v for k, v in done.items()
                        if str(k).split(":")[0] == str(t.id))
 
+        # THE PRECONDITION, ASSERTED FIRST. Everything below is vacuous if no
+        # frame was ever taken, and that is exactly the state this test spent a
+        # day in without saying so.
+        assert done, (
+            "the run finished without entering the frame loop at all, so this "
+            "test is asserting nothing about the call site")
         assert _frames(rises) >= 3, (
             f"the target that stayed up did not get its frames: {done}")
         assert _frames(sunk) < 3, (
