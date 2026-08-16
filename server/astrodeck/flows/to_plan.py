@@ -106,6 +106,21 @@ REDUNDANT_PORTS: dict[tuple[str, str], str] = {
         "in the ledger is skipped and the next member gets the night, on this "
         "night and on every night after - so this wire is not needed, and it "
         "is kept in the graph and does no harm"),
+    # THE NIGHT ENDS PARKED AND SHUT WITHOUT BEING ASKED. `plan_extras` sets
+    # `park_when_done` for every flow-derived plan, and `_panel_off_safe` closes
+    # the dust cover on every wind-down. So "the engine has no 'on_night_end'
+    # trigger; the engine has no 'parkclose' action" was true about the enums
+    # and wrong about the night - the same shape as the pool loop-back above.
+    #
+    # The ROOF is the one part that depends on something outside the graph, and
+    # it has its own two reports: `automation.dome` says whether it will close,
+    # and `blocking_reasons` refuses the run when it will not. Repeating that
+    # here would give an operator two different sentences about one shutter.
+    ("parkclose", "do"): (
+        "the night already ends parked with the dust cover shut, whether or "
+        "not this wire is here - every flow's plan carries park-when-done and "
+        "the wind-down closes the cover - so this wire is not needed. Whether "
+        "the ROOF closes is reported separately, under the dome"),
 }
 
 #: Rules the hold ALREADY HONOURS, keyed by (trigger, node type, input port).

@@ -460,26 +460,27 @@ class TestBlockingReasons:
         """A lost weather rule is a danger the operator must SEE, not a reason
         to refuse a night's imaging. Only the roof blocks.
 
-        Built from a graph rather than borrowed from an example, and that is the
-        point of the rewrite. It leaned on M16 and then on the campaign example,
-        and both stopped carrying a second danger as their notes got more
-        accurate - so a test about `blocking_reasons` kept failing for reasons
-        that had nothing to do with `blocking_reasons`. The graph below states
-        its own two dangers and cannot drift."""
-        g = FlowGraph(
-            nodes=[_n("d", "dome"),
-                   _n("t", "target", x=100, name="M31", ra="00h 42m 44s",
-                      dec="+41 16 09"),
-                   _n("c", "capture", x=200, exposure=60, count=5),
-                   _n("w", "cloudwatch", x=300),
-                   # No engine action: a cloud-triggered loss, reported danger.
-                   _n("p", "parkclose", x=400)],
-            edges=[_e("t", "target", "c", "run"), _e("w", "in", "p", "do")])
-        _, un = to_sequence_plan(compile_plan(g, "n"))
-        dangers = [u["key"] for u in un if u["level"] == "danger"]
-        assert len(dangers) > 1, f"the graph must carry two dangers, got {dangers}"
+        NO GRAPH AT ALL, and it took three failures to get here. This leaned on
+        M16, then on the campaign example, then on a hand-built graph whose
+        second danger was a cloud-wired PARK + CLOSE - and each of the three
+        stopped carrying a second danger as the notes got more accurate, so a
+        test about `blocking_reasons` kept failing for reasons that had nothing
+        to do with `blocking_reasons`.
+
+        `blocking_reasons` takes a list of dicts. Handing it the list directly
+        is the only version that cannot drift when some unrelated wire gets
+        reclassified, which will keep happening - that is the whole direction of
+        travel in this module."""
+        un = [
+            {"key": "automation.dome", "detail": "roof", "level": "danger"},
+            {"key": "instructions[on_unsafe -> abort]", "detail": "weather",
+             "level": "danger"},
+            {"key": "automation.dusk_flats", "detail": "flats", "level": "warn"},
+        ]
         assert [u["key"] for u in blocking_reasons(un, dome_connected=True)] == \
-               ["automation.dome"]
+               ["automation.dome"], (
+            "a lost weather rule is a danger the operator must SEE, not a "
+            "reason to refuse a night's imaging - only the roof blocks")
 
 
 class TestTheShippedExamples:
