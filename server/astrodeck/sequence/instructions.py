@@ -69,6 +69,7 @@ _PREDICATE_OF = {
     "on_clouds_clear": "clouds_clear",
     "on_unsafe": "unsafe",
     "on_panel_ready": "panel_ready",
+    "on_altitude_floor": "altitude_floor",
 }
 
 
@@ -97,6 +98,12 @@ class TriggerContext:
     cloudy: bool | None = None
     unsafe: bool | None = None
     panel_ready: bool | None = None
+    # NOT tri-state, and not a level. The engine sets this True at the one frame
+    # boundary where it has just measured the active target below its own floor
+    # and is about to set that target aside; there is no "unreadable" case,
+    # because an unreadable altitude is not a floor hit and the engine returns
+    # without building this context at all.
+    altitude_floor: bool = False
 
 
 @dataclass
@@ -162,6 +169,13 @@ def _eval_predicate(kind: str, threshold: float, at_time: str | None,
         return ctx.frame_rejected
     if kind == "target_complete":
         return ctx.target_complete
+    if kind == "altitude_floor":
+        # A per-event flag like the two above, not a level: the engine builds a
+        # context carrying it only at the boundary where it has just measured
+        # the target below its floor, and the target leaves the rotation in the
+        # same breath. There is no unreadable case to pass through as None -
+        # an altitude nobody could read is not a floor hit.
+        return ctx.altitude_floor
     if kind == "at_time":
         t = parse_hhmm(at_time, ctx.now_ts)
         return None if t is None else ctx.now_ts >= t

@@ -106,10 +106,14 @@ class TestRealLossesAreStillLosses:
     """The guard against the fix becoming the next defect. Quieting a class of
     report is one edit away from quieting the ones that matter."""
 
+    # `on_altitude_floor` used to be on this list and is deliberately not any
+    # more: the engine gained `_enforce_altitude_floor`, the trigger became
+    # legal, and the rule now RUNS. Removing it from here rather than relaxing
+    # the assertion is the point - this list is what is still owed, and it
+    # should shrink by exactly one line each time something gets built.
     @pytest.mark.parametrize("needle,level", [
         ("on_night_end", "warn"),        # parkclose: genuinely not built
         ("on_shutdown_complete", "warn"),  # calib as an action: not built
-        ("on_altitude_floor", "warn"),   # trigger not built
         ("automation.dome", "danger"),   # a roof that will not close
     ])
     def test_it_is_still_reported(self, needle, level):

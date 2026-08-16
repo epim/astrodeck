@@ -694,9 +694,13 @@ def brief(graph: FlowGraph | None) -> str:
     elif rep is not None:
         seg.append("A session report is appended when the run ends.")
 
-    if pool is not None and (_wired(g, frm=pool, from_port="floor")
-                             or str(pool.params.get("onFloor") or "")
-                             .startswith("Advance")):
+    # GATED ON THE DIAL ALONE, because the dial is the only half the engine
+    # reads (`Schedule.on_floor`, set from `onFloor` in compile.py). The old
+    # condition also fired on a WIRED floor port, so a graph that wired the port
+    # and then chose "Keep imaging" got this paragraph promising the opposite of
+    # what its own dial said - and for a while nothing implemented either.
+    if pool is not None and str(pool.params.get("onFloor") or "").strip() \
+            .lower().startswith("advance"):
         seg.append(f"If the active target sinks to the "
                    f"{pool.params.get('minAlt')}° floor, it is set aside - "
                    f"resumed the next night, not retried tonight - and the next "

@@ -184,6 +184,17 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
                     # can never finish a target, only stop working on one.
                     "quota_cycles": _num(n.params.get("quota")),
                     "min_altitude_deg": _num(n.params.get("minAlt")),
+                    # WHAT THE FLOOR MEANS ONCE THE TARGET IS RUNNING, and it
+                    # only reached a sentence in the Tonight story before this.
+                    # The dial's two options are prose ("Advance now; retry it
+                    # next night" / "Keep imaging (not recommended)"), so match
+                    # on the verb rather than the whole string - the copy is
+                    # allowed to change without silently flipping a night's
+                    # behaviour back to "keep".
+                    "on_floor": ("advance"
+                                 if str(n.params.get("onFloor") or "")
+                                 .strip().lower().startswith("advance")
+                                 else "keep"),
                     "min_moon_sep_deg": _num(n.params.get("moonSep")),
                     "max_hour_angle_h": _num(n.params.get("maxHA")),
                     "steps": [],

@@ -44,6 +44,18 @@ class Schedule(BaseModel):
     start_offset_min: int = 0          # ± minutes relative to dusk/dawn
     start_time: str | None = None      # "HH:MM" when start_mode == "time"
     min_altitude_deg: float = 0.0      # per-target START gate (target-alt). 0 = none
+    # What to do when a RUNNING target sinks back below `min_altitude_deg`.
+    #
+    # "keep" is the default and it is the behaviour every plan has always had:
+    # the number above gated SELECTION only, so a target chosen at 40 deg went
+    # on being imaged down through the floor and into the trees. Defaulting to
+    # "advance" would silently change what every saved plan does at night, and a
+    # target dropped mid-run is not a change to make on the operator's behalf.
+    #
+    # "advance" is a POOL's `onFloor` dial: set the target aside for TONIGHT -
+    # skipped, not marked done, so the ledger brings it back tomorrow - and let
+    # the next member have the sky. It is also what fires `on_altitude_floor`.
+    on_floor: Literal["keep", "advance"] = "keep"
     # --- pro visibility constraints (PRO-14; additive, 0 = off => back-compat) ---
     min_moon_sep_deg: float = Field(0.0, ge=0, le=180)    # ≥ this from the Moon while up
     max_moon_illum_pct: float = Field(0.0, ge=0, le=100)  # skip while Moon > this % lit
@@ -98,6 +110,16 @@ TriggerKind = Literal[
     # TRI-STATE reading where None means "unreadable" and fires nothing. See
     # instructions.TriggerContext for why that distinction is load-bearing.
     "on_clouds_in", "on_clouds_clear", "on_unsafe", "on_panel_ready",
+    # The active target sank back below its own `min_altitude_deg`. NOT a level
+    # like the four above: it fires once, at the frame boundary that detects it,
+    # and the target leaves the night's rotation in the same breath - so there
+    # is nothing left to re-arm against.
+    #
+    # Added only once `SequenceEngine._enforce_altitude_floor` could raise it.
+    # `to_plan.LEGAL_TRIGGERS` reads this tuple directly, so a member listed
+    # here that the engine cannot produce turns an honest "this rule will not
+    # run" into silence - which is worse than the warning it replaces.
+    "on_altitude_floor",
 ]
 ActionKind = Literal[
     "notify", "pause", "refocus", "dither", "abort",
