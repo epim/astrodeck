@@ -144,6 +144,11 @@ SCHEDULE_KEYS = ("start_mode", "start_offset_min", "stop_mode", "min_altitude_de
 
 #: A pool member's constraints are also real ``Schedule`` fields.
 POOL_SCHEDULE_KEYS = {"min_altitude_deg": "min_altitude_deg",
+                      # The floor POLICY travels with the floor NUMBER. Carrying
+                      # one without the other is how `onFloor` spent its whole
+                      # life as a sentence in the Tonight story with no engine
+                      # behind it.
+                      "on_floor": "on_floor",
                       "min_moon_sep_deg": "min_moon_sep_deg",
                       "max_hour_angle_h": "max_hour_angle_h"}
 

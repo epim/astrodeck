@@ -1411,6 +1411,67 @@ class SequenceEngine:
         if stop_ts is not None and time.time() >= stop_ts:
             raise StopTarget("observing window closed (stop time / max run / dawn)")
 
+    async def _enforce_altitude_floor(self, target: Target) -> None:
+        """Set the target aside when it sinks back below its own altitude floor.
+
+        ``Schedule.min_altitude_deg`` gated SELECTION and nothing else, so a
+        target picked at 40 degrees went on being imaged all the way down
+        through its floor and into the trees. Meanwhile the Tonight page said,
+        flatly and in the future indicative, that "if the active target sinks to
+        the 30 degree floor, it is set aside - resumed the next night, not
+        retried tonight - and the next best takes over", and the POOL node
+        offered a dial to choose it. The sentence and the dial were the whole
+        implementation.
+
+        SUSPENDED, NOT DONE, and that distinction is the feature. ``StopTarget``
+        is caught by the scheduler, which logs a skip, calls
+        ``reporter.mark_skipped`` and drops the target from TONIGHT's rotation -
+        while writing nothing to the frame ledger. So tomorrow's resume seeds
+        ``_done`` from the frames that actually exist, finds this target short,
+        and shoots the remainder. A target marked complete would never come
+        back; a target left in rotation would be re-selected and re-refused by
+        its own start gate, forever.
+
+        Gated on ``on_floor == "advance"`` because "keep" is what every saved
+        plan has always done, and dropping a target mid-run is not a change to
+        make silently on an operator's behalf.
+
+        Fires ``on_altitude_floor`` BEFORE raising, so a wired NOTIFY reaches
+        the operator with the run still on this target - the alert names the
+        target that sank, not the one that replaced it.
+        """
+        sched = getattr(target, "schedule", None)
+        if sched is None or getattr(sched, "on_floor", "keep") != "advance":
+            return
+        floor = float(getattr(sched, "min_altitude_deg", 0.0) or 0.0)
+        if floor <= 0 or target.calibration:
+            # A floor of 0 is "no gate" everywhere else in this model, and a
+            # calibration target has no sky position to sink.
+            return
+        now = time.time()
+        alt = _frame_altitude(target, self.hub.site, now)
+        if alt is None or alt >= floor:
+            # None is "nobody can say" - an unset site or a bad coordinate - and
+            # it must not read as "below the floor". Abandoning a target on an
+            # unreadable altitude would be the tri-state mistake that made a
+            # blind cloud probe release a hold.
+            return
+        bus.log("warn",
+                f"{target.name}: sank to {alt:.1f}°, below its {floor:.0f}° "
+                f"floor — setting it aside for tonight (its frames stay in the "
+                f"ledger, so it resumes tomorrow)", "sequence")
+        if self.plan and self.plan.instructions:
+            await self._run_instructions(
+                TriggerContext(now_ts=now,
+                               active_target=target.name,
+                               altitude_floor=True,
+                               cloudy=self._clouds.cloudy(now),
+                               unsafe=await self._unsafe_now(),
+                               panel_ready=self._panel_ready_now()),
+                target, None)
+        raise StopTarget(
+            f"sank to {alt:.1f}°, below its {floor:.0f}° altitude floor")
+
     def _missed_start(self, target: Target, now: float, site: dict,
                       twilight_deg: float) -> bool:
         """Whether ``target``'s start window opened long enough ago that its
@@ -1884,6 +1945,11 @@ class SequenceEngine:
             # finishes but no new one starts into daylight (§1.6). Raises StopTarget
             # → the scheduler skips ahead / finalizes the night at dawn.
             self._enforce_stop_boundary(target)
+            # ...and the SPATIAL boundary beside the temporal one. The stop
+            # boundary ends a target because the clock ran out; this one ends it
+            # because the sky moved. Both raise StopTarget, so both hand the
+            # night on rather than ending it.
+            await self._enforce_altitude_floor(target)
             await self._safety_gate(context="frame", target=target)
             # §1.9-F: ping the external dead-man's-switch + heartbeat each frame.
             await self._frame_alerts_tick()
