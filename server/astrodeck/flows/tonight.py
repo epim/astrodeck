@@ -734,12 +734,25 @@ def brief(graph: FlowGraph | None) -> str:
 
     if (pc is not None and dusk is not None
             and _wired(g, frm=dusk, from_port="nightend", to=pc)):
+        # WHAT ACTUALLY HAPPENS, not what the node's dials say.
+        #
+        # This sentence used to add "with the cooler held cold" whenever the
+        # PARK + CLOSE node's `cooler` dial said Hold, and ", banking capped day
+        # darks" whenever it was wired to a calibration queue. Neither happens:
+        # `plan_extras` hardcodes `warm_cooler_when_done=True` for every
+        # flow-derived plan, and no lane shoots darks after a shutdown at all -
+        # the calibration queue's darks are only ever taken inside a cloud hold.
+        #
+        # The campaign tab already said so in `_DAWN`, so the two tabs of the
+        # same page contradicted each other about the same rig on the same
+        # night. This is the one that was wrong.
+        #
+        # The dropped dials belong in the unmapped list, not in a hedge here -
+        # a story that says "the cooler MIGHT be held" is worse than one that
+        # says what the night does. See `_automation`'s parkclose note.
         t = (f"When astronomical night ends, the mount parks and the "
              f"{str(pc.params.get('closure')).lower()} closes")
-        if str(pc.params.get("cooler") or "").startswith("Hold"):
-            t += " with the cooler held cold"
-        if cq is not None and _wired(g, frm=pc, to=cq):
-            t += ", banking capped day darks"
+        t += ", then the camera warms"
         if str(dusk.params.get("repeat") or "Single night") != "Single night":
             t += ("; the flow re-arms at the next dusk and resumes mid-cycle "
                   "from the ledger")

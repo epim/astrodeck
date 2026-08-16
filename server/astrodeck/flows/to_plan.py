@@ -487,6 +487,27 @@ def _automation(compiled: dict, out: list[dict]) -> None:
             "wired into the engine yet"))
 
 
+#: Node types whose generic "settings do not reach the run" sentence is WRONG,
+#: keyed by type. One entry, and it is here rather than inline because the next
+#: node to half-work will want the same treatment.
+#:
+#: PARK + CLOSE claims four things and three of them happen - just not because
+#: this node is on the canvas. Telling an operator that none of them do is the
+#: same defect as telling them all of them do, and it is the more dangerous
+#: direction: someone who believes the night does not park will go out and park
+#: it themselves, or leave a run they would otherwise have trusted.
+NODE_LOSS: dict[str, str] = {
+    "parkclose": (
+        "most of what this node promises already happens, but not because it "
+        "is here: every flow's night ends with the mount parked and the dust "
+        "cover shut whether or not this node is on the canvas, and the dome "
+        "closes only if Settings > Safety has 'close dome when done' ticked. "
+        "What does NOT happen is the cooler setting - the camera is warmed at "
+        "the end of every run, so 'Hold cold (day darks)' is not honoured and "
+        "no darks are taken after a shutdown"),
+}
+
+
 def inert_nodes(graph: FlowGraph | None) -> list[dict]:
     """Nodes whose parameters reach nothing, reported FROM THE GRAPH.
 
@@ -496,10 +517,21 @@ def inert_nodes(graph: FlowGraph | None) -> list[dict]:
     a GUIDE node's settle time was discarded.
 
     This is the honest surface for a whole class of dead control. A SLEW node's
-    tolerance, an AUTOFOCUS node's step size, an ABORT+PARK node's "park: Yes"
-    - all of them are editable, all of them look live, and none of them reaches
-    the engine. The last is the one that bites: ``park_when_done`` stays False,
-    so a flow that says park and warm leaves the mount tracking and the TEC cold.
+    tolerance, an AUTOFOCUS node's step size, a NOTIFY node's severity - all of
+    them are editable, all of them look live, and none of them reaches the
+    engine.
+
+    THE PARK EXAMPLE THAT USED TO BE HERE IS NO LONGER TRUE, and leaving it
+    would have made this docstring the thing it warns about. It said
+    ``park_when_done`` stays False "so a flow that says park and warm leaves the
+    mount tracking and the TEC cold". :func:`plan_extras` now sets it True for
+    every flow-derived plan, unconditionally - so the night ends parked whether
+    or not a PARK + CLOSE node is on the canvas, and the sentence describing the
+    opposite outlived the behaviour it described.
+
+    PARK + CLOSE therefore gets its own wording below rather than the generic
+    one: three of the four things that node claims DO happen, and telling an
+    operator none of them do is the same defect as telling them all of them do.
     """
     if graph is None:
         return []
@@ -511,10 +543,11 @@ def inert_nodes(graph: FlowGraph | None) -> list[dict]:
         seen.add(node.type)
         if not node.params:
             continue
-        out.append(_note(
-            f"nodes.{node.type}",
-            f"the {node.type.upper()} node's settings do not reach the run - "
-            f"the compiler does not carry them into the plan"))
+        out.append(_note(f"nodes.{node.type}",
+                         NODE_LOSS.get(node.type) or (
+                             f"the {node.type.upper()} node's settings do not "
+                             f"reach the run - the compiler does not carry them "
+                             f"into the plan")))
     return out
 
 
