@@ -68,11 +68,16 @@ class Session(BaseModel):
     # ResumeArm because a crash can take the process with it - a counter in
     # memory would reset on exactly the restart it is meant to be counting.
     #
-    # Incremented when a run of this session ends with end_reason="error", reset
-    # to 0 by ANY other ending. A weather veto, a recovery hold or a refusal to
-    # start is NOT a crash and must never land here: those are the system
-    # working, and counting them would park the mount three cloudy holds into a
-    # night that was going to clear.
+    # Incremented from BOTH halves of "the run died":
+    #   * a run that ends with end_reason="error" while the server survives
+    #     (`_finalize_report`), and
+    #   * a session still `active` on disk at boot (`boot_sweep`), which can
+    #     only mean the process itself died mid-run — the case that finalizes
+    #     nothing and so used to count as nothing.
+    # Reset to 0 by ANY other ending. A weather veto, a recovery hold or a
+    # refusal to start is NOT a crash and must never land here: those are the
+    # system working, and counting them would park the mount three cloudy holds
+    # into a night that was going to clear.
     crash_resumes: int = 0
 
     # ---- derived helpers (mode-aware per the FROZEN plan's count_mode) -------
@@ -197,11 +202,25 @@ class SessionStore:
 
     def boot_sweep(self) -> int:
         """Power-cut orphans: any ``active`` session on disk at boot (the engine
-        is never running at boot) -> ``dormant`` (spec §4). Returns the count."""
+        is never running at boot) -> ``dormant`` (spec §4). Returns the count.
+
+        AND IT COUNTS THE DEATH. Being ``active`` here is not just a stale
+        status to tidy up, it is the only evidence that exists of a crash that
+        took the whole process with it: ``_finalize_report`` never ran, so the
+        in-process crash counter never saw it. Without this, the supervisor
+        relaunches, auto-resume restarts the same run, it dies in the same
+        place, and the loop goes round all night with ``crash_resumes`` still
+        at 0 and the give-up ladder unreachable.
+
+        A clean ending of ANY kind resets the counter, so one power blip a
+        night never accumulates toward a stow — only deaths with no clean
+        ending between them do.
+        """
         n = 0
         for s in self.load_all():
             if s.status == "active":
                 s.status = "dormant"
+                s.crash_resumes += 1
                 self.save(s)
                 n += 1
         return n
