@@ -11,8 +11,11 @@ session's terminal status and the run's own end reason. A single new engine
 flag, `_window_closed`, distinguishes a window that ran out from a target the
 run set aside for other reasons.
 
-**Tech Stack:** Python 3.12 / pydantic / pytest-asyncio server; React + TypeScript
-+ vitest UI.
+**Tech Stack:** Python 3.12 / pydantic / pytest-asyncio server; React +
+TypeScript UI. The UI has NO test framework: each `*.test.ts` is a plain tsx
+script with its own assertions that exports `{ passed, failed, total }`, and
+`npm test` (run-tests.mjs) runs one child process per file and exits on those
+counts. Run a single file with `npx tsx <path>`, never `npx vitest`.
 
 **Spec:** `docs/superpowers/specs/2026-08-16-dawn-cut-resume-design.md`
 
@@ -486,7 +489,7 @@ test("a night that owes frames is UNFINISHED, and never reads as complete", () =
 - [ ] **Step 2: Run it and confirm it fails**
 
 ```
-cd ui && npx vitest run src/lib/__tests__/reportChart.test.ts
+cd ui && npx tsx src/lib/__tests__/reportChart.test.ts
 ```
 
 Expected: FAIL — `expected { word: 'INCOMPLETE', tone: 'warn' } to deeply equal
@@ -541,7 +544,7 @@ for dawn cuts too, so this reads oddly today and nonsensically after:
 - [ ] **Step 7: Run both suites' affected files**
 
 ```
-cd ui && npx vitest run src/lib/__tests__/reportChart.test.ts && npx tsc --noEmit
+cd ui && npx tsx src/lib/__tests__/reportChart.test.ts && npx tsc --noEmit
 cd ../server && ./.venv/Scripts/python.exe -m pytest tests/test_alerting.py -p no:randomly -q
 ```
 
@@ -587,7 +590,7 @@ Expected: 6095 + 6 new passed, 0 failed.
 - [ ] **Step 3: Full UI suite + build**
 
 ```
-cd ui && npx vitest run && npx tsc --noEmit && npx vite build
+cd ui && npm test && npx tsc --noEmit && npx vite build
 ```
 
 Expected: 2351 + 1 green, tsc and vite clean.
