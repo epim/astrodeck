@@ -282,6 +282,17 @@ class SequencePlan(BaseModel):
     # what a hold can spend and makes the intent visible in the plan the PLAN
     # tab renders. 0 means do not.
     cloud_hold_darks: int = Field(0, ge=0, le=200)
+    # DARKS AFTER THE NIGHT, matched to the LIGHTS this plan actually shot.
+    #
+    # The sibling above spends a cloud hold; this one spends the dead time after
+    # the run ends, in the window between the park and the warm ramp - the only
+    # moment when the mount is stowed, the cover is shut and the sensor is still
+    # at setpoint. A dark is indexed by temperature, so shooting it after the
+    # ramp has started produces cover for nothing.
+    #
+    # 0 means do not, and 0 is the default: a flow that did not ask for day
+    # darks must not find its camera held cold for an extra hour.
+    day_darks: int = Field(0, ge=0, le=200)
     # --- conditional sequencer (PRO-3; ADDITIVE — [] => byte-identical run) ---
     # An author-editable when-trigger-do-action layer on top of the fixed
     # targets×steps plan. Empty by default so existing plans deserialize
