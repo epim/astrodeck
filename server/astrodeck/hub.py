@@ -5513,9 +5513,17 @@ class Hub:
         is not determinable (fork mounts report unknown/none)."""
         return side in ("east", "west")
 
-    async def _compute_meridian(self, tel, ra_hours: float | None) -> dict:
+    async def _compute_meridian(self, tel, ra_hours: float | None,
+                                dec_deg: float | None = None) -> dict:
         """The MeridianInfo block. Prefers the device's own value (NINA); for
-        sim/Alpaca derives hours-to-flip from the hour angle HA = LST − RA."""
+        sim/Alpaca derives hours-to-flip from the hour angle HA = LST − RA.
+
+        ``dec_deg`` is what tells this apart from a countdown to nothing: a
+        target whose lower culmination clears the horizon never swings its tube
+        down toward the pier, so the engine declines the flip (see
+        ``schedule.flip_unnecessary_over_pole``). Counting down to a flip that
+        will not happen is the same broken promise as any other — the strip has
+        to say what the run will actually do."""
         from .catalog.coords import lst_hours
         meridian: dict[str, Any] = {
             "status": "unknown", "hours_to_flip": None,
@@ -5535,11 +5543,24 @@ class Hub:
             lst = lst_hours(self.site["longitude"])
             ha = ((lst - ra_hours + 12) % 24) - 12
             ttf = -ha
-        meridian["flip_enabled"] = self._is_gem(side) and self._plan_flip_enabled()
+        from .sequence.schedule import flip_unnecessary_over_pole
+        try:
+            over_pole = flip_unnecessary_over_pole(dec_deg, self.site["latitude"])
+        except Exception:
+            over_pole = False
+        meridian["flip_enabled"] = (self._is_gem(side)
+                                    and self._plan_flip_enabled()
+                                    and not over_pole)
         if not self._is_gem(side):
             meridian["status"] = "n_a_fork" if side != "unknown" else "unknown"
         elif not self._plan_flip_enabled():
             meridian["status"] = "flip_disabled"          # GEM but plan disabled it
+        elif over_pole:
+            # A GEM, a plan that asks for a flip — and a target that does not
+            # need one. Not `flip_disabled`: nothing is switched off and there is
+            # no pier risk to warn about, which is exactly why it needs its own
+            # word rather than borrowing one that means something else.
+            meridian["status"] = "n_a_over_pole"
         elif ttf is None:
             meridian["status"] = "unknown"
         elif ttf <= 0:
@@ -5697,7 +5718,7 @@ class Hub:
             # sim/Alpaca the hub derives it from the hour angle so the Monitor's
             # flip countdown populates on every backend (monitor spec §6.1).
             try:
-                meridian = await self._compute_meridian(tel, ra)
+                meridian = await self._compute_meridian(tel, ra, dec)
                 out["meridian"] = meridian
                 # stash so the engine's (sync) ETA can window-gate the flip cost
                 # without doing device I/O.
