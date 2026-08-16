@@ -375,6 +375,13 @@ class SequenceEngine:
         self._pending_skips: set[str] = set()
         self._cfg = None                    # config snapshot taken at start()
         self._dawn_cutoff = False           # scheduler ran out of open windows
+        # A RUNNING target hit its frozen stop boundary — dawn, a stop time, or
+        # max_run — as opposed to the scheduler finding every window already
+        # shut. Separate from `_dawn_cutoff` because that one is only ever set
+        # at SELECTION, and a single-target night never reaches selection again:
+        # its window closes under the frame loop, the target is dropped, the
+        # queue empties, and the run used to call that "all targets complete".
+        self._window_closed = False
         # A teardown is in flight (``abort()`` between its first publish and the
         # terminal one). NOT the same question as ``self.running``, which stays
         # True for the whole wind-down and so cannot tell a live run from one
@@ -485,6 +492,7 @@ class SequenceEngine:
         self._jumps_spent = 0
         self._pending_skips = set()
         self._dawn_cutoff = False
+        self._window_closed = False
         self._task = asyncio.create_task(self._run())
 
     def pause(self) -> None:
@@ -970,14 +978,36 @@ class SequenceEngine:
 
             await self._run_scheduled(plan)
 
-            if self._dawn_cutoff:
+            # WHICH ENDING IS THIS? Two facts decide it, and they answer
+            # different questions. `owed` says whether the PLAN is unfinished;
+            # the flags say what STOPPED it. A run that ends owing nothing is
+            # complete however its last target left the queue.
+            owed = self._session.owed() if self._session is not None else 0
+            if self._dawn_cutoff or (self._window_closed and owed):
                 # the scheduler ran out of open windows (every remaining target's
-                # window closed / never rose) — finalize as a dawn cutoff (§1.9-C).
+                # window closed / never rose), or a RUNNING target hit its frozen
+                # stop boundary and left work behind — finalize as a dawn cutoff
+                # (§1.9-C). The second half used to fall through to "all targets
+                # complete" below, which is how a 58-frame shortfall came to be
+                # recorded as the word "complete" (#252).
                 self._set_state(state="complete", detail="stopped at dawn (windows closed)",
                                 end_reason="dawn_cutoff", schedule=None, session=None)
                 bus.log("info", f"sequence '{plan.name}' stopped at dawn: "
-                                f"{self._frames_done} frames", "sequence")
+                                f"{self._shortfall_phrase(owed)}", "sequence")
                 self._finalize_report("dawn_cutoff")
+            elif owed:
+                # The run did everything it was told to do and the plan is STILL
+                # short: a target set aside by its altitude floor, a start that
+                # was missed under `on_missed="skip"`, or a skip instruction.
+                # Reporting that as "complete" is the same lie as the dawn case
+                # in a smaller font — the session is dormant either way, and the
+                # two would disagree.
+                self._set_state(state="complete",
+                                detail="targets set aside — frames still owed",
+                                end_reason="incomplete", schedule=None, session=None)
+                bus.log("info", f"sequence '{plan.name}' ended with targets set "
+                                f"aside: {self._shortfall_phrase(owed)}", "sequence")
+                self._finalize_report("incomplete")
             else:
                 self._set_state(state="complete", detail="all targets complete",
                                 schedule=None, session=None)
@@ -1112,6 +1142,18 @@ class SequenceEngine:
             except Exception as e:
                 bus.log("warning", f"session save failed: {e}", "sequence")
             self._session = None
+
+    def _shortfall_phrase(self, owed: int) -> str:
+        """The sentence that was missing at 05:25 on 2026-08-16, when the whole
+        record of a 58-frame shortfall was the word "complete".
+
+        Counts are CAMPAIGN-wide, not tonight's: ``_frames_done`` is seeded from
+        the ledger on a resume, so night two of a 175-frame plan honestly reads
+        "150 of 175" rather than starting over at zero.
+        """
+        total = self.plan.total_frames() if self.plan else 0
+        return (f"{self._frames_done} of {total} frames, {owed} still owed — "
+                f"the session stays armed and resumes when the window opens")
 
     async def _run_scheduled(self, plan: SequencePlan) -> None:
         """Window-sorted skip-ahead scheduler (§1.9-C).
@@ -1445,6 +1487,12 @@ class SequenceEngine:
             return
         stop_ts = win[1]
         if stop_ts is not None and time.time() >= stop_ts:
+            # RECORD THE CAUSE BEFORE UNWINDING. Every catcher of StopTarget
+            # keeps the night going — that is the point of it — so by the time
+            # the run ends, nothing else remembers that a closing window is
+            # what stopped this target. Without this the last target's cut is
+            # indistinguishable from a target that simply finished.
+            self._window_closed = True
             raise StopTarget("observing window closed (stop time / max run / dawn)")
 
     async def _enforce_altitude_floor(self, target: Target) -> None:
