@@ -67,14 +67,20 @@ class NodeDef:
     ins: tuple[Port, ...] = ()
     outs: tuple[Port, ...] = ()
     params: dict = field(default_factory=dict)
-    #: Inputs that may be left unwired without the doctor complaining. Two of
-    #: them, and for the same reason in both cases: the node works without the
-    #: wire, and there is a SEPARATE rule that says so in its own words rather
-    #: than as an "unwired input" complaint that would read like a mistake.
+    #: Inputs that may be left unwired without the doctor complaining, because
+    #: the node WORKS without the wire. Either a separate rule explains the
+    #: absence in its own words (``calib.panel`` -> rule 7, flats get skipped),
+    #: or the engine already does the thing by another route and
+    #: ``to_plan.REDUNDANT_PORTS`` / ``HOLD_HONOURED`` says so:
     #:
-    #: * ``calib.panel`` — a queue with no flat panel skips flats (rule 7).
-    #: * ``pool.advance`` — a single-night pool never advances (rule 11 fires
-    #:   only once the DUSK WINDOW is set to repeat, i.e. once it is a campaign).
+    #: * ``calib.do`` / ``calib.stop`` - ``plan_extras`` funds cloud-hold darks
+    #:   from the queue's QUOTA alone, and the hold ends when the sky clears.
+    #: * ``holdresume.resume`` - the hold releases itself.
+    #: * ``parkclose.do`` - the night ends parked with the cover shut regardless.
+    #: * ``pool.advance`` - the scheduler advances the pool from the ledger.
+    #:
+    #: `test_flows_doctor_agrees_with_the_engine` asserts structurally that
+    #: nothing can be in one of those tables AND demanded by doctor rule 1.
     optional_ins: frozenset[str] = frozenset()
 
     def port(self, port_id: str, direction: str) -> Port | None:
@@ -185,11 +191,23 @@ NODE_DEFS: dict[str, NodeDef] = {
                 "filters": "Tonight's plan only", "adu": 28500, "count": 15}),
     "calib": NodeDef(
         type="calib", label="CALIBRATION QUEUE", cat="RIG",
-        # `panel` is OPTIONAL: a queue with no panel is a working queue that
-        # skips flats, and rule 7 says so in its own words rather than as an
-        # "unwired input" complaint that would read like a mistake.
+        # ALL THREE INPUTS ARE OPTIONAL, and the queue still works with none of
+        # them wired.
+        #
+        # `panel` — a queue with no panel is a working queue that skips flats,
+        # and rule 7 says so in its own words rather than as an "unwired input"
+        # complaint that would read like a mistake.
+        #
+        # `do` / `stop` — `to_plan.plan_extras` funds `cloud_hold_darks` from
+        # this node's QUOTA alone, so a queue nobody wired still tops the dark
+        # library up during a weather hold, and the hold ends when the sky
+        # clears without anything telling it to. The doctor spent releases
+        # telling operators to wire two ports the engine does not consult, and
+        # `to_plan.REDUNDANT_PORTS` said the opposite one panel away.
+        # (`day_darks` IS keyed on the operator's own wire — see plan_extras —
+        # so a shutdown lane still buys something; it is just not required.)
         ins=(_e("do", "do"), _e("stop", "stop"), _e("panel", "panel")),
-        optional_ins=frozenset({"panel"}),
+        optional_ins=frozenset({"panel", "do", "stop"}),
         params={"darks": "If library stale", "bias": "If library stale",
                 "flats": "If stale + panel wired", "blackSlot": "Rotate to black slot",
                 "quota": 20, "dest": "captures/Calibration/"}),
@@ -219,7 +237,14 @@ NODE_DEFS: dict[str, NodeDef] = {
     # -------------------------------------------------------- ACTIONS + SINKS
     "holdresume": NodeDef(
         type="holdresume", label="HOLD / RESUME", cat="ACTION",
+        # `resume` is OPTIONAL and `pause` is not, and the asymmetry is the
+        # whole behaviour: a hold with nothing wired to `pause` never triggers,
+        # which is a broken graph; a hold with nothing wired to `resume`
+        # releases itself when the sky clears, which is how it already worked.
+        # `to_plan.REDUNDANT_PORTS` has said so about this exact wire since it
+        # shipped, while the doctor went on demanding it.
         ins=(_e("pause", "pause"), _e("resume", "resume")),
+        optional_ins=frozenset({"resume"}),
         # THE COOLER GATE COMES FIRST, and the ordering is the whole point. A
         # hold can outlive the thing that was keeping the sensor cold: a daybreak
         # park warms it by design, a power cycle drops the TEC, a cooler fault
@@ -250,7 +275,16 @@ NODE_DEFS: dict[str, NodeDef] = {
         # able to pick up where it stopped. `closed` then chains into a
         # CALIBRATION QUEUE so the day is spent on darks that match the night —
         # which is only true if the cooler was held cold, hence the param.
+        # `do` is OPTIONAL, and found by the structural check rather than by
+        # reading: the night already ends parked with the dust cover shut
+        # whether or not this wire is here — every flow's plan carries
+        # park-when-done and the wind-down closes the cover — which is what
+        # `to_plan.REDUNDANT_PORTS` says about this exact port. Demanding it
+        # sent the operator to draw a wire the adapter calls redundant. Whether
+        # the ROOF closes depends on config, not on this node, and rule 9 is
+        # what speaks about that.
         ins=(_e("do", "do"),), outs=(_e("closed", "closed"),),
+        optional_ins=frozenset({"do"}),
         params={"closure": "Dust flap + dome", "cooler": "Hold cold (day darks)",
                 "tracking": "Park"}),
     "abort": NodeDef(
