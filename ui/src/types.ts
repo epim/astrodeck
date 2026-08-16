@@ -587,7 +587,10 @@ export interface SequenceState {
   // undefined. The other fields are pydantic str/int-typed: never null.
   session?: { id: string; name: string; count_mode: string; accepted: number; target?: string | null };
   // Terminal reason — drives the run-complete Badge + Report end-reason icon.
-  end_reason?: "complete" | "aborted" | "error" | "unsafe" | "dawn_cutoff" | "cooling_skip" | "quality";
+  // "incomplete" = the run did everything it was told to and the plan is still
+  // short (a target set aside by its altitude floor, a missed start, a skip
+  // instruction). Its session stays dormant and armed. Renders as UNFINISHED.
+  end_reason?: "complete" | "aborted" | "error" | "unsafe" | "dawn_cutoff" | "cooling_skip" | "quality" | "incomplete";
 }
 
 export interface CoolerInfo {

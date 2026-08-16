@@ -271,8 +271,12 @@ class AlertDispatcher:
                                    plan=data.get("plan_name", ""))
             elif state in ("complete", "aborted", "error"):
                 reason = data.get("end_reason") or state
+                # PHRASED FROM THE REASON, NOT THE STATE. `state` is "complete"
+                # for a dawn cutoff and for a night that ended owing frames, so
+                # the old "Run {state}: {reason}" read "Run complete: incomplete"
+                # — a push notification contradicting itself in five words.
                 alert = AlertEvent("run_end", "info" if state == "complete" else "error",
-                                   f"Run {state}: {reason}",
+                                   f"Run ended: {reason}",
                                    plan=data.get("plan_name", ""),
                                    extra={"end_reason": reason})
         elif t == "safety":

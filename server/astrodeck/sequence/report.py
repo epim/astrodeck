@@ -98,7 +98,7 @@ class SessionReport(BaseModel):
     plan_name: str = ""
     started_at: float = 0.0
     ended_at: float | None = None
-    end_reason: str | None = None        # complete|aborted|error|unsafe|dawn_cutoff
+    end_reason: str | None = None        # complete|incomplete|aborted|error|unsafe|dawn_cutoff
     frames_captured: int = 0             # accepted light/calibration frames
     frames_rejected: int = 0
     integration_s: float = 0.0           # accepted light integration only
