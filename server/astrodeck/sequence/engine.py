@@ -36,6 +36,8 @@ from ..config import config_store
 from ..devices.base import DeviceError, DomeShutterState, PierSide
 from ..events import bus
 from ..focus import run_autofocus
+from ..focus.autofocus import SWEEP_EXPOSURE_S, SWEEP_GAIN
+from ..focus.filter_offsets import narrowband_sweep_settings
 from ..guide.base import rms_total_arcsec
 from ..hub import Hub
 from ..imaging.processing import to_jpeg
@@ -4397,6 +4399,57 @@ class SequenceEngine:
         except Exception:
             pass
 
+    async def _sweep_settings_for_current_filter(
+            self, label: str) -> tuple[float, int]:
+        """``(exposure_s, gain)`` for a sweep through whatever is in the beam.
+
+        A two-second frame through a 3-7 nm passband does not reach enough stars
+        to fit a curve: measured on the rig 2026-08-16, 1277 stars through L and
+        34 through narrowband at the same exposure, and the sweep failed
+        `not_enough_spread` with four of six points dropped.
+
+        The wheel already knows which slots are narrowband and
+        ``narrowband_sweep_settings`` already computes the pair the offsets
+        dialog shows; this only asks them. Exposure is scaled rather than the
+        filter changed (which is what the plate solver does for the same
+        underlying problem) because focus position is filter-dependent — that is
+        what per-filter offsets are for — so focusing through a different filter
+        measures the wrong thing and then has to guess back.
+
+        NEVER COSTS THE FOCUS RUN. A missing wheel, an unmarked wheel or a wheel
+        whose link just dropped falls back to the broadband pair, which is
+        exactly what every sweep used before this existed.
+        """
+        exposure_s: float = SWEEP_EXPOSURE_S
+        gain: int = SWEEP_GAIN
+        try:
+            fw = self.hub.devices.get("filterwheel")
+            if fw is None or not getattr(fw, "connected", False):
+                return exposure_s, gain
+            slot = int(await _bounded(fw.get_position(),
+                                      FILTER_MOVE_TIMEOUT_S,
+                                      "filter get_position"))
+            if not fw.is_narrowband(slot):
+                return exposure_s, gain
+            cam = self.hub.devices.get("camera")
+            exposure_s, gain = narrowband_sweep_settings(
+                exposure_s, gain,
+                hcg_threshold_gain=getattr(cam, "hcg_threshold_gain", None))
+            names = getattr(fw, "filter_names", []) or []
+            name = names[slot] if 0 <= slot < len(names) else f"slot {slot}"
+            bus.log("info",
+                    f"{label}: {name!r} is narrowband, so the sweep runs at "
+                    f"{exposure_s:g}s gain {gain} instead of "
+                    f"{SWEEP_EXPOSURE_S:g}s gain {SWEEP_GAIN} — a broadband "
+                    f"exposure through this filter does not reach enough stars "
+                    f"to fit a curve", "sequence")
+        except Exception as e:      # noqa: BLE001 — a wheel must never cost focus
+            bus.log("debug", f"{label}: could not read the filter for the "
+                             f"sweep settings ({e}); using the broadband pair",
+                    "sequence")
+            return SWEEP_EXPOSURE_S, SWEEP_GAIN
+        return exposure_s, gain
+
     async def _autofocus(self, label: str) -> None:
         self._set_state(detail=label)
         _t0 = time.time()
@@ -4404,7 +4457,9 @@ class SequenceEngine:
         try:
             cam = self.hub.require("camera")
             foc = self.hub.require("focuser")
-            result = await run_autofocus(cam, foc, hub=self.hub)
+            exposure_s, gain = await self._sweep_settings_for_current_filter(label)
+            result = await run_autofocus(cam, foc, hub=self.hub,
+                                         exposure_s=exposure_s, gain=gain)
             if not result.success:
                 bus.log("warning", f"{label} failed: {result.message}", "sequence")
                 failed_reason = result.message or "autofocus failed"
