@@ -4264,15 +4264,27 @@ class SequenceEngine:
         tearing down); a missing/absent calibrator is a no-op."""
         if "covercalibrator" not in self.hub.devices:
             return
+        # TWO INDEPENDENT DUTIES, SO TWO INDEPENDENT TRIES. They shared one, and
+        # the lamp went first: a `calibrator_off` that raised - a device present
+        # but with its link down raises DeviceError out of `hub.require` - took
+        # the cover close with it and logged "panel-off failed", which reads as
+        # "the light may still be on" and not as "the telescope is open to the
+        # sky all night". Closing the cover does not depend on the lamp having
+        # answered, so it must not be skipped because the lamp did not.
         try:
             await _bounded(self.hub.calibrator_off(), CALIBRATOR_CMD_TIMEOUT_S,
                            "calibrator off")
+        except Exception as e:
+            bus.log("warning", f"panel-off failed: {e}", "sequence")
+        try:
             cc = self.hub.calibrator
             if getattr(cc, "has_cover", False):
                 await _bounded(self.hub.close_cover(), CALIBRATOR_CMD_TIMEOUT_S,
                                "close cover")
         except Exception as e:
-            bus.log("warning", f"panel-off failed: {e}", "sequence")
+            # Named for what was left open, not for the command that failed.
+            bus.log("error", f"COVER NOT CLOSED — the dust cover is still open "
+                             f"and nothing else will close it: {e}", "sequence")
 
     async def _safe_stop(self) -> None:
         """Leave the rig in a safe state after abort/error. Bounded (P0-2): a
