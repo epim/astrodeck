@@ -119,8 +119,15 @@ class TestRealLossesAreStillLosses:
     # What remains is genuinely not built: PARK + CLOSE's roof half needs the
     # plan to be able to carry a DomePolicy, and the dome danger is the roof
     # that will not close.
+    #   `on_night_end -> parkclose` - the night already ends parked with the
+    #   cover shut whether or not the wire is there, so it too became a note.
+    #   The ROOF half is the only part that depends on anything outside the
+    #   graph, and it keeps its own two reports (the dome danger below, and
+    #   `blocking_reasons` refusing the run when the roof would stay open).
+    #
+    # THE CAMPAIGN NOW HAS NO DEAD RULES AT ALL. What is left on this list is
+    # the roof, which is a real danger and not a rule.
     @pytest.mark.parametrize("needle,level", [
-        ("on_night_end", "warn"),        # parkclose: genuinely not built
         ("automation.dome", "danger"),   # a roof that will not close
     ])
     def test_it_is_still_reported(self, needle, level):
