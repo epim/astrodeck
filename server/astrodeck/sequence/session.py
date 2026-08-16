@@ -114,6 +114,17 @@ class Session(BaseModel):
                 out[s.id] = max(0, s.count - counts.get(s.id, 0))
         return out
 
+    def owed(self) -> int:
+        """Frames still owed across every step (mode-aware, floored at 0).
+
+        THE definition of "is this plan finished". It exists as one method
+        rather than an expression at each call site because the run's ending
+        and the session's status must never be able to answer it differently -
+        which is exactly how #252 shipped: the session asked about unmet quota
+        in accepted mode only, and the run did not ask at all.
+        """
+        return sum(self.remaining().values())
+
     def done_map(self) -> dict[str, int]:
         """Engine seeding map ``"<target_id>:<step_id>" -> completed`` (mode-
         aware), capped at the step count so a resumed loop never starts past
