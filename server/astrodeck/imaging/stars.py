@@ -902,6 +902,21 @@ def saturation_fraction(data: np.ndarray) -> float:
                          >= SATURATION_LEVEL_FRAC * ceiling))
 
 
+#: The smallest half-flux radius that can be a STAR rather than a PIXEL.
+#:
+#: Below one pixel the flux is contained in a single pixel, which is not a
+#: resolved image of anything at any binning. It matters because the number is
+#: SMALL: on a defocused frame the detector finds a few noise peaks, reports
+#: half a pixel, and that outranks the true minimum instead of merely adding
+#: noise to it.
+#:
+#: Measured 2026-08-17 (NGC 7129, Ha, 24 s gain 200 bin 1): focus was 2.96 px
+#: from 1172 stars at 11135, and the sweep walked out of its own range chasing
+#: 0.50 / 0.51 / 0.52 px from four to twelve "stars" until nothing was
+#: measurable. See #219.
+MIN_SIZE_PX = 1.0
+
+
 def focus_size(data: np.ndarray, min_stars: int = 3) -> tuple[float | None, int]:
     """``(size in px, sources behind it)`` — the drop-in an autofocus sweep wants.
 
@@ -916,6 +931,11 @@ def focus_size(data: np.ndarray, min_stars: int = 3) -> tuple[float | None, int]
     if size is None:
         return None, 0
     if size.n_sources < min_stars and size.snr < SIZE_CONFIDENT_SNR:
+        return None, size.n_sources
+    # A half-flux radius inside one pixel is a pixel, not a star. Mirrors
+    # `focus.autofocus._size_point` - the two are one rule in two places by
+    # design, and a floor on only one of them is how they drift (#219).
+    if size.radius < MIN_SIZE_PX:
         return None, size.n_sources
     return size.radius, size.n_sources
 
