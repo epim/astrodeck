@@ -77,6 +77,37 @@ class ResumeArm:
         #: session whose disarm failed to save cannot park the mount once a
         #: minute for the rest of the night.
         self._stowed_for: str | None = None
+        #: WHY NOTHING IS HAPPENING, for anything that wants to say so.
+        #:
+        #: Every refusal below was formatted into a log line and dropped. The
+        #: log ring holds ~40 minutes of a ten-hour night, and the standing-by
+        #: branch latches per session and logs EXACTLY ONCE - so scraping the
+        #: ring for it works by luck on a weather veto that re-logs every ten
+        #: minutes, and not at all on the more common hold. Monitor therefore
+        #: said "No run active - plan a session" over a session that was armed
+        #: and waiting, which is an instruction to do the one thing that
+        #: strands it (a fresh start disarms every other session).
+        #:
+        #: ``None`` = not holding. Otherwise {reason, since, retry_at,
+        #: session_id, session_name, owed}.
+        self.hold: dict | None = None
+
+    def _set_hold(self, session, reason: str, retry_at: float = 0.0) -> None:
+        """Record the current refusal, preserving ``since`` while the reason
+        stands so the UI can say how long it has been waiting."""
+        prior = self.hold or {}
+        same = prior.get("reason") == reason and prior.get("session_id") == getattr(session, "id", "")
+        self.hold = {
+            "reason": reason,
+            "since": prior.get("since") if same else self._clock(),
+            "retry_at": retry_at or None,
+            "session_id": getattr(session, "id", ""),
+            "session_name": getattr(session, "name", ""),
+            "owed": session.owed() if hasattr(session, "owed") else 0,
+        }
+
+    def _clear_hold(self) -> None:
+        self.hold = None
 
     def start(self) -> None:
         if self._task is None or self._task.done():
@@ -146,10 +177,12 @@ class ResumeArm:
     async def tick(self) -> None:
         now = self._clock()
         if self.engine.running:
+            self._clear_hold()              # a live run is not a hold
             return                          # anything running = no interest
         armed = session_store.armed()
         if armed is None:
             self._retry_at = 0.0            # disarmed from the UI: stop instantly
+            self._clear_hold()
             self._gave_up_for = None
             # SAY SO WHEN THERE IS AN INTERRUPTED RUN NOBODY WILL RESTART.
             #
@@ -179,6 +212,15 @@ class ResumeArm:
                 self._quiet_note_for = None
             return
         if not self._window_open(armed, now):
+            # THE MOST COMMON HOLD, and the one the log ring cannot answer for:
+            # the branch below latches per session and logs exactly ONCE, so
+            # forty minutes later there is nothing left to read. Recorded every
+            # tick regardless of whether anything is logged.
+            owed = armed.owed()
+            self._set_hold(armed,
+                           "it is not dark enough yet"
+                           + (f", and this session still owes {owed} frame"
+                              f"{'' if owed == 1 else 's'}" if owed else ""))
             if self._retry_at and self._gave_up_for != armed.id:
                 # the window closed while we were mid-backoff: dawn beat us.
                 self._gave_up_for = armed.id
@@ -246,12 +288,16 @@ class ResumeArm:
                                f"or stop boundary) — retrying in "
                                f"{int(RETRY_INTERVAL_S / 60)} min", "sequence")
             self._retry_at = now + RETRY_INTERVAL_S
+            self._set_hold(armed, "this plan counts accepted frames with no "
+                                  "reject guard and no stop boundary, so it "
+                                  "could run forever", self._retry_at)
             return
         veto = self.resume_veto()
         if veto is not None:
             bus.log("warning", f"auto-resume vetoed: {veto} — retrying in "
                                f"{int(RETRY_INTERVAL_S / 60)} min", "sequence")
             self._retry_at = now + RETRY_INTERVAL_S
+            self._set_hold(armed, veto, self._retry_at)
             return
         # STILL BOOTING IS NOT A REFUSAL.
         #
@@ -276,6 +322,7 @@ class ResumeArm:
             bus.log("warning", f"auto-resume held: {refusal} — retrying in "
                                f"{int(RETRY_INTERVAL_S / 60)} min", "sequence")
             self._retry_at = now + RETRY_INTERVAL_S
+            self._set_hold(armed, refusal, self._retry_at)
             return
         try:
             self.hub.require("camera")
@@ -284,8 +331,10 @@ class ResumeArm:
             bus.log("warning", f"auto-resume refused: {e} — retrying in "
                                f"{int(RETRY_INTERVAL_S / 60)} min", "sequence")
             self._retry_at = now + RETRY_INTERVAL_S
+            self._set_hold(armed, str(e), self._retry_at)
             return
         self._retry_at = 0.0
+        self._clear_hold()
         bus.log("info", f"auto-resume: '{armed.name}' resumed", "sequence")
 
     async def _give_up_and_stow(self, session) -> None:

@@ -3854,9 +3854,20 @@ def create_app() -> FastAPI:
             hub.require("camera")
             # Synchronous, and it owns its own task — do not await it, and do
             # not wrap it in a busy lane. "Already running" is raised in here.
-            engine.start(plan)
+            engine.start(plan, origin="flow", origin_id=flow_id)
         except DeviceError as e:
             raise _err(e)
+
+        # THE CARD SAID "NEVER RUN" FOREVER. `last_run` has been on FlowRecord
+        # since the library shipped and the cards render it; nothing wrote it.
+        # Stamped after the engine is already going, so a bookkeeping failure
+        # can never turn a started run into a failed request.
+        try:
+            await asyncio.to_thread(flow_store.touch_run, flow_id,
+                                    ts=time.time(), result="")
+        except Exception as e:      # noqa: BLE001 - never fail a live run
+            bus.log("warning", f"could not record the run on flow "
+                               f"'{rec.name}': {e}", "flow")
 
         bus.log("info",
                 f"flow '{rec.name}' started: {plan.total_frames()} frames"
@@ -5520,10 +5531,42 @@ def create_app() -> FastAPI:
             await hub.stop_loop_and_wait()
         try:
             hub.require("camera")
-            engine.start(plan)
+            # The OTHER start path. Stamped so a session can say which of the
+            # two screens built it - the question "is the flow running?" had no
+            # answer because both paths produced identical plans.
+            engine.start(plan, origin="plan")
         except DeviceError as e:
             raise _err(e)
         return {"started": True, "frames": plan.total_frames()}
+
+    @app.get("/api/sequence/resume-arm",
+             dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
+    async def sequence_resume_arm():
+        """Is a run armed and waiting, and what is holding it.
+
+        The engine's own state cannot answer this: `_set_state` clears the
+        session sub-block on every terminal transition, so a night that ended
+        owing 58 frames leaves `sequence` as literally {"state": "idle"} and
+        Monitor rendered "No run active - plan a session" over an armed
+        session. Following that instruction is how you strand it, because a
+        fresh start disarms every other session.
+
+        `armed` is derived from the store (the same predicate ResumeArm uses);
+        `hold` is the service's own current refusal, which existed only as a
+        log line before this. view.status - it says nothing a status frame
+        does not already carry.
+        """
+        armed = await asyncio.to_thread(session_store.armed)
+        return {
+            "armed": ({"id": armed.id, "name": armed.name,
+                       "owed": armed.owed(),
+                       "accepted": armed.total_accepted(),
+                       "total": armed.plan.total_frames(),
+                       "origin": armed.origin, "origin_id": armed.origin_id}
+                      if armed is not None else None),
+            "hold": resume_arm.hold,
+        }
 
     @app.post("/api/sequence/pause", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
     @declare(CAP_CONTROL_MOUNT)
