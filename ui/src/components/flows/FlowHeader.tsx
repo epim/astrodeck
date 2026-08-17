@@ -197,6 +197,25 @@ export default function FlowHeader({ tier }: { tier: FlowTier }): JSX.Element {
           two flex-1 children would halve a title that has to truncate first. */}
       {!phoneTitle && <div className="flex-1 min-w-0" />}
 
+      {/* 6b — PLAN EDITOR (#239 stage B). Plan left the nav rail; this is one of
+          its two doors (the other is Settings > Safety > Imaging standards).
+          Editor-only: from the library there is no compiled plan to go and look
+          at. It is a plain destination switch, not a compile - the plan editor
+          reads the stored plan, and what it is FOR now is the handful of
+          settings that are still per-night intent and that Flows cannot yet
+          say: guiding on or off, count mode, per-target meridian flip. */}
+      {editor && (
+        <button
+          type="button"
+          className="btn !text-[10.5px] !tracking-[0.12em] !px-2.5 !py-[7px] shrink-0"
+          title="Open the plan editor - guiding, count mode and per-target flip
+                 are not expressible in a flow yet"
+          onClick={() => useStore.getState().setView("sequence")}
+        >
+          PLAN
+        </button>
+      )}
+
       {/* 7 — provider badge. */}
       {showProv && pill && (
         <span
