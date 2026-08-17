@@ -38,6 +38,7 @@ from ..config import config_store
 from ..events import bus
 from . import schedule
 from .models import quota_unbounded
+from .policy import resolve_policy
 from .session import Session, session_store
 
 CHECK_INTERVAL_S = 60.0
@@ -238,7 +239,8 @@ class ResumeArm:
             return
         # HARD REQUIREMENT: engine.start is unguarded here, so refuse an
         # accepted-quota plan that could loop forever (spec §3 / Task 4 review).
-        if quota_unbounded(armed.plan):
+        if quota_unbounded(armed.plan,
+                           resolve_policy(armed.plan, config_store.cfg())):
             bus.log("warning", f"auto-resume refused: accepted-quota plan "
                                f"'{armed.name}' is unbounded (no reject guard "
                                f"or stop boundary) — retrying in "
