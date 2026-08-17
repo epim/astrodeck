@@ -118,6 +118,28 @@ class SafetyConfig(BaseModel):
     enabled: bool = True
     preset: str = "backyard"               # backyard | remote | custom
     poll_each_frame: bool = True
+    #: FALL BACK TO THE SKY ITSELF when safety is armed and no monitor is
+    #: assigned - the shipped default, and the state this rig has run in for
+    #: months. The engine already takes a cloud verdict off every frame (it logs
+    #: "sky verdict: clear (200 bright stars, 17x noise)"), and until now that
+    #: measurement fed only rule-driven holds. A Plan-built night with no
+    #: instructions therefore had NOTHING watching the sky once it started: the
+    #: weather veto guards the START, not the running night.
+    #:
+    #: A cloudy verdict engages the existing self-releasing hold - stand down
+    #: the guider, probe, resume on a clear streak, and only abort+park if it
+    #: runs past its bound - rather than the unsafe/park path. That is
+    #: deliberately gentler than what `on_unsafe` would do, because the detector
+    #: has known false modes and parking on one costs a re-slew and a re-solve
+    #: for weather that may pass in ten minutes.
+    #:
+    #: NOT the forecast. On 2026-08-17 Open-Meteo said 100% cloud while the
+    #: frames showed 200 bright stars at 17x noise; a forecast that wrong must
+    #: never be allowed to park a mount. This reads the sky, not a prediction.
+    #:
+    #: Inert unless safety is armed AND no monitor is assigned, so a rig with a
+    #: real monitor is untouched.
+    sky_fallback_hold: bool = True
     #: Lead time for the live meridian-flip ETA chip (#239 stage A: moved off
     #: SequencePlan). Operator preference about how much warning they want, not
     #: a property of any one night. NOT part of SAFETY_PRESETS, so the preset

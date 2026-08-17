@@ -2645,14 +2645,53 @@ class SequenceEngine:
                 "no safety monitor is assigned, and require_safety_monitor is on",
                 stale=True, target=target)
             return
+        # THE SKY IS STILL EVIDENCE. Every frame already yields a cloud verdict
+        # and until now a Plan-built night with no hold rule threw it away, so
+        # "nothing is watching" was literally true on this rig for months. Fall
+        # back to it: a cloudy verdict engages the SELF-RELEASING hold, not the
+        # park path, because the detector has known false modes and parking on
+        # one costs a re-slew and a re-solve for weather that may pass.
+        # A SIMULATED FRAME IS NOT A SKY. The sim's frames carry no stars, so
+        # the detector reads every one of them as "cloudy: 1 bright stars, low
+        # contrast" - and the first version of this held every simulated run
+        # forever, which the suite caught. Trusting that verdict would be the
+        # same mistake as trusting the forecast, in the other direction.
+        simulated = getattr(self.hub, "mode", "") == "sim"
+        if (cfg is not None and not simulated
+                and getattr(cfg.safety, "sky_fallback_hold", False)):
+            verdict = self._clouds.cloudy(time.time())
+            if verdict is True:
+                if not self._warned_no_safety_source:
+                    self._warned_no_safety_source = True
+                    bus.log("warning",
+                            "safety is armed with no monitor assigned, so the "
+                            "sky verdict from the frames is standing in for one "
+                            f"— {self._clouds.describe(time.time())}", "safety")
+                await self._hold_for_clear(
+                    "no safety monitor is assigned and the frames say the sky "
+                    "has closed in", target)
+                return
         if self._warned_no_safety_source:
             return
         self._warned_no_safety_source = True
-        bus.log("warning",
-                "safety is armed but no monitor is assigned — nothing is watching "
-                "the weather for this run. Assign a safety monitor, or turn safety "
-                "off so the run does not claim a guard it does not have.",
-                "safety")
+        if (cfg is not None and not simulated
+                and getattr(cfg.safety, "sky_fallback_hold", False)):
+            # Armed, unmonitored, and the sky currently reads clear or unknown.
+            # Say what IS watching rather than claiming nothing is - the old
+            # wording was true before the fallback existed and would now be the
+            # opposite kind of lie.
+            bus.log("warning",
+                    "safety is armed but no monitor is assigned. The frames' own "
+                    "cloud verdict is standing in for one: the run holds if the "
+                    "sky closes in, and resumes when it clears. That is weather "
+                    "only — assign a monitor for rain, wind or a roof.",
+                    "safety")
+        else:
+            bus.log("warning",
+                    "safety is armed but no monitor is assigned — nothing is watching "
+                    "the weather for this run. Assign a safety monitor, or turn safety "
+                    "off so the run does not claim a guard it does not have.",
+                    "safety")
 
     async def _read_safety(self):
         """The cached SafetyReading from the hub's own-cadence poller. When the
