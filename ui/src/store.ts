@@ -214,20 +214,29 @@ function defaultPlan(): SequencePlan {
     targets: [],
     guide: true,
     dither_every: 3,
-    dither_pixels: 3,
+    dither_pixels: null,
     autofocus_every: 0,
     cool_to: null,
-    cool_timeout_s: 600,
-    apply_filter_offsets: true,
-    refocus_on_temp_delta_c: 0,
+    // #239 stage A: `null` = INHERIT the rig's standards (Settings > Safety >
+    // Imaging standards). These used to be concrete numbers here, mirroring the
+    // old pydantic defaults - which meant every plan the UI created was born
+    // fully overridden and could never inherit anything, so the whole feature
+    // was inert for any plan made on this screen. Caught by looking at the
+    // editor: a plan nobody had touched showed OVERRIDE on ten of twelve rows.
+    cool_timeout_s: null,
+    apply_filter_offsets: null,
+    refocus_on_temp_delta_c: null,
     meridian_flip: true,
-    recover_guiding: true,
-    hfr_reject_factor: 0,
-    // unattended safety (Batch-4b) — MUST mirror models.SequencePlan defaults
-    // (safety_check=True, meridian_flip_warn_min=15.0) or a UI-started run silently
-    // drops the SafetyMonitor gate / mis-times the meridian-flip warning.
+    recover_guiding: null,
+    hfr_reject_factor: null,
+    // unattended safety (Batch-4b). `safety_check` still MUST mirror
+    // models.SequencePlan or a UI-started run silently drops the SafetyMonitor
+    // gate. `meridian_flip_warn_min` no longer mirrors a number: since #239
+    // stage A it is `null` = inherit, and the rig's 15-minute standard is what
+    // answers - mirroring 15 here would pin every new plan to a value the
+    // operator never chose and could not change from Settings.
     safety_check: true,
-    meridian_flip_warn_min: 15,
+    meridian_flip_warn_min: null,
     park_when_done: false,
     warm_cooler_when_done: false,
     // multi-night quota (sessions spec §3) — MUST mirror models.SequencePlan
@@ -257,10 +266,10 @@ function defaultPlan(): SequencePlan {
     // The plan is POSTed whole to /api/sequence/start, so this value — not the
     // pydantic default — is what every UI-started run uses.
     count_mode: "accepted",
-    min_stars: 0,
-    max_guide_rms: 0,
-    max_consecutive_rejects: 10,
-    max_consecutive_rejects_night: 20,
+    min_stars: null,
+    max_guide_rms: null,
+    max_consecutive_rejects: null,
+    max_consecutive_rejects_night: null,
     // conditional sequencer (PRO-3) — [] => byte-identical run. The loadPlan()
     // spread `{ ...defaultPlan(), ...parsed }` backfills [] onto legacy plans.
     instructions: [],
