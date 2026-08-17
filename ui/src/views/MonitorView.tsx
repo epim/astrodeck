@@ -34,9 +34,10 @@ import {
   useWeather,
   useSite,
   useStore,
+  useResumeArm,
   usePhotometry,
 } from "../store";
-import { Panel, Stat, EmptyState } from "../components/ui";
+import { Led, Panel, Stat, EmptyState } from "../components/ui";
 import { Icon } from "../components/icons";
 import {
   subNoise, skyElectronsPerSub, skyRateEPerSec, skyLimitedSubSeconds,
@@ -46,7 +47,6 @@ import { formatScheduleStatus } from "../lib/scheduleStatus";
 import SkyConditionsPanel from "../components/weather/SkyConditionsPanel";
 import RadarMap from "../components/weather/RadarMap";
 import { getDomeState, type DomeState } from "../api/backends";
-import { getResumeArm, type ResumeArmState } from "../api/sessions";
 import { domeStatusLabel } from "../lib/dome";
 import { accessPhrase, useCanControlMount, useCanViewWeather } from "../lib/caps";
 import {
@@ -296,18 +296,7 @@ export default function MonitorView() {
   // pushed: it changes on ResumeArm's own 60s cadence, nothing about it is
   // frame-rate, and the alternative was a new WS event for one panel. Same
   // shape as the dome poll above.
-  const [resumeArm, setResumeArm] = useState<ResumeArmState | null>(null);
-  useEffect(() => {
-    let live = true;
-    const tick = () => {
-      getResumeArm()
-        .then((r) => { if (live) setResumeArm(r); })
-        .catch(() => { /* older server / offline - the panel falls back */ });
-    };
-    tick();
-    const id = window.setInterval(tick, 20000);
-    return () => { live = false; window.clearInterval(id); };
-  }, []);
+  const resumeArm = useResumeArm();
 
   // ----- derived liveness -----
   const frameAgeMs = liveness.frame != null ? now - liveness.frame : null;
@@ -755,23 +744,39 @@ export default function MonitorView() {
                  the sky cleared - and planning a fresh one is precisely how you
                  strand it, because engine.start disarms every other session.
                  The CTA is deliberately NOT "plan a session" here. */
-              <EmptyState
-                icon="plan"
-                title={`Armed and waiting — ${resumeArm.armed.name}`}
-                hint={
-                  (resumeArm.armed.owed > 0
-                    ? `${resumeArm.armed.owed} frame${resumeArm.armed.owed === 1 ? "" : "s"} still owed. `
-                    : "")
-                  + (resumeArm.hold
-                    ? `Holding: ${resumeArm.hold.reason}. It starts by itself when that clears.`
-                    : "It starts by itself when its window opens.")
-                }
-                action={
+              <div className="flex flex-col gap-3 py-2">
+                <div className="flex items-center gap-2">
+                  <Led state="warn" label="Run armed and waiting" />
+                  <span className="font-display tracking-wider text-warn text-sm">
+                    RUN ARMED
+                  </span>
+                  <span className="text-ink truncate min-w-0">
+                    {resumeArm.armed.name}
+                  </span>
+                </div>
+                {resumeArm.armed.owed > 0 && (
+                  <div className="mono text-2xl text-ink">
+                    {resumeArm.armed.owed}
+                    <span className="text-sm text-dim">
+                      {" "}frame{resumeArm.armed.owed === 1 ? "" : "s"} still owed
+                    </span>
+                    <span className="text-sm text-dim">
+                      {" "}· {resumeArm.armed.accepted} of {resumeArm.armed.total} done
+                    </span>
+                  </div>
+                )}
+                <p className="text-ink leading-snug max-w-prose">
+                  {resumeArm.hold
+                    ? <>Holding: <span className="text-warn">{resumeArm.hold.reason}</span>.
+                       It starts by itself when that clears.</>
+                    : "It starts by itself when its window opens."}
+                </p>
+                <div className="flex gap-2">
                   <button className="btn min-h-[44px]" onClick={() => setView("sequence")}>
                     Review the session →
                   </button>
-                }
-              />
+                </div>
+              </div>
             ) : idle ? (
               <EmptyState
                 icon="plan"
