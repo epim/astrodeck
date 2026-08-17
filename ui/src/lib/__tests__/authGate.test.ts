@@ -385,7 +385,7 @@ const STORE_ACTIONS: string[] = [
   // live preview
   "pushPreview", "selectPreview", "setViewport", "setStretch", "setOverlays",
   // monitor
-  "setAutoMonitor", "dismissRunBanner",
+  "setAutoMonitor", "dismissRunBanner", "setResumeArm", "dismissArmedBanner",
   // touch
   "setLocked", "setMonitorAwake", "setTouch",
   // photometry

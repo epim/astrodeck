@@ -269,6 +269,13 @@ export interface ClearedRigState {
   mountOp: null;
   sequence: SequenceState;
   runBanner: null;
+  // Both describe the observatory's night - which session is armed, how many
+  // frames it owes, and why it is waiting - so both are cleared with the rest
+  // of the rig state. The dismissal carries a session id, which is itself a
+  // fact about this rig that a stranger at the sign-in form has no business
+  // seeing survive.
+  resumeArm: null;
+  armedBannerDismissed: null;
   polar: PolarState;
   // What THIS rig's next frame of each purpose will be shot at, INCLUDING a
   // pinned filter name — i.e. the observatory's filter-wheel configuration.
@@ -357,6 +364,8 @@ export function clearedRigState(): ClearedRigState {
     mountOp: null,
     sequence: EMPTY_SEQUENCE,
     runBanner: null,
+    resumeArm: null,
+    armedBannerDismissed: null,
     polar: EMPTY_POLAR,
     frameSettings: EMPTY_FRAME_SETTINGS(),
     captureTarget: "",

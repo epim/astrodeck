@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { create } from "zustand";
+import type { ResumeArmState } from "./api/sessions";
 import { useShallow } from "zustand/react/shallow";
 // Flows lives in its own slice module: store.ts is shared by every surface and
 // a 300-line domain addition here is 300 lines of merge surface for anyone else
@@ -769,6 +770,11 @@ interface AppState extends FlowsActions {
   lastGuideAtMs: number | null; // set on each guide event
   autoMonitor: boolean; // localStorage pref, default false (auto-SELECT only)
   runBanner: RunBanner; // persistent "Sequence running — open Live" banner
+  //: What is ARMED and waiting, and why it is holding. Lives here rather than
+  //: in MonitorView because two surfaces need it - the global banner and the
+  //: Monitor panel - and polling it twice would be two answers that can differ.
+  resumeArm: ResumeArmState | null;
+  armedBannerDismissed: string | null;   // session id, dismissed for this session
 
   // --- touch ergonomics (Batch-3 3B; master §A.2 / touch §2.2) ---
   locked: boolean; // touch-guard engaged; NEVER persisted
@@ -895,6 +901,8 @@ interface AppState extends FlowsActions {
   setAutoMonitor: (v: boolean) => void;
   dismissRunBanner: () => void;
 
+  setResumeArm: (r: ResumeArmState | null) => void;
+  dismissArmedBanner: () => void;
   // --- actions: touch ---
   setLocked: (v: boolean) => void; // setting true MUST stop any active slew (R11/§4.6)
   setMonitorAwake: (v: boolean) => void;
@@ -1047,6 +1055,8 @@ export const useStore = create<AppState>((set, get) => ({
   lastGuideAtMs: null,
   autoMonitor: localStorage.getItem(AUTO_MONITOR_KEY) === "1",
   runBanner: null,
+  resumeArm: null,
+  armedBannerDismissed: null,
 
   // --- touch ---
   locked: false, // never persisted
@@ -1531,6 +1541,12 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   dismissRunBanner: () => set({ runBanner: null }),
+
+  setResumeArm: (r: ResumeArmState | null) => set({ resumeArm: r }),
+  //: Dismissed PER SESSION, not globally: a new armed session is new news and
+  //: has to announce itself again.
+  dismissArmedBanner: () =>
+    set((st) => ({ armedBannerDismissed: st.resumeArm?.armed?.id ?? null })),
 
   // -------------------------------------------------------------------- touch
   // Engaging the lock MUST stop any active slew (R11/§4.6). The SlewPad's own
@@ -2267,3 +2283,6 @@ export const useAutoMonitor = () => useStore((s) => s.autoMonitor);
 // ============================================================================
 export const useBrightness = (): number =>
   useStore((s) => (s.night ? s.brightNight : s.brightDay));
+
+export const useResumeArm = () => useStore((s) => s.resumeArm);
+export const useArmedBannerDismissed = () => useStore((s) => s.armedBannerDismissed);

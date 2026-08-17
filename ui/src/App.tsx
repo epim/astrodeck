@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { JSX } from "react";
 import {
   useStore, useBrightness, useAuthMethods, useAuthGate, useWeatherAlertKey,
+  useResumeArm, useArmedBannerDismissed,
   type ViewName,
 } from "./store";
 import { getHealth } from "./api/backends";
@@ -13,6 +14,7 @@ import { connectWs } from "./ws";
 import { Icon, type IconName } from "./components/icons";
 import { Led } from "./components/ui";
 import ConnectionBanner from "./components/ConnectionBanner";
+import { getResumeArm } from "./api/sessions";
 import HealthLeds from "./components/HealthLeds";
 import RoleBadge from "./components/RoleBadge";
 import SignInButton from "./components/SignInButton";
@@ -364,6 +366,32 @@ export default function App() {
   // never-forced, always-dismissible affordance (resolves A3/B6).
   const showRunBanner = !!runBanner?.active && view !== "monitor";
 
+  // ARMED IS NEWS TOO. A run that will start by itself deserves the same
+  // announcement as one already going: dim text in the middle of an empty
+  // panel on one screen is not communication. One poll here feeds both this
+  // banner and the Monitor panel, so the two can never disagree.
+  const resumeArm = useResumeArm();
+  const armedDismissed = useArmedBannerDismissed();
+  const setResumeArm = useStore((s) => s.setResumeArm);
+  const dismissArmedBanner = useStore((s) => s.dismissArmedBanner);
+  useEffect(() => {
+    if (showLogin) return;
+    let live = true;
+    const tick = () => {
+      getResumeArm()
+        .then((r) => { if (live) setResumeArm(r); })
+        .catch(() => { /* older server / offline - the banner stays hidden */ });
+    };
+    tick();
+    const id = window.setInterval(tick, 20000);
+    return () => { live = false; window.clearInterval(id); };
+  }, [showLogin, setResumeArm]);
+  // Never both banners at once, and never over the screen that already says it.
+  const showArmedBanner = !!resumeArm?.armed
+    && !runBanner?.active
+    && view !== "monitor"
+    && armedDismissed !== resumeArm.armed.id;
+
   // Auth gate (W2.6): when a method is enabled and the caller is unauthenticated,
   // the whole app is replaced by the full-screen Login. The WS effect above still
   // runs (hooks are unconditional), so loadAuthMethods/loadPrincipal keep polling
@@ -601,6 +629,47 @@ export default function App() {
 
         {/* ConnectionBanner renders null when the link is up and telemetry fresh. */}
         <ConnectionBanner />
+
+        {/* ARMED-AND-WAITING banner. Same shape and same slot as the run
+            banner below - an armed run is the other half of "something is
+            happening that you should know about", and it was previously
+            announced only as dim centred text inside an empty panel on one
+            screen. Amber not accent: nothing is running, and the LED does not
+            blink because nothing is in motion. */}
+        {showArmedBanner && resumeArm?.armed && (
+          <div className="flex items-center gap-3 px-4 py-2 border-b border-line bg-warn/10 shrink-0 text-xs">
+            <span className="shrink-0">
+              <Led state="warn" label="Run armed and waiting" />
+            </span>
+            <span className="min-w-0 truncate text-ink">
+              <span className="font-display tracking-wider text-warn">RUN ARMED</span>
+              <span className="text-dim"> · {resumeArm.armed.name}</span>
+              {resumeArm.armed.owed > 0 && (
+                <span className="mono text-dim">
+                  {" "}· {resumeArm.armed.owed} frame{resumeArm.armed.owed === 1 ? "" : "s"} owed
+                </span>
+              )}
+              {resumeArm.hold && (
+                <span className="text-dim"> · holding: {resumeArm.hold.reason}</span>
+              )}
+            </span>
+            <div className="flex-1" />
+            <button
+              className="btn btn-accent !py-1.5 !px-3 text-[10px] min-h-[44px] sm:min-h-0"
+              onClick={() => setView("monitor")}
+            >
+              {resumeArm.hold ? "SEE WHY" : "OPEN LIVE"}
+            </button>
+            <button
+              className="btn !py-1.5 !px-2.5 min-h-[44px] sm:min-h-0 inline-flex items-center"
+              onClick={dismissArmedBanner}
+              aria-label="Dismiss run-armed banner"
+              title="Dismiss"
+            >
+              <Icon name="x" size={12} />
+            </button>
+          </div>
+        )}
 
         {/* Persistent run banner (monitor §3.2 / B7): never-forced, always
             dismissible affordance to open the Monitor while a run is active.
