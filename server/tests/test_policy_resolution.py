@@ -107,3 +107,34 @@ def test_a_flow_compiled_plan_picks_up_the_rigs_standards():
     assert p.max_guide_rms == 1.5
     assert p.refocus_on_temp_delta_c == 2.0
     assert p.sources["min_stars"] == "rig"
+
+
+# ------------------------------------------------------- the real compiler
+# The tests above build a flow-SHAPED plan by hand. This one runs the actual
+# compiler over a shipped example, because the hole stage A exists to close is a
+# property of `to_plan.py`, and a hand-built stand-in cannot notice if that file
+# starts setting one of the twelve.
+
+def test_the_real_flow_compiler_leaves_every_moved_field_to_the_rig():
+    from astrodeck.flows.compile import compile_plan
+    from astrodeck.flows.examples import examples
+    from astrodeck.flows.to_plan import to_sequence_plan
+
+    m16 = next(e for e in examples() if e.id == "example-m16")
+    plan, _ = to_sequence_plan(compile_plan(m16.graph, m16.name), m16.graph)
+
+    for f in MOVED_FIELDS:
+        assert getattr(plan, f) is None, (
+            f"to_plan.py now sets {f!r}. That is not a failure - it is a "
+            f"decision to review: a compiled flow saying something explicit "
+            f"about {f} means it stops inheriting the rig's standard.")
+
+    cfg = AppConfig()
+    cfg.standards.min_stars = 40
+    cfg.standards.max_guide_rms = 1.5
+    cfg.standards.refocus_on_temp_delta_c = 2.0
+    p = resolve_policy(plan, cfg)
+    # Before stage A these were 0/0/0 on every flow-driven night, with nowhere
+    # in Flows to say otherwise.
+    assert (p.min_stars, p.max_guide_rms, p.refocus_on_temp_delta_c) == (40, 1.5, 2.0)
+    assert all(p.sources[f] == "rig" for f in MOVED_FIELDS)
