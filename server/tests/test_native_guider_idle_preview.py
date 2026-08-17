@@ -87,7 +87,11 @@ async def test_a_poll_past_the_ttl_reaches_the_sensor_again(monkeypatch):
     assert await g.guide_frame() == first
     assert cam.started == 1, "inside the TTL the cache is the honest answer"
 
-    await asyncio.sleep(0.06)
+    # 3x the TTL, not 1.2x. At 0.06 the margin was 10 ms, and under xdist on a
+    # loaded machine this test failed roughly one run in three — observed
+    # 2026-08-17 while landing an unrelated change, which cost a full-suite red
+    # and a bisect. The claim is "past the TTL", and 0.15 states it just as well.
+    await asyncio.sleep(0.15)
     cam.star_x = 20                      # the field drifted, as a guide field does
     later = await g.guide_frame()
     assert cam.started == 2, "a stale cache must be re-exposed, not re-encoded"
