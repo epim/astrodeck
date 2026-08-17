@@ -199,6 +199,14 @@ class SimRig:
         self.parked = False
         self.focuser_pos = 19_200
         self.best_focus = 20_000      # the autofocus routine must find this
+        #: Focuser steps of defocus per pixel of added star sigma — how STEEPLY
+        #: this rig's stars bloat as the drawtube leaves focus. 700 keeps every
+        #: existing focus test byte-identical, and it models a gentle train:
+        #: ±1400 steps only doubles the star. A real f/5 rig is far steeper (the
+        #: 2026-08-17 measurement: 2.96 px at focus, 27 px at ±350). Exposed so
+        #: a test can be a fast scope, which is what `focus/span.py` exists to
+        #: size a sweep for.
+        self.defocus_steps_per_px = 700.0
         self.filter_slot = 0
         self.rotator_mech_deg = 0.0
         # hidden ground truth: how the camera is "clocked" vs mechanical zero.
@@ -475,6 +483,9 @@ class SimCamera(Camera):
             # clip/saturation overlay is honest on the dev-default backend.
             full_well=self.full_well, data_is_linear=True,
             egain_e_per_adu=self.SIM_EGAIN,
+            # The sim renders sharpness from this, so it is the one backend that
+            # can attribute a frame to a focuser position. See CameraFrame.
+            focuser_position=int(self.rig.focuser_pos),
         )
 
     # ---------------------------------------------------------------- render
@@ -533,7 +544,7 @@ class SimCamera(Camera):
         # focus quality: sigma grows with distance from best focus.
         # The 1.8 floor is seeing: even perfect focus never beats the sky.
         defocus = abs(self.rig.focuser_pos - self.rig.best_focus)
-        sigma = (1.8 + defocus / 700.0) / binning
+        sigma = (1.8 + defocus / self.rig.defocus_steps_per_px) / binning
         seeing_jitter = rng.normal(0, 0.05)
         sigma = max(1.2 / binning, sigma + seeing_jitter)
 
