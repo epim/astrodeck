@@ -74,31 +74,54 @@ export default function StandardsPanel(): JSX.Element {
         override any of them for a single night.
       </p>
 
-      {STANDARDS_NUMBER_FIELDS.map((f) => (
-        <Field key={f.key as string} label={f.label} hint={f.hint}>
-          <input
-            type="text"
-            inputMode="decimal"
-            className="input w-24"
-            value={drafts[f.key as string] ?? ""}
-            onChange={(e) => setDrafts(
-              (d) => ({ ...d, [f.key]: e.target.value }))}
-            onBlur={() => commitNumber(f.key)}
-            {...lockedProps(canEdit ? null : LOCK)}
-          />
-          {f.unit ? <span className="text-xs text-dim ml-2">{f.unit}</span> : null}
-        </Field>
-      ))}
+      {/* `Field` is a flex COLUMN - label above, children below - so the input
+          and its unit have to share one row of their own, or the unit lands on
+          a line of its own under the box. `field` is the house input class;
+          `input` is not one, which is why these first rendered as bare numbers
+          with no box while every neighbouring panel had proper controls. */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {STANDARDS_NUMBER_FIELDS.map((f) => (
+          <Field key={f.key as string} label={f.label} hint={f.hint}>
+            <span className="inline-flex items-center gap-2 min-w-0">
+              <input
+                type="text"
+                inputMode="decimal"
+                className="field !w-24"
+                value={drafts[f.key as string] ?? ""}
+                onChange={(e) => setDrafts(
+                  (d) => ({ ...d, [f.key]: e.target.value }))}
+                onBlur={() => commitNumber(f.key)}
+                {...lockedProps(canEdit ? null : LOCK)}
+              />
+              {f.unit ? (
+                <span className="text-xs text-dim shrink-0">{f.unit}</span>
+              ) : null}
+            </span>
+          </Field>
+        ))}
+      </div>
 
-      <Field
-        label="Apply per-filter focus offsets"
-        hint="Shift the focuser by the filter's stored offset when the wheel moves.">
+      {/* Toggle's `label` is the ARIA label only - it renders nothing visible -
+          so the row supplies its own text, the same shape SafetyLimitsPanel's
+          "Ramp at all" row uses. Without this the panel showed a bare switch
+          reading ON with no word saying what was on. `showState` because the
+          panels either side of this one all show the ON/OFF word; state is
+          never carried by colour alone here. */}
+      <div className="flex items-start justify-between gap-3 mt-4 pt-3 border-t border-line2">
+        <div className="min-w-0">
+          <div className="text-sm text-ink">Apply per-filter focus offsets</div>
+          <p className="text-[11px] text-dim max-w-md">
+            Shift the focuser by the filter&apos;s stored offset when the wheel
+            moves, so a filter change does not cost a refocus.
+          </p>
+        </div>
         <Toggle
           label="Apply per-filter focus offsets"
           checked={saved.apply_filter_offsets}
           onChange={(v) => void save({ ...saved, apply_filter_offsets: v })}
+          showState
           {...lockedProps(canEdit ? null : LOCK)} />
-      </Field>
+      </div>
 
       {/* The plan editor's door (#239 stage B). Plan left the nav rail, so the
           sentence above about a plan overriding these has to say WHERE. */}

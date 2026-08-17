@@ -96,7 +96,10 @@ test("P2-7: defaultPlan reconciled values (Tonight/guide/cool_to/flip/dither)", 
   eq(plan.guide, true, "guide");
   eq(plan.cool_to, null, "cool_to");
   eq(plan.meridian_flip, true, "meridian_flip");
-  eq(plan.dither_pixels, 3, "dither_pixels");
+  // #239 stage A: dither distance is the rig's standard now, and `null` is how
+  // a fresh plan says "inherit it". Mirroring 3 here is what made every plan
+  // this app created an override of a number nobody chose.
+  eq(plan.dither_pixels, null, "dither_pixels inherits");
 });
 
 // ------------------------------------------------ defaultPlan backend parity
@@ -105,12 +108,17 @@ test("P2-7: defaultPlan reconciled values (Tonight/guide/cool_to/flip/dither)", 
 // overrides the backend's pydantic defaults for every UI-started run, so a
 // divergence here silently disables dithering / filter-offset refocus /
 // guide-loss recovery for a whole unattended night.
-test("defaultPlan mirrors backend SequencePlan defaults (dither_every/apply_filter_offsets/recover_guiding)", () => {
+test("defaultPlan mirrors backend SequencePlan defaults (dither_every), and inherits the rest", () => {
   localStorage.removeItem("astrodeck-plan");
   const plan = useStore.getState().plan;
+  // Still a real mirror: dither CADENCE stayed per-night intent (stage C).
   eq(plan.dither_every, 3, "dither_every");
-  eq(plan.apply_filter_offsets, true, "apply_filter_offsets");
-  eq(plan.recover_guiding, true, "recover_guiding");
+  // #239 stage A: these two moved to the rig's standards, so the thing to
+  // mirror is no longer a value but the ABSENCE of one. planPolicyDefaults.test
+  // holds the whole list of twelve against policy.py; these two are here
+  // because this is the test that used to assert the opposite.
+  eq(plan.apply_filter_offsets, null, "apply_filter_offsets inherits");
+  eq(plan.recover_guiding, null, "recover_guiding inherits");
 });
 
 // --------------------------------------------------------- P2-7 setPlan SSOT
