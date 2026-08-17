@@ -1015,6 +1015,10 @@ export interface AppConfig {
   //     predates them. ---
   solve_saved_lights?: boolean;
   wcs_stamp?: WcsStampConfig;
+  //     The rig's imaging standards (#239 stage A). Optional because a config
+  //     written before the block existed simply has no key; the server fills
+  //     every field with the value SequencePlan used to carry.
+  standards?: StandardsConfig;
   // --- file-sync push destination (Phase 2; appended). Optional: an old WS
   //     `hello` bootstrap predates the field. ---
   sync_push?: SyncPushConfig;
@@ -1181,6 +1185,27 @@ export interface NamingConfig {
 // bool alone fully drives the feature. `solver` is Auto/ASTAP only on purpose:
 // there is deliberately no "force sim" (faking a solve on a real rig is the
 // exact hazard the sim solver refuses).
+// Mirrors server/astrodeck/config.py StandardsConfig (#239 stage A) - the
+// operator's standards for a usable frame, plus the focus policy that keeps
+// frames usable. These were plan fields; a flow-built night could not set them
+// at all, so a graph-drawn night ran with every quality gate off.
+//
+// A plan may still override any of them for one night: `null` on the plan means
+// "inherit what is here". See sequence/policy.py for the resolution.
+//
+// NAMING HAZARD: `min_stars` here is the floor below which a frame is REJECTED.
+// `WcsStampConfig.min_stars` below is a different setting entirely - the floor
+// below which a saved light is not WCS-stamped. Do not consolidate them.
+export interface StandardsConfig {
+  apply_filter_offsets: boolean;
+  refocus_on_temp_delta_c: number;   // 0 = off
+  min_stars: number;                 // 0 = off
+  max_guide_rms: number;             // arcsec, 0 = off
+  max_eccentricity: number;          // 0..1, 0 = off
+  max_consecutive_rejects: number;   // per step, 0 = off
+  max_consecutive_rejects_night: number;  // per night, 0 = off
+}
+
 export interface WcsStampConfig {
   solver: "auto" | "astap";
   downsample: number;   // 0 = automatic; else ASTAP -z (1/2/4)
