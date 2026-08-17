@@ -2,7 +2,7 @@
  "generator": "tools/gen_credits.py",
  "project": {
   "name": "AstroDeck",
-  "version": "0.2.72",
+  "version": "0.2.86",
   "spdx": "Apache-2.0"
  },
  "scope": "Every component whose bytes ship inside an AstroDeck release or are compiled into one, plus every external program and network service AstroDeck depends on at runtime. Build-time-only tooling (vite, tailwindcss, typescript, pytest) is not listed: none of it places its own licensed code in a shipped artifact.",
@@ -185,7 +185,7 @@
       }
      ],
      "url": "https://www.zwoastro.com/downloads/developers",
-     "notes": "Lets AstroDeck talk to ZWO cameras, the EAF focuser and the CAA rotator without installing ZWO's own software. ZWO publish these SDKs under a verbatim MIT licence whose grant explicitly covers distributing copies, so shipping the compiled libraries is permitted outright; the notice below travels with them, which is the only condition MIT attaches. The same libraries are redistributed the same way by INDI (indi-3rdparty) and by NINA.\n\nOne nit worth recording: EAF_focuser.h carries no copyright line of its own and inherits its terms from the LICENSE file beside it.\n\nBinaries shipped: ASICamera2.dll, CAARotator.dll, EAF_focuser.dll, macos/libASICamera2.dylib"
+     "notes": "Lets AstroDeck talk to ZWO cameras, the EAF focuser and the CAA rotator without installing ZWO's own software. ZWO publish these SDKs under a verbatim MIT licence whose grant explicitly covers distributing copies, so shipping the compiled libraries is permitted outright; the notice below travels with them, which is the only condition MIT attaches. The same libraries are redistributed the same way by INDI (indi-3rdparty) and by NINA.\n\nOne nit worth recording: EAF_focuser.h carries no copyright line of its own and inherits its terms from the LICENSE file beside it.\n\nBinaries shipped: ASICamera2.dll, CAARotator.dll, EAF_focuser.dll, linux-arm64/libASICamera2.so, linux-arm64/libCAARotator.so, linux-arm64/libEAFFocuser.so, macos/libASICamera2.dylib"
     }
    ]
   },
@@ -570,7 +570,7 @@
       }
      ],
      "url": "https://nighttime-imaging.eu/",
-     "notes": "Autofocus curve fitting and star detection were reimplemented from audited dossiers of NINA and the Hocus Focus plugin. No code was copied; both upstreams are MPL-2.0 and the resulting crates are MPL-2.0 too."
+     "notes": "Autofocus curve fitting and star detection were reimplemented from audited dossiers of NINA and the Hocus Focus plugin by George Hilios (https://github.com/ghilios/hocus-focus). No code was copied; both upstreams are MPL-2.0 and the resulting crates are MPL-2.0 too. Hocus Focus remains the template our autofocus follows, and its published design decisions continue to shape ours: the hyperbolic V-curve, excluding starless positions at the extremes of a wide sweep from the fit rather than letting them poison it (and saying so when it happens), statistical outlier rejection within a frame's star population, and its finding that loose detection settings admit noise and donut fragments that skew autofocus on wide or defocused sweeps - which is the same failure we measured on narrowband on 2026-08-17. Those were read from its public documentation and release notes, not from its source."
     },
     {
      "name": "PHD2 guiding algorithms (ported)",

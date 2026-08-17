@@ -699,8 +699,19 @@ DERIVED: list[dict] = [
         "texts": [_file("Mozilla Public License 2.0", "mpl-2.0.txt")],
         "notes": (
             "Autofocus curve fitting and star detection were reimplemented from "
-            "audited dossiers of NINA and the Hocus Focus plugin. No code was "
+            "audited dossiers of NINA and the Hocus Focus plugin by George "
+            "Hilios (https://github.com/ghilios/hocus-focus). No code was "
             "copied; both upstreams are MPL-2.0 and the resulting crates are "
-            "MPL-2.0 too."),
+            "MPL-2.0 too. "
+            "Hocus Focus remains the template our autofocus follows, and its "
+            "published design decisions continue to shape ours: the hyperbolic "
+            "V-curve, excluding starless positions at the extremes of a wide "
+            "sweep from the fit rather than letting them poison it (and saying "
+            "so when it happens), statistical outlier rejection within a "
+            "frame's star population, and its finding that loose detection "
+            "settings admit noise and donut fragments that skew autofocus on "
+            "wide or defocused sweeps - which is the same failure we measured "
+            "on narrowband on 2026-08-17. Those were read from its public "
+            "documentation and release notes, not from its source."),
     },
 ]
