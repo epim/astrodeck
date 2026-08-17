@@ -106,6 +106,16 @@ class SessionReport(BaseModel):
     targets: list[TargetBreakdown] = Field(default_factory=list)
     safety_events: list[dict] = Field(default_factory=list)          # {ts,reason,action}
     frames: list[FrameRecord] = Field(default_factory=list)          # downsampled if huge
+    #: WHAT THIS NIGHT ACTUALLY RAN UNDER (#239 stage A):
+    #: ``{field: {"value": v, "source": "plan"|"rig"}}`` for the twelve settings
+    #: that can come from either the plan or the rig's standards.
+    #:
+    #: Recorded because the plan alone stopped being able to answer it. "Which
+    #: gates were on that night?" is asked months later, about frames that
+    #: already exist, from this file - and a two-layer setting whose losing
+    #: layer is the one on screen is precisely how Polar ran simulated for
+    #: weeks. Empty on reports written before this field existed.
+    policy: dict[str, dict] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------- header builder
@@ -256,6 +266,10 @@ class SessionReporter:
         self._safety: list[dict] = []
         self._ended_at: float | None = None
         self._end_reason: str | None = None
+        #: The resolved rig-standards-vs-plan record (#239 stage A), stamped by
+        #: the engine at start via :meth:`record_policy`. A plain dict so a
+        #: reporter built in a test without an engine simply carries nothing.
+        self._policy: dict[str, dict] = {}
         self._lock = asyncio.Lock()
         # Serializes the ACTUAL disk write across threads. record_frame's snapshot
         # runs _persist on a worker thread (asyncio.to_thread) while finalize() runs
@@ -348,7 +362,16 @@ class SessionReporter:
             frames_captured=captured, frames_rejected=rejected, integration_s=integ,
             by_filter=by_filter, targets=targets,
             safety_events=list(self._safety), frames=list(self._frames),
+            policy=dict(self._policy),
         )
+
+    def record_policy(self, record: dict[str, dict]) -> None:
+        """Stamp what the run resolved its twelve settings to, and from where.
+
+        Called once at start rather than at finalize: a run that dies before
+        finalizing is exactly the one whose settings someone will want to read.
+        """
+        self._policy = dict(record)
 
     def finalize(self, end_reason: str) -> SessionReport:
         """Stamp the terminal reason + end time and write the final snapshot.
@@ -415,6 +438,13 @@ class SessionReporter:
         r._safety = list(rep.safety_events)
         r._ended_at = rep.ended_at
         r._end_reason = rep.end_reason
+        # RESTORED FROM DISK, not left empty and not re-resolved. This is a
+        # crash-resume appending to the SAME night's file, and the settings that
+        # night ran under are the ones already recorded in it - re-resolving
+        # would silently rewrite history with whatever Settings says now.
+        # `__new__` skips __init__, so every private field has to be set here;
+        # this one was the reminder of that.
+        r._policy = dict(getattr(rep, "policy", {}) or {})
         r._lock = asyncio.Lock()
         r._persist_lock = threading.Lock()
         return r
