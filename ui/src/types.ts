@@ -794,28 +794,31 @@ export interface SequencePlan {
   targets: Target[];
   guide: boolean;
   dither_every: number;
-  dither_pixels: number;
+  // #239 stage A: `null` = INHERIT the rig's standards. Not optional-vs-
+  // present: the server distinguishes null (inherit) from an explicit 0 or
+  // false (this plan's choice), and so must anything that writes one.
+  dither_pixels: number | null;
   autofocus_every: number;
   cool_to: number | null;
-  cool_timeout_s: number;
-  apply_filter_offsets: boolean;
-  refocus_on_temp_delta_c: number;
+  cool_timeout_s: number | null;
+  apply_filter_offsets: boolean | null;
+  refocus_on_temp_delta_c: number | null;
   meridian_flip: boolean;
-  recover_guiding: boolean;
-  hfr_reject_factor: number;
+  recover_guiding: boolean | null;
+  hfr_reject_factor: number | null;
   park_when_done: boolean;
   warm_cooler_when_done: boolean;
   // --- automation (Batch-4b; additive — safety/escalation are GLOBAL in config,
   //     the plan carries only the master toggle + a meridian-flip warning lead). ---
   safety_check?: boolean;          // honor the configured SafetyMonitor + floor
-  meridian_flip_warn_min?: number; // lead time for the live meridian-flip ETA chip
+  meridian_flip_warn_min?: number | null; // lead time for the live meridian-flip ETA chip
   // --- multi-night quota (sessions spec §3; additive — server defaults apply) ---
   count_mode?: "attempts" | "accepted";
-  min_stars?: number;                     // star floor (0 = off)
-  max_guide_rms?: number;                 // guide-RMS ceiling, arcsec (0 = off)
-  max_consecutive_rejects?: number;       // per-step guard (0 = off)
-  max_consecutive_rejects_night?: number; // per-night guard (0 = off)
-  max_eccentricity?: number;              // per-frame median-ecc ceiling, 0..1 (0 = off)
+  min_stars?: number | null;                     // star floor (0 = off)
+  max_guide_rms?: number | null;                 // guide-RMS ceiling, arcsec (0 = off)
+  max_consecutive_rejects?: number | null;       // per-step guard (0 = off)
+  max_consecutive_rejects_night?: number | null; // per-night guard (0 = off)
+  max_eccentricity?: number | null;              // per-frame median-ecc ceiling, 0..1 (0 = off)
   // --- conditional sequencer (PRO-3; additive/optional — [] / absent === today) ---
   instructions?: Instruction[];
 }

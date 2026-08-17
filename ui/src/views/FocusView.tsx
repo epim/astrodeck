@@ -17,6 +17,7 @@ import {
   usePolar,
   usePreviews,
   useProviders,
+  useConfig,
   useSelectedPreviewId,
   useSequence,
   useStretch,
@@ -33,6 +34,7 @@ import {
   frameWaitNote, presetAction, sweepPreviewNote, sweepReadiness,
 } from "../lib/focusCapture";
 import { isExposureInvalid } from "../lib/exposure";
+import { planPolicy } from "../lib/standards";
 import { ProviderBadge } from "../components/ProviderBadge";
 import { PreviewStage, type StageControls } from "../components/preview/PreviewStage";
 import FocusPod, { POD_BOTTOM_PX, POD_DISC_PX, POD_MIN_STAGE_H } from "../components/focus/FocusPod";
@@ -291,7 +293,15 @@ export default function FocusView() {
   // Pixel scale for the arcsec HFR in the verdict: prefer computed optics, fall
   // back to the live frame's scale when the sensor reports it.
   const pixelScale = status?.optics?.image_scale_arcsec_px ?? shown?.pixel_scale_arcsec ?? null;
-  const refocusArmed = plan.autofocus_every > 0 || plan.refocus_on_temp_delta_c > 0;
+  // #239 stage A: `refocus_on_temp_delta_c` is null when the plan inherits the
+  // rig's standard, so reading it raw would report "manual only" on a rig whose
+  // standards DO arm temp-drift refocus - a false claim about what tonight will
+  // do, on the screen an operator checks focus from.
+  const config = useConfig();
+  const refocusDelta = planPolicy(
+    plan as unknown as Record<string, unknown>, config,
+    "refocus_on_temp_delta_c").value as number;
+  const refocusArmed = plan.autofocus_every > 0 || refocusDelta > 0;
 
   const act = async (fn: () => Promise<unknown>) => {
     try { await fn(); } catch (e) { showToast("error", (e as Error).message); }
@@ -1569,8 +1579,8 @@ export default function FocusView() {
           <p className="mono text-[11px] text-faint mt-2">
             {refocusArmed
               ? `Refocus armed:${plan.autofocus_every > 0 ? ` every ${plan.autofocus_every} frames` : ""}` +
-                `${plan.autofocus_every > 0 && plan.refocus_on_temp_delta_c > 0 ? " ·" : ""}` +
-                `${plan.refocus_on_temp_delta_c > 0 ? ` Δtemp ${plan.refocus_on_temp_delta_c}°C` : ""}`
+                `${plan.autofocus_every > 0 && refocusDelta > 0 ? " ·" : ""}` +
+                `${refocusDelta > 0 ? ` Δtemp ${refocusDelta}°C` : ""}`
               : "Refocus: manual only (set cadence in the plan)"}
           </p>
         </Panel>
