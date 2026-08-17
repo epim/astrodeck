@@ -138,3 +138,46 @@ def test_the_real_flow_compiler_leaves_every_moved_field_to_the_rig():
     # in Flows to say otherwise.
     assert (p.min_stars, p.max_guide_rms, p.refocus_on_temp_delta_c) == (40, 1.5, 2.0)
     assert all(p.sources[f] == "rig" for f in MOVED_FIELDS)
+
+
+# ---------------------------------------------------------------- stage C
+# The GUIDE node means what it draws. Kept in this file because it is the same
+# question the rest of it asks: does the thing an operator can SEE decide what
+# the run does?
+
+def test_a_flow_with_no_guide_node_does_not_guide():
+    """Seven nights on this rig ran with guide=False, one of them a real
+    imaging night (NGC 7023, unguided). No flow could say it: `guide` was never
+    set by the compiler, so a canvas with no guider on it guided anyway."""
+    from astrodeck.flows.compile import compile_plan
+    from astrodeck.flows.examples import examples
+    from astrodeck.flows.to_plan import to_sequence_plan
+
+    eaa = next(e for e in examples() if e.id == "example-eaa")
+    assert not any(n.type == "guide" for n in eaa.graph.nodes), (
+        "the EAA example grew a GUIDE node - pick another graph for this test")
+    plan, _ = to_sequence_plan(compile_plan(eaa.graph, eaa.name), eaa.graph)
+    assert plan.guide is False
+
+
+def test_a_flow_with_a_guide_node_guides():
+    from astrodeck.flows.compile import compile_plan
+    from astrodeck.flows.examples import examples
+    from astrodeck.flows.to_plan import to_sequence_plan
+
+    m16 = next(e for e in examples() if e.id == "example-m16")
+    plan, _ = to_sequence_plan(compile_plan(m16.graph, m16.name), m16.graph)
+    assert plan.guide is True
+
+
+def test_without_the_graph_it_does_not_guess():
+    """`compiled` carries no node types. Reading absence as "unguided" would
+    turn every graph-less caller into an unguided night by accident, so the
+    field is left unset and the model default stands."""
+    from astrodeck.flows.compile import compile_plan
+    from astrodeck.flows.examples import examples
+    from astrodeck.flows.to_plan import to_sequence_plan
+
+    m16 = next(e for e in examples() if e.id == "example-m16")
+    plan, _ = to_sequence_plan(compile_plan(m16.graph, m16.name))
+    assert plan.guide is True
