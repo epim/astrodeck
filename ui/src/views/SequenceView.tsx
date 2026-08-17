@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
+import { planPolicy, type PolicyField } from "../lib/standards";
 import { api, ApiError } from "../api";
 import {
-  useStore, useAtlasBannerPending, useLastReportId, defaultSchedule,
+  useStore, useConfig, useAtlasBannerPending, useLastReportId, defaultSchedule,
   usePhotometry, usePreview,
 } from "../store";
 import {
@@ -179,6 +180,29 @@ export default function SequenceView() {
   // persists). No private useState / localStorage effect here.
   const plan = useStore((s) => s.plan);
   const setPlan = useStore((s) => s.setPlan);
+  const config = useConfig();
+  // #239 stage A: twelve settings are the rig's standards unless THIS plan
+  // overrides them, and `null` is how a plan says "inherit". Every control below
+  // used to fall back to a hardcoded literal, which showed a number the plan did
+  // not hold and the rig might not either.
+  const pol = (f: PolicyField) => planPolicy(
+    plan as unknown as Record<string, unknown>, config, f);
+  /** Says which layer the value came from, and hands it back on click. Without
+   *  the click there is no way out of an override once one is made. */
+  const RigChip = ({ f }: { f: PolicyField }) => pol(f).inherited ? (
+    <span className="text-[10px] uppercase tracking-widest text-dim"
+          title="Follows the rig's standards (Settings > Safety > Imaging standards)">
+      rig
+    </span>
+  ) : (
+    <button type="button"
+            className="text-[10px] uppercase tracking-widest text-accent underline"
+            title="This plan overrides the rig's standard. Click to follow the rig again."
+            onClick={() => setPlan({ ...plan, [f]: null })}>
+      override
+    </button>
+  );
+
   // Frame-in-Atlas (wave-3 §5): openFraming switches the view to "atlas" and
   // seeds the framing session's center from the CatalogEntry; the follow-up
   // setFraming lands the PA synchronously on that fresh session (MountView
@@ -1492,8 +1516,9 @@ export default function SequenceView() {
             <label className="flex items-center justify-between gap-2">
               <span className="text-dim">dither size (pixels)</span>
               <NumberField className="!w-16 !py-1" label="Dither size in pixels"
-                value={plan.dither_pixels}
+                value={pol("dither_pixels").value as number}
                 onCommit={(n) => setPlan({ ...plan, dither_pixels: Math.max(0, Math.round(n)) })} />
+              <RigChip f="dither_pixels" />
             </label>
             <label className="flex items-center justify-between gap-2">
               <span className="text-dim">refocus every N frames</span>
@@ -1505,16 +1530,18 @@ export default function SequenceView() {
               <span className="text-dim">refocus on temp Δ°C (0=off)</span>
               <NumberField className="!w-16 !py-1" inputMode="decimal"
                 label="Refocus on temperature change, in °C (0 = off)"
-                value={plan.refocus_on_temp_delta_c}
+                value={pol("refocus_on_temp_delta_c").value as number}
                 onCommit={(n) => setPlan({ ...plan, refocus_on_temp_delta_c: Math.max(0, n) })} />
+              <RigChip f="refocus_on_temp_delta_c" />
             </label>
             <label className="flex items-center justify-between gap-2">
               <span className="text-dim inline-flex items-center gap-1">
                 apply filter focus offsets
                 <InfoDot content={HELP.filterOffset} label="About filter focus offsets" />
               </span>
-              <Toggle checked={plan.apply_filter_offsets} onChange={(v) => setPlan({ ...plan, apply_filter_offsets: v })}
+              <Toggle checked={pol("apply_filter_offsets").value as boolean} onChange={(v) => setPlan({ ...plan, apply_filter_offsets: v })}
                 label="Apply filter focus offsets" />
+              <RigChip f="apply_filter_offsets" />
             </label>
             <label className="flex items-center justify-between gap-2">
               <span className="text-dim inline-flex items-center gap-1">
@@ -1533,8 +1560,9 @@ export default function SequenceView() {
                 />
               </span>
               <NumberField className="!w-16 !py-1" label="Meridian warning lead, in minutes"
-                value={plan.meridian_flip_warn_min ?? 15}
+                value={(pol("meridian_flip_warn_min").value as number)}
                 onCommit={(n) => setPlan({ ...plan, meridian_flip_warn_min: Math.max(0, n) })} />
+                  <RigChip f="meridian_flip_warn_min" />
             </label>
             <label className="flex items-center justify-between gap-2">
               <span className="text-dim inline-flex items-center gap-1">
@@ -1549,8 +1577,9 @@ export default function SequenceView() {
             </label>
             <label className="flex items-center justify-between gap-2">
               <span className="text-dim">recover guiding if lost</span>
-              <Toggle checked={plan.recover_guiding} onChange={(v) => setPlan({ ...plan, recover_guiding: v })}
+              <Toggle checked={pol("recover_guiding").value as boolean} onChange={(v) => setPlan({ ...plan, recover_guiding: v })}
                 label="Recover guiding if lost" />
+              <RigChip f="recover_guiding" />
             </label>
             <label className="flex items-center justify-between gap-2">
               <span className="text-dim">cool sensor to °C (blank=off)</span>
@@ -1572,8 +1601,9 @@ export default function SequenceView() {
               </span>
               <NumberField className="!w-16 !py-1" inputMode="decimal"
                 label="Flag HFR spikes above this multiple of the median (0 = off)"
-                value={plan.hfr_reject_factor}
+                value={pol("hfr_reject_factor").value as number}
                 onCommit={(n) => setPlan({ ...plan, hfr_reject_factor: Math.max(0, n) })} />
+              <RigChip f="hfr_reject_factor" />
             </label>
             <label className="flex items-center justify-between gap-2">
               <span className="text-dim">park mount when done</span>
@@ -1630,24 +1660,26 @@ export default function SequenceView() {
               <label className="flex items-center justify-between gap-2">
                 <span className="text-dim">min stars per frame</span>
                 <span className="inline-flex items-center gap-2">
-                  {(plan.min_stars ?? 0) === 0 && (
+                  {((pol("min_stars").value as number)) === 0 && (
                     <span className="text-[10px] uppercase tracking-widest text-dim">off</span>
                   )}
                   <NumberField className="!w-16 !py-1" label="Minimum stars per frame (0 = off)"
-                    value={plan.min_stars ?? 0}
+                    value={(pol("min_stars").value as number)}
                     onCommit={(n) => setPlan({ ...plan, min_stars: Math.max(0, Math.round(n)) })} />
+                  <RigChip f="min_stars" />
                 </span>
               </label>
               <label className="flex items-center justify-between gap-2">
                 <span className="text-dim">max guide RMS (arcsec)</span>
                 <span className="inline-flex items-center gap-2">
-                  {(plan.max_guide_rms ?? 0) === 0 && (
+                  {((pol("max_guide_rms").value as number)) === 0 && (
                     <span className="text-[10px] uppercase tracking-widest text-dim">off</span>
                   )}
                   <NumberField className="!w-16 !py-1" inputMode="decimal"
                     label="Maximum guide RMS in arcseconds (0 = off)"
-                    value={plan.max_guide_rms ?? 0}
+                    value={(pol("max_guide_rms").value as number)}
                     onCommit={(n) => setPlan({ ...plan, max_guide_rms: Math.max(0, n) })} />
+                  <RigChip f="max_guide_rms" />
                 </span>
               </label>
               <label className="flex items-center justify-between gap-2">
@@ -1658,13 +1690,14 @@ export default function SequenceView() {
                     content="Reject a frame whose stars are too elongated (trailing / tilt / coma): the median star eccentricity across the frame. 0 = off." />
                 </span>
                 <span className="inline-flex items-center gap-2">
-                  {(plan.max_eccentricity ?? 0) === 0 && (
+                  {((pol("max_eccentricity").value as number)) === 0 && (
                     <span className="text-[10px] uppercase tracking-widest text-dim">off</span>
                   )}
                   <NumberField className="!w-16 !py-1" inputMode="decimal"
                     label="Maximum star eccentricity, 0 to 1 (0 = off)"
-                    value={plan.max_eccentricity ?? 0}
+                    value={(pol("max_eccentricity").value as number)}
                     onCommit={(n) => setPlan({ ...plan, max_eccentricity: Math.min(1, Math.max(0, n)) })} />
+                  <RigChip f="max_eccentricity" />
                 </span>
               </label>
               <label className="flex items-center justify-between gap-2">
@@ -1676,13 +1709,14 @@ export default function SequenceView() {
                   />
                 </span>
                 <span className="inline-flex items-center gap-2">
-                  {(plan.max_consecutive_rejects ?? 10) === 0 && (
+                  {((pol("max_consecutive_rejects").value as number)) === 0 && (
                     <span className="text-[10px] uppercase tracking-widest text-dim">off</span>
                   )}
                   <NumberField className="!w-16 !py-1"
                     label="Skip a step after N consecutive rejects (0 = off)"
-                    value={plan.max_consecutive_rejects ?? 10}
+                    value={(pol("max_consecutive_rejects").value as number)}
                     onCommit={(n) => setPlan({ ...plan, max_consecutive_rejects: Math.max(0, Math.round(n)) })} />
+                  <RigChip f="max_consecutive_rejects" />
                 </span>
               </label>
               <label className="flex items-center justify-between gap-2">
@@ -1694,13 +1728,14 @@ export default function SequenceView() {
                   />
                 </span>
                 <span className="inline-flex items-center gap-2">
-                  {(plan.max_consecutive_rejects_night ?? 20) === 0 && (
+                  {((pol("max_consecutive_rejects_night").value as number)) === 0 && (
                     <span className="text-[10px] uppercase tracking-widest text-dim">off</span>
                   )}
                   <NumberField className="!w-16 !py-1"
                     label="End the night after N consecutive rejects (0 = off)"
-                    value={plan.max_consecutive_rejects_night ?? 20}
+                    value={(pol("max_consecutive_rejects_night").value as number)}
                     onCommit={(n) => setPlan({ ...plan, max_consecutive_rejects_night: Math.max(0, Math.round(n)) })} />
+                  <RigChip f="max_consecutive_rejects_night" />
                 </span>
               </label>
             </div>
