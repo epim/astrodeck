@@ -46,6 +46,7 @@ import { formatScheduleStatus } from "../lib/scheduleStatus";
 import SkyConditionsPanel from "../components/weather/SkyConditionsPanel";
 import RadarMap from "../components/weather/RadarMap";
 import { getDomeState, type DomeState } from "../api/backends";
+import { getResumeArm, type ResumeArmState } from "../api/sessions";
 import { domeStatusLabel } from "../lib/dome";
 import { accessPhrase, useCanControlMount, useCanViewWeather } from "../lib/caps";
 import {
@@ -288,6 +289,23 @@ export default function MonitorView() {
     };
     tick();
     const id = window.setInterval(tick, 15000);
+    return () => { live = false; window.clearInterval(id); };
+  }, []);
+
+  // WHAT IS ARMED AND WAITING (relay-review finding 1). Polled rather than
+  // pushed: it changes on ResumeArm's own 60s cadence, nothing about it is
+  // frame-rate, and the alternative was a new WS event for one panel. Same
+  // shape as the dome poll above.
+  const [resumeArm, setResumeArm] = useState<ResumeArmState | null>(null);
+  useEffect(() => {
+    let live = true;
+    const tick = () => {
+      getResumeArm()
+        .then((r) => { if (live) setResumeArm(r); })
+        .catch(() => { /* older server / offline - the panel falls back */ });
+    };
+    tick();
+    const id = window.setInterval(tick, 20000);
     return () => { live = false; window.clearInterval(id); };
   }, []);
 
@@ -730,7 +748,31 @@ export default function MonitorView() {
         {/* ================================================== PROGRESS */}
         {!ninaNative && (
           <Panel className="col-span-full lg:col-span-8" title="Progress">
-            {idle ? (
+            {idle && resumeArm?.armed ? (
+              /* ARMED AND WAITING IS NOT "NO RUN ACTIVE". On 2026-08-16 this
+                 panel said "Plan a session to start capturing" over a session
+                 that owed 58 frames and would have started itself the moment
+                 the sky cleared - and planning a fresh one is precisely how you
+                 strand it, because engine.start disarms every other session.
+                 The CTA is deliberately NOT "plan a session" here. */
+              <EmptyState
+                icon="plan"
+                title={`Armed and waiting — ${resumeArm.armed.name}`}
+                hint={
+                  (resumeArm.armed.owed > 0
+                    ? `${resumeArm.armed.owed} frame${resumeArm.armed.owed === 1 ? "" : "s"} still owed. `
+                    : "")
+                  + (resumeArm.hold
+                    ? `Holding: ${resumeArm.hold.reason}. It starts by itself when that clears.`
+                    : "It starts by itself when its window opens.")
+                }
+                action={
+                  <button className="btn min-h-[44px]" onClick={() => setView("sequence")}>
+                    Review the session →
+                  </button>
+                }
+              />
+            ) : idle ? (
               <EmptyState
                 icon="plan"
                 title="No run active"

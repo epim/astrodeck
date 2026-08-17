@@ -934,15 +934,34 @@ export default function EquipmentView(): JSX.Element {
         >
           {/* #41 cont.: the explanation belongs ONCE at panel level — ten
               identical sub-lines under ten rows is noise, not an explanation. */}
+          {/* "STARTED SOMEWHERE ELSE" IS ONLY TRUE IF IT WAS. This screen holds
+              a browser-local AssignmentMap; the rig is driven by whatever the
+              server activated. Subtracting one from the other and reporting the
+              difference as a rig condition meant a rig that boots from its own
+              saved profile - which is every night on astrotown - was told for
+              months that it had been started somewhere else, with a call to
+              action that was already done. Two different sentences, because
+              they are two different situations. */}
           {liveUnassignedRoles.length > 0 && (
             <p className="text-[11px] text-dim mb-3 inline-flex items-start gap-1.5 leading-snug">
               <Icon name="info" size={12} className="shrink-0 mt-0.5" />
               <span>
-                {liveUnassignedRoles.length} device
-                {liveUnassignedRoles.length === 1 ? " is" : "s are"} connected
-                but not assigned here — this rig was started somewhere else (the
-                one-tap simulator, a boot profile, or Profiles → Activate). Pick
-                a driver on those rows to save them into a profile.
+                {config?.active_profile_id ? (
+                  <>
+                    {liveUnassignedRoles.length} device
+                    {liveUnassignedRoles.length === 1 ? " is" : "s are"} running
+                    from the saved profile this rig booted with. This screen
+                    edits assignments; it does not need to match to be correct.
+                  </>
+                ) : (
+                  <>
+                    {liveUnassignedRoles.length} device
+                    {liveUnassignedRoles.length === 1 ? " is" : "s are"} connected
+                    but not assigned here — this rig was started somewhere else
+                    (the one-tap simulator, or Profiles → Activate). Pick a
+                    driver on those rows to save them into a profile.
+                  </>
+                )}
               </span>
             </p>
           )}
