@@ -5,7 +5,7 @@
 // anti-drift check against server/astrodeck/config.py runs under `npx tsx`
 // without jsdom. Importing the panel instead pulls in the store and the api
 // client and dies on `window`.
-import type { StandardsConfig } from "../types";
+import type { AppConfig, StandardsConfig } from "../types";
 
 /** The server's defaults, which are the values `SequencePlan` carried before
  *  #239 stage A moved these fields. A config written before the block existed
@@ -62,3 +62,53 @@ export const STANDARDS_ALL_FIELDS: (keyof StandardsConfig)[] = [
   ...STANDARDS_NUMBER_FIELDS.map((f) => f.key),
   "apply_filter_offsets",
 ];
+
+// ---------------------------------------------------------------- plan editor
+// The plan editor's half of the layering (#239 stage A). Twelve plan fields are
+// `null` when they mean "inherit the rig's standard", and every control used to
+// fall back to a HARDCODED literal - so a rig whose star floor is 40 would have
+// shown a plan editor reading 0, which is the losing layer on screen and
+// exactly how Polar ran simulated for weeks.
+
+/** The rig-level value for one moved field, read from the block that owns it. */
+export function rigValue(
+  cfg: AppConfig | null | undefined, field: PolicyField,
+): number | boolean {
+  const std = standardsOrDefault(cfg?.standards);
+  switch (field) {
+    case "dither_pixels": return cfg?.guide?.dither_pixels ?? 3;
+    case "recover_guiding": return cfg?.guide?.recover_guiding ?? true;
+    case "cool_timeout_s": return cfg?.cooling?.cool_timeout_s ?? 600;
+    case "hfr_reject_factor": return cfg?.escalation?.hfr_reject_factor ?? 0;
+    case "meridian_flip_warn_min": return cfg?.safety?.meridian_flip_warn_min ?? 15;
+    default: return std[field as keyof typeof std];
+  }
+}
+
+export type PolicyField =
+  | "dither_pixels" | "recover_guiding" | "cool_timeout_s" | "hfr_reject_factor"
+  | "meridian_flip_warn_min" | "apply_filter_offsets" | "refocus_on_temp_delta_c"
+  | "min_stars" | "max_guide_rms" | "max_eccentricity"
+  | "max_consecutive_rejects" | "max_consecutive_rejects_night";
+
+export const POLICY_FIELDS: PolicyField[] = [
+  "dither_pixels", "recover_guiding", "cool_timeout_s", "hfr_reject_factor",
+  "meridian_flip_warn_min", "apply_filter_offsets", "refocus_on_temp_delta_c",
+  "min_stars", "max_guide_rms", "max_eccentricity",
+  "max_consecutive_rejects", "max_consecutive_rejects_night",
+];
+
+/** What the editor should SHOW for one field, and whether it is the rig's. */
+export function planPolicy(
+  plan: Record<string, unknown> | null | undefined,
+  cfg: AppConfig | null | undefined,
+  field: PolicyField,
+): { value: number | boolean; inherited: boolean } {
+  const own = plan?.[field];
+  // `null`/`undefined` is the ONLY absence. An explicit 0 or false is a choice
+  // about this plan and must display as this plan's, never as the rig's.
+  if (own === null || own === undefined) {
+    return { value: rigValue(cfg, field), inherited: true };
+  }
+  return { value: own as number | boolean, inherited: false };
+}
