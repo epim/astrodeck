@@ -512,6 +512,10 @@ class SequenceEngine:
         self.reporter = SessionReporter(plan, report_id=rid,
                                         started_at=self._started_at)
         session.nights.append(self.reporter.id)
+        # STAMPED AT START, not at finalize: a run that dies before it can
+        # finalize is exactly the one whose settings someone will question, and
+        # the plan alone can no longer answer which gates were on (#239 A).
+        self.reporter.record_policy(self._policy.as_record())
         session_store.save(session)
         self._report_finalized = False
         self._unsafe_streak = 0
