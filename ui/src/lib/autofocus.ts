@@ -256,6 +256,15 @@ export interface DeriveAfInputs {
    *  liveExposureS already implies a frame — but a caller holding the preview
    *  object should say so outright rather than have this infer it. */
   hasLiveFrame?: boolean;
+  /** `status.focuser?.sweep` — the geometry the SERVER will use, sized from
+   *  this focuser's measured defocus slope, with its own explanation.
+   *
+   *  It wins over the derivation below, and it has to: the browser cannot
+   *  compute a defocus slope, so a screen that kept deriving its own step would
+   *  print one number and the sweep would run another. Null (no focuser, an old
+   *  server, a status that has not arrived) falls back to the travel-fraction
+   *  rule below, which is what shipped before any of this. */
+  serverSweep?: { step: number; basis: string } | null;
 }
 export interface DerivedAfParams {
   exposure_s: number;
@@ -326,10 +335,20 @@ export function deriveAutofocusParams(inp: DeriveAfInputs): DerivedAfParams {
     ? `copied from the live frame (gain ${gain})`
     : `gain ${gain} guess — no frame has been taken, so nothing has shown this exposes stars`;
 
-  // step — keep proven default; rescale only at focuser-range extremes
+  // step — the server's measured span when it has one, else the proven default
+  // rescaled only at focuser-range extremes.
   let step = AF_DEFAULT_STEP;
   let stepBasis = `default ${AF_DEFAULT_STEP} steps`;
   const fm = inp.focuserMax;
+  const srv = inp.serverSweep;
+  if (srv && Number.isFinite(srv.step) && srv.step > 0) {
+    // The server sized this from what a completed sweep MEASURED. Its
+    // explanation comes with it rather than being reconstructed here — the
+    // slope, the date and the point count are facts only it has.
+    return { exposure_s, gain, step: Math.round(srv.step), steps_each_side: AF_STEPS_EACH_SIDE,
+             binning, source,
+             basis: { exposure, gain: gainBasis, step: srv.basis, binning: binBasis } };
+  }
   if (fm != null && fm > 0) {
     const frac = (AF_DEFAULT_STEP * AF_STEPS_EACH_SIDE * 2) / fm;
     if (frac > AF_SPAN_MAX_FRAC || frac < AF_SPAN_MIN_FRAC) {

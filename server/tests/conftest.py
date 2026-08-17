@@ -110,6 +110,36 @@ def _never_touch_the_real_config():
 
 
 @pytest.fixture(autouse=True)
+def _no_inherited_focus_calibration():
+    """No test starts with another test's measured sweep span.
+
+    The fixture above is SESSION-scoped: one throwaway config dir for the whole
+    worker, not one per test. That is fine for a store every test overwrites,
+    and wrong for a file tests WRITE AS A SIDE EFFECT — which
+    `focus_calibration.json` now is. Every successful autofocus run records the
+    defocus slope it measured (focus/span.py), so any sim sweep anywhere in the
+    suite leaves one behind, and the next test in that worker would size its
+    sweep from it. Order-dependent, worker-dependent, and invisible: exactly the
+    shape of the guider-calibration leak this fixture's neighbour documents,
+    which took three weeks to surface.
+
+    An unlink either side, so a test that wants a calibration plants its own.
+    Swallowed, because a housekeeping fixture must not be able to fail a test:
+    `test_session_store.py` monkeypatches `Path.unlink` itself to raise, and a
+    teardown that propagated that would report an error in a test that passed.
+    """
+    import contextlib
+
+    import astrodeck.config as config_mod
+    path = config_mod.focus_calibration_path()
+    with contextlib.suppress(Exception):
+        path.unlink(missing_ok=True)
+    yield
+    with contextlib.suppress(Exception):
+        path.unlink(missing_ok=True)
+
+
+@pytest.fixture(autouse=True)
 def _reset_hub_singleton_locks():
     """Test-isolation seam: ``astrodeck.hub.hub`` is a process-wide singleton, but
     many tests each spin up their own ``TestClient(app)`` (own event loop) or their

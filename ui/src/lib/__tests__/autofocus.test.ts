@@ -139,6 +139,37 @@ test("derive: step rescales only at focuser-range extremes", () => {
     liveExposureS: 2, liveGain: 120, liveBinning: 2, liveStars: 40, liveHfr: 2 });
   assert(huge.step === AF_STEP_MAX, `100000 -> clamp ${AF_STEP_MAX}, got ${huge.step}`); // 2.8% < 4%
 });
+test("derive: a MEASURED span from the server beats every rule in this file", () => {
+  // The sweep's width is no longer something a browser can work out. It is
+  // sized from the defocus slope a completed sweep measured (server:
+  // focus/span.py) — 0.078 px/step on this rig, which comes out at ±300 rather
+  // than the shipped ±1400. If this file kept deriving its own number, the line
+  // printed under the button would describe a sweep that does not happen, which
+  // is the exact defect the `source`/`basis` split was added to end.
+  const measured = "75 steps (±300) — sized from a defocus slope of 0.0780 px/step";
+  const p = deriveAutofocusParams({ focuserMax: 30000, maxBin: 4, maxGain: 300,
+    liveExposureS: 2, liveGain: 120, liveBinning: 1, liveStars: 40, liveHfr: 2,
+    serverSweep: { step: 75, basis: measured } });
+  assert(p.step === 75, `server span ignored: ${p.step}`);
+  assert(p.basis.step === measured, `basis rebuilt locally: ${p.basis.step}`);
+  // And it wins even where the local travel rule would have intervened, which
+  // is where the two would otherwise most visibly disagree.
+  const tiny = deriveAutofocusParams({ focuserMax: 5000, maxBin: 4, maxGain: 300,
+    liveExposureS: 2, liveGain: 120, liveBinning: 1, liveStars: 40, liveHfr: 2,
+    serverSweep: { step: 75, basis: measured } });
+  assert(tiny.step === 75, `travel rule overrode a measurement: ${tiny.step}`);
+});
+test("derive: no server span (old server, no focuser) keeps the shipped rule", () => {
+  // The fallback has to stay exactly what shipped: a rig whose focuser has
+  // never completed a sweep gets the geometry every successful focus run in
+  // this project's history used.
+  for (const sweep of [null, undefined, { step: 0, basis: "nonsense" }]) {
+    const p = deriveAutofocusParams({ focuserMax: 30000, maxBin: 4, maxGain: 300,
+      liveExposureS: 2, liveGain: 120, liveBinning: 1, liveStars: 40, liveHfr: 2,
+      serverSweep: sweep as never });
+    assert(p.step === AF_DEFAULT_STEP, `fallback broke for ${JSON.stringify(sweep)}: ${p.step}`);
+  }
+});
 test("derive: the sweep BINS LIKE THE FRAME — the third parameter, and the one that cost the night", () => {
   // The reviewed defect: binning was min(2, maxBin) unconditionally while three
   // sentences on the Focus screen said it had been copied from the live frame.

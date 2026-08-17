@@ -65,6 +65,21 @@ class CameraFrame:
     #: e-/ADU at the capture gain, when the backend reports it (Player One
     #: get_egain / ZWO ElecPerADU / sim constant). None -> EGAIN card omitted.
     egain_e_per_adu: float | None = None
+    #: Where the focuser was when this frame was exposed, when the backend can
+    #: say. Only the SIMULATOR can: it renders star sharpness from the focuser
+    #: position, so it knows; a real camera has never heard of the focuser.
+    #:
+    #: A FRAME'S MEASUREMENT BELONGS TO THE FRAME, not to wherever the focuser
+    #: has since moved on to. That distinction did not exist while the sweep
+    #: measured each frame before moving again, and six focus tests quietly
+    #: relied on it by reading the live rig position inside a metric substitute.
+    #: The sweep now exposes the next point WHILE measuring this one
+    #: (`focus.pipeline`), so the live position is the NEXT point's, and a
+    #: substitute that wants to know which point it is looking at has to read it
+    #: off the frame. Production never touches this — the real metric reads
+    #: pixels — but a test double that reads live device state is a test double
+    #: that can pass while the code under test is wrong.
+    focuser_position: int | None = None
 
 
 class Device(ABC):

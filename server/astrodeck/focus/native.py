@@ -36,8 +36,11 @@ from ..imaging.stars import OVEREXPOSED_FRAC, focus_size, saturation_fraction
 from .autofocus import (MAX_DROPS_PER_POSITION, MIN_STARS_PER_POINT,
                         over_swept_advice,
                         AutofocusResult, curve_verdict, dropped_points_phrase,
-                        overexposure_levers, overexposure_phrase, sweep_levers,
-                        thin_points_phrase)
+                        forget_measured_span, overexposure_levers,
+                        overexposure_phrase, record_measured_span,
+                        resolve_sweep, sweep_levers, thin_points_phrase)
+from .pipeline import Prefetch, SweepPredictor
+from .span import DEFAULT_STEP
 
 # Guarded handle to the Rust wheel. ``NATIVE_AVAILABLE`` (the single source of
 # truth) already told us whether the import can succeed; we re-import here only
@@ -62,6 +65,18 @@ R_SQUARED_THRESHOLD = 0.7
 #: so this is the number to print beside a flat curve, and 0.1 px of spread on
 #: a metric that ranges 8→110 across a real sweep is the whole diagnosis.
 FLAT_TIP_BAND = 0.1
+
+#: The engine failures a sweep that was TOO NARROW produces, as
+#: `fail_reason_label` spells them (native/crates/astrodeck-native/src/lib.rs).
+#: `not_enough_spread` is the direct one — the flat-tip band swallowed a whole
+#: side, so there is no trendline to fit. `fit_unavailable` is the same shortage
+#: one notch worse: too few usable points to produce the required fit at all.
+#:
+#: Deliberately NOT `r_squared_below_threshold` or `out_of_bounds`. Those are
+#: what a sweep that is too WIDE or mis-centred produces, and discarding a
+#: calibration over them would throw away a good measurement for a fault it did
+#: not cause.
+FLAT_FAILURES = ("not_enough_spread", "fit_unavailable")
 
 
 def vcurve_report(points: list[tuple[int, float, float]],
@@ -154,7 +169,7 @@ def _fit_payload(outcome: dict) -> dict:
     }
 
 
-def native_sweep_metric(data) -> tuple[float | None, int]:
+def native_sweep_metric(frame) -> tuple[float | None, int]:
     """The size a native sweep point contributes: ``(px | None, sources)``.
 
     THE seam the native sweep measures through, deliberately one named function
@@ -166,8 +181,12 @@ def native_sweep_metric(data) -> tuple[float | None, int]:
     longer intercepting anything the fit used. A stub that has stopped
     intercepting is worse than no stub: the test still reports success, while
     testing something else entirely.
+
+    Takes the whole frame for the reason ``sweep_metric`` does: the next point
+    is already exposing while this one is measured, so the focuser's live
+    position no longer identifies the frame in hand.
     """
-    return focus_size(data)
+    return focus_size(frame.data)
 
 
 def point_sigma(hfr: float, mad: float, n_stars: int) -> float:
@@ -190,10 +209,15 @@ def point_sigma(hfr: float, mad: float, n_stars: int) -> float:
 
 async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                                exposure_s: float = 2.0, gain: int = 120,
-                               step: int = 350, steps_each_side: int = 4,
+                               step: int | None = None, steps_each_side: int = 4,
                                binning: int = 2, expose_guard=None,
                                hfr_method: str | None = None) -> AutofocusResult:
     """Run a V-curve autofocus sweep driven by the native Rust engine.
+
+    ``step`` None — the default — sizes the sweep from this focuser's MEASURED
+    defocus slope (see ``focus.span``), falling back to the shipped 350 until a
+    sweep has measured one. An explicit value is used verbatim: the Advanced
+    panel exists so an operator can overrule us.
 
     ``expose_guard`` mirrors the legacy path: an async context-manager factory
     taking one label, used to serialize the single camera against the live loop /
@@ -217,11 +241,19 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
         async with guard:
             return await camera.expose(exposure_s, gain, 30, binning=binning)
 
+    async def _move_and_expose(pos: int):
+        """One point's device work, as a unit — so it can run as a speculative
+        task while the previous frame is being measured (see `focus.pipeline`)."""
+        await focuser.move_to(pos)
+        return await _expose()
+
     # Detector params: None selects the shipped Typical preset; an explicit
     # ``hfr_method`` picks a base profile before the engine's per-field defaults.
     params = {"profile": hfr_method} if hfr_method else None
 
     start_pos = await focuser.get_position()
+    geometry = resolve_sweep(focuser, step, steps_each_side)
+    step = geometry.step
     # Missing config keys (backlash strategy, max attempts, outlier policy) take
     # the engine's NINA defaults — we only pin the geometry we were asked for.
     config = {
@@ -254,6 +286,12 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
             f"autofocus sweep: {exposure_s:g}s at gain {gain}, bin {binning}, "
             f"{2 * steps_each_side + 1} points of {step} steps around {start_pos}",
             "focus")
+    # WHERE THE GEOMETRY CAME FROM, beside the geometry itself. The sweep width
+    # is no longer a constant in a signature — it is sized from what the last
+    # successful sweep measured — so a log that printed the number without the
+    # reason would leave "why is it sweeping ±300 tonight" unanswerable from the
+    # morning's log alone.
+    bus.log("info", f"autofocus span: {geometry.basis}", "focus")
 
     def _pts() -> list[dict]:
         return [{"position": p, "hfr": h, "sigma": s} for p, h, s in points]
@@ -313,6 +351,23 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
     #: ``MAX_DROPS_PER_POSITION`` for the rig run this spun on forever.
     drop_pos: int | None = None
     drops_here = 0
+    #: The speculative move+expose running ahead of the measurement, if any, and
+    #: the model that decides where to aim it. See `focus.pipeline`: a frame is
+    #: only ever used for the position the engine actually asks for, so this
+    #: cannot change what is measured — only when.
+    predictor = SweepPredictor(step, steps_each_side)
+    prefetch: Prefetch | None = None
+
+    async def _settle(*, cancel: bool = False) -> None:
+        """Let any in-flight speculative exposure finish before we touch the
+        devices ourselves. EVERY path out of the loop goes through this: the
+        task owns the focuser and the camera while it runs, and a restore-to-
+        start racing a speculative move is two moves on one focuser."""
+        nonlocal prefetch
+        if prefetch is not None:
+            spent, prefetch = prefetch, None
+            await spent.settle(cancel=cancel)
+
     #: Stars at the start position, and the knobs that would change that number.
     #: Set by the probe below; -1 until then so a failure BEFORE the probe (a
     #: camera that will not expose) says nothing about the field rather than
@@ -466,6 +521,15 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
 
             if action == "move_to":
                 pos = int(s["position"])
+                # CLAIM THE SPECULATIVE FRAME FIRST, whatever happens next. This
+                # both hands us the frame when the guess was right and — because
+                # it awaits either way — gives the devices back before any of the
+                # branches below move the focuser.
+                frame = None
+                if prefetch is not None:
+                    spent, prefetch = prefetch, None
+                    frame = await spent.take(pos)
+                predictor.emitted(pos)
                 if not (leash_lo <= pos <= leash_hi):
                     # A BOUNDED SWEEP MUST NOT BECOME AN UNBOUNDED WALK.
                     #
@@ -512,10 +576,21 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                                 best=None, message=reason, advice=advice)
                     return AutofocusResult(False, start_pos, None,
                                            _result_pts(), reason, advice=advice)
-                await focuser.move_to(pos)
-                _activity("exposing", index=attempted)
-                frame = await _expose()
+                if frame is None:
+                    await focuser.move_to(pos)
+                    _activity("exposing", index=attempted)
+                    frame = await _expose()
                 attempted += 1
+                # ARM THE NEXT POINT BEFORE MEASURING THIS ONE. That overlap is
+                # the whole speedup: the camera spends the 3-6 s of star
+                # detection exposing instead of waiting for it. The frame it
+                # produces is used only if the engine asks for this exact
+                # position next — see `focus.pipeline` for the rules that bound
+                # what a wrong guess costs.
+                nxt = predictor.predict()
+                if nxt is not None and leash_lo <= nxt <= leash_hi:
+                    prefetch = Prefetch(
+                        nxt, asyncio.create_task(_move_and_expose(nxt)))
                 _activity("measuring", index=attempted - 1)
                 # detect_and_measure releases the GIL but is CPU-heavy; offload it
                 # so focuser/camera awaits and the event stream stay responsive.
@@ -547,7 +622,7 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                 # takes half a minute longer is not a trade worth agonising over.
                 # Offloaded because it is numpy-heavy and would otherwise stall
                 # the event stream the UI is drawing from.
-                size, size_n = await asyncio.to_thread(native_sweep_metric, frame.data)
+                size, size_n = await asyncio.to_thread(native_sweep_metric, frame)
                 hfr = size
                 if size_n > n:
                     # focus_size found sources the star detector did not — at
@@ -616,10 +691,13 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                         # was only consulted on the engine's own `failed` path,
                         # so this branch returned before ever reaching it.
                         salvage = curve_verdict(_result_pts(), counts)
+                        await _settle()
                         if salvage.accepted and salvage.best_position is not None:
                             best = int(round(salvage.best_position))
                             best_hfr = min(h for _p, h, _s in points)
                             advice = _advice(ok=True)
+                            record_measured_span(focuser, _result_pts(), best,
+                                                 binning)
                             await focuser.move_to(best)
                             bus.publish("focus", state="done", points=_pts(),
                                         best={"position": best,
@@ -691,6 +769,7 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                             points_planned=points_planned)
 
             elif action == "done":
+                await _settle()
                 outcome = s.get("outcome") or {}
                 best = int(outcome.get("best_position", start_pos))
                 best_hfr = outcome.get("best_value")
@@ -698,6 +777,10 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                 # Even a success can rest on thin evidence — say so rather than
                 # letting a confident R² stand on four five-star samples.
                 advice = _advice(ok=True)
+                # WHAT THIS SWEEP TAUGHT THE NEXT ONE. A curve the engine
+                # accepted is the only kind worth learning a defocus slope from
+                # — a rejected one describes something that is not a V.
+                record_measured_span(focuser, _result_pts(), best, binning)
                 # Settle the focuser on the fitted optimum before reporting done.
                 await focuser.move_to(best)
                 bus.publish("focus", state="done", points=_pts(),
@@ -733,6 +816,7 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                 # sit under EVERY engine failure rather than only the one
                 # reason: the shape decides, not the label.
                 salvage = curve_verdict(_result_pts(), counts)
+                await _settle()
                 if salvage.accepted and salvage.best_position is not None:
                     best = int(round(salvage.best_position))
                     # The smallest size the sweep MEASURED, not a fitted value
@@ -745,6 +829,7 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                     # five of them.)
                     best_hfr = min(h for _p, h, _s in points)
                     advice = _advice(ok=True)
+                    record_measured_span(focuser, _result_pts(), best, binning)
                     await focuser.move_to(best)
                     bus.publish("focus", state="done", points=_pts(),
                                 best={"position": best, "hfr": best_hfr},
@@ -764,6 +849,19 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                 # about it, from what it measured. Where the run has nothing
                 # specific to say it says nothing — see _advice.
                 advice = _advice(ok=False)
+                # A FLAT CURVE IS THE ONE FAILURE A TOO-NARROW SPAN PRODUCES, so
+                # a span WE sized is the first thing to doubt. Forgetting it
+                # sends the next attempt back to the shipped 350 rather than
+                # letting one bad calibration narrow every sweep of the night
+                # into the same failure. An operator's explicit step is not
+                # ours to forget, hence `geometry.measured`.
+                if geometry.measured and reason in FLAT_FAILURES:
+                    forget_measured_span(focuser)
+                    bus.log("warning",
+                            f"autofocus: this sweep was sized from a measured "
+                            f"defocus slope and came back {reason} — discarding "
+                            f"that calibration so the next run uses the "
+                            f"{DEFAULT_STEP}-step default", "focus")
                 # Restore start: never park the focuser at an arbitrary sweep point.
                 await focuser.move_to(start_pos)
                 bus.publish("focus", state="failed", points=_pts(), best=None,
@@ -795,6 +893,14 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
         # Any transient DeviceError, a cancel from /api/focuser/halt, or an engine
         # ValueError must still return the focuser to where the sweep began before
         # propagating. Shield the restore so even a cancel completes the move.
+        #
+        # CANCELLED, not awaited, and before the restore. Everywhere else a
+        # speculative exposure is allowed to finish; here the sweep itself is
+        # already being torn down, so waiting out a 30 s narrowband frame would
+        # only delay the halt the user asked for — and the restore below must
+        # not race a speculative move on the same focuser.
+        with contextlib.suppress(Exception):
+            await _settle(cancel=True)
         with contextlib.suppress(Exception):
             await asyncio.shield(focuser.move_to(start_pos))
         bus.publish("focus", state="failed", points=_pts(), best=None,

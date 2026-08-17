@@ -312,8 +312,8 @@ async def test_a_thin_point_beside_rich_ones_is_reported_as_discounted(monkeypat
     count in it, so the user can check the claim instead of taking it."""
     rig, cam, foc = await _connected_sim()
 
-    def mixed(data, min_stars=3):
-        pos = rig.focuser_pos
+    def mixed(frame, min_stars=3):
+        pos = frame.focuser_position
         return (9.0, 4, None) if abs(pos - 18500) < 100 else \
             (2.0 + ((pos - 19200) / 1000.0) ** 2, 500, None)
 
@@ -329,9 +329,18 @@ async def test_a_thin_point_beside_rich_ones_is_reported_as_discounted(monkeypat
 def _v_curve_at(rig, minimum: int):
     """A textbook V with its vertex at ``minimum``, 500 stars everywhere — so
     the fit is exact and the only thing under test is what the run SAYS about a
-    vertex it cannot see."""
-    def metric(data, min_stars=3):
-        return 2.0 + ((rig.focuser_pos - minimum) / 1000.0) ** 2, 500, None
+    vertex it cannot see.
+
+    Read off the FRAME, not off ``rig.focuser_pos``. The sweep exposes the next
+    point while this one is being measured, so the live focuser position is the
+    NEXT point's and a curve built from it comes out shifted one step — which is
+    how this substitute failed the day pipelining landed. The sim stamps every
+    frame with the position it was rendered at (``CameraFrame.focuser_position``)
+    precisely so a double can say which point it is looking at.
+    """
+    def metric(frame, min_stars=3):
+        return (2.0 + ((frame.focuser_position - minimum) / 1000.0) ** 2,
+                500, None)
     return metric
 
 
@@ -404,9 +413,9 @@ async def test_legacy_fit_lets_the_richest_frames_decide(monkeypatch):
     true_focus = 19200          # the sim starts here; keep the vertex in the window
     outlier_at = 18500
 
-    def fake_metric(data, min_stars=3):
+    def fake_metric(frame, min_stars=3):
         # A textbook V, except at one position where four stars report nonsense.
-        pos = rig.focuser_pos
+        pos = frame.focuser_position
         if abs(pos - outlier_at) < 100:
             return 9.0, 4, None
         return 2.0 + ((pos - true_focus) / 1000.0) ** 2, 500, None
@@ -508,13 +517,15 @@ async def test_a_real_v_curve_is_not_caught_by_the_flat_gate(monkeypatch):
     _rig, cam, foc = await _connected_sim()
     start = await foc.get_position()
 
-    def v(data, min_stars=3):
-        # A real V about the start position, read off the focuser's OWN place —
-        # `rig.focuser_pos`, which is what get_position() returns. A first draft
-        # guessed an attribute name, silently got the constant `start` every
-        # time, and so fed the gate the very flat curve it was meant to be the
-        # control for.
-        return (2.0 + abs(foc.rig.focuser_pos - start) / 350.0, 400, None)
+    def v(frame, min_stars=3):
+        # A real V about the start position, read off the position THIS FRAME
+        # was exposed at. A first draft guessed an attribute name, silently got
+        # the constant `start` every time, and so fed the gate the very flat
+        # curve it was meant to be the control for. Reading the live focuser
+        # instead is the same failure one step subtler: the sweep exposes the
+        # next point while this one is measured, so the rig's position belongs
+        # to a different frame.
+        return (2.0 + abs(frame.focuser_position - start) / 350.0, 400, None)
 
     monkeypatch.setattr(A, "sweep_metric", v)
     res = await run_autofocus(cam, foc, exposure_s=2.0, gain=200, step=350,
