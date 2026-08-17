@@ -44,9 +44,24 @@ const NAV: { id: ViewName; label: string; icon: IconName }[] = [
   { id: "focus", label: "Focus", icon: "focus" },
   { id: "capture", label: "Capture", icon: "capture" },
   { id: "guide", label: "Guide", icon: "guide" },
-  // Atlas slots immediately BEFORE Plan (spec §8 IA): …Guide → Atlas → Plan → Power.
   { id: "atlas", label: "Atlas", icon: "atlas" },
-  { id: "sequence", label: "Plan", icon: "plan" },
+  // PLAN IS NOT ON THE RAIL ANY MORE (#239 stage B), and this is a REMOVAL, not
+  // the reorder Risk-10 forbids: every remaining entry keeps its position
+  // relative to every other, so nobody's learnt muscle memory moves sideways in
+  // the dark. The one tab that vanishes is the one Flows replaced.
+  //
+  // The ROUTE stays. `sequence` is still a ViewName, still in the routing table
+  // below, still deep-linkable, and still reachable from two places: the Flows
+  // view ("edit the compiled plan") and Settings > Safety > Imaging standards,
+  // whose per-plan overrides live in the plan editor. Deleting the destination
+  // would strand the settings that are still genuinely per-night - `guide`,
+  // `count_mode`, per-target `meridian_flip` - which stage C has not yet given
+  // Flows a way to say.
+  //
+  // The rail is back to fifteen, which is what BOTH padding notes below were
+  // fighting. The padding is deliberately NOT reverted here: it was tuned for
+  // sixteen and looks correct at fifteen, and changing two things at once is
+  // how the last two rail changes each needed a follow-up.
   { id: "power", label: "Power", icon: "power" },
   { id: "monitor", label: "Monitor", icon: "monitor" },
   // APPENDED (polish grab-bag (c), same Risk-10 precedent as Monitor): "what can I

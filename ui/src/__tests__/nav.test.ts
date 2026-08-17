@@ -97,9 +97,19 @@ const NAV_IDS = NAV.map((n) => n.id);
  */
 const LANDED_ORDER = [
   "connect", "polar", "mount", "focus", "capture", "guide", "atlas",
-  "sequence", "power", "monitor", "tonight", "settings", "report", "help",
+  "power", "monitor", "tonight", "settings", "report", "help",
   "gallery", "flows",
 ];
+
+/** Destinations that are REACHABLE but deliberately not on the rail.
+ *
+ *  Risk-10 is about not REORDERING a landed rail - a user who learnt where a
+ *  tab lives must not find it moved. Removing one shifts nobody: every
+ *  remaining entry keeps its position relative to every other. So a removal is
+ *  permitted, and the thing that has to be guarded instead is that the
+ *  destination still EXISTS - a "demotion" that quietly deletes the route is a
+ *  different change wearing the same name. */
+const OFF_RAIL_BUT_ROUTABLE = ["sequence"];
 
 // ---------------------------------------------------------------- tests
 
@@ -115,6 +125,24 @@ test("APPEND-ONLY: the landed rail order is byte-for-byte unchanged", () => {
     "the rail order changed. Risk-10 permits APPENDING a destination and nothing else — " +
     "a user who has learnt where a tab lives finds it moved, in the dark, mid-session. " +
     "If this is a deliberate append, add the new id to the END of LANDED_ORDER here too");
+});
+
+test("Plan is off the rail but still a real destination", () => {
+  // #239 stage B. Flows is the front door; the plan editor stays for the
+  // settings that are still per-night intent and that Flows cannot yet say.
+  for (const id of OFF_RAIL_BUT_ROUTABLE) {
+    eq(NAV_IDS.includes(id), false, `${id} is back on the rail`);
+    const at = typesSrc.search(/export type ViewName\s*=/);
+    const tail = decomment(typesSrc.slice(at));
+    const union = tail.slice(0, tail.indexOf(";"));
+    assert(union.includes(`"${id}"`),
+      `${id} was removed from ViewName - that is a deletion, not a demotion, ` +
+      "and it strands every deep link and both entry points");
+    const lazySrc = fs.readFileSync(pathOf("../lib/lazyViews.ts"), "utf8");
+    assert(lazySrc.includes(`${id}: () => import(`),
+      `${id} has no loader left in lib/lazyViews.ts - the tab is gone AND ` +
+      "unreachable, which is a deletion wearing a demotion's name");
+  }
 });
 
 test("APPEND-ONLY: Flows is the newest entry and sits last", () => {

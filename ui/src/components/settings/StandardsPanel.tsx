@@ -100,6 +100,20 @@ export default function StandardsPanel(): JSX.Element {
           {...lockedProps(canEdit ? null : LOCK)} />
       </Field>
 
+      {/* The plan editor's door (#239 stage B). Plan left the nav rail, so the
+          sentence above about a plan overriding these has to say WHERE. */}
+      <p className="text-xs text-dim mt-3">
+        A single night can override any of these in the{" "}
+        <button
+          type="button"
+          className="underline text-accent"
+          onClick={() => useStore.getState().setView("sequence")}
+        >
+          plan editor
+        </button>
+        , where an overridden setting is marked and can be handed back to the rig.
+      </p>
+
       {!canEdit && <LockedNote reason={LOCK} />}
       {err && <p className="text-xs text-bad mt-2">{err}</p>}
     </Panel>
