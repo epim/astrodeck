@@ -967,3 +967,65 @@ path containment, the site-derived keys, the focuser arrival check, the dawn
 park, the unsafe-confirm debounce, the warm ramp and the guide offer predicate
 all have covering tests that go red when the guard is disarmed. The sample is
 eight of thousands; the file states the bound and asserts it.
+
+---
+
+## #219 — autofocus: the diagnosis was wrong, and half of it is now fixed
+
+**Re-measured 2026-08-17** (NGC 7129, Ha, 24 s gain 200, **bin 1** — the
+measurement the old note demanded before any work). The original filing said
+"only works on a bright field". That field had **1172 stars at focus**. The
+failure is at the bloated end of the sweep, not the faint end.
+
+The sweep found focus at 11135 (2.96 px, 1172 stars), then walked 2450 steps
+past the bottom of its own planned range chasing 0.50 / 0.51 / 0.52 px from four
+to twelve "stars", and gave up after thirteen minutes with no focus.
+
+**FIXED (`ea4b3b4`).** A half-flux *radius* below one pixel means the flux fits
+inside a single pixel — a measurement of a pixel, not a star, at any binning.
+`_size_point` refused only `hfr <= 0`, so half a pixel was legal, and a
+too-small number does not merely add noise to the fit: it outranks the true
+minimum and steers the search. `MIN_SIZE_PX` now floors it.
+
+**NOT FIXED — the wings.** With the sub-pixel points gone the curve is still
+refused: "the left wing falls back 16.66px … an arm that turns round is not one
+arm of a V". Outward from focus the rig measured:
+
+    ±350 steps    27.06 / 27.38 px   from 49 / 32 stars   good, symmetric
+    ±700 steps    10.40 / 14.12 px   from 13 /  8 stars   backwards
+    −1050 steps    5.52 px           from 10 stars        backwards
+
+**Reproduced without a telescope** — `test_star_size_fragments_a_thin_donut.py`.
+A thick-rimmed synthetic donut is measured correctly (26.71 px for 24 px true,
+nine donuts → nine sources). Thin the rim to what a real optic gives at large
+defocus and the ring breaks into arcs: sources rise 9 → 19 → 24, and the
+measured size collapses and **plateaus at ~7.7 px whether the true radius is 24
+or 34**. Saturation ruled out. That is the wing failure, on a bench.
+
+Hocus Focus found the same thing independently — its 4.0.0.5 note restores
+tighter Brightness Sensitivity because looser values "admitted noise/donut
+fragments that could skew autofocus on wide/defocused sweeps".
+
+### Why the obvious fix was not taken
+
+The fix belongs in the detector, and **`detect_stars` also feeds the cloud
+detector**, which since 2026-08-17 stands in for a missing safety monitor and
+can hold a night. Retuning detection to chase a focus bug could hold good nights
+on a false cloudy verdict. That is a real trade and wants its own change.
+
+Narrowing the sweep was the other candidate and was also left alone: ±350 was
+excellent and ±700 was not, but `steps_each_side=4` at step 350 spans ±1400, and
+shrinking it blind risks the existing `not_enough_spread` failure. Choosing a
+span honestly needs the focuser's critical focus zone, which we have not
+measured.
+
+### What would close it
+
+1. A detector rule that refuses arcs, or recognises fragments of one ring —
+   validated against **both** the donut reproduction and the cloud detector's
+   own fixtures, because they share `detect_stars`.
+2. Or measure the CFZ and set the sweep span from it, so the sweep never asks
+   for a point it cannot measure.
+3. Hocus Focus's other two ideas, both cheap and independent: exclude extreme
+   positions from the fit with a notice saying so, and statistical outlier
+   rejection within a frame's star population.
