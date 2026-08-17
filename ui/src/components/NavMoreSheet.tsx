@@ -37,7 +37,10 @@ export const OVERFLOW_VIEWS: { id: ViewName; label: string; icon: IconName }[] =
   { id: "guide", label: "Guide", icon: "guide" },
   // Atlas before Plan, mirroring the desktop rail IA (spec §8 mobile "More" overflow).
   { id: "atlas", label: "Atlas", icon: "atlas" },
-  { id: "sequence", label: "Plan", icon: "plan" },
+  // Plan left this sheet with the rail (#239 stage B). On a phone this sheet
+  // IS the navigation, so keeping it here would make Plan a primary
+  // destination on phones and an advanced one everywhere else. It is reached
+  // from Flows and from Settings > Safety, on every form factor.
   { id: "power", label: "Power", icon: "power" },
   { id: "monitor", label: "Monitor", icon: "monitor" },
   // Tonight lands HERE on mobile (polish grab-bag Decision C): the 5-slot primary
