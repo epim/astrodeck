@@ -221,9 +221,32 @@ export default function FirstRunWizard(): JSX.Element | null {
   // Auto-open: genuine blank slate only (never-seen + default site + no rig),
   // so a returning/already-set-up user (or astrotown) is never interrupted.
   // seenWizard guards a user who has already dismissed it once.
+  //
+  // ONLY ON REAL DATA. Both terms below default to the blank-slate answer while
+  // the store is un-hydrated - `siteIsDefault` falls back to `true` and
+  // `equipConnected` starts `false` - so "we have not heard from the server
+  // yet" and "this is a fresh install" are the same value, and this effect
+  // races the first status frame. Losing that race once is permanent for the
+  // session, which is why a rig that has been imaging for weeks still had the
+  // guide up at step 3/6.
+  //
+  // `status` is the hydration marker because the hub publishes one every 2s no
+  // matter what is connected. The grace timer is NOT optional: on a genuinely
+  // fresh install whose socket never comes up, waiting forever would deny the
+  // guide to exactly the user who needs it. After it elapses we fall back to
+  // today's decision.
+  const status = useStore((s) => s.status);
+  const [graceElapsed, setGraceElapsed] = useState(false);
   useEffect(() => {
+    const id = window.setTimeout(() => setGraceElapsed(true), 4000);
+    return () => window.clearTimeout(id);
+  }, []);
+  const heardFromServer = config !== null && status !== null;
+  useEffect(() => {
+    if (!heardFromServer && !graceElapsed) return;
     if (!seenWizard && !open && siteIsDefault && !equipConnected) openWizard();
-  }, [seenWizard, open, siteIsDefault, equipConnected, openWizard]);
+  }, [heardFromServer, graceElapsed, seenWizard, open, siteIsDefault,
+      equipConnected, openWizard]);
 
   if (!open) return null;
 
