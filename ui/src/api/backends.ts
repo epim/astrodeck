@@ -36,6 +36,7 @@ import type {
   UpdateConfig,
   UpdateStatus,
   User,
+  StandardsConfig,
   WcsStampConfig,
 } from "../types";
 import type { DiscoveredHardware } from "../components/settings/backendMeta";
@@ -553,6 +554,13 @@ export const setNamingConfig = (naming: NamingConfig): Promise<AppConfig> =>
 // ------------------------------------------------- per-frame WCS (per-frame-wcs)
 /** POST /api/config/wcs → config payload. config.site_optics.
  *  Master enable + advanced block travel together (one atomic version bump). */
+/** POST /api/config { standards } -> config payload. config.safety.
+ *  The rig's imaging standards (#239 stage A): the thresholds that decide
+ *  whether a frame is kept and when the night gives up. Gated on config.safety
+ *  rather than site_optics for that reason. */
+export const setStandardsConfig = (standards: StandardsConfig):
+  Promise<AppConfig> => api.post<AppConfig>("/api/config", { standards });
+
 export const setWcsStampConfig = (
   body: { solve_saved_lights: boolean; wcs_stamp: WcsStampConfig },
 ): Promise<AppConfig> => api.post<AppConfig>("/api/config/wcs", body);

@@ -42,6 +42,7 @@ import UsersPanel from "./UsersPanel";
 import AuthMethodPanel from "./AuthMethodPanel";
 import SafetyPanel from "./SafetyPanel";
 import SafetyLimitsPanel from "./SafetyLimitsPanel";
+import StandardsPanel from "./StandardsPanel";
 import EscalationPanel from "./EscalationPanel";
 import AlertsPanel from "./AlertsPanel";
 import UpdatePanel from "./UpdatePanel";
@@ -244,6 +245,11 @@ export default function SettingsView(): JSX.Element {
         <div className="flex flex-col gap-4">
           <SafetyPanel />
           <SafetyLimitsPanel />
+          {/* #239 stage A. Under Safety rather than a tab of its own: these are
+              the thresholds that decide whether a frame is kept and when a
+              night gives up, and they are gated on the same config.safety
+              capability as the panels above. */}
+          <StandardsPanel />
           <EscalationPanel />
         </div>
       )}
