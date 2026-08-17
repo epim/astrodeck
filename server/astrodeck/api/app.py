@@ -62,7 +62,8 @@ from ..config import (FRAME_SCOPES, AlertSink, AuthConfig, CalibrationConfig,
                       ConfigVersionConflict, CoolingConfig,
                       EscalationConfig, GuideConfig, NamingConfig, Optics,
                       ProvidersConfig, RotatorConfig, SafetyConfig, Site,
-                      SurveyConfig, SyncPushConfig, UpdateConfig, WcsStampConfig,
+                      StandardsConfig, SurveyConfig, SyncPushConfig,
+                      UpdateConfig, WcsStampConfig,
                       WeatherConfig,
                       config_store, frames_payload, publish_frames, redacted,
                       set_frame_settings)
@@ -1361,6 +1362,11 @@ class ConfigPatchBody(BaseModel):
     # words: "park, then warm the camera at a safe ramp". The knob belongs next
     # to the sentence that promises it.
     cooling: CoolingConfig | None = None
+    # The rig's imaging standards (#239 stage A). Gated on config.safety rather
+    # than site_optics: these are the thresholds that decide whether a frame is
+    # kept and when the night gives up, which is the same family of
+    # hardware-and-run protection SafetyLimitsPanel already owns.
+    standards: StandardsConfig | None = None
 
 
 class SafetySimulateBody(BaseModel):
@@ -2609,6 +2615,8 @@ def create_app() -> FastAPI:
             config_store.set_escalation(body.escalation)
         if body.cooling is not None:
             config_store.set_cooling(body.cooling)
+        if body.standards is not None:
+            config_store.set_standards(body.standards)
         if body.alerts is not None:
             config_store.set_alerts(_merge_alert_verified(body.alerts))
         if body.deadman_url is not None:
@@ -2637,6 +2645,7 @@ def create_app() -> FastAPI:
           site.horizon_min_deg -> ALSO config.safety (a safety floor)
           safety               -> config.safety
           cooling              -> config.safety   (warm-down ramp = hardware protection)
+          standards            -> config.safety   (frame-quality + give-up thresholds)
           escalation           -> config.alerts   (notification/recovery policy)
           alerts               -> config.alerts
           deadman_url          -> config.alerts
@@ -2648,6 +2657,7 @@ def create_app() -> FastAPI:
             "site": CAP_CONFIG_SITE_OPTICS,
             "safety": CAP_CONFIG_SAFETY,
             "cooling": CAP_CONFIG_SAFETY,
+            "standards": CAP_CONFIG_SAFETY,
             "escalation": CAP_CONFIG_ALERTS,
             "alerts": CAP_CONFIG_ALERTS,
             "deadman_url": CAP_CONFIG_ALERTS,

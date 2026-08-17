@@ -1300,6 +1300,18 @@ class ConfigStore:
         cfg.escalation = escalation
         return self.bump_and_save()
 
+    def set_standards(self, standards: "StandardsConfig") -> AppConfig:
+        """Persist the rig's imaging standards (#239 stage A).
+
+        Wholesale-replace, like set_safety and set_cooling: the panel echoes the
+        full block back with its edit applied. Nothing here is exempt - unlike
+        cooling's live `setpoint_c`, every field in this block is policy the
+        panel owns.
+        """
+        cfg = self.cfg()
+        cfg.standards = standards
+        return self.bump_and_save()
+
     def set_cooling(self, cooling: "CoolingConfig") -> AppConfig:
         """Persist the cooler warm-down POLICY (rate / assumed ambient / whether
         the ramp runs at all). Wholesale-replace, like set_safety — the UI echoes
