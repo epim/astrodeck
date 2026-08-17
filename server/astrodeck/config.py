@@ -118,6 +118,11 @@ class SafetyConfig(BaseModel):
     enabled: bool = True
     preset: str = "backyard"               # backyard | remote | custom
     poll_each_frame: bool = True
+    #: Lead time for the live meridian-flip ETA chip (#239 stage A: moved off
+    #: SequencePlan). Operator preference about how much warning they want, not
+    #: a property of any one night. NOT part of SAFETY_PRESETS, so the preset
+    #: detector below ignores it and a rig stays on its named preset.
+    meridian_flip_warn_min: float = Field(15.0, ge=0, le=240)
     # floor is OFF until a SafetyMonitor or a custom horizon is configured (C1-4);
     # 0 = disabled. The UI sets 10 when the user enables the floor.
     min_alt_deg: float = 0.0
@@ -207,6 +212,10 @@ class EscalationConfig(BaseModel):
     af_failure_action: str = "warn"        # warn | abort | skip
     hfr_reject_action: str = "warn"        # warn | discard | retake (retake = Advanced)
     hfr_retake_limit_per_target: int = 4   # cap per target (C1-7)
+    #: The threshold `hfr_reject_action` ACTS ON (#239 stage A: moved off
+    #: SequencePlan). It lived on the plan while its action lived here, which is
+    #: one setting split across two layers for no reason. 0 = off.
+    hfr_reject_factor: float = Field(0.0, ge=0, le=10)
     no_progress_watchdog_s: int = 0        # 0 = off
     reconnect_resume: bool = False         # Alpaca-only; off by default (C2-15)
     reconnect_retries: int = 1
@@ -449,6 +458,11 @@ class GuideConfig(BaseModel):
     # default so an unset config round-trips byte-identical (no params sent).
     ra_params: GuideAxisParams = GuideAxisParams()
     dec_params: GuideAxisParams = GuideAxisParams()
+    #: #239 stage A, moved off SequencePlan. Dither distance is a function of
+    #: this guide scope's image scale and recovery is standing behaviour; both
+    #: are the same on every night this rig ever runs.
+    dither_pixels: float = Field(3.0, ge=0, le=100)
+    recover_guiding: bool = True
     # Guide-camera frame settings (2026-08-07; appended — old configs load
     # fine). The native guider reads these PER EXPOSURE, so a change applies
     # from the next guide frame; before this the loop's exposure was a
@@ -663,6 +677,10 @@ class CoolingConfig(BaseModel):
     #: cooler off, so it tracks INTENT and never drifts into a stale order to
     #: re-cool at dawn.
     setpoint_c: float | None = Field(None, ge=-60, le=40)
+    #: How long to wait for the sensor to reach `cool_to` before the escalation
+    #: policy decides (#239 stage A: moved off SequencePlan). A property of this
+    #: camera and this ambient, not of tonight's target.
+    cool_timeout_s: int = Field(600, ge=0, le=7200)
 
 
 class WeatherConfig(BaseModel):
@@ -742,6 +760,44 @@ class DriverEntry(BaseModel):
         return self
 
 
+class StandardsConfig(BaseModel):
+    """The operator's standards for a usable frame, and the focus policy that
+    keeps frames usable (#239 stage A).
+
+    These were plan fields, which meant a flow-driven night could not have them
+    at all: `flows/to_plan.py` sets eight plan fields and every quality gate
+    took the model default of "off". So a graph-built night ran with no star
+    floor, no guide-RMS ceiling, no eccentricity ceiling and no HFR rejection,
+    silently, and there was nowhere to say otherwise.
+
+    Every default below is the value `SequencePlan` carried before the move, so
+    a rig that never opens Settings behaves exactly as it did.
+
+    NAMING HAZARD: `WcsStampConfig.min_stars` is a DIFFERENT setting - the floor
+    below which a saved light is not WCS-stamped. This one is the floor below
+    which a frame is REJECTED. Do not consolidate them.
+    """
+    #: Shift the focuser by the per-filter offset on a filter change. A property
+    #: of the filter set.
+    apply_filter_offsets: bool = True
+    #: Refocus when the focuser temperature has drifted this far since the last
+    #: focus run. A property of the OTA and focuser. 0 = off.
+    refocus_on_temp_delta_c: float = Field(0.0, ge=0, le=50)
+    #: Reject a light frame with fewer than this many stars. 0 = off.
+    #: NOT `wcs_stamp.min_stars` - see the class docstring.
+    min_stars: int = Field(0, ge=0, le=100000)
+    #: Reject a light frame taken while guide RMS exceeded this, arcsec. 0 = off.
+    max_guide_rms: float = Field(0.0, ge=0, le=60)
+    #: Reject a light frame whose median star eccentricity exceeds this, 0..1.
+    #: 0 = off.
+    max_eccentricity: float = Field(0.0, ge=0, le=1)
+    #: Give up on a STEP after this many consecutive rejects. 0 = off.
+    max_consecutive_rejects: int = Field(10, ge=0, le=1000)
+    #: End the NIGHT after this many consecutive rejects across all targets.
+    #: 0 = off.
+    max_consecutive_rejects_night: int = Field(20, ge=0, le=1000)
+
+
 class AppConfig(BaseModel):
     version: int = 1                   # bumped on every save (optimistic-concurrency token)
     site: Site = Field(default_factory=Site)
@@ -788,6 +844,9 @@ class AppConfig(BaseModel):
     # --- per-frame-WCS advanced knobs (per-frame-wcs spec §3; appended — old
     #     configs load fine, and every field defaults to today's behaviour) ---
     wcs_stamp: WcsStampConfig = Field(default_factory=WcsStampConfig)
+    # --- the rig's imaging standards (#239 stage A; appended - old configs load
+    #     fine and every default is the value SequencePlan used to carry) ---
+    standards: StandardsConfig = Field(default_factory=StandardsConfig)
     # --- file-sync push destination (Phase 2; appended — old configs load fine
     #     and the default is OFF, so nothing changes for anyone who ignores it) ---
     sync_push: SyncPushConfig = Field(default_factory=SyncPushConfig)
