@@ -1019,6 +1019,11 @@ export interface AppConfig {
   //     written before the block existed simply has no key; the server fills
   //     every field with the value SequencePlan used to carry.
   standards?: StandardsConfig;
+  //     Only the two fields #239 stage A moved here. The rest of GuideConfig is
+  //     the native-guider tuning surface, which no screen in this app edits, so
+  //     mirroring all of it would be three more hand-maintained copies for no
+  //     reader.
+  guide?: { dither_pixels?: number; recover_guiding?: boolean };
   // --- file-sync push destination (Phase 2; appended). Optional: an old WS
   //     `hello` bootstrap predates the field. ---
   sync_push?: SyncPushConfig;
@@ -1383,6 +1388,8 @@ export interface NoGoWedge {
 }
 
 export interface SafetyConfig {
+  // #239 stage A: lead time for the live meridian-flip ETA chip.
+  meridian_flip_warn_min?: number;
   enabled: boolean;
   preset: "backyard" | "remote" | "custom";
   poll_each_frame: boolean;             // read the monitor before every exposure
@@ -1421,6 +1428,8 @@ export interface SafetyConfig {
  *  and any older server omit it, and every consumer must degrade to "the
  *  default 2 °C/min ramp is on" rather than blanking the control. */
 export interface CoolingConfig {
+  // #239 stage A: how long to wait for the setpoint before escalation decides.
+  cool_timeout_s?: number;
   warm_ramp: boolean;            // false = cut the TEC dead (the pre-2026-08-04 bug, opt-in)
   warm_rate_c_per_min: number;   // ramp rate; server clamps to 0.1..20
   warm_ambient_c: number | null; // null = work it out (measured, else assumed 20 °C)
@@ -1437,6 +1446,8 @@ export interface CalibrationConfig {
 }
 
 export interface EscalationConfig {
+  // #239 stage A: the threshold hfr_reject_action acts on. 0 = off.
+  hfr_reject_factor?: number;
   require_cooling: boolean;
   cooling_action: "warn" | "abort" | "skip";
   require_guiding: boolean;
