@@ -26,6 +26,11 @@ from ..imaging.stars import (OVEREXPOSED_FRAC, focus_size, median_hfr,
 #: same authority as a 900-star one and fitted the resulting noise.
 MIN_STARS_PER_POINT = 3
 
+#: The sampling floor lives in `imaging.stars` beside the detector that can
+#: violate it; imported rather than restated so the sweep and `focus_size`
+#: cannot drift apart. See its docstring for the 2026-08-17 measurement and
+#: why #219's original "only works on a bright field" diagnosis was wrong.
+
 #: How many times in a row one sweep position may be dropped before the run is
 #: refused instead of retried.
 #:
@@ -369,10 +374,14 @@ def _size_point(size, min_stars: int) -> tuple[float | None, int]:
     directly so it can also hand the SourceSize to ``size_advice``, and this
     keeps the accept/refuse rule in ONE shape rather than two that can drift.
     """
-    from ..imaging.stars import SIZE_CONFIDENT_SNR
+    from ..imaging.stars import MIN_SIZE_PX, SIZE_CONFIDENT_SNR
     if size is None:
         return None, 0
     if size.n_sources < min_stars and size.snr < SIZE_CONFIDENT_SNR:
+        return None, size.n_sources
+    if size.radius < MIN_SIZE_PX:
+        # Checked AFTER the star gate and independently of SNR: a bright single
+        # hot pixel has a confident SNR and is exactly what this refuses.
         return None, size.n_sources
     return size.radius, size.n_sources
 
