@@ -13,7 +13,9 @@ import astrodeck.api.app as app_module
 import astrodeck.hub as hub_module
 from astrodeck.hub import Hub
 from astrodeck.sequence import SequenceEngine, SequencePlan
+from astrodeck.config import AppConfig
 from astrodeck.sequence.models import ExposureStep, Target, quota_unbounded
+from astrodeck.sequence.policy import resolve_policy
 from astrodeck.sequence.session import session_store
 
 
@@ -189,33 +191,42 @@ def test_count_mode_still_accepts_the_two_real_values():
 
 # ------------------------------------- IMPORTANT: unbounded accepted-quota gate
 
+def _unbounded(plan):
+    """`quota_unbounded` takes the RESOLVED policy since #239 stage A - both
+    reject guards are rig standards unless the plan overrides them, so the
+    question cannot be answered from the plan alone. These plans set the guards
+    explicitly, so resolving against a default config returns exactly what they
+    asked for and every assertion below means what it always did."""
+    return quota_unbounded(plan, resolve_policy(plan, AppConfig()))
+
+
 def test_quota_unbounded_helper():
     """Direct unit coverage of the ``quota_unbounded`` predicate: reviewer-
     verified that ``_enforce_stop_boundary`` never raises for a (now, None)
     window and the no-progress watchdog only WARNs, so BOTH reject guards off
     AND a boundary-less target is the exact unbounded combination."""
     unbounded = _plan(max_consecutive_rejects=0, max_consecutive_rejects_night=0)
-    assert quota_unbounded(unbounded) is True
+    assert _unbounded(unbounded) is True
 
     # attempts mode never counts, regardless of guards
     attempts = _plan(max_consecutive_rejects=0, max_consecutive_rejects_night=0)
     attempts.count_mode = "attempts"
-    assert quota_unbounded(attempts) is False
+    assert _unbounded(attempts) is False
 
     # either guard alone is enough to make the run bounded
-    assert quota_unbounded(
+    assert _unbounded(
         _plan(max_consecutive_rejects=1, max_consecutive_rejects_night=0)) is False
-    assert quota_unbounded(
+    assert _unbounded(
         _plan(max_consecutive_rejects=0, max_consecutive_rejects_night=1)) is False
 
     # a stop boundary on every target is also enough
     bounded_run = _plan(max_consecutive_rejects=0, max_consecutive_rejects_night=0)
     bounded_run.targets[0].schedule.max_run_min = 30
-    assert quota_unbounded(bounded_run) is False
+    assert _unbounded(bounded_run) is False
 
     bounded_dawn = _plan(max_consecutive_rejects=0, max_consecutive_rejects_night=0)
     bounded_dawn.targets[0].schedule.stop_mode = "dawn"
-    assert quota_unbounded(bounded_dawn) is False
+    assert _unbounded(bounded_dawn) is False
 
     # reviewer-specified semantics (fix round 2): ANY non-calibration target
     # lacking a stop boundary fires the gate — a mixed plan's boundary-less
@@ -223,11 +234,11 @@ def test_quota_unbounded_helper():
     mixed = _plan(count=2, targets=2, max_consecutive_rejects=0,
                   max_consecutive_rejects_night=0)
     mixed.targets[0].schedule.max_run_min = 30
-    assert quota_unbounded(mixed) is True
+    assert _unbounded(mixed) is True
 
     # ...and bounding BOTH targets makes the same plan startable again
     mixed.targets[1].schedule.stop_mode = "dawn"
-    assert quota_unbounded(mixed) is False
+    assert _unbounded(mixed) is False
 
     # calibration targets never enter the accepted-mode quota loop -> a
     # calibration-only plan is never unbounded by this rule
@@ -236,7 +247,7 @@ def test_quota_unbounded_helper():
                        targets=[Target(name="darks", ra_hours=0.0, dec_deg=0.0,
                                        calibration=True,
                                        steps=[ExposureStep(exposure_s=1.0, count=3)])])
-    assert quota_unbounded(cal) is False
+    assert _unbounded(cal) is False
 
     # ...and a boundary-less calibration target must not fire the gate when
     # mixed with a BOUNDED light target (only lights enter the quota loop)
@@ -245,7 +256,7 @@ def test_quota_unbounded_helper():
     cal_mixed.targets.append(Target(name="darks", ra_hours=0.0, dec_deg=0.0,
                                     calibration=True,
                                     steps=[ExposureStep(exposure_s=1.0, count=3)]))
-    assert quota_unbounded(cal_mixed) is False
+    assert _unbounded(cal_mixed) is False
 
 
 @pytest.fixture

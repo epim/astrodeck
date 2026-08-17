@@ -48,6 +48,7 @@ from .instructions import (
 )
 from .models import ExposureStep, SequencePlan, Target
 from .report import FrameRecord, SessionReporter
+from .policy import resolve_policy
 from .session import Session, SessionFrame, session_store
 
 # --- Monitor / ETA shared constants (single source of truth) ---------------
@@ -275,6 +276,11 @@ class SequenceEngine:
         # register so the hub's poll_status can read the active plan's
         # meridian_flip setting (Monitor meridian block) without importing here.
         hub.engine = self
+        self._cfg = None                    # config snapshot taken at start()
+        #: Resolved rig-standards-vs-plan policy (#239 stage A). DERIVED from
+        #: the plan - see the `plan` property - so it can never describe a
+        #: different plan from the one being run.
+        self._policy = resolve_policy(SequencePlan(), None)
         self.plan: SequencePlan | None = None
         self._task: asyncio.Task | None = None
         self._paused = asyncio.Event()
@@ -373,8 +379,11 @@ class SequenceEngine:
         # up, instead of unwinding the frame loop. A set => idempotent, so a rule
         # that re-fires every frame can never queue work or loop.
         self._pending_skips: set[str] = set()
-        self._cfg = None                    # config snapshot taken at start()
         self._dawn_cutoff = False           # scheduler ran out of open windows
+        #: Resolved rig-standards-vs-plan policy (#239 stage A), replaced at
+        #: start(). A bare default here so an engine built without start() -
+        #: which many tests do - still reads real numbers rather than None.
+        self._policy = resolve_policy(SequencePlan(), None)
         # A RUNNING target hit its frozen stop boundary — dawn, a stop time, or
         # max_run — as opposed to the scheduler finding every window already
         # shut. Separate from `_dawn_cutoff` because that one is only ever set
@@ -395,6 +404,29 @@ class SequenceEngine:
         self.dispatcher = None
 
     # ----------------------------------------------------------------- control
+
+    @property
+    def plan(self) -> "SequencePlan | None":
+        return self._plan
+
+    @plan.setter
+    def plan(self, value: "SequencePlan | None") -> None:
+        """Assigning a plan RE-DERIVES the policy, and that is the point.
+
+        `_policy` resolves twelve settings from the rig's standards unless this
+        plan overrides them, so a policy left over from a different plan is a
+        run graded against somebody else's standards. Only `start()` assigns a
+        plan in production today, which is exactly the sort of "true for now"
+        that this codebase keeps being bitten by - the tests that build an
+        engine by hand and set `.plan` were reading a stale policy the moment
+        the field moved, and they were right to fail.
+
+        Re-derived on ASSIGNMENT, not on read: within one run the plan object
+        does not change, so the rules a frame is graded against at 03:00 are the
+        ones the 21:00 frame got, even if Settings is edited mid-night.
+        """
+        self._plan = value
+        self._policy = resolve_policy(value or SequencePlan(), self._cfg)
 
     def start(self, plan: SequencePlan, *, session: Session | None = None) -> None:
         """Start a run. EVERY start owns a Session (spec §2): a fresh one when
@@ -470,6 +502,11 @@ class SequenceEngine:
         self._event_costs = {}
         # --- automation / safety run state (snapshot config ONCE at run start) ---
         self._cfg = config_store.cfg()
+        # RESOLVE THE RIG'S STANDARDS ONCE, HERE (#239 stage A). Twelve settings
+        # live in config unless this plan overrides them. Resolving per-read
+        # would let a mid-run Settings edit change the rules between one frame
+        # and the next, with nothing recording that it happened.
+        self._policy = resolve_policy(plan, self._cfg)
         rid = _mint_report_id(plan.name or "Tonight", self._started_at,
                               session.nights)
         self.reporter = SessionReporter(plan, report_id=rid,
@@ -899,7 +936,8 @@ class SequenceEngine:
         if self.plan.meridian_flip and mer.get("flip_enabled"):
             ttf_h = mer.get("hours_to_flip")
             if ttf_h is not None and ttf_h > 0:
-                warn_min = getattr(self.plan, "meridian_flip_warn_min", 15.0) or 0.0
+                # the resolver always answers, so there is no default to guess here
+                warn_min = self._policy.meridian_flip_warn_min or 0.0
                 if ttf_h * 60.0 <= warn_min:
                     # ttf is HOURS — convert to seconds for the chip (C2-17).
                     live["meridian_eta_s"] = round(ttf_h * 3600.0)
@@ -956,7 +994,7 @@ class SequenceEngine:
             self._start_watchdog()
 
             if plan.cool_to is not None:
-                cooled = await self._cool_and_wait(plan.cool_to, plan.cool_timeout_s)
+                cooled = await self._cool_and_wait(plan.cool_to, self._policy.cool_timeout_s)
                 # P1-7: require_cooling + cooling_action == "skip" → don't shoot
                 # warm lights. (abort raised SafetyAbort inside _cool_and_wait;
                 # warn/not-required returned and we proceed as before.)
@@ -2047,7 +2085,7 @@ class SequenceEngine:
                 self._set_state(detail="dithering")
                 _t0 = time.time()
                 try:
-                    await _bounded(self.hub.guider.dither(plan.dither_pixels),
+                    await _bounded(self.hub.guider.dither(self._policy.dither_pixels),
                                    GUIDE_OP_TIMEOUT_S, "dither")
                     self._frames_since_dither = 0
                     self._record_event_cost("dither", time.time() - _t0)
@@ -2127,12 +2165,12 @@ class SequenceEngine:
                 self._end_discarded_frame()
                 step_rejects += 1
                 self._night_rejects += 1
-                if plan.max_consecutive_rejects_night \
-                        and self._night_rejects >= plan.max_consecutive_rejects_night:
+                if self._policy.max_consecutive_rejects_night \
+                        and self._night_rejects >= self._policy.max_consecutive_rejects_night:
                     raise NightQualityStop(
                         f"{self._night_rejects} consecutive rejects across targets")
-                if plan.max_consecutive_rejects \
-                        and step_rejects >= plan.max_consecutive_rejects:
+                if self._policy.max_consecutive_rejects \
+                        and step_rejects >= self._policy.max_consecutive_rejects:
                     bus.log("warning",
                             f"{target.name}: {step_rejects} consecutive rejects — "
                             "skipping to the next step (shortfall stays in the "
@@ -3933,8 +3971,13 @@ class SequenceEngine:
             return
         bus.log("info", f"cooler gate ({why}): checking the sensor before capture",
                 "sequence")
-        await self._cool_and_wait(
-            target, getattr(self.plan, "cool_timeout_s", 900))
+        # THE RESOLVED POLICY, not a getattr default (#239 stage A). This read
+        # was `getattr(self.plan, "cool_timeout_s", 900)`, whose default fires
+        # only when the ATTRIBUTE IS ABSENT - and the field is now present and
+        # None on every flow-built plan, so it returned None and this line
+        # raised TypeError on the first cooled resume. A defaulting read that
+        # stops defaulting is the whole hazard of making a field optional.
+        await self._cool_and_wait(target, self._policy.cool_timeout_s)
 
     def _cooling_failed(self, require: bool, action: str, reason: str) -> bool:
         """Apply ``cfg.escalation.cooling_action`` on a cooling failure (P1-7).
@@ -4006,7 +4049,7 @@ class SequenceEngine:
         # offset is a placeholder zero, not a measurement, so honouring it would
         # yank the focuser to the reference position and back for a dark.
         offsets = getattr(fw, "filter_offsets", []) or []
-        if self.plan.apply_filter_offsets and "focuser" in self.hub.devices \
+        if self._policy.apply_filter_offsets and "focuser" in self.hub.devices \
                 and len(offsets) > max(new_slot, old_slot) \
                 and not fw.is_opaque(new_slot) and not fw.is_opaque(old_slot):
             delta = offsets[new_slot] - offsets[old_slot]
@@ -4191,7 +4234,7 @@ class SequenceEngine:
         return True
 
     async def _maybe_recover_guiding(self, target=None) -> None:
-        if not (self.plan.guide and self.plan.recover_guiding):
+        if not (self.plan.guide and self._policy.recover_guiding):
             return
         g = self.hub.guider
         if not g or not g.connected:
@@ -4243,7 +4286,7 @@ class SequenceEngine:
             return False
         if plan.autofocus_every and self._frames_since_focus >= plan.autofocus_every:
             return True
-        if plan.refocus_on_temp_delta_c > 0:
+        if self._policy.refocus_on_temp_delta_c > 0:
             try:
                 t = await self.hub.require("focuser").get_temperature()
             except Exception:
@@ -4257,7 +4300,7 @@ class SequenceEngine:
                 # from where it is NOW — arm from the first reading.
                 self._last_focus_temp = t
                 return False
-            if t is not None and abs(t - self._last_focus_temp) >= plan.refocus_on_temp_delta_c:
+            if t is not None and abs(t - self._last_focus_temp) >= self._policy.refocus_on_temp_delta_c:
                 bus.log("info", f"focuser temp drifted to {t:.1f}°C — refocusing", "sequence")
                 return True
         return False
@@ -4342,7 +4385,7 @@ class SequenceEngine:
                         self._frame_had_event = True
                 elif fa.action == "dither":
                     if self.hub.guider and self.hub.guider.connected:
-                        await _bounded(self.hub.guider.dither(self.plan.dither_pixels),
+                        await _bounded(self.hub.guider.dither(self._policy.dither_pixels),
                                        GUIDE_OP_TIMEOUT_S, "instruction dither")
                         self._frames_since_dither = 0
                         self._frame_had_event = True
@@ -4407,7 +4450,7 @@ class SequenceEngine:
         ``record`` (a rejected/cloudy HFR must never drift the median).
         ``record=False`` is a pure read-only check."""
         plan = self.plan
-        factor = plan.hfr_reject_factor
+        factor = self._policy.hfr_reject_factor
         hfr = info.get("hfr") if isinstance(info, dict) else None
         accepted = True
         if factor and hfr is not None:
@@ -4419,28 +4462,28 @@ class SequenceEngine:
                     bus.log("warning", f"frame HFR {hfr:.2f} >> median {med:.2f} — "
                                        "possible cloud / poor frame", "sequence")
                     accepted = False
-        if accepted and not calibration and plan.min_stars > 0:
+        if accepted and not calibration and self._policy.min_stars > 0:
             stars = info.get("stars") if isinstance(info, dict) else None
-            if stars is not None and int(stars) < plan.min_stars:
+            if stars is not None and int(stars) < self._policy.min_stars:
                 self._rejected += 1
                 bus.log("warning", f"frame stars {int(stars)} below floor "
-                                   f"{plan.min_stars}", "sequence")
+                                   f"{self._policy.min_stars}", "sequence")
                 accepted = False
-        if accepted and not calibration and plan.max_guide_rms > 0:
+        if accepted and not calibration and self._policy.max_guide_rms > 0:
             rms = self._guide_rms()
             if rms is None and self._guiding_now():
                 self._warn_rms_unit_once()
-            if rms is not None and rms > plan.max_guide_rms:
+            if rms is not None and rms > self._policy.max_guide_rms:
                 self._rejected += 1
                 bus.log("warning", f'guide RMS {rms:.2f}" above ceiling '
-                                   f'{plan.max_guide_rms:.2f}"', "sequence")
+                                   f'{self._policy.max_guide_rms:.2f}"', "sequence")
                 accepted = False
-        if accepted and not calibration and plan.max_eccentricity > 0:
+        if accepted and not calibration and self._policy.max_eccentricity > 0:
             ecc = info.get("ecc") if isinstance(info, dict) else None
-            if ecc is not None and float(ecc) > plan.max_eccentricity:
+            if ecc is not None and float(ecc) > self._policy.max_eccentricity:
                 self._rejected += 1
                 bus.log("warning", f"frame eccentricity {float(ecc):.2f} above ceiling "
-                                   f"{plan.max_eccentricity:.2f} — trailing/tilt", "sequence")
+                                   f"{self._policy.max_eccentricity:.2f} — trailing/tilt", "sequence")
                 accepted = False
         if accepted and record and factor and hfr is not None:
             self._recent_hfr.append(float(hfr))
