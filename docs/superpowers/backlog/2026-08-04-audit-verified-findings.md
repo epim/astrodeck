@@ -1024,3 +1024,31 @@ Credited in `THIRD-PARTY-NOTICES.md`.
 (`steps_each_side=4` × 350) when ±350 measured beautifully. Narrowing it wants
 the focuser's critical focus zone, which has never been measured — worth doing
 on its own terms now that the wings are trustworthy.
+
+> **CLOSED 2026-08-17**, together with a second change to the same loop. The CFZ
+> could not be computed — `Optics` has a focal length and no aperture, so there
+> is no f-ratio — but it did not need to be. A V-curve is the hyperbola
+> `size(d) = sqrt(y0² + (m·d)²)`, so **every successful sweep measures `m`**,
+> and this sweep's own points agree on it to 5% across a factor of three in
+> defocus (0.0777 / 0.0768 / 0.0808 px/step). Sizing the span so the outer point
+> reads 8× the tip gives **±301 steps** off exactly the numbers above — the ±350
+> that "measured beautifully", arrived at rather than guessed.
+>
+> `focus/span.py` (pure) does the arithmetic, `focus_calibration.json` holds it,
+> and it is discarded whenever a sweep sized from it comes back flat, so one bad
+> measurement cannot wedge a night. It is also never allowed to ask for a wider
+> sweep than the one that measured it — the simulator's gentle optics asked for
+> ±5712 off a ±1400 sweep, which is the ratchet an under-measured wing would
+> otherwise start.
+>
+> The second change: the sweep now **exposes the next point while measuring this
+> one** (`focus/pipeline.py`). `sweep.rs` invited it ("pipelined
+> move-while-analyzing timing is a host concern") but will not name the next
+> position until the measurement is added, so the position is predicted —
+> `pos - step`, which is what both engine phases do — and *checked*: a
+> speculative frame is used only for the position the engine actually asks for.
+> One strike and a stop-before-validation rule bound a wrong guess to one wasted
+> exposure per run. Measured on the sim: **22% faster from pipelining, 29% with
+> the narrower span**.
+>
+> Spec: `docs/superpowers/specs/2026-08-17-autofocus-span-and-pipeline-design.md`.
