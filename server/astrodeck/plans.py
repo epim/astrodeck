@@ -58,6 +58,77 @@ def _summarize(plan: SequencePlan) -> dict:
             "targets": len(plan.targets)}
 
 
+#: What each moved field's default WAS before #239 stage A made it optional.
+#: A stored value equal to its entry here was never a decision - the field
+#: simply had no way to say "no opinion" - so the migration below turns it into
+#: one. Frozen literals rather than a read off the model: the model no longer
+#: knows these numbers, which is the whole point.
+_PRE_MIGRATION_DEFAULTS: dict[str, object] = {
+    "dither_pixels": 3.0,
+    "recover_guiding": True,
+    "cool_timeout_s": 600,
+    "hfr_reject_factor": 0.0,
+    "meridian_flip_warn_min": 15.0,
+    "apply_filter_offsets": True,
+    "refocus_on_temp_delta_c": 0.0,
+    "min_stars": 0,
+    "max_guide_rms": 0.0,
+    "max_eccentricity": 0.0,
+    "max_consecutive_rejects": 10,
+    "max_consecutive_rejects_night": 20,
+}
+
+
+def migrate_plan_policy_fields(library: "PlanLibrary | None" = None) -> int:
+    """Turn stored plan-policy values that were never chosen into "inherit".
+
+    Returns the number of plans changed. Idempotent, and a plan with nothing to
+    null is not rewritten at all, so a migrated library does not churn on boot.
+
+    THIS IS LOSSY IN ONE DIRECTION AND THAT IS DELIBERATE. A `dither_pixels` of
+    3.0 that someone typed on purpose is indistinguishable from the 3.0 the
+    model used to supply, so both become "inherit". Until this change there was
+    no way to express the difference, so the information was never captured -
+    and treating every untouched default as a deliberate choice would leave the
+    rig's standards unable to reach a single plan that already exists, which is
+    the feature not working at all.
+
+    SESSION-FROZEN PLANS ARE LEFT ALONE. A session's plan is the contract for
+    one multi-night run - what that run was authored with, and what it resumes
+    under. Rewriting it mid-campaign would change the rules between night one
+    and night two, which is the one thing a frozen snapshot exists to prevent.
+    """
+    from .events import bus
+
+    lib = library if library is not None else plan_library
+    changed = 0
+    for row in lib.list():
+        pid = row["id"]
+        try:
+            env = lib._envelope(pid)
+        except KeyError:
+            continue
+        if env is None:
+            continue
+        raw = env.get("plan") or {}
+        nulled = [f for f, was in _PRE_MIGRATION_DEFAULTS.items()
+                  if f in raw and raw[f] == was and raw[f] is not None]
+        if not nulled:
+            continue
+        for f in nulled:
+            raw[f] = None
+        env["plan"] = raw
+        write_json_atomic(lib._path(pid), env)
+        changed += 1
+        bus.log("info",
+                f"plan '{env.get('name') or pid}': {len(nulled)} setting"
+                f"{'' if len(nulled) == 1 else 's'} now follow the rig's "
+                f"standards ({', '.join(sorted(nulled))}) - they held the old "
+                f"built-in default, which was never a choice anyone made",
+                "plans")
+    return changed
+
+
 class PlanLibrary:
     """uuid-keyed plan store; one ``plans/<id>.json`` per plan."""
 
