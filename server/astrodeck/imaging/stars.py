@@ -753,6 +753,13 @@ def _is_resolved(img: np.ndarray, bg: float, cy: float, cx: float,
     return ring8 >= MIN_NEIGHBOUR_FLUX_RATIO * centre
 
 
+#: How many binned pixels a source must span before a measurement taken at that
+#: bin level is believed. Below this the answer is the bin's own resolution
+#: floor rather than the object (a 6 px star measured at bin 64 reports 32 px),
+#: so the seed is deferred to a finer level instead of claimed.
+SIZE_BIN_TRUST = 1.5
+
+
 def star_size(data: np.ndarray, *, k_sigma: float = 5.0,
               max_sources: int = SIZE_MAX_SOURCES,
               r_cap: float = SIZE_R_CAP) -> SourceSize | None:
@@ -780,14 +787,36 @@ def star_size(data: np.ndarray, *, k_sigma: float = 5.0,
                 continue        # already measured as part of a bigger source
             if not _is_resolved(img, bg, y, x, 3):
                 continue
-            m = _measure_source(img, bg, sigma, y, x, max(8.0, 8.0 * k), cap)
-            if m is None:
-                continue
-            ny, nx = _lock_on(img, m["bg"], sigma, y, x, m["edge"])
-            better = _measure_source(img, bg, sigma, ny, nx,
-                                     max(8.0, m["edge"] * 1.5), cap)
-            if better is not None and better["flux"] >= m["flux"]:
-                m = better
+            if k > 1:
+                # MEASURE WHERE THE SEED WAS FOUND. A coarse seed used to be
+                # measured at FULL resolution with an aperture of 8*k px, which
+                # is the single most expensive thing this function does and is
+                # done for a structure that is k px wide by construction. On a
+                # 3126x2088 frame, screening coarse seeds correctly without this
+                # cost 23x (235 -> 5362 ms) - eleven times a sweep, on a Pi.
+                # `_measure_at_bin` does the same measurement on the cached
+                # k-binned copy and scales back, for ~k^2 less, and it already
+                # locks on internally.
+                m = _measure_at_bin(img, binned, k, y, x, 8.0 * k, cap)
+                if m is None:
+                    continue
+                # TOO COARSE FOR THIS SOURCE. At bin k a radius cannot come back
+                # smaller than about one binned pixel, so a tight star measured
+                # at k=64 reports 32 px - the size of the bin, not of the star.
+                # Skip without claiming and let a finer level have it; the
+                # source is not lost, only deferred to a resolution that can
+                # actually see it.
+                if m["mean_r"] < SIZE_BIN_TRUST * k:
+                    continue
+            else:
+                m = _measure_source(img, bg, sigma, y, x, 8.0, cap)
+                if m is None:
+                    continue
+                ny, nx = _lock_on(img, m["bg"], sigma, y, x, m["edge"])
+                better = _measure_source(img, bg, sigma, ny, nx,
+                                         max(8.0, m["edge"] * 1.5), cap)
+                if better is not None and better["flux"] >= m["flux"]:
+                    m = better
             # The APERTURE stopped us, not the frame: re-measure the same source
             # coarsely rather than report the fragment we can afford to see. The
             # frame stopping us is a different answer (``truncated`` -> a floor),
