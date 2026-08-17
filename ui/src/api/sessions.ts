@@ -45,3 +45,29 @@ export const patchFrame = (
 
 export const deleteSession = (id: string): Promise<{ deleted: string }> =>
   api.del<{ deleted: string }>(`/api/sessions/${id}`);
+
+/** What is armed and waiting, and what is holding it.
+ *
+ *  The engine's own state cannot answer either half: `_set_state` clears the
+ *  session sub-block on every terminal transition, so a night that ended owing
+ *  58 frames leaves `sequence` as literally `{state: "idle"}`. Monitor rendered
+ *  "No run active - plan a session" over exactly that, which is an instruction
+ *  to strand the armed session (a fresh start disarms every other one). */
+export interface ResumeArmState {
+  armed: {
+    id: string; name: string; owed: number;
+    accepted: number; total: number;
+    origin: string; origin_id: string;
+  } | null;
+  hold: {
+    reason: string;
+    since: number | null;
+    retry_at: number | null;
+    session_id: string;
+    session_name: string;
+    owed: number;
+  } | null;
+}
+
+export const getResumeArm = (): Promise<ResumeArmState> =>
+  api.get<ResumeArmState>("/api/sequence/resume-arm");
