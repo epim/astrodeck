@@ -117,6 +117,17 @@ dossiers `docs/native-parity/algorithms/nina-autofocus.md` and
 `hocusfocus-autofocus-tilt.md`. No code was copied from NINA or Hocus Focus; the
 upstream projects are MPL-2.0 and this reimplementation is likewise MPL-2.0.
 
+Hocus Focus, by George Hilios (https://github.com/ghilios/hocus-focus), remains
+the template AstroDeck's autofocus follows, and its published design decisions
+keep shaping ours. Read from its documentation and release notes rather than its
+source: the hyperbolic V-curve; excluding starless positions at the extremes of
+a wide sweep from the fit instead of letting them poison it, and saying so when
+that happens; statistical outlier rejection within a frame's star population;
+and its finding that loose detection settings admit noise and donut fragments
+which skew autofocus on wide or defocused sweeps. That last one named a failure
+we had measured ourselves on narrowband on 2026-08-17 and had diagnosed only
+half of (#219).
+
 ## ASTAP — plate solver (MPL-2.0), bundled binary
 
 AstroDeck's releases bundle the ASTAP command-line solver (`astap_cli`) and one
