@@ -121,6 +121,7 @@ from ..sequence.bundle import (CalibrationLibraryAdapter, NullMasterLibrary,
                                bundle_summary, build_script,
                                manifest_json, readme_text, weights_csv)
 from ..sequence.resume_arm import ResumeArm
+from ..plans import migrate_plan_policy_fields
 from ..sequence.session import migrate_legacy_resume, session_store
 from ..weather import NoNightError, weather_service
 
@@ -349,6 +350,18 @@ async def _lifespan(app: "FastAPI"):
                     "sequence")
     except Exception as e:  # noqa: BLE001 - degrade, never crash boot
         bus.log("error", f"session boot sweep failed: {e}", "sequence")
+    # #239 stage A: stored plans hold a concrete value for twelve settings that
+    # are now the rig's standards unless a plan overrides them. One that equals
+    # the old built-in default was never a choice, so it becomes "inherit" -
+    # otherwise the rig's standards could not reach a single existing plan.
+    # Idempotent, and only rewrites the plans it actually changes.
+    try:
+        moved = migrate_plan_policy_fields()
+        if moved:
+            bus.log("info", f"{moved} stored plan(s) now follow the rig's "
+                            f"imaging standards", "plans")
+    except Exception as e:  # noqa: BLE001 - degrade, never crash boot
+        bus.log("error", f"plan policy migration failed: {e}", "plans")
     task = asyncio.create_task(dispatcher.run())
     # Auto-resume-at-dusk service (sessions spec §5) — its own 60s asyncio loop.
     resume_arm.start()
