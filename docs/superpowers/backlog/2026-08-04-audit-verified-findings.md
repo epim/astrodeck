@@ -1019,13 +1019,61 @@ shrinking it blind risks the existing `not_enough_spread` failure. Choosing a
 span honestly needs the focuser's critical focus zone, which we have not
 measured.
 
+### ROOT CAUSE FOUND (2026-08-17). One line, and it is not what I said.
+
+`star_size` walks pyramid levels coarse→fine and lets a coarse detection CLAIM a
+circle so finer levels cannot re-detect its parts. Before measuring a seed it
+runs a cheap hot-pixel screen:
+
+    if not _is_resolved(img, bg, y, x, 3):      # imaging/stars.py
+        continue
+
+**A 3-pixel probe at a coarse seed sits in the donut's dark hole.** Traced on the
+r=24 thin ring: five k=16 seeds land 7-8 px from the true centres,
+`_is_resolved` is False at R=3 and True at R=8, and `_measure_source` at those
+same seeds returns **mean_r ≈ 23 for a true 24** — a correct measurement of the
+whole ring, thrown away by the screen. The rim is then re-detected at k=8 as
+arcs, and the arcs are what get reported.
+
+The code already knows this. Twenty lines later the LATE resolve check was
+widened to `max(3.0, m["edge"])` with the comment "a donut's middle is dark, so
+half the aperture can land entirely inside the hole ... which is how a 40 px
+ring came back as 3.3 px". The same insight was never applied to the early
+screen.
+
+**The earlier worry was wrong and is retired:** `star_size` is focus-only. Its
+callers are the sweep and `focus_size`. The cloud detector, preview HFR and
+Bahtinov go through `detect_stars`, a different function. Fixing this cannot
+hold a night.
+
+### Why it is still open: correct costs 23x
+
+Two fixes were built and measured on a real-sized 3126x2088 in-focus frame
+(baseline **235 ms**):
+
+| change | in-focus cost | donuts on realistic frames |
+|---|---|---|
+| scale the early probe with `k` | 1085 ms (4.6x) | still wrong at several radii |
+| that **plus** coarse seed budget 6 → 40 | 5362 ms (**23x**) | 24→24.43, 34→34.57, 48→48.76, all correct |
+
+The 3-px probe was accidentally acting as a cost limiter: it rejected coarse
+seeds cheaply, and every seed that passes triggers a full-resolution
+`_measure_source` with an aperture up to `8*k` px. Correctness needs those
+measurements; at full resolution they are unaffordable eleven times a sweep on a
+Pi-class box.
+
+Neither was shipped. A wrong answer and a 23x slowdown are both worse than the
+current honest failure.
+
 ### What would close it
 
-1. A detector rule that refuses arcs, or recognises fragments of one ring —
-   validated against **both** the donut reproduction and the cloud detector's
-   own fixtures, because they share `detect_stars`.
-2. Or measure the CFZ and set the sweep span from it, so the sweep never asks
-   for a point it cannot measure.
-3. Hocus Focus's other two ideas, both cheap and independent: exclude extreme
-   positions from the fit with a notice saying so, and statistical outlier
-   rejection within a frame's star population.
+1. **Make coarse measurement cheap.** The binned image is already computed for
+   seeding, and `_measure_at_bin` already exists for the escalation path.
+   Measuring a coarse seed at its own bin level and scaling the radius by `k`
+   should cost ~k² less. That is the fix; it wants care and its own benchmark.
+2. Or measure the focuser's CFZ and set the sweep span from it, so the sweep
+   never asks for a point it cannot measure. `steps_each_side=4` × 350 spans
+   ±1400; ±350 measured beautifully and ±700 did not.
+3. Hocus Focus's other two ideas, both cheap and independent of all this:
+   exclude extreme positions from the fit with a notice saying so, and
+   statistical outlier rejection within a frame's star population.
