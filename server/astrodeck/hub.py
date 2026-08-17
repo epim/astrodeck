@@ -4137,7 +4137,8 @@ class Hub:
 
     async def learn_filter_offsets(self, ref_slot: int | None = None,
                                    exposure_s: float = 2.0, gain: int = 120,
-                                   step: int = 350, steps_each_side: int = 4,
+                                   step: int | None = None,
+                                   steps_each_side: int = 4,
                                    binning: int = 2,
                                    narrowband: list[bool] | None = None,
                                    nb_exposure_s: float | None = None,
@@ -5757,6 +5758,21 @@ class Hub:
                 # whether to offer re-anchoring at all.
                 out["focuser"]["can_set_position"] = bool(
                     getattr(foc, "can_set_position_reference", False))
+                # WHAT A SWEEP WOULD ACTUALLY DO, so the Focus screen can print
+                # it before the tap. The width is no longer a constant the UI
+                # can derive for itself — it is sized from this focuser's
+                # measured defocus slope — and a screen that kept deriving its
+                # own number would be describing a sweep that does not happen.
+                # Its own try: a calibration file is the least important thing
+                # in this block and must never cost the position readout.
+                try:
+                    from .focus.autofocus import resolve_sweep
+                    g = resolve_sweep(foc, None, 4)
+                    out["focuser"]["sweep"] = {
+                        "step": g.step, "steps_each_side": g.steps_each_side,
+                        "basis": g.basis, "measured": g.measured}
+                except Exception:
+                    pass
         fw = self.devices.get("filterwheel")
         if fw and fw.connected:
             try:

@@ -349,7 +349,7 @@ def curve_verdict(points, counts=None) -> CurveVerdict:
         depth, roughness)
 
 
-def sweep_metric(data, min_stars: int = MIN_STARS_PER_POINT
+def sweep_metric(frame, min_stars: int = MIN_STARS_PER_POINT
                  ) -> tuple[float | None, int, str | None]:
     """One sweep point: ``(size px | None, sources, the metric's own advice)``.
 
@@ -361,8 +361,14 @@ def sweep_metric(data, min_stars: int = MIN_STARS_PER_POINT
     is needed twice — once for the number, once so ``size_advice`` can say what
     the metric actually saw when a point is refused, instead of the sweep
     inferring a cause it cannot know.
+
+    THE WHOLE FRAME, not ``frame.data``. The real metric only ever reads pixels,
+    but the sweep now exposes the next point while this one is being measured
+    (`focus.pipeline`) — so the focuser is no longer standing at the position
+    this frame was taken at, and a substitute that wants to know which point it
+    is looking at must be able to read it off the frame rather than off the rig.
     """
-    size = star_size(data)
+    size = star_size(frame.data)
     value, n = _size_point(size, min_stars)
     return value, n, (size_advice(size) if value is None else None)
 
@@ -488,13 +494,116 @@ SWEEP_EXPOSURE_S = 2.0
 SWEEP_GAIN = 120
 
 
+# ------------------------------------------------- how wide, and who says so
+# The sweep's WIDTH used to be a constant in the signature below. It is now a
+# measurement of the optical train that every successful sweep refreshes — see
+# `focus.span` for the physics, the rig numbers behind it, and why the +/-1400
+# it replaces was four times wider than this rig needs. These three functions
+# are the only join between that pure arithmetic and the disk, and both sweep
+# paths go through them so the two cannot come to disagree about the geometry.
+
+def calibration_key(focuser) -> str | None:
+    """The key this focuser's measured span is filed under.
+
+    ``_state_key`` is the same handle a position is filed under
+    (``devices/backends/zwo_usb.py`` → ``save_focuser_position``), so a rig with
+    two focusers keeps two calibrations. A backend that sets none shares the
+    default entry, which is the right answer for a single-focuser rig and the
+    only one available for a driver that cannot identify itself.
+    """
+    return getattr(focuser, "_state_key", None)
+
+
+def resolve_sweep(focuser, step: int | None, steps_each_side: int):
+    """The step this sweep will use, and the sentence explaining it.
+
+    An explicit ``step`` is used verbatim and marked unmeasured — the Advanced
+    panel exists so an operator can overrule us, and a value they typed must
+    never be silently replaced. ``None`` means "size it from what this focuser
+    has measured", falling back to the shipped default until something has.
+    """
+    from .span import DEFAULT_STEP, SweepGeometry, sweep_geometry
+    sides = max(1, int(steps_each_side))
+    if step is not None:
+        return SweepGeometry(int(step), sides,
+                             f"{int(step)} steps (±{int(step) * sides}), as "
+                             f"requested by the caller", False)
+    from ..config import load_focus_calibration
+    try:
+        cal = load_focus_calibration(calibration_key(focuser))
+    except Exception:      # noqa: BLE001 - an unreadable file is "not measured"
+        cal = None
+    return sweep_geometry(cal, steps_each_side=sides,
+                          focuser_max=getattr(focuser, "max_position", None),
+                          default_step=DEFAULT_STEP)
+
+
+def record_measured_span(focuser, points, best_position: int,
+                         binning: int) -> None:
+    """Learn this focuser's defocus slope from a sweep that SUCCEEDED.
+
+    Silent when the curve cannot supply one — arm points on both sides, far
+    enough out to be off the flat tip. That is the common case for a sweep
+    rescued by ``curve_verdict`` from a couple of measurable points, and a slope
+    guessed off two frames would then decide the width of every future sweep.
+
+    Never raises: this is a by-product of a focus run that has already
+    succeeded, and it must not be able to turn that success into a failure.
+    """
+    try:
+        from ..config import save_focus_calibration
+        from .span import FocusCalibration, defocus_slope, half_span_steps
+        rows = [(float(p), float(h)) for p, h in points]
+        if not rows:
+            return
+        y0 = min(h for _p, h in rows)
+        slope = defocus_slope(rows, float(best_position), y0)
+        if slope is None:
+            return
+        import datetime as _dt
+        positions = [p for p, _h in rows]
+        cal = FocusCalibration(
+            slope_px_per_step=slope, in_focus_px=y0, binning=int(binning),
+            n_points=len(rows), best_position=int(best_position),
+            swept_half_span=(max(positions) - min(positions)) / 2.0,
+            measured_on=_dt.date.today().isoformat())
+        save_focus_calibration(calibration_key(focuser), cal)
+        # THE NUMBER THIS PROJECT HAS NEVER HAD. The #219 close-out left the
+        # sweep width open because "narrowing it wants the focuser's critical
+        # focus zone, which has never been measured". This line is that
+        # measurement, in the log, on every successful sweep.
+        want = half_span_steps(slope, y0)
+        bus.log("info",
+                f"autofocus: this focuser defocuses at {slope:.4f} px/step "
+                f"(from {len(rows)} points at bin {binning}, {y0:.2f} px at "
+                f"focus) — the next sweep will span "
+                f"±{int(round(min(want, cal.swept_half_span or want)))} steps",
+                "focus")
+    except Exception as e:      # noqa: BLE001 - never cost a successful run
+        bus.log("debug", f"could not record the defocus slope: {e}", "focus")
+
+
+def forget_measured_span(focuser) -> None:
+    """Discard this focuser's measured span. Never raises — see
+    ``config.clear_focus_calibration`` for when and why."""
+    try:
+        from ..config import clear_focus_calibration
+        clear_focus_calibration(calibration_key(focuser))
+    except Exception:      # noqa: BLE001 - never cost a run that already failed
+        pass
+
+
 async def run_autofocus(camera: Camera, focuser: Focuser, *,
                         exposure_s: float = SWEEP_EXPOSURE_S,
                         gain: int = SWEEP_GAIN,
-                        step: int = 350, steps_each_side: int = 4,
+                        step: int | None = None, steps_each_side: int = 4,
                         binning: int = 2, expose_guard=None,
                         hub=None, provider=None) -> AutofocusResult:
     """Run a V-curve autofocus sweep.
+
+    ``step`` None — the default — sizes the sweep from this focuser's measured
+    defocus slope (``focus.span``), which is what the sequence engine gets. An
+    explicit value is honoured verbatim.
 
     ``expose_guard`` (optional): an async context-manager *factory* taking one
     label argument, used to serialize the single camera against the live loop /
@@ -542,10 +651,23 @@ async def run_autofocus(camera: Camera, focuser: Focuser, *,
         async with guard:
             return await camera.expose(exposure_s, gain, 30, binning=binning)
 
+    async def _move_and_expose(pos: int):
+        """One point's device work as a unit, so the NEXT point can be exposing
+        while this one is being measured. Nothing to predict on this path — the
+        positions are a plain list computed up front."""
+        await focuser.move_to(pos)
+        return await _expose()
+
     start_pos = await focuser.get_position()
+    geometry = resolve_sweep(focuser, step, steps_each_side)
+    step = geometry.step
     positions = [start_pos + step * i
                  for i in range(-steps_each_side, steps_each_side + 1)]
     positions = [max(0, min(focuser.max_position, p)) for p in positions]
+    #: The next point's move+expose, already in flight while this one is
+    #: measured. Declared out here so the teardown below can reach it: the task
+    #: owns the focuser, and the restore-to-start must not race it.
+    pending = None
 
     points: list[tuple[int, float]] = []
     #: Stars behind each ACCEPTED point, parallel to ``points`` — the fit weight
@@ -563,6 +685,7 @@ async def run_autofocus(camera: Camera, focuser: Focuser, *,
     #: longer" and "you are pointed at nothing".
     metric_note: str | None = None
     bus.publish("focus", state="running", points=[], best=None)
+    bus.log("info", f"autofocus span: {geometry.basis}", "focus")
 
     def _thin_advice(extra: str = "") -> str | None:
         """The run's own account of what it could and could not measure.
@@ -621,9 +744,17 @@ async def run_autofocus(camera: Camera, focuser: Focuser, *,
         # Approach from below to take out backlash, then sweep upward.
         await focuser.move_to(max(0, positions[0] - step))
 
-        for pos in positions:
-            await focuser.move_to(pos)
-            frame = await _expose()
+        for i, pos in enumerate(positions):
+            if pending is not None:
+                frame, pending = await pending, None
+            else:
+                await focuser.move_to(pos)
+                frame = await _expose()
+            # THE NEXT POINT STARTS NOW, not after this one is measured. Star
+            # detection below is CPU on a thread and the camera is idle for all
+            # of it; this is the whole of the overlap on this path.
+            if i + 1 < len(positions):
+                pending = asyncio.create_task(_move_and_expose(positions[i + 1]))
             # numpy star detection is ~0.3-0.5s full-frame; offload it so the
             # sweep never freezes the event loop at every point (matches the
             # offloaded preview-path detection).
@@ -638,7 +769,7 @@ async def run_autofocus(camera: Camera, focuser: Focuser, *,
             # a curve with an actual minimum. Same return shape, same units at
             # focus; it simply keeps rising once the star outgrows a cutout.
             hfr, n_stars, why = await asyncio.to_thread(
-                sweep_metric, frame.data, MIN_STARS_PER_POINT)
+                sweep_metric, frame, MIN_STARS_PER_POINT)
             if why and metric_note is None:
                 metric_note = why
             if hfr is None:
@@ -760,6 +891,15 @@ async def run_autofocus(camera: Camera, focuser: Focuser, *,
                 f"across {span} steps — either the sweep is too narrow to reach "
                 f"either arm of the V (raise the step size), or the focuser is not "
                 f"moving as far as it reports.")
+            # A flat curve is the one failure a span WE sized produces, so it is
+            # the first thing to doubt — see `config.clear_focus_calibration`.
+            if geometry.measured:
+                forget_measured_span(focuser)
+                bus.log("warning",
+                        "autofocus: this sweep was sized from a measured "
+                        "defocus slope and came back flat — discarding that "
+                        "calibration so the next run uses the default span",
+                        "focus")
             await focuser.move_to(start_pos)
             bus.publish("focus", state="failed",
                         points=[{"position": p, "hfr": h} for p, h in points],
@@ -839,6 +979,14 @@ async def run_autofocus(camera: Camera, focuser: Focuser, *,
         # start_pos best-effort (shielded so even a cancel completes the move
         # rather than interrupting it), flag the UI, then re-raise so the caller
         # (engine / _spawn) still sees the failure.
+        #
+        # The pipelined next point goes first: it owns the focuser while it
+        # runs, so the restore below must not race it. Cancelled rather than
+        # awaited — the run is already being torn down.
+        if pending is not None:
+            pending.cancel()
+            with contextlib.suppress(BaseException):
+                await pending
         with contextlib.suppress(Exception):
             await asyncio.shield(focuser.move_to(start_pos))
         bus.publish("focus", state="failed",
@@ -849,6 +997,7 @@ async def run_autofocus(camera: Camera, focuser: Focuser, *,
     # A sweep can succeed on thin evidence. Say so on the WAY OUT too, rather than
     # letting a confident-looking vertex stand on four 5-star samples.
     advice = _thin_advice()
+    record_measured_span(focuser, points, best, binning)
     bus.publish("focus", state="done",
                 points=[{"position": p, "hfr": h} for p, h in points],
                 best={"position": best, "hfr": final_hfr}, advice=advice)

@@ -422,7 +422,15 @@ async def test_a_position_the_sweep_will_not_leave_fails_instead_of_spinning(
 
     assert not result.success
     # The bound IS the behaviour: without it this call never returns.
-    assert seen["n"] <= MAX_DROPS_PER_POSITION, (
+    #
+    # MAX_DROPS_PER_POSITION frames at the stuck position, plus AT MOST ONE
+    # more: the sweep exposes the next point speculatively while measuring this
+    # one, and a sweep that will not advance is exactly the case where that
+    # guess is wrong. `focus.pipeline` stops speculating after the first miss —
+    # permanently, for the rest of the run — so the overshoot is one frame and
+    # cannot grow with the number of retries. If this ever needs raising again,
+    # the one-strike rule has stopped working.
+    assert seen["n"] <= MAX_DROPS_PER_POSITION + 1, (
         f"the sweep exposed {seen['n']} times at one position — it is still "
         f"retrying a point it cannot measure")
 
@@ -523,8 +531,11 @@ async def test_a_curve_the_fit_gate_refuses_is_accepted_on_its_shape(monkeypatch
     rig, cam, foc = await _connected_sim()
     start = await foc.get_position()
     size_at = _saturating_v(start)
+    # The position THIS FRAME was exposed at, not the rig's live one: the sweep
+    # exposes the next point while this one is being measured, so the focuser
+    # has already moved on by the time the metric runs.
     monkeypatch.setattr(N, "native_sweep_metric",
-                        lambda data: (size_at(rig.focuser_pos), 300))
+                        lambda frame: (size_at(frame.focuser_position), 300))
 
     q = bus.subscribe()
     try:

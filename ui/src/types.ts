@@ -86,6 +86,21 @@ export interface RigStatus {
     /** Can the position count be re-anchored without moving the drawtube
      *  (EAFResetPostion)? Static capability, not a reading. */
     can_set_position?: boolean;
+    /** What a sweep would actually do, decided SERVER-SIDE.
+     *
+     *  The sweep's width used to be a constant this file's neighbours could
+     *  re-derive (`AF_DEFAULT_STEP`). It is now sized from the focuser's
+     *  MEASURED defocus slope (server: focus/span.py), which the browser has no
+     *  way to compute — so the screen has to be told, or the line printed under
+     *  the button describes a sweep that does not happen. `measured` false means
+     *  the server is still on the shipped default because no sweep has
+     *  completed yet. */
+    sweep?: {
+      step: number;
+      steps_each_side: number;
+      basis: string;
+      measured: boolean;
+    };
   };
   filterwheel?: {
     position: number;

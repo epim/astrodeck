@@ -960,7 +960,11 @@ class RotatorSyncBody(BaseModel):
 class AutofocusBody(BaseModel):
     exposure_s: float = 2.0
     gain: int = 120
-    step: int = 350
+    #: None — the default — sizes the sweep from this focuser's MEASURED
+    #: defocus slope (focus/span.py), falling back to the shipped 350 until a
+    #: sweep has measured one. A number is honoured verbatim: the Focus screen's
+    #: Advanced panel exists so an operator can overrule us.
+    step: int | None = None
     steps_each_side: int = 4
     binning: int = 2
     filter: int | None = None  # UX-25: slot to move to before the sweep (per-filter AF)
@@ -1069,7 +1073,9 @@ class LearnOffsetsBody(BaseModel):
     ref_slot: int | None = None
     exposure_s: float = 2.0
     gain: int = 120
-    step: int = 350
+    #: None sizes each slot's sweep from the measured defocus slope — see
+    #: AutofocusBody.step.
+    step: int | None = None
     steps_each_side: int = 4
     binning: int = 2
     #: Which slots are narrowband. None leaves the wheel's stored marking alone

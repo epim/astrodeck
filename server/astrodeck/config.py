@@ -1026,6 +1026,74 @@ def save_focuser_position(key: str | None, position: int) -> None:
         pass
 
 
+# ------------------------------------------------- measured defocus response
+# How wide a sweep has to be is a MEASUREMENT of the optical train, not a
+# constant — see focus/span.py for the physics and the numbers. A successful
+# sweep writes what it learned here; the next one reads it.
+#
+# ITS OWN FILE, NOT AN EXTRA KEY IN focuser_state.json. `save_focuser_position`
+# above REPLACES its entry wholesale on every completed move, so a calibration
+# living beside `position` would be erased by the very next focuser move — and
+# erased silently, which is the worst version of it.
+#
+# A FUNCTION, NOT A MODULE CONSTANT. `CONFIG_DIR` is REBOUND per test (see
+# `tests/conftest.py::_isolate_config_store`, and the three-week-old failure its
+# docstring describes), so a path computed at import time captures the
+# developer's real `server/config/` and writes there for the whole session. The
+# neighbouring `FOCUSER_STATE_FILE` predates that fixture and has exactly this
+# shape; this one does not repeat it.
+def focus_calibration_path() -> Path:
+    return CONFIG_DIR / "focus_calibration.json"
+
+
+def load_focus_calibration(key: str | None):
+    """This focuser's measured defocus response, or None if never measured.
+
+    Returns a ``focus.span.FocusCalibration``. Imported lazily so `config` — which
+    every module imports — does not pull the focus package in behind it.
+    """
+    from .focus.span import FocusCalibration
+    data = read_json_or(focus_calibration_path(), {})
+    if not isinstance(data, dict):
+        return None
+    return FocusCalibration.from_json(data.get(key or _FOCUSER_DEFAULT_KEY))
+
+
+def save_focus_calibration(key: str | None, cal) -> None:
+    """Record what a sweep measured (best-effort merge; never raises).
+
+    A calibration is a by-product of a focus run that has already succeeded, so
+    failing to store it must never turn that success into a failure."""
+    try:
+        data = read_json_or(focus_calibration_path(), {})
+        if not isinstance(data, dict):
+            data = {}
+        data[key or _FOCUSER_DEFAULT_KEY] = cal.to_json()
+        write_json_atomic(focus_calibration_path(), data)
+    except Exception:  # noqa: BLE001 - bookkeeping must not break a focus run
+        pass
+
+
+def clear_focus_calibration(key: str | None) -> None:
+    """Forget this focuser's measured span.
+
+    Called when a sweep fails the ONE way a too-narrow span fails — a flat
+    curve with no spread to fit. Without this a single bad calibration would
+    narrow every subsequent sweep of the night into the same failure, with the
+    rig getting further from focus each time. Forgetting sends the next attempt
+    back to the shipped default, which is the geometry every successful focus
+    run in this project's history used."""
+    try:
+        data = read_json_or(focus_calibration_path(), {})
+        if not isinstance(data, dict):
+            return
+        if data.pop(key or _FOCUSER_DEFAULT_KEY, None) is None:
+            return
+        write_json_atomic(focus_calibration_path(), data)
+    except Exception:  # noqa: BLE001 - bookkeeping must not break a focus run
+        pass
+
+
 # --------------------------------------------------------------------- pure math
 
 def image_scale_arcsec_px(focal_mm: float, pixel_um: float, binning: int = 1) -> float:

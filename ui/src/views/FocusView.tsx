@@ -740,6 +740,9 @@ export default function FocusView() {
     liveStars: liveFrame?.stars ?? null,
     liveHfr: liveFrame?.hfr ?? null,
     hasLiveFrame: !!liveFrame,
+    // The sweep's WIDTH is the server's to decide now: it is sized from the
+    // defocus slope a completed sweep measured, which no browser can compute.
+    serverSweep: foc?.sweep ?? null,
   });
   // With the settings panel OPEN the user is steering, so their fields win.
   // ONE place builds the numbers, so the line printed under the button and the
