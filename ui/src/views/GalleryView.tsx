@@ -35,7 +35,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { JSX } from "react";
 import { ApiError } from "../api";
 import {
-  backfillThumbs, listFrames, listNights, listTrash, trashFrames,
+  backfillThumbs, getTrashCount, listFrames, listNights, trashFrames,
 } from "../api/gallery";
 import { useStore } from "../store";
 import { BASE } from "../lib/base";
@@ -212,7 +212,9 @@ export default function GalleryView(): JSX.Element {
   useEffect(() => {
     if (!canDelete) return;
     let alive = true;
-    listTrash()
+    // COUNT ONLY. This asked for the whole bin to render one number - 40 KB
+    // over the relay on every gallery open. TrashPanel still fetches the rows.
+    getTrashCount()
       .then((t) => {
         if (!alive) return;
         setTrashCount(t.count);

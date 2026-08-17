@@ -66,6 +66,14 @@ export const trashFrames = (paths: string[]): Promise<GalleryTrashResult> =>
 export const listTrash = (): Promise<GalleryTrashListing> =>
   api.get<GalleryTrashListing>("/api/gallery/trash");
 
+/** Just the number on the tab. The gallery asks for this on every open, and
+ *  the full listing was 40 KB of rows over the relay to render one integer -
+ *  the second-largest payload of a page load. `items` comes back empty; the
+ *  panel fetches the real listing when it is opened. */
+export const getTrashCount = (): Promise<GalleryTrashListing> =>
+  api.get<GalleryTrashListing>("/api/gallery/trash?count_only=1")
+    .then((t) => ({ ...t, items: t.items ?? [] }));
+
 /** Paths here are TRASH-relative (what the listing returns), NOT library
  *  paths — a collision on delete suffixes the trash name, so the two differ. */
 export const restoreTrashed = (paths: string[]): Promise<GalleryRestoreResult> =>

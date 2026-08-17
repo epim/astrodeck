@@ -6372,11 +6372,21 @@ def create_app() -> FastAPI:
     @app.get("/api/gallery/trash",
              dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
     @declare(CAP_CONTROL_CAPTURE)
-    async def gallery_trash_list():
+    async def gallery_trash_list(count_only: bool = False):
         """What is in the bin, when each item auto-purges, and whether it can
         still go back. Gated at ``control.capture`` with the rest of the trash
-        surface: only someone who can delete needs to read the bin."""
-        return await asyncio.to_thread(gallery_module.list_trash)
+        surface: only someone who can delete needs to read the bin.
+
+        ``count_only`` drops the rows. The gallery fetches this on EVERY open to
+        put a number on the Trash tab, and on this rig that number cost 40 KB of
+        listing over a WebSocket relay - the second-largest payload of a gallery
+        page load, entirely to render "41". The panel itself still asks for the
+        rows when it is actually opened.
+        """
+        data = await asyncio.to_thread(gallery_module.list_trash)
+        if count_only and isinstance(data, dict):
+            return {k: v for k, v in data.items() if k != "items"}
+        return data
 
     @app.post("/api/gallery/trash/restore",
               dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
