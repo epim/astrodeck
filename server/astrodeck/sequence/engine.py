@@ -428,7 +428,8 @@ class SequenceEngine:
         self._plan = value
         self._policy = resolve_policy(value or SequencePlan(), self._cfg)
 
-    def start(self, plan: SequencePlan, *, session: Session | None = None) -> None:
+    def start(self, plan: SequencePlan, *, session: Session | None = None,
+              origin: str = "", origin_id: str = "") -> None:
         """Start a run. EVERY start owns a Session (spec §2): a fresh one when
         ``session`` is None (ids were backfilled by pydantic during plan
         validation — the server-side backfill seam), or a re-opened dormant one
@@ -441,8 +442,14 @@ class SequenceEngine:
         self.plan = plan
         resume = session is not None
         if session is None:
+            # Stamped on the FRESH branch only: a resume inherits the origin its
+            # first night recorded and must never re-stamp itself, or night two
+            # of a flow campaign would claim to have come from the Plan editor.
+            # Default "" rather than "plan" so a future fourth start path that
+            # forgets the argument records "unknown" instead of a confident lie.
             session = Session(name=plan.name or "Tonight",
-                              created_ts=time.time(), status="active", plan=plan)
+                              created_ts=time.time(), status="active", plan=plan,
+                              origin=origin, origin_id=origin_id)
         else:
             session.status = "active"
 
@@ -1183,7 +1190,44 @@ class SequenceEngine:
                 session_store.save(self._session)
             except Exception as e:
                 bus.log("warning", f"session save failed: {e}", "sequence")
+            self._record_flow_result(self._session, reason)
             self._session = None
+
+    #: How a night's ending reads on a flow card. The card renders "" | ok |
+    #: warn | bad, and the distinction that matters to somebody scanning a
+    #: library is "did this finish, did the sky end it, or did it break".
+    _FLOW_RESULT = {
+        "complete": "ok",
+        "dawn_cutoff": "warn",      # the sky ran out - not the flow's fault
+        "incomplete": "warn",
+        "quality": "warn",
+        "cooling_skip": "warn",
+        "aborted": "warn",          # somebody stopped it on purpose
+        "unsafe": "bad",
+        "error": "bad",
+    }
+
+    def _record_flow_result(self, session, reason: str) -> None:
+        """Write how it went back onto the flow that started it.
+
+        Only reachable because the session records its origin: a flow run and a
+        Plan run compile to identical plans, so at finalize time there is
+        otherwise nothing left that names the flow. `last_run` is stamped when
+        the run STARTS (the route does it); this is the other half, and it can
+        only be known now.
+
+        Best-effort and last: never let bookkeeping raise out of a terminal
+        path, which is the one path that must always complete.
+        """
+        if getattr(session, "origin", "") != "flow" or not session.origin_id:
+            return
+        try:
+            from ..flows.store import flow_store
+            flow_store.touch_run(session.origin_id,
+                                 result=self._FLOW_RESULT.get(reason, "warn"))
+        except Exception as e:  # noqa: BLE001
+            bus.log("warning", f"could not record the result on the flow: {e}",
+                    "flow")
 
     def _shortfall_phrase(self, owed: int) -> str:
         """The sentence that was missing at 05:25 on 2026-08-16, when the whole

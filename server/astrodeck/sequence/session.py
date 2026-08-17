@@ -64,6 +64,18 @@ class Session(BaseModel):
     nights: list[str] = Field(default_factory=list)           # report ids, in order
     frames: list[SessionFrame] = Field(default_factory=list)
     auto_resume: bool = False
+    # WHERE THIS WORK CAME FROM (#239 follow-up). A flow run and a Plan-editor
+    # run compile to identical plans with identical names, so this cannot be
+    # inferred after the fact - which is exactly why "what is the status of the
+    # flow in progress" had no answer on any screen. "" means the session
+    # predates the field and STAYS "": backfilling it would be an invention.
+    #
+    # Named origin/origin_id rather than source/source_id because
+    # SessionReport.policy already uses {"source": "plan"|"rig"} for which LAYER
+    # a setting won from, and two fields named "source" whose value "plan" means
+    # different things is a trap laid for the next reader.
+    origin: str = ""                # "" unknown | "plan" | "flow"
+    origin_id: str = ""             # the flow id when origin == "flow"
     # CONSECUTIVE CRASHES OF THIS SESSION, and it lives here rather than in
     # ResumeArm because a crash can take the process with it - a counter in
     # memory would reset on exactly the restart it is meant to be counting.
@@ -207,6 +219,7 @@ class SessionStore:
                 "created_ts": s.created_ts, "updated_ts": s.updated_ts,
                 "nights": len(s.nights), "accepted": s.total_accepted(),
                 "total": s.plan.total_frames(), "auto_resume": s.auto_resume,
+                "owed": s.owed(), "origin": s.origin, "origin_id": s.origin_id,
             })
         rows.sort(key=lambda r: r["updated_ts"], reverse=True)
         return rows

@@ -107,6 +107,47 @@ class FlowStore:
 
     # ----------------------------------------------------------------- write
 
+    def touch_run(self, flow_id: str, *, ts: float | None = None,
+                  result: str | None = None) -> bool:
+        """Record that a flow RAN. Returns True if anything was written.
+
+        `last_run`/`last_result` have existed on FlowRecord since the library
+        shipped and the cards render all four states, but nothing ever wrote
+        them - so every flow said NEVER RUN forever, including the two on this
+        rig whose descriptions say "First flow run on the real rig". The API
+        deliberately re-derives both from the stored record on every PUT so a
+        client cannot forge a green card; that closed the loop, because no
+        server-side writer was added to replace it. This is that writer.
+
+        NOT `save()`, for two reasons. `save` raises ReadOnlyFlow for the
+        shipped examples, and the M16 example is REQUIRED to run on the
+        simulator - an unguarded write-back would turn every example run into a
+        500 *after* the engine had already started. And `save` re-stamps
+        `updated_ts`, which would make running a flow look like editing it.
+
+        Best-effort by contract: a read-only flow returns False rather than
+        raising, because the caller is bookkeeping after a run that is already
+        under way.
+        """
+        try:
+            record = self.get(flow_id)
+        except KeyError:
+            return False
+        if record.readonly or any(e.id == record.id for e in examples()):
+            return False
+        update: dict = {}
+        if ts is not None:
+            update["last_run"] = ts
+        if result is not None:
+            update["last_result"] = result
+        if not update:
+            return False
+        record = record.model_copy(update=update)
+        write_json_atomic(self._path(record.id),
+                          {"schema_version": FLOW_SCHEMA, "id": record.id,
+                           "flow": record.model_dump(by_alias=True)})
+        return True
+
     def save(self, record: FlowRecord) -> FlowRecord:
         if record.readonly or any(e.id == record.id for e in examples()):
             raise ReadOnlyFlow("the shipped examples are read-only — "
