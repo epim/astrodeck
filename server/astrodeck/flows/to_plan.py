@@ -563,7 +563,16 @@ def _automation(compiled: dict, out: list[dict], *,
 #: same defect as telling them all of them do, and it is the more dangerous
 #: direction: someone who believes the night does not park will go out and park
 #: it themselves, or leave a run they would otherwise have trusted.
+#: #239 stage C: GUIDE is no longer wholly inert - its PRESENCE now decides
+#: whether the run guides at all - so the generic "does not reach the run" line
+#: would be a fresh lie in the other direction.
+NODE_LOSS_GUIDE = (
+    "whether this node is on the canvas decides whether the night guides, and "
+    "that IS honoured - but its settle time and dither settings are not: the "
+    "run uses the rig's own guiding settings for those")
+
 NODE_LOSS: dict[str, str] = {
+    "guide": NODE_LOSS_GUIDE,
     "parkclose": (
         "most of what this node promises already happens, but not because it "
         "is here: every flow's night ends with the mount parked and the dust "
@@ -774,6 +783,23 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
         "instructions": _instructions(compiled, unmapped),
         **plan_extras(compiled),
     }
+    # THE GUIDE NODE MEANS WHAT IT DRAWS (#239 stage C).
+    #
+    # `guide` was never set here, so every flow-built night guided - a graph
+    # with no GUIDE node on it guided anyway, and one with a GUIDE node was no
+    # different. `inert_nodes` was honest that the node's SETTINGS went nowhere,
+    # but the sentence an operator actually reads off a canvas is "there is no
+    # guider in this picture", and the run disagreed with it.
+    #
+    # Seven nights on the rig were shot with guide=False, one of them a real
+    # imaging night (NGC 7023, unguided). A flow could not express any of them.
+    #
+    # Only when the GRAPH is in hand: `compiled` does not carry node types, and
+    # guessing "unguided" from its absence would turn every graph-less caller
+    # (tests, the odd internal path) into an unguided night by accident. Both
+    # production callers pass the graph.
+    if graph is not None:
+        fields["guide"] = any(n.type == "guide" for n in graph.nodes)
     if cool_to is not None:
         fields["cool_to"] = float(cool_to)
     plan = SequencePlan.model_validate(fields)
