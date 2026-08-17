@@ -114,6 +114,7 @@ from ..rotation import angle_equals, map_sky_target, mod360
 from ..sequence import SequenceEngine, SequencePlan
 from ..sequence import schedule as schedule_mod
 from ..sequence.models import quota_unbounded
+from ..sequence.policy import resolve_policy
 from ..sequence.report import SessionReporter, _slug
 from ..sequence.bundle import (CalibrationLibraryAdapter, NullMasterLibrary,
                                build_bundle, bundle_materialize_plan,
@@ -3802,7 +3803,7 @@ def create_app() -> FastAPI:
 
         if not plan.targets or plan.total_frames() == 0:
             raise HTTPException(422, "plan has no frames")
-        if quota_unbounded(plan):
+        if quota_unbounded(plan, resolve_policy(plan, config_store.cfg())):
             raise HTTPException(400, "count_mode=accepted with both reject "
                                      "guards disabled and no stop boundary can "
                                      "run unbounded — set a frame count, a stop "
@@ -3983,7 +3984,7 @@ def create_app() -> FastAPI:
         # engine on this same loop, so a session carrying the unbounded
         # combination (accepted mode, both reject guards off, no stop boundary)
         # must be refused here too — not just on the original start.
-        if quota_unbounded(s.plan):
+        if quota_unbounded(s.plan, resolve_policy(s.plan, config_store.cfg())):
             raise HTTPException(
                 400,
                 "count_mode=accepted with both reject guards disabled and no "
@@ -5447,7 +5448,7 @@ def create_app() -> FastAPI:
         # whose quota can never be satisfied (e.g. persistent clouds) would run
         # forever. Never bypassed by `force` (that flag only overrides the
         # horizon pre-flight below, not a structural configuration hazard).
-        if quota_unbounded(plan):
+        if quota_unbounded(plan, resolve_policy(plan, config_store.cfg())):
             raise HTTPException(
                 400,
                 "count_mode=accepted with both reject guards disabled and no "
@@ -5724,7 +5725,7 @@ def create_app() -> FastAPI:
         # review, IMPORTANT) — resume starts the engine on this same loop, so a
         # dormant session carrying the unbounded combination must be refused
         # here too, not just on the original start.
-        if quota_unbounded(s.plan):
+        if quota_unbounded(s.plan, resolve_policy(s.plan, config_store.cfg())):
             raise HTTPException(
                 400,
                 "count_mode=accepted with both reject guards disabled and no "

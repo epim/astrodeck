@@ -57,10 +57,12 @@ def test_a_config_without_the_new_block_still_loads():
     assert restored.cooling.cool_timeout_s == 600
 
 
-def test_a_plan_still_carries_its_own_defaults_before_A2():
-    """Guard on the ordering. A1 only ADDS config; it must not have quietly
-    changed the plan model, or a rig would start behaving differently before
-    the resolver that reconciles the two layers exists."""
+def test_a_fresh_plan_inherits_rather_than_deciding():
+    """This guarded A1's ordering - "A1 only adds config, the plan model is
+    untouched" - and A2 then changed the model on purpose, so it now states the
+    post-A2 truth instead: a plan nobody edited says nothing about these, and
+    `None` is what makes "the rig decides" expressible at all."""
     plan = SequencePlan()
-    assert plan.dither_pixels == 3.0
-    assert plan.max_consecutive_rejects == 10
+    assert plan.dither_pixels is None
+    assert plan.max_consecutive_rejects is None
+    assert plan.min_stars is None

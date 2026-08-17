@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import re
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, model_validator
+
+if TYPE_CHECKING:                       # pragma: no cover - typing only
+    from .policy import RunPolicy
 
 
 class ExposureStep(BaseModel):
@@ -240,32 +243,37 @@ class SequencePlan(BaseModel):
     targets: list[Target] = []
     guide: bool = True
     dither_every: int = 3              # frames; 0 = never
-    dither_pixels: float = 3.0
+    # --- #239 stage A: `None` = inherit the rig's standard (config), which is
+    # what a flow-compiled plan leaves them at. An explicit value - INCLUDING 0
+    # or False - is a choice about tonight and beats the rig. See
+    # sequence/policy.py; nothing reads these directly any more.
+    dither_pixels: float | None = None
     autofocus_every: int = 0           # frames; 0 = only at target start
+    # NB autofocus_every and dither_every stay per-night intent (stage C).
     # cooling
     cool_to: float | None = None       # target sensor °C; cool + stabilize before lights
-    cool_timeout_s: int = 600
+    cool_timeout_s: int | None = None
     # focus
-    apply_filter_offsets: bool = True  # shift focuser by per-filter offset on filter change
-    refocus_on_temp_delta_c: float = 0.0   # refocus when focuser temp drifts this much (0 = off)
+    apply_filter_offsets: bool | None = None
+    refocus_on_temp_delta_c: float | None = None
     # safety
     meridian_flip: bool = True         # flip a German mount when past the meridian
-    recover_guiding: bool = True       # restart guiding if the star is lost
-    hfr_reject_factor: float = 0.0     # warn when a frame's HFR exceeds factor × running median (0 = off)
+    recover_guiding: bool | None = None
+    hfr_reject_factor: float | None = None
     # --- multi-night quota mode (sessions spec §3; defaults preserve behavior) ---
     # Literal (Task 4 review, MINOR): a typo used to silently degrade to
     # "attempts" mode (the else-branch of every `count_mode == "accepted"`
     # check) with no feedback. Now rejected at validation.
     count_mode: Literal["attempts", "accepted"] = "attempts"
-    min_stars: int = 0                       # star-count floor (0 = off)
-    max_guide_rms: float = 0.0               # guide-RMS ceiling, arcsec (0 = off)
-    max_eccentricity: float = 0.0            # per-frame median-ecc ceiling, 0..1 (0 = off)
-    max_consecutive_rejects: int = 10        # per-STEP consecutive guard (0 = off)
-    max_consecutive_rejects_night: int = 20  # per-NIGHT guard, crosses targets (0 = off)
+    min_stars: int | None = None
+    max_guide_rms: float | None = None
+    max_eccentricity: float | None = None
+    max_consecutive_rejects: int | None = None
+    max_consecutive_rejects_night: int | None = None
     # unattended safety (Batch 4b; global safety/escalation live in config.py —
     # the plan carries only a master toggle + the meridian-flip warning lead time)
     safety_check: bool = True          # honor the configured SafetyMonitor + floor
-    meridian_flip_warn_min: float = 15.0
+    meridian_flip_warn_min: float | None = None
     # wind-down
     park_when_done: bool = False
     warm_cooler_when_done: bool = False
@@ -324,7 +332,7 @@ class SequencePlan(BaseModel):
                    if (s.frame_type or "Light").strip().lower() == "light")
 
 
-def quota_unbounded(plan: SequencePlan) -> bool:
+def quota_unbounded(plan: SequencePlan, policy: "RunPolicy") -> bool:
     """True when starting ``plan`` in accepted-frame quota mode could run
     forever under persistent rejects (Task 4 review, IMPORTANT; public name —
     imported across module boundaries by the api route gates).
@@ -342,13 +350,19 @@ def quota_unbounded(plan: SequencePlan) -> bool:
     quota can never be satisfied (e.g. persistent clouds) loops without any
     terminating bound.
 
+    THE GUARDS MOVED (#239 stage A): both reject guards are now resolved from
+    the rig's standards unless this plan overrides them, so the question cannot
+    be answered from the plan alone - hence ``policy``. A caller that passed only
+    the plan would read a bare ``None`` as "no guard" and refuse every accepted-
+    quota run on a rig whose standards set one.
+
     Calibration targets never enter the quota loop (``quota = count_mode ==
     "accepted" and not target.calibration`` in ``_run_step``), so they're
     excluded here; a plan with no non-calibration targets is never unbounded
     by this rule."""
     if plan.count_mode != "accepted":
         return False
-    if plan.max_consecutive_rejects or plan.max_consecutive_rejects_night:
+    if policy.max_consecutive_rejects or policy.max_consecutive_rejects_night:
         return False
     return any(t.schedule.stop_mode == "none" and not t.schedule.max_run_min
                for t in plan.targets if not t.calibration)

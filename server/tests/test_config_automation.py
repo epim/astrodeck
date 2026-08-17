@@ -9,6 +9,8 @@ import pytest
 from astrodeck.config import (AlertSink, AppConfig, ConfigStore,
                               EscalationConfig, SAFETY_PRESETS, SafetyConfig,
                               redacted)
+from astrodeck.config import AppConfig
+from astrodeck.sequence.policy import resolve_policy
 from astrodeck.sequence.models import Schedule, SequencePlan, Target
 
 
@@ -153,7 +155,12 @@ def test_old_plan_without_schedule_deserializes_unchanged():
         }],
     })
     assert plan.safety_check is True
-    assert plan.meridian_flip_warn_min == pytest.approx(15.0)
+    # #239 stage A: the plan no longer CARRIES this - `None` means "inherit the
+    # rig's standard" - so the question "does an old plan still behave like a
+    # 15-minute lead time" is now asked of the resolved policy. The intent of
+    # the assertion is unchanged; the layer that answers it moved.
+    assert plan.meridian_flip_warn_min is None
+    assert resolve_policy(plan, AppConfig()).meridian_flip_warn_min == pytest.approx(15.0)
     t = plan.targets[0]
     assert isinstance(t.schedule, Schedule)
     assert t.schedule.start_mode == "now"
