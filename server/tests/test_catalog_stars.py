@@ -269,8 +269,16 @@ def test_a_star_with_no_greek_letter_still_reads_correctly():
     assert _ids("alpha Sco")[0] == "Antares"     # ...and the real one still is
 
 
-def test_a_star_search_does_not_bury_the_deep_sky_ids():
-    """241 stars all brighter than every galaxy could easily push a Messier id
-    off the front of the list. Every deep-sky id must still find itself first."""
-    for o in CATALOG:
-        assert _ids(o.id)[0] == o.id, o.id
+# THE "STARS MUST NOT BURY THE DEEP SKY" SWEEP LIVES IN test_catalog.py NOW,
+# as `test_every_catalog_id_finds_itself_first_however_it_is_spelled`.
+#
+# It was here as `test_a_star_search_does_not_bury_the_deep_sky_ids`, walking
+# all 13,370 ids and asserting each finds itself FIRST — while test_catalog.py
+# walked the same catalogue twice more, once asserting the strictly weaker
+# `o.id in _ids(o.id)`. Three walks of a 6.9 ms search is 276 seconds of every
+# CI run, and one of the three could not fail unless another already had.
+#
+# The merged test makes the same call (`search_catalog` merges the stars, so
+# the star claim is exactly what first-ness tests) and carries this rationale
+# in its docstring. Everything below stays here: it is about what a STAR row
+# says, which is this file's subject.
