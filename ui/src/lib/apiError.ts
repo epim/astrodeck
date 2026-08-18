@@ -86,3 +86,24 @@ export function parseApiError(
   }
   return { message: forHumans(fallback) };
 }
+
+/** The object inside an error body that carries `code`, `id` and anything else
+ *  the endpoint attached — `detail` when the server nested it there, else the
+ *  body itself.
+ *
+ *  `parseApiError` above already knows this nesting; it just does not hand the
+ *  rest of the payload back. A 409 that asks a QUESTION carries the material
+ *  the question is about (`POST /api/flows/{id}/run` sends the list of dropped
+ *  graph settings), and a caller that wants it should not have to re-derive
+ *  which of two shapes FastAPI used — that is how `flowsRun` came to read
+ *  `err.body?.unmapped`, which is the un-nested shape the server never sends.
+ */
+export function apiErrorPayload(body: unknown): Record<string, unknown> | null {
+  if (!body || typeof body !== "object") return null;
+  const j = body as Record<string, unknown>;
+  const d = j.detail;
+  if (d && typeof d === "object" && !Array.isArray(d)) {
+    return d as Record<string, unknown>;
+  }
+  return j;
+}
