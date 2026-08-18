@@ -350,6 +350,65 @@ test("an armed output takes the ring", () => {
     "the ring is on the armed OUTPUT only");
 });
 
+// ------------------------------------- NOT HONOURED BY A RUN, on the canvas
+// The list existed in two places you have to already be looking at: the
+// inspector's NOT HONOURED BY A RUN panel, and a confirm dialog that appears
+// AFTER you press RUN. The canvas — the surface the operator reads — said
+// nothing, so a node whose settings the compiler drops looked exactly like one
+// it honours.
+
+const LOSS = [
+  { key: "nodes.target", level: "warn",
+    detail: "the TARGET node's settings do not reach the run" },
+  { key: "nodes.capture", level: "note",
+    detail: "the scheduler advances the pool instead" },
+];
+
+test("a node whose settings the compile drops is marked ON THE CANVAS", () => {
+  render({});
+  setFlows({ compiled: { unmapped: LOSS } });
+  const mark = card("target").querySelector("[data-node-loss]") as any;
+  assert.ok(mark, "the node the compiler ignores looks identical to one it runs");
+  assert.equal(mark.getAttribute("data-node-loss"), "warn");
+  assert.equal(mark.textContent, "!", "colour is never the only channel");
+  assert.match(mark.getAttribute("title") ?? "", /do not reach the run/,
+    "a bare glyph makes the operator go hunting; to_plan already wrote the "
+    + "sentence that names the setting");
+  assert.match(mark.getAttribute("aria-label") ?? "", /not honoured/,
+    "the mark has to survive a screen reader and a colourblind eye");
+});
+
+test("a NOTE is not a loss — it says the thing happens another way", () => {
+  render({});
+  setFlows({ compiled: { unmapped: LOSS } });
+  assert.ok(!card("capture").querySelector("[data-node-loss]"),
+    "marking the notes too would train the mark to mean nothing: a note says "
+    + "the cloud hold releases itself, not that it was dropped");
+});
+
+test("the loss ring is below selection and busy, and above idle", () => {
+  render({});
+  setFlows({ compiled: { unmapped: LOSS }, statuses: {}, sel: null });
+  assert.match(card("target").getAttribute("style") ?? "", /--warn/,
+    "at rest the ring is what makes it visible without opening anything");
+  setFlows({ sel: { kind: "node", id: "n1" } });
+  assert.match(card("target").getAttribute("style") ?? "", /--accent/,
+    "selection is what the operator is doing NOW and outranks a standing fact");
+  setFlows({ sel: null, statuses: { n1: "busy" } });
+  assert.match(card("target").getAttribute("style") ?? "", /--accent/,
+    "so does busy — that is the rig moving");
+  setFlows({ statuses: {} });
+});
+
+test("a clean compile leaves every card unmarked", () => {
+  render({});
+  setFlows({ compiled: { unmapped: [] } });
+  assert.ok(!card("target").querySelector("[data-node-loss]"));
+  setFlows({ compiled: null });
+  assert.ok(!card("target").querySelector("[data-node-loss]"),
+    "before the first compile nothing is known, and a mark would be a claim");
+});
+
 // ------------------------------------------------------------------- report
 act(() => { root.unmount(); });
 const total = passed + failed;
