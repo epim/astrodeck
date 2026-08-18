@@ -14,6 +14,7 @@
 // `s.flows.graph` is exact only because nothing but a graph edit rewrites it.
 // A convenience writer that rebuilt the whole `flows` object would silently
 // re-render every subscriber and nothing would fail.
+import { apiErrorPayload } from "../../lib/apiError";
 import { flowsApi } from "../../lib/flowsApi";
 import type { FlowCard, FlowFolder } from "../../lib/flowsApi";
 import { NODE_DEFS } from "./nodeDefs";
@@ -398,9 +399,18 @@ export function createFlowsActions(set: SetFn, get: GetFn): FlowsActions {
         // whether the operator accepts running a flow that will not honour part
         // of their graph. Handing the list back lets the caller show it and
         // ask; swallowing it would turn a question into an error.
-        const err = e as { code?: string; body?: { unmapped?: unknown } };
-        const list = (err as { unmapped?: FlowCompileResult["unmapped"] }).unmapped
-          ?? (err.body?.unmapped as FlowCompileResult["unmapped"] | undefined);
+        //
+        // THIS READ WAS DEAD FOR AS LONG AS IT EXISTED. It looked for
+        // `err.unmapped` and `err.body?.unmapped`; ApiError carried NEITHER
+        // (it kept message/status/code/id and dropped the decoded body), and
+        // the server nests the payload under `detail` anyway. So the guard
+        // could never be true, every flow with a loss fell through to the log
+        // line below, and RUN silently did nothing — on a rig where almost
+        // every flow has a loss. `apiErrorPayload` is the one place that knows
+        // which of the two shapes FastAPI used.
+        const err = e as { code?: string; body?: unknown };
+        const payload = apiErrorPayload(err.body);
+        const list = payload?.unmapped as FlowCompileResult["unmapped"] | undefined;
         if (err.code === "unmapped" && list) return list;
         get().flowsAppendLog(`could not start: ${errText(e)}`, "bad");
         return null;

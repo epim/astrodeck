@@ -383,15 +383,38 @@ class TestRefusals:
 
 
 class TestRotation:
-    def test_a_zero_rotation_becomes_no_constraint(self):
-        """``Target.rotation_deg=0`` commands the rotator to PA 0 and adds 300 s
-        of goto timeout on every target, every night — for a field the operator
-        never touched."""
-        plan, un = to_sequence_plan(compile_plan(_one_target(), "n"))
-        assert plan.targets[0].rotation_deg is None
-        assert any(k.endswith("rotation_deg") for k in _keys(un)), (
-            "the coercion must be reported — an operator who genuinely meant "
-            "PA 0 has to be able to see it was read as 'unset'")
+    def test_zero_is_a_position_angle_not_a_sentinel(self):
+        """PA 0 IS NORTH UP — the angle most people frame at and the one a
+        mosaic is planned around. It used to be the "no constraint" sentinel, so
+        the one value an operator was most likely to want was the one value the
+        field could not express, and every flow carried a permanent advisory
+        line because the sentinel WAS the default.
+
+        Changed 2026-08-18 on the operator's call: negative means no
+        constraint, everything else is an angle."""
+        plan, un = to_sequence_plan(compile_plan(_one_target(rotation=0), "n"))
+        assert plan.targets[0].rotation_deg == 0
+        assert not any(k.endswith("rotation_deg") for k in _keys(un)), (
+            "a plain answer should not cost an advisory")
+
+    def test_negative_is_the_no_constraint_sentinel(self):
+        """A rotator cannot be commanded to a negative position angle, so no
+        real value is displaced. -1 is what the UI writes for "any angle"."""
+        for value in (-1, -0.5, -90):
+            plan, un = to_sequence_plan(
+                compile_plan(_one_target(rotation=value), "n"))
+            assert plan.targets[0].rotation_deg is None, value
+            assert not any(k.endswith("rotation_deg") for k in _keys(un)), value
+
+    def test_an_empty_angle_box_does_not_command_the_rotator(self):
+        """The trap this change could have introduced. `_num` defaulted to 0, so
+        once 0 stopped meaning "unset" an unparseable or blank field would have
+        silently commanded PA 0 on every target of every flow. It defaults to -1
+        now."""
+        for blank in ("", None, "not a number"):
+            plan, _ = to_sequence_plan(
+                compile_plan(_one_target(rotation=blank), "n"))
+            assert plan.targets[0].rotation_deg is None, repr(blank)
 
     def test_a_real_rotation_survives_untouched(self):
         plan, un = to_sequence_plan(compile_plan(_one_target(rotation=23.4), "n"))

@@ -168,7 +168,13 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
                 "name": n.params.get("name"),
                 "ra": n.params.get("ra"),
                 "dec": n.params.get("dec"),
-                "rotation_deg": _num(n.params.get("rotation")),
+                # DEFAULT -1, NOT 0. -1 is "no angle constraint" (see
+                # to_plan's rotation block); 0 is north-up, a real position
+                # angle somebody may well want. An unparseable or empty field
+                # must fall to "no constraint" — falling to 0 would silently
+                # command the rotator to PA 0 on every target of every flow
+                # whose angle box was left blank.
+                "rotation_deg": _num(n.params.get("rotation"), -1),
                 "steps": [],
             })
         elif n.type == "pool":

@@ -772,20 +772,22 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
             continue
         ra_hours, dec_deg = coords
 
-        # 0 is what an untouched rotation field compiles to, and Target treats
-        # None as "no constraint". Passing the 0 through commands the rotator to
-        # PA 0 and adds 300 s of goto timeout on EVERY target, every night. The
-        # asymmetry decides it: a wrong None costs an operator who really wanted
-        # PA 0 an unconstrained angle - which on a rig with no rotator is the
-        # same behaviour anyway.
+        # NEGATIVE MEANS "NO ANGLE CONSTRAINT". 0 IS A POSITION ANGLE.
+        #
+        # This used to read 0 as the sentinel, on the reasoning that 0 is what an
+        # untouched field compiles to and that "a wrong None costs an operator
+        # who really wanted PA 0 an unconstrained angle". Both halves were
+        # wrong-headed: PA 0 is a perfectly ordinary answer — it is north up,
+        # the angle most people frame at and the one a mosaic is planned around
+        # — and a field whose most common value cannot be expressed is a field
+        # that lies. It also cost every flow a permanent advisory line, because
+        # the warning fired on the DEFAULT.
+        #
+        # So the sentinel is anything below zero. -1 is what the UI writes for
+        # "any angle"; a rotator cannot be commanded to a negative PA, so no
+        # real value is displaced, and an operator who types 0 now gets 0.
         rotation = entry.get("rotation_deg")
-        if not rotation:
-            if rotation == 0 and "rotation_deg" in entry:
-                unmapped.append(_note(
-                    f"targets[{name}].rotation_deg",
-                    "a rotation of 0 is read as 'no angle constraint'. If you "
-                    "meant position angle 0 exactly, the rotator will not be "
-                    "commanded to it"))
+        if rotation is None or (isinstance(rotation, (int, float)) and rotation < 0):
             rotation = None
 
         target = {"name": name, "ra_hours": ra_hours, "dec_deg": dec_deg,
