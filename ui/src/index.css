@@ -433,6 +433,28 @@ textarea:focus:not(:focus-visible), [tabindex]:focus:not(:focus-visible) { outli
   .btn:active:not(:disabled) { transform: none; }
 }
 .btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+/* EVERY BUTTON ACKNOWLEDGES A PRESS, not just the ones wearing `.btn`.
+   Measured 2026-08-18 by pressing all 172 controls and diffing the button's
+   own pixels at hover vs mouse-down: 15 changed nothing at all, and they were
+   one family — the chips, cards and disclosure rows that opt out of `.btn`.
+   The filename token chips ($$TARGET$$, $$FILTER$$, $$DATE$$ ...), the Flows
+   folder filters (All / My flows / Examples), the flow CARDS themselves, the
+   exposure presets (6s g200, 60s g120) and the CAMERA PHOTOMETRY disclosure.
+   All of them are real <button>s doing real work with no press affordance.
+
+   `brightness`, deliberately, and not a transform: these are cards and inline
+   chips inside dense tables, where a nudge or a scale would shift text
+   sideways under the finger. Brightness is also not motion, so it survives
+   prefers-reduced-motion intact, and it is not a hue, so it survives the night
+   palette collapsing good/warn/bad toward coral.
+
+   Scoped `:not(.btn)` so it never compounds with the stronger treatment
+   above. */
+button:not(.btn):not(:disabled):active,
+[role="button"]:not(.btn):not([aria-disabled="true"]):active {
+  filter: brightness(1.35);
+}
 /* UX-33: skip-to-content link — off-screen until focused, so a keyboard user
    can jump past the 11-item nav straight to <main>. */
 .skip-link {
