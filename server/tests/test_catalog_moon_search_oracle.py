@@ -196,8 +196,8 @@ def test_a_withheld_body_costs_no_ephemeris(monkeypatch):
     calls: list[str] = []
     real = ss.position
     monkeypatch.setattr(ss, "position",
-                        lambda key, when=None: (calls.append(key),
-                                                real(key, when))[1])
+                        lambda key, when=None, **kw: (calls.append(key),
+                                                      real(key, when, **kw))[1])
     search("moon", when=_WHEN, site_derived=False)
     assert "moon" not in calls, (
         f"the Moon's position was computed and then thrown away: {calls}")

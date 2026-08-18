@@ -62,6 +62,14 @@ export interface SkyRow {
   /** Solar-system rows only: the instant this position was computed for. */
   ephemeris_unix?: number;
   topocentric?: boolean;
+  /** Why the position was computed from the centre of the Earth, when it was.
+   *
+   *  Two reasons, and they need two sentences. "site_unset" is a setting the
+   *  user can fix. "not_permitted" (#203) is their ROLE: the planets are
+   *  computed site-free for anyone without `view.site_derived`, because a
+   *  topocentric row is a location oracle. Telling that user "no site is set"
+   *  would send them to change a setting that is already correct. */
+  geocentric_reason?: "site_unset" | "not_permitted" | null;
 }
 
 export interface RegionResponse {
