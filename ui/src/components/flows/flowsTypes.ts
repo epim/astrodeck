@@ -150,8 +150,13 @@ export function nodeLossLevel(
 ): "warn" | "danger" | null {
   if (!unmapped || !unmapped.length) return null;
   let worst: "warn" | "danger" | null = null;
+  const whole = `nodes.${nodeType}`;
+  const param = `${whole}.`;
   for (const u of unmapped) {
-    if (u.key !== `nodes.${nodeType}`) continue;
+    // `nodes.<type>` is the whole node's params; `nodes.<type>.<param>` is one
+    // dropped setting on a node the compiler otherwise reads (to_plan's
+    // INERT_PARAMS). Both belong on the same card.
+    if (u.key !== whole && !u.key.startsWith(param)) continue;
     if (u.level === "danger") return "danger";
     if (u.level === "warn") worst = "warn";
   }
@@ -171,7 +176,9 @@ export function nodeLossDetail(
   if (!unmapped || !unmapped.length) return "";
   const hits: string[] = [];
   for (const u of unmapped) {
-    if (u.key === `nodes.${nodeType}` && u.level !== "note") hits.push(u.detail);
+    const k = u.key;
+    if ((k === `nodes.${nodeType}` || k.startsWith(`nodes.${nodeType}.`))
+        && u.level !== "note") hits.push(u.detail);
   }
   return hits.join(" · ");
 }

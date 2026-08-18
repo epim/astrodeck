@@ -624,6 +624,55 @@ def inert_nodes(graph: FlowGraph | None) -> list[dict]:
                              f"the {node.type.upper()} node's settings do not "
                              f"reach the run - the compiler does not carry them "
                              f"into the plan")))
+    out.extend(_inert_params(graph))
+    return out
+
+
+#: Params on an OTHERWISE-COMPILED node that still reach nothing. ``(type,
+#: param) -> sentence``.
+#:
+#: The loop above cannot see these: it skips every type in
+#: ``COMPILED_NODE_TYPES`` wholesale, on the reasoning that a compiled node's
+#: params arrive. Mostly true, and for `reject` it is false — which made this
+#: the one dropped setting with NOTHING anywhere saying so, while
+#: `tonight.py`'s brief went on promising it by name and by number ("a sub is
+#: graded and only counts below HFR 3.5in"). A silent loss under a list whose
+#: whole job is that losses are not silent.
+#:
+#: WHY IT IS NOT SIMPLY WIRED UP INSTEAD. The nearest plan field,
+#: ``hfr_reject_factor``, is a MULTIPLIER of the running median of accepted
+#: frames (`engine.py`: `hfr > med * factor`, needing a 4-frame window). The
+#: node's `reject` is presented everywhere as an absolute HFR in arcsec.
+#: Feeding 3.5 into a field that means "3.5x the median" would be a different
+#: rule wearing the same number, which is worse than not carrying it.
+INERT_PARAMS: dict[tuple[str, str], str] = {
+    (t, "reject"): (
+        f"the {t.upper()} node's HFR reject threshold does not reach the run - "
+        f"frame grading uses the rig's own standards (Settings > Safety), and "
+        f"the plan's nearest field is a MULTIPLE of the running median, not an "
+        f"absolute HFR, so this number is not carried into it")
+    for t in ("capture", "cycle")
+}
+
+
+def _inert_params(graph: FlowGraph) -> list[dict]:
+    """Dropped params on nodes the compiler otherwise reads. See INERT_PARAMS.
+
+    Only reported when the param is actually SET to something: a node left at a
+    default the operator never looked at does not need a warning, and a list
+    that fires on every flow is a list nobody reads.
+    """
+    out: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for node in graph.nodes:
+        for (ntype, param), detail in INERT_PARAMS.items():
+            if node.type != ntype or (ntype, param) in seen:
+                continue
+            value = (node.params or {}).get(param)
+            if value in (None, "", 0, 0.0):
+                continue
+            seen.add((ntype, param))
+            out.append(_note(f"nodes.{ntype}.{param}", detail))
     return out
 
 

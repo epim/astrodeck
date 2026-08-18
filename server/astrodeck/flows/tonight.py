@@ -677,14 +677,22 @@ def brief(graph: FlowGraph | None) -> str:
         slots = parse_cycle_plan(cyc.params.get("plan"))
         table = ", ".join(f"{f} {e} s × {cyc.params.get('cycles')}"
                           for f, e in slots)
+        # NO GRADING CLAUSE. This used to end "; a sub is graded and only counts
+        # below HFR {reject}″" — a specific threshold, in arcsec, for something
+        # nothing does: the node's `reject` is dropped by `to_plan` and the
+        # plan's nearest field is a multiple of the running median, not an
+        # absolute HFR. An operator reading it would believe soft frames were
+        # being discarded and their counts topped up. What DOES grade a frame is
+        # the rig's own standards, which are not this flow's to describe; that
+        # the setting is dropped is now said where dropped settings are said, in
+        # `to_plan.INERT_PARAMS`.
         seg.append(f"Capture interleaves one sub per filter per pass - {table} - "
-                   f"so every channel grows evenly; a sub is graded and only "
-                   f"counts below HFR {cyc.params.get('reject')}″.")
+                   f"so every channel grows evenly.")
     elif cap is not None:
         p = cap.params
+        # Same removal as the cycle branch above, same reason.
         seg.append(f"It captures {p.get('filter')} {p.get('exposure')} s × "
-                   f"{p.get('count')} (gain {p.get('gain')}, bin {p.get('bin')}); "
-                   f"subs grading above HFR {p.get('reject')}″ don't count.")
+                   f"{p.get('count')} (gain {p.get('gain')}, bin {p.get('bin')}).")
 
     advances = pool is not None and _wired(g, to=pool, to_port="advance")
     if rep is not None and advances:
