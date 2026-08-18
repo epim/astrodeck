@@ -38,12 +38,39 @@ def test_designation_search_ignores_spacing_and_case(query, expected):
     assert ids and ids[0] == expected, ids[:5]
 
 
-def test_every_catalog_id_is_findable_spaced_and_unspaced():
-    """Neither storage convention may be privileged: every id must be found
-    both as it is written here and with its separators removed."""
+def test_every_catalog_id_finds_itself_first_however_it_is_spelled():
+    """Every id, both spellings, at the TOP of its own results.
+
+    THE MOST EXPENSIVE TEST IN THIS SUITE, and worth knowing the price of: each
+    `search_catalog` call is a linear scan of all 13,370 rows (6.9 ms measured
+    2026-08-17), so one walk of the catalogue is ~92 seconds of pure CPU. It
+    earns that by being the only check that no id anywhere is unreachable or
+    outranked — the shape that made "M 31" and "ngc3372" each find nothing.
+
+    IT USED TO BE THREE WALKS, in two files, and one of them established
+    nothing. This test asserted `o.id in _ids(o.id)`; `test_catalog_stars.py`
+    separately asserted `_ids(o.id)[0] == o.id` over the same catalogue with the
+    same call. The second implies the first, so 13,370 searches — 92 seconds of
+    every CI run — were re-deriving a weaker form of a claim already proved
+    three files away. Merged here, at two walks:
+
+      * spaced, i.e. as the id is written;
+      * unspaced, which is how a beginner copying off a website types it.
+
+    Both now assert FIRST rather than merely present, which is stronger than
+    either original and costs nothing: verified against all 13,370 before the
+    assertion was tightened.
+
+    THE STAR CLAIM RIDES ALONG, and is the reason first-ness matters rather
+    than membership: `search_catalog` merges 241 named stars, all brighter than
+    every galaxy in here, and brightness breaks ties. Without this, a Messier id
+    could be pushed off the front of its own search by a star that merely shares
+    letters with it.
+    """
     for o in CATALOG:
-        assert o.id in _ids(o.id), o.id
-        assert o.id in _ids(o.id.replace(" ", "").replace("-", "")), o.id
+        assert _ids(o.id)[0] == o.id, o.id
+        unspaced = o.id.replace(" ", "").replace("-", "")
+        assert _ids(unspaced)[0] == o.id, f"{o.id} as {unspaced!r}"
 
 
 def test_name_and_type_search_still_substring():
