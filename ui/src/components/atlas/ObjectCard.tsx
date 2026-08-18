@@ -55,14 +55,27 @@ function frameVerdict(sizeArcmin: number, frameFovDeg: number): string | null {
   return `${frac.toFixed(1)}× your frame — needs a mosaic`;
 }
 
-function ephemerisAge(row: SkyRow): string | null {
+/** Exported for its own test: this sentence has two mutually-exclusive halves
+ *  and one of them is advice. Getting the wrong one in front of a user tells
+ *  them to change a setting that is already correct — and, since it is their
+ *  ROLE that chose the geocentric position, one they cannot change at all. */
+export function ephemerisAge(row: SkyRow): string | null {
   if (row.kind !== "solar_system" || !row.ephemeris_unix) return null;
   const mins = Math.max(0, (Date.now() / 1000 - row.ephemeris_unix) / 60);
   const when = mins < 1 ? "just now" : `${Math.round(mins)} min ago`;
-  const where = row.topocentric === false
-    ? " Computed for the centre of the Earth, because no site is set — that "
-      + "moves the Moon by up to a degree."
-    : "";
+  // TWO REASONS to stand at the centre of the Earth, and only one of them is
+  // something the reader can act on. "no site is set" said to a viewer on a
+  // fully-configured rig sends them to fix a setting that is already right —
+  // and they could not fix it anyway, since it is their role that decided this.
+  const where =
+    row.geocentric_reason === "not_permitted"
+      ? " Computed for the centre of the Earth: where a body appears from your "
+        + "actual location would give away where this rig is, so your role sees "
+        + "the site-free position. It is under 13″ out for a planet."
+      : row.topocentric === false
+        ? " Computed for the centre of the Earth, because no site is set — that "
+          + "moves the Moon by up to a degree."
+        : "";
   return `Position computed ${when}; it moves as the night does.${where}`;
 }
 

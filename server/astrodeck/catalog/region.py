@@ -335,11 +335,20 @@ def _ephem_key() -> tuple:
             round(site.elevation_m, 3), bool(getattr(site, "is_default", False)))
 
 
-def solar_system_rows(when: float | None = None) -> tuple[list[dict], list[str]]:
+def solar_system_rows(when: float | None = None, *,
+                      site_derived: bool = True
+                      ) -> tuple[list[dict], list[str]]:
     """Every Sun/Moon/planet row we can compute, and the reasons for any we
     cannot. Cached for ``_EPHEM_TTL_S`` when ``when`` is None (i.e. "now");
     an explicit time always computes, so a test is never answered from a
     cache built for a different instant.
+
+    ``site_derived=False`` computes the set from the centre of the Earth (#203)
+    and IS PART OF THE CACHE KEY. It has to be: this cache is module-level and
+    the flag is per-CALLER, so without it a topocentric set computed for an
+    operator would be handed to the viewer who asked thirty seconds later —
+    a leak that only appears under a second reader, i.e. the one condition no
+    single-caller test would ever reproduce.
 
     THE SUN IS INCLUDED HERE, unlike ``solar_system.offered_bodies()``, and
     the difference is deliberate. That gate exists so a SEARCH does not offer a
@@ -353,7 +362,7 @@ def solar_system_rows(when: float | None = None) -> tuple[list[dict], list[str]]
     from . import solar_system as ss
 
     live = when is None
-    key = _ephem_key() if live else None
+    key = (_ephem_key(), bool(site_derived)) if live else None
     if live and _ephem_cache is not None:
         cached_key, at, rows = _ephem_cache
         if cached_key == key and (_time.time() - at) < _EPHEM_TTL_S:
@@ -363,7 +372,7 @@ def solar_system_rows(when: float | None = None) -> tuple[list[dict], list[str]]
     notes: list[str] = []
     for body in ss.BODIES:
         try:
-            r = ss.row(body.key, when)
+            r = ss.row(body.key, when, site_derived=site_derived)
         except ss.EphemerisUnavailable as e:
             notes.append(
                 f"{body.label} is not marked on the map: it could not be placed "
@@ -388,6 +397,9 @@ def solar_system_rows(when: float | None = None) -> tuple[list[dict], list[str]]
             # observer was standing. Both are what make the row falsifiable.
             "ephemeris_unix": r["ephemeris_unix"],
             "topocentric": r["topocentric"],
+            # WHY it is geocentric, when it is. The Atlas card's copy says "no
+            # site is set", which is false for a viewer on a configured rig.
+            "geocentric_reason": r["geocentric_reason"],
         })
     if live and not notes:
         # Only a complete set is cached: a partial one would keep re-serving
@@ -408,11 +420,32 @@ def _reset_ephemeris_cache() -> None:
 #: hundred times the marker it draws. A pannable map that answers on every
 #: viewport change is a far higher-rate oracle than a search box, and this repo
 #: has already had a viewer geolocate the rig to 2.9 km through exactly this
-#: shape. So the Moon rides the same capability alt/az does. The Sun and the
-#: planets do not: their topocentric shift is under an arcsecond, which carries
-#: no recoverable position at any precision this API publishes.
+#: shape. So the Moon rides the same capability alt/az does.
+#:
+#: THIS COMMENT USED TO END: "The Sun and the planets do not: their topocentric
+#: shift is under an arcsecond, which carries no recoverable position at any
+#: precision this API publishes." Both halves were false. Six of the eight shift
+#: by more than an arcsecond (Venus by 12.8"), and every published
+#: `distance_km` sat 600-4,000 km from its geocentric value — the observer's own
+#: radius projected onto that body's line of sight, eight times over, at eight
+#: geometries. `solar_system.SITE_DERIVED_BODIES` had already measured this and
+#: warned in so many words that "what is NOT acceptable is a comment asserting
+#: the residual is under an arcsecond, because it measurably is not". The
+#: comment outlived the warning by nine days.
+#:
+#: FIXED as #203, and not by adding names to this set: a caller without
+#: `view.site_derived` now gets the whole ephemeris computed from the CENTRE OF
+#: THE EARTH, so the site is not an input to any row and cannot be in any field.
+#: The set survives only for the Moon, which is 0.92 deg wrong geocentric and is
+#: therefore withheld rather than degraded.
 _SITE_DERIVED_BODIES = {"Moon"}
 
+#: Its last sentence was a PROMISE THE CODE DID NOT KEEP until #203 — every
+#: other body on the map was computed for this rig's own latitude and longitude,
+#: so the map was demonstrably not "the same from anywhere on Earth". It is now,
+#: for the callers this note is shown to. Pinned by
+#: test_the_planets_do_not_carry_the_site.py, so the sentence and the behaviour
+#: cannot part company again.
 _MOON_WITHHELD_NOTE = (
     "The Moon is not marked: where it appears in the sky depends on where you "
     "are standing (up to about 1 degree), so its position would give away this "
@@ -486,7 +519,12 @@ def scored_region_rows(ra_hours: float, dec_deg: float, radius_deg: float, *,
         scored.extend(_star_region_rows(ra_hours, dec_deg, radius_deg))
 
     if "solar_system" in kinds:
-        bodies, body_notes = solar_system_rows(when)
+        # THE CAPABILITY REACHES THE EPHEMERIS, not just the filter below.
+        # This line read `solar_system_rows(when)` while the loop under it
+        # dropped the Moon by name — so every OTHER body went out topocentric,
+        # which is #203 exactly: the gate was written against field names and
+        # the site rode past it in the rows the gate let through.
+        bodies, body_notes = solar_system_rows(when, site_derived=site_derived)
         notes.extend(body_notes)
         withheld = False
         for row in bodies:
@@ -687,6 +725,21 @@ def frame_geometry(wcs, width_px: int, height_px: int) -> dict:
     }
 
 
+def _withheld_bodies_geocentric(when: float | None) -> list[dict]:
+    """The bodies ``_SITE_DERIVED_BODIES`` names, computed WITHOUT the site.
+
+    Only ever used to ask "would one of these have been in this frame", so the
+    positions never leave the server — but they are computed geocentrically
+    anyway, because a topocentric evaluation whose ANSWER escapes is the same
+    leak one bit at a time. Never raises: a note is not worth a failed preview.
+    """
+    try:
+        rows, _notes = solar_system_rows(when, site_derived=False)
+    except Exception:      # noqa: BLE001 - a caption must not cost the frame
+        return []
+    return [r for r in rows if r["id"] in _SITE_DERIVED_BODIES]
+
+
 def objects_in_frame(wcs, width_px: int, height_px: int, *,
                      limit: int = 25,
                      margin_frac: float = 0.10,
@@ -715,8 +768,21 @@ def objects_in_frame(wcs, width_px: int, height_px: int, *,
     to withhold. ``region_rows`` raises its note as soon as a site-derived body
     exists at all, which is correct for a whole-sky map and wrong for a
     half-degree frame: it would put "the Moon is not marked" under every single
-    exposure and imply the Moon was in it. So the withholding happens HERE,
-    after placement, using the same constants.
+    exposure and imply the Moon was in it. So the per-frame withholding note is
+    decided HERE, after placement.
+
+    #203 CHANGED WHAT IS COMPUTED, NOT JUST WHAT IS DROPPED. This used to ask
+    for TOPOCENTRIC rows and drop the Moon from them by name, which left eight
+    planet rows on the broadcast still carrying 1,100-3,400 km of parallax in
+    their ``distance_km``. The capability now reaches the ephemeris itself.
+
+    AND THE NOTE IS DECIDED FROM THE GEOCENTRIC MOON, deliberately. Asking
+    whether the TRUE Moon lands in this frame, and saying so, is a one-bit
+    oracle on the parallax vector -- per frame, for free, on the widest-reaching
+    channel in the product. The geocentric Moon is within ~1 deg of the true
+    one, so the note can be wrong at that margin about a body it is telling the
+    user is NOT DRAWN. That is the right trade: an occasionally-superfluous note
+    costs nothing, and its absence never has to be explained.
     """
     geom = frame_geometry(wcs, width_px, height_px)
     plate = geom["plate"]
@@ -729,10 +795,12 @@ def objects_in_frame(wcs, width_px: int, height_px: int, *,
     scored, notes, _truncated = scored_region_rows(
         geom["ra_hours"], geom["dec_deg"], geom["radius_deg"],
         fov_deg=fov_deg, limit=max(limit * 3, 60), kinds=kinds,
-        # TRUE, then withheld below: the server is entitled to the position, the
-        # broadcast is not. Asking for the rows and dropping them at the boundary
-        # is what makes the note truthful about THIS frame.
-        site_derived=True, when=when)
+        # THE CALLER'S CAPABILITY, all the way down to the ephemeris. It used to
+        # be a hardcoded True with a by-name drop afterwards; see the docstring
+        # for what that left on the wire.
+        site_derived=site_derived, when=when)
+    # region_rows raises its note the moment a withheld body exists anywhere in
+    # the sky. Whether one is in THIS frame is decided after placement, below.
     notes = [n for n in notes if n != _MOON_WITHHELD_NOTE]
 
     mx, my = w * margin_frac, h * margin_frac
@@ -745,6 +813,10 @@ def objects_in_frame(wcs, width_px: int, height_px: int, *,
         if x < -mx or x > w - 1 + mx or y < -my or y > h - 1 + my:
             continue
         if row["id"] in _SITE_DERIVED_BODIES and not site_derived:
+            # UNREACHABLE while `scored_region_rows` filters the same set on the
+            # same flag, and kept anyway: this is the last line before a
+            # location oracle reaches a broadcast socket, and a redundant guard
+            # at a security boundary costs one comparison.
             withheld = True
             continue
         size_arcmin = float(row.get("size_arcmin") or 0.0)
@@ -754,6 +826,19 @@ def objects_in_frame(wcs, width_px: int, height_px: int, *,
             size_px=round((size_arcmin / 60.0) / geom["pixel_scale_deg"], 1),
             inside=bool(0.0 <= x <= w - 1 and 0.0 <= y <= h - 1),
         )))
+
+    # Would a withheld body have landed in THIS frame? Decided here rather than
+    # in the loop above, because the rows never got that far — and decided from
+    # the GEOCENTRIC position, because deciding it from the true one and saying
+    # so is a one-bit-per-frame oracle on the parallax. See the docstring.
+    if not site_derived and not withheld:
+        for r in _withheld_bodies_geocentric(when):
+            x, y = plate.to_pixel(r["ra_hours"], r["dec_deg"])
+            if not (math.isfinite(x) and math.isfinite(y)):
+                continue
+            if -mx <= x <= w - 1 + mx and -my <= y <= h - 1 + my:
+                withheld = True
+                break
 
     if withheld:
         notes.append(_MOON_WITHHELD_NOTE)

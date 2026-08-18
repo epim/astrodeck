@@ -433,9 +433,9 @@ def test_the_ephemeris_is_reused_within_its_ttl_and_recomputed_after():
     from astrodeck.catalog import solar_system as ss
     real_row = ss.row
 
-    def counting_row(key, when=None):
+    def counting_row(key, when=None, **kw):
         calls["n"] += 1
-        return real_row(key, when)
+        return real_row(key, when, **kw)
 
     ss.row = counting_row
     try:
