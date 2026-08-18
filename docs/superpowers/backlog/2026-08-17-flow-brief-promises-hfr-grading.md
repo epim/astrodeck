@@ -54,3 +54,34 @@ plan, unmapped = to_sequence_plan(compiled, graph_with_a_cycle_node)
 assert plan.hfr_reject_factor is None            # it did not arrive
 assert not any("reject" in l["key"] for l in losses(unmapped))   # and nothing said so
 ```
+
+---
+
+## FIXED 2026-08-17 (`8fe828e`), in the "say so" direction — plus a follow-up
+
+The clause is gone from both the cycle and capture branches of `tonight.brief`,
+and `to_plan.INERT_PARAMS` now reports the drop where drops are reported. Since
+`75010fd` that also puts a `!` on the CYCLE node on the canvas.
+
+Not wired up instead, and the units are the reason — `hfr_reject_factor` is a
+MULTIPLE of the running median, not an absolute HFR. A test pins that: wire it
+and the test fails, telling you to check the units before deleting the loss.
+
+### Still open: the doctor reads `reject: 0` as "reject everything"
+
+Setting the node's `reject` to 0 — the obvious way to say "I do not want
+grading" — produces:
+
+> watchdog threshold 3.2″ sits above the grader's reject 0″ — frames get
+> rejected before the rule can ever fire
+
+Nothing is rejected: 0 means off everywhere else in this codebase
+(`hfr_reject_factor`, `min_stars`, `max_guide_rms`, `max_eccentricity` all
+document "0 disables"), and `reject` reaches no engine at all. So the rule
+compares two inert numbers and gives advice about a mechanism that does not
+run. The effect is that turning the dial off is punished and leaving it at a
+value that does nothing is rewarded — which is why the NGC 7129 flow keeps
+`reject: 3.5` and an honest loss line rather than `0` and a false warning.
+
+Fix: treat 0 as "no grading" in that doctor rule (skip the comparison), the
+same way every other floor in the product treats it.
