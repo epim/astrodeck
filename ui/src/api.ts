@@ -18,12 +18,32 @@ export class ApiError extends Error {
    *  existing-location id) — the authoritative reference for a follow-up
    *  overwrite, parsed by lib/apiError.ts. */
   id?: string;
+  /** The DECODED response body, verbatim.
+   *
+   *  Some 409s are a QUESTION, not a failure, and they carry the material the
+   *  question is about: `POST /api/flows/{id}/run` answers 409 `code:
+   *  "unmapped"` with the list of graph settings the compile drops, so the UI
+   *  can show them and ask "run anyway?".
+   *
+   *  Message, code and id used to be all that survived — the body was decoded,
+   *  read for those three fields, and dropped on the floor. `flowsRun` read
+   *  `err.unmapped` and `err.body?.unmapped`, neither of which existed on this
+   *  class, so its guard could never be true: EVERY flow carrying any loss fell
+   *  through to "could not start", and since almost every flow carries one
+   *  (SAFETY, SLEW, AUTOFOCUS, GUIDE, REPORT, CONDITION, REFOCUS and ABORT all
+   *  have inert params), RUN could not start anything at all. Verified on the
+   *  rig 2026-08-18: press RUN, get a 409, no dialog, no way forward.
+   *
+   *  `unknown` on purpose — a caller narrows what it expects. Typing it would
+   *  make this class know every endpoint's error shape. */
+  body?: unknown;
   constructor(
     message: string,
     status: number,
     timedOut = false,
     code?: string,
     id?: string,
+    body?: unknown,
   ) {
     super(message);
     this.name = "ApiError";
@@ -31,6 +51,7 @@ export class ApiError extends Error {
     this.timedOut = timedOut;
     this.code = code;
     this.id = id;
+    this.body = body;
   }
 }
 
@@ -82,7 +103,8 @@ async function req<T = unknown>(method: string, path: string, body?: unknown): P
       /* no/invalid JSON body; parseApiError falls back to statusText */
     }
     const { message, code, id } = parseApiError(res.status, body, res.statusText);
-    throw new ApiError(message, res.status, false, code, id);
+    // `body`, not just the three fields parsed out of it — see ApiError.body.
+    throw new ApiError(message, res.status, false, code, id, body);
   }
   return res.json() as Promise<T>;
 }

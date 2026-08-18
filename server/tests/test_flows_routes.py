@@ -325,13 +325,36 @@ class TestCalibrationHealth:
 class TestRun:
     def test_a_flow_whose_features_are_dropped_refuses_until_acknowledged(
             self, client):
-        """M31 loses its on_unsafe rule and its integration goal. Starting a
-        night that quietly does less than the canvas shows is the thing this
-        whole seam exists to prevent."""
-        fid = client.post("/api/flows", json={"flow": _flow()}).json()["id"]
+        """Starting a night that quietly does less than the canvas shows is the
+        thing this whole seam exists to prevent.
+
+        THE FLOW HAS TO ACTUALLY LOSE SOMETHING, and this test used to rely on
+        an accident that it did. `GRAPH` is a three-node stub (dusk, target,
+        capture) whose only warn-level loss was the rotation advisory — fired
+        because 0 was the "no angle constraint" sentinel and 0 was also the
+        default, so EVERY flow carried it. When 0 became a real position angle
+        (2026-08-18) that advisory went away and this test's flow had no losses
+        at all: the 409 stopped firing and the assertion tripped over the NEXT
+        409 ("no camera connected") instead.
+
+        A GUIDE node is the durable choice. Its settle and dither never reach
+        the run and never have — `to_plan.NODE_LOSS_GUIDE` is written about
+        exactly that — so the premise cannot evaporate under an unrelated
+        default change again.
+        """
+        graph = {"nodes": [*GRAPH["nodes"],
+                           {"id": "gd", "type": "guide", "x": 700, "y": 200,
+                            "params": {"provider": "PHD2", "settle": 1.5,
+                                       "dither": 3}}],
+                 "edges": GRAPH["edges"]}
+        fid = client.post("/api/flows",
+                          json={"flow": _flow(graph=graph)}).json()["id"]
         r = client.post(f"/api/flows/{fid}/run", json={})
-        assert r.status_code == 409
+        assert r.status_code == 409, r.json()
         body = r.json()["detail"]
+        assert isinstance(body, dict), (
+            f"the refusal came back as a bare string, so this is a DIFFERENT "
+            f"409 and the unmapped gate never fired: {body!r}")
         assert body["code"] == "unmapped" and body["unmapped"]
 
     def _dome_flow(self, client):
