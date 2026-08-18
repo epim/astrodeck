@@ -26,6 +26,7 @@ import { Led } from "../ui";
 import type { LedState } from "../../types";
 import { NODE_DEFS } from "./nodeDefs";
 import { nodeW, type PortDir } from "./geometry";
+import { nodeLossDetail, nodeLossLevel } from "./flowsTypes";
 import type { FlowNodeRec, FlowNodeStatus } from "./flowsTypes";
 import FlowPort from "./FlowPort";
 
@@ -78,6 +79,11 @@ function FlowNodeCard({
   const status = useStore((s) => asStatus(s.flows.statuses[node.id]));
   const selected = useStore((s) =>
     s.flows.sel?.kind === "node" && s.flows.sel.id === node.id);
+  // THE THIRD, and it obeys the same rule: `nodeLossLevel` returns a string or
+  // null, never a fresh object, so a compile that changes nothing for this type
+  // does not wake this card. See flowsTypes.ts for why notes are excluded.
+  const loss = useStore((s) => nodeLossLevel(s.flows.compiled?.unmapped, node.type));
+  const lossWhy = useStore((s) => nodeLossDetail(s.flows.compiled?.unmapped, node.type));
 
   // Actions are stable references on the store, so selecting them costs nothing.
   const select = useStore((s) => s.flowsSelect);
@@ -92,14 +98,25 @@ function FlowNodeCard({
   // Both are token-derived: the prototype's literal rgba(0,210,255,·) values are
   // `--accent` at various mixes, and its idle rgba(120,140,200,0.22) is `--line`
   // at 0.18 (a 4% delta the contract authorises; §G-14 is open on it).
+  //
+  // A LOSS SITS BELOW BOTH, and above idle. Selection is what the operator is
+  // doing right now and busy is what the rig is doing right now; a loss is a
+  // standing fact about the graph, true whether or not anyone is looking. It
+  // still has to be visible at rest, which is the case this was missing: the
+  // list existed in the inspector and behind the RUN confirm, and the canvas —
+  // the surface the operator is actually reading — said nothing.
+  const lossVar = loss === "danger" ? "--bad" : "--warn";
   const borderColor = selected ? "var(--accent)"
     : status === "busy" ? "color-mix(in srgb, var(--accent) 55%, transparent)"
+    : loss ? `color-mix(in srgb, var(${lossVar}) 70%, transparent)`
     : "var(--line)";
   const boxShadow = selected
     ? "0 0 16px color-mix(in srgb, var(--accent) 35%, transparent)"
     : status === "busy"
       ? "0 0 14px color-mix(in srgb, var(--accent) 25%, transparent)"
-      : "0 4px 14px rgba(0,0,0,0.45)";
+      : loss
+        ? `0 0 12px color-mix(in srgb, var(${lossVar}) 22%, transparent), 0 4px 14px rgba(0,0,0,0.45)`
+        : "0 4px 14px rgba(0,0,0,0.45)";
 
   const cardStyle: CSSProperties = {
     width: w,
@@ -173,6 +190,24 @@ function FlowNodeCard({
         </span>
         {/* The status word is the LED's accessible name, so the state is
             readable without the colour and without the silhouette. */}
+        {/* NOT HONOURED BY A RUN, on the node it belongs to.
+            A GLYPH AND A NAME, not a colour: the night palette collapses warn
+            and bad toward coral (FlowInspector's ISSUE_INK says the same), so
+            an amber ring alone is indistinguishable from a red one — and from
+            nothing at all under prefers-reduced-motion or a colourblind eye.
+            `title` carries to_plan's own sentence, which already names the
+            setting and what the run does instead. */}
+        {loss && (
+          <span
+            data-node-loss={loss}
+            title={lossWhy}
+            aria-label={`settings not honoured by a run: ${lossWhy}`}
+            className={`flex-none font-display font-semibold text-[10px] leading-none
+                        ${loss === "danger" ? "text-bad" : "text-warn"}`}
+          >
+            !
+          </span>
+        )}
         <Led state={LED_BY_STATUS[status]} label={status} />
         <EditGlyph
           size={auto ? 24 : 20}
