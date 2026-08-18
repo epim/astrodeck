@@ -80,48 +80,69 @@ def _sources_of(graph, node_type: str) -> set[str]:
             if by_id[e.to].type == node_type}
 
 
+def _overlapping(nodes) -> list[str]:
+    """Cards that would land on top of each other on the canvas."""
+    return [f"{a.type}@({a.x},{a.y}) overlaps {b.type}@({b.x},{b.y})"
+            for i, a in enumerate(nodes) for b in nodes[i + 1:]
+            if abs(a.x - b.x) < NODE_W and abs(a.y - b.y) < NODE_H]
+
+
 class TestEveryGeneratedGraphPassesTheDoctor:
-    """§9's stated hard requirement, over the whole answer space."""
+    """§9's stated hard requirement, over the whole answer space.
+
+    ONE TEST PER ANSWER, FOUR QUESTIONS OF EACH GRAPH — not four tests over the
+    same answers. The four used to be separate, which generated every graph
+    FOUR TIMES (1,536 generations, 768 test ids from one 400-line file, 13% of
+    the whole suite's collected count) to ask four questions of it. Asking them
+    of one graph is the same assertions on the same objects at 576 generations,
+    and every failure is still named individually because they are collected
+    rather than raised — a merge that let the first failure hide the other
+    three would be trading fidelity for a number, which is the one thing this
+    consolidation must not do.
+    """
 
     @pytest.mark.parametrize("kind,opts", EVERY_ANSWER)
-    def test_no_answer_the_sheet_can_give_generates_a_warning(self, kind, opts):
-        """The wizard's output is somebody's first flow. If it opens with "120s
-        subs with no GUIDE upstream" or "nothing closes the shutter on rain",
-        they learn that the doctor is noise — and then they miss the one that
-        matters at 03:00."""
-        for target in TARGET_INPUTS:
-            graph = generate(kind, opts, target)
-            loud = [i.text for i in check(graph) if i.level in ("warn", "danger")]
-            assert loud == [], f"{kind} {sorted(opts)} target={target!r}: {loud}"
+    def test_every_generated_graph_is_one_somebody_can_use(self, kind, opts):
+        """Four promises about a generated graph, each with its own cost:
 
-    @pytest.mark.parametrize("kind,opts", EVERY_ANSWER)
-    def test_every_generated_graph_is_structurally_valid(self, kind, opts):
-        """Structural validity is a different question from the doctor's: an
+        THE DOCTOR IS SILENT. The wizard's output is somebody's first flow. If
+        it opens with "120s subs with no GUIDE upstream" or "nothing closes the
+        shutter on rain", they learn that the doctor is noise — and then they
+        miss the one that matters at 03:00.
+
+        IT IS STRUCTURALLY VALID. A different question from the doctor's: an
         edge naming a missing port or crossing the flow/event boundary is a
         graph that cannot be drawn or compiled at all, so the store refuses to
-        save it — the wizard would hand back something unsaveable."""
+        save it — the wizard would hand back something unsaveable.
+
+        IT LEAVES A LEDGER. Doctor rule 10 is only a note, so a missing SESSION
+        REPORT slips past the bar above — and the night leaves no record of
+        what it actually shot.
+
+        NO TWO CARDS OVERLAP. The graph is dropped straight onto the canvas and
+        the operator's first act is to read it. Overlapping cards hide each
+        other's ports and wires, which is indistinguishable from a graph that
+        is missing stages.
+
+        The last two used to be checked only on the DEFAULT target; they are
+        checked on all three now, so this is strictly more than it replaced.
+        """
+        problems: list[str] = []
         for target in TARGET_INPUTS:
             graph = generate(kind, opts, target)
-            assert graph.validation_errors() == [], f"{kind} {sorted(opts)}"
-
-    @pytest.mark.parametrize("kind,opts", EVERY_ANSWER)
-    def test_every_generated_night_leaves_a_ledger(self, kind, opts):
-        """Doctor rule 10 is only a note, so a missing SESSION REPORT would slip
-        past the bar above — and the night would leave no record of what it
-        actually shot."""
-        assert "report" in _types(generate(kind, opts))
-
-    @pytest.mark.parametrize("kind,opts", EVERY_ANSWER)
-    def test_no_two_nodes_land_on_top_of_each_other(self, kind, opts):
-        """The generated graph is dropped straight onto the canvas and the
-        operator's first act is to read it. Overlapping cards hide each other's
-        ports and wires, which is indistinguishable from a graph that is missing
-        stages."""
-        nodes = generate(kind, opts).nodes
-        for i, a in enumerate(nodes):
-            for b in nodes[i + 1:]:
-                assert not (abs(a.x - b.x) < NODE_W and abs(a.y - b.y) < NODE_H), (
-                    f"{a.type}@({a.x},{a.y}) overlaps {b.type}@({b.x},{b.y})")
+            where = f"{kind} {sorted(opts)} target={target!r}"
+            loud = [i.text for i in check(graph) if i.level in ("warn", "danger")]
+            if loud:
+                problems.append(f"{where}: doctor says {loud}")
+            errs = graph.validation_errors()
+            if errs:
+                problems.append(f"{where}: invalid graph {errs}")
+            if "report" not in _types(graph):
+                problems.append(f"{where}: no SESSION REPORT — the night keeps "
+                                f"no record of what it shot")
+            for clash in _overlapping(graph.nodes):
+                problems.append(f"{where}: {clash}")
+        assert not problems, "\n".join(problems)
 
 
 class TestTheFlowLane:
