@@ -394,15 +394,23 @@ def _solar_system_hits(q: str, qs: str, when: float | None,
     as "Planets aren't supported yet" — the browser's guess — while the true
     cause sat in the server log where nobody at a telescope will ever read it.
 
-    ``site_derived=False`` (a caller without ``view.site_derived``) withholds
-    every body in ``solar_system.SITE_DERIVED_BODIES``, which is the Moon —
-    whose published position is a function of the observer's latitude and
-    longitude to within a kilometre or two. See that constant for the
-    measurements. The Atlas marker layer (``region.region_rows``) has gated the
-    same body on the same capability since it shipped; a search box is the same
-    oracle, so it is the same gate. The body is skipped BEFORE the ephemeris is
-    evaluated: a withheld body must not be computable-and-then-dropped, or the
-    timing says what the row would not.
+    ``site_derived=False`` (a caller without ``view.site_derived``) does TWO
+    things, and they are different in kind (#203):
+
+    * the Moon is withheld outright — its position is f(lat, lon) to within a
+      kilometre, and its geocentric stand-in would be 0.92° wrong, which is a
+      visibly bad marker rather than a coarse one. Skipped BEFORE the ephemeris
+      is evaluated: a withheld body must not be computable-and-then-dropped, or
+      the timing says what the row would not.
+    * every other body is computed FROM THE CENTRE OF THE EARTH. Not filtered —
+      computed differently. The site is never an input, so no field of the row
+      can carry it, which is the only fix consistent with this package's own
+      finding that "a filter written against field NAMES cannot withhold
+      f(lat, lon)". Before this, the eight non-Moon rows shipped 1,100-3,400 km
+      of topocentric offset in ``distance_km`` alone.
+
+    The Atlas marker layer (``region.region_rows``) rides the same capability
+    the same way; a search box is the same oracle, so it is the same gate.
     """
     from . import solar_system
 
@@ -417,7 +425,8 @@ def _solar_system_hits(q: str, qs: str, when: float | None,
             notes.append(_MOON_WITHHELD_NOTE)
             continue
         try:
-            hits.append((rank, solar_system.row(body.key, when)))
+            hits.append((rank, solar_system.row(body.key, when,
+                                                site_derived=site_derived)))
         except solar_system.EphemerisUnavailable as e:
             log.warning("dropping %s from search: %s", body.label, e)
             notes.append(

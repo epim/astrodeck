@@ -113,14 +113,27 @@ SUN_KEY = "sun"
 #: its RA/Dec does, and a filter written against field NAMES cannot withhold
 #: f(lat, lon).
 #:
-#: THE REST ARE NOT ZERO AND THIS SET DOES NOT CLAIM THEY ARE. Six of the eight
-#: shift by more than an arcsecond, and every ``distance_km`` above resolves the
-#: observer along that body's line of sight to ~1 km (measured: 0-1 km of
-#: difference between two sites 1.1 km apart). Withholding them too is a
-#: judgement call that spans this module, ``objects.search`` and
-#: ``region.region_rows`` at once and is filed rather than made here; what is NOT
-#: acceptable is a comment asserting the residual is under an arcsecond, because
-#: it measurably is not.
+#: THE REST WERE NOT ZERO EITHER, AND THIS SET NEVER CLAIMED THEY WERE. Six of
+#: the eight shift by more than an arcsecond, and every ``distance_km`` above
+#: resolves the observer along that body's line of sight to ~1 km. Eight
+#: distances along eight lines of sight is a trilateration with more equations
+#: than unknowns. That judgement call was filed here rather than made; it was
+#: made on 2026-08-17 as #203, and NOT by adding bodies to this set.
+#:
+#: WHAT CHANGED: a caller without ``view.site_derived`` gets a different
+#: OBSERVER, not a smaller row — ``_observer(site_derived=False)`` stands at the
+#: centre of the Earth, so the site is never an input and no field can carry it,
+#: including fields nobody has written yet. That is the only fix consistent with
+#: the sentence above about field-name filters. It costs such a caller at most
+#: 12.8" of planetary position, which is nothing on a row whose job is to say
+#: what is in the sky tonight.
+#:
+#: SO WHY DOES THIS SET STILL EXIST? Because the Moon at geocentric is 0.92°
+#: out — nearly two lunar diameters, and visibly wrong to anyone who looks up.
+#: A wrong marker is not an improvement on a stated refusal, so the Moon is
+#: still withheld whole, with ``objects._MOON_WITHHELD_NOTE`` saying why. The
+#: set is now the "too wrong to degrade" line rather than the "too revealing to
+#: publish" one; every other body is safe by construction.
 SITE_DERIVED_BODIES: frozenset[str] = frozenset({"Moon"})
 
 
@@ -201,25 +214,47 @@ def offered_bodies() -> tuple[Body, ...]:
 
 # --------------------------------------------------------------------- ephemeris
 
-def _observer():
-    """(EarthLocation, topocentric?) for the configured site.
+def _observer(site_derived: bool = True):
+    """``(EarthLocation, geocentric_reason)`` — where to compute FROM.
 
-    An unconfigured site is lat 0 / lon 0 — a point in the Atlantic, not a
-    guess we are entitled to make. For the Moon it is not a harmless one
-    either: horizontal parallax reaches ~1°, twice the Moon's own diameter. So
-    an unconfigured rig gets the honest GEOCENTRIC position and the row says
-    so. For everything further away than the Moon the difference is under an
-    arcsecond and the distinction is cosmetic."""
+    ``geocentric_reason`` is None when the site was used, else why it was not.
+
+    TWO REASONS TO STAND AT THE CENTRE OF THE EARTH, and they are different
+    things to say to a user.
+
+    ``site_unset``: an unconfigured site is lat 0 / lon 0 — a point in the
+    Atlantic, not a guess we are entitled to make. For the Moon it is not a
+    harmless one either: horizontal parallax reaches ~1°, twice the Moon's own
+    diameter. So an unconfigured rig gets the honest GEOCENTRIC position and the
+    row says so.
+
+    ``not_permitted``: the CALLER does not hold ``view.site_derived`` (#203).
+    A topocentric row IS the site — measured at this rig 2026-08-18, the eight
+    non-Moon bodies shift 0.4-12.8" in RA/Dec and 1,100-3,400 km in
+    ``distance_km``, and eight distances along eight different lines of sight
+    is a trilateration with more equations than unknowns. The fix is not to
+    strip fields: this module's own note says "a filter written against field
+    NAMES cannot withhold f(lat, lon)", and it is right — a field added next
+    month would leak again. So the site is not withheld from the output, it is
+    never an INPUT. What no code read cannot appear in what it wrote.
+
+    The accuracy this costs a viewer is 12.8" at worst, on a row whose job is to
+    say what is in the sky tonight. The Moon, at 0.92°, is a different matter
+    and is withheld whole rather than degraded — see ``SITE_DERIVED_BODIES``.
+    """
     import astropy.units as u
     from astropy.coordinates import EarthLocation
     from ..config import config_store
 
+    centre = EarthLocation.from_geocentric(0.0, 0.0, 0.0, unit=u.m)
+    if not site_derived:
+        return centre, "not_permitted"
     site = config_store.cfg().site
     if getattr(site, "is_default", False):
-        return EarthLocation.from_geocentric(0.0, 0.0, 0.0, unit=u.m), False
+        return centre, "site_unset"
     return (EarthLocation(lat=site.latitude * u.deg,
                           lon=site.longitude * u.deg,
-                          height=site.elevation_m * u.m), True)
+                          height=site.elevation_m * u.m), None)
 
 
 def _phase_magnitude(body: Body, r_km: float, delta_km: float,
@@ -253,10 +288,15 @@ def _phase_magnitude(body: Body, r_km: float, delta_km: float,
     return body.abs_mag + 5.0 * math.log10(r_km * delta_km / AU_KM ** 2) + phase
 
 
-def position(key: str, when: float | None = None) -> dict:
+def position(key: str, when: float | None = None, *,
+             site_derived: bool = True) -> dict:
     """Everything measurable about one body at ``when`` (unix seconds, now if
     None): J2000-axes RA/Dec, distance, apparent diameter, phase angle,
-    illuminated fraction, V magnitude, and whether the site was known.
+    illuminated fraction, V magnitude, and whether the site was used.
+
+    ``site_derived=False`` — a caller without ``view.site_derived`` — computes
+    from the centre of the Earth, so nothing in the returned dict is a function
+    of the observer's position. See ``_observer``.
 
     Raises :class:`EphemerisUnavailable` rather than inventing a position."""
     import time as _time
@@ -270,7 +310,8 @@ def position(key: str, when: float | None = None) -> dict:
         from astropy.time import Time
 
         t = Time(t_unix, format="unix")
-        loc, topocentric = _observer()
+        loc, geocentric_reason = _observer(site_derived)
+        topocentric = geocentric_reason is None
         # GCRS: ICRS/J2000 axes, observer at the origin. See the module docstring
         # on why this must NOT be transformed to ICRS.
         c = get_body(body.key, t, loc)
@@ -321,6 +362,10 @@ def position(key: str, when: float | None = None) -> dict:
         "mag": _phase_magnitude(body, r_km, delta_km, alpha),
         "constellation": constellation,
         "topocentric": topocentric,
+        #: None, "site_unset" or "not_permitted" — WHY the site was not used.
+        #: Two different sentences: telling a viewer on a fully-configured rig
+        #: to "set your site" is advice to fix a setting that is already right.
+        "geocentric_reason": geocentric_reason,
         "when_unix": t_unix,
     }
 
@@ -372,15 +417,28 @@ def describe(body: Body, p: dict, sun_sep_deg: float, cone_deg: float) -> str:
         # Not a warning about glare: the mount will actually refuse this slew.
         parts.append(f"{sun_sep_deg:.0f}° from the Sun — the mount will refuse "
                      f"this slew")
-    if body.key == "moon" and not p["topocentric"]:
+    # The Moon is the only body where standing at the centre of the Earth is
+    # VISIBLE (0.92°, nearly two lunar diameters). Two reasons, two sentences:
+    # telling a viewer on a fully-configured rig to "set your site" is advice to
+    # fix a setting that is already correct.
+    why = p.get("geocentric_reason")
+    if body.key == "moon" and why == "site_unset":
         parts.append("geocentric until you set your site (moves it up to 1°)")
+    elif body.key == "moon" and why == "not_permitted":
+        parts.append("geocentric for your role, so up to 1° off — where the "
+                     "Moon appears would give away this rig's location")
     return " · ".join(parts)
 
 
-def row(key: str, when: float | None = None) -> dict:
-    """A catalog row for one body, in the shape /api/catalog returns."""
+def row(key: str, when: float | None = None, *,
+        site_derived: bool = True) -> dict:
+    """A catalog row for one body, in the shape /api/catalog returns.
+
+    ``site_derived=False`` computes the whole row from the centre of the Earth
+    (#203), so no field of it — named, or added later — is a function of where
+    this rig stands."""
     body = BY_KEY[key]
-    p = position(key, when)
+    p = position(key, when, site_derived=site_derived)
     sun_sep = 0.0 if key == SUN_KEY else _sun_separation_deg(
         p["ra_hours"], p["dec_deg"], when)
     return {
@@ -398,10 +456,14 @@ def row(key: str, when: float | None = None) -> dict:
         "illumination": round(p["illumination"], 3),
         "distance_km": round(p["distance_km"]),
         "sun_separation_deg": round(sun_sep, 1),
-        # The two facts that make this row falsifiable: WHEN it was true, and
-        # whether we knew where the observer was standing.
+        # The three facts that make this row falsifiable: WHEN it was true,
+        # whether we knew where the observer was standing, and — because there
+        # are now two reasons not to — WHY not. The UI's copy branches on this:
+        # "no site is set" said on a rig whose site IS set is a sentence that
+        # sends a user to fix something that is already right.
         "ephemeris_unix": p["when_unix"],
         "topocentric": p["topocentric"],
+        "geocentric_reason": p["geocentric_reason"],
     }
 
 
