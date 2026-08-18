@@ -32,7 +32,8 @@ import pytest
 
 from astrodeck.flows import examples as ex
 from astrodeck.flows.compile import compile_plan
-from astrodeck.flows.to_plan import NODE_LOSS, inert_nodes, to_sequence_plan
+from astrodeck.flows.to_plan import (INERT_PARAMS, NODE_LOSS, inert_nodes,
+                                     to_sequence_plan)
 from astrodeck.flows.tonight import resolve_tonight
 
 SITE = {"latitude": 37.0, "longitude": -122.0, "elevation_m": 100.0}
@@ -136,13 +137,27 @@ class TestTheDroppedDialIsReportedInstead:
             "operator the park is lost when the plan parks unconditionally")
 
     def test_every_other_node_still_gets_the_generic_sentence(self):
-        """The override table must stay a table of exceptions. If a second node
+        """The override tables must stay tables of EXCEPTIONS. If a second node
         quietly needed one, this catches it as an unexplained mismatch rather
-        than letting a wrong sentence ship."""
+        than letting a wrong sentence ship.
+
+        TWO tables now. `NODE_LOSS` overrides the wording for a whole node whose
+        params are inert; `INERT_PARAMS` (2026-08-17) covers a single dropped
+        setting on a node the compiler otherwise reads — the case that let
+        CAPTURE/CYCLE's `reject` be dropped in silence while the brief promised
+        it by number. A row must come from one of the two, or be the generic
+        sentence; bespoke wording written inline is what this refuses.
+        """
         rec, _ = _campaign()
         for row in inert_nodes(rec.graph):
             kind = row["key"].split(".", 1)[1]
             if kind in NODE_LOSS:
+                continue
+            if "." in kind:                      # nodes.<type>.<param>
+                ntype, param = kind.split(".", 1)
+                assert (ntype, param) in INERT_PARAMS, (
+                    f"{kind} is a param-level loss with no INERT_PARAMS entry")
+                assert row["detail"] == INERT_PARAMS[(ntype, param)]
                 continue
             assert "do not reach the run" in row["detail"], (
                 f"{kind} has bespoke wording that is not in NODE_LOSS")
