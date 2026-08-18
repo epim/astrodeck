@@ -121,3 +121,57 @@ export interface FlowCalHealth {
 }
 
 export type { FlowCompileResult, FlowUnmapped };
+
+// ----------------------------------------------------- losses, per NODE
+//
+// `to_plan.losses()` keys a dropped node setting as `nodes.<type>` — one entry
+// per node TYPE, not per node id, because the compiler drops a type's params
+// wholesale. The inspector already lists them under NOT HONOURED BY A RUN and
+// `flowRunControls` puts them behind a confirm at RUN time, and both of those
+// are places you have to already be looking. The canvas is where the operator
+// IS looking, and a node whose settings will be ignored should say so there —
+// see `FlowNodeCard`, which draws the mark this decides.
+//
+// Deliberately excludes `note`: a note says the thing DOES happen, by some
+// other part of the engine (the cloud hold releases itself, the scheduler
+// advances the pool). Marking those would train the mark to mean nothing.
+
+/** The worst loss level attached to a node type, or null when it survives.
+ *
+ *  A plain function over the array rather than a memoised map, so a caller can
+ *  use it inside a zustand selector and get a PRIMITIVE back — which is what
+ *  keeps `FlowNodeCard`'s subscription exact under Object.is (see its header:
+ *  a selector returning a fresh object re-renders every card on every tick).
+ *  Ten entries and one string compare each; the map would cost more to keep.
+ */
+export function nodeLossLevel(
+  unmapped: readonly FlowUnmapped[] | undefined,
+  nodeType: string,
+): "warn" | "danger" | null {
+  if (!unmapped || !unmapped.length) return null;
+  let worst: "warn" | "danger" | null = null;
+  for (const u of unmapped) {
+    if (u.key !== `nodes.${nodeType}`) continue;
+    if (u.level === "danger") return "danger";
+    if (u.level === "warn") worst = "warn";
+  }
+  return worst;
+}
+
+/** Every dropped-setting sentence for a node type, joined — the mark's tooltip.
+ *
+ *  A bare glyph says "something is wrong here" and leaves the operator to go
+ *  find out where; the whole point of `to_plan`'s wording is that it already
+ *  says WHICH setting and what happens instead. Returns "" for a node that
+ *  survives, so callers get a primitive either way. */
+export function nodeLossDetail(
+  unmapped: readonly FlowUnmapped[] | undefined,
+  nodeType: string,
+): string {
+  if (!unmapped || !unmapped.length) return "";
+  const hits: string[] = [];
+  for (const u of unmapped) {
+    if (u.key === `nodes.${nodeType}` && u.level !== "note") hits.push(u.detail);
+  }
+  return hits.join(" · ");
+}
