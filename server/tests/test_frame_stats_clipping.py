@@ -46,3 +46,58 @@ def test_the_legacy_fields_are_untouched():
     got before - this dict is persisted into frame records."""
     d = _frame(5)
     assert set(frame_stats(d)) == {"min", "max", "mean", "median", "std"}
+
+
+def test_live_view_keeps_the_clipped_count():
+    """hub._publish_preview recomputes stats from the live STACK mean, and did so
+    with no well depth — dropping `clipped` for every frame of the session.
+    FocusVerdict requires `clipped != null`, so the saturation advice silently
+    vanished the moment Live View was armed, while `stats.max` was still
+    recomputed and still >= full_well, so the CLIP chip and the histogram's
+    CLIPPED tag stayed lit. The alarm without the advice, and only in Live View.
+
+    Two earlier attempts at this test both passed against the broken code:
+    grepping for "frame_stats(" missed `asyncio.to_thread(frame_stats, data)`,
+    and a starless frame never reaches the branch at all because the stacker
+    produces no mean without stars to align on. It needs a real star field.
+    """
+    import asyncio
+    import math
+    import numpy as np
+    from astrodeck.hub import Hub
+
+    class _Frame:
+        rendered_bytes = None
+        def __init__(self, data):
+            self.data = data
+            self.exposure_s = 1.0
+            self.gain = 100
+            self.binning = 1
+            self.full_well = 65535
+            self.bayer_pattern = None
+            self.saved_path = None
+            self.data_is_linear = True
+
+    def _stars_and_clipping(cx, cy):
+        rng = np.random.default_rng(1)
+        img = rng.normal(400, 5.0, (200, 240))
+        for dx, dy in ((0, 0), (30, 20), (-40, 35), (55, -25), (-20, -45)):
+            xs = np.arange(240) - (cx + dx)
+            ys = (np.arange(200) - (cy + dy))[:, None]
+            img += 300_000.0 * np.exp(-(xs**2 + ys**2) / (2 * 1.6**2)) / (2 * math.pi * 1.6**2)
+        img = np.clip(img, 0, 65535).astype(np.uint16)
+        img[:20, :] = 65535                       # a blown region, 10% of the frame
+        return img
+
+    hub = Hub()
+    unarmed = asyncio.run(hub._publish_preview(_Frame(_stars_and_clipping(120, 100))))
+    assert unarmed["stats"].get("clipped"), "premise: unarmed reports the count"
+
+    assert hub.start_live_stack()["active"] is True
+    for cx, cy in ((120, 100), (122, 99), (119, 101)):
+        info = asyncio.run(hub._publish_preview(_Frame(_stars_and_clipping(cx, cy))))
+    assert (info.get("livestack") or {}).get("frames"), "premise: the stack accumulated"
+    assert info["stats"].get("clipped") is not None, (
+        "Live View dropped stats.clipped, so the saturation advice cannot render "
+        f"for the whole session — while stats.max ({info['stats'].get('max')}) "
+        "still trips the CLIP chip")
