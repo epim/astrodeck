@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { linearUnavailableReason } from "../components/preview/linearReason";
 import { api } from "../api";
 import { Icon } from "../components/icons";
 import {
@@ -1068,7 +1069,11 @@ export default function FocusView() {
                 </button>
               ) : (
                 <LockedChip
-                  reason="The magnifier needs linear data — this frame came from NINA already stretched."
+                  reason={linearUnavailableReason(
+                    { hasFrame: !!shown,
+                      isNina: !!shown?.is_stretched,
+                      isLinear: !!shown?.data_is_linear },
+                    "The magnifier") ?? "The magnifier is unavailable"}
                   className="btn !px-2.5 !text-[11px]"
                 >
                   Magnifier
