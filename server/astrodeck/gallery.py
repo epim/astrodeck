@@ -165,12 +165,21 @@ THUMB_CACHE_MAX_BYTES = 256 * 1024 * 1024
 #: over-cap cache trims it without waiting for 200 more.
 THUMB_PRUNE_EVERY = 200
 
-#: The largest thumbnail the route will render. 768 rather than the old 512
-#: because the grid is `minmax(140px, 1fr)` and a HiDPI desktop asks for ~2x the
-#: CSS width — at 256 the picture arrived with fewer pixels than the tile had,
-#: which is what "a pixelated mess" was. Keep in step with
-#: `ui/src/lib/gallery.ts::THUMB_WIDTH_STEPS`, whose last step this clamps.
-THUMB_MAX_WIDTH = 768
+#: The largest thumbnail the route will render, and now the ONLY one the grid
+#: asks for.
+#:
+#: This was 768, raised from 512 on the reasoning that "at 256 the picture
+#: arrived with fewer pixels than the tile had, which is what a pixelated mess
+#: was". Revisited 2026-08-19 against the thing itself: the same frame rendered
+#: at 256/384/768 and scaled into a real 445-device-pixel phone tile, judged by
+#: the operator, is near identical — while 768 costs 28.7 KB a tile against 2.8,
+#: i.e. 5.6 MB versus 0.5 MB to scan 200 frames, and fragments the cache into
+#: four entries per frame.
+#:
+#: Clamping HERE as well as in the client is what makes "one width" true: the
+#: route is reachable by anything, and a stray `w` is how the cache fragmented
+#: in the first place.
+THUMB_MAX_WIDTH = 256
 
 #: JPEG quality for gallery thumbnails.
 #:
@@ -186,14 +195,16 @@ THUMB_MAX_WIDTH = 768
 #: depending on whether anyone had scrolled past it before.
 THUMB_QUALITY = 85
 
-#: The widths WARMED on capture and by the backfill.
+#: The widths WARMED on capture and by the backfill — every width the client can
+#: ask for, which is now exactly one. Keep in lockstep with
+#: `ui/src/lib/gallery.ts::THUMB_WIDTH_STEPS`; a test asserts they match.
 #:
-#: Only the two a real client asks for. Rendering every step would triple the
-#: work for widths nothing requests: a 1x desktop asks 256, a 2x desktop asks
-#: 512, and those two cover every tile the grid actually draws. A width outside
-#: this list still WORKS — it renders on demand exactly as before — it is simply
-#: not pre-warmed, which is the difference between "slow once" and "broken".
-PRECOMPUTE_WIDTHS: tuple[int, ...] = (256, 512)
+#: The history is worth keeping: this was (256, 512) while the client could ask
+#: for 256/384/512/768, so a phone above DPR 2 landed on 768 and missed the
+#: cache on every single tile — 2.3s each, 8s under contention, a grid of grey
+#: placeholders, and the device most likely to be standing next to the telescope
+#: was the only one affected.
+PRECOMPUTE_WIDTHS: tuple[int, ...] = (256,)
 
 _NIGHT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 

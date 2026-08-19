@@ -330,8 +330,22 @@ export function thumbWidthFor(cssWidth: number, dpr = 1): number {
 }
 
 /** The widths the server will render and cache. Kept in step with
- *  `gallery.THUMB_MAX_WIDTH` on the server, which clamps to the last one. */
-export const THUMB_WIDTH_STEPS = [256, 384, 512, 768] as const;
+ *  `gallery.PRECOMPUTE_WIDTHS` on the server; a server test asserts they match.
+ *
+ *  ONE WIDTH, DELIBERATELY. This was [256, 384, 512, 768], which meant a phone
+ *  at DPR 2.6 asked for 768 — the one width nothing pre-warmed — and paid a full
+ *  50 MB FITS read plus a 26-megapixel stretch per tile: 2.3s each, 8s with
+ *  several in flight, and a grid of grey placeholders. Reported from the rig
+ *  2026-08-19.
+ *
+ *  Warming every step would have fixed the speed, but the operator compared
+ *  256/384/768 rendered into a real 445-device-pixel tile and judged them near
+ *  identical, at 0.5 MB versus 5.6 MB across 200 tiles. So the grid asks for one
+ *  size, every device gets a cache hit, and the cache holds one entry per frame
+ *  instead of four.
+ *
+ *  The full-resolution frame is a click away; this is the scanning grid. */
+export const THUMB_WIDTH_STEPS = [256] as const;
 
 /** The words on a failed tile. `label` is the chip drawn over the empty frame;
  *  `hint` is the sentence under it. `downloadable` decides whether the tile
