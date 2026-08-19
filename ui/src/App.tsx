@@ -152,6 +152,17 @@ const NAV: { id: ViewName; label: string; icon: IconName }[] = [
   { id: "flows", label: "Flows", icon: "bridge" },
 ];
 
+//: Views that lay out their own full-height panes and scroll INSIDE them,
+//: rather than growing a document for <main> to scroll. These get bounded to
+//: the pane; everything else keeps `min-h-full` and grows.
+//:
+//: The test for membership is not "is it big" — it is "does this view contain
+//: something anchored to its own bottom edge, or a pane with its own
+//: scrollbar". Add a view here only after checking that its content does not
+//: need `main` to scroll, because bounding a document view makes the bottom of
+//: it unreachable (measured: Settings loses 3237px).
+const FILLS_PANE: ReadonlySet<ViewName> = new Set<ViewName>(["flows"]);
+
 // ROUTING + CODE SPLITTING. Every destination except Equipment is a lazily
 // imported chunk (the loader table lives in lib/lazyViews.ts, which also explains
 // why). Only the views that are actually reachable at first paint are bundled
@@ -821,7 +832,27 @@ export default function App() {
             className={`flex-1 overflow-y-auto overflow-x-hidden p-4 main-safe-pad outline-none ${dim ? "opacity-60 transition-opacity" : "transition-opacity"}`}
             key={view}
           >
-            <div className="view-enter max-w-[1500px] mx-auto w-full min-h-full flex flex-col">
+            <div
+              // A VIEW THAT MANAGES ITS OWN HEIGHT MUST BE BOUNDED BY THE PANE.
+              //
+              // `min-h-full` never resolves here — <main> is a flex item with
+              // an indefinite height, so the percentage computes to the literal
+              // "100%" and the wrapper falls back to its CONTENT size. On the
+              // Flows editor that content is 1040px in a 970px pane, so
+              // everything anchored `bottom-0` inside it — the flow log strip —
+              // renders 54px BELOW THE FOLD. That is why a refused RUN looked
+              // like nothing happened: the explanation was written off-screen.
+              //
+              // The cap is opt-in, and it has to be. Measured on Settings, a
+              // 4207px document view: capping the wrapper globally clips 3237px
+              // and (with the flex variant) leaves `main` unscrollable — the
+              // whole page unreachable. Document views must keep growing so
+              // `main` can scroll them; only a view that scrolls its OWN panes
+              // may be pinned to the pane's height.
+              className={`view-enter max-w-[1500px] mx-auto w-full flex flex-col ${
+                FILLS_PANE.has(view) ? "min-h-0 max-h-full" : "min-h-full"
+              }`}
+            >
               {gatedOut ? (
                 <NotConnectedInterstitial view={view} />
               ) : Active ? (
