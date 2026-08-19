@@ -34,6 +34,7 @@ from ..events import bus
 from ..providers import NATIVE_AVAILABLE
 from ..imaging.stars import OVEREXPOSED_FRAC, focus_size, saturation_fraction
 from .autofocus import (MAX_DROPS_PER_POSITION, MIN_STARS_PER_POINT,
+                        confirmed_best,
                         over_swept_advice,
                         AutofocusResult, curve_verdict, dropped_points_phrase,
                         forget_measured_span, overexposure_levers,
@@ -772,8 +773,23 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                 await _settle()
                 outcome = s.get("outcome") or {}
                 best = int(outcome.get("best_position", start_pos))
-                best_hfr = outcome.get("best_value")
+                model_hfr = outcome.get("best_value")
                 fit = _fit_payload(outcome)
+                # THE SWEEP MEASURED A FRAME AT THE FITTED POSITION. Use it.
+                # Every sweep on 2026-08-19 moved to a vertex whose own
+                # confirming frame read worse than a sample already in hand,
+                # and the frames that followed the worst of them were 10-20%
+                # softer across all six filters.
+                verdict = confirmed_best(_result_pts(), best)
+                if verdict.overridden:
+                    bus.log("warning", f"autofocus: {verdict.reason}", "focus")
+                    best = verdict.position
+                # What was MEASURED at the position we are settling on. The
+                # completion line used to quote the fit's y0, which is a model
+                # number the very next exposure contradicted (2.94 logged
+                # against 3.78 measured).
+                best_hfr = (verdict.measured_hfr
+                            if verdict.measured_hfr is not None else model_hfr)
                 # Even a success can rest on thin evidence — say so rather than
                 # letting a confident R² stand on four five-star samples.
                 advice = _advice(ok=True)
@@ -781,16 +797,25 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                 # accepted is the only kind worth learning a defocus slope from
                 # — a rejected one describes something that is not a V.
                 record_measured_span(focuser, _result_pts(), best, binning)
-                # Settle the focuser on the fitted optimum before reporting done.
+                # Settle the focuser on the position we CHOSE — the fitted vertex,
+                # or the best measured sample when the confirming frame refused it.
                 await focuser.move_to(best)
                 bus.publish("focus", state="done", points=_pts(),
-                            best={"position": best, "hfr": best_hfr}, fit=fit,
+                            best={"position": best, "hfr": best_hfr,
+                                  "model_hfr": model_hfr,
+                                  "confirmed": not verdict.overridden}, fit=fit,
                             advice=advice)
+                measured_note = (f", HFR {best_hfr:.2f} measured"
+                                 if verdict.measured_hfr is not None
+                                 else (f", HFR {best_hfr:.2f}"
+                                       if isinstance(best_hfr, (int, float)) else ""))
+                model_note = (f" (fit {model_hfr:.2f}, {fit.get('method')})"
+                              if isinstance(model_hfr, (int, float))
+                              and verdict.measured_hfr is not None
+                              else f" ({fit.get('method')})")
                 bus.log("info",
                         f"native autofocus complete: position {best}"
-                        + (f", HFR {best_hfr:.2f}" if isinstance(best_hfr, (int, float))
-                           else "")
-                        + f" ({fit.get('method')})", "focus")
+                        + measured_note + model_note, "focus")
                 return AutofocusResult(True, best, best_hfr, _result_pts(), "ok",
                                        advice=advice)
 

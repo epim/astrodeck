@@ -299,6 +299,66 @@ def _peel_turned_ends(rows):
     return rows, peeled
 
 
+
+#: How much worse the confirming frame at the fitted vertex may measure, against
+#: the best sample already taken, before the sweep declines the move.
+#:
+#: Calibrated on the rig's three sweeps of 2026-08-19: +24%, +6%, +30%. The +6%
+#: one must PASS — its fitted move produced the best frames of the night, so its
+#: confirming frame was simply noise — and the other two must not. 15% separates
+#: them and sits clear of both.
+CONFIRM_REGRESSION_FRAC = 0.15
+
+
+@dataclass(frozen=True)
+class ConfirmedBest:
+    """Where the sweep should actually settle, and what was measured there."""
+    position: int
+    #: The HFR MEASURED at ``position``. None when nothing was measured there,
+    #: which is the honest answer and not a zero.
+    measured_hfr: float | None
+    overridden: bool
+    reason: str
+
+
+def confirmed_best(points, fitted_position: int,
+                   frac: float = CONFIRM_REGRESSION_FRAC) -> ConfirmedBest:
+    """Judge a fitted vertex against the sweep's own measurements.
+
+    The engine measures one frame AT the fitted position before finishing. That
+    frame is evidence, and it was being ignored: on 2026-08-19 all three sweeps
+    moved to a vertex whose confirming frame measured worse than a sample
+    already in hand (+24%, +6%, +30%), and the frames that followed the worst of
+    them were 10-20% softer across all six filters.
+
+    A fit that lands between samples and beats them all is the normal case and
+    is kept — interpolating is what the fit is FOR. This only refuses the case
+    where the sweep's own measurement contradicts it by more than ``frac``.
+
+    ``points`` is ``[(position, hfr), ...]`` or ``[(position, hfr, sigma), ...]``.
+    """
+    rows = [(int(p[0]), float(p[1])) for p in points if p[1] is not None]
+    if not rows:
+        return ConfirmedBest(int(fitted_position), None, False, "no measurements")
+    at_fit = [h for pos, h in rows if pos == int(fitted_position)]
+    best_pos, best_hfr = min(rows, key=lambda r: r[1])
+    if not at_fit:
+        # Nothing measured there, so nothing contradicts the fit. Falling back to
+        # the best sample would throw away the interpolation.
+        return ConfirmedBest(int(fitted_position), None, False,
+                             "no frame was taken at the fitted position")
+    measured = min(at_fit)
+    if measured <= best_hfr * (1.0 + frac):
+        return ConfirmedBest(int(fitted_position), measured, False,
+                             f"confirmed at {measured:.2f}px")
+    return ConfirmedBest(
+        best_pos, best_hfr, True,
+        f"the frame at the fitted {int(fitted_position)} measured {measured:.2f}px "
+        f"against {best_hfr:.2f}px already measured at {best_pos} "
+        f"({100*(measured/best_hfr - 1):.0f}% worse) — keeping the position the "
+        f"sweep actually saw work")
+
+
 def curve_verdict(points, counts=None) -> CurveVerdict:
     """Judge a measured V-curve on its own shape. PURE — see the block above.
 
