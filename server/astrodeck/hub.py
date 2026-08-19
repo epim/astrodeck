@@ -3291,7 +3291,11 @@ class Hub:
                 mean = self.live_stacker.mean()
                 if mean is not None:
                     data = mean                          # image pipeline shows the stack
-                    info["stats"] = await asyncio.to_thread(frame_stats, data)
+                    # Carry the well depth here too, or `clipped` vanishes for
+                    # every frame of a Live View session while `max` keeps
+                    # lighting the CLIP chip — the alarm without the advice.
+                    info["stats"] = await asyncio.to_thread(
+                        frame_stats, data, full_well)
                 ls_info = {"frames": outcome.frames,
                            "integrated_s": round(outcome.integrated_s, 1),
                            "rejected": outcome.rejected,

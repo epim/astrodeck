@@ -73,7 +73,9 @@ export function StarOverlay({
         const cx = s.x * displayScale;
         const cy = s.y * displayScale;
         // Outside the star's visible disc, never on it — see starOverlayGeometry.
-        const r = markerRadius(s.hfr, displayScale);
+        // `scale` is the stage zoom: it keeps the tap-target floor constant on
+        // SCREEN so it stops standing on the star when the operator zooms in.
+        const r = markerRadius(s.hfr, displayScale, scale);
         const q = quality(s.hfr, hfrGood, hfrWarn);
         const color = q === "good" ? "var(--good)" : q === "warn" ? "var(--warn)" : "var(--bad)";
         const sw = q === "good" ? 1 : q === "warn" ? 1.6 : 1.6;
