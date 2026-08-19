@@ -9,6 +9,9 @@ let retryMs = 1000;
 let everConnected = false;
 let staleTicker: number | null = null;
 let reconnectTimer: number | null = null;
+//: The backoff may only be reset by a connection that PROVED itself — see
+//: `proveConnection`. Cleared on every close.
+let proveTimer: number | null = null;
 
 const STALE_MS = 20000; // socket up but no frame for 20s AND not busy
 
@@ -46,12 +49,32 @@ export function connectWs(): void {
   socket = new WebSocket(`${proto}://${location.host}${BASE}/ws`);
 
   socket.onopen = async () => {
-    retryMs = 1000;
+    // THE BACKOFF IS NOT RESET HERE, and that is the whole point.
+    //
+    // The relay ACCEPTS a viewer socket unconditionally (relay/server.py:257,
+    // after a rate-limit and a home-exists check) and only then forwards it to
+    // the rig, which closes it if the session is dead. So an expired browser
+    // tab gets `onopen` on every single attempt. Resetting `retryMs` here meant
+    // the exponential backoff never engaged once: open -> reset to 1000ms ->
+    // closed -> retry in 1s -> forever.
+    //
+    // Measured against the live relay 2026-08-18: a single logged-out tab was
+    // driving 7.6 requests/second — /api/me, /api/auth/methods, /api/config,
+    // /api/logs, /api/monitor/snapshot and a fresh WebSocket, over and over —
+    // at a flat ~2s cadence that never widened. On a shared-cpu-1x machine
+    // that is a permanent load competing with the home tunnel's keepalive, and
+    // the rig had logged ~157 reconnects, several as "sent 1011 keepalive ping
+    // timeout" and "timed out during opening handshake".
+    //
+    // A socket earns the reset by STAYING open (5s) or by delivering a frame.
+    // An accept-then-reject socket does neither, so its retries widen to the
+    // 15s cap as they always should have.
     everConnected = true;
     const st = useStore.getState();
     st.setWsPhase("up");
     st.noteWsEvent();
     if (!staleTicker) staleTicker = window.setInterval(tickStale, 1000);
+    proveConnection();
     // Hydrate config at boot (and re-hydrate after reconnect) so settings-derived
     // UI isn't blank/defaults until a config mutation. Fire-and-forget. (The
     // principal + auth-methods signals are already resolved by bootstrapAuth at
@@ -111,6 +134,9 @@ export function connectWs(): void {
   };
 
   socket.onmessage = (msg) => {
+    // A frame is proof the session is real: an unauthenticated socket is closed
+    // before it delivers one.
+    settleBackoff();
     try {
       const st = useStore.getState();
       st.noteWsEvent(); // stamp BEFORE handling so a throw still counts liveness
@@ -121,6 +147,10 @@ export function connectWs(): void {
   };
 
   socket.onclose = () => {
+    if (proveTimer !== null) {
+      window.clearTimeout(proveTimer);
+      proveTimer = null;
+    }
     const st = useStore.getState();
     st.setWsPhase("down");
     if (staleTicker) {
@@ -140,6 +170,25 @@ export function connectWs(): void {
   socket.onerror = () => socket?.close();
 }
 
+/** Reset the retry interval. Called only by a connection that has proved
+ *  itself — see `socket.onopen`. */
+function settleBackoff(): void {
+  retryMs = 1000;
+  if (proveTimer !== null) {
+    window.clearTimeout(proveTimer);
+    proveTimer = null;
+  }
+}
+
+/** A socket that stays open for 5s has proved itself even if the rig happens to
+ *  be quiet. The rig publishes `status` every 2s, so a live session normally
+ *  settles on the first frame long before this fires; this is the backstop for
+ *  a genuinely silent but valid connection. */
+function proveConnection(): void {
+  if (proveTimer !== null) window.clearTimeout(proveTimer);
+  proveTimer = window.setTimeout(settleBackoff, 5000);
+}
+
 // Force an IMMEDIATE (re)connect after a credential change — a login/logout, or
 // an admin flipping the enabled sign-in methods. Resets the exponential backoff
 // and tears down any pending retry + the current socket so a fresh session lands
@@ -147,6 +196,10 @@ export function connectWs(): void {
 // socket are detached first so its deliberate close() does NOT run the onclose
 // reconnect path (which would stack a second socket).
 export function reconnectWs(): void {
+  // A credential change is the one caller entitled to clear the backoff
+  // outright: the operator just signed in, and making them wait out a 15s
+  // retry would look like the sign-in failed.
+  settleBackoff();
   retryMs = 1000;
   if (reconnectTimer !== null) {
     window.clearTimeout(reconnectTimer);
