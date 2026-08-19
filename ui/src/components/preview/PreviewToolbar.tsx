@@ -45,6 +45,7 @@
 // copy a tap-reachable home without adding seven more 44px targets to a
 // three-row phone toolbar. See `GroupHelp` for why they carry `mx-4`.
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { linearUnavailableReason } from "./linearReason";
 import PickerButton, { type PickerOption } from "../ui/PickerButton";
 import type { OverlayToggles, PreviewInfo, StretchParams } from "../../types";
 import { Icon, type IconName } from "../icons";
@@ -353,6 +354,14 @@ export function PreviewToolbar({
   // array is still held. Same capability gate as the client LUT canvas and the
   // clip mask — one truth, honestly disabled.
   const renderCapable = !!preview?.data_is_linear && !preview?.is_stretched;
+  // The TRUE reason a linear-only tool is off. `linearEnabled` has three ways to
+  // be false and both tooltips below used to blame NINA for all of them — on a
+  // rig with no NINA and, at that moment, no frame at all.
+  const linearState = {
+    hasFrame: !!preview,
+    isNina: !!preview?.is_stretched,
+    isLinear: !!preview?.data_is_linear,
+  };
   const renderAvailable = renderCapable && !heavyFreed;
   // WYSIWYG honesty (Decision A1): in Auto with neutral Brightness the server
   // reproduces the on-screen stretch EXACTLY (it replays preview.auto_levels).
@@ -462,7 +471,8 @@ export function PreviewToolbar({
           title={
             loupeAvailable
               ? "Magnifier — real sensor pixels at the centre of the view (the true focus/noise check; 1:1)"
-              : "The magnifier needs linear data — this frame came from NINA"
+              : (linearUnavailableReason(linearState, "The magnifier")
+                 ?? "The magnifier is unavailable")
           }
           onClick={() => onLoupe?.(!loupeOn)}
         />
@@ -555,7 +565,8 @@ export function PreviewToolbar({
               <LockedChip
                 reason={renderCapable
                   ? heavyFreedReason("A full-res export")
-                  : "Full-res export needs linear data — this frame came from NINA already stretched."}
+                  : (linearUnavailableReason(linearState, "Full-res export")
+                     ?? "Full-res export is unavailable")}
                 className="btn !justify-start !px-2 text-[11px] w-full"
               >
                 Full-res PNG
