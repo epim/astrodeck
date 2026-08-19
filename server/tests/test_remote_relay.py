@@ -1321,3 +1321,129 @@ def test_redact_ws_event_holder_and_weird_shapes_never_raise():
         out = redact_module._redact_ws_event(weird, viewer)  # must not raise
         if isinstance(out, dict) and isinstance(out.get("data"), dict):
             assert not isinstance(out["data"].get("site"), (list, int))
+
+
+def test_a_session_that_held_for_hours_redials_at_once_when_it_drops():
+    """THE RIG'S BACKOFF NEVER RESET EITHER.
+
+    ``attempt = 0`` sits on the path where ``_serve_once`` RETURNS, and a dropped
+    socket never takes it -- every real loss is the exception path. So after the
+    first failure of a process's life the counter climbed monotonically, pinned
+    the ceiling at ``_BACKOFF_CAP_S`` from attempt>=5, and every subsequent redial
+    drew ``uniform(0, 15)`` forever.
+
+    Measured on the rig 2026-08-18: a session that had been healthy for 3h19m
+    dropped at 07:33:06 and the rig sat local-only until it redialled at 07:33:18
+    -- 12 seconds of remote blackout that a fresh backoff would have made ~0.25s.
+    The counter is per-process (``self._generation``/``attempt`` reset only at
+    startup), so the only cure was restarting the server.
+
+    A session that held for a healthy interval is EVIDENCE THE RELAY IS FINE. The
+    next dial gets the fast lane; only a relay that keeps failing quickly earns
+    the ceiling.
+    """
+    import astrodeck.remote.relay_client as rc
+
+    class _HoldsThenDrops:
+        """A channel that serves for `hold` seconds and then dies the way a real
+        keepalive timeout does -- through the async iterator, not a clean return."""
+        def __init__(self, hold): self.hold = hold
+        async def send(self, data): pass
+        async def close(self): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        def __aiter__(self):
+            async def _gen():
+                await asyncio.sleep(self.hold)
+                raise ConnectionError("sent 1011 (internal error) keepalive ping timeout")
+                yield b""  # pragma: no cover - makes this a generator
+            return _gen()
+
+    cfg = RemoteConfig(enabled=True, relay_url="wss://relay.test/scope",
+                       device_token="tok")
+    dials = {"n": 0}
+    seen: list[int] = []
+
+    async def _connect(url):
+        dials["n"] += 1
+        if dials["n"] <= 2:
+            raise ConnectionError("relay down")   # climb the counter first
+        return _HoldsThenDrops(0.12)              # then one healthy session
+
+    async def _scenario():
+        orig_delay, orig_healthy = rc._backoff_delay, rc._HEALTHY_SESSION_S
+        rc._HEALTHY_SESSION_S = 0.05              # 0.12s session clears it
+
+        def _record(attempt):
+            seen.append(attempt)
+            return 0.001                          # spin fast
+
+        rc._backoff_delay = _record
+        try:
+            client = RelayClient(_noop_app, lambda: cfg, connect=_connect)
+            task = asyncio.create_task(client.run())
+            while dials["n"] < 4 and len(seen) < 6:
+                await asyncio.sleep(0.01)
+            client.stop()
+            await asyncio.wait_for(task, timeout=2.0)
+            assert task.exception() is None
+        finally:
+            rc._backoff_delay, rc._HEALTHY_SESSION_S = orig_delay, orig_healthy
+
+    asyncio.run(_scenario())
+
+    assert seen[:2] == [0, 1], f"premise: two fast failures climb the counter, got {seen}"
+    assert seen[2] == 0, (
+        "the redial after a HEALTHY session that dropped drew attempt="
+        f"{seen[2]} -- it must start over at 0. At attempt>=5 this is a flat "
+        "uniform(0,15s) of remote blackout after every drop, for the life of "
+        "the process."
+    )
+
+
+def test_a_relay_that_wedges_right_after_accepting_still_earns_the_backoff():
+    """The reset must be earned by DURATION, not by connecting at all. A relay
+    that accepts and then dies immediately is exactly the failure the backoff
+    exists for -- if any successful dial reset the counter, a wedging relay would
+    be redialled at full speed forever."""
+    import astrodeck.remote.relay_client as rc
+
+    class _DiesAtOnce:
+        async def send(self, data): pass
+        async def close(self): pass
+        def __aiter__(self):
+            async def _gen():
+                raise ConnectionError("wedged")
+                yield b""  # pragma: no cover
+            return _gen()
+
+    cfg = RemoteConfig(enabled=True, relay_url="wss://relay.test/scope",
+                       device_token="tok")
+    seen: list[int] = []
+
+    async def _scenario():
+        orig_delay, orig_healthy = rc._backoff_delay, rc._HEALTHY_SESSION_S
+        rc._HEALTHY_SESSION_S = 5.0               # nothing here comes close
+
+        def _record(attempt):
+            seen.append(attempt)
+            return 0.001
+
+        rc._backoff_delay = _record
+        try:
+            client = RelayClient(_noop_app, lambda: cfg,
+                                 connect=lambda url: _ready(_DiesAtOnce()))
+            task = asyncio.create_task(client.run())
+            while len(seen) < 4:
+                await asyncio.sleep(0.01)
+            client.stop()
+            await asyncio.wait_for(task, timeout=2.0)
+        finally:
+            rc._backoff_delay, rc._HEALTHY_SESSION_S = orig_delay, orig_healthy
+
+    async def _ready(v):
+        return v
+
+    asyncio.run(_scenario())
+    assert seen[:4] == [0, 1, 2, 3], (
+        f"a relay that wedges on every dial must keep climbing, got {seen}")
