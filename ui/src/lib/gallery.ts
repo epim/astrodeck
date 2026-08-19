@@ -338,13 +338,17 @@ export function thumbWidthFor(cssWidth: number, dpr = 1): number {
  *  several in flight, and a grid of grey placeholders. Reported from the rig
  *  2026-08-19.
  *
- *  Warming every step would have fixed the speed, but the operator compared
- *  256/384/768 rendered into a real 445-device-pixel tile and judged them near
- *  identical, at 0.5 MB versus 5.6 MB across 200 tiles. So the grid asks for one
- *  size, every device gets a cache hit, and the cache holds one entry per frame
- *  instead of four.
+ *  Warming every step would have fixed the speed, but for a 171 CSS px tile used
+ *  to SCAN a night's work the operator compared 256/384/768 rendered into a real
+ *  445-device-pixel tile and judged 256 sufficient, at 0.5 MB versus 5.6 MB
+ *  across 200 tiles. So the grid asks for one size, every device gets a cache
+ *  hit, and the cache holds one entry per frame instead of four.
  *
- *  The full-resolution frame is a click away; this is the scanning grid. */
+ *  THIS IS THE SCANNING GRID ONLY. It says nothing about capture previews, which
+ *  need high fidelity and take a different path (`/api/preview/*` — 1400px live,
+ *  sensor 1:1 for the pixel-peep, full sensor for the baked export). "Fewer
+ *  pixels than the tile had" is still a real failure everywhere someone judges
+ *  FOCUS from what they see. */
 export const THUMB_WIDTH_STEPS = [256] as const;
 
 /** The words on a failed tile. `label` is the chip drawn over the empty frame;
