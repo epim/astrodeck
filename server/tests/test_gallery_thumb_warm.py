@@ -152,15 +152,25 @@ class TestBackfill:
 
 
 class TestTheWidthTheGridAsksFor:
-    def test_the_clamp_admits_the_hidpi_width(self, cap):
-        """A 2x desktop tile wants ~400 real pixels; the old clamp stopped at
-        512 and the client asked for 256, so the picture arrived with fewer
-        pixels than the tile had. That is the 'pixelated mess'."""
+    def test_a_hidpi_request_is_clamped_to_the_one_width(self, cap):
+        """This used to assert the opposite — that a 768px request came back at
+        768 — on the reasoning that a HiDPI tile handed fewer pixels than it had
+        was "a pixelated mess".
+
+        Re-examined 2026-08-19 against the thing itself rather than the
+        argument: the same frame at 256/384/768, each scaled into a real
+        445-device-pixel phone tile, is near identical to the eye, while 768
+        costs 28.7 KB a tile against 2.8 — 5.6 MB versus 0.5 MB to scan 200
+        frames — and splits the cache four ways, which is what made a phone
+        re-read a 50 MB FITS per tile and show a grid of grey placeholders.
+
+        One width, clamped server-side, because the route is reachable by
+        anything and a stray `w` is how the fragmentation happened."""
         _write(cap, REL, size=1024)
         jpeg = gallery.thumbnail(REL, width=768)
         from PIL import Image
         import io
-        assert Image.open(io.BytesIO(jpeg)).width == 768
+        assert Image.open(io.BytesIO(jpeg)).width == 256
 
     def test_an_over_wide_request_clamps_rather_than_failing(self, cap):
         _write(cap, REL, size=1024)
