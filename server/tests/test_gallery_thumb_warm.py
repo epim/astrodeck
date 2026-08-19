@@ -157,12 +157,17 @@ class TestTheWidthTheGridAsksFor:
         768 — on the reasoning that a HiDPI tile handed fewer pixels than it had
         was "a pixelated mess".
 
-        Re-examined 2026-08-19 against the thing itself rather than the
-        argument: the same frame at 256/384/768, each scaled into a real
-        445-device-pixel phone tile, is near identical to the eye, while 768
-        costs 28.7 KB a tile against 2.8 — 5.6 MB versus 0.5 MB to scan 200
-        frames — and splits the cache four ways, which is what made a phone
-        re-read a 50 MB FITS per tile and show a grid of grey placeholders.
+        Narrowed 2026-08-19, not retired: for a 171 CSS px GRID TILE used to
+        scan a night's work, the same frame at 256/384/768 scaled into a real
+        445-device-pixel tile is close enough, while 768 costs 28.7 KB a tile
+        against 2.8 — 5.6 MB versus 0.5 MB to scan 200 frames — and splits the
+        cache four ways, which is what made a phone re-read a 50 MB FITS per
+        tile and show a grid of grey placeholders.
+
+        The "pixelated mess" rule still holds for CAPTURE PREVIEWS, which are a
+        different path (`/api/preview/*`) and stay at 1400px live, sensor 1:1
+        for the pixel-peep, and full sensor for the baked export. Nobody judges
+        focus from a grid tile.
 
         One width, clamped server-side, because the route is reachable by
         anything and a stray `w` is how the fragmentation happened."""

@@ -168,13 +168,19 @@ THUMB_PRUNE_EVERY = 200
 #: The largest thumbnail the route will render, and now the ONLY one the grid
 #: asks for.
 #:
-#: This was 768, raised from 512 on the reasoning that "at 256 the picture
-#: arrived with fewer pixels than the tile had, which is what a pixelated mess
-#: was". Revisited 2026-08-19 against the thing itself: the same frame rendered
-#: at 256/384/768 and scaled into a real 445-device-pixel phone tile, judged by
-#: the operator, is near identical — while 768 costs 28.7 KB a tile against 2.8,
-#: i.e. 5.6 MB versus 0.5 MB to scan 200 frames, and fragments the cache into
-#: four entries per frame.
+#: SCOPE: THIS IS THE GALLERY GRID TILE AND NOTHING ELSE. Capture previews are a
+#: different path entirely — `imaging/processing.to_png`/`to_jpeg` at
+#: `max_width=1400`, and `/api/preview/{id}/crop` at true sensor 1:1 — and they
+#: stay high fidelity. `THUMB_MAX_WIDTH` is referenced only inside this module.
+#: Do not reach for this constant when sizing anything the operator focuses by.
+#:
+#: This was 768, raised from 512 because "at 256 the picture arrived with fewer
+#: pixels than the tile had, which is what a pixelated mess was". That rule is
+#: NOT retired — it still governs previews. What was settled on 2026-08-19 is
+#: narrower: for a 171 CSS px GRID TILE used to scan a night's work, the
+#: operator compared the same frame at 256/384/768 scaled into a real
+#: 445-device-pixel tile and judged 256 sufficient, against 28.7 KB a tile for
+#: 768 — 5.6 MB versus 0.5 MB to scan 200 frames — plus a cache split four ways.
 #:
 #: Clamping HERE as well as in the client is what makes "one width" true: the
 #: route is reachable by anything, and a stray `w` is how the cache fragmented
