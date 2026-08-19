@@ -519,6 +519,14 @@ class Hub:
         # reads other code was already paying for (the capture header, the solve
         # hint) so identification never adds a device round-trip to the hot path.
         self._last_pointing: tuple[float, float, float] | None = None
+        #: WAS THE POINTING ACTUALLY VERIFIED? A centering that fell back to a
+        #: raw GoTo used to leave no trace but one log line, so the screen showed
+        #: a confident TRACKING and a panel full of coordinates nobody had
+        #: checked (reported 2026-08-19). Published on mount status so the UI can
+        #: say "not verified" instead of implying it was.
+        self._pointing_verified: bool = False
+        self._pointing_reason: str = "not plate solved since the last move"
+        self._pointing_error_arcmin: float | None = None
         # (rounded ra, rounded dec) -> the pointing-derived guess, so a 60-frame
         # loop on one target runs one cone query rather than sixty.
         self._pointing_field_cache: tuple[tuple[float, float], dict | None] | None = None
@@ -2657,6 +2665,7 @@ class Hub:
             # ride THIS read — the one the header was already paying for — so
             # naming the field never adds a device round-trip to the capture path.
             self._note_pointing(ra, dec)
+            self.note_pointing_moved()
             # Gather header telemetry (best-effort; never fails the save) and the
             # OTA name for TELESCOP (omitted when blank). Wrapping the whole meta
             # build keeps spec §9 (a header write never fails a capture) structural,
@@ -5196,6 +5205,35 @@ class Hub:
             f"{last_error}. Attempts (attempt, solved PA, target, error, "
             f"commanded): {trail}")
 
+    def note_pointing_verified(self, ok: bool, *, error_arcmin: float | None = None,
+                               reason: str = "") -> None:
+        """Record whether the tube's position was CONFIRMED against the sky.
+
+        Called by every path that tries to centre. `ok=False` carries the reason
+        forward to the UI, because "we pointed where the mount thinks that is"
+        and "we solved the field and it agrees" are different claims and the
+        operator asked for the second one.
+        """
+        self._pointing_verified = bool(ok)
+        self._pointing_error_arcmin = error_arcmin if ok else None
+        if ok:
+            self._pointing_reason = (
+                f"plate solved to {error_arcmin:.1f}' of target"
+                if error_arcmin is not None else "plate solved on target")
+        else:
+            self._pointing_reason = (
+                (reason or "centering failed")
+                + " — the mount went to raw GoTo coordinates, so the pointing "
+                  "is only as good as its model")
+
+    def note_pointing_moved(self) -> None:
+        """Invalidate a previous verdict. A 'verified' that outlives the pointing
+        it described is worse than none — it is a green tick about somewhere the
+        tube no longer is."""
+        self._pointing_verified = False
+        self._pointing_error_arcmin = None
+        self._pointing_reason = "the mount has moved since the last plate solve"
+
     async def goto_and_center(self, ra_hours: float, dec_deg: float,
                               tolerance_deg: float = 0.02,
                               max_attempts: int = 3,
@@ -5247,6 +5285,7 @@ class Hub:
         async with self._motion_lock:
             if not self._motion_committed_clean(epoch):
                 bus.log("warning", "goto abandoned: aborted before motion", "mount")
+                self.note_pointing_verified(False, reason=str("centering did not converge"))
                 return {"centered": False, "error_arcmin": None,
                         "attempts": 0, "aborted": True, "rotation": None}
             if await tel.is_parked():
@@ -5264,6 +5303,7 @@ class Hub:
                 if not self._motion_committed_clean(epoch):
                     bus.log("warning", "goto abandoned: aborted before rotation",
                             "mount")
+                    self.note_pointing_verified(False, reason=str("centering did not converge"))
                     return {"centered": False, "error_arcmin": None,
                             "attempts": 0, "aborted": True, "rotation": None}
                 slew_ra, slew_dec = await self.to_mount_frame(tel, ra_hours, dec_deg)
@@ -5291,6 +5331,7 @@ class Hub:
                     bus.log("warning",
                             f"goto re-slew abandoned at attempt {attempt}: aborted",
                             "mount")
+                    self.note_pointing_verified(False, reason=str("centering did not converge"))
                     return {"centered": False,
                             "error_arcmin": (last_err or 0) * 60 if last_err else None,
                             "attempts": attempt - 1, "aborted": True} | _rot_keys
@@ -5312,12 +5353,14 @@ class Hub:
             except (DeviceError, Exception) as e:
                 bus.log("warning",
                         f"centering: plate solve failed ({e}); using raw GoTo", "solve")
+                self.note_pointing_verified(False, reason=str("centering did not converge"))
                 return {"centered": False, "error_arcmin": None,
                         "attempts": attempt, "solve_failed": True} | _rot_keys
             err = _ang_sep_deg(solved["ra_hours"], solved["dec_deg"], ra_hours, dec_deg)
             bus.log("info", f"centering attempt {attempt}: {err * 60:.1f}' off target", "solve")
             if err <= tolerance_deg:
                 bus.publish("mount", action="centered", error_arcmin=err * 60)
+                self.note_pointing_verified(True, error_arcmin=err * 60)
                 return {"centered": True, "error_arcmin": err * 60, "attempts": attempt} | _rot_keys
             # The correction slew commanded the FULL remaining error; if the
             # pointing barely changed, the slew did not happen. Iterating on an
@@ -5337,9 +5380,11 @@ class Hub:
                         f"its current state looks exactly like this.", "solve")
                 bus.publish("mount", action="centering_stuck",
                             error_arcmin=err * 60)
+                self.note_pointing_verified(False, reason=str("centering did not converge"))
                 return {"centered": False, "error_arcmin": err * 60,
                         "attempts": attempt, "did_not_move": True} | _rot_keys
             last_err = err
+        self.note_pointing_verified(False, reason=str("centering did not converge"))
         return {"centered": False, "error_arcmin": (last_err or 0) * 60,
                 "attempts": max_attempts} | _rot_keys
 
@@ -5725,6 +5770,13 @@ class Hub:
                     # button on this, so a mount with no home sensor never shows
                     # a control that would 400.
                     "can_find_home": getattr(tel, "can_find_home", False),
+                    # Was this pointing CONFIRMED against the sky, or is it the
+                    # mount's own opinion? See `note_pointing_verified`.
+                    "pointing": {
+                        "verified": self._pointing_verified,
+                        "reason": self._pointing_reason,
+                        "error_arcmin": self._pointing_error_arcmin,
+                    },
                 }
             except Exception:
                 pass

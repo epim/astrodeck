@@ -59,7 +59,7 @@ export default function NamingPanel(): JSX.Element {
               aria-disabled={!canEdit || undefined}
               title={!canEdit ? "config.site_optics required" : `insert $$${t}$$`}
               onClick={!canEdit ? undefined : () => setDraft((d) => `${d}$$${t}$$`)}
-              className={`text-[11px] px-2 py-1 border uppercase tracking-wide
+              className={`chip-btn text-[11px] px-2 py-1 border uppercase tracking-wide
                 ${!canEdit ? "!text-dim cursor-not-allowed" : "bg-raise border-line2 text-dim"}`}>
               {`$$${t}$$`}
             </button>

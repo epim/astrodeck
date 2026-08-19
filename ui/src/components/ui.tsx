@@ -151,7 +151,7 @@ export function Toggle({ checked, onChange, disabled = false, label, showState =
         aria-label={label}
         disabled={disabled}
         onClick={() => onChange(!checked)}
-        className={`relative w-9 h-5 border transition-colors shrink-0
+        className={`toggle-track relative w-9 h-5 border transition-colors shrink-0
           ${checked ? "bg-accent2/40 border-accent" : "bg-raise border-line2"}
           ${disabled ? "opacity-40" : "cursor-pointer"}`}
       >
@@ -730,6 +730,13 @@ export function HonestButton({ reason, onClick, onExplain, className = "btn", ch
       type="button"
       className={`${className} ${reason ? `${LOCKED_CLASS} !pointer-events-auto` : ""}`}
       aria-disabled={reason ? true : undefined}
+      // ALSO ON HOVER, not only on press. Pressing to find out why is the right
+      // and only option on a touch screen, and it is what this component is
+      // for — but on a desktop the reason is already known and withholding it
+      // until a click makes a live-looking button feel broken. `LockedChip`
+      // next door has always put its reason in `title`; this is the same
+      // sentence, in the same place, so the two patterns agree.
+      title={reason || undefined}
       onClick={() => (reason ? onExplain(reason) : onClick())}
     >
       {children}

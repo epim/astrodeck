@@ -353,7 +353,23 @@ export default function MountView() {
                 this stat read IDLE while the mount was physically travelling —
                 the same lie the Park button beside it used to tell. */}
             <Stat label="State" value={mountState} tone={mountStateTone} />
+            {/* WAS THIS POINTING CHECKED, OR IS IT THE MOUNT'S OPINION?
+                A centering that fell back to a raw GoTo used to leave the panel
+                full of confident coordinates and no hint that the plate solve
+                had failed — the only trace was one line in a collapsed log
+                (reported 2026-08-19, "Not enough stars" in daylight). These are
+                different claims and the operator asked for the stronger one. */}
+            <Stat
+              label="Pointing"
+              value={m?.pointing?.verified ? "VERIFIED" : "NOT VERIFIED"}
+              tone={m?.pointing?.verified ? undefined : "warn"}
+            />
           </div>
+          {m?.pointing && !m.pointing.verified && m.pointing.reason && (
+            <p className="mt-2 text-[11px] leading-snug text-warn">
+              {m.pointing.reason}
+            </p>
+          )}
           <div className="mt-4 border-t border-line pt-3 flex flex-col gap-3">
             <div className="flex items-center gap-3">
               <Toggle checked={!!tracking.value} disabled={trackingBlocked}

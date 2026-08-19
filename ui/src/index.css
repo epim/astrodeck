@@ -1060,3 +1060,30 @@ nav.fixed[aria-label="Primary"] { padding-bottom: env(safe-area-inset-bottom, 0p
 @supports (height: 1dvh) {
   .reticle-cap { max-width: min(320px, 40dvh); }
 }
+
+/* ---------------------------------------------------------- HOVER AFFORDANCE
+   Two families of control answered a PRESS but not a HOVER, so on a desktop
+   nothing said they were interactive until you committed to clicking. Measured
+   2026-08-19: 21 of the 70 controls on Settings, against at most 4 anywhere
+   else. Both are shapes that read as decoration:
+
+   `.chip-btn`  the filename-template tokens ($$TARGET$$, $$DATE$$ ...), which
+                look exactly like the little uppercase labels beside them.
+   the toggle   a switch is guessable, but it was the only interactive thing on
+                the page with no pointer feedback at all.
+
+   Press feedback is untouched — `.btn:active` and the global fallback already
+   cover it, and on a touch screen hover does not exist, which is why this was
+   invisible from the phone. */
+.chip-btn { transition: border-color .12s, color .12s, background .12s; }
+.chip-btn:hover:not([aria-disabled="true"]) {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-raise));
+  cursor: pointer;
+}
+.toggle-track { transition: border-color .12s, box-shadow .12s, background-color .12s; }
+.toggle-track:hover:not([aria-disabled="true"]) {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent);
+}
