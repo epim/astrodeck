@@ -123,3 +123,52 @@ async def test_large_body_chunked_under_max_payload(fake_tunnel):
     last = fake_tunnel.of_type(FrameType.REQ_DATA)[-1]
     assert len(last.payload) == protocol.MAX_PAYLOAD
     assert last.eof() is False
+
+
+# ------------------------------------------- a late reply must not kill the home
+
+async def test_a_late_reply_to_an_aborted_request_does_not_orphan(monkeypatch):
+    """AN ABORTED REQUEST IS NOT A PROTOCOL VIOLATION.
+
+    `abort_request` dropped the exchange BEFORE sending REQ_ABORT, so a home that
+    was already answering produced a RESP_HEAD for a stream_id the relay no
+    longer knew. `_on_resp_head` raised ProxyError for the orphan, which
+    `_scope_endpoint` catches with a bare `except Exception` and turns into
+    `mux.shutdown(1012)` — **the whole home tunnel**, and every browser on it.
+
+    That path became reachable the moment the upstream timeout shipped: any
+    request slower than `upstream_timeout_s` aborts, and a home that answers a
+    moment later kills remote access for everyone. `POST /api/connect/rig`
+    awaits a full rig bring-up inside its handler and routinely exceeds 30s.
+
+    A genuine orphan — a stream_id never opened — must still be an error.
+    """
+    tunnel = FakeScopeTunnel()
+    mux = _mux(tunnel)
+    sid, got = await _drive_request(mux)
+    await mux.abort_request(sid, "relay upstream timeout")
+
+    # the home was already answering when the abort went out
+    await mux.on_tunnel_frame(protocol.resp_head(sid, 200, []))
+    await mux.on_tunnel_frame(protocol.resp_data(sid, b"late", eof=True))
+
+    assert got["status"] is None, "an aborted browser must not be written to"
+    assert got["body"] == b"", got
+
+
+async def test_a_reply_for_a_stream_that_never_existed_is_still_an_error():
+    """The check earns its keep on frames the abort cannot explain."""
+    tunnel = FakeScopeTunnel()
+    mux = _mux(tunnel)
+    with pytest.raises(ProxyError):
+        await mux.on_tunnel_frame(protocol.resp_head(4242, 200, []))
+
+
+async def test_the_tombstone_set_cannot_grow_without_bound():
+    """One entry per aborted request, on a tunnel that lives for a whole night."""
+    tunnel = FakeScopeTunnel()
+    mux = _mux(tunnel)
+    for _ in range(5000):
+        sid, _ = await _drive_request(mux)
+        await mux.abort_request(sid)
+    assert len(mux._aborted) <= 1024, f"tombstones grew to {len(mux._aborted)}"

@@ -26,6 +26,7 @@ the unit tests drive them with in-memory fakes (NO WSS on the wire).
 from __future__ import annotations
 
 import asyncio
+from collections import OrderedDict
 import json
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Optional
@@ -105,6 +106,12 @@ class TunnelMultiplexer:
         self.ws_egress_max = ws_egress_max
         self._exchanges: dict[int, _HttpExchange] = {}
         self._viewers: dict[str, _WsViewer] = {}
+        #: Stream ids we told the home to abandon. A home that was ALREADY
+        #: answering will land a RESP_HEAD/RESP_DATA here a moment later, and
+        #: that is expected traffic, not a protocol violation — see
+        #: `abort_request`. Bounded: one entry per aborted request on a tunnel
+        #: that stays up all night.
+        self._aborted: "OrderedDict[int, None]" = OrderedDict()
 
     @property
     def tunnel(self):
@@ -136,10 +143,34 @@ class TunnelMultiplexer:
         sliced to ``MAX_PAYLOAD`` by the caller; here we forward as-is."""
         await self.tunnel.send_frame(protocol.req_data(stream_id, chunk, eof=eof))
 
+    #: How many aborted stream ids to remember. Late replies arrive within one
+    #: round trip; this is orders of magnitude more slack than that.
+    ABORTED_MEMORY = 1024
+
     async def abort_request(self, stream_id: int, reason: str = "") -> None:
-        """The browser hung up before EOF -> tell the home to abandon it."""
+        """The browser hung up before EOF -> tell the home to abandon it.
+
+        REMEMBER THE ID. Dropping the exchange and forgetting it made the home's
+        in-flight reply an ORPHAN, and `_on_resp_head` raises ProxyError on an
+        orphan — which `_scope_endpoint` catches with a bare `except Exception`
+        and turns into `shutdown(1012)`, tearing down the whole home tunnel and
+        every browser on it.
+
+        That was unreachable until the upstream timeout shipped. Now any request
+        slower than `upstream_timeout_s` aborts, and a home that answers a beat
+        later kills remote access for everyone. `POST /api/connect/rig` awaits a
+        full rig bring-up inside its handler and routinely exceeds 30s.
+        """
         self._drop_exchange(stream_id)
+        self._aborted[stream_id] = None
+        while len(self._aborted) > self.ABORTED_MEMORY:
+            self._aborted.popitem(last=False)
         await self.tunnel.send_frame(protocol.req_abort(stream_id, reason))
+
+    def _is_late_reply(self, stream_id: int) -> bool:
+        """True when this stream was aborted, so a reply for it is expected
+        late traffic to be discarded rather than a protocol error."""
+        return stream_id in self._aborted
 
     # -------------------------------------------------- browser WS -> tunnel
 
@@ -203,6 +234,8 @@ class TunnelMultiplexer:
     async def _on_resp_head(self, frame: Frame) -> None:
         ex = self._exchanges.get(frame.stream_id)
         if ex is None:
+            if self._is_late_reply(frame.stream_id):
+                return          # we aborted it; the home had already answered
             raise ProxyError(
                 f"RESP_HEAD for unknown stream_id {frame.stream_id} (orphan)"
             )
@@ -218,6 +251,8 @@ class TunnelMultiplexer:
     async def _on_resp_data(self, frame: Frame) -> None:
         ex = self._exchanges.get(frame.stream_id)
         if ex is None:
+            if self._is_late_reply(frame.stream_id):
+                return          # tail of a reply we already abandoned
             raise ProxyError(
                 f"RESP_DATA for unknown stream_id {frame.stream_id} (orphan)"
             )
