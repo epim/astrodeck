@@ -258,3 +258,117 @@ async def test_abort_action_ends_run(sim_hub, temp_store, monkeypatch):
     eng.start(plan)
     await _wait_done(eng)
     assert eng.state["state"] in ("aborted",)   # SafetyAbort => aborted, end_reason unsafe
+
+
+# ------------------------------------------------- a failed action must re-arm
+
+async def test_a_refocus_that_FAILED_leaves_the_rule_armed(sim_hub, temp_store,
+                                                           monkeypatch):
+    """AN EDGE TRIGGER ASSUMES ITS ACTION WORKED.
+
+    `on_hfr_above` fires on the rising edge and re-arms only when HFR drops back
+    to or below the threshold. That is right when the refocus fixes the focus.
+    When the refocus FAILS, HFR stays high, the rule stays disarmed, and the
+    promise 'refocus when HFR exceeds 3.2' quietly expires for the rest of the
+    night after exactly one attempt.
+
+    Measured on the rig 2026-08-18: the rule fired at 21:22, the sweep aborted
+    at 21:27 ('triggered refocus failed'), and nothing tried again. The operator
+    read that as the analyser never noticing.
+    """
+    eng = SequenceEngine(sim_hub)
+    af = []
+
+    async def failing_af(label):
+        af.append(label)
+        return False                    # the sweep could not find focus
+
+    monkeypatch.setattr(eng, "_autofocus", failing_af)
+    monkeypatch.setattr(eng, "_capture",
+                        _returns({"hfr": 9.9, "stats": {"median": 100}, "saved_path": None}))
+    plan = _tiny_plan(instructions=[Instruction(
+        trigger="on_hfr_above", threshold=3.0, action="refocus")])
+    plan.targets[0].steps[0].count = 4
+    eng.start(plan)
+    await _wait_done(eng)
+    assert len(af) > 1, (
+        f"the rule fired {len(af)} time(s) across 4 high-HFR frames — a refocus "
+        "that failed must leave the trigger armed, or one bad sweep retires the "
+        "rule for the night")
+
+
+async def test_a_refocus_that_WORKED_does_not_re_fire(sim_hub, temp_store,
+                                                      monkeypatch):
+    """The no-double-fire guarantee still holds for the case it was written for:
+    a successful refocus must not run again on every subsequent frame just
+    because HFR is still being reported above the threshold."""
+    eng = SequenceEngine(sim_hub)
+    af = []
+
+    async def ok_af(label):
+        af.append(label)
+        return True
+
+    monkeypatch.setattr(eng, "_autofocus", ok_af)
+    monkeypatch.setattr(eng, "_capture",
+                        _returns({"hfr": 9.9, "stats": {"median": 100}, "saved_path": None}))
+    plan = _tiny_plan(instructions=[Instruction(
+        trigger="on_hfr_above", threshold=3.0, action="refocus")])
+    plan.targets[0].steps[0].count = 4
+    eng.start(plan)
+    await _wait_done(eng)
+    assert len(af) == 1, (
+        f"a successful refocus fired {len(af)} times over 4 frames — the rising "
+        "edge must still be a rising edge")
+
+
+async def test_a_rule_that_keeps_failing_gives_up_and_says_so(sim_hub, temp_store,
+                                                              monkeypatch):
+    """Re-arming must be BOUNDED. A focuser that cannot find focus at all would
+    otherwise run a full sweep between every frame for the rest of the night,
+    spending the whole session on a sweep that is never going to work."""
+    eng = SequenceEngine(sim_hub)
+    af = []
+
+    async def failing_af(label):
+        af.append(label)
+        return False
+
+    monkeypatch.setattr(eng, "_autofocus", failing_af)
+    monkeypatch.setattr(eng, "_capture",
+                        _returns({"hfr": 9.9, "stats": {"median": 100}, "saved_path": None}))
+    plan = _tiny_plan(instructions=[Instruction(
+        trigger="on_hfr_above", threshold=3.0, action="refocus")])
+    plan.targets[0].steps[0].count = 12
+    eng.start(plan)
+    await _wait_done(eng)
+    assert 1 < len(af) <= 4, (
+        f"fired {len(af)} times over 12 frames — re-arming after a failure must "
+        "be capped, not unbounded")
+
+
+async def test_autofocus_reports_whether_it_actually_found_focus(sim_hub,
+                                                                 temp_store,
+                                                                 monkeypatch):
+    """The re-arm rests entirely on `_autofocus` telling the truth about its
+    outcome. Every other test here patches `_autofocus` out, so without this one
+    the method could `return True` unconditionally and nothing would notice —
+    and the rule would be retired by the first failed sweep exactly as before.
+    """
+    import astrodeck.sequence.engine as eng_mod
+    from astrodeck.focus.autofocus import AutofocusResult
+
+    eng = SequenceEngine(sim_hub)
+    outcome = {"success": True}
+
+    async def fake_run_autofocus(*a, **k):
+        return AutofocusResult(outcome["success"], 11193, 3.05, [],
+                               "" if outcome["success"] else "could not measure 9750")
+
+    monkeypatch.setattr(eng_mod, "run_autofocus", fake_run_autofocus)
+    assert await eng._autofocus("test") is True
+
+    outcome["success"] = False
+    assert await eng._autofocus("test") is False, (
+        "a sweep that could not find focus reported success — the instruction "
+        "dispatcher believes this, so the rule would never be re-armed")
