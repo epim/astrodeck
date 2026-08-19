@@ -187,6 +187,23 @@ THUMB_PRUNE_EVERY = 200
 #: in the first place.
 THUMB_MAX_WIDTH = 256
 
+#: The largest render the FRAME VIEWER will produce, and the ladder it rounds to.
+#:
+#: A DIFFERENT CEILING FROM `THUMB_MAX_WIDTH` ON PURPOSE. The grid tile is a
+#: scanning aid held to 256; this is the picture someone opened deliberately to
+#: LOOK at, so it is sized to their screen. Keeping them apart is what stops the
+#: grid decision from quietly degrading the viewer — see
+#: `tests/test_preview_fidelity_is_not_the_gallery.py`.
+#:
+#: 2560 covers a 1440p desktop and any phone at DPR 3 in either orientation.
+#: Past that the honest answer is the FITS itself, which the tile already offers.
+VIEW_MAX_WIDTH = 2560
+
+#: Rounded to steps for the same reason the tile is: the cache key carries the
+#: width, and a continuously-sized request would render a 26 MP frame on every
+#: resize. Keep in step with `ui/src/lib/gallery.ts::VIEW_WIDTH_STEPS`.
+VIEW_WIDTH_STEPS: tuple[int, ...] = (640, 960, 1280, 1600, 2048, 2560)
+
 #: JPEG quality for gallery thumbnails.
 #:
 #: Higher than the 70 the live filmstrip uses, because these are different
@@ -781,7 +798,8 @@ def _prune_thumb_cache(directory: Path) -> None:
         pass
 
 
-def thumbnail(rel: str, *, width: int = 256) -> bytes:
+def thumbnail(rel: str, *, width: int = 256,
+              ceiling: int | None = None) -> bytes:
     """JPEG thumbnail for one frame, rendered on first view and cached on disk.
 
     Neither existing thumbnail store is reusable, which is why this exists: the
@@ -808,7 +826,7 @@ def thumbnail(rel: str, *, width: int = 256) -> bytes:
             or path.suffix.lower() not in FRAME_SUFFIXES):
         raise KeyError(rel)
     st = path.stat()                         # FileNotFoundError -> 404
-    width = max(32, min(int(width), THUMB_MAX_WIDTH))
+    width = max(32, min(int(width), ceiling or THUMB_MAX_WIDTH))
     cached = _thumb_cache_path(rel, st.st_mtime, width)
     try:
         return cached.read_bytes()
@@ -838,6 +856,27 @@ def thumbnail(rel: str, *, width: int = 256) -> bytes:
     except OSError:
         pass                                 # cache miss forever beats a 500
     return jpeg
+
+
+
+def view_width_for(want: int) -> int:
+    """Round a requested width up to a VIEW_WIDTH_STEPS rung, capped."""
+    want = max(1, int(want))
+    for step in VIEW_WIDTH_STEPS:
+        if want <= step:
+            return step
+    return VIEW_WIDTH_STEPS[-1]
+
+
+def view(rel: str, *, width: int) -> bytes:
+    """Render a saved frame for the FRAME VIEWER — the picture someone opened.
+
+    Same read, stretch, resize and disk cache as `thumbnail`; the only
+    difference is the ceiling, because the two answer different questions. The
+    grid asks "which of these 200 frames is worth a look" at 256px; this asks
+    "let me actually look at it" at the size of the screen in front of them.
+    """
+    return thumbnail(rel, width=view_width_for(width), ceiling=VIEW_MAX_WIDTH)
 
 
 def thumb_is_cached(rel: str, width: int) -> bool:

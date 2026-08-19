@@ -46,6 +46,7 @@ import {
   EmptyState, HonestButton, InfoDot, LockedNote, Panel,
 } from "../components/ui";
 import FrameTile from "../components/gallery/FrameTile";
+import FrameViewer from "../components/gallery/FrameViewer";
 import TrashPanel from "../components/gallery/TrashPanel";
 import {
   TRASH_BATCH_CAP, downloadPlan, fmtBytes, fmtCount, fmtFrameCost,
@@ -104,6 +105,9 @@ export default function GalleryView(): JSX.Element {
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // The frame the operator opened, or null. One at a time: this is a
+  // look-at-it overlay, not a filmstrip.
+  const [viewing, setViewing] = useState<GalleryFrame | null>(null);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [allInFilter, setAllInFilter] = useState(false);
   /** The last tile ticked by a PLAIN click. A shift+click selects from here to
@@ -346,6 +350,7 @@ export default function GalleryView(): JSX.Element {
   const actionBtn = "!py-1.5 !px-3 text-[11px] min-h-[44px] sm:min-h-0 inline-flex items-center gap-1.5";
 
   return (
+    <>
     <div className="flex flex-col gap-3">
       {/* =============================================================== filter */}
       <Panel
@@ -643,6 +648,7 @@ export default function GalleryView(): JSX.Element {
                     selected={allInFilter || picked.has(f.path)}
                     selectable={canDelete || canMedia}
                     canDownload={canMedia}
+                    onOpen={canMedia ? () => setViewing(f) : undefined}
                     onToggle={(shift) => {
                       if (allInFilter) {
                         // Un-ticking one tile out of "everything" means "all of
@@ -691,6 +697,10 @@ export default function GalleryView(): JSX.Element {
           )}
         </>
       )}
-    </div>
+      </div>
+      {viewing && (
+        <FrameViewer frame={viewing} onClose={() => setViewing(null)} />
+      )}
+    </>
   );
 }
