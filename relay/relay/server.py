@@ -62,6 +62,12 @@ except Exception:  # noqa: BLE001 - server deps absent (pure-core/test env)
 
 # --------------------------------------------------------------- shared state
 
+
+class UpstreamTimeout(Exception):
+    """The home went quiet mid-response. Raised out of the body generator so the
+    transfer FAILS rather than completing short — see `_proxy_http`."""
+
+
 class RelayState:
     """Process-wide relay state: the home registry, signers, and rate limiters.
     One per relay process (single-instance affinity)."""
@@ -255,7 +261,18 @@ async def _browser_http(state: RelayState, request) -> "StreamingResponse":
             except asyncio.TimeoutError:
                 with contextlib.suppress(Exception):
                     await conn.mux.abort_request(stream_id, "relay upstream timeout")
-                return
+                # RAISE, DO NOT RETURN. Returning ends the chunked response
+                # cleanly: the browser receives a well-formed 200 with the
+                # terminating 0-length chunk and no error, so a half-downloaded
+                # FITS or a truncated JSON body looks COMPLETE. Verified at the
+                # wire level 2026-08-19: 10 of 40 bytes arrived as a
+                # well-formed chunked body complete with its terminating
+                # zero-length chunk, and the client raised nothing. Raising
+                # drops the connection WITHOUT that terminator, which every HTTP
+                # client already knows how to treat as a failed transfer.
+                raise UpstreamTimeout(
+                    f"home stopped sending after the response head "
+                    f"(waited {state.cfg.upstream_timeout_s:g}s)")
             if chunk:
                 yield chunk
             if eof:
