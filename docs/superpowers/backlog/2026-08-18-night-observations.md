@@ -112,6 +112,49 @@ so I am NOT recommending "more sample points" — that would be a guess.
    unmeasured — but it is the same defect class as the one already fixed, in the
    path that runs every time instead of only on salvage.
 
+## The mount's reported position drifts degrees away from where it is pointing
+
+**The most serious thing seen tonight.** At 21:16, straight after three
+plate-solve syncs, the mount reported the target exactly: 21h42m59s +66d06'47".
+By 00:45 it reported 21h32m47s **+62d21'** — 3.75 degrees of declination away —
+and it was still moving at ~21 arcsec/minute, monotonically, while tracking a
+guided target at 1.1" RMS and never slewing.
+
+**The telescope had not moved.** Two L frames 1h45m apart show the identical
+field, same framing, best correlation at a ~1.2' shift (dithering). No field
+rotation either, which also rules out a polar error large enough to explain a
+real 3.75 degree drift.
+
+The app noticed and shrugged:
+
+    23:27 [solve] field identification cleared: the mount has moved 3.67 deg
+                  since the last plate solve
+
+It took "the mount moved 3.67 deg" at face value and discarded its field
+identification, rather than treating "a guided, non-slewing mount appears to
+have moved 3.67 degrees" as the impossibility it is.
+
+**What it contaminates:**
+
+- Every FITS header from ~21:30 on: `RA`, `DEC`, `OBJCTRA`, `OBJCTDEC`, and the
+  derived `OBJCTALT` / `AIRMASS`. Stacking software that trusts headers for
+  alignment hints or airmass is being handed a position degrees off.
+- The **meridian logic**. `hours_to_flip` counted down to zero on this false
+  position at 00:49 and the engine declined the flip — correctly, for reasons
+  decided at run start from the TARGET's dec, not from the mount's. The right
+  outcome, reached without the position being right.
+- The **safety gates** — altitude floor, horizon, no-go box, solar avoidance all
+  read mount coordinates.
+
+Not diagnosed. Two candidate causes (driver position cache diverging vs genuine
+drift) and the imaging evidence rules against the second. Watching what the
+native LX200 driver actually reads off the wire is a daylight job.
+
+**Cheap detector, whatever the cause:** the run already plate-solves. Comparing
+a solve against the mount's claimed position costs nothing and turns this from
+invisible into a warning. The code that logged "moved 3.67 deg" is the exact
+place to raise it.
+
 ## Open — not yet fixed
 
 - **`preview_crop` calls itself "sensor-1:1" but crops the PREVIEW array.**
