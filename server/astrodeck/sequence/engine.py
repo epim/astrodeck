@@ -1753,10 +1753,24 @@ class SequenceEngine:
                 if await _bounded(tel.is_parked(), MOUNT_QUERY_TIMEOUT_S,
                                   "mount is_parked query"):
                     await _bounded(tel.unpark(), PARK_TIMEOUT_S, "mount unpark")
-                await _bounded(tel.set_tracking(True), MOUNT_QUERY_TIMEOUT_S,
-                               "mount set_tracking")
+                # TRACKING FIRST IS ONLY A PREFERENCE; THE SLEW IS THE POINT.
+                # A mount pinned against its own meridian limit answers
+                # "tracking on rejected" and this used to kill the run before
+                # the slew — which is the one action that moves it OFF the
+                # limit. On the rig 2026-08-19 that left no recovery at all:
+                # two restarts died instantly and the night ended on a manual
+                # park. Ask, tolerate a refusal, slew, then insist.
+                try:
+                    await _bounded(tel.set_tracking(True), MOUNT_QUERY_TIMEOUT_S,
+                                   "mount set_tracking")
+                except Exception as e:          # noqa: BLE001
+                    bus.log("warning",
+                            f"{target.name}: the mount would not start tracking "
+                            f"before the slew ({e}); slewing first", "sequence")
                 await _bounded(tel.slew(target.ra_hours, target.dec_deg),
                                SLEW_TIMEOUT_S, f"slew to {target.name}")
+                await _bounded(tel.set_tracking(True), MOUNT_QUERY_TIMEOUT_S,
+                               "mount set_tracking")
 
         if target.autofocus_first and "focuser" in self.hub.devices:
             await self._autofocus("initial autofocus")
@@ -2137,6 +2151,7 @@ class SequenceEngine:
             await self._reconnect_gate()
             await self._maybe_meridian_flip(target, step.exposure_s)
             await self._maybe_recover_guiding(target)
+            await self._enforce_tracking(step)
 
             if plan.dither_every and self._frames_since_dither >= plan.dither_every \
                     and self.hub.guider and self.hub.guider.connected:
@@ -4537,6 +4552,53 @@ class SequenceEngine:
                     f"rather than retrying it between every frame", "sequence")
             return
         rec.armed = True
+
+    async def _enforce_tracking(self, step) -> None:
+        """A LIGHT FRAME ON A MOUNT THAT IS NOT TRACKING IS A STREAK.
+
+        2026-08-19 00:54: the AM5 hit its own meridian limit five minutes after
+        the engine declined a flip, and stopped tracking. The run continued to
+        01:56 — 21 frames, 60s each, on a stationary mount, all accepted. Every
+        other layer that could have caught it needed configuring and was off:
+        `max_guide_rms` is 0/off so a guide RMS of 4085 rejected nothing,
+        `require_guiding` is false, and fifteen consecutive dither failures were
+        each logged as an isolated hiccup.
+
+        This one needs no configuring. The mount already knows, the answer is
+        binary, and there is no such thing as a good light frame taken while it
+        is false.
+
+        Tries to resume first — a mount that was merely switched off should be
+        recovered, not abandoned. A mount that REFUSES (the limit case) ends the
+        target, which for a single-target night ends the run and parks it.
+        Unreadable is not a verdict: a driver that cannot answer must not end a
+        night that is probably fine.
+        """
+        if (getattr(step, "frame_type", "Light") or "Light").strip().lower() != "light":
+            return                       # darks and bias are shot parked, on purpose
+        tel = self.hub.devices.get("telescope")
+        if tel is None or not getattr(tel, "connected", False):
+            return
+        try:
+            tracking = await tel.get_tracking()
+        except Exception:                # noqa: BLE001 - unknown is not False
+            return
+        if tracking:
+            return
+        bus.log("warning", "the mount is not tracking — trying to resume before "
+                           "the next light frame", "sequence")
+        try:
+            await tel.set_tracking(True)
+            tracking = await tel.get_tracking()
+        except Exception as e:           # noqa: BLE001
+            bus.log("warning", f"the mount refused to resume tracking ({e})", "sequence")
+            tracking = False
+        if tracking:
+            bus.log("info", "tracking resumed", "sequence")
+            return
+        raise StopTarget(
+            "the mount is not tracking and will not resume — every light frame "
+            "from here would be a streak")
 
     def _guide_rms(self) -> float | None:
         """Current total guide RMS in ARCSEC, or None when unguided/unreadable
