@@ -6260,6 +6260,31 @@ def create_app() -> FastAPI:
         # at the same path produces a different URL rather than a stale image.
         return Response(jpeg, media_type="image/jpeg", headers=_PREVIEW_CACHE)
 
+    @app.get("/api/gallery/view", dependencies=[Depends(require(CAP_VIEW_PREVIEW))])
+    @declare(CAP_VIEW_PREVIEW)
+    async def gallery_view(path: str, w: int = 1280):
+        """A saved frame rendered for LOOKING AT, sized to the caller's screen.
+
+        Deliberately not `/api/gallery/thumb`: that route is the scanning grid
+        and is clamped to 256px, and a viewer that inherited the tile's ceiling
+        is exactly the confusion `test_preview_fidelity_is_not_the_gallery`
+        exists to prevent. Same render and same disk cache, different ceiling.
+
+        `w` is rounded UP to a `VIEW_WIDTH_STEPS` rung so a phone rotating, or a
+        desktop window being dragged, lands on a handful of cache keys instead of
+        re-rendering 26 megapixels per pixel of resize."""
+        try:
+            jpeg = await asyncio.to_thread(gallery_module.view, path, width=w)
+        except KeyError:
+            raise HTTPException(404, "frame not found")
+        except FileNotFoundError:
+            raise HTTPException(404, "frame not found")
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+        except OSError as e:
+            raise HTTPException(404, f"frame not readable: {e}")
+        return Response(jpeg, media_type="image/jpeg", headers=_PREVIEW_CACHE)
+
     @app.post("/api/gallery/thumbs/backfill",
               dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
     @declare(CAP_CONTROL_CAPTURE)

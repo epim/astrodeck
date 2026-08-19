@@ -100,7 +100,7 @@ export function useInView<T extends Element>(
  * a night) can be asserted directly in a test without a DOM or a network.
  */
 export function TileSurface({
-  frame, state, status, selected, selectable, canDownload, onToggle,
+  frame, state, status, selected, selectable, canDownload, onToggle, onOpen,
   thumbSrc, onImgLoad, onImgError,
 }: {
   frame: GalleryFrame;
@@ -118,6 +118,9 @@ export function TileSurface({
    *  backs a checkbox's change with the click, so the modifier is right there,
    *  and a keyboard space carries shift=false, which is the right answer. */
   onToggle: (shift: boolean) => void;
+  /** Open the frame in the viewer. Absent = no viewer (the tile is inert in the
+   *  centre, which is how it behaved before the viewer existed). */
+  onOpen?: () => void;
   /** Absent until the tile has scrolled into reach; that IS the lazy load. */
   thumbSrc?: string;
   onImgLoad?: () => void;
@@ -178,6 +181,20 @@ export function TileSurface({
             </span>
             <span className="text-[10px] leading-tight text-dim">{copy.hint}</span>
           </div>
+        )}
+
+        {/* ---- OPEN. The centre of the picture only: the 44px corners already
+                belong to the tick box and the download, and a full-tile hit area
+                would make every select-by-tapping open the viewer instead.
+                Sits UNDER those corners in the DOM order below, so they win. */}
+        {onOpen && !gone && (
+          <button
+            type="button"
+            className="absolute inset-x-11 inset-y-11 z-0 cursor-zoom-in"
+            aria-label={`Open ${frame.name}`}
+            title={`Open ${frame.name}`}
+            onClick={(e) => { e.stopPropagation(); onOpen(); }}
+          />
         )}
 
         {/* ---- tick box. A real <input type="checkbox"> — a div with
@@ -245,6 +262,8 @@ export default function FrameTile(props: {
    *  backs a checkbox's change with the click, so the modifier is right there,
    *  and a keyboard space carries shift=false, which is the right answer. */
   onToggle: (shift: boolean) => void;
+  /** Open this frame in the viewer. */
+  onOpen?: () => void;
 }): JSX.Element {
   const [ref, inView] = useInView<HTMLDivElement>();
   const [state, setState] = useState<TileState>("loading");
