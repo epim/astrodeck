@@ -22,7 +22,10 @@ from ..persist import ensure_dir, list_json, read_json_or, safe_id_path, write_j
 from .examples import examples
 from .models import EXAMPLES_FOLDER, MY_FLOWS_FOLDER, FlowRecord
 
-FLOW_SCHEMA = 1
+#: 2 -- a target's ``rotation`` of 0 used to mean "no angle constraint"; it now
+#: means position angle 0. See ``_migrate`` for why the file version is the only
+#: thing that can tell the two apart.
+FLOW_SCHEMA = 2
 FLOWS_DIR = CONFIG_DIR / "flows"
 
 #: Soft quota, same reasoning as PlanLibrary's: a client must not be able to
@@ -43,6 +46,31 @@ class ReadOnlyFlow(ValueError):
     def __init__(self, message: str, code: str = "readonly"):
         super().__init__(message)
         self.code = code
+
+
+
+def _migrate(raw: dict) -> dict:
+    """Bring a stored flow up to ``FLOW_SCHEMA``.
+
+    v1 -> v2: a target's ``rotation`` of 0 meant "NO ANGLE CONSTRAINT" -- it was
+    what a blank field compiled to. From v2 a negative value means unconstrained
+    and 0 is a real position angle (north-up framing is something an operator
+    asks for). Nothing inside the flow distinguishes the two readings, so the
+    file's own version is the only evidence: a v1 file CANNOT have meant PA 0.
+    Without this, every flow written under the old rule -- and every night's
+    saved work -- would start commanding a physical rotator to 0 on its next run.
+
+    Read-only: the migrated dict is returned, the file is left alone until the
+    operator next saves it (which stamps the current FLOW_SCHEMA).
+    """
+    flow = raw.get("flow") or {}
+    if int(raw.get("schema_version") or 1) >= 2:
+        return flow
+    for node in (flow.get("graph") or {}).get("nodes") or []:
+        params = node.get("params")
+        if isinstance(params, dict) and params.get("rotation") == 0:
+            params["rotation"] = -1
+    return flow
 
 
 class FlowStore:
@@ -69,7 +97,7 @@ class FlowStore:
             if not isinstance(raw, dict):
                 continue
             try:
-                out.append(FlowRecord(**(raw.get("flow") or {})))
+                out.append(FlowRecord(**_migrate(raw)))
             except Exception:
                 # A corrupt or future-schema file is SKIPPED, not fatal: one bad
                 # file must not make the whole library unopenable.
