@@ -5,6 +5,7 @@
 // vs the previous frame, and a one-line saturation ACTION when the frame clips
 // (every warning carries an action — §12.6). NEVER color alone: word + arrow + text.
 import type { PreviewInfo } from "../../types";
+import { clippedFloor } from "./clippedFloor";
 import { Icon } from "../icons";
 import { defocusMessage, focusState } from "../../lib/focusVerdict";
 import { autofocusLevel, type AfLevel } from "../../lib/autofocus";
@@ -95,7 +96,16 @@ export function FocusVerdict({
   });
   const fewStars = state.kind === "few-stars";
   const fw = preview.full_well;
-  const clipped = fw != null && preview.data_is_linear && preview.stats.max >= fw;
+  // A WARNING THAT IS ALWAYS ON CARRIES NO INFORMATION. This read
+  // `stats.max >= fw`, i.e. ONE railed pixel — and every deep-sky sub rails a
+  // bright star core, so it was lit permanently. A 60s B sub of NGC 7129 on
+  // 2026-08-18 carried 169 clipped pixels out of 26,108,352 (0.0006%) and got
+  // told to shorten the exposure. `stats.clipped` is absent on a camera that
+  // does not report its well depth, and there we stay quiet rather than guess.
+  const clipped = fw != null && preview.data_is_linear
+    && preview.stats.clipped != null
+    && preview.stats.clipped >= clippedFloor(preview.data_width,
+                                             preview.data_height);
 
   // Grossly defocused outranks everything below. In that state the star count is
   // ring fragments and the HFR is the measurement box's ceiling, so "FAIR" is

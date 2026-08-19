@@ -3232,7 +3232,7 @@ class Hub:
         saved_path = getattr(frame, "saved_path", None)
         info: dict[str, Any] = {
             "id": pid,
-            "stats": frame_stats(data),
+            "stats": frame_stats(data, full_well),
             "exposure_s": frame.exposure_s,
             "gain": frame.gain,
             "binning": binning,
