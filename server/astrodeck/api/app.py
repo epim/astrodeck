@@ -5958,7 +5958,7 @@ def create_app() -> FastAPI:
         guess, and its guess — "Planets aren't supported yet" — is the failure
         this whole search change exists to end.
         """
-        from ..catalog import altaz, round_az_deg
+        from ..catalog import altaz, order_by_observability, round_az_deg
         # OFF the event loop. search() now evaluates astropy ephemerides inline:
         # ~6ms per planet, ~27ms for the Moon, and ~512ms on the first
         # solar-system query of the process (astropy import + IERS init). This
@@ -5983,15 +5983,28 @@ def create_app() -> FastAPI:
         # type. The rows themselves (name, type, magnitude, RA/Dec) are catalog
         # facts and stay: a viewer can still see what is in the sky, just not
         # where the sky is being observed from.
+        rows = found.rows
         if principal.has(CAP_VIEW_SITE_DERIVED):
-            for r in found.rows:
+            for r in rows:
                 alt, az = altaz(r["ra_hours"], r["dec_deg"],
                                 hub.site["latitude"], hub.site["longitude"])
                 r["alt"] = round(alt, 1)
                 r["az"] = round_az_deg(az)
+            # WHAT IS UP, FIRST. Ordering purely by magnitude put the Large
+            # Magellanic Cloud (-17 deg from this site) and the Carina Nebula
+            # (-29) at the top of a GOTO list. A stable partition keeps the
+            # search's relevance within each group and only sinks the ones that
+            # cannot be pointed at. Only possible here, because alt is computed
+            # above — `search` never sees it.
+            #
+            # A LOCAL, because SearchResult is a frozen dataclass. Assigning to
+            # `found.rows` raised FrozenInstanceError on every site-derived
+            # search — i.e. the catalog was 500ing for exactly the callers this
+            # change was written for.
+            rows = order_by_observability(rows)
         if explain:
-            return {"results": found.rows, "notes": found.notes}
-        return found.rows
+            return {"results": rows, "notes": found.notes}
+        return rows
 
     @app.get("/api/catalog/tonight",
              dependencies=[Depends(require(CAP_VIEW_SITE_DERIVED))])
@@ -6298,8 +6311,17 @@ def create_app() -> FastAPI:
         machine's CPU is an operational act, not a browse.
 
         Runs in a worker thread and is idempotent: an already-warm library costs
-        one stat per frame per width."""
-        result = await asyncio.to_thread(gallery_module.backfill, limit=limit)
+        one stat per frame per width.
+
+        BOUNDED BY TIME, so it can be called from anywhere. This awaited inline
+        while promising "twenty minutes on a large library", and the relay gives
+        up on an upstream after 30s — so from a phone, which is exactly where an
+        operator reaches for it, it could only ever 504 (measured 2026-08-19).
+        It now returns what it managed with `truncated` set, which the response
+        contract already meant as "run again to continue"."""
+        result = await asyncio.to_thread(
+            gallery_module.backfill, limit=limit,
+            budget_s=gallery_module.DEFAULT_BACKFILL_BUDGET_S)
         bus.log("info",
                 f"gallery thumbnails: warmed {result['rendered']} across "
                 f"{result['frames']} frames"

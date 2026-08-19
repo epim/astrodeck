@@ -135,7 +135,7 @@ function EventChips({
             aria-pressed={on}
             disabled={!canEdit}
             onClick={() => onChange(on ? events.filter((e) => e !== ev) : [...events, ev])}
-            className={`text-[11px] px-2 py-1 border uppercase tracking-wide
+            className={`chip-btn text-[11px] px-2 py-1 border uppercase tracking-wide
               ${on ? "bg-accent2/40 border-accent text-accent" : "bg-raise border-line2 text-dim"}
               ${!canEdit ? "opacity-50" : ""}`}
           >

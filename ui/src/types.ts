@@ -66,6 +66,14 @@ export interface MountStatus {
   /** Mount advertises a home position (Home control, 2026-07-30). Absent on
    *  older servers, so the control is simply not offered there. */
   can_find_home?: boolean;
+  /** Was this pointing CONFIRMED against the sky by a plate solve, or is it the
+   *  mount's own model? A raw-GoTo fallback used to be indistinguishable from a
+   *  successful centering on screen. */
+  pointing?: {
+    verified: boolean;
+    reason: string;
+    error_arcmin: number | null;
+  };
 }
 
 export interface RigStatus {
