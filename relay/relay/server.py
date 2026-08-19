@@ -30,6 +30,7 @@ not need to strip them, but it MUST NOT synthesize a privileged one.)
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from typing import Optional
 
@@ -80,6 +81,9 @@ class RelayState:
         self.ws_limiter = RateLimiter(cfg.ws_rate, cfg.ws_burst)
         # home_id -> live ScopeConnection (the affinity table).
         self.connections: dict[str, ScopeConnection] = {}
+        # Strong ref to the housekeeping loop; a bare create_task() result can be
+        # garbage-collected mid-flight.
+        self.housekeeping_task: "asyncio.Task | None" = None
 
 
 def _make_signer(seed: bytes, *, kid: str) -> PrincipalSigner:
@@ -224,7 +228,17 @@ async def _browser_http(state: RelayState, request) -> "StreamingResponse":
     else:
         await conn.mux.send_request_body(stream_id, b"", eof=True)
 
-    await head_ready.wait()
+    # A DEAD TUNNEL MUST NOT PARK THIS HANDLER FOREVER. When a tunnel drops,
+    # shutdown() clears `_exchanges`/`req_routes`, so nothing can ever call
+    # on_head for this stream again -- an unbounded wait here leaked the task,
+    # its buffered body and its queue for the life of the process, and left the
+    # browser spinning with no error to show.
+    try:
+        await asyncio.wait_for(head_ready.wait(), timeout=state.cfg.upstream_timeout_s)
+    except asyncio.TimeoutError:
+        with contextlib.suppress(Exception):
+            await conn.mux.abort_request(stream_id, "relay upstream timeout")
+        return PlainTextResponse("home did not respond", status_code=504)
     status = head_holder.get("status", 502)
     raw_headers = head_holder.get("headers", [])
     out_headers = transform_response_headers(
@@ -232,8 +246,16 @@ async def _browser_http(state: RelayState, request) -> "StreamingResponse":
     )
 
     async def body_iter():
+        # Same bound on the body: a tunnel that dies after the head but before
+        # EOF would otherwise hang this response open forever.
         while True:
-            chunk, eof = await chunks.get()
+            try:
+                chunk, eof = await asyncio.wait_for(
+                    chunks.get(), timeout=state.cfg.upstream_timeout_s)
+            except asyncio.TimeoutError:
+                with contextlib.suppress(Exception):
+                    await conn.mux.abort_request(stream_id, "relay upstream timeout")
+                return
             if chunk:
                 yield chunk
             if eof:
@@ -308,7 +330,30 @@ def create_app(cfg: Optional[RelayConfig] = None) -> "Starlette":
         Route("/h/{home_id}/{path:path}", browser_http_ep,
               methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]),
     ]
-    app = Starlette(routes=routes)
+    async def _housekeeping() -> None:
+        """Expire idle rate-limiter buckets. RateLimiter.prune() documents itself
+        as "call periodically from the server's housekeeping loop" and had NO
+        production caller -- both limiters are keyed by client IP and grew for
+        the life of the process."""
+        while True:
+            await asyncio.sleep(60.0)
+            for limiter in (state.http_limiter, state.ws_limiter):
+                with contextlib.suppress(Exception):
+                    limiter.prune()
+
+    @contextlib.asynccontextmanager
+    async def _lifespan(_app):
+        # `on_startup=` was removed in Starlette 0.5x; lifespan is the one
+        # surviving hook. Keep the task on `state` so it is not collected.
+        state.housekeeping_task = asyncio.create_task(_housekeeping())
+        try:
+            yield
+        finally:
+            state.housekeeping_task.cancel()
+            with contextlib.suppress(BaseException):
+                await state.housekeeping_task
+
+    app = Starlette(routes=routes, lifespan=_lifespan)
     app.state.relay = state
     if state.oidc_signer.is_dev() or state.viewer_signer.is_dev():
         import logging
