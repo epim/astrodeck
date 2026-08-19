@@ -23,6 +23,43 @@ Live-run notes. Everything here was seen on the rig tonight, not inferred.
 - **"Stars saturated" fired on ONE railed pixel.** 169px of 26,108,352 on a good
   frame. Now needs 0.02% of the frame.
 
+## The flow cannot cool the camera, and talks as if it can
+
+The operator expected their flow to cool the sensor. It cannot: **no node and no
+param in the flow vocabulary sets a cooling setpoint.** The only source is
+`config.cooling.setpoint_c`, injected into the plan by the run route
+(`flows/to_plan.py:854`), and it was null — so the night opened at ambient.
+
+What makes this a broken promise rather than a missing feature is that the
+vocabulary is full of cooler-shaped controls:
+
+```python
+"hold":      {"cooler": "Re-cool + stabilize before capture"}
+"parkclose": {"cooler": "Hold cold (day darks)"}
+"abort":     {"warm": "Yes"}
+```
+
+The operator's own graph carries `warm: Yes`, which only means anything if
+something cooled. `nodes.py` even documents the exact disaster in a comment —
+"Resuming into that shoots warm subs against a cold dark library, which is
+exactly what happened on 2026-08-12 — 63 frames at ambient" — while offering no
+way to cool. Tonight it was 35 frames at ~20 C before anyone noticed.
+
+Worked around live 2026-08-18 23:27: cooled via `POST /api/camera/cooler`
+(18.1 -> -10.0 C in 4 min, TEC settling at 27%, so -10 holds with headroom) and
+persisted `cooling.setpoint_c = -10.0`, which every future run now inherits.
+
+**Two candidate fixes, needs a decision:**
+
+1. *The cheap, high-value one.* Nothing warned that the setpoint was unset. A
+   flow that will capture on a cooling-capable camera with no standing setpoint
+   should say so at compile time, in the same advisory list as the other losses:
+   "this rig has no cooling setpoint, so the night shoots at ambient". That is
+   the mechanism that would have caught this before the first frame.
+2. *The real one.* A COOLING node (or a setpoint param on CAPTURE/CYCLE) so the
+   graph can express the temperature it wants, instead of silently depending on
+   a rig-level field the canvas never mentions.
+
 ## Open — not yet fixed
 
 - **`preview_crop` calls itself "sensor-1:1" but crops the PREVIEW array.**
@@ -54,3 +91,7 @@ Live-run notes. Everything here was seen on the rig tonight, not inferred.
 - Saturation on the same sub: **169px of 26,108,352**. Exposure is not too long.
 - Sky verdict held **clear (200 bright stars, 35-45x noise)** all evening
   against a forecast of 100% cloud from 22:00.
+- Cooling: 18.1 -> -10.0 C in ~4 min, TEC power settling at **27%** at -10 C
+  against ~16 C ambient. Deeper setpoints are clearly available.
+- Frames tonight by sensor temperature: **35 at ambient ~20 C**, 2 mid-cooldown,
+  the rest at -10 C. They need separate darks; do not stack them together.
