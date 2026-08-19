@@ -954,8 +954,20 @@ def precompute(rel: str, widths: "tuple[int, ...] | None" = None) -> int:
     return made
 
 
+#: How long a REMOTE backfill may run before returning what it managed.
+#:
+#: The relay gives up on an upstream after 30s (`relay.config.upstream_timeout_s`)
+#: and this route awaited inline while its own docstring promised "twenty minutes
+#: on a large library" — so through the relay, which is where an operator on a
+#: phone would reach for it, it could only ever 504. Measured 2026-08-19. A
+#: budget plus the `truncated` flag the contract already carries turns a
+#: twenty-minute request into a loop of short ones.
+DEFAULT_BACKFILL_BUDGET_S = 15.0
+
+
 def backfill(*, widths: "tuple[int, ...] | None" = None,
              limit: int = 0,
+             budget_s: float | None = None,
              progress=None) -> dict:
     """Warm every listable frame's thumbnails. Returns a summary dict.
 
@@ -969,10 +981,24 @@ def backfill(*, widths: "tuple[int, ...] | None" = None,
     hung for twenty minutes.
     """
     rows, truncated = scan()
+    # MEASURE BEFORE SLICING. The flag used to compare `limit` against a count
+    # the limit had already capped, so `limit < len(rows)` was never true and a
+    # 3-of-400 pass reported complete coverage — precisely what the comment
+    # below warns about. Found by sabotaging the clause and watching nothing
+    # fail.
+    available = len(rows)
     if limit > 0:
         rows = rows[:limit]
-    total, made, failed = len(rows), 0, 0
+    planned = len(rows)
+    deadline = (time.monotonic() + budget_s) if budget_s and budget_s > 0 else None
+    total, made, failed = 0, 0, 0
     for i, r in enumerate(rows, 1):
+        # OUT OF TIME IS NOT OUT OF WORK. Stop cleanly and say so, so the caller
+        # can run again rather than have its request aborted underneath it.
+        if deadline is not None and time.monotonic() >= deadline:
+            truncated = True
+            break
+        total = i
         rel = r.get("path") or ""
         try:
             n = precompute(rel, widths)
@@ -987,7 +1013,8 @@ def backfill(*, widths: "tuple[int, ...] | None" = None,
     # SCAN_MAX_FILES reads exactly like one that finished, and the frames past
     # the cap stay cold forever while the summary says everything is warm.
     return {"frames": total, "rendered": made, "unrenderable": failed,
-            "truncated": bool(truncated) or (limit > 0 and limit < total)}
+            "truncated": bool(truncated) or total < planned
+                         or planned < available}
 
 
 # ----------------------------------------------------------------------- trash
