@@ -5,6 +5,7 @@
 // vs the previous frame, and a one-line saturation ACTION when the frame clips
 // (every warning carries an action — §12.6). NEVER color alone: word + arrow + text.
 import type { PreviewInfo } from "../../types";
+import { adviceFor, adviceLabel } from "./focusAdvice";
 import { clippedFloor } from "./clippedFloor";
 import { Icon } from "../icons";
 import { defocusMessage, focusState } from "../../lib/focusVerdict";
@@ -127,13 +128,19 @@ export function FocusVerdict({
     );
   }
 
-  if (fewStars) {
+  // SATURATION OUTRANKS FEW-STARS, because it causes it. This branch used to
+  // return before `clipped` was ever read, so a frame railed at full scale —
+  // no stars, no dynamic range — was told to LENGTHEN its exposure. Measured
+  // on the rig 2026-08-19 with the cap on: MIN = MEDIAN = MEAN = MAX = 65535,
+  // 0 stars, "lengthen the exposure" on screen.
+  const advice = adviceFor({ fewStars, clipped });
+  if (advice) {
     return (
       <div className="text-xs flex flex-wrap items-center gap-x-2 gap-y-1" aria-live="polite">
         <span className="text-warn font-medium inline-flex items-center gap-1">
-          <Icon name="alert" size={13} /> Few stars
+          <Icon name="alert" size={13} /> {adviceLabel(advice.kind)}
         </span>
-        <span className="text-dim">— check focus/clouds, or lengthen the exposure</span>
+        <span className="text-dim">— {advice.text}</span>
       </div>
     );
   }
