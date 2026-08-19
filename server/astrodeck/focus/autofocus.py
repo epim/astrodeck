@@ -209,6 +209,15 @@ WING_RISE_FLOOR_PX = 0.5
 #: more than a measurement wobble and far less than an arm turning round.
 WING_DIP_FRAC = 0.25
 
+#: An end point may only be peeled as a donut if the detector was STARVED there
+#: -- fewer than this fraction of the stars behind the best point. Measured
+#: 2026-08-18 on the rig: the turned-back ends carried 14 and 11 stars against
+#: 2539 at focus (0.55%, 0.43%). The reconstructed Oiii curve whose arm genuinely
+#: turns round carries 40 and 44 against 321 (12.5%, 13.7%) and must stay
+#: refused -- a second minimum measured from plenty of stars is a focuser
+#: slipping, and geometry alone cannot tell the two apart.
+STARVED_END_FRAC = 0.05
+
 #: How many times the curve's own roughness the minimum must be deep by.
 #: Roughness is measured as each interior point's distance from the midpoint of
 #: its two neighbours (the tip excluded — the corner of a V is real curvature,
@@ -242,6 +251,54 @@ class CurveVerdict:
     roughness: float = 0.0
 
 
+
+def _peel_turned_ends(rows):
+    """Drop sweep-end points that measure SMALLER than the point inside them.
+
+    Far outside focus a star is not a big blob, it is a large faint DONUT, and
+    the detector sizes the ring smaller than the solid disc further in. So the
+    outermost point of a wing can come back below its neighbour. The wing test
+    reads that as "an arm that turns round", which is the right call about an
+    arm and the wrong call about the end of a sweep.
+
+    Measured on the rig 2026-08-18: a 7-point sweep with a 3.88px minimum from
+    2539 stars, wings to 66.70px, was discarded whole because its outermost
+    point fell back 17.27px. The rig then imaged for an hour at HFR 5.61 with
+    3.05 available.
+
+    Peels from the ENDS ONLY, one point at a time, and ONLY where the detector
+    was star-starved (see STARVED_END_FRAC) -- never past the minimum, and never
+    below MIN_ACCEPT_POINTS. Geometry alone would also excuse a genuine second
+    minimum; the star count is what separates "the detector ran out of range"
+    from "the focuser slipped". A fall-back BETWEEN interior points survives to
+    be judged either way: two minima are not one V.
+
+    Returns ``(rows, peeled)`` with ``rows`` sorted by position as it was given.
+    """
+    peeled = []
+    best_n = max((r[2] for r in rows), default=0.0)
+    starved = best_n * STARVED_END_FRAC
+    while len(rows) > MIN_ACCEPT_POINTS:
+        # Never eat the minimum: if an end IS the smallest point, focus was not
+        # bracketed, and that verdict belongs to the caller, not to this trim.
+        y_min = min(r[1] for r in rows)
+
+        def _peelable(end, inward):
+            return (end[1] < inward[1]          # turned back
+                    and end[1] > y_min          # is not the minimum
+                    and end[2] < starved)       # the detector was starved here
+
+        lo = _peelable(rows[0], rows[1])
+        hi = _peelable(rows[-1], rows[-2])
+        if hi and (not lo or rows[-1][2] <= rows[0][2]):
+            peeled.append(rows.pop())
+        elif lo:
+            peeled.append(rows.pop(0))
+        else:
+            break
+    return rows, peeled
+
+
 def curve_verdict(points, counts=None) -> CurveVerdict:
     """Judge a measured V-curve on its own shape. PURE — see the block above.
 
@@ -253,6 +310,7 @@ def curve_verdict(points, counts=None) -> CurveVerdict:
     counts += [0] * max(0, len(points) - len(counts))
     rows = sorted((float(p), float(h), float(n))
                   for (p, h), n in zip(points, counts))
+    rows, peeled = _peel_turned_ends(rows)
     n_pts = len(rows)
     if n_pts < MIN_ACCEPT_POINTS:
         return CurveVerdict(False, None,
@@ -335,12 +393,17 @@ def curve_verdict(points, counts=None) -> CurveVerdict:
             f"outside the {int(xl.min())}..{int(xl.max())} points it was fitted "
             f"to", depth, roughness)
 
+    trimmed = (f" (the outer {len(peeled)} point"
+               f"{'' if len(peeled) == 1 else 's'} turned back below "
+               f"{'its' if len(peeled) == 1 else 'their'} neighbour and "
+               f"{'was' if len(peeled) == 1 else 'were'} peeled — past the "
+               f"range the detector can size a donut)") if peeled else ""
     return CurveVerdict(
         True, vertex,
         f"a {depth:.2f}px-deep minimum at {int(round(vertex))}, "
         f"{depth / roughness:.0f}x the {roughness:.2f}px scatter between "
         f"neighbouring points, bracketed by wings rising to {float(ys[0]):.2f}px "
-        f"and {float(ys[-1]):.2f}px, measured from {int(ns[i])} stars"
+        f"and {float(ys[-1]):.2f}px, measured from {int(ns[i])} stars" + trimmed
         if roughness > 0 else
         f"a {depth:.2f}px-deep minimum at {int(round(vertex))} on a curve with "
         f"no scatter between neighbouring points, bracketed by wings rising to "
