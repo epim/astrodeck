@@ -33,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import random
+import time
 from typing import Any, Awaitable, Callable, Iterable
 from urllib.parse import parse_qsl, urlencode, urlsplit
 
@@ -74,6 +75,12 @@ _STRIPPED_QUERY_PARAMS = frozenset({"token"})
 # thundering-herd reconnect if many homes share a relay restart.
 _BACKOFF_BASE_S = 0.5
 _BACKOFF_CAP_S = 15.0
+# A session that stayed up this long is evidence the relay is HEALTHY, so the
+# drop that ends it must not inherit the outage backoff. Deliberately above the
+# ~50s a keepalive-timeout session costs (20s ping_interval + 20s ping_timeout +
+# 10s close_timeout), so a relay that wedges just after accepting still earns the
+# ceiling instead of being redialled at full speed forever.
+_HEALTHY_SESSION_S = 120.0
 # Clamp the exponent so ``2 ** attempt`` can never overflow float on a long
 # outage (attempt keeps climbing until a clean session). 40 already puts the
 # raw term at ~5e11 s, so the cap fully dominates; the clamp is purely an
@@ -306,6 +313,7 @@ class RelayClient:
                 # launches us when enabled, but re-check defensively for a live
                 # config edit toggling us off).
                 return
+            started = time.monotonic()
             try:
                 self._generation += 1
                 await self._serve_once(cfg)
@@ -313,8 +321,23 @@ class RelayClient:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - degrade to local-only, never crash
+                held = time.monotonic() - started
+                # A DROP IS NOT A CLEAN RETURN, and for the whole life of this
+                # loop that was the only thing that reset `attempt`. So the first
+                # failure of a process poisoned every redial after it: from
+                # attempt>=5 the ceiling pins at _BACKOFF_CAP_S and each dial
+                # drew uniform(0, 15s). Measured on the rig 2026-08-18 -- a
+                # session healthy for 3h19m dropped and the rig stayed
+                # local-only for 12s before trying again.
+                if held >= _HEALTHY_SESSION_S:
+                    attempt = 0
+                # `held` is the DIAL duration when the failure happened inside
+                # _connect (the first statement of _serve_once) and the SESSION
+                # lifetime otherwise -- which of the two failure classes this was
+                # is readable straight off the log line.
                 bus.log("warning",
-                        f"relay connection lost ({type(exc).__name__}: {exc}); "
+                        f"relay connection lost gen={self._generation} after "
+                        f"{held:.1f}s ({type(exc).__name__}: {exc}); "
                         f"retrying local-only", "remote")
             if self._stop.is_set():
                 break
