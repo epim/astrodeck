@@ -60,6 +60,58 @@ persisted `cooling.setpoint_c = -10.0`, which every future run now inherits.
    graph can express the temperature it wants, instead of silently depending on
    a rig-level field the canvas never mentions.
 
+## Autofocus moves to a position its own confirming frame says is worse
+
+Asked to check whether autofocus was as tight as it could be. It is not, and the
+sweeps' own data says so. Every sweep takes a confirming exposure at the fitted
+vertex. In all three sweeps tonight that frame came back WORSE than a sample the
+sweep already had, and it moved there anyway:
+
+| sweep | best sample | moved to (fit) | confirm frame there | logged as |
+|-------|-------------|----------------|---------------------|-----------|
+| 22:58 | 11177 -> 3.05 | 11167 (-10) | **3.78** (+24%) | "HFR 2.94" |
+| 23:18 | 11169 -> 3.24 | 11188 (+19) | **3.43** (+6%)  | "HFR 2.92" |
+| 23:39 | 11188 -> 3.01 | 11179 (-9)  | **3.90** (+30%) | "HFR 2.95" |
+
+Three for three. Seeing noise would land better about half the time.
+
+It reaches the subs. Same six filters, two different bases, from the frame
+ledger:
+
+    base 11167 (22:58 sweep):  R 3.31  G 3.54  B 3.58  S 3.17  Ha 3.18  Oiii 3.64
+    base 11186 (23:18 sweep):  R 2.88  G 2.91  B 2.94  S 2.64  Ha 2.66  Oiii 3.21
+
+Every filter 10-20% better. ~15 minutes of the run was spent at the worse base.
+At this train's slope (0.0774 px/step) 20 steps off focus costs ~13% HFR, which
+is exactly the size of the effect.
+
+**The reported number is the model, not a measurement.** `native autofocus
+complete: position 11167, HFR 2.94 (hyperbolic)` is the fit's y0. The next
+exposure at that position measured 3.78. Same class as everything in
+`broken-promises-bug-class`.
+
+**Why the fit wanders.** With OUTER_SIZE_FACTOR 8 and 4 points a side, the
+innermost samples sit at +-70 steps where HFR is already 2.1x the minimum.
+Nothing is sampled between 1.0x and 2.1x, so the vertex is always extrapolated
+from the arms, and the three sweeps' arms disagree by more than the fit's
+precision. I could not reproduce the observed 21-step spread with a noise model
+(photon noise gives 1 step, symmetric seeing jitter 3 even at absurd amplitude),
+so I am NOT recommending "more sample points" — that would be a guess.
+
+**Three fixes, in order of confidence:**
+
+1. **Never move to a fitted position that measures worse than a sample already
+   in hand.** The confirming exposure is already taken; it just is not used.
+   Would have caught all three tonight. No extra exposures.
+2. **Log the measured HFR, not the model's y0** — or both. A number nothing
+   observed should not be the line the operator reads.
+3. **Apply the starvation-gated peel to the FITTER, not just the acceptance
+   judge.** Sweep C carried a turned-back outermost point (15.59 below its
+   neighbour's 16.32); on an unweighted fit that one point moves the vertex 22
+   steps. The production fit is weighted 1/error^2 so the real shift is
+   unmeasured — but it is the same defect class as the one already fixed, in the
+   path that runs every time instead of only on salvage.
+
 ## Open — not yet fixed
 
 - **`preview_crop` calls itself "sensor-1:1" but crops the PREVIEW array.**
