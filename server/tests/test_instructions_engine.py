@@ -372,3 +372,88 @@ async def test_autofocus_reports_whether_it_actually_found_focus(sim_hub,
     assert await eng._autofocus("test") is False, (
         "a sweep that could not find focus reported success — the instruction "
         "dispatcher believes this, so the rule would never be re-armed")
+
+
+async def test_a_SUCCESSFUL_refocus_clears_the_failure_budget(sim_hub, temp_store,
+                                                              monkeypatch):
+    """MAX_REARM_AFTER_FAILURE is meant to bound CONSECUTIVE failures.
+
+    `_rule_failures` was incremented on every failure and cleared only at
+    `start()`, so it counted failures per NIGHT. Two sweeps beaten by passing
+    cloud early on, then a success, then one failure at 02:00 and the rule was
+    retired for the rest of the session — the pre-fix behaviour, and exactly the
+    incident the fix was written for. Its own docstring said "Cleared when the
+    action works"; it was not.
+
+    The script has to let HFR DROP after the success, or the level trigger never
+    re-arms and there is nothing left to spend the budget on:
+
+        frame 1,2  HFR 9.9  fires, sweep FAILS  (budget 1, 2)
+        frame 3    HFR 9.9  fires, sweep WORKS  (budget must reset to 0)
+        frame 4    HFR 2.0  drops -> the rule re-arms naturally
+        frame 5+   HFR 9.9  fires again, fails  -> must get its retries back
+
+    With the reset: sweeps at frames 1,2,3,5,6,7 = 6. Without it the budget is
+    already at 2, so frame 5 is the third failure and it gives up = 4.
+    """
+    eng = SequenceEngine(sim_hub)
+    hfr_script = [9.9, 9.9, 9.9, 2.0, 9.9, 9.9, 9.9, 9.9, 9.9, 9.9]
+    af_results = [False, False, True, False, False, False, False, False]
+    frames, af = {"n": 0}, []
+
+    async def scripted_capture(*a, **k):
+        i = min(frames["n"], len(hfr_script) - 1)
+        frames["n"] += 1
+        return {"hfr": hfr_script[i], "stats": {"median": 100}, "saved_path": None}
+
+    async def scripted_af(label):
+        ok = af_results[min(len(af), len(af_results) - 1)]
+        af.append(ok)
+        return ok
+
+    monkeypatch.setattr(eng, "_capture", scripted_capture)
+    monkeypatch.setattr(eng, "_autofocus", scripted_af)
+    plan = _tiny_plan(instructions=[Instruction(
+        trigger="on_hfr_above", threshold=3.0, action="refocus")])
+    plan.targets[0].steps[0].count = 10
+    eng.start(plan)
+    await _wait_done(eng)
+    assert len(af) >= 6, (
+        f"ran {len(af)} sweeps ({af}) — a SUCCESS between the failures must reset "
+        "the budget, or it counts failures per night and the rule is spent")
+
+
+async def test_skip_on_autofocus_failure_actually_skips_the_target(sim_hub, temp_store,
+                                                                   monkeypatch):
+    """`escalation.af_failure_action = "skip"` is a supported setting whose whole
+    purpose is to stop shooting a target out of focus.
+
+    `_autofocus` raises StopTarget for it, StopTarget subclasses plain Exception,
+    and `_dispatch_actions` re-raises only SafetyAbort — so `except Exception`
+    ate it. The target kept shooting, the skip never happened, and the re-arm
+    never ran either, making the whole fix inert on this configuration.
+    """
+    import astrodeck.sequence.engine as eng_mod
+    from astrodeck.focus.autofocus import AutofocusResult
+
+    eng = SequenceEngine(sim_hub)
+    cfg = sim_hub.config_store.cfg() if hasattr(sim_hub, "config_store") else None
+    import astrodeck.config as config_mod
+    monkeypatch.setattr(config_mod.config_store.cfg().escalation,
+                        "af_failure_action", "skip")
+
+    async def failing_run_autofocus(*a, **k):
+        return AutofocusResult(False, 11193, None, [], "could not measure")
+
+    monkeypatch.setattr(eng_mod, "run_autofocus", failing_run_autofocus)
+    monkeypatch.setattr(eng, "_capture",
+                        _returns({"hfr": 9.9, "stats": {"median": 100}, "saved_path": None}))
+    plan = _tiny_plan(instructions=[Instruction(
+        trigger="on_hfr_above", threshold=3.0, action="refocus")])
+    plan.targets[0].steps[0].count = 6
+    eng.start(plan)
+    await _wait_done(eng)
+    done = eng.state.get("progress", {}).get("frames_done", 0)
+    assert done < 6, (
+        f"captured {done}/6 frames with af_failure_action='skip' and a failing "
+        "sweep — the StopTarget was swallowed and the target was never skipped")
