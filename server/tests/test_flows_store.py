@@ -197,3 +197,69 @@ class TestAFlowCannotClaimARunItNeverHad:
         for rec in FlowStore().load_all():
             if rec.last_run is None:
                 assert rec.last_result == "", rec.name
+
+
+class TestRotationZeroMeantAnyAngle:
+    """A SEMANTICS FLIP WITH NO MIGRATION SILENTLY REPOINTS THE ROTATOR.
+
+    Until 0.2.93 a target's ``rotation: 0`` meant "no angle constraint" -- it was
+    the value a blank field compiled to. From 0.2.93 negative means unconstrained
+    and 0 IS a position angle, which is what an operator framing a target at
+    north-up actually needs.
+
+    Nothing distinguishes the two readings inside a stored flow, so every flow
+    written under the old rule -- including four of the shipped Examples -- would
+    start commanding the rotator to PA 0 on its next run. On this rig that is a
+    real ~346 degree slew of a physical rotator that the flow never asked for.
+
+    The on-disk schema_version is what separates them: a file written at v1
+    CANNOT have meant PA 0, so it migrates to -1. A file written at v2 means
+    exactly what it says.
+    """
+
+    def _write(self, store, schema_version: int, rotation):
+        import json
+        from astrodeck.persist import ensure_dir
+        ensure_dir(store.dir)
+        (store.dir / "f1.json").write_text(json.dumps({
+            "schema_version": schema_version,
+            "id": "f1",
+            "flow": {
+                "id": "f1", "name": "old flow",
+                "graph": {"nodes": [{
+                    "id": "t", "type": "target",
+                    "params": {"name": "NGC 7129", "ra": "21h 42m 30s",
+                               "dec": "+66° 06′ 00″", "rotation": rotation},
+                }]},
+            },
+        }), encoding="utf-8")
+
+    def _rotation_of(self, store):
+        rec = store.get("f1")
+        return rec.graph.nodes[0].params.get("rotation")
+
+    def test_a_v1_flow_that_said_zero_meant_any_angle(self, store):
+        self._write(store, 1, 0)
+        assert self._rotation_of(store) == -1, (
+            "a flow saved when 0 meant 'any angle' must not start commanding "
+            "the rotator to PA 0")
+
+    def test_a_v1_flow_with_a_real_angle_is_left_alone(self, store):
+        self._write(store, 1, 23.4)
+        assert self._rotation_of(store) == 23.4
+
+    def test_a_v2_flow_that_says_zero_means_zero(self, store):
+        self._write(store, 2, 0)
+        assert self._rotation_of(store) == 0, (
+            "0 is a position angle now — north-up framing is a thing an "
+            "operator asks for on purpose")
+
+    def test_no_shipped_example_commands_pa_zero(self):
+        """The Examples were authored under the old rule, so their zeros meant
+        'any angle'. They are code, not disk, so no migration reaches them."""
+        offenders = [
+            (e.id, n.id) for e in examples() for n in e.graph.nodes
+            if n.params.get("rotation") == 0
+        ]
+        assert offenders == [], (
+            f"these examples would slew the rotator to PA 0: {offenders}")
