@@ -360,3 +360,103 @@ def test_the_threshold_is_what_separates_them():
                                   9423, "a longer exposure")
     assert "narrowband" in just_under.lower(), just_under
     assert "narrowband" not in just_over.lower(), just_over
+
+
+# ---------------------------------------------------------------- the donut end
+
+# MEASURED ON THE RIG, NGC 7129, 2026-08-18 21:27. A sweep at the shipped 350
+# step, whose outer points sit 1400 steps from focus where the model predicts a
+# 105px blob. Both ends turned back -- far outside focus a star is a large faint
+# donut, and the detector sizes the ring SMALLER than the solid blob further in.
+# The right end's 17.27px fall-back tripped the wing test, the whole sweep was
+# discarded, and the rig imaged the next hour at HFR 5.61 against an achievable
+# 3.05.
+RIG_7129 = [(10100, 55.85), (10450, 66.70), (10800, 32.28), (11150, 3.88),
+            (11500, 24.65), (11850, 56.75), (12200, 39.48)]
+RIG_7129_STARS = [14, 25, 32, 2539, 36, 20, 11]
+
+
+def test_a_sweep_whose_ends_turned_back_is_still_a_v():
+    """The outermost point of a wing measuring SMALLER than the point inside it
+    is a fact about the end of the sweep, not about the focus. Peel it and judge
+    what is left."""
+    v = curve_verdict(RIG_7129, RIG_7129_STARS)
+    assert v.accepted, f"rejected the rig's own V-curve: {v.reason}"
+    assert v.best_position is not None
+    assert 11100 < v.best_position < 11250, (
+        f"vertex at {v.best_position}; the measured minimum was 11150 from 2539 "
+        "stars and the sweep that followed put focus at 11193")
+
+
+def test_the_trim_is_named_in_the_reason():
+    """An operator reading the log must see that points were dropped, or a
+    5-point verdict on a 7-point sweep is unexplainable."""
+    v = curve_verdict(RIG_7129, RIG_7129_STARS)
+    assert "turn" in v.reason.lower() or "peel" in v.reason.lower() \
+        or "outer" in v.reason.lower() or "trim" in v.reason.lower(), v.reason
+
+
+def test_a_wing_that_turns_over_in_its_MIDDLE_is_still_rejected():
+    """Only the ENDS get peeled. A fall-back between two interior points is
+    scatter or a double star, and it still means the curve is not one V."""
+    pts = [(1000, 20.0), (1100, 5.0), (1200, 12.0), (1300, 2.0), (1400, 14.0),
+           (1500, 18.0), (1600, 22.0)]
+    v = curve_verdict(pts, [50] * 7)
+    assert not v.accepted, f"accepted a curve with two minima: {v.reason}"
+
+
+def test_peeling_never_eats_the_minimum():
+    """A monotonically falling curve has its smallest value AT an end -- focus
+    was never bracketed. Peeling must not manufacture a bracket by eating the
+    curve down to a fake interior minimum."""
+    pts = [(1000 + 100 * k, 40.0 - 4.0 * k) for k in range(8)]
+    v = curve_verdict(pts, [50] * 8)
+    assert not v.accepted, f"accepted an unbracketed ramp: {v.reason}"
+    assert "bracket" in v.reason.lower() or "end" in v.reason.lower(), v.reason
+
+
+def test_a_clean_curve_is_not_trimmed():
+    """Peeling is for turned-back ends only; a well-formed V keeps every point."""
+    pts = [(1000, 30.0), (1100, 18.0), (1200, 8.0), (1300, 2.0), (1400, 9.0),
+           (1500, 19.0), (1600, 31.0)]
+    v = curve_verdict(pts, [200] * 7)
+    assert v.accepted, v.reason
+    assert "31.00" in v.reason, (
+        "the reason should still quote the true outer wing, so an untrimmed "
+        f"curve reads as untrimmed: {v.reason}")
+
+
+def test_a_turned_end_measured_from_PLENTY_of_stars_is_not_a_donut():
+    """The whole peel rests on star starvation. Same geometry as the rig curve,
+    but the ends carry a healthy share of the tip's stars — so the turnaround is
+    a real second minimum (a slipping focuser), not the detector running out of
+    range, and it must still be refused."""
+    healthy = [800, 25, 32, 2539, 36, 20, 700]      # ends at ~30% of the tip
+    v = curve_verdict(RIG_7129, healthy)
+    assert not v.accepted, (
+        "peeled an end the detector had no trouble measuring — geometry alone "
+        f"cannot excuse a turnaround: {v.reason}")
+    assert "falls back" in v.reason, v.reason
+
+
+def test_a_starved_end_that_IS_the_minimum_is_never_peeled():
+    """Every condition for a peel except the one that matters.
+
+    The last point is star-starved AND turned back AND the smallest thing
+    measured — which means focus is outside the swept range, not that the
+    detector gave up. Peeling it would MANUFACTURE a bracket: the point inward
+    becomes an interior low and what is really an unbracketed sweep gets
+    reported as a focus position at the wrong place.
+
+    A plain ramp cannot show this (peel a monotonic curve and the minimum is
+    still at the end), so the shape here is one where the second-from-last point
+    is high enough to become a fake wing.
+    """
+    ys = [50.0, 40.0, 32.0, 20.0, 45.0, 3.0]
+    pts = [(1000 + 100 * k, y) for k, y in enumerate(ys)]
+    starved_at_the_low_end = [900, 900, 900, 900, 900, 4]
+    v = curve_verdict(pts, starved_at_the_low_end)
+    assert not v.accepted, (
+        "peeled the smallest point off the end and called what was left a V — "
+        f"focus is below 1000 here, not at 1300: {v.reason}")
+    assert "bracket" in v.reason.lower(), v.reason

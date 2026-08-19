@@ -146,7 +146,20 @@ def test_the_floor_changes_WHY_the_run_fails():
     assert "too shallow" in before.reason, before.reason
     assert "0.50px minimum" in before.reason, (
         "the noise peak should be what the fitter calls the minimum")
-    assert "turns round" in after.reason, after.reason
+    # It used to be refused for "an arm that turns round". Since 2026-08-18 the
+    # judge PEELS a star-starved end that turns back (STARVED_END_FRAC) -- the
+    # decision `test_the_wings_under_measure_and_that_is_the_next_defect` calls
+    # for, made for END points only. Here that removes 5.52/10 stars and
+    # 10.40/13 stars, and what is left is refused for the truer reason: this
+    # curve's own scatter (30.43px, driven by the 14.12 sitting between 27.38
+    # and 84.89) is larger than the 24.10px the minimum is deep. Still refused,
+    # which is the property that matters; the sweep still over-ran its range.
+    assert "scatter" in after.reason, after.reason
+    assert after.depth is not None and after.roughness is not None
+    assert after.depth < after.roughness, (
+        f"depth {after.depth} vs roughness {after.roughness} — if this curve "
+        "ever becomes clean enough to accept, the sweep span is the thing that "
+        "changed and this test should be re-derived")
 
 
 def test_the_wings_under_measure_and_that_is_the_next_defect():
