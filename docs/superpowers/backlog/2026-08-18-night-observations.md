@@ -155,6 +155,58 @@ a solve against the mount's claimed position costs nothing and turns this from
 invisible into a warning. The code that logged "moved 3.67 deg" is the exact
 place to raise it.
 
+## THE NIGHT ENDED AT 00:54 AND NOTHING NOTICED FOR AN HOUR
+
+The single worst failure of the session, and every layer that should have caught
+it was switched off or looking elsewhere.
+
+    00:49  meridian due; the engine DECLINES the flip (decided at run start:
+           "at dec +66.1 the target's lowest point is 13 deg above the horizon,
+           so the tube never swings down towards the ground")
+    00:54  the AM5 hits its OWN meridian limit and stops tracking
+    00:54  guide RMS 1.34 -> 29 -> 80 -> 151 -> ... -> 4085
+    01:43  dither fails on every frame: "settle timed out"
+    01:49  "native guider lost the guide star (reacquire 1/8)"
+    01:56  still saving frames, rejected=0
+
+**21 frames** (00:54-01:56, three of every filter) are 60s exposures on a
+stationary mount. All accepted. The run would have gone on to dawn.
+
+Why nothing stopped it:
+
+- The engine's "no flip needed" reasoning is about the TUBE hitting the ground.
+  The mount has its own meridian limit and enforces it regardless. Those are two
+  different questions and only one is being asked.
+- `standards.max_guide_rms` is 0.0 and `escalation.require_guiding` is false, so
+  a guider reporting **RMS 4085** rejects nothing. Guiding failure is a `warn`.
+- The dither failed on every single frame for 13 minutes and the sequence
+  treated each one as an isolated hiccup. Nothing counts consecutive failures.
+- Nothing compares "mount says it is tracking" against "the guide star is
+  moving". The two facts were both present and never met.
+
+Recovery was blocked too: `POST /api/mount/tracking?on=true` returns
+`ZWO AM5 (native serial): tracking on rejected (reply '0')` while pinned at the
+limit, and restarting the flow fails instantly because the engine enables
+tracking BEFORE slewing — so the one action that would clear the limit sits
+behind the one that cannot succeed. **A run cannot recover from this state on
+its own.**
+
+Ended manually 02:15: parked (which cleared the limit) and started the warm
+ramp. Note that with no run active nothing would have parked it — see
+`astrodeck-no-dawn-park`. The rig would have sat unparked with the cooler at
+-10 C through sunrise.
+
+**Fixes worth arguing about:**
+
+1. A guider whose RMS is orders of magnitude off, or which has lost its star,
+   should stop the run — not annotate it. `max_guide_rms` defaulting to 0/off
+   means the strongest available signal that a night has died is discarded.
+2. Consecutive dither-settle failures should escalate. One is a hiccup; fifteen
+   is the night being over.
+3. The flip decision must ask the mount's limit, not only the tube geometry.
+4. `_run` should slew before it enables tracking, or fall back to slewing when
+   tracking is refused — otherwise no run can ever recover from a limit stop.
+
 ## Open — not yet fixed
 
 - **`preview_crop` calls itself "sensor-1:1" but crops the PREVIEW array.**
@@ -190,3 +242,11 @@ place to raise it.
   against ~16 C ambient. Deeper setpoints are clearly available.
 - Frames tonight by sensor temperature: **35 at ambient ~20 C**, 2 mid-cooldown,
   the rest at -10 C. They need separate darks; do not stack them together.
+
+## Tonight's yield
+
+    usable (tracked)   64 frames   L10 R10 G10 B10 S10 Ha7 Oiii7
+       of which cooled to -10C: 27      at ambient ~20C: 37
+    trailed (untracked) 21 frames  00:54-01:56, three of every filter — DISCARD
+
+Three temperature groups need separate darks: ~20C, the 2-frame cooldown, -10C.
