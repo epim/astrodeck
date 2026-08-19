@@ -263,3 +263,80 @@ async def test_the_rate_limiter_buckets_are_pruned():
     assert pruned["n"] >= 2, (
         "the housekeeping loop never pruned either limiter — the IP-keyed "
         "buckets grow unbounded")
+
+
+async def _home_that_stops_mid_body(relay_port: int, ready: asyncio.Event,
+                                    stop: asyncio.Event) -> None:
+    """Answers with a head promising 40 bytes, sends 10, then goes silent."""
+    url = f"ws://127.0.0.1:{relay_port}/scope"
+    async with websockets.connect(url, max_size=2 * 1024 * 1024) as ws:
+        await ws.send(protocol.hello(DEVICE_TOKEN, HOME_ID, generation=1).encode())
+        assert protocol.decode(await ws.recv()).header["ok"] is True
+        ready.set()
+        while not stop.is_set():
+            try:
+                raw = await asyncio.wait_for(ws.recv(), timeout=0.5)
+            except asyncio.TimeoutError:
+                continue
+            frame = protocol.decode(raw)
+            if frame.type == protocol.FrameType.PING:
+                await ws.send(protocol.pong(0.0).encode())
+            elif frame.type == protocol.FrameType.REQ_OPEN:
+                sid = frame.stream_id
+                await ws.send(protocol.resp_head(
+                    sid, 200, [["content-length", "40"]]).encode())
+                await ws.send(protocol.resp_data(sid, b"A" * 10, eof=False).encode())
+                # ...and then nothing. Ever.
+
+
+@pytest.mark.asyncio
+async def test_a_body_that_stops_half_way_is_a_FAILED_transfer_not_a_short_one():
+    """A TRUNCATED FILE MUST NOT LOOK COMPLETE.
+
+    The body timeout originally `return`ed, which ends a StreamingResponse
+    cleanly — the client got a well-formed chunked 200 carrying 10 of the
+    promised 40 bytes and raised nothing. A gallery FITS would be saved short and
+    a JSON body parsed half, silently. Measured at the wire on 2026-08-19.
+
+    Hanging forever (the behaviour before the timeout existed) was bad; handing
+    back a plausible-looking wrong file is worse.
+    """
+    relay_port = _free_port()
+    cfg = RelayConfig(bind_host="127.0.0.1", bind_port=relay_port,
+                      origin="relay.test", ping_interval_s=0.2,
+                      upstream_timeout_s=1.0)
+    app = create_app(cfg)
+    app.state.relay.registry.provision(DEVICE_TOKEN, HOME_ID)
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1",
+                                           port=relay_port, log_level="critical"))
+    server_task = asyncio.ensure_future(server.serve())
+    for _ in range(100):
+        if server.started:
+            break
+        await asyncio.sleep(0.05)
+    assert server.started
+
+    ready, stop = asyncio.Event(), asyncio.Event()
+    home_task = asyncio.ensure_future(_home_that_stops_mid_body(relay_port, ready, stop))
+    try:
+        await asyncio.wait_for(ready.wait(), timeout=5)
+        failed = False
+        async with httpx.AsyncClient() as client:
+            try:
+                r = await client.get(
+                    f"http://127.0.0.1:{relay_port}/h/{HOME_ID}/api/big", timeout=10)
+                body = r.content
+            except Exception:
+                failed = True          # a broken transfer — the correct outcome
+                body = b""
+        assert failed or len(body) >= 40, (
+            f"got a clean {len(body)}-byte response for a 40-byte body — a "
+            "truncated download that looks complete")
+    finally:
+        stop.set()
+        home_task.cancel()
+        server.should_exit = True
+        for t in (server_task, home_task):
+            with contextlib.suppress(BaseException):
+                await asyncio.wait_for(asyncio.shield(t), timeout=5)
+            t.cancel()
