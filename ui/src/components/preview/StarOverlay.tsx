@@ -17,6 +17,7 @@
 import { useEffect, useMemo } from "react";
 import type { StarMark } from "../../types";
 import { ellipseGeom } from "../../lib/starEllipse";
+import { markerRadius } from "./starOverlayGeometry";
 
 interface Props {
   stars: StarMark[];
@@ -71,7 +72,8 @@ export function StarOverlay({
       {shown.map((s) => {
         const cx = s.x * displayScale;
         const cy = s.y * displayScale;
-        const r = Math.max(s.hfr * displayScale * 1.6, 4);
+        // Outside the star's visible disc, never on it — see starOverlayGeometry.
+        const r = markerRadius(s.hfr, displayScale);
         const q = quality(s.hfr, hfrGood, hfrWarn);
         const color = q === "good" ? "var(--good)" : q === "warn" ? "var(--warn)" : "var(--bad)";
         const sw = q === "good" ? 1 : q === "warn" ? 1.6 : 1.6;
