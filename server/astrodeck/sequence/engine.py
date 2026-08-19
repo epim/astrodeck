@@ -4482,6 +4482,13 @@ class SequenceEngine:
                         self._frame_had_event = True
                         if ok is False:
                             self._rearm_failed_rule(fa)
+                        else:
+                            # CONSECUTIVE, not lifetime. Without this the budget
+                            # counted every failure of the night, so two sweeps
+                            # beaten by early cloud plus one at 02:00 retired the
+                            # rule — the pre-fix behaviour, and the incident this
+                            # was written for.
+                            self._rule_failures.pop(fa.instruction_id, None)
                 elif fa.action == "dither":
                     if self.hub.guider and self.hub.guider.connected:
                         await _bounded(self.hub.guider.dither(self._policy.dither_pixels),
@@ -4489,6 +4496,13 @@ class SequenceEngine:
                         self._frames_since_dither = 0
                         self._frame_had_event = True
             except SafetyAbort:
+                raise
+            except (StopTarget, JumpTarget):
+                # NOT a hiccup — the configured escalation. `af_failure_action`
+                # of "skip" reaches us as StopTarget out of `_autofocus`, and
+                # StopTarget subclasses plain Exception, so the handler below
+                # ate it: the target was never skipped and kept shooting out of
+                # focus, which is the one thing that setting exists to prevent.
                 raise
             except Exception as e:
                 bus.log("warning", f"instruction action '{fa.action}' failed: {e}",
