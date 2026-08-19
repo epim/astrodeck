@@ -120,6 +120,12 @@ RECONNECT_BACKOFF_S = 5.0       # between reconnect_resume attempts on one role
 # warning and the scheduler degrades to normal ordering. Degrade-and-warn, never
 # abort — finishing the plan beats killing a real imaging night over a rule typo.
 MAX_JUMPS = 64
+
+#: How many times a level-triggered rule may be re-armed after its action FAILED
+#: before it is left disarmed. 3 is two retries past the first attempt: enough to
+#: ride out a sweep beaten by a passing cloud, few enough that a focuser which
+#: cannot focus does not spend the night sweeping.
+MAX_REARM_AFTER_FAILURE = 3
 # --- meridian-flip trigger (server HA countdown) ---------------------------
 # Slack added to the next exposure when deciding "would this frame cross the flip
 # point?": we never START an exposure that cannot finish (plus download/settle
@@ -291,6 +297,9 @@ class SequenceEngine:
         self._frames_since_focus = 0
         self._last_focus_temp: float | None = None
         self._recent_hfr: list[float] = []
+        #: instruction id -> consecutive failed fires (see
+        #: `_rearm_failed_rule`). Cleared when the action works.
+        self._rule_failures: dict[str, int] = {}
         self._rejected = 0
         self._night_rejects = 0   # per-night consecutive-reject counter (spec §3)
         # one-shot latch for the "guide RMS gate can't be judged in arcsec" notice
@@ -491,6 +500,7 @@ class SequenceEngine:
         self._frames_since_focus = 0
         self._last_focus_temp = None
         self._recent_hfr = []
+        self._rule_failures = {}
         self._rejected = 0
         self._night_rejects = 0
         self._rms_unit_warned = False
@@ -4468,8 +4478,10 @@ class SequenceEngine:
                         fa.message or "clouds", target)
                 elif fa.action == "refocus":
                     if "focuser" in self.hub.devices:
-                        await self._autofocus("triggered refocus")
+                        ok = await self._autofocus("triggered refocus")
                         self._frame_had_event = True
+                        if ok is False:
+                            self._rearm_failed_rule(fa)
                 elif fa.action == "dither":
                     if self.hub.guider and self.hub.guider.connected:
                         await _bounded(self.hub.guider.dither(self._policy.dither_pixels),
@@ -4481,6 +4493,36 @@ class SequenceEngine:
             except Exception as e:
                 bus.log("warning", f"instruction action '{fa.action}' failed: {e}",
                         "sequence")
+
+    def _rearm_failed_rule(self, fa) -> None:
+        """Put a level-triggered rule back on the rising edge after its action
+        FAILED to address the condition.
+
+        `evaluate_instructions` disarms a level rule the moment it fires and
+        re-arms it only when the metric drops back through the threshold. That
+        is exactly right when the action worked. When it did not — a sweep that
+        cannot find focus — HFR stays above the threshold, so the rule can never
+        re-arm and one failure retires it for the night. Measured on the rig
+        2026-08-18: fired once at 21:22, failed at 21:27, silent until dawn
+        while every frame was soft.
+
+        BOUNDED. A focuser that will never find focus would otherwise run a full
+        sweep between every frame for the rest of the session. After
+        MAX_REARM_AFTER_FAILURE consecutive failures the rule stays disarmed and
+        says so — the condition still has to clear to bring it back.
+        """
+        rec = self._fire_state.get(fa.instruction_id)
+        if rec is None:
+            return
+        n = self._rule_failures.get(fa.instruction_id, 0) + 1
+        self._rule_failures[fa.instruction_id] = n
+        if n >= MAX_REARM_AFTER_FAILURE:
+            bus.log("warning",
+                    f"instruction '{fa.action}' has failed {n} times in a row; "
+                    f"leaving the rule disarmed until the condition clears "
+                    f"rather than retrying it between every frame", "sequence")
+            return
+        rec.armed = True
 
     def _guide_rms(self) -> float | None:
         """Current total guide RMS in ARCSEC, or None when unguided/unreadable
@@ -4665,7 +4707,13 @@ class SequenceEngine:
             return base_exp, base_gain
         return exposure_s, gain
 
-    async def _autofocus(self, label: str) -> None:
+    async def _autofocus(self, label: str) -> bool:
+        """Run one autofocus. Returns True if it found focus.
+
+        The return exists for the instruction dispatcher: an edge-triggered rule
+        has to know whether its action actually addressed the condition, or a
+        failed sweep silently retires the rule (see `_dispatch_actions`).
+        """
         self._set_state(detail=label)
         _t0 = time.time()
         failed_reason: str | None = None
@@ -4706,6 +4754,7 @@ class SequenceEngine:
                 raise SafetyAbort(f"autofocus failed: {failed_reason}")
             if action == "skip":
                 raise StopTarget(f"autofocus failed: {failed_reason}")
+        return failed_reason is None
 
     async def _panel_off_safe(self) -> None:
         """Best-effort flat-panel-off (PRO-5): an aborted/failed run must NEVER
