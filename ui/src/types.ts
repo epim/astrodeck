@@ -391,7 +391,12 @@ export interface BahtinovInfo {
 
 export interface PreviewInfo {
   id: number;
-  stats: { min: number; max: number; mean: number; median: number; std: number };
+  stats: {
+    min: number; max: number; mean: number; median: number; std: number;
+    /** Railed pixels. ABSENT when the camera does not report a well depth —
+     *  absent means "could not measure", 0 means "measured, none". */
+    clipped?: number;
+  };
   histogram: number[]; // DISPLAY-domain bins (see histogram_domain)
   histogram_linear?: number[]; // linear bins, present only when data_is_linear
   histogram_domain: "display" | "linear";

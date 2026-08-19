@@ -233,11 +233,23 @@ def to_thumb(data_or_img, *, max_width: int = 160, quality: int = 70) -> bytes:
     return _encode(img, max_width=max_width, fmt="JPEG", quality=quality)[0]
 
 
-def frame_stats(data: np.ndarray) -> dict:
-    return {
+def frame_stats(data: np.ndarray, full_well: int | None = None) -> dict:
+    """Summary statistics for one frame.
+
+    ``full_well`` adds a ``clipped`` COUNT of railed pixels. ``max`` alone
+    cannot distinguish one saturated star core from a blown field, and every
+    deep-sky sub rails something: a 60s B sub of NGC 7129 measured 169 clipped
+    pixels out of 26,108,352 on 2026-08-18 while `max >= full_well` read the
+    same as a ruined frame. Omitted entirely when the well depth is unknown --
+    absent means "could not measure", 0 means "measured, none".
+    """
+    out = {
         "min": int(data.min()),
         "max": int(data.max()),
         "mean": round(float(data.mean()), 1),
         "median": int(np.median(data)),
         "std": round(float(data.std()), 1),
     }
+    if full_well:
+        out["clipped"] = int(np.count_nonzero(data >= full_well))
+    return out
