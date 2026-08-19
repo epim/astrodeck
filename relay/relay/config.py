@@ -71,6 +71,12 @@ class RelayConfig:
     ws_rate: float = 1.0
     ws_burst: float = 5.0
     max_body: int = 128 * 1024 * 1024
+    # How long a proxied request may wait on the home before the relay gives up.
+    # NOT a comfort setting: without a bound, a tunnel that dies mid-request
+    # parks the handler FOREVER (the exchange it is waiting on is cleared by
+    # TunnelMultiplexer.shutdown, so on_head can never fire), holding its fully
+    # buffered body on a 512MB machine and spinning the browser with no error.
+    upstream_timeout_s: float = 30.0
 
     @classmethod
     def from_env(cls) -> "RelayConfig":
@@ -87,6 +93,7 @@ class RelayConfig:
             ws_rate=_env_float("RELAY_WS_RATE", 1.0),
             ws_burst=_env_float("RELAY_WS_BURST", 5.0),
             max_body=_env_int("RELAY_MAX_BODY", 128 * 1024 * 1024),
+            upstream_timeout_s=_env_float("RELAY_UPSTREAM_TIMEOUT_S", 30.0),
         )
 
 
