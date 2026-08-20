@@ -745,3 +745,58 @@ def flip_forced_by_mount(device_hours: float | None) -> bool:
     if device_hours is None:
         return False
     return 0.0 < float(device_hours) <= MOUNT_LIMIT_FLIP_WINDOW_H
+
+
+def mount_is_gem(pier_side: "str | None") -> bool:
+    """Is this a German equatorial, i.e. a mount that HAS a meridian limit?
+
+    A mount that reports a real east/west pier side is a GEM. Fork and alt-az
+    mounts report unknown/none — they have no pier to be on a side of, and no
+    meridian flip. Mirrors `Hub._is_gem`, which has used the same test to drive
+    the UI's flip indicator since it shipped.
+    """
+    return str(pier_side or "").strip().lower() in ("east", "west")
+
+
+def flip_can_be_skipped(dec_deg: "float | None", lat_deg: "float | None",
+                        pier_side: "str | None",
+                        clearance_deg: float = MERIDIAN_POLE_CLEARANCE_DEG) -> bool:
+    """May this target cross the meridian without a flip?
+
+    THE TUBE CLEARING THE GROUND IS NOT THE SAME AS THE MOUNT AGREEING TO KEEP
+    TRACKING, and conflating the two cost two whole nights.
+
+    `flip_unnecessary_over_pole` proves something real: at high declination the
+    tube's lowest point over a full rotation still clears the horizon, so it
+    cannot strike the pier, the tripod or the ground. Its conclusion — "the
+    meridian crossing is just the top of a circle the mount can follow the whole
+    way round" — is a claim about the MOUNT, drawn from a fact about the TUBE,
+    and a GEM does not follow it. A German equatorial enforces its own meridian
+    limit in firmware, at an hour angle, with no opinion about where the tube is
+    pointing.
+
+    Measured on this rig, both times on NGC 7129 (dec +66.1, lower culmination
+    13.5 deg, comfortably clear):
+
+        2026-08-19  declined 00:49  ->  ZWO AM5 stopped tracking 00:54
+        2026-08-20  declined 00:16  ->  ZWO AM5 stopped tracking 00:49
+
+    The second night the run then set the target aside and parked, ending the
+    session with 73 of 175 frames and four hours of clear sky left.
+
+    So: a GEM flips. The cost of a flip that was not strictly needed is one
+    re-slew, one re-centre and a field rotation — about four minutes, which is
+    what the over-pole optimisation was written to save. The cost of missing one
+    is the rest of the night. That asymmetry is the whole argument, and the
+    original docstring named the risk itself: "this makes it flip less, which is
+    the direction that can hurt".
+
+    UNKNOWN PIER SIDE KEEPS THE OLD BEHAVIOUR. It is genuinely ambiguous — a
+    fork mount (no flip possible) and a GEM whose driver is quiet look the same
+    from here — so this falls back to the tube geometry rather than guessing in
+    either direction. An operator who does not want flips at all already has
+    `SequencePlan.meridian_flip`.
+    """
+    if mount_is_gem(pier_side):
+        return False
+    return flip_unnecessary_over_pole(dec_deg, lat_deg, clearance_deg)

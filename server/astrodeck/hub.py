@@ -3850,13 +3850,25 @@ class Hub:
         It DOES raise DeviceError when there is no camera at all, so the route can
         answer 400 rather than silently succeeding at nothing."""
         cam: Camera = self.require("camera")
-        # THE INTENT FLIPS HERE, not at each of the five `set_cooler(False)`
-        # calls below it. "Warm" is the moment somebody — the operator, the
-        # dawn wind-down, a safety abort — stops asking for cooling, and one
-        # seam is what keeps the standing request from surviving as a stale
-        # order to re-cool at 08:00. Clearing it per cooler-off site would be
-        # five places to remember and one to forget.
-        self._remember_cooling(None)
+        # WARMING STOPS THE COOLER. IT DOES NOT CHANGE WHAT TEMPERATURE THIS RIG
+        # IMAGES AT.
+        #
+        # This used to clear `cooling.setpoint_c` here, reasoning that "warm is
+        # the moment somebody stops asking for cooling" and that keeping it
+        # would leave a stale order to re-cool at 08:00. But the dawn wind-down
+        # warms EVERY night, so the operator's setpoint survived exactly one
+        # session: set to -10 and confirmed on 2026-08-19 at 23:27, gone by the
+        # next night, and 63 frames were shot at ~17C ambient before anyone
+        # looked. The same thing had already cost 35 frames the night before.
+        #
+        # Two different facts. "Stop the cooler now" is a live command and is
+        # what every `set_cooler(False)` below carries out. "Image at -10" is a
+        # standing preference that only the operator changes — and the run
+        # re-asserts it per frame (`SequenceEngine._enforce_cooling`), so a
+        # stale order cannot outlive the intent that reads it.
+        #
+        # `_remember_cooling(None)` still exists and is still how the preference
+        # is deliberately cleared; it is just no longer a side effect of dawn.
         if not getattr(cam, "can_cool", False):
             return self._warm_finished_state(source, f"{cam.name} has no cooler",
                                              ramped=False)
@@ -5607,9 +5619,12 @@ class Hub:
             over_pole = flip_unnecessary_over_pole(dec_deg, self.site["latitude"])
         except Exception:
             over_pole = False
+        # SAME RULE AS THE ENGINE, or the strip promises a flip the run will not
+        # take (or vice versa). `over_pole` only excuses a flip when the mount is
+        # NOT a GEM — see `schedule.flip_can_be_skipped` for why a GEM flips
+        # whatever the tube geometry says.
         meridian["flip_enabled"] = (self._is_gem(side)
-                                    and self._plan_flip_enabled()
-                                    and not over_pole)
+                                    and self._plan_flip_enabled())
         if not self._is_gem(side):
             meridian["status"] = "n_a_fork" if side != "unknown" else "unknown"
         elif not self._plan_flip_enabled():
