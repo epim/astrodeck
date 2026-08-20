@@ -4203,7 +4203,22 @@ class SequenceEngine:
             lat = self.hub.site["latitude"]
         except Exception:
             lat = None
-        if schedule.flip_unnecessary_over_pole(target.dec_deg, lat):
+        # ASK THE MOUNT BEFORE DECLINING ON GEOMETRY. The shortcut below answers
+        # a question about the TUBE; the mount enforces its OWN limit whatever
+        # the tube is doing. On 2026-08-19 the engine declined the flip for
+        # NGC 7129 at 00:49 on the geometry, and the AM5 stopped tracking at
+        # 00:54 on its own authority — the night ended there and the run shot 21
+        # streaks before anything noticed. This query used to sit BELOW the
+        # `return`, so the one fact that mattered was never read.
+        try:
+            dev = await _bounded(tel.time_to_meridian_flip(),
+                                 MOUNT_QUERY_TIMEOUT_S, "meridian-flip query")
+        except SafetyAbort:
+            raise
+        except Exception:
+            dev = None
+        forced = schedule.flip_forced_by_mount(dev)
+        if schedule.flip_unnecessary_over_pole(target.dec_deg, lat) and not forced:
             if self._flip_armed:
                 self._flip_armed = False
                 bus.log("info",
@@ -4215,17 +4230,13 @@ class SequenceEngine:
                         f"toward the pier and the mount tracks straight "
                         f"through the meridian", "sequence")
             return
-        # fold in the device's own value ONLY when it reports a sooner positive
-        # countdown (a mount enforcing a tighter minutes-after-meridian limit
-        # must be allowed to flip earlier — never later, so a wrapped ~12h device
-        # value can't push the flip past the meridian).
-        try:
-            dev = await _bounded(tel.time_to_meridian_flip(),
-                                 MOUNT_QUERY_TIMEOUT_S, "meridian-flip query")
-        except SafetyAbort:
-            raise
-        except Exception:
-            dev = None
+        if forced and schedule.flip_unnecessary_over_pole(target.dec_deg, lat):
+            bus.log("warning",
+                    f"{target.name}: the tube would clear the pier, but the "
+                    f"mount reports its own meridian limit in "
+                    f"{float(dev) * 60:.0f} min — flipping anyway, because it "
+                    f"stops tracking at that limit whatever the geometry says",
+                    "sequence")
         if dev is not None and dev > 0 and dev < ttf_h:
             ttf_h = dev
 

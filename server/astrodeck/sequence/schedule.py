@@ -709,3 +709,39 @@ def schedule_order(targets: list["Target"], site: dict[str, Any],
         return start if start is not None else float("inf")
 
     return sorted(targets, key=key)
+
+
+#: How close the MOUNT'S OWN limit has to be before it overrules the
+#: "no flip needed over the pole" shortcut.
+#:
+#: The AM5 stopped tracking five minutes past the meridian on 2026-08-19, so the
+#: window has to be wider than that to leave time to stop guiding, flip,
+#: re-solve and re-centre. 20 minutes is comfortably inside one exposure of
+#: warning and still narrow enough that a mount reporting a genuine half-hour
+#: does not trigger a flip nobody needs.
+MOUNT_LIMIT_FLIP_WINDOW_H = 20.0 / 60.0
+
+
+def flip_forced_by_mount(device_hours: float | None) -> bool:
+    """Does the MOUNT'S own meridian limit demand a flip, whatever the geometry?
+
+    `flip_unnecessary_over_pole` answers a question about the TUBE: at high
+    declination the lower culmination clears the horizon, so the tube never
+    points down and there is nothing to hit. That is true, and skipping the flip
+    saves a re-slew, a re-solve, a re-centre and 180 degrees of field rotation
+    mid-stack.
+
+    It is not the only question. A ZWO AM5 enforces its own limit regardless of
+    where the tube is pointing: on 2026-08-19 the engine declined the flip for
+    NGC 7129 at 00:49 on exactly that geometric reasoning, and the mount stopped
+    tracking at 00:54 on its own authority. The run then shot 21 streaked frames
+    before anything noticed.
+
+    A device countdown is the mount stating a fact about itself, so it outranks
+    our opinion about the tube. Absence is not a fact: most mounts report
+    nothing useful, and a missing value must not manufacture a flip the geometry
+    says is pure cost.
+    """
+    if device_hours is None:
+        return False
+    return 0.0 < float(device_hours) <= MOUNT_LIMIT_FLIP_WINDOW_H
