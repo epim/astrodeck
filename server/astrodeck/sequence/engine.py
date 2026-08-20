@@ -297,6 +297,9 @@ class SequenceEngine:
         self._frames_since_focus = 0
         self._last_focus_temp: float | None = None
         self._recent_hfr: list[float] = []
+        #: one line per cooling excursion, not one per frame
+        self._cooling_reasserted = False
+        self._warned_no_cooler = False
         #: instruction id -> consecutive failed fires (see
         #: `_rearm_failed_rule`). Cleared when the action works.
         self._rule_failures: dict[str, int] = {}
@@ -500,6 +503,8 @@ class SequenceEngine:
         self._frames_since_focus = 0
         self._last_focus_temp = None
         self._recent_hfr = []
+        self._cooling_reasserted = False
+        self._warned_no_cooler = False
         self._rule_failures = {}
         self._rejected = 0
         self._night_rejects = 0
@@ -2152,6 +2157,7 @@ class SequenceEngine:
             await self._maybe_meridian_flip(target, step.exposure_s)
             await self._maybe_recover_guiding(target)
             await self._enforce_tracking(step)
+            await self._enforce_cooling()
 
             if plan.dither_every and self._frames_since_dither >= plan.dither_every \
                     and self.hub.guider and self.hub.guider.connected:
@@ -4218,7 +4224,19 @@ class SequenceEngine:
         except Exception:
             dev = None
         forced = schedule.flip_forced_by_mount(dev)
-        if schedule.flip_unnecessary_over_pole(target.dec_deg, lat) and not forced:
+        # ASK THE MOUNT WHAT KIND OF MOUNT IT IS. The over-pole shortcut proves
+        # the TUBE never points down; a German equatorial stops at its own
+        # meridian limit regardless, which is what actually ended the nights of
+        # 2026-08-19 and 2026-08-20. `pier_side` is the discriminator the hub has
+        # always used for the UI's flip indicator, and the AM5 reports it.
+        try:
+            side = (await _bounded(tel.pier_side(), MOUNT_QUERY_TIMEOUT_S,
+                                   "pier-side query")).value
+        except SafetyAbort:
+            raise
+        except Exception:
+            side = "unknown"        # ambiguous: falls back to the tube geometry
+        if schedule.flip_can_be_skipped(target.dec_deg, lat, side) and not forced:
             if self._flip_armed:
                 self._flip_armed = False
                 bus.log("info",
@@ -4231,6 +4249,7 @@ class SequenceEngine:
                         f"through the meridian", "sequence")
             return
         if forced and schedule.flip_unnecessary_over_pole(target.dec_deg, lat):
+            # (only reachable on an UNKNOWN pier side now — a GEM never gets here)
             bus.log("warning",
                     f"{target.name}: the tube would clear the pier, but the "
                     f"mount reports its own meridian limit in "
@@ -4563,6 +4582,65 @@ class SequenceEngine:
                     f"rather than retrying it between every frame", "sequence")
             return
         rec.armed = True
+
+    async def _enforce_cooling(self) -> None:
+        """Keep the sensor at the temperature THIS RUN asked for.
+
+        Cooling used to be commanded once at `start` and never looked at again,
+        so anything that dropped it mid-night — a TEC trip, a camera reconnect,
+        a stray Warm from another screen — went unnoticed until a person
+        happened to read the number. Two nights in a row ended with frames at
+        ambient against a dark library built at -10 (35 frames on 2026-08-18,
+        63 on 2026-08-19).
+
+        Cheap: a status read per frame, and a `set_cooler` only when the cooler
+        is actually off or aiming somewhere else. NEVER FATAL — a TEC that
+        cannot hold on a hot night still takes usable frames, and a camera with
+        no cooler at all must not end a night. Both are said out loud instead.
+
+        The temperature not being REACHED is a different thing from the cooler
+        not being ASKED, and only the second is repaired here: chasing the first
+        would mean re-commanding a TEC that is already working as hard as it can.
+        """
+        plan = self.plan
+        target = getattr(plan, "cool_to", None) if plan else None
+        if target is None:
+            return                       # this plan asked for no cooling
+        cam = self.hub.devices.get("camera")
+        if cam is None or not getattr(cam, "connected", False):
+            return
+        if not getattr(cam, "can_cool", False):
+            if not self._warned_no_cooler:
+                self._warned_no_cooler = True
+                bus.log("warning",
+                        f"this plan asks for {target:g}°C but {getattr(cam, 'name', 'the camera')} "
+                        f"has no cooler — the frames will be at ambient", "sequence")
+            return
+        try:
+            st = await cam.get_cooler()
+        except Exception:                # noqa: BLE001 - unreadable is not a verdict
+            return
+        if st is None:
+            return
+        on = bool(st.get("on"))
+        aim = st.get("target_c")
+        if on and aim is not None and abs(float(aim) - float(target)) < 0.51:
+            self._cooling_reasserted = False
+            return
+        # Either the cooler is off, or it is holding a different number.
+        try:
+            await cam.set_cooler(True, float(target))
+        except Exception as e:           # noqa: BLE001 - never fatal
+            bus.log("warning", f"could not re-assert cooling to {target:g}°C ({e})",
+                    "sequence")
+            return
+        if not self._cooling_reasserted:
+            self._cooling_reasserted = True
+            was = "off" if not on else f"aiming at {aim}°C"
+            bus.log("warning",
+                    f"the cooler was {was} mid-run; re-asserting {target:g}°C — "
+                    f"frames taken meanwhile are warmer than this run's darks",
+                    "sequence")
 
     async def _enforce_tracking(self, step) -> None:
         """A LIGHT FRAME ON A MOUNT THAT IS NOT TRACKING IS A STREAK.
