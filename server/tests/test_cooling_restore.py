@@ -14,8 +14,9 @@ the silence and the lost setpoint, not the ramp.
 
 A camera cannot be asked what it was doing before it was reopened, so the
 operator's intent has to be written down. These tests pin that it is written,
-that it is put back, that it is CLEARED when somebody warms (or the run's
-wind-down does), and that a failed restore is loud.
+that it is put back, that it SURVIVES a warm (reversed 2026-08-20 — see
+test_warming_does_NOT_clear_it; erasing it at dawn cost two nights of ambient
+frames), that the operator can still clear it, and that a failed restore is loud.
 """
 from __future__ import annotations
 
@@ -78,14 +79,44 @@ class TestTheSetpointIsRecorded:
         assert reloaded.cfg().cooling.setpoint_c == -15.0
 
     @pytest.mark.asyncio
-    async def test_warming_clears_it(self, store):
-        """Otherwise the standing request survives the dawn wind-down and a
-        reconnect at 08:00 would helpfully re-cool a camera nobody is using."""
+    async def test_warming_does_NOT_clear_it(self, store):
+        """REVERSED 2026-08-20, deliberately, and the old reason still stands.
+
+        This asserted the opposite: warming cleared the standing setpoint, so
+        "the standing request survives the dawn wind-down and a reconnect at
+        08:00 would helpfully re-cool a camera nobody is using". That cost is
+        real and this change accepts it.
+
+        The cost on the other side turned out to be much larger. The dawn
+        wind-down runs EVERY night, so the operator's setpoint survived exactly
+        one session: set to -10 and confirmed on 2026-08-19 at 23:27, gone by
+        the next night, 63 frames at ~17C ambient before anyone looked — after
+        35 frames at ~20C the night before, from the same root.
+
+        An idle TEC running in daylight wastes power. A night of frames that no
+        dark in the library matches wastes the night. So the preference now
+        survives, and the RUN asserts it every frame
+        (`SequenceEngine._enforce_cooling`) rather than trusting that nothing
+        cleared it.
+
+        Deliberate clearing still works — see the test below.
+        """
         h = hub_module.Hub()
         h.devices["camera"] = _Cam()
         await h.cool_camera(-10.0)
         assert store.cfg().cooling.setpoint_c == -10.0
         await h.warm_camera(source="test", ramp=False)
+        assert store.cfg().cooling.setpoint_c == -10.0, (
+            "warming erased what temperature this rig images at — that is a "
+            "standing preference, not a live command")
+
+    @pytest.mark.asyncio
+    async def test_the_operator_can_still_clear_the_setpoint(self, store):
+        """The preference is not immortal; it is just not a casualty of dawn."""
+        h = hub_module.Hub()
+        h.devices["camera"] = _Cam()
+        await h.cool_camera(-10.0)
+        h._remember_cooling(None)
         assert store.cfg().cooling.setpoint_c is None
 
     def test_editing_the_warm_policy_does_not_wipe_it(self, store):
