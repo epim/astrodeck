@@ -197,19 +197,40 @@ One line. No separate implementation.
 
 The satellite product geolocates a pixel by intersecting its line of sight with
 the **ground**, so a cloud at height h is reported displaced *away* from the
-sub-satellite point. Correct by moving *toward* it:
+sub-satellite point. Correct by moving *toward* it.
+
+The reported ground point, the true cloud and the satellite are **collinear by
+construction** — the ground point IS where the ray through the cloud meets the
+sphere. So walking back up that same ray to the cloud shell recovers the cloud
+exactly, and that is one call to `pierce_point`:
 
 ```
-look  = satellite_look(Site(reported_lat, reported_lon, 0.0), sat_lon)
-shift = cloud_msl_km · tan(radians(90 − look.alt_deg))
-result = move along great circle from (reported) on bearing look.az_deg by shift
+site   = Site(reported_lat_deg, reported_lon_deg, 0.0)
+look   = satellite_look(site, sat_lon_deg)
+result = pierce_point(site, look.alt_deg, look.az_deg, cloud_msl_km)
 ```
 
 **Sign is the likely bug: the corrected point moves TOWARD the satellite.**
 A named test pins it.
 
-Single pass. Re-evaluating the zenith angle at the corrected point changes the
-shift by ~20 m over 9.4 km — far below pixel scale. Do not iterate.
+**AMENDED 2026-08-21 — this section was wrong.** It originally specified a shift
+of `cloud_msl_km · tan(zenith)` along a great circle, which is the flat-earth
+form of the same ray walk — the very approximation §8.1 forbids two sections
+earlier, reintroduced by the author in the next breath. Verified by forward
+ray-trace (place a cloud at height h, cast the ray from the geostationary
+position through it, take the ground intersection as the reported pixel, correct
+it back), the flat form leaves a residual that grows with zenith angle:
+20 m at 46°, 42 m at 57°, 108 m at 67°, 283 m at 74°, against the "~20 m" this
+section used to claim. The form above returns 0 m at every zenith angle.
+
+It is also what §6 asked for and §8.5 was quietly violating: no second geometry.
+The magnitude still agrees with `h · tan(zenith)` to better than 0.3%, so the
+original intuition about the SIZE of the shift was sound; only the formula was
+not. It additionally inherits `pierce_point`'s domain guards, so a satellite
+below the horizon at the reported point now raises rather than returning a
+plausible wrong answer.
+
+No iteration, and now nothing to iterate: the walk is exact in one pass.
 
 ### 8.6 `beam_footprint_km`
 
@@ -272,10 +293,16 @@ Tolerance: `abs=0.01` degrees.
 
 ### 9.4 `deparallax`, sat_lon −137.0, reported point 40.0/−105.0
 
-| cloud_msl_km | shift_km | result lat | result lon |
-|---|---|---|---|
-| 2.0 | 3.05 | 39.98033 | −105.02495 |
-| 9.0 | 13.72 | 39.91145 | −105.11216 |
+| cloud_msl_km | nominal `h·tan(zen)` km | actual walk km | result lat | result lon |
+|---|---|---|---|---|
+| 2.0 | 3.05 | 3.04778 | 39.98034 | −105.02493 |
+| 9.0 | 13.72 | 13.68259 | 39.91172 | −105.11182 |
+
+**AMENDED 2026-08-21 alongside §8.5.** The h=9.0 row previously read
+(39.91145, −105.11216), which is the flat-earth answer — 41 m from the truth and
+outside test 11's own 10 m tolerance. The `nominal` column is retained because
+the test still asserts the exact walk agrees with `h·tan(zen)` to within 0.3%,
+which is the sanity check the original formula was really providing.
 
 ### 9.5 `beam_footprint_km`, fov 1.682°
 
@@ -321,11 +348,31 @@ not merge or rename them.
     layer pierces nearer than a sea-level site does.
 18. `test_agl_to_msl_adds_the_ground_elevation`.
 
+**Added during implementation (19th):**
+`test_deparallax_refuses_a_point_the_satellite_cannot_see` — a consequence of
+the §8.5 amendment: routing through `pierce_point` means a reported pixel with
+the satellite below its horizon now raises instead of returning a plausible
+wrong answer. Worth pinning, since it is new behaviour.
+
+**Note for whoever writes test 7.** `pierce_point(site, alt, 0°, h)` round-trips
+to `az = 359.999999999996` — correct to 4e-12 as a *bearing*, 360 away as a
+*number*. Compare the wrapped difference `(back − az + 180) % 360 − 180`, or
+every `az=0` case fails spuriously. This is the single most likely way a
+re-implementation of this file produces a false red.
+
+**Note for test 2.** §9.1's horizon row is a limit, not a value §8.7 permits:
+`alt_deg <= 0` raises. Approach with `alt_deg=1e-9`. The limit is sharp — at
+`1e-6` the answer is already 6.4 m off the tabled figure, so a "small" epsilon
+with a tight tolerance fails spuriously.
+
 ## 11. Invariants an implementation must not break
 
 - `pierce_point` and `look_from` are exact inverses (test 7).
 - `satellite_look` has no arithmetic of its own (test 9).
 - No function reads config, the clock, the network, or the filesystem.
+- Longitude is returned in `(−180, +180]`; exactly −180 normalises to +180. This
+  boundary was the one mutation of 26 that survived the first implementation's
+  test suite, and is now pinned.
 - No function mutates its arguments; all dataclasses frozen.
 - Pure stdlib `math`. No numpy, no new dependencies.
 
