@@ -31,6 +31,15 @@ from .events import bus
 from .sequence import schedule
 
 CHECK_INTERVAL_S = 60.0
+#: Millimetres of forecast precipitation in one 15-minute bucket that count as
+#: RAIN for the auto-resume veto.
+#:
+#: Not zero. Forecast models emit trace amounts more or less constantly, and a
+#: gate that tripped on 0.01 mm would refuse every night and be switched off
+#: within a week - which is how a safety feature becomes decorative. 0.1 mm is
+#: below anything that would wet an OTA and above the models' noise floor.
+RAIN_VETO_MM = 0.1
+
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
 ASTROSPHERIC_URL = ("https://astrosphericpublicaccess.azurewebsites.net"
                     "/api/GetForecastData_V1")
@@ -61,7 +70,7 @@ async def _fetch_open_meteo(lat: float, lon: float) -> dict:
     params = {
         "latitude": str(lat),
         "longitude": str(lon),
-        "minutely_15": "cloud_cover,cloud_cover_low,cloud_cover_mid,cloud_cover_high",
+        "minutely_15": ("cloud_cover,cloud_cover_low,cloud_cover_mid,cloud_cover_high,precipitation"),
         "forecast_days": "2",
         "timezone": "UTC",
     }
@@ -90,16 +99,37 @@ def _parse_open_meteo(js: dict) -> tuple[list[float], dict[str, list[int]]]:
         dt = datetime.strptime(str(t), "%Y-%m-%dT%H:%M").replace(
             tzinfo=timezone.utc)
         times.append(dt.timestamp())
-    series: dict[str, list[int]] = {}
+    series: dict[str, list] = {}
     for key in ("cloud_cover", "cloud_cover_low", "cloud_cover_mid",
                 "cloud_cover_high"):
         vals = block.get(key) or []
         series[key] = [
             max(0, min(100, int(v))) if isinstance(v, (int, float)) else 0
             for v in vals]
+    # The CLOUD series decide the usable length; precipitation is folded in
+    # afterwards so a payload without it cannot shorten anything (see below).
     n = min([len(times)] + [len(series[k]) for k in series])
     n = min(n, _MAX_SAMPLES)
     times = times[:n]
+    # PRECIPITATION IS MILLIMETRES, NOT A PERCENTAGE, and it joins here rather
+    # than above for two separate reasons.
+    #
+    # It must not go through the 0-100 int clamp the cloud series uses: that
+    # turns 0.8 mm of rain into 0 and silently disables the only gate that
+    # protects the equipment.
+    #
+    # And it must not participate in the shortest-series truncation. Adding it
+    # to that `min` meant a response WITHOUT precipitation - an older cached
+    # payload, a partial upstream reply, or any of the existing fixtures -
+    # collapsed n to 0 and wiped the entire cloud forecast. The suite caught
+    # that immediately, which is the argument for running all of it.
+    #
+    # Missing values pad with 0.0, which reads as "no rain forecast" and so
+    # fails OPEN, matching how the rest of this module treats absent data.
+    precip = block.get("precipitation") or []
+    vals = [max(0.0, float(v)) if isinstance(v, (int, float)) else 0.0
+            for v in precip][:n]
+    series["precipitation"] = vals + [0.0] * (n - len(vals))
     for k in series:
         series[k] = series[k][:n]
     return times, series
@@ -383,9 +413,38 @@ class WeatherService:
         return None
 
     def veto_reason(self, now: float) -> str | None:
-        """Auto-resume weather gate (spec §4). Non-None = human-readable
-        reason. FAIL-OPEN on stale/missing data: weather is advisory; the
-        safety monitor remains the hard guard."""
+        """Auto-resume weather gate. Non-None = human-readable reason.
+
+        RAIN VETOES. CLOUD DOES NOT. They are different hazards and they want
+        different instruments.
+
+        Rain risks the equipment, is irreversible, and cannot be observed from
+        here in time - by the time water is on the corrector the decision is
+        long past. A forecast is the RIGHT instrument for it, and being early is
+        the correct kind of wrong.
+
+        Cloud risks some frames. The frames are free to discard, the rig
+        measures the sky above itself on every exposure, and the engine already
+        treats that measurement as the authority once a run is going (see
+        `SequenceEngine._safety_gate`: "THE SKY IS STILL EVIDENCE"). A forecast
+        over a ~10 km grid cell is the WRONG instrument, and using it to refuse
+        to start is self-fulfilling: decline to open and you never learn the sky
+        was clear.
+
+        It was not a hypothetical. This gate refused two consecutive nights:
+
+            2026-08-19  forecast 100% from 22:00  ->  clear past 02:00
+            2026-08-20  forecast 100% from 21:30  ->  plate solve succeeded and
+                                                      the focus frame held 1386
+                                                      stars
+
+        The cloud outlook is still computed, still alerted, and still shown in
+        the Tonight brief. It informs; it no longer gates.
+
+        FAIL-OPEN on stale/missing data, unchanged: we act on positive evidence
+        of rain, never on the absence of evidence of no rain, because a network
+        blip must not end a night.
+        """
         cfg = config_store.cfg().weather
         if not cfg.enabled:
             return None
@@ -394,6 +453,40 @@ class WeatherService:
         if self._om_fetched_ts is None or \
                 now - self._om_fetched_ts > OPEN_METEO_STALE_S:
             return None                            # stale/missing -> fail-open
+        return self._rain_veto(now)
+
+    def _rain_veto(self, now: float) -> str | None:
+        """Forecast rain inside the next hour, or None.
+
+        NO SUSTAIN REQUIREMENT, unlike cloud. One 15-minute bucket of rain is
+        enough: the hazard is instantaneous and the damage does not average out
+        over half an hour the way a thin cloud layer does.
+        """
+        precip = self._om_series.get("precipitation") or []
+        worst = 0.0
+        when: float | None = None
+        for i, t in enumerate(self._om_times):
+            if i >= len(precip) or not (now <= t <= now + 3600.0):
+                continue
+            if float(precip[i]) > worst:
+                worst, when = float(precip[i]), t
+        if worst < RAIN_VETO_MM or when is None:
+            return None
+        mins = max(0, int((when - now) / 60.0))
+        return (f"rain forecast within the next hour ({worst:.1f} mm in "
+                f"about {mins} min) - the sky can be argued with, water cannot")
+
+    def cloud_outlook(self, now: float) -> str | None:
+        """What the cloud forecast says for the next hour, as ADVICE.
+
+        This is what `veto_reason` used to return before cloud stopped gating.
+        Kept so the information survives the policy change - the operator still
+        needs to know what tonight is forecast to do, they just are not stopped
+        by it.
+        """
+        cfg = config_store.cfg().weather
+        if self._om_fetched_ts is None:
+            return None
         needed = self._needed_samples(cfg.sustain_minutes)
         hit = self._sustained_breach(now, now + 3600.0,
                                      cfg.cloud_threshold_pct, needed)
@@ -402,7 +495,8 @@ class WeatherService:
         cloud = self._om_series.get("cloud_cover") or []
         peak = max(cloud[hit[0]:hit[1] + 1])
         return (f"cloud cover {peak}% forecast within the next hour "
-                f"(threshold {cfg.cloud_threshold_pct}%)")
+                f"(threshold {cfg.cloud_threshold_pct}%) - the frames decide, "
+                f"not this")
 
     # -- high-cloud night warning (spec §5, REQUIRED) --------------------------
 
