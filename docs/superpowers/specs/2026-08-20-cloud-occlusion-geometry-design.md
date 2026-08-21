@@ -36,6 +36,12 @@ the correct instrument, but from the western United States:
 satellite is a **stage 2** decision; recorded here because stage 1 must expose
 the sub-longitude as a parameter rather than hard-coding one.
 
+**AMENDED 2026-08-21 — the table above names a retired satellite.** Listing
+`noaa-goes16` returns zero keys for every ABI L2 product: GOES-16 is out of
+service and GOES-East is now **GOES-19**. Read the GOES-East row as GOES-19,
+same sub-longitude. Stage 2 took the decision this paragraph deferred and chose
+**GOES-18 (West)**; see `2026-08-21-abi-fixed-grid-design.md` section 2.1.
+
 **Do not parse the IEM tiles.** They are PNGs of a colour ramp; recovering
 physical values from them is lossy. NOAA publishes the derived products free and
 unauthenticated on S3 (`noaa-goes18`): `ABI-L2-ACMF` (clear-sky mask) and
