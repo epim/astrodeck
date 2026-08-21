@@ -1,7 +1,9 @@
 # The autofocus confirm frame measures worse than the sweep, and I do not know why
 
-**Status:** OBSERVED AND UNEXPLAINED. Three hypotheses tested and refuted. Not
-fixed, and deliberately not "fixed" on a guess.
+**Status:** EXPLAINED, on the full night's data. It is the winner's curse, and
+the guard is therefore backwards. See the section at the bottom, which
+supersedes the "not obviously the winner's curse" paragraph above it — that
+conclusion was drawn from nine runs and a bad estimator.
 
 ## The observation
 
@@ -94,3 +96,57 @@ costs:
 And if the winner's curse turns out to be the cause, the guard is backwards --
 it prefers the luckiest grid point over an all-points fit, which is worse focus
 on average. That would make `confirmed_best` a fix that needs fixing.
+
+---
+
+## RESOLVED the next morning, on 23 runs instead of 9
+
+The overnight log carried 23 autofocus runs, not the 9 I had at 00:30. On the
+full set:
+
+- **21 of 23 confirm frames were worse, 2 were better.** Median +18.7%, mean
+  +18.3%. Not 100% one-directional, which is what a purely mechanical cause
+  (backlash, settling, a longer return move) would have to produce. Both
+  exceptions fell in the last hour, when the sky was steadiest.
+
+- **The 21:37 run measures the noise floor directly.** Its best sweep point and
+  its confirm frame are at *the same focuser position*, 11206, and read
+  **2.81 px and 3.67 px**. Identical position, no move between them beyond the
+  approach, 30.6% apart. Nothing about focus can explain that; it is what one
+  measurement of this quantity costs, and it puts the per-point noise near
+  0.86 px on a ~3.2 px reading.
+
+That settles it. The sweep's best point is the **minimum of ten noisy draws** and
+is therefore biased low by roughly 1.5 sigma, while the confirm frame is a single
+unbiased draw at the fitted optimum. At the sigma the 21:37 pair implies, that
+bias is 0.6-1.3 px — and the observed mean penalty is +18.3% of ~3.4 px, about
+0.6 px. The numbers line up without needing any mechanism at all.
+
+My earlier attempt to test this predicted a bias of only -0.06 px and I recorded
+it as "not established". The estimator was wrong, not the hypothesis: I fitted
+sigma across the whole sweep, where the far-defocus wings run 18-28 px and
+dominate the residual, instead of across the near-focus points that actually
+determine the minimum.
+
+**So `confirmed_best` is backwards.** It compares a selection-biased number
+against an unbiased one and, unsurprisingly, prefers the biased one — on 21 of
+23 runs it discarded the all-points fit in favour of whichever grid point got
+lucky. The fit uses ten points and interpolates between a 79-step grid; the
+lucky point is constrained to the grid and chosen *because* it read low. The
+guard is not protecting focus, it is degrading it slightly and spending a frame
+and a move per autofocus to do so.
+
+**The fix is to make the comparison fair, not to widen the threshold.** Widening
+it just moves the arbitrary line. Two honest options:
+
+1. Re-measure the best sweep point at confirm time and compare two fresh draws.
+   Costs one extra frame; removes the bias entirely.
+2. Keep one confirm frame but compare it against the *fitted curve's value* at
+   the best sweep point rather than against the measured value there. The curve
+   is the de-biased estimate and it is already computed.
+
+Option 2 is free. Either way the guard should then only fire on a genuine fit
+failure, which is what it was for — and those exist: the 23:51 run fitted a
+position on a mount that had stopped tracking, and no threshold based on noise
+should be expected to catch that. Defect 1 in
+`2026-08-21-tracking-stopped-and-nothing-noticed.md` is the right guard for it.
