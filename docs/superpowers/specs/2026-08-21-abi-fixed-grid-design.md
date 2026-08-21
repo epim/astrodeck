@@ -98,9 +98,18 @@ Phase correlation on consecutive 5-minute granules, in a window around the site:
 **Two independent products, different algorithms and different grids, agree to
 2.3 km/h on a 111 km/h vector.** Nine consecutive pairs, per-pair scatter
 0.8 km/h. The measured speed matches the 250 hPa model wind (105.4 km/h at
-10.9 km) to 5%, and the cloud-top histogram is bimodal with 442 of 1389
-retrieved pixels above 8 km — the correlation is locked to the cirrus deck,
-which is the deck with the structure.
+10.9 km) to 5%. The cloud-top histogram carries a dominant low deck plus a
+second deck spread through the upper troposphere, 442 of 1389 retrieved pixels
+above 8 km — and the correlation locks to the high deck, which is the one with
+structure to correlate.
+
+**AMENDED 2026-08-21, same day.** An earlier draft of this paragraph called that
+histogram "bimodal". It is not, quite. The bins are 1 km wide below 4 km and 2 km
+above, so raw counts are not comparable between them; read as density per km it
+runs 296, 68, 62, 172, 121, 54, 100, 109, 6 — a sharp low peak and a broad
+elevated deck, not two clean modes. The claim that matters, that there is
+substantial cloud at both ends of the column and that the correlation follows the
+upper one, survives unchanged. The word did not. Caught by plotting it.
 
 Four artifact hypotheses were tested and rejected: the vector varies spatially
 (-3.07 px at the site, -0.04 px 400 km south, +0.89 px over the ocean, so it is
@@ -251,7 +260,7 @@ sx   = H - rc * cos(phic) * cos(lam - lam0)
 sy   = -rc * cos(phic) * sin(lam - lam0)
 sz   = rc * sin(phic)
 
-if H * (H - sx)  <  sy^2 + (r_eq^2/r_pol^2) * sz^2 :  return None   # behind the limb
+if H * (H - sx)  <  r_eq^2 :  return None                # behind the limb
 y_rad = atan( sz / sx )
 x_rad = asin( -sy / sqrt(sx^2 + sy^2 + sz^2) )
 ```
@@ -260,13 +269,49 @@ The visibility test is not optional and not a nicety: without it the arithmetic
 returns a perfectly plausible scan angle for a point on the far side of the
 planet.
 
+**AMENDED 2026-08-21 — this section originally published the GOES-R PUG's own
+visibility test, and that test is an approximation.** It read
+
+```
+if H * (H - sx)  <  sy^2 + (r_eq^2/r_pol^2) * sz^2 :  return None
+```
+
+which declares points visible for roughly 21 km past the true limb at the
+equator, rising to 23 km at latitude 70. Those points then fail to invert:
+`scan_to_lonlat` cannot recover them, so §11's round-trip invariant broke in a
+thin band all the way around the edge of the disk.
+
+The exact condition is one line and needs no ellipsoid term at all. Scaling z by
+`r_eq / r_pol` maps the ellipsoid onto a sphere of radius `r_eq`, maps straight
+lines to straight lines, and leaves the satellite fixed because it sits on the
+equatorial plane. On that sphere a surface point is visible exactly when its
+component along the satellite direction reaches `r_eq^2 / H` — and that
+component is `H - sx`, which the scaling did not touch. Hence `H*(H - sx) >=
+r_eq^2`, with no `sy` or `sz` in it.
+
+Verified three independent ways before adopting: two agents derived it
+separately, and the spec's author confirmed it by ray-tracing the
+satellite-to-point segment against the ellipsoid using the prime-vertical
+radius `N` rather than the geocentric route above. Bisected limb longitudes:
+
+| latitude | true limb | PUG form | exact form |
+|---|---|---|---|
+| 0 | −55.70049 | −55.50859 (21.4 km out) | −55.70048 |
+| 40 | −58.37295 | −58.12077 (21.5 km out) | −58.37295 |
+| 70 | −73.16594 | −72.55128 (23.4 km out) | −73.16593 |
+
+**This is a deliberate deviation from the published product user guide.** If
+stage 3 ever needs to agree with NOAA's own edge-of-disk masking exactly, that
+is the place to reconsider it; nothing at a mid-latitude ground site comes
+within thousands of kilometres of the limb.
+
 ### 7.2 `scan_to_lonlat`, for `sweep_axis == "x"`
 
 ```
 a  = sin(x)^2 + cos(x)^2 * ( cos(y)^2 + (r_eq^2/r_pol^2) * sin(y)^2 )
 b  = -2 * H * cos(x) * cos(y)
 c  = H^2 - r_eq^2
-d  = b^2 - 4ac
+d  = 4 * ( r_eq^2 * a  -  H^2 * ( sin(x)^2 + (r_eq^2/r_pol^2) * cos(x)^2 * sin(y)^2 ) )
 if d < 0 : return None                                  # the ray misses the earth
 rs = ( -b - sqrt(d) ) / (2a)                            # NEAR root; +sqrt is the far side
 sx = rs * cos(x) * cos(y)
@@ -282,6 +327,19 @@ survived the first test suite.
 
 **`-b - sqrt(d)` is the likely bug.** The far root is the back of the earth and
 is also geometrically valid.
+
+**AMENDED 2026-08-21 — the discriminant is written collected, not as
+`b^2 - 4ac`.** The two are the same number in exact arithmetic; substituting
+`c = H^2 - r_eq^2` and cancelling gives the form above. In floating point they
+are not the same at all. Near grazing incidence `b^2` is about 6.95e15, whose
+ULP is 1.0, and `b^2 - 4ac` evaluates to single digits — every significant
+figure is lost to cancellation, and the round trip degrades by three orders of
+magnitude. The collected form never forms the large intermediate.
+
+A test that only samples mid-latitudes will not see this. The first attempt at
+`test_the_round_trip_survives_grazing_incidence` let the cancelling form pass;
+it needs latitude 80 at 0.1 deg inside the limb, where the two forms differ by
+200x.
 
 ### 7.3 Index arithmetic
 
@@ -317,7 +375,19 @@ distance on the ground, which is stage 1's job, not defining the grid. Import
 `EARTH_RADIUS_KM` from `geometry` rather than redeclaring it.
 
 At the edge of the grid, clamp the neighbour to the grid and halve the divisor
-accordingly, so the function is total for every in-grid cell.
+accordingly.
+
+**AMENDED 2026-08-21 — the original sentence ended "so the function is total
+for every in-grid cell", and that promise is false in two cases this design
+permits.** (a) A grid one cell across on an axis clamps both neighbours to the
+same index, the divisor becomes zero, and the arithmetic raises
+`ZeroDivisionError`. (b) On a full-disk grid the array corners are in-grid but
+off the earth, so `index_to_lonlat` returns `None` and there is no distance to
+measure. `pixel_size_km` therefore raises `ValueError` for a cell that is not
+`in_grid`, for a degenerate span, and for an off-the-disk neighbour. Returning a
+number in any of those cases would be worse than raising: the clamp applied to a
+negative row yields a *negative* ground spacing, which stage 5 would turn into
+cloud drifting backwards at a believable speed.
 
 **Why this function exists.** The "2 km" in the product name is at nadir. At the
 site it is 2.95 km north-south by 2.21 km east-west. Converting pixel
@@ -416,7 +486,12 @@ function.
    least 200 points actually ran, or a broken visibility test that returns
    `None` everywhere passes vacuously.
 3. `test_a_point_behind_the_limb_is_not_visible` — (40, -20) gives `None`; and
-   the nearest visible point on the same parallel does not.
+   the nearest visible point on the same parallel does not. **The 40th
+   parallel's limb is at longitude -58.37295**, not -58.12: the latter is where
+   the approximate test of the original §7.1 put it, 21 km of open Atlantic east
+   of the earth's actual edge. Pin the true value, to better than 0.011 deg
+   (one step of a 0.01 deg walk), or the test freezes the approximation it is
+   supposed to be checking.
 4. `test_row_increases_southward_and_column_eastward` — from an asymmetric
    in-grid cell, row+1 is south and col+1 is east. Pins the negative
    `y_scale_rad`.
@@ -442,6 +517,29 @@ function.
     `sweep_axis="y"` raises rather than returning EUMETSAT-shaped nonsense.
 15. `test_pixel_size_is_total_at_the_grid_edge` — row 0 and the last row return
     finite positive sizes.
+**Added during verification (17-22).** Every one of these exists because a
+sabotage mutation survived the sixteen above, or because a verifier proved an
+invariant false. They are not optional extras; each is the only thing standing
+between a named bug and production:
+
+17. `test_in_grid_is_exclusive_at_the_top_and_zero_based_at_the_bottom` — THREE
+    off-by-one mutations (`row <= n_rows`, `col <= n_cols`, a `-1` lower bound)
+    survived the whole original suite. Test 10's out-of-sector indices sit
+    hundreds of rows past the end, so they never touch the boundary.
+18. `test_the_limb_sits_where_the_ellipsoid_puts_it` — pins §7.1's exact
+    condition. Reverting to the PUG form, or swapping `r_eq^2` for `r_pol^2`,
+    both used to survive.
+19. `test_the_round_trip_survives_grazing_incidence` — the only thing holding
+    §7.2's collected discriminant in place. Must sample latitude 80 within
+    0.1 deg of the limb; mid-latitudes cannot see the cancellation.
+20. `test_an_index_outside_the_sector_still_has_a_ground_point` — §6 promises
+    `index_to_lonlat` extrapolates past the sector. Making it return `None`
+    instead used to survive, because every test passed in-grid indices.
+21. `test_pixel_size_says_so_when_a_neighbour_is_off_the_disk` — needs a
+    full-disk `GridSpec`; on a CONUS sector the guard is unreachable.
+22. `test_pixel_size_refuses_a_grid_one_cell_across` — the degenerate-span
+    `ZeroDivisionError` from §7.4.
+
 16. `test_nothing_here_uses_the_sphere_for_the_projection` — construct a
     GridSpec with `r_pol_m == r_eq_m` and assert the scan angle for
     (40, -105) differs from the GRS80 answer by more than 1e-4 rad, proving
@@ -449,7 +547,16 @@ function.
 
 ## 11. Invariants an implementation must not break
 
-- `lonlat_to_scan` and `scan_to_lonlat` are exact inverses to 1e-9 deg.
+- `lonlat_to_scan` and `scan_to_lonlat` are inverses to 1e-9 deg over the
+  sector, degrading to about 1e-7 deg (a few centimetres on the ground) within
+  a degree of the limb, where the intersection is grazing and no rearrangement
+  removes the last of the conditioning loss. **This invariant originally read
+  "exact inverses to 1e-9 deg" and was false**, first by 1.238 deg in a band
+  just outside the approximate limb, and then — after that was fixed — by
+  1.4e-6 deg from discriminant cancellation. Both are repaired; the residual
+  above is measured, not hoped for. A stated invariant that nothing checks is
+  the exact shape this project keeps getting caught by, so it is stated as
+  measured.
 - The scan angle for a latitude and longitude is independent of grid sampling.
 - `y_scale_rad` stays negative; row 0 is north.
 - The projection uses the ellipsoid from the `GridSpec`. It never uses
