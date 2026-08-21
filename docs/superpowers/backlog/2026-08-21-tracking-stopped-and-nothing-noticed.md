@@ -112,9 +112,29 @@ suspect — `:Mn#`/`:Ms#`/`:Mw#` rate moves plus the tracking-suspend for east,
 none of which the AM5 may account for in its own model. **That mechanism is
 suspected, not proven**, and proving it needs a bench test: park, sync, drive a
 known number of pulses in each direction with the guider otherwise idle, and
-read the coordinate back. It was NOT continuous during observation — dec held to
-about 4 arcseconds over the 80 seconds I sampled at 10 s — so it moves in steps
-tied to some event rather than creeping.
+read the coordinate back.
+
+**CORRECTED an hour later, by measuring for longer.** This paragraph first said
+the divergence "moves in steps tied to some event rather than creeping", on the
+strength of 80 seconds of sampling in which declination held to about 4
+arcseconds. That was too short a window to conclude anything from. Sampled every
+10 s for 26 minutes instead — 151 points spanning ten captured frames —
+declination fell smoothly from 70.6656 to 70.5914, a steady **-10.3 arcsec per
+minute**, with no step at any frame boundary, dither or filter change. It creeps.
+
+Which sharpens the puzzle rather than solving it, and the sharpened version is
+the useful thing to hand the bench test: there are **two regimes**. Between
+01:02 and 01:24 the reported declination moved +4.74 degrees, about +12.9
+arcminutes per minute. Between 01:47 and 02:13 it moved -10.3 arcseconds per
+minute — seventy-five times slower and in the opposite direction. The fast
+window contains the two autofocus runs and the guider's calibration and start;
+the slow window is nothing but frames and dithers. So whatever drives the fast
+regime is plausibly tied to the guider starting or to the mount tracking
+unguided through a sweep, and is NOT the per-frame dithering.
+
+At the slow rate the error reaches about 25 arcminutes over a remaining night,
+which is a re-centre and no more. At the fast rate it reaches degrees in
+minutes, which is what breaks the flip.
 
 **Two fixes, in order.** First, the flip and every other pointing decision
 should be computed from the TARGET's solved coordinates and the clock, not from
