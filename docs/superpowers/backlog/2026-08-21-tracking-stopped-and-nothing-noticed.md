@@ -70,6 +70,59 @@ week.
 
 Nothing to fix in code. Deploy it.
 
+## Defect 5, found afterwards, and probably the root of defects 1 and 3
+
+**The mount's reported position diverges from reality during a guided run, and
+the software already detects it and does nothing.**
+
+At 01:24:24, twenty-two minutes after a plate solve synced the mount to
+Dec +66.113, the log says:
+
+```
+field identification cleared: the mount has moved 4.74 deg since the last plate solve
+```
+
+The telescope had not moved. Two L frames 36 minutes apart (01:08 and 01:44)
+show the same star field, same nebulosity, same cluster, offset only by the
+dither — and every star is a round point, so tracking and guiding were both
+working. What moved was the mount's *belief* about where it is.
+
+Corroborated by its own arithmetic: at 01:01:45 it reported altitude 61.2, which
+is right for Dec 66.1 near the meridian; by 01:31 it reported 56.1, which is
+right for Dec 70.6. Its altitude and azimuth stay perfectly self-consistent with
+its own declination the whole way — computed 55.607 against a reported 55.6 —
+so this is not a status-reporting bug. The internal model itself has walked.
+
+**The detection is the damning part.** Something already computes "the mount has
+moved 4.74 deg since the last plate solve". Its entire response is to clear a
+field-identification label. It does not re-solve, does not re-sync, does not
+warn, does not hold. A number that large means one of two things — the mount is
+lost, or the mount is lying — and both are worth more than forgetting a caption.
+
+**Why this is probably the root of tonight.** The meridian flip is scheduled
+from the mount's coordinates. If those are several degrees out, the flip is
+computed for the wrong hour angle and fires at the wrong time, which is exactly
+what happened: the flip came nine minutes after the mount had already hit its
+own limit, because the scheduler thought there was time left. The same applies
+to any altitude or horizon gate.
+
+It also fits the earlier, vaguer note that mount position drift "appears only
+when the guider drives the mount", and the emulated pulse guide is the obvious
+suspect — `:Mn#`/`:Ms#`/`:Mw#` rate moves plus the tracking-suspend for east,
+none of which the AM5 may account for in its own model. **That mechanism is
+suspected, not proven**, and proving it needs a bench test: park, sync, drive a
+known number of pulses in each direction with the guider otherwise idle, and
+read the coordinate back. It was NOT continuous during observation — dec held to
+about 4 arcseconds over the 80 seconds I sampled at 10 s — so it moves in steps
+tied to some event rather than creeping.
+
+**Two fixes, in order.** First, the flip and every other pointing decision
+should be computed from the TARGET's solved coordinates and the clock, not from
+the mount's readout; the target's hour angle is exactly knowable and the mount's
+opinion is not needed. Second, the 4.74 deg detector should trigger a re-solve
+and re-sync rather than a label change — the rig already plate-solves on demand
+and the correction is free.
+
 ## What I checked and ruled out on the way
 
 Recorded because each of these looked right for a while:
