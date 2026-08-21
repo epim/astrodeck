@@ -191,7 +191,11 @@ def _iso_minute(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M")
 
 
-def _om_payload(cloud, *, start: float = BASE, low=None, mid=None, high=None):
+def _om_payload(cloud, *, start: float = BASE, low=None, mid=None, high=None,
+                precip=None):
+    """`precip` is millimetres per 15-min bucket. Omitted means a dry forecast,
+    which since 2026-08-20 is the only thing that decides the auto-resume veto -
+    cloud advises, rain gates. See test_rain_vetoes_cloud_does_not."""
     n = len(cloud)
     return {"minutely_15": {
         "time": [_iso_minute(start + i * 900) for i in range(n)],
@@ -199,6 +203,7 @@ def _om_payload(cloud, *, start: float = BASE, low=None, mid=None, high=None):
         "cloud_cover_low": low if low is not None else [0] * n,
         "cloud_cover_mid": mid if mid is not None else [0] * n,
         "cloud_cover_high": high if high is not None else list(cloud),
+        "precipitation": precip if precip is not None else [0.0] * n,
     }}
 
 
@@ -506,20 +511,31 @@ async def test_payload_site_coords_null_on_default_site(svc):
 # latch), §14 test matrix rows.
 
 
-async def test_veto_consecutive_sample_rule_and_reason_string(svc):
+async def test_the_consecutive_sample_rule_now_drives_ADVICE_not_a_veto(svc):
+    """The sustained-breach rule still works and still produces the sentence -
+    it simply no longer refuses the night.
+
+    Cloud stopped gating on 2026-08-20 after this veto refused two consecutive
+    clear nights (see test_rain_vetoes_cloud_does_not for the measurements).
+    The rule itself was never wrong about the forecast; the forecast was the
+    wrong instrument for deciding whether to open. It is kept as
+    `cloud_outlook` so the operator still gets the information.
+    """
     s, now, store, rec = svc
     store.cfg().weather.cloud_threshold_pct = 50
     store.cfg().weather.sustain_minutes = 30       # -> 2 consecutive samples
     # a single >=50 sample inside [now, now+60min] is NOT sustained
     _FakeWxClient.om_payload = _om_payload([40, 60, 40, 40, 40, 40, 40, 40])
     await s.tick()
-    assert s.veto_reason(now["t"]) is None
+    assert s.cloud_outlook(now["t"]) is None
     # two CONSECUTIVE samples >= 50 inside the hour ARE (peak = 70)
     _FakeWxClient.om_payload = _om_payload([40, 60, 70, 40, 40, 40, 40, 40])
     now["t"] += OPEN_METEO_INTERVAL_S
     await s.tick()
-    assert s.veto_reason(now["t"]) == \
-        "cloud cover 70% forecast within the next hour (threshold 50%)"
+    assert s.cloud_outlook(now["t"]).startswith(
+        "cloud cover 70% forecast within the next hour (threshold 50%)")
+    # and, the point of the change: it does not stop the night
+    assert s.veto_reason(now["t"]) is None
 
 
 async def test_veto_sustain_longer_than_window_never_fires(svc):
@@ -530,14 +546,18 @@ async def test_veto_sustain_longer_than_window_never_fires(svc):
     store.cfg().weather.sustain_minutes = 240
     _FakeWxClient.om_payload = _om_payload([100] * 8)
     await s.tick()
+    assert s.cloud_outlook(now["t"]) is None
     assert s.veto_reason(now["t"]) is None
 
 
 async def test_veto_fail_open_when_stale(svc):
+    """Unchanged in subject, retargeted in trigger: cloud no longer vetoes, so
+    the vetoing condition here is now forecast RAIN. Fail-open on stale data is
+    the property under test and it still holds."""
     s, now, store, rec = svc
-    _FakeWxClient.om_payload = _om_payload([90] * 8)
+    _FakeWxClient.om_payload = _om_payload([90] * 8, precip=[0.0, 2.0] + [0.0] * 6)
     await s.tick()
-    assert s.veto_reason(now["t"]) is not None     # baseline: breach vetoes
+    assert s.veto_reason(now["t"]) is not None     # baseline: rain vetoes
     _FakeWxClient.fail_om = True
     now["t"] += OPEN_METEO_STALE_S + 900           # age past 45 min, fetch dead
     await s.tick()
@@ -555,7 +575,9 @@ async def test_veto_none_when_disabled(svc):
 async def test_ignore_tonight_set_expire_and_no_night(svc, monkeypatch):
     from astrodeck.weather import NoNightError
     s, now, store, rec = svc
-    _FakeWxClient.om_payload = _om_payload([90] * 8)
+    # rain, because that is what vetoes now - the override must cover the gate
+    # that actually exists, or an operator with a roll-off roof cannot proceed.
+    _FakeWxClient.om_payload = _om_payload([90] * 8, precip=[0.0, 2.0] + [0.0] * 6)
     await s.tick()
     dusk, dawn = BASE - 3600.0, BASE + 8 * 3600.0
     monkeypatch.setattr(
