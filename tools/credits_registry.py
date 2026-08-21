@@ -427,6 +427,35 @@ OPTIONAL_UNINSTALLED: dict[str, dict] = {
 
 SERVICES: list[dict] = [
     {
+        "name": "NOAA GOES on AWS",
+        "spdx": "LicenseRef-Public-Domain",
+        "url": "https://registry.opendata.aws/noaa-goes/",
+        "hosts": [
+            "noaa-goes18.s3.amazonaws.com",
+            "noaa-goes19.s3.amazonaws.com",
+            "s3.amazonaws.com",
+        ],
+        "notes": (
+            "GOES-R Advanced Baseline Imager cloud products \u2014 the clear-sky "
+            "mask and cloud-top height behind the cloud-occlusion model. Read "
+            "anonymously from the public buckets NOAA publish through their Open "
+            "Data Dissemination programme; no key, no account, no cost.\n\n"
+            "NOAA data is a work of the United States government and is in the "
+            "public domain (17 U.S.C. \u00a7 105). The AWS Open Data registry "
+            "entry states plainly: \"There are no restrictions on the use of this "
+            "data.\" Nothing is legally owed here.\n\n"
+            "Credited anyway, because taking a public good silently is a poor "
+            "way to treat one. The sky is measured by an instrument somebody "
+            "else paid for.\n\n"
+            "NOT YET ON SCREEN. Open-Meteo is named in the sky-conditions panel "
+            "every time it shows a forecast; there is no cloud-map panel yet, so "
+            "this entry is the only place NOAA is currently credited. When that "
+            "panel lands it should name NOAA the same way. Written down here "
+            "rather than asserted as done, because a credit line that describes "
+            "a screen nobody built is the same defect as a docstring describing "
+            "a fix nobody called."),
+    },
+    {
         "name": "Open-Meteo",
         "spdx": "CC-BY-4.0",
         "url": "https://open-meteo.com/",

@@ -51,6 +51,23 @@ comhost = ["comtypes>=1.4.0; sys_platform == 'win32'"]
 # The GitHub API reports spdx_id "MIT". tools/licence_texts/libasi.txt already
 # carries that identical text.
 asiair = ["libasi @ git+https://github.com/epim/libasi"]
+# GOES cloud-occlusion granule reader (astrodeck.cloudmap.granule). h5py is
+# BSD-3-Clause and its only requirement is numpy, already a hard dependency, so
+# this extra costs no platform reach: h5py's wheel coverage IS numpy's, save
+# win32, and 32-bit Windows was never a target (the vendored camera DLLs are
+# x64). 32-bit ARM was already out of reach before this stage existed — numpy
+# put it there — so the Orange Pi appliance, Raspberry Pi OS 64-bit and Ubuntu
+# arm64 all install this cleanly.
+#
+# Absent h5py the module still imports, `HAVE_H5PY` is False and every entry
+# point raises CloudmapUnavailable naming THIS extra by name — so the key here
+# and the string in granule.py::_require_h5py have to stay the same word.
+# test_the_extra_that_the_error_message_names_exists reads this file and
+# asserts exactly that, because for one review round the message told users to
+# run `pip install 'astrodeck[cloudmap]'` against an extra that did not exist:
+# pip warns "does not provide the extra", installs nothing, exits 0, and the
+# next run prints the identical instruction again.
+cloudmap = ["h5py>=3.10"]
 
 [project.entry-points."astrodeck.backends"]
 # Native drivers register through the SAME entry-point path an external plugin
