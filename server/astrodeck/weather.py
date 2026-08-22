@@ -64,6 +64,39 @@ def _iso_z(ts: float) -> str:
 
 # ------------------------------------------------------------------ fetchers
 
+#: The pressure levels the wind column is read at, hPa.
+#:
+#: THEY RIDE THE FORECAST REQUEST rather than a second one. The cloud-occlusion
+#: model corroborates its measured cloud motion against the wind aloft, and
+#: this module already holds the only connection to Open-Meteo there is. A
+#: second client for the same host would double the traffic, double the failure
+#: modes, and double the number of places a site coordinate leaves the rig --
+#: for data that costs nothing to append here.
+#:
+#: 850 to 200 hPa is roughly 1.5 km to 12 km, which brackets every layer cloud
+#: is advected in. Which level a measurement matches is NOT chosen by the
+#: cloud's height: tracking by height band is precisely the thing that does not
+#: work (design 2 §2.5 got 126 km/h for cloud below 2 km against a 17 km/h wind
+#: there), so the whole column is offered and the consumer asks whether the
+#: measurement resembles ANY of it.
+WIND_LEVELS_HPA: tuple[int, ...] = (850, 700, 500, 400, 300, 250, 200)
+#: How far from ``now`` an hourly sample may sit and still describe it. The
+#: series is hourly, so a series covering now is never more than 30 min away;
+#: past an hour there is no sample for this moment and the honest answer is an
+#: empty column rather than the nearest thing on file.
+WIND_COLUMN_MAX_AGE_S = 3600.0
+
+
+def _wind_fields() -> list[str]:
+    """The ``hourly=`` field list for the pressure-level winds."""
+    fields: list[str] = []
+    for level in WIND_LEVELS_HPA:
+        fields.append("wind_speed_%dhPa" % level)
+        fields.append("wind_direction_%dhPa" % level)
+        fields.append("geopotential_height_%dhPa" % level)
+    return fields
+
+
 async def _fetch_open_meteo(lat: float, lon: float) -> dict:
     """One request + one retry against Open-Meteo (the _fetch_cutout shape,
     survey.py:170-191); parsed JSON or RuntimeError on exhaustion."""
@@ -71,6 +104,13 @@ async def _fetch_open_meteo(lat: float, lon: float) -> dict:
         "latitude": str(lat),
         "longitude": str(lon),
         "minutely_15": ("cloud_cover,cloud_cover_low,cloud_cover_mid,cloud_cover_high,precipitation"),
+        # Appended, not substituted: the minutely_15 block above is what every
+        # other consumer of this response reads, and the hourly block is a
+        # separate key in the same payload. A response that carries no `hourly`
+        # -- an older cached body, a partial reply -- still parses, and the
+        # wind column simply comes back empty, which is not a refutation of
+        # anything (stage 5 §5.2).
+        "hourly": ",".join(_wind_fields()),
         "forecast_days": "2",
         "timezone": "UTC",
     }
@@ -133,6 +173,68 @@ def _parse_open_meteo(js: dict) -> tuple[list[float], dict[str, list[int]]]:
     for k in series:
         series[k] = series[k][:n]
     return times, series
+
+
+def _parse_wind_column(js: dict) -> tuple[list[float], list[list[dict]]]:
+    """hourly block -> (unix sample times, one level list per sample).
+
+    Each level is ``{"label", "height_km", "speed_kmh", "from_deg"}``.
+
+    ``from_deg`` IS THE METEOROLOGICAL CONVENTION and the key says so. Open-Meteo
+    reports the direction wind comes FROM; a consumer comparing it against a
+    measured drift wants the direction air is GOING, and the two are 180 degrees
+    apart. Naming the field for the convention it is in -- rather than handing
+    over a bare ``direction`` -- is what stops the turn being forgotten: a
+    column entered backwards corroborates nothing and looks exactly like a sky
+    the wind disagrees with, which is a silent wrong answer rather than a loud
+    one.
+
+    A level missing any of its three values is dropped from that sample rather
+    than defaulted. A wind speed nobody measured is not calm air.
+    """
+    # Total by construction: every shape that is not the one expected answers
+    # with an empty column. This runs on the success path of the forecast
+    # refresh, and an exception here would cost the cloud forecast that had
+    # already parsed cleanly out of the same body.
+    block = js.get("hourly")
+    if not isinstance(block, dict):
+        return [], []
+    times: list[float] = []
+    for t in (block.get("time") if isinstance(block.get("time"), list) else []):
+        try:
+            dt = datetime.strptime(str(t), "%Y-%m-%dT%H:%M").replace(
+                tzinfo=timezone.utc)
+        except (TypeError, ValueError):
+            return [], []
+        times.append(dt.timestamp())
+    if not times:
+        return [], []
+
+    def _num(seq, i) -> float | None:
+        if not isinstance(seq, list) or i >= len(seq):
+            return None
+        v = seq[i]
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            return None
+        return float(v)
+
+    samples: list[list[dict]] = []
+    for i in range(len(times)):
+        levels: list[dict] = []
+        for level in WIND_LEVELS_HPA:
+            speed = _num(block.get("wind_speed_%dhPa" % level), i)
+            direction = _num(block.get("wind_direction_%dhPa" % level), i)
+            height_m = _num(block.get("geopotential_height_%dhPa" % level), i)
+            if speed is None or direction is None or height_m is None:
+                continue
+            levels.append({
+                "label": "%d hPa" % level,
+                "height_km": height_m / 1000.0,
+                "speed_kmh": speed,
+                "from_deg": direction % 360.0,
+            })
+        samples.append(levels)
+    return times, samples
 
 
 async def _fetch_astrospheric(lat: float, lon: float, api_key: str) -> dict:
@@ -213,6 +315,11 @@ class WeatherService:
         self._om_series: dict[str, list[int]] = {}
         self._om_fetched_ts: float | None = None
         self._om_attempt_at: float = 0.0   # due-when-older-than attempt latch
+        # Pressure-level winds, riding the same Open-Meteo response (see
+        # WIND_LEVELS_HPA). Hourly, so kept as its own time base rather than
+        # folded into the 15-minute series.
+        self._wind_times: list[float] = []
+        self._wind_samples: list[list[dict]] = []
         # Astrospheric cache
         self._as_times: list[float] = []
         self._as_seeing: list[float | None] = []
@@ -287,6 +394,7 @@ class WeatherService:
     def _clear(self) -> None:
         self._om_times, self._om_series, self._om_fetched_ts = [], {}, None
         self._om_attempt_at = 0.0
+        self._wind_times, self._wind_samples = [], []
         self._as_times, self._as_seeing, self._as_trans = [], [], []
         self._as_fetched_ts, self._as_credits = None, None
         self._as_attempt_at = 0.0
@@ -306,6 +414,25 @@ class WeatherService:
                     f"open-meteo fetch failed: {type(exc).__name__}", "weather")
             return
         self._om_times, self._om_series = times, series
+        # Parsed off the SAME body, and outside the try above on purpose: a
+        # malformed hourly block must not throw away a good cloud forecast.
+        # _parse_wind_column answers an unusable one with an empty column --
+        # and IN ITS OWN try, because that promise was the only thing keeping
+        # this line from being the opposite of what the sentence above claims.
+        # A raise here lands outside every handler in the refresh: `_om_times`
+        # and `_om_series` would already be assigned, `_om_fetched_ts` would
+        # stay None, `_evaluate_night_warning` would never run and no
+        # `weather` event would be published -- so the RAIN VETO would go
+        # stale with 96 good samples in hand and nothing in any log to say
+        # why. The function is total today (fuzzed with 23 adversarial hourly
+        # blocks, none raised); nothing enforced that, and now the call site
+        # does not need it to be true.
+        try:
+            self._wind_times, self._wind_samples = _parse_wind_column(js)
+        except Exception as exc:  # noqa: BLE001 — an unusable block is empty
+            self._wind_times, self._wind_samples = [], []
+            bus.log("warning",
+                    f"wind column unusable: {type(exc).__name__}", "weather")
         self._om_fetched_ts = now
         # spec §5: evaluate BEFORE publishing so a fresh alert rides this
         # payload (the publish is emission #1; the bus.log inside is #2).
@@ -497,6 +624,37 @@ class WeatherService:
         return (f"cloud cover {peak}% forecast within the next hour "
                 f"(threshold {cfg.cloud_threshold_pct}%) - the frames decide, "
                 f"not this")
+
+    def wind_column(self, now: float) -> list[dict]:
+        """The pressure-level winds over the site at ``now``, or an empty list.
+
+        One row per level: ``{"label", "height_km", "speed_kmh", "from_deg"}``,
+        ordered 850 hPa upward. ``from_deg`` is where the wind comes FROM (see
+        ``_parse_wind_column``); a caller comparing it against a measured drift
+        has to turn it around.
+
+        PLAIN ROWS, NOT A TYPE FROM THE CONSUMER. The one caller is the
+        cloud-occlusion service, whose corroboration takes a small dataclass --
+        and importing that dataclass here would put an import of the cloud
+        model into the module that owns ``veto_reason``, which is the auto-
+        resume safety gate. The rule that the cloud model gates nothing is kept
+        by a test that greps this file for exactly that import, and a rule kept
+        by a detector must not be worked around by the file it is watching. The
+        translation costs the consumer four lines and buys a dependency edge
+        that only ever points one way.
+
+        EMPTY IS NOT A REFUTATION and never an error: no forecast yet, weather
+        disabled, an upstream that dropped the hourly block, or a moment the
+        series does not cover all answer the same way, and the consumer treats
+        the absence of a column as "unconfirmed" rather than "contradicted".
+        """
+        if not self._wind_times:
+            return []
+        best = min(range(len(self._wind_times)),
+                   key=lambda i: abs(self._wind_times[i] - now))
+        if abs(self._wind_times[best] - now) > WIND_COLUMN_MAX_AGE_S:
+            return []
+        return [dict(level) for level in self._wind_samples[best]]
 
     # -- high-cloud night warning (spec §5, REQUIRED) --------------------------
 

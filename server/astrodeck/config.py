@@ -717,6 +717,42 @@ class WeatherConfig(BaseModel):
     astrospheric_api_key: str | None = None
 
 
+class CloudmapConfig(BaseModel):
+    """GOES cloud-occlusion model (cloud-occlusion stage 6a design §7).
+
+    DEFAULT OFF, and that is a decision rather than caution. The two ABI
+    products cost 4.4 MB a cycle; a feature that silently started pulling 26 MB
+    an hour on somebody's metered connection because they took an update is a
+    bad citizen, and the operator who wants it can find one switch.
+
+    IT DOES NOT GATE ANYTHING. Nothing in the sequence engine, the safety gate
+    or auto-resume consults this model, by design and by a named test. The
+    frames decide whether tonight is worth exposing; this says where in the sky
+    the cloud is, which is a thing no scalar forecast can express and still not
+    a reason to refuse to open.
+    """
+    enabled: bool = False
+    #: G18 is GOES-WEST and the right default for the western United States:
+    #: from there the zenith angle is 46.2 degrees against GOES-19's 64.7,
+    #: which is a 2.9 km smeared pixel against 4.7 and a 9.4 km parallax error
+    #: against 19.1 (design 2 §2.1). East of roughly 100 W the answer flips,
+    #: and this is the knob for it.
+    platform: Literal["G18", "G19"] = "G18"
+    #: Ten minutes, not five. The products refresh every five and the cloud
+    #: pattern's own lifetime is under forty (design 2 §2.6), so a ten-minute
+    #: cadence loses nothing a five-minute one would have caught and halves the
+    #: traffic on a rig that is also carrying the relay tunnel and, on an
+    #: imaging night, uploading frames. Below five is REFUSED rather than
+    #: clamped: it cannot produce fresher data than the satellite publishes, so
+    #: a caller asking for it has misunderstood something and should be told.
+    poll_minutes: int = Field(10, ge=5, le=60)
+    #: Half-width of the fetched window, in grid cells. 100 is a 201-cell box,
+    #: which on the 2 km mask reaches 200 km either way -- past the 151 km the
+    #: occlusion ladder walks at its 5 degree floor -- and is stage 5's default
+    #: correlation window.
+    half_px: int = Field(100, ge=16, le=400)
+
+
 # ------------------------------------------------------- backend drivers (2026-07-08)
 #
 # GLOBAL configured drivers (equipment-drivers spec §3.1): a driver is "how to
@@ -852,6 +888,10 @@ class AppConfig(BaseModel):
     survey: SurveyConfig = Field(default_factory=SurveyConfig)
     # --- weather integration (sub-project C spec §2; appended — old configs load fine) ---
     weather: WeatherConfig = Field(default_factory=WeatherConfig)
+    # --- GOES cloud-occlusion model (cloud-occlusion stage 6a §7; appended —
+    #     old configs load fine and the default is OFF, so a rig that takes an
+    #     update starts no new outbound traffic) ---
+    cloudmap: CloudmapConfig = Field(default_factory=CloudmapConfig)
     # --- cooler warm-down ramp (2026-08-04; appended — old configs load fine and
     #     inherit the ramp, which is the whole point: the rigs that need it most
     #     are the ones nobody is going to go and enable it on) ---
