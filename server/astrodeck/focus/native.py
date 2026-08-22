@@ -34,7 +34,7 @@ from ..events import bus
 from ..providers import NATIVE_AVAILABLE
 from ..imaging.stars import OVEREXPOSED_FRAC, focus_size, saturation_fraction
 from .autofocus import (MAX_DROPS_PER_POSITION, MIN_STARS_PER_POINT,
-                        confirmed_best,
+                        assert_tracking, confirmed_best,
                         over_swept_advice,
                         AutofocusResult, curve_verdict, dropped_points_phrase,
                         forget_measured_span, overexposure_levers,
@@ -212,7 +212,8 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                                exposure_s: float = 2.0, gain: int = 120,
                                step: int | None = None, steps_each_side: int = 4,
                                binning: int = 2, expose_guard=None,
-                               hfr_method: str | None = None) -> AutofocusResult:
+                               hfr_method: str | None = None,
+                               tracking_check=None) -> AutofocusResult:
     """Run a V-curve autofocus sweep driven by the native Rust engine.
 
     ``step`` None — the default — sizes the sweep from this focuser's MEASURED
@@ -225,6 +226,12 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
     single-capture / sequence exposures (hub capture guard). ``hfr_method`` selects
     a detector preset ("autofocus"/"advanced"/"typical") — None uses the shipped
     default.
+
+    ``tracking_check`` mirrors the legacy path too, and this is the path the rig
+    actually runs: a tri-state async probe of the mount's tracking state, asked
+    before the first frame and again before every point. See
+    ``focus.autofocus.assert_tracking`` and the 2026-08-21 sweep that returned
+    HFR 8.40 px measured entirely on a stopped mount.
 
     Raises ``DeviceError`` (user-presentable) when the wheel is absent or the
     engine rejects an input; ALWAYS restores the focuser to its start position on
@@ -445,6 +452,9 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
         return " ".join(bits)
 
     try:
+        # Before the probe frame, so a stopped mount costs one mount read and
+        # not five minutes of exposures.
+        await assert_tracking(tracking_check, "before the sweep")
         # ONE frame before committing to the whole sweep. The failure this
         # prevents is not a crash: it is five minutes of moving the focuser to
         # reach "not_enough_spread", with nothing on screen saying the field was
@@ -531,6 +541,13 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                     spent, prefetch = prefetch, None
                     frame = await spent.take(pos)
                 predictor.emitted(pos)
+                # AND AGAIN AT EVERY POINT. A sweep is minutes long; a mount can
+                # reach its meridian limit in the middle of one and every point
+                # after that measures the drift. Asked here, with the devices
+                # released and nothing in flight, so the teardown below can put
+                # the focuser back cleanly.
+                await assert_tracking(
+                    tracking_check, f"at sweep point {attempted + 1}")
                 if not (leash_lo <= pos <= leash_hi):
                     # A BOUNDED SWEEP MUST NOT BECOME AN UNBOUNDED WALK.
                     #

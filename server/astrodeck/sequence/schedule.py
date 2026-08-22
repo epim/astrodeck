@@ -527,6 +527,94 @@ def hours_to_meridian_flip(ra_hours: float, lon_deg: float,
     return -hour_angle_h(ra_hours, lon_deg, now)
 
 
+#: Minutes before meridian transit at which a GEM flip is triggered.
+#:
+#: NOT zero, and this is the whole fix. Measured on the rig's AM5: tracking was
+#: refused at -7.6 min (NGC 7129, 2026-08-21) and -4.7 min (NGC 6946,
+#: 2026-08-22), both BEFORE transit, both answering :Te# with 0. A flip
+#: triggered at the crossing is always too late by several minutes.
+#:
+#: 10 minutes clears the worse of the two measurements with a 2.4 minute margin
+#: and costs, when it was not strictly needed, one re-slew and one re-centre -
+#: about four minutes. The asymmetry is the argument: four minutes against the
+#: rest of the night.
+#:
+#: THE DATES ARE THE MORNING SIDE OF THE NIGHT. NGC 7129 refused at 00:44 on
+#: 2026-08-21, i.e. during the night of 08-20/21; NGC 6946 refused at 23:35
+#: LOCAL ON 2026-08-21, i.e. the evening that opened the night of 08-21/22. The
+#: -4.7 min hour angle reproduces from 2026-08-21 23:35 and does NOT reproduce
+#: from 2026-08-22 23:35 (that evening the same target is only -0.8 min out),
+#: which matters because that number is the tighter of the two measurements the
+#: lead is sized against.
+#:
+#: 2.4 minutes is NOT the whole margin: the frame loop can put a dither, a
+#: filter change and a five-minute autofocus sweep between two flip checks, and
+#: none of that fits in a one-exposure window. The engine closes that gap by
+#: re-checking the flip AFTER those events rather than by inflating this number
+#: - see `SequenceEngine._maybe_meridian_flip`'s caller.
+MERIDIAN_FLIP_LEAD_MIN = 10.0
+
+#: The upper bound on a plan's own lead. An hour is already far more than any
+#: mount's limit needs; past that the setting stops being a lead and starts
+#: being "flip immediately, always", which is a different (and unasked-for)
+#: behaviour. Enforced by the ``SequencePlan`` field, not here, so a bad value
+#: is refused at the edge instead of silently clamped mid-run.
+MERIDIAN_FLIP_LEAD_MAX_MIN = 60.0
+
+#: How far PAST transit a target may already be at acquisition and still arm
+#: the flip, in MINUTES, on top of the plan's own flip lead.
+#:
+#: THE ARMING HAS TO MOVE WITH THE TRIGGER. `_flip_armed` gates the flip AND
+#: its decline log, so a trigger that fires earlier than the latch arms is a
+#: silent skip - which is exactly how 2026-08-21 and 08-22 produced no flip
+#: decision in the log at all. The trigger now fires ``lead`` minutes before
+#: transit, so the latch has to arm at least that far past it, or a target
+#: acquired inside its own lead window never flips at all.
+#:
+#: THE MARGIN IS FIVE MINUTES AND NOT AN HOUR, and the difference is measured
+#: cost. Arming a whole hour past transit was tried first, on the argument that
+#: the mount's own idea of the meridian is drifted. It is - but the flip
+#: countdown is computed from the TARGET's catalogue RA and the site longitude
+#: (`hours_to_meridian_flip`), never from the mount's readout, so the drift
+#: does not reach this decision at all. What a flat hour does reach is every
+#: re-acquisition inside that hour: `_setup_target` re-runs on a safety-pause
+#: resume, a roof reopen and a cloud-hold release, and each one armed a latch
+#: that fired a full stop-guide / re-slew / re-solve / re-centre /
+#: guider-recalibrate / post-flip-autofocus - about eight minutes of sky - on a
+#: mount that `goto_and_center` had placed on the correct side seconds earlier.
+#: Five minutes covers the case the design actually named (a target acquired
+#: inside the lead window, plus the few minutes a slew and an initial autofocus
+#: take between the countdown being read and the frame loop starting) and stops
+#: there.
+FLIP_ARM_MARGIN_MIN = 5.0
+
+
+def flip_should_arm(hours_to_flip: float,
+                    lead_min: float | None = None) -> bool:
+    """Whether a target acquired with this countdown owes a meridian flip.
+
+    ``hours_to_flip`` is :func:`hours_to_meridian_flip` - positive while the
+    target is still east of the meridian. ``lead_min`` is the plan's own flip
+    lead (:data:`MERIDIAN_FLIP_LEAD_MIN` when not given), because the boundary
+    is defined RELATIVE TO THE TRIGGER: see :data:`FLIP_ARM_MARGIN_MIN`.
+    """
+    try:
+        h = float(hours_to_flip)
+    except (TypeError, ValueError):
+        return False
+    if math.isnan(h):
+        return False
+    lead = MERIDIAN_FLIP_LEAD_MIN if lead_min is None else lead_min
+    try:
+        lead = float(lead)
+    except (TypeError, ValueError):
+        lead = MERIDIAN_FLIP_LEAD_MIN
+    if lead != lead:                            # NaN
+        lead = MERIDIAN_FLIP_LEAD_MIN
+    lead = min(max(0.0, lead), MERIDIAN_FLIP_LEAD_MAX_MIN)
+    return h > -((lead + FLIP_ARM_MARGIN_MIN) / 60.0)
+
+
 def constraint_gate(target: "Target", site: dict[str, Any],
                     now: float) -> tuple[str, str, float] | None:
     """Evaluate the PRO-14 pro constraints (hour angle / moon sep / moon illum) at
@@ -791,12 +879,29 @@ def flip_can_be_skipped(dec_deg: "float | None", lat_deg: "float | None",
     original docstring named the risk itself: "this makes it flip less, which is
     the direction that can hurt".
 
-    UNKNOWN PIER SIDE KEEPS THE OLD BEHAVIOUR. It is genuinely ambiguous — a
-    fork mount (no flip possible) and a GEM whose driver is quiet look the same
-    from here — so this falls back to the tube geometry rather than guessing in
-    either direction. An operator who does not want flips at all already has
-    `SequencePlan.meridian_flip`.
+    UNKNOWN PIER SIDE NOW MEANS FLIP, reversing what shipped on 2026-08-20.
+
+    That version fell back to the tube geometry when the pier side could not be
+    read, on the argument that a fork mount and a quiet GEM look identical from
+    here. The ambiguity is real; the errors are not symmetric. Treating a GEM as
+    a fork has now cost four nights — 2026-08-19, 08-20, 08-21, 08-22. Treating
+    a fork as a GEM costs one unnecessary re-slew per meridian crossing, and a
+    fork owner who minds already has `SequencePlan.meridian_flip = False`.
+
+    This is "unreadable is not a verdict" (see `astrodeck-dead-link-recovery`):
+    an absent pier side is a FAILURE TO MEASURE, and the old code was reading it
+    as a measurement of "no pier".
+
+    So the honest answer today is that nothing excuses a flip: this returns
+    False for every mount. ``dec_deg``/``lat_deg``/``clearance_deg`` are kept —
+    and `flip_unnecessary_over_pole` is still exported and still correct about
+    the tube — because the geometry is not what was wrong, only its authority
+    over a mount that has its own limit. If a driver ever reports a mount TYPE
+    (rather than a side that a fork simply cannot have), the optimisation
+    reconnects here and nowhere else.
     """
     if mount_is_gem(pier_side):
         return False
-    return flip_unnecessary_over_pole(dec_deg, lat_deg, clearance_deg)
+    # Not `flip_unnecessary_over_pole(...)`: see above. The tube clearing the
+    # ground says nothing about whether the mount will keep tracking.
+    return False
