@@ -64,7 +64,9 @@ disagree.
 
 ```python
 HORIZON_S          = 1800.0    # 30 min; beyond it, withhold
-MIN_PEAK           = 0.15      # below this the correlation is noise
+MIN_PEAK           = 0.15      # necessary, NOT sufficient - see below
+MIN_PEAK_Z         = 8.0       # and the peak must stand 8 sigma above its own surface
+MIN_WINDOW_PX      = 16        # a crop smaller than this is nearly all taper
 MIN_SEPARATION_S   = 120.0     # two granules closer than this cannot resolve motion
 MAX_SEPARATION_S   = 1200.0    # beyond 20 min the pattern has moved on
 WIND_SPEED_FACTOR  = 1.6       # measured speed within this factor of some level
@@ -79,6 +81,7 @@ class Motion:
     peak: float                # correlation strength, 0..1
     dt_s: float
     corroborated: bool         # matched a level in the wind column
+    column_consulted: bool     # was there a column to consult at all
     matched_level: str | None  # e.g. "250 hPa"
     reason: str
 
@@ -91,6 +94,27 @@ def corroborate(motion, column) -> Motion
 def forecast_at(site, alt_deg, az_deg, mask, height, motion, ahead_s,
                 *, fov_deg=1.682) -> Occlusion
 ```
+
+**AMENDED 2026-08-21 — `MIN_PEAK` alone is the wrong gate.** "Below this the
+correlation is noise" is true only at one crop size. A phase-correlation
+surface's noise floor scales with the number of cells, so an absolute threshold
+is loose on a big crop and, worse, permissive on a small one: a handful of cells
+is nearly all Hann taper and produces a convincing peak out of nothing.
+
+The peak must therefore ALSO stand `MIN_PEAK_Z` = 8.0 standard deviations above
+the mean of its own correlation surface, which is scale-free in a way an
+absolute number cannot be, and the crop must be at least `MIN_WINDOW_PX` = 16
+cells on each axis. `MIN_WINDOW_PX` existed in the implementation and was absent
+from this section entirely.
+
+**AMENDED — `HORIZON_S`'s justification conflates two different quantities.**
+Design 2's 40-minute pair correlating at 0.088 bounds where a MEASUREMENT is
+still possible. It says nothing about where a FORECAST is still useful, which is
+a separate and shorter question, and 1800 s was set as though the two were the
+same. The constant stays at 1800 s for now: a verifier measured the forecast
+becoming worse than silence before that and proposed 1200 s, but the measurement
+did not reproduce, and a safety bound does not move on a number that cannot be
+re-derived. Settle it with the calibration data stage 6 collects.
 
 `estimate_motion` returns `None` — never a zero vector — when the pair is
 unusable: separation outside `[MIN_SEPARATION_S, MAX_SEPARATION_S]`, peak below
@@ -153,6 +177,22 @@ gives a speed no level carries, a direction no level carries, or both.
 
 An empty column returns `corroborated=False` with a reason saying the column
 was unavailable — **not** an assertion that the motion is wrong.
+
+**AMENDED — `corroborated=False` was carrying two different facts.** "No wind
+column was available" and "a column was consulted and no level matched" are
+different states, and only the second is evidence against the measurement. A
+single boolean reports the first as though it were the second, which is the
+"unreadable is not a verdict" mistake this codebase has paid for elsewhere.
+Hence `column_consulted`, and hence three corroboration states in the forecast's
+reason (section 5.3), not two.
+
+**AMENDED — report the CLOSEST matching level, not the first.** A column arrives
+in whatever order its source lists it, so a first-match rule makes
+`matched_level` an artifact of that ordering. It changes no verdict; it changes
+what the operator is told, which is the field's only purpose. Score each level
+by the hypot of its two gate residuals, each normalised by its own gate, so
+neither speed nor bearing is privileged, the point of section 5.2 being that
+those two must not collapse into one distance.
 
 An uncorroborated `Motion` is still returned. Stage 6 decides what to show; this
 stage does not silently discard a measurement it merely cannot confirm.
@@ -220,6 +260,25 @@ time and whether the motion was corroborated.
 16. `test_beyond_the_horizon_the_forecast_is_withheld` — `ahead_s` of 2400
     gives `basis="no_data"`, not an extrapolation.
 17. `test_a_negative_lead_time_is_refused`.
+**AMENDED — test 18 as written below is FALSE, and falls into a neighbouring
+version of the hazard it warns about.** Mean-subtracting `1 - p` gives exactly
+`-A`, so the whitened cross-spectrum is -1 at every frequency and the surface is
+a NEGATIVE delta: peak 0.0 against 1.0, argmax at float noise, and
+`estimate_motion` refuses the pair. Written literally, the test fails.
+
+The construction that genuinely cannot fail — and the one design 2 section 2.7
+actually fell into — is complementing BOTH frames of the pair: correlating
+clear-vs-clear against cloudy-vs-cloudy is bit-identical by construction. Assert
+that. A warning about tests that cannot fail is worth little if the warning is
+wrong about which construction cannot fail.
+
+**The eighteen tests below also leave the module's refusals largely unkept.**
+The suite now carries thirty; the additions pin the behind-the-limb and
+out-of-sector refusals, the missing-variable case, the different-grid refusal,
+the `half_px` floor, the calm-level skip, the lower half of the speed gate, the
+ordering of the look-direction and lead-time checks, and the no-coordinates rule
+on every reason string rather than only the forecast's.
+
 18. `test_no_test_here_correlates_a_field_with_its_own_complement` — a
     meta-test: assert that correlating `p` against `1 - p` returns the same
     peak and shift as correlating `p` against `p`, which is why such a
