@@ -125,6 +125,10 @@ from ..sequence.resume_arm import ResumeArm
 from ..plans import migrate_plan_policy_fields
 from ..sequence.session import migrate_legacy_resume, session_store
 from ..weather import NoNightError, weather_service
+# Cloud-occlusion model (stage 6a). Imported HERE and nowhere near the sequence
+# engine, the safety gate or the auto-resume arm: the model informs, it does not
+# vote, and a named test greps those files to keep it that way.
+from ..cloudmap.service import cloudmap_service
 
 engine = SequenceEngine(hub)
 
@@ -370,6 +374,13 @@ async def _lifespan(app: "FastAPI"):
     # Started UNCONDITIONALLY: each tick no-ops unless cfg.weather.enabled AND
     # the site is set, so runtime config toggles take effect within one tick.
     weather_service.start()
+    # GOES cloud-occlusion poller (cloud-occlusion stage 6a §3) — its own 60 s
+    # asyncio loop, polling NOAA every 10 min. Started UNCONDITIONALLY for the
+    # same reason as the weather poller: each tick no-ops unless
+    # cfg.cloudmap.enabled AND the site is set, and the disabled path
+    # constructs no HTTP client at all, so a runtime toggle takes effect within
+    # one tick with no restart and a rig that never enables it pays nothing.
+    cloudmap_service.start()
     # Gallery trash auto-purge — its own 6 h asyncio loop, first tick immediately
     # so a box that reboots daily still reaches the 30-day horizon. A no-op (one
     # `is_dir()`) until something has actually been deleted.
@@ -442,6 +453,7 @@ async def _lifespan(app: "FastAPI"):
         yield
     finally:
         await weather_service.stop()
+        await cloudmap_service.stop()
         await resume_arm.stop()
         await trash_keeper.stop()
         await dawn_park.stop()
@@ -2076,6 +2088,61 @@ def create_app() -> FastAPI:
             await asyncio.to_thread(_write_weather_tile, path, body)
             return Response(body, media_type="image/png",
                             headers=cache_headers)
+
+    # ------------------------------------ cloud map (cloud-occlusion 6a §6)
+    #
+    # Three read-only routes over the GOES cloud-occlusion model. All three are
+    # gated on view.weather, the same cap and the same trade-off as the radar
+    # map above (2026-07-17 decisions wave I2): the dome is centred on the site
+    # and a pierce point sits within 30 km of it, so reaching these routes
+    # discloses the rig's region to an operator, and a VIEWER never reaches
+    # them at all.
+    #
+    # ALL THREE ANSWER 200 FOR EVERY STATE OF THE SKY, including "switched off"
+    # and "nothing fetched yet". 6b has to draw off, stale and no-data as three
+    # different things, and a 404 collapses them into one status code that also
+    # means "the route moved" and "the proxy is misconfigured". A 400 is
+    # reserved for the caller asking for something that does not exist -- a
+    # zero-degree grid step -- which is not a state of the sky.
+    #
+    # NONE OF THIS GATES ANYTHING. No sequence decision, no safety gate and no
+    # auto-resume consults these routes or the service behind them.
+
+    def _cloudmap_400(exc: ValueError):
+        # Stage 4 owns the domains -- 0 < step <= 45, 0 < alt <= 90, finite
+        # azimuth -- and says why in a full sentence. Re-checking them here
+        # would be a second copy of a boundary rule, which is how two copies
+        # come to disagree; the route only decides what a domain error IS,
+        # which is a 400.
+        return HTTPException(status_code=400, detail=str(exc))
+
+    @app.get("/api/cloudmap")
+    @declare(CAP_VIEW_WEATHER)
+    async def get_cloudmap(
+            principal: Principal = Depends(require(CAP_VIEW_WEATHER))):
+        return cloudmap_service.payload()
+
+    @app.get("/api/cloudmap/dome")
+    @declare(CAP_VIEW_WEATHER)
+    async def get_cloudmap_dome(
+            alt_step: float = 2.0, az_step: float = 4.0,
+            principal: Principal = Depends(require(CAP_VIEW_WEATHER))):
+        try:
+            return await cloudmap_service.dome_payload(
+                alt_step_deg=alt_step, az_step_deg=az_step)
+        except ValueError as exc:
+            raise _cloudmap_400(exc) from exc
+
+    @app.get("/api/cloudmap/at")
+    @declare(CAP_VIEW_WEATHER)
+    async def get_cloudmap_at(
+            alt: float, az: float, ahead_s: float = 0.0,
+            principal: Principal = Depends(require(CAP_VIEW_WEATHER))):
+        try:
+            return cloudmap_service.at_payload(
+                alt_deg=alt, az_deg=az, ahead_s=ahead_s)
+        except ValueError as exc:
+            raise _cloudmap_400(exc) from exc
 
     # -------------------------------------------------- restricted assets (#216)
     #
