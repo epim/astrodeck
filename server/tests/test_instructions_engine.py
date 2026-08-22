@@ -49,6 +49,9 @@ def _returns(info: dict):
 def _tiny_plan(*, instructions=None) -> SequencePlan:
     return SequencePlan(
         name="pro3", guide=False, dither_every=0, autofocus_every=0,
+        # See _multi_plan: M42's hour angle depends on when the suite runs, and
+        # the flip now fires on a lead. Nothing here is about the meridian.
+        meridian_flip=False,
         targets=[Target(
             name="M42", ra_hours=5.5881, dec_deg=-5.3911,
             center=False, autofocus_first=False,
@@ -80,7 +83,7 @@ async def test_high_hfr_triggers_refocus(sim_hub, temp_store, monkeypatch):
     eng = SequenceEngine(sim_hub)
     af = []
 
-    async def fake_af(label):
+    async def fake_af(label, **_ctx):
         af.append(label)
     monkeypatch.setattr(eng, "_autofocus", fake_af)
     monkeypatch.setattr(eng, "_capture",
@@ -97,6 +100,11 @@ def _multi_plan(names, *, count=1, instructions=None) -> SequencePlan:
     so schedule_order preserves that order)."""
     return SequencePlan(
         name="jumps", guide=False, dither_every=0, autofocus_every=0,
+        # A FIXED RA MEANS A WALL-CLOCK-DEPENDENT HOUR ANGLE. The meridian flip
+        # now fires 10 minutes BEFORE transit and stays armed until
+        # lead + FLIP_ARM_MARGIN_MIN past it (`schedule`), so for a small slice
+        # of the day these runs would take a real flip mid-test. Off on purpose.
+        meridian_flip=False,
         targets=[Target(
             name=n, ra_hours=5.5881, dec_deg=-5.3911,
             center=False, autofocus_first=False,
@@ -279,7 +287,7 @@ async def test_a_refocus_that_FAILED_leaves_the_rule_armed(sim_hub, temp_store,
     eng = SequenceEngine(sim_hub)
     af = []
 
-    async def failing_af(label):
+    async def failing_af(label, **_ctx):
         af.append(label)
         return False                    # the sweep could not find focus
 
@@ -305,7 +313,7 @@ async def test_a_refocus_that_WORKED_does_not_re_fire(sim_hub, temp_store,
     eng = SequenceEngine(sim_hub)
     af = []
 
-    async def ok_af(label):
+    async def ok_af(label, **_ctx):
         af.append(label)
         return True
 
@@ -330,7 +338,7 @@ async def test_a_rule_that_keeps_failing_gives_up_and_says_so(sim_hub, temp_stor
     eng = SequenceEngine(sim_hub)
     af = []
 
-    async def failing_af(label):
+    async def failing_af(label, **_ctx):
         af.append(label)
         return False
 
@@ -406,7 +414,7 @@ async def test_a_SUCCESSFUL_refocus_clears_the_failure_budget(sim_hub, temp_stor
         frames["n"] += 1
         return {"hfr": hfr_script[i], "stats": {"median": 100}, "saved_path": None}
 
-    async def scripted_af(label):
+    async def scripted_af(label, **_ctx):
         ok = af_results[min(len(af), len(af_results) - 1)]
         af.append(ok)
         return ok

@@ -7,6 +7,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, model_validator
 
+from .schedule import MERIDIAN_FLIP_LEAD_MAX_MIN, MERIDIAN_FLIP_LEAD_MIN
+
 if TYPE_CHECKING:                       # pragma: no cover - typing only
     from .policy import RunPolicy
 
@@ -258,6 +260,17 @@ class SequencePlan(BaseModel):
     refocus_on_temp_delta_c: float | None = None
     # safety
     meridian_flip: bool = True         # flip a German mount when past the meridian
+    # HOW EARLY, and it is not zero. This rig's AM5 refuses to track BEFORE the
+    # meridian - measured at 7.6 and 4.7 minutes east of transit on two
+    # consecutive nights - so a flip triggered at the crossing arrives after the
+    # mount has already stopped. See `schedule.MERIDIAN_FLIP_LEAD_MIN`.
+    #
+    # Settable so a mount with a genuinely permissive limit can ask for the old
+    # crossing-triggered behaviour with a deliberate 0 rather than getting it by
+    # accident, and bounded so a typo cannot disarm the fix (negative) or turn
+    # it into "flip at every target start" (huge).
+    meridian_flip_lead_min: float = Field(
+        MERIDIAN_FLIP_LEAD_MIN, ge=0.0, le=MERIDIAN_FLIP_LEAD_MAX_MIN)
     recover_guiding: bool | None = None
     hfr_reject_factor: float | None = None
     # --- multi-night quota mode (sessions spec §3; defaults preserve behavior) ---

@@ -39,6 +39,12 @@ async def sim_hub(tmp_path, monkeypatch):
 def _plan(count=6, frame_type="Light") -> SequencePlan:
     return SequencePlan(
         name="tracking", guide=False, dither_every=0, autofocus_every=0,
+        # M42's hour angle depends on when the suite runs, and since 2026-08-22
+        # the flip fires on a 10-minute lead and stays armed until
+        # lead + FLIP_ARM_MARGIN_MIN past transit — so for a slice of the day
+        # these runs would flip mid-test. This file is about the tracking gate,
+        # not the meridian.
+        meridian_flip=False,
         targets=[Target(name="M42", ra_hours=5.5881, dec_deg=-5.3911,
                         center=False, autofocus_first=False,
                         steps=[ExposureStep(filter="L", exposure_s=0.05, gain=100,
