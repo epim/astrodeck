@@ -160,6 +160,13 @@ class TestTheEngineActuallyConsultsIt:
     equatorial stops at its own meridian limit whatever the tube is doing, so the
     engine now asks the mount what it is before letting the geometry excuse a
     flip. See `schedule.flip_can_be_skipped` for the two nights that proved it.
+
+    REVISED AGAIN 2026-08-22, after two more nights. An unknown pier side used
+    to keep the old behaviour on the grounds that a fork and a quiet GEM are
+    indistinguishable; it now means GEM, so nothing a driver can report excuses
+    the flip. The flip also fires on a LEAD rather than at the crossing, because
+    this AM5 stops tracking BEFORE the meridian - see
+    `test_flip_before_the_limit.py`, which owns that half.
     """
 
     def _engine_at_the_meridian(self, sim_hub, monkeypatch, dec_deg: float,
@@ -167,9 +174,10 @@ class TestTheEngineActuallyConsultsIt:
         """An engine whose target is crossing the meridian RIGHT NOW.
 
         `pier_side` is what the mount will report: east/west for a German
-        equatorial, unknown for a fork - the difference the engine now turns on.
-        The sim reports a REAL side derived from its pointing, so it is pinned
-        here rather than left to the fixture geometry.
+        equatorial, unknown for a fork OR for a GEM whose driver is quiet. Since
+        2026-08-22 all three flip; the parameter is kept because WHICH of them
+        the engine is looking at still has to be pinned - the sim reports a REAL
+        side derived from its pointing, not a constant.
         """
         from astrodeck.devices.base import PierSide
         lon = sim_hub.site["longitude"]
@@ -235,20 +243,33 @@ class TestTheEngineActuallyConsultsIt:
         await e._maybe_meridian_flip(t, next_exposure_s=0.05)
         assert flips, "a GEM at dec +80 skipped the flip and will stop tracking"
 
-    # --------------------------------------------- the optimisation, preserved
+    # ------------------------------------- the optimisation, and what beat it
 
-    async def test_a_FORK_is_still_not_flipped_at_high_dec(
+    async def test_a_mount_reporting_NO_pier_side_now_flips_anyway(
             self, sim_hub, monkeypatch):
-        """The over-pole optimisation survives where it is actually true. A fork
-        has no pier to be on a side of and no meridian limit, so it tracks
-        straight through and a flip would buy nothing."""
+        """REVERSED 2026-08-22, AND THE REVERSAL IS THE FIX.
+
+        This used to assert the opposite: an unknown pier side fell back to the
+        tube geometry and declined, on the argument that a fork and a quiet GEM
+        are indistinguishable from here. They are. The two errors are not.
+        Reading a GEM as a fork has now cost four nights - 08-19, 08-20, 08-21,
+        08-22 - and reading a fork as a GEM costs one re-slew per crossing.
+
+        The optimisation itself is not gone: `flip_unnecessary_over_pole` is
+        still right about the tube and still tested above. What it lost is its
+        authority over a mount that enforces its own limit. A fork owner who
+        minds keeps `SequencePlan.meridian_flip = False` - see
+        `test_flip_before_the_limit.py::test_a_fork_mount_can_still_opt_out`.
+        """
         monkeypatch.setattr(hub_module.config_store.cfg().site, "latitude", 37.35)
+        # Premise: the geometry really does say this flip is unnecessary.
+        assert flip_unnecessary_over_pole(80.0, 37.35) is True
         e, t, flips = self._engine_at_the_meridian(
             sim_hub, monkeypatch, 80.0, pier_side="unknown")
         await e._maybe_meridian_flip(t, next_exposure_s=0.05)
-        assert not flips, (
-            "flipped a mount that reports no pier side - there is nothing to "
-            "flip and the tube never swings low")
+        assert flips, (
+            "an unreadable pier side declined the flip - the failure to MEASURE "
+            "was read as a measurement of 'no pier'")
 
     async def test_a_low_dec_target_is_still_flipped(self, sim_hub, monkeypatch):
         """THE POSITIVE CONTROL. dec +20 from lat 37 sweeps 33 degrees below the
@@ -273,11 +294,11 @@ class TestTheEngineActuallyConsultsIt:
         await e._maybe_meridian_flip(t, next_exposure_s=0.05)
         assert flips, "an unreadable latitude skipped the flip instead of taking it"
 
-    async def test_an_unreadable_pier_side_falls_back_to_the_geometry(
+    async def test_a_pier_side_that_cannot_be_READ_flips_too(
             self, sim_hub, monkeypatch):
-        """A mount that raises when asked must not change the answer. Unknown is
-        ambiguous - a fork and a quiet GEM look identical - so it keeps the
-        behaviour that shipped rather than guessing in either direction."""
+        """A driver that RAISES is in exactly the same position as one that
+        answers "unknown": nobody measured anything. Same conclusion - take the
+        flip. Also reversed 2026-08-22; see the test above for why."""
         monkeypatch.setattr(hub_module.config_store.cfg().site, "latitude", 37.35)
         e, t, flips = self._engine_at_the_meridian(
             sim_hub, monkeypatch, 80.0, pier_side="unknown")
@@ -287,16 +308,27 @@ class TestTheEngineActuallyConsultsIt:
 
         monkeypatch.setattr(sim_hub.devices["telescope"], "pier_side", _boom)
         await e._maybe_meridian_flip(t, next_exposure_s=0.05)
-        assert not flips, "a pier-side read error changed the flip decision"
+        assert flips, "a pier-side read error was treated as 'there is no pier'"
 
     # ---------------------------------------------------------- the audit trail
 
     async def test_it_says_why_it_declined(self, sim_hub, monkeypatch):
         """A declined flip that leaves no trace is indistinguishable from a flip
         that failed. This is the one direction of the decision that can put a
-        tube into a pier, so it has to be auditable."""
+        tube into a pier, so it has to be auditable.
+
+        THE PREDICATE IS FORCED, and it has to be. Since 2026-08-22
+        `flip_can_be_skipped` answers False for every mount a driver can
+        describe - a GEM is a GEM and an unknown mount is assumed to be one -
+        so there is no device state that reaches this branch any more. What is
+        still worth pinning is the WIRING: if a mount type ever becomes
+        knowable, the engine must honour the verdict, say why, and disarm. A
+        decline that logs nothing is how four nights ended with no evidence.
+        """
         from astrodeck.events import bus
         monkeypatch.setattr(hub_module.config_store.cfg().site, "latitude", 37.35)
+        monkeypatch.setattr(schedule, "flip_can_be_skipped",
+                            lambda *a, **k: True)
         e, t, flips = self._engine_at_the_meridian(
             sim_hub, monkeypatch, 80.0, pier_side="unknown")
         q = bus.subscribe()
@@ -309,6 +341,7 @@ class TestTheEngineActuallyConsultsIt:
                     msgs.append(str((ev.data or {}).get("message", "")))
         finally:
             bus.unsubscribe(q)
+        assert not flips, "declined the flip and took it anyway"
         assert any("no meridian flip needed" in m for m in msgs), msgs
         assert any("above the horizon" in m for m in msgs), msgs
 
@@ -316,14 +349,16 @@ class TestTheEngineActuallyConsultsIt:
         """`_flip_armed` is cleared with the decision, so a 25-cycle night does
         not repeat this line on every frame.
 
-        PINNED ON A FORK. This used to run at dec +80 on the sim own pier side,
-        which is now read as a GEM and therefore flips - so the declined-flip
-        line never appeared and the test passed by asserting the absence of
-        something that could no longer happen. It has to decline first for
-        "said once" to mean anything.
+        IT HAS TO DECLINE FIRST for "said once" to mean anything - twice now
+        this test has been left asserting the absence of something that could
+        no longer happen. It ran on the sim's own pier side until that was read
+        as a GEM, then on an unknown side until THAT was read as a GEM too. The
+        verdict is forced for the same reason as the test above.
         """
         from astrodeck.events import bus
         monkeypatch.setattr(hub_module.config_store.cfg().site, "latitude", 37.35)
+        monkeypatch.setattr(schedule, "flip_can_be_skipped",
+                            lambda *a, **k: True)
         e, t, flips = self._engine_at_the_meridian(
             sim_hub, monkeypatch, 80.0, pier_side="unknown")
 

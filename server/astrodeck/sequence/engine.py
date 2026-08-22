@@ -36,7 +36,7 @@ from ..config import config_store, frames_payload
 from ..devices.base import DeviceError, DomeShutterState, PierSide
 from ..events import bus
 from ..focus import run_autofocus
-from ..focus.autofocus import SWEEP_EXPOSURE_S, SWEEP_GAIN
+from ..focus.autofocus import SWEEP_EXPOSURE_S, SWEEP_GAIN, TrackingLost
 from ..focus.filter_offsets import narrowband_sweep_settings
 from ..guide.base import rms_total_arcsec
 from ..hub import Hub
@@ -160,6 +160,35 @@ GUIDE_QUIET_TIMEOUT_S = 240.0   # cap on waiting for the guider to stop pulsing
 GUIDE_QUIET_POLL_S = 2.0
 COOLER_CMD_TIMEOUT_S = 30.0     # a single set_cooler / get_temperature call
 MOUNT_QUERY_TIMEOUT_S = 30.0    # is_parked / set_tracking / time_to_meridian_flip
+#: A mount that answers "not tracking" is re-asked this many more times, this
+#: far apart, before the answer is believed (`SequenceEngine._tracking_now`).
+#: Sized to outlast an east guide pulse's tracking-suspend window (capped near
+#: one second by `guide.assistant.MAX_PULSE_MS`) with room for a slow reply,
+#: and to be nothing at all against a real meridian-limit stop, which lasts
+#: until a human or the recovery intervenes.
+TRACKING_CONFIRM_PROBES = 4
+TRACKING_CONFIRM_S = 1.0
+#: Hard outer bound on the park/unpark/re-slew/re-centre recovery a mount gets
+#: ONCE when it refuses to track at its meridian limit
+#: (``_recover_from_tracking_refusal``). Each step inside is already bounded;
+#: this caps the whole sequence so a mount that answers every command slowly
+#: cannot spend the night in a recovery.
+#:
+#: IT HAS TO BE BIGGER THAN THE STEPS IT WRAPS, or it is not a backstop, it is
+#: a guillotine. The inner bounds sum to
+#: ``GUIDE_OP + 2*PARK + 3*MOUNT_QUERY + GOTO(+rotation) + GUIDE_START`` =
+#: 1290 s, or 1590 s when the target carries a rotation angle. At the 600 s
+#: this shipped with, a park and an unpark that were merely SLOW (200 s each,
+#: well inside their own 240 s bounds) left the plate-solving re-slew to be
+#: CANCELLED MID-MOTION, and the generic handler below reports that as "the
+#: recovery failed" - a soft set-aside - instead of the SafetyAbort teardown a
+#: wedged device is supposed to get. A step that genuinely wedges still trips
+#: its own `_bounded` first and still tears the night down properly; this bound
+#: exists only for the case where nothing individually wedges and the whole
+#: thing is nevertheless going nowhere. `test_the_recovery_bound_is_bigger_than
+#: _the_steps_it_wraps` recomputes the sum from the constants so the two cannot
+#: drift apart again.
+TRACKING_RECOVERY_TIMEOUT_S = 1800.0
 MOUNT_RECONNECT_TIMEOUT_S = 30.0  # reopening a dropped link so a wind-down can park
 FILTER_MOVE_TIMEOUT_S = 90.0    # a filter-wheel slot change (incl. settle)
 FOCUSER_MOVE_TIMEOUT_S = 180.0  # a focuser offset move (a big Ha offset can crawl)
@@ -315,6 +344,18 @@ class SequenceEngine:
         # whole ~12h the target is west — flips at most ONCE per crossing instead
         # of re-flipping every frame.
         self._flip_armed = False
+        #: Targets whose early (lead-triggered) flip re-slewed without changing
+        #: the pier side. They get ONE more attempt, with the lead dropped so it
+        #: waits for the meridian itself — see `_maybe_meridian_flip`.
+        self._flip_no_op: set[str] = set()
+        #: Rate-limit for the "armed but the mount is offline" warning, so a
+        #: dropped link says so once instead of once per frame.
+        self._flip_offline_logged = False
+        #: Targets that have already spent their ONE park/unpark recovery from a
+        #: refused-tracking mount this run (`_recover_from_tracking_refusal`).
+        #: Keyed by target id, cleared only at run start — a recovery that can
+        #: loop at 3 a.m. is worse than the bug it recovers from.
+        self._tracking_recovered: set[str] = set()
         self._done: dict[str, int] = {}   # "targetId:stepId" -> frames completed
         self._session: Session | None = None   # live ledger (sessions spec §2)
         # In-flight ~512px review-thumbnail renders (Task 6 review, Important
@@ -510,6 +551,9 @@ class SequenceEngine:
         self._night_rejects = 0
         self._rms_unit_warned = False
         self._flip_armed = False
+        self._flip_no_op = set()
+        self._flip_offline_logged = False
+        self._tracking_recovered = set()
         self._paused.set()
         self._started_at = time.time()
         self._paused_accum_s = 0.0
@@ -1738,11 +1782,32 @@ class SequenceEngine:
             if target.center:
                 # GOTO+center is the slew + iterated solve→sync→re-slew loop —
                 # bounded so a hung solve/slew can't stall the night (P0-2).
-                result = await _bounded(
-                    self.hub.goto_and_center(target.ra_hours, target.dec_deg,
-                                             rotation_deg=target.rotation_deg),
-                    GOTO_TIMEOUT_S + (300 if target.rotation_deg is not None else 0),
-                    f"goto+center {target.name}")
+                #
+                # AND IT CARRIES THE SAME UNGUARDED `set_tracking(True)` the
+                # flip does (hub.goto_and_center, before the slew), so a mount
+                # still pinned at its limit from the previous target kills the
+                # run right here. Measured, not message-matched, and the
+                # one-attempt latch bounds it; the recovery's own park/unpark/
+                # re-slew IS the retry this call wanted.
+                try:
+                    result = await _bounded(
+                        self.hub.goto_and_center(
+                            target.ra_hours, target.dec_deg,
+                            rotation_deg=target.rotation_deg),
+                        GOTO_TIMEOUT_S
+                        + (300 if target.rotation_deg is not None else 0),
+                        f"goto+center {target.name}")
+                except SafetyAbort:
+                    raise
+                except Exception as e:      # noqa: BLE001
+                    if await self._tracking_now() is not False:
+                        raise
+                    bus.log("warning",
+                            f"{target.name}: the mount refused to track on the "
+                            f"way to the target ({e})", "sequence")
+                    if not await self._recover_from_tracking_refusal(target):
+                        raise
+                    result = {"centered": True, "error_arcmin": None}
                 if not result["centered"]:
                     # error_arcmin is None on the solve-failure and motion-fence
                     # abort paths (hub.goto_and_center degrades to a raw GoTo) —
@@ -1774,11 +1839,28 @@ class SequenceEngine:
                             f"before the slew ({e}); slewing first", "sequence")
                 await _bounded(tel.slew(target.ra_hours, target.dec_deg),
                                SLEW_TIMEOUT_S, f"slew to {target.name}")
-                await _bounded(tel.set_tracking(True), MOUNT_QUERY_TIMEOUT_S,
-                               "mount set_tracking")
+                try:
+                    await _bounded(tel.set_tracking(True),
+                                   MOUNT_QUERY_TIMEOUT_S, "mount set_tracking")
+                except SafetyAbort:
+                    raise
+                except Exception as e:  # noqa: BLE001
+                    # THE PRE-SLEW CALL IS DELIBERATELY TOLERANT AND THIS ONE
+                    # WAS NOT, so a mount still pinned at its limit after the
+                    # slew killed the run here with nothing tried. Same routing
+                    # as the flip: measured, not message-matched, and the
+                    # one-attempt latch makes it safe.
+                    bus.log("warning",
+                            f"{target.name}: the mount would not track after "
+                            f"the slew ({e})", "sequence")
+                    if await self._tracking_now() is False:
+                        if not await self._recover_from_tracking_refusal(target):
+                            raise
+                    else:
+                        raise
 
         if target.autofocus_first and "focuser" in self.hub.devices:
-            await self._autofocus("initial autofocus")
+            await self._autofocus("initial autofocus", target=target)
 
         # THE DECISION IS MADE WHENEVER THE PLAN ASKED FOR GUIDING — not only
         # when a guider happens to be present. This whole block used to sit
@@ -1835,20 +1917,37 @@ class SequenceEngine:
                     bus.log("warning", f"guiding failed to start: {e} — continuing "
                                        "unguided", "sequence")
 
-        # Arm the meridian flip for THIS target iff we acquired it east of the
-        # meridian (server HA countdown > 0), so a GEM tracking east→west across
-        # the meridian flips exactly once when it crosses. A target acquired
-        # already-west is on the correct pier side and stays disarmed (arming on
-        # HA sign alone would otherwise flip it, or re-flip every frame — the
-        # server countdown stays negative for the whole ~12h it is west).
+        # Arm the meridian flip for THIS target, so a GEM tracking east→west
+        # across the meridian flips exactly once when it crosses. A target
+        # acquired hours west is on the correct pier side and stays disarmed —
+        # the server countdown stays negative for the whole ~12h it is west, so
+        # arming on HA sign alone would re-flip it every frame.
+        #
+        # THE BOUNDARY MOVED WITH THE TRIGGER (2026-08-22). It used to be
+        # "countdown > 0"; the flip now fires MERIDIAN_FLIP_LEAD_MIN minutes
+        # early, and a latch that arms later than the trigger fires is a silent
+        # skip — the shape that left both lost nights with no flip decision in
+        # the log at all. `schedule.flip_should_arm` owns the boundary and the
+        # reasoning for it.
         self._flip_armed = False
         if self.plan.meridian_flip and "telescope" in self.hub.devices:
             try:
                 lon = self.hub.site["longitude"]
-                self._flip_armed = schedule.hours_to_meridian_flip(
-                    target.ra_hours, lon) > 0
-            except Exception:
+                self._flip_armed = schedule.flip_should_arm(
+                    schedule.hours_to_meridian_flip(target.ra_hours, lon),
+                    self._flip_lead_s(target) / 60.0)
+            except Exception as e:      # noqa: BLE001
+                # SAID OUT LOUD. The whole fix now hangs off this one latch, and
+                # this was the one place that set it while swallowing any error
+                # in silence — reproducing the exact shape the design set out to
+                # remove, on the exact line it depends on. One log per target
+                # setup is not a hot path.
                 self._flip_armed = False
+                bus.log("warning",
+                        f"{target.name}: could not work out whether a meridian "
+                        f"flip is owed ({e}) — the flip is DISARMED for this "
+                        f"target, so nothing will move it off its limit",
+                        "sequence")
 
         # setup complete — capture is about to begin. Arm the no-progress watchdog
         # and anchor its clock to NOW so a slow slew/solve/AF that just finished
@@ -2156,7 +2255,7 @@ class SequenceEngine:
             await self._reconnect_gate()
             await self._maybe_meridian_flip(target, step.exposure_s)
             await self._maybe_recover_guiding(target)
-            await self._enforce_tracking(step)
+            await self._enforce_tracking(step, target)
             await self._enforce_cooling()
 
             if plan.dither_every and self._frames_since_dither >= plan.dither_every \
@@ -2175,8 +2274,21 @@ class SequenceEngine:
                     bus.log("warning", f"dither failed: {e}", "sequence")
 
             if await self._refocus_due():
-                await self._autofocus("refocus")
+                await self._autofocus("refocus", step=step, target=target)
                 self._frame_had_event = True
+
+            # AND THE FLIP AGAIN, AFTER ALL OF THAT. The gate at the top of the
+            # loop budgets one exposure plus the measured per-frame overhead for
+            # the trip back to it. A dither, a filter change and an autofocus
+            # sweep can put five minutes in between — and on 2026-08-21 the
+            # whole margin between the flip point and the mount's own limit was
+            # 2.4 minutes. That is not hypothetical: the sweep that ran at 00:48
+            # sat exactly here, between the last flip check and the flip that
+            # arrived nine minutes after the mount had already stopped. Cheap
+            # (two mount queries, and only while a flip is armed) and it makes
+            # the worst case "one exposure late" instead of "one exposure plus
+            # whatever the loop decided to do first".
+            await self._maybe_meridian_flip(target, step.exposure_s)
 
             # LAST GATE BEFORE THE SHUTTER. The recovery path above already
             # waits, so in the ordinary run this is a no-op that returns on its
@@ -4185,7 +4297,20 @@ class SequenceEngine:
             return
         tel = self.hub.devices.get("telescope")
         if not tel or not tel.connected:
+            # AN ARMED FLIP THAT CANNOT BE TAKEN IS NEWS. This returned in
+            # silence, so a run whose mount link had dropped sailed past its own
+            # meridian with the latch still set and nothing in the log — the
+            # same invisible-skip shape the whole design is about. Rate-limited
+            # on a flag rather than by disarming, because the link may well come
+            # back and the flip is still owed when it does.
+            if not self._flip_offline_logged:
+                self._flip_offline_logged = True
+                bus.log("warning",
+                        f"{target.name}: a meridian flip is armed but the "
+                        f"mount is not reachable — it will not be taken",
+                        "sequence")
             return
+        self._flip_offline_logged = False
         # authoritative countdown = server HA math (the device value alone never
         # goes negative, so it can't detect the crossing — the live bug).
         try:
@@ -4235,7 +4360,15 @@ class SequenceEngine:
         except SafetyAbort:
             raise
         except Exception:
-            side = "unknown"        # ambiguous: falls back to the tube geometry
+            # UNREADABLE IS NOT A VERDICT. This used to fall back to the tube
+            # geometry and decline; since 2026-08-22 an unknown side means GEM
+            # means flip (`schedule.flip_can_be_skipped`).
+            side = "unknown"
+        # Kept, and currently always False: no mount reports a side that proves
+        # it is NOT a German equatorial, so nothing excuses the flip any more.
+        # The branch stays because it is the ONLY place a declined flip is
+        # announced, and a declined flip that leaves no trace is how four nights
+        # ended with no evidence at all.
         if schedule.flip_can_be_skipped(target.dec_deg, lat, side) and not forced:
             if self._flip_armed:
                 self._flip_armed = False
@@ -4249,7 +4382,6 @@ class SequenceEngine:
                         f"through the meridian", "sequence")
             return
         if forced and schedule.flip_unnecessary_over_pole(target.dec_deg, lat):
-            # (only reachable on an UNKNOWN pier side now — a GEM never gets here)
             bus.log("warning",
                     f"{target.name}: the tube would clear the pier, but the "
                     f"mount reports its own meridian limit in "
@@ -4260,49 +4392,166 @@ class SequenceEngine:
             ttf_h = dev
 
         ttf_s = ttf_h * 3600.0
+        # THE LEAD, AND IT IS THE WHOLE FIX. This mount stops tracking BEFORE
+        # the meridian — measured at 7.6 min (NGC 7129) and 4.7 min (NGC 6946)
+        # east of transit, both answering :Te# with 0 — so a flip scheduled for
+        # the crossing is always several minutes too late. Trigger on the lead
+        # instead: `remaining_s` is the time until the FLIP POINT, not until the
+        # meridian. See `schedule.MERIDIAN_FLIP_LEAD_MIN`.
+        key = getattr(target, "id", None) or target.name
+        lead_s = self._flip_lead_s(target)
+        remaining_s = ttf_s - lead_s
         # frame-window gate: a flip comfortably beyond the next exposure (+ slack)
         # is not our concern this frame — expose normally.
-        window_s = max(0.0, float(next_exposure_s)) + FLIP_FRAME_MARGIN_S
-        if ttf_s > window_s:
+        #
+        # THE WINDOW HAS TO COVER THE TRIP BACK HERE, not just the exposure.
+        # `_overhead_ema` is precisely the measured cadence-minus-exposure of an
+        # event-free frame (download, quality, thumbnail, the guider-quiet gate),
+        # so adding it makes this gate's budget the real gap to the next check
+        # rather than an optimistic one. The much larger gap — a dither, a filter
+        # change and a five-minute autofocus sweep — is closed by re-checking
+        # AFTER those events instead (see the frame loop), because sizing this
+        # window for a sweep that usually does not happen would hold the mount
+        # idle for five minutes before every flip.
+        window_s = (max(0.0, float(next_exposure_s)) + FLIP_FRAME_MARGIN_S
+                    + max(0.0, float(getattr(self, "_overhead_ema", 0.0) or 0.0)))
+        if remaining_s > window_s:
             return
-        # the flip falls within the upcoming frame. If the target has NOT yet
-        # crossed (ttf still > 0), WAIT it out rather than starting an exposure
-        # that would straddle the meridian (NINA PassMeridian semantics) — a
-        # premature flip while still east of the meridian would swing the mount
-        # counterweight-up on the far side. The mount keeps tracking through this
-        # short (≤ one frame) cancel/pause-responsive hold.
-        if ttf_s > 0:
-            await self._wait_for_flip_point(target)
+        # the flip point falls within the upcoming frame but has not arrived
+        # yet: WAIT it out rather than starting an exposure that would straddle
+        # it. With a zero lead this is the original NINA PassMeridian hold — do
+        # not swing a GEM counterweight-up while it is still east. With a lead
+        # it is the same hold, taken earlier.
+        if remaining_s > 0:
+            await self._wait_for_flip_point(target, lead_s)
 
         # pre-flip safety + mount-floor gate (the flip is a slew — §1.9-B).
         await self._safety_gate(context="slew", target=target)
         self._set_state(detail="meridian flip")
         _t0 = time.time()
+        # READ THE SIDE BEFORE AND AFTER, BECAUSE NOTHING EVER DID. `hub.
+        # meridian_flip` is a bare `goto_and_center` whose docstring only
+        # ASSUMES "the mount chooses the far side of the pier"; there is no
+        # pre/post comparison anywhere in it or here, and the latch below used
+        # to be spent whether or not anything moved. That mattered little while
+        # the flip fired at the crossing. It matters now: with a lead the GoTo
+        # is issued while the target is still EAST of the meridian, and a mount
+        # that picks its side from the hour angle — which is what this repo's
+        # own AM5N measurement records (`devices/sim.py`'s `pier_side`) — would
+        # answer that GoTo by staying exactly where it is.
+        side_before = await self._pier_side_now()
         # the flip = stop-guide + re-slew + solve + restart-guide; bound it (P0-2)
         # so a wedged flip can't hang the night mid-slew across the meridian.
-        await _bounded(self.hub.meridian_flip(target.ra_hours, target.dec_deg),
-                       FLIP_TIMEOUT_S, "meridian flip")
+        try:
+            await _bounded(
+                self.hub.meridian_flip(target.ra_hours, target.dec_deg),
+                FLIP_TIMEOUT_S, "meridian flip")
+        except SafetyAbort:
+            raise
+        except Exception as e:           # noqa: BLE001
+            # THIS IS THE LINE BOTH NIGHTS DIED ON. `hub.goto_and_center` does
+            # an UNGUARDED `set_tracking(True)` before it slews, so a mount
+            # already at its limit answers `0`, the RuntimeError comes straight
+            # out through here, and the run ends — "sequence crashes: tracking
+            # on rejected (reply '0')" is the incident note's own line. The new
+            # park/unpark recovery was wired only to `_enforce_tracking`, which
+            # this path never reaches.
+            #
+            # Routed on a MEASUREMENT, not on the message: only a mount that is
+            # confirmed not tracking gets the recovery, so a solve failure or a
+            # rotator error still fails the way it always did. If the recovery
+            # cannot help, the original exception is re-raised unchanged.
+            if await self._tracking_now() is not False:
+                raise
+            bus.log("warning",
+                    f"{target.name}: the meridian flip was refused by a mount "
+                    f"that is not tracking ({e}) — trying the park/unpark "
+                    f"recovery before giving up", "sequence")
+            if not await self._recover_from_tracking_refusal(target):
+                raise
+            # The recovery re-slewed and re-centred the target itself, from a
+            # parked start, at or past the meridian. Leave the latch ARMED: the
+            # side check below cannot run (no flip happened), and the next
+            # frame's gate is the right place to decide whether a flip is still
+            # owed.
+            self._record_event_cost("flip", time.time() - _t0)
+            self._frame_had_event = True
+            return
+        side_after = await self._pier_side_now()
+        unchanged = (side_before not in (None, "unknown")
+                     and side_after == side_before)
         # one flip per meridian crossing: the target now tracks counterweight-down
         # on the far side and the server countdown stays negative for hours, so
         # disarm until the next target re-arms in _setup_target.
         self._flip_armed = False
+        if unchanged and key not in self._flip_no_op:
+            # A FLIP THAT DID NOT FLIP IS NOT A FLIP, and spending the
+            # crossing's one latch on it is how the mount reaches its limit
+            # with the engine believing it is safely on the far side. Keep the
+            # latch armed for ONE more attempt and drop the lead for it, so the
+            # retry is gated on the actual meridian crossing (the original NINA
+            # PassMeridian point, where a GoTo unambiguously selects the far
+            # side) rather than firing again immediately. Bounded to a single
+            # retry per target: a mount that reports a constant side — a fork
+            # with a chatty driver — costs two flips per crossing and no more.
+            self._flip_no_op.add(key)
+            self._flip_armed = True
+            bus.log("warning",
+                    f"{target.name}: the meridian flip re-slewed but the mount "
+                    f"still reports pier side {side_after} — nothing flipped. "
+                    f"Holding the flip armed and dropping the "
+                    f"{self._flip_lead_s() / 60:.0f} min lead, so the retry "
+                    f"waits for the meridian itself", "sequence")
+        else:
+            bus.log("info",
+                    f"{target.name}: meridian flip complete (pier side "
+                    f"{side_before or 'unreadable'} -> "
+                    f"{side_after or 'unreadable'})", "sequence")
         self._record_event_cost("flip", time.time() - _t0)
         # the flip wall-time is accounted analytically (events_cost_s), so flag
         # this frame to exclude it from the per-frame overhead EMA — matching the
         # dither/AF blocks (P2-1).
         self._frame_had_event = True
         if "focuser" in self.hub.devices:
-            await self._autofocus("post-flip autofocus")
+            await self._autofocus("post-flip autofocus", target=target)
 
-    async def _wait_for_flip_point(self, target: Target) -> None:
-        """Hold (cancel/pause-responsive) until the target actually reaches the
-        meridian flip point (server HA countdown ``<= 0``).
+    def _flip_lead_s(self, target: Target | None = None) -> float:
+        """Seconds before transit at which this plan wants its GEM flip.
 
-        Entered only when the flip falls inside the upcoming frame window but the
-        target has not yet crossed, so we never START an exposure that would
-        straddle the meridian and we never flip a GEM counterweight-up while it is
-        still east of the meridian (NINA PassMeridian). Bounded by construction:
-        the caller only waits when the remaining countdown is ≤ one frame window."""
+        Reads the plan, falls back to the module default, and never raises: a
+        plan object from an older store that has no such field must still get
+        the fix, and a nonsense value must not be able to disarm it.
+
+        ZERO for a target whose early flip demonstrably did not change the pier
+        side (`_flip_no_op`). The lead is an optimisation — get ahead of a
+        mount that stops before the meridian — and an optimisation that has
+        just been shown not to work on this mount should not also cost the
+        retry. That retry waits for the crossing itself.
+        """
+        if target is not None and (
+                getattr(target, "id", None) or target.name) in self._flip_no_op:
+            return 0.0
+        lead = getattr(self.plan, "meridian_flip_lead_min", None)
+        if lead is None:
+            lead = schedule.MERIDIAN_FLIP_LEAD_MIN
+        try:
+            lead = float(lead)
+        except (TypeError, ValueError):
+            lead = schedule.MERIDIAN_FLIP_LEAD_MIN
+        if lead != lead:                        # NaN
+            lead = schedule.MERIDIAN_FLIP_LEAD_MIN
+        return min(max(0.0, lead), schedule.MERIDIAN_FLIP_LEAD_MAX_MIN) * 60.0
+
+    async def _wait_for_flip_point(self, target: Target,
+                                   lead_s: float = 0.0) -> None:
+        """Hold (cancel/pause-responsive) until the target reaches the flip
+        point — ``lead_s`` seconds before the meridian, or the meridian itself
+        when the lead is zero.
+
+        Entered only when the flip point falls inside the upcoming frame window
+        but has not arrived yet, so we never START an exposure that would
+        straddle it. Bounded by construction: the caller only waits when the
+        remaining time is ≤ one frame window."""
         try:
             lon = self.hub.site["longitude"]
         except Exception:
@@ -4310,13 +4559,14 @@ class SequenceEngine:
         while True:
             await self._checkpoint()            # honor a concurrent pause
             ttf_h = schedule.hours_to_meridian_flip(target.ra_hours, lon)
-            if ttf_h <= 0:
+            remaining_s = ttf_h * 3600.0 - max(0.0, lead_s)
+            if remaining_s <= 0:
                 return
-            self._set_state(detail=f"holding for meridian "
-                                   f"({ttf_h * 60.0:.1f} min)")
+            self._set_state(detail=f"holding for the meridian flip point "
+                                   f"({remaining_s / 60.0:.1f} min)")
             # sleep the smaller of the step and the remaining time, with a small
             # floor so we don't busy-spin as the countdown approaches zero.
-            await asyncio.sleep(max(0.2, min(FLIP_WAIT_STEP_S, ttf_h * 3600.0)))
+            await asyncio.sleep(max(0.2, min(FLIP_WAIT_STEP_S, remaining_s)))
 
     def _guider_phase(self) -> str:
         """The guider's own narration phase, or "" when it cannot be read.
@@ -4523,7 +4773,8 @@ class SequenceEngine:
                         fa.message or "clouds", target)
                 elif fa.action == "refocus":
                     if "focuser" in self.hub.devices:
-                        ok = await self._autofocus("triggered refocus")
+                        ok = await self._autofocus("triggered refocus",
+                                                   step=step, target=target)
                         self._frame_had_event = True
                         if ok is False:
                             self._rearm_failed_rule(fa)
@@ -4642,7 +4893,106 @@ class SequenceEngine:
                     f"frames taken meanwhile are warmer than this run's darks",
                     "sequence")
 
-    async def _enforce_tracking(self, step) -> None:
+    @staticmethod
+    def _is_light(step) -> bool:
+        """Does this step measure the sky?
+
+        The one place the "darks and bias are shot parked, on purpose"
+        exemption is spelled, so the light-frame gate and the autofocus gate
+        cannot come to disagree about what a light frame is.
+        """
+        if step is None:
+            return True                  # no step in hand: assume it matters
+        return (getattr(step, "frame_type", "Light")
+                or "Light").strip().lower() == "light"
+
+    async def _pier_side_now(self) -> str | None:
+        """The mount's pier side as a lower-case string, or None.
+
+        None means NOBODY CAN SAY — no mount, a dropped link, a driver that
+        raised. ``"unknown"`` means the driver answered and the answer was
+        "unknown"; both are treated the same by every caller here, and both are
+        kept distinct from a real side so nothing can compare two failures to
+        read and conclude "unchanged".
+        """
+        tel = self.hub.devices.get("telescope")
+        if tel is None or not getattr(tel, "connected", False):
+            return None
+        try:
+            side = await asyncio.wait_for(tel.pier_side(),
+                                          MOUNT_QUERY_TIMEOUT_S)
+        except asyncio.CancelledError:
+            raise
+        except Exception:                # noqa: BLE001
+            return None
+        return getattr(side, "value", None) or None
+
+    async def _read_tracking(self) -> bool | None:
+        """One bounded read of the mount's tracking flag, or None.
+
+        Bounded because this is the engine's only mount query that was not:
+        every other one goes through `_bounded`, and this one is now asked
+        about ten times per autofocus sweep instead of once per light frame. A
+        wedged serial link must degrade to the None the tri-state contract
+        exists for, not hang the sweep. Deliberately NOT `_bounded`, whose
+        SafetyAbort would contradict "unreadable is not a verdict" and turn a
+        slow read into a torn-down night.
+        """
+        tel = self.hub.devices.get("telescope")
+        if tel is None or not getattr(tel, "connected", False):
+            return None
+        try:
+            return bool(await asyncio.wait_for(tel.get_tracking(),
+                                               MOUNT_QUERY_TIMEOUT_S))
+        except asyncio.CancelledError:
+            raise
+        except Exception:                # noqa: BLE001 - unknown is not False
+            return None
+
+    async def _tracking_now(self) -> bool | None:
+        """Is the mount tracking? TRI-STATE, and the third state is the point.
+
+        ``True`` tracking, ``False`` the mount says it is not, ``None`` nobody
+        can say — no mount, a dropped link, a driver that raised. Unknown is
+        NOT False: a driver that cannot answer must not end a night that is
+        probably fine (and must not abandon a focus sweep either).
+
+        THE ONE READ. `_enforce_tracking` and the autofocus sweep both come
+        through here rather than each asking the mount their own way; two
+        readers with two conventions is how one of them ends up treating an
+        exception as a stopped mount.
+
+        ONE SAMPLE IS NOT A VERDICT EITHER, and on this mount that is not a
+        theoretical worry. `zwo_am5.pulse_guide` implements an EAST guide pulse
+        as a tracking SUSPEND — ``:Td#``, sleep, ``:Te#`` in a finally — so
+        ``get_tracking()`` sampled inside that window answers False on a mount
+        that is working perfectly. The incident note lists it as the known
+        benign false negative. The engine does not stop guiding for a sequence
+        autofocus, so the sweep asks this question about eleven times with the
+        guider actively pulsing; a single unlucky sample used to throw the whole
+        sweep away, and with ``escalation.af_failure_action = "abort"`` it would
+        have ended the night.
+
+        So a False is CONFIRMED before it is believed: re-read
+        :data:`TRACKING_CONFIRM_PROBES` more times, :data:`TRACKING_CONFIRM_S`
+        apart, and answer False only if every one of them still says False. A
+        guide pulse is capped at about a second (`guide.assistant.MAX_PULSE_MS`)
+        and the whole confirm window is several; a mount sitting at its meridian
+        limit stays False for minutes, so this costs the 2026-08-21 detection
+        nothing. Any True or None during the confirm means carry on — a mount
+        that is tracking again by the time we look twice was never the problem.
+        """
+        state = await self._read_tracking()
+        if state is not False:
+            return state
+        for _ in range(TRACKING_CONFIRM_PROBES):
+            await asyncio.sleep(TRACKING_CONFIRM_S)
+            again = await self._read_tracking()
+            if again is not False:
+                return again
+        return False
+
+    async def _enforce_tracking(self, step, target: Target | None = None) -> None:
         """A LIGHT FRAME ON A MOUNT THAT IS NOT TRACKING IS A STREAK.
 
         2026-08-19 00:54: the AM5 hit its own meridian limit five minutes after
@@ -4658,36 +5008,256 @@ class SequenceEngine:
         is false.
 
         Tries to resume first — a mount that was merely switched off should be
-        recovered, not abandoned. A mount that REFUSES (the limit case) ends the
-        target, which for a single-target night ends the run and parks it.
+        recovered, not abandoned. A mount that REFUSES (the limit case) gets ONE
+        bounded park/unpark/re-slew recovery (`_recover_from_tracking_refusal`,
+        the intervention a human performed by hand on 2026-08-21 and 08-22) and,
+        failing that, ends the target — which for a single-target night ends the
+        run and parks it, exactly as it did before the recovery existed.
         Unreadable is not a verdict: a driver that cannot answer must not end a
         night that is probably fine.
         """
-        if (getattr(step, "frame_type", "Light") or "Light").strip().lower() != "light":
+        if not self._is_light(step):
             return                       # darks and bias are shot parked, on purpose
         tel = self.hub.devices.get("telescope")
         if tel is None or not getattr(tel, "connected", False):
             return
-        try:
-            tracking = await tel.get_tracking()
-        except Exception:                # noqa: BLE001 - unknown is not False
-            return
-        if tracking:
-            return
+        tracking = await self._tracking_now()
+        if tracking is None or tracking:
+            return                       # tracking, or nobody can say
         bus.log("warning", "the mount is not tracking — trying to resume before "
                            "the next light frame", "sequence")
         try:
             await tel.set_tracking(True)
-            tracking = await tel.get_tracking()
+            # THE READBACK GOES THROUGH THE CONFIRMED PROBE TOO. A raw single
+            # read here can land inside an east guide pulse's tracking-suspend
+            # window and answer False on a mount that just accepted `:Te#` —
+            # and the next thing down is a park. `None` (unreadable) counts as
+            # resumed for the same reason it counts as "carry on" above.
+            tracking = await self._tracking_now() is not False
         except Exception as e:           # noqa: BLE001
             bus.log("warning", f"the mount refused to resume tracking ({e})", "sequence")
             tracking = False
         if tracking:
             bus.log("info", "tracking resumed", "sequence")
             return
+        # A PLAIN "tracking on" DOES NOT CLEAR A MERIDIAN LIMIT. Ask the mount
+        # again from a different state — parked, then unparked — which is what
+        # a human did at 01:01 on 2026-08-21 and again on 08-22, both times
+        # recovering the run. Strictly bounded (see the method) and, when it
+        # cannot help, it falls straight through to the set-aside below.
+        if await self._recover_from_tracking_refusal(target):
+            return
         raise StopTarget(
             "the mount is not tracking and will not resume — every light frame "
             "from here would be a streak")
+
+    async def _recover_from_tracking_refusal(self, target: Target | None) -> bool:
+        """Park, unpark, re-assert tracking, re-slew, re-centre, resume guiding.
+
+        THE INTERVENTION A HUMAN PERFORMED TWICE. On both 2026-08-21 and
+        2026-08-22 the AM5 reached its own meridian limit, refused ``:Te#`` with
+        a bare ``0``, and the run died. Both times the fix was park, unpark,
+        tracking on, re-slew, plate solve — and both times it put the run back
+        about half an arcminute from target with hours of clear sky left.
+
+        BOUNDED, BECAUSE A RECOVERY LOOP AT 3 A.M. IS WORSE THAN THE BUG:
+
+        * ONE attempt per target per run. The latch is set before anything
+          moves, so even a recovery that dies mid-slew cannot be retried.
+        * A hard outer timeout on the whole sequence, on top of the per-call
+          bounds each step already carries.
+        * Refused outright when the sky is not dark or the target's window has
+          closed — "recover" at dawn means slewing a parked mount into daylight.
+        * Any failure returns False and the caller runs the pre-existing
+          set-aside-and-park path unchanged.
+
+        Returns True only when the mount is measurably tracking again.
+        """
+        if target is None:
+            return False
+        key = getattr(target, "id", None) or target.name
+        if key in self._tracking_recovered:
+            bus.log("warning",
+                    f"{target.name}: the mount refused tracking again after a "
+                    f"park/unpark recovery already ran for this target — not "
+                    f"trying a second time", "sequence")
+            return False
+        tel = self.hub.devices.get("telescope")
+        if tel is None or not getattr(tel, "connected", False):
+            return False
+        # --- the refusals, before anything moves -----------------------------
+        # `dark_enough` FAILS OPEN on an unset site, deliberately and correctly:
+        # its own docstring says "we cannot tell" must not stand every
+        # automation down, and then "fail-open here, fail-closed in the gates
+        # that actually move hardware". This is a gate that moves hardware. On a
+        # fresh install the whole daylight refusal was inert.
+        try:
+            if self.hub.site.get("is_default"):
+                bus.log("warning",
+                        f"{target.name}: the mount is at its limit, but this "
+                        f"rig has no configured site — refusing to unpark and "
+                        f"slew when nothing here can tell day from night",
+                        "sequence")
+                return False
+        except Exception:                # noqa: BLE001 - unreadable site, same answer
+            return False
+        try:
+            if not schedule.dark_enough(self.hub.site):
+                bus.log("warning",
+                        f"{target.name}: the mount is at its limit, but it is "
+                        f"not dark — not unparking and slewing into daylight",
+                        "sequence")
+                return False
+        except Exception:                # noqa: BLE001 - a bad site is not a green light
+            return False
+        # Deliberately the RUN-WIDE flag as well as this target's own window
+        # below. Once anything tonight has run out of window, the odds that an
+        # unattended park/unpark/slew is the right move have gone down, and the
+        # cost of refusing is only the set-aside this method exists to avoid.
+        if self._window_closed:
+            return False
+        win = self._frozen.get(id(target))
+        stop_ts = win[1] if win else None
+        if stop_ts is not None and time.time() >= stop_ts:
+            bus.log("warning",
+                    f"{target.name}: the mount is at its limit and this "
+                    f"target's window has closed — leaving it parked",
+                    "sequence")
+            return False
+        # THE RECOVERY IS A SLEW, and every other slew in this engine takes the
+        # gate first — target setup at `_setup_target`, the flip three hundred
+        # lines up under "the flip is a slew - S1.9-B". This one used to move
+        # with only a darkness check, so the mount-altitude floor, the horizon
+        # profile, the no-go wedges, the ZENITH KEEP-OUT and the pier-collision
+        # guard were all skipped on a slew that BY DEFINITION happens at the
+        # meridian, which is exactly where the zenith keep-out lives. Taken
+        # BEFORE the latch, so a refused recovery does not burn the one attempt,
+        # and left to raise SafetyAbort exactly as it does for the flip.
+        await self._safety_gate(context="slew", target=target)
+        # LATCH FIRST. Anything after this point can raise, be cancelled or
+        # time out, and none of those may buy a second attempt.
+        self._tracking_recovered.add(key)
+        bus.log("warning",
+                f"{target.name}: the mount refuses to track — parking, "
+                f"unparking and re-acquiring the target, once", "sequence")
+        self._set_state(detail="recovering the mount from its limit")
+        _t0 = time.time()
+        try:
+            ok = await asyncio.wait_for(
+                self._do_tracking_recovery(tel, target),
+                TRACKING_RECOVERY_TIMEOUT_S)
+        except asyncio.CancelledError:
+            raise
+        except SafetyAbort:
+            # A device that WEDGED (a `_bounded` timeout) is not "the recovery
+            # did not help" — it is the abort+shielded-park path, and swallowing
+            # it here would leave a possibly-mid-slew mount and carry on.
+            raise
+        except Exception as e:           # noqa: BLE001 - never fatal on its own
+            # Includes the outer asyncio.TimeoutError: the whole recovery is
+            # optional, so blowing its own hard bound sets the target aside
+            # rather than escalating.
+            bus.log("warning",
+                    f"{target.name}: the park/unpark recovery failed ({e}) — "
+                    f"setting the target aside", "sequence")
+            return False
+        if not ok:
+            return False
+        self._frame_had_event = True
+        # The wall clock goes in the LOG, not into `_event_costs`. Nothing reads
+        # a "tracking recovery" key — `compute_eta` accounts only dither,
+        # autofocus and flip, and neither the report nor the session ledger has
+        # a recovery line — so recording it there was a measurement with no
+        # consumer, which reads as coverage that is not there. Here it is
+        # visible to the person reading the night log, which is who wants it.
+        bus.log("info",
+                f"{target.name}: recovered in {time.time() - _t0:.0f}s — the "
+                f"mount is tracking again and the target is re-centred",
+                "sequence")
+        return True
+
+    async def _do_tracking_recovery(self, tel, target: Target) -> bool:
+        """The recovery sequence itself; see `_recover_from_tracking_refusal`
+        for the bounds. Split out only so the timeout can wrap it whole."""
+        # Stop guiding first: the guider must not be pulsing a mount that is
+        # about to park. Remembered so it can be put back afterwards — a
+        # recovered mount that is no longer guided just fails more quietly.
+        was_guiding = False
+        guider = self.hub.guider
+        if guider is not None and getattr(guider, "connected", False):
+            try:
+                was_guiding = bool(await guider.is_active())
+                await _bounded(guider.stop_guiding(), GUIDE_OP_TIMEOUT_S,
+                               "stop guiding for limit recovery")
+            except Exception:            # noqa: BLE001 - best effort
+                pass
+        side_before = await self._pier_side_now()
+        await _bounded(tel.park(), PARK_TIMEOUT_S, "park for limit recovery")
+        await _bounded(tel.unpark(), PARK_TIMEOUT_S, "unpark for limit recovery")
+        await _bounded(tel.set_tracking(True), MOUNT_QUERY_TIMEOUT_S,
+                       "re-assert tracking after unpark")
+        if not bool(await _bounded(tel.get_tracking(), MOUNT_QUERY_TIMEOUT_S,
+                                   "tracking readback after unpark")):
+            bus.log("warning",
+                    f"{target.name}: the mount still will not track after a "
+                    f"park/unpark cycle", "sequence")
+            return False
+        # A park slewed the tube to the home position, so the target has to be
+        # re-acquired properly — solve and re-centre, not a bare GoTo. This is
+        # the step that put both nights back 0.5 arcmin from target.
+        result = await _bounded(
+            self.hub.goto_and_center(target.ra_hours, target.dec_deg,
+                                     rotation_deg=target.rotation_deg),
+            GOTO_TIMEOUT_S + (300 if target.rotation_deg is not None else 0),
+            f"re-centre {target.name} after limit recovery")
+        if not result.get("centered"):
+            err = result.get("error_arcmin")
+            bus.log("warning",
+                    f"{target.name}: re-centring after the recovery "
+                    + (f"converged to {err:.1f}'" if err is not None
+                       else "could not plate solve")
+                    + " — continuing", "sequence")
+        # A PARK SENDS THE TUBE HOME AND THE RE-SLEW PICKS A SIDE AGAIN, and
+        # this recovery runs AT THE MERIDIAN, which is the one place the side
+        # most plausibly comes back different. `hub.meridian_flip` flips the
+        # guider's calibration for exactly that reason ("on a real GEM the
+        # RA/Dec sense reverses across the meridian, so guiding with the
+        # pre-flip calibration runs BACKWARDS (runaway)") and this path had no
+        # equivalent step and no pier-side read at all. The native guider is
+        # already safe — its `start_guiding` calls `_maybe_flip_for_pier` — but
+        # PHD2's is a bare `guide` RPC, so a recovery across the meridian would
+        # restart it mirrored. Best-effort and guarded: an unreadable side
+        # changes nothing, and a guider that cannot flip must not fail the
+        # recovery.
+        side_after = await self._pier_side_now()
+        if (side_before not in (None, "unknown")
+                and side_after not in (None, "unknown")
+                and side_before != side_after):
+            bus.log("info",
+                    f"{target.name}: the recovery changed the pier side "
+                    f"({side_before}->{side_after}) — flipping the guider "
+                    f"calibration before restarting", "sequence")
+            flip_cal = getattr(self.hub.guider, "flip_calibration", None)
+            if callable(flip_cal):
+                try:
+                    await _bounded(flip_cal(), GUIDE_OP_TIMEOUT_S,
+                                   "guider calibration flip after recovery")
+                except Exception as e:   # noqa: BLE001 - never fatal
+                    bus.log("warning",
+                            f"{target.name}: could not flip the guider "
+                            f"calibration after the recovery ({e})", "sequence")
+        if was_guiding and self.hub.guider is not None:
+            try:
+                await _bounded(self.hub.guider.start_guiding(),
+                               GUIDE_START_TIMEOUT_S,
+                               "restart guiding after limit recovery")
+            except Exception as e:       # noqa: BLE001
+                bus.log("warning",
+                        f"{target.name}: guiding did not restart after the "
+                        f"recovery ({e}) — continuing unguided", "sequence")
+        # The last word is the mount's, not ours.
+        return bool(await _bounded(tel.get_tracking(), MOUNT_QUERY_TIMEOUT_S,
+                                   "tracking readback after re-centring"))
 
     def _guide_rms(self) -> float | None:
         """Current total guide RMS in ARCSEC, or None when unguided/unreadable
@@ -4872,16 +5442,30 @@ class SequenceEngine:
             return base_exp, base_gain
         return exposure_s, gain
 
-    async def _autofocus(self, label: str) -> bool:
+    async def _autofocus(self, label: str, *, step=None,
+                         target: Target | None = None) -> bool:
         """Run one autofocus. Returns True if it found focus.
 
         The return exists for the instruction dispatcher: an edge-triggered rule
         has to know whether its action actually addressed the condition, or a
         failed sweep silently retires the rule (see `_dispatch_actions`).
+
+        ``step``/``target`` are the CONTEXT the sweep is running in, and their
+        only job is the tracking assertion below: a sweep measures the sky, so
+        it needs a mount that is following it — except on a calibration target
+        or a dark/bias/flat step, which are shot parked on purpose and get the
+        same exemption `_enforce_tracking` already makes.
         """
         self._set_state(detail=label)
         _t0 = time.time()
         failed_reason: str | None = None
+        # A SWEEP IS TEN EXPOSURES OVER FIVE MINUTES AND USED TO ASK NOBODY.
+        # On 2026-08-21 one ran to completion on a mount that had stopped four
+        # minutes earlier, consumed the drift as data, returned HFR 8.40 px
+        # against 3.05-3.71 earlier the same night — and applied it. Same read
+        # the light-frame gate uses, so the two cannot disagree.
+        needs_tracking = self._is_light(step) and not getattr(
+            target, "calibration", False)
         try:
             cam = self.hub.require("camera")
             foc = self.hub.require("focuser")
@@ -4892,7 +5476,8 @@ class SequenceEngine:
             # interleaving their imageready polls on one camera.
             result = await run_autofocus(
                 cam, foc, hub=self.hub, exposure_s=exposure_s, gain=gain,
-                binning=binning, expose_guard=self.hub.exposure_guard)
+                binning=binning, expose_guard=self.hub.exposure_guard,
+                tracking_check=self._tracking_now if needs_tracking else None)
             if not result.success:
                 bus.log("warning", f"{label} failed: {result.message}", "sequence")
                 failed_reason = result.message or "autofocus failed"
@@ -4901,6 +5486,23 @@ class SequenceEngine:
             await self._capture_focus_temp()
         except SafetyAbort:
             raise
+        except TrackingLost as e:
+            # A STOPPED MOUNT IS NOT AN AUTOFOCUS FAILURE. It has its own
+            # detector, its own escalation and — since 2026-08-22 — its own
+            # park/unpark recovery, all of them in the frame loop's
+            # `_enforce_tracking`. Routed through the af_failure escalation
+            # instead, a rig with `escalation.af_failure_action = "abort"` (a
+            # setting a careful operator would turn on) would turn a
+            # momentarily-stopped mount into a night-ending SafetyAbort at the
+            # two sweeps that run BEFORE any tracking gate does — the initial
+            # autofocus in `_setup_target` and the post-flip one — so the
+            # recovery would never get its turn. Say so, return False, let the
+            # mount's own machinery own it.
+            bus.log("warning",
+                    f"{label} abandoned: {e} — leaving it to the mount's own "
+                    f"tracking gate, which can recover it", "sequence")
+            self._record_event_cost("autofocus", time.time() - _t0)
+            return False
         except Exception as e:
             bus.log("warning", f"{label} error: {e}", "sequence")
             failed_reason = str(e)

@@ -42,6 +42,13 @@ def small_plan(**overrides) -> SequencePlan:
             ],
         )],
         guide=False, dither_every=0, autofocus_every=0,
+        # A FIXED RA MEANS A WALL-CLOCK-DEPENDENT HOUR ANGLE. Nothing in this
+        # file is about the meridian, but the flip now fires on a 10-minute
+        # LEAD (`schedule.MERIDIAN_FLIP_LEAD_MIN`) and stays armed until
+        # lead + FLIP_ARM_MARGIN_MIN past transit, so for a slice of the day
+        # M42 would take a real flip in the middle of these runs. Off, so these
+        # tests measure what they name.
+        meridian_flip=False,
     )
     return SequencePlan(**(defaults | overrides))
 

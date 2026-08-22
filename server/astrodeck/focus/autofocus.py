@@ -19,6 +19,59 @@ from ..imaging.stars import (OVEREXPOSED_FRAC, focus_size, median_hfr,
                              saturation_fraction, size_advice, star_size)
 
 
+class TrackingLost(DeviceError):
+    """Raised when a sweep is asked to measure the sky on a mount that is not
+    tracking.
+
+    A SWEEP IS TEN EXPOSURES OVER FIVE MINUTES, AND A STOPPED MOUNT DRIFTS
+    THROUGH ALL OF THEM. On 2026-08-21 the AM5 reached its meridian limit at
+    00:44; at 00:48 the sequence started an autofocus, which ran to completion
+    on a drifting mount, consumed the drift as data, and returned "focus" at
+    HFR 8.40 px against 3.05-3.71 earlier the same night — then applied it.
+
+    A DeviceError so every existing caller's error handling already covers it,
+    and an exception rather than a failed result so it takes the sweep's own
+    teardown path: the focuser goes back to ``start_pos`` and nothing is
+    applied. A sweep abandoned mid-way is how a night gets shot 2450 steps out
+    of focus.
+    """
+
+
+async def assert_tracking(tracking_check, where: str) -> None:
+    """Refuse to measure the sky on a mount that is not following it.
+
+    ``tracking_check`` is the tri-state probe described on
+    :func:`run_autofocus`; ``None`` (no probe at all) and ``None`` (the probe
+    cannot say) are both "carry on", because unreadable is not a verdict. Only
+    an explicit ``False`` raises :class:`TrackingLost`.
+
+    Module-level rather than a closure because BOTH sweep engines need it — the
+    legacy numpy path here and the native Rust one in ``focus.native`` — and the
+    native engine is what this rig actually runs. A guard wired to only one of
+    two providers is the "built, tested, never reached by the real path" shape.
+
+    THE PROBE OWNS "IS THIS FALSE REAL?", NOT THIS FUNCTION. One sample is
+    enough to abandon a five-minute sweep, so the caller's probe must not report
+    a transient as False — and on this rig there is a routine transient:
+    ``zwo_am5.pulse_guide`` implements an EAST guide pulse as a tracking
+    suspend, so ``get_tracking()`` inside that sub-second window answers False
+    on a perfectly healthy mount. The engine's ``_tracking_now`` confirms a
+    False across several seconds before returning it, which is why this can
+    stay a single question. A probe that does not confirm will throw away
+    sweeps on clear nights.
+    """
+    if tracking_check is None:
+        return
+    try:
+        state = await tracking_check()
+    except Exception:                    # noqa: BLE001 - unknown is not False
+        return
+    if state is False:
+        raise TrackingLost(
+            f"the mount is not tracking ({where}) — a sweep on a drifting "
+            f"mount measures the drift, not the focus")
+
+
 #: A median HFR over fewer than this many stars is one detection's opinion: with
 #: two samples the "median" is their mean and the MAD is a coin toss, so a single
 #: hot pixel or cosmic ray IS the measurement. Points this thin are refused
@@ -721,7 +774,8 @@ async def run_autofocus(camera: Camera, focuser: Focuser, *,
                         gain: int = SWEEP_GAIN,
                         step: int | None = None, steps_each_side: int = 4,
                         binning: int = 2, expose_guard=None,
-                        hub=None, provider=None) -> AutofocusResult:
+                        hub=None, provider=None,
+                        tracking_check=None) -> AutofocusResult:
     """Run a V-curve autofocus sweep.
 
     ``step`` None — the default — sizes the sweep from this focuser's measured
@@ -733,6 +787,16 @@ async def run_autofocus(camera: Camera, focuser: Focuser, *,
     single capture / sequence exposures (hub-level capture guard). When None the
     exposures run unguarded (direct unit-test / native-autofocus paths).
 
+    ``tracking_check`` (optional): a zero-argument async callable returning the
+    mount's TRI-STATE tracking answer — ``True`` tracking, ``False`` stopped,
+    ``None`` nobody can say. Awaited before the first point and again before
+    every point, because a sweep is minutes long and a mount can reach its limit
+    in the middle of one. ``False`` raises :class:`TrackingLost` and the sweep
+    unwinds through its normal teardown (focuser back to ``start_pos``, nothing
+    applied); ``None`` proceeds, because unreadable is not a verdict and a
+    driver that cannot answer must not cost a focus run. ``None`` for the whole
+    parameter — every existing caller — behaves exactly as before.
+
     Provider routing (spec §5): who runs autofocus is a per-capability choice
     (auto|backend|astrodeck). Callers that have a ``hub`` pass it (or a resolved
     ``provider`` ProviderChoice) so the provider layer decides: ``backend`` →
@@ -741,6 +805,13 @@ async def run_autofocus(camera: Camera, focuser: Focuser, *,
     through to the legacy behaviour below, so the existing signature and its
     default numpy sweep keep working unchanged.
     """
+    # BEFORE ANY PROVIDER RUNS. Whoever ends up driving the sweep — this
+    # module, the native engine, or a backend's own routine — none of them can
+    # measure a focus curve on a mount that is not following the sky, and only
+    # one of the three is inspectable from here. One mount read, before the
+    # first exposure.
+    await assert_tracking(tracking_check, "before the sweep")
+
     # --- provider routing ---------------------------------------------------
     choice = provider
     if choice is None and hub is not None:
@@ -759,7 +830,7 @@ async def run_autofocus(camera: Camera, focuser: Focuser, *,
             return await run_native_autofocus(
                 camera, focuser, exposure_s=exposure_s, gain=gain, step=step,
                 steps_each_side=steps_each_side, binning=binning,
-                expose_guard=expose_guard)
+                expose_guard=expose_guard, tracking_check=tracking_check)
 
     # --- legacy path (no provider context) ----------------------------------
     if getattr(focuser, "supports_native_autofocus", False):
@@ -868,6 +939,12 @@ async def run_autofocus(camera: Camera, focuser: Focuser, *,
         await focuser.move_to(max(0, positions[0] - step))
 
         for i, pos in enumerate(positions):
+            # AGAIN AT EVERY POINT, not only before the first. The 2026-08-21
+            # sweep started four minutes AFTER the mount had already stopped,
+            # but one that starts clean and loses tracking at point three is
+            # the same ruined curve — and this one runs for five minutes.
+            await assert_tracking(
+                tracking_check, f"at sweep point {i + 1}/{len(positions)}")
             if pending is not None:
                 frame, pending = await pending, None
             else:
