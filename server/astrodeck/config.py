@@ -896,6 +896,21 @@ class AppConfig(BaseModel):
     #     inherit the ramp, which is the whole point: the rigs that need it most
     #     are the ones nobody is going to go and enable it on) ---
     cooling: CoolingConfig = Field(default_factory=CoolingConfig)
+    #: Could the camera this rig LAST CONNECTED cool? Server-owned and derived,
+    #: never operator-edited — which is why it sits out here rather than inside
+    #: CoolingConfig, whose whole block is wholesale-replaced by the settings
+    #: panel. A field a client can erase by omission is not a durable record.
+    #:
+    #: WHY IT IS PERSISTED. The Plan tab's "this run has no target temperature"
+    #: advisory needs to know whether there is a TEC to talk about, and
+    #: ``Camera.can_cool`` only exists while a camera is connected. Reading it
+    #: live meant the advisory appeared only if you happened to compile with the
+    #: rig plugged in, which is not the state a rig is in at 19:00 — the exact
+    #: hour the advisory exists to serve. False also means "no camera has ever
+    #: connected", so a rig that has genuinely never had a cooler still says
+    #: nothing rather than nagging. LAST-SEEN and not sticky-true: swapping to an
+    #: uncooled camera and connecting it corrects the record.
+    camera_can_cool_seen: bool = False
     # --- file-naming template (PRO-11; appended — old configs load fine) ---
     naming: NamingConfig = Field(default_factory=NamingConfig)
     # --- calibration master library (PRO-1; appended — old configs load fine) ---
@@ -1447,18 +1462,51 @@ class ConfigStore:
         the ramp runs at all). Wholesale-replace, like set_safety — the UI echoes
         the full block back with its edit applied.
 
-        ``setpoint_c`` is EXEMPT from the replace and is carried over from the
-        stored config. It is not policy — it is the live "cool to X" the operator
-        asked the camera for, written by ``hub.cool_camera`` — and the settings
-        panel neither shows it nor owns it. Without this carry-over, editing the
-        warm rate at 21:00 would silently cancel the standing cooling request,
-        because the panel would POST a block whose ``setpoint_c`` defaulted to
-        None. Same shape as the alert-token guard in the config route: a client
-        that never had the value must not be able to erase it by omission."""
+        ``setpoint_c`` IS SET ONLY WHEN IT WAS ACTUALLY SENT, and that
+        distinction is the whole of this method.
+
+        Absent must mean unchanged. The settings panel POSTs the entire
+        CoolingConfig block and its client type has no setpoint field, so a
+        plain replace cancels the standing cooling request every time somebody
+        nudges the warm rate at 21:00 — the same shape as the alert-token guard
+        in the config route: a client that never had the value must not be able
+        to erase it by omission.
+
+        But the carry-over used to be UNCONDITIONAL, which made the setpoint
+        unwritable through this route at all: ``POST /api/config`` with
+        ``{"cooling": {"setpoint_c": -15}}`` answered 200 and threw the value
+        away, with no way for the caller to tell "saved" from "discarded". On
+        2026-08-22 that cost 19 light frames at +23 °C against a -10 °C dark
+        library, because the only remaining writer was a side effect of
+        ``POST /api/camera/cooler`` and nobody had pressed it.
+
+        ``model_fields_set`` is what tells an omitted field from an explicitly
+        sent one, so an explicit ``null`` still clears the setpoint and still
+        means "no cooling intent" — a rig with no cooler is a real rig — while
+        a block that never mentions it leaves the operator's number alone.
+        """
         cfg = self.cfg()
-        cfg.cooling = cooling.model_copy(
-            update={"setpoint_c": cfg.cooling.setpoint_c})
+        if "setpoint_c" not in cooling.model_fields_set:
+            cooling = cooling.model_copy(
+                update={"setpoint_c": cfg.cooling.setpoint_c})
+        cfg.cooling = cooling
         return self.bump_and_save()
+
+    def remember_camera_can_cool(self, can_cool: bool) -> None:
+        """Record whether the just-connected camera has a TEC
+        (``AppConfig.camera_can_cool_seen``).
+
+        Writes ONLY on a change. Every connect would otherwise bump the config
+        version and rebroadcast the whole config to every client for a fact that
+        almost never moves. Never raises: this is a derived convenience for an
+        editor advisory, and it must not be able to fail a connect."""
+        try:
+            if self.cfg().camera_can_cool_seen == bool(can_cool):
+                return
+            self.cfg().camera_can_cool_seen = bool(can_cool)
+            self.bump_and_save()
+        except Exception:       # noqa: BLE001 - an advisory hint, never a fault
+            pass
 
     def set_cooling_setpoint(self, setpoint_c: float | None) -> AppConfig:
         """Record (or clear) the standing cooling request — see
@@ -1957,6 +2005,22 @@ def _strip_url_userinfo(url: str) -> str:
     return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
 
 
+#: The AlertSink fields ``redacted()`` BLANKS outbound (sets to ""), as opposed
+#: to rewrites (``url``, whose userinfo is stripped but which keeps a real
+#: value). Every field in here is one a client cannot echo back, so the config
+#: route MUST treat an empty incoming value as "unchanged" for each of them
+#: (see ``_merge_alert_verified``).
+#:
+#: THIS EXISTS SO THE TWO LISTS CANNOT DRIFT. They already had: ``chat_id`` was
+#: added to the redaction and never added to the restore, so a plain
+#: GET -> POST echo of the alerts array erased every telegram sink's chat_id and
+#: reset ``verified`` to False on the way past. The sink stayed in the config,
+#: could no longer deliver, and nothing reported it. A new redaction that
+#: forgets its restore is a new eraser; deriving one from the other is what
+#: makes that impossible rather than merely unlikely.
+REDACTED_SINK_FIELDS: tuple[str, ...] = ("token", "chat_id")
+
+
 def redacted(cfg: AppConfig) -> dict:
     """Serialize ``cfg`` for WS/REST with every secret scrubbed (P2-12).
 
@@ -1975,13 +2039,13 @@ def redacted(cfg: AppConfig) -> dict:
         # can't otherwise tell a configured Discord/Slack/email/Telegram sink
         # from an empty one once `token` is blanked below.)
         sink["token_configured"] = bool(sink.get("token"))
-        # Telegram bot token — the at-rest secret. Always blanked.
-        if sink.get("token"):
-            sink["token"] = ""
-        # Telegram chat id can be a private/identifying value — redact it but keep
-        # a boolean-ish marker so the UI can still show "configured".
-        if sink.get("chat_id"):
-            sink["chat_id"] = ""
+        # The at-rest secrets: the Telegram bot token, and the chat id (a
+        # private/identifying value). Blanked from REDACTED_SINK_FIELDS so the
+        # config route's "empty means unchanged" restore is derived from the
+        # same tuple and cannot fall behind a newly-redacted field.
+        for _field in REDACTED_SINK_FIELDS:
+            if sink.get(_field):
+                sink[_field] = ""
         # ntfy/webhook url can carry Basic-auth creds in the userinfo. Strip them
         # (keep the host/path so the UI still shows where it points).
         if sink.get("url"):

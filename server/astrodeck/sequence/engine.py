@@ -329,6 +329,12 @@ class SequenceEngine:
         #: one line per cooling excursion, not one per frame
         self._cooling_reasserted = False
         self._warned_no_cooler = False
+        #: ...and one line per RUN for the no-setpoint warning. Its siblings
+        #: above have carried a flag from the start; this one relied on its
+        #: single call site sitting outside the frame loop, so a refactor that
+        #: moved the call could flood a 170-frame night with one repeated amber
+        #: sentence and evict the whole log from the 200-entry ring.
+        self._warned_no_temperature = False
         #: instruction id -> consecutive failed fires (see
         #: `_rearm_failed_rule`). Cleared when the action works.
         self._rule_failures: dict[str, int] = {}
@@ -546,6 +552,7 @@ class SequenceEngine:
         self._recent_hfr = []
         self._cooling_reasserted = False
         self._warned_no_cooler = False
+        self._warned_no_temperature = False
         self._rule_failures = {}
         self._rejected = 0
         self._night_rejects = 0
@@ -1049,6 +1056,77 @@ class SequenceEngine:
         except Exception:
             pass
 
+    def _warn_if_the_run_has_no_temperature(self, plan) -> None:
+        """Say out loud that this run has no target temperature.
+
+        THE SILENCE IS THE DEFECT. `_run` skips the entire cooling block on
+        `if plan.cool_to is not None`, and the line immediately above that
+        check announces the run — so a night with no cooling intent reads, in
+        the log, exactly like a night that cooled. On 2026-08-22 a flow-driven
+        run put 19 lights on disk at +23 °C against a -10 °C dark library and
+        the only tell was a number on a status screen 80 minutes later.
+        `_enforce_cooling`, the per-frame guard written for this failure, is a
+        documented no-op without cooling intent, so nothing downstream speaks
+        either.
+
+        A flow cannot express cooling at all (there is no cooling node), so the
+        run's `cool_to` comes from the rig's standing `cooling.setpoint_c` and
+        from nowhere else. "Unset" is therefore an easy state to be in by
+        accident, which is why this is a WARNING and not a debug line.
+
+        SILENT ON A CAMERA WITH NO COOLER. That is not a defect, it is a fact
+        about the hardware, and a rig that gets nagged every single night
+        learns to ignore the log — which would cost us the one line above.
+        `can_cool` is populated on connect, so a camera that is absent or has
+        never connected also says nothing rather than guessing.
+        """
+        if getattr(plan, "cool_to", None) is not None:
+            return
+        cam = self.hub.devices.get("camera")
+        if cam is None or not getattr(cam, "can_cool", False):
+            return
+        # ONCE PER RUN, structurally — not merely because the one call site
+        # happens to sit outside the frame loop. See `_warned_no_temperature`.
+        if self._warned_no_temperature:
+            return
+        self._warned_no_temperature = True
+        bus.log("warning",
+                f"sequence '{plan.name}' has no target temperature: "
+                f"{getattr(cam, 'name', 'this camera')} can cool but nothing "
+                f"asked it to, so every frame is exposed at whatever the sensor "
+                f"happens to read and will not match a dark library. Set "
+                f"Target °C on the Capture tab and press Cool, then start "
+                f"again.",
+                "sequence")
+
+    def _no_setpoint_must_stop_the_run(self) -> bool:
+        """Apply ``escalation.require_cooling`` to a run with NO setpoint.
+
+        True means "do not shoot" (the ``skip`` action). ``abort`` raises
+        SafetyAbort out of here, exactly as a cool-timeout does one branch over.
+
+        THE WARNING ABOVE IS THE RIGHT LEVEL ONLY WHEN COOLING IS OPTIONAL.
+        ``require_cooling`` is the operator stating that frames taken warm are
+        worthless to them; answering that with a log line and 19 warm lights is
+        the failure this whole file exists about, one configuration setting
+        further in. Routed through ``_cooling_failed`` — the same helper the
+        cool-timeout path uses — so "abort" and "skip" cannot come to mean two
+        different things depending on WHY the frames would be warm.
+
+        Silent and permissive on a camera that cannot cool, matching the
+        warning: require_cooling cannot sensibly demand a TEC that is not
+        there, and a rig with no cooler is a real rig.
+        """
+        cfg = self._cfg
+        if not (cfg and cfg.escalation.require_cooling):
+            return False
+        cam = self.hub.devices.get("camera")
+        if cam is None or not getattr(cam, "can_cool", False):
+            return False
+        self._cooling_failed(True, cfg.escalation.cooling_action,
+                             "this run has no target temperature")
+        return cfg.escalation.cooling_action == "skip"
+
     # ------------------------------------------------------------------- run
 
     async def _run(self) -> None:
@@ -1061,8 +1139,21 @@ class SequenceEngine:
             # shutter time, not signal on the target.
             bus.log("info", f"sequence '{plan.name}' started: {plan.total_frames()} frames, "
                             f"{plan.light_seconds() / 60:.0f} min integration", "sequence")
+            self._warn_if_the_run_has_no_temperature(plan)
             self._start_watchdog()
 
+            # WHY THIS IS ONE DECISION AND NOT TWO. "The cooler never reached
+            # the target" and "nothing ever asked it to" are the same fact from
+            # the operator's chair — the frames come out warm either way — so
+            # ``require_cooling``/``cooling_action`` has to cover both. It used
+            # to cover only the first, because this whole escalation block lived
+            # inside ``if plan.cool_to is not None``: a rig configured "this
+            # night must be cooled, ABORT if it is not" shot the full set of
+            # warm lights and reported success. That is the loudest thing an
+            # operator can say being ignored completely, and it is the same
+            # 2026-08-22 night the run-start warning above was written for —
+            # the warning made that night audible, this makes it stoppable.
+            skip_detail: str | None = None
             if plan.cool_to is not None:
                 cooled = await self._cool_and_wait(plan.cool_to, self._policy.cool_timeout_s)
                 # P1-7: require_cooling + cooling_action == "skip" → don't shoot
@@ -1071,18 +1162,22 @@ class SequenceEngine:
                 cfg = self._cfg
                 if (not cooled and cfg and cfg.escalation.require_cooling
                         and cfg.escalation.cooling_action == "skip"):
-                    self._set_state(state="complete",
-                                    detail="skipped: camera did not reach target temp",
-                                    end_reason="cooling_skip", schedule=None,
-                                    session=None)
-                    bus.log("warning", f"sequence '{plan.name}' skipped — cooling "
-                                       "required but not reached", "sequence")
-                    self._finalize_report("cooling_skip")
-                    await self._wind_down(
-                        plan.park_when_done, plan.warm_cooler_when_done,
-                        close_dome=bool(self._cfg
-                                        and self._cfg.safety.close_dome_when_done))
-                    return
+                    skip_detail = "skipped: camera did not reach target temp"
+            elif self._no_setpoint_must_stop_the_run():
+                skip_detail = "skipped: this run has no target temperature"
+
+            if skip_detail is not None:
+                self._set_state(state="complete", detail=skip_detail,
+                                end_reason="cooling_skip", schedule=None,
+                                session=None)
+                bus.log("warning", f"sequence '{plan.name}' skipped — cooling "
+                                   "required but not reached", "sequence")
+                self._finalize_report("cooling_skip")
+                await self._wind_down(
+                    plan.park_when_done, plan.warm_cooler_when_done,
+                    close_dome=bool(self._cfg
+                                    and self._cfg.safety.close_dome_when_done))
+                return
 
             await self._run_scheduled(plan)
 

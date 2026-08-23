@@ -3760,10 +3760,19 @@ class Hub:
         a louder one, because the alternative is a night of warm frames nobody
         was told about.
         """
+        cam = self.devices.get("camera")
+        # RECORD THE CAPABILITY BEFORE THE EARLY RETURNS. `can_cool` exists only
+        # while a camera is connected, and the Plan tab needs the answer at
+        # 19:00 with the rig unplugged (AppConfig.camera_can_cool_seen). This is
+        # the one function that already runs on every connect with the camera in
+        # hand. It must stay ABOVE the `target is None` return, because the run
+        # with no setpoint is precisely the run the advisory is about.
+        if cam is not None and getattr(cam, "connected", False):
+            config_store.remember_camera_can_cool(
+                bool(getattr(cam, "can_cool", False)))
         target = getattr(config_store.cfg().cooling, "setpoint_c", None)
         if target is None:
             return False
-        cam = self.devices.get("camera")
         if cam is None or not getattr(cam, "connected", False):
             return False
         if not hasattr(cam, "set_cooler"):
@@ -3790,13 +3799,35 @@ class Hub:
         the ramp, I want it off now" and for rig teardown. ``finalize=False`` is
         for a caller taking ownership of the cooler in the very next statement
         (``cool_camera``); it is the ONLY case where leaving the TEC on is a
-        defined state, because the caller is about to define it."""
-        if finalize:
-            # Same reasoning as warm_camera: finalize=True means "off, now" —
-            # teardown, or an operator stopping the ramp — so the standing
-            # request goes with it. finalize=False is cool_camera taking
-            # ownership in its very next statement, which records its own.
-            self._remember_cooling(None)
+        defined state, because the caller is about to define it.
+
+        NEITHER MODE TOUCHES ``cooling.setpoint_c``. Stopping the cooler is a
+        live command; what temperature this rig images at is a standing
+        preference. See the comment below for the night that distinction cost."""
+        # THIS USED TO CLEAR THE STANDING SETPOINT, AND IT ERASED IT ON EVERY
+        # CONNECT. The reasoning was the same as warm_camera's: finalize=True
+        # means "off, now" — teardown, or an operator stopping the ramp — so the
+        # standing request goes with it. But the operator half of that sentence
+        # was never true: the ONLY caller that passes finalize=True is
+        # ``_teardown``, which every connect path runs FIRST (and which
+        # /api/disconnect and the lifespan shutdown run too). So the clear was
+        # never an operator decision — it was a side effect of the rig going
+        # away, and it fired on the way IN as well as the way out.
+        #
+        # Measured 2026-08-23: POST /api/config setpoint -15, then
+        # POST /api/connect/sim, and the setpoint reads null. That also made
+        # ``restore_cooling`` — the #153/#204 fix whose whole job is to put the
+        # camera back on the operator's number after a reconnect — permanently
+        # dead code, because _teardown had cleared the value it reads moments
+        # earlier in the same call. It has apparently never once fired.
+        #
+        # Two different facts, the same split warm_camera already makes: "stop
+        # the cooler now" is a live command and is what the set_cooler(False)
+        # below carries out; "image at -10" is a standing preference that only
+        # the operator changes. Teardown owns the first and must not touch the
+        # second. The preference is cleared deliberately by POSTing
+        # {"cooling": {"setpoint_c": null}} to /api/config, which is a real
+        # operator path and the only one that should be.
         async with self._warm_lock:
             was_running = await self._cancel_warm_locked(reason)
             if was_running and finalize:
@@ -3867,8 +3898,11 @@ class Hub:
         # re-asserts it per frame (`SequenceEngine._enforce_cooling`), so a
         # stale order cannot outlive the intent that reads it.
         #
-        # `_remember_cooling(None)` still exists and is still how the preference
-        # is deliberately cleared; it is just no longer a side effect of dawn.
+        # The preference is cleared deliberately by POSTing
+        # {"cooling": {"setpoint_c": null}} to /api/config. It is NOT cleared by
+        # any device path any more: the one that remained (cancel_warm's
+        # finalize branch) turned out to be reachable only from _teardown, so it
+        # erased the setpoint on every connect instead of on any decision.
         if not getattr(cam, "can_cool", False):
             return self._warm_finished_state(source, f"{cam.name} has no cooler",
                                              ramped=False)

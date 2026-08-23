@@ -730,6 +730,7 @@ def plan_extras(compiled: dict) -> dict:
 def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
                      when: float | None = None,
                      cool_to: float | None = None,
+                     camera_can_cool: bool = False,
                      closes_on_unsafe: bool = False
                      ) -> tuple[SequencePlan, list[dict]]:
     """``(plan, unmapped)`` for a compiled flow.
@@ -749,6 +750,13 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
     ``None`` leaves ``cool_to`` unset and the run behaves exactly as before -
     the rig with no configured setpoint has expressed no intent to cool, and
     inventing one here would be picking a number on the operator's behalf.
+
+    ``camera_can_cool`` is the rig's answer to "is there a TEC on this camera",
+    injected for the same reason ``cool_to`` is: this function has no devices.
+    It only decides whether ``None`` is worth REPORTING - a plan with no
+    temperature on a camera that could have held one earns a note, and the same
+    plan on an uncooled camera earns nothing. The default is False so a caller
+    that cannot answer stays silent rather than nagging.
 
     Raises :class:`GraphNotRunnable` when there is nothing runnable here - no
     targets at all, or a capture step with no exposure or no frames.
@@ -853,6 +861,30 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
         fields["guide"] = any(n.type == "guide" for n in graph.nodes)
     if cool_to is not None:
         fields["cool_to"] = float(cool_to)
+    elif camera_can_cool:
+        # THE NIGHT HAS NO TEMPERATURE, AND THE EDITOR IS WHERE TO SAY IT.
+        #
+        # The engine warns at run start (`_warn_if_the_run_has_no_temperature`),
+        # which is what caught this on 2026-08-22 — 80 minutes and 19 frames at
+        # +23 °C against a -10 °C library. A line in a log at 22:00 is worth
+        # less than a line on the canvas at 19:00, and this list is already the
+        # thing the PLAN tab draws before anyone presses Run.
+        #
+        # NOTE, NOT A LOSS, and deliberately: `losses` is what makes /run refuse
+        # with "parts of this flow do not survive the compile", and refusing
+        # here would block an intentionally uncooled night on a rig whose
+        # vocabulary cannot express cooling in the first place. A note is the
+        # level for "worth reading, not worth blocking on" — the same reason
+        # HOLD_HONOURED and the redundant ports use it.
+        unmapped.append(_note(
+            "cooling.setpoint_c",
+            "this run has no target temperature: the flow vocabulary has no "
+            "cooling node, so a run cools to the rig's standing setpoint and "
+            "nothing has set one. This camera can cool, so every frame will be "
+            "exposed at whatever the sensor happens to read and will not match "
+            "a dark library. Set Target °C on the Capture tab and press Cool, "
+            "or run uncooled on purpose",
+            "note"))
     plan = SequencePlan.model_validate(fields)
     return plan, unmapped
 

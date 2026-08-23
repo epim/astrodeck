@@ -37,7 +37,7 @@ import time
 from ..config import config_store
 from ..events import bus
 from . import schedule
-from .models import quota_unbounded
+from .models import quota_unbounded, replan_cooling
 from .policy import resolve_policy
 from .session import Session, session_store
 
@@ -326,7 +326,13 @@ class ResumeArm:
             return
         try:
             self.hub.require("camera")
-            self.engine.start(armed.plan, session=armed)
+            # A resume is a NEW run and re-reads the standing setpoint, exactly
+            # as the two /api resume entries do (replan_cooling). Without it a
+            # multi-night session that began with no setpoint warns every single
+            # night with no reachable way to act on the advice.
+            self.engine.start(replan_cooling(
+                armed.plan, config_store.cfg().cooling.setpoint_c),
+                session=armed)
         except Exception as e:              # noqa: BLE001 — refusal, not a crash
             bus.log("warning", f"auto-resume refused: {e} — retrying in "
                                f"{int(RETRY_INTERVAL_S / 60)} min", "sequence")
