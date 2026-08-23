@@ -458,10 +458,30 @@ def test_the_ephemeris_is_reused_within_its_ttl_and_recomputed_after():
 
 def test_a_site_change_invalidates_the_cached_body_positions(tmp_path, monkeypatch):
     """The Moon's position IS a function of the site (up to ~1 deg). A cached
-    set from the previous site would be served for two minutes after the edit."""
+    set from the previous site would be served for two minutes after the edit.
+
+    THE INSTANT IS PINNED, and it has to be. The quantity measured here is
+    lunar topocentric parallax, whose size depends on where the Moon happens to
+    be in the sky at the moment the test runs -- so against the wall clock this
+    assertion is a fact about the DATE, exactly like the solar-separation note
+    on M42 elsewhere in the suite. Measured over 30 days of 3-hourly samples the
+    50 deg latitude change moves the Moon between 0.0667 and ~1.9 deg, so the
+    0.1 deg margin genuinely fails for stretches of real time; it was observed
+    red across six consecutive runs in one 40-minute window and green either
+    side of it. At `_WHEN` the separation is 1.25 deg.
+
+    Pinned by wrapping ``ss.row`` rather than by passing ``when=`` to
+    ``solar_system_rows``: an explicit ``when`` is deliberately never answered
+    from the cache (see the test above), and the cache is the entire subject of
+    this one. The clock has to be frozen without leaving the live path.
+    """
     store = ConfigStore(path=tmp_path / "astrodeck.json")
     import astrodeck.config as config_mod
+    from astrodeck.catalog import solar_system as ss
     monkeypatch.setattr(config_mod, "config_store", store)
+    real_row = ss.row
+    monkeypatch.setattr(ss, "row", lambda key, when=None, **kw: real_row(
+        key, _WHEN if when is None else when, **kw))
     region_mod._reset_ephemeris_cache()
 
     store.set_site(Site(name="A", latitude=10.0, longitude=10.0),

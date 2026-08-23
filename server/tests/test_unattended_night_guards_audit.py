@@ -273,17 +273,25 @@ async def test_watchdog_is_blind_while_frames_are_not_expected(sim_hub, monkeypa
 # 2. require_cooling / cooling_action
 # ============================================================================
 
-async def test_require_cooling_is_inert_without_a_plan_setpoint(sim_hub, temp_store):
-    """GAP. ``require_cooling`` is only ever consulted inside ``_cool_and_wait``,
-    and ``_cool_and_wait`` is only called when ``plan.cool_to is not None``.
+async def test_require_cooling_now_REFUSES_a_run_with_no_plan_setpoint(
+        sim_hub, temp_store):
+    """GAP CLOSED 2026-08-23, and pinned in the direction it now points.
 
-    The rig has NO cooling setpoint anywhere in its config and the camera sat at
-    31.2 °C, so turning ``require_cooling`` on — even with the harshest
-    ``cooling_action="abort"`` — changes nothing: a plan with no ``cool_to``
-    shoots warm lights all night and the run completes normally.
+    This test used to assert the opposite, under the file's own rule that a
+    documented gap says what would have to change for it to be deleted: it read
+    "``require_cooling`` is only ever consulted inside ``_cool_and_wait``, and
+    ``_cool_and_wait`` is only called when ``plan.cool_to is not None`` ...
+    Delete this test when a required-cooling run with no setpoint refuses to
+    start." It now refuses, so the characterisation is inverted rather than
+    dropped — the assertion is the same seam, pointing the other way, and the
+    old behaviour cannot come back unnoticed.
 
-    "Require cooling" does not require a setpoint to exist. Delete this test
-    when a required-cooling run with no setpoint refuses to start."""
+    What changed: the escalation block no longer lives inside
+    ``if plan.cool_to is not None``. ``_no_setpoint_must_stop_the_run`` routes a
+    missing setpoint through the same ``_cooling_failed`` helper a cool-timeout
+    uses, so "abort" means abort whether the frames would be warm because the
+    cooler could not keep up or because nothing ever asked it to.
+    """
     temp_store.set_safety(SafetyConfig(enabled=False))
     temp_store.set_escalation(EscalationConfig(require_cooling=True,
                                                cooling_action="abort"))
@@ -293,8 +301,8 @@ async def test_require_cooling_is_inert_without_a_plan_setpoint(sim_hub, temp_st
 
     engine.start(plan)
     assert await wait_for(lambda: not engine.running, timeout=20), engine.state
-    assert engine.state.get("state") == "complete"
-    assert engine._frames_done == 3, "warm lights were taken, not refused"
+    assert engine.state.get("state") == "aborted", engine.state
+    assert engine._frames_done == 0, "warm lights were taken, not refused"
 
 
 # ============================================================================

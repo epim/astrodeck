@@ -345,6 +345,31 @@ class SequencePlan(BaseModel):
                    if (s.frame_type or "Light").strip().lower() == "light")
 
 
+def replan_cooling(plan: SequencePlan, setpoint_c: float | None) -> SequencePlan:
+    """Give a RESUMED plan the rig's standing setpoint, if it has none.
+
+    A dormant session replays the plan it stored, and ``cool_to`` is not a
+    property of the flow — the vocabulary has no cooling node, so the only
+    producer is ``to_sequence_plan(cool_to=config.cooling.setpoint_c)`` at the
+    moment the run was first compiled. A session started on a night when the
+    setpoint was unset therefore carried ``cool_to=None`` FOREVER: the operator
+    could set the setpoint the next morning, watch the run-start warning fire
+    again that evening, and have no reachable way to act on it short of
+    abandoning a part-finished multi-night session. The remedy the warning
+    names has to actually work on night two.
+
+    ONLY WHEN THE STORED PLAN HAS NO TEMPERATURE AT ALL, which is the narrow
+    thing that makes this safe. Re-resolving unconditionally would let night
+    two of a session run at -15 °C when nights one and three ran at -10 °C, and
+    a session whose subs span two sensor temperatures cannot be calibrated
+    against one dark library — trading this bug for a subtler one. A plan that
+    never had a temperature has no such continuity to break.
+    """
+    if getattr(plan, "cool_to", None) is not None or setpoint_c is None:
+        return plan
+    return plan.model_copy(update={"cool_to": float(setpoint_c)})
+
+
 def quota_unbounded(plan: SequencePlan, policy: "RunPolicy") -> bool:
     """True when starting ``plan`` in accepted-frame quota mode could run
     forever under persistent rejects (Task 4 review, IMPORTANT; public name —
