@@ -28,6 +28,7 @@ import { StretchHistogram } from "./StretchHistogram";
 import { FrameFilmstrip } from "./FrameFilmstrip";
 import { FocusVerdict } from "./FocusVerdict";
 import { FrameStats } from "./FrameStats";
+import { useLastSessionFrame } from "./useLastSessionFrame";
 
 export function LivePreview() {
   const previews = usePreviews();
@@ -41,7 +42,8 @@ export function LivePreview() {
   //      (the store can briefly have a populated `previews` ring but a null
   //      live/selected id — e.g. right after a reconnect or before the first
   //      livePreviewId latches);
-  //  (3) else null → the stage paints the AstroDeck logo empty state.
+  //  (3) else null → the stage paints the AstroDeck logo empty state, UNLESS
+  //      (4) below can find something honest to put there instead.
   const shown = live ?? (previews.length ? previews[previews.length - 1] : null);
   const viewport = useViewport();
   const stretch = useStretch();
@@ -55,6 +57,42 @@ export function LivePreview() {
   const setStretch = useStore((s) => s.setStretch);
   const setOverlays = useStore((s) => s.setOverlays);
   const selectPreview = useStore((s) => s.selectPreview);
+
+  // (4) — the fourth precedence step, BELOW the two above. The ring is filled
+  // only by WebSocket preview events received during THIS browser session, so
+  // opening Capture mid-run finds it empty and used to show the logo for up to
+  // a full sub while the rig was imaging. When there is nothing of our own to
+  // paint and a sequence is live, fetch the last frame that run actually saved
+  // and show it, clearly marked as not-live, until a real preview arrives.
+  //
+  // `enabled: !shown` is the whole ordering guarantee: the moment (1) or (2)
+  // has something, the stand-in is retired and cannot come back. The hook also
+  // drops a reply that lands after a live frame — see its header.
+  //
+  // `linkDown` goes in because a frozen `sequence` still says "running" and its
+  // frozen `server_now_ms` makes an hours-old frame measure as seconds old, so
+  // the age gate cannot see the staleness by itself. The stage says so too (the
+  // link-down ribbon rides over the empty state as well as over a live frame),
+  // but the honest thing is not to go and fetch one in the first place.
+  const stageBox = useRef<HTMLDivElement>(null);
+  const lastCaptured = useLastSessionFrame({
+    enabled: !shown,
+    sequence,
+    linkDown,
+    stageRef: stageBox,
+  });
+
+  // Why the zoom cluster is inert, in the operator's terms, or null when it is
+  // not. The stage's pan/zoom lives in the `.preview-transform` layer, and both
+  // empty-state pictures — the logo and the stand-in — are painted outside it,
+  // so the buttons move nothing. That was invisible while the empty state was a
+  // logo; with a real picture on the stage a readout stepping 100% -> 125% over
+  // an image that does not move is the toolbar asserting something false.
+  const zoomReason = shown
+    ? null
+    : lastCaptured
+      ? "This is a saved frame, not the live view — zoom returns with the next sub"
+      : "Nothing on the stage to zoom yet";
 
   const [stretchDragging, setStretchDragging] = useState(false);
   const controls = useRef<StageControls | null>(null);
@@ -104,35 +142,44 @@ export function LivePreview() {
       <div className="flex flex-col gap-3">
         <FocusVerdict preview={shown} prev={prev} hfrGood={hfrGood} hfrWarn={hfrWarn} />
 
-        <PreviewStage
-          preview={shown}
-          viewport={viewport}
-          setViewport={setViewport}
-          stretch={stretch}
-          overlays={overlays}
-          hfrGood={hfrGood}
-          hfrWarn={hfrWarn}
-          night={night}
-          linkDown={linkDown}
-          pinned={pinned}
-          newSincePinned={newSincePinned}
-          onReturnToLive={() => selectPreview(null)}
-          stretchDragging={stretchDragging}
-          onControls={(c) => {
-            controls.current = c;
-            setLoupe((p) =>
-              p.on === c.loupeOn && p.available === c.loupeAvailable
-                ? p
-                : { on: c.loupeOn, available: c.loupeAvailable },
-            );
-          }}
-        />
+        {/* The wrapper exists to be MEASURED. The stage is `w-full` inside it,
+            so this box's clientWidth is the stage's CSS width — which is what
+            decides how many pixels to ask the server to render for the stand-in
+            above. The stage measures itself too, but only once its own
+            ResizeObserver has fired, which is after the point we need it. */}
+        <div ref={stageBox}>
+          <PreviewStage
+            preview={shown}
+            lastCaptured={lastCaptured}
+            viewport={viewport}
+            setViewport={setViewport}
+            stretch={stretch}
+            overlays={overlays}
+            hfrGood={hfrGood}
+            hfrWarn={hfrWarn}
+            night={night}
+            linkDown={linkDown}
+            pinned={pinned}
+            newSincePinned={newSincePinned}
+            onReturnToLive={() => selectPreview(null)}
+            stretchDragging={stretchDragging}
+            onControls={(c) => {
+              controls.current = c;
+              setLoupe((p) =>
+                p.on === c.loupeOn && p.available === c.loupeAvailable
+                  ? p
+                  : { on: c.loupeOn, available: c.loupeAvailable },
+              );
+            }}
+          />
+        </div>
 
         <PreviewToolbar
           preview={shown}
           overlays={overlays}
           setOverlays={setOverlays}
           scalePct={scalePct}
+          zoomReason={zoomReason}
           onZoomIn={() => controls.current?.zoomIn()}
           onZoomOut={() => controls.current?.zoomOut()}
           onFit={() => controls.current?.fit()}

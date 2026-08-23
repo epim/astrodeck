@@ -49,7 +49,7 @@ import { linearUnavailableReason } from "./linearReason";
 import PickerButton, { type PickerOption } from "../ui/PickerButton";
 import type { OverlayToggles, PreviewInfo, StretchParams } from "../../types";
 import { Icon, type IconName } from "../icons";
-import { InfoDot, LockedChip } from "../ui";
+import { InfoDot, LOCKED_CLASS, LockedChip } from "../ui";
 import { u } from "../../lib/base";
 import { shareQuery } from "../../lib/share";
 import { isExactWysiwyg, renderPath } from "../../lib/renderLevels";
@@ -107,6 +107,43 @@ function HelpLine({ name, children }: { name: string; children: ReactNode }) {
     <span className="block mb-1 last:mb-0">
       <b className="text-ink">{name}</b> — {children}
     </span>
+  );
+}
+
+/** A zoom-cluster button that is honest about being inert.
+ *
+ *  Same shape as the house `HonestButton` (dim + `aria-disabled` + the reason
+ *  in `title` + a press that STATES the reason instead of acting), with two
+ *  differences this cluster needs: it takes an `aria-label`, because "+" and
+ *  "−" are not names, and it keeps its own `btn` geometry so the phone
+ *  toolbar's row count and 44px floors are untouched. Never the native
+ *  `disabled` attribute — that strips the element and its reason out of the
+ *  accessibility tree and leaves a grey rectangle that cannot be asked why.
+ */
+function ZoomButton({
+  className, label, title, reason, onClick, onExplain, children,
+}: {
+  className: string;
+  /** aria-label, for the glyph buttons that have no readable text. */
+  label?: string;
+  title?: string;
+  /** null => live. A sentence => inert, for THIS. */
+  reason: string | null;
+  onClick: () => void;
+  onExplain: (reason: string) => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      className={`${className} ${reason ? `${LOCKED_CLASS} !pointer-events-auto` : ""}`}
+      aria-disabled={reason ? true : undefined}
+      title={reason || title}
+      onClick={() => (reason ? onExplain(reason) : onClick())}
+    >
+      {children}
+    </button>
   );
 }
 
@@ -234,6 +271,7 @@ export function PreviewToolbar({
   overlays,
   setOverlays,
   scalePct,
+  zoomReason = null,
   onZoomIn,
   onZoomOut,
   onFit,
@@ -251,6 +289,12 @@ export function PreviewToolbar({
   overlays: OverlayToggles;
   setOverlays: (o: Partial<OverlayToggles>) => void;
   scalePct: number;
+  /** Why the zoom cluster cannot act, or null when it can. Non-null whenever
+   *  the stage has no live frame of its own: the logo and the mid-run stand-in
+   *  are both painted OUTSIDE `.preview-transform`, so these controls move
+   *  nothing, and a percentage that steps while the picture does not is the
+   *  toolbar lying. Stated rather than silently ignored (house rule §11.8). */
+  zoomReason?: string | null;
   onZoomIn: () => void;
   onZoomOut: () => void;
   onFit: () => void;
@@ -276,6 +320,9 @@ export function PreviewToolbar({
   // caller has no reason to know about the server's frame ring, and a blocked
   // annotation row has to be able to say so somewhere the user is looking.
   const showToast = useStore((s) => s.showToast);
+  /** A blocked zoom press has to reach a fingertip; `title` never fires on
+   *  touch, and the tablet at the scope is the primary field device. */
+  const explainZoom = (r: string) => showToast("info", r);
   const liveId = useLivePreviewId();
 
   // Annotations, as one picker. `bahtinov` is opt-OUT (undefined reads as on),
@@ -433,9 +480,10 @@ export function PreviewToolbar({
           Download simply could not be reached, and every sibling panel
           (Exposure, Cooler, Filter Wheel) inherited the blown-out track. */}
       <div className="flex flex-wrap items-center gap-1">
-        <button className="btn !px-2.5 min-w-11 min-h-11" aria-label="Zoom out" onClick={onZoomOut}>
+        <ZoomButton className="btn !px-2.5 min-w-11 min-h-11" label="Zoom out"
+          reason={zoomReason} onExplain={explainZoom} onClick={onZoomOut}>
           −
-        </button>
+        </ZoomButton>
         {/* w-10, not w-12. Combined with the `!` fix above this buys the row
             ~11px of slack at 320px; the `!` alone left 2.98px, which one font
             metric change would eat again. Safe against the widest reading the
@@ -443,21 +491,30 @@ export function PreviewToolbar({
             = 8, so the string is at most 4-5 characters, and "1600%" in IBM
             Plex Mono at 11px measures ~33px inside the 40px box. This span is
             NOT a .btn, so its 11px was always real. */}
-        <span className="mono text-[11px] text-dim w-10 text-center tabular-nums" aria-live="off">
-          {scalePct}%
+        {/* An em dash, not a number, while the cluster is inert. The readout is
+            the only control here that ASSERTS something, and 100% over a
+            picture the stage is not transforming is a wrong reading rather
+            than a disabled one. */}
+        <span className="mono text-[11px] text-dim w-10 text-center tabular-nums" aria-live="off"
+          title={zoomReason || undefined}>
+          {zoomReason ? "—" : `${scalePct}%`}
         </span>
-        <button className="btn !px-2.5 min-w-11 min-h-11" aria-label="Zoom in" onClick={onZoomIn}>
+        <ZoomButton className="btn !px-2.5 min-w-11 min-h-11" label="Zoom in"
+          reason={zoomReason} onExplain={explainZoom} onClick={onZoomIn}>
           +
-        </button>
+        </ZoomButton>
         {/* min-w-11: at 43.3x44 this was the one primary in the cluster under the
             44px floor on a 390px phone — a rounding miss, but the floor is a
             floor. */}
-        <button className="btn !px-2.5 min-w-11 min-h-11 !text-[11px]" onClick={onFit}>
+        <ZoomButton className="btn !px-2.5 min-w-11 min-h-11 !text-[11px]"
+          reason={zoomReason} onExplain={explainZoom} onClick={onFit}>
           Fit
-        </button>
-        <button className="btn !px-2.5 min-h-11 !text-[11px]" onClick={onHundred} title="100% of the preview image">
+        </ZoomButton>
+        <ZoomButton className="btn !px-2.5 min-h-11 !text-[11px]"
+          title="100% of the preview image"
+          reason={zoomReason} onExplain={explainZoom} onClick={onHundred}>
           100%
-        </button>
+        </ZoomButton>
         {/* ADVANCED (§1.4): the sensor-1:1 loupe. Off by default; a novice never
             needs it. "100%" is 100% of the ≤1400px preview — this is 100% of the
             SENSOR, which is a different and much stricter thing. */}

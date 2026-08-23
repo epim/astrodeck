@@ -73,6 +73,14 @@ interface Props {
    *  because the stage is shared chrome: it has no business knowing what Focus
    *  draws on it, only how much room it has been left. */
   bottomRightReserve?: number;
+  /** The last frame ALREADY SAVED by the run in flight, painted in place of the
+   *  logo while this browser session waits for its first live preview.
+   *
+   *  A fully-built URL rather than a frame path: choosing WHICH frame may stand
+   *  in, and how many pixels to ask for, is the caller's job (LivePreview via
+   *  lib/lastSessionFrame). The stage only knows how to paint it and how to say
+   *  what it is. */
+  lastCaptured?: { src: string; label: string; alt: string } | null;
   // expose gesture controls to a parent toolbar
   onControls?: (c: StageControls) => void;
 }
@@ -99,6 +107,21 @@ function prefersReducedMotion(): boolean {
   return typeof matchMedia !== "undefined" && matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
+/** "Stale — link down", drawn identically over a live frame and over the empty
+ *  state. One component because the two used to disagree: the ribbon was
+ *  written inline in the live branch only, so the empty branch — which is what
+ *  a browser that opens Capture after the link died actually sees — said
+ *  nothing. A shared element cannot drift apart again. */
+function StaleLinkRibbon() {
+  return (
+    <div className="absolute inset-0 bg-black/40 flex items-end justify-center pointer-events-none">
+      <div className="mb-3 preview-chip !text-warn flex items-center gap-1" aria-live="polite">
+        <Icon name="alert" size={12} /> Stale — link down
+      </div>
+    </div>
+  );
+}
+
 export function PreviewStage(props: Props) {
   const {
     preview,
@@ -116,6 +139,7 @@ export function PreviewStage(props: Props) {
     compact = false,
     minHeight,
     bottomRightReserve = 0,
+    lastCaptured = null,
     onControls,
   } = props;
   const stageMinH = minHeight ?? (compact ? undefined : 380);
@@ -157,6 +181,10 @@ export function PreviewStage(props: Props) {
   // the logo empty state instead of the browser's broken-image glyph. Reset on
   // every new frame so a later good frame recovers automatically.
   const [brokenUrl, setBrokenUrl] = useState<string | null>(null);
+  // Same idea for the saved-frame stand-in: a render the server refused (the
+  // file moved, an unreadable header) must fall back to the logo, never to a
+  // broken-image glyph. Keyed by URL so a later, different stand-in recovers.
+  const [brokenStandIn, setBrokenStandIn] = useState<string | null>(null);
 
   // Dimensions of the bytes the browser ACTUALLY decoded, keyed by frame URL.
   //
@@ -520,9 +548,16 @@ export function PreviewStage(props: Props) {
 
   // ----- empty / placeholder state -----
   // Shown when there is no frame at all, or the only frame we have cannot be
-  // displayed. Always renders the AstroDeck logo centered on the dark stage — never
-  // a broken-image icon (Lane B).
+  // displayed. Renders either the last frame the run already saved (see
+  // `lastCaptured`) or the AstroDeck logo centered on the dark stage — never a
+  // broken-image icon (Lane B).
   if (!preview || imgBroken) {
+    // The stand-in only ever replaces "nothing has arrived yet". `imgBroken`
+    // means we HAVE a frame and cannot paint it, which is a fault the operator
+    // has to see rather than have papered over with an older picture.
+    const standIn = !preview && lastCaptured && brokenStandIn !== lastCaptured.src
+      ? lastCaptured
+      : null;
     const caption = !preview ? "No capture yet" : "Capture unavailable";
     return (
       <div
@@ -530,10 +565,53 @@ export function PreviewStage(props: Props) {
         className="preview-stage astro-surface relative w-full overflow-hidden flex items-center justify-center"
         style={{ aspectRatio: compact ? "3 / 2" : undefined, minHeight: stageMinH }}
       >
-        <div className="flex flex-col items-center text-center">
-          <Logo size={compact ? 56 : 80} className="text-dim opacity-60" />
-          <div className="mt-3 text-dim text-xs tracking-[0.3em] uppercase">{caption}</div>
-        </div>
+        {standIn ? (
+          <>
+            <img
+              src={standIn.src}
+              alt={standIn.alt}
+              // `astro` carries the night filter, so a stand-in cannot emit
+              // white on a dark-adapted screen when the live frame would not.
+              className="astro absolute inset-0 w-full h-full object-contain"
+              onError={() => setBrokenStandIn(standIn.src)}
+            />
+            {/* THE SAME WEIGHT AS THE OTHER TWO "this is not the live view"
+                states. Pinned gets a scrim plus a panel banner; link-down gets
+                a scrim plus a warn ribbon with an alert icon; this had a plain
+                10px mono chip in the ordinary text colour, which on a
+                full-bleed picture on a dark stage at 2am was the weakest signal
+                of the three — over arguably the most confusable state, because
+                the picture looks exactly like a live one. `!text-warn` and the
+                alert icon are the shared vocabulary.
+
+                No scrim, deliberately: the other two are dimming a frame the
+                operator is being told to stop trusting, while this picture is
+                the whole point — it is a real sub of the running target and
+                someone is judging focus off it. Dimming it would defeat the
+                feature to decorate the warning.
+
+                role=status because it arrives AFTER the stage has already been
+                read once. */}
+            <div className="absolute top-2 left-2 preview-chip !text-warn flex items-center gap-1"
+              role="status">
+              <Icon name="alert" size={11} />
+              {standIn.label}
+            </div>
+          </>
+        ) : (
+          <div className="flex flex-col items-center text-center">
+            <Logo size={compact ? 56 : 80} className="text-dim opacity-60" />
+            <div className="mt-3 text-dim text-xs tracking-[0.3em] uppercase">{caption}</div>
+          </div>
+        )}
+        {/* THE RIBBON BELONGS HERE TOO. It used to live only after this early
+            return, so the one branch that most needs it never drew it: with the
+            websocket down mid-run the stage could paint a stand-in — or the
+            logo — with nothing at all saying the connection was dead, while the
+            identical wsPhase over a LIVE frame did show it. The link being down
+            is a fact about the link, not about what happens to be on the
+            stage. */}
+        {linkDown && <StaleLinkRibbon />}
       </div>
     );
   }
@@ -914,14 +992,8 @@ export function PreviewStage(props: Props) {
         </div>
       )}
 
-      {/* stale link ribbon */}
-      {linkDown && (
-        <div className="absolute inset-0 bg-black/40 flex items-end justify-center pointer-events-none">
-          <div className="mb-3 preview-chip !text-warn flex items-center gap-1" aria-live="polite">
-            <Icon name="alert" size={12} /> Stale — link down
-          </div>
-        </div>
-      )}
+      {/* stale link ribbon (shared with the empty/stand-in branch above) */}
+      {linkDown && <StaleLinkRibbon />}
     </div>
   );
 }
