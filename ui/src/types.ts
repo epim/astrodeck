@@ -588,9 +588,20 @@ export interface SequenceState {
   // same two-step as polar's pausing/paused). Every is-live predicate must
   // include it: a client that treats it as terminal blanks the run panel and
   // the Abort control over a rig that is still moving.
-  state: "idle" | "running" | "paused" | "aborting" | "complete" | "aborted"
-    | "error" | "nina_native";
+  //
+  // "holding" IS ALSO A LIVE RUN, and it was missing from this union for as
+  // long as the engine has been publishing it. sequence/engine.py `_set_state`
+  // PROMOTES any routine `running` publish to "holding" while a cloud hold is
+  // up (and `_hold_for_clear` publishes it directly), so every client keys off
+  // a string that TypeScript said could not happen. The rig is still imaging
+  // through a hold — cloud probes on a timer, plus hold darks — so an is-live
+  // predicate that omits it blanks the stage over a working run, and the answer
+  // then depends on whether you were already looking at the tab.
+  state: "idle" | "running" | "paused" | "holding" | "aborting" | "complete"
+    | "aborted" | "error" | "nina_native";
   detail?: string;
+  /** Why the run is holding, when it is ("clouds"). Set beside state="holding". */
+  hold?: string;
   target?: string;
   target_index?: number;
   plan_name?: string;

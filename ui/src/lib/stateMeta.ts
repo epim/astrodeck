@@ -29,6 +29,13 @@ const MAP: Record<SequenceState["state"], StateMeta> = {
   // Still LIVE — the teardown is running and the rig has not stopped. It blinks
   // for the same reason RUNNING does: something is still happening. Without this
   // entry the fallback below reads IDLE over a rig that is winding down.
+  // Also still LIVE. The engine PROMOTES a routine `running` publish to
+  // "holding" while a cloud hold is up (sequence/engine.py `_set_state`), so
+  // this string reaches the Monitor on a real overcast night — and until this
+  // entry existed the fallback below badged it IDLE over a rig that was still
+  // probing the sky on a timer and shooting hold darks. Warn, not good: the
+  // plan is not progressing. Blinks because something is still happening.
+  holding: { icon: "clock", label: "HOLDING", tone: "warn", blinkable: true },
   aborting: { icon: "stop", label: "ABORTING", tone: "warn", blinkable: true },
   complete: { icon: "check", label: "COMPLETE", tone: "accent", blinkable: false },
   aborted: { icon: "stop", label: "ABORTED", tone: "bad", blinkable: false },
