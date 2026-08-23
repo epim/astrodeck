@@ -87,6 +87,15 @@ const NOTE: FlowUnmapped = {
   detail: "NOTEROW the scheduler advances the pool itself",
   level: "note",
 };
+// A note that is NOT about a wire. Same level, opposite sentence: nothing drawn
+// is being dropped, the RIG is missing something. Under ANSWERED ANOTHER WAY
+// "this run has no target temperature" reads as its own contradiction.
+const COOL: FlowUnmapped = {
+  key: "cooling.setpoint_c",
+  detail: "COOLROW this run has no target temperature: every frame will be "
+        + "exposed at whatever the sensor reads and will not match a dark library",
+  level: "note",
+};
 
 const root = createRoot(win.document.getElementById("root"));
 const container = win.document.getElementById("root");
@@ -168,12 +177,37 @@ test("a flow whose only unmapped rows are notes shows no losses heading", () => 
     + "worth blocking on");
 });
 
+test("the no-temperature advisory is NOT filed under ANSWERED ANOTHER WAY", () => {
+  // The whole point of splitting that heading out was that a row must never
+  // sit under a sentence it contradicts. "This run has no target temperature"
+  // is not answered by anything — that is the 19-frames-at-+23C state.
+  setUnmapped([NOTE, COOL]);
+  assert.equal(sectionOf("COOLROW"), "BEFORE YOU RUN",
+    "a rig advisory is filed under a heading claiming it is already handled");
+  assert.equal(sectionOf("NOTEROW"), "ANSWERED ANOTHER WAY",
+    "a genuine 'the engine does this anyway' note moved out of its list");
+});
+
+test("the no-temperature advisory does not read as a loss", () => {
+  // Non-blocking by design: an uncooled night is legitimate, and the run route
+  // must not make anyone click past this. If it ever renders as a loss the
+  // 'parts of this flow do not survive the compile' refusal is next.
+  setUnmapped([COOL]);
+  const headings = [...container.querySelectorAll(".label")]
+    .map((e: any) => e.textContent.trim());
+  assert.ok(!headings.includes("NOT HONOURED BY A RUN"),
+    `the cooling advisory printed as a loss: ${headings.join(" | ")}`);
+  assert.ok(headings.includes("BEFORE YOU RUN"),
+    `the cooling advisory did not render at all: ${headings.join(" | ")}`);
+});
+
 test("no unmapped rows at all prints neither heading", () => {
   setUnmapped([]);
   const headings = [...container.querySelectorAll(".label")]
     .map((e: any) => e.textContent.trim());
   assert.ok(!headings.includes("ANSWERED ANOTHER WAY")
-            && !headings.includes("NOT HONOURED BY A RUN"),
+            && !headings.includes("NOT HONOURED BY A RUN")
+            && !headings.includes("BEFORE YOU RUN"),
     `a flow with nothing to report printed a heading: ${headings.join(" | ")}`);
 });
 

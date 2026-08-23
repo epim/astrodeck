@@ -304,9 +304,21 @@ export const setSafetyConfig = (safety: SafetyConfig): Promise<AppConfig> =>
  *  (ramp on/off, °C per minute, assumed ambient). Same wholesale-replace
  *  contract as setSafetyConfig and the same capability (config.safety): the
  *  server files the warm ramp under safety because it is what makes the
- *  "park and warm" sentence in SafetyLimitsPanel true. */
-export const setCoolingConfig = (cooling: CoolingConfig): Promise<AppConfig> =>
-  api.post<AppConfig>("/api/config", { cooling });
+ *  "park and warm" sentence in SafetyLimitsPanel true.
+ *
+ *  setpoint_c IS DELETED BEFORE SENDING, and that is not tidying. The server
+ *  now honours an explicitly-sent setpoint (absent = unchanged, null = no
+ *  cooling intent), so whatever this block carries WINS. The panel's draft is
+ *  a deep copy of the config as it was when the panel opened — CoolingConfig
+ *  has no setpoint field in TS, but JSON.parse keeps the key at runtime — so
+ *  saving a warm-rate edit at 21:00 would write back a setpoint that a Cool
+ *  command from another screen has since moved. This panel does not show the
+ *  standing cooling request and does not own it; the camera panel does. */
+export const setCoolingConfig = (cooling: CoolingConfig): Promise<AppConfig> => {
+  const { setpoint_c: _unowned, ...policy } = cooling as CoolingConfig &
+    { setpoint_c?: number | null };
+  return api.post<AppConfig>("/api/config", { cooling: policy });
+};
 
 /** POST /api/config {escalation} → persist the WHOLE escalation block. Same
  *  wholesale-replace contract as setSafetyConfig, but gated on config.alerts

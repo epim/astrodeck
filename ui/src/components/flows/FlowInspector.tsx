@@ -37,6 +37,22 @@ const ISSUE_INK: Record<string, string> = {
   warn: "text-warn", danger: "text-bad", note: "text-dim",
 };
 
+/** `note`-level entries that are NOT "answered another way".
+ *
+ *  The note level means one thing to `to_plan.losses` — do not block the run —
+ *  and the inspector's ANSWERED ANOTHER WAY heading reads a second meaning
+ *  into it: the thing you drew does happen, by some other part of the engine.
+ *  That held while every note was about a wire.
+ *
+ *  `cooling.setpoint_c` is not about a wire. It says the run has no target
+ *  temperature at all, on a camera that could hold one — the state that put 19
+ *  lights on disk at +23 °C against a -10 °C library on 2026-08-22. Under
+ *  ANSWERED ANOTHER WAY that sentence contradicts its own heading, which is
+ *  exactly the failure the heading was split out to fix in the first place.
+ *  So it gets its own list: still non-blocking, still note-weight, but a
+ *  statement about THIS RIG rather than about the canvas. */
+const RIG_ADVISORY: ReadonlySet<string> = new Set(["cooling.setpoint_c"]);
+
 const DELETE_BTN =
   "font-display font-semibold text-[10.5px] tracking-[0.12em] rounded-[10px] " +
   "border border-[color-mix(in_srgb,var(--bad)_45%,transparent)] bg-transparent " +
@@ -173,7 +189,13 @@ function InspectorOverview() {
   // (to_plan.losses). Partitioned here rather than in the store so the split
   // sits beside the two headings it feeds.
   const losses = useMemo(() => unmapped.filter((u) => u.level !== "note"), [unmapped]);
-  const notes = useMemo(() => unmapped.filter((u) => u.level === "note"), [unmapped]);
+  const notes = useMemo(
+    () => unmapped.filter((u) => u.level === "note" && !RIG_ADVISORY.has(u.key)),
+    [unmapped]);
+  // A THIRD LIST, because a third statement showed up. See RIG_ADVISORY.
+  const advisories = useMemo(
+    () => unmapped.filter((u) => u.level === "note" && RIG_ADVISORY.has(u.key)),
+    [unmapped]);
 
   return (
     <>
@@ -253,6 +275,22 @@ function InspectorOverview() {
                 ISSUE_INK[u.level] ?? "text-warn"}`}
             >
               {u.level === "danger" && <span>⚠ DANGER </span>}
+              {u.detail}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* BEFORE YOU RUN — rig state the canvas cannot show, at note weight.
+          Today that is one row: this flow will run with no target temperature.
+          It is not a loss (nothing drawn is being dropped) and it does not
+          block the run (an uncooled night is legitimate), but it is the last
+          moment anyone can act on it for free. */}
+      {advisories.length > 0 && (
+        <div className="flex flex-col gap-1.5">
+          <span className="label">BEFORE YOU RUN</span>
+          {advisories.map((u) => (
+            <div key={u.key} className="font-mono text-[10.5px] leading-[1.45] text-warn">
               {u.detail}
             </div>
           ))}

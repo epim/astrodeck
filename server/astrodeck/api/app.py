@@ -58,7 +58,8 @@ from ..catalog.tiles import router as tiles_router
 from ..catalog.framing import router as framing_router
 from ..catalog.visibility import router as visibility_router
 from ..catalog.region import router as region_router
-from ..config import (FRAME_SCOPES, AlertSink, AuthConfig, CalibrationConfig,
+from ..config import (FRAME_SCOPES, REDACTED_SINK_FIELDS, AlertSink, AuthConfig,
+                      CalibrationConfig,
                       ConfigVersionConflict, CoolingConfig,
                       EscalationConfig, GuideConfig, NamingConfig, Optics,
                       ProvidersConfig, RotatorConfig, SafetyConfig, Site,
@@ -114,7 +115,7 @@ from ..flows.tonight import (banked_hours_from_reports,
 from ..rotation import angle_equals, map_sky_target, mod360
 from ..sequence import SequenceEngine, SequencePlan
 from ..sequence import schedule as schedule_mod
-from ..sequence.models import quota_unbounded
+from ..sequence.models import quota_unbounded, replan_cooling
 from ..sequence.policy import resolve_policy
 from ..sequence.report import SessionReporter, _slug
 from ..sequence.bundle import (CalibrationLibraryAdapter, NullMasterLibrary,
@@ -1374,6 +1375,11 @@ class ConfigPatchBody(BaseModel):
     escalation: EscalationConfig | None = None
     alerts: list[AlertSink] | None = None
     deadman_url: str | None = None
+    #: Explicitly clear the deadman url. Needed because the url is redacted
+    #: outbound, so "" from a client means "unchanged" and the field would
+    #: otherwise be write-once. Same contract as WeatherSaveBody's
+    #: clear_astrospheric_key. Gated on config.alerts like deadman_url itself.
+    clear_deadman_url: bool = False
     # Cooler warm-down policy (2026-08-04). It rides this route, and is gated on
     # config.safety rather than a cap of its own, because the setting it governs
     # is a hardware-protection policy the SafetyLimitsPanel already claims in
@@ -2656,12 +2662,24 @@ def create_app() -> FastAPI:
             old = existing.get(sink.id)
             if old is not None and "verified" not in sink.model_fields_set:
                 sink = sink.model_copy(update={"verified": old.verified})
-            # an empty (redacted) token on update means "unchanged" — never blank
+            # An empty (redacted) value on update means "unchanged" — never blank
             # a stored secret just because the client echoed back the blanked
-            # token. Restore it BEFORE the identity-change check so an empty token
+            # field. Restored BEFORE the identity-change check so an empty value
             # also doesn't spuriously trip the verified reset.
-            if old is not None and not sink.token and old.token:
-                sink = sink.model_copy(update={"token": old.token})
+            #
+            # EVERY FIELD redacted() BLANKS HAS TO BE ON THIS LIST. It blanks
+            # `token` AND `chat_id`; only `token` was restored, so a plain
+            # GET -> POST echo of the alerts array — what a settings panel does
+            # when you edit any unrelated sink field — wrote the blank chat_id
+            # through and then tripped the identity check below, resetting
+            # `verified` to False. The sink survived, could no longer deliver,
+            # and nothing said so. Derived from REDACTED_SINK_FIELDS rather than
+            # spelled out here so a NEW redaction cannot silently become a new
+            # eraser.
+            for field in REDACTED_SINK_FIELDS:
+                if old is not None and not getattr(sink, field, None)                         and getattr(old, field, None):
+                    sink = sink.model_copy(
+                        update={field: getattr(old, field)})
             if old is not None and (
                     old.url != sink.url or old.token != sink.token
                     or old.chat_id != sink.chat_id or old.kind != sink.kind
@@ -2677,10 +2695,26 @@ def create_app() -> FastAPI:
         setters (each bumps version + writes atomically). Runs on a worker thread
         — the disk writes must not block the event loop."""
         if body.site is not None:
-            # set_site flips is_default off, persists elevation_m, and preserves
-            # the stored per-site horizon (the TS Site omits it).
-            site = body.site.model_copy(update={
-                "horizon_min_deg": config_store.cfg().site.horizon_min_deg})
+            # set_site flips is_default off and persists elevation_m. The stored
+            # per-site horizon is preserved ONLY when the caller did not mention
+            # it: the TS Site type omits the field, so a settings save must not
+            # reset a safety floor by omission.
+            #
+            # THE CARRY-OVER USED TO BE UNCONDITIONAL, which made
+            # horizon_min_deg unwritable through this route entirely — 200 OK,
+            # value discarded, caller unable to tell "saved" from "thrown away".
+            # Exactly the shape that cost 19 warm frames via cooling.setpoint_c
+            # (see ConfigStore.set_cooling), and worse here: the route 403s a
+            # caller who lacks config.safety for sending this very field
+            # (_require_config_field_caps), so it gated a write it then dropped.
+            # PUT /api/site honours it, so the two routes silently disagreed.
+            #
+            # model_fields_set is what tells an omitted field from an explicitly
+            # sent one. Absent means unchanged; sent means write it.
+            site = body.site
+            if "horizon_min_deg" not in site.model_fields_set:
+                site = site.model_copy(update={
+                    "horizon_min_deg": config_store.cfg().site.horizon_min_deg})
             config_store.set_site(site)
         if body.safety is not None:
             config_store.set_safety(body.safety)
@@ -2692,13 +2726,25 @@ def create_app() -> FastAPI:
             config_store.set_standards(body.standards)
         if body.alerts is not None:
             config_store.set_alerts(_merge_alert_verified(body.alerts))
-        if body.deadman_url is not None:
-            # The deadman url is now REDACTED outbound (P2-12) — it can carry a
-            # per-ping secret in its path/query. So an empty string on update means
-            # "unchanged" (the client echoed back the blanked value), exactly like
-            # the alert-token guard above: never wipe a stored deadman just because
-            # the redacted client round-tripped it. To truly clear it the UI POSTs
-            # a dedicated clear (handled at the /api/config layer if needed).
+        if body.clear_deadman_url:
+            # The explicit clear. Wins over any deadman_url in the same body:
+            # asking to clear it and supplying one is a contradiction, and the
+            # destructive reading is the one the operator typed on purpose.
+            config_store.set_deadman("")
+        elif body.deadman_url is not None:
+            # The deadman url is REDACTED outbound (P2-12) — it can carry a
+            # per-ping secret in its path/query. So an empty string on update
+            # means "unchanged" (the client echoed back the blanked value),
+            # exactly like the alert-secret guard above: never wipe a stored
+            # deadman just because the redacted client round-tripped it.
+            #
+            # That made it WRITE-ONCE. The comment here used to promise "to
+            # truly clear it the UI POSTs a dedicated clear (handled at the
+            # /api/config layer if needed)" — and it never was, so the only
+            # documented escape hatch did not exist and POST "" answered 200
+            # while keeping the old url. clear_deadman_url above is that
+            # dedicated clear, built to the shape /api/config/weather already
+            # uses for astrospheric_api_key.
             if body.deadman_url or not config_store.cfg().deadman_url:
                 config_store.set_deadman(body.deadman_url)
 
@@ -2722,6 +2768,7 @@ def create_app() -> FastAPI:
           escalation           -> config.alerts   (notification/recovery policy)
           alerts               -> config.alerts
           deadman_url          -> config.alerts
+          clear_deadman_url    -> config.alerts   (same field, destructive half)
         """
         present = body.model_fields_set
         # Known, mapped blocks only. Any field on the body outside this map is a
@@ -2734,6 +2781,11 @@ def create_app() -> FastAPI:
             "escalation": CAP_CONFIG_ALERTS,
             "alerts": CAP_CONFIG_ALERTS,
             "deadman_url": CAP_CONFIG_ALERTS,
+            # The destructive half of deadman_url, so it carries the identical
+            # cap. Unmapped it would 403 as an unknown block (fail-closed), which
+            # is the map doing its job -- but it would make the clear
+            # unreachable for everyone rather than gated for the right people.
+            "clear_deadman_url": CAP_CONFIG_ALERTS,
         }
         for field in present:
             cap = block_caps.get(field)
@@ -3618,6 +3670,28 @@ def create_app() -> FastAPI:
             raise HTTPException(422, detail={"detail": str(e),
                                              "code": getattr(e, "code", "invalid")})
 
+    def _camera_can_cool() -> bool:
+        """Does this rig have a TEC? Live off the connected camera, and from the
+        last one that connected when nothing is plugged in.
+
+        THE FALLBACK IS THE POINT. ``can_cool`` is populated on connect and
+        ``_teardown`` clears ``hub.devices``, so reading it live answered False
+        for a disconnected rig — and the cooling advisory this feeds exists to
+        put a line on the canvas at 19:00, which is exactly when a rig is not
+        connected. Measured: the same flow compiled silent, then produced the
+        note after POST /api/connect/sim, then went silent again on disconnect.
+        "Not plugged in right now" is not "has no cooler".
+
+        ``camera_can_cool_seen`` is False until a camera has actually connected,
+        so a rig that has genuinely never had a cooler still says nothing rather
+        than nagging — the same rule the engine's run-start warning uses, and it
+        has to be the same rule or the editor and the log disagree about tonight.
+        """
+        cam = hub.devices.get("camera")
+        if cam is not None:
+            return bool(getattr(cam, "can_cool", False))
+        return bool(config_store.cfg().camera_can_cool_seen)
+
     def _compile_payload(graph: FlowGraph, name: str) -> dict:
         """``{plan, structural, issues, unmapped}``.
 
@@ -3647,6 +3721,7 @@ def create_app() -> FastAPI:
             _plan, unmapped = to_sequence_plan(
                 compiled, graph,
                 cool_to=getattr(config_store.cfg().cooling, "setpoint_c", None),
+                camera_can_cool=_camera_can_cool(),
                 closes_on_unsafe=bool(
                     config_store.cfg().safety.close_dome_on_unsafe))
         except GraphNotRunnable as e:
@@ -3856,6 +3931,7 @@ def create_app() -> FastAPI:
             plan, unmapped = to_sequence_plan(
                 compiled, rec.graph,
                 cool_to=getattr(config_store.cfg().cooling, "setpoint_c", None),
+                camera_can_cool=_camera_can_cool(),
                 closes_on_unsafe=bool(
                     config_store.cfg().safety.close_dome_on_unsafe))
         except GraphNotRunnable as e:
@@ -4099,7 +4175,11 @@ def create_app() -> FastAPI:
                 "max_consecutive_rejects_night, a stop time, or max_run_min")
         try:
             hub.require("camera")
-            engine.start(s.plan, session=s)
+            # A resume is a NEW run, so it re-reads the rig's standing setpoint
+            # the same way a fresh start does -- but only if the stored plan has
+            # no temperature at all. See replan_cooling for why the "only".
+            engine.start(replan_cooling(
+                s.plan, config_store.cfg().cooling.setpoint_c), session=s)
         except DeviceError as e:
             raise _err(e)
         return {"resumed": True, "remaining": sum(s.remaining().values())}
@@ -5872,7 +5952,10 @@ def create_app() -> FastAPI:
                 "max_consecutive_rejects_night, a stop time, or max_run_min")
         try:
             hub.require("camera")
-            engine.start(s.plan, session=s)
+            # Same re-resolve as /api/sessions/{id}/resume -- the three entries
+            # into a dormant session must not disagree about its temperature.
+            engine.start(replan_cooling(
+                s.plan, config_store.cfg().cooling.setpoint_c), session=s)
         except DeviceError as e:
             raise _err(e)
         return {"resumed": True,
