@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import threading
 import time
 from pathlib import Path
 from uuid import uuid4
@@ -174,15 +175,57 @@ class SessionStore:
                 continue                      # corrupt file: skip, never raise
         return out
 
+    #: Serialises read-modify-write against plain writes. RLock because
+    #: ``save_run_state`` holds it across a ``load`` and a ``save``.
+    _write_lock = threading.RLock()
+
     def save(self, session: Session) -> None:
         """Atomic write, no .bak (churns every frame). A NEW id triggers the
         prune sweep; upserting an existing id never prunes."""
-        session.updated_ts = time.time()
-        path = self._path(session.id)
-        is_new = not path.exists()
-        write_json_atomic(path, session.model_dump(), backup=False)
-        if is_new:
-            self._prune()
+        with self._write_lock:
+            session.updated_ts = time.time()
+            path = self._path(session.id)
+            is_new = not path.exists()
+            write_json_atomic(path, session.model_dump(), backup=False)
+            if is_new:
+                self._prune()
+
+    #: Fields the OPERATOR owns while a run is live. The engine may not write
+    #: these from the copy it captured at ``start()``.
+    _OPERATOR_OWNED = ("auto_resume",)
+
+    def save_run_state(self, session: Session) -> None:
+        """Write a session the RUN owns, preserving operator-owned fields.
+
+        The engine holds one ``Session`` from ``start()`` and writes the whole
+        object back on every frame (the ledger write) and again from each
+        thumbnail render. The API edits the SAME session by loading a fresh
+        copy, mutating it and saving -- and ``auto_resume`` on an ACTIVE
+        session is an edit the route allows deliberately. Two writers, two
+        objects, and the engine's fires every couple of minutes, so a 200 from
+        PATCH /api/sessions/<id> was undone within one exposure. Measured
+        2026-08-24; first misread as the abort disarm failing.
+
+        Re-reading before the write is not enough on its own: without the lock
+        an in-flight frame whose read happened BEFORE the operator's write
+        still puts the stale value back, and every later read then returns the
+        engine's own stale value. The window is milliseconds at a two-minute
+        cadence and reliable at test exposures -- a race, which is to say a
+        bug that waits for a bad night. The lock closes it: the run's read and
+        write are one critical section, and plain ``save`` takes the same lock.
+
+        Mutates ``session`` as well as the file, so the caller's long-lived
+        copy stops being stale rather than silently diverging again.
+        """
+        with self._write_lock:
+            try:
+                stored = self.load(session.id)
+            except (KeyError, Exception):
+                stored = None
+            if stored is not None:
+                for field in self._OPERATOR_OWNED:
+                    setattr(session, field, getattr(stored, field))
+            self.save(session)
 
     def _prune(self) -> None:
         sessions = self.load_all()

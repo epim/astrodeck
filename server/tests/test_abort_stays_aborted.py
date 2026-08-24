@@ -126,3 +126,85 @@ async def test_a_cancellation_that_is_not_an_operator_abort_stays_armed(sim_hub)
     assert s.auto_resume is True, (
         "a cancelled task is not an operator abort -- disarming here would "
         "break resume-after-restart, which is the whole point of the feature")
+
+
+async def test_a_live_edit_survives_the_next_frame(sim_hub):
+    """A 200 from PATCH /api/sessions/<id> must still be true one exposure later.
+
+    `patch_session` (api/app.py:4187) deliberately allows `auto_resume` edits on
+    an ACTIVE session -- "arming an active session is the point, not an edge
+    case" -- and does it by loading a FRESH copy from the store
+    (api/app.py:4192), mutating that, and saving it.
+
+    The running engine holds a DIFFERENT object, captured at `start()`, and
+    writes the whole of it back on EVERY frame (engine.py:4107, the ledger
+    write). So the operator's edit is undone within one sub, and the route
+    returned 200 while meaning no.
+
+    This is the mechanism behind "PATCH returned 200 with auto_resume False and
+    did not help" on 2026-08-24. The backlog note blamed finalize; finalize is
+    the second clobber, not the first.
+
+    Stated as the engine's invariant rather than the route's, because the route
+    is only one caller: the ledger write owns `frames`, and must not carry
+    operator-owned fields over the top of a newer store copy.
+    """
+    engine = SequenceEngine(sim_hub)
+    engine.start(_plan())
+    sid = engine._session.id
+    try:
+        assert await wait_for(lambda: engine._frames_done >= 1), "no first frame"
+
+        # exactly what the route does, on the store, while the run is live
+        edited = session_store.load(sid)
+        assert edited.auto_resume is True, "precondition: start() armed it"
+        edited.auto_resume = False
+        session_store.save(edited)
+
+        before = engine._frames_done
+        assert await wait_for(lambda: engine._frames_done >= before + 1), "no second frame"
+
+        assert session_store.load(sid).auto_resume is False, (
+            "the engine's per-frame ledger write clobbered the operator's edit; "
+            "a route that answers 200 and is undone one exposure later is a "
+            "broken promise, not a race")
+    finally:
+        await engine.abort()
+
+
+def test_save_run_state_never_writes_the_callers_auto_resume():
+    """The primitive, pinned directly.
+
+    The integration test above cannot isolate a single write site: the engine
+    saves the session from the ledger write AND again from each thumbnail
+    render, so reverting EITHER one alone still passes -- the other repairs it
+    a moment later. Measured by sabotage: breaking only the ledger write left
+    all four tests green. A guard that a later writer can mask is not a guard
+    for the earlier one, so the shared primitive gets its own test.
+    """
+    from astrodeck.sequence.models import ExposureStep, SequencePlan, Target
+    from astrodeck.sequence.session import Session
+
+    plan = SequencePlan(name="p", targets=[Target(
+        name="T", ra_hours=1.0, dec_deg=1.0,
+        steps=[ExposureStep(filter="L", exposure_s=1.0, count=1)])])
+    s = Session(name="owned", status="active", plan=plan, auto_resume=True)
+    session_store.save(s)
+
+    # the operator disarms it through the API, on a fresh copy
+    edited = session_store.load(s.id)
+    edited.auto_resume = False
+    session_store.save(edited)
+
+    # the run writes its OWN stale copy back, which still says True
+    assert s.auto_resume is True, "precondition: the run's copy is stale"
+    s.name = "written by the run"
+    session_store.save_run_state(s)
+
+    back = session_store.load(s.id)
+    assert back.auto_resume is False, "the run clobbered an operator-owned field"
+    assert back.name == "written by the run", (
+        "save_run_state must still write the fields the RUN owns")
+    assert s.auto_resume is False, (
+        "the caller's copy must stop being stale, or it diverges again on the "
+        "next write")
