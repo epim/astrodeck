@@ -1281,6 +1281,42 @@ class SequenceEngine:
         finally:
             self._stop_watchdog()
 
+    def _adopt_operator_session_fields(self) -> None:
+        """Re-read the fields the OPERATOR owns, for the FINALIZE write only.
+
+        The per-frame writes use ``session_store.save_run_state``, which does
+        this under the store's lock. Finalize cannot: the operator-abort
+        disarm below has to BEAT the stored value, so it reads first and
+        decides after.
+
+        We hold `self._session` from `start()` and write the whole object to
+        the store on every frame (the ledger write) and again at finalize. The
+        API edits the same session by loading a FRESH copy
+        (api/app.py patch_session), mutating that and saving it -- and
+        `auto_resume` on an ACTIVE session is an edit the route allows on
+        purpose ("arming an active session is the point, not an edge case").
+
+        Two writers, two objects, and ours is the one that fires every couple
+        of minutes: the operator's edit was reliably undone within one
+        exposure. The route answered 200 and meant no. Measured 2026-08-24,
+        where it was misread as the abort disarm failing.
+
+        `auto_resume` only. `status` and `frames` are OURS while a run is live
+        -- the route refuses plan edits on a non-dormant session and accepts
+        only "abandoned" for status -- so adopting those would let a stale
+        reader roll the ledger back.
+
+        Best-effort by design: a store that cannot be read must never stop a
+        frame being recorded.
+        """
+        if self._session is None:
+            return
+        try:
+            stored = session_store.load(self._session.id)
+        except Exception:
+            return
+        self._session.auto_resume = stored.auto_resume
+
     def _finalize_report(self, reason: str) -> None:
         """Finalize the session report (guard None) and publish a ``report``
         event on EVERY terminal path (§1.9-G).
@@ -1320,6 +1356,9 @@ class SequenceEngine:
         # `owed()` is mode-aware on the session's own frozen plan, so accepted
         # mode still counts accepted frames and nothing about it changes.
         if self._session is not None:
+            # Adopt first, THEN decide: an operator disarm below must win over
+            # the stored value, and a stored value must win over our stale one.
+            self._adopt_operator_session_fields()
             unmet = self._session.owed() > 0
             self._session.status = ("complete"
                                     if reason == "complete" and not unmet
@@ -4104,7 +4143,9 @@ class SequenceEngine:
                           auto_accepted=auto_accepted)
         try:
             self._session.frames.append(sf)
-            session_store.save(self._session)
+            # save_run_state, not save: our copy's `auto_resume` is from
+            # start() and the operator may have changed it since.
+            session_store.save_run_state(self._session)
         except Exception as e:
             bus.log("warning", f"session ledger write failed: {e}", "sequence")
         self._spawn_thumb(sf)
@@ -4157,7 +4198,7 @@ class SequenceEngine:
             path = tdir / f"{sf.id}.jpg"
             await asyncio.to_thread(path.write_bytes, jpeg)
             sf.thumb = f"thumbs/{sf.id}.jpg"
-            session_store.save(session)
+            session_store.save_run_state(session)
         except Exception as e:
             bus.log("warning", f"thumb render failed: {e}", "sequence")
 
