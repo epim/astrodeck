@@ -240,15 +240,64 @@ test("preview: 'preview' event pushes ring, sets preview + lastFrameAtMs", () =>
   assert(s.lastFrameAtMs !== null && s.lastFrameAtMs >= before, "lastFrameAtMs stamped");
 });
 
-// --------------------------------- live-preview: pinning is sticky
-test("preview: selectPreview pins; new live frame does not move the pin", () => {
+// --------------------------------- live-preview: pinning is sticky DURING A RUN
+const seqIn = (state: string) =>
+  useStore.setState({
+    sequence: { ...useStore.getState().sequence, state } as never,
+  });
+
+test("preview: selectPreview pins; a run's next frame does not move the pin", () => {
   useStore.setState({ previews: [], selectedPreviewId: null, livePreviewId: null });
+  seqIn("running");
   useStore.getState().pushPreview(mkPreview(1));
   useStore.getState().selectPreview(1);
-  useStore.getState().pushPreview(mkPreview(2)); // new live arrival
+  useStore.getState().pushPreview(mkPreview(2)); // sequencer's next sub
   const s = useStore.getState();
-  eq(s.selectedPreviewId, 1, "pin held");
+  eq(s.selectedPreviewId, 1, "pin held under a live run");
   eq(s.livePreviewId, 2, "live advanced underneath");
+});
+
+// A pin must NOT survive a frame the operator asked for. Focusing is iteration:
+// turn the focuser, shoot, look. A stage frozen on the pre-turn sub defeats it.
+test("preview: an idle-rig frame retires the pin (focus session)", () => {
+  useStore.setState({ previews: [], selectedPreviewId: null, livePreviewId: null });
+  seqIn("idle");
+  useStore.getState().pushPreview(mkPreview(1));
+  useStore.getState().pushPreview(mkPreview(2));
+  useStore.getState().selectPreview(1);           // compare against an earlier try
+  useStore.getState().pushPreview(mkPreview(3));  // adjusted focus, shot again
+  const s = useStore.getState();
+  eq(s.selectedPreviewId, null, "pin retired -- the new sub is what was asked for");
+  eq(s.livePreviewId, 3, "stage follows the newest frame");
+});
+
+// Holding is for a run; every non-live sequence state releases.
+test("preview: pin holds through paused/holding, releases when idle", () => {
+  for (const st of ["paused", "holding", "aborting"]) {
+    useStore.setState({ previews: [], selectedPreviewId: null, livePreviewId: null });
+    seqIn(st);
+    useStore.getState().pushPreview(mkPreview(1));
+    useStore.getState().selectPreview(1);
+    useStore.getState().pushPreview(mkPreview(2));
+    eq(useStore.getState().selectedPreviewId, 1, `pin held while ${st}`);
+  }
+});
+
+// The lifetime bug behind the report: a pin made before a run rode the whole
+// night, because nothing retired it on the rising edge.
+test("preview: starting a run retires a pin left over from before it", () => {
+  useStore.setState({ previews: [], selectedPreviewId: null, livePreviewId: null });
+  seqIn("idle");
+  useStore.getState().pushPreview(mkPreview(1));
+  useStore.getState().pushPreview(mkPreview(2));
+  useStore.getState().selectPreview(1);
+  eq(useStore.getState().selectedPreviewId, 1, "pinned while idle");
+  useStore.getState().handleEvent({
+    type: "sequence",
+    data: { state: "running", plan_name: "P", progress: { percent: 0 } } as never,
+    ts: 0,
+  });
+  eq(useStore.getState().selectedPreviewId, null, "run start retired the stale pin");
 });
 
 // --------------------------------- live-preview: persistence of toggles only

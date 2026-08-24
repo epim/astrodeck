@@ -10,6 +10,7 @@ import {
   createFlowsActions, FLOWS_INIT,
   type FlowsActions, type FlowsState,
 } from "./components/flows/flowsSlice";
+import { runIsLive } from "./lib/lastSessionFrame";
 import type { ReactNode } from "react";
 import type {
   AppConfig,
@@ -1505,14 +1506,33 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   // --------------------------------------------------------------- live-preview
-  // Append, trim to cap, set livePreviewId. Pinning is sticky: if the user has
-  // pinned a frame (selectedPreviewId !== null) the stage does NOT move — the
-  // filmstrip badges the new live arrival and the pinned banner counts it.
+  // Append, trim to cap, set livePreviewId. Pinning is sticky DURING A RUN: the
+  // stage does not move, the filmstrip badges the new arrival and the pinned
+  // banner counts it. Pinning a frame to study it while the sequencer works is
+  // the case that behaviour exists for.
+  //
+  // IT IS NOT STICKY WHEN NOTHING IS RUNNING, and that is the whole point. A
+  // preview that arrives with no run in flight was asked for by the person at
+  // the keyboard — a manual sub, a focus loop, a Bahtinov check — and they
+  // asked for it precisely to see what their last adjustment did. Holding a pin
+  // through that hides the one frame they are waiting for: turn the focuser,
+  // shoot, and the stage still shows the sub from before the turn. Focusing is
+  // ITERATION, and a frozen stage defeats it. Reported from the rig: an older
+  // Bahtinov sub stayed on the stage across the whole focus session AND on into
+  // a 150-frame sequence started afterwards, because nothing in this store ever
+  // retired a pin.
+  //
+  // The rule is "no run in flight", not "user clicked capture", because the
+  // store cannot see who pressed what — but it can see that frames arriving
+  // with an idle sequencer have exactly one source. Same reasoning as
+  // lib/lastSessionFrame.ts: a pin, like a stand-in, is a claim about the
+  // frames on screen NOW and has to be retired when that stops being true.
   pushPreview: (p) =>
     set((s) => {
       const previews = [...s.previews, p];
       if (previews.length > PREVIEW_CAP) previews.splice(0, previews.length - PREVIEW_CAP);
-      return { previews, livePreviewId: p.id };
+      const held = runIsLive(s.sequence) ? s.selectedPreviewId : null;
+      return { previews, livePreviewId: p.id, selectedPreviewId: held };
     }),
 
   selectPreview: (id) => set({ selectedPreviewId: id }),
@@ -1939,9 +1959,15 @@ export const useStore = create<AppState>((set, get) => ({
         // Rising edge (not-running → running) raises the banner; subsequent
         // progress refreshes percent; any terminal/idle state clears it.
         let runBanner: RunBanner = get().runBanner;
+        // A pin belongs to the frames that were on screen when it was made. A
+        // NEW run makes it a claim about a different session, so retire it on
+        // the rising edge — otherwise a frame pinned while focusing before the
+        // run rides the whole night on the stage, which is what happened.
+        let pin = get().selectedPreviewId;
         if (seq.state === "running") {
           if (RUN_RISING_FROM.has(prevState)) {
             runBanner = { active: true, plan_name: seq.plan_name, percent };
+            pin = null;
           } else if (runBanner) {
             runBanner = { ...runBanner, percent };
           }
@@ -1983,7 +2009,8 @@ export const useStore = create<AppState>((set, get) => ({
                    && seq.state !== "aborting") {
           lastCaptureAtMs = null;          // no run: nothing can be overdue
         }
-        set({ sequence: seq, runBanner, lastCaptureAtMs, lastFramesDone: doneNow });
+        set({ sequence: seq, runBanner, lastCaptureAtMs, lastFramesDone: doneNow,
+             selectedPreviewId: pin });
 
         if (seq.state === "error" && prevState !== "error") {
           // NOV-9: the focal sequence-fatal toast now surfaces a plain cause +
