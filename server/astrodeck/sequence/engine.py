@@ -1324,6 +1324,38 @@ class SequenceEngine:
             self._session.status = ("complete"
                                     if reason == "complete" and not unmet
                                     else "dormant")
+            # AN ABORT IS A DECISION, NOT A FAULT.
+            #
+            # `dormant` is right for a stopped run -- it still owes frames --
+            # but dormant is also exactly half of what `session_store.armed()`
+            # asks for, and `start()` above arms `auto_resume` unconditionally.
+            # So an operator abort left the session dormant AND armed, the
+            # resume tick restarted it, and that resume re-armed it: a loop
+            # with no exit. Measured on the rig 2026-08-24, three aborts and
+            # three resumes inside ten minutes, each abort correctly reporting
+            # {"aborted": true}. It also made the box undeployable, because
+            # deploy refuses to restart the server under a running sequence.
+            #
+            # KEYED ON `_aborting`, NOT ON THE REASON STRING. A process
+            # teardown cancels the run task without going through `abort()`
+            # and lands on the SAME `except CancelledError ->
+            # _finalize_report("aborted")` arm. Disarming there would retire
+            # resume-after-restart -- the feature whose entire purpose is the
+            # 2am reboot. `_aborting` is set only by `abort()`, whose four
+            # callers are all deliberate human actions (/api/sequence/abort,
+            # /api/disconnect, profile apply and activate), and it is still
+            # True here because it is cleared in `abort()`'s `finally`, after
+            # the awaited task has already run this.
+            #
+            # Re-arming stays a UI action: the operator who stopped a run can
+            # arm it again from the session list, which is what
+            # test_resume_arm.py's `_dormant_armed` helper models.
+            if reason == "aborted" and self._aborting:
+                self._session.auto_resume = False
+                bus.log("info",
+                        f"'{self._session.name}': stopped by hand, so "
+                        f"auto-resume is disarmed for it. Arm it from the "
+                        f"session list to pick it up again.", "sequence")
             # COUNT THE CRASHES, AND ONLY THE CRASHES. `dormant` is the right
             # status for a crash - it is what lets auto-resume pick the night
             # back up, which is the behaviour we want - but a run that keeps
