@@ -59,7 +59,7 @@ from ..catalog.framing import router as framing_router
 from ..catalog.visibility import router as visibility_router
 from ..catalog.region import router as region_router
 from ..config import (FRAME_SCOPES, REDACTED_SINK_FIELDS, AlertSink, AuthConfig,
-                      CalibrationConfig,
+                      CalibrationConfig, CloudmapConfig,
                       ConfigVersionConflict, CoolingConfig,
                       EscalationConfig, GuideConfig, NamingConfig, Optics,
                       ProvidersConfig, RotatorConfig, SafetyConfig, Site,
@@ -1371,6 +1371,7 @@ class ConfigPatchBody(BaseModel):
     ``admin.users``-gated routes (``/api/auth/config`` etc.), NEVER this merge."""
     model_config = ConfigDict(extra="forbid")
     site: Site | None = None
+    cloudmap: CloudmapConfig | None = None
     safety: SafetyConfig | None = None
     escalation: EscalationConfig | None = None
     alerts: list[AlertSink] | None = None
@@ -2716,6 +2717,8 @@ def create_app() -> FastAPI:
                 site = site.model_copy(update={
                     "horizon_min_deg": config_store.cfg().site.horizon_min_deg})
             config_store.set_site(site)
+        if body.cloudmap is not None:
+            config_store.set_cloudmap(body.cloudmap)
         if body.safety is not None:
             config_store.set_safety(body.safety)
         if body.escalation is not None:
@@ -2775,6 +2778,11 @@ def create_app() -> FastAPI:
         # programming error (a new block added without a cap) -> fail closed.
         block_caps = {
             "site": CAP_CONFIG_SITE_OPTICS,
+            # The GOES cloud model is a weather DATA SOURCE, so it carries the
+            # same cap as /api/config/weather rather than a safety cap: it
+            # gates nothing (a named test pins that the engine never consults
+            # it), it only decides whether we fetch.
+            "cloudmap": CAP_CONFIG_SITE_OPTICS,
             "safety": CAP_CONFIG_SAFETY,
             "cooling": CAP_CONFIG_SAFETY,
             "standards": CAP_CONFIG_SAFETY,

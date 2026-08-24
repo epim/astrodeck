@@ -1517,6 +1517,26 @@ class ConfigStore:
             update={"setpoint_c": None if setpoint_c is None else float(setpoint_c)})
         return self.bump_and_save()
 
+    def set_cloudmap(self, cloudmap: "CloudmapConfig") -> AppConfig:
+        """Persist the GOES cloud-occlusion block. Wholesale-replace, like
+        set_safety.
+
+        IT HAD NO WRITER AT ALL until 2026-08-24. Stage 6a shipped the model,
+        the service, the poller and three read routes, and CloudmapConfig
+        defaults to ``enabled=False`` on the reasoning that a feature pulling
+        26 MB an hour should be opt-in -- but nothing anywhere could set it.
+        ConfigPatchBody is ``extra="forbid"``, so POST /api/config with a
+        cloudmap block 422'd at binding, and there is no /api/config/cloudmap.
+        4,357 lines and seven test files behind a switch that did not exist:
+        the model had never fetched a granule on the rig.
+
+        The same defect class as cooling.setpoint_c, one step earlier -- there
+        the route discarded the value, here there was no route to discard it.
+        """
+        cfg = self.cfg()
+        cfg.cloudmap = cloudmap
+        return self.bump_and_save()
+
     def set_alerts(self, alerts: list[AlertSink]) -> AppConfig:
         cfg = self.cfg()
         cfg.alerts = list(alerts)
