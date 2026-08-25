@@ -12,9 +12,10 @@
 import { memo, useEffect, useRef } from "react";
 
 import {
+  NO_DATA_HATCH,
   domeCells,
   domeExtent,
-  occlusionFill,
+  occlusionStyle,
   projectAltAz,
   type DomeGrid,
 } from "../../lib/domeProjection";
@@ -49,6 +50,31 @@ function haloText(ctx: CanvasRenderingContext2D, text: string, x: number,
   ctx.strokeText(text, x, y);
   ctx.fillStyle = fill;
   ctx.fillText(text, x, y);
+}
+
+/** The "no reading" hatch, as a repeatable canvas pattern.
+ *
+ *  Built once per paint rather than per cell: at 540 cells the allocation, not
+ *  the fill, is what would cost. The two corner segments are what make the tile
+ *  seamless -- without them the diagonal breaks at every tile boundary and the
+ *  hatch reads as a dotted grid instead of stripes. */
+function hatchPattern(ctx: CanvasRenderingContext2D): CanvasPattern | null {
+  const t = NO_DATA_HATCH.tile;
+  const tile = document.createElement("canvas");
+  tile.width = t;
+  tile.height = t;
+  const tc = tile.getContext("2d");
+  if (!tc) return null;
+  tc.fillStyle = NO_DATA_HATCH.ground;
+  tc.fillRect(0, 0, t, t);
+  tc.strokeStyle = NO_DATA_HATCH.stroke;
+  tc.lineWidth = NO_DATA_HATCH.lineWidth;
+  tc.beginPath();
+  tc.moveTo(0, t); tc.lineTo(t, 0);
+  tc.moveTo(-1, 1); tc.lineTo(1, -1);
+  tc.moveTo(t - 1, t + 1); tc.lineTo(t + 1, t - 1);
+  tc.stroke();
+  return ctx.createPattern(tile, "repeat");
 }
 
 function ringPath(ctx: CanvasRenderingContext2D, altDeg: number,
@@ -98,6 +124,7 @@ export const SkyDome = memo(function SkyDome({
 
     // ---- cloud cells, far half first so the near half draws over it
     if (grid) {
+      const hatch = hatchPattern(ctx);
       const cells = domeCells(grid);
       const drawn = cells.map((c) => {
         const mid = projectAltAz((c.altLo + c.altHi) / 2, (c.azLo + c.azHi) / 2,
@@ -116,12 +143,21 @@ export const SkyDome = memo(function SkyDome({
         ctx.moveTo(corners[0].x, corners[0].y);
         for (let i = 1; i < corners.length; i++) ctx.lineTo(corners[i].x, corners[i].y);
         ctx.closePath();
-        ctx.fillStyle = occlusionFill(c.p);
+        const style = occlusionStyle(c.p);
         // The back of the dome is seen THROUGH the front. Halving its opacity
         // keeps it legible as context without letting a cloud bank behind the
         // observer read as one overhead.
         ctx.globalAlpha = depth > 0 ? 1 : 0.45;
-        ctx.fill();
+        if (style.kind === "hatch") {
+          // A gap is hatched, not shaded. See NO_DATA_HATCH for why: a shade
+          // this faint is indistinguishable from clear sky, and an entire dome
+          // of gaps is exactly what a site outside GOES coverage returns.
+          ctx.fillStyle = hatch ?? style.ground;
+          ctx.fill();
+        } else {
+          ctx.fillStyle = style.color;
+          ctx.fill();
+        }
       }
       ctx.globalAlpha = 1;
     }

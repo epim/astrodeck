@@ -6,10 +6,14 @@
 // Those are exactly the failures a screenshot does not reveal.
 import {
   DOME_TILT_DEG,
+  DOME_GROUND_RGB,
+  NO_DATA_HATCH,
   domeCells,
   domeExtent,
+  domeGapFraction,
   domePeak,
   occlusionFill,
+  occlusionStyle,
   occlusionWord,
   projectAltAz,
   skyVector,
@@ -196,6 +200,92 @@ test("nothing is drawn outside the canvas that extent sizes", () => {
       assert(p.x >= 0 && p.x <= cssW, `alt ${alt} az ${az} drew at x=${p.x}`);
     }
   }
+});
+
+// ------------------------------------------- no data must not look like clear
+//
+// The old guard here compared the two fill STRINGS and passed, while the two
+// cells rendered 2.5 luminance units apart out of 255 -- measured in a browser
+// against the real component. Nobody can see 2.5. A site outside GOES coverage
+// returns null for every ray, so that near-invisible difference was the whole
+// distance between "we have no idea" and "clear sky all night".
+//
+// These tests grade what reaches the eye, not what reaches the string.
+
+/** Composite an "rgba(r,g,b,a)" over the dome's own ground and return its
+ *  relative luminance. This is the number the operator actually sees. */
+function renderedLuminance(css: string): number {
+  const m = /rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+)\s*)?\)/.exec(css);
+  if (!m) throw new Error(`not an rgba colour: ${css}`);
+  const a = m[4] === undefined ? 1 : parseFloat(m[4]);
+  const over = (c: number, g: number) => c * a + g * (1 - a);
+  const r = over(+m[1], DOME_GROUND_RGB[0]);
+  const g = over(+m[2], DOME_GROUND_RGB[1]);
+  const b = over(+m[3], DOME_GROUND_RGB[2]);
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+test("renderedLuminance: the helper itself is calibrated", () => {
+  near(renderedLuminance("rgba(0,0,0,1)"), 0, 1e-9, "opaque black");
+  near(renderedLuminance("rgba(255,255,255,1)"), 255, 1e-9, "opaque white");
+  const ground = 0.2126 * DOME_GROUND_RGB[0] + 0.7152 * DOME_GROUND_RGB[1]
+    + 0.0722 * DOME_GROUND_RGB[2];
+  near(renderedLuminance("rgba(200,200,200,0)"), ground, 1e-9,
+       "a fully transparent fill IS the ground");
+});
+
+test("no data is drawn as a different KIND of mark, not a different shade", () => {
+  eq(occlusionStyle(null).kind, "hatch", "a cell with no reading");
+  eq(occlusionStyle(undefined).kind, "hatch", "a missing cell");
+  eq(occlusionStyle(NaN).kind, "hatch", "a non-finite reading");
+  // No real probability may ever borrow the no-data mark, or a cloudy cell
+  // would read as a gap.
+  for (let p = 0; p <= 1.0001; p += 0.01) {
+    eq(occlusionStyle(p).kind, "fill", `probability ${p.toFixed(2)}`);
+  }
+});
+
+test("the no-data mark is VISIBLY unlike clear sky, not just unequal to it", () => {
+  const clear = renderedLuminance(occlusionFill(0));
+  const gapMark = renderedLuminance(NO_DATA_HATCH.stroke);
+  const delta = Math.abs(gapMark - clear);
+  assert(delta > 40, (
+    `the hatch strokes render at luminance ${gapMark.toFixed(1)} against clear `
+    + `sky's ${clear.toFixed(1)} -- a gap of ${delta.toFixed(1)}/255. Below ~40 `
+    + `nobody can tell an uncovered sky from a clear one on a dark screen.`));
+});
+
+test("the hatch is a texture, so its geometry has to actually draw something", () => {
+  assert(NO_DATA_HATCH.tile >= 4, "a tile under 4px is a flat wash, not a hatch");
+  assert(NO_DATA_HATCH.lineWidth >= 1, "zero-width strokes draw nothing");
+  assert(NO_DATA_HATCH.lineWidth < NO_DATA_HATCH.tile, (
+    "strokes at least as wide as the tile fill it solid -- that is a flat "
+    + "wash again, and it would read as heavy cloud"));
+});
+
+test("the neighbouring probability bands stay apart to the eye as well", () => {
+  // Same failure mode one step along: a ramp whose stops differ in string but
+  // not in appearance tells the operator nothing.
+  const stops = [0, 0.05, 0.2, 0.5, 0.9];
+  for (let i = 1; i < stops.length; i++) {
+    const lo = renderedLuminance(occlusionFill(stops[i - 1]));
+    const hi = renderedLuminance(occlusionFill(stops[i]));
+    assert(hi - lo > 8, (
+      `p=${stops[i - 1]} renders at ${lo.toFixed(1)} and p=${stops[i]} at `
+      + `${hi.toFixed(1)}; the ramp has to climb, visibly, at every stop`));
+  }
+});
+
+test("domeGapFraction counts how much of the sky we cannot see", () => {
+  const all = (v: number | null) => ({
+    rows: [[v, v], [v, v]], alt_start: 5, alt_step: 10, az_step: 180,
+  });
+  eq(domeGapFraction(all(0.1)), 0, "a complete dome has no gaps");
+  eq(domeGapFraction(all(null)), 1, "a dome of nulls is entirely gap");
+  eq(domeGapFraction({ rows: [[0.1, null], [null, null]],
+                       alt_start: 5, alt_step: 10, az_step: 180 }), 0.75, "three of four");
+  eq(domeGapFraction({ rows: [], alt_start: 5, alt_step: 10, az_step: 180 }), 1,
+     "an empty dome is not a clear one");
 });
 
 const total = passed + failed;
