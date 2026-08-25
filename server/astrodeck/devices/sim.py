@@ -208,6 +208,20 @@ class SimRig:
         #: size a sweep for.
         self.defocus_steps_per_px = 700.0
         self.filter_slot = 0
+        #: Sky transmission per slot, indexed by ``filter_slot``. THE single
+        #: source of truth: ``SimFilterWheel.filter_opaque`` is derived from it
+        #: (0.0 == no glass), so "the wheel says this slot is a blackout" and
+        #: "the camera renders nothing through it" cannot disagree.
+        #:
+        #: They used to. The render read a SEVEN-element list indexed
+        #: ``filter_slot % 7`` while the wheel had EIGHT slots, so the blackout
+        #: slot wrapped onto slot 0 and rendered at full L flux -- measured
+        #: 2 stars and 7.2 sigma against L's 3 and 8.3. That made the
+        #: 2026-08-13 incident (a cloud hold's probe frames taken through the
+        #: blackout slot, scored "clear (12 bright stars)", releasing the hold)
+        #: impossible to reproduce, and hub.py's blackout guard impossible to
+        #: grade.
+        self.filter_transmission = [1.0, 0.8, 0.8, 0.8, 0.12, 0.10, 0.10, 0.0]
         self.rotator_mech_deg = 0.0
         # hidden ground truth: how the camera is "clocked" vs mechanical zero.
         # 0.0 by default so every existing sim solve/TPPA test is byte-identical
@@ -549,7 +563,11 @@ class SimCamera(Camera):
         sigma = max(1.2 / binning, sigma + seeing_jitter)
 
         # narrowband filters cut star flux
-        flux_scale = [1.0, 0.8, 0.8, 0.8, 0.12, 0.10, 0.10][self.rig.filter_slot % 7]
+        # No modulo. A slot outside the table is a bug worth seeing as a
+        # black frame rather than silently wrapping onto luminance.
+        _tx = self.rig.filter_transmission
+        _slot = self.rig.filter_slot
+        flux_scale = _tx[_slot] if 0 <= _slot < len(_tx) else 0.0
 
         tx0 = int((ra_deg - half / cosd) / 0.5) - 1
         tx1 = int((ra_deg + half / cosd) / 0.5) + 1
@@ -918,20 +936,37 @@ class SimTelescope(Telescope):
         Standard ASCOM convention, matching what the AM5N was measured to report
         (2026-08-06, both sides): a target EAST of the meridian is observed with
         the tube on the WEST side, and vice versa."""
+        return self._side_for_ra(self.rig.ra_hours)
+
+    def _side_for_ra(self, ra_hours: float) -> PierSide:
+        """ASCOM convention: a target EAST of the meridian is observed with the
+        tube on the WEST side. Shared by both pier-side oracles so they cannot
+        drift apart."""
         try:
             from ..catalog.coords import lst_hours
             from ..config import config_store
             lon = float(config_store.cfg().site.longitude)
-            ha = ((lst_hours(lon) - self.rig.ra_hours + 12.0) % 24.0) - 12.0
+            ha = ((lst_hours(lon) - ra_hours + 12.0) % 24.0) - 12.0
         except Exception:  # noqa: BLE001 - a sim must never fail a geometry query
             return PierSide.WEST
         return PierSide.EAST if ha > 0.0 else PierSide.WEST
 
     async def destination_pier_side(self, ra_hours: float, dec_deg: float) -> PierSide:
-        """Deterministic pre-slew side: targets in the eastern RA half land EAST,
-        the western half WEST. Lets the pier-limit guard be exercised without a
-        live mount (Batch 4b)."""
-        return PierSide.EAST if (ra_hours % 24.0) < 12.0 else PierSide.WEST
+        """What ``pier_side`` will report once we are pointing there.
+
+        SAME GEOMETRY AS ``pier_side``, applied to the destination RA. It used
+        to be ``(ra_hours % 24) < 12 -> EAST``, a rule on RA alone that ignores
+        the hour angle and therefore the sidereal time -- so the two oracles
+        contradicted each other at 8 of 24 RA hours, identically at every LST,
+        which is itself the proof that one of them was not consulting the sky.
+
+        Both are read by the same pre-slew guard, so that disagreement meant
+        every meridian-flip decision taken in the simulator was graded against
+        a contradiction rather than against geometry -- on a rig whose real
+        flip failed its first attempt on hardware and was caught only by a
+        pier-side check.
+        """
+        return self._side_for_ra(ra_hours)
 
     async def guide_rates(self) -> tuple[float, float] | None:
         """Fixed 0.5x sidereal rate on both axes (``GUIDE_RATE_DEG_S``) — the
@@ -1097,7 +1132,10 @@ class SimFilterWheel(FilterWheel):
         # Appended rather than prepended on purpose: L..SII keep their indices.
         self.filter_names = ["L", "R", "G", "B", "Ha", "OIII", "SII", "Dark"]
         self.filter_offsets = [0, 12, 10, 15, 120, 110, 115, 0]  # focuser steps
-        self.filter_opaque = [False] * 7 + [True]
+        # DERIVED, not declared: a slot passes no light exactly when its
+        # transmission is zero. Declaring it separately is what let the wheel
+        # and the renderer disagree about slot 7.
+        self.filter_opaque = [t <= 0.0 for t in rig.filter_transmission]
         self._moving = False
 
     async def connect(self) -> None:
