@@ -74,8 +74,13 @@ class PushRunner:
     tick with the feature off is one attribute read, and it is armed the moment
     someone turns it on, with no restart."""
 
-    def __init__(self, *, clock=time.time, interval_s: float = TICK_INTERVAL_S) -> None:
-        self._clock = clock
+    def __init__(self, *, clock=None, interval_s: float = TICK_INTERVAL_S) -> None:
+        # clock=None, NOT clock=time.time. A default argument is evaluated at
+        # IMPORT and holds the original builtin, so monkeypatching time.time
+        # never reached it -- and production builds this WITHOUT a clock
+        # (api/app.py:147-185). A simulated night would tick this hundreds of
+        # times at one frozen instant with every assertion green.
+        self._clock = clock or (lambda: time.time())
         self._interval_s = interval_s
         self._task: asyncio.Task | None = None
         self.state = _push.PushState()
