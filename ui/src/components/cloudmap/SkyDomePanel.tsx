@@ -125,6 +125,8 @@ export function SkyDomePanel({ pointing, target }: {
         pointing={pointing}
         target={target}
         emptyNote={off ? "cloud model is switched off" : "waiting for a granule"}
+        stale={!off && (status?.stale === true || dead)}
+        staleNote={dead ? "feed down" : ageLabel ?? undefined}
         height={280}
       />
 

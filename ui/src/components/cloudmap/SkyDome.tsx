@@ -13,6 +13,7 @@ import { memo, useEffect, useRef } from "react";
 
 import {
   NO_DATA_HATCH,
+  STALE_CLOUD_ALPHA,
   domeCells,
   domeExtent,
   occlusionStyle,
@@ -29,6 +30,11 @@ export interface SkyDomeProps {
   /** No data at all -- draw the empty dome rather than nothing, so the panel
    *  keeps its shape and the operator can see the model is simply off. */
   emptyNote?: string;
+  /** The granule is old. The CLOUD recedes; the grid, the cardinals and the
+   *  pointing marker do not, because those are still true. */
+  stale?: boolean;
+  /** What to write across a stale dome, e.g. "157m old". */
+  staleNote?: string;
   height?: number;
 }
 
@@ -88,7 +94,7 @@ function ringPath(ctx: CanvasRenderingContext2D, altDeg: number,
 }
 
 export const SkyDome = memo(function SkyDome({
-  grid, pointing, target, emptyNote, height = 300,
+  grid, pointing, target, emptyNote, stale = false, staleNote, height = 300,
 }: SkyDomeProps) {
   const ref = useRef<HTMLCanvasElement | null>(null);
 
@@ -147,7 +153,7 @@ export const SkyDome = memo(function SkyDome({
         // The back of the dome is seen THROUGH the front. Halving its opacity
         // keeps it legible as context without letting a cloud bank behind the
         // observer read as one overhead.
-        ctx.globalAlpha = depth > 0 ? 1 : 0.45;
+        ctx.globalAlpha = (depth > 0 ? 1 : 0.45) * (stale ? STALE_CLOUD_ALPHA : 1);
         if (style.kind === "hatch") {
           // A gap is hatched, not shaded. See NO_DATA_HATCH for why: a shade
           // this faint is indistinguishable from clear sky, and an entire dome
@@ -233,12 +239,18 @@ export const SkyDome = memo(function SkyDome({
       cross();
     }
 
+    if (grid && stale && staleNote) {
+      ctx.font = "600 11px ui-monospace, monospace";
+      haloText(ctx, `${staleNote} - not the sky now`, cx, cy - r * 0.62,
+               "rgba(240,190,120,0.92)");
+    }
+
     if (!grid && emptyNote) {
       ctx.fillStyle = "rgba(190,205,225,0.55)";
       ctx.font = "500 11px ui-monospace, monospace";
       ctx.fillText(emptyNote, cx, cy - r * 0.35);
     }
-  }, [grid, pointing, target, emptyNote, height]);
+  }, [grid, pointing, target, emptyNote, stale, staleNote, height]);
 
   return (
     <canvas
@@ -246,7 +258,10 @@ export const SkyDome = memo(function SkyDome({
       role="img"
       aria-label={
         grid
-          ? "Sky dome showing modelled cloud occlusion, with the telescope's pointing marked"
+          ? (stale
+              ? `Sky dome showing modelled cloud occlusion from a stale reading${
+                  staleNote ? `, ${staleNote}` : ""}, with the telescope's pointing marked`
+              : "Sky dome showing modelled cloud occlusion, with the telescope's pointing marked")
           : (emptyNote || "Sky dome, no cloud data")
       }
       className="block mx-auto"
