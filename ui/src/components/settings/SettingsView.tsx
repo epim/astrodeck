@@ -34,6 +34,7 @@ import NamingPanel from "./NamingPanel";
 import WcsStampPanel from "./WcsStampPanel";
 import SyncPanel from "./SyncPanel";
 import WeatherPanel from "./WeatherPanel";
+import CloudmapPanel from "./CloudmapPanel";
 import ProfileList from "./ProfileList";
 import CalibrationLibraryPanel from "./CalibrationLibraryPanel";
 import CalibrationTolerancesPanel from "./CalibrationTolerancesPanel";
@@ -298,6 +299,11 @@ export default function SettingsView(): JSX.Element {
             <OpticsPanel />
             <DriversPanel />
             {canSeePrecise && <WeatherPanel />}
+            {/* Directly under Weather because it answers the neighbouring
+                question: Weather says whether tonight is worth opening for,
+                this says WHERE in the sky the cloud is. Same site dependency,
+                same capability. */}
+            {canSeePrecise && <CloudmapPanel />}
             <SkyAtlasPanel />
             <NamingPanel />
             <WcsStampPanel />
