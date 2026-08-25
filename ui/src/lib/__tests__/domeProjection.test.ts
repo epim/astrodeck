@@ -7,6 +7,7 @@
 import {
   DOME_TILT_DEG,
   domeCells,
+  domeExtent,
   domePeak,
   occlusionFill,
   occlusionWord,
@@ -168,6 +169,33 @@ test("occlusionFill: missing data is NOT drawn as clear sky", () => {
   assert(gap !== clear, (
     "a cell we have no reading for must look different from one we know is "
     + "clear -- otherwise a dead feed reads as perfect conditions"));
+});
+
+test("domeExtent: the top of the dome is NOT the zenith", () => {
+  const ext = domeExtent();
+  const zenithUp = Math.cos((DOME_TILT_DEG * Math.PI) / 180);
+  assert(ext.top > zenithUp, (
+    `the dome reaches ${ext.top} above centre but the zenith only ${zenithUp}; `
+    + `sizing off the zenith clips northern sky`));
+  near(ext.top, 1, 1e-9, "the maximum is exactly 1, at alt (90-tilt) due north");
+});
+
+test("nothing is drawn outside the canvas that extent sizes", () => {
+  // Reproduce the component's sizing and sweep the whole hemisphere. The
+  // telescope marker, parked at alt 37 due north, projected to y = -6 and was
+  // drawn off the top edge until domeExtent replaced a cos(tilt) guess.
+  const cssW = 400, cssH = 300;
+  const ext = domeExtent();
+  const r = Math.min((cssW - 24) / 2, (cssH - 28) / (ext.top + ext.bottom));
+  const cx = cssW / 2, cy = 14 + r * ext.top;
+  for (let alt = 0; alt <= 90; alt += 2) {
+    for (let az = 0; az < 360; az += 5) {
+      const p = projectAltAz(alt, az, cx, cy, r);
+      assert(p.y >= 0 && p.y <= cssH,
+        `alt ${alt} az ${az} drew at y=${p.y.toFixed(1)}, outside 0..${cssH}`);
+      assert(p.x >= 0 && p.x <= cssW, `alt ${alt} az ${az} drew at x=${p.x}`);
+    }
+  }
 });
 
 const total = passed + failed;

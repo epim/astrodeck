@@ -12,8 +12,8 @@
 import { memo, useEffect, useRef } from "react";
 
 import {
-  DOME_TILT_DEG,
   domeCells,
+  domeExtent,
   occlusionFill,
   projectAltAz,
   type DomeGrid,
@@ -36,6 +36,20 @@ const CARDINALS: [string, number][] = [["N", 0], ["E", 90], ["S", 180], ["W", 27
 /** Altitude rings worth drawing. 30 and 60 are the ones people reason in;
  *  the horizon and zenith come free from the dome's own outline. */
 const ALT_RINGS = [30, 60];
+
+/** Text with a dark halo. Cardinals and labels land on whatever the weather
+ *  happens to be painting -- a bright overcast dome swallowed the "N" entirely
+ *  at low alpha, which is the one glyph that tells you which way you are
+ *  looking. Stroke first, fill second. */
+function haloText(ctx: CanvasRenderingContext2D, text: string, x: number,
+                  y: number, fill: string): void {
+  ctx.lineJoin = "round";
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = "rgba(8,10,16,0.85)";
+  ctx.strokeText(text, x, y);
+  ctx.fillStyle = fill;
+  ctx.fillText(text, x, y);
+}
 
 function ringPath(ctx: CanvasRenderingContext2D, altDeg: number,
                   cx: number, cy: number, r: number): void {
@@ -69,14 +83,12 @@ export const SkyDome = memo(function SkyDome({
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, cssW, cssH);
 
-    // The dome's vertical extent is r * (sin(tilt) + cos(tilt)) -- the horizon
-    // half-depth plus the zenith height -- so solve for r rather than guessing
-    // a margin and having the zenith clip on short panels.
-    const t = (DOME_TILT_DEG * Math.PI) / 180;
-    const vSpan = Math.sin(t) + Math.cos(t);
-    const r = Math.min((cssW - 24) / 2, (cssH - 28) / vSpan);
+    // Size against the dome's REAL extent. The highest point on screen is
+    // altitude (90 - tilt) due north, not the zenith -- see domeExtent.
+    const ext = domeExtent();
+    const r = Math.min((cssW - 24) / 2, (cssH - 28) / (ext.top + ext.bottom));
     const cx = cssW / 2;
-    const cy = 14 + r * Math.cos(t);        // leave the zenith room above
+    const cy = 14 + r * ext.top;
 
     // ---- the far half of the horizon, so the dome reads as a solid volume
     ctx.strokeStyle = "rgba(150,170,200,0.18)";
@@ -140,11 +152,14 @@ export const SkyDome = memo(function SkyDome({
     ctx.textBaseline = "middle";
     for (const [label, az] of CARDINALS) {
       const p = projectAltAz(0, az, cx, cy, r);
-      ctx.fillStyle = p.facing ? "rgba(200,215,235,0.85)" : "rgba(200,215,235,0.38)";
-      // Nudge outward along the radius so the glyph clears the rim.
+      // Push clear of the rim, and further for the FAR cardinals: the dome
+      // bulges above its own back horizon, so a 9 px nudge left "N" sitting on
+      // painted cloud rather than beside the outline.
       const dx = p.x - cx, dy = p.y - cy;
       const len = Math.hypot(dx, dy) || 1;
-      ctx.fillText(label, p.x + (dx / len) * 9, p.y + (dy / len) * 9);
+      const out = p.facing ? 10 : 16;
+      haloText(ctx, label, p.x + (dx / len) * out, p.y + (dy / len) * out,
+               p.facing ? "rgba(210,225,245,0.9)" : "rgba(190,205,230,0.72)");
     }
 
     // ---- the next target, dimmer
@@ -154,9 +169,8 @@ export const SkyDome = memo(function SkyDome({
       ctx.lineWidth = 1;
       ctx.beginPath(); ctx.arc(p.x, p.y, 5, 0, Math.PI * 2); ctx.stroke();
       if (target.name) {
-        ctx.fillStyle = "rgba(160,205,255,0.75)";
         ctx.font = "500 9px ui-monospace, monospace";
-        ctx.fillText(target.name, p.x, p.y - 12);
+        haloText(ctx, target.name, p.x, p.y - 12, "rgba(170,210,255,0.85)");
       }
     }
 
@@ -164,15 +178,23 @@ export const SkyDome = memo(function SkyDome({
     // that must never be hidden behind a cloud cell.
     if (pointing && pointing.alt >= 0) {
       const p = projectAltAz(pointing.alt, pointing.az, cx, cy, r);
-      ctx.strokeStyle = "rgba(255,214,102,0.95)";
-      ctx.lineWidth = 1.5;
-      ctx.beginPath(); ctx.arc(p.x, p.y, 7, 0, Math.PI * 2); ctx.stroke();
-      ctx.beginPath();
-      ctx.moveTo(p.x - 11, p.y); ctx.lineTo(p.x - 3, p.y);
-      ctx.moveTo(p.x + 3, p.y); ctx.lineTo(p.x + 11, p.y);
-      ctx.moveTo(p.x, p.y - 11); ctx.lineTo(p.x, p.y - 3);
-      ctx.moveTo(p.x, p.y + 3); ctx.lineTo(p.x, p.y + 11);
-      ctx.stroke();
+      const cross = () => {
+        ctx.beginPath(); ctx.arc(p.x, p.y, 7, 0, Math.PI * 2); ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(p.x - 11, p.y); ctx.lineTo(p.x - 3, p.y);
+        ctx.moveTo(p.x + 3, p.y); ctx.lineTo(p.x + 11, p.y);
+        ctx.moveTo(p.x, p.y - 11); ctx.lineTo(p.x, p.y - 3);
+        ctx.moveTo(p.x, p.y + 3); ctx.lineTo(p.x, p.y + 11);
+        ctx.stroke();
+      };
+      // Dark underlay first: against a fully overcast dome the gold alone is
+      // nearly invisible, and this is the one mark that must always read.
+      ctx.strokeStyle = "rgba(8,10,16,0.8)";
+      ctx.lineWidth = 4;
+      cross();
+      ctx.strokeStyle = "rgba(255,214,102,0.98)";
+      ctx.lineWidth = 1.6;
+      cross();
     }
 
     if (!grid && emptyNote) {
