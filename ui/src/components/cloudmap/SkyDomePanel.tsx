@@ -13,7 +13,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { getCloudmap, getCloudmapAt, getCloudmapDome,
          type CloudmapAt, type CloudmapDome, type CloudmapStatus } from "../../api/cloudmap";
-import { domeGapFraction, occlusionWord } from "../../lib/domeProjection";
+import { ageWords, domeGapFraction, domeStatus, occlusionWord } from "../../lib/domeProjection";
 import { Panel } from "../ui";
 import { SkyDome } from "./SkyDome";
 
@@ -36,6 +36,22 @@ const AHEAD_LABEL: Record<number, string> = { 0: "now", 900: "+15m", 1800: "+30m
  *  gap as clear sky. */
 const QUIET_FAILURES = 3;
 
+/** How often the age readout re-renders between polls. The server recomputes
+ *  age_s from the granule's observation time on every request, so it is right
+ *  whenever it arrives -- but it is a NUMBER, not a clock, and the panel held
+ *  it unchanged for the whole 60 s between polls and indefinitely once the
+ *  feed stopped answering. "9m old" sitting frozen on a dead feed is the same
+ *  defect as the stale dome: a measurement that quietly became a memory. */
+const AGE_TICK_MS = 15_000;
+
+/** Server rule, restated: STALE_POLLS (3) x poll_minutes. The panel needs its
+ *  own copy because it extrapolates the age past the last successful poll and
+ *  must be able to cross the line without being told. Ten minutes is the
+ *  config default; the status payload does not carry poll_minutes, so this is
+ *  the default's horizon and the server's own flag still wins when it is
+ *  fresher. */
+const ASSUMED_STALE_AFTER_S = 3 * 10 * 60;
+
 export function SkyDomePanel({ pointing, target }: {
   pointing?: { alt: number; az: number } | null;
   target?: { alt: number; az: number; name?: string } | null;
@@ -44,6 +60,10 @@ export function SkyDomePanel({ pointing, target }: {
   const [dome, setDome] = useState<CloudmapDome | null>(null);
   const [ladder, setLadder] = useState<(CloudmapAt | null)[]>([]);
   const [failures, setFailures] = useState(0);
+  /** The server's age_s and the wall-clock moment it arrived, so the readout
+   *  can be extrapolated rather than frozen. */
+  const [ageAt, setAgeAt] = useState<{ ageS: number; at: number } | null>(null);
+  const [, setAgeTick] = useState(0);
   const alive = useRef(true);
 
   // Read the pointing through a ref: it changes on every 2 s status frame and
@@ -57,6 +77,7 @@ export function SkyDomePanel({ pointing, target }: {
       if (!alive.current) return;
       setStatus(st);
       setFailures(0);
+      setAgeAt(typeof st.age_s === "number" ? { ageS: st.age_s, at: Date.now() } : null);
       if (!st.enabled) { setDome(null); setLadder([]); return; }
       // 6 x 10 degrees is 15 x 36 = 540 rays. The server walks each one through
       // the cloud volume, so this is the resolution/latency trade the panel can
@@ -85,16 +106,32 @@ export function SkyDomePanel({ pointing, target }: {
     alive.current = true;
     void load();
     const h = setInterval(() => void load(), POLL_MS);
-    return () => { alive.current = false; clearInterval(h); };
+    const a = setInterval(() => setAgeTick((n) => n + 1), AGE_TICK_MS);
+    return () => { alive.current = false; clearInterval(h); clearInterval(a); };
   }, [load]);
 
   const off = status != null && !status.enabled;
-  const ageS = status?.age_s;
-  const ageLabel = typeof ageS === "number"
-    ? (ageS < 90 ? `${Math.round(ageS)}s old` : `${Math.round(ageS / 60)}m old`)
-    : null;
+  const dead = failures >= QUIET_FAILURES;
+  // Extrapolated, not echoed. See AGE_TICK_MS.
+  const ageS = ageAt ? ageAt.ageS + (Date.now() - ageAt.at) / 1000 : null;
+  // All four states in one tested place -- see domeStatus. Three separate bugs
+  // lived in the inline conditionals this replaced, and every one of them was
+  // found by looking at a rendered panel rather than by reading the code.
+  const st = domeStatus({
+    dead, off,
+    observedAt: status?.observed_at,
+    serverStale: status?.stale,
+    ageS,
+    staleAfterS: ASSUMED_STALE_AFTER_S,
+  });
 
   const gridUsable = dome != null && (dome.rows?.length ?? 0) > 0;
+  // The server writes three DIFFERENT sentences here -- switched off, no site
+  // set, no granule read (naming the last failure) -- precisely so a UI can
+  // tell them apart. The first version of this panel fetched the field and
+  // threw it away, which drew "no observing site has been set" and a build
+  // missing h5py as the transient "waiting for a granule".
+  const serverReason = !gridUsable ? (dome?.reason ?? null) : null;
   const gapFrac = gridUsable ? domeGapFraction(dome) : 1;
   const now = ladder[0] ?? null;
 
@@ -105,7 +142,6 @@ export function SkyDomePanel({ pointing, target }: {
   const beamM = typeof now?.beam_m === "number" ? now.beam_m : null;
   const beamRatio = cellM && beamM && beamM > 0 ? cellM / beamM : null;
 
-  const dead = failures >= QUIET_FAILURES;
 
   return (
     <Panel
@@ -113,10 +149,7 @@ export function SkyDomePanel({ pointing, target }: {
       title="Sky dome"
       right={
         <span className="text-[10px] text-dim">
-          {dead ? "not answering"
-            : off ? "off"
-            : status?.stale ? `stale · ${ageLabel ?? "?"}`
-            : ageLabel ?? ""}
+          {st.chip}
         </span>
       }
     >
@@ -124,17 +157,18 @@ export function SkyDomePanel({ pointing, target }: {
         grid={gridUsable ? dome : null}
         pointing={pointing}
         target={target}
-        emptyNote={off ? "cloud model is switched off" : "waiting for a granule"}
-        stale={!off && (status?.stale === true || dead)}
-        staleNote={dead ? "feed down" : ageLabel ?? undefined}
+        emptyNote={off ? "cloud model is switched off"
+                       : serverReason ?? "waiting for a granule"}
+        stale={st.stale}
+        staleNote={st.kind === "dead" ? "feed down" : ageWords(ageS) ?? undefined}
         height={280}
       />
 
       <div className="mt-2 flex flex-col gap-1 text-[11px]">
         {off && (
           <p className="text-dim">
-            Settings &gt; enable the GOES cloud model. It pulls about 4.4 MB per
-            cycle, which is why it is opt-in.
+            Switch it on under Settings &gt; Connect &gt; Cloud model. It pulls
+            about 4.4 MB per cycle, which is why it is opt-in.
           </p>
         )}
 
@@ -145,10 +179,23 @@ export function SkyDomePanel({ pointing, target }: {
           </p>
         )}
 
+        {/* THE SERVER'S OWN SENTENCE, when it has one. It knows things this
+            panel cannot infer -- that no site is set, that the last fetch
+            ended in SiteOutsideSector -- and each is a different thing for
+            the operator to do. */}
+        {!off && serverReason && (
+          <p className="text-warn">{serverReason}</p>
+        )}
+
         {/* An entirely blank dome is the one case that must never pass without
             words: hatching says "no reading" per cell, but only the words can
             say whether the model has simply not fetched yet or the site is
-            somewhere neither satellite can see. */}
+            somewhere neither satellite can see.
+
+            NOT gated on a non-empty grid. A site outside the sector comes back
+            two different ways depending on how far outside it is -- 540 null
+            cells for a near miss, no rows at all for London -- and the second
+            was landing on the transient "waiting for a granule". */}
         {!off && gridUsable && gapFrac >= 0.999 && (
           <p className="text-warn">
             No reading anywhere on the dome. Either no granule has covered this

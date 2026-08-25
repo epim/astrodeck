@@ -9,6 +9,8 @@ import {
   DOME_GROUND_RGB,
   NO_DATA_HATCH,
   STALE_CLOUD_ALPHA,
+  ageWords,
+  domeStatus,
   domeCells,
   domeExtent,
   domeGapFraction,
@@ -300,6 +302,72 @@ test("a stale dome cannot be painted at full confidence", () => {
   assert(STALE_CLOUD_ALPHA > 0, (
     "and it must not vanish entirely -- an old reading is still the only one "
     + "there is, and a blank dome would read as clear"));
+});
+
+// ------------------------------------------------ the four conflated states
+//
+// Each of these is a bug that shipped, found by looking at a rendered panel.
+
+const BASE = { dead: false, off: false, observedAt: "2026-08-25T23:07:36Z",
+               serverStale: false, ageS: 559, staleAfterS: 1800 };
+
+test("a feed that stopped answering outranks everything the last payload said", () => {
+  // It rendered as a healthy panel for the three minutes before the failure
+  // counter tripped, and then still at full confidence.
+  const s = domeStatus({ ...BASE, dead: true });
+  eq(s.kind, "dead", "");
+  eq(s.chip, "not answering", "");
+  assert(s.stale, "a dead feed's last dome is not the sky now");
+  // even if the frozen payload claimed to be seconds old and healthy
+  eq(domeStatus({ ...BASE, dead: true, ageS: 3, serverStale: false }).kind, "dead", "");
+});
+
+test("nothing ever fetched is NOT stale, and must not complain about it", () => {
+  // The server sets stale=true when observed_at is null, so passing it through
+  // drew "stale - ?" on a rig that had simply never fetched: a complaint about
+  // data that does not exist, where the reason line says what to actually do.
+  const s = domeStatus({ ...BASE, observedAt: null, serverStale: true, ageS: null });
+  eq(s.kind, "never", "");
+  eq(s.chip, "", "say nothing rather than something wrong");
+  assert(!s.stale, "there is no old cloud to fade -- there is no cloud");
+});
+
+test("old data is stale even when the server last said it was not", () => {
+  // The server recomputes staleness per request, so a feed that stops
+  // answering leaves the panel holding serverStale:false for ever.
+  const s = domeStatus({ ...BASE, serverStale: false, ageS: 9400 });
+  eq(s.kind, "stale", "past the horizon, whatever the frozen flag says");
+  assert(s.stale, "");
+  assert(s.chip.includes("157m old"), `chip was ${s.chip}`);
+});
+
+test("and stale when the server says so even inside the horizon", () => {
+  const s = domeStatus({ ...BASE, serverStale: true, ageS: 100 });
+  eq(s.kind, "stale", "the server knows its own poll interval; we assume one");
+});
+
+test("a fresh granule reads as its age and nothing more", () => {
+  const s = domeStatus(BASE);
+  eq(s.kind, "fresh", "");
+  eq(s.chip, "9m old", "");
+  assert(!s.stale, "");
+});
+
+test("off outranks the data states but not a dead feed", () => {
+  eq(domeStatus({ ...BASE, off: true }).kind, "off", "");
+  eq(domeStatus({ ...BASE, off: true, ageS: 9400 }).kind, "off",
+     "there is no data to call stale when the model is not running");
+  eq(domeStatus({ ...BASE, off: true, dead: true }).kind, "dead",
+     "a server that will not answer is not a server reporting 'off'");
+});
+
+test("ageWords: seconds below 90, minutes above, nothing for no reading", () => {
+  eq(ageWords(null), null, "");
+  eq(ageWords(NaN), null, "");
+  eq(ageWords(12), "12s old", "");
+  eq(ageWords(89), "89s old", "");
+  eq(ageWords(90), "2m old", "");
+  eq(ageWords(9400), "157m old", "");
 });
 
 const total = passed + failed;
