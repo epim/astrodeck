@@ -1,9 +1,9 @@
 // SkyDomePanel.tsx — the dome, plus the words the picture cannot say.
 //
 // The panel exists to answer two questions the operator actually asks at the
-// eyepiece: "is there cloud between me and where I'm pointing", and "is it
-// coming this way". The dome answers the first; the motion line and the
-// look-ahead answer the second.
+// eyepiece: is there cloud between me and where I am pointing, and is it
+// coming this way. The dome answers the first; the look-ahead ladder and the
+// motion line answer the second.
 //
 // IT NEVER GATES ANYTHING, and says so. Nothing in the sequence engine, the
 // safety gate or auto-resume consults this model (a named server test pins
@@ -13,7 +13,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { getCloudmap, getCloudmapAt, getCloudmapDome,
          type CloudmapAt, type CloudmapDome, type CloudmapStatus } from "../../api/cloudmap";
-import { occlusionWord } from "../../lib/domeProjection";
+import { domeGapFraction, occlusionWord } from "../../lib/domeProjection";
 import { Panel } from "../ui";
 import { SkyDome } from "./SkyDome";
 
@@ -23,8 +23,18 @@ const POLL_MS = 60_000;
 
 /** How far ahead to ask about the current pointing. Half an hour is about as
  *  far as a phase-correlation motion estimate is worth trusting -- the cloud
- *  pattern's own lifetime is under forty minutes. */
-const LOOK_AHEAD_S = 1800;
+ *  pattern's own lifetime is under forty minutes. The intermediate rung is what
+ *  tells the operator whether the trend is arriving or leaving: two points can
+ *  only ever draw a straight line. */
+const LOOK_AHEAD_S = [0, 900, 1800] as const;
+
+const AHEAD_LABEL: Record<number, string> = { 0: "now", 900: "+15m", 1800: "+30m" };
+
+/** Consecutive failed polls before the panel admits it. One dropped relay hop
+ *  is noise; three in a row over three minutes is a dead feed, and leaving the
+ *  last good dome on screen without saying so is the same lie as painting a
+ *  gap as clear sky. */
+const QUIET_FAILURES = 3;
 
 export function SkyDomePanel({ pointing, target }: {
   pointing?: { alt: number; az: number } | null;
@@ -32,8 +42,8 @@ export function SkyDomePanel({ pointing, target }: {
 }) {
   const [status, setStatus] = useState<CloudmapStatus | null>(null);
   const [dome, setDome] = useState<CloudmapDome | null>(null);
-  const [now, setNow] = useState<CloudmapAt | null>(null);
-  const [soon, setSoon] = useState<CloudmapAt | null>(null);
+  const [ladder, setLadder] = useState<(CloudmapAt | null)[]>([]);
+  const [failures, setFailures] = useState(0);
   const alive = useRef(true);
 
   // Read the pointing through a ref: it changes on every 2 s status frame and
@@ -46,7 +56,8 @@ export function SkyDomePanel({ pointing, target }: {
       const st = await getCloudmap();
       if (!alive.current) return;
       setStatus(st);
-      if (!st.enabled) { setDome(null); setNow(null); setSoon(null); return; }
+      setFailures(0);
+      if (!st.enabled) { setDome(null); setLadder([]); return; }
       // 6 x 10 degrees is 15 x 36 = 540 rays. The server walks each one through
       // the cloud volume, so this is the resolution/latency trade the panel can
       // actually draw -- finer looks no better at this size.
@@ -55,19 +66,18 @@ export function SkyDomePanel({ pointing, target }: {
       setDome(d);
       const p = pointingRef.current;
       if (p && p.alt >= 0) {
-        const [a, b] = await Promise.all([
-          getCloudmapAt(p.alt, p.az, 0),
-          getCloudmapAt(p.alt, p.az, LOOK_AHEAD_S),
-        ]);
+        const rungs = await Promise.all(
+          LOOK_AHEAD_S.map((s) => getCloudmapAt(p.alt, p.az, s).catch(() => null)));
         if (!alive.current) return;
-        setNow(a); setSoon(b);
+        setLadder(rungs);
       } else {
-        setNow(null); setSoon(null);
+        setLadder([]);
       }
     } catch {
-      // Silent by design. This is a decorative read on the screen someone runs
-      // a night from; a 500 or a dropped relay hop has no business putting an
-      // error banner over the run.
+      // Counted, not silent. This is a decorative read on the screen someone
+      // runs a night from, so one failure has no business putting a banner over
+      // the run -- but a feed that has been dead for three minutes does.
+      if (alive.current) setFailures((n) => n + 1);
     }
   }, []);
 
@@ -84,18 +94,34 @@ export function SkyDomePanel({ pointing, target }: {
     ? (ageS < 90 ? `${Math.round(ageS)}s old` : `${Math.round(ageS / 60)}m old`)
     : null;
 
+  const gridUsable = dome != null && (dome.rows?.length ?? 0) > 0;
+  const gapFrac = gridUsable ? domeGapFraction(dome) : 1;
+  const now = ladder[0] ?? null;
+
+  // One satellite cell against the beam the telescope actually looks through.
+  // The probability is an average over the whole cell, so this ratio IS the
+  // caveat: a hole narrower than a cell cannot appear in the number at all.
+  const cellM = dome?.cell_km ? Math.max(dome.cell_km[0], dome.cell_km[1]) * 1000 : null;
+  const beamM = typeof now?.beam_m === "number" ? now.beam_m : null;
+  const beamRatio = cellM && beamM && beamM > 0 ? cellM / beamM : null;
+
+  const dead = failures >= QUIET_FAILURES;
+
   return (
     <Panel
       className="col-span-full sm:col-span-2 lg:col-span-6"
       title="Sky dome"
       right={
         <span className="text-[10px] text-dim">
-          {off ? "off" : (status?.stale ? `stale · ${ageLabel ?? "?"}` : ageLabel ?? "")}
+          {dead ? "not answering"
+            : off ? "off"
+            : status?.stale ? `stale · ${ageLabel ?? "?"}`
+            : ageLabel ?? ""}
         </span>
       }
     >
       <SkyDome
-        grid={dome && dome.rows?.length ? dome : null}
+        grid={gridUsable ? dome : null}
         pointing={pointing}
         target={target}
         emptyNote={off ? "cloud model is switched off" : "waiting for a granule"}
@@ -110,6 +136,29 @@ export function SkyDomePanel({ pointing, target }: {
           </p>
         )}
 
+        {dead && (
+          <p className="text-warn">
+            {failures} polls in a row failed. Anything on the dome above is the
+            last reading that arrived, not the sky now.
+          </p>
+        )}
+
+        {/* An entirely blank dome is the one case that must never pass without
+            words: hatching says "no reading" per cell, but only the words can
+            say whether the model has simply not fetched yet or the site is
+            somewhere neither satellite can see. */}
+        {!off && gridUsable && gapFrac >= 0.999 && (
+          <p className="text-warn">
+            No reading anywhere on the dome. Either no granule has covered this
+            site yet, or the site is outside this satellite view.
+          </p>
+        )}
+        {!off && gridUsable && gapFrac > 0.02 && gapFrac < 0.999 && (
+          <p className="text-dim">
+            no reading for {(gapFrac * 100).toFixed(0)}% of the sky (hatched)
+          </p>
+        )}
+
         {!off && now && (
           <p>
             <span className="text-dim">where you are pointing: </span>
@@ -117,25 +166,48 @@ export function SkyDomePanel({ pointing, target }: {
             {typeof now.probability === "number" && (
               <span className="text-dim"> ({(now.probability * 100).toFixed(1)}%)</span>
             )}
-            {soon && soon.basis === "forecast" && (
-              <>
-                <span className="text-dim"> · in 30 min: </span>
-                <span className="text-ink">{occlusionWord(soon.probability)}</span>
-              </>
-            )}
-            {soon && soon.basis === "no_data" && (
-              // Honest rather than blank: the forecast needs two granules to
-              // correlate, so it is genuinely absent for the first cycle after
-              // the model is switched on.
-              <span className="text-dim"> · no forecast yet (needs two granules)</span>
-            )}
+          </p>
+        )}
+
+        {!off && ladder.length > 0 && (
+          <p className="text-dim tabular-nums">
+            {LOOK_AHEAD_S.map((s, i) => {
+              const r = ladder[i];
+              const label = AHEAD_LABEL[s] ?? `+${Math.round(s / 60)}m`;
+              // "no_data" is honest rather than blank: the forecast needs two
+              // granules to correlate, so it is genuinely absent for the first
+              // cycle after the model is switched on.
+              const body = !r ? "?"
+                : r.basis === "no_data" ? "no forecast yet"
+                : `${occlusionWord(r.probability)}${
+                    typeof r.probability === "number"
+                      ? ` ${(r.probability * 100).toFixed(1)}%` : ""}`;
+              return (
+                <span key={s}>
+                  {i > 0 && <span className="text-dim"> · </span>}
+                  <span className="text-dim">{label} </span>
+                  <span className="text-ink">{body}</span>
+                </span>
+              );
+            })}
+          </p>
+        )}
+
+        {!off && beamRatio != null && cellM != null && beamM != null && (
+          // The 6b spec asks for this beside the probabilities, and it is the
+          // honest limit of the whole model: the scope looks through a 91 m
+          // patch of cloud and the answer above is averaged over 2.9 km of it.
+          <p className="text-dim">
+            one cell is {beamRatio.toFixed(0)}x the beam ({(cellM / 1000).toFixed(1)} km
+            vs {beamM.toFixed(0)} m) &mdash; a gap narrower than that cannot show
+            up above
           </p>
         )}
 
         {!off && status?.motion && (
           <p className="text-dim">
             drift {status.motion.speed_kmh.toFixed(1)} km/h toward{" "}
-            {Math.round(status.motion.toward_deg)}°
+            {Math.round(status.motion.toward_deg)}&deg;
             {!status.motion.corroborated && " · not corroborated by the wind column"}
           </p>
         )}
@@ -145,7 +217,7 @@ export function SkyDomePanel({ pointing, target }: {
         )}
 
         <p className="text-dim text-[10px]">
-          Modelled from {status?.credit?.source ?? "NOAA GOES"}. Advisory only —
+          Modelled from {status?.credit?.source ?? "NOAA GOES"}. Advisory only &mdash;
           nothing in the sequencer reads it.
         </p>
       </div>

@@ -104,6 +104,54 @@ export function projectAltAz(altDeg: number, azDeg: number, cx: number,
   return projectDome(skyVector(altDeg, azDeg), cx, cy, r, tiltDeg);
 }
 
+/** The panel's own background, as the dome composites over it. Exported so a
+ *  test can work out what a colour actually LOOKS like rather than how it is
+ *  spelled -- see the no-data tests. Keep in step with Panel's surface. */
+export const DOME_GROUND_RGB: readonly [number, number, number] = [11, 15, 22];
+
+/** Is this a reading at all? A gap is not a zero. */
+function hasReading(p: number | null | undefined): p is number {
+  return typeof p === "number" && Number.isFinite(p) && p >= 0;
+}
+
+/**
+ * How a cell with NO reading is drawn: diagonal hatching, the cartographic
+ * convention for "not surveyed".
+ *
+ * WHY A TEXTURE AND NOT A SHADE. The first version answered this with a
+ * slightly different flat colour, and the two rendered 2.5 luminance units
+ * apart out of 255 -- a difference the guarding unit test could see (the
+ * strings differed) and no human could. It matters most exactly where it is
+ * invisible: a site outside GOES coverage gets null for every ray, so the dome
+ * painted "we have no idea" as a clear night. Any shade dark enough not to
+ * shout is a shade close enough to clear; the way out is a mark of a different
+ * KIND, which no palette tweak can quietly collapse.
+ */
+export const NO_DATA_HATCH = {
+  /** Pattern tile, px. */
+  tile: 8,
+  /** Stroke width, px. */
+  lineWidth: 2,
+  /** Painted under the strokes, so a gap is not simply see-through. */
+  ground: "rgba(120,130,150,0.10)",
+  /** The strokes themselves: this is what the eye reads as texture. */
+  stroke: "rgba(155,168,190,0.62)",
+} as const;
+
+/** What a cell is drawn WITH. `kind` is the part that cannot silently become
+ *  indistinguishable: a gap is hatched, a reading is filled, and no
+ *  probability may ever return "hatch". */
+export type CellStyle =
+  | { kind: "fill"; color: string }
+  | { kind: "hatch"; ground: string; stroke: string };
+
+export function occlusionStyle(p: number | null | undefined): CellStyle {
+  if (!hasReading(p)) {
+    return { kind: "hatch", ground: NO_DATA_HATCH.ground, stroke: NO_DATA_HATCH.stroke };
+  }
+  return { kind: "fill", color: occlusionFill(p) };
+}
+
 /**
  * Occlusion probability to a colour.
  *
@@ -117,8 +165,8 @@ export function projectAltAz(altDeg: number, azDeg: number, cx: number,
  * is "not imaging through that" and need not be distinguished further.
  */
 export function occlusionFill(p: number | null | undefined): string {
-  if (typeof p !== "number" || !Number.isFinite(p) || p < 0) {
-    return "rgba(120,130,150,0.10)";          // no data: faint neutral, not clear
+  if (!hasReading(p)) {
+    return NO_DATA_HATCH.ground;              // see occlusionStyle: this alone is not enough
   }
   const q = Math.min(1, p);
   if (q < 0.02) return "rgba(90,190,255,0.05)";
@@ -184,6 +232,25 @@ export function domePeak(grid: DomeGrid): number | null {
     }
   }
   return peak;
+}
+
+/**
+ * The fraction of the dome we have no reading for, 0..1.
+ *
+ * The panel needs this because one missing cell and a sky the satellite cannot
+ * see at all are the same colour per-cell but completely different facts. An
+ * EMPTY dome counts as 1: no rows is not a clear sky either.
+ */
+export function domeGapFraction(grid: DomeGrid): number {
+  let total = 0;
+  let gaps = 0;
+  for (const row of grid.rows) {
+    for (const p of row) {
+      total++;
+      if (typeof p !== "number" || !Number.isFinite(p)) gaps++;
+    }
+  }
+  return total === 0 ? 1 : gaps / total;
 }
 
 /**
