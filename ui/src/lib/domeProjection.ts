@@ -282,3 +282,66 @@ export function occlusionWord(p: number | null | undefined): string {
   if (p < 0.60) return "cloudy";
   return "socked in";
 }
+
+
+// --------------------------------------------------------- the status states
+//
+// Four things the panel can be, and they were conflated three different ways
+// before this function existed. Every one of them was found by looking at a
+// rendered panel rather than by reading the code:
+//
+//   - the feed is not answering       (drawn as a healthy panel for 3 minutes)
+//   - the model is switched off       (fine)
+//   - nothing has ever been fetched   (drawn as "stale - ?", a complaint about
+//                                      data that does not exist)
+//   - what we have is old             (drawn identically to what we have is
+//                                      current, apart from a 10 px chip)
+//
+// Pure and exported so all four can be tested without a browser. The panel
+// renders what this returns and makes no judgement of its own.
+
+export interface DomeStatusInput {
+  /** Consecutive poll failures have crossed the panel's threshold. */
+  dead: boolean;
+  /** The model is switched off in config. */
+  off: boolean;
+  /** The server's observed_at, or null/undefined if no granule has arrived. */
+  observedAt?: string | null;
+  /** The server's own stale flag. It is ALSO true when nothing was ever
+   *  fetched, which is why this function cannot just pass it through. */
+  serverStale?: boolean;
+  /** Age in seconds, extrapolated locally past the last successful poll. */
+  ageS: number | null;
+  /** Cross this and call it stale regardless of what the server last said --
+   *  a feed that stopped answering leaves the server's flag frozen at false. */
+  staleAfterS: number;
+}
+
+export interface DomeStatus {
+  /** The short chip in the panel header. Empty string means say nothing. */
+  chip: string;
+  /** Whether the CLOUD should recede. See STALE_CLOUD_ALPHA. */
+  stale: boolean;
+  /** Which of the four states this is, so a test can name it. */
+  kind: "dead" | "off" | "never" | "stale" | "fresh";
+}
+
+/** Human age. Seconds under 90, minutes above -- nobody reads "312s". */
+export function ageWords(ageS: number | null): string | null {
+  if (ageS == null || !Number.isFinite(ageS)) return null;
+  return ageS < 90 ? `${Math.round(ageS)}s old` : `${Math.round(ageS / 60)}m old`;
+}
+
+export function domeStatus(i: DomeStatusInput): DomeStatus {
+  const age = ageWords(i.ageS);
+  // ORDER IS THE MEANING. A dead feed outranks everything: whatever the last
+  // payload said about being fresh or off stopped being true when the answers
+  // stopped. Off outranks the data states because there is no data to grade.
+  if (i.dead) return { chip: "not answering", stale: true, kind: "dead" };
+  if (i.off) return { chip: "off", stale: false, kind: "off" };
+  if (!i.observedAt) return { chip: "", stale: false, kind: "never" };
+  const stale = i.serverStale === true
+    || (i.ageS != null && i.ageS > i.staleAfterS);
+  if (stale) return { chip: `stale · ${age ?? "?"}`, stale: true, kind: "stale" };
+  return { chip: age ?? "", stale: false, kind: "fresh" };
+}

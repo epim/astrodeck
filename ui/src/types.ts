@@ -1028,6 +1028,15 @@ export interface AppConfig {
     astrospheric_api_key: string | null;
     astrospheric_configured?: boolean;
   };
+  // --- GOES cloud-occlusion model (cloud-occlusion stage 6a §7; additive).
+  //     DEFAULT OFF and it costs 4.4 MB a cycle, so it is opt-in. Optional
+  //     here because an old WS `hello` bootstrap predates the field. ---
+  cloudmap?: {
+    enabled: boolean;
+    platform: "auto" | "G18" | "G19";
+    poll_minutes: number;
+    half_px: number;
+  };
   // --- RBAC (W2.5; additive). The redacted auth state block — non-secret
   //     booleans + role allowlist. Optional: the WS `hello` bootstrap config may
   //     omit it; the first `config` event / REST GET carries it. ---

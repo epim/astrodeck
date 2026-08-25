@@ -5,6 +5,7 @@
 // answer `enabled: false` and that is the normal, expected state rather than
 // an error.
 import { api } from "../api";
+import type { AppConfig } from "../types";
 
 export interface CloudMotion {
   speed_kmh: number;
@@ -73,3 +74,24 @@ export const getCloudmapDome = (altStep = 6, azStep = 10): Promise<CloudmapDome>
 export const getCloudmapAt = (alt: number, az: number, aheadS = 0): Promise<CloudmapAt> =>
   api.get<CloudmapAt>(
     `/api/cloudmap/at?alt=${alt.toFixed(3)}&az=${az.toFixed(3)}&ahead_s=${Math.round(aheadS)}`);
+
+/** The persisted config block, as GET /api/config returns it. */
+export interface CloudmapConfig {
+  enabled: boolean;
+  platform: "auto" | "G18" | "G19";
+  poll_minutes: number;
+  half_px: number;
+}
+
+/**
+ * POST /api/config {cloudmap} -> persist the WHOLE block.
+ *
+ * Wholesale replace, like setSafetyConfig: the server's `set_cloudmap` swaps
+ * the block rather than merging, so the caller must echo every field with its
+ * edits applied. Requires config.site_optics.
+ *
+ * There is no /api/config/cloudmap. The block rides the generic config POST,
+ * which is why it 422s at binding if a field is wrong rather than clamping.
+ */
+export const setCloudmapConfig = (cloudmap: CloudmapConfig): Promise<AppConfig> =>
+  api.post<AppConfig>("/api/config", { cloudmap });
