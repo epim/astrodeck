@@ -74,6 +74,7 @@ import {
   stallLevel,
   THUMB_BRIGHTNESS_NIGHT_DEFAULT,
 } from "../lib/eta";
+import { SkyDomePanel } from "../components/cloudmap/SkyDomePanel";
 import { diagnoseFailure, runFailureLog } from "../lib/troubleshoot";
 import type { MonitorSnapshot, PreviewInfo } from "../types";
 
@@ -1003,6 +1004,16 @@ export default function MonitorView() {
 
         {/* ========================================= RADAR MAP (weather spec §11) */}
         {canSeeWeather && weather?.enabled && <RadarMap />}
+
+        {/* ================================================== SKY DOME */}
+        {/* Where the cloud is, relative to where the scope is looking. Placed
+            beside Thermal rather than given a rail entry: the rail's rule is
+            append-never-reorder and this has not yet earned a destination.
+            Advisory only -- a named server test pins that nothing in the
+            sequencer consults the model. */}
+        <SkyDomePanel
+          pointing={mount && mount.alt >= 0 ? { alt: mount.alt, az: mount.az } : null}
+        />
 
         {/* ================================================== THERMAL */}
         <Panel className="col-span-full sm:col-span-1 lg:col-span-3" title="Thermal">
