@@ -80,6 +80,23 @@ export function projectDome(v: SkyVec, cx: number, cy: number, r: number,
   };
 }
 
+/**
+ * How far the dome reaches above and below the horizon centre, in units of r.
+ *
+ * THE TOP IS NOT THE ZENITH. `upDot = y*sin(t) + z*cos(t)` is maximised where
+ * (y, z) points along (sin t, cos t) -- that is altitude `90 - t` due NORTH,
+ * where it reaches a full 1.0, against the zenith's cos(t) (0.85 at the default
+ * tilt). Sizing the canvas off the zenith therefore clips a band of northern
+ * sky, and the first version did exactly that: the telescope marker, parked at
+ * alt 37 due north, projected to y = -6 and was drawn off the top edge.
+ *
+ * The bottom is the southern horizon at sin(t).
+ */
+export function domeExtent(tiltDeg: number = DOME_TILT_DEG): { top: number; bottom: number } {
+  const t = (tiltDeg * Math.PI) / 180;
+  return { top: 1, bottom: Math.sin(t) };
+}
+
 /** Convenience: alt/az straight to canvas. */
 export function projectAltAz(altDeg: number, azDeg: number, cx: number,
                              cy: number, r: number,
