@@ -70,7 +70,7 @@ import {
   fmtCountdown,
   fmtDuration,
   GUIDE_STALE_S,
-  LIVE_WINDOW_S,
+  frameIsLive,
   stallLevel,
   THUMB_BRIGHTNESS_NIGHT_DEFAULT,
 } from "../lib/eta";
@@ -309,7 +309,13 @@ export default function MonitorView() {
   // CAPTURE STALLED while every sub was landing on disk.
   const captureAgeMs = liveness.capture != null ? now - liveness.capture : null;
   const captureAgeS = captureAgeMs != null ? captureAgeMs / 1000 : null;
-  const live = frameAgeMs != null && frameAgeMs < LIVE_WINDOW_S * 1000;
+  // NOT the flat LIVE_WINDOW_S any more. Nothing can produce a frame faster
+  // than the exposure in flight, so a 60 s sub read STALE for 52 of its 60
+  // seconds and a 180 s narrowband sub for 172 of its 180 -- the chip spent
+  // most of a healthy night warning about a working camera. The window is now
+  // the running exposure plus a grace, falling back to the flat one when the
+  // rig is idle and there is no exposure to wait for. See lib/eta.ts.
+  const live = frameIsLive(frameAgeMs, seq.progress?.current_exposure_s);
   const guideStale = guideAgeMs != null && guideAgeMs > GUIDE_STALE_S * 1000;
 
   const state = seq.state;
@@ -942,6 +948,7 @@ export default function MonitorView() {
             previewId={preview?.id ?? coldPreviewId}
             live={live}
             stale={!live && (preview != null || coldPreviewId != null)}
+            ageMs={frameAgeMs}
             hfr={preview?.hfr}
             stars={preview?.stars}
             meta={previewMeta}

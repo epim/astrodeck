@@ -16,6 +16,9 @@ import {
   COOLER_AT_TARGET_C,
   ETA_MIN_FRAMES,
   STALL_MARGIN_S,
+  frameIsLive,
+  staleAfterS,
+  frameAgeChip,
 } from "../eta";
 
 // ---------------------------------------------------------------- harness
@@ -182,6 +185,44 @@ test("stallLevel: null secsSinceFrame (no frame yet) -> none even while running"
 });
 test("stallLevel: zero/negative exposure can't divide into a threshold -> none", () => {
   eq(stallLevel("running", 999, 0), "none", "zero exposure");
+});
+
+// ------------------------------------------------- frame-age liveness (#stale)
+// The flat LIVE_WINDOW_S made the chip lie for most of every exposure: a 60 s
+// sub read STALE for 52 of its 60 seconds. The window must track the sub in
+// flight, and a stale chip must say HOW stale.
+test("frameIsLive: a frame mid-exposure is not stale", () => {
+  // 40 s into a 60 s sub — nothing could have produced a newer frame yet.
+  assert(frameIsLive(40_000, 60), "40s into a 60s sub must read LIVE");
+  assert(frameIsLive(69_000, 60), "inside exposure+grace must read LIVE");
+  assert(!frameIsLive(71_000, 60), "past exposure+grace must read STALE");
+});
+
+test("frameIsLive: 180s narrowband subs get 180s of patience", () => {
+  assert(frameIsLive(170_000, 180), "170s into a 180s sub must read LIVE");
+  assert(!frameIsLive(191_000, 180), "past 190s must read STALE");
+  // The old flat window would have called every one of these stale.
+  assert(LIVE_WINDOW_S * 1000 < 170_000, "precondition: the flat window is shorter");
+});
+
+test("frameIsLive: falls back to the flat window with no exposure", () => {
+  assert(frameIsLive(5_000, null), "idle rig, fresh frame");
+  assert(!frameIsLive(9_000, null), "idle rig, past the flat window");
+  assert(!frameIsLive(9_000, 0), "a zero exposure is not an exposure");
+});
+
+test("staleAfterS: exposure plus grace, else the flat window", () => {
+  eq(staleAfterS(60), 70, "60s sub");
+  eq(staleAfterS(180), 190, "180s sub");
+  eq(staleAfterS(null), LIVE_WINDOW_S, "no exposure");
+  eq(staleAfterS(-5), LIVE_WINDOW_S, "nonsense exposure");
+});
+
+test("frameAgeChip: STALE carries its age in seconds", () => {
+  eq(frameAgeChip(40_000, 60), "LIVE", "mid-exposure");
+  eq(frameAgeChip(180_000, 60), "STALE (180s)", "the shape the owner asked for");
+  eq(frameAgeChip(9_500, null), "STALE (10s)", "rounds to the nearest second");
+  eq(frameAgeChip(null, 60), "STALE", "no age to report");
 });
 
 // ---------------------------------------------------------------- report
