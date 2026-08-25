@@ -8,6 +8,7 @@ import {
   DOME_TILT_DEG,
   DOME_GROUND_RGB,
   NO_DATA_HATCH,
+  STALE_CLOUD_ALPHA,
   domeCells,
   domeExtent,
   domeGapFraction,
@@ -286,6 +287,19 @@ test("domeGapFraction counts how much of the sky we cannot see", () => {
                        alt_start: 5, alt_step: 10, az_step: 180 }), 0.75, "three of four");
   eq(domeGapFraction({ rows: [], alt_start: 5, alt_step: 10, az_step: 180 }), 1,
      "an empty dome is not a clear one");
+});
+
+test("a stale dome cannot be painted at full confidence", () => {
+  // Two panels rendered side by side in the browser harness -- one 9 minutes
+  // old, one 157 -- were pixel-identical apart from a 10px chip in the corner.
+  // At the 80 km/h drift this model routinely reports, 157 minutes is 210 km of
+  // cloud movement: the picture was showing a sky that had gone.
+  assert(STALE_CLOUD_ALPHA < 0.6, (
+    `stale cloud is drawn at ${STALE_CLOUD_ALPHA} of normal opacity; above ~0.6 `
+    + `a two-hour-old mask still reads as the present sky`));
+  assert(STALE_CLOUD_ALPHA > 0, (
+    "and it must not vanish entirely -- an old reading is still the only one "
+    + "there is, and a blank dome would read as clear"));
 });
 
 const total = passed + failed;

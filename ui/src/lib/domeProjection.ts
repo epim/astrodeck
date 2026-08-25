@@ -138,6 +138,19 @@ export const NO_DATA_HATCH = {
   stroke: "rgba(155,168,190,0.62)",
 } as const;
 
+/**
+ * How much of its normal opacity the cloud layer keeps when the granule is
+ * stale.
+ *
+ * A dome painted at full confidence from a two-hour-old granule is a lie about
+ * the present sky, and the age chip in the corner does not undo it: the picture
+ * is what the operator reads. At the drift this model routinely measures --
+ * 80 km/h -- a 157 minute old mask has moved 210 km, which is most of the way
+ * across everything the dome shows. So the cloud recedes and the grid stays,
+ * which reads as "this was the sky" rather than "this is the sky".
+ */
+export const STALE_CLOUD_ALPHA = 0.3;
+
 /** What a cell is drawn WITH. `kind` is the part that cannot silently become
  *  indistinguishable: a gap is hatched, a reading is filled, and no
  *  probability may ever return "hatch". */
