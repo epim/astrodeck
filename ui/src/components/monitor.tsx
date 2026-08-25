@@ -581,6 +581,7 @@ export const PreviewTile = memo(function PreviewTile({
   previewId,
   live,
   stale,
+  ageMs,
   hfr,
   stars,
   meta,
@@ -595,6 +596,9 @@ export const PreviewTile = memo(function PreviewTile({
   previewId: number | null;
   live: boolean;
   stale: boolean;
+  /** Age of the shown frame. Stale says HOW stale -- "STALE" alone cannot tell
+   *  a frame 3 s past its window from one 40 minutes old. */
+  ageMs?: number | null;
   hfr?: number;
   stars?: number;
   meta?: string;
@@ -685,7 +689,11 @@ export const PreviewTile = memo(function PreviewTile({
               style={{ background: showLive ? "var(--accent)" : "var(--warn)" }}
               aria-hidden
             />
-            {showLive ? "LIVE" : "STALE"}
+            {showLive
+              ? "LIVE"
+              : (typeof ageMs === "number" && Number.isFinite(ageMs) && ageMs >= 0
+                  ? `STALE (${Math.round(ageMs / 1000)}s)`
+                  : "STALE")}
           </span>
         )}
 

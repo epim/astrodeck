@@ -8,6 +8,10 @@ import type { SequenceState } from "../types";
 // One source of truth; the cells, store auto-select and stall logic all import
 // from here so the numbers never drift (monitor spec §9 "Shared constants").
 export const LIVE_WINDOW_S = 8; // "new frame arriving" window for the LIVE chip
+//: Grace on top of the exposure before a frame counts as stale. A frame cannot
+//: arrive sooner than the exposure that makes it, so the wait is expected, not
+//: a fault; ten seconds covers download, save and the preview hop.
+export const STALE_GRACE_S = 10;
 export const STALL_MARGIN_S = 20; // grace before declaring a capture stall
 export const GUIDE_STALE_S = 15; // guider-stale window
 export const COOLER_AT_TARGET_C = 1.0; // MUST equal engine cool-and-wait threshold
@@ -118,4 +122,47 @@ export function stallLevel(
   if (secsSinceFrame > exposureS * 3 + STALL_MARGIN_S) return "red";
   if (secsSinceFrame > exposureS * 2) return "amber";
   return "none";
+}
+
+
+// ------------------------------------------------------- frame-age liveness
+/**
+ * How long a frame may be the newest one before it is genuinely stale.
+ *
+ * LIVE_WINDOW_S alone was WRONG DURING EVERY EXPOSURE. It is a flat 8 s, so a
+ * 60 s sub read STALE for 52 of its 60 seconds and a 180 s narrowband sub for
+ * 172 of its 180 — the chip spent most of a healthy night warning about a
+ * camera that was working perfectly. Nothing can produce a frame faster than
+ * the exposure currently running, so waiting one exposure is the expected
+ * state and not a fault.
+ *
+ * `currentExposureS` comes from the engine's own progress block
+ * (`progress.current_exposure_s`), so the window tracks the sub actually in
+ * flight rather than a guess. With no exposure — idle rig, or a status frame
+ * that predates the run — it falls back to the flat window, which is the right
+ * answer when nothing is being exposed.
+ */
+export function staleAfterS(currentExposureS?: number | null): number {
+  return typeof currentExposureS === "number" && currentExposureS > 0
+    ? currentExposureS + STALE_GRACE_S
+    : LIVE_WINDOW_S;
+}
+
+/** True while the newest frame is as fresh as the running exposure allows. */
+export function frameIsLive(ageMs: number | null | undefined,
+                            currentExposureS?: number | null): boolean {
+  if (typeof ageMs !== "number" || !Number.isFinite(ageMs)) return false;
+  return ageMs < staleAfterS(currentExposureS) * 1000;
+}
+
+/**
+ * The chip's text. Stale carries its AGE, because "STALE" alone cannot tell a
+ * frame 3 s past its window from one 40 minutes old, and those mean entirely
+ * different things at 3am.
+ */
+export function frameAgeChip(ageMs: number | null | undefined,
+                             currentExposureS?: number | null): string {
+  if (frameIsLive(ageMs, currentExposureS)) return "LIVE";
+  if (typeof ageMs !== "number" || !Number.isFinite(ageMs) || ageMs < 0) return "STALE";
+  return `STALE (${Math.round(ageMs / 1000)}s)`;
 }
