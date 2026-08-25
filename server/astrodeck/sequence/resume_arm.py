@@ -58,10 +58,15 @@ RECOVERY_SOLVE_EXPOSURE_S = 12.0
 
 
 class ResumeArm:
-    def __init__(self, engine, hub, *, clock=time.time, weather=None):
+    def __init__(self, engine, hub, *, clock=None, weather=None):
         self.engine = engine
         self.hub = hub
-        self._clock = clock
+        # clock=None, NOT clock=time.time. A default argument is evaluated at
+        # IMPORT and holds the original builtin, so monkeypatching time.time
+        # never reached it -- and production builds this WITHOUT a clock
+        # (api/app.py:147-185). A simulated night would tick this hundreds of
+        # times at one frozen instant with every assertion green.
+        self._clock = clock or (lambda: time.time())
         # sub-project C (weather spec §4): injected WeatherService (like clock,
         # so tests inject fakes). None = no weather gate (back-compat).
         self._weather = weather

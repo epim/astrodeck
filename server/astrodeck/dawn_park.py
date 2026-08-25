@@ -118,11 +118,16 @@ class DawnPark:
     """The lifespan task. One instance, created in ``api.app`` beside the other
     services and started/stopped by the app lifespan."""
 
-    def __init__(self, hub, engine, *, clock=time.time,
+    def __init__(self, hub, engine, *, clock=None,
                  interval_s: float = CHECK_INTERVAL_S) -> None:
         self.hub = hub
         self.engine = engine
-        self._clock = clock                 # injected so tests can pick a sky
+        # clock=None, NOT clock=time.time. A default argument is evaluated at
+        # IMPORT and holds the original builtin, so monkeypatching time.time
+        # never reached it -- and production builds this WITHOUT a clock
+        # (api/app.py:147-185). A simulated night would tick this hundreds of
+        # times at one frozen instant with every assertion green.
+        self._clock = clock or (lambda: time.time())
         self._interval_s = interval_s
         self._task: asyncio.Task | None = None
         # Has this dawn been dealt with? Set when the mount is parked (or found

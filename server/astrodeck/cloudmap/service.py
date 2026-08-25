@@ -233,8 +233,13 @@ class CloudmapService:
     the weather service anything, and it certainly does not tell the gate.
     """
 
-    def __init__(self, *, clock=time.time, weather=None):
-        self._clock = clock
+    def __init__(self, *, clock=None, weather=None):
+        # clock=None, NOT clock=time.time. A default argument is evaluated at
+        # IMPORT and holds the original builtin, so monkeypatching time.time
+        # never reached it -- and production builds this WITHOUT a clock
+        # (api/app.py:147-185). A simulated night would tick this hundreds of
+        # times at one frozen instant with every assertion green.
+        self._clock = clock or (lambda: time.time())
         self._weather = weather if weather is not None else weather_service
         self._task: asyncio.Task | None = None
         self._platform = ""

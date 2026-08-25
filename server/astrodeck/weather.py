@@ -307,8 +307,13 @@ class WeatherService:
     (resume_arm.py:47-68): one asyncio task, 60 s tick, broad-except never-die
     loop, injected wall clock."""
 
-    def __init__(self, *, clock=time.time):
-        self._clock = clock
+    def __init__(self, *, clock=None):
+        # clock=None, NOT clock=time.time. A default argument is evaluated at
+        # IMPORT and holds the original builtin, so monkeypatching time.time
+        # never reached it -- and production builds this WITHOUT a clock
+        # (api/app.py:147-185). A simulated night would tick this hundreds of
+        # times at one frozen instant with every assertion green.
+        self._clock = clock or (lambda: time.time())
         self._task: asyncio.Task | None = None
         # Open-Meteo cache (in-memory only — spec §3; failures never cached)
         self._om_times: list[float] = []
