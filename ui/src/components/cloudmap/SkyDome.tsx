@@ -1,0 +1,197 @@
+// SkyDome.tsx — the sky hemisphere with the cloud model painted on it and the
+// scope's pointing marked, drawn on a 2D canvas.
+//
+// The geometry lives in lib/domeProjection.ts and is unit-tested without a
+// browser, because the failures that matter here are the ones a screenshot
+// cannot reveal: a dome drawn upside down, azimuth mirrored so eastern cloud is
+// painted west, cells offset half a step. This file is the part that can only
+// be got wrong in pixels.
+//
+// Canvas rather than SVG: a 15x36 grid is 540 quads and the panel repaints on a
+// poll, so this is a thousand fills a minute in the DOM against one bitmap.
+import { memo, useEffect, useRef } from "react";
+
+import {
+  DOME_TILT_DEG,
+  domeCells,
+  occlusionFill,
+  projectAltAz,
+  type DomeGrid,
+} from "../../lib/domeProjection";
+
+export interface SkyDomeProps {
+  grid: DomeGrid | null;
+  /** Where the scope is looking, if it is connected. */
+  pointing?: { alt: number; az: number } | null;
+  /** Drawn dimmer than the pointing marker: where the run goes next. */
+  target?: { alt: number; az: number; name?: string } | null;
+  /** No data at all -- draw the empty dome rather than nothing, so the panel
+   *  keeps its shape and the operator can see the model is simply off. */
+  emptyNote?: string;
+  height?: number;
+}
+
+const CARDINALS: [string, number][] = [["N", 0], ["E", 90], ["S", 180], ["W", 270]];
+
+/** Altitude rings worth drawing. 30 and 60 are the ones people reason in;
+ *  the horizon and zenith come free from the dome's own outline. */
+const ALT_RINGS = [30, 60];
+
+function ringPath(ctx: CanvasRenderingContext2D, altDeg: number,
+                  cx: number, cy: number, r: number): void {
+  ctx.beginPath();
+  for (let az = 0; az <= 360; az += 3) {
+    const p = projectAltAz(altDeg, az, cx, cy, r);
+    if (az === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
+  }
+  ctx.closePath();
+}
+
+export const SkyDome = memo(function SkyDome({
+  grid, pointing, target, emptyNote, height = 300,
+}: SkyDomeProps) {
+  const ref = useRef<HTMLCanvasElement | null>(null);
+
+  useEffect(() => {
+    const cv = ref.current;
+    if (!cv) return;
+    const parentW = cv.parentElement?.clientWidth ?? 0;
+    const cssW = Math.max(220, parentW || 320);
+    const cssH = height;
+    // Device pixels, so the dome is not a blurry oval on a retina panel.
+    const dpr = (typeof window !== "undefined" && window.devicePixelRatio) || 1;
+    cv.width = Math.round(cssW * dpr);
+    cv.height = Math.round(cssH * dpr);
+    cv.style.width = `${cssW}px`;
+    cv.style.height = `${cssH}px`;
+    const ctx = cv.getContext("2d");
+    if (!ctx) return;                       // headless/jsdom: nothing to draw
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, cssW, cssH);
+
+    // The dome's vertical extent is r * (sin(tilt) + cos(tilt)) -- the horizon
+    // half-depth plus the zenith height -- so solve for r rather than guessing
+    // a margin and having the zenith clip on short panels.
+    const t = (DOME_TILT_DEG * Math.PI) / 180;
+    const vSpan = Math.sin(t) + Math.cos(t);
+    const r = Math.min((cssW - 24) / 2, (cssH - 28) / vSpan);
+    const cx = cssW / 2;
+    const cy = 14 + r * Math.cos(t);        // leave the zenith room above
+
+    // ---- the far half of the horizon, so the dome reads as a solid volume
+    ctx.strokeStyle = "rgba(150,170,200,0.18)";
+    ctx.lineWidth = 1;
+    ringPath(ctx, 0, cx, cy, r);
+    ctx.stroke();
+
+    // ---- cloud cells, far half first so the near half draws over it
+    if (grid) {
+      const cells = domeCells(grid);
+      const drawn = cells.map((c) => {
+        const mid = projectAltAz((c.altLo + c.altHi) / 2, (c.azLo + c.azHi) / 2,
+                                 cx, cy, r);
+        return { c, depth: mid.depth };
+      });
+      drawn.sort((a, b) => a.depth - b.depth);   // far (negative) first
+      for (const { c, depth } of drawn) {
+        const corners = [
+          projectAltAz(c.altLo, c.azLo, cx, cy, r),
+          projectAltAz(c.altLo, c.azHi, cx, cy, r),
+          projectAltAz(c.altHi, c.azHi, cx, cy, r),
+          projectAltAz(c.altHi, c.azLo, cx, cy, r),
+        ];
+        ctx.beginPath();
+        ctx.moveTo(corners[0].x, corners[0].y);
+        for (let i = 1; i < corners.length; i++) ctx.lineTo(corners[i].x, corners[i].y);
+        ctx.closePath();
+        ctx.fillStyle = occlusionFill(c.p);
+        // The back of the dome is seen THROUGH the front. Halving its opacity
+        // keeps it legible as context without letting a cloud bank behind the
+        // observer read as one overhead.
+        ctx.globalAlpha = depth > 0 ? 1 : 0.45;
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    // ---- altitude rings and the horizon, over the cloud
+    ctx.strokeStyle = "rgba(160,180,210,0.22)";
+    for (const alt of ALT_RINGS) { ringPath(ctx, alt, cx, cy, r); ctx.stroke(); }
+    ctx.strokeStyle = "rgba(170,190,220,0.45)";
+    ringPath(ctx, 0, cx, cy, r);
+    ctx.stroke();
+
+    // ---- meridian and the prime vertical, for orientation
+    ctx.strokeStyle = "rgba(160,180,210,0.16)";
+    for (const az of [0, 90]) {
+      ctx.beginPath();
+      for (let alt = 0; alt <= 180; alt += 3) {
+        const a = alt <= 90 ? alt : 180 - alt;
+        const z = alt <= 90 ? az : (az + 180) % 360;
+        const p = projectAltAz(a, z, cx, cy, r);
+        if (alt === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
+      }
+      ctx.stroke();
+    }
+
+    // ---- cardinal letters, on the horizon where they belong
+    ctx.font = "600 10px ui-monospace, monospace";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    for (const [label, az] of CARDINALS) {
+      const p = projectAltAz(0, az, cx, cy, r);
+      ctx.fillStyle = p.facing ? "rgba(200,215,235,0.85)" : "rgba(200,215,235,0.38)";
+      // Nudge outward along the radius so the glyph clears the rim.
+      const dx = p.x - cx, dy = p.y - cy;
+      const len = Math.hypot(dx, dy) || 1;
+      ctx.fillText(label, p.x + (dx / len) * 9, p.y + (dy / len) * 9);
+    }
+
+    // ---- the next target, dimmer
+    if (target && target.alt >= 0) {
+      const p = projectAltAz(target.alt, target.az, cx, cy, r);
+      ctx.strokeStyle = "rgba(140,200,255,0.55)";
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(p.x, p.y, 5, 0, Math.PI * 2); ctx.stroke();
+      if (target.name) {
+        ctx.fillStyle = "rgba(160,205,255,0.75)";
+        ctx.font = "500 9px ui-monospace, monospace";
+        ctx.fillText(target.name, p.x, p.y - 12);
+      }
+    }
+
+    // ---- where the scope is actually looking. Drawn last: it is the one mark
+    // that must never be hidden behind a cloud cell.
+    if (pointing && pointing.alt >= 0) {
+      const p = projectAltAz(pointing.alt, pointing.az, cx, cy, r);
+      ctx.strokeStyle = "rgba(255,214,102,0.95)";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(p.x, p.y, 7, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(p.x - 11, p.y); ctx.lineTo(p.x - 3, p.y);
+      ctx.moveTo(p.x + 3, p.y); ctx.lineTo(p.x + 11, p.y);
+      ctx.moveTo(p.x, p.y - 11); ctx.lineTo(p.x, p.y - 3);
+      ctx.moveTo(p.x, p.y + 3); ctx.lineTo(p.x, p.y + 11);
+      ctx.stroke();
+    }
+
+    if (!grid && emptyNote) {
+      ctx.fillStyle = "rgba(190,205,225,0.55)";
+      ctx.font = "500 11px ui-monospace, monospace";
+      ctx.fillText(emptyNote, cx, cy - r * 0.35);
+    }
+  }, [grid, pointing, target, emptyNote, height]);
+
+  return (
+    <canvas
+      ref={ref}
+      role="img"
+      aria-label={
+        grid
+          ? "Sky dome showing modelled cloud occlusion, with the telescope's pointing marked"
+          : (emptyNote || "Sky dome, no cloud data")
+      }
+      className="block mx-auto"
+    />
+  );
+});
