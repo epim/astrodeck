@@ -8,9 +8,9 @@ report. It runs on a mini-PC or a Pi at the scope. You open a page.
 
 [**Overview and documentation →**](https://epim.github.io/astrodeck/)
 
-![status](https://img.shields.io/badge/version-0.3.22-4DD9E8)
+![version](https://img.shields.io/badge/version-0.3.22-4DD9E8)
 ![python](https://img.shields.io/badge/python-3.11%2B-4DD9E8)
-![tests](https://img.shields.io/badge/tests-8%2C700%2B%20passing-3FB950)
+![platforms](https://img.shields.io/badge/runs%20on-Windows%20%C2%B7%20Linux%20%C2%B7%20macOS%20%C2%B7%20Pi-4DD9E8)
 ![licence](https://img.shields.io/badge/licence-Apache--2.0-8A97AE)
 
 > **Under real stars.** Whole nights, unattended, on a Player One Poseidon-M PRO,
@@ -32,14 +32,14 @@ python -m venv .venv
 Open **Equipment**, press **Simulator rig**. Eleven devices connect in three
 seconds.
 
-The simulator is not a row of stubs returning `True`. It renders a real star
-field that answers to where the mount points, where the focuser sits and which
-filter is in the light path — so autofocus walks a genuine V curve, the plate
-solver actually solves, the guider actually guides, and a two-target night runs
-to completion while it rains outside. Close the blackout filter and the frame
-goes dark, because the simulator knows what a blackout filter does.
+The simulator renders a real star field that answers to where the mount points,
+where the focuser sits and which filter is in the light path. Autofocus walks a
+V curve. The plate solver solves. The guider guides. A two-target night runs to
+completion while it rains outside. Put the blackout filter in and the frame goes
+dark, because the simulator knows what a blackout filter does.
 
-Learn the entire app on a cloudy Tuesday.
+You can learn the whole app on a cloudy Tuesday and be fluent before your next
+clear night.
 
 ---
 
@@ -55,8 +55,8 @@ count. Bahtinov mask aid with a live spike overlay.
 
 **Mount** — Touch slew pad with a dead-man's switch. Catalog goto with live
 altitude and a below-horizon guard. Plate solve and sync. Park, unpark, tracking
-rates, and a meridian flip that verifies the pier side actually changed instead
-of believing the mount's first answer.
+rates, and a meridian flip that re-reads the pier side afterwards instead of
+believing the mount's first answer.
 
 **Guiding** — Built-in guide engine, or PHD2, or NINA's. RA/Dec error graph,
 scatter plot, RMS, dithering. A Guiding Assistant measures your seeing and Dec
@@ -64,24 +64,27 @@ backlash and suggests settings you are free to ignore.
 
 **Planning** — Sky Atlas: a pan-and-zoom WebGL survey map with a draggable,
 rotatable field-of-view overlay, mosaic planner, and altitude curves with
-transit, twilight and moon separation. Tonight ranks what is actually up, right
-now, tagged by difficulty.
+transit, twilight and moon separation. Tonight ranks what is up right now,
+tagged by difficulty, so you always have somewhere to point.
 
-**Astro Flows** — Draw the night as a graph. Twenty-one node types across
-sources, rig actions, logic and sinks. Wire a cloud watcher into a hold, a
-target pool into a filter cycle, a rejected frame into a refocus. The compiler
-tells you what it could not honour *before* you run it, on screen, rather than
-at 3am from a mount that kept shooting through overcast.
+**Astro Flows** — Planning a complicated night is the part that usually needs a
+spreadsheet and a lot of squinting. Draw it instead. Drag a target pool onto the
+canvas, wire a cloud watcher into a hold, hang a refocus off a bad frame, and
+the shape of the night becomes something you can see and reason about. A month
+of imaging takes about as long to lay out as one night. Before anything moves,
+the canvas tells you which of your rules it cannot run, so you find out at your
+desk instead of at 3am.
 
-**Weather awareness** — Forecast from Open-Meteo or Astrospheric, plus a cloud
-model built on GOES-18/19 satellite imagery that projects real cloud onto a
-hemisphere over your site and answers a question no scalar forecast can:
-*is that cloud between my scope and my target, and when will it be?*
+**Weather awareness** — Forecast from Open-Meteo or Astrospheric, and a sky dome
+that shades your whole hemisphere with real GOES satellite cloud. You can see at
+a glance which half of your sky is clear, whether the bank moving in will reach
+your target before you finish, and which of tonight's candidates will stay in
+the open. Picking a target stops being a guess.
 
-**Multi-night sessions** — Targets accrue frames across as many nights and
-reboots as it takes. A per-frame ledger scores HFR, star count and guide RMS,
-you can override any call by hand, and a dormant session re-arms itself at dusk
-when the target's window reopens.
+**Multi-night sessions** — Set a target once and keep adding to it across as
+many nights and reboots as it takes. AstroDeck scores every frame for HFR, star
+count and guide RMS, you can overrule any call it makes, and it re-arms itself
+at dusk when the target rises again. You never re-count what you already shot.
 
 **Data out** — Full FITS headers, per-frame WCS written back after a solve, an
 end-of-night report, and a stacking bundle: one zip pre-sorted into PixInsight,
@@ -155,9 +158,9 @@ Where a feature depends on the route you chose, this is what each one does.
 The ASIAIR filter wheel and rotator are the two commands that could not be
 mapped to certainty without a box on the bench. A guess there rotates to the
 wrong angle or images through the wrong filter in silence, so AstroDeck declines
-to guess. That backend needs one extra install step —
+to guess. That backend needs one extra install step,
 `pip install -e .[asiair]`, which pulls in the MIT-licensed
-[libasi](https://github.com/epim/libasi) — and is simply absent if you skip it.
+[libasi](https://github.com/epim/libasi). Skip it and the backend is absent.
 
 AstroDeck reads that the ASIAIR is guiding and refuses to fight it, rather than
 pretending to take over.
@@ -180,7 +183,7 @@ pretending to take over.
 | Wanderer Astro | Snowflake filter wheel | Native serial |
 
 **Everything else.** Anything with an **ASCOM Alpaca** endpoint connects
-directly — ZWO, Pegasus Astro, QHY, PrimaLuceLab, Optec, Lakeside, Moonlite and
+directly: ZWO, Pegasus Astro, QHY, PrimaLuceLab, Optec, Lakeside, Moonlite and
 the rest of the ASCOM world through ASCOM Remote. Anything with a Windows-only
 ASCOM driver works through the bundled COM host, which AstroDeck starts and
 manages for you.
@@ -196,7 +199,7 @@ manages for you.
 
 **Not on the list?** Ask. Adding a backend means implementing a handful of small
 async methods against `devices/base.py` and nothing else in the codebase
-changes — that is the whole point of the abstraction. Third-party backends can
+changes. Third-party backends can
 also ship as separate packages and register themselves through an entry point,
 with no fork required. Open an issue with the gear you have.
 
@@ -220,7 +223,7 @@ unreachable. Online deep-zooms grow it on disk as a side effect. DSS2 imagery
 
 ---
 
-## Vendor neutrality is structural, not a slogan
+## Vendor neutrality, in the code rather than the marketing
 
 Everything above `devices/base.py` is vendor agnostic. The sequencer does not
 know what brand your mount is; it knows a mount can slew, report a pier side and
@@ -232,14 +235,14 @@ transitional: they are all just backends behind the same seam.
 
 ---
 
-## Where it is honest about itself
+## What is not finished
 
 v0.3, run on a real rig most clear nights, not finished.
 
 - **Guiding and plate solving work and still have sharp corners.** Used every
   session; both can still fail with a message that could be clearer.
-- **No flats wizard.** Flats are shootable — there is flat auto-exposure and a
-  calibration library — but nobody has built the guided walkthrough.
+- **No flats wizard.** You can shoot flats, with auto-exposure and a
+  calibration library behind them, but nobody has built the guided walkthrough.
 - **The ASIAIR backend has never touched real hardware.** Written against the
   protocol, tested against a fake.
 - **The cloud model needs a GOES footprint.** North and South America are
@@ -261,9 +264,9 @@ v0.3, run on a real rig most clear nights, not finished.
 
 ## Documentation
 
-The full site lives at **[epim.github.io/astrodeck](https://epim.github.io/astrodeck/)** —
-overview, Astro Flows, weather awareness, the hardware matrix and the user
-guide.
+The full site lives at
+**[epim.github.io/astrodeck](https://epim.github.io/astrodeck/)**: overview,
+Astro Flows, weather awareness, the hardware matrix and the user guide.
 
 In this repo:
 
@@ -296,9 +299,9 @@ relay/       the forward-only remote-access relay
 ```
 
 ```powershell
-cd server && .venv\Scripts\python -m pytest -q     # 6,100+ tests
-cd ui      && npm test                             # 2,500+ tests
-cd ui      && npm run dev                          # Vite, proxies to :8800
+cd server && .venv\Scripts\python -m pytest -q
+cd ui      && npm test
+cd ui      && npm run dev          # Vite, proxies to :8800
 ```
 
 Contributions welcome, and so are bug reports from rigs that look nothing like

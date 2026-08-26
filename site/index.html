@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>AstroDeck</title>
-<meta name="description" content="An open, vendor-neutral observatory controller. Runs the whole night from one browser tab — slew, focus, guide, shoot, flip, park — and knows where the clouds are.">
+<meta name="description" content="An open, vendor-neutral observatory controller. Runs the whole night from one browser tab: slew, focus, guide, shoot, flip, park. And it shows you where the clouds are.">
 <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
 <link rel="canonical" href="https://epim.github.io/astrodeck/">
 <meta property="og:type" content="website">
@@ -43,9 +43,9 @@
     <h1>The night runs itself. You just watch.</h1>
     <p class="lede">
       AstroDeck slews, centres, focuses, guides, shoots, dithers, flips the
-      meridian and parks at dawn — then writes you a report.
-      <strong>It also knows where the clouds are, and whether one is about to
-      cross your target.</strong>
+      meridian and parks at dawn, then writes you a report.
+      <strong>It also shows you where tonight's cloud is, so you can pick a
+      target that stays in the clear.</strong>
     </p>
     <div class="ctarow">
       <a class="btn btn-solid" href="#start">Run it in two minutes</a>
@@ -57,7 +57,7 @@
 <div class="wrap">
   <div class="stats">
     <div class="stat"><span class="n">21</span><span class="l">Flow node types</span></div>
-    <div class="stat"><span class="n">8,700+</span><span class="l">Tests passing</span></div>
+    <div class="stat"><span class="n">250 MB</span><span class="l">Of sky, offline</span></div>
     <div class="stat"><span class="n">11</span><span class="l">Devices, simulated</span></div>
     <div class="stat"><span class="n">3</span><span class="l">Ways to drive a rig</span></div>
     <div class="stat"><span class="n">0</span><span class="l">Ports to forward</span></div>
@@ -72,10 +72,10 @@
       <h2>Your rig, your rules, your source code.</h2>
       <p>
         Every part of AstroDeck sits above one small device abstraction. The
-        sequencer does not know what brand your mount is — it knows a mount can
-        slew, report a pier side, and refuse. That is not a design slogan. It is
-        the reason you can swap a camera vendor without touching autofocus, and
-        the reason a new driver is a few async methods rather than a fork.
+        sequencer does not know what brand your mount is. It knows a mount can
+        slew, report a pier side and refuse. That is why you can swap a camera
+        vendor without touching autofocus, and why a new driver is a few async
+        methods rather than a fork.
       </p>
     </div>
 
@@ -103,8 +103,8 @@
         <h3>Keep what already works</h3>
         <p>
           Point it at NINA through the Advanced API, or at an ASIAIR over its own
-          protocol, and that setup keeps driving the hardware while AstroDeck
-          adds the touch UI, Flows, sessions and remote access.
+          protocol. That setup keeps driving the hardware while AstroDeck adds
+          the touch UI, Flows, sessions and remote access.
         </p>
       </article>
       <article class="card">
@@ -142,10 +142,9 @@
   <div class="wrap stack gap-4">
     <div class="band-head">
       <p class="eyebrow">One clear night</p>
-      <h2>What “unattended” actually means.</h2>
+      <h2>What you get to sleep through.</h2>
       <p>
-        This is a real sequence of events, in the order the engine performs them.
-        Nothing here needs a human awake.
+        One night, in the order it happens. You are asleep for all of it.
       </p>
     </div>
 
@@ -215,22 +214,22 @@
     <div class="grid grid-2">
       <article class="card">
         <span class="kicker">The part nobody enjoys</span>
-        <h3>The meridian flip verifies itself</h3>
+        <h3>The flip you do not have to watch</h3>
         <p>
           Mounts lie about flipping. AstroDeck re-reads the pier side after the
-          slew, and if nothing actually changed it holds the flip armed, drops
-          its own lead time and retries at the meridian itself — rather than
-          reporting success and imaging the rest of the night upside down.
+          slew, and when nothing moved it keeps the flip armed, drops its own
+          lead time and tries again at the meridian. You wake up to a night that
+          is the right way up.
         </p>
       </article>
       <article class="card">
         <span class="kicker">Across nights</span>
-        <h3>A target is a debt, not an event</h3>
+        <h3>Never re-count what you already shot</h3>
         <p>
-          Frames accrue against a target across as many nights and reboots as it
-          takes. Every frame carries its HFR, star count and guide RMS in a
-          ledger you can override by hand, and a dormant session re-arms itself
-          at dusk when the window reopens.
+          Set a target once and keep adding to it over weeks. AstroDeck scores
+          every frame for HFR, star count and guide RMS, lets you overrule any
+          call it makes, and re-arms itself at dusk when the target rises again.
+          Come back in a month to one finished stack.
         </p>
       </article>
     </div>
@@ -264,11 +263,11 @@
       </article>
       <article class="card">
         <h3>Atlas</h3>
-        <p>A WebGL survey map warped through the exact TAN projection, with a draggable rotatable field-of-view overlay and a mosaic planner. Works offline.</p>
+        <p>Frame the shot before you drive anywhere. Drag and rotate your real field of view over survey imagery, plan a mosaic, and do all of it at a dark site with no signal.</p>
       </article>
       <article class="card">
         <h3>Tonight</h3>
-        <p>What is actually up, right now, ranked and tagged by difficulty — with altitude curves, transit, twilight and moon separation.</p>
+        <p>Cloudy for a week and out of ideas? Tonight ranks what is up right now and tags it by difficulty, with altitude curves, transit, twilight and moon separation.</p>
       </article>
       <article class="card">
         <h3>Monitor</h3>
@@ -276,7 +275,7 @@
       </article>
       <article class="card">
         <h3>Align</h3>
-        <p>Three-point polar alignment with a live error readout, plus a measured guide-scope offset so the guider knows where it is really looking.</p>
+        <p>Three-point polar alignment with a live error readout, plus a measured guide-scope offset so the guider knows where it is pointed.</p>
       </article>
       <article class="card">
         <h3>Gallery and reports</h3>
@@ -307,7 +306,7 @@
           <tr>
             <td class="mono">Standalone</td>
             <td>AstroDeck, via native drivers or ASCOM Alpaca</td>
-            <td>Everything — it is the whole stack</td>
+            <td>Everything below. It is the whole stack</td>
           </tr>
           <tr>
             <td class="mono">With NINA</td>
@@ -325,7 +324,7 @@
 
     <p class="note">
       <strong>Full breakdown per route</strong> — camera, mount, focuser, wheel,
-      rotator, power, guiding and solving — is on the
+      rotator, power, guiding and solving, is on the
       <a href="features.html">features page</a>.
     </p>
   </div>
@@ -364,34 +363,32 @@ python -m venv .venv
     </div>
 
     <div class="prose">
-      <h3>The simulator is not a row of stubs</h3>
+      <h3>Be fluent before your next clear night</h3>
       <p class="dim">
-        It renders a real star field that answers to where the mount points,
-        where the focuser sits and which filter is in the light path. Autofocus
-        walks a genuine V curve. The plate solver actually solves. The guider
-        actually guides. A two-target night runs to completion while it rains
-        outside.
+        The simulator renders a real star field that answers to where the mount
+        points, where the focuser sits and which filter is in the light path.
+        Autofocus walks a V curve. The plate solver solves. The guider guides. A
+        two-target night runs to completion while it rains outside.
       </p>
       <p class="dim">
         Put the blackout filter in and the frame goes dark, because the simulator
-        knows what a blackout filter does. That fidelity is deliberate: a
-        simulator that lies is worse than no simulator, because it manufactures
-        confidence.
+        knows what a blackout filter does. Everything you learn indoors is
+        something you already know when the sky opens.
       </p>
     </div>
   </div>
 </section>
 
-<!-- ================================================================ honesty -->
+<!-- ============================================================== not done -->
 <section class="band band-tint">
   <div class="wrap stack gap-3">
     <div class="band-head">
-      <p class="eyebrow">Where it stands</p>
-      <h2>v0.3, on a real rig most clear nights, not finished.</h2>
+      <p class="eyebrow">v0.3, on a real rig most clear nights</p>
+      <h2>What is not finished.</h2>
     </div>
     <ul class="ticks" style="max-width:62ch">
       <li><strong>Guiding and plate solving work and still have sharp corners.</strong> Used every session; both can still fail with a message that could be clearer.</li>
-      <li><strong>No flats wizard.</strong> Flats are shootable — there is auto-exposure and a calibration library — but nobody has built the guided walkthrough.</li>
+      <li><strong>No flats wizard.</strong> You can shoot flats, with auto-exposure and a calibration library behind them, but nobody has built the guided walkthrough.</li>
       <li><strong>The ASIAIR backend has never touched real hardware.</strong> Written against the protocol, tested against a fake.</li>
       <li><strong>The cloud model needs a GOES footprint.</strong> The Americas are covered; elsewhere AstroDeck says so rather than drawing an empty sky as clear.</li>
       <li><strong>Binaries are not code-signed</strong>, so Windows and macOS both warn on first run.</li>
