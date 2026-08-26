@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Weather Awareness</title>
+<meta name="description" content="Forecast, satellite cloud projected onto a hemisphere over your site, and the only question that matters: is that cloud between the scope and the target?">
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="canonical" href="https://epim.github.io/astrodeck/weather.html">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Weather Awareness | AstroDeck">
+<meta property="og:description" content="Satellite cloud projected onto a hemisphere over your site, answering the only question that matters: is it between the scope and the target?">
+<meta property="og:url" content="https://epim.github.io/astrodeck/weather.html">
+<meta name="twitter:card" content="summary">
+<meta name="theme-color" content="#070A12">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;700;800&family=Spectral:ital,wght@0,300;0,400;0,600;1,400&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="assets/site.css">
+<script src="assets/theme.js"></script>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="wrap topbar-in">
+    <a class="brand" href="index.html">Astro<span>Deck</span></a>
+    <nav class="navlinks">
+      <a href="index.html">Overview</a>
+      <a href="flows.html">Flows</a>
+      <a href="weather.html" aria-current="page">Weather</a>
+      <a href="hardware.html">Hardware</a>
+      <a href="features.html" class="opt">Features</a>
+      <a href="https://github.com/epim/astrodeck" class="opt">GitHub</a>
+      <button class="themetoggle" data-theme-toggle type="button">Auto</button>
+    </nav>
+  </div>
+</header>
+
+<section class="band">
+  <div class="wrap stack gap-3">
+    <p class="eyebrow">Weather awareness</p>
+    <h1 style="max-width:18ch">“40% cloud” is not an answer.</h1>
+    <p class="lead" style="max-width:58ch">
+      Forty per cent of what, and where? A scalar forecast cannot tell you
+      whether the gap is over your target or over next door. AstroDeck projects
+      real satellite cloud onto a hemisphere above your site and answers the
+      question you actually have: <strong>is something between this telescope
+      and that object, and when will it be?</strong>
+    </p>
+  </div>
+</section>
+
+<!-- =========================================================== the geometry -->
+<section class="band band-tint">
+  <div class="wrap stack gap-4">
+    <div class="band-head">
+      <p class="eyebrow">The geometry</p>
+      <h2>The cloud overhead is not the cloud in your way.</h2>
+      <p>
+        At 40° elevation with a deck at 3 km, the cloud that blocks you sits
+        about three and a half kilometres downrange. Answering from the pixel
+        above your observatory is answering the wrong question.
+      </p>
+    </div>
+
+    <figure>
+      <div class="framed">
+        <svg viewBox="0 0 1000 340" role="img" aria-label="Side view. A telescope on the ground looks up at forty degrees toward a target. A cloud deck sits three kilometres up. The line of sight pierces the deck several kilometres downrange, not directly overhead, so the cloud that matters is the one at the pierce point.">
+          <defs>
+            <linearGradient id="deck" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="var(--dim)" stop-opacity="0.30"/>
+              <stop offset="1" stop-color="var(--dim)" stop-opacity="0.06"/>
+            </linearGradient>
+            <marker id="wa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0 0 L10 5 L0 10 z" fill="var(--accent)"/>
+            </marker>
+            <marker id="wd" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M0 0 L10 5 L0 10 z" fill="var(--dimmer)"/>
+            </marker>
+          </defs>
+
+          <!-- cloud deck -->
+          <rect x="40" y="74" width="920" height="42" fill="url(#deck)"/>
+          <line x1="40" y1="74" x2="960" y2="74" stroke="var(--line)" stroke-dasharray="5 4"/>
+          <line x1="40" y1="116" x2="960" y2="116" stroke="var(--line)" stroke-dasharray="5 4"/>
+          <text x="48" y="66" font-family="JetBrains Mono, monospace" font-size="9.5" letter-spacing="1.2" fill="var(--dim)">CLOUD DECK — TOP HEIGHT FROM THE SATELLITE</text>
+
+          <!-- the thick bit of cloud that actually matters -->
+          <ellipse cx="470" cy="95" rx="132" ry="26" fill="var(--dim)" opacity="0.34"/>
+          <ellipse cx="180" cy="95" rx="74" ry="19" fill="var(--dim)" opacity="0.16"/>
+
+          <!-- ground -->
+          <line x1="40" y1="286" x2="960" y2="286" stroke="var(--line)" stroke-width="1.5"/>
+
+          <!-- scope -->
+          <g transform="translate(96,286)">
+            <line x1="0" y1="0" x2="0" y2="-16" stroke="var(--text)" stroke-width="2"/>
+            <line x1="-11" y1="0" x2="11" y2="0" stroke="var(--text)" stroke-width="2"/>
+            <line x1="0" y1="-16" x2="26" y2="-38" stroke="var(--text)" stroke-width="3.5" stroke-linecap="round"/>
+          </g>
+          <text x="62" y="308" font-family="JetBrains Mono, monospace" font-size="9.5" letter-spacing="1.1" fill="var(--dim)">YOUR SITE</text>
+
+          <!-- line of sight -->
+          <line x1="110" y1="266" x2="880" y2="56" stroke="var(--accent)" stroke-width="1.8" marker-end="url(#wa)"/>
+          <text x="800" y="44" font-family="JetBrains Mono, monospace" font-size="9.5" letter-spacing="1.1" fill="var(--accent)">TARGET</text>
+
+          <!-- elevation angle -->
+          <path d="M156 266 A 46 46 0 0 0 148 246" fill="none" stroke="var(--dim)" stroke-width="1"/>
+          <text x="162" y="258" font-family="JetBrains Mono, monospace" font-size="9.5" fill="var(--dim)">40°</text>
+
+          <!-- pierce point -->
+          <circle cx="470" cy="167" r="0" fill="none"/>
+          <g>
+            <circle cx="459" cy="171" r="5.5" fill="none" stroke="var(--amber)" stroke-width="1.8"/>
+            <line x1="459" y1="116" x2="459" y2="165" stroke="var(--amber)" stroke-width="1.2" stroke-dasharray="3 3"/>
+            <text x="474" y="176" font-family="JetBrains Mono, monospace" font-size="9.5" letter-spacing="1.1" fill="var(--amber)">PIERCE POINT</text>
+            <text x="474" y="191" font-family="Spectral, serif" font-size="11.5" fill="var(--dim)">the cloud that is actually in the way</text>
+          </g>
+
+          <!-- the wrong answer: straight up -->
+          <line x1="110" y1="266" x2="110" y2="120" stroke="var(--dimmer)" stroke-width="1" stroke-dasharray="4 4" marker-end="url(#wd)"/>
+          <text x="120" y="140" font-family="Spectral, serif" font-size="11.5" fill="var(--dimmer)">what a single-number</text>
+          <text x="120" y="155" font-family="Spectral, serif" font-size="11.5" fill="var(--dimmer)">forecast reports</text>
+
+          <!-- downrange -->
+          <line x1="110" y1="304" x2="459" y2="304" stroke="var(--dimmer)" stroke-width="1"/>
+          <line x1="110" y1="299" x2="110" y2="309" stroke="var(--dimmer)"/>
+          <line x1="459" y1="299" x2="459" y2="309" stroke="var(--dimmer)"/>
+          <text x="252" y="322" font-family="JetBrains Mono, monospace" font-size="9.5" letter-spacing="1.1" fill="var(--dimmer)">DOWNRANGE ≈ 3.6 km</text>
+
+          <!-- drift -->
+          <g opacity="0.85">
+            <line x1="620" y1="95" x2="700" y2="95" stroke="var(--dim)" stroke-width="1" marker-end="url(#wd)"/>
+            <text x="628" y="86" font-family="JetBrains Mono, monospace" font-size="9" letter-spacing="1" fill="var(--dim)">DRIFT</text>
+          </g>
+        </svg>
+      </div>
+      <figcaption>
+        Height matters twice: it sets how far downrange the pierce point falls,
+        and it sets the parallax correction for what the satellite saw. A cloud
+        deck reported at one place is over another.
+      </figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- =============================================================== the dome -->
+<section class="band">
+  <div class="wrap stack gap-4">
+    <div class="band-head">
+      <p class="eyebrow">On the Monitor screen</p>
+      <h2>Your whole sky, shaded by what is really up there.</h2>
+      <p>
+        The hemisphere is drawn from your horizon to your zenith, cloud shaded
+        onto it from the satellite pass, and your scope's pointing marked. One
+        glance answers "can I keep going".
+      </p>
+    </div>
+
+    <div class="grid grid-2" style="align-items:start">
+      <div class="card">
+        <span class="kicker">The dome</span>
+        <figure style="margin-top:.4rem">
+          <svg viewBox="0 0 420 300" role="img" aria-label="A sky dome: nested altitude rings from horizon to zenith, cardinal points, cloud shaded over the eastern half, and a crosshair marking where the telescope points.">
+            <defs>
+              <radialGradient id="cl" cx="0.5" cy="0.5" r="0.5">
+                <stop offset="0" stop-color="var(--dim)" stop-opacity="0.5"/>
+                <stop offset="1" stop-color="var(--dim)" stop-opacity="0"/>
+              </radialGradient>
+            </defs>
+            <circle cx="210" cy="158" r="118" fill="var(--ground)" stroke="var(--accent)" stroke-opacity="0.42"/>
+            <circle cx="210" cy="158" r="79"  fill="none" stroke="var(--accent)" stroke-opacity="0.2"/>
+            <circle cx="210" cy="158" r="40"  fill="none" stroke="var(--accent)" stroke-opacity="0.2"/>
+            <g stroke="var(--accent)" stroke-opacity="0.14">
+              <line x1="92"  y1="158" x2="328" y2="158"/>
+              <line x1="210" y1="40"  x2="210" y2="276"/>
+              <line x1="127" y1="75"  x2="293" y2="241"/>
+              <line x1="293" y1="75"  x2="127" y2="241"/>
+            </g>
+
+            <!-- cloud over the eastern half -->
+            <ellipse cx="272" cy="128" rx="74" ry="58" fill="url(#cl)"/>
+            <ellipse cx="300" cy="186" rx="52" ry="40" fill="url(#cl)"/>
+
+            <!-- the scope -->
+            <g stroke="var(--accent)" stroke-width="1.4" fill="none">
+              <circle cx="163" cy="120" r="8"/>
+              <line x1="147" y1="120" x2="153" y2="120"/>
+              <line x1="173" y1="120" x2="179" y2="120"/>
+              <line x1="163" y1="104" x2="163" y2="110"/>
+              <line x1="163" y1="130" x2="163" y2="136"/>
+            </g>
+
+            <g font-family="JetBrains Mono, monospace" font-size="9" letter-spacing="1.3" fill="var(--dim)">
+              <text x="203" y="32">N</text>
+              <text x="336" y="162">E</text>
+              <text x="203" y="292">S</text>
+              <text x="76"  y="162">W</text>
+              <text x="216" y="154" fill="var(--dimmer)" font-size="8">ZENITH</text>
+            </g>
+          </svg>
+          <figcaption>Cloud on the eastern half. The scope, west of it, is clear — for now.</figcaption>
+        </figure>
+      </div>
+
+      <div class="stack gap-3">
+        <ul class="ticks">
+          <li><strong>Per-pointing probability.</strong> Ask about any altitude and azimuth and get a number, plus the basis it came from.</li>
+          <li><strong>A forecast, not just a reading.</strong> Two satellite passes give the cloud field a velocity, so the same question can be asked about ten minutes from now.</li>
+          <li><strong>It tells you when it does not know.</strong> A missing cloud-top height is never reported as clear sky. No corroborating wind level means the motion estimate says so rather than inventing one.</li>
+          <li><strong>It refuses outside its footprint.</strong> Sites the satellites cannot see are told, not drawn as an empty blue dome.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ three inputs -->
+<section class="band band-tint">
+  <div class="wrap stack gap-4">
+    <div class="band-head">
+      <p class="eyebrow">Three independent witnesses</p>
+      <h2>Forecast, satellite, and the frames themselves.</h2>
+      <p>
+        They disagree sometimes, and that is the point. A model that only ever
+        had one opinion could not notice being wrong.
+      </p>
+    </div>
+
+    <div class="grid grid-3">
+      <article class="card">
+        <span class="kicker">Hours ahead</span>
+        <h3>Forecast</h3>
+        <p>
+          Open-Meteo, or Astrospheric with your own key. Layered cloud, seeing,
+          transparency, dewpoint and wind. Used to decide whether tonight is
+          worth arming at all, and to veto an automatic resume.
+        </p>
+      </article>
+      <article class="card">
+        <span class="kicker">Minutes ahead</span>
+        <h3>Satellite</h3>
+        <p>
+          NOAA GOES-18 and GOES-19 ABI, straight from the public archive. Cloud
+          mask and cloud-top height, on their own five-minute cadence, projected
+          through the real satellite geometry rather than a flat approximation.
+        </p>
+      </article>
+      <article class="card">
+        <span class="kicker">Right now</span>
+        <h3>Your own frames</h3>
+        <p>
+          Every sub is measured for bright-star count and contrast. This is the
+          witness that cannot be wrong about your sky, because it is a photograph
+          of it — and it is what actually stops a run.
+        </p>
+      </article>
+    </div>
+
+    <p class="note note-amber">
+      <strong>The cloud model gates nothing, deliberately.</strong> It says where
+      the cloud is; your frames decide whether tonight is worth exposing. A
+      satellite pass five minutes stale is not allowed to close an observatory
+      that can see stars.
+    </p>
+  </div>
+</section>
+
+<!-- ============================================================== what it does -->
+<section class="band">
+  <div class="wrap stack gap-4">
+    <div class="band-head">
+      <p class="eyebrow">What it does about it</p>
+      <h2>Holding is a skill.</h2>
+    </div>
+
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr><th>When</th><th>What happens</th><th>How it comes back</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="mono">Cloud arrives</td>
+            <td>Capture holds. Tracking continues, the guider parks, and hold darks can be shot while waiting.</td>
+            <td>Releases itself when the sky clears for your set duration — then re-cools, re-centres with a solve, and refocuses if HFR drifted.</td>
+          </tr>
+          <tr>
+            <td class="mono">Hold runs long</td>
+            <td>Your maximum hold expires.</td>
+            <td>Whatever you chose: keep waiting, or park and close.</td>
+          </tr>
+          <tr>
+            <td class="mono">Forecast is bad at dusk</td>
+            <td>Auto-resume vetoes the night rather than unparking into overcast.</td>
+            <td>Re-checks on its own cadence. "Ignore weather tonight" overrides it.</td>
+          </tr>
+          <tr>
+            <td class="mono">Safety monitor unsafe</td>
+            <td>Abort. Park, close, warm. A stale sensor reading counts as unsafe.</td>
+            <td>Manual — this tier does not self-release, on purpose.</td>
+          </tr>
+          <tr>
+            <td class="mono">Frames go bad</td>
+            <td>The quality gate rejects them and the ledger records why.</td>
+            <td>Rejected frames are re-shot. Nothing is silently lost from the count.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================== coverage -->
+<section class="band band-tint">
+  <div class="wrap stack gap-3">
+    <div class="band-head">
+      <p class="eyebrow">Honest about coverage</p>
+      <h2>Where the satellite model works.</h2>
+    </div>
+    <div class="prose">
+      <p class="dim">
+        GOES-18 and GOES-19 are geostationary over the Americas. North and South
+        America are covered well; the resolution is best near the sub-satellite
+        longitude and degrades toward the limb. Europe, Africa, Asia and Oceania
+        are outside the footprint entirely.
+      </p>
+      <p class="dim">
+        AstroDeck says so rather than rendering an uncovered site as clear sky,
+        and it stops fetching once it knows — an answer that cannot change is not
+        worth re-downloading every ten minutes.
+      </p>
+      <p class="dim">
+        The forecast layer, the safety-monitor tier and the frame-based cloud
+        detector are global and work anywhere. Only the satellite dome is
+        regional.
+      </p>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <hr class="footrule" style="margin-top:0">
+    <p>
+      Cloud data courtesy NOAA GOES on AWS. Forecast from Open-Meteo, or
+      Astrospheric with your own key.
+    </p>
+    <p style="margin-top:.8rem">
+      <a href="index.html">Overview</a> ·
+      <a href="flows.html">Flows</a> ·
+      <a href="hardware.html">Hardware</a> ·
+      <a href="features.html">Features</a> ·
+      <a href="https://github.com/epim/astrodeck">GitHub</a>
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>
