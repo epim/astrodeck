@@ -4795,6 +4795,38 @@ def create_app() -> FastAPI:
             bus.publish("mount", action="slew_complete")
         return _spawn("goto", plain_goto())
 
+    @app.get("/api/align/guide-offset",
+             dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
+    async def get_guide_offset():
+        """The last measurement, or nulls before one has been taken.
+
+        SEPARATE FROM THE POST because the measurement is two plate solves and
+        takes about forty seconds -- past the point where a browser fetch is
+        still waiting. The POST starts it in a lane; this collects it, and the
+        same payload rides an `align` bus event for anything already listening.
+        """
+        return {"last": getattr(hub, "_last_guide_offset", None)}
+
+    @app.post("/api/align/guide-offset/measure",
+              dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
+    @declare(CAP_CONTROL_MOUNT, reaches={"Camera.expose"})
+    async def measure_guide_offset(exposure_s: float = 4.0,
+                                   guide_exposure_s: float = 4.0):
+        """Solve both cameras where the mount is now and return the offset.
+
+        CAP_CONTROL_MOUNT rather than a capture capability: this does not move
+        the mount, but it takes the camera off whatever it was doing and it is
+        the pointing model it feeds. The capability that governs pointing is
+        the honest gate.
+        """
+        try:
+            hub.require("camera")
+        except DeviceError as e:
+            raise _err(e)
+        return _spawn("solve", hub.measure_guide_offset(
+            exposure_s=exposure_s, guide_exposure_s=guide_exposure_s))
+
     @app.post("/api/mount/solve_sync", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
     @declare(CAP_CONTROL_MOUNT, reaches={"Telescope.sync"})
     async def solve_sync():

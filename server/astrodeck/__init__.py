@@ -1,3 +1,3 @@
 """AstroDeck — open multi-vendor astrophotography controller."""
 
-__version__ = "0.3.17"
+__version__ = "0.3.21"

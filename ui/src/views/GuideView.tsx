@@ -12,6 +12,8 @@ import {
   type AssistantReport, type GuideSettingsPutBody,
 } from "../lib/guideAssistant";
 import { confirmDialog } from "../components/ConfirmDialog";
+import { getGuideOffset, startGuideOffsetMeasure,
+         type GuideOffsetMeasurement } from "../api/align";
 import { GuideGraph, GuideScatter } from "../components/graphs";
 import { Icon } from "../components/icons";
 import {
@@ -416,6 +418,8 @@ export default function GuideView() {
             </div>
           </div>
         </Panel>
+
+        <GuideScopeOffset />
 
         {calReport && (
           <Panel title="Calibration">
@@ -1475,5 +1479,91 @@ function Meas({ label, px, as }: { label: string; px: number; as: number | null 
         {as != null ? `${as.toFixed(2)}″` : `${px.toFixed(2)} px`}
       </span>
     </div>
+  );
+}
+
+/** Where the guide scope points relative to the OTA.
+ *
+ *  A measurement, not a setting: it solves both cameras where the mount is
+ *  now and reports the difference. It moves nothing -- no slew, no sync -- so
+ *  it is safe to press mid-session, and the numbers are shown rather than
+ *  swallowed because the operator can already SEE this misalignment and
+ *  deserves to check the machine agrees with their eyes. */
+function GuideScopeOffset() {
+  const [busy, setBusy] = useState(false);
+  const [res, setRes] = useState<GuideOffsetMeasurement | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  const run = async () => {
+    setBusy(true); setErr(null); setRes(null);
+    try {
+      const before = (await getGuideOffset()).last;
+      await startGuideOffsetMeasure();
+      // POLLED, NOT AWAITED. Two solves run about forty seconds and the POST
+      // returns as soon as the lane starts, so waiting on it would report
+      // success before anything had been solved. Watch for a result that is
+      // not the one already there.
+      const deadline = Date.now() + 180_000;
+      for (;;) {
+        await new Promise((r) => setTimeout(r, 3000));
+        const now = (await getGuideOffset()).last;
+        if (now && now !== before
+            && JSON.stringify(now) !== JSON.stringify(before)) {
+          setRes(now); break;
+        }
+        if (Date.now() > deadline) {
+          setErr("the measurement did not finish within three minutes");
+          break;
+        }
+      }
+    } catch (e) {
+      setErr((e as Error).message || "the measurement did not complete");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const off = res?.offset ?? null;
+  return (
+    <Panel title="Guide scope offset">
+      <p className="text-[11px] text-dim mb-2">
+        Solves both cameras where the mount is pointing now and reports how far
+        the guide scope looks from the OTA. Nothing moves.
+      </p>
+      <button className="btn btn-accent tap min-h-[44px] !text-[11px]"
+              onClick={() => void run()} disabled={busy}>
+        {busy ? "Solving both cameras…" : "Measure offset"}
+      </button>
+
+      {err && <p className="mt-2 text-[11px] text-bad">{err}</p>}
+
+      {res && !off && (
+        <p className="mt-2 text-[11px] text-warn">
+          {res.reason ?? "no offset could be computed from this pair"}
+        </p>
+      )}
+
+      {off && (
+        <div className="mt-3 flex flex-col gap-1 text-[11px]">
+          <div className="flex justify-between">
+            <span className="label">separation</span>
+            <span className="mono tabular-nums">
+              {(off.sep_arcsec / 60).toFixed(2)}′
+              <span className="text-dim"> ({Math.round(off.sep_arcsec)}″)</span>
+            </span>
+          </div>
+          <div className="flex justify-between">
+            <span className="label">angle, instrument frame</span>
+            <span className="mono tabular-nums">{off.pa_deg.toFixed(1)}°</span>
+          </div>
+          <p className="text-dim">
+            Stored against the imaging frame&rsquo;s own orientation
+            ({off.measured_pa_deg.toFixed(1)}° at measurement), so it stays
+            true through a meridian flip.
+          </p>
+          {off.note && <p className="text-dim">{off.note}</p>}
+        </div>
+      )}
+    </Panel>
   );
 }
