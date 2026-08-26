@@ -39,13 +39,12 @@
 <section class="band">
   <div class="wrap stack gap-3">
     <p class="eyebrow">Weather awareness</p>
-    <h1 style="max-width:18ch">“40% cloud” is not an answer.</h1>
+    <h1 style="max-width:19ch">See which half of your sky is worth pointing at.</h1>
     <p class="lead" style="max-width:58ch">
-      Forty per cent of what, and where? A scalar forecast cannot tell you
-      whether the gap is over your target or over next door. AstroDeck projects
-      real satellite cloud onto a hemisphere above your site and answers the
-      question you actually have: <strong>is something between this telescope
-      and that object, and when will it be?</strong>
+      Forty per cent cloud tells you nothing about where the gap is. AstroDeck
+      shades your whole hemisphere with real satellite cloud, so you can look
+      once and know: <strong>the east is socked in, the west is open, and the
+      bank moving through will reach your target in about forty minutes.</strong>
     </p>
   </div>
 </section>
@@ -55,11 +54,11 @@
   <div class="wrap stack gap-4">
     <div class="band-head">
       <p class="eyebrow">The geometry</p>
-      <h2>The cloud overhead is not the cloud in your way.</h2>
+      <h2>Why the cloud overhead does not matter.</h2>
       <p>
-        At 40° elevation with a deck at 3 km, the cloud that blocks you sits
-        about three and a half kilometres downrange. Answering from the pixel
-        above your observatory is answering the wrong question.
+        Point at 40° with a deck at 3 km and the cloud that blocks you sits three
+        and a half kilometres downrange. Read the pixel above your observatory
+        and you have measured somebody else's sky.
       </p>
     </div>
 
@@ -85,7 +84,7 @@
           <line x1="40" y1="116" x2="960" y2="116" stroke="var(--line)" stroke-dasharray="5 4"/>
           <text x="48" y="66" font-family="JetBrains Mono, monospace" font-size="9.5" letter-spacing="1.2" fill="var(--dim)">CLOUD DECK — TOP HEIGHT FROM THE SATELLITE</text>
 
-          <!-- the thick bit of cloud that actually matters -->
+          <!-- the bank sitting on the line of sight -->
           <ellipse cx="470" cy="95" rx="132" ry="26" fill="var(--dim)" opacity="0.34"/>
           <ellipse cx="180" cy="95" rx="74" ry="19" fill="var(--dim)" opacity="0.16"/>
 
@@ -114,7 +113,7 @@
             <circle cx="459" cy="171" r="5.5" fill="none" stroke="var(--amber)" stroke-width="1.8"/>
             <line x1="459" y1="116" x2="459" y2="165" stroke="var(--amber)" stroke-width="1.2" stroke-dasharray="3 3"/>
             <text x="474" y="176" font-family="JetBrains Mono, monospace" font-size="9.5" letter-spacing="1.1" fill="var(--amber)">PIERCE POINT</text>
-            <text x="474" y="191" font-family="Spectral, serif" font-size="11.5" fill="var(--dim)">the cloud that is actually in the way</text>
+            <text x="474" y="191" font-family="Spectral, serif" font-size="11.5" fill="var(--dim)">the cloud that is in your way</text>
           </g>
 
           <!-- the wrong answer: straight up -->
@@ -136,9 +135,9 @@
         </svg>
       </div>
       <figcaption>
-        Height matters twice: it sets how far downrange the pierce point falls,
-        and it sets the parallax correction for what the satellite saw. A cloud
-        deck reported at one place is over another.
+        Height counts twice. It sets how far downrange your line of sight
+        crosses the deck, and it corrects for the satellite's own viewing angle.
+        A deck reported in one place sits over another.
       </figcaption>
     </figure>
   </div>
@@ -149,11 +148,11 @@
   <div class="wrap stack gap-4">
     <div class="band-head">
       <p class="eyebrow">On the Monitor screen</p>
-      <h2>Your whole sky, shaded by what is really up there.</h2>
+      <h2>Pick a target that stays clear.</h2>
       <p>
-        The hemisphere is drawn from your horizon to your zenith, cloud shaded
-        onto it from the satellite pass, and your scope's pointing marked. One
-        glance answers "can I keep going".
+        Horizon to zenith, shaded with the last satellite pass, your scope marked
+        where it points. Before you commit three hours to something you can see
+        whether it sits under the gap or under the bank.
       </p>
     </div>
 
@@ -199,16 +198,16 @@
               <text x="216" y="154" fill="var(--dimmer)" font-size="8">ZENITH</text>
             </g>
           </svg>
-          <figcaption>Cloud on the eastern half. The scope, west of it, is clear — for now.</figcaption>
+          <figcaption>Cloud on the eastern half. The scope sits west of it and is clear for now.</figcaption>
         </figure>
       </div>
 
       <div class="stack gap-3">
         <ul class="ticks">
-          <li><strong>Per-pointing probability.</strong> Ask about any altitude and azimuth and get a number, plus the basis it came from.</li>
-          <li><strong>A forecast, not just a reading.</strong> Two satellite passes give the cloud field a velocity, so the same question can be asked about ten minutes from now.</li>
-          <li><strong>It tells you when it does not know.</strong> A missing cloud-top height is never reported as clear sky. No corroborating wind level means the motion estimate says so rather than inventing one.</li>
-          <li><strong>It refuses outside its footprint.</strong> Sites the satellites cannot see are told, not drawn as an empty blue dome.</li>
+          <li><strong>Ask about any patch of sky.</strong> Give it an altitude and azimuth and get a number back, with the reading it came from.</li>
+          <li><strong>And about ten minutes from now.</strong> Two satellite passes give the cloud field a speed and a bearing, so you can ask where it will be by the time you get there.</li>
+          <li><strong>It says when it does not know.</strong> A missing cloud-top height comes back as unknown. If no wind level matches the drift it measured, it tells you that too.</li>
+          <li><strong>It says when it cannot see you.</strong> Outside the satellite footprint you get told, rather than an empty blue dome that means nothing.</li>
         </ul>
       </div>
     </div>
@@ -219,11 +218,11 @@
 <section class="band band-tint">
   <div class="wrap stack gap-4">
     <div class="band-head">
-      <p class="eyebrow">Three independent witnesses</p>
-      <h2>Forecast, satellite, and the frames themselves.</h2>
+      <p class="eyebrow">Three sources</p>
+      <h2>Three sources, and they check each other.</h2>
       <p>
-        They disagree sometimes, and that is the point. A model that only ever
-        had one opinion could not notice being wrong.
+        They disagree sometimes, which is how you catch a forecast that has
+        already been overtaken by the sky outside.
       </p>
     </div>
 
@@ -233,35 +232,37 @@
         <h3>Forecast</h3>
         <p>
           Open-Meteo, or Astrospheric with your own key. Layered cloud, seeing,
-          transparency, dewpoint and wind. Used to decide whether tonight is
-          worth arming at all, and to veto an automatic resume.
+          transparency, dewpoint and wind. This is what decides whether tonight
+          is worth arming, and what stops an unattended rig unparking into
+          overcast.
         </p>
       </article>
       <article class="card">
         <span class="kicker">Minutes ahead</span>
         <h3>Satellite</h3>
         <p>
-          NOAA GOES-18 and GOES-19 ABI, straight from the public archive. Cloud
-          mask and cloud-top height, on their own five-minute cadence, projected
-          through the real satellite geometry rather than a flat approximation.
+          NOAA GOES-18 and GOES-19, straight from the public archive, refreshing
+          every five minutes. Cloud mask and cloud-top height, projected through
+          the real satellite geometry so the dome matches the sky you are
+          standing under.
         </p>
       </article>
       <article class="card">
         <span class="kicker">Right now</span>
         <h3>Your own frames</h3>
         <p>
-          Every sub is measured for bright-star count and contrast. This is the
-          witness that cannot be wrong about your sky, because it is a photograph
-          of it — and it is what actually stops a run.
+          AstroDeck measures bright-star count and contrast on every sub. This
+          one cannot be wrong about your sky, because it is a photograph of it,
+          and this is the one that stops a run.
         </p>
       </article>
     </div>
 
     <p class="note note-amber">
-      <strong>The cloud model gates nothing, deliberately.</strong> It says where
-      the cloud is; your frames decide whether tonight is worth exposing. A
-      satellite pass five minutes stale is not allowed to close an observatory
-      that can see stars.
+      <strong>The satellite never closes your observatory.</strong> It shows you
+      where the cloud is; your own frames decide whether the sky is worth
+      exposing. A five-minute-old satellite pass does not get to shut down a rig
+      that can still see stars.
     </p>
   </div>
 </section>
@@ -271,7 +272,7 @@
   <div class="wrap stack gap-4">
     <div class="band-head">
       <p class="eyebrow">What it does about it</p>
-      <h2>Holding is a skill.</h2>
+      <h2>What it does when the sky turns.</h2>
     </div>
 
     <div class="tablewrap">
@@ -283,7 +284,7 @@
           <tr>
             <td class="mono">Cloud arrives</td>
             <td>Capture holds. Tracking continues, the guider parks, and hold darks can be shot while waiting.</td>
-            <td>Releases itself when the sky clears for your set duration — then re-cools, re-centres with a solve, and refocuses if HFR drifted.</td>
+            <td>Releases itself once the sky clears for your set duration, then re-cools, re-centres with a solve and refocuses if HFR drifted.</td>
           </tr>
           <tr>
             <td class="mono">Hold runs long</td>
@@ -298,7 +299,7 @@
           <tr>
             <td class="mono">Safety monitor unsafe</td>
             <td>Abort. Park, close, warm. A stale sensor reading counts as unsafe.</td>
-            <td>Manual — this tier does not self-release, on purpose.</td>
+            <td>Manual. This one never releases itself.</td>
           </tr>
           <tr>
             <td class="mono">Frames go bad</td>
@@ -315,25 +316,23 @@
 <section class="band band-tint">
   <div class="wrap stack gap-3">
     <div class="band-head">
-      <p class="eyebrow">Honest about coverage</p>
-      <h2>Where the satellite model works.</h2>
+      <p class="eyebrow">Where it works</p>
+      <h2>The satellite half is the Americas.</h2>
     </div>
     <div class="prose">
       <p class="dim">
-        GOES-18 and GOES-19 are geostationary over the Americas. North and South
-        America are covered well; the resolution is best near the sub-satellite
-        longitude and degrades toward the limb. Europe, Africa, Asia and Oceania
-        are outside the footprint entirely.
+        GOES-18 and GOES-19 sit over the Americas. North and South America get
+        the dome, sharpest under the satellite and coarser toward the edge of its
+        view. Europe, Africa, Asia and Oceania fall outside it.
       </p>
       <p class="dim">
-        AstroDeck says so rather than rendering an uncovered site as clear sky,
-        and it stops fetching once it knows — an answer that cannot change is not
-        worth re-downloading every ten minutes.
+        Set up a site there and AstroDeck tells you, rather than drawing an empty
+        sky and letting you read it as clear. It also stops downloading, because
+        the answer will not change.
       </p>
       <p class="dim">
-        The forecast layer, the safety-monitor tier and the frame-based cloud
-        detector are global and work anywhere. Only the satellite dome is
-        regional.
+        Everything else works anywhere: the forecast, the safety monitor, and the
+        cloud detection running on your own frames.
       </p>
     </div>
   </div>
