@@ -95,8 +95,8 @@ Write-Output "== verify what the running server SERVES, not what was staged =="
 # element per line, and -match against an array FILTERS instead of matching --
 # it enters the if and leaves $Matches unset. That is why every deploy since
 # 0.3.8 printed an empty "served asset", and why this check threw on a deploy
-# that had in fact worked (relay-verified index-BxUVeDyn.js afterwards).
-$want = "index-BxUVeDyn.js"
+# that had in fact worked (relay-verified index-BpDyIhOH.js afterwards).
+$want = "index-BpDyIhOH.js"
 $idx = ((& curl.exe -s --max-time 15 "http://127.0.0.1:8800/") -join [char]10)
 if ($idx -match 'assets/(index-[A-Za-z0-9_-]+\.js)') {
     $got = $Matches[1]

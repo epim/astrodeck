@@ -16,7 +16,8 @@
 import { useEffect, useState, type JSX } from "react";
 
 import { ApiError } from "../../api";
-import { setCloudmapConfig } from "../../api/cloudmap";
+import { getCloudmap, setCloudmapConfig,
+         type CloudmapStatus } from "../../api/cloudmap";
 import { useCan } from "../../lib/caps";
 import { useConfig, useStore } from "../../store";
 import { Field, Panel, Toggle } from "../ui";
@@ -57,6 +58,16 @@ export default function CloudmapPanel(): JSX.Element {
   const [poll, setPoll] = useState("10");
   const [halfPx, setHalfPx] = useState("100");
   const [busy, setBusy] = useState(false);
+  const [live, setLive] = useState<CloudmapStatus | null>(null);
+
+  // Read the live status once for `suggested_platform`. It is not in the
+  // config -- it is what the geometry makes of the config -- and it is the
+  // only thing that can tell an operator their pinned bird is the wrong one.
+  useEffect(() => {
+    let alive = true;
+    getCloudmap().then((s) => { if (alive) setLive(s); }).catch(() => {});
+    return () => { alive = false; };
+  }, [config?.version]);
 
   const c = config?.cloudmap;
   const sig = c ? JSON.stringify([c.enabled, c.platform, c.poll_minutes, c.half_px]) : null;
@@ -118,6 +129,8 @@ export default function CloudmapPanel(): JSX.Element {
   };
 
   const mbh = megabytesPerHour(toNum(halfPx) || 100, toNum(poll) || 10);
+  const suggested = live?.suggested_platform ?? null;
+  const mispinned = platform !== "auto" && suggested != null && suggested !== platform;
 
   return (
     <Panel title="Cloud model">
@@ -163,6 +176,35 @@ export default function CloudmapPanel(): JSX.Element {
           outside North America gets no reading from either — the dome says so
           rather than drawing clear sky.
         </p>
+
+        {/* THE UPGRADE PATH, and the only one available.
+            Pydantic writes defaults into the stored config, so every install
+            from before "auto" existed carries an explicit "G18" it never
+            chose -- and that explicit value correctly wins over the new
+            default, because AppConfig has no schema_version and a written-out
+            default is byte-identical to a deliberate override. Rewriting it
+            silently would overwrite somebody's real decision. So: say it,
+            here, where the operator can act on it, and let them choose. */}
+        {mispinned && (
+          <p className="text-[12px] text-warn inline-flex items-start gap-1.5">
+            <Icon name="alert" size={14} className="shrink-0 mt-0.5" />
+            <span>
+              This site is pinned to {platform === "G18" ? "GOES-West" : "GOES-East"},
+              but {suggested === "G18" ? "GOES-West" : "GOES-East"} sees it at a
+              lower zenith angle — a sharper pixel and less parallax. If the pin
+              was not deliberate,{" "}
+              <button
+                type="button"
+                className="underline"
+                disabled={!canEdit || busy}
+                onClick={() => setPlatform("auto")}
+              >
+                switch to Automatic
+              </button>
+              {" "}and save.
+            </span>
+          </p>
+        )}
 
         <div className="grid grid-cols-2 gap-3">
           <Field label="Poll every (min)">

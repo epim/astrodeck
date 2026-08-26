@@ -176,3 +176,58 @@ def test_the_echoed_sentence_carries_no_coordinate():
     # And the indices are still there for whoever is debugging, just not in
     # the sentence.
     assert exc.centre_row == -790 and exc.centre_col == 157
+
+
+# ---------------------------------------------- the upgrade path for old rigs
+
+def test_the_payload_suggests_the_better_bird_even_when_pinned(store):
+    """The auto-pick reaches NOBODY who already has a config file.
+
+    Pydantic writes defaults into the stored JSON -- no exclude_defaults on
+    ConfigStore._save -- so every install predating `auto` carries an explicit
+    "platform": "G18" it never chose. Measured on the rig 2026-08-25:
+    {"enabled":true,"platform":"G18","poll_minutes":10,"half_px":100}. That
+    explicit value correctly wins over the new default, which means the fix is
+    inert on upgrade, which means an operator east of 106.1 W keeps getting an
+    empty cloud map.
+
+    It cannot be migrated silently either: AppConfig has no schema_version, so
+    a written-out default is BYTE-IDENTICAL to a deliberate operator override
+    and no read-time rule can tell them apart without overwriting somebody's
+    real decision.
+
+    So the payload carries what the geometry WOULD pick, always, and the panel
+    offers the switch. This is the only channel that reaches an existing rig.
+    """
+    store.cfg().cloudmap.platform = "G18"
+    _at(store, EAST)
+    p = service_mod.CloudmapService().payload()
+    assert p["platform"] == "G18", "the pin is still honoured"
+    assert p["suggested_platform"] == "G19", (
+        "and the operator is told which bird actually sees them, or the "
+        "auto-pick never reaches a single deployed rig")
+
+
+def test_it_stays_quiet_when_the_pin_is_already_right(store):
+    """A nudge that fires everywhere is noise, and noise gets dismissed.
+
+    The panel keys its warning on suggested != platform, so this is the half
+    that decides whether the feature is useful: on the rig's own longitude the
+    two must AGREE and nothing must be said.
+    """
+    store.cfg().cloudmap.platform = "G18"
+    _at(store, WEST)
+    p = service_mod.CloudmapService().payload()
+    assert p["suggested_platform"] == p["platform"] == "G18"
+
+
+def test_an_unset_site_suggests_nothing_rather_than_guessing(store):
+    """There is no longitude to reason from, so there is no suggestion.
+
+    Returning a default here would put a warning in front of an operator who
+    has not told us where they are, about a satellite chosen from a position
+    we invented.
+    """
+    store.cfg().cloudmap.platform = "G18"
+    store.cfg().site.is_default = True
+    assert service_mod.CloudmapService().payload()["suggested_platform"] is None
