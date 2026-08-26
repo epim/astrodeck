@@ -68,8 +68,11 @@ from typing import TYPE_CHECKING
 # is, and a second copy of it here would eventually disagree with the one
 # ``pixel_size_km`` measures cells with. Promoting it to a public name means
 # editing stage 2, which stage 4 is not allowed to touch.
+from functools import lru_cache
+
 from .abi_grid import _great_circle_km, in_grid, lonlat_to_index, pixel_size_km
 from .geometry import (
+    apparent_point,
     GeoPoint,
     Site,
     beam_footprint_km,
@@ -349,6 +352,50 @@ def _no_data(reason: str) -> Occlusion:
     )
 
 
+#: Grid the parallax displacement is cached on, in degrees. 0.1 deg is about
+#: 11 km, so a whole dome's rays share a handful of entries per rung.
+_PARALLAX_CACHE_DEG = 0.1
+
+
+@lru_cache(maxsize=65536)
+def _parallax_shift(lat_key: float, lon_key: float, height_km: float,
+                    sat_lon_deg: float) -> tuple[float, float]:
+    """The parallax DISPLACEMENT, in degrees, cached on a coarse grid.
+
+    THE DISPLACEMENT, NOT THE POINT, and that is what makes the cache work.
+    The corrected position is unique to every ray; the displacement between it
+    and the true position is a smooth function of where you are and varies by
+    almost nothing across one dome. Measured before adopting: reusing the shift
+    from a key up to 11 km away costs at most 5 m at a 2 km deck, 13 m at 5 km,
+    26 m at 10 km and 38 m at 15 km -- against a mask cell 2900 m across. The
+    largest error is 1.3 percent of a cell.
+
+    WHY THIS IS NOT THE APPROXIMATION geometry.deparallax REFUSES. That one
+    rejected h*tan(zenith) because the flat-earth FORM is wrong in a way that
+    grows without bound with zenith angle. This computes the exact ray walk;
+    it just declines to recompute it for a point 300 m away. Exactness of the
+    formula and granularity of its evaluation are different questions.
+
+    Measured cost: correcting every point exactly ran a worst-case 3870-ray
+    dome to 294,120 distinct calls and 4.2 s, on a budget of 3.0 s that exists
+    so stage 6 can call this per frame. Zero cache hits, because every pierce
+    point in a dome is unique. Spending four seconds to refine a metre inside a
+    three-kilometre cell is the wrong trade in both directions.
+    """
+    corrected = apparent_point(lat_key, lon_key, height_km, sat_lon_deg)
+    return (corrected.lat_deg - lat_key, corrected.lon_deg - lon_key)
+
+
+def _imaged(point: GeoPoint, sat_lon_deg: float) -> GeoPoint:
+    """Where the satellite images ``point``. See :func:`_parallax_shift`."""
+    key_lat = round(point.lat_deg / _PARALLAX_CACHE_DEG) * _PARALLAX_CACHE_DEG
+    key_lon = round(point.lon_deg / _PARALLAX_CACHE_DEG) * _PARALLAX_CACHE_DEG
+    dlat, dlon = _parallax_shift(key_lat, key_lon, point.height_msl_km,
+                                 sat_lon_deg)
+    return GeoPoint(point.lat_deg + dlat, point.lon_deg + dlon,
+                    point.height_msl_km)
+
+
 def _cell_for(
     window: GranuleWindow, name: str, point: GeoPoint, what: str
 ) -> tuple[tuple[int, int] | None, str]:
@@ -363,7 +410,36 @@ def _cell_for(
     raises, and an IndexError cannot say which of the two windows fell short
     nor by how many cells, which is the part that tells a caller what to do.
     """
-    index = lonlat_to_index(window.spec, point.lat_deg, point.lon_deg)
+    # PARALLAX, APPLIED HERE SO NO LOOKUP CAN FORGET IT.
+    #
+    # `point` is where the cloud REALLY is -- pierce_point walked the telescope
+    # ray to the layer height. The product geolocates by intersecting the
+    # SATELLITE's line of sight with the ground, so that same cloud is imaged
+    # displaced away from the sub-satellite point. Reading the pixel at the
+    # true position reads the wrong pixel, by h*tan(zenith): measured on the
+    # rig 2026-08-26, 5.4 km at a 5.2 km deck with GOES-18 43.8 deg up, which
+    # is about two mask cells and always the same direction. The operator saw
+    # a star in a clear gap reported as cloudy and called it "offset a bit".
+    #
+    # geometry.deparallax existed for this and moves the OTHER way -- it turns
+    # a reported pixel into a true position, which is the correction a product
+    # consumer needs and the opposite of what this consumer needs. Using it
+    # here would have doubled the error. apparent_point is its exact inverse.
+    #
+    # The sub-satellite longitude comes off the window's own grid spec rather
+    # than from config, so a G18 window and a G19 window each get their own
+    # geometry with nothing to keep in step.
+    imaged = point
+    if point.height_msl_km > 0.0:
+        try:
+            imaged = _imaged(point, window.spec.lon_origin_deg)
+        except ValueError:
+            # apparent_point inherits pierce_point's domain guards. A point
+            # the satellite cannot see has no imaged position at all, and the
+            # lookup below will refuse it on its own terms rather than on a
+            # correction's.
+            imaged = point
+    index = lonlat_to_index(window.spec, imaged.lat_deg, imaged.lon_deg)
     if index is None:
         return None, (
             "is behind the satellite's limb, so no " + what + " granule holds it"

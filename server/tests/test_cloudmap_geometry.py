@@ -20,6 +20,7 @@ from astrodeck.cloudmap.geometry import (
     Site,
     agl_to_msl_km,
     beam_footprint_km,
+    apparent_point,
     deparallax,
     look_from,
     pierce_point,
@@ -404,3 +405,81 @@ def test_agl_to_msl_adds_the_ground_elevation():
     assert agl_to_msl_km(1.5, 1.6) == pytest.approx(3.1)
     assert agl_to_msl_km(0.6, 0.0) == pytest.approx(0.6)
     assert agl_to_msl_km(0.0, 1.6) == pytest.approx(1.6)
+
+
+# ------------------------------------------------- the inverse, and its sign
+#
+# apparent_point answers "the cloud is here, which pixel images it". deparallax
+# answers "the pixel says here, where is the cloud". They move OPPOSITE ways,
+# and stage 4 needs the first: it walks the telescope ray to a true position
+# and then has to read a satellite image at it. It used the true position
+# directly for the whole of stage 4's life, which is the 5.4 km offset an
+# operator reported on 2026-08-26 as "we're offset a bit".
+
+
+def test_apparent_point_round_trips_deparallax_exactly():
+    """The definition of an inverse, asserted as one.
+
+    Not "about 5 km in about the right direction" -- that would pass for a
+    function with the sign right and the magnitude wrong, and for one with the
+    magnitude right and a degree of bearing error.
+    """
+    for lat, lon, h, sat in [
+        (40.0, -105.0, 5.2, -137.0),
+        (40.0, -105.0, 12.0, -75.2),
+        (25.0, -80.0, 2.0, -75.2),
+        (48.0, -122.0, 9.0, -137.0),
+        (0.0, -137.0, 6.0, -137.0),        # directly under the satellite
+    ]:
+        ap = apparent_point(lat, lon, h, sat)
+        back = deparallax(ap.lat_deg, ap.lon_deg, h, sat)
+        # 1e-8 deg is about a millimetre. The first draft used 1e-9 and went
+        # red on the LAST case only: directly under the satellite the elevation
+        # is 89.9999998 deg and the azimuth is undefined, so the ray walk is
+        # degenerate and leaves 1.1e-9 deg of float noise -- 0.12 mm, and a
+        # property of the singularity rather than of the inverse. Tightening
+        # past the geometry's own conditioning tests the float unit.
+        assert abs(back.lat_deg - lat) < 1e-8, (lat, lon, h, sat)
+        assert abs(back.lon_deg - lon) < 1e-8, (lat, lon, h, sat)
+
+
+def test_apparent_point_moves_AWAY_from_the_subsatellite_point():
+    """The sign, pinned on its own.
+
+    THE TRAP THIS EXISTS FOR: deparallax was sitting in the package, exported
+    and tested, moving toward the sub-satellite point. Reaching for it here
+    would not have failed to correct the error, it would have DOUBLED it -- and
+    the result would still have looked like a plausible cloud map.
+    """
+    lat, lon, h, sat = 40.0, -105.0, 9.0, -137.0
+    ap = apparent_point(lat, lon, h, sat)
+    dp = deparallax(lat, lon, h, sat)
+    # The satellite is west and south of this site, so its pixel of an elevated
+    # cloud lands north and east of the truth, and deparallax pulls the other
+    # way. Asserting both keeps a future sign flip from passing.
+    assert ap.lat_deg > lat, "apparent must move north, away from the equator"
+    assert ap.lon_deg > lon, "apparent must move east, away from 137 W"
+    assert dp.lat_deg < lat and dp.lon_deg < lon, "deparallax is the opposite"
+
+
+def test_directly_under_the_satellite_there_is_no_parallax():
+    """Zero zenith angle, zero displacement -- the one case with no argument
+    about direction, and the one a magnitude-only test cannot distinguish from
+    a function that returns its input."""
+    ap = apparent_point(0.0, -137.0, 10.0, -137.0)
+    assert abs(ap.lat_deg - 0.0) < 1e-7
+    assert abs(ap.lon_deg + 137.0) < 1e-7
+
+
+def test_apparent_displacement_grows_with_height_and_zenith():
+    """Monotonic in both, which a constant offset would fail."""
+    base = apparent_point(40.0, -105.0, 3.0, -137.0)
+    tall = apparent_point(40.0, -105.0, 12.0, -137.0)
+    near = apparent_point(40.0, -105.0, 9.0, -105.0)   # satellite overhead-ish
+    far = apparent_point(40.0, -105.0, 9.0, -137.0)    # further west, higher zenith
+
+    def shift(p, lat=40.0, lon=-105.0):
+        return math.hypot((p.lat_deg - lat), (p.lon_deg - lon))
+
+    assert shift(tall) > shift(base), "a higher cloud is displaced further"
+    assert shift(far) > shift(near), "a lower satellite displaces further"
