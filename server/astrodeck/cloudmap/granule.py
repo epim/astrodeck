@@ -61,6 +61,7 @@ except ImportError:  # pragma: no cover - exercised by a fresh masked import
 
 __all__ = [
     "CloudmapUnavailable",
+    "SiteOutsideSector",
     "HAVE_H5PY",
     "GranuleWindow",
     "parse_granule_name",
@@ -93,6 +94,84 @@ class CloudmapUnavailable(RuntimeError):
     One type for the whole stage, so a caller that only wants to degrade
     gracefully catches it once and never learns what an S3 listing is.
     """
+
+
+class SiteOutsideSector(ValueError):
+    """The satellite sees the site, but this product's sector stops short of it.
+
+    THE TYPE IS THE MESSAGE, and that is not a stylistic preference. The one
+    caller in the tree -- ``cloudmap.service``'s poll -- catches everything a
+    fetch can raise and keeps ``type(exc).__name__`` and nothing else, because
+    httpx puts the full request URL in its exception text and an S3 URL will
+    carry a site coordinate the day somebody adds a point query. So the class
+    name is the whole of what reaches the operator and the panel that renders
+    ``status.last_error``. Before this type existed that panel said
+    "ValueError", which is true of a typo in a filter name too. The name is
+    written to be read in that slot as a statement of fact: the site is
+    outside the sector.
+
+    THE MESSAGE IS SAFE TO SHOW AS WELL, so a caller that can echo more is not
+    forced to choose between silence and a leak. It carries no coordinate, no
+    grid index, no array shape and no URL. A cell index is a position wearing
+    a hat: the fixed-grid transform is a bijection, so a centre cell run back
+    through it is a latitude and a longitude in two steps, ambiguous only to
+    the width of a cell -- about 2 km. This project has already had a viewer
+    geolocate the rig to 2.9 km from a derived value that nobody had thought
+    of as a coordinate, which is the whole reason this rule is written down
+    rather than assumed. The sector's dimensions leak nothing by themselves;
+    they are excluded anyway because they tell an operator nothing they can
+    act on, and a sentence that already prints two numbers is where the third
+    one gets added. No worked example of the arithmetic appears here either:
+    any plausible one would be the rig's own position.
+
+    Subclasses ``ValueError`` because design section 7 promises ValueError for
+    every argument this module refuses, and callers were written against that
+    promise before this type existed.
+
+    Constructed with keyword-only, required indices. That makes it unpicklable
+    -- ``BaseException.__reduce__`` replays ``args``, which is the message
+    alone -- and that is fine here: the read runs on a worker THREAD, not in a
+    process pool, so no exception in this stage crosses a process boundary. If
+    one ever does, this needs a ``__reduce__``, not a looser signature.
+    """
+
+    #: OPT-IN PERMISSION TO ECHO ``str(exc)``, read by the service's error
+    #: filter. Absent on every other exception in this package and that is the
+    #: point: ``source.py`` builds its CloudmapUnavailable text by
+    #: concatenating the failing request's own error, which is where the URL
+    #: lives, so a blanket "echo our own exceptions" rule would leak the thing
+    #: the filter exists to withhold. Set this only on a class whose message is
+    #: a CONSTANT, as MESSAGE below is.
+    SAFE_TO_ECHO = True
+
+    #: The only sentence this exception ever says. A constant and not a format
+    #: string, deliberately: a format string is where a coordinate gets
+    #: interpolated in six months by someone debugging a clipped window.
+    MESSAGE = (
+        "this satellite's sector does not reach the site: the granule itself "
+        "read fine, but the site falls outside the ground this product "
+        "scans, so no granule of it will ever hold the sky overhead -- only "
+        "a wider sector, or a satellite that covers the site, will"
+    )
+
+    def __init__(
+        self,
+        *,
+        centre_row: int,
+        centre_col: int,
+        n_rows: int,
+        n_cols: int,
+    ) -> None:
+        super().__init__(self.MESSAGE)
+        # DEBUGGING ONLY, NEVER FOR DISPLAY. These four are precisely what the
+        # message above may not contain: centre_row/centre_col ARE the site's
+        # position to about 2 km (see the class docstring). Read them in a
+        # debugger or a local traceback; do not log them, do not render them,
+        # do not fold them back into str(self).
+        self.centre_row = centre_row
+        self.centre_col = centre_col
+        self.n_rows = n_rows
+        self.n_cols = n_cols
 
 
 def _require_h5py() -> None:
@@ -355,6 +434,12 @@ def read_window(
     given. An exception text reaches the same journal that design section 6
     keeps latitudes out of, and a site's position is the one thing in this
     stage worth withholding.
+
+    The empty clip goes one step further and raises :class:`SiteOutsideSector`
+    -- same rule, applied to the TYPE, because the caller that shows this to
+    an operator keeps only ``type(exc).__name__``. The limb refusal is still a
+    bare ValueError: it is a misconfigured site rather than a sector edge, and
+    nothing in the tree yet distinguishes the two on the way out.
     """
     _require_h5py()
     if half_rows < 0 or half_cols < 0:
@@ -383,17 +468,18 @@ def read_window(
         col0 = max(0, centre_col - half_cols)
         col1 = min(spec.n_cols - 1, centre_col + half_cols)
         if row1 < row0 or col1 < col0:
-            raise ValueError(
-                "the window clips to nothing: its centre is visible but at "
-                "cell ("
-                + repr(centre_row)
-                + ", "
-                + repr(centre_col)
-                + ") of a "
-                + repr(spec.n_rows)
-                + "x"
-                + repr(spec.n_cols)
-                + " sector, which this granule never sampled"
+            # A NAMED TYPE, because this is the one refusal here that is the
+            # OPERATOR'S to act on -- the fetch worked, the file is good, the
+            # site is simply not in this satellite's picture -- and the caller
+            # that shows it to them can only safely echo the class name. The
+            # four indices ride along as attributes instead of in the text:
+            # the centre cell is the site's position to about 2 km. See
+            # SiteOutsideSector.
+            raise SiteOutsideSector(
+                centre_row=centre_row,
+                centre_col=centre_col,
+                n_rows=spec.n_rows,
+                n_cols=spec.n_cols,
             )
 
         data: dict[str, np.ndarray] = {}

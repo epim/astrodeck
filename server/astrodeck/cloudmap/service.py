@@ -72,6 +72,7 @@ from .granule import (
     read_window,
 )
 from .motion import Motion, WindLevel, corroborate, estimate_motion, forecast_at
+from .platform import resolve_platform
 from .occlusion import (
     CLOUD_TOP,
     MASK_PROBABILITY,
@@ -182,6 +183,41 @@ CREDIT_URLS = {
     "G18": "https://noaa-goes18.s3.amazonaws.com/",
     "G19": "https://noaa-goes19.s3.amazonaws.com/",
 }
+
+
+def _safe_error(exc: BaseException) -> str:
+    """What an operator is allowed to read about a failed fetch.
+
+    THE DEFAULT IS THE CLASS NAME, and the reason is unchanged: httpx puts the
+    full request URL in its exception text and an S3 URL will carry a site
+    coordinate the day somebody adds a point query. ``source.py`` compounds it
+    by concatenating that text into its own CloudmapUnavailable message, so
+    "echo the exceptions we author" is not a safe rule either.
+
+    The exception is an exception that says so. A class carrying
+    ``SAFE_TO_ECHO`` has a CONSTANT message, reviewed to hold no coordinate,
+    index, shape or URL -- see ``granule.SiteOutsideSector`` -- and gets echoed
+    in full, because "SiteOutsideSector" in a status chip is a class name where
+    a sentence would have told the operator what to do about it.
+    """
+    if getattr(exc, "SAFE_TO_ECHO", False):
+        return str(exc) or type(exc).__name__
+    return type(exc).__name__
+
+
+def _resolved_platform(ccfg) -> str:
+    """The satellite actually being fetched, never the literal ``"auto"``.
+
+    ``auto`` is a CONFIG vocabulary word and nothing downstream speaks it:
+    ``bucket_for`` raises on it by design, ``credit`` would silently fall back
+    to G18's URL and mis-attribute the imagery, and a status payload echoing
+    "auto" tells an operator the MODE when the only thing they can act on is
+    the BIRD. Resolved here, once, against the site's longitude -- see
+    :mod:`.platform` for where the crossover comes from.
+    """
+    site = config_store.cfg().site
+    lon = None if site.is_default else site.longitude
+    return resolve_platform(ccfg.platform, lon)
 
 
 def credit(platform: str) -> dict:
@@ -367,7 +403,16 @@ class CloudmapService:
         # good granules away every time somebody corrected the rig's height by
         # a metre, for a change that cannot make them wrong.
         site_key = (site.latitude, site.longitude)
-        if ccfg.platform != self._platform or site_key != self._site_key:
+        # RESOLVED, not configured. Under `auto` the configured value never
+        # changes while the SATELLITE does -- moving the rig from California to
+        # New York flips the bird with `platform` still reading "auto", and
+        # comparing the config string would have kept the old satellite's grid
+        # for exactly the reasons the comment below gives for never doing that.
+        # (The site half of the key would catch this particular move, but only
+        # because a longitude change is what caused it; the two facts are not
+        # the same one and must not be relied on to coincide.)
+        resolved = _resolved_platform(ccfg)
+        if resolved != self._platform or site_key != self._site_key:
             # A DIFFERENT SATELLITE IS A DIFFERENT GRID. Its cells are not this
             # one's cells, so a mask held from the old platform cannot be
             # correlated against a new one (stage 5 refuses the pair outright)
@@ -385,7 +430,7 @@ class CloudmapService:
             # 162 cells filled and a cell_km of [3.773, 2.506]. It degraded
             # honestly and it stayed degraded for a whole poll for no reason.
             self._clear()
-            self._platform = ccfg.platform
+            self._platform = resolved
             self._site_key = site_key
         if now - self._attempt_at < ccfg.poll_minutes * 60.0:
             return
@@ -414,7 +459,7 @@ class CloudmapService:
         listing has already been made.
         """
         geo = Site(site.latitude, site.longitude, site.elevation_m / 1000.0)
-        bucket = bucket_for(ccfg.platform)
+        bucket = bucket_for(_resolved_platform(ccfg))
         when = datetime.fromtimestamp(now, tz=timezone.utc)
         stage = MASK_PRODUCT
         mask: GranuleWindow | None = None
@@ -471,7 +516,7 @@ class CloudmapService:
             bus.log("warning",
                     f"cloud map {stage} fetch failed: {type(exc).__name__}",
                     "cloudmap")
-            self._last_error = type(exc).__name__
+            self._last_error = _safe_error(exc)
             return
         finally:
             # TRIMMED WHETHER OR NOT THE READ WORKED, and that is the whole
@@ -614,7 +659,8 @@ class CloudmapService:
         ccfg = config_store.cfg().cloudmap
         if not ccfg.enabled:
             return CloudmapState(
-                enabled=False, platform=ccfg.platform, mask=None, height=None,
+                enabled=False, platform=_resolved_platform(ccfg),
+                mask=None, height=None,
                 previous_mask=None, motion=None, observed_at=None,
                 fetched_at=None, stale=False, last_error=None)
         observed = self._mask.observed_at if self._mask is not None else None
@@ -626,7 +672,7 @@ class CloudmapService:
                  or (now - observed.timestamp()) > horizon_s)
         return CloudmapState(
             enabled=True,
-            platform=ccfg.platform,
+            platform=_resolved_platform(ccfg),
             mask=self._mask,
             height=self._height,
             previous_mask=self._previous_mask,
