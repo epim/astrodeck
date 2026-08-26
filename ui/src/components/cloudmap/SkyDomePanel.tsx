@@ -9,13 +9,16 @@
 // safety gate or auto-resume consults this model (a named server test pins
 // that). The frames decide whether tonight is worth exposing; this says WHERE
 // in the sky the cloud is, which no scalar forecast can express.
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { getCloudmap, getCloudmapAt, getCloudmapDome,
          type CloudmapAt, type CloudmapDome, type CloudmapStatus } from "../../api/cloudmap";
 import { ageWords, domeGapFraction, domeStatus, occlusionWord } from "../../lib/domeProjection";
 import { Panel } from "../ui";
 import { SkyDome } from "./SkyDome";
+import { altAzOf } from "../../lib/altaz";
+import { getResumeArm, getSession } from "../../api/sessions";
+import { useSequence, useSite } from "../../store";
 
 /** The satellite publishes every five minutes and the service polls on its own
  *  cadence; re-reading faster than this buys nothing but relay traffic. */
@@ -60,16 +63,74 @@ export function SkyDomePanel({ pointing, target }: {
   const [dome, setDome] = useState<CloudmapDome | null>(null);
   const [ladder, setLadder] = useState<(CloudmapAt | null)[]>([]);
   const [failures, setFailures] = useState(0);
+  /** How far the dome is turned. Kept HERE and not in the canvas so a redraw
+   *  on the 2 s status frame cannot reset the operator's view mid-drag. */
+  const [yawDeg, setYawDeg] = useState(0);
+  /** The loaded plan's targets as RA/Dec, refetched only when the SESSION
+   *  changes -- a plan is edited between runs, not during one. */
+  const [planTargets, setPlanTargets] = useState<
+    { name?: string; ra_hours: number; dec_deg: number }[]>([]);
   /** The server's age_s and the wall-clock moment it arrived, so the readout
    *  can be extrapolated rather than frozen. */
   const [ageAt, setAgeAt] = useState<{ ageS: number; at: number } | null>(null);
-  const [, setAgeTick] = useState(0);
+  // Read as well as written: the target alt/az recompute rides this same
+  // one-second tick, so a target moves with the clock like the age does.
+  const [ageTick, setAgeTick] = useState(0);
   const alive = useRef(true);
 
   // Read the pointing through a ref: it changes on every 2 s status frame and
   // must not restart the poll, but the fetch needs its current value.
   const pointingRef = useRef(pointing);
   useEffect(() => { pointingRef.current = pointing; });
+
+  // WHOSE targets. The running session if there is one, else the session
+  // auto-resume has armed for tonight -- those are the only two plans that are
+  // actually going to happen. A plan merely open in the editor is not on the
+  // sky and drawing it would claim otherwise.
+  const seq = useSequence();
+  const site = useSite();
+  const sessionId = seq?.session?.id ?? null;
+
+  useEffect(() => {
+    let alive2 = true;
+    void (async () => {
+      try {
+        let id = sessionId;
+        if (!id) {
+          const arm = await getResumeArm();
+          id = arm?.armed?.id ?? null;
+        }
+        if (!id) { if (alive2) setPlanTargets([]); return; }
+        const sess = await getSession(id);
+        if (!alive2) return;
+        setPlanTargets(
+          (sess?.plan?.targets ?? [])
+            .filter((t) => typeof t.ra_hours === "number"
+                        && typeof t.dec_deg === "number")
+            .map((t) => ({ name: t.name, ra_hours: t.ra_hours as number,
+                           dec_deg: t.dec_deg as number })));
+      } catch {
+        // Decorative. A plan we cannot read leaves the dome exactly as it was
+        // before this feature existed, which is a fine place to fall back to.
+        if (alive2) setPlanTargets([]);
+      }
+    })();
+    return () => { alive2 = false; };
+  }, [sessionId]);
+
+  // Alt/az is a function of the CLOCK, so this recomputes on the panel's own
+  // tick rather than being stored -- a target frozen where it was an hour ago
+  // is the exact lie the stale-cloud rule exists to prevent.
+  const domeTargets = useMemo(() => {
+    const lat = site?.latitude;
+    const lon = site?.longitude;
+    if (typeof lat !== "number" || typeof lon !== "number") return null;
+    const now = Date.now() / 1000;
+    return planTargets.map((t) => {
+      const { altDeg, azDeg } = altAzOf(t.ra_hours, t.dec_deg, lat, lon, now);
+      return { alt: altDeg, az: azDeg, name: t.name };
+    });
+  }, [planTargets, site?.latitude, site?.longitude, ageTick]);
 
   const load = useCallback(async () => {
     try {
@@ -157,12 +218,50 @@ export function SkyDomePanel({ pointing, target }: {
         grid={gridUsable ? dome : null}
         pointing={pointing}
         target={target}
+        targets={domeTargets}
+        yawDeg={yawDeg}
+        onYaw={setYawDeg}
         emptyNote={off ? "cloud model is switched off"
                        : serverReason ?? "waiting for a granule"}
         stale={st.stale}
         staleNote={st.kind === "dead" ? "feed down" : ageWords(ageS) ?? undefined}
         height={280}
       />
+
+      {/* THE PAN IS INVISIBLE WITHOUT THIS. A canvas that happens to respond to
+          a drag is a feature nobody finds; the hint costs one line and the
+          reset is the only way back to a known orientation once you have
+          turned it, since "which way am I looking" is answered by the
+          cardinals and those have moved too. */}
+      <div className="mt-1 flex items-center justify-between text-[10px] text-dim">
+        <span>drag the dome to turn it</span>
+        {Math.round(((yawDeg % 360) + 360) % 360) !== 0 && (
+          <button
+            type="button"
+            className="tap min-h-[28px] px-2 text-accent hover:underline"
+            onClick={() => setYawDeg(0)}
+          >
+            facing south again
+          </button>
+        )}
+      </div>
+
+      {/* The numbered dots need a key, or they are decoration. Order is plan
+          order, which is the order the night runs in. */}
+      {domeTargets && domeTargets.length > 0 && (
+        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[10px]">
+          {domeTargets.map((t, i) => (
+            <span key={`${t.name ?? "t"}-${i}`}
+                  className={t.alt >= 0 ? "text-ink" : "text-dim"}>
+              <span className="mono text-accent">{i + 1}</span>{" "}
+              {t.name ?? "target"}{" "}
+              {t.alt >= 0
+                ? <span className="text-dim">{Math.round(t.alt)}&deg;</span>
+                : <span className="text-dim">not up</span>}
+            </span>
+          ))}
+        </div>
+      )}
 
       <div className="mt-2 flex flex-col gap-1 text-[11px]">
         {off && (
