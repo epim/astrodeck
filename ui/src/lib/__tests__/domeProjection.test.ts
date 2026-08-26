@@ -370,6 +370,77 @@ test("ageWords: seconds below 90, minutes above, nothing for no reading", () => 
   eq(ageWords(9400), "157m old", "");
 });
 
+// ------------------------------------------------------------------ panning
+//
+// Yaw exists so the operator can turn the dome and look at the northern half,
+// which the fixed south-facing camera hides behind the horizon. These pin the
+// properties that make a spin a spin rather than a smear.
+
+test("yaw 0 changes nothing at all", () => {
+  for (const [alt, az] of [[90, 0], [45, 137], [10, 300], [0, 180]]) {
+    const a = projectAltAz(alt, az, 100, 100, 80);
+    const b = projectAltAz(alt, az, 100, 100, 80, DOME_TILT_DEG, 0);
+    near(b.x, a.x, 1e-9, "x");
+    near(b.y, a.y, 1e-9, "y");
+    near(b.depth, a.depth, 1e-9, "depth");
+  }
+});
+
+test("a full turn is the identity", () => {
+  const a = projectAltAz(35, 42, 100, 100, 80);
+  const b = projectAltAz(35, 42, 100, 100, 80, DOME_TILT_DEG, 360);
+  near(b.x, a.x, 1e-9, "x after 360");
+  near(b.y, a.y, 1e-9, "y after 360");
+});
+
+test("yawing by N is the same as subtracting N from the azimuth", () => {
+  // The property that makes panning legible: turning the dome 90 degrees must
+  // put the sky where an object 90 degrees round the compass already was. If
+  // this fails the dome smears instead of spinning.
+  for (const yaw of [30, 90, 180, 270]) {
+    for (const [alt, az] of [[20, 0], [55, 110], [5, 265]]) {
+      const spun = projectAltAz(alt, az, 100, 100, 80, DOME_TILT_DEG, yaw);
+      const moved = projectAltAz(alt, az - yaw, 100, 100, 80);
+      near(spun.x, moved.x, 1e-9, `x yaw ${yaw} az ${az}`);
+      near(spun.y, moved.y, 1e-9, `y yaw ${yaw} az ${az}`);
+      near(spun.depth, moved.depth, 1e-9, `depth yaw ${yaw} az ${az}`);
+    }
+  }
+});
+
+test("the zenith never moves, whatever the yaw", () => {
+  // Spinning about the vertical leaves the vertical alone. A zenith that
+  // drifts means the rotation axis is wrong, and every cell is then wrong by
+  // an amount that grows with altitude -- subtle enough to look plausible.
+  const a = projectAltAz(90, 0, 100, 100, 80);
+  for (const yaw of [17, 90, 180, 300]) {
+    const b = projectAltAz(90, 0, 100, 100, 80, DOME_TILT_DEG, yaw);
+    near(b.x, a.x, 1e-9, `zenith x at yaw ${yaw}`);
+    near(b.y, a.y, 1e-9, `zenith y at yaw ${yaw}`);
+  }
+});
+
+test("half a turn brings the hidden north face round to the front", () => {
+  // The whole point of the feature. Due north on the horizon faces away from
+  // a south-sitting camera; after 180 degrees it must face it.
+  const before = projectAltAz(10, 0, 100, 100, 80);
+  const after = projectAltAz(10, 0, 100, 100, 80, DOME_TILT_DEG, 180);
+  if (before.facing) throw new Error("precondition: due north starts hidden");
+  if (!after.facing) throw new Error("north must face the camera after 180 deg");
+});
+
+test("a negative yaw is the mirror of a positive one", () => {
+  // Through the identity above: yaw w is az - w, so yaw -w at azimuth a and
+  // yaw +w at azimuth a + 2w are the same direction. The first draft of this
+  // asserted a + (-2w) and went red -- the SAME sign slip the identity test
+  // caught, which is why both are here rather than one.
+  const w = 60;
+  const l = projectAltAz(40, 90, 100, 100, 80, DOME_TILT_DEG, -w);
+  const r = projectAltAz(40, 90 + 2 * w, 100, 100, 80, DOME_TILT_DEG, w);
+  near(l.x, r.x, 1e-9, "x");
+  near(l.y, r.y, 1e-9, "y");
+});
+
 const total = passed + failed;
 // eslint-disable-next-line no-console
 console.log(`\ndomeProjection.test: ${passed}/${total} passed`);

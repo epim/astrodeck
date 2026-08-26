@@ -57,7 +57,31 @@ export function skyVector(altDeg: number, azDeg: number): SkyVec {
  * is how the mount's own azimuth is quoted.
  */
 export function projectDome(v: SkyVec, cx: number, cy: number, r: number,
-                            tiltDeg: number = DOME_TILT_DEG): DomePoint {
+                            tiltDeg: number = DOME_TILT_DEG,
+                            yawDeg: number = 0): DomePoint {
+  // YAW SPINS THE SKY, NOT THE CAMERA BASIS. The basis below is derived once
+  // and its screen and depth terms have to keep agreeing -- the first version
+  // of this file derived them separately and put North at the BOTTOM while the
+  // depth term still called North the far side. So panning rotates the sky
+  // vector about the vertical and leaves that derivation untouched: one place
+  // to be wrong instead of two.
+  //
+  // THE EXACT IDENTITY, because "it spins the right way" is not a spec:
+  //
+  //     projectDome(skyVector(alt, az), ..., yaw)
+  //       === projectDome(skyVector(alt, az - yaw), ..., 0)
+  //
+  // A positive yaw SUBTRACTS from every azimuth. Written down because the
+  // first test of it asserted `az + yaw` while its own name said "subtracting"
+  // -- prose and assertion disagreeing is exactly how a dome ends up spinning
+  // backwards with a green suite. The component decides which drag direction
+  // maps to which sign; this function only promises the identity.
+  if (yawDeg !== 0) {
+    const w = (yawDeg * Math.PI) / 180;
+    const cw = Math.cos(w);
+    const sw = Math.sin(w);
+    v = { x: v.x * cw - v.y * sw, y: v.x * sw + v.y * cw, z: v.z };
+  }
   const t = (tiltDeg * Math.PI) / 180;
   const cosT = Math.cos(t);
   const sinT = Math.sin(t);
@@ -100,8 +124,9 @@ export function domeExtent(tiltDeg: number = DOME_TILT_DEG): { top: number; bott
 /** Convenience: alt/az straight to canvas. */
 export function projectAltAz(altDeg: number, azDeg: number, cx: number,
                              cy: number, r: number,
-                             tiltDeg: number = DOME_TILT_DEG): DomePoint {
-  return projectDome(skyVector(altDeg, azDeg), cx, cy, r, tiltDeg);
+                             tiltDeg: number = DOME_TILT_DEG,
+                             yawDeg: number = 0): DomePoint {
+  return projectDome(skyVector(altDeg, azDeg), cx, cy, r, tiltDeg, yawDeg);
 }
 
 /** The panel's own background, as the dome composites over it. Exported so a
