@@ -4324,7 +4324,10 @@ def create_app() -> FastAPI:
         # a stray single capture must not interleave its exposures (mis-stamped /
         # cross-downloaded frames). The hub exposure guard is the last line of
         # defense; reject up front for a clear error.
-        if engine.running:
+        if engine.owns_camera:
+            # `owns_camera` and not `running`: a PAUSED run still has a live
+            # task but no exposure in flight, and taking a frame is what an
+            # operator pauses in order to do. See SequenceEngine.owns_camera.
             raise HTTPException(409, "a sequence is running")
         try:
             hub.require("camera")
@@ -4339,7 +4342,10 @@ def create_app() -> FastAPI:
     async def capture_loop(body: CaptureBody):
         if hub.polar.running:
             raise HTTPException(409, "polar alignment in progress")
-        if engine.running:
+        if engine.owns_camera:
+            # `owns_camera` and not `running`: a PAUSED run still has a live
+            # task but no exposure in flight, and taking a frame is what an
+            # operator pauses in order to do. See SequenceEngine.owns_camera.
             raise HTTPException(409, "a sequence is running")
         try:
             hub.require("camera")
@@ -4373,7 +4379,10 @@ def create_app() -> FastAPI:
     async def livestack_start(body: LiveStackBody):
         if hub.polar.running:
             raise HTTPException(409, "polar alignment in progress")
-        if engine.running:
+        if engine.owns_camera:
+            # `owns_camera` and not `running`: a PAUSED run still has a live
+            # task but no exposure in flight, and taking a frame is what an
+            # operator pauses in order to do. See SequenceEngine.owns_camera.
             raise HTTPException(409, "a sequence is running")
         try:
             hub.require("camera")
@@ -5176,7 +5185,10 @@ def create_app() -> FastAPI:
     async def bahtinov_start(body: BahtinovBody):
         if hub.polar.running:
             raise HTTPException(409, "polar alignment in progress")
-        if engine.running:
+        if engine.owns_camera:
+            # `owns_camera` and not `running`: a PAUSED run still has a live
+            # task but no exposure in flight, and taking a frame is what an
+            # operator pauses in order to do. See SequenceEngine.owns_camera.
             raise HTTPException(409, "a sequence is running")
         try:
             hub.require("camera")

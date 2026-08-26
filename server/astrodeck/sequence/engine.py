@@ -839,6 +839,17 @@ class SequenceEngine:
             # review, Important #1: no orphaned renders / "destroyed but pending"
             # warnings at interpreter exit).
             await self._drain_thumb_tasks()
+            # A STOPPED RUN IS NOT A PAUSED ONE. `pause()` clears this event
+            # and `resume()` sets it; nothing here ever did, and both of them
+            # early-return while `_aborting`, so a run aborted while paused
+            # left the flag stuck ON with no run behind it. Measured on the rig
+            # 2026-08-26: state=aborted running=False paused=True, which lights
+            # Resume on nothing and -- through `owns_camera` -- would now also
+            # decide the camera question. Cleared here rather than in `pause()`
+            # because this is the one path that ends a run without either of
+            # those two being reachable.
+            self._paused.set()
+            self._pause_started_at = None
             self._set_state(state="aborted", detail="sequence aborted",
                             schedule=None, session=None)
         finally:
@@ -890,6 +901,30 @@ class SequenceEngine:
     @property
     def paused(self) -> bool:
         return not self._paused.is_set()
+
+    @property
+    def owns_camera(self) -> bool:
+        """Is the sequencer actually holding the camera right now?
+
+        NOT ``running``, and the difference is the whole point. ``running`` is
+        "a run task exists", which stays True through a pause -- the task is
+        alive, parked on ``_checkpoint``'s ``await self._paused.wait()``. That
+        gate is a FRAME BOUNDARY, so a paused run has no exposure in flight and
+        the camera is genuinely free.
+
+        Four routes used ``running`` for camera mutual exclusion --
+        /api/capture, /api/capture/loop, /api/capture/livestack/start and
+        /api/focuser/bahtinov/start -- and every one of them is a thing an
+        operator pauses IN ORDER TO DO. Reported from the rig 2026-08-26: "I
+        paused the flow and I couldn't manually trigger a capture." The refusal
+        was about a flag, not about the hardware.
+
+        Resume takes it back: the run's next frame is issued through the same
+        hub lane, so an operator who leaves a loop running has it interrupted
+        by the sequencer rather than the other way round. That is the right way
+        round -- the run is the thing with a deadline.
+        """
+        return self.running and not self.paused
 
     # ------------------------------------------------------------------- state
 
