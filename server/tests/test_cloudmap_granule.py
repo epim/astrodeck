@@ -54,6 +54,7 @@ import pytest
 from astrodeck.cloudmap import granule as granule_mod
 from astrodeck.cloudmap.granule import (
     CloudmapUnavailable,
+    SiteOutsideSector,
     observed_at,
     parse_granule_name,
     read_grid_spec,
@@ -502,8 +503,14 @@ def test_the_window_is_clipped_at_the_grid_edge(make_granule):
     # both axes lets either half of it be deleted unnoticed. The second is
     # outside on the column only, the third on the row only -- a site off the
     # east edge of a sector, and a site off its south edge.
+    #
+    # SiteOutsideSector and not ValueError: all three are the same fact about
+    # the site and the sector, and the caller that shows that fact to an
+    # operator has only the class name to show. The two tests below are about
+    # that name and that message; this loop is about all three centres
+    # reaching them.
     for centre in (SUB_SATELLITE, ROW_INSIDE_COLUMN_OUT, COLUMN_INSIDE_ROW_OUT):
-        with pytest.raises(ValueError):
+        with pytest.raises(SiteOutsideSector):
             read_window(
                 path,
                 ("BCM",),
@@ -512,6 +519,90 @@ def test_the_window_is_clipped_at_the_grid_edge(make_granule):
                 half_rows=2,
                 half_cols=2,
             )
+
+
+def test_a_site_outside_the_sector_is_refused_by_a_type_that_says_so(
+    make_granule,
+):
+    """The operator sees the CLASS NAME of this refusal and nothing else.
+
+    ``cloudmap.service``'s poll catches everything a fetch can raise and keeps
+    ``type(exc).__name__``, on purpose: httpx puts the full request URL in its
+    exception text and an S3 URL will carry a site coordinate the day somebody
+    adds a point query. So the panel that renders ``status.last_error`` used
+    to say "ValueError" here -- the same word it says for a mistyped variable
+    name and for a granule stamped in the wrong epoch. One word, three
+    unrelated facts, and no next move for the person reading it.
+
+    Hence the exact-name assertion below, which looks like a tautology and is
+    not: that string IS the operator-facing copy, so renaming the class is a
+    copy change and has to be a deliberate one.
+
+    ``ValueError`` stays in the bases because design section 7 promises it for
+    every argument this module refuses, and callers -- including the clipping
+    test above -- were written against that promise.
+
+    The indices are asserted too. The point of the exercise is to stop
+    PRINTING them, not to stop knowing them: a developer holding the exception
+    still needs the cell that missed and the sector it missed, or the next
+    person debugging a clipped window puts them back into the message.
+    """
+    with pytest.raises(SiteOutsideSector) as caught:
+        read_window(
+            make_granule(),
+            ("BCM",),
+            centre_lat_deg=SUB_SATELLITE[0],
+            centre_lon_deg=SUB_SATELLITE[1],
+            half_rows=2,
+            half_cols=2,
+        )
+
+    assert type(caught.value).__name__ == "SiteOutsideSector"
+    assert isinstance(caught.value, ValueError)
+    # Reachable for debugging, by a route that is not str(): the sub-satellite
+    # point is cell (2290, 1250) of this 40 x 48 fixture.
+    assert (caught.value.centre_row, caught.value.centre_col) == (2290, 1250)
+    assert (caught.value.n_rows, caught.value.n_cols) == (N_ROWS, N_COLS)
+
+
+def test_the_out_of_sector_refusal_names_no_position(make_granule):
+    """No digit in the sentence, because every digit here is a position.
+
+    ``lonlat_to_index`` is a bijection on the fixed grid, so a centre cell is
+    the site's latitude and longitude with two steps of stage 2 run backwards
+    -- ambiguous only to the width of a cell, about 2 km. A viewer has already
+    geolocated this rig to 2.9 km out of a value nobody had thought of as a
+    coordinate, and this message is bound for the operator journal and a UI
+    panel.
+
+    ASSERTED BY PATTERN rather than by reading the sentence, because the
+    failure mode is somebody appending a helpful clause to a message that was
+    safe when it was written. A reviewer eyeballing the constant catches that
+    once; a regex catches it every run. The centre used here is cell
+    (20, 200), whose two indices are digit strings the old message printed
+    verbatim.
+
+    The last two assertions stop the regex being satisfied by the empty
+    string, which would pass everything above and tell the operator nothing.
+    ``repr`` is checked as well as ``str``: a log line written ``{exc!r}``
+    renders the args tuple rather than the message.
+    """
+    with pytest.raises(SiteOutsideSector) as caught:
+        read_window(
+            make_granule(),
+            ("BCM",),
+            centre_lat_deg=ROW_INSIDE_COLUMN_OUT[0],
+            centre_lon_deg=ROW_INSIDE_COLUMN_OUT[1],
+            half_rows=2,
+            half_cols=2,
+        )
+
+    sentence = str(caught.value)
+    assert re.search(r"\d", sentence) is None, sentence
+    assert re.search(r"\d", repr(caught.value)) is None, repr(caught.value)
+    # And it still says the thing: the site, and the sector that misses it.
+    assert "site" in sentence and "sector" in sentence
+    assert len(sentence.split()) > 10
 
 
 def test_the_window_is_clipped_at_the_far_edge_of_the_sector(make_granule):
@@ -646,10 +737,19 @@ def test_a_negative_half_is_refused_by_name(make_granule):
     proves nothing. That message says the granule never sampled the cell,
     which sends the reader to NOAA's sector definition for a bug in their own
     argument list. The ``match`` is the whole test.
+
+    The empty-clip refusal is now :class:`SiteOutsideSector`, which makes that
+    confusion worse without this guard rather than better: the caller would
+    show the operator a name asserting their site is outside the satellite's
+    sector when the site is dead centre of it and the argument list is what is
+    wrong. So the type is asserted negatively as well as the message
+    positively: drop the guard and the ``match`` fails first, quoting the
+    sector sentence back at you, and the ``isinstance`` line is what still
+    holds if that message is ever reworded into something ``>= 0`` matches.
     """
     path = make_granule()
     for half_rows, half_cols in ((-1, 3), (3, -1)):
-        with pytest.raises(ValueError, match=">= 0"):
+        with pytest.raises(ValueError, match=">= 0") as caught:
             read_window(
                 path,
                 ("BCM",),
@@ -658,6 +758,7 @@ def test_a_negative_half_is_refused_by_name(make_granule):
                 half_rows=half_rows,
                 half_cols=half_cols,
             )
+        assert not isinstance(caught.value, SiteOutsideSector)
 
 
 def test_a_centre_behind_the_limb_is_refused(make_granule):
