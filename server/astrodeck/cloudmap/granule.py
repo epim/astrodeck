@@ -61,6 +61,7 @@ except ImportError:  # pragma: no cover - exercised by a fresh masked import
 
 __all__ = [
     "CloudmapUnavailable",
+    "SiteBehindLimb",
     "SiteOutsideSector",
     "HAVE_H5PY",
     "GranuleWindow",
@@ -172,6 +173,62 @@ class SiteOutsideSector(ValueError):
         self.centre_col = centre_col
         self.n_rows = n_rows
         self.n_cols = n_cols
+
+
+class SiteBehindLimb(ValueError):
+    """No satellite in the constellation can see the site at all.
+
+    THE OTHER HALF OF SiteOutsideSector, and a genuinely different problem. A
+    site off the SCAN -- Anchorage, Sydney -- is on the visible disk and could
+    be served tomorrow by a wider sector or a full-disk product. A site below
+    the satellite's HORIZON cannot be served by any GOES product that will ever
+    exist, because the earth is in the way.
+
+    Measured for the sites people actually asked about, as the satellite's
+    altitude above the local horizon at the nearer bird:
+
+        San Jose  +43.8    Honolulu  +55.6    Anchorage +19.8
+        Sydney     +6.4    Reykjavik  +6.5    London     +0.5
+        Tokyo      -3.3    Cape Town -11.5
+
+    Only the last two are below the horizon. London grazes it, which is why
+    visibility is not the operative test and sector membership is -- but when
+    the site IS below the horizon, ``lonlat_to_index`` returns None and the
+    read used to raise a BARE ValueError.
+
+    That is what this type exists to stop. The service's error filter echoes
+    ``str(exc)`` only for a class declaring SAFE_TO_ECHO, so a bare ValueError
+    reached the operator as the word "ValueError", inside the sentence "no
+    cloud granule has been read yet; the last attempt ended in ...". The least
+    useful message in the product, attached to its most permanent condition:
+    "not yet" invites an operator in London to wait for a granule that cannot
+    arrive.
+
+    THE MESSAGE SAYS "NEVER" ON PURPOSE. It is the one word that separates this
+    from an outage, a missing extra, or a satellite in eclipse -- all of which
+    are worth waiting through, and this is not.
+
+    Same echo rules as SiteOutsideSector: a CONSTANT message holding no
+    coordinate, no index and no URL. The sub-satellite longitude is a property
+    of the spacecraft, not of the observer, so it rides as an attribute for
+    debugging rather than in the text -- not because it leaks, but because a
+    format string is where a coordinate gets interpolated later by someone who
+    has not read this paragraph.
+    """
+
+    SAFE_TO_ECHO = True
+
+    MESSAGE = (
+        "this site is below the satellite's horizon: the earth itself is in "
+        "the way, so no GOES granule will ever hold the sky overhead -- not "
+        "now and not later, whichever satellite is chosen. A cloud map here "
+        "needs a different constellation"
+    )
+
+    def __init__(self, *, sat_lon_deg: float) -> None:
+        super().__init__(self.MESSAGE)
+        #: DEBUGGING ONLY. A spacecraft's longitude, not the observer's.
+        self.sat_lon_deg = sat_lon_deg
 
 
 def _require_h5py() -> None:
@@ -457,11 +514,12 @@ def read_window(
 
         index = lonlat_to_index(spec, centre_lat_deg, centre_lon_deg)
         if index is None:
-            raise ValueError(
-                "the window centre is behind the limb: it is not on the earth "
-                "visible from a satellite at longitude "
-                + repr(spec.lon_origin_deg)
-            )
+            # A NAMED TYPE, for the same reason SiteOutsideSector is one and
+            # then one reason more: this refusal is PERMANENT. The bare
+            # ValueError this used to raise reached the operator as the word
+            # "ValueError" -- see SiteBehindLimb. The longitude that used to be
+            # interpolated here now rides as an attribute.
+            raise SiteBehindLimb(sat_lon_deg=spec.lon_origin_deg)
         centre_row, centre_col = index
         row0 = max(0, centre_row - half_rows)
         row1 = min(spec.n_rows - 1, centre_row + half_rows)

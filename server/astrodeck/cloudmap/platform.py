@@ -55,10 +55,22 @@ correct comparison normalises the DIFFERENCE; see
 
 WHAT THIS DOES NOT ANSWER. It picks the BETTER OF TWO satellites, which is not
 the same as promising either one can see the site. A site off the CONUS sector
-(Hawaii, Alaska, most of Canada) or off the visible disk entirely (anywhere
-past about 81 deg of gamma) still gets a name from here, and
-:func:`abi_grid.in_grid` and :func:`abi_grid.lonlat_to_scan` still say no --
-correctly, and now with the nearer satellite in the message. Folding "not
+(Alaska, most of Canada) or off the visible disk entirely still gets a name
+from here, and :func:`abi_grid.in_grid` and :func:`abi_grid.lonlat_to_scan`
+still say no -- correctly, and now with the nearer satellite in the message.
+
+HAWAII IS NOT ONE OF THEM, and this paragraph said it was until somebody ran
+the numbers: Honolulu lands at row 1167 of 1500, column 220 of 2500, well
+inside GOES-West's grid, because that sector is PACUS and reaches it. The
+rejected-site list is Alaska and most of Canada, not Hawaii. Measured in
+tests/test_cloudmap_uncovered_sites.py, which now pins it.
+
+THE TWO REFUSALS DOWNSTREAM ARE DIFFERENT FACTS. A site on the visible disk
+but off the scan raises ``granule.SiteOutsideSector`` and could be served by a
+wider sector tomorrow. A site below the satellite's horizon raises
+``granule.SiteBehindLimb`` and can never be served by any GOES product, because
+the earth is in the way. Both carry SAFE_TO_ECHO sentences; the second one used
+to be a bare ValueError, which reached the operator as the word "ValueError". Folding "not
 visible" into this function would mean returning None for a question that
 always has a best answer, and would put a coverage test in the one module that
 has no grid to test against.

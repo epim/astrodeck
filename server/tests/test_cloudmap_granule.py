@@ -54,6 +54,7 @@ import pytest
 from astrodeck.cloudmap import granule as granule_mod
 from astrodeck.cloudmap.granule import (
     CloudmapUnavailable,
+    SiteBehindLimb,
     SiteOutsideSector,
     observed_at,
     parse_granule_name,
@@ -889,3 +890,43 @@ def test_the_extra_that_the_error_message_names_exists(monkeypatch):
         requirement.replace(" ", "").startswith("h5py")
         for requirement in extras[named.group(1)]
     )
+
+
+# ------------------------------------------------- behind the limb, not "off"
+#
+# THE SABOTAGE THAT SURVIVED. tests/test_cloudmap_uncovered_sites.py pins the
+# exception's message and its SAFE_TO_ECHO flag, and reverting `read_window`'s
+# raise to a bare ValueError left all 28 of those tests green -- the class was
+# graded in isolation and nothing checked that the READ still produces it.
+# A guard on a type nobody raises is not a guard.
+
+#: 137 degrees from the fixture's sub-satellite longitude: the earth is in the
+#: way, `lonlat_to_index` returns None, and no widening of the sector helps.
+LONDON = (51.5, -0.13)
+TOKYO = (35.68, 139.65)
+
+
+@pytest.mark.parametrize("centre", [LONDON, TOKYO], ids=["london", "tokyo"])
+def test_a_centre_behind_the_limb_raises_the_named_type(make_granule, centre):
+    """Not SiteOutsideSector, and not a bare ValueError.
+
+    Off-the-scan and below-the-horizon are different facts with different
+    remedies -- a wider sector serves Anchorage and can never serve London --
+    so they carry different types and different sentences.
+    """
+    path = make_granule()
+    with pytest.raises(SiteBehindLimb) as caught:
+        read_window(
+            path,
+            ("BCM",),
+            centre_lat_deg=centre[0],
+            centre_lon_deg=centre[1],
+            half_rows=2,
+            half_cols=2,
+        )
+    assert not isinstance(caught.value, SiteOutsideSector), (
+        "a site behind the limb is not a site off the sector")
+    assert caught.value.sat_lon_deg == pytest.approx(LON_ORIGIN_DEG), (
+        "the spacecraft longitude rides as an attribute, for debugging")
+    assert str(caught.value) == SiteBehindLimb.MESSAGE, (
+        "the message is a CONSTANT -- no coordinate interpolated in")
