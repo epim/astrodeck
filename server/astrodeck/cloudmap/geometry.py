@@ -42,6 +42,7 @@ __all__ = [
     "pierce_point",
     "slant_to_layer_km",
     "satellite_look",
+    "apparent_point",
     "deparallax",
     "beam_footprint_km",
     "agl_to_msl_km",
@@ -256,6 +257,12 @@ def satellite_look(site: Site, sat_lon_deg: float) -> LookVector:
     return look_from(site, GeoPoint(0.0, sat_lon_deg, GEOSTATIONARY_ALT_KM))
 
 
+#: Newton steps for :func:`apparent_point`. The displacement is smooth and
+#: about 5 km against a 111 km degree, so two steps reach sub-millimetre and
+#: this is a runaway guard rather than a budget.
+_APPARENT_MAX_STEPS = 8
+
+
 def deparallax(
     reported_lat_deg: float,
     reported_lon_deg: float,
@@ -293,6 +300,69 @@ def deparallax(
     reported = Site(reported_lat_deg, reported_lon_deg, 0.0)
     look = satellite_look(reported, sat_lon_deg)
     return pierce_point(reported, look.alt_deg, look.az_deg, cloud_msl_km)
+
+
+def apparent_point(
+    true_lat_deg: float,
+    true_lon_deg: float,
+    cloud_msl_km: float,
+    sat_lon_deg: float,
+) -> GeoPoint:
+    """Where the satellite REPORTS a cloud that is really at this position.
+
+    The exact inverse of :func:`deparallax`, and the direction stage 4 needs.
+    ``deparallax`` answers "the product says a pixel is here, where is the
+    cloud"; this answers "the cloud is here, which pixel do I read". They move
+    opposite ways -- deparallax TOWARD the sub-satellite point, this one AWAY
+    -- and using the wrong one does not merely fail to correct the error, it
+    DOUBLES it.
+
+    THIS WAS THE BUG. ``occlusion_at`` took ``pierce_point``'s output -- the
+    true ground position under the cloud -- and handed it straight to
+    ``lonlat_to_index``, reading the pixel at the cloud's true position rather
+    than at its imaged one. Measured on the rig 2026-08-26 with GOES-18 at
+    43.8 deg altitude: a 5.2 km cloud deck is displaced 5.4 km, about two mask
+    cells, always away from the satellite. The operator reported it as "we're
+    offset a bit", which is exactly the shape of a missing parallax term.
+
+    ``deparallax`` was written, exported and covered by two named tests --
+    including one pinning its magnitude as h*tan(zenith) -- and called by
+    nothing outside those tests. A correction that ships in the package and
+    never runs on the path it exists for.
+
+    SOLVED BY ITERATING THE EXACT WALK, not by a closed form. ``deparallax``
+    deliberately rejects the design's ``h * tan(zenith)`` shift because the
+    flat-earth residual grows with zenith angle (283 m at 74 deg), and writing
+    the inverse in that form would reintroduce precisely the error its own
+    docstring measured. Newton on a displacement this smooth converges in two
+    or three steps; each one is a single call to the proven walk, so this
+    inherits its exactness and its domain guards instead of restating them.
+    """
+    # SEEDED WITH THE ANALYTIC SHIFT, then Newton'd. Starting from the true
+    # point instead costs three iterations of the exact walk per lookup, and
+    # this runs once per ray per rung: measured, that put a full dome at 5.0 s
+    # against its own 3.0 s budget. The flat-earth h*tan(zenith) displacement
+    # is within about 0.4 percent, so one step lands on the answer and the
+    # loop below exits immediately -- exactness kept, two thirds of the work
+    # gone. The seed being approximate does not matter: it is only where the
+    # iteration STARTS, and the convergence test is unchanged.
+    look = satellite_look(Site(true_lat_deg, true_lon_deg, 0.0), sat_lon_deg)
+    shift_km = cloud_msl_km * math.tan(math.radians(90.0 - look.alt_deg))
+    away_rad = math.radians((look.az_deg + 180.0) % 360.0)
+    lat = true_lat_deg + (shift_km * math.cos(away_rad)) / 110.574
+    lon = true_lon_deg + (shift_km * math.sin(away_rad)) / (
+        111.320 * max(1e-6, math.cos(math.radians(true_lat_deg))))
+    for _ in range(_APPARENT_MAX_STEPS):
+        back = deparallax(lat, lon, cloud_msl_km, sat_lon_deg)
+        dlat = true_lat_deg - back.lat_deg
+        dlon = true_lon_deg - back.lon_deg
+        lat += dlat
+        lon += dlon
+        # A degree is ~111 km, so this is sub-metre in both axes. Tested by
+        # round-trip rather than trusted: see test_apparent_point_round_trips.
+        if abs(dlat) < 1e-9 and abs(dlon) < 1e-9:
+            break
+    return GeoPoint(lat, lon, cloud_msl_km)
 
 
 def beam_footprint_km(slant_km: float, fov_deg: float) -> float:
