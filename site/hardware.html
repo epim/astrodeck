@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Hardware Support</title>
-<meta name="description" content="Native drivers, ASCOM Alpaca, and the COM host — every vendor and device AstroDeck drives, and how to get yours added.">
+<meta name="description" content="Native drivers, ASCOM Alpaca and the COM host. Every vendor AstroDeck drives, and how to get yours added.">
 <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
 <link rel="canonical" href="https://epim.github.io/astrodeck/hardware.html">
 <meta property="og:type" content="website">
@@ -55,8 +55,8 @@
       <p class="eyebrow">Native drivers</p>
       <h2>No vendor software. Nothing to install.</h2>
       <p>
-        AstroDeck talks to these directly — over the vendor SDK or the wire
-        protocol itself. Plug in the USB cable and press connect.
+        AstroDeck talks to these over the vendor SDK or the wire protocol
+        itself. Plug in the USB cable and press connect.
       </p>
     </div>
 
@@ -98,9 +98,9 @@
         <span class="kicker">Direct</span>
         <h3>ASCOM Alpaca</h3>
         <p>
-          Any Alpaca endpoint connects over the network with no bridge at all —
+          Any Alpaca endpoint connects over the network with no bridge at all:
           cameras, mounts, focusers, wheels, rotators, domes, safety monitors,
-          switches and weather stations. Discovery finds them; you pick roles.
+          switches and weather stations. Discovery finds them, you pick roles.
           ZWO, Pegasus Astro, QHY, PrimaLuceLab, Optec, Lakeside, Moonlite and
           the rest of the ASCOM ecosystem all reach AstroDeck this way.
         </p>
@@ -111,8 +111,8 @@
         <p>
           Gear that only ships a Windows COM driver still works: AstroDeck starts
           and manages a local COM-to-Alpaca host itself. No separate ASCOM Remote
-          install, no second thing to keep running, and it is simply absent on
-          Linux and macOS rather than half-present.
+          install and no second thing to keep running. On Linux and macOS it is absent
+          rather than half-present.
         </p>
       </article>
     </div>
@@ -123,14 +123,14 @@
           <tr><th>Function</th><th>What AstroDeck supports</th></tr>
         </thead>
         <tbody>
-          <tr><td class="mono">Plate solving</td><td>ASTAP, auto-detected — with its own star-detection and HFR engine behind it</td></tr>
+          <tr><td class="mono">Plate solving</td><td>ASTAP, auto-detected, with AstroDeck's own star detection and HFR behind it</td></tr>
           <tr><td class="mono">Guiding</td><td>Built-in guide engine, PHD2, or NINA's guider</td></tr>
           <tr><td class="mono">Polar alignment</td><td>Three-point (TPPA), native</td></tr>
           <tr><td class="mono">Forecast</td><td>Open-Meteo, Astrospheric</td></tr>
           <tr><td class="mono">Satellite cloud</td><td>NOAA GOES-18 and GOES-19 (Americas)</td></tr>
           <tr><td class="mono">Sky survey</td><td>DSS2 through HiPS, plus a ~250 MB offline pack</td></tr>
           <tr><td class="mono">Alerts</td><td>ntfy, Telegram, webhook, dead-man's heartbeat</td></tr>
-          <tr><td class="mono">Host platforms</td><td>Windows, Linux, macOS, Raspberry Pi 4/5, Orange Pi — x86-64 and arm64</td></tr>
+          <tr><td class="mono">Host platforms</td><td>Windows, Linux, macOS, Raspberry Pi 4/5, Orange Pi. x86-64 and arm64</td></tr>
         </tbody>
       </table>
     </div>
@@ -197,8 +197,8 @@
       </div>
       <figcaption>
         Swap a camera vendor and autofocus does not change. Add a backend and no
-        existing code moves. This is also why running alongside NINA or an ASIAIR
-        can be permanent rather than transitional — they are just backends.
+        existing code moves. It is also why running alongside NINA or an ASIAIR
+        can be permanent rather than transitional: they are just backends.
       </figcaption>
     </figure>
   </div>
@@ -242,8 +242,8 @@
         <h3>No fork required</h3>
         <p>
           Backends can ship as separate packages and register themselves through
-          an entry point. Your driver, your repo, your release cadence — it just
-          appears in the equipment list.
+          an entry point. Your driver, your repo, your release cadence. It appears in
+          the equipment list like any other.
         </p>
       </article>
     </div>

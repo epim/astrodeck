@@ -4,12 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Astro Flows</title>
-<meta name="description" content="Draw the night as a graph. Twenty-one node types, two kinds of wire, and a compiler that tells you what it cannot honour before the mount moves.">
+<meta name="description" content="Planning a complicated night usually takes a spreadsheet. Draw it instead, and see the whole shape of a month of imaging on one canvas.">
 <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
 <link rel="canonical" href="https://epim.github.io/astrodeck/flows.html">
 <meta property="og:type" content="website">
 <meta property="og:title" content="Astro Flows | AstroDeck">
-<meta property="og:description" content="Draw the night as a graph. 21 node types, two kinds of wire, and a compiler that tells you what it cannot honour before the mount moves.">
+<meta property="og:description" content="Planning a complicated night usually takes a spreadsheet. Draw it instead, and see the whole shape of a month of imaging on one canvas.">
 <meta property="og:url" content="https://epim.github.io/astrodeck/flows.html">
 <meta name="twitter:card" content="summary">
 <meta name="theme-color" content="#070A12">
@@ -39,11 +39,12 @@
 <section class="band">
   <div class="wrap stack gap-3">
     <p class="eyebrow">Astro Flows</p>
-    <h1 style="max-width:17ch">Draw the night. Then go to bed.</h1>
+    <h1 style="max-width:18ch">Plan a month of imaging in an afternoon.</h1>
     <p class="lead" style="max-width:56ch">
-      A sequence is a list. A night is a graph. Flows lets you wire the second
-      one directly — twenty-one node types, two kinds of wire, and a compiler
-      that tells you what it could not honour <em>before</em> the mount moves.
+      Planning a complicated night usually means a spreadsheet, a planetarium in
+      another window and a lot of squinting. Draw it instead. Drag a target pool
+      onto the canvas, wire a cloud watcher into a hold, hang a refocus off a bad
+      frame, and the whole shape of the night sits in front of you.
     </p>
   </div>
 </section>
@@ -53,11 +54,11 @@
   <div class="wrap stack gap-4">
     <div class="band-head">
       <p class="eyebrow">The canvas</p>
-      <h2>One graph, two lanes.</h2>
+      <h2>The whole night, at a glance.</h2>
       <p>
-        The solid lane is the night in order. The dashed lane is everything that
-        reacts to it. They are different kinds of wire because they are
-        different kinds of promise.
+        Solid wires are the order things happen in. Dashed wires are what reacts
+        when the sky misbehaves. You can read a campaign off the canvas without
+        opening a single settings panel.
       </p>
     </div>
 
@@ -203,7 +204,7 @@
   <div class="wrap stack gap-4">
     <div class="band-head">
       <p class="eyebrow">Two kinds of wire</p>
-      <h2>Sequence and reaction are not the same thing.</h2>
+      <h2>Two wires, so you can tell plan from reflex.</h2>
     </div>
 
     <div class="grid grid-2">
@@ -211,32 +212,29 @@
         <span class="kicker">Flow — solid</span>
         <h3>This happens, then that happens</h3>
         <p>
-          A flow wire is an ordering promise. <code>SLEW + CENTER</code> emits
-          <code>centered</code> and only then does <code>AUTOFOCUS</code> begin.
-          The graph stays acyclic, so there is no way to draw a night that
-          silently never ends.
+          <code>SLEW + CENTER</code> emits <code>centered</code>, and
+          <code>AUTOFOCUS</code> starts. Order you can see, on a canvas that will
+          not let you draw a night with no end in it.
         </p>
       </article>
       <article class="card">
         <span class="kicker">Event — dashed</span>
         <h3>When this happens, do that</h3>
         <p>
-          An event wire carries something that occurred — a graded frame, cloud
-          arriving, an unsafe reading — to whatever should react. Events do not
-          sequence the night; they interrupt it. Campaign loops across many
-          nights are event wires, which is how the graph stays acyclic and a
-          multi-night run still repeats.
+          A graded frame, cloud arriving, a sensor going quiet: an event wire
+          carries it to whatever should react. Events interrupt the night rather
+          than ordering it, and a campaign that repeats for weeks is one event
+          wire back to dusk.
         </p>
       </article>
     </div>
 
     <p class="note">
-      <strong>Loops live inside stages, not in the graph.</strong>
-      <code>FILTER CYCLE</code> is a sibling of <code>CAPTURE LOOP</code>, not a
-      container: it shoots its slot table one sub per filter per pass and repeats
-      until every slot has its count. So the channels grow evenly, and a night cut
-      short by cloud still stacks. Forty-five L frames followed by nothing else is
-      a mono image; one of each, forty-five times, is an image at every prefix.
+      <strong>A night cut short still stacks.</strong>
+      <code>FILTER CYCLE</code> shoots one sub per filter per pass and repeats,
+      so your channels grow together. Forty-five L frames and nothing else leaves
+      you a mono image. One of each, forty-five times, leaves you a picture at
+      every point cloud might have stopped you.
     </p>
   </div>
 </section>
@@ -245,12 +243,12 @@
 <section class="band band-tint">
   <div class="wrap stack gap-4">
     <div class="band-head">
-      <p class="eyebrow">A distinction worth the ink</p>
-      <h2>Safety aborts and never holds. Cloud watch holds and never aborts.</h2>
+      <p class="eyebrow">Why there are two monitors</p>
+      <h2>Cloud should pause your night. Rain should end it.</h2>
       <p>
-        These are separate node types on purpose. If one monitor did both, the
-        fail-closed tier would beat the recoverable one to the punch every time,
-        and the recoverable one would always lose.
+        Two separate blocks, because those are two different decisions. Give both
+        jobs to one monitor and the one that ends the night wins every race, so
+        you lose clear hours to a cloud that had already moved on.
       </p>
     </div>
 
@@ -283,8 +281,8 @@
   <div class="wrap stack gap-4">
     <div class="band-head">
       <p class="eyebrow">The catalogue</p>
-      <h2>Twenty-one nodes.</h2>
-      <p>Everything you can put on the canvas, and what it emits.</p>
+      <h2>The palette.</h2>
+      <p>Twenty-one blocks. Everything you can put on the canvas, and what comes out of it.</p>
     </div>
 
     <div class="tablewrap">
@@ -306,7 +304,7 @@
           <tr><td class="mono">FILTER CYCLE</td><td class="mono">Rig</td><td class="mono">complete · frame graded</td><td>A slot table across the whole wheel, interleaved so every channel grows together.</td></tr>
           <tr><td class="mono">DUSK FLATS</td><td class="mono">Rig</td><td class="mono">flats done</td><td>Sky flats in the sun −2° to −8° window, for tonight's filters only.</td></tr>
           <tr><td class="mono">CALIBRATION QUEUE</td><td class="mono">Rig</td><td class="mono">queue done</td><td>Darks, flats and bias. Every input is optional; with no panel wired it skips flats and says so.</td></tr>
-          <tr><td class="mono">TARGET POOL</td><td class="mono">Logic</td><td class="mono">best target · floor hit</td><td>A list of candidates ranked by altitude and moon separation, with a per-target quota, an altitude floor and what to do when one hits it.</td></tr>
+          <tr><td class="mono">TARGET POOL</td><td class="mono">Logic</td><td class="mono">best target · floor hit</td><td>A list of candidates ranked by altitude and moon separation, with a per-target quota, an altitude floor, and what to do when one hits it.</td></tr>
           <tr><td class="mono">CONDITION</td><td class="mono">Logic</td><td class="mono">fire</td><td>Watch an event stream for HFR above, guide RMS above, a rejected frame, a completed target or a wall-clock time. Window it over N frames, once or every time.</td></tr>
           <tr><td class="mono">HOLD / RESUME</td><td class="mono">Action</td><td class="mono">—</td><td>Self-releasing pause with a maximum hold, and a documented way back: re-cool, re-centre, refocus if needed.</td></tr>
           <tr><td class="mono">NOTIFY</td><td class="mono">Action</td><td class="mono">—</td><td>ntfy, Telegram or a webhook, with a channel and a level.</td></tr>
@@ -325,25 +323,23 @@
   <div class="wrap stack gap-4">
     <div class="band-head">
       <p class="eyebrow">Before the mount moves</p>
-      <h2>The compiler tells you what it will not do.</h2>
+      <h2>Find out at your desk, not at 3am.</h2>
       <p>
-        A graph you can draw is not automatically a night the engine can run.
-        Compiling reports every dropped rule on screen, by name, with the reason.
+        Press compile and AstroDeck lists every rule it cannot run, by name, with
+        the reason. You fix it while you are awake and holding a coffee.
       </p>
     </div>
 
     <div class="prose">
       <p class="dim">
-        This exists because of a specific failure mode. Unknown keys are dropped
-        in silence by default, which means a naive hand-off produces a plan that
-        validates clean and starts a run immediately — in daylight, with no
-        altitude gate, no dawn stop and none of the cloud rules the operator
-        drew. Green start, wrong night, no error anywhere.
+        The failure this prevents is a quiet one. Software that silently drops
+        settings it does not recognise will start a run that looks correct and
+        has no altitude gate, no dawn stop and none of the cloud rules you drew.
+        It goes green, it moves the mount, and nothing reports a problem.
       </p>
       <p class="dim">
-        So every dropped thing is reported. You find out that your cloud rule is
-        not running <em>now</em>, from a list on the screen, instead of at 3am
-        from a mount that kept shooting through overcast.
+        So AstroDeck names what it dropped. Your cloud rule is either running or
+        on that list.
       </p>
     </div>
 
@@ -351,7 +347,7 @@
       <article class="card">
         <span class="kicker">Checked</span>
         <h3>Wiring</h3>
-        <p>Required inputs that nothing feeds, outputs that go nowhere, and the optional ones that are genuinely fine to leave unwired.</p>
+        <p>Required inputs that nothing feeds, outputs that go nowhere, and the optional ones that are fine to leave unwired.</p>
       </article>
       <article class="card">
         <span class="kicker">Checked</span>
@@ -371,8 +367,8 @@
 <section class="band">
   <div class="wrap stack gap-4">
     <div class="band-head">
-      <p class="eyebrow">Three shapes worth stealing</p>
-      <h2>Patterns.</h2>
+      <p class="eyebrow">Three shapes that cover most nights</p>
+      <h2>Steal these.</h2>
     </div>
 
     <div class="grid grid-3">
@@ -381,8 +377,8 @@
         <h3>The unattended single target</h3>
         <p>
           <code>DUSK → TARGET → SLEW + CENTER → AUTOFOCUS → GUIDE → FILTER CYCLE → PARK + CLOSE → REPORT</code>,
-          with <code>SAFETY → ABORT</code> hanging off the side. Eight nodes and
-          you never touch it again.
+          with <code>SAFETY → ABORT</code> hanging off the side. Eight blocks,
+          then you go inside.
         </p>
       </article>
       <article class="card">
@@ -391,8 +387,8 @@
         <p>
           Swap <code>TARGET</code> for <code>TARGET POOL</code> with a quota per
           member, set <code>DUSK WINDOW</code> to repeat, and wire
-          <code>night ends</code> into <code>PARK + CLOSE</code>. It works the
-          list down across weeks, picking whatever is best placed each night.
+          <code>night ends</code> into <code>PARK + CLOSE</code>. AstroDeck works
+          the list down over weeks, taking whatever is best placed each night.
         </p>
       </article>
       <article class="card">
@@ -401,16 +397,16 @@
         <p>
           Wire <code>frame graded</code> into a <code>CONDITION</code> set to HFR
           above your threshold over a 3-frame window, and fire
-          <code>REFOCUS</code>. Focus drift fixes itself and you find out from
-          the report, not from the stack.
+          <code>REFOCUS</code>. You read about the drift in the morning report
+          instead of finding it in the stack.
         </p>
       </article>
     </div>
 
     <p class="note">
-      <strong>Everything on the canvas is also just a plan.</strong> Flows
-      compile to the same sequence the engine runs when you build a night by
-      hand, so nothing you can draw is a separate code path with its own bugs.
+      <strong>Nothing here is a second code path.</strong> A flow compiles to
+      the same sequence AstroDeck runs when you build a night by hand, so the
+      canvas cannot grow bugs of its own.
     </p>
   </div>
 </section>
