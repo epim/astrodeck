@@ -66,6 +66,7 @@ from ..weather import weather_service
 from .abi_grid import lonlat_to_index, pixel_size_km
 from .geometry import Site
 from .granule import (
+    SiteOutsideSector,
     HAVE_H5PY,
     CloudmapUnavailable,
     GranuleWindow,
@@ -291,6 +292,13 @@ class CloudmapService:
         self._fetched_at: float | None = None
         self._last_error: str | None = None
         self._attempt_at: float = 0.0      # due-when-older-than attempt latch
+        #: Latched when this site+satellite pairing can NEVER produce a
+        #: readable granule. See `tick`. Initialised HERE as well as in
+        #: `_clear` because `__init__` sets these fields one by one rather than
+        #: calling `_clear`, and the first `tick` reads it -- without this line
+        #: a fresh service raises AttributeError on its first poll and the
+        #: cloud model never starts at all.
+        self._hopeless = False
         self._was_enabled = False
         # The SITE the windows now held were read around, for the reason the
         # platform is remembered: see the second half of the branch in `tick`.
@@ -432,6 +440,22 @@ class CloudmapService:
             self._clear()
             self._platform = resolved
             self._site_key = site_key
+        if self._hopeless:
+            # THIS PAIRING CAN NEVER WORK, so stop paying for it. A site
+            # outside the sector is not a transient failure like a timeout or
+            # a late granule: the sector is a fixed property of the satellite
+            # and the site, so every poll would list, download 4.4 MB, fail the
+            # same read and evict it again -- 634 MB a day, for ever, on the
+            # same volume the night's frames are written to. The disk side of
+            # that was already measured and fixed; this is the bandwidth side,
+            # and the trim only ever hid it.
+            #
+            # `_clear()` resets the flag, and `_clear()` is exactly what runs
+            # when the site moves or the satellite changes -- the only two
+            # things that can make this answer different. So the retry is
+            # event-driven rather than timed, which is the honest cadence: a
+            # timer here would be a claim that waiting changes something.
+            return
         if now - self._attempt_at < ccfg.poll_minutes * 60.0:
             return
         self._attempt_at = now
@@ -446,6 +470,7 @@ class CloudmapService:
         self._fetched_at = None
         self._last_error = None
         self._attempt_at = 0.0
+        self._hopeless = False
 
     async def _refresh(self, ccfg, site, now: float) -> None:
         """One poll: list, fetch what is new, read it, re-measure the motion.
@@ -517,6 +542,11 @@ class CloudmapService:
                     f"cloud map {stage} fetch failed: {type(exc).__name__}",
                     "cloudmap")
             self._last_error = _safe_error(exc)
+            if isinstance(exc, SiteOutsideSector):
+                # See `tick`. Latched, not counted: one occurrence is proof,
+                # because the geometry that produced it cannot change while the
+                # site and the satellite stay put.
+                self._hopeless = True
             return
         finally:
             # TRIMMED WHETHER OR NOT THE READ WORKED, and that is the whole
