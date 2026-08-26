@@ -37,7 +37,8 @@ import pydantic
 import pytest
 
 from astrodeck.cloudmap.abi_grid import GridSpec
-from astrodeck.cloudmap.granule import CloudmapUnavailable, GranuleWindow
+from astrodeck.cloudmap.granule import (
+    CloudmapUnavailable, GranuleWindow, SiteOutsideSector)
 from astrodeck.cloudmap.source import GranuleRef
 from astrodeck.config import CloudmapConfig, ConfigStore
 
@@ -1300,3 +1301,78 @@ async def test_two_dome_requests_do_not_walk_the_sky_at_once(svc, monkeypatch):
         + " threads on the sky at once")
     assert all(p["rows"] is not None for p in payloads), (
         "serialising them must not lose any of the answers")
+
+
+# ---------------------------------------------------------------------------
+# A site the satellite can never see must stop COSTING something every poll.
+
+async def test_a_site_outside_the_sector_stops_being_fetched_for(svc):
+    """634 MB a day, for ever, for an answer that cannot change.
+
+    Out-of-sector is not a timeout or a late granule. The sector is a fixed
+    property of the satellite and the site, so re-listing and re-downloading
+    4.4 MB every ten minutes to fail the identical read is pure waste -- on the
+    same volume the night's frames are written to. The disk half of this was
+    already found and fixed (the cache trim runs in a `finally`); the trim is
+    exactly what hid the bandwidth half, because the directory stopped growing
+    while the transfers went on for ever.
+
+    Counted rather than asserted on a flag: a flag proves a variable changed,
+    and what has to be true is that the WORK stops.
+    """
+    service, now, store, rec, upstream = svc
+
+    def _outside(*a, **kw):
+        raise SiteOutsideSector(centre_row=-790, centre_col=157,
+                                n_rows=1500, n_cols=2500)
+
+    monkey = pytest.MonkeyPatch()
+    with monkey.context() as patched:
+        patched.setattr(service_mod, "read_window", _outside)
+        await service.tick()
+        after_first = (upstream.list_calls, service._last_error)
+        for _ in range(20):
+            upstream.advance(GRANULE_S)
+            now["t"] += 600.0
+            await service.tick()
+        after_twenty = upstream.list_calls
+
+    assert after_first[0] > 0, "the test never exercised a fetch at all"
+    assert after_first[1] == SiteOutsideSector.MESSAGE, (
+        "and the operator is told why, not left with a silent dead panel")
+    assert after_twenty == after_first[0], (
+        "twenty further polls listed upstream " + str(after_twenty - after_first[0])
+        + " more times; each one downloads 4.4 MB to fail the same read")
+
+
+async def test_moving_the_rig_makes_it_try_again(svc):
+    """The latch is event-driven, and these are the events.
+
+    A timer would be a claim that WAITING changes the answer. It does not --
+    only the site or the satellite moving can, and both already run `_clear`.
+    So the retry has to be keyed on those, and it has to actually happen: a
+    latch that never releases would strand a rig that had simply been carried
+    to a different observatory.
+    """
+    service, now, store, rec, upstream = svc
+
+    def _outside(*a, **kw):
+        raise SiteOutsideSector(centre_row=-790, centre_col=157,
+                                n_rows=1500, n_cols=2500)
+
+    monkey = pytest.MonkeyPatch()
+    with monkey.context() as patched:
+        patched.setattr(service_mod, "read_window", _outside)
+        await service.tick()
+        assert service._hopeless is True
+        latched_at = upstream.list_calls
+
+        # ... and the rig moves.
+        store.cfg().site.latitude = 41.0
+        store.cfg().site.longitude = -87.6
+        now["t"] += 600.0
+        await service.tick()
+
+    assert upstream.list_calls > latched_at, (
+        "after the site moved the poller must look again -- the sector answer "
+        "is about WHERE the rig is, and it is somewhere else now")

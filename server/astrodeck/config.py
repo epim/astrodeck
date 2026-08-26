@@ -889,7 +889,45 @@ class StandardsConfig(BaseModel):
     max_consecutive_rejects_night: int = Field(20, ge=0, le=1000)
 
 
+#: On-disk shape of ``astrodeck.json``. Bump when a change needs a MIGRATION --
+#: not for an added field, which pydantic already tolerates in both directions
+#: (``_load`` fills defaults for keys an old file lacks).
+#:
+#: WHAT THE MARKER IS ACTUALLY FOR, because it is easy to expect too much of
+#: it. It does NOT let you tell a written-out default from a deliberate
+#: operator choice -- ``_save`` writes ``model_dump()`` with no
+#: ``exclude_defaults``, so both look identical on disk, and no version number
+#: recovers information the format never stored. See CloudmapConfig.platform
+#: for the case that proves it.
+#:
+#: What it DOES buy is the two things that were impossible without it:
+#:   - a migration can run EXACTLY ONCE per config, because afterwards the
+#:     stamp says it already ran;
+#:   - a file written by a NEWER build is recognisable as such, instead of
+#:     being silently stripped of every field this build has never heard of.
+#: A config with no stamp at all reads back as version 0, which is itself the
+#: evidence "this predates the marker" that a future migration will want.
+CONFIG_SCHEMA = 1
+
+
+def _stored_schema(raw: dict) -> int:
+    """The stamp on disk, or 0 for a file written before the marker existed.
+
+    Deliberately total. A stamp that is missing, null, a string, or nonsense
+    all mean the same thing operationally -- we cannot trust it to say the file
+    is current -- and the safe reading of "cannot trust" is the OLDEST version,
+    because that makes a future migration run rather than skip. Guessing high
+    would silently skip it.
+    """
+    try:
+        return max(0, int(raw.get("schema_version") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 class AppConfig(BaseModel):
+    #: See CONFIG_SCHEMA. 0 on a file written before the marker existed.
+    schema_version: int = CONFIG_SCHEMA
     version: int = 1                   # bumped on every save (optimistic-concurrency token)
     site: Site = Field(default_factory=Site)
     optics: Optics = Field(default_factory=Optics)
@@ -1278,6 +1316,16 @@ def _refuse_lockout(auth: "AuthConfig") -> None:
         "that block back used to wipe it.)")
 
 
+
+def _unknown_keys(raw: dict) -> dict:
+    """Top-level keys in the file that this build's AppConfig has no field for.
+
+    Defined after the model because it reads ``AppConfig.model_fields``.
+    """
+    known = set(AppConfig.model_fields)
+    return {k: v for k, v in raw.items() if k not in known}
+
+
 class ConfigStore:
     """Module singleton (like ``hub``) owning the persisted ``AppConfig``.
 
@@ -1289,6 +1337,10 @@ class ConfigStore:
     def __init__(self, path: Path = CONFIG_FILE):
         self._path = path
         self._cfg: AppConfig | None = None
+        #: Top-level keys belonging to a NEWER build than this one, held so a
+        #: downgrade does not silently delete them. See `_load`. Empty in every
+        #: normal case.
+        self._foreign: dict = {}
         # One thread at a time may materialise or persist this store. The store
         # is a process-wide singleton read from worker threads (every route that
         # does asyncio.to_thread -> hub.site lands here), and both of its disk
@@ -1339,17 +1391,27 @@ class ConfigStore:
             raw = read_json(bak)
         except (FileNotFoundError, ValueError, OSError):
             return None
+        stored = _stored_schema(raw)
         try:
-            cfg = AppConfig(**raw)
+            cfg = AppConfig(**{**raw, "schema_version": stored})
         except Exception:
             return None
         bus.log("warning", "config restored from backup (.bak)", "config")
         self._cfg = cfg
+        # The backup came from a newer build too, if the primary did. Recovering
+        # from corruption is not licence to also delete the settings this build
+        # does not understand -- see `_load`, and note this write goes out
+        # directly rather than through `_save`, so the merge has to be here as
+        # well or the restore path quietly undoes the preservation.
+        self._foreign = (_unknown_keys(raw) if stored > CONFIG_SCHEMA else {})
+        body = cfg.model_dump()
+        if self._foreign:
+            body = {**self._foreign, **body}
         # Re-establish the primary from the good backup WITHOUT taking a fresh
         # backup: the (possibly corrupt) primary still on disk must not be copied
         # over the known-good ``.bak`` we just recovered from.
         ensure_dir(self._path.parent)
-        write_json_atomic(self._path, cfg.model_dump(), backup=False)
+        write_json_atomic(self._path, body, backup=False)
         return cfg
 
     def _load(self) -> AppConfig:
@@ -1374,7 +1436,13 @@ class ConfigStore:
         try:
             # tolerate missing keys (forward/back-compat with the automation
             # surface, which appends keys later) — pydantic fills defaults.
-            cfg = AppConfig(**raw)
+            #
+            # THE STAMP IS READ BEFORE THE MODEL IS BUILT, and it has to be:
+            # `schema_version` defaults to CONFIG_SCHEMA, so `AppConfig(**raw)`
+            # on a file that has no stamp would invent one and destroy the only
+            # evidence that the file predates the marker.
+            stored = _stored_schema(raw)
+            cfg = AppConfig(**{**raw, "schema_version": stored})
         except Exception as e:  # invalid shape
             recovered = self._restore_from_bak()
             if recovered is not None:
@@ -1383,6 +1451,36 @@ class ConfigStore:
             self._cfg = cfg
             self._save()
             return cfg
+
+        # A FILE FROM A NEWER BUILD IS NOT OURS TO REWRITE. `AppConfig` is a
+        # plain BaseModel, so pydantic's default `extra="ignore"` drops every
+        # key this build has never heard of -- and the next `_save` writes the
+        # stripped version back, permanently deleting settings that belong to
+        # the build the operator is about to return to. Downgrading used to
+        # cost them silently. Their keys are held here and merged back on save.
+        # ONLY for a newer stamp: on an equal or older one an unknown key is a
+        # field we deliberately removed, and resurrecting those for ever is a
+        # different bug.
+        self._foreign = (_unknown_keys(raw) if stored > CONFIG_SCHEMA else {})
+        if self._foreign:
+            bus.log("warning",
+                    "config was written by a newer AstroDeck (schema "
+                    + str(stored) + " against this build's "
+                    + str(CONFIG_SCHEMA) + "); "
+                    + str(len(self._foreign))
+                    + " setting(s) this build does not understand are being "
+                    "preserved untouched",
+                    "config")
+
+        # Nothing to migrate yet -- CONFIG_SCHEMA is 1 and there has never been
+        # a 0->1 change worth making, because everything before the marker was
+        # additive. The stamp is applied so the NEXT change has a floor to
+        # migrate from, and `_stamped` makes the write happen once rather than
+        # on every boot.
+        if cfg.schema_version < CONFIG_SCHEMA:
+            cfg.schema_version = CONFIG_SCHEMA
+            self._cfg = cfg
+            self._save()
         return cfg
 
     def _recover_from_corrupt(self, err: Exception) -> AppConfig:
@@ -1411,7 +1509,13 @@ class ConfigStore:
             if cfg is None:
                 return
             ensure_dir(self._path.parent)
-            write_json_atomic(self._path, cfg.model_dump())
+            body = cfg.model_dump()
+            # See `_load`: a newer build's keys ride through untouched, and
+            # ours win on any collision -- they are the ones this build just
+            # edited.
+            if self._foreign:
+                body = {**self._foreign, **body}
+            write_json_atomic(self._path, body)
 
     def reload(self) -> AppConfig:
         """Force a re-read from disk (used by tests)."""
