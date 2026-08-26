@@ -732,12 +732,45 @@ class CloudmapConfig(BaseModel):
     a reason to refuse to open.
     """
     enabled: bool = False
-    #: G18 is GOES-WEST and the right default for the western United States:
-    #: from there the zenith angle is 46.2 degrees against GOES-19's 64.7,
-    #: which is a 2.9 km smeared pixel against 4.7 and a 9.4 km parallax error
-    #: against 19.1 (design 2 §2.1). East of roughly 100 W the answer flips,
-    #: and this is the knob for it.
-    platform: Literal["G18", "G19"] = "G18"
+    #: Which GOES satellite to fetch. ``auto`` picks it from the site's own
+    #: longitude and is the default; ``G18``/``G19`` remain as a manual
+    #: override and always win.
+    #:
+    #: The numbers that make the choice matter, kept from when this was a bare
+    #: G18 default: from the western United States GOES-18's zenith angle is
+    #: 46.2 degrees against GOES-19's 64.7, which is a 2.9 km smeared pixel
+    #: against 4.7 and a 9.4 km parallax error against 19.1 (design 2 §2.1).
+    #: Those three metrics are one geometry read three ways, so they never
+    #: disagree about which satellite is better -- see
+    #: ``cloudmap/platform.py``, which owns the arithmetic and the crossover.
+    #:
+    #: WHY IT IS NO LONGER A BARE KNOB. G18 is right for the west and produces
+    #: NOTHING for most of the country: east of the crossover the site falls
+    #: outside GOES-West's CONUS sector, every cell reads no_data, and the only
+    #: cure was a field an operator had no reason to know existed.
+    #: ``test_cloudmap_service`` names that exact case. The site longitude was
+    #: already sitting two blocks up in this same file.
+    #:
+    #: THE CROSSOVER IS 106.1 W, NOT THE "roughly 100 W" THIS COMMENT USED TO
+    #: CLAIM. It is the midpoint of the two sub-satellite longitudes (-137.0
+    #: and -75.2) and, because both satellites are on the equator, it is the
+    #: same at every latitude. The old wording was wrong by 6.1 degrees --
+    #: 520 km at latitude 40 -- and contradicted by the geometry design's own
+    #: worked example, which has 105 W already preferring GOES-EAST (55.5 deg
+    #: against 56.7). 100 W was folklore borrowed from US regional geography.
+    #:
+    #: MIGRATION -- READ BEFORE ASSUMING THIS REACHES ANYBODY. ``_save`` writes
+    #: ``cfg.model_dump()`` with no ``exclude_defaults``, so every config file
+    #: already on disk contains a literal ``"platform": "G18"``. That is the
+    #: safe direction (no rig silently changes satellite on upgrade) and the
+    #: useless one: an existing install stays pinned to a value it never chose
+    #: and never sees ``auto``. Worse, the stored ``"G18"`` is byte-identical
+    #: whether it was a written-out default or a deliberate operator override,
+    #: and ``AppConfig`` carries no schema_version to tell them apart, so a
+    #: read-time migration cannot be written safely after the fact. Reaching
+    #: existing rigs needs a deliberate one-shot -- ask, or bump a version --
+    #: not a quiet rewrite of a value that might be somebody's choice.
+    platform: Literal["auto", "G18", "G19"] = "auto"
     #: Ten minutes, not five. The products refresh every five and the cloud
     #: pattern's own lifetime is under forty (design 2 §2.6), so a ten-minute
     #: cadence loses nothing a five-minute one would have caught and halves the

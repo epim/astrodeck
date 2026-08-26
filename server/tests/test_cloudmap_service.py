@@ -803,7 +803,11 @@ def test_the_poll_floor_is_five_minutes():
     relay tunnel and, on an imaging night, uploading frames."""
     assert CloudmapConfig().poll_minutes == 10
     assert CloudmapConfig().enabled is False
-    assert CloudmapConfig().platform == "G18"
+    # Was "G18" until the default became "auto" -- the old literal default
+    # produced an empty map east of 106.1 W. The satellite choice and its
+    # boundaries now live in tests/test_cloudmap_platform.py; what this line
+    # still guards is that the block's OTHER defaults did not move with it.
+    assert CloudmapConfig().platform == "auto"
     with pytest.raises(pydantic.ValidationError):
         CloudmapConfig(poll_minutes=4)
     with pytest.raises(pydantic.ValidationError):
