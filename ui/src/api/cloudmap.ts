@@ -27,6 +27,11 @@ export interface CloudmapStatus {
   stale: boolean;
   last_error: string | null;
   motion: CloudMotion | null;
+  /** What the geometry would pick for the configured site, independent of what
+   *  is configured. Null when no site is set. It differs from `platform` only
+   *  when the operator has pinned a bird -- see CloudmapPanel for why that is
+   *  worth saying out loud rather than silently correcting. */
+  suggested_platform?: "G18" | "G19" | null;
   credit: { source: string; url: string };
 }
 
