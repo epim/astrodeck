@@ -72,7 +72,7 @@ from .granule import (
     read_window,
 )
 from .motion import Motion, WindLevel, corroborate, estimate_motion, forecast_at
-from .platform import resolve_platform
+from .platform import platform_for_longitude, resolve_platform
 from .occlusion import (
     CLOUD_TOP,
     MASK_PROBABILITY,
@@ -715,8 +715,29 @@ class CloudmapService:
             "stale": st.stale,
             "last_error": st.last_error,
             "motion": motion,
+            # WHAT THE GEOMETRY WOULD PICK, regardless of what is configured.
+            #
+            # This exists because the auto-pick reaches nobody who already has
+            # a config file. Pydantic writes defaults into the stored JSON --
+            # measured on the rig: {"enabled":true,"platform":"G18",...} -- so
+            # every install that predates `auto` carries an explicit "G18" it
+            # never chose, and that explicit value correctly wins over the new
+            # default. AppConfig has no schema_version, so a written-out
+            # default is BYTE-IDENTICAL to a deliberate operator override and
+            # no read-time migration can safely tell them apart.
+            #
+            # So the panel asks instead of the config guessing. Null when the
+            # site is unset, because then there is nothing to suggest from.
+            "suggested_platform": self._suggested_platform(),
             "credit": credit(st.platform),
         }
+
+    def _suggested_platform(self) -> str | None:
+        """The nearer satellite for the configured site, or None if unset."""
+        site = config_store.cfg().site
+        if site.is_default:
+            return None
+        return platform_for_longitude(site.longitude)
 
     def _no_sky(self, st: CloudmapState) -> str | None:
         """Why there is nothing to answer with, or None when there is.
