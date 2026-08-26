@@ -1,0 +1,450 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AstroDeck</title>
+<meta name="description" content="An open, vendor-neutral observatory controller. Runs the whole night from one browser tab — slew, focus, guide, shoot, flip, park — and knows where the clouds are.">
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="canonical" href="https://epim.github.io/astrodeck/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="AstroDeck">
+<meta property="og:description" content="An open, vendor-neutral observatory controller. Runs the whole night from one browser tab, and knows where the clouds are.">
+<meta property="og:url" content="https://epim.github.io/astrodeck/">
+<meta name="twitter:card" content="summary">
+<meta name="theme-color" content="#070A12">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;700;800&family=Spectral:ital,wght@0,300;0,400;0,600;1,400&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="assets/site.css">
+<script src="assets/theme.js"></script>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="wrap topbar-in">
+    <a class="brand" href="index.html">Astro<span>Deck</span></a>
+    <nav class="navlinks">
+      <a href="index.html" aria-current="page">Overview</a>
+      <a href="flows.html">Flows</a>
+      <a href="weather.html">Weather</a>
+      <a href="hardware.html">Hardware</a>
+      <a href="features.html" class="opt">Features</a>
+      <a href="https://github.com/epim/astrodeck" class="opt">GitHub</a>
+      <button class="themetoggle" data-theme-toggle type="button">Auto</button>
+    </nav>
+  </div>
+</header>
+
+<section class="hero">
+  <canvas id="skycanvas" aria-hidden="true"></canvas>
+  <div class="wrap hero-in">
+    <p class="eyebrow">Open observatory control</p>
+    <h1>The night runs itself. You just watch.</h1>
+    <p class="lede">
+      AstroDeck slews, centres, focuses, guides, shoots, dithers, flips the
+      meridian and parks at dawn — then writes you a report.
+      <strong>It also knows where the clouds are, and whether one is about to
+      cross your target.</strong>
+    </p>
+    <div class="ctarow">
+      <a class="btn btn-solid" href="#start">Run it in two minutes</a>
+      <a class="btn btn-ghost" href="flows.html">See Astro Flows</a>
+    </div>
+  </div>
+</section>
+
+<div class="wrap">
+  <div class="stats">
+    <div class="stat"><span class="n">21</span><span class="l">Flow node types</span></div>
+    <div class="stat"><span class="n">8,700+</span><span class="l">Tests passing</span></div>
+    <div class="stat"><span class="n">11</span><span class="l">Devices, simulated</span></div>
+    <div class="stat"><span class="n">3</span><span class="l">Ways to drive a rig</span></div>
+    <div class="stat"><span class="n">0</span><span class="l">Ports to forward</span></div>
+  </div>
+</div>
+
+<!-- ============================================================ the thesis -->
+<section class="band">
+  <div class="wrap stack gap-4">
+    <div class="band-head">
+      <p class="eyebrow">Why it exists</p>
+      <h2>Your rig, your rules, your source code.</h2>
+      <p>
+        Every part of AstroDeck sits above one small device abstraction. The
+        sequencer does not know what brand your mount is — it knows a mount can
+        slew, report a pier side, and refuse. That is not a design slogan. It is
+        the reason you can swap a camera vendor without touching autofocus, and
+        the reason a new driver is a few async methods rather than a fork.
+      </p>
+    </div>
+
+    <div class="grid grid-3">
+      <article class="card">
+        <span class="kicker">Vendor neutral</span>
+        <h3>No brand owns your night</h3>
+        <p>
+          Native drivers for ZWO and Player One cameras, ZWO mounts, focusers,
+          wheels and rotators, and Wanderer accessories. Everything else through
+          ASCOM Alpaca, or a Windows ASCOM driver via the bundled COM host.
+        </p>
+      </article>
+      <article class="card">
+        <span class="kicker">Standalone</span>
+        <h3>Complete on its own</h3>
+        <p>
+          Star detection, autofocus, plate solving, polar alignment, guiding and
+          sequencing all ship in the box. A rig can run with no other astronomy
+          software installed anywhere.
+        </p>
+      </article>
+      <article class="card">
+        <span class="kicker">Or alongside</span>
+        <h3>Keep what already works</h3>
+        <p>
+          Point it at NINA through the Advanced API, or at an ASIAIR over its own
+          protocol, and that setup keeps driving the hardware while AstroDeck
+          adds the touch UI, Flows, sessions and remote access.
+        </p>
+      </article>
+      <article class="card">
+        <span class="kicker">Offline first</span>
+        <h3>No signal, no problem</h3>
+        <p>
+          The Sky Atlas ships a ~250 MB offline survey pack and falls back to it
+          automatically. Dark sites are the normal case, not the exception.
+        </p>
+      </article>
+      <article class="card">
+        <span class="kicker">Remote</span>
+        <h3>One outbound connection</h3>
+        <p>
+          The scope dials a forward-only relay. No port forwarding, no NAT
+          surgery, and every tunnelled request is re-authenticated at home rather
+          than trusted because it arrived.
+        </p>
+      </article>
+      <article class="card">
+        <span class="kicker">Apache-2.0</span>
+        <h3>Actually yours</h3>
+        <p>
+          Read it, change it, run it on hardware nobody anticipated. Third-party
+          backends can ship as separate packages and register themselves without
+          a fork.
+        </p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- ======================================================== a night, traced -->
+<section class="band band-tint">
+  <div class="wrap stack gap-4">
+    <div class="band-head">
+      <p class="eyebrow">One clear night</p>
+      <h2>What “unattended” actually means.</h2>
+      <p>
+        This is a real sequence of events, in the order the engine performs them.
+        Nothing here needs a human awake.
+      </p>
+    </div>
+
+    <figure>
+      <div class="framed">
+        <svg viewBox="0 0 1000 232" role="img" aria-label="Timeline of one automated night: dusk, cool, slew and centre, autofocus, guide, capture with dithering, meridian flip, weather hold, dawn cutoff, park and warm, report.">
+          <defs>
+            <linearGradient id="nightband" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0"    stop-color="var(--accent)" stop-opacity="0.05"/>
+              <stop offset="0.14" stop-color="var(--accent)" stop-opacity="0.20"/>
+              <stop offset="0.86" stop-color="var(--accent)" stop-opacity="0.20"/>
+              <stop offset="1"    stop-color="var(--accent)" stop-opacity="0.05"/>
+            </linearGradient>
+          </defs>
+
+          <rect x="40" y="52" width="920" height="34" fill="url(#nightband)"/>
+          <line x1="40" y1="103" x2="960" y2="103" stroke="var(--line)" stroke-width="1"/>
+
+          <g font-family="JetBrains Mono, monospace" font-size="10" fill="var(--dimmer)" letter-spacing="1.2">
+            <text x="40"  y="42">20:41</text>
+            <text x="286" y="42">22:15</text>
+            <text x="520" y="42">01:02</text>
+            <text x="742" y="42">03:38</text>
+            <text x="906" y="42">05:19</text>
+          </g>
+
+          <g font-family="JetBrains Mono, monospace" font-size="10" fill="var(--dim)" letter-spacing="1.4">
+            <text x="40"  y="76" fill="var(--accent)">DUSK</text>
+            <text x="742" y="76" fill="var(--amber)">CLOUD HOLD</text>
+            <text x="880" y="76" fill="var(--accent)">DAWN</text>
+          </g>
+
+          <g stroke="var(--accent)" stroke-width="1.5">
+            <line x1="40"  y1="96" x2="40"  y2="110"/>
+            <line x1="286" y1="96" x2="286" y2="110"/>
+            <line x1="520" y1="96" x2="520" y2="110"/>
+            <line x1="742" y1="96" x2="742" y2="110" stroke="var(--amber)"/>
+            <line x1="906" y1="96" x2="906" y2="110"/>
+          </g>
+
+          <g font-family="Archivo, sans-serif" font-size="12.5" fill="var(--text)">
+            <text x="40"  y="134">Cool to −10 °C</text>
+            <text x="40"  y="152" font-size="11" fill="var(--dim)">then slew, plate solve, centre</text>
+
+            <text x="286" y="134">Autofocus, guide, capture</text>
+            <text x="286" y="152" font-size="11" fill="var(--dim)">dither every 3, refocus on ΔT</text>
+
+            <text x="520" y="134">Meridian flip</text>
+            <text x="520" y="152" font-size="11" fill="var(--dim)">pier side verified, not assumed</text>
+
+            <text x="700" y="180">Hold for cloud</text>
+            <text x="700" y="198" font-size="11" fill="var(--dim)">releases itself when it clears</text>
+
+            <text x="820" y="134">Park and warm</text>
+            <text x="820" y="152" font-size="11" fill="var(--dim)">report written</text>
+          </g>
+
+          <path d="M742 110 L742 168 L790 168" fill="none" stroke="var(--amber)" stroke-width="1" stroke-dasharray="3 3"/>
+        </svg>
+      </div>
+      <figcaption>
+        Frames that fail the quality gate are logged with the reason and re-shot.
+        Anything still owed at dawn carries to the next night automatically.
+      </figcaption>
+    </figure>
+
+    <div class="grid grid-2">
+      <article class="card">
+        <span class="kicker">The part nobody enjoys</span>
+        <h3>The meridian flip verifies itself</h3>
+        <p>
+          Mounts lie about flipping. AstroDeck re-reads the pier side after the
+          slew, and if nothing actually changed it holds the flip armed, drops
+          its own lead time and retries at the meridian itself — rather than
+          reporting success and imaging the rest of the night upside down.
+        </p>
+      </article>
+      <article class="card">
+        <span class="kicker">Across nights</span>
+        <h3>A target is a debt, not an event</h3>
+        <p>
+          Frames accrue against a target across as many nights and reboots as it
+          takes. Every frame carries its HFR, star count and guide RMS in a
+          ledger you can override by hand, and a dormant session re-arms itself
+          at dusk when the window reopens.
+        </p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ the modules -->
+<section class="band">
+  <div class="wrap stack gap-4">
+    <div class="band-head">
+      <p class="eyebrow">The surface</p>
+      <h2>Eleven screens, one rig, no manual.</h2>
+    </div>
+
+    <div class="grid grid-3">
+      <article class="card">
+        <h3>Capture</h3>
+        <p>Live preview with zoom, pan and a 1:1 loupe. Interactive histogram and stretch, star overlay, clip mask, filmstrip. Cooler with an at-target badge and dew heater.</p>
+      </article>
+      <article class="card">
+        <h3>Focus</h3>
+        <p>V-curve autofocus on real HFR, hyperbola fit with a visible R². Per-filter offsets, refocus on temperature or frame count, and a Bahtinov aid with a live spike overlay.</p>
+      </article>
+      <article class="card">
+        <h3>Mount</h3>
+        <p>Touch slew pad with a dead-man's switch, catalog goto with a below-horizon guard, plate solve and sync, tracking rates, park and unpark.</p>
+      </article>
+      <article class="card">
+        <h3>Guide</h3>
+        <p>Built-in engine, PHD2 or NINA's. RA/Dec error graph, scatter, RMS and dithering. The Guiding Assistant measures seeing and Dec backlash and suggests settings.</p>
+      </article>
+      <article class="card">
+        <h3>Atlas</h3>
+        <p>A WebGL survey map warped through the exact TAN projection, with a draggable rotatable field-of-view overlay and a mosaic planner. Works offline.</p>
+      </article>
+      <article class="card">
+        <h3>Tonight</h3>
+        <p>What is actually up, right now, ranked and tagged by difficulty — with altitude curves, transit, twilight and moon separation.</p>
+      </article>
+      <article class="card">
+        <h3>Monitor</h3>
+        <p>ETA, progress, cooler, guide RMS, meridian countdown, HFR trend, live thumbnail and the sky dome. One tap turns the whole interface dark-adaptation red.</p>
+      </article>
+      <article class="card">
+        <h3>Align</h3>
+        <p>Three-point polar alignment with a live error readout, plus a measured guide-scope offset so the guider knows where it is really looking.</p>
+      </article>
+      <article class="card">
+        <h3>Gallery and reports</h3>
+        <p>Full FITS headers, per-frame WCS written back after a solve, an end-of-night report, and a stacking bundle pre-sorted for PixInsight, Siril or APP.</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================== the three -->
+<section class="band band-tint">
+  <div class="wrap stack gap-4">
+    <div class="band-head">
+      <p class="eyebrow">Three routes, all permanent</p>
+      <h2>Standalone, or wrapped around what you have.</h2>
+      <p>
+        None of these is a migration path and none is a stage on the way to
+        another. Pick the one that fits the rig you already own.
+      </p>
+    </div>
+
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr><th>Route</th><th>What drives the hardware</th><th>What AstroDeck adds</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="mono">Standalone</td>
+            <td>AstroDeck, via native drivers or ASCOM Alpaca</td>
+            <td>Everything — it is the whole stack</td>
+          </tr>
+          <tr>
+            <td class="mono">With NINA</td>
+            <td>NINA, through its Advanced API on port <code>1888</code></td>
+            <td>Touch UI, Flows, session ledger, Sky Atlas, weather model, remote access, phone dashboard</td>
+          </tr>
+          <tr>
+            <td class="mono">With ASIAIR</td>
+            <td>The ASIAIR box, over its own network protocol</td>
+            <td>The same, with guiding left where it already works</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p class="note">
+      <strong>Full breakdown per route</strong> — camera, mount, focuser, wheel,
+      rotator, power, guiding and solving — is on the
+      <a href="features.html">features page</a>.
+    </p>
+  </div>
+</section>
+
+<!-- ============================================================== simulator -->
+<section class="band" id="start">
+  <div class="wrap stack gap-4">
+    <div class="band-head">
+      <p class="eyebrow">Try it now</p>
+      <h2>Two minutes. No hardware. No excuses.</h2>
+      <p>
+        Open Equipment, press <strong>Simulator rig</strong>, and eleven devices
+        connect in about three seconds.
+      </p>
+    </div>
+
+    <div class="grid grid-2">
+      <div class="card">
+        <span class="kicker">From source</span>
+<pre><code>cd server
+python -m venv .venv
+.venv\Scripts\pip install -e .
+.venv\Scripts\python -m astrodeck</code></pre>
+        <p>Then open <code>http://localhost:8800</code>.</p>
+      </div>
+      <div class="card">
+        <span class="kicker">Or Docker, Raspberry Pi included</span>
+<pre><code>docker compose up -d</code></pre>
+        <p>
+          Multi-arch, so the same setup runs on a mini-PC or a Pi 4/5. There is
+          also a single binary for Windows, Linux and Mac with no Python and no
+          Node.
+        </p>
+      </div>
+    </div>
+
+    <div class="prose">
+      <h3>The simulator is not a row of stubs</h3>
+      <p class="dim">
+        It renders a real star field that answers to where the mount points,
+        where the focuser sits and which filter is in the light path. Autofocus
+        walks a genuine V curve. The plate solver actually solves. The guider
+        actually guides. A two-target night runs to completion while it rains
+        outside.
+      </p>
+      <p class="dim">
+        Put the blackout filter in and the frame goes dark, because the simulator
+        knows what a blackout filter does. That fidelity is deliberate: a
+        simulator that lies is worse than no simulator, because it manufactures
+        confidence.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ================================================================ honesty -->
+<section class="band band-tint">
+  <div class="wrap stack gap-3">
+    <div class="band-head">
+      <p class="eyebrow">Where it stands</p>
+      <h2>v0.3, on a real rig most clear nights, not finished.</h2>
+    </div>
+    <ul class="ticks" style="max-width:62ch">
+      <li><strong>Guiding and plate solving work and still have sharp corners.</strong> Used every session; both can still fail with a message that could be clearer.</li>
+      <li><strong>No flats wizard.</strong> Flats are shootable — there is auto-exposure and a calibration library — but nobody has built the guided walkthrough.</li>
+      <li><strong>The ASIAIR backend has never touched real hardware.</strong> Written against the protocol, tested against a fake.</li>
+      <li><strong>The cloud model needs a GOES footprint.</strong> The Americas are covered; elsewhere AstroDeck says so rather than drawing an empty sky as clear.</li>
+      <li><strong>Binaries are not code-signed</strong>, so Windows and macOS both warn on first run.</li>
+    </ul>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="footgrid">
+      <div>
+        <h4>Product</h4>
+        <ul>
+          <li><a href="index.html">Overview</a></li>
+          <li><a href="flows.html">Astro Flows</a></li>
+          <li><a href="weather.html">Weather awareness</a></li>
+          <li><a href="features.html">Feature matrix</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Hardware</h4>
+        <ul>
+          <li><a href="hardware.html">Supported vendors</a></li>
+          <li><a href="hardware.html#alpaca">ASCOM Alpaca</a></li>
+          <li><a href="hardware.html#ask">Request a device</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Docs</h4>
+        <ul>
+          <li><a href="https://github.com/epim/astrodeck/blob/main/docs/guide/README.md">User guide</a></li>
+          <li><a href="https://github.com/epim/astrodeck/blob/main/docs/quickstart.md">Quickstart</a></li>
+          <li><a href="https://github.com/epim/astrodeck/blob/main/docs/development.md">Development</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Project</h4>
+        <ul>
+          <li><a href="https://github.com/epim/astrodeck">GitHub</a></li>
+          <li><a href="https://github.com/epim/astrodeck/issues">Issues</a></li>
+          <li><a href="https://github.com/epim/astrodeck/blob/main/LICENSE">Apache-2.0</a></li>
+        </ul>
+      </div>
+    </div>
+    <hr class="footrule">
+    <p>
+      Apache-2.0. Not affiliated with ZWO, Player One, Wanderer Astro, or the
+      NINA or PHD2 projects. DSS2 imagery © AAO/STScI via public CDS/ESA HiPS
+      mirrors. Cloud data courtesy NOAA GOES on AWS.
+    </p>
+  </div>
+</footer>
+
+<script src="assets/sky.js"></script>
+</body>
+</html>

@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hardware Support</title>
+<meta name="description" content="Native drivers, ASCOM Alpaca, and the COM host — every vendor and device AstroDeck drives, and how to get yours added.">
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="canonical" href="https://epim.github.io/astrodeck/hardware.html">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Hardware Support | AstroDeck">
+<meta property="og:description" content="Native drivers, ASCOM Alpaca and the COM host. Every vendor AstroDeck drives, and how to get yours added.">
+<meta property="og:url" content="https://epim.github.io/astrodeck/hardware.html">
+<meta name="twitter:card" content="summary">
+<meta name="theme-color" content="#070A12">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;700;800&family=Spectral:ital,wght@0,300;0,400;0,600;1,400&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="assets/site.css">
+<script src="assets/theme.js"></script>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="wrap topbar-in">
+    <a class="brand" href="index.html">Astro<span>Deck</span></a>
+    <nav class="navlinks">
+      <a href="index.html">Overview</a>
+      <a href="flows.html">Flows</a>
+      <a href="weather.html">Weather</a>
+      <a href="hardware.html" aria-current="page">Hardware</a>
+      <a href="features.html" class="opt">Features</a>
+      <a href="https://github.com/epim/astrodeck" class="opt">GitHub</a>
+      <button class="themetoggle" data-theme-toggle type="button">Auto</button>
+    </nav>
+  </div>
+</header>
+
+<section class="band">
+  <div class="wrap stack gap-3">
+    <p class="eyebrow">Hardware</p>
+    <h1 style="max-width:16ch">Bring the gear you already own.</h1>
+    <p class="lead" style="max-width:56ch">
+      Three ways in: a native driver with nothing else installed, ASCOM Alpaca
+      over the network, or a Windows ASCOM driver through the COM host AstroDeck
+      starts for you. Most rigs need only the first.
+    </p>
+  </div>
+</section>
+
+<!-- ================================================================= native -->
+<section class="band band-tint">
+  <div class="wrap stack gap-4">
+    <div class="band-head">
+      <p class="eyebrow">Native drivers</p>
+      <h2>No vendor software. Nothing to install.</h2>
+      <p>
+        AstroDeck talks to these directly — over the vendor SDK or the wire
+        protocol itself. Plug in the USB cable and press connect.
+      </p>
+    </div>
+
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr><th>Vendor</th><th>Device</th><th>How it is driven</th><th>Status</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">ZWO</td><td>AM5 / AM5N harmonic mounts</td><td>Meade LX200 ASCII over USB serial</td><td class="yes">On sky</td></tr>
+          <tr><td class="mono">ZWO</td><td>ASI cameras</td><td>ASICamera2 SDK</td><td class="yes">On sky</td></tr>
+          <tr><td class="mono">ZWO</td><td>EAF focuser</td><td>ZWO USB SDK</td><td class="yes">On sky</td></tr>
+          <tr><td class="mono">ZWO</td><td>EFW filter wheel</td><td>ZWO USB SDK</td><td class="yes">Supported</td></tr>
+          <tr><td class="mono">ZWO</td><td>CAA rotator</td><td>ZWO USB SDK</td><td class="yes">Supported</td></tr>
+          <tr><td class="mono">ZWO</td><td>ASIAIR, as a backend</td><td>Its own network protocol, via libasi</td><td class="part">Untested on hardware</td></tr>
+          <tr><td class="mono">Player One</td><td>Cameras</td><td>Player One SDK, gain modes included</td><td class="yes">On sky</td></tr>
+          <tr><td class="mono">Wanderer Astro</td><td>Snowflake filter wheel</td><td>Native serial, protocol verified on hardware</td><td class="yes">On sky</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p class="note">
+      <strong>“On sky” means exactly that</strong> — that device has run whole
+      unattended nights on a real rig, not just connected on a bench.
+    </p>
+  </div>
+</section>
+
+<!-- ================================================================= alpaca -->
+<section class="band" id="alpaca">
+  <div class="wrap stack gap-4">
+    <div class="band-head">
+      <p class="eyebrow">Everything else</p>
+      <h2>If it speaks ASCOM, it works.</h2>
+    </div>
+
+    <div class="grid grid-2">
+      <article class="card">
+        <span class="kicker">Direct</span>
+        <h3>ASCOM Alpaca</h3>
+        <p>
+          Any Alpaca endpoint connects over the network with no bridge at all —
+          cameras, mounts, focusers, wheels, rotators, domes, safety monitors,
+          switches and weather stations. Discovery finds them; you pick roles.
+          ZWO, Pegasus Astro, QHY, PrimaLuceLab, Optec, Lakeside, Moonlite and
+          the rest of the ASCOM ecosystem all reach AstroDeck this way.
+        </p>
+      </article>
+      <article class="card">
+        <span class="kicker">Windows-only drivers</span>
+        <h3>The bundled COM host</h3>
+        <p>
+          Gear that only ships a Windows COM driver still works: AstroDeck starts
+          and manages a local COM-to-Alpaca host itself. No separate ASCOM Remote
+          install, no second thing to keep running, and it is simply absent on
+          Linux and macOS rather than half-present.
+        </p>
+      </article>
+    </div>
+
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr><th>Function</th><th>What AstroDeck supports</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">Plate solving</td><td>ASTAP, auto-detected — with its own star-detection and HFR engine behind it</td></tr>
+          <tr><td class="mono">Guiding</td><td>Built-in guide engine, PHD2, or NINA's guider</td></tr>
+          <tr><td class="mono">Polar alignment</td><td>Three-point (TPPA), native</td></tr>
+          <tr><td class="mono">Forecast</td><td>Open-Meteo, Astrospheric</td></tr>
+          <tr><td class="mono">Satellite cloud</td><td>NOAA GOES-18 and GOES-19 (Americas)</td></tr>
+          <tr><td class="mono">Sky survey</td><td>DSS2 through HiPS, plus a ~250 MB offline pack</td></tr>
+          <tr><td class="mono">Alerts</td><td>ntfy, Telegram, webhook, dead-man's heartbeat</td></tr>
+          <tr><td class="mono">Host platforms</td><td>Windows, Linux, macOS, Raspberry Pi 4/5, Orange Pi — x86-64 and arm64</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================== the seam -->
+<section class="band band-tint">
+  <div class="wrap stack gap-4">
+    <div class="band-head">
+      <p class="eyebrow">Why adding one is easy</p>
+      <h2>Everything above one file is vendor agnostic.</h2>
+    </div>
+
+    <figure>
+      <div class="framed">
+        <svg viewBox="0 0 1000 250" role="img" aria-label="Layer diagram. Sequencer, autofocus, guiding, flows and the sky atlas all sit above a single device abstraction. Below it sit native drivers, ASCOM Alpaca, the COM host, NINA, ASIAIR and the simulator, all interchangeable.">
+          <g font-family="JetBrains Mono, monospace" font-size="9.5" letter-spacing="1.3">
+            <text x="40" y="28" fill="var(--dim)">KNOWS NOTHING ABOUT YOUR BRAND</text>
+            <text x="40" y="224" fill="var(--dim)">KNOWS EVERYTHING ABOUT ONE BRAND</text>
+          </g>
+
+          <g>
+            <rect x="40" y="40" width="920" height="52" rx="3" fill="var(--surface-2)" stroke="var(--line)"/>
+            <g font-family="Archivo, sans-serif" font-size="12.5" font-weight="700" fill="var(--text)">
+              <text x="72"  y="72">Sequencer</text>
+              <text x="212" y="72">Autofocus</text>
+              <text x="352" y="72">Guiding</text>
+              <text x="472" y="72">Flows</text>
+              <text x="592" y="72">Sky Atlas</text>
+              <text x="732" y="72">Sessions</text>
+              <text x="862" y="72">Monitor</text>
+            </g>
+          </g>
+
+          <g>
+            <rect x="40" y="106" width="920" height="38" rx="3" fill="none" stroke="var(--accent)" stroke-width="1.4"/>
+            <text x="72" y="130" font-family="JetBrains Mono, monospace" font-size="11" letter-spacing="1.6" fill="var(--accent)">devices/base.py — THE SEAM</text>
+            <text x="620" y="130" font-family="Spectral, serif" font-size="12" fill="var(--dim)">a mount can slew, report a pier side, and refuse</text>
+          </g>
+
+          <g>
+            <rect x="40" y="158" width="920" height="52" rx="3" fill="var(--surface-2)" stroke="var(--line)"/>
+            <g font-family="Archivo, sans-serif" font-size="12.5" font-weight="700" fill="var(--text)">
+              <text x="72"  y="190">Native</text>
+              <text x="192" y="190">Alpaca</text>
+              <text x="322" y="190">COM host</text>
+              <text x="472" y="190">NINA</text>
+              <text x="592" y="190">ASIAIR</text>
+              <text x="722" y="190">Simulator</text>
+              <text x="862" y="190">Yours</text>
+            </g>
+          </g>
+
+          <g stroke="var(--line)" stroke-dasharray="3 3">
+            <line x1="176" y1="92" x2="176" y2="106"/>
+            <line x1="500" y1="92" x2="500" y2="106"/>
+            <line x1="820" y1="92" x2="820" y2="106"/>
+            <line x1="176" y1="144" x2="176" y2="158"/>
+            <line x1="500" y1="144" x2="500" y2="158"/>
+            <line x1="820" y1="144" x2="820" y2="158"/>
+          </g>
+        </svg>
+      </div>
+      <figcaption>
+        Swap a camera vendor and autofocus does not change. Add a backend and no
+        existing code moves. This is also why running alongside NINA or an ASIAIR
+        can be permanent rather than transitional — they are just backends.
+      </figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- ================================================================== ask -->
+<section class="band" id="ask">
+  <div class="wrap stack gap-3">
+    <div class="band-head">
+      <p class="eyebrow">Not on the list?</p>
+      <h2>Ask. Genuinely.</h2>
+      <p>
+        The list above is what has been built so far, not a judgement about what
+        deserves to exist. If your gear is missing, open an issue with what you
+        have and how it connects.
+      </p>
+    </div>
+
+    <div class="grid grid-3">
+      <article class="card">
+        <span class="kicker">For you</span>
+        <h3>Open an issue</h3>
+        <p>
+          Tell us the vendor, the model, and whether it has an ASCOM driver, an
+          Alpaca endpoint or a documented serial protocol. That is usually enough
+          to know how much work it is.
+        </p>
+      </article>
+      <article class="card">
+        <span class="kicker">For a contributor</span>
+        <h3>A handful of async methods</h3>
+        <p>
+          A backend implements a small protocol against
+          <code>devices/base.py</code>. There is a contract test suite every
+          backend runs against, so "does it behave like a mount" is a question
+          with an automated answer.
+        </p>
+      </article>
+      <article class="card">
+        <span class="kicker">For a vendor</span>
+        <h3>No fork required</h3>
+        <p>
+          Backends can ship as separate packages and register themselves through
+          an entry point. Your driver, your repo, your release cadence — it just
+          appears in the equipment list.
+        </p>
+      </article>
+    </div>
+
+    <div class="ctarow" style="margin-top:1rem">
+      <a class="btn btn-solid" href="https://github.com/epim/astrodeck/issues">Request a device</a>
+      <a class="btn btn-ghost" href="https://github.com/epim/astrodeck/blob/main/docs/development.md">Write a backend</a>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <hr class="footrule" style="margin-top:0">
+    <p>
+      Not affiliated with ZWO, Player One, Wanderer Astro, Pegasus Astro, QHY,
+      PrimaLuceLab, or the NINA, PHD2 or ASTAP projects. Names are used only to
+      say what AstroDeck talks to.
+    </p>
+    <p style="margin-top:.8rem">
+      <a href="index.html">Overview</a> ·
+      <a href="flows.html">Flows</a> ·
+      <a href="weather.html">Weather</a> ·
+      <a href="features.html">Features</a> ·
+      <a href="https://github.com/epim/astrodeck">GitHub</a>
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>

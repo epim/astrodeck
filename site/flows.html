@@ -1,0 +1,432 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Astro Flows</title>
+<meta name="description" content="Draw the night as a graph. Twenty-one node types, two kinds of wire, and a compiler that tells you what it cannot honour before the mount moves.">
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="canonical" href="https://epim.github.io/astrodeck/flows.html">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Astro Flows | AstroDeck">
+<meta property="og:description" content="Draw the night as a graph. 21 node types, two kinds of wire, and a compiler that tells you what it cannot honour before the mount moves.">
+<meta property="og:url" content="https://epim.github.io/astrodeck/flows.html">
+<meta name="twitter:card" content="summary">
+<meta name="theme-color" content="#070A12">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;700;800&family=Spectral:ital,wght@0,300;0,400;0,600;1,400&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="assets/site.css">
+<script src="assets/theme.js"></script>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="wrap topbar-in">
+    <a class="brand" href="index.html">Astro<span>Deck</span></a>
+    <nav class="navlinks">
+      <a href="index.html">Overview</a>
+      <a href="flows.html" aria-current="page">Flows</a>
+      <a href="weather.html">Weather</a>
+      <a href="hardware.html">Hardware</a>
+      <a href="features.html" class="opt">Features</a>
+      <a href="https://github.com/epim/astrodeck" class="opt">GitHub</a>
+      <button class="themetoggle" data-theme-toggle type="button">Auto</button>
+    </nav>
+  </div>
+</header>
+
+<section class="band">
+  <div class="wrap stack gap-3">
+    <p class="eyebrow">Astro Flows</p>
+    <h1 style="max-width:17ch">Draw the night. Then go to bed.</h1>
+    <p class="lead" style="max-width:56ch">
+      A sequence is a list. A night is a graph. Flows lets you wire the second
+      one directly — twenty-one node types, two kinds of wire, and a compiler
+      that tells you what it could not honour <em>before</em> the mount moves.
+    </p>
+  </div>
+</section>
+
+<!-- ============================================================== the canvas -->
+<section class="band band-tint">
+  <div class="wrap stack gap-4">
+    <div class="band-head">
+      <p class="eyebrow">The canvas</p>
+      <h2>One graph, two lanes.</h2>
+      <p>
+        The solid lane is the night in order. The dashed lane is everything that
+        reacts to it. They are different kinds of wire because they are
+        different kinds of promise.
+      </p>
+    </div>
+
+    <figure>
+      <div class="framed">
+        <svg viewBox="0 0 1000 392" role="img" aria-label="A flow graph. Solid flow wires run left to right: dusk window, target pool, slew and centre, autofocus, guide, then down to a filter cycle and a session report. Dashed event wires run from cloud watch to hold and resume, from safety monitor to abort and park, and from the filter cycle's graded frame into a condition and on to refocus.">
+          <defs>
+            <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0 0 L10 5 L0 10 z" fill="var(--dim)"/>
+            </marker>
+            <marker id="ahE" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0 0 L10 5 L0 10 z" fill="var(--amber)"/>
+            </marker>
+          </defs>
+
+          <!-- ------------------------------------------------ flow wires -->
+          <g stroke="var(--dim)" stroke-width="1.4" fill="none" marker-end="url(#ah)">
+            <path d="M190 77 L226 77"/>
+            <path d="M382 77 L418 77"/>
+            <path d="M574 77 L610 77"/>
+            <path d="M766 77 L802 77"/>
+            <path d="M883 104 L883 170"/>
+            <path d="M883 230 L883 296"/>
+          </g>
+
+          <!-- ----------------------------------------------- event wires -->
+          <g stroke="var(--amber)" stroke-width="1.3" fill="none" stroke-dasharray="4 4" marker-end="url(#ahE)">
+            <path d="M190 203 L226 203"/>
+            <path d="M190 329 L226 329"/>
+            <path d="M845 230 L845 258 L499 258 L499 232"/>
+            <path d="M574 203 L610 203"/>
+          </g>
+
+          <!-- ---------------------------------------------------- nodes -->
+          <!-- SOURCE: cyan -->
+          <g>
+            <rect x="40" y="50" width="150" height="54" rx="3" fill="var(--surface-2)" stroke="var(--accent)" stroke-width="1.2"/>
+            <text x="52" y="70" font-family="JetBrains Mono, monospace" font-size="8" letter-spacing="1.4" fill="var(--accent)">SOURCE</text>
+            <text x="52" y="90" font-family="Archivo, sans-serif" font-size="13" font-weight="700" fill="var(--text)">DUSK WINDOW</text>
+          </g>
+          <g>
+            <rect x="40" y="176" width="150" height="54" rx="3" fill="var(--surface-2)" stroke="var(--accent)" stroke-width="1.2"/>
+            <text x="52" y="196" font-family="JetBrains Mono, monospace" font-size="8" letter-spacing="1.4" fill="var(--accent)">SOURCE</text>
+            <text x="52" y="216" font-family="Archivo, sans-serif" font-size="13" font-weight="700" fill="var(--text)">CLOUD WATCH</text>
+          </g>
+          <g>
+            <rect x="40" y="302" width="150" height="54" rx="3" fill="var(--surface-2)" stroke="var(--accent)" stroke-width="1.2"/>
+            <text x="52" y="322" font-family="JetBrains Mono, monospace" font-size="8" letter-spacing="1.4" fill="var(--accent)">SOURCE</text>
+            <text x="52" y="342" font-family="Archivo, sans-serif" font-size="12" font-weight="700" fill="var(--text)">SAFETY MONITOR</text>
+          </g>
+
+          <!-- LOGIC: amber -->
+          <g>
+            <rect x="232" y="50" width="150" height="54" rx="3" fill="var(--surface-2)" stroke="var(--amber)" stroke-width="1.2"/>
+            <text x="244" y="70" font-family="JetBrains Mono, monospace" font-size="8" letter-spacing="1.4" fill="var(--amber)">LOGIC</text>
+            <text x="244" y="90" font-family="Archivo, sans-serif" font-size="13" font-weight="700" fill="var(--text)">TARGET POOL</text>
+          </g>
+          <g>
+            <rect x="424" y="176" width="150" height="54" rx="3" fill="var(--surface-2)" stroke="var(--amber)" stroke-width="1.2"/>
+            <text x="436" y="196" font-family="JetBrains Mono, monospace" font-size="8" letter-spacing="1.4" fill="var(--amber)">LOGIC</text>
+            <text x="436" y="216" font-family="Archivo, sans-serif" font-size="13" font-weight="700" fill="var(--text)">CONDITION</text>
+          </g>
+
+          <!-- RIG: neutral -->
+          <g>
+            <rect x="424" y="50" width="150" height="54" rx="3" fill="var(--surface-2)" stroke="var(--line)" stroke-width="1.2"/>
+            <text x="436" y="70" font-family="JetBrains Mono, monospace" font-size="8" letter-spacing="1.4" fill="var(--dim)">RIG</text>
+            <text x="436" y="90" font-family="Archivo, sans-serif" font-size="12.5" font-weight="700" fill="var(--text)">SLEW + CENTER</text>
+          </g>
+          <g>
+            <rect x="616" y="50" width="150" height="54" rx="3" fill="var(--surface-2)" stroke="var(--line)" stroke-width="1.2"/>
+            <text x="628" y="70" font-family="JetBrains Mono, monospace" font-size="8" letter-spacing="1.4" fill="var(--dim)">RIG</text>
+            <text x="628" y="90" font-family="Archivo, sans-serif" font-size="13" font-weight="700" fill="var(--text)">AUTOFOCUS</text>
+          </g>
+          <g>
+            <rect x="808" y="50" width="150" height="54" rx="3" fill="var(--surface-2)" stroke="var(--line)" stroke-width="1.2"/>
+            <text x="820" y="70" font-family="JetBrains Mono, monospace" font-size="8" letter-spacing="1.4" fill="var(--dim)">RIG</text>
+            <text x="820" y="90" font-family="Archivo, sans-serif" font-size="13" font-weight="700" fill="var(--text)">GUIDE</text>
+          </g>
+          <g>
+            <rect x="808" y="176" width="150" height="54" rx="3" fill="var(--surface-2)" stroke="var(--line)" stroke-width="1.2"/>
+            <text x="820" y="196" font-family="JetBrains Mono, monospace" font-size="8" letter-spacing="1.4" fill="var(--dim)">RIG</text>
+            <text x="820" y="216" font-family="Archivo, sans-serif" font-size="13" font-weight="700" fill="var(--text)">FILTER CYCLE</text>
+          </g>
+
+          <!-- ACTION: rose -->
+          <g>
+            <rect x="232" y="176" width="150" height="54" rx="3" fill="var(--surface-2)" stroke="var(--bad)" stroke-width="1.2"/>
+            <text x="244" y="196" font-family="JetBrains Mono, monospace" font-size="8" letter-spacing="1.4" fill="var(--bad)">ACTION</text>
+            <text x="244" y="216" font-family="Archivo, sans-serif" font-size="12.5" font-weight="700" fill="var(--text)">HOLD / RESUME</text>
+          </g>
+          <g>
+            <rect x="232" y="302" width="150" height="54" rx="3" fill="var(--surface-2)" stroke="var(--bad)" stroke-width="1.2"/>
+            <text x="244" y="322" font-family="JetBrains Mono, monospace" font-size="8" letter-spacing="1.4" fill="var(--bad)">ACTION</text>
+            <text x="244" y="342" font-family="Archivo, sans-serif" font-size="12.5" font-weight="700" fill="var(--text)">ABORT + PARK</text>
+          </g>
+          <g>
+            <rect x="616" y="176" width="150" height="54" rx="3" fill="var(--surface-2)" stroke="var(--bad)" stroke-width="1.2"/>
+            <text x="628" y="196" font-family="JetBrains Mono, monospace" font-size="8" letter-spacing="1.4" fill="var(--bad)">ACTION</text>
+            <text x="628" y="216" font-family="Archivo, sans-serif" font-size="13" font-weight="700" fill="var(--text)">REFOCUS</text>
+          </g>
+
+          <!-- SINK: green -->
+          <g>
+            <rect x="808" y="302" width="150" height="54" rx="3" fill="var(--surface-2)" stroke="var(--good)" stroke-width="1.2"/>
+            <text x="820" y="322" font-family="JetBrains Mono, monospace" font-size="8" letter-spacing="1.4" fill="var(--good)">SINK</text>
+            <text x="820" y="342" font-family="Archivo, sans-serif" font-size="12.5" font-weight="700" fill="var(--text)">SESSION REPORT</text>
+          </g>
+
+          <!-- ---------------------------------------------- wire labels -->
+          <g font-family="JetBrains Mono, monospace" font-size="8" fill="var(--dimmer)" letter-spacing="0.6">
+            <text x="196" y="70">window opens</text>
+            <text x="388" y="70">best target</text>
+            <text x="580" y="70">centered</text>
+            <text x="772" y="70">focused</text>
+            <text x="892" y="146">guiding</text>
+            <text x="892" y="272">complete</text>
+            <text x="196" y="196" fill="var(--amber)">clouds in</text>
+            <text x="196" y="322" fill="var(--amber)">unsafe</text>
+            <text x="580" y="196" fill="var(--amber)">fire</text>
+            <text x="620" y="253" fill="var(--amber)">frame graded</text>
+          </g>
+        </svg>
+      </div>
+      <figcaption>
+        A working two-lane graph. The night proceeds along the solid wires; the
+        dashed wires only carry things that happened.
+      </figcaption>
+    </figure>
+
+    <div class="legend">
+      <span><i style="background:var(--accent)"></i>Source</span>
+      <span><i style="background:var(--dim)"></i>Rig</span>
+      <span><i style="background:var(--amber)"></i>Logic</span>
+      <span><i style="background:var(--bad)"></i>Action</span>
+      <span><i style="background:var(--good)"></i>Sink</span>
+    </div>
+  </div>
+</section>
+
+<!-- ================================================================= wires -->
+<section class="band">
+  <div class="wrap stack gap-4">
+    <div class="band-head">
+      <p class="eyebrow">Two kinds of wire</p>
+      <h2>Sequence and reaction are not the same thing.</h2>
+    </div>
+
+    <div class="grid grid-2">
+      <article class="card">
+        <span class="kicker">Flow — solid</span>
+        <h3>This happens, then that happens</h3>
+        <p>
+          A flow wire is an ordering promise. <code>SLEW + CENTER</code> emits
+          <code>centered</code> and only then does <code>AUTOFOCUS</code> begin.
+          The graph stays acyclic, so there is no way to draw a night that
+          silently never ends.
+        </p>
+      </article>
+      <article class="card">
+        <span class="kicker">Event — dashed</span>
+        <h3>When this happens, do that</h3>
+        <p>
+          An event wire carries something that occurred — a graded frame, cloud
+          arriving, an unsafe reading — to whatever should react. Events do not
+          sequence the night; they interrupt it. Campaign loops across many
+          nights are event wires, which is how the graph stays acyclic and a
+          multi-night run still repeats.
+        </p>
+      </article>
+    </div>
+
+    <p class="note">
+      <strong>Loops live inside stages, not in the graph.</strong>
+      <code>FILTER CYCLE</code> is a sibling of <code>CAPTURE LOOP</code>, not a
+      container: it shoots its slot table one sub per filter per pass and repeats
+      until every slot has its count. So the channels grow evenly, and a night cut
+      short by cloud still stacks. Forty-five L frames followed by nothing else is
+      a mono image; one of each, forty-five times, is an image at every prefix.
+    </p>
+  </div>
+</section>
+
+<!-- ============================================================== the tiers -->
+<section class="band band-tint">
+  <div class="wrap stack gap-4">
+    <div class="band-head">
+      <p class="eyebrow">A distinction worth the ink</p>
+      <h2>Safety aborts and never holds. Cloud watch holds and never aborts.</h2>
+      <p>
+        These are separate node types on purpose. If one monitor did both, the
+        fail-closed tier would beat the recoverable one to the punch every time,
+        and the recoverable one would always lose.
+      </p>
+    </div>
+
+    <div class="grid grid-2">
+      <article class="card">
+        <span class="kicker">Fail closed</span>
+        <h3>SAFETY MONITOR → ABORT + PARK</h3>
+        <p>
+          Rain, wind, a sensor that stopped answering. A stale reading counts as
+          unsafe, because "I do not know" and "it is fine" are not the same
+          claim. The night ends, the mount parks, the dome closes.
+        </p>
+      </article>
+      <article class="card">
+        <span class="kicker">Recoverable</span>
+        <h3>CLOUD WATCH → HOLD / RESUME</h3>
+        <p>
+          Cloud is temporary and the hold releases itself. It keeps tracking,
+          parks the guider, and on the way back it re-cools, re-centres with a
+          plate solve and refocuses if HFR drifted. Give it a maximum hold and
+          what to do if that expires.
+        </p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- =========================================================== the catalogue -->
+<section class="band">
+  <div class="wrap stack gap-4">
+    <div class="band-head">
+      <p class="eyebrow">The catalogue</p>
+      <h2>Twenty-one nodes.</h2>
+      <p>Everything you can put on the canvas, and what it emits.</p>
+    </div>
+
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr><th>Node</th><th>Class</th><th>Emits</th><th>What it is for</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">DUSK WINDOW</td><td class="mono">Source</td><td class="mono">window opens · night ends</td><td>The night's clock. Offsets from astro dusk, a minimum altitude, and a repeat mode that turns dawn from an ending into a scheduled hold.</td></tr>
+          <tr><td class="mono">TARGET</td><td class="mono">Source</td><td class="mono">target</td><td>One object, with coordinates and a rotation angle.</td></tr>
+          <tr><td class="mono">SAFETY MONITOR</td><td class="mono">Source</td><td class="mono">unsafe</td><td>The fail-closed tier. Choose what it watches and whether a stale reading is unsafe.</td></tr>
+          <tr><td class="mono">CLOUD WATCH</td><td class="mono">Source</td><td class="mono">clouds in · clouds clear</td><td>The recoverable tier, with a threshold and a clear-for duration so one gap does not restart the night.</td></tr>
+          <tr><td class="mono">DOME CONTROL</td><td class="mono">Rig</td><td class="mono">shutter open</td><td>Open, bind to the mount, and close fail-closed on unsafe.</td></tr>
+          <tr><td class="mono">FLAT PANEL</td><td class="mono">Rig</td><td class="mono">panel ready</td><td>Panel or dust cover, target ADU, solve per filter.</td></tr>
+          <tr><td class="mono">SLEW + CENTER</td><td class="mono">Rig</td><td class="mono">centered</td><td>Slew, plate solve, iterate to a tolerance in arcminutes, with a retry budget.</td></tr>
+          <tr><td class="mono">AUTOFOCUS</td><td class="mono">Rig</td><td class="mono">focused</td><td>V-curve sweep with a step size and sample count.</td></tr>
+          <tr><td class="mono">GUIDE</td><td class="mono">Rig</td><td class="mono">guiding</td><td>Provider, settle threshold, dither every N.</td></tr>
+          <tr><td class="mono">CAPTURE LOOP</td><td class="mono">Rig</td><td class="mono">complete · frame graded</td><td>One filter, one exposure, a count, a reject threshold and a goal.</td></tr>
+          <tr><td class="mono">FILTER CYCLE</td><td class="mono">Rig</td><td class="mono">complete · frame graded</td><td>A slot table across the whole wheel, interleaved so every channel grows together.</td></tr>
+          <tr><td class="mono">DUSK FLATS</td><td class="mono">Rig</td><td class="mono">flats done</td><td>Sky flats in the sun −2° to −8° window, for tonight's filters only.</td></tr>
+          <tr><td class="mono">CALIBRATION QUEUE</td><td class="mono">Rig</td><td class="mono">queue done</td><td>Darks, flats and bias. Every input is optional; with no panel wired it skips flats and says so.</td></tr>
+          <tr><td class="mono">TARGET POOL</td><td class="mono">Logic</td><td class="mono">best target · floor hit</td><td>A list of candidates ranked by altitude and moon separation, with a per-target quota, an altitude floor and what to do when one hits it.</td></tr>
+          <tr><td class="mono">CONDITION</td><td class="mono">Logic</td><td class="mono">fire</td><td>Watch an event stream for HFR above, guide RMS above, a rejected frame, a completed target or a wall-clock time. Window it over N frames, once or every time.</td></tr>
+          <tr><td class="mono">HOLD / RESUME</td><td class="mono">Action</td><td class="mono">—</td><td>Self-releasing pause with a maximum hold, and a documented way back: re-cool, re-centre, refocus if needed.</td></tr>
+          <tr><td class="mono">NOTIFY</td><td class="mono">Action</td><td class="mono">—</td><td>ntfy, Telegram or a webhook, with a channel and a level.</td></tr>
+          <tr><td class="mono">REFOCUS</td><td class="mono">Action</td><td class="mono">—</td><td>Refocus at the next frame boundary rather than mid-exposure.</td></tr>
+          <tr><td class="mono">PARK + CLOSE</td><td class="mono">Action</td><td class="mono">closed</td><td>End-of-night closure: dust flap, dome, park, and whether to hold the cooler cold for day darks.</td></tr>
+          <tr><td class="mono">ABORT + PARK</td><td class="mono">Action</td><td class="mono">—</td><td>Stop now. Park, warm, and say why in the log and the alert.</td></tr>
+          <tr><td class="mono">SESSION REPORT</td><td class="mono">Sink</td><td class="mono">—</td><td>The night's record: what was shot, what was rejected, and the stacking bundle.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================== the doctor -->
+<section class="band band-tint">
+  <div class="wrap stack gap-4">
+    <div class="band-head">
+      <p class="eyebrow">Before the mount moves</p>
+      <h2>The compiler tells you what it will not do.</h2>
+      <p>
+        A graph you can draw is not automatically a night the engine can run.
+        Compiling reports every dropped rule on screen, by name, with the reason.
+      </p>
+    </div>
+
+    <div class="prose">
+      <p class="dim">
+        This exists because of a specific failure mode. Unknown keys are dropped
+        in silence by default, which means a naive hand-off produces a plan that
+        validates clean and starts a run immediately — in daylight, with no
+        altitude gate, no dawn stop and none of the cloud rules the operator
+        drew. Green start, wrong night, no error anywhere.
+      </p>
+      <p class="dim">
+        So every dropped thing is reported. You find out that your cloud rule is
+        not running <em>now</em>, from a list on the screen, instead of at 3am
+        from a mount that kept shooting through overcast.
+      </p>
+    </div>
+
+    <div class="grid grid-3">
+      <article class="card">
+        <span class="kicker">Checked</span>
+        <h3>Wiring</h3>
+        <p>Required inputs that nothing feeds, outputs that go nowhere, and the optional ones that are genuinely fine to leave unwired.</p>
+      </article>
+      <article class="card">
+        <span class="kicker">Checked</span>
+        <h3>Tier conflicts</h3>
+        <p>A safety monitor also watching clouds would beat the recoverable hold every time. The doctor names it rather than letting the race happen at 2am.</p>
+      </article>
+      <article class="card">
+        <span class="kicker">Checked</span>
+        <h3>Unmapped settings</h3>
+        <p>Anything you configured on the canvas that the engine has no way to honour, listed before you run rather than discarded quietly.</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================== worked ex -->
+<section class="band">
+  <div class="wrap stack gap-4">
+    <div class="band-head">
+      <p class="eyebrow">Three shapes worth stealing</p>
+      <h2>Patterns.</h2>
+    </div>
+
+    <div class="grid grid-3">
+      <article class="card">
+        <span class="kicker">Pattern</span>
+        <h3>The unattended single target</h3>
+        <p>
+          <code>DUSK → TARGET → SLEW + CENTER → AUTOFOCUS → GUIDE → FILTER CYCLE → PARK + CLOSE → REPORT</code>,
+          with <code>SAFETY → ABORT</code> hanging off the side. Eight nodes and
+          you never touch it again.
+        </p>
+      </article>
+      <article class="card">
+        <span class="kicker">Pattern</span>
+        <h3>The whole-season campaign</h3>
+        <p>
+          Swap <code>TARGET</code> for <code>TARGET POOL</code> with a quota per
+          member, set <code>DUSK WINDOW</code> to repeat, and wire
+          <code>night ends</code> into <code>PARK + CLOSE</code>. It works the
+          list down across weeks, picking whatever is best placed each night.
+        </p>
+      </article>
+      <article class="card">
+        <span class="kicker">Pattern</span>
+        <h3>The self-correcting night</h3>
+        <p>
+          Wire <code>frame graded</code> into a <code>CONDITION</code> set to HFR
+          above your threshold over a 3-frame window, and fire
+          <code>REFOCUS</code>. Focus drift fixes itself and you find out from
+          the report, not from the stack.
+        </p>
+      </article>
+    </div>
+
+    <p class="note">
+      <strong>Everything on the canvas is also just a plan.</strong> Flows
+      compile to the same sequence the engine runs when you build a night by
+      hand, so nothing you can draw is a separate code path with its own bugs.
+    </p>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <hr class="footrule" style="margin-top:0">
+    <p>
+      <a href="index.html">Overview</a> ·
+      <a href="weather.html">Weather</a> ·
+      <a href="hardware.html">Hardware</a> ·
+      <a href="features.html">Features</a> ·
+      <a href="https://github.com/epim/astrodeck">GitHub</a>
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>
