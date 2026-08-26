@@ -484,25 +484,38 @@ def test_the_ladder_reaches_its_last_rung():
 def test_the_two_grids_are_never_confused():
     """The 5x sampling, read both ways round, both wrong answers available.
 
-    At this site the same ground point is ACMC (20, 20) and ACHAC (4, 4), and
-    both windows contain both cells -- so a lookup through the wrong spec does
-    not fall off an edge and raise, it reads a real number from a place five
-    cells away and returns it. The height field is 4 km at (4, 4) and 9 km at
-    (20, 20); the mask is 0.80 at (20, 20) and 0.05 at (4, 4). Indexing the
-    height through the mask's spec crosses at 9.0 km; indexing the mask through
-    the height's spec answers 0.05. Neither looks like an error.
+    Both windows contain both cells, so a lookup through the wrong spec does
+    not fall off an edge and raise -- it reads a real number from a place five
+    cells away and returns it. Indexing the height through the mask's spec
+    crosses at the wrong altitude; indexing the mask through the height's spec
+    answers the wrong probability. Neither looks like an error.
+
+    THE CELLS MOVED WHEN PARALLAX LANDED, and the reason is worth keeping. The
+    fixture used to name ACMC (20, 20) and ACHAC (4, 4) as "the same ground
+    point", true of the ray's TRUE position. The lookup now reads the IMAGED
+    position, and the ladder corrects each candidate rung by that rung's own
+    height -- so the two products are sampled with different displacements and
+    the tidy 5x correspondence between their cells no longer holds. That is
+    self-consistent rather than wrong: the ladder is looking for the height
+    whose imaged position holds cloud, and at the correct rung the candidate
+    height IS the cloud height. The cells below are the ones the corrected ray
+    actually reaches, measured, not derived from the old coincidence.
     """
     def top_m(row, col):
-        if (row, col) == (4, 4):
+        if (row, col) == (3, 3):
             return 4000.0
-        if (row, col) == (20, 20):
+        if (row, col) == (19, 19):
             return 9000.0
         return math.nan
 
     def probability(row, col):
-        if (row, col) == (20, 20):
+        # (18, 19) and not (19, 19): the mask is read at the RETRIEVED height,
+        # 4 km, whose displacement differs from the rung that found it. Two
+        # products, two sampling heights, two cells -- the point the docstring
+        # above makes, showing up one more time.
+        if (row, col) == (18, 19):
             return 0.80
-        if (row, col) == (4, 4):
+        if (row, col) == (3, 3):
             return 0.05
         return 0.50
 
@@ -541,22 +554,43 @@ def test_a_pierce_point_outside_the_window_says_no_data():
     assert occ.basis == "no_data"
     assert occ.probability is None
     assert "mask window" in occ.reason
-    assert "4 rows" in occ.reason
+    # 5, not 4: parallax moves the sampled cell about two mask cells away
+    # from the satellite, so a point already outside the window falls a little
+    # further outside it. The NUMBER is not the subject of this test -- that
+    # the reason names the window and how far short it fell is -- but pinning
+    # it is what would catch the correction being silently dropped.
+    assert "5 rows" in occ.reason
     assert "37.0" not in occ.reason
     assert "-125" not in occ.reason
 
     # Past the other two edges. Off the far edge the shortfall counts from the
     # last cell IN the window and off the near edge from the first, which are
-    # two different expressions each carrying a deliberate one -- so the same
-    # displacement to the southeast and to the northwest has to count the same.
+    # two different expressions each carrying a deliberate one.
+    #
+    # THEY USED TO HAVE TO MATCH, and now they must not. That assertion guarded
+    # the shortfall arithmetic against a sign bug by sending the same
+    # displacement southeast and northwest and requiring the same answer.
+    # Parallax is DIRECTIONAL -- always away from the satellite -- so a ray
+    # pointing toward it and one pointing away no longer land the same distance
+    # outside the window, and demanding they do would demand the correction not
+    # be applied. Both counts are pinned instead, and their INEQUALITY is now
+    # the thing that goes red if the correction is dropped.
+    #
+    # Measured three times before being written down, because a probe beside
+    # the test used height_window(nan) where the test uses height_window(4000)
+    # and answered 11.2 km downrange against the fixture's 14.9 -- two
+    # different questions that both looked like this one. The numbers below
+    # come from the fixture itself.
     southeast = occlusion_at(
         SITE, 15.0, 135.0, mask_window(0.9, half_rows=1, half_cols=1), height
     )
-    assert "3 rows and 5 columns outside" in southeast.reason
+    assert "2 rows and 5 columns outside" in southeast.reason
     northwest = occlusion_at(
         SITE, 15.0, 315.0, mask_window(0.9, half_rows=1, half_cols=1), height
     )
-    assert "3 rows and 5 columns outside" in northwest.reason
+    assert "4 rows and 4 columns outside" in northwest.reason
+    assert southeast.reason != northwest.reason, (
+        "parallax is directional; identical shortfalls mean it was not applied")
 
     # The HEIGHT window is the one that runs out first in practice, because the
     # ladder walks the whole ray while the mask is read once at the crossing.
@@ -722,7 +756,11 @@ def test_the_beam_and_the_cell_are_reported_together():
 
     assert occ.beam_m == pytest.approx(234.648, abs=0.01)
     assert occ.cell_km is not None
-    assert occ.cell_km[0] == pytest.approx(2.9024, abs=0.001)
+    # 2.9040, not 2.9024: cell size varies across the grid, and the parallax
+    # correction reads a cell about two rows away from the ray's true ground
+    # position. 1.6 m of difference in a 2.9 km cell -- the number moved
+    # because the LOOKUP moved, which is the fix working.
+    assert occ.cell_km[0] == pytest.approx(2.9040, abs=0.001)
     assert occ.cell_km[1] == pytest.approx(2.1597, abs=0.001)
     assert occ.quality == 1
 
