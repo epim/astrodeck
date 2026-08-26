@@ -10,10 +10,12 @@
 // Canvas rather than SVG: a 15x36 grid is 540 quads and the panel repaints on a
 // poll, so this is a thousand fills a minute in the DOM against one bitmap.
 import { memo, useEffect, useRef } from "react";
+import type React from "react";
 
 import {
   NO_DATA_HATCH,
   STALE_CLOUD_ALPHA,
+  DOME_TILT_DEG,
   domeCells,
   domeExtent,
   occlusionStyle,
@@ -27,6 +29,17 @@ export interface SkyDomeProps {
   pointing?: { alt: number; az: number } | null;
   /** Drawn dimmer than the pointing marker: where the run goes next. */
   target?: { alt: number; az: number; name?: string } | null;
+  /** Every target in the loaded plan, in plan order, so an operator can see
+   *  the whole night against the weather instead of one object at a time.
+   *  Numbered from 1: the ORDER is the point -- "target 3 is in the clear" is
+   *  actionable and "M31 is in the clear" is only half the answer. */
+  targets?: { alt: number; az: number; name?: string }[] | null;
+  /** Degrees the dome is turned about the vertical. See projectDome: a
+   *  positive yaw subtracts from every azimuth. */
+  yawDeg?: number;
+  /** Supply this to make the dome draggable. Absent = a static picture, which
+   *  is what a print or a narrow phone column wants. */
+  onYaw?: (deg: number) => void;
   /** No data at all -- draw the empty dome rather than nothing, so the panel
    *  keeps its shape and the operator can see the model is simply off. */
   emptyNote?: string;
@@ -84,17 +97,18 @@ function hatchPattern(ctx: CanvasRenderingContext2D): CanvasPattern | null {
 }
 
 function ringPath(ctx: CanvasRenderingContext2D, altDeg: number,
-                  cx: number, cy: number, r: number): void {
+                  cx: number, cy: number, r: number, yaw = 0): void {
   ctx.beginPath();
   for (let az = 0; az <= 360; az += 3) {
-    const p = projectAltAz(altDeg, az, cx, cy, r);
+    const p = projectAltAz(altDeg, az, cx, cy, r, DOME_TILT_DEG, yaw);
     if (az === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
   }
   ctx.closePath();
 }
 
 export const SkyDome = memo(function SkyDome({
-  grid, pointing, target, emptyNote, stale = false, staleNote, height = 300,
+  grid, pointing, target, targets, emptyNote, stale = false, staleNote,
+  height = 300, yawDeg = 0, onYaw,
 }: SkyDomeProps) {
   const ref = useRef<HTMLCanvasElement | null>(null);
 
@@ -125,7 +139,7 @@ export const SkyDome = memo(function SkyDome({
     // ---- the far half of the horizon, so the dome reads as a solid volume
     ctx.strokeStyle = "rgba(150,170,200,0.18)";
     ctx.lineWidth = 1;
-    ringPath(ctx, 0, cx, cy, r);
+    ringPath(ctx, 0, cx, cy, r, yawDeg);
     ctx.stroke();
 
     // ---- cloud cells, far half first so the near half draws over it
@@ -140,10 +154,10 @@ export const SkyDome = memo(function SkyDome({
       drawn.sort((a, b) => a.depth - b.depth);   // far (negative) first
       for (const { c, depth } of drawn) {
         const corners = [
-          projectAltAz(c.altLo, c.azLo, cx, cy, r),
-          projectAltAz(c.altLo, c.azHi, cx, cy, r),
-          projectAltAz(c.altHi, c.azHi, cx, cy, r),
-          projectAltAz(c.altHi, c.azLo, cx, cy, r),
+          projectAltAz(c.altLo, c.azLo, cx, cy, r, DOME_TILT_DEG, yawDeg),
+          projectAltAz(c.altLo, c.azHi, cx, cy, r, DOME_TILT_DEG, yawDeg),
+          projectAltAz(c.altHi, c.azHi, cx, cy, r, DOME_TILT_DEG, yawDeg),
+          projectAltAz(c.altHi, c.azLo, cx, cy, r, DOME_TILT_DEG, yawDeg),
         ];
         ctx.beginPath();
         ctx.moveTo(corners[0].x, corners[0].y);
@@ -170,9 +184,9 @@ export const SkyDome = memo(function SkyDome({
 
     // ---- altitude rings and the horizon, over the cloud
     ctx.strokeStyle = "rgba(160,180,210,0.22)";
-    for (const alt of ALT_RINGS) { ringPath(ctx, alt, cx, cy, r); ctx.stroke(); }
+    for (const alt of ALT_RINGS) { ringPath(ctx, alt, cx, cy, r, yawDeg); ctx.stroke(); }
     ctx.strokeStyle = "rgba(170,190,220,0.45)";
-    ringPath(ctx, 0, cx, cy, r);
+    ringPath(ctx, 0, cx, cy, r, yawDeg);
     ctx.stroke();
 
     // ---- meridian and the prime vertical, for orientation
@@ -182,7 +196,7 @@ export const SkyDome = memo(function SkyDome({
       for (let alt = 0; alt <= 180; alt += 3) {
         const a = alt <= 90 ? alt : 180 - alt;
         const z = alt <= 90 ? az : (az + 180) % 360;
-        const p = projectAltAz(a, z, cx, cy, r);
+        const p = projectAltAz(a, z, cx, cy, r, DOME_TILT_DEG, yawDeg);
         if (alt === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
       }
       ctx.stroke();
@@ -193,7 +207,7 @@ export const SkyDome = memo(function SkyDome({
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     for (const [label, az] of CARDINALS) {
-      const p = projectAltAz(0, az, cx, cy, r);
+      const p = projectAltAz(0, az, cx, cy, r, DOME_TILT_DEG, yawDeg);
       // Push clear of the rim, and further for the FAR cardinals: the dome
       // bulges above its own back horizon, so a 9 px nudge left "N" sitting on
       // painted cloud rather than beside the outline.
@@ -204,9 +218,32 @@ export const SkyDome = memo(function SkyDome({
                p.facing ? "rgba(210,225,245,0.9)" : "rgba(190,205,230,0.72)");
     }
 
+    // ---- every target in the plan, numbered in plan order
+    //
+    // BELOW THE HORIZON IS DRAWN, NOT DROPPED, and drawn differently: a target
+    // that has not risen is the single most useful thing this panel can tell
+    // an operator planning the next hour, and silently omitting it reads as
+    // "clear" -- the same lie the dome refuses to tell about cloud. It goes on
+    // the horizon at its azimuth, hollow, so the shape says "not up yet"
+    // rather than claiming a position it does not have.
+    for (const [i, t] of (targets ?? []).entries()) {
+      const up = t.alt >= 0;
+      const p = projectAltAz(up ? t.alt : 0, t.az, cx, cy, r,
+                             DOME_TILT_DEG, yawDeg);
+      if (!p.facing) continue;              // round the back of the dome
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = up ? "rgba(150,235,190,0.8)" : "rgba(150,235,190,0.35)";
+      ctx.beginPath(); ctx.arc(p.x, p.y, 4.5, 0, Math.PI * 2);
+      if (up) { ctx.fillStyle = "rgba(150,235,190,0.22)"; ctx.fill(); }
+      ctx.stroke();
+      ctx.font = "600 9px ui-monospace, monospace";
+      haloText(ctx, String(i + 1), p.x + 7, p.y - 5,
+               up ? "rgba(170,245,205,0.95)" : "rgba(170,245,205,0.5)");
+    }
+
     // ---- the next target, dimmer
     if (target && target.alt >= 0) {
-      const p = projectAltAz(target.alt, target.az, cx, cy, r);
+      const p = projectAltAz(target.alt, target.az, cx, cy, r, DOME_TILT_DEG, yawDeg);
       ctx.strokeStyle = "rgba(140,200,255,0.55)";
       ctx.lineWidth = 1;
       ctx.beginPath(); ctx.arc(p.x, p.y, 5, 0, Math.PI * 2); ctx.stroke();
@@ -219,7 +256,7 @@ export const SkyDome = memo(function SkyDome({
     // ---- where the scope is actually looking. Drawn last: it is the one mark
     // that must never be hidden behind a cloud cell.
     if (pointing && pointing.alt >= 0) {
-      const p = projectAltAz(pointing.alt, pointing.az, cx, cy, r);
+      const p = projectAltAz(pointing.alt, pointing.az, cx, cy, r, DOME_TILT_DEG, yawDeg);
       const cross = () => {
         ctx.beginPath(); ctx.arc(p.x, p.y, 7, 0, Math.PI * 2); ctx.stroke();
         ctx.beginPath();
@@ -250,7 +287,35 @@ export const SkyDome = memo(function SkyDome({
       ctx.font = "500 11px ui-monospace, monospace";
       ctx.fillText(emptyNote, cx, cy - r * 0.35);
     }
-  }, [grid, pointing, target, emptyNote, stale, staleNote, height]);
+  }, [grid, pointing, target, targets, emptyNote, stale, staleNote,
+      height, yawDeg]);
+
+  // ---- drag to turn the dome
+  //
+  // POINTER EVENTS, not mouse: the same three handlers carry finger and stylus,
+  // and setPointerCapture keeps the drag alive when the finger leaves the
+  // canvas -- without it a slow pan that strays over the panel edge stops dead
+  // halfway round, which reads as the dome being stuck.
+  //
+  // The horizon spans 2r across the canvas, so a full turn is a drag of about
+  // one diameter. Anything faster overshoots on a phone; anything slower needs
+  // three swipes to see north.
+  const drag = useRef<{ id: number; x: number; yaw: number } | null>(null);
+
+  const down = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!onYaw) return;
+    (e.currentTarget as HTMLCanvasElement).setPointerCapture?.(e.pointerId);
+    drag.current = { id: e.pointerId, x: e.clientX, yaw: yawDeg };
+  };
+  const move = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const d = drag.current;
+    if (!onYaw || !d || d.id !== e.pointerId) return;
+    const w = (e.currentTarget as HTMLCanvasElement).clientWidth || 1;
+    onYaw(d.yaw + ((e.clientX - d.x) / w) * 360);
+  };
+  const up = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (drag.current && drag.current.id === e.pointerId) drag.current = null;
+  };
 
   return (
     <canvas
@@ -264,7 +329,12 @@ export const SkyDome = memo(function SkyDome({
               : "Sky dome showing modelled cloud occlusion, with the telescope's pointing marked")
           : (emptyNote || "Sky dome, no cloud data")
       }
-      className="block mx-auto"
+      className="block mx-auto touch-none select-none"
+      style={onYaw ? { cursor: "ew-resize" } : undefined}
+      onPointerDown={onYaw ? down : undefined}
+      onPointerMove={onYaw ? move : undefined}
+      onPointerUp={onYaw ? up : undefined}
+      onPointerCancel={onYaw ? up : undefined}
     />
   );
 });
