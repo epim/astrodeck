@@ -35,6 +35,7 @@ from .devices.base import (
 )
 from .devices.backend import ROLES
 from .devices.nina import build_nina_rig, pick as nina_pick
+from .align import guide_offset as _guide_offset
 from .events import bus
 from .guide import Guider, PHD2Guider
 from .imaging import (
@@ -4902,6 +4903,142 @@ class Hub:
             bus.log("warning", f"plate solve: could not return the wheel to "
                                f"{label} ({e}) — the next frame's filter move "
                                f"will correct it", "solve")
+
+    async def measure_guide_offset(self, *, exposure_s: float = 4.0,
+                                   guide_exposure_s: float = 4.0) -> dict:
+        """Plate-solve BOTH cameras where the mount is now, and diff the centres.
+
+        The whole measurement: the guide scope is bolted to the OTA and points
+        somewhere else, so solve a frame through each and the difference is the
+        offset. No star-hopping, no reticle, no tape measure.
+
+        NEITHER FRAME IS SYNCED and the mount is never commanded. This reads
+        the sky twice and returns arithmetic; a measurement that moved the
+        mount between its two exposures would be measuring the mount.
+
+        THE TWO SCOPES NEED DIFFERENT FOV HINTS. ASTAP's `-fov` narrows the
+        scale search, and the guide scope's focal length is a different number
+        entirely -- 150 mm against 801 mm here. Handing the main scope's hint
+        to the guide frame is how a solvable field comes back "no solution",
+        so the guide hint is scaled by the focal-length ratio from the same
+        optics block that already stores both.
+
+        Returns a plain dict, including both raw solves, so a caller can see
+        WHY it failed and a human can sanity-check the geometry rather than
+        being handed one number to trust.
+        """
+        # Imported in-function, as every other caller in this file does: the
+        # providers module reaches back into hub for capability routing and a
+        # module-level import here is a cycle.
+        from . import providers as _providers
+
+        cam: Camera = self.require("camera")
+        guide_cam = self.devices.get("guide_camera")
+        if guide_cam is None:
+            raise DeviceError("no guide camera is connected, so there is "
+                              "nothing to measure the offset against")
+        tel = self.devices.get("telescope")
+        solver = _providers.pick_solver(self)
+        await self.yield_camera_for("guide-scope offset")
+
+        ra_hint = dec_hint = None
+        if tel is not None:
+            try:
+                ra_hint, dec_hint = await tel.get_position()
+                if ra_hint is not None:
+                    ra_hint, dec_hint = await self.from_mount_frame(
+                        tel, ra_hint, dec_hint)
+            except Exception:
+                ra_hint = dec_hint = None
+
+        opt = self.effective_optics()
+        main_fov = opt["fov_h_deg"] or None
+        # THE GUIDE CAMERA'S OWN SENSOR, not the main one scaled.
+        #
+        # The first version computed `main_fov * (main_fl / guide_fl)`, which
+        # silently assumes both cameras have the SAME SENSOR. They do not: the
+        # imaging camera here is 6248 x 4176 and the guide camera a fraction of
+        # that, so the hint came out about four times too wide and ASTAP
+        # answered "no solution" on a field that solves easily. Measured on the
+        # rig 2026-08-26: main solved, guide did not, first attempt.
+        #
+        # Read off the DEVICE, which populates sensor size and pixel pitch on
+        # connect, so it needs nothing configured and cannot disagree with the
+        # camera actually attached. The focal length still comes from
+        # `effective_optics`, which resolves through the active profile -- the
+        # global block an active profile overrides is the wrong layer, and
+        # `effective_optics`'s own comment records that the native guider
+        # already shipped that bug on this exact field.
+        #
+        # No sensor metadata -> None -> ASTAP searches. Slower and right beats
+        # fast and wrong: a bad hint FAILS the solve, an absent one only costs
+        # seconds.
+        guide_fov = None
+        guide_fl = opt.get("guide_focal_length_mm")
+        g_h = getattr(guide_cam, "sensor_height", 0) or 0
+        g_px = getattr(guide_cam, "pixel_size_um", 0.0) or 0.0
+        if guide_fl and g_h and g_px:
+            guide_fov = (g_h * g_px * 206.265 / guide_fl) / 3600.0
+
+        async def _solve(device, seconds, path_name, fov, binning):
+            async with self.exposure_guard("guide-scope offset"):
+                frame = await device.expose(seconds, 200, 30, binning=binning)
+            tmp = CAPTURE_DIR / "_solve" / path_name
+            await asyncio.to_thread(save_fits, frame, tmp, ra_hours=ra_hint,
+                                    dec_deg=dec_hint, instrument=device.name)
+            bus.log("info", f"guide-offset: solving {device.name} "
+                            f"(fov hint {fov or 'auto'})…", "solve")
+            return await solver.solve(tmp, ra_hint=ra_hint, dec_hint=dec_hint,
+                                      fov_deg_hint=fov)
+
+        # MAIN FIRST, and the order is not arbitrary: the imaging frame supplies
+        # the position angle the offset is stored against, so a run that dies
+        # after one solve has produced the more useful half.
+        main = await _solve(cam, exposure_s, "guide_offset_main.fits", main_fov, 2)
+        guide = await _solve(guide_cam, guide_exposure_s,
+                             "guide_offset_guide.fits", guide_fov, 1)
+
+        out = {
+            "main": {"ok": main.success, "ra_hours": main.ra_hours,
+                     "dec_deg": main.dec_deg, "rotation_deg": main.rotation_deg,
+                     "scale": main.pixel_scale_arcsec, "message": main.message},
+            "guide": {"ok": guide.success, "ra_hours": guide.ra_hours,
+                      "dec_deg": guide.dec_deg, "rotation_deg": guide.rotation_deg,
+                      "scale": guide.pixel_scale_arcsec, "message": guide.message},
+            "camera": cam.name, "guide_camera": guide_cam.name,
+        }
+        if not (main.success and guide.success):
+            out["offset"] = None
+            which = "main" if not main.success else "guide"
+            out["reason"] = (f"the {which} frame did not solve, so there is no "
+                             f"pair to difference: {out[which]['message']}")
+            # STORED AND PUBLISHED ON FAILURE TOO. Two solves take about forty
+            # seconds, so this runs in a lane and the caller collects the
+            # result later -- a failure that is not recorded is a button that
+            # spins and then says nothing.
+            self._last_guide_offset = out
+            bus.publish("align", action="guide_offset", measurement=out)
+            return out
+
+        off = _guide_offset.offset_from_solves(
+            main_ra_hours=main.ra_hours, main_dec_deg=main.dec_deg,
+            main_pa_deg=main.rotation_deg, guide_ra_hours=guide.ra_hours,
+            guide_dec_deg=guide.dec_deg, measured_ts=time.time(),
+            camera=cam.name, guide_camera=guide_cam.name,
+            note=f"main {main.pixel_scale_arcsec:.2f}\"/px, "
+                 f"guide {guide.pixel_scale_arcsec:.2f}\"/px")
+        out["offset"] = {
+            "sep_arcsec": off.sep_arcsec, "pa_deg": off.pa_deg,
+            "measured_ts": off.measured_ts, "measured_pa_deg": off.measured_pa_deg,
+            "camera": off.camera, "guide_camera": off.guide_camera,
+            "note": off.note,
+        }
+        bus.log("info",
+                f"guide-scope offset: {off.sep_arcsec / 60.0:.2f} arcmin at "
+                f"instrument PA {off.pa_deg:.1f} deg", "solve")
+        self._last_guide_offset = out
+        bus.publish("align", action="guide_offset", measurement=out)
+        return out
 
     async def solve_and_sync(self, exposure_s: float = 3.0, *,
                              blind: bool = False) -> dict:
