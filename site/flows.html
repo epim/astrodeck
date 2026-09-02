@@ -209,7 +209,7 @@
 
     <div class="grid grid-2">
       <article class="card">
-        <span class="kicker">Flow — solid</span>
+        <span class="kicker">Flow (solid)</span>
         <h3>This happens, then that happens</h3>
         <p>
           <code>SLEW + CENTER</code> emits <code>centered</code>, and
@@ -218,7 +218,7 @@
         </p>
       </article>
       <article class="card">
-        <span class="kicker">Event — dashed</span>
+        <span class="kicker">Event (dashed)</span>
         <h3>When this happens, do that</h3>
         <p>
           A graded frame, cloud arriving, a sensor going quiet: an event wire
@@ -282,7 +282,7 @@
     <div class="band-head">
       <p class="eyebrow">The catalogue</p>
       <h2>The palette.</h2>
-      <p>Twenty-one blocks. Everything you can put on the canvas, and what comes out of it.</p>
+      <p>Twenty-one blocks: everything you can put on the canvas, and what each one emits.</p>
     </div>
 
     <div class="tablewrap">
@@ -306,12 +306,12 @@
           <tr><td class="mono">CALIBRATION QUEUE</td><td class="mono">Rig</td><td class="mono">queue done</td><td>Darks, flats and bias. Every input is optional; with no panel wired it skips flats and says so.</td></tr>
           <tr><td class="mono">TARGET POOL</td><td class="mono">Logic</td><td class="mono">best target · floor hit</td><td>A list of candidates ranked by altitude and moon separation, with a per-target quota, an altitude floor, and what to do when one hits it.</td></tr>
           <tr><td class="mono">CONDITION</td><td class="mono">Logic</td><td class="mono">fire</td><td>Watch an event stream for HFR above, guide RMS above, a rejected frame, a completed target or a wall-clock time. Window it over N frames, once or every time.</td></tr>
-          <tr><td class="mono">HOLD / RESUME</td><td class="mono">Action</td><td class="mono">—</td><td>Self-releasing pause with a maximum hold, and a documented way back: re-cool, re-centre, refocus if needed.</td></tr>
-          <tr><td class="mono">NOTIFY</td><td class="mono">Action</td><td class="mono">—</td><td>ntfy, Telegram or a webhook, with a channel and a level.</td></tr>
-          <tr><td class="mono">REFOCUS</td><td class="mono">Action</td><td class="mono">—</td><td>Refocus at the next frame boundary rather than mid-exposure.</td></tr>
+          <tr><td class="mono">HOLD / RESUME</td><td class="mono">Action</td><td class="mono">none</td><td>Self-releasing pause with a maximum hold, and a documented way back: re-cool, re-centre, refocus if needed.</td></tr>
+          <tr><td class="mono">NOTIFY</td><td class="mono">Action</td><td class="mono">none</td><td>ntfy, Telegram or a webhook, with a channel and a level.</td></tr>
+          <tr><td class="mono">REFOCUS</td><td class="mono">Action</td><td class="mono">none</td><td>Refocus at the next frame boundary rather than mid-exposure.</td></tr>
           <tr><td class="mono">PARK + CLOSE</td><td class="mono">Action</td><td class="mono">closed</td><td>End-of-night closure: dust flap, dome, park, and whether to hold the cooler cold for day darks.</td></tr>
-          <tr><td class="mono">ABORT + PARK</td><td class="mono">Action</td><td class="mono">—</td><td>Stop now. Park, warm, and say why in the log and the alert.</td></tr>
-          <tr><td class="mono">SESSION REPORT</td><td class="mono">Sink</td><td class="mono">—</td><td>The night's record: what was shot, what was rejected, and the stacking bundle.</td></tr>
+          <tr><td class="mono">ABORT + PARK</td><td class="mono">Action</td><td class="mono">none</td><td>Stop now. Park, warm, and say why in the log and the alert.</td></tr>
+          <tr><td class="mono">SESSION REPORT</td><td class="mono">Sink</td><td class="mono">none</td><td>The night's record: what was shot, what was rejected, and the stacking bundle.</td></tr>
         </tbody>
       </table>
     </div>
@@ -333,9 +333,9 @@
     <div class="prose">
       <p class="dim">
         The failure this prevents is a quiet one. Software that silently drops
-        settings it does not recognise will start a run that looks correct and
-        has no altitude gate, no dawn stop and none of the cloud rules you drew.
-        It goes green, it moves the mount, and nothing reports a problem.
+        settings it does not recognise will start a run that looks correct but
+        has no dawn stop and none of the cloud rules you drew. It goes green and
+        moves the mount, and nothing reports a problem.
       </p>
       <p class="dim">
         So AstroDeck names what it dropped. Your cloud rule is either running or
@@ -357,7 +357,7 @@
       <article class="card">
         <span class="kicker">Checked</span>
         <h3>Unmapped settings</h3>
-        <p>Anything you configured on the canvas that the engine has no way to honour, listed before you run rather than discarded quietly.</p>
+        <p>Anything you configured on the canvas that the engine cannot honour is listed before you run.</p>
       </article>
     </div>
   </div>
