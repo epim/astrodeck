@@ -167,18 +167,26 @@ AstroDeck sees that the ASIAIR is guiding and does not fight it.
 
 ## Hardware
 
-**Native drivers.** No vendor software or ASCOM layer to install.
+**Native drivers.** No vendor software or ASCOM layer to install. Verified
+means whole unattended nights on a real rig. Supported means the driver
+reaches it through the same SDK or protocol, but nobody has run it through a
+night yet.
 
-| Vendor | Device | How |
-|---|---|---|
-| ZWO | AM5 / AM5N mounts | LX200 ASCII over USB serial |
-| ZWO | ASI cameras | ASICamera2 SDK |
-| ZWO | EAF focuser | ZWO USB SDK |
-| ZWO | EFW filter wheel | ZWO USB SDK |
-| ZWO | CAA rotator | ZWO USB SDK |
-| ZWO | ASIAIR (as a backend) | Its own network protocol, via libasi |
-| Player One | Cameras | Player One SDK, gain modes included |
-| Wanderer Astro | Snowflake filter wheel | Native serial |
+| Vendor | Device | How | Status |
+|---|---|---|---|
+| ZWO | AM5 / AM5N mounts | LX200 ASCII over USB serial | Verified |
+| ZWO | ASI220MM camera | ASICamera2 SDK | Verified |
+| ZWO | Any other uncooled mono ASI camera | ASICamera2 SDK, whichever model it lists | Supported |
+| ZWO | Cooled or colour ASI cameras | Exposes and reads temperature; no cooler control and no Bayer tag yet | Use Alpaca for now |
+| ZWO | EAF focuser | ZWO USB SDK | Verified |
+| ZWO | CAA rotator | ZWO USB SDK | Supported |
+| ZWO | ASIAIR (as a backend) | Its own network protocol, via libasi | Untested on hardware |
+| Player One | Poseidon-M PRO camera | Player One SDK, gain modes included | Verified |
+| Player One | Any other Player One camera | Player One SDK; cooling, dew heater, read modes and Bayer tag all wired | Supported |
+| Wanderer Astro | Snowflake filter wheel | Native serial | Verified |
+
+The ZWO EFW has no native driver; like any ASCOM device it connects through
+the bundled COM host or Alpaca.
 
 **Everything else.** Anything with an **ASCOM Alpaca** endpoint connects
 directly: ZWO, Pegasus Astro, QHY, PrimaLuceLab, Optec, Lakeside, Moonlite and
