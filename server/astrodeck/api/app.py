@@ -107,6 +107,7 @@ from ..flows.compile import compile_plan
 from ..flows.doctor import check as flow_doctor
 from ..flows.models import MY_FLOWS_FOLDER, FlowGraph, FlowRecord
 from ..flows.store import FlowLibraryFull, ReadOnlyFlow, flow_store
+from ..flows import wizard as flow_wizard
 from ..flows.to_plan import (GraphNotRunnable, blocking_reasons, losses,
                              to_sequence_plan)
 from ..flows.tonight import (banked_hours_from_reports,
@@ -1295,6 +1296,47 @@ class PlanSaveBody(BaseModel):
     plan: SequencePlan
     id: str | None = None
     overwrite: bool = False
+
+
+class FlowWizardBody(BaseModel):
+    """The sheet's three answers.
+
+    VALIDATED AGAINST THE GENERATOR'S OWN CONSTANTS rather than re-typed here.
+    wizard.py opens by explaining why: a caller matching on "EAA quick look" and
+    a generator matching on "EAA Quick Look" silently builds a guided deep-sky
+    night instead. A second copy of these strings in this file is exactly that
+    bug with a longer fuse.
+
+    An unknown kind or chip is REFUSED (422) rather than dropped. Dropping it
+    generates a night the operator did not ask for and gives them no way to tell
+    -- the wizard exists so somebody's first flow works, and quietly building a
+    different one fails that harder than an error does.
+    """
+    kind: str = flow_wizard.KIND_DEEP_SKY
+    options: list[str] = Field(default_factory=list)
+    target: str = ""
+    #: Only consulted for an unguided lane; the generator picks a safe default.
+    unguided_exposure_s: float | None = Field(None, gt=0, le=3600)
+
+    @field_validator("kind")
+    @classmethod
+    def _known_kind(cls, v: str) -> str:
+        if v not in flow_wizard.KINDS:
+            raise ValueError(
+                f"unknown kind {v!r}; expected one of "
+                + ", ".join(repr(k) for k in flow_wizard.KINDS))
+        return v
+
+    @field_validator("options")
+    @classmethod
+    def _known_options(cls, v: list[str]) -> list[str]:
+        bad = [o for o in v if o not in flow_wizard.AUTOMATION_OPTIONS]
+        if bad:
+            raise ValueError(
+                "unknown automation " + ", ".join(repr(b) for b in bad)
+                + "; expected from "
+                + ", ".join(repr(o) for o in flow_wizard.AUTOMATION_OPTIONS))
+        return v
 
 
 class FlowSaveBody(BaseModel):
@@ -3760,6 +3802,31 @@ def create_app() -> FastAPI:
     # ORDERING: every static /api/flows/<segment> route MUST be declared before
     # /api/flows/{flow_id}, or Starlette matches the parameterised route first
     # and "folders" arrives as a flow id — a 404 on a route that exists.
+    @app.post("/api/flows/wizard",
+              dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
+    async def generate_flow_from_wizard(body: FlowWizardBody):
+        """Three answers in, a saved flow out.
+
+        The generator lives in ``flows/wizard.py`` and stays there. This route
+        is the missing wire, not a second implementation: it validates the
+        answers against the generator's own constants, calls
+        ``generate_record``, and persists through ``_persist_flow`` -- the same
+        writer POST /api/flows and PUT use, so the four server-owned fields are
+        re-derived here exactly as they are everywhere else.
+
+        SAVED, not returned unsaved. The sheet's next act is to open the flow in
+        the editor, and a generated graph the operator has to save by hand is a
+        graph they can lose by closing a tab.
+
+        CAP_CONTROL_CAPTURE matches POST /api/flows for the same reason it does
+        there: somebody who may compose a graph may compose this one.
+        """
+        record = await asyncio.to_thread(
+            flow_wizard.generate_record,
+            body.kind, body.options, body.target, body.unguided_exposure_s)
+        return await _persist_flow(record)
+
     @app.get("/api/flows/folders", dependencies=[Depends(require(CAP_VIEW_STATUS))])
     @declare(CAP_VIEW_STATUS)
     async def list_flow_folders():

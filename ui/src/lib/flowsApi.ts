@@ -76,6 +76,7 @@ export interface FlowRunResult {
 export const FLOWS_BASE = "/api/flows";
 export const FLOWS_FOLDERS = "/api/flows/folders";
 export const FLOWS_COMPILE_DRAFT = "/api/flows/compile";
+export const FLOWS_WIZARD = "/api/flows/wizard";
 export const CALIBRATION_HEALTH = "/api/calibration/health";
 
 const one = (id: string) => `${FLOWS_BASE}/${encodeURIComponent(id)}`;
@@ -88,6 +89,14 @@ export const flowsApi = {
    *  `last_result` from what it already has, so sending them is harmless and
    *  forging them is not possible. */
   create: (flow: unknown) => api.post<unknown>(FLOWS_BASE, { flow }),
+
+  /** The wizard's three answers -> a generated, SAVED flow. The rules live in
+   *  server/astrodeck/flows/wizard.py and are not duplicated here; `kind` and
+   *  the `options` labels are that module's own constants, so the sheet sends
+   *  the strings it renders. */
+  generateFromWizard: (answers: {
+    kind: string; options: string[]; target: string;
+  }) => api.post<unknown>(FLOWS_WIZARD, answers),
   save: (id: string, flow: unknown) => api.put<unknown>(one(id), { flow }),
   remove: (id: string) => api.del<{ deleted: string }>(one(id)),
 
