@@ -176,13 +176,13 @@ night yet.
 |---|---|---|---|
 | ZWO | AM5 / AM5N mounts | LX200 ASCII over USB serial | Verified |
 | ZWO | ASI220MM camera | ASICamera2 SDK | Verified |
-| ZWO | Any other uncooled mono ASI camera | ASICamera2 SDK, whichever model it lists | Supported |
-| ZWO | Cooled or colour ASI cameras | Exposes and reads temperature; no cooler control and no Bayer tag yet | Use Alpaca for now |
+| ZWO | Any other uncooled ASI camera, mono or colour | ASICamera2 SDK, whichever model it lists | Supported |
+| ZWO | Cooled ASI cameras | Exposes and reads temperature; no cooler control yet | Use Alpaca for now |
 | ZWO | EAF focuser | ZWO USB SDK | Verified |
 | ZWO | CAA rotator | ZWO USB SDK | Supported |
 | ZWO | ASIAIR (as a backend) | Its own network protocol, via libasi | Untested on hardware |
 | Player One | Poseidon-M PRO camera | Player One SDK, gain modes included | Verified |
-| Player One | Any other Player One camera | Player One SDK; cooling, dew heater, read modes and Bayer tag all wired | Supported |
+| Player One | Any other Player One camera | Player One SDK; cooling, dew heater and read modes all wired | Supported |
 | Wanderer Astro | Snowflake filter wheel | Native serial | Verified |
 
 The ZWO EFW has no native driver; like any ASCOM device it connects through
