@@ -68,3 +68,24 @@ async def test_asi_registered_in_registry():
     import astrodeck.devices.cameras.zwo_asi  # noqa: F401 (import registers)
     from astrodeck.devices.cameras import registry
     assert "zwo-asi" in [n for n, _ in registry.iter_adapters()]
+
+
+async def test_cooled_asi_reports_no_cooler_until_cooling_is_implemented():
+    # The SDK says IsCoolerCam for a cooled ASI, but this adapter implements
+    # none of the cooling hooks, so the waist's defaults raise "camera has no
+    # cooler" on the first set_target_temp. Advertising the cooler lets a night
+    # connect cleanly and then fail its cool-down step with a message that
+    # blames the camera. Report what the DRIVER can do, not what the camera has.
+    from astrodeck.devices.cameras.zwo_asi import AsiCameraAdapter, AsiProperty
+
+    class CooledAsiSdk(FakeAsiSdk):
+        def get_property(self, cam_id):
+            return AsiProperty(name="ZWO ASI2600MM Pro", width=self._w,
+                               height=self._h, pixel_size_um=3.76, is_color=False,
+                               bayer=None, bit_depth=16, bin_modes=(1, 2),
+                               max_gain=460, max_offset=255, has_cooler=True,
+                               camera_id=0, egain=1.0)
+
+    cam = NativeCamera(AsiCameraAdapter(sdk=CooledAsiSdk(8, 6)))
+    await cam.connect()
+    assert cam.can_cool is False
