@@ -1,13 +1,15 @@
 // FlowWizard.tsx — the guided "NEW FLOW" sheet. Contract §C.14, ref 09.
 //
-// THE GENERATOR IS NOT CONNECTED, AND THIS FILE DOES NOT PRETEND OTHERWISE.
-// `server/astrodeck/flows/wizard.py` has `generate()` / `generate_record()` /
-// `flow_name()` and **no route reaches any of them** (contract §E.7, §G-2 item
-// 4). The two ways to close that are (a) add `POST /api/flows/wizard`, or (b)
-// re-implement `genWizard()` in TypeScript as a third transcription of the same
-// rules — and §G-2 is explicit that the choice is the user's, not this file's.
-// So the sheet collects its three answers exactly as designed and GENERATE FLOW
-// is an honest-disabled control that SAYS the generator is unreachable. A button
+// THE GENERATOR LIVES ON THE SERVER, AND STAYS THERE.
+// `server/astrodeck/flows/wizard.py` owns the rules; `POST /api/flows/wizard`
+// is the wire (§G-2 item 4, closed by option (a)). Option (b) was to
+// re-implement `genWizard()` here, which would make three transcriptions of one
+// rule set — the prototype, wizard.py and this file — and wizard.py's own
+// header names that drift as the thing this project keeps re-finding.
+//
+// So this sheet asks and the server answers. The route generates AND saves, so
+// what comes back has an id and can be opened straight away rather than being a
+// graph the operator can lose by closing a tab. A button
 // that quietly built a graph from a TS copy of the rules would be the drift the
 // open question exists to prevent; one that silently did nothing would be worse.
 //
@@ -38,16 +40,10 @@ const AUTOMATION_DEFAULTS: readonly string[] = ["Guiding", "HFR watchdog"];
  *  the single-target example from the comma-list one without a second field. */
 const TARGET_PLACEHOLDER = "M16    ·    or: M16, M17, M8, NGC 6946";
 
-/** Why GENERATE FLOW cannot act. One short claim + one paragraph of why, both
- *  shown in BOTH places — as the visible LockedNote under the blurb and as the
- *  toast a press produces. Two wordings for one refusal is how an operator ends
- *  up unsure whether they hit two different problems. */
-export const GENERATE_BLOCKED =
-  "Generating is not connected yet — nothing on the rig exposes the generator.";
-export const GENERATE_BLOCKED_WHY =
-  "The rig can build a graph from these answers, but no endpoint reaches that "
-  + "code. START BLANK opens an empty canvas; the library's Examples are "
-  + "editable copies.";
+/** The only thing that can stop GENERATE FLOW now is a capability or a request
+ *  already in flight. Kept as one exported string so the button's reason and
+ *  any test asserting on it cannot drift apart. */
+export const GENERATE_FAILED = "Could not generate the flow";
 
 // The blank flow the prototype's `loadPipe("new")` produces (line 891): a TARGET
 // and a SLEW, unwired, at these coordinates. Two nodes rather than none because
@@ -87,6 +83,7 @@ export default function FlowWizard() {
   const [autos, setAutos] = useState<readonly string[]>(AUTOMATION_DEFAULTS);
   const [target, setTarget] = useState("");
   const [creating, setCreating] = useState(false);
+  const [generating, setGenerating] = useState(false);
 
   const close = () => setUi({ wizardOpen: false });
 
@@ -95,9 +92,39 @@ export default function FlowWizard() {
   const explain = (reason: string, why?: string) =>
     enqueueToast({ level: "warning", title: reason, detail: why });
 
+  const busy = creating || generating;
   const blankReason = !canCreate
     ? `Creating a flow needs ${accessPhrase("control.capture")}.`
-    : creating ? "Already creating a flow — one moment." : null;
+    : busy ? "Already creating a flow — one moment." : null;
+  const generateReason = !canCreate
+    ? `Generating a flow needs ${accessPhrase("control.capture")}.`
+    : busy ? "Already creating a flow — one moment." : null;
+
+  /** The server generates AND saves, so there is one call and the id it returns
+   *  is openable. The three answers go up exactly as the sheet holds them: the
+   *  chip labels and kind strings ARE the generator's constants, which is why
+   *  neither end re-types them. */
+  const generate = async () => {
+    setGenerating(true);
+    try {
+      const rec = (await flowsApi.generateFromWizard({
+        kind,
+        options: [...autos],
+        target: target.trim(),
+      })) as { id?: string };
+      if (!rec?.id) throw new Error("the server returned a flow with no id");
+      close();
+      await flowsOpen(rec.id);
+    } catch (e) {
+      enqueueToast({
+        level: "error",
+        title: GENERATE_FAILED,
+        detail: e instanceof Error ? e.message : String(e),
+      });
+    } finally {
+      setGenerating(false);
+    }
+  };
 
   const startBlank = async () => {
     setCreating(true);
@@ -159,16 +186,14 @@ export default function FlowWizard() {
         // inset; repeating `border-t` here would render a 2px double line.
         <footer className="flex gap-2.5 px-[18px] py-[13px]">
           <HonestButton
-            reason={GENERATE_BLOCKED}
-            // Unreachable while `reason` is set, which is always: the day a
-            // route exists, this is where it gets called and the reason goes.
-            onClick={() => { /* no generator to call — §G-2 item 4. */ }}
-            onExplain={(r) => explain(r, GENERATE_BLOCKED_WHY)}
+            reason={generateReason}
+            onClick={() => { void generate(); }}
+            onExplain={(r) => explain(r)}
             className="flex-1 min-h-[46px] rounded-[10px] border border-accent2
               bg-accent-fill text-accent font-display font-semibold text-[12px]
               tracking-[0.14em] cursor-pointer"
           >
-            GENERATE FLOW
+            {generating ? "GENERATING…" : "GENERATE FLOW"}
           </HonestButton>
           <HonestButton
             reason={blankReason}
@@ -275,16 +300,18 @@ export default function FlowWizard() {
         you can rearrange. The doctor will flag anything risky.
       </p>
 
-      {/* The blurb above is the design's copy and it describes a generator that
-          is not reachable. The refusal goes directly under it so the promise and
-          its qualification are read together, and so the reason reaches someone
-          who never presses the button. */}
-      <LockedNote
-        reason={`${GENERATE_BLOCKED} ${GENERATE_BLOCKED_WHY}`}
-        // The note wraps to several lines; `!` because LockedNote's own
-        // `items-center` would otherwise float the lock glyph mid-paragraph.
-        className="!items-start leading-[1.5] [text-wrap:pretty]"
-      />
+      {/* A capability note, and only when it applies. This used to carry a
+          standing refusal because the generator was unreachable; now the only
+          reason to refuse is not holding control.capture, and saying so to
+          everyone else would be a warning about nothing. */}
+      {!canCreate && (
+        <LockedNote
+          reason={`Generating a flow needs ${accessPhrase("control.capture")}.`}
+          // The note wraps to several lines; `!` because LockedNote's own
+          // `items-center` would otherwise float the lock glyph mid-paragraph.
+          className="!items-start leading-[1.5] [text-wrap:pretty]"
+        />
+      )}
     </Overlay>
   );
 }
