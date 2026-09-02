@@ -232,7 +232,19 @@ pre code { background: none; padding: 0; }
   font-family: var(--f-mono); font-size: .68rem; letter-spacing: .13em;
   text-transform: uppercase; color: var(--dimmer); margin-top: .45rem; display: block;
 }
-@media (max-width: 620px) { .stat { border-right: 0; border-bottom: 1px solid var(--line-soft); } }
+/* Five cells in two phone columns leave the fifth alone beside an empty
+   one, and a spanning cell with left-aligned text looks exactly the same.
+   One column instead, each stat a row with its number and label side by
+   side. */
+@media (max-width: 620px) {
+  .stats { grid-template-columns: minmax(0, 1fr); }
+  .stat {
+    display: flex; align-items: baseline; gap: .9rem; padding: .75rem 0;
+    border-right: 0; border-bottom: 1px solid var(--line-soft);
+  }
+  .stat .n { min-width: 5ch; }
+  .stat .l { margin-top: 0; }
+}
 
 /* ---------------------------------------------------------------- sections */
 .band { padding: clamp(3.5rem, 8vh, 6.5rem) 0; border-bottom: 1px solid var(--line-soft); }
@@ -288,6 +300,13 @@ figcaption {
   color: var(--dimmer); line-height: 1.6;
 }
 .framed { border: 1px solid var(--line); background: var(--surface); border-radius: 4px; padding: 1.4rem; }
+/* A five-column graph squeezed to 350 px is 5 px text. Below this width the
+   framed diagrams keep a readable size and scroll sideways inside their own
+   frame; the page itself never scrolls horizontally. */
+@media (max-width: 720px) {
+  .framed { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .framed svg { display: block; min-width: 800px; height: auto; }
+}
 
 /* --------------------------------------------------------------- node keys */
 .legend { display: flex; flex-wrap: wrap; gap: .5rem 1.2rem; }
