@@ -1,7 +1,14 @@
 """ZWO ASI camera adapter — maps the ASICamera2 SDK onto the CameraAdapter waist.
 On this rig the ASI220MM is the GUIDE camera (uncooled mono, no read modes); the
 same adapter serves an imaging ASI just as well. Vendor-specific logic lives here
-only; the engine (engine.py) owns the exposure loop and buffer assembly."""
+only; the engine (engine.py) owns the exposure loop and buffer assembly.
+
+COOLING IS NOT IMPLEMENTED HERE YET. Exposure, gain, offset, ROI, binning, the
+Bayer tag and the sensor temperature are; the cooler, its setpoint and the
+anti-dew heater are not, so ``capabilities()`` reports ``has_cooler=False`` even
+for a cooled model and the engine never calls a hook that would raise. A cooled
+ASI runs uncooled natively, or through Alpaca. The Player One adapter is the
+template when this lands."""
 from __future__ import annotations
 
 from ..base import DeviceError
@@ -47,7 +54,10 @@ class AsiCameraAdapter(CameraAdapter):
             pixel_size_um=p.pixel_size_um, bit_depth=p.bit_depth,
             bayer_pattern=p.bayer, gain_range=(0, self._gain_max),
             offset_range=(0, self._offset_max), bin_modes=tuple(p.bin_modes),
-            roi_supported=True, has_cooler=p.has_cooler, has_dew_heater=False,
+            # What the DRIVER can do, not what the camera has: see the module
+            # docstring. Advertising the SDK's IsCoolerCam here let a night
+            # connect cleanly and then fail its cool-down step.
+            roi_supported=True, has_cooler=False, has_dew_heater=False,
             max_adu=65535, read_modes=(), hcg_threshold_gain=None,
             extra={"egain": p.egain} if p.egain else {})
 
