@@ -53,7 +53,7 @@
   <div class="wrap stack gap-4">
     <div class="band-head">
       <p class="eyebrow">Native drivers</p>
-      <h2>No vendor software. Nothing to install.</h2>
+      <h2>No vendor software to install.</h2>
       <p>
         AstroDeck talks to these over the vendor SDK or the wire protocol
         itself. Plug in the USB cable and press connect.
@@ -79,8 +79,8 @@
     </div>
 
     <p class="note">
-      <strong>“On sky” means exactly that</strong> — that device has run whole
-      unattended nights on a real rig, not just connected on a bench.
+      <strong>"On sky" means exactly that:</strong> the device has run whole
+      unattended nights on a real rig. Connecting on a bench does not count.
     </p>
   </div>
 </section>
@@ -111,8 +111,8 @@
         <p>
           Gear that only ships a Windows COM driver still works: AstroDeck starts
           and manages a local COM-to-Alpaca host itself. No separate ASCOM Remote
-          install and no second thing to keep running. On Linux and macOS it is absent
-          rather than half-present.
+          install and no second thing to keep running. On Linux and macOS there
+          is no COM host at all, so nothing pretends to work.
         </p>
       </article>
     </div>
@@ -168,7 +168,7 @@
 
           <g>
             <rect x="40" y="106" width="920" height="38" rx="3" fill="none" stroke="var(--accent)" stroke-width="1.4"/>
-            <text x="72" y="130" font-family="JetBrains Mono, monospace" font-size="11" letter-spacing="1.6" fill="var(--accent)">devices/base.py — THE SEAM</text>
+            <text x="72" y="130" font-family="JetBrains Mono, monospace" font-size="11" letter-spacing="1.6" fill="var(--accent)">devices/base.py: THE SEAM</text>
             <text x="620" y="130" font-family="Spectral, serif" font-size="12" fill="var(--dim)">a mount can slew, report a pier side, and refuse</text>
           </g>
 
@@ -198,7 +198,7 @@
       <figcaption>
         Swap a camera vendor and autofocus does not change. Add a backend and no
         existing code moves. It is also why running alongside NINA or an ASIAIR
-        can be permanent rather than transitional: they are just backends.
+        is a permanent option: they are backends like any other.
       </figcaption>
     </figure>
   </div>
@@ -209,7 +209,7 @@
   <div class="wrap stack gap-3">
     <div class="band-head">
       <p class="eyebrow">Not on the list?</p>
-      <h2>Ask. Genuinely.</h2>
+      <h2>Ask, and it gets added.</h2>
       <p>
         The list above is what has been built so far, not a judgement about what
         deserves to exist. If your gear is missing, open an issue with what you
@@ -242,8 +242,8 @@
         <h3>No fork required</h3>
         <p>
           Backends can ship as separate packages and register themselves through
-          an entry point. Your driver, your repo, your release cadence. It appears in
-          the equipment list like any other.
+          an entry point. Your driver stays in your repo on your own release
+          schedule, and it appears in the equipment list like any other.
         </p>
       </article>
     </div>

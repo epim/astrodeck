@@ -73,27 +73,27 @@
           <tr><td>Expose and download linear FITS</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="yes">Yes</td></tr>
           <tr><td>Cooler set point and temperature</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="yes">Yes</td></tr>
           <tr><td>Warm-up ramp on shutdown</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="yes">Yes</td></tr>
-          <tr><td>Anti-dew heater</td><td class="yes">Yes</td><td class="no">—</td><td class="yes">Yes</td></tr>
+          <tr><td>Anti-dew heater</td><td class="yes">Yes</td><td class="no">No</td><td class="yes">Yes</td></tr>
           <tr><td>Mount slew, sync, park, unpark, jog</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="yes">Yes</td></tr>
           <tr><td>Tracking on/off and drive rate</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="yes">Yes</td></tr>
           <tr><td>Pier side and meridian flip</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="yes">Yes</td></tr>
           <tr><td>Focuser absolute move and temperature</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="yes">Yes</td></tr>
           <tr><td>Filter wheel</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="part">Not yet</td></tr>
           <tr><td>Rotator</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="part">Not yet</td></tr>
-          <tr><td>Dome and shutter</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="no">—</td></tr>
-          <tr><td>Flat panel / dust cover</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="no">—</td></tr>
-          <tr><td>DC power ports</td><td class="yes">Yes</td><td class="no">—</td><td class="yes">Yes, 4</td></tr>
-          <tr><td>Safety monitor</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="no">—</td></tr>
+          <tr><td>Dome and shutter</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="no">No</td></tr>
+          <tr><td>Flat panel / dust cover</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="no">No</td></tr>
+          <tr><td>DC power ports</td><td class="yes">Yes</td><td class="no">No</td><td class="yes">Yes, 4</td></tr>
+          <tr><td>Safety monitor</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="no">No</td></tr>
         </tbody>
       </table>
     </div>
 
     <p class="note note-amber">
-      <strong>Why two ASIAIR cells say “not yet”.</strong> The filter wheel and
+      <strong>Why two ASIAIR cells say "not yet".</strong> The filter wheel and
       rotator are the two commands that could not be mapped to certainty without
       a box on the bench. A wrong guess there rotates to the wrong angle or
       images through the wrong filter, silently, for a whole night. So AstroDeck
-      declines to guess rather than ship a coin flip.
+      declines to guess.
     </p>
   </div>
 </section>
@@ -120,7 +120,7 @@
           <tr><td>Per-frame WCS written back into the FITS</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="yes">Yes</td></tr>
           <tr><td>Three-point polar alignment (TPPA)</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="yes">Yes</td></tr>
           <tr><td>Guiding</td><td class="yes">Built-in or PHD2</td><td class="yes">NINA's guider</td><td class="part">Left to the box</td></tr>
-          <tr><td>Guiding Assistant (seeing, Dec backlash)</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="no">—</td></tr>
+          <tr><td>Guiding Assistant (seeing, Dec backlash)</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="no">No</td></tr>
           <tr><td>Dithering</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="part">Box's own</td></tr>
           <tr><td>Live stacking with satellite rejection</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="yes">Yes</td></tr>
           <tr><td>Frame quality gate (HFR, stars, guide RMS)</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="yes">Yes</td></tr>
@@ -160,7 +160,7 @@
           <tr><td class="mono">Monitor dashboard</td><td>ETA, progress, cooler, guide RMS, meridian countdown, HFR trend, live thumbnail, sky dome</td></tr>
           <tr><td class="mono">Dark-adaptation mode</td><td>One tap turns the whole interface red, with day and night brightness remembered separately</td></tr>
           <tr><td class="mono">Alerts</td><td>ntfy, Telegram, webhook, and a dead-man's-switch heartbeat</td></tr>
-          <tr><td class="mono">Remote access</td><td>One outbound connection to a forward-only relay. No port forwarding, no NAT configuration</td></tr>
+          <tr><td class="mono">Remote access</td><td>One outbound connection to a forward-only relay, so there is nothing to port-forward or configure on the router</td></tr>
           <tr><td class="mono">Roles</td><td>Viewer, operator and admin gate every capability; Google sign-in or local accounts; read-only share links</td></tr>
           <tr><td class="mono">Location privacy</td><td>Precise site coordinates are admin-only, and derived values do not leak them</td></tr>
           <tr><td class="mono">Signed updates</td><td>Ed25519, fail-closed, with automatic rollback and no interruption of a running sequence</td></tr>
