@@ -69,12 +69,18 @@
   /* The dome: a hemisphere seen from outside and slightly above, so altitude
      rings read as nested ellipses and the horizon is the outermost one. */
   function domeGeom() {
-    var cx = W * (W < 760 ? 0.5 : 0.72);
-    var cy = H * (W < 760 ? 0.62 : 0.56);
+    // Phones stack the copy down the whole hero, so a dome centred behind it
+    // draws rings and the crosshair through the lede. Sit it on the bottom
+    // edge instead: a horizon arc rising under the buttons, clear of the text.
+    var narrow = W < 760;
+    var cx = W * (narrow ? 0.5 : 0.72);
+    var cy = narrow ? H : H * 0.56;
     // keep the horizon ring inside the frame: a curve cut by the viewport
     // edge reads as clipped rather than bled
-    var rx = Math.min(W * (W < 760 ? 0.42 : 0.33), 372);
-    var ry = rx * 0.44;
+    var rx = narrow ? W * 0.5 : Math.min(W * 0.33, 372);
+    // on a phone the arc must also clear the buttons, whatever the hero
+    // height came out as; the bottom padding is at least 10vh
+    var ry = narrow ? Math.min(rx * 0.44, H * 0.09) : rx * 0.44;
     return { cx: cx, cy: cy, rx: rx, ry: ry };
   }
 

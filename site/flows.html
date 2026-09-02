@@ -4,12 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Astro Flows</title>
-<meta name="description" content="Planning a complicated night usually takes a spreadsheet. Draw it instead, and see the whole shape of a month of imaging on one canvas.">
+<meta name="description" content="Planning a complicated night usually takes a spreadsheet. Draw it with simple and intuitive elements instead!">
 <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
 <link rel="canonical" href="https://epim.github.io/astrodeck/flows.html">
 <meta property="og:type" content="website">
 <meta property="og:title" content="Astro Flows | AstroDeck">
-<meta property="og:description" content="Planning a complicated night usually takes a spreadsheet. Draw it instead, and see the whole shape of a month of imaging on one canvas.">
+<meta property="og:description" content="Planning a complicated night usually takes a spreadsheet. Draw it with simple and intuitive elements instead!">
 <meta property="og:url" content="https://epim.github.io/astrodeck/flows.html">
 <meta name="twitter:card" content="summary">
 <meta name="theme-color" content="#070A12">
@@ -39,7 +39,7 @@
 <section class="band">
   <div class="wrap stack gap-3">
     <p class="eyebrow">Astro Flows</p>
-    <h1 style="max-width:18ch">Plan a month of imaging in an afternoon.</h1>
+    <h1 style="max-width:18ch">Advanced astrophotography planning made simple</h1>
     <p class="lead" style="max-width:56ch">
       Planning a complicated night usually means a spreadsheet, a planetarium in
       another window and a lot of squinting. Draw it instead. Drag a target pool
@@ -54,10 +54,9 @@
   <div class="wrap stack gap-4">
     <div class="band-head">
       <p class="eyebrow">The canvas</p>
-      <h2>The whole night, at a glance.</h2>
+      <h2>Your night is a <i>flow</i></h2>
       <p>
-        Solid wires are the order things happen in. Dashed wires are what reacts
-        when the sky misbehaves. You can read a campaign off the canvas without
+        Solid wires are the things that happen sequentially. Dashed wires are reactions that occur to events (ie, the sky misbehaves). You can read a campaign off the canvas without
         opening a single settings panel.
       </p>
     </div>
@@ -168,17 +167,24 @@
             <text x="820" y="342" font-family="Archivo, sans-serif" font-size="12.5" font-weight="700" fill="var(--text)">SESSION REPORT</text>
           </g>
 
-          <!-- ---------------------------------------------- wire labels -->
+          <!-- ------------------------------------ port labels, on the emitter -->
+          <!-- Each horizontal wire's label sits in the header row of the node
+               that emits it, right-aligned at the edge the wire leaves from and
+               in the wire's colour. The 42-unit gap between columns is narrower
+               than "window opens", so a label on the wire itself ran into the
+               next node's kicker. Vertical wires have room beside them. -->
+          <g font-family="JetBrains Mono, monospace" font-size="8" fill="var(--dimmer)" letter-spacing="0.6" text-anchor="end">
+            <text x="182" y="70">window opens</text>
+            <text x="374" y="70">best target</text>
+            <text x="566" y="70">centered</text>
+            <text x="758" y="70">focused</text>
+            <text x="182" y="196" fill="var(--amber)">clouds in</text>
+            <text x="182" y="322" fill="var(--amber)">unsafe</text>
+            <text x="566" y="196" fill="var(--amber)">fire</text>
+          </g>
           <g font-family="JetBrains Mono, monospace" font-size="8" fill="var(--dimmer)" letter-spacing="0.6">
-            <text x="196" y="70">window opens</text>
-            <text x="388" y="70">best target</text>
-            <text x="580" y="70">centered</text>
-            <text x="772" y="70">focused</text>
             <text x="892" y="146">guiding</text>
             <text x="892" y="272">complete</text>
-            <text x="196" y="196" fill="var(--amber)">clouds in</text>
-            <text x="196" y="322" fill="var(--amber)">unsafe</text>
-            <text x="580" y="196" fill="var(--amber)">fire</text>
             <text x="620" y="253" fill="var(--amber)">frame graded</text>
           </g>
         </svg>
