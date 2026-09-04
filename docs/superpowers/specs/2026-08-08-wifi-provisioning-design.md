@@ -5,6 +5,12 @@
 captive setup page; user connects from a phone, enters home WiFi credentials;
 board joins the network. First piece of the appliance onboarding path.
 
+> **Security supersession (2026-09-01):** The fixed `astrodeck` password and
+> automatic hotspot-on-route-loss lifecycle below are historical and must not
+> ship. The credential, one-shot authorization, 15-minute window, and physical
+> recovery rules in
+> `2026-09-01-platform-security-hardening-execution-design.md` replace them.
+
 ## Context and constraints
 
 - Target: Orange Pi 5 Pro running Armbian community 26.8 Trixie **minimal**
@@ -30,7 +36,7 @@ are installed on the board. Rejected: offline-staged hostapd/dnsmasq debs
 wpa_supplicant AP mode) and offline NetworkManager (largest closure, replaces
 the image's networking model).
 
-## Product decisions (owner)
+## Superseded product decisions (historical)
 
 - Hotspot security: **WPA2-PSK, fixed password `astrodeck`**.
 - SSID: **`AstroDeck-XXXX`**, XXXX = last four hex digits of the wlan0 MAC,

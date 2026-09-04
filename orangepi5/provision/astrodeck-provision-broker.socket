@@ -1,0 +1,16 @@
+[Unit]
+Description=AstroDeck fixed-operation WiFi broker socket
+RequiresMountsFor=/data
+ConditionPathIsMountPoint=/data
+After=systemd-sysusers.service
+Before=astrodeck-provision.service
+
+[Socket]
+ListenStream=/run/astrodeck-provision-broker.sock
+FileDescriptorName=provision-broker
+Accept=no
+SocketUser=root
+SocketGroup=astrodeck-setup
+SocketMode=0660
+RemoveOnStop=yes
+Backlog=8

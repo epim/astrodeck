@@ -1,0 +1,39 @@
+[Unit]
+Description=Record an early AstroDeck physical-recovery boot
+RequiresMountsFor=/data
+ConditionPathIsMountPoint=/data
+Before=astrodeck-provision.service network-pre.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/bin/python3 /usr/local/lib/astrodeck/astrodeck-provision-broker.py record-boot
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectProc=invisible
+CapabilityBoundingSet=
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=~@clock @cpu-emulation @debug @module @mount @obsolete @raw-io @reboot @swap
+RestrictAddressFamilies=AF_UNIX
+ReadWritePaths=/data/astrodeck
+LimitCORE=0
+TasksMax=4
+LimitNOFILE=32
+
+[Install]
+WantedBy=network-pre.target

@@ -3,12 +3,17 @@
 import importlib.util
 import pathlib
 
-spec = importlib.util.spec_from_file_location(
-    "astrodeck_provision",
-    pathlib.Path(__file__).parent.parent / "provision" / "astrodeck-provision.py",
+provision_dir = pathlib.Path(__file__).parent.parent / "provision"
+frontend_spec = importlib.util.spec_from_file_location(
+    "astrodeck_provision_frontend", provision_dir / "astrodeck-provision.py"
 )
-prov = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(prov)
+frontend = importlib.util.module_from_spec(frontend_spec)
+frontend_spec.loader.exec_module(frontend)
+broker_spec = importlib.util.spec_from_file_location(
+    "astrodeck_provision_broker", provision_dir / "astrodeck-provision-broker.py"
+)
+prov = importlib.util.module_from_spec(broker_spec)
+broker_spec.loader.exec_module(prov)
 
 
 def test_derive_ssid():
@@ -21,6 +26,16 @@ def test_psk_validation():
     assert prov.valid_psk("")            # open network
     assert not prov.valid_psk("short")
     assert not prov.valid_psk("x" * 64)
+    assert not prov.valid_psk("1234567\r")
+    assert frontend.valid_psk("example88")
+
+
+def test_ssid_validation_is_byte_bounded_and_control_free():
+    assert prov.valid_ssid("home")
+    assert prov.valid_ssid("é" * 16)       # 32 UTF-8 bytes
+    assert not prov.valid_ssid("é" * 17)
+    assert not prov.valid_ssid("evil\rname")
+    assert frontend.valid_ssid("home")
 
 
 def test_netplan_psk_quoting():
@@ -36,10 +51,12 @@ def test_netplan_open_network():
     assert "password:" not in y
 
 
-def test_netplan_rejects_newlines():
+def test_netplan_rejects_control_characters():
     import pytest
     with pytest.raises(ValueError):
         prov.emit_netplan("evil\nnet", "12345678")
+    with pytest.raises(ValueError):
+        prov.emit_netplan("evil\rnet", "12345678")
 
 
 def test_netplan_sae():
@@ -92,7 +109,11 @@ def test_networkd_ap_unit():
 
 
 def test_pages_escape_html():
-    page = prov.render_portal([{"ssid": "x<script>y", "signal": -40}], 'e"rr', 'a"b')
+    page = frontend.render_portal(
+        [{"ssid": "x<script>y", "signal": -40, "akm": []}], 'e"rr', 'a"b'
+    )
     assert "<script>" not in page
-    joining = prov.render_joining("net<script>")
+    joining = frontend.render_joining("net<script>")
     assert "<script>" not in joining
+    assert f'name="csrf" value="{frontend.CSRF_TOKEN}"' in page
+    assert 'method="post" action="/rescan"' in page

@@ -9,6 +9,16 @@ This is intentionally more explicit than a normal design note. Where this
 document names a path, function, setting, order, error policy, or acceptance
 command, treat it as the selected design rather than reopening the decision.
 
+**Implementation note (2026-09-03):** Workstream A shipped as two processes,
+an unprivileged portal and a root broker, rather than the single root unit
+A4 first described. A4 and A5 below describe what was built, and the
+acceptance contract was extended to pin both units. The Orange Pi hardware
+checklist was run against it on 2026-09-03 with software reboots standing in
+for power pulls; it found three defects no host test could see, all fixed
+the same night. See `docs/hardware/orange-pi-5-hardware-gate-2026-09-03.md`.
+The current-state bullets further down describe the tree as it was on
+2026-09-01.
+
 ## Outcome
 
 The implementation is complete only when all of these are true:
@@ -130,8 +140,10 @@ on the device before its label is printed. Persist one identity at:
 /data/astrodeck/setup-identity.json
 ```
 
-The directory is root-owned `0700`; the file is root-owned `0600`. The service
-has `RequiresMountsFor=/data` and fails closed if the durable mount is absent.
+The directory is root-owned `0700`; the file is root-owned `0600`. Every unit
+and the broker socket carry `RequiresMountsFor=/data` and
+`ConditionPathIsMountPoint=/data`, and the broker refuses to start if the
+durable mount is absent.
 Do not create an interim second source of truth under `/var/lib/astrodeck`.
 
 Schema version 1 contains at least:
@@ -161,7 +173,8 @@ commissioning station reads the returned value, prints password plus Wi-Fi QR,
 and rejects duplicates. It must not retain a central plaintext inventory unless
 the owner separately approves that secret-management system.
 
-Expose these testable seams in `astrodeck-provision.py`:
+Expose these testable seams in `astrodeck-provision-broker.py` (the root
+broker; the unprivileged portal never reads identity state):
 
 ```python
 generate_setup_password() -> str
@@ -183,15 +196,25 @@ arm the AP. `factory_psk` remains the printed physical-recovery credential.
 
 ### A2. One-shot AP and physical recovery
 
-Factory finalization arms one AP authorization. `main_run()` atomically consumes
-it before any AP/network mutation. Consumption survives crash/reboot, so an
-interrupted setup does not automatically reopen.
+Factory finalization arms one AP authorization. The broker's `open` operation
+(`BrokerState.open_window`) atomically consumes it before any AP/network
+mutation; the portal's `main_run()` only asks, and is told closed or open.
+Consumption survives crash/reboot, so an interrupted setup does not
+automatically reopen.
 
 Once consumed, the portal is available for at most
-`PORTAL_LIFETIME_S = 900`, measured with `time.monotonic()`. Every exit path—
-success, timeout, signal, handler/DNS/network failure—shuts HTTP, DNS,
-wpa_supplicant, and transient networkd state in `finally`. Ordinary route loss
-on a commissioned device never authorizes an AP.
+`PORTAL_LIFETIME_S = 900`, measured with `time.monotonic()` inside the broker,
+which tears the AP down at the deadline whether or not the portal is still
+alive. Every portal exit path (success, timeout, signal, handler/DNS/network
+failure) shuts HTTP and DNS in `finally` and sends `close`; the broker then
+removes wpa_supplicant and transient networkd state. Ordinary route loss on a
+commissioned device never authorizes an AP.
+
+Observed 2026-09-03: that teardown does not restart the client supplicant;
+only a successful join runs `netplan apply`. A window that expires or closes
+without a join leaves an already-joined, Wi-Fi-only board without a network
+until reboot. Moot for a factory unit; an in-place upgrade needs a decision,
+either restart `netplan-wpa-<iface>.service` on close or document the reboot.
 
 Physical recovery uses the approved three short power cycles:
 
@@ -210,6 +233,14 @@ Physical recovery uses the approved three short power cycles:
   window;
 - Wi-Fi, plans, captures, and ordinary configuration remain intact.
 
+Observed 2026-09-03: `first_at` and `now` are wall-clock times and the
+appliance has no RTC. With fake-hwclock the clock advanced only seconds
+across three quick reboots, so the 180-second window is measured in stored
+clock time, and an NTP step after the first record could expire a sequence
+early. Three distinct boot IDs are still required and the 60-second clear is
+uptime-based, so this changes how forgiving the gesture is, not whether a
+service restart can fake it.
+
 This slice is deliberately **Wi-Fi onboarding recovery**, which is what
 OPEN-003 requires. It does not reset AstroDeck users, change the application
 claim state, or invalidate application sessions. The 2026-08-12 product design
@@ -222,7 +253,8 @@ this document supersedes its recovery row only for the OPEN-003 implementation.
 The MaskROM button is not reused. No HTTP/API/WebSocket route triggers recovery
 or returns the setup credential.
 
-Change `ap_up` to `ap_up(ssid, psk)` and pass the loaded active secret. Delete
+In the broker, change `ap_up` to `ap_up(ssid, psk)` and pass the loaded active
+secret. Delete
 `AP_PSK`, every fixed fallback, and every log interpolation of a password/PSK.
 Diagnostics may name a missing/invalid credential but never its value or state.
 
@@ -256,16 +288,43 @@ Retain the already-fixed portal controls and add real loopback/raw-socket tests:
   before its superclass constructor, acquire before spawning/reading, and prove
   every error path releases exactly once.
 
-### A4. Root service sandbox
+### A4. Privilege separation: unprivileged portal, root broker
 
-The provisioner remains a narrow root exception because it controls networking
-and binds 53/80. The general AstroDeck server never runs as root.
+As implemented (2026-09-02..03) this workstream went one step past the design
+as first written. The original A4 kept a single root unit and admitted that its
+sandbox "is not an authorization boundary against root's systemd D-Bus
+access". The shipped design takes root away from the process that parses
+hostile traffic instead of sandboxing it harder:
 
-Required unit baseline:
+- `astrodeck-provision.service` runs `astrodeck-provision.py run` as the
+  `astrodeck-setup` system user (declared in
+  `astrodeck-provision.sysusers.conf`). It serves the portal's HTTP and DNS on
+  `10.42.0.1`. It has `CapabilityBoundingSet=` and `AmbientCapabilities=` of
+  exactly `CAP_NET_BIND_SERVICE`, `PrivateDevices=yes`, `ProcSubset=pid`, no
+  `ReadWritePaths`, `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`,
+  `SocketBindDeny=any` with `SocketBindAllow=ipv4:tcp:80 ipv4:udp:53`,
+  `IPAddressDeny=any` with `IPAddressAllow=10.42.0.0/24`, `@privileged` added
+  to the syscall deny list, and `InaccessiblePaths` covering
+  `/run/systemd/private`, `/run/dbus/system_bus_socket`, `/run/systemd/system`
+  and `/etc/systemd/system`. The script imports no `subprocess` and contains
+  none of the strings `systemctl`, `networkctl`, `netplan`, `wpa_supplicant`,
+  `/etc/netplan`, `/run/systemd/network` or `setup-identity.json`. The
+  acceptance suite pins all of this.
+- `astrodeck-provision-broker.socket` listens on
+  `/run/astrodeck-provision-broker.sock` as `root:astrodeck-setup` mode `0660`
+  (`Accept=no`, `Backlog=8`, `RemoveOnStop=yes`) and activates
+  `astrodeck-provision-broker.service`, which runs
+  `astrodeck-provision-broker.py broker` as root under the sandbox below. The
+  portal unit `Requires=` the socket, so the portal cannot start without it.
+
+Root broker unit baseline (the former single-unit baseline, with binding moved
+to the portal and the writable set measured):
 
 ```ini
 [Unit]
 RequiresMountsFor=/data
+ConditionPathIsMountPoint=/data
+Requires=astrodeck-provision-broker.socket
 
 [Service]
 User=root
@@ -278,7 +337,7 @@ PrivateTmp=yes
 ProtectProc=invisible
 RuntimeDirectory=astrodeck
 RuntimeDirectoryMode=0700
-CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes
@@ -293,29 +352,71 @@ MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
 SystemCallFilter=~@clock @cpu-emulation @debug @module @mount @obsolete @raw-io @reboot @swap
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_PACKET
+ReadWritePaths=/run/astrodeck /run/systemd/network /etc/netplan /data/astrodeck
+KillMode=control-group
 LimitCORE=0
 TasksMax=64
 LimitNOFILE=128
 ```
 
-Do not set `PrivateDevices`; rfkill may need device access. Include `AF_PACKET`,
-which wpa_supplicant may need. Replace writable `/run` with measured paths under
-`/run/astrodeck`, the exact transient networkd location, `/etc/netplan`, and
-`/data/astrodeck`. Move the wpa control socket under `/run/astrodeck`. Trace
-`netplan apply` and children on target before finalizing `ReadWritePaths`; never
-guess broader access. `ProtectSystem` does not constrain root's systemd D-Bus
-authority, so this helper stays small and never imports the general app.
+Do not set `PrivateDevices` on the broker; rfkill may need device access.
+Include `AF_PACKET`, which wpa_supplicant may need. `ReadWritePaths` is the
+exact measured set, not a prefix, and `/run` as a whole is never granted. Trace
+`netplan apply` and its children on target before widening it.
+
+Broker protocol. One connection carries one request: a single JSON object,
+newline terminated, at most 8 KiB; the response is one JSON object, at most
+64 KiB. The broker reads the peer's UID with `SO_PEERCRED` and serves only the
+`astrodeck-setup` UID. `version` must be `1`; `operation` must be one of
+`open`, `scan`, `join`, `close`; the field set must be exactly the one that
+operation expects (`join` adds `ssid`, `psk`, `sae`), validated with the same
+SSID/PSK rules the portal applies. Responses are `{"ok": true, ...}` or
+`{"ok": false, "error": "invalid_request" | "window_closed" |
+"operation_failed"}`; no other detail crosses the socket. The broker also
+verifies the listener systemd handed it: exactly one descriptor, an `AF_UNIX`
+stream bound at the expected path, named `provision-broker`.
+
+Authorization ownership. `open` calls `consume_ap_authorization()` under the
+identity lock, raises the AP, returns the setup SSID, a bounded scan and the
+remaining seconds, and starts a `PORTAL_LIFETIME_S = 900` monotonic deadline
+inside the broker. A watcher thread tears the AP down at the deadline whether
+or not the portal is alive. `open` during an active window returns the
+remaining time and consumes nothing. `scan`, `join` and `close` outside a
+window answer `window_closed`. On the portal side `main_run()` asks `open`;
+when told `authorized: false` it logs that provisioning remains closed and
+exits 0; otherwise it serves HTTP and DNS for `remaining_s`, and every exit
+path shuts both servers in `finally` and sends `close`. The broker's own
+deadline is the fail-safe if that message never arrives.
+
+Remaining risk. The broker still runs as root, and its sandbox is still not an
+authorization boundary against root's own systemd and D-Bus authority. What
+changed is the surface in front of it: hostile HTTP and DNS is parsed by a
+process that cannot reach those sockets, and the root process accepts four
+fixed operations from one UID. A defect in the broker's own parsing of `iw`,
+`wpa_supplicant`, `networkctl` or `netplan` output would still be a root
+defect. Observed 2026-09-03: on Armbian Trixie's systemd `ProtectSystem=strict`
+leaves `/run` writable in the broker's namespace, and `netplan apply` inside
+the broker needs `/run/netplan` and `/run/systemd/system` anyway, so the
+`/run` entries in `ReadWritePaths` are not an enforced boundary on this
+platform.
 
 ### A5. Files and acceptance
 
-Modify the provisioner, service, rootfs installer, Orange Pi README, and the
-conflicting appliance specs. Add
+Modify the portal script, its service, the rootfs installer, the Orange Pi
+README, and the conflicting appliance specs. Add
+`astrodeck-provision-broker.py`, `astrodeck-provision-broker.service`,
+`astrodeck-provision-broker.socket`, `astrodeck-provision.sysusers.conf`,
 `astrodeck-recovery-record.service`, `astrodeck-recovery-clear.service`, and
-`astrodeck-recovery-clear.timer`; enable the record service and timer from the
-rootfs installer. The record unit must run before the provisioner and network
-setup decision. Add
-`test_provision_credentials.py`, `test_provision_http.py`,
-`test_provision_files.py`, and `test_provision_unit.py`.
+`astrodeck-recovery-clear.timer`. The installer copies both scripts and the
+sysusers file, installs all six units, and enables the portal in
+`multi-user.target.wants`, the record service in `network-pre.target.wants`
+(it must run before the portal and before any network setup decision), and
+the timer in `timers.target.wants`. Identity, authorization, recovery and the
+`commission`, `rotate`, `record-boot` and `clear-boots` commands all live in
+the broker script; the portal script has only `run` and `self-test`. Add
+`orangepi5/tests/conftest.py`, `test_provision_credentials.py`,
+`test_provision_http.py`, `test_provision_files.py`, and
+`test_provision_unit.py`.
 
 Portable gate:
 
@@ -327,9 +428,13 @@ python -m pytest -q -p no:xdist security_acceptance/test_orangepi_contract.py \
 
 Disposable Orange Pi 5 hardware gate:
 
-1. `systemd-analyze verify` and effective properties pass; `/proc/$PID/status`
-   shows no-new-privileges, seccomp, and exact capability bound while real
-   AP/scan/join/retry works.
+1. `systemd-analyze verify` and effective properties pass for all three units;
+   `/proc/$PID/status` shows the portal running as `astrodeck-setup` with
+   no-new-privileges, seccomp and a capability bound of exactly
+   `CAP_NET_BIND_SERVICE`, and the broker as root with exactly
+   `CAP_NET_ADMIN CAP_NET_RAW`, while real AP/scan/join/retry works. The
+   socket is `root:astrodeck-setup` `0660`; a connection from any other UID
+   and a request outside the four operations are refused.
 2. Outside writes fail; required writes work; files are root:root `0600` and
    directories `0700`.
 3. Two units have different printed passwords; `astrodeck` opens neither.
@@ -338,9 +443,17 @@ Disposable Orange Pi 5 hardware gate:
    Wi-Fi/data/config and application accounts/sessions unchanged.
 6. Rotation invalidates old active password; recovery restores printed value.
 7. Route inventory/network probing finds no recovery operation.
+8. A board already joined to WiFi and upgraded in place keeps its network,
+   shows the portal exiting closed before commissioning, and opens exactly
+   one window after `commission` plus a label.
 
 Record commands, properties, timestamps, and observed results in the release
 artifact. A desktop test cannot substitute for this gate.
+
+Run 2026-09-03 on a disposable Orange Pi 5 Pro: steps 1 to 8 pass on the
+mechanism, with software reboots in place of power pulls and no phone join;
+those two remain unverified. Artifact:
+`docs/hardware/orange-pi-5-hardware-gate-2026-09-03.md`.
 
 ---
 
@@ -619,7 +732,10 @@ Use two explicit profiles:
    never all interfaces. It is not the LAN/internet deployment.
 2. `deploy/reverse-proxy/docker-compose.yml` is the supported network profile.
    Only nginx publishes. The app has `expose: 8800` on an internal bridge and no
-   `ports` entry.
+   `ports` entry. The app also attaches alone to one project-private outbound
+   bridge because remote WSS, weather/maps, update checks, alerts, and OAuth
+   require egress; nginx stays off that bridge. No Uvicorn port is published on
+   either network.
 
 App policy:
 
@@ -769,7 +885,11 @@ run without service/network/volume name collisions.
 Each Compose file assigns fixed internal bridge addresses—for example nginx
 `172.30.0.2`, app `172.30.0.3`—and its Python service trusts only nginx's exact
 address. Select non-conflicting subnets and keep each in one documented
-constant.
+constant. The home controller additionally attaches alone to a dedicated
+non-internal egress bridge for required outbound integrations. This is not an
+inbound exposure: the app has no `ports` mapping, while the host firewall still
+denies direct access to container port 8800. The public relay has no equivalent
+outbound requirement and remains only on its internal backend.
 
 Each proxy mounts the common `nginx.conf` and exactly one relevant site
 template read-only. Override the image entrypoint with a fail-fast `/bin/sh`
@@ -789,7 +909,14 @@ The relay Compose mounts `device_tokens.json` through a read-only Compose secret
 at `/run/secrets/device_tokens` and sets only
 `RELAY_DEVICE_TOKENS_FILE=/run/secrets/device_tokens`. It never places
 `RELAY_DEVICE_TOKENS`, signing seeds, or token JSON inline in Compose
-environment/container metadata.
+environment/container metadata. Because Docker Compose silently ignores
+service-level `uid`, `gid`, and `mode` for file-sourced secrets, the reference
+loads the protected host file into a short-lived host environment variable and
+uses an environment-sourced Compose secret with UID/GID 10001 and mode 0400;
+the operator unsets that host variable immediately after Compose materializes
+the secret. Do not switch this back to `file:` without first proving the
+numeric non-root process can read it without making the host file broadly
+readable.
 
 nginx is the only published listener; firewall rules also deny upstream 8800.
 A host-installed nginx profile may proxy to loopback and trusts only
@@ -1093,6 +1220,9 @@ Update all related text atomically with behavior:
 - distinguish loopback Compose from production proxy Compose;
 - replace broken environment-token quick start with `create-admin`;
 - document Windows NTFS/dedicated-standard-account requirements;
+- describe the unprivileged portal / root broker split, the `astrodeck-setup`
+  account, and the broker-script commissioning commands in the Orange Pi
+  README;
 - correct the inaccurate private-directory finding; and
 - change OPEN-003/005/008/010 status only after all target evidence exists.
   A design or static test is not “fixed.”
@@ -1125,9 +1255,10 @@ Update all related text atomically with behavior:
 - Replacing legacy browser query-token mode (`OPEN-011`); production rejects it
   and uses session cookies.
 - CSP, Rust maintenance, or relay multi-tenancy work.
-- Replacing the root network helper with a privileged broker. Its sandbox
-  reduces impact but is not an authorization boundary against root's systemd
-  D-Bus access.
+- Making the root broker's sandbox an authorization boundary against root's
+  own systemd and D-Bus authority. What this work adds is that no
+  network-facing code runs as root and the broker accepts four fixed
+  operations from one UID (A4); the broker process itself is still root.
 
 ## Primary references
 
