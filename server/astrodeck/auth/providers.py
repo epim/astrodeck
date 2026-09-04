@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from .capabilities import caps_for_role
 from .principal import Principal, admin_principal
-from .session import verify_session
+from .session import credential_fingerprint, verify_session
 
 if TYPE_CHECKING:  # avoid importing starlette at module import time for tests
     from starlette.requests import Request
@@ -63,7 +63,10 @@ class TokenAdminProvider:
     name = "token"
 
     def __init__(self, admin_token: str):
-        self._token = (admin_token or "").strip()
+        token = (admin_token or "").strip()
+        # Persisted files can predate current validation.  A legacy weak token
+        # fails closed instead of remaining a valid administrative credential.
+        self._token = token if len(token.encode("utf-8")) >= 32 else ""
 
     @staticmethod
     def _present_token(request: "Request") -> str | None:
@@ -136,23 +139,96 @@ class SessionCookieProvider:
         claims = verify_session(raw)
         if claims is None:
             return None
-        jti = claims.get("jti")
-        if jti is not None and jti in self._revoked:
-            return None  # revoked -> fail closed
-        if self._min_epoch:
-            try:
-                if int(claims.get("epoch", 0)) < self._min_epoch:
-                    return None  # minted under an older auth epoch -> fail closed
-            except (TypeError, ValueError):
-                return None  # malformed epoch claim -> fail closed
-        role = claims.get("role")
-        if not isinstance(role, str):
+        try:
+            # Read authorization state live.  A signed cookie proves who logged
+            # in; it does not freeze their role, enabled state, credential
+            # generation, or the continued existence of that login method.
+            from ..config import config_store
+            from .users import user_store
+
+            auth = config_store.cfg().auth
+            methods = set(auth.methods_effective() or ())
+            live_revoked = set(auth.revoked_jti or ())
+        except Exception:  # noqa: BLE001 - identity/config uncertainty denies
             return None
+        jti = claims.get("jti")
+        if jti is not None and (jti in self._revoked or jti in live_revoked):
+            return None  # revoked -> fail closed
+        try:
+            floor = max(self._min_epoch, int(auth.session_epoch or 0))
+            if int(claims.get("epoch", 0)) < floor:
+                return None
+        except (TypeError, ValueError):
+            return None  # malformed epoch claim -> fail closed
+
+        authn = claims.get("authn")
+        role: str | None = None
+        email: str | None = None
+        if authn == "local":
+            if "local" not in methods:
+                return None
+            subject = claims.get("sub")
+            account_epoch = claims.get("account_epoch")
+            if not isinstance(subject, str) or not subject:
+                return None
+            try:
+                account_epoch = int(account_epoch)
+            except (TypeError, ValueError):
+                return None
+            user = user_store.get(subject)
+            if (user is None or not user.enabled or not user.password_hash
+                    or user.session_epoch != account_epoch):
+                return None
+            role = user.role
+            email = user.email
+        elif authn == "google":
+            if "google" not in methods:
+                return None
+            claimed_email = claims.get("email")
+            if not isinstance(claimed_email, str) or not claimed_email.strip():
+                return None
+            email = claimed_email.strip().casefold()
+            user = user_store.get_by_email(email)
+            subject = claims.get("sub")
+            if user is not None:
+                try:
+                    account_epoch = int(claims.get("account_epoch"))
+                except (TypeError, ValueError):
+                    return None
+                if (not user.enabled or subject != user.id
+                        or user.session_epoch != account_epoch):
+                    return None
+                role = user.role
+                email = user.login_email
+            else:
+                # A formerly store-backed account was deleted.  It must not
+                # fall through to a broad legacy allowlist/default role.
+                if subject is not None:
+                    return None
+                allow = auth.role_allowlist or {}
+                role = allow.get(email, auth.default_role)
+        elif authn == "admin_token":
+            configured = (auth.admin_token or "").strip()
+            tag = claims.get("credential_tag")
+            if not configured or not isinstance(tag, str):
+                return None
+            try:
+                expected = credential_fingerprint(configured)
+            except Exception:  # noqa: BLE001 - key material unavailable => deny
+                return None
+            import hmac as _hmac
+            if not _hmac.compare_digest(tag, expected):
+                return None
+            role = "admin"
+        else:
+            # Upgrade boundary: legacy cookies did not bind their issuer or
+            # account generation and therefore cannot be safely re-authorized.
+            return None
+
         caps = caps_for_role(role)
         if not caps:
             return None  # unknown role holds nothing -> fail closed
-        email = claims.get("email")
-        return Principal(role=role, email=email if isinstance(email, str) else None,
+        return Principal(role=role, email=email,
                          caps=caps, jti=jti if isinstance(jti, str) else None)
 
 

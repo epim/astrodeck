@@ -17,11 +17,11 @@ start on a different port:
 **Nothing loads in the browser.** Confirm the console shows the server came up on
 `http://localhost:8800` (or your `--port`). If you bound loopback with
 `--host 127.0.0.1`, only the same machine can reach it — other devices need the
-default `0.0.0.0` bind and the machine's LAN address.
+explicit `0.0.0.0` bind, configured authentication, and the machine's LAN address.
 
-**A big "SECURITY WARNING … NO auth" banner on startup.** That's expected when
-bound to a non-loopback interface with no sign-in enabled — it's a reminder, not
-an error. On a trusted LAN it's fine; before remote exposure see
+**"Refusing unauthenticated non-loopback bind."** This is intentional. Set a long
+`ASTRODECK_TOKEN`, or create/enable a local or Google sign-in method, then restart.
+`--allow-insecure-open` is only for an isolated development network. See
 [remote-access-and-roles.md](remote-access-and-roles.md).
 
 **Import/build errors.** Reinstall the server package into the venv

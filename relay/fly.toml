@@ -13,9 +13,9 @@
 #                                     # so mount them or pass via a secret volume)
 #   fly deploy
 #
-# Provision device tokens + signing seeds as MOUNTED FILES (never in the image):
-# use a Fly volume or a secrets-as-files mechanism and point the RELAY_*_FILE
-# env vars at them.
+# Provision the device-token map as a mounted file or encrypted environment
+# secret (never in the image). Reserved OIDC/share features would additionally
+# require separate mounted signing seeds; this build exposes neither route.
 
 app = "astrodeck-relay"
 # San Jose, CA - next to a California scope + owner (lowest latency); use "lax"

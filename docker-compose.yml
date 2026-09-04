@@ -1,43 +1,49 @@
-# AstroDeck — one container, two volumes.
+# Hardened loopback-only development and maintenance profile.
 #
-#   docker compose up -d          start it
-#   docker compose logs -f        watch it
-#   docker compose down           stop it (your data stays in ./data)
+# A fresh config volume must be bootstrapped interactively before the server can
+# accept its container-internal non-loopback bind:
 #
-# Then open http://<this-machine>:8800 from a phone, tablet or laptop on the
-# same network.
+#   docker compose build
+#   docker compose run --rm astrodeck \
+#     python -m astrodeck create-admin <username>
+#   docker compose up -d
+#
+# This profile is intentionally reachable only from the Docker host. Use
+# deploy/reverse-proxy/docker-compose.yml for a supported LAN/public deployment.
+
+name: astrodeck-local
 
 services:
   astrodeck:
     build: .
     image: astrodeck:latest
-    container_name: astrodeck
+    user: "10001:10001"
+    read_only: true
+    init: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=128m,mode=1777
+    pids_limit: 256
+    ulimits:
+      nofile:
+        soft: 4096
+        hard: 8192
+    stop_signal: SIGTERM
+    stop_grace_period: 90s
     restart: unless-stopped
     ports:
-      # host:container. Change the LEFT number to move it off 8800 on the host.
-      - "8800:8800"
+      - "127.0.0.1:8800:8800"
     volumes:
-      # Bind mounts, not named volumes, so your captures are ordinary files you
-      # can copy off with anything — not buried in Docker's storage.
-      - ./data/config:/data/config
-      - ./data/captures:/data/captures
-    # USB devices. Docker cannot see a device that is not passed in, so a rig on
-    # USB needs one of these. Uncomment ONE:
-    #
-    #   the blunt option — the container sees every USB device, present or not,
-    #   including ones hotplugged later:
-    # privileged: true
-    # volumes:
-    #   - /dev/bus/usb:/dev/bus/usb
-    #
-    #   the narrow option — name the exact devices. Safer, but a device that
-    #   appears after the container starts is invisible until you restart it:
-    # devices:
-    #   - /dev/ttyUSB0:/dev/ttyUSB0     # a serial mount, focuser or filter wheel
-    #   - /dev/ttyACM0:/dev/ttyACM0     # a CDC-ACM mount (e.g. ZWO AM5)
+      - type: volume
+        source: astrodeck-config
+        target: /data/config
+      - type: volume
+        source: astrodeck-captures
+        target: /data/captures
     environment:
-      # Everything else is configured in the UI. These two just point the
-      # container's paths at the mounts above.
       ASTRODECK_CONFIG_DIR: /data/config
       ASTRODECK_CAPTURE_DIR: /data/captures
     healthcheck:
@@ -46,3 +52,12 @@ services:
       timeout: 5s
       start_period: 15s
       retries: 3
+    logging:
+      driver: local
+      options:
+        max-size: 10m
+        max-file: "5"
+
+volumes:
+  astrodeck-config:
+  astrodeck-captures:

@@ -66,17 +66,23 @@ const SECONDS_PER_DAY: f64 = 86_400.0;
 // --------------------------------------------------------------------------
 
 /// Extract an optional typed value from `d[key]`, treating `None`/missing alike.
-fn get_opt<'py, T: FromPyObject<'py>>(d: &Bound<'py, PyDict>, key: &str) -> PyResult<Option<T>> {
+fn get_opt<'py, T>(d: &Bound<'py, PyDict>, key: &str) -> PyResult<Option<T>>
+where
+    T: FromPyObjectOwned<'py>,
+{
     match d.get_item(key)? {
-        Some(v) if !v.is_none() => Ok(Some(v.extract()?)),
+        Some(v) if !v.is_none() => v.extract().map(Some).map_err(Into::into),
         _ => Ok(None),
     }
 }
 
 /// Extract a required typed value from `d[key]`, erroring if absent.
-fn get_req<'py, T: FromPyObject<'py>>(d: &Bound<'py, PyDict>, key: &str) -> PyResult<T> {
+fn get_req<'py, T>(d: &Bound<'py, PyDict>, key: &str) -> PyResult<T>
+where
+    T: FromPyObjectOwned<'py>,
+{
     match d.get_item(key)? {
-        Some(v) if !v.is_none() => v.extract(),
+        Some(v) if !v.is_none() => v.extract().map_err(Into::into),
         _ => Err(PyValueError::new_err(format!(
             "missing required key '{key}'"
         ))),
@@ -301,7 +307,7 @@ fn psf_to_dict<'py>(
     m: &PsfModel,
     fit_type: PsfFitType,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let d = PyDict::new_bound(py);
+    let d = PyDict::new(py);
     let (model, beta) = psf_family(fit_type, m);
     let factor = fwhm_factor(beta);
     d.set_item("model", model)?;
@@ -351,14 +357,14 @@ fn detect_and_measure<'py>(
     let p = build_params(params.as_ref())?;
 
     // Heavy compute with the GIL released (large frames).
-    let result = py.allow_threads(|| {
+    let result = py.detach(|| {
         let gf = astro_star::GrayFrame::new(slice, width, height);
         astro_star::detect_and_measure(&gf, &p)
     });
 
-    let stars = PyList::empty_bound(py);
+    let stars = PyList::empty(py);
     for s in &result.stars {
-        let sd = PyDict::new_bound(py);
+        let sd = PyDict::new(py);
         sd.set_item("x", s.center.0)?;
         sd.set_item("y", s.center.1)?;
         sd.set_item("hfr", s.hfr)?;
@@ -378,7 +384,7 @@ fn detect_and_measure<'py>(
     }
 
     let af_score = median_of(result.stars.iter().map(astro_star::af_star_score).collect());
-    let stats = PyDict::new_bound(py);
+    let stats = PyDict::new(py);
     stats.set_item("hfr_median", result.stats.hfr)?;
     stats.set_item("hfr_mad", result.stats.hfr_std_dev)?;
     stats.set_item("star_count", result.stats.star_count)?;
@@ -458,12 +464,12 @@ fn outcome_to_dict<'py>(
     valid: bool,
     failure: Option<&str>,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let d = PyDict::new_bound(py);
+    let d = PyDict::new(py);
     d.set_item("method", method_label)?;
     d.set_item("best_position", outcome.best_position)?;
     d.set_item("best_value", outcome.best_value)?;
 
-    let r2s = PyDict::new_bound(py);
+    let r2s = PyDict::new(py);
     match outcome.hyperbolic_r_squared {
         Some(v) => r2s.set_item("hyperbolic", v)?,
         None => r2s.set_item("hyperbolic", py.None())?,
@@ -476,23 +482,23 @@ fn outcome_to_dict<'py>(
     r2s.set_item("right_trend", outcome.right_trend_r_squared)?;
     d.set_item("r2s", r2s)?;
 
-    let curve = PyList::empty_bound(py);
+    let curve = PyList::empty(py);
     for &(x, y) in &outcome.curve {
-        curve.append(PyList::new_bound(py, [x, y]))?;
+        curve.append(PyList::new(py, [x, y])?)?;
     }
     d.set_item("curve", curve)?;
 
-    let trend = PyDict::new_bound(py);
-    let left = PyDict::new_bound(py);
+    let trend = PyDict::new(py);
+    let left = PyDict::new(py);
     left.set_item("slope", outcome.left_trend_slope)?;
     left.set_item("r2", outcome.left_trend_r_squared)?;
     trend.set_item("left", left)?;
-    let right = PyDict::new_bound(py);
+    let right = PyDict::new(py);
     right.set_item("slope", outcome.right_trend_slope)?;
     right.set_item("r2", outcome.right_trend_r_squared)?;
     trend.set_item("right", right)?;
     match outcome.trend_intersection {
-        Some((x, y)) => trend.set_item("intersection", PyList::new_bound(py, [x as f64, y]))?,
+        Some((x, y)) => trend.set_item("intersection", PyList::new(py, [x as f64, y])?)?,
         None => trend.set_item("intersection", py.None())?,
     }
     d.set_item("trendlines", trend)?;
@@ -511,13 +517,13 @@ fn failed_fit_dict<'py>(
     method_label: &str,
     failure: &str,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let d = PyDict::new_bound(py);
+    let d = PyDict::new(py);
     d.set_item("method", method_label)?;
     d.set_item("best_position", py.None())?;
     d.set_item("best_value", py.None())?;
-    d.set_item("r2s", PyDict::new_bound(py))?;
-    d.set_item("curve", PyList::empty_bound(py))?;
-    d.set_item("trendlines", PyDict::new_bound(py))?;
+    d.set_item("r2s", PyDict::new(py))?;
+    d.set_item("curve", PyList::empty(py))?;
+    d.set_item("trendlines", PyDict::new(py))?;
     d.set_item("valid", false)?;
     d.set_item("failure", failure)?;
     Ok(d)
@@ -549,7 +555,7 @@ fn fit_focus_curve<'py>(
         .map(|&(pos, val, err)| astro_focus::FocusPoint::new(pos, val, err))
         .collect();
 
-    let (outcome, valid, failure) = py.allow_threads(|| {
+    let (outcome, valid, failure) = py.detach(|| {
         let fits = astro_focus::fit::compute_all_fits(&pts, af_method);
         match astro_focus::fit::determine_final_focus_point(af_method, fitting, &fits) {
             Some((fx, fy)) => {
@@ -650,7 +656,7 @@ impl FocusSweep {
     /// `{action: "failed", reason}`.
     fn next<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let step = self.inner.next();
-        let d = PyDict::new_bound(py);
+        let d = PyDict::new(py);
         match step {
             Step::MoveTo(pos) => {
                 d.set_item("action", "move_to")?;
@@ -697,7 +703,7 @@ fn knob_label(k: KnobDirection) -> &'static str {
 }
 
 fn flags_list<'py>(py: Python<'py>, f: &QualityFlags) -> PyResult<Bound<'py, PyList>> {
-    let list = PyList::empty_bound(py);
+    let list = PyList::empty(py);
     if f.position_angle_spread_large {
         list.append("position_angle_spread_large")?;
     }
@@ -714,7 +720,7 @@ fn flags_list<'py>(py: Python<'py>, f: &QualityFlags) -> PyResult<Bound<'py, PyL
 }
 
 fn error_to_dict<'py>(py: Python<'py>, e: &PolarError) -> PyResult<Bound<'py, PyDict>> {
-    let d = PyDict::new_bound(py);
+    let d = PyDict::new(py);
     d.set_item("az_arcmin", e.az_arcmin)?;
     d.set_item("alt_arcmin", e.alt_arcmin)?;
     d.set_item("total_arcmin", e.total_arcmin)?;
@@ -730,7 +736,7 @@ fn error_to_dict<'py>(py: Python<'py>, e: &PolarError) -> PyResult<Bound<'py, Py
 }
 
 fn model_to_dict<'py>(py: Python<'py>, m: &TppaModel) -> PyResult<Bound<'py, PyDict>> {
-    let d = PyDict::new_bound(py);
+    let d = PyDict::new(py);
     d.set_item("init_ra_deg", m.init_ra_deg)?;
     d.set_item("init_dec_deg", m.init_dec_deg)?;
     d.set_item("init_pa_deg", m.init_pa_deg)?;
@@ -854,7 +860,7 @@ fn tppa_from_three<'py>(
     let (model, err) = astro_tppa::tppa_from_three(&[s0, s1, s2], site, &opts)
         .map_err(|e| PyValueError::new_err(e.to_string()))?;
 
-    let out = PyDict::new_bound(py);
+    let out = PyDict::new(py);
     out.set_item("model", model_to_dict(py, &model)?)?;
     out.set_item("error", error_to_dict(py, &err)?)?;
     Ok(out)
@@ -968,7 +974,7 @@ fn cal_leg_label(l: CalLeg) -> &'static str {
 }
 
 fn cal_to_dict<'py>(py: Python<'py>, c: &Cal) -> PyResult<Bound<'py, PyDict>> {
-    let d = PyDict::new_bound(py);
+    let d = PyDict::new(py);
     d.set_item("x_rate", c.x_rate)?;
     d.set_item("y_rate", c.y_rate)?;
     d.set_item("x_angle", c.x_angle)?;
@@ -1161,7 +1167,7 @@ fn guide_star_find<'py>(
 
     // Heavy compute with the GIL released (full-frame PSF scan), mirroring
     // detect_and_measure.
-    let (candidates, sat_thresh) = py.allow_threads(|| {
+    let (candidates, sat_thresh) = py.detach(|| {
         let gf = astro_star::GrayFrame::new(slice, width, height);
         let cands = auto_find(&gf, &sel_params);
         let peaks: Vec<(i32, i32)> = cands.iter().map(|c| (c.x as i32, c.y as i32)).collect();
@@ -1169,9 +1175,9 @@ fn guide_star_find<'py>(
         (cands, sat)
     });
 
-    let stars = PyList::empty_bound(py);
+    let stars = PyList::empty(py);
     for c in &candidates {
-        let sd = PyDict::new_bound(py);
+        let sd = PyDict::new(py);
         sd.set_item("x", c.x)?;
         sd.set_item("y", c.y)?;
         sd.set_item("snr", c.snr)?;
@@ -1180,7 +1186,7 @@ fn guide_star_find<'py>(
         sd.set_item("peak", c.peak_val)?;
         stars.append(sd)?;
     }
-    let meta = PyDict::new_bound(py);
+    let meta = PyDict::new(py);
     meta.set_item("sat_thresh", sat_thresh)?;
     Ok((stars, meta))
 }
@@ -1217,7 +1223,7 @@ impl LostReason {
 }
 
 fn axis_pulse_to_dict<'py>(py: Python<'py>, p: &AxisPulse) -> PyResult<Bound<'py, PyDict>> {
-    let d = PyDict::new_bound(py);
+    let d = PyDict::new(py);
     d.set_item("dir", direction_label(p.dir))?;
     d.set_item("ms", p.ms)?;
     Ok(d)
@@ -1233,7 +1239,7 @@ fn action_to_dict<'py>(
     action: &Action,
     reason: Option<LostReason>,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let d = PyDict::new_bound(py);
+    let d = PyDict::new(py);
     match action {
         Action::Idle => {
             d.set_item("action", "idle")?;
@@ -1299,7 +1305,7 @@ fn action_to_dict<'py>(
 /// window closed" from the frame's `Action` shape alone — a fast-recenter
 /// frame (dossier §11.2) returns an ordinary `pulse_pair` while the window
 /// stays open, which a pure shape-based shadow would misclassify.
-#[pyclass]
+#[pyclass(unsendable)]
 struct GuideEngine {
     inner: astro_guide::engine::GuideEngine,
     calibrating: bool,
@@ -1422,7 +1428,7 @@ impl GuideEngine {
         // detect_and_measure) then ingest() (the cheap per-frame decision)
         // run as one atomic step under one GIL release.
         let engine = &mut self.inner;
-        let action = py.allow_threads(move || {
+        let action = py.detach(move || {
             let gf = astro_star::GrayFrame::new(slice, width, height);
             let measured = engine.measure(&gf);
             engine.ingest(&meta, &measured)
@@ -1437,7 +1443,7 @@ impl GuideEngine {
     /// recent:[[t,ra,dec],...], secondaries:[[x,y],...]}`.
     fn stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let s = self.inner.stats();
-        let d = PyDict::new_bound(py);
+        let d = PyDict::new(py);
         d.set_item("guiding", s.guiding)?;
         // P2-T1 Produces line: the authoritative settle-window state, valid
         // for every settling frame including fast-recenter frames (dossier
@@ -1449,17 +1455,17 @@ impl GuideEngine {
         d.set_item("rms_dec", s.rms_dec)?;
         d.set_item("rms_total", s.rms_total)?;
         d.set_item("snr", s.snr)?;
-        let recent = PyList::empty_bound(py);
+        let recent = PyList::empty(py);
         for &(t, ra, dec) in &s.recent {
-            recent.append(PyList::new_bound(py, [t, ra, dec]))?;
+            recent.append(PyList::new(py, [t, ra, dec])?)?;
         }
         d.set_item("recent", recent)?;
         // Multi-star (dossier §2.6/§4; P3-T1): currently tracked secondary
         // guide stars' last-known camera-frame positions, for a UI
         // overlay. Empty in single-star mode.
-        let secondaries = PyList::empty_bound(py);
+        let secondaries = PyList::empty(py);
         for &(x, y) in &s.secondaries {
-            secondaries.append(PyList::new_bound(py, [x, y]))?;
+            secondaries.append(PyList::new(py, [x, y])?)?;
         }
         d.set_item("secondaries", secondaries)?;
         Ok(d)
@@ -1496,7 +1502,7 @@ impl GuideEngine {
     /// The current calibration as a dict (see [`cal_to_dict`] for the exact
     /// shape, including `"pier_side"`), or `None` if no calibration is
     /// stored. Serializable for persistence across sessions.
-    fn dump_calibration<'py>(&self, py: Python<'py>) -> PyResult<PyObject> {
+    fn dump_calibration<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
         match self.inner.calibration() {
             Some(cal) => Ok(cal_to_dict(py, &cal)?.into()),
             None => Ok(py.None()),
@@ -1518,9 +1524,9 @@ impl GuideEngine {
     /// pending point excluded (amended spec §3-A5). Empty for a non-PPEC RA
     /// algorithm or an untrained model. Serializable beside the calibration.
     fn dump_gp_window<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        let out = PyList::empty_bound(py);
+        let out = PyList::empty(py);
         for (t, m, v, c) in self.inner.dump_gp_window() {
-            out.append(PyList::new_bound(py, [t, m, v, c]))?;
+            out.append(PyList::new(py, [t, m, v, c])?)?;
         }
         Ok(out)
     }

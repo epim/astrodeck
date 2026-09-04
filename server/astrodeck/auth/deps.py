@@ -145,6 +145,16 @@ def build_provider(auth_cfg) -> AuthProvider:
     at read time (see ``_effective_methods``). Accepts a duck-typed object (so
     this module never imports ``config``); reads only the attributes it needs,
     each with a safe default."""
+    raw_methods = list(getattr(auth_cfg, "methods", []) or [])
+    legacy_provider = (getattr(auth_cfg, "provider", "none") or "none")
+    if (any(m not in {"local", "google"} for m in raw_methods)
+            or legacy_provider not in {"none", "google"}
+            or int(getattr(auth_cfg, "session_ttl_s", 0) or 0) <= 0):
+        # Persisted config is not guaranteed to have passed the typed API
+        # setter (operators and older builds can edit/write it directly). An
+        # unknown value must never collapse through `_effective_methods()` to
+        # the open-admin provider.
+        return TokenAdminProvider("")  # empty token => deny every caller
     revoked = frozenset(getattr(auth_cfg, "revoked_jti", []) or [])
     admin_token = (getattr(auth_cfg, "admin_token", "") or "").strip()
     methods = _effective_methods(auth_cfg)

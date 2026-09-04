@@ -22,14 +22,17 @@ python -m venv .venv
 
 `-e .` installs AstroDeck and its dependencies (FastAPI, uvicorn, numpy, astropy,
 httpx, pillow). The server hosts both the API and the built UI, so once it's up,
-open **http://localhost:8800** in any browser on the same network — phone,
-tablet, or desktop.
+open **http://localhost:8800** in a browser on that machine.
 
-To bind a specific interface or port:
+To bind a LAN interface, configure authentication first. For example:
 
 ```powershell
+$env:ASTRODECK_TOKEN = "replace-with-a-long-random-secret"
 .venv\Scripts\python -m astrodeck --host 0.0.0.0 --port 8800
 ```
+
+AstroDeck refuses an unauthenticated non-loopback bind. See
+[`SECURITY.md`](SECURITY.md) before serving another device.
 
 ### Rebuilding the UI (only if you change it)
 

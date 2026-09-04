@@ -43,9 +43,14 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from ..persist import read_json_or, write_json_atomic
+from ..persist import read_json, write_json_atomic
 from .capabilities import ROLES
-from .passwords import dummy_verify, hash_password, verify_password
+from .passwords import (
+    CURRENT_PASSWORD_POLICY,
+    dummy_verify,
+    hash_password,
+    verify_password,
+)
 
 
 def _default_store_path() -> Path:
@@ -110,6 +115,14 @@ class User(BaseModel):
     email: str | None = None
     role: str = "viewer"
     password_hash: str = ""               # bcrypt $2b$12$...  -- SECRET; "" = OIDC-only
+    # Old records have no marker and deserialize as 0. Managed/public startup
+    # requires a reset under the current policy before accepting such a local
+    # password as its authentication boundary.
+    password_policy_version: int = 0
+    # Per-account invalidation generation.  Every security-relevant mutation
+    # advances it; local/Google sessions bind the value at login and are denied
+    # on their very next request after a reset, demotion, disable, or rename.
+    session_epoch: int = 0
     enabled: bool = True
     created: float = Field(default_factory=lambda: time.time())
 
@@ -162,30 +175,99 @@ class UserStore:
 
     # -- loading / persistence -------------------------------------------------
 
-    def _load(self) -> dict[str, User]:
-        raw = read_json_or(self._path, default=None)
+    @staticmethod
+    def _decode(raw) -> dict[str, User]:
+        """Validate an entire user-store document without dropping records.
+
+        A partially parsed account database is not a safe degradation: omitting
+        the only administrator can reopen the unauthenticated first-run route.
+        Therefore one malformed or duplicate record invalidates the document.
+        """
         users: dict[str, User] = {}
         if isinstance(raw, dict):
-            records = raw.get("users", [])
+            if "users" not in raw:
+                raise RuntimeError("user store is missing its users collection")
+            records = raw["users"]
         elif isinstance(raw, list):
             records = raw
         else:
-            records = []
-        for rec in records or []:
+            raise RuntimeError("user store must contain a JSON object or list")
+        if not isinstance(records, list):
+            raise RuntimeError("user store users collection must be a list")
+
+        usernames: set[str] = set()
+        for index, rec in enumerate(records):
+            if not isinstance(rec, dict):
+                raise RuntimeError(f"user store record {index} is not an object")
             try:
                 u = User(**rec)
-            except Exception:
-                continue  # skip a malformed record rather than brick the store
+            except Exception as exc:
+                raise RuntimeError(f"user store record {index} is invalid") from exc
+            username = _norm_username(u.username)
+            if not username or u.role not in ROLES:
+                raise RuntimeError(f"user store record {index} is invalid")
+            if u.id in users or username in usernames:
+                raise RuntimeError("user store contains a duplicate identity")
+            usernames.add(username)
             users[u.id] = u
         return users
+
+    def _restore_from_bak(self) -> dict[str, User] | None:
+        bak = self._path.with_suffix(self._path.suffix + ".bak")
+        try:
+            raw = read_json(bak)
+        except FileNotFoundError:
+            return None
+        except (ValueError, OSError) as exc:
+            raise RuntimeError("user-store backup is unreadable or corrupt") from exc
+        try:
+            users = self._decode(raw)
+        except RuntimeError as exc:
+            raise RuntimeError("user-store backup is invalid") from exc
+
+        data = {
+            "version": 1,
+            "users": [
+                user.model_dump()
+                for user in sorted(users.values(), key=lambda item: item.created)
+            ],
+        }
+        # Do not copy the corrupt primary over the known-good recovery source.
+        write_json_atomic(self._path, data, backup=False)
+        return users
+
+    def _load(self) -> dict[str, User]:
+        try:
+            raw = read_json(self._path)
+        except FileNotFoundError:
+            recovered = self._restore_from_bak()
+            return recovered if recovered is not None else {}
+        except (ValueError, OSError) as exc:
+            recovered = self._restore_from_bak()
+            if recovered is not None:
+                return recovered
+            raise RuntimeError(
+                "user store is unreadable or corrupt and no valid backup is available"
+            ) from exc
+        try:
+            return self._decode(raw)
+        except RuntimeError as exc:
+            recovered = self._restore_from_bak()
+            if recovered is not None:
+                return recovered
+            raise RuntimeError(
+                "user store is invalid and no valid backup is available"
+            ) from exc
 
     def _file_stamp(self) -> tuple[int, int] | None:
         """``(mtime_ns, size)`` of the store file, or None when it is absent."""
         try:
             st = self._path.stat()
             return (st.st_mtime_ns, st.st_size)
-        except OSError:
+        except FileNotFoundError:
             return None
+        except OSError as exc:
+            raise RuntimeError("user store cannot be inspected safely") from exc
 
     def _cache(self) -> dict[str, User]:
         """The in-memory users, RE-READ when the file changed underneath us.
@@ -296,8 +378,14 @@ class UserStore:
         # empty password would then match — turning "Google only" into "no
         # password required".
         pw_hash = hash_password(password) if password else ""
-        user = User(username=key, email=email or key, role=role,
-                    password_hash=pw_hash, enabled=enabled)
+        user = User(
+            username=key,
+            email=email or key,
+            role=role,
+            password_hash=pw_hash,
+            password_policy_version=(CURRENT_PASSWORD_POLICY if pw_hash else 0),
+            enabled=enabled,
+        )
         self._cache()[user.id] = user
         self._save()
         return user
@@ -324,6 +412,8 @@ class UserStore:
         Here it is unconditional: the store's job is the record, not policy."""
         user = self._require(user_id)
         user.password_hash = ""
+        user.password_policy_version = 0
+        user.session_epoch += 1
         self._save()
         return user
 
@@ -332,6 +422,8 @@ class UserStore:
         user = self._require(user_id)
         new_hash = hash_password(password)   # may raise PasswordTooLongError
         user.password_hash = new_hash
+        user.password_policy_version = CURRENT_PASSWORD_POLICY
+        user.session_epoch += 1
         self._save()
         return user
 
@@ -344,7 +436,9 @@ class UserStore:
         if user.role == "admin" and role != "admin" and user.enabled:
             if not self._enabled_admins(exclude_id=user_id):
                 raise ValueError("last admin")
-        user.role = role
+        if user.role != role:
+            user.role = role
+            user.session_epoch += 1
         self._save()
         return user
 
@@ -354,7 +448,9 @@ class UserStore:
         if not enabled and user.role == "admin" and user.enabled:
             if not self._enabled_admins(exclude_id=user_id):
                 raise ValueError("last admin")
-        user.enabled = enabled
+        if user.enabled != enabled:
+            user.enabled = enabled
+            user.session_epoch += 1
         self._save()
         return user
 
@@ -367,7 +463,19 @@ class UserStore:
         if existing is not None and existing.id != user_id:
             raise ValueError("username already exists")
         user = self._require(user_id)
-        user.username = key
+        if user.username != key:
+            user.username = key
+            user.session_epoch += 1
+        self._save()
+        return user
+
+    def set_email(self, user_id: str, email: str | None) -> User:
+        """Update login metadata and revoke sessions bound to the old value."""
+        user = self._require(user_id)
+        normalized = normalize_email(email) if email else None
+        if user.email != normalized:
+            user.email = normalized
+            user.session_epoch += 1
         self._save()
         return user
 

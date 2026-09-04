@@ -60,7 +60,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install build deps
-        run: pip install "cryptography>=42.0"
+        run: pip install "cryptography>=50.0.0"
 
       - name: Verify tag matches package version
         run: |

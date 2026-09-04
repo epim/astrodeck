@@ -1283,6 +1283,101 @@ def usable_login_methods(auth: "AuthConfig") -> list[str]:
     return out
 
 
+REQUIRE_AUTH_ENV = "ASTRODECK_REQUIRE_AUTH"
+DIRECT_TOKEN_ENV = "ASTRODECK_TOKEN"
+MIN_BEARER_TOKEN_BYTES = 32
+
+
+def deployment_auth_required() -> bool:
+    """Whether this process must remain authenticated for its whole lifetime."""
+    raw = os.environ.get(REQUIRE_AUTH_ENV)
+    if raw is None:
+        return False
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    raise RuntimeError(f"{REQUIRE_AUTH_ENV} must be a boolean value")
+
+
+def _validate_bearer_token(value: str, name: str) -> str:
+    token = (value or "").strip()
+    if token and len(token.encode("utf-8")) < MIN_BEARER_TOKEN_BYTES:
+        raise ValueError(
+            f"{name} must contain at least {MIN_BEARER_TOKEN_BYTES} bytes of "
+            "independently generated secret material"
+        )
+    return token
+
+
+def network_auth_ready(auth: "AuthConfig", *, strict: bool) -> bool:
+    """Whether auth is a real boundary for an exposed/managed listener.
+
+    Strict mode is deliberately stronger than the loopback development posture:
+    it rejects weak bearer tokens, legacy password records whose strength was
+    never established, and an unauthenticated local first-run window.
+    """
+    direct_token = (os.environ.get(DIRECT_TOKEN_ENV) or "").strip()
+    admin_token = (auth.admin_token or "").strip()
+    # A configured bearer credential is never accepted below the minimum, even
+    # on loopback.  ``strict`` controls the additional account/first-run checks,
+    # not whether guessable tokens become valid credentials.
+    direct_token = _validate_bearer_token(direct_token, DIRECT_TOKEN_ENV)
+    admin_token = _validate_bearer_token(admin_token, "admin_token")
+    methods = set(auth.methods_effective() or ())
+
+    local_ready = False
+    if methods:
+        # Both local and Google authorization consult this database. A corrupt
+        # store must never be treated as empty or bypassed by an old allowlist.
+        from .auth.users import user_store
+
+        users = user_store.list()
+        if strict and "local" in methods:
+            from .auth.passwords import CURRENT_PASSWORD_POLICY
+
+            if auth.local_enabled_first_run:
+                raise ValueError(
+                    "local first-run setup must be disabled before an exposed "
+                    "or managed listener can start; run create-admin"
+                )
+            legacy = [
+                user for user in users
+                if user.enabled and user.password_hash
+                and user.password_policy_version < CURRENT_PASSWORD_POLICY
+            ]
+            if legacy:
+                raise ValueError(
+                    "local password records predate the current password policy; "
+                    "reset them with create-admin before exposed startup"
+                )
+            local_ready = any(
+                user.enabled and bool(user.password_hash)
+                and user.password_policy_version >= CURRENT_PASSWORD_POLICY
+                for user in users
+            )
+        elif "local" in methods:
+            # Loopback development retains the explicit first-run workflow.
+            local_ready = True
+
+    google_ready = (
+        "google" in methods
+        and bool((auth.google_client_id or "").strip())
+        and bool((auth.google_client_secret or "").strip())
+    )
+    return bool(direct_token or admin_token or local_ready or google_ready)
+
+
+def enforce_required_auth(auth: "AuthConfig") -> None:
+    """Reject a transition that would open a managed listener at runtime."""
+    if deployment_auth_required() and not network_auth_ready(auth, strict=True):
+        raise ValueError(
+            f"{REQUIRE_AUTH_ENV} is enabled but no strong authentication "
+            "method is ready"
+        )
+
+
 def _refuse_lockout(auth: "AuthConfig") -> None:
     """Refuse a config that would leave NOBODY able to sign in.
 
@@ -1329,9 +1424,11 @@ def _unknown_keys(raw: dict) -> dict:
 class ConfigStore:
     """Module singleton (like ``hub``) owning the persisted ``AppConfig``.
 
-    Loaded once from disk; missing file → defaults + immediate save; a corrupt
-    file → defaults + a logged warning + the bad file backed up. Every mutating
-    helper bumps ``version`` and writes atomically.
+    Loaded once from disk; a genuinely new store gets defaults + an immediate
+    save. A missing or corrupt primary is restored from a valid backup. Existing
+    but unreadable/invalid state never becomes an open-auth default: startup
+    fails closed and leaves the evidence intact for operator recovery. Every
+    mutating helper bumps ``version`` and writes atomically.
     """
 
     def __init__(self, path: Path = CONFIG_FILE):
@@ -1380,22 +1477,27 @@ class ConfigStore:
 
     def _restore_from_bak(self) -> AppConfig | None:
         """Try to load a valid ``AppConfig`` from the ``.bak`` copy. Returns the
-        recovered config (already re-persisted as the primary) or ``None`` if the
-        backup is absent/unparseable/invalid.
+        recovered config (already re-persisted as the primary) or ``None`` only
+        when the backup is absent. An unreadable or invalid backup is a hard
+        failure: silently replacing security state with defaults can disable
+        authentication on a reverse-proxied deployment.
 
-        Called *before* ``_recover_from_corrupt`` stashes the corrupt primary at
-        ``.bak`` — otherwise the recoverable previous version would be clobbered.
+        The corrupt primary is deliberately left untouched when recovery fails.
         """
         bak = self._bak_path()
         try:
             raw = read_json(bak)
-        except (FileNotFoundError, ValueError, OSError):
+        except FileNotFoundError:
             return None
-        stored = _stored_schema(raw)
+        except (ValueError, OSError) as exc:
+            raise RuntimeError("configuration backup is unreadable or corrupt") from exc
         try:
+            if not isinstance(raw, dict):
+                raise ValueError("configuration backup must contain a JSON object")
+            stored = _stored_schema(raw)
             cfg = AppConfig(**{**raw, "schema_version": stored})
-        except Exception:
-            return None
+        except Exception as exc:
+            raise RuntimeError("configuration backup is invalid") from exc
         bus.log("warning", "config restored from backup (.bak)", "config")
         self._cfg = cfg
         # The backup came from a newer build too, if the primary did. Recovering
@@ -1425,15 +1527,18 @@ class ConfigStore:
             self._cfg = cfg
             self._save()
             return cfg
-        except (ValueError, OSError) as e:
+        except OSError as exc:
+            raise RuntimeError("configuration file cannot be read safely") from exc
+        except ValueError as exc:
             recovered = self._restore_from_bak()
             if recovered is not None:
                 return recovered
-            cfg = self._recover_from_corrupt(e)
-            self._cfg = cfg
-            self._save()
-            return cfg
+            raise RuntimeError(
+                "configuration is corrupt and no valid backup is available"
+            ) from exc
         try:
+            if not isinstance(raw, dict):
+                raise ValueError("configuration must contain a JSON object")
             # tolerate missing keys (forward/back-compat with the automation
             # surface, which appends keys later) — pydantic fills defaults.
             #
@@ -1443,14 +1548,13 @@ class ConfigStore:
             # evidence that the file predates the marker.
             stored = _stored_schema(raw)
             cfg = AppConfig(**{**raw, "schema_version": stored})
-        except Exception as e:  # invalid shape
+        except Exception as exc:  # invalid shape
             recovered = self._restore_from_bak()
             if recovered is not None:
                 return recovered
-            cfg = self._recover_from_corrupt(e)
-            self._cfg = cfg
-            self._save()
-            return cfg
+            raise RuntimeError(
+                "configuration is invalid and no valid backup is available"
+            ) from exc
 
         # A FILE FROM A NEWER BUILD IS NOT OURS TO REWRITE. `AppConfig` is a
         # plain BaseModel, so pydantic's default `extra="ignore"` drops every
@@ -1482,16 +1586,6 @@ class ConfigStore:
             self._cfg = cfg
             self._save()
         return cfg
-
-    def _recover_from_corrupt(self, err: Exception) -> AppConfig:
-        bus.log("warning", f"config reset to defaults: {err}", "config")
-        try:
-            if self._path.exists():
-                import os
-                os.replace(self._path, self._bak_path())
-        except OSError:
-            pass
-        return AppConfig()
 
     def cfg(self) -> AppConfig:
         if self._cfg is None:
@@ -1534,6 +1628,7 @@ class ConfigStore:
         model itself. Version handling stays with ``bump_and_save``, so a caller
         that carries the old ``version`` forward keeps the counter monotonic and
         an open client's stale token still loses its concurrency race."""
+        enforce_required_auth(cfg.auth)
         self._cfg = cfg
         return self.bump_and_save()
 
@@ -1698,6 +1793,7 @@ class ConfigStore:
         """
         validate_auth_config(auth, current=self.cfg().auth)
         _refuse_lockout(auth)
+        enforce_required_auth(auth)
         cfg = self.cfg()
         old = cfg.auth
         # Session-epoch invariant (R4B-AUTH-01). The epoch is SERVER-owned: a
@@ -2116,6 +2212,7 @@ def validate_auth_config(auth: AuthConfig, current: AuthConfig | None = None) ->
             raise ValueError(f"unknown auth method: {m!r}")
     if auth.session_ttl_s <= 0:
         raise ValueError("session_ttl_s must be positive")
+    _validate_bearer_token(auth.admin_token, "admin_token")
 
     roles_in_use = list(auth.role_allowlist.values())
     if auth.default_role is not None:

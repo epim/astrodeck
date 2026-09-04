@@ -1,0 +1,15 @@
+# Copy this file to:
+#   /etc/systemd/system/astrodeck.service.d/hardware.conf
+# Replace the placeholder with each measured stable device path needed by the
+# rig. Add the astrodeck account only to the narrowly scoped udev group owning
+# those nodes. Never add root, sudo, docker, or blanket /dev access.
+
+[Service]
+PrivateDevices=no
+DevicePolicy=closed
+DeviceAllow=/dev/serial/by-id/REPLACE_WITH_STABLE_DEVICE_ID rw
+
+# Some cameras use dynamically numbered /dev/bus/usb nodes. If hardware testing
+# proves a stable path impossible, add a measured USB character-device rule and
+# pair it with vendor-specific udev DAC ownership. Do not grant all character or
+# block devices.

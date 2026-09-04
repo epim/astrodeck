@@ -4,10 +4,10 @@ version = "0.1.0"
 description = "AstroDeck remote-access relay: outbound-WSS tunnel front door (no port-forwarding)"
 requires-python = ">=3.11"
 dependencies = [
-    "starlette>=0.37",
+    "starlette>=1.6.0",
     "uvicorn[standard]>=0.30",
     "websockets>=12.0",
-    "cryptography>=42.0",
+    "cryptography>=50.0.0",
 ]
 
 [project.optional-dependencies]

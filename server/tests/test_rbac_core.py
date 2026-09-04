@@ -8,6 +8,8 @@ api/app.py is covered by the app-level RBAC suite (separate owner).
 """
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from fastapi import Depends, FastAPI, Request
 from fastapi.testclient import TestClient
@@ -259,15 +261,48 @@ def test_build_provider_selection():
     # none + no token -> NoneAuthProvider
     assert build_provider(AuthConfig()).name == "none"
     # none + admin_token -> TokenAdminProvider
-    p = build_provider(AuthConfig(admin_token="s3cret"))
+    p = build_provider(AuthConfig(admin_token="s" * 32))
     assert isinstance(p, TokenAdminProvider)
     assert p.name == "token"
     # google -> GoogleAuthProvider
     assert build_provider(AuthConfig(provider="google")).name == "google"
 
 
+def test_invalid_persisted_auth_method_fails_closed_not_open():
+    # AuthConfig is also loaded from operator-edited JSON, not only the validated
+    # setter. A typo must not be filtered to [] and become open-admin.
+    p = build_provider(AuthConfig(methods=["locla"]))
+    assert isinstance(p, TokenAdminProvider)
+
+    async def _resolve():
+        req = type("Req", (), {"headers": {}, "query_params": {}})()
+        assert await p.resolve(req) is None
+
+    asyncio.run(_resolve())
+
+
+def test_legacy_weak_admin_token_fails_closed():
+    provider = build_provider(AuthConfig(admin_token="guessable"))
+
+    async def _resolve():
+        req = type("Req", (), {
+            "headers": {"x-auth-token": "guessable"},
+            "query_params": {},
+        })()
+        assert await provider.resolve(req) is None
+
+    asyncio.run(_resolve())
+
+
+def test_set_auth_rejects_weak_admin_token(tmp_path):
+    store = ConfigStore(path=tmp_path / "astrodeck.json")
+    with pytest.raises(ValueError, match="at least 32 bytes"):
+        store.set_auth(AuthConfig(admin_token="guessable"))
+
+
 def test_token_admin_provider_via_app():
-    cfg = AuthConfig(admin_token="s3cret")
+    token = "s" * 32
+    cfg = AuthConfig(admin_token=token)
     configure_provider_from_auth(cfg)
     app = FastAPI()
 
@@ -279,9 +314,9 @@ def test_token_admin_provider_via_app():
     # no token -> provider yields None -> 401
     assert c.get("/g").status_code == 401
     # valid token (any carrier) -> admin -> 200
-    assert c.get("/g", headers={"X-Auth-Token": "s3cret"}).status_code == 200
-    assert c.get("/g", headers={"Authorization": "Bearer s3cret"}).status_code == 200
-    assert c.get("/g?token=s3cret").status_code == 200
+    assert c.get("/g", headers={"X-Auth-Token": token}).status_code == 200
+    assert c.get("/g", headers={"Authorization": f"Bearer {token}"}).status_code == 200
+    assert c.get(f"/g?token={token}").status_code == 200
     # wrong token -> 401
     assert c.get("/g", headers={"X-Auth-Token": "nope"}).status_code == 401
 

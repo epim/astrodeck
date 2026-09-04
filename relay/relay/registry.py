@@ -28,6 +28,7 @@ multiplexer contract.
 from __future__ import annotations
 
 import itertools
+import secrets
 import time
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Optional
@@ -63,6 +64,11 @@ class HomeRegistration:
     #   ws_id     -> a callback that consumes a WS_DATA/WS_CLOSE for that browser
     req_routes: dict = field(default_factory=dict)
     ws_routes: dict = field(default_factory=dict)
+    # A deferred registration retains the previous committed route until its
+    # HELLO_ACK has actually reached the new home. Hidden from repr/equality so
+    # it cannot recursively expose live connection state in logs.
+    previous: Optional["HomeRegistration"] = field(
+        default=None, repr=False, compare=False)
 
     def next_stream_id(self) -> int:
         """Allocate a fresh (relay-owned) ``stream_id`` for a browser HTTP
@@ -140,7 +146,16 @@ class HomeRegistry:
         ``RegistrationError`` on an unknown/blank token."""
         if not device_token:
             raise RegistrationError("missing device_token")
-        home_id = self._token_to_home.get(device_token)
+        home_id = None
+        if isinstance(device_token, str):
+            for provisioned, candidate_home in self._token_to_home.items():
+                try:
+                    matched = secrets.compare_digest(device_token, provisioned)
+                except (TypeError, UnicodeError):
+                    matched = False
+                if matched:
+                    home_id = candidate_home
+                    break
         if home_id is None:
             raise RegistrationError("unknown device_token")
         return home_id
@@ -168,14 +183,39 @@ class HomeRegistry:
                     f"stale generation {generation} <= live "
                     f"{existing.generation} for home {home_id}"
                 )
-            # Evict the older socket (fencing): mark it and let the caller close.
-            existing.tunnel.evicted = True
-            existing.tunnel.closed = True
-
         reg = HomeRegistration(home_id=home_id, generation=generation,
-                               tunnel=tunnel)
+                               tunnel=tunnel, previous=existing)
         self._homes[home_id] = reg
         return reg
+
+    def commit(self, reg: HomeRegistration) -> bool:
+        """Commit ``reg`` after its positive HELLO_ACK is delivered.
+
+        The previous socket is fenced only now.  This prevents a failed ACK
+        write from destroying an otherwise healthy active route.
+        """
+
+        if self._homes.get(reg.home_id) is not reg:
+            return False
+        previous = reg.previous
+        reg.previous = None
+        if previous is not None:
+            previous.tunnel.evicted = True
+            previous.tunnel.closed = True
+        return True
+
+    def rollback(self, reg: HomeRegistration) -> bool:
+        """Undo an uncommitted registration whose ACK was not delivered."""
+
+        if self._homes.get(reg.home_id) is not reg:
+            return False
+        previous = reg.previous
+        reg.previous = None
+        if previous is None:
+            del self._homes[reg.home_id]
+        else:
+            self._homes[reg.home_id] = previous
+        return True
 
     def get(self, home_id: str) -> Optional[HomeRegistration]:
         """The live registration for ``home_id`` (or None if no home is

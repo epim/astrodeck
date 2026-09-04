@@ -13,10 +13,17 @@ def client(tmp_path, monkeypatch):
     store = ConfigStore(path=tmp_path / "astrodeck.json")
     store.set_site(Site(name="Mid", latitude=40.0, longitude=-74.0),
                    expected_version=None)
+    import astrodeck.api.app as app_module
     import astrodeck.config as config_mod
     import astrodeck.hub as hub_mod
     monkeypatch.setattr(config_mod, "config_store", store)
     monkeypatch.setattr(hub_mod, "config_store", store)
+    # app.py bound the singleton by name at import, so create_app() would
+    # otherwise install its auth provider from the worker-shared store: any
+    # earlier test that saved a real method turns every request here into
+    # a 401 (seen once in a parallel run; reproduced by saving an admin_token
+    # into the shared store first).
+    monkeypatch.setattr(app_module, "config_store", store)
     with TestClient(create_app()) as c:
         yield c
 

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import OrderedDict
+import contextlib
 import json
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Optional
@@ -131,10 +132,17 @@ class TunnelMultiplexer:
         ex = _HttpExchange(stream_id=stream_id, on_head=on_head, on_data=on_data)
         self._exchanges[stream_id] = ex
         self.reg.req_routes[stream_id] = ex
-        await self.tunnel.send_frame(
-            protocol.req_open(stream_id, method, path, query, headers,
-                              has_body=has_body, cls=cls)
-        )
+        try:
+            await self.tunnel.send_frame(
+                protocol.req_open(stream_id, method, path, query, headers,
+                                  has_body=has_body, cls=cls)
+            )
+        except BaseException:
+            # Registration and the wire send are one logical transaction. A
+            # failed/cancelled send must not leave an exchange that can never
+            # receive a response (and permanently consumes concurrency state).
+            self._drop_exchange(stream_id)
+            raise
         return stream_id
 
     async def send_request_body(self, stream_id: int, chunk: bytes, *,
@@ -187,10 +195,16 @@ class TunnelMultiplexer:
         self._viewers[ws_id] = viewer
         self.reg.ws_routes[ws_id] = viewer
         viewer.pump_task = asyncio.ensure_future(self._pump_viewer(viewer))
-        await self.tunnel.send_frame(
-            protocol.ws_open(stream_id, ws_id, path, query, headers,
-                             cls=protocol.CLASS_EVENT)
-        )
+        try:
+            await self.tunnel.send_frame(
+                protocol.ws_open(stream_id, ws_id, path, query, headers,
+                                 cls=protocol.CLASS_EVENT)
+            )
+        except BaseException:
+            self._viewers.pop(ws_id, None)
+            self.reg.ws_routes.pop(ws_id, None)
+            await self._stop_pump(viewer.pump_task)
+            raise
         return ws_id
 
     async def close_ws(self, ws_id: str, code: int = 1000) -> None:
@@ -199,8 +213,7 @@ class TunnelMultiplexer:
         self.reg.ws_routes.pop(ws_id, None)
         if viewer is None:
             return
-        if viewer.pump_task is not None:
-            viewer.pump_task.cancel()
+        await self._stop_pump(viewer.pump_task)
         # tunnel may already be gone on a full teardown; ignore send errors.
         try:
             await self.tunnel.send_frame(
@@ -291,8 +304,7 @@ class TunnelMultiplexer:
         if viewer is None:
             return
         code = int(frame.header.get("code", 1000))
-        if viewer.pump_task is not None:
-            viewer.pump_task.cancel()
+        await self._stop_pump(viewer.pump_task)
         await viewer.browser.close(code)
 
     # ---------------------------------------------- per-browser egress buffer
@@ -366,6 +378,17 @@ class TunnelMultiplexer:
         self._exchanges.pop(stream_id, None)
         self.reg.req_routes.pop(stream_id, None)
 
+    @staticmethod
+    async def _stop_pump(task: Optional["asyncio.Task"]) -> None:
+        """Cancel and reap a viewer pump without ever awaiting the current task."""
+        if task is None or task.done():
+            return
+        if task is asyncio.current_task():
+            return
+        task.cancel()
+        with contextlib.suppress(BaseException):
+            await task
+
     async def shutdown(self, code: int = 1012) -> None:
         """The home tunnel dropped: fail every in-flight exchange and disconnect
         every browser ``/ws`` so they re-resolve + resync against the new tunnel
@@ -374,13 +397,15 @@ class TunnelMultiplexer:
             ex.done.set()
         self._exchanges.clear()
         self.reg.req_routes.clear()
+        pump_tasks = [viewer.pump_task for viewer in self._viewers.values()
+                      if viewer.pump_task is not None]
         for viewer in list(self._viewers.values()):
-            if viewer.pump_task is not None:
-                viewer.pump_task.cancel()
             try:
                 await viewer.browser.close(code)
             except Exception:  # noqa: BLE001
                 pass
+        for task in pump_tasks:
+            await self._stop_pump(task)
         self._viewers.clear()
         self.reg.ws_routes.clear()
 

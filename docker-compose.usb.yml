@@ -1,0 +1,21 @@
+# Rootful Linux-only hardware override for hot-plugged libusb devices.
+# Combine with one AstroDeck Compose profile, for example:
+#   docker compose -f docker-compose.yml -f docker-compose.usb.yml up -d
+#
+# Host udev rules must grant only approved vendor nodes to ASTRODECK_USB_GID.
+# This override deliberately retains the base profile's zero-capability policy.
+
+services:
+  astrodeck:
+    cap_drop:
+      - ALL
+    group_add:
+      - "${ASTRODECK_USB_GID:?set the udev-assigned USB group GID}"
+    volumes:
+      - type: bind
+        source: /dev/bus/usb
+        target: /dev/bus/usb
+        bind:
+          create_host_path: false
+    device_cgroup_rules:
+      - "c 189:* rmw"

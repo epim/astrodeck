@@ -62,6 +62,19 @@ stick, or somewhere read-only. It uses the normal per-user location for your OS:
 | macOS | `~/Library/Application Support/AstroDeck` |
 | Linux | `~/.local/share/astrodeck` |
 
+On Windows, the configuration directory must be on NTFS or ReFS. At every
+startup AstroDeck verifies the filesystem and replaces inherited permissions
+with a protected DACL granting full control only to the account running
+AstroDeck, `SYSTEM`, and `BUILTIN\Administrators`. It also rejects junctions,
+symlinks, unexpected owners, and ACL API failures before opening a listening
+socket. FAT32 and exFAT are therefore suitable for exported captures, but not
+for `ASTRODECK_CONFIG_DIR`.
+
+Run a supervised Windows instance as its own standard user, not as
+Administrator or LocalSystem. Create and first start the configuration while
+signed in as that same identity; a directory owned by an unrelated account is
+rejected rather than silently taken over.
+
 Override either with an environment variable — useful for putting captures on an
 external drive:
 
@@ -96,9 +109,9 @@ astrodeck create-admin yourname    # create the first sign-in account
 astrodeck --help
 ```
 
-**There is no authentication until you set it up.** Anything that can reach the
-port can move your mount. Behind a home router that is usually fine; before
-exposing it further, `create-admin` and then Settings → Auth. See
+A fresh install has no sign-in method, so it binds loopback only. The CLI refuses
+an unauthenticated non-loopback bind. Before serving a LAN device, run
+`create-admin` and enable local auth, or set a long `ASTRODECK_TOKEN`. See
 [`docs/SECURITY.md`](../SECURITY.md).
 
 ## Running it as a service
@@ -112,6 +125,7 @@ Description=AstroDeck
 After=network-online.target
 
 [Service]
+EnvironmentFile=/etc/astrodeck.env
 ExecStart=/opt/astrodeck/astrodeck run --host 0.0.0.0 --port 8800
 User=astro
 Restart=on-failure
@@ -121,6 +135,8 @@ WantedBy=multi-user.target
 ```
 
 ```bash
+sudo install -m 600 /dev/null /etc/astrodeck.env
+sudoedit /etc/astrodeck.env  # add ASTRODECK_TOKEN=<long random secret>
 sudo systemctl enable --now astrodeck
 ```
 

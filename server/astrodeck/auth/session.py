@@ -57,6 +57,7 @@ DEV_DEFAULT_SECRET = "astrodeck-dev-insecure-secret-change-me"  # noqa: S105 (in
 # with the public dev sentinel (see ``ensure_real_secret``). Read live so a
 # freshly-written file is honored without a restart.
 SECRET_FILE_NAME = "session_secret"  # noqa: S105 (a path, not a secret value)
+MIN_SESSION_SECRET_BYTES = 32
 
 #: Did THIS process actually mint the persisted secret, as opposed to finding
 #: one already on disk? Purely for honest reporting — see ``secret_was_minted``.
@@ -104,6 +105,22 @@ class InsecureSessionSecretError(RuntimeError):
     default. Minting a session on the public key would be a full auth bypass."""
 
 
+def _validate_real_secret(raw: str, source: str) -> str:
+    """Return a configured HS256 secret or reject weak/known key material."""
+    try:
+        size = len(raw.encode("utf-8"))
+    except (AttributeError, UnicodeError) as exc:
+        raise InsecureSessionSecretError(
+            f"{source} is not valid UTF-8 secret material"
+        ) from exc
+    if raw == DEV_DEFAULT_SECRET or size < MIN_SESSION_SECRET_BYTES:
+        raise InsecureSessionSecretError(
+            f"{source} must contain at least {MIN_SESSION_SECRET_BYTES} bytes "
+            "of independently generated secret material"
+        )
+    return raw
+
+
 def _secret_dir():
     """The directory the auto-persisted secret lives in: the ACTIVE config
     store's directory (so a test pointing ``config_store`` at a temp path keeps
@@ -119,19 +136,25 @@ def _secret_dir():
         return None
 
 
-def _persisted_secret() -> str:
-    """The auto-generated secret persisted next to the active config, or "".
+def _persisted_secret() -> str | None:
+    """The persisted secret, or ``None`` only when the file does not exist.
 
     Read live + lazily so this module stays import-light and a file written at
     first-enable is honored at once."""
     directory = _secret_dir()
     if directory is None:
-        return ""
+        return None
     try:
-        raw = (directory / SECRET_FILE_NAME).read_text(encoding="utf-8").strip()
-        return raw
-    except (OSError, ValueError):
-        return ""
+        from ..persist import harden_private_file
+        path = directory / SECRET_FILE_NAME
+        harden_private_file(path)
+        return path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeError) as exc:
+        raise InsecureSessionSecretError(
+            "persisted session secret cannot be read safely"
+        ) from exc
 
 
 def session_secret() -> bytes:
@@ -143,10 +166,15 @@ def session_secret() -> bytes:
     the env var, so a method-enabled rig never signs on the dev sentinel. Local
     open-default use (no method) keeps working out of the box on the default."""
     raw = (os.environ.get(SECRET_ENV_VAR) or "").strip()
-    if not raw:
-        raw = _persisted_secret()
-    if not raw:
-        raw = DEV_DEFAULT_SECRET
+    if raw:
+        raw = _validate_real_secret(raw, SECRET_ENV_VAR)
+    else:
+        persisted = _persisted_secret()
+        raw = (
+            DEV_DEFAULT_SECRET
+            if persisted is None
+            else _validate_real_secret(persisted, "persisted session secret")
+        )
     return raw.encode("utf-8")
 
 
@@ -155,9 +183,15 @@ def secret_is_default() -> bool:
     no auto-persisted secret), so sessions would be signed with the PUBLIC dev
     sentinel. The boot/enable path treats this + an enabled method as a fatal
     misconfiguration (see ``ensure_real_secret`` / the boot guard)."""
-    if (os.environ.get(SECRET_ENV_VAR) or "").strip():
+    configured = (os.environ.get(SECRET_ENV_VAR) or "").strip()
+    if configured:
+        _validate_real_secret(configured, SECRET_ENV_VAR)
         return False
-    return _persisted_secret() == ""
+    persisted = _persisted_secret()
+    if persisted is None:
+        return True
+    _validate_real_secret(persisted, "persisted session secret")
+    return False
 
 
 def ensure_real_secret() -> bool:
@@ -177,17 +211,14 @@ def ensure_real_secret() -> bool:
         return True
     import secrets as _secrets
 
-    from ..persist import ensure_dir
+    from ..persist import write_private_text_atomic
     directory = _secret_dir()
     if directory is None:
         return False
     new_secret = _secrets.token_urlsafe(32)
     try:
-        ensure_dir(directory)
         path = directory / SECRET_FILE_NAME
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(new_secret, encoding="utf-8")
-        os.replace(tmp, path)
+        write_private_text_atomic(path, new_secret)
     except OSError:
         return False
     ok = not secret_is_default()
@@ -306,6 +337,20 @@ def _sign(signing_input: bytes, secret: bytes) -> str:
     return _b64u_encode(mac)
 
 
+def credential_fingerprint(value: str) -> str:
+    """Opaque, rotation-sensitive identifier for an admin bearer credential.
+
+    The raw token never enters a cookie.  Domain separation prevents this MAC
+    from being confused with a session signature, and a live comparison lets a
+    token rotation invalidate every exchanged cookie immediately.
+    """
+    material = (value or "").strip().encode("utf-8")
+    return hmac.new(
+        session_secret(), b"astrodeck/admin-token/v1\0" + material,
+        hashlib.sha256,
+    ).hexdigest()
+
+
 # --------------------------------------------------------------------- public
 
 def sign_session(role: str, email: str | None = None, *,
@@ -313,6 +358,10 @@ def sign_session(role: str, email: str | None = None, *,
                  secret: bytes | None = None,
                  now: float | None = None,
                  epoch: int | None = None,
+                 authn: str | None = None,
+                 subject: str | None = None,
+                 account_epoch: int | None = None,
+                 credential_tag: str | None = None,
                  alg: str | None = None,
                  private_key: str | None = None) -> str:
     """Mint a signed session token carrying ``role`` (+ ``email``/``jti``/exp).
@@ -353,6 +402,14 @@ def sign_session(role: str, email: str | None = None, *,
         payload["email"] = email
     if jti is not None:
         payload["jti"] = jti
+    if authn is not None:
+        payload["authn"] = authn
+    if subject is not None:
+        payload["sub"] = subject
+    if account_epoch is not None:
+        payload["account_epoch"] = int(account_epoch)
+    if credential_tag is not None:
+        payload["credential_tag"] = credential_tag
     payload["epoch"] = _current_session_epoch() if epoch is None else int(epoch)
     payload["iat"] = int(now)
     if ttl_s is not None:

@@ -8,6 +8,7 @@ import inspect
 import json
 import os
 import re
+import subprocess
 import textwrap
 from ctypes import wintypes
 from dataclasses import dataclass
@@ -42,6 +43,26 @@ def _windows_acl_module():
 def _require_windows_live() -> None:
     if os.name != "nt":
         pytest.fail("this mandatory live DACL gate must run on Windows NTFS/ReFS")
+
+
+def _make_directory_reparse(link: Path, target: Path) -> None:
+    """Create a directory symlink, falling back to an unprivileged junction."""
+    try:
+        link.symlink_to(target, target_is_directory=True)
+        return
+    except OSError as symlink_error:
+        completed = subprocess.run(
+            ["cmd.exe", "/d", "/c", "mklink", "/J", str(link), str(target)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode:
+            detail = (completed.stderr or completed.stdout).strip()
+            pytest.skip(
+                "directory reparse creation is unavailable: "
+                f"symlink={symlink_error}; junction={detail}"
+            )
 
 
 def _aces(sddl: str) -> list[tuple[str, str, str, str, str, str]]:
@@ -695,3 +716,42 @@ def test_live_windows_reparse_point_is_rejected_without_touching_target(
         harden(link, directory=False)
     assert victim.read_text(encoding="utf-8") == "unchanged"
     assert _read_acl(victim) == victim_acl
+
+
+@pytest.mark.security_live
+def test_live_windows_intermediate_reparse_point_cannot_redirect_private_io(
+    tmp_path: Path,
+):
+    """A normal leaf below a directory link must not bypass the no-follow guard."""
+    _require_windows_live()
+    from astrodeck import persist
+
+    acl = _windows_acl_module()
+    error_type = getattr(acl, "PrivateAclError", RuntimeError)
+
+    victim_dir = tmp_path / "victim"
+    nested = victim_dir / "nested"
+    nested.mkdir(parents=True)
+    victim = nested / "existing.json"
+    victim.write_text('{"value": "unchanged"}', encoding="utf-8")
+    victim_acl = _read_acl(victim)
+
+    redirect = tmp_path / "redirect"
+    _make_directory_reparse(redirect, victim_dir)
+
+    redirected_victim = redirect / "nested" / victim.name
+    with pytest.raises(error_type, match="reparse point"):
+        acl.harden_private_path(redirected_victim, directory=False)
+
+    # The persistence path first secures its parent.  That parent is a normal
+    # directory reached through the intermediate link, so this independently
+    # proves the entire prefix (rather than only the final object) is checked.
+    redirected_new = redirect / "nested" / "new-secret.json"
+    with pytest.raises(error_type, match="reparse point"):
+        persist.write_json_atomic(
+            redirected_new, {"secret": True}, backup=False
+        )
+
+    assert victim.read_text(encoding="utf-8") == '{"value": "unchanged"}'
+    assert _read_acl(victim) == victim_acl
+    assert not (nested / "new-secret.json").exists()

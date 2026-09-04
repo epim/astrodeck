@@ -99,10 +99,11 @@ def test_default_open_no_provider_no_token(tmp_path, monkeypatch):
 def test_token_composes_with_rbac(tmp_path, monkeypatch):
     """ASTRODECK_TOKEN set: token-less 401 (middleware), valid-token caller
     resolves admin (none provider) and reaches a control.mount route."""
-    _store, app = _make_client(tmp_path, monkeypatch, token="s3cret")
+    token = "s" * 32
+    _store, app = _make_client(tmp_path, monkeypatch, token=token)
     with TestClient(app) as c:
         assert c.get("/api/status").status_code == 401
-        h = {"X-Auth-Token": "s3cret"}
+        h = {"X-Auth-Token": token}
         assert c.get("/api/status", headers=h).status_code == 200
         r = c.post("/api/mount/goto", headers=h,
                    json={"ra_hours": 5.0, "dec_deg": 10.0})
@@ -326,7 +327,7 @@ def test_auth_config_admin_only(tmp_path, monkeypatch):
     _install(principal_for_role("admin"))
     with TestClient(app) as c:
         r = c.post("/api/auth/config",
-                   json={"provider": "none", "admin_token": "sekret"})
+                   json={"provider": "none", "admin_token": "s" * 32})
         assert r.status_code == 200
         # the response is the REDACTED auth block -- secret blanked, flag surfaced
         assert r.json().get("admin_token") == ""

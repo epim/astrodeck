@@ -84,14 +84,15 @@ def test_expected_version_none_skips_check(tmp_path):
     assert cfg.version == 2
 
 
-def test_corrupt_file_recovers_to_defaults_and_backs_up(tmp_path):
+def test_corrupt_file_without_valid_backup_fails_closed_and_is_preserved(tmp_path):
     path = tmp_path / "astrodeck.json"
-    path.write_text("{ this is not valid json", encoding="utf-8")
+    corrupt = "{ this is not valid json"
+    path.write_text(corrupt, encoding="utf-8")
     store = ConfigStore(path=path)
-    cfg = store.cfg()
-    assert cfg.version == 1                        # reset to defaults
-    assert path.exists()                           # rewritten clean
-    assert (tmp_path / "astrodeck.json.bak").exists()  # bad file preserved
+    with pytest.raises(RuntimeError, match="configuration is corrupt"):
+        store.cfg()
+    assert path.read_text(encoding="utf-8") == corrupt
+    assert not (tmp_path / "astrodeck.json.bak").exists()
 
 
 def test_atomic_write_leaves_no_tmp(tmp_path):

@@ -20,10 +20,9 @@ there is **no home port-forwarding and no NAT pain**. A remote browser hits the
 relay over **HTTPS + WSS**; the relay **tunnels** each browser request (and each
 `/ws`) down that scope connection to the home app and streams the response back. The
 home serves the **whole app** (SPA + REST API + `/ws`), so the relay forwards
-**everything** (`/`, `/assets`, `/api`, `/auth`, `/ws`) — there is no separate
-frontend host and **zero UI component changes**. The relay is a **dumb
-byte-forwarder**: it holds **no home signing secret** and **cannot forge a
-principal**.
+the application under `/h/<home_id>/`. It transforms transport headers and
+forwards the home's signed session cookie; it is therefore a trusted
+bearer-token intermediary, not a blind byte-forwarder.
 
 ---
 
@@ -49,23 +48,22 @@ docker build -t astrodeck-relay .
 docker run -p 8080:8080 \
   -v $PWD/secrets:/secrets:ro \
   -e RELAY_DEVICE_TOKENS_FILE=/secrets/device_tokens.json \
-  -e RELAY_OIDC_SEED_FILE=/secrets/oidc_seed.bin \
-  -e RELAY_VIEWER_SEED_FILE=/secrets/viewer_seed.bin \
   -e RELAY_ORIGIN=relay.example.com \
   astrodeck-relay
 ```
 
-The image bakes **no secrets**: device tokens and the two signing seeds are **mounted
-files** at runtime. Put a real TLS terminator (Caddy / nginx / the platform LB) in
-front, or run behind Fly's TLS.
+The image bakes **no secrets**: the device-token map is mounted at runtime. Put a
+real TLS terminator (Caddy / nginx / the platform LB) in front, or run behind
+Fly's TLS.
 
 ### Option B — Fly.io (bundled `fly.toml`)
 
 ```bash
 cd relay
 fly launch --no-deploy            # create the app, accept the bundled fly.toml
-# Provision device tokens + signing seeds as MOUNTED FILES (Fly volume or
-# secrets-as-files); point the RELAY_*_FILE env vars at them.
+# Provision the device-token map as a mounted file or encrypted environment
+# secret. Signing seeds are unnecessary while the reserved OIDC/share routes
+# remain disabled.
 fly secrets set RELAY_ORIGIN=relay.example.com
 fly deploy
 ```
@@ -80,18 +78,20 @@ The bundled `fly.toml` pins **one always-on machine** (`min_machines_running = 1
 | var | default | meaning |
 |-----|---------|---------|
 | `RELAY_BIND_HOST` / `RELAY_BIND_PORT` | `0.0.0.0` / `8080` | listen address |
-| `RELAY_ORIGIN` | `""` | public host (rewrites `Set-Cookie Domain`) |
+| `RELAY_ORIGIN` | `""` | canonical public browser host for exact Origin checks; required on non-loopback binds |
 | `RELAY_HTTPS` | `1` | forces cookie `Secure` |
 | `RELAY_DEVICE_TOKENS_FILE` | `""` | JSON `{device_token: home_id}` (mounted) |
 | `RELAY_OIDC_SEED_FILE` | `""` | 32-byte Ed25519 seed for the OIDC key |
 | `RELAY_VIEWER_SEED_FILE` | `""` | 32-byte Ed25519 seed for the **separate** viewer key |
 | `RELAY_PING_INTERVAL_S` / `RELAY_PING_MAX_MISSES` | `10` / `3` | keepalive |
-| `RELAY_MAX_BODY` | `134217728` | max tunnelled request body bytes |
+| `RELAY_MAX_BODY` | `8388608` | max tunnelled request body bytes |
 
-> Dev fallback: without `RELAY_OIDC_SEED_FILE` / `RELAY_VIEWER_SEED_FILE` the relay
-> runs with a **loud dev-HMAC signer** (logs a warning). Fine for local dev, **never
-> production**. In production mount two 32-byte Ed25519 seeds and load the matching
-> **public** keys into the home (`relay_pubkey` / `viewer_link_pubkey`).
+> No implicit signer: without `RELAY_OIDC_SEED_FILE` /
+> `RELAY_VIEWER_SEED_FILE`, the network server constructs no signer and cannot
+> mint tokens. That is the recommended posture for this build because it exposes
+> neither relay-terminated OIDC nor `/share`. If those features are implemented,
+> provision distinct Ed25519 seeds and matching home public keys before enabling
+> their routes.
 
 ---
 
@@ -114,8 +114,13 @@ mapping the token to the `home_id` you want in the URL:
 { "<the-generated-token>": "home-1" }
 ```
 
-This file is **mounted, never baked into the image**. One token → one home; a
-reconnect with a higher `generation` fences the previous scope connection.
+This file is **mounted, never baked into the image**. Tokens shorter than 32
+printable ASCII characters are rejected; use the generated token rather than a
+human password. Multiple rotation tokens
+may map to the same home, but one relay hostname/instance may contain only one
+distinct home: path tenants would otherwise share a browser origin and cookie
+namespace. A reconnect with a higher `generation` physically evicts the prior
+scope socket.
 
 **On the home**, put the same token in `RemoteConfig.device_token` (next section).
 
@@ -156,78 +161,59 @@ secret.
 
 ## 4. Reach it from a remote browser
 
-Once the home's tunnel is up (`GET https://<relay>/healthz` lists the connected
-home), open:
+Once the home's tunnel is up (confirm it in the home/relay logs; `/healthz`
+intentionally exposes liveness only), open:
 
 ```
 https://relay.example.com/h/home-1/
 ```
 
-The relay forwards the **whole app** under `/h/<home_id>/…` — the SPA, `/assets`,
-`/api`, `/auth`, and the `/ws` event stream at `/h/<home_id>/ws`. Browser ↔ relay is
-plain **HTTPS + WSS**; there is no separate frontend to host and no UI changes beyond
-the session cookie's `SameSite` (Strict → Lax) for the relay origin.
+The relay forwards the whole app under `/h/<home_id>/`: SPA/assets, home-served
+`/auth` routes, capability-gated `/api`, and the send-only `/ws` event stream.
+Browser-to-relay transport must be HTTPS/WSS. Home cookies are rewritten to be
+host-only and `Secure`; an explicit SameSite policy is preserved.
 
-- **Admin (full remote control):** authenticate through a **real** provider (e.g.
-  Google OIDC, terminated at the relay's `/auth/google/callback`, with the session
-  **re-validated at the home**). The open `none` provider is **hard-denied remotely**.
-- **Friends (view-only):** redeem a **viewer link** (`/share/<token>`) minted by the
-  relay with explicit caps, a revocable `jti`, TTL/renew, and a max-viewers bound.
-  RBAC at the home keeps them view-only.
+Authenticate through a **real home provider** (local or Google session). The open
+`none` provider is hard-denied remotely. `ASTRODECK_TOKEN` is deliberately a
+direct-transport credential and is stripped in both header and query form at the
+tunnel boundary. This build does not expose relay-terminated OIDC or `/share`
+viewer-link endpoints; do not design deployment access around those reserved
+components.
 
 ---
 
 ## Security model (the deployment depends on this)
 
-The relay is **UNTRUSTED and forwards only**. Every safety-relevant decision is made
-**at the home**, and the home is correct even if the relay is fully compromised.
+The current relay is **trusted transport**. TLS terminates there and the home
+session cookie passes through it, so compromise of the relay can expose and
+replay a bearer session. Treat the relay host, its logs, and its runtime with the
+same care as an authentication proxy.
 
-- **The home re-authenticates and re-authorizes EVERY tunneled request.** The scope
-  client tags each replayed request and the tunneled `/ws` with an ASGI-scope-state
-  flag (`scope['state']['astrodeck_remote'] = True`) — **not a spoofable header** — and
-  the home passes `remote=True` into `resolve_principal`. With `remote=True`, the open
-  **`none` provider is hard-denied** (`server/astrodeck/auth/deps.py`), so the LAN's
-  open-admin default can **never** be reached from the relay. A real provider is
-  required remotely.
-- **RBAC is re-checked at the home on every route** (capability gates), and
-  destructive capabilities require a fresh step-up. Inbound `authorization` /
-  `x-auth-token` / session-cookie headers are **stripped** at the replay shim — they
-  are not valid tunnel carriers.
-- **The relay holds no signing secret and cannot forge a principal.** It carries a
-  **public key only** (`relay_pubkey` / `viewer_link_pubkey`); the home verifies any
-  relay-supplied principal token against that public key. The relay can mint nothing
-  the home will trust as admin.
-- **The sun-avoidance, horizon, and safety gates enforce below the API at the home**
-  (e.g. `hub._check_solar`, the motion-serialization lock/epoch), independent of auth
-  and independent of the relay. Loss of the relay ⇒ full local autonomy; the local
-  kill switch is `RemoteConfig.enabled = false`.
-- **`/ws` stays send-only.** The relay forwards server→client events only; commands
-  always travel the capability-gated REST path.
-- **Per-principal audit** is recorded at tunnel ingress at the home.
+Defense in depth still applies at the home:
 
-Net effect: a compromised relay can read tunneled traffic and behave as an
-already-authenticated **viewer** in real time, but it **cannot** issue admin/control
-actions, **cannot** forge a principal, and **cannot** bypass the sun/RBAC/safety
-floors.
+- Every tunneled HTTP and WebSocket scope carries a non-header remote flag. The
+  open `none` provider hard-denies remote scopes; a real home provider must
+  authenticate the cookie.
+- Raw `Authorization`, `X-Auth-Token`, and `?token=` carriers are stripped, so
+  the direct `ASTRODECK_TOKEN` break-glass credential is never tunnel authority.
+- RBAC and physical sun/horizon/safety gates execute at the home. The event
+  WebSocket is send-only; commands use capability-gated REST routes.
+- Identity and auth configuration, user management, relay configuration,
+  factory reset, update check/apply/config, connection discovery/setup, and
+  host/LAN destination configuration are denied on remote scopes even for an
+  otherwise-valid admin session.
+- The codec, request bodies, queues, handshakes, and concurrent stream counts
+  are bounded. Exact browser Origin is required for mutations and WebSockets.
+- Setting `RemoteConfig.enabled = false` closes the live connection promptly;
+  a changed URL/token/home id also fences the old generation before redial.
 
----
+These controls limit persistence and trust-root changes, but they do **not** make
+a compromised relay view-only: it can replay a captured operator/admin cookie
+for any capability that remains intentionally available over the tunnel,
+including rig control. mTLS protects the home-to-relay dial from impersonation;
+it does not cure compromise of the relay endpoint.
 
-## Trust posture: hardened TRUSTED-TRANSPORT interim
-
-This is the **hardened trusted-transport interim** described in the ADR
-(`docs/architecture/2026-06-17-remote-access-architecture.md`). TLS terminates **at
-the relay** (browser ↔ relay is TLS **to the relay**), so a compromised relay can
-observe tunneled plaintext and act as a live, already-authenticated viewer. That risk
-is **accepted and documented**, and it is **bounded** by the home-side enforcement
-above: token **minting is withheld** from the relay (public key only), and the
-privilege-defining writes (`admin` / `config` / remote-config) are **tunnel-blocked at
-the home**.
-
-Hardening to apply in production: bind the scope ↔ relay dial with **mTLS**, mount
-real Ed25519 seeds (no dev-HMAC fallback), and load the matching public keys into the
-home.
-
-**Documented future step:** an **end-to-end / blind-relay** design where the relay
-never sees plaintext and is a pure ciphertext mover, removing the "relay-as-live-
-viewer" risk entirely. That is the next evolution of this architecture, not what ships
-in this interim.
+Use a dedicated hardened relay, one home per hostname/instance, strict secret
+mount permissions, HTTPS/WSS, and mTLS where available. A future end-to-end
+encrypted blind relay would remove plaintext/cookie access; that is not what
+this implementation ships today.
