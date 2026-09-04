@@ -453,10 +453,14 @@ artifact. A desktop test cannot substitute for this gate.
 Run 2026-09-03..04 on a disposable Orange Pi 5 Pro: steps 1 to 8 pass on the
 mechanism. Real power pulls confirmed the recovery gesture arms but showed
 the 60-second healthy-boot clear is easy to trip by hand (see the residual
-risks above). The phone/laptop join is BLOCKED by an AP-mode firmware fault
-on this board's BCM4345 radio: a driven client never associates, the radio
-logs nothing, and the same failure occurs with the sandbox removed, so it is
-below the provisioner. Artifact:
+risks above). The phone/laptop join exposed a radio-state regression: brcmfmac will not
+service AP clients when the AP is raised on a radio that was just a 5 GHz
+station, and `ap_up` does not reset the radio. A clean driver reload makes a
+client associate and complete the 4-way handshake, so August worked (idle
+radio on a fresh board) and an already-joined board fails. The reset belongs
+in AP bring-up; the how is an open design choice (recovery boot keeps the
+station off the radio / soft reset with CAP_NET_ADMIN / CAP_SYS_MODULE for a
+module reload). Artifact:
 `docs/hardware/orange-pi-5-hardware-gate-2026-09-03.md`.
 
 ---
