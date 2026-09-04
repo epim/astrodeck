@@ -12,6 +12,7 @@ import inspect
 import os
 import re
 import stat
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -19,8 +20,13 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PROVISIONER = ROOT / "orangepi5" / "provision" / "astrodeck-provision.py"
-SERVICE = ROOT / "orangepi5" / "provision" / "astrodeck-provision.service"
+PROVISION_DIR = ROOT / "orangepi5" / "provision"
+PROVISIONER = PROVISION_DIR / "astrodeck-provision.py"
+BROKER = PROVISION_DIR / "astrodeck-provision-broker.py"
+SERVICE = PROVISION_DIR / "astrodeck-provision.service"
+BROKER_SERVICE = PROVISION_DIR / "astrodeck-provision-broker.service"
+BROKER_SOCKET = PROVISION_DIR / "astrodeck-provision-broker.socket"
+SYSUSERS = PROVISION_DIR / "astrodeck-provision.sysusers.conf"
 ROOTFS_INSTALLER = ROOT / "orangepi5" / "provision" / "install-to-rootfs.sh"
 RECOVERY_RECORD_SERVICE = (
     ROOT / "orangepi5" / "provision" / "astrodeck-recovery-record.service"
@@ -33,14 +39,23 @@ RECOVERY_CLEAR_TIMER = (
 )
 
 
-def _load_provisioner():
-    spec = importlib.util.spec_from_file_location(
-        "astrodeck_security_acceptance_provision", PROVISIONER
-    )
+def _load(path: Path, name: str):
+    spec = importlib.util.spec_from_file_location(name, path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
+    # exec_module() does not perform importlib's normal sys.modules insertion.
+    # Register the module so inspect.getsource() can resolve class definitions.
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def _load_provisioner():
+    return _load(PROVISIONER, "astrodeck_security_acceptance_provision")
+
+
+def _load_broker():
+    return _load(BROKER, "astrodeck_security_acceptance_broker")
 
 
 def _require(module: Any, name: str):
@@ -60,46 +75,52 @@ def _field(value: Any, name: str):
 
 
 def test_no_shared_factory_password_and_no_secret_value_is_logged():
-    source = PROVISIONER.read_text(encoding="utf-8")
-    assert not re.search(
-        r"(?m)^\s*AP_PSK\s*=\s*(['\"])astrodeck\1", source, re.IGNORECASE
-    ), "a public password must not unlock every shipped appliance"
-
-    tree = ast.parse(source)
     weak_secret_assignments: list[str] = []
     leaking_calls: list[str] = []
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.Assign, ast.AnnAssign)):
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            value = node.value
-            names = [
-                target.id.lower()
-                for target in targets
-                if isinstance(target, ast.Name)
-            ]
-            if (
-                any(part in name for name in names for part in ("psk", "password", "secret"))
-                and isinstance(value, ast.Constant)
-                and isinstance(value.value, str)
-                and value.value.lower() in {"astrodeck", "password", "changeme", "default"}
-            ):
-                weak_secret_assignments.append(ast.unparse(node))
-        if not isinstance(node, ast.Call) or not node.args:
-            continue
-        if not isinstance(node.func, ast.Name) or node.func.id != "log":
-            continue
-        for formatted in ast.walk(node.args[0]):
-            if isinstance(formatted, ast.FormattedValue):
-                expression = ast.unparse(formatted.value).lower()
-                if "psk" in expression or "password" in expression:
-                    leaking_calls.append(ast.unparse(node))
+    for path in (PROVISIONER, BROKER):
+        source = path.read_text(encoding="utf-8")
+        assert not re.search(
+            r"(?m)^\s*AP_PSK\s*=\s*(['\"])astrodeck\1", source, re.IGNORECASE
+        ), "a public password must not unlock every shipped appliance"
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Assign, ast.AnnAssign)):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                value = node.value
+                names = [
+                    target.id.lower()
+                    for target in targets
+                    if isinstance(target, ast.Name)
+                ]
+                if (
+                    any(
+                        part in name
+                        for name in names
+                        for part in ("psk", "password", "secret")
+                    )
+                    and isinstance(value, ast.Constant)
+                    and isinstance(value.value, str)
+                    and value.value.lower()
+                    in {"astrodeck", "password", "changeme", "default"}
+                ):
+                    weak_secret_assignments.append(f"{path.name}: {ast.unparse(node)}")
+            if not isinstance(node, ast.Call) or not node.args:
+                continue
+            if not isinstance(node.func, ast.Name) or node.func.id != "log":
+                continue
+            for formatted in ast.walk(node.args[0]):
+                if isinstance(formatted, ast.FormattedValue):
+                    expression = ast.unparse(formatted.value).lower()
+                    if "psk" in expression or "password" in expression:
+                        leaking_calls.append(f"{path.name}: {ast.unparse(node)}")
     assert not weak_secret_assignments, (
         f"shared/default setup secret remains: {weak_secret_assignments}"
     )
     assert not leaking_calls, f"setup secret is interpolated into logs: {leaking_calls}"
 
-    provisioner = _load_provisioner()
-    ap_up = _require(provisioner, "ap_up")
+    frontend = _load_provisioner()
+    broker = _load_broker()
+    ap_up = _require(broker, "ap_up")
     assert list(inspect.signature(ap_up).parameters)[:2] == ["ssid", "psk"]
     ap_tree = ast.parse(inspect.getsource(ap_up))
     for call in (node for node in ast.walk(ap_tree) if isinstance(node, ast.Call)):
@@ -109,11 +130,12 @@ def test_no_shared_factory_password_and_no_secret_value_is_logged():
             assert "psk" not in arguments and "password" not in arguments, (
                 "setup credential was placed in a subprocess argv that is logged/visible"
             )
-    assert "AP_PSK" not in inspect.getsource(provisioner.main_run)
+    assert "AP_PSK" not in inspect.getsource(frontend.main_run)
+    assert "setup-identity.json" not in PROVISIONER.read_text(encoding="utf-8")
 
 
 def test_setup_password_format_and_generation_are_per_device():
-    provisioner = _load_provisioner()
+    provisioner = _load_broker()
     generate = _require(provisioner, "generate_setup_password")
     generator_source = inspect.getsource(generate)
     assert "secrets.choice" in generator_source
@@ -126,7 +148,7 @@ def test_setup_password_format_and_generation_are_per_device():
 
 
 def test_commissioned_identity_is_exclusive_private_and_stable(tmp_path: Path):
-    provisioner = _load_provisioner()
+    provisioner = _load_broker()
     commission = _require(provisioner, "commission_setup_identity")
     load = _require(provisioner, "load_setup_identity")
 
@@ -160,7 +182,7 @@ def test_commissioned_identity_is_exclusive_private_and_stable(tmp_path: Path):
 def test_identity_loader_fails_closed_for_missing_malformed_or_symlinked_state(
     tmp_path: Path,
 ):
-    provisioner = _load_provisioner()
+    provisioner = _load_broker()
     load = _require(provisioner, "load_setup_identity")
 
     with pytest.raises((FileNotFoundError, ValueError, RuntimeError, OSError)):
@@ -188,26 +210,31 @@ def test_identity_loader_fails_closed_for_missing_malformed_or_symlinked_state(
 
 
 def test_ap_authorization_is_one_shot_and_portal_is_time_bounded(tmp_path: Path):
-    provisioner = _load_provisioner()
-    commission = _require(provisioner, "commission_setup_identity")
-    consume = _require(provisioner, "consume_ap_authorization")
+    broker = _load_broker()
+    frontend = _load_provisioner()
+    commission = _require(broker, "commission_setup_identity")
+    consume = _require(broker, "consume_ap_authorization")
 
     identity_path = tmp_path / "setup-identity.json"
     commission(identity_path, ssid="AstroDeck-BEEF", now=1000.0)
 
     assert consume(identity_path, now=1001.0) is True
     assert consume(identity_path, now=1002.0) is False
-    assert int(_require(provisioner, "PORTAL_LIFETIME_S")) == 15 * 60
+    assert int(_require(broker, "PORTAL_LIFETIME_S")) == 15 * 60
+    assert int(_require(frontend, "PORTAL_LIFETIME_S")) == 15 * 60
 
-    main_source = inspect.getsource(provisioner.main_run)
-    assert "consume_ap_authorization" in main_source
-    assert "PORTAL_LIFETIME_S" in main_source
+    broker_source = inspect.getsource(broker.BrokerState.open_window)
+    assert "consume_ap_authorization" in broker_source
+    assert "PORTAL_LIFETIME_S" in broker_source
+    frontend_source = inspect.getsource(frontend.main_run)
+    assert 'opened["remaining_s"]' in frontend_source
+    assert "consume_ap_authorization" not in frontend_source
 
 
 def test_three_distinct_short_boots_rearm_the_printed_factory_credential(
     tmp_path: Path,
 ):
-    provisioner = _load_provisioner()
+    provisioner = _load_broker()
     commission = _require(provisioner, "commission_setup_identity")
     consume = _require(provisioner, "consume_ap_authorization")
     rotate = _require(provisioner, "rotate_setup_password")
@@ -241,7 +268,7 @@ def test_three_distinct_short_boots_rearm_the_printed_factory_credential(
 
 
 def test_recovery_sequence_expires_and_a_healthy_boot_clears_it(tmp_path: Path):
-    provisioner = _load_provisioner()
+    provisioner = _load_broker()
     commission = _require(provisioner, "commission_setup_identity")
     consume = _require(provisioner, "consume_ap_authorization")
     record = _require(provisioner, "record_short_boot")
@@ -292,20 +319,22 @@ def _unit_values(text: str) -> dict[str, list[str]]:
     return values
 
 
-def test_provisioning_unit_has_a_measured_root_sandbox():
+def test_network_frontend_is_non_root_and_has_no_system_manager_bus_access():
     values = _unit_values(SERVICE.read_text(encoding="utf-8"))
 
-    assert values.get("User") == ["root"]
-    assert values.get("Group") == ["root"]
+    assert values.get("User") == ["astrodeck-setup"]
+    assert values.get("Group") == ["astrodeck-setup"]
     assert values.get("RequiresMountsFor") == ["/data"]
+    assert values.get("ConditionPathIsMountPoint") == ["/data"]
+    assert values.get("Requires") == [BROKER_SOCKET.name]
     assert values.get("UMask") == ["0077"]
     assert values.get("NoNewPrivileges") in (["yes"], ["true"])
     assert values.get("ProtectSystem") == ["strict"]
     assert values.get("ProtectHome") in (["yes"], ["true"])
     assert values.get("PrivateTmp") in (["yes"], ["true"])
+    assert values.get("PrivateDevices") in (["yes"], ["true"])
     assert values.get("ProtectProc") == ["invisible"]
-    assert values.get("RuntimeDirectory") == ["astrodeck"]
-    assert values.get("RuntimeDirectoryMode") == ["0700"]
+    assert values.get("ProcSubset") == ["pid"]
     for key in (
         "ProtectKernelTunables",
         "ProtectKernelModules",
@@ -325,17 +354,152 @@ def test_provisioning_unit_has_a_measured_root_sandbox():
     assert values.get("TasksMax") == ["64"]
     assert values.get("LimitNOFILE") == ["128"]
 
-    caps = set(" ".join(values.get("CapabilityBoundingSet", [])).split())
-    assert caps == {"CAP_NET_ADMIN", "CAP_NET_BIND_SERVICE", "CAP_NET_RAW"}
+    assert values.get("CapabilityBoundingSet") == ["CAP_NET_BIND_SERVICE"]
+    assert values.get("AmbientCapabilities") == ["CAP_NET_BIND_SERVICE"]
 
     families = set(" ".join(values.get("RestrictAddressFamilies", [])).split())
-    assert {"AF_UNIX", "AF_INET", "AF_INET6", "AF_NETLINK", "AF_PACKET"} <= families
+    assert families == {"AF_UNIX", "AF_INET", "AF_INET6"}
 
-    writable = " ".join(values.get("ReadWritePaths", [])).split()
-    assert "/run" not in writable, "do not grant the root helper all of /run"
-    assert "/etc/netplan" in writable
-    assert any(path.startswith("/run/astrodeck") for path in writable)
-    assert any(path.startswith("/data/") for path in writable)
+    assert "ReadWritePaths" not in values
+    inaccessible = set(" ".join(values.get("InaccessiblePaths", [])).split())
+    assert "-/run/systemd/private" in inaccessible
+    assert "-/run/dbus/system_bus_socket" in inaccessible
+    assert values.get("SocketBindDeny") == ["any"]
+    # One rule per line: systemd rejects a space-separated SocketBindAllow=
+    # and the deny-all then leaves the portal unable to bind 80 or 53.
+    bind_allow = values.get("SocketBindAllow", [])
+    assert all(" " not in rule for rule in bind_allow), bind_allow
+    assert set(bind_allow) == {"ipv4:tcp:80", "ipv4:udp:53"}
+    assert values.get("IPAddressDeny") == ["any"]
+    assert values.get("IPAddressAllow") == ["10.42.0.0/24"]
+
+    filters = " ".join(values.get("SystemCallFilter", []))
+    for denied_group in (
+        "@clock",
+        "@cpu-emulation",
+        "@debug",
+        "@module",
+        "@mount",
+        "@obsolete",
+        "@privileged",
+        "@raw-io",
+        "@reboot",
+        "@swap",
+    ):
+        assert denied_group in filters
+
+
+def test_frontend_cannot_invoke_privileged_commands_or_read_private_identity():
+    source = PROVISIONER.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    imported = {
+        alias.name.split(".", 1)[0]
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+        for alias in node.names
+    }
+    assert "subprocess" not in imported
+    for forbidden in (
+        "systemctl",
+        "networkctl",
+        "netplan",
+        "wpa_supplicant",
+        "/etc/netplan",
+        "/run/systemd/network",
+        "setup-identity.json",
+    ):
+        assert forbidden not in source
+
+
+def test_root_broker_is_socket_activated_and_has_a_fixed_protocol():
+    service = _unit_values(BROKER_SERVICE.read_text(encoding="utf-8"))
+    socket_values = _unit_values(BROKER_SOCKET.read_text(encoding="utf-8"))
+    assert service.get("User") == ["root"]
+    assert service.get("Group") == ["root"]
+    assert service.get("ExecStart") == [
+        "/usr/bin/python3 /usr/local/lib/astrodeck/"
+        "astrodeck-provision-broker.py broker"
+    ]
+    assert service.get("CapabilityBoundingSet") == ["CAP_NET_ADMIN CAP_NET_RAW"]
+    writable = set(" ".join(service.get("ReadWritePaths", [])).split())
+    assert writable == {
+        "/run/astrodeck",
+        "/run/systemd/network",
+        "/etc/netplan",
+        "/data/astrodeck",
+    }
+    assert socket_values.get("ListenStream") == [
+        "/run/astrodeck-provision-broker.sock"
+    ]
+    assert socket_values.get("Accept") == ["no"]
+    assert socket_values.get("SocketUser") == ["root"]
+    assert socket_values.get("SocketGroup") == ["astrodeck-setup"]
+    assert socket_values.get("SocketMode") == ["0660"]
+    assert "astrodeck-setup" in SYSUSERS.read_text(encoding="utf-8")
+
+    broker = _load_broker()
+    assert broker.BROKER_OPERATIONS == frozenset({"open", "scan", "join", "close"})
+    valid_join = {
+        "version": 1,
+        "operation": "join",
+        "ssid": "home",
+        "psk": "12345678",
+        "sae": False,
+    }
+    for request in (
+        {"version": 1, "operation": "systemctl"},
+        {"version": 1, "operation": "run", "command": "id"},
+        {"version": 1, "operation": "open", "path": "/etc/shadow"},
+        {"version": 1, "operation": "close", "unit": "evil.service"},
+        {**valid_join, "argv": ["sh", "-c", "id"]},
+        {**valid_join, "path": "/tmp/attacker.yaml"},
+    ):
+        with pytest.raises(broker.BrokerRequestError):
+            broker.validate_broker_request(request)
+
+
+def test_root_broker_keeps_the_measured_root_sandbox():
+    """The A4 sandbox followed the root identity from the portal unit into the
+    broker; the contract has to follow it too, because the root process is the
+    one whose escape matters. The portal test above covers the non-root side."""
+    values = _unit_values(BROKER_SERVICE.read_text(encoding="utf-8"))
+
+    assert values.get("User") == ["root"]
+    assert values.get("RequiresMountsFor") == ["/data"]
+    assert values.get("ConditionPathIsMountPoint") == ["/data"]
+    assert values.get("UMask") == ["0077"]
+    assert values.get("NoNewPrivileges") in (["yes"], ["true"])
+    assert values.get("ProtectSystem") == ["strict"]
+    assert values.get("ProtectHome") in (["yes"], ["true"])
+    assert values.get("PrivateTmp") in (["yes"], ["true"])
+    assert values.get("ProtectProc") == ["invisible"]
+    assert values.get("RuntimeDirectory") == ["astrodeck"]
+    assert values.get("RuntimeDirectoryMode") == ["0700"]
+    for key in (
+        "ProtectKernelTunables",
+        "ProtectKernelModules",
+        "ProtectKernelLogs",
+        "ProtectControlGroups",
+        "ProtectClock",
+        "ProtectHostname",
+        "RestrictSUIDSGID",
+        "RestrictRealtime",
+        "RestrictNamespaces",
+        "LockPersonality",
+        "MemoryDenyWriteExecute",
+    ):
+        assert values.get(key) in (["yes"], ["true"]), key
+    assert values.get("SystemCallArchitectures") == ["native"]
+    assert values.get("LimitCORE") == ["0"]
+    assert values.get("TasksMax") == ["64"]
+    assert values.get("LimitNOFILE") == ["128"]
+    assert values.get("KillMode") == ["control-group"]
+    # A4: rfkill may need device access, so the root side must not gain
+    # PrivateDevices by a copy-paste from the portal unit.
+    assert "PrivateDevices" not in values
+
+    families = set(" ".join(values.get("RestrictAddressFamilies", [])).split())
+    assert families == {"AF_UNIX", "AF_INET", "AF_INET6", "AF_NETLINK", "AF_PACKET"}
 
     filters = " ".join(values.get("SystemCallFilter", []))
     for denied_group in (
@@ -350,6 +514,22 @@ def test_provisioning_unit_has_a_measured_root_sandbox():
         "@swap",
     ):
         assert denied_group in filters
+
+    writable = " ".join(values.get("ReadWritePaths", [])).split()
+    assert "/run" not in writable, "do not grant the root broker all of /run"
+
+
+def test_hotspot_network_file_is_readable_by_networkd_and_the_portal_waits_for_its_address():
+    """Two defects only the board could show (2026-09-03): the networkd
+    drop-in was 0600, so networkd never assigned the hotspot address; and the
+    portal bound that address the instant the beacon started."""
+    broker = _load_broker()
+    frontend = _load_provisioner()
+    ap_up = inspect.getsource(broker.ap_up)
+    assert re.search(r"_write_private\(\s*NETWORKD_PATH,.*?mode=0o644\)", ap_up, re.S)
+    assert BROKER.read_text(encoding="utf-8").count("mode=0o644") == 1
+    assert "_bind_when_addressed" in inspect.getsource(frontend.main_run)
+    assert "EADDRNOTAVAIL" in inspect.getsource(frontend._bind_when_addressed)
 
 
 def test_recovery_units_make_service_restart_insufficient_for_recovery():
@@ -368,9 +548,13 @@ def test_recovery_units_make_service_restart_insufficient_for_recovery():
 
     assert record.get("Type") == ["oneshot"]
     assert record.get("User") == ["root"]
+    assert record.get("ConditionPathIsMountPoint") == ["/data"]
     assert "astrodeck-provision.service" in " ".join(record.get("Before", []))
+    assert "network-pre.target" in " ".join(record.get("Before", []))
+    assert record.get("WantedBy") == ["network-pre.target"]
     assert any("record" in value and "boot" in value for value in record.get("ExecStart", []))
     assert clear_service.get("Type") == ["oneshot"]
+    assert clear_service.get("ConditionPathIsMountPoint") == ["/data"]
     assert any("clear" in value and "boot" in value for value in clear_service.get("ExecStart", []))
     assert clear_timer.get("OnBootSec") == ["60s"]
     assert clear_timer.get("Unit") == [RECOVERY_CLEAR_SERVICE.name]
@@ -382,3 +566,6 @@ def test_recovery_units_make_service_restart_insufficient_for_recovery():
     installer = ROOTFS_INSTALLER.read_text(encoding="utf-8")
     for unit in (RECOVERY_RECORD_SERVICE.name, RECOVERY_CLEAR_TIMER.name):
         assert unit in installer, f"rootfs installer never enables {unit}"
+    assert (
+        f"network-pre.target.wants/{RECOVERY_RECORD_SERVICE.name}" in installer
+    ), "the short-boot recorder is enabled too late to precede network setup"

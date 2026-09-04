@@ -1,0 +1,11 @@
+[Unit]
+Description=Clear AstroDeck short-boot recovery progress after 60 seconds
+
+[Timer]
+OnBootSec=60s
+AccuracySec=1s
+Unit=astrodeck-recovery-clear.service
+Persistent=no
+
+[Install]
+WantedBy=timers.target
