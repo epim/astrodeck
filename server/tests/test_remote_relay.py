@@ -35,12 +35,14 @@ from astrodeck.auth import (CAP_VIEW_SITE_PRECISE, CAP_VIEW_STATUS,
                             set_active_provider)
 from astrodeck.auth.deps import _scope_is_remote
 from astrodeck.config import AppConfig, ConfigStore, RemoteConfig, redacted
-from astrodeck.remote.protocol import (CONTROL_STREAM_ID, DEFAULT_MAX_PAYLOAD,
-                                       Frame, FrameType, ProtocolError,
-                                       decode_frame, encode_frame)
+from astrodeck.remote.protocol import (CONTROL_STREAM_ID, DEFAULT_MAX_HEADER,
+                                       DEFAULT_MAX_PAYLOAD, Frame, FrameType,
+                                       ProtocolError, decode_frame, encode_frame)
 from astrodeck.remote.relay_client import (REMOTE_SCOPE_KEY, RelayClient,
-                                           _backoff_delay, run_relay_client,
-                                           scope_is_remote)
+                                           _backoff_delay, _validate_relay_config,
+                                           run_relay_client, scope_is_remote)
+
+TEST_DEVICE_TOKEN = "t" * 43
 
 
 # ============================================================ harness
@@ -77,11 +79,13 @@ class FakeChannel:
     receive, and ``sent`` collects raw frames the client emits. Exposes the
     async-iterable + ``send``/``close`` surface the client expects."""
 
-    def __init__(self):
+    def __init__(self, *, auto_ack: bool = True):
         self._inbox: asyncio.Queue[bytes] = asyncio.Queue()
         self.sent: list[bytes] = []
         self._closed = False
         self._eof = object()
+        if auto_ack:
+            self.push_frame(FrameType.HELLO_ACK, CONTROL_STREAM_ID, {"ok": True})
 
     # -- relay side (the test drives these) ------------------------------------
 
@@ -121,7 +125,7 @@ class FakeChannel:
 def _make_relay_client(app, channel, cfg=None):
     """A RelayClient wired to a fake channel (one connect, then EOF)."""
     cfg = cfg or RemoteConfig(enabled=True, relay_url="wss://relay.test/scope",
-                              device_token="tok", home_id="home-1")
+                              device_token=TEST_DEVICE_TOKEN, home_id="home-1")
 
     async def _connect(url):
         return channel
@@ -187,6 +191,12 @@ def test_frame_rejects_unknown_type():
 def test_frame_rejects_oversize_payload():
     with pytest.raises(ProtocolError):
         encode_frame(FrameType.RESP_DATA, 1, {}, b"x" * (DEFAULT_MAX_PAYLOAD + 1))
+
+
+def test_frame_rejects_oversize_header_before_websocket_allocation_can_repeat():
+    with pytest.raises(ProtocolError):
+        encode_frame(FrameType.REQ_OPEN, 1,
+                     {"x": "y" * (DEFAULT_MAX_HEADER + 1)})
 
 
 def test_frame_rejects_truncated_header():
@@ -298,6 +308,82 @@ def test_tunneled_request_allowed_for_authenticated_admin(tmp_path, monkeypatch)
     assert heads and heads[0].header["status"] == 200
 
 
+def test_direct_transport_token_does_not_block_remote_session_auth(
+        tmp_path, monkeypatch):
+    """ASTRODECK_TOKEN protects the direct listener. It is stripped from the
+    tunnel, so remote scopes must bypass that coarse middleware and continue to
+    the real home provider; the open provider still hard-denies independently."""
+    _store, app = _make_client(tmp_path, monkeypatch, token="direct-only-token-0123456789abcdef")
+
+    class _AdminProvider:
+        name = "fake"
+
+        async def resolve(self, request):
+            return principal_for_role("admin")
+
+    set_active_provider(_AdminProvider())
+    channel = FakeChannel()
+    client = _make_relay_client(app, channel)
+    channel.push_frame(FrameType.REQ_OPEN, 6, {
+        "method": "GET", "path": "/api/status", "query": "",
+        "has_body": False,
+    })
+    frames = asyncio.run(_drain_request(client, channel, stream_id=6))
+    heads = [f for f in frames if f.type == FrameType.RESP_HEAD]
+    assert heads and heads[0].header["status"] == 200
+
+
+@pytest.mark.parametrize("method,path", [
+    ("POST", "/auth/token"),
+    ("POST", "/api/update/check"),
+    ("POST", "/api/update/apply"),
+    ("POST", "/api/update/config"),
+    ("POST", "/api/auth/config"),
+    ("POST", "/api/auth/revoke"),
+    ("POST", "/api/auth/unrevoke"),
+    ("POST", "/api/config/sync"),
+    ("POST", "/api/config"),
+    ("POST", "/api/config/drivers"),
+    ("POST", "/api/alerts"),
+    ("POST", "/api/drivers/test/probe"),
+    ("POST", "/api/profiles"),
+    ("POST", "/api/connect/nina"),
+    ("POST", "/api/sync/push/now"),
+    ("DELETE", "/api/survey/pack"),
+    ("GET", "/api/discover"),
+    ("POST", "/api/remote/config"),
+    ("POST", "/api/system/factory-reset"),
+    ("GET", "/api/users"),
+])
+def test_tunneled_admin_cannot_replay_cookie_into_privilege_root_routes(
+        tmp_path, monkeypatch, method, path):
+    """A relay-visible admin cookie is still a replayable bearer credential.
+    Privilege-defining and whole-system lifecycle routes therefore remain
+    direct-LAN-only even when the tunneled principal resolves as admin."""
+    _store, app = _make_client(tmp_path, monkeypatch)
+
+    class _AdminProvider:
+        name = "fake"
+
+        async def resolve(self, request):
+            return principal_for_role("admin")
+
+    set_active_provider(_AdminProvider())
+    channel = FakeChannel()
+    client = _make_relay_client(app, channel)
+    has_body = method != "GET"
+    channel.push_frame(FrameType.REQ_OPEN, 8, {
+        "method": method, "path": path, "query": "",
+        "headers": [["content-type", "application/json"]],
+        "has_body": has_body,
+    })
+    if has_body:
+        channel.push_frame(FrameType.REQ_DATA, 8, {"eof": True}, b"{}")
+    frames = asyncio.run(_drain_request(client, channel, stream_id=8))
+    heads = [f for f in frames if f.type == FrameType.RESP_HEAD]
+    assert heads and heads[0].header["status"] == 403
+
+
 # ============================================================ response streaming
 
 def test_response_chunks_reassemble_byte_for_byte(tmp_path, monkeypatch):
@@ -330,9 +416,56 @@ def test_response_chunks_reassemble_byte_for_byte(tmp_path, monkeypatch):
     assert all(not f.eof for f in datas[:-1])
 
 
+def test_request_stream_caps_total_body_even_if_the_app_consumes_it(monkeypatch):
+    """A compromised relay must not bypass the public relay's body limit by
+    keeping the home queue drained while sending an unbounded request."""
+    import astrodeck.remote.relay_client as rc
+
+    monkeypatch.setattr(rc, "_REQUEST_BODY_BYTES_MAX", 5)
+    stream = rc._RequestStream(10, lambda _frame: asyncio.sleep(0))
+    assert stream.feed_body(b"123", False)
+    assert not stream.feed_body(b"456", True)
+
+
+def test_aborted_request_stream_fences_late_application_writes():
+    from astrodeck.remote.relay_client import _RequestStream
+
+    sent: list[Frame] = []
+
+    async def _capture(frame):
+        sent.append(frame)
+
+    async def _scenario():
+        stream = _RequestStream(11, _capture)
+        stream.abort()
+        with pytest.raises(ConnectionError, match="aborted"):
+            await stream.send({
+                "type": "http.response.start", "status": 200, "headers": []})
+
+    asyncio.run(_scenario())
+    assert sent == []
+
+
 async def _run_response(stream, body):
     await stream.send({"type": "http.response.start", "status": 200, "headers": []})
     await stream.send({"type": "http.response.body", "body": body, "more_body": False})
+
+
+def test_tunneled_request_body_queue_is_bounded_and_abort_unblocks_receive():
+    from astrodeck.remote.relay_client import _RequestStream
+
+    async def _ignore(_frame):
+        pass
+
+    stream = _RequestStream(10, _ignore)
+    accepted = 0
+    while stream.feed_body(b"x", False):
+        accepted += 1
+        assert accepted < 100, "request-body queue is unexpectedly unbounded"
+    assert accepted > 0
+    stream.abort()
+    message = asyncio.run(stream.receive())
+    assert message["type"] == "http.disconnect"
 
 
 # ============================================================ header stripping
@@ -428,7 +561,7 @@ def test_run_loop_survives_high_attempt_backoff():
         raise ConnectionError("relay down")
 
     cfg = RemoteConfig(enabled=True, relay_url="wss://relay.test/scope",
-                       device_token="tok")
+                       device_token=TEST_DEVICE_TOKEN, home_id="home-1")
 
     async def _scenario():
         client = RelayClient(_noop_app, lambda: cfg, connect=_bad_connect)
@@ -470,7 +603,7 @@ def test_run_loop_never_raises_on_connect_failure():
         raise ConnectionError("relay down")
 
     cfg = RemoteConfig(enabled=True, relay_url="wss://relay.test/scope",
-                       device_token="tok")
+                       device_token=TEST_DEVICE_TOKEN, home_id="home-1")
 
     async def _scenario():
         client = RelayClient(_noop_app, lambda: cfg, connect=_bad_connect)
@@ -522,7 +655,7 @@ def test_generation_increments_on_each_dial(tmp_path, monkeypatch):
         await asyncio.wait_for(client._serve_once(client._config()), timeout=5.0)
         hellos = [f for f in channel.sent_frames() if f.type == FrameType.HELLO]
         assert hellos, "HELLO must be sent on connect"
-        assert hellos[0].header["device_token"] == "tok"
+        assert hellos[0].header["device_token"] == TEST_DEVICE_TOKEN
         assert hellos[0].header["generation"] == g0 + 1
         assert hellos[0].header["proto_version"] >= 1
 
@@ -545,7 +678,7 @@ def test_tunneled_ws_streams_bus_events(tmp_path, monkeypatch):
         client = _make_relay_client(app, channel)
         # open one tunneled ws then publish an event then EOF the connection
         channel.push_frame(FrameType.WS_OPEN, 4,
-                           {"path": "/ws", "query": "", "ws_id": 4})
+                           {"path": "/ws", "query": "", "ws_id": "ws4"})
 
         async def _serve():
             await client._serve_once(client._config())
@@ -560,7 +693,7 @@ def test_tunneled_ws_streams_bus_events(tmp_path, monkeypatch):
 
         ws_data = [f for f in channel.sent_frames() if f.type == FrameType.WS_DATA]
         assert ws_data, "expected WS_DATA frames"
-        assert all(f.header["ws_id"] == 4 for f in ws_data)
+        assert all(f.header["ws_id"] == "ws4" for f in ws_data)
         seqs = [f.header["seq"] for f in ws_data]
         assert seqs == sorted(seqs) and len(set(seqs)) == len(seqs)  # monotonic
         first = json.loads(ws_data[0].payload)
@@ -880,6 +1013,8 @@ async def test_on_wire_wss_roundtrip(tmp_path, monkeypatch):
         # read HELLO
         hello = decode_frame(await conn.recv())
         got["hello_type"] = hello.type
+        await conn.send(encode_frame(
+            FrameType.HELLO_ACK, CONTROL_STREAM_ID, {"ok": True}, b""))
         # tunnel a request
         await conn.send(encode_frame(
             FrameType.REQ_OPEN, 1,
@@ -903,7 +1038,7 @@ async def test_on_wire_wss_roundtrip(tmp_path, monkeypatch):
     server = await websockets.serve(relay_handler, "127.0.0.1", 0)
     port = server.sockets[0].getsockname()[1]
     url = f"ws://127.0.0.1:{port}/scope"
-    cfg = RemoteConfig(enabled=True, relay_url=url, device_token="tok",
+    cfg = RemoteConfig(enabled=True, relay_url=url, device_token=TEST_DEVICE_TOKEN,
                        home_id="h1")
     client = RelayClient(app, lambda: cfg)
     serve_task = asyncio.create_task(client._serve_once(cfg))
@@ -1141,7 +1276,7 @@ def test_tunneled_ws_oversize_event_does_not_kill_stream(tmp_path, monkeypatch):
         channel = FakeChannel()
         client = _make_relay_client(app, channel)
         channel.push_frame(FrameType.WS_OPEN, 4,
-                           {"path": "/ws", "query": "", "ws_id": 4})
+                           {"path": "/ws", "query": "", "ws_id": "ws4"})
         task = asyncio.create_task(client._serve_once(client._config()))
         # wait for the hello so we know the ws has subscribed to the bus
         await _wait_for_frame(channel, lambda f: f.type == FrameType.WS_DATA)
@@ -1186,7 +1321,7 @@ def test_tunneled_ws_forwards_connected_rig_status(tmp_path, monkeypatch):
             channel = FakeChannel()
             client = _make_relay_client(app, channel)
             channel.push_frame(FrameType.WS_OPEN, 7,
-                               {"path": "/ws", "query": "", "ws_id": 7})
+                               {"path": "/ws", "query": "", "ws_id": "ws7"})
             task = asyncio.create_task(client._serve_once(client._config()))
             await _wait_for_frame(channel, lambda f: f.type == FrameType.WS_DATA)
             from astrodeck.events import bus
@@ -1354,13 +1489,15 @@ def test_a_session_that_held_for_hours_redials_at_once_when_it_drops():
         async def __aexit__(self, *a): return False
         def __aiter__(self):
             async def _gen():
+                yield encode_frame(
+                    FrameType.HELLO_ACK, CONTROL_STREAM_ID, {"ok": True})
                 await asyncio.sleep(self.hold)
                 raise ConnectionError("sent 1011 (internal error) keepalive ping timeout")
                 yield b""  # pragma: no cover - makes this a generator
             return _gen()
 
     cfg = RemoteConfig(enabled=True, relay_url="wss://relay.test/scope",
-                       device_token="tok")
+                       device_token=TEST_DEVICE_TOKEN, home_id="home-1")
     dials = {"n": 0}
     seen: list[int] = []
 
@@ -1401,6 +1538,157 @@ def test_a_session_that_held_for_hours_redials_at_once_when_it_drops():
     )
 
 
+def test_client_requires_successful_hello_ack_before_accepting_work():
+    async def _scenario():
+        channel = FakeChannel(auto_ack=False)
+        channel.push_frame(FrameType.REQ_OPEN, 9, {
+            "method": "GET", "path": "/api/status", "query": "",
+            "has_body": False,
+        })
+        client = _make_relay_client(_noop_app, channel)
+        with pytest.raises(ProtocolError, match="HELLO rejected"):
+            await client._serve_once(client._config())
+        assert not any(
+            f.type in (FrameType.RESP_HEAD, FrameType.RESP_DATA)
+            for f in channel.sent_frames())
+
+    asyncio.run(_scenario())
+
+
+def test_public_relay_url_must_use_tls():
+    with pytest.raises(ValueError, match="wss"):
+        _validate_relay_config(RemoteConfig(
+            enabled=True, relay_url="ws://relay.example/scope",
+            device_token=TEST_DEVICE_TOKEN, home_id="home-1"))
+    # Explicit loopback development remains possible.
+    _validate_relay_config(RemoteConfig(
+        enabled=True, relay_url="ws://127.0.0.1:8765/scope",
+        device_token=TEST_DEVICE_TOKEN, home_id="home-1"))
+
+
+def test_remote_relay_rejects_a_short_human_device_password():
+    with pytest.raises(ValueError, match="32-256"):
+        _validate_relay_config(RemoteConfig(
+            enabled=True, relay_url="wss://relay.example/scope",
+            device_token="short-password", home_id="home-1"))
+
+
+@pytest.mark.parametrize("home_id", ["", "../other", "has space", "a" * 65])
+def test_remote_relay_rejects_invalid_home_ids(home_id):
+    with pytest.raises(ValueError, match="home_id"):
+        _validate_relay_config(RemoteConfig(
+            enabled=True, relay_url="wss://relay.example/scope",
+            device_token=TEST_DEVICE_TOKEN, home_id=home_id))
+
+
+@pytest.mark.parametrize("url", [
+    "wss://relay.example/scope?token=secret",
+    "wss://user:password@relay.example/scope",
+    "wss://relay.example/scope#fragment",
+])
+def test_remote_relay_url_rejects_secret_bearing_components(url):
+    with pytest.raises(ValueError, match="invalid remote relay URL"):
+        _validate_relay_config(RemoteConfig(
+            enabled=True, relay_url=url,
+            device_token=TEST_DEVICE_TOKEN, home_id="home-1"))
+
+
+def test_hello_ack_requires_a_literal_boolean_true():
+    async def _scenario():
+        channel = FakeChannel(auto_ack=False)
+        channel.push_frame(
+            FrameType.HELLO_ACK, CONTROL_STREAM_ID, {"ok": "true"})
+        client = _make_relay_client(_noop_app, channel)
+        with pytest.raises(ProtocolError, match="HELLO rejected"):
+            await client._serve_once(client._config())
+
+    asyncio.run(_scenario())
+
+
+def test_malformed_tunneled_request_headers_fail_closed():
+    client = _make_relay_client(_noop_app, FakeChannel())
+    for headers in (
+        "not-a-list",
+        [["X-Test"]],
+        [["Bad Name", "value"]],
+        [["X-Test", "ok\x00bad"]],
+        [["X-Test", {"not": "text"}]],
+    ):
+        frame = Frame(
+            type=FrameType.REQ_OPEN,
+            stream_id=123,
+            header={"method": "GET", "path": "/", "headers": headers},
+        )
+        with pytest.raises(ProtocolError):
+            client._build_http_scope(frame)
+
+
+def test_unreadable_live_config_closes_the_remote_tunnel(monkeypatch):
+    import astrodeck.remote.relay_client as rc
+
+    cfg = RemoteConfig(
+        enabled=True, relay_url="wss://relay.example/scope",
+        device_token=TEST_DEVICE_TOKEN, home_id="home-1")
+    original_sleep = asyncio.sleep
+
+    async def yield_once(_delay):
+        await original_sleep(0)
+
+    class _Closable:
+        def __init__(self):
+            self.closed = False
+
+        async def close(self):
+            self.closed = True
+
+    def broken_config():
+        raise RuntimeError("config unreadable")
+
+    async def _scenario():
+        channel = _Closable()
+        client = RelayClient(_noop_app, broken_config)
+        monkeypatch.setattr(rc.asyncio, "sleep", yield_once)
+        await client._watch_connection_config(channel, cfg)
+        assert channel.closed is True
+
+    asyncio.run(_scenario())
+
+
+def test_req_abort_cancels_and_reaps_the_in_process_handler():
+    async def _scenario():
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        async def _blocking_app(scope, receive, send):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        channel = FakeChannel()
+        client = _make_relay_client(_blocking_app, channel)
+        channel.push_frame(FrameType.REQ_OPEN, 17, {
+            "method": "POST", "path": "/api/slow", "query": "",
+            "has_body": False,
+        })
+        serve = asyncio.create_task(client._serve_once(client._config()))
+        await asyncio.wait_for(started.wait(), timeout=1.0)
+        channel.push_frame(FrameType.REQ_ABORT, 17, {"reason": "browser gone"})
+        await asyncio.wait_for(cancelled.wait(), timeout=1.0)
+        for _ in range(100):
+            if 17 not in client._req_tasks:
+                break
+            await asyncio.sleep(0)
+        assert 17 not in client._req_tasks
+        assert 17 not in client._reqs
+        channel.finish()
+        await asyncio.wait_for(serve, timeout=1.0)
+
+    asyncio.run(_scenario())
+
+
 def test_a_relay_that_wedges_right_after_accepting_still_earns_the_backoff():
     """The reset must be earned by DURATION, not by connecting at all. A relay
     that accepts and then dies immediately is exactly the failure the backoff
@@ -1413,12 +1701,14 @@ def test_a_relay_that_wedges_right_after_accepting_still_earns_the_backoff():
         async def close(self): pass
         def __aiter__(self):
             async def _gen():
+                yield encode_frame(
+                    FrameType.HELLO_ACK, CONTROL_STREAM_ID, {"ok": True})
                 raise ConnectionError("wedged")
                 yield b""  # pragma: no cover
             return _gen()
 
     cfg = RemoteConfig(enabled=True, relay_url="wss://relay.test/scope",
-                       device_token="tok")
+                       device_token=TEST_DEVICE_TOKEN, home_id="home-1")
     seen: list[int] = []
 
     async def _scenario():

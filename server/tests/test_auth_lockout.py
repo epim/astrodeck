@@ -62,7 +62,7 @@ def test_local_is_usable_whenever_it_is_enabled():
 def test_a_break_glass_token_counts_wherever_it_is_set():
     """It bypasses the provider entirely, which is the entire point of it."""
     assert usable_login_methods(
-        _cfg(google_client_secret="", admin_token="t")) == ["admin_token"]
+        _cfg(google_client_secret="", admin_token="t" * 32)) == ["admin_token"]
 
 
 # ------------------------------------------------------------- the backstop

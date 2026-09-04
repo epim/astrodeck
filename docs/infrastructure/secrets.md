@@ -61,16 +61,18 @@ Consequences:
   update the home's `RemoteConfig.device_token` → the home reconnects. A higher
   `generation` on reconnect fences the old scope connection.
 
-### Relay **Ed25519 seeds** — OIDC + viewer-link signing
+### Relay **Ed25519 seeds** — reserved OIDC + viewer-link signing
 - **What:** two separate 32-byte Ed25519 seeds the relay uses to sign (a) OIDC
-  session material and (b) revocable viewer links. The home holds only the
-  matching **public** keys (`relay_pubkey` / `viewer_link_pubkey`).
+  session material and (b) revocable viewer links if those optional components
+  are enabled. The currently exposed relay routes do not use either signer. The
+  home holds only the matching **public** keys (`relay_pubkey` /
+  `viewer_link_pubkey`).
 - **Source of truth:** your password manager.
 - **Copies:** on the relay as *mounted files* (`RELAY_OIDC_SEED_FILE`,
   `RELAY_VIEWER_SEED_FILE`); the public keys are configured on the home.
 - **Rotate:** mount new seeds on the relay, load the new public keys on the home.
-  Without these the relay falls back to a loud dev-HMAC signer — **never run
-  production that way.**
+  Without a seed the corresponding signer is disabled and fails closed. Runtime
+  startup never falls back to the unit-test-only development HMAC signer.
 
 ### Optional / app-level secrets
 - **`ASTRODECK_TOKEN`** — optional break-glass shared bearer token (off by
@@ -90,4 +92,4 @@ Consequences:
 | `FLY_API_TOKEN` | `fly tokens create deploy` | `gh secret set FLY_API_TOKEN` |
 | `RELEASE_SIGNING_KEY` | `scripts/gen_signing_key.py` | `gh secret set RELEASE_SIGNING_KEY` **+ re-pin public key on every scope** |
 | relay device token | `secrets.token_urlsafe(32)` | relay token map file **+** home `RemoteConfig.device_token` |
-| relay OIDC/viewer seed | new 32-byte seed | relay mounted files **+** home public keys |
+| relay OIDC/viewer seed (if enabled) | new 32-byte seed | relay mounted files **+** home public keys |

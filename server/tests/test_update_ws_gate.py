@@ -23,6 +23,7 @@ from astrodeck.update import github, service as SVC
 from astrodeck.update.state import update_state
 
 GATE_KEYS = ("supervised", "can_apply", "apply_blocked_reason")
+AUTH_HEADERS = {"x-auth-token": "update-ws-gate-test-token-0123456789"}
 
 
 @pytest.fixture(autouse=True)
@@ -39,6 +40,7 @@ def _clean_state():
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
+    monkeypatch.setenv("ASTRODECK_TOKEN", AUTH_HEADERS["x-auth-token"])
     temp_store = ConfigStore(path=tmp_path / "astrodeck.json")
     import astrodeck.config as config_mod
     import astrodeck.hub as hub_mod
@@ -51,7 +53,7 @@ def client(tmp_path, monkeypatch):
 
 
 def test_the_snapshot_carries_the_same_gate_the_route_computes(client):
-    route = client.get("/api/update/status").json()
+    route = client.get("/api/update/status", headers=AUTH_HEADERS).json()
     # PRECONDITION: if the ROUTE stopped answering the gate there is no
     # difference left to detect and the comparison below proves nothing.
     for k in GATE_KEYS:
@@ -69,7 +71,7 @@ def test_the_snapshot_carries_the_same_gate_the_route_computes(client):
 
 def test_a_published_update_frame_does_not_erase_the_gate(client, monkeypatch):
     """The real vector: a phase/poller frame, not a REST read."""
-    route = client.get("/api/update/status").json()
+    route = client.get("/api/update/status", headers=AUTH_HEADERS).json()
     assert route["can_apply"] is False and route["apply_blocked_reason"], (
         "this fixture is supposed to be BLOCKED (unsupervised, no pinned key) -- "
         "with nothing to lose, a clobber would be invisible")
@@ -83,7 +85,7 @@ def test_a_published_update_frame_does_not_erase_the_gate(client, monkeypatch):
                                   "http://s", "http://g", False)
     monkeypatch.setattr("astrodeck.update.github.latest_release", fake_latest)
 
-    assert client.post("/api/update/check").status_code == 200
+    assert client.post("/api/update/check", headers=AUTH_HEADERS).status_code == 200
     frames = [d for t, d in published if t == "update"]
     assert frames, "the check published no update frame -- nothing under test"
 

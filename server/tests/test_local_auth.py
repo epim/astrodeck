@@ -11,6 +11,7 @@ The HTTP login/setup/user-management routes are a separate owner.
 from __future__ import annotations
 
 import json
+import os
 import time
 
 import pytest
@@ -36,17 +37,24 @@ from astrodeck.config import AuthConfig
 def _open_default():
     """Start/end each test on the open-default provider so a leftover provider
     never leaks into the next test."""
+    import astrodeck.config as config_mod
+    # ``_install`` below writes the test's AuthConfig into the worker-shared
+    # store (the provider re-reads it on every request). Restore it, or
+    # every later test on this worker that builds an app on the shared
+    # store installs a real provider and answers 401.
+    saved_auth = config_mod.config_store.cfg().auth
     reset_active_provider()
     yield
+    config_mod.config_store.cfg().auth = saved_auth
     reset_active_provider()
 
 
 # ============================================================ bcrypt helpers
 
 def test_hash_password_roundtrips():
-    h = hash_password("hunter2")
+    h = hash_password("hunter2-long")
     assert h.startswith("$2b$") and f"${BCRYPT_ROUNDS:02d}$" in h[:7]
-    assert verify_password("hunter2", h) is True
+    assert verify_password("hunter2-long", h) is True
 
 
 def test_verify_rejects_wrong_password():
@@ -56,14 +64,14 @@ def test_verify_rejects_wrong_password():
 
 
 def test_verify_rejects_tampered_hash():
-    h = hash_password("s3cret")
+    h = hash_password("s3cret-longer")
     # Flip a byte deep in the digest -> bcrypt can't match -> False (no raise).
     tampered = h[:-1] + ("A" if h[-1] != "A" else "B")
-    assert verify_password("s3cret", tampered) is False
+    assert verify_password("s3cret-longer", tampered) is False
     # Structurally broken hashes are denied, not exceptions.
-    assert verify_password("s3cret", "not-a-bcrypt-hash") is False
-    assert verify_password("s3cret", "") is False
-    assert verify_password("s3cret", None) is False
+    assert verify_password("s3cret-longer", "not-a-bcrypt-hash") is False
+    assert verify_password("s3cret-longer", "") is False
+    assert verify_password("s3cret-longer", None) is False
 
 
 def test_hash_rejects_overlong_password():
@@ -82,9 +90,9 @@ def test_hash_rejects_overlong_password():
 
 def test_distinct_hashes_for_same_password():
     # gensalt() means two hashes of the same password differ but both verify.
-    a, b = hash_password("same"), hash_password("same")
+    a, b = hash_password("same-password"), hash_password("same-password")
     assert a != b
-    assert verify_password("same", a) and verify_password("same", b)
+    assert verify_password("same-password", a) and verify_password("same-password", b)
 
 
 # ============================================================ UserStore CRUD
@@ -101,7 +109,7 @@ def test_store_starts_empty(tmp_path):
 
 def test_create_and_query(tmp_path):
     s = _store(tmp_path)
-    u = s.create(username="Alice", password="pw-alice", role="admin",
+    u = s.create(username="Alice", password="alice-password", role="admin",
                  email="a@x")
     assert s.is_empty() is False
     # username stored case-folded; lookup is case-insensitive
@@ -113,45 +121,45 @@ def test_create_and_query(tmp_path):
 
 def test_duplicate_username_rejected(tmp_path):
     s = _store(tmp_path)
-    s.create(username="bob", password="pw", role="operator")
+    s.create(username="bob", password="correct-horse", role="operator")
     with pytest.raises(ValueError):
-        s.create(username="BOB", password="pw2", role="viewer")  # case-folded dup
+        s.create(username="BOB", password="correct-horse-2", role="viewer")  # case-folded dup
 
 
 def test_unknown_role_rejected(tmp_path):
     s = _store(tmp_path)
     with pytest.raises(ValueError):
-        s.create(username="x", password="pw", role="superuser")
+        s.create(username="x", password="correct-horse", role="superuser")
 
 
 def test_blank_username_rejected(tmp_path):
     s = _store(tmp_path)
     with pytest.raises(ValueError):
-        s.create(username="   ", password="pw", role="viewer")
+        s.create(username="   ", password="correct-horse", role="viewer")
 
 
 def test_set_password_and_role_and_enabled(tmp_path):
     s = _store(tmp_path)
-    admin = s.create(username="root", password="pw", role="admin")
-    u = s.create(username="joe", password="old", role="viewer")
-    assert s.verify("joe", "old") is not None
-    s.set_password(u.id, "new")
-    assert s.verify("joe", "old") is None
-    assert s.verify("joe", "new") is not None
+    admin = s.create(username="root", password="correct-horse", role="admin")
+    u = s.create(username="joe", password="old-password", role="viewer")
+    assert s.verify("joe", "old-password") is not None
+    s.set_password(u.id, "new-password")
+    assert s.verify("joe", "old-password") is None
+    assert s.verify("joe", "new-password") is not None
     s.set_role(u.id, "operator")
     assert s.get(u.id).role == "operator"
     s.set_enabled(u.id, False)
     assert s.get(u.id).enabled is False
     # a disabled user fails verify even with the right password
-    assert s.verify("joe", "new") is None
+    assert s.verify("joe", "new-password") is None
     # admin still around so the above demotions/disables are allowed
     assert admin.role == "admin"
 
 
 def test_rename(tmp_path):
     s = _store(tmp_path)
-    s.create(username="root", password="pw", role="admin")
-    u = s.create(username="old", password="pw", role="viewer")
+    s.create(username="root", password="correct-horse", role="admin")
+    u = s.create(username="old", password="correct-horse", role="viewer")
     s.rename(u.id, "NewName")
     assert s.get(u.id).username == "newname"
     assert s.get_by_username("newname").id == u.id
@@ -162,8 +170,8 @@ def test_rename(tmp_path):
 
 def test_delete(tmp_path):
     s = _store(tmp_path)
-    s.create(username="root", password="pw", role="admin")
-    u = s.create(username="temp", password="pw", role="viewer")
+    s.create(username="root", password="correct-horse", role="admin")
+    u = s.create(username="temp", password="correct-horse", role="viewer")
     s.delete(u.id)
     assert s.get(u.id) is None
     assert s.get_by_username("temp") is None
@@ -173,7 +181,7 @@ def test_delete(tmp_path):
 
 def test_cannot_delete_disable_or_demote_last_admin(tmp_path):
     s = _store(tmp_path)
-    a = s.create(username="only-admin", password="pw", role="admin")
+    a = s.create(username="only-admin", password="correct-horse", role="admin")
     with pytest.raises(ValueError, match="last admin"):
         s.delete(a.id)
     with pytest.raises(ValueError, match="last admin"):
@@ -181,15 +189,15 @@ def test_cannot_delete_disable_or_demote_last_admin(tmp_path):
     with pytest.raises(ValueError, match="last admin"):
         s.set_role(a.id, "operator")
     # with a SECOND enabled admin, demoting the first is allowed
-    s.create(username="admin2", password="pw", role="admin")
+    s.create(username="admin2", password="correct-horse", role="admin")
     s.set_role(a.id, "viewer")
     assert s.get(a.id).role == "viewer"
 
 
 def test_disabled_admin_does_not_count_as_last_admin_guard(tmp_path):
     s = _store(tmp_path)
-    a1 = s.create(username="a1", password="pw", role="admin")
-    a2 = s.create(username="a2", password="pw", role="admin")
+    a1 = s.create(username="a1", password="correct-horse", role="admin")
+    a2 = s.create(username="a2", password="correct-horse", role="admin")
     s.set_enabled(a2.id, False)            # a2 disabled -> a1 is the only ENABLED admin
     with pytest.raises(ValueError, match="last admin"):
         s.delete(a1.id)                    # deleting the only enabled admin denied
@@ -200,11 +208,11 @@ def test_disabled_admin_does_not_count_as_last_admin_guard(tmp_path):
 def test_persists_atomically_and_reloads(tmp_path):
     path = tmp_path / "users.json"
     s = UserStore(path=path)
-    u = s.create(username="alice", password="pw", role="admin")
+    u = s.create(username="alice", password="correct-horse", role="admin")
     # a fresh store over the SAME file reads the user back
     s2 = UserStore(path=path)
     assert s2.get_by_username("alice").id == u.id
-    assert s2.verify("alice", "pw") is not None
+    assert s2.verify("alice", "correct-horse") is not None
     # the on-disk file is valid JSON with a users array
     on_disk = json.loads(path.read_text(encoding="utf-8"))
     assert isinstance(on_disk["users"], list) and len(on_disk["users"]) == 1
@@ -212,7 +220,7 @@ def test_persists_atomically_and_reloads(tmp_path):
 
 def test_password_hash_absent_from_public_shape(tmp_path):
     s = _store(tmp_path)
-    u = s.create(username="alice", password="pw", role="admin")
+    u = s.create(username="alice", password="correct-horse", role="admin")
     pub = u.to_public()
     # structurally ABSENT (not blanked) from the public view
     assert "password_hash" not in pub
@@ -231,10 +239,10 @@ def test_password_hash_absent_from_public_shape(tmp_path):
 
 def test_verify_is_the_only_path_reading_hash(tmp_path):
     s = _store(tmp_path)
-    s.create(username="alice", password="pw", role="admin")
-    assert s.verify("alice", "pw") is not None
+    s.create(username="alice", password="correct-horse", role="admin")
+    assert s.verify("alice", "correct-horse") is not None
     assert s.verify("alice", "nope") is None
-    assert s.verify("ghost", "pw") is None      # unknown user -> None (no reason)
+    assert s.verify("ghost", "correct-horse") is None  # unknown -> None
 
 
 # ============================================================ multi-method resolve
@@ -255,6 +263,10 @@ def _guarded_client(dep, *, cookie: str | None = None) -> TestClient:
 
 
 def _install(auth_cfg):
+    # SessionCookieProvider re-reads authorization state on every request, so
+    # its unit harness must install the same config into the live store.
+    import astrodeck.config as config_mod
+    config_mod.config_store.cfg().auth = auth_cfg
     p = build_provider(auth_cfg)
     set_active_provider(p)
     return p
@@ -270,20 +282,27 @@ def test_empty_methods_resolve_admin():
 
 def test_break_glass_token_always_admin():
     # local method enabled AND a break-glass admin_token: the token wins -> admin.
-    _install(AuthConfig(methods=["local"], admin_token="glass"))
+    token = "g" * 32
+    _install(AuthConfig(methods=["local"], admin_token=token))
     c = _guarded_client(require(CAP_CONTROL_MOUNT))
     # no creds -> 401 (a method is enabled, no open default)
     assert c.get("/g").status_code == 401
     # token via any carrier -> admin
-    assert c.get("/g", headers={"X-Auth-Token": "glass"}).json()["role"] == "admin"
-    assert c.get("/g", headers={"Authorization": "Bearer glass"}).status_code == 200
-    assert c.get("/g?token=glass").status_code == 200
+    assert c.get("/g", headers={"X-Auth-Token": token}).json()["role"] == "admin"
+    assert c.get("/g", headers={"Authorization": f"Bearer {token}"}).status_code == 200
+    assert c.get(f"/g?token={token}").status_code == 200
 
 
-def test_local_session_resolves_to_its_role():
+def test_local_session_resolves_to_its_role(tmp_path, monkeypatch):
     # A local login mints the SAME ad_session cookie; the provider resolves it.
+    import astrodeck.auth.users as users_mod
+    users = _store(tmp_path)
+    user = users.create(username="op", password="correct-horse",
+                        role="operator", email="op@rig")
+    monkeypatch.setattr(users_mod, "user_store", users)
     _install(AuthConfig(methods=["local"]))
-    tok = sign_session("operator", email="op@rig", jti="j1")
+    tok = sign_session("operator", email="op@rig", jti="j1", authn="local",
+                       subject=user.id, account_epoch=user.session_epoch)
     r = _guarded_client(require(CAP_VIEW_STATUS), cookie=tok).get("/g")
     assert r.status_code == 200
     body = r.json()
@@ -296,8 +315,9 @@ def test_local_session_resolves_to_its_role():
 
 def test_google_session_still_resolves_under_multi():
     # A google-minted cookie (same sign_session) resolves identically.
-    _install(AuthConfig(methods=["google", "local"]))
-    tok = sign_session("admin", email="g@x", jti="jg")
+    _install(AuthConfig(methods=["google", "local"],
+                        role_allowlist={"g@x": "admin"}))
+    tok = sign_session("admin", email="g@x", jti="jg", authn="google")
     r = _guarded_client(require(CAP_CONTROL_MOUNT), cookie=tok).get("/g")
     assert r.status_code == 200
     assert r.json()["role"] == "admin"
@@ -310,8 +330,9 @@ def test_no_cookie_with_method_enabled_is_401():
 
 def test_revoked_session_denied(tmp_path):
     # A jti in the revoke registry is rejected on its next request.
-    _install(AuthConfig(methods=["local"], revoked_jti=["dead"]))
-    tok = sign_session("admin", email="a@x", jti="dead")
+    _install(AuthConfig(methods=["google"], revoked_jti=["dead"],
+                        role_allowlist={"a@x": "admin"}))
+    tok = sign_session("admin", email="a@x", jti="dead", authn="google")
     assert _guarded_client(require(CAP_VIEW_STATUS), cookie=tok).get(
         "/g").status_code == 401
 
@@ -329,10 +350,10 @@ def test_disabled_user_denied_end_to_end(tmp_path):
     # cookie is ever minted for them. (Login route is a separate owner; here we
     # assert the store gate that the route depends on.)
     s = _store(tmp_path)
-    s.create(username="root", password="pw", role="admin")
-    u = s.create(username="banned", password="pw", role="operator")
+    s.create(username="root", password="correct-horse", role="admin")
+    u = s.create(username="banned", password="correct-horse", role="operator")
     s.set_enabled(u.id, False)
-    assert s.verify("banned", "pw") is None
+    assert s.verify("banned", "correct-horse") is None
 
 
 # =================================================== SECURITY REGRESSIONS (W2.6)
@@ -345,7 +366,7 @@ def test_default_secret_session_refused_when_interlock_armed(monkeypatch):
     refuse to accept -- otherwise anyone knowing the public key mints an admin."""
     monkeypatch.delenv(session_mod.SECRET_ENV_VAR, raising=False)
     # No persisted secret either => the effective secret is the dev default.
-    monkeypatch.setattr(session_mod, "_persisted_secret", lambda: "")
+    monkeypatch.setattr(session_mod, "_persisted_secret", lambda: None)
     assert secret_is_default() is True
 
     # Pre-mint a token on the dev default BEFORE arming, then arm the interlock.
@@ -378,6 +399,18 @@ def test_ensure_real_secret_generates_and_persists(tmp_path, monkeypatch):
     first = (tmp_path / session_mod.SECRET_FILE_NAME).read_text()
     assert session_mod.ensure_real_secret() is True
     assert (tmp_path / session_mod.SECRET_FILE_NAME).read_text() == first
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX mode bits only")
+def test_generated_session_secret_is_owner_only(tmp_path, monkeypatch):
+    import stat
+
+    monkeypatch.delenv(session_mod.SECRET_ENV_VAR, raising=False)
+    monkeypatch.setattr(session_mod, "_secret_dir", lambda: tmp_path)
+    assert session_mod.ensure_real_secret() is True
+    mode = stat.S_IMODE(
+        (tmp_path / session_mod.SECRET_FILE_NAME).stat().st_mode)
+    assert mode == 0o600
 
 
 def test_configure_provider_arms_interlock_only_with_method(monkeypatch, tmp_path):
@@ -434,7 +467,7 @@ def test_verify_unknown_user_burns_a_real_compare(tmp_path, monkeypatch):
 
     monkeypatch.setattr("astrodeck.auth.users.dummy_verify", _spy)
     s = _store(tmp_path)
-    s.create(username="real", password="pw", role="admin")
+    s.create(username="real", password="correct-horse", role="admin")
     assert s.verify("ghost", "anything") is None
     assert calls["n"] == 1  # the unknown-user branch burned a real compare
 
@@ -449,6 +482,36 @@ def test_hash_rejects_blank_password():
             hash_password(bad)
     # It's a ValueError subclass so a route ``except ValueError`` still catches it.
     assert isinstance(PasswordTooShortError(), ValueError)
+
+
+def test_hash_rejects_human_password_below_policy_minimum():
+    with pytest.raises(PasswordTooShortError, match="at least 12"):
+        hash_password("short-pass")
+
+
+def test_weak_configured_session_secrets_fail_closed(tmp_path, monkeypatch):
+    monkeypatch.setenv(session_mod.SECRET_ENV_VAR, "guessable")
+    with pytest.raises(InsecureSessionSecretError, match="at least 32 bytes"):
+        session_mod.session_secret()
+
+    monkeypatch.delenv(session_mod.SECRET_ENV_VAR, raising=False)
+    monkeypatch.setattr(session_mod, "_secret_dir", lambda: tmp_path)
+    (tmp_path / session_mod.SECRET_FILE_NAME).write_text(
+        "still-guessable", encoding="utf-8")
+    with pytest.raises(InsecureSessionSecretError, match="at least 32 bytes"):
+        session_mod.secret_is_default()
+
+
+def test_corrupt_user_store_is_not_treated_as_empty(tmp_path):
+    path = tmp_path / "users.json"
+    original = b'{"users": ['
+    path.write_bytes(original)
+    store = UserStore(path=path)
+
+    with pytest.raises(RuntimeError, match="no valid backup"):
+        store.is_empty()
+
+    assert path.read_bytes() == original
 
 
 def test_store_create_with_no_password_makes_a_google_only_account(tmp_path):

@@ -111,6 +111,39 @@ async def test_stream_ids_are_unique_per_request(fake_tunnel):
     assert sid1 != 0 and sid2 != 0
 
 
+async def test_failed_req_open_send_rolls_back_routing_state():
+    tunnel = FakeScopeTunnel()
+    tunnel.closed = True
+    mux = _mux(tunnel)
+
+    async def _head(_status, _headers):
+        pass
+
+    async def _data(_chunk, _eof):
+        pass
+
+    with pytest.raises(Exception):
+        await mux.open_request(
+            "GET", "/api/status", "", [], has_body=False,
+            on_head=_head, on_data=_data)
+    assert mux._exchanges == {}
+    assert mux.reg.req_routes == {}
+
+
+async def test_failed_ws_open_send_rolls_back_viewer_and_pump():
+    from conftest import FakeBrowserWS
+
+    tunnel = FakeScopeTunnel()
+    tunnel.closed = True
+    mux = _mux(tunnel)
+    browser = FakeBrowserWS()
+
+    with pytest.raises(Exception):
+        await mux.open_ws(browser, "/ws", "", [])
+    assert mux._viewers == {}
+    assert mux.reg.ws_routes == {}
+
+
 async def test_large_body_chunked_under_max_payload(fake_tunnel):
     """A body larger than MAX_PAYLOAD streams up in bounded chunks (the
     server shell slices; here we verify the proxy forwards a pre-sliced

@@ -51,6 +51,51 @@ jobs:
       # enough to consistently trip wall-clock perf gates (test_render_perf_768).
       - run: pytest -q -n auto
 
+  # The setter and the independent verifier both call Win32 directly, so a
+  # Linux-only unit lane cannot establish that protected DACLs really persist.
+  # Run the contract on NTFS for every change; only the symlink assertion may
+  # skip when the hosted identity lacks Create symbolic links privilege.
+  windows-private-state:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: 'server/pyproject.toml'
+      - run: pip install -e "./server[dev]"
+      - name: Portable ACL orchestration regressions
+        run: >-
+          python -m pytest -q -p no:cacheprovider
+          server/tests/test_windows_private_acl.py
+          server/tests/test_persist.py
+      - name: Live NTFS protected-DACL gate
+        run: >-
+          python -m pytest -q -p no:cacheprovider
+          security_acceptance/test_windows_acl_contract.py
+          --run-security-acceptance --run-security-live
+
+  # Host-safe regressions for the Orange Pi appliance portal and recovery
+  # policy. Hardware validation still runs on a real board before release, but
+  # these checks prevent credential, HTTP-boundary and systemd-policy drift on
+  # every ordinary CI run.
+  orangepi-security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install 'pytest>=8.0'
+      - name: Orange Pi unit and portable acceptance gates
+        run: >-
+          python -m pytest -q -p no:cacheprovider
+          orangepi5/tests security_acceptance/test_orangepi_contract.py
+          --run-security-acceptance -m "not security_live"
+
   # The one job with no paths-ignore exemption in spirit: a docs-only commit is
   # exactly how the site values got in (26 spec files, pasted by the boilerplate
   # that forbids them). Cheap enough to always run.
@@ -82,6 +127,45 @@ jobs:
       # Starlette's TestClient needs httpx, which requirements.txt omits)
       - run: pip install -e ".[dev]"
       - run: pytest -q
+
+  # Container isolation has architecture-specific release requirements: the
+  # image must be exercised by a native Linux kernel on both the ordinary
+  # amd64 host and the arm64 target used by Raspberry/Orange Pi deployments.
+  # The live contract builds both runtime images, checks their numeric IDs,
+  # then runs them with a read-only root, no capabilities and
+  # no-new-privileges.  It also proves only the declared data volumes and
+  # bounded tmpfs remain writable and that named-volume state survives a
+  # replacement container.
+  container-security:
+    name: container-security (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install contract-test dependencies
+        run: pip install 'pytest>=8.0' 'PyYAML>=6.0'
+      - name: Validate local and USB Compose profiles
+        env:
+          ASTRODECK_USB_GID: '1000'
+        run: |
+          docker compose -f docker-compose.yml config --quiet
+          docker compose -f docker-compose.yml -f docker-compose.usb.yml config --quiet
+      - name: Run native container isolation gate
+        run: >-
+          python -m pytest -q -p no:cacheprovider
+          security_acceptance/test_container_contract.py
+          --run-security-acceptance --run-security-live
 
   ui:
     runs-on: ubuntu-latest

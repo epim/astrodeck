@@ -10,8 +10,8 @@ name = "astrodeck_native"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.22", features = ["abi3-py311"] }
-numpy = "0.22"
+pyo3 = { version = "0.29", features = ["abi3-py311"] }
+numpy = "0.29"
 astro-star = { path = "../astro-star" }
 astro-focus = { path = "../astro-focus" }
 astro-guide = { path = "../astro-guide" }

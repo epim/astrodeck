@@ -28,12 +28,12 @@ import bcrypt
 # inputs outright at hash time (and treat them as a non-match at verify time).
 MAX_PASSWORD_BYTES = 72
 
-# Minimum acceptable password length (characters after stripping surrounding
-# whitespace). The load-bearing rule is "no blank / whitespace-only password"
-# (an empty-password ADMIN created over the open first-run/LAN surface is a real
-# bypass); the minimum is kept small to mirror the CLI's "password required"
-# guard without dictating a heavy policy here.
-MIN_PASSWORD_LEN = 1
+# Local auth has no second factor, so short human credentials are not adequate
+# for the supported TLS/reverse-proxy deployment.  Existing hashes remain
+# verifiable, but managed startup requires their record to carry the current
+# policy marker (set on the next password reset).
+MIN_PASSWORD_LEN = 12
+CURRENT_PASSWORD_POLICY = 1
 
 # Work factor (log2 rounds). 12 is the pinned cost.
 BCRYPT_ROUNDS = 12
@@ -77,8 +77,8 @@ def hash_password(password: str) -> str:
         raise TypeError("password must be a str")
     if _too_short(password):
         raise PasswordTooShortError(
-            "password must not be blank "
-            f"(minimum {MIN_PASSWORD_LEN} non-whitespace character(s))")
+            f"password must contain at least {MIN_PASSWORD_LEN} "
+            "non-whitespace characters")
     if _too_long(password):
         raise PasswordTooLongError(
             f"password exceeds {MAX_PASSWORD_BYTES} bytes "
@@ -135,5 +135,6 @@ __all__ = [
     "PasswordTooShortError",
     "MAX_PASSWORD_BYTES",
     "MIN_PASSWORD_LEN",
+    "CURRENT_PASSWORD_POLICY",
     "BCRYPT_ROUNDS",
 ]

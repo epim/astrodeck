@@ -34,8 +34,15 @@ SESSION_COOKIE = "ad_session"
 
 @pytest.fixture(autouse=True)
 def _clean_provider():
+    import astrodeck.config as config_mod
+    # ``_install`` below writes the test's AuthConfig into the worker-shared
+    # store (the provider re-reads it on every request). Restore it, or every
+    # later test on this worker that builds an app on the shared store
+    # installs a real provider and answers 401.
+    saved_auth = config_mod.config_store.cfg().auth
     reset_active_provider()
     yield
+    config_mod.config_store.cfg().auth = saved_auth
     reset_active_provider()
 
 
@@ -90,7 +97,7 @@ def test_stale_epoch_cookie_rejected_after_auth_reenable(tmp_path, monkeypatch):
     with TestClient(app) as c:
         # earlier epoch: first-run setup mints an admin session cookie
         r = c.post("/auth/setup/local",
-                   json={"username": "root", "password": "hunter2long"})
+                   json={"username": "root", "password": "hunter2-long"})
         assert r.status_code == 200, r.text
         old_cookie = c.cookies.get(SESSION_COOKIE)
         assert old_cookie
@@ -116,7 +123,7 @@ def test_stale_epoch_cookie_rejected_after_auth_reenable(tmp_path, monkeypatch):
 
         # a fresh login works and mints a NEW-epoch session that resolves
         r = c.post("/auth/local",
-                   json={"username": "root", "password": "hunter2long"})
+                   json={"username": "root", "password": "hunter2-long"})
         assert r.status_code == 200, r.text
         assert c.get("/api/me").json()["role"] == "admin"
 
@@ -167,16 +174,22 @@ def _guarded_client(dep, *, cookie: str | None = None) -> TestClient:
 
 
 def _install(auth_cfg):
+    import astrodeck.config as config_mod
+    config_mod.config_store.cfg().auth = auth_cfg
     p = build_provider(auth_cfg)
     set_active_provider(p)
     return p
 
 
 def test_provider_rejects_below_epoch_accepts_at_or_above():
-    _install(AuthConfig(methods=["local"], session_epoch=2))
-    below = sign_session("admin", jti="j0", epoch=1)
-    at = sign_session("admin", jti="j1", epoch=2)
-    above = sign_session("admin", jti="j2", epoch=3)
+    _install(AuthConfig(methods=["google"], session_epoch=2,
+                        role_allowlist={"admin@example.com": "admin"}))
+    below = sign_session("admin", email="admin@example.com", jti="j0",
+                         epoch=1, authn="google")
+    at = sign_session("admin", email="admin@example.com", jti="j1",
+                      epoch=2, authn="google")
+    above = sign_session("admin", email="admin@example.com", jti="j2",
+                         epoch=3, authn="google")
     dep = require(CAP_VIEW_STATUS)
     assert _guarded_client(dep, cookie=below).get("/g").status_code == 401
     assert _guarded_client(dep, cookie=at).get("/g").status_code == 200
@@ -185,15 +198,16 @@ def test_provider_rejects_below_epoch_accepts_at_or_above():
 
 def test_provider_rejects_legacy_no_epoch_claim_once_bumped():
     # a pre-fix token (no epoch claim) reads as epoch 0 -> dead after any bump
-    _install(AuthConfig(methods=["local"], session_epoch=1))
+    _install(AuthConfig(methods=["google"], session_epoch=1))
     legacy = sign_session("admin", jti="jl", epoch=0)
     assert _guarded_client(require(CAP_VIEW_STATUS),
                            cookie=legacy).get("/g").status_code == 401
 
 
-def test_epoch_zero_floor_accepts_everything_byte_for_byte():
-    # session_epoch == 0 (every existing deployment): no behavior change
-    _install(AuthConfig(methods=["local"]))
-    tok = sign_session("operator", email="op@rig", jti="jz", epoch=0)
+def test_epoch_zero_accepts_current_identity_bound_session():
+    _install(AuthConfig(methods=["google"],
+                        role_allowlist={"op@rig": "operator"}))
+    tok = sign_session("operator", email="op@rig", jti="jz", epoch=0,
+                       authn="google")
     assert _guarded_client(require(CAP_VIEW_STATUS),
                            cookie=tok).get("/g").status_code == 200

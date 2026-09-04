@@ -8,15 +8,18 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import ipaddress
 import io
 import json
 import os
+import re
 import shutil
 import time
 import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 import httpx
@@ -37,9 +40,10 @@ from ..auth import (ALL_CAPS, CAP_ADMIN_USERS, CAP_CONFIG_ALERTS,
                     CAP_CONTROL_POWER, CAP_SYSTEM_UPDATE, CAP_VIEW_MEDIA,
                     CAP_VIEW_PREVIEW, CAP_VIEW_SITE_PRECISE, CAP_VIEW_STATUS,
                     CAP_VIEW_WEATHER,
-                    Principal, _scope_is_remote,
-                    configure_provider_from_auth, get_principal, require,
-                    resolve_principal)
+                    Principal, TokenAdminProvider, _scope_is_remote,
+                    configure_provider_from_auth, get_active_provider,
+                    get_principal, require, resolve_principal,
+                    set_active_provider)
 from ..auth.rbac import assert_route_capabilities, declare
 # Site-precision redaction helpers + the WS re-auth cadence live in a neutral,
 # import-light module so BOTH the LAN /ws handler (here) and the relay-tunneled
@@ -50,7 +54,7 @@ from .redact import (WS_AUTH_RECHECK_S, _redact_drivers_for,  # re-exported at m
                      _redact_profile_for, _redact_report_for,
                      _redact_session_for, _redact_site_for, _redact_ws_event,
                      report_csv_columns)
-from ..persist import safe_id_path, safe_subpath
+from ..persist import safe_id_path, safe_subpath, secure_private_tree
 from ..catalog import search          # rows AND the reasons for what is missing
 from ..catalog import survey_pack as survey_pack_mod
 from ..catalog.survey import router as survey_router
@@ -337,15 +341,21 @@ async def _lifespan(app: "FastAPI"):
     unpark/slew/track). A persisted in-progress sequence is NOT auto-resumed here
     (W1.6 PAUSED-PENDING-ACK) - the boot path deliberately does not call
     engine.start/resume."""
+    # This must remain outside every broad startup exception handler.  A DACL,
+    # owner, reparse-point, filesystem, or POSIX mode failure is fatal before
+    # any provider reads config or any background service is launched.
+    secure_private_tree(config_module.CONFIG_DIR)
     # Install the configured auth provider from persisted AuthConfig (W2.3). With
     # the default ``provider="none"`` and no ``admin_token`` this is the open
-    # NoneAuthProvider, so behavior stays byte-for-byte today. Never raises out of
-    # boot: a bad provider config degrades to open-default rather than bricking.
+    # NoneAuthProvider. A broken auth config MUST fail closed: continuing with
+    # open-admin after an initialization error silently turns a protected rig
+    # into an unauthenticated one.
     try:
         configure_provider_from_auth(config_store.cfg().auth)
         _warn_insecure_session_secret()
-    except Exception as e:  # noqa: BLE001 - degrade to open-default, never crash boot
-        bus.log("error", f"auth provider init failed (open-default): {e}", "auth")
+    except Exception as e:  # noqa: BLE001 - keep health/UI up, but deny authority
+        set_active_provider(TokenAdminProvider(""))
+        bus.log("error", f"auth provider init failed (FAIL-CLOSED): {e}", "auth")
     # Multi-night sessions (spec §2/§4): migrate the retired single-slot resume
     # file ONCE, then sweep power-cut orphans (active -> dormant) so they are
     # manually resumable + ResumeArm-eligible. Never raises out of boot.
@@ -1555,6 +1565,7 @@ class IgnoreTonightBody(BaseModel):
 # load the login-less UI and then attach the token to its API/WS calls.
 
 AUTH_ENV_VAR = "ASTRODECK_TOKEN"
+MAX_REQUEST_BODY_BYTES = 8 * 1024 * 1024
 
 # Path prefixes that stay open even when a token is configured, so the browser can
 # fetch the UI bundle before it knows the token. The API + WS are NEVER in here.
@@ -1564,6 +1575,156 @@ AUTH_ENV_VAR = "ASTRODECK_TOKEN"
 _AUTH_OPEN_PREFIXES = ("/assets", "/auth/login", "/auth/google/callback")
 _AUTH_OPEN_EXACT = {"/", "/index.html", "/favicon.ico", "/manifest.json", "/healthz"}
 
+# These endpoints define identities/trust roots or perform whole-system
+# lifecycle operations. A relay-terminated session cookie is a replayable bearer
+# credential, so even a correctly signed admin cookie is insufficient over the
+# tunnel. Keep these operations on the directly connected LAN UI.
+_REMOTE_LOCAL_ONLY_EXACT = frozenset({
+    "/auth/token",
+    "/api/auth/config",
+    "/api/auth/revoke",
+    "/api/auth/unrevoke",
+    "/api/config/sync",
+    "/api/remote/config",
+    "/api/system/factory-reset",
+    "/api/update/check",
+    "/api/update/apply",
+    "/api/update/config",
+    "/api/sync/push/now",
+})
+_REMOTE_LOCAL_ONLY_PREFIXES = ("/api/users", "/api/discover")
+# These route families either choose host filesystem/network destinations or
+# cause the server to probe/connect to caller-selected local resources. Reads
+# remain available where useful, but no tunnelled bearer session may mutate or
+# trigger them: a compromised TLS-terminating relay must not become an SSRF,
+# serial-device, or arbitrary-destination foothold into the base OS/LAN.
+_REMOTE_LOCAL_ONLY_MUTATION_PREFIXES = (
+    "/api/config",
+    "/api/alerts",
+    "/api/drivers",
+    "/api/profiles",
+    "/api/connect",
+    "/api/survey/pack",
+)
+_UPDATE_MUTATION_PATHS = frozenset({
+    "/api/update/check", "/api/update/apply", "/api/update/config",
+})
+
+ALLOWED_HOSTS_ENV = "ASTRODECK_ALLOWED_HOSTS"
+_DNS_HOST_RE = re.compile(
+    r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+    r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$"
+)
+
+
+def _normalise_allowed_host(raw: str) -> str:
+    """Canonical host-only allowlist entry, rejecting wildcard/URL syntax."""
+    value = (raw or "").strip()
+    if not value or any(ch.isspace() for ch in value) or any(
+            ch in value for ch in "/\\@,?\0"):
+        raise ValueError(f"invalid host in {ALLOWED_HOSTS_ENV}")
+    if value.startswith("[") and value.endswith("]"):
+        value = value[1:-1]
+    try:
+        return ipaddress.ip_address(value).compressed.casefold()
+    except ValueError:
+        pass
+    value = value.rstrip(".").casefold()
+    if len(value) > 253 or not _DNS_HOST_RE.fullmatch(value):
+        raise ValueError(f"invalid host in {ALLOWED_HOSTS_ENV}: {raw!r}")
+    return value
+
+
+def _request_host(raw: str) -> str:
+    """Return the canonical hostname from an HTTP Host authority, or ``''``."""
+    value = (raw or "").strip()
+    if (not value or any(ch.isspace() for ch in value)
+            or any(ch in value for ch in "/\\@,?\0")):
+        return ""
+    # urllib requires brackets around an IPv6 authority and otherwise gives us
+    # strict, well-tested hostname/port splitting.
+    if value.count(":") > 1 and not value.startswith("["):
+        return ""
+    try:
+        parsed = urlsplit(f"http://{value}")
+        host = parsed.hostname
+        _ = parsed.port  # force rejection of malformed/out-of-range ports
+        if not host:
+            return ""
+        return _normalise_allowed_host(host)
+    except (TypeError, ValueError):
+        return ""
+
+
+def _trusted_hosts(bind_host: str | None, configured: str | None) -> frozenset[str] | None:
+    """Build the exact Host allowlist for a real listener.
+
+    ``None`` means create_app was used as an in-process/application factory and
+    no bind context was supplied.  The supported CLI always supplies it.
+    """
+    if bind_host is None:
+        return None
+    allowed = {"localhost", "127.0.0.1", "::1"}
+    bind = _normalise_allowed_host(bind_host)
+    if bind not in {"0.0.0.0", "::"}:
+        allowed.add(bind)
+    for entry in (configured or "").split(","):
+        if entry.strip():
+            allowed.add(_normalise_allowed_host(entry))
+    return frozenset(allowed)
+
+
+def _host_allowed(headers, allowed: frozenset[str] | None) -> bool:
+    return allowed is None or _request_host(headers.get("host") or "") in allowed
+
+
+def _canonical_origin(raw: str) -> str:
+    """Canonical HTTP(S) origin, or ``""`` for malformed/non-origin input."""
+    try:
+        parsed = urlsplit(raw)
+        if (parsed.scheme.lower() not in {"http", "https"}
+                or not parsed.hostname or parsed.username or parsed.password
+                or parsed.path not in {"", "/"} or parsed.query or parsed.fragment):
+            return ""
+        scheme = parsed.scheme.lower()
+        host = parsed.hostname.lower()
+        if ":" in host:
+            host = f"[{host}]"
+        port = parsed.port
+        if port is not None and not (
+                (scheme == "http" and port == 80)
+                or (scheme == "https" and port == 443)):
+            host = f"{host}:{port}"
+        return f"{scheme}://{host}"
+    except (TypeError, ValueError):
+        return ""
+
+
+def _browser_origin_allowed(scope, headers) -> bool:
+    """Reject cross-origin browser requests while preserving CLI/API clients.
+
+    Browsers send ``Origin`` on unsafe forms/fetches and WebSocket handshakes.
+    Non-browser clients commonly omit it, so absence remains valid; when
+    present it must exactly match the effective scheme + Host. Fetch Metadata
+    also closes same-site/different-origin forms (cookies ignore ports).
+    """
+    fetch_site = (headers.get("sec-fetch-site") or "").strip().lower()
+    if fetch_site and fetch_site not in {"same-origin", "none"}:
+        return False
+    supplied_raw = (headers.get("origin") or "").strip()
+    if not supplied_raw:
+        return True
+    supplied = _canonical_origin(supplied_raw)
+    scheme = str(scope.get("scheme") or "http").lower()
+    if scheme == "ws":
+        scheme = "http"
+    elif scheme == "wss":
+        scheme = "https"
+    host = (headers.get("host") or "").strip()
+    expected = _canonical_origin(f"{scheme}://{host}")
+    return bool(supplied and expected) and hmac.compare_digest(
+        supplied.encode("utf-8"), expected.encode("utf-8"))
+
 
 def auth_token() -> str:
     """The configured shared token, or '' when auth is disabled (the default).
@@ -1571,7 +1732,14 @@ def auth_token() -> str:
     Read live from the environment so a token set before launch is honored and
     tests can monkeypatch ``os.environ`` per-app. Whitespace is stripped so a
     stray newline in a launcher script can't create a token nobody can type."""
-    return (os.environ.get(AUTH_ENV_VAR) or "").strip()
+    token = (os.environ.get(AUTH_ENV_VAR) or "").strip()
+    if token and len(token.encode("utf-8")) < config_module.MIN_BEARER_TOKEN_BYTES:
+        raise RuntimeError(
+            f"{AUTH_ENV_VAR} must contain at least "
+            f"{config_module.MIN_BEARER_TOKEN_BYTES} bytes of independently "
+            "generated secret material"
+        )
+    return token
 
 
 def auth_enabled() -> bool:
@@ -1675,14 +1843,37 @@ def _path_is_open(path: str) -> bool:
     return False
 
 
-def create_app() -> FastAPI:
+def create_app(*, bind_host: str | None = None,
+               allowed_hosts: str | None = None) -> FastAPI:
+    host_allowlist = _trusted_hosts(
+        bind_host,
+        os.environ.get(ALLOWED_HOSTS_ENV) if allowed_hosts is None else allowed_hosts,
+    )
     app = FastAPI(title="AstroDeck", version=__version__, lifespan=_lifespan)
 
     # Optional shared-token gate (P0-4). A pure pass-through when ASTRODECK_TOKEN
     # is unset, so default LAN behavior is byte-for-byte unchanged.
     @app.middleware("http")
     async def _auth_mw(request, call_next):
-        if auth_enabled() and not _path_is_open(request.url.path):
+        if not _host_allowed(request.headers, host_allowlist):
+            return JSONResponse(
+                {"detail": "unrecognized Host authority",
+                 "code": "invalid_host"},
+                status_code=421)
+        remote = _scope_is_remote(request)
+        unsafe_method = request.method.upper() not in {"GET", "HEAD", "OPTIONS"}
+        if unsafe_method and not _browser_origin_allowed(
+                request.scope, request.headers):
+            return JSONResponse(
+                {"detail": "cross-origin browser request denied",
+                 "code": "invalid_origin"},
+                status_code=403)
+        # ASTRODECK_TOKEN is a direct-transport credential and is deliberately
+        # stripped by the relay client. Remote scopes authenticate through the
+        # home-signed session/provider path instead; the open ``none`` provider
+        # independently hard-denies them in ``resolve_principal``.
+        if (auth_enabled() and not remote
+                and not _path_is_open(request.url.path)):
             supplied = _present_token(
                 header=request.headers.get("x-auth-token"),
                 authorization=request.headers.get("authorization"),
@@ -1690,7 +1881,91 @@ def create_app() -> FastAPI:
             if not _token_ok(supplied):
                 return JSONResponse(
                     {"detail": "missing or invalid auth token"}, status_code=401)
-        return await call_next(request)
+        path = request.url.path
+        if (remote and (
+                path in _REMOTE_LOCAL_ONLY_EXACT
+                or any(path == prefix or path.startswith(prefix + "/")
+                       for prefix in _REMOTE_LOCAL_ONLY_PREFIXES)
+                or (unsafe_method and any(
+                    path == prefix or path.startswith(prefix + "/")
+                    for prefix in _REMOTE_LOCAL_ONLY_MUTATION_PREFIXES)))):
+            return JSONResponse(
+                {"detail": "this security-sensitive operation is LAN-only",
+                 "code": "local_only"},
+                status_code=403)
+        if path in _UPDATE_MUTATION_PATHS:
+            provider_name = getattr(get_active_provider(), "name", "none")
+            if provider_name == "none" and not auth_enabled():
+                return JSONResponse(
+                    {"detail": "configure authentication before managing updates",
+                     "code": "authentication_required"},
+                    status_code=403)
+        content_length = request.headers.get("content-length")
+        if content_length is not None:
+            try:
+                declared_length = int(content_length)
+            except (TypeError, ValueError):
+                return JSONResponse(
+                    {"detail": "invalid Content-Length"}, status_code=400)
+            if declared_length < 0:
+                return JSONResponse(
+                    {"detail": "invalid Content-Length"}, status_code=400)
+            if declared_length > MAX_REQUEST_BODY_BYTES:
+                return JSONResponse(
+                    {"detail": "request body too large"}, status_code=413,
+                    headers={"Connection": "close"})
+
+        # Content-Length is advisory: a chunked sender can omit it or lie. Wrap
+        # the ASGI receive channel so every parsed body is bounded before
+        # pydantic/json can allocate without limit.
+        original_receive = request._receive
+        received = 0
+        body_overflow = False
+
+        async def limited_receive():
+            nonlocal received, body_overflow
+            if body_overflow:
+                return {"type": "http.disconnect"}
+            message = await original_receive()
+            if message.get("type") == "http.request":
+                received += len(message.get("body", b""))
+                if received > MAX_REQUEST_BODY_BYTES:
+                    body_overflow = True
+                    # Give the parser a terminal empty chunk; after it unwinds,
+                    # replace its response with the authoritative 413 below.
+                    return {"type": "http.request", "body": b"",
+                            "more_body": False}
+            return message
+
+        request._receive = limited_receive
+        response = await call_next(request)
+        if body_overflow:
+            return JSONResponse(
+                {"detail": "request body too large"}, status_code=413,
+                headers={"Connection": "close"})
+        return response
+
+    @app.middleware("http")
+    async def _security_headers_mw(request, call_next):
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("Referrer-Policy", "same-origin")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault(
+            "Permissions-Policy",
+            "camera=(), microphone=(), geolocation=(), payment=(), usb=()")
+        response.headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'self'; base-uri 'self'; object-src 'none'; "
+            "frame-ancestors 'none'; form-action 'self'; "
+            "script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data: blob: https:; "
+            "font-src 'self' data:; connect-src 'self' ws: wss:")
+        if request.url.scheme == "https":
+            response.headers.setdefault(
+                "Strict-Transport-Security", "max-age=31536000")
+        return response
 
     # --------------------------------------------------------- atlas routers
     # The Sky-Atlas feature lanes own these as separate APIRouter modules
@@ -1758,6 +2033,20 @@ def create_app() -> FastAPI:
               dependencies=[Depends(require(CAP_SYSTEM_UPDATE))])
     @declare(CAP_SYSTEM_UPDATE)
     async def update_set_config(body: UpdateConfig):
+        stored_update = config_store.cfg().update
+        if ((body.repo or "").strip() != (stored_update.repo or "").strip()
+                or (body.signing_pubkey or "").strip()
+                != (stored_update.signing_pubkey or "").strip()):
+            # ``repo`` + ``signing_pubkey`` together are a code-execution trust
+            # root. Letting a web session replace both turns admin-panel access
+            # into arbitrary OS code execution during the next update. Provision
+            # or rotate them through the local config file/installer instead.
+            raise HTTPException(
+                403,
+                detail={
+                    "detail": "update repository and signing key are offline-only",
+                    "code": "update_trust_root_offline_only",
+                })
         # A blank github_token means "unchanged" (the UI only ever sees the
         # redacted block, so it echoes back empty) -- restore the stored secret
         # rather than wiping it. Mirrors the admin_token / device_token pattern.
@@ -1826,6 +2115,18 @@ def create_app() -> FastAPI:
         if blocker:
             raise HTTPException(409, detail={"detail": blocker,
                                              "code": "rig_busy"})
+        if body.reset_auth:
+            # Check the post-reset posture before disconnecting equipment or
+            # touching any state.  Managed deployments may reset accounts only
+            # when a separate strong ASTRODECK_TOKEN will keep the listener
+            # authenticated after the auth block is cleared.
+            try:
+                config_module.enforce_required_auth(AuthConfig())
+            except ValueError as exc:
+                raise HTTPException(409, detail={
+                    "detail": str(exc),
+                    "code": "authentication_required",
+                }) from exc
         # Drop the rig FIRST. A fresh install has nothing connected, and leaving
         # a live rig up would leave the first-run wizard's "connect" step already
         # satisfied against equipment the reset config no longer knows about.
@@ -6953,6 +7254,12 @@ def create_app() -> FastAPI:
 
     @app.websocket("/ws")
     async def ws(websocket: WebSocket):
+        if not _host_allowed(websocket.headers, host_allowlist):
+            await websocket.close(code=1008)
+            return
+        if not _browser_origin_allowed(websocket.scope, websocket.headers):
+            await websocket.close(code=1008)
+            return
         # Optional shared-token gate (P0-4). The middleware does not cover the WS
         # upgrade, so check here. When auth is disabled this is a no-op. The
         # browser can't set custom headers on a WebSocket, so the token is taken

@@ -1,8 +1,10 @@
 """Persistence durability: atomic write keeps a recoverable ``.bak`` *copy*, the
 replace-retry count is exact (and raises the last error), and ``ConfigStore``
-restores from ``.bak`` before falling back to defaults."""
+restores from ``.bak`` and fails closed rather than replacing corrupt security
+state with defaults."""
 import json
 import os
+import stat
 
 import pytest
 
@@ -46,6 +48,24 @@ def test_first_write_has_no_backup(tmp_path):
     p = tmp_path / "x.json"
     write_json_atomic(p, {"v": 1})
     assert not p.with_suffix(p.suffix + ".bak").exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX mode bits only")
+def test_persisted_json_and_backup_are_owner_only(tmp_path):
+    p = tmp_path / "astrodeck.json"
+    write_json_atomic(p, {"secret": "one"})
+    write_json_atomic(p, {"secret": "two"})
+    assert stat.S_IMODE(p.stat().st_mode) == 0o600
+    assert stat.S_IMODE(p.with_suffix(".json.bak").stat().st_mode) == 0o600
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX mode bits only")
+def test_read_repairs_legacy_world_readable_json(tmp_path):
+    p = tmp_path / "astrodeck.json"
+    p.write_text('{"secret": "legacy"}', encoding="utf-8")
+    p.chmod(0o644)
+    assert read_json(p) == {"secret": "legacy"}
+    assert stat.S_IMODE(p.stat().st_mode) == 0o600
 
 
 # ------------------------------------------------------- replace-retry exactness
@@ -130,20 +150,36 @@ def test_config_restores_from_bak_when_primary_corrupt(tmp_path):
     assert read_json(bak)["site"]["name"] == "Backyard"
 
 
-@pytest.mark.parametrize("scenario", ["files_absent", "files_present_but_corrupt"])
-def test_config_falls_back_to_defaults(tmp_path, scenario):
-    """files_absent: no primary and no usable backup -> clean defaults + a
-    freshly-saved file. files_present_but_corrupt: a corrupt primary AND an
-    unparseable ``.bak`` -> defaults (no crash)."""
+def test_new_config_store_falls_back_to_defaults(tmp_path):
+    """No primary and no backup means a genuine first run, so defaults are safe."""
     path = tmp_path / "astrodeck.json"
-    bak = path.with_suffix(path.suffix + ".bak")
-    if scenario == "files_present_but_corrupt":
-        path.write_text("nonsense", encoding="utf-8")
-        bak.write_text("also nonsense", encoding="utf-8")
 
     store = ConfigStore(path=path)
     cfg = store.cfg()
     assert cfg.site.is_default is True
     assert cfg.site.latitude == 0.0
-    if scenario == "files_absent":
-        assert path.exists()
+    assert path.exists()
+
+
+@pytest.mark.parametrize("primary", ["nonsense", "[]"])
+def test_corrupt_or_invalid_config_without_backup_fails_closed(tmp_path, primary):
+    path = tmp_path / "astrodeck.json"
+    path.write_text(primary, encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match=r"configuration.*(corrupt|invalid)"):
+        ConfigStore(path=path).cfg()
+
+    assert path.read_text(encoding="utf-8") == primary
+
+
+def test_corrupt_primary_and_backup_fail_closed_without_overwrite(tmp_path):
+    path = tmp_path / "astrodeck.json"
+    bak = path.with_suffix(path.suffix + ".bak")
+    path.write_text("nonsense", encoding="utf-8")
+    bak.write_text("also nonsense", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="backup"):
+        ConfigStore(path=path).cfg()
+
+    assert path.read_text(encoding="utf-8") == "nonsense"
+    assert bak.read_text(encoding="utf-8") == "also nonsense"

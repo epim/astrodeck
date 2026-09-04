@@ -16,11 +16,11 @@ scope (and the tunneled /ws scope) gets ``scope['state']['astrodeck_remote'] =
 True``. The home reads that via ``scope_is_remote`` and passes ``remote=True`` into
 ``resolve_principal``, which hard-denies the open ``none`` provider remotely. This
 is ASGI scope STATE, not a header, so an on-LAN attacker cannot forge it (a real
-uvicorn-borne request has no such key). Inbound ``authorization`` / ``x-auth-token``
-/ session-cookie headers are STRIPPED at the replay shim -- they are not valid
-tunnel carriers; a remote principal is injected ONLY from a home-verifiable
-``principal_token`` (verification owned by the auth/relay lane; this client carries
-the token through but does not mint it).
+uvicorn-borne request has no such key). Inbound ``authorization`` and
+``x-auth-token`` headers are stripped at the replay shim. The current
+home-terminated-auth deployment deliberately forwards the home's signed session
+cookie; therefore the relay is a trusted bearer-token intermediary. A future
+blind-relay design should replace this with end-to-end protected credentials.
 
 ISOLATION: this never blocks or crashes the app lifespan. A relay outage -> the
 client retries with capped backoff + full jitter and the home runs local-only.
@@ -32,15 +32,18 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import ipaddress
 import random
+import re
 import time
 from typing import Any, Awaitable, Callable, Iterable
 from urllib.parse import parse_qsl, urlencode, urlsplit
 
 from ..config import RemoteConfig
 from ..events import Event, bus
-from .protocol import (DEFAULT_MAX_PAYLOAD, PROTO_VERSION, Frame, FrameType,
-                       decode_frame, encode_frame)
+from .protocol import (DEFAULT_MAX_PAYLOAD, DEFAULT_MAX_WIRE_SIZE, PROTO_VERSION,
+                       Frame, FrameType, ProtocolError, decode_frame,
+                       encode_frame)
 
 # The ASGI scope state key that marks a request/ws as relay-tunneled. Read by the
 # home via ``scope_is_remote`` -> passed as ``remote=`` to ``resolve_principal``.
@@ -90,6 +93,47 @@ _BACKOFF_MAX_EXP = 40
 # Per-viewer /ws fanout buffer (drop-oldest). A slow remote viewer must never
 # stall the single shared bus subscription that feeds every viewer.
 _WS_BUFFER_MAX = 200
+
+# Hard per-tunnel state bounds. The public relay is an authenticated peer, not a
+# memory-allocation authority: a stolen device token or compromised relay must
+# not create unbounded ASGI tasks/queues on the home controller.
+_REQUEST_BODY_CHUNKS_MAX = 8
+_REQUEST_BODY_BYTES_MAX = 8 * 1024 * 1024
+_OPEN_REQUESTS_MAX = 32
+_OPEN_WS_STREAMS_MAX = 16
+_HELLO_ACK_TIMEOUT_S = 10.0
+_TASK_TEARDOWN_TIMEOUT_S = 2.0
+
+
+def _validate_relay_config(cfg: RemoteConfig) -> None:
+    """Fail closed before disclosing the device token or accepting work.
+
+    Public relays must use TLS. Plain ``ws://`` is permitted only for an actual
+    loopback host so the on-wire integration test and local development remain
+    possible without teaching operators to expose credentials in plaintext.
+    """
+    try:
+        parsed = urlsplit(cfg.relay_url)
+        host = parsed.hostname or ""
+        loopback = host.lower() == "localhost"
+        if host and not loopback:
+            with contextlib.suppress(ValueError):
+                loopback = ipaddress.ip_address(host).is_loopback
+    except (TypeError, ValueError) as exc:
+        raise ValueError("invalid remote relay URL") from exc
+    if (not host or parsed.username is not None or parsed.password is not None
+            or parsed.query or parsed.fragment):
+        raise ValueError("invalid remote relay URL")
+    if parsed.scheme != "wss" and not (parsed.scheme == "ws" and loopback):
+        raise ValueError("remote relay URL must use wss:// (ws:// is loopback-only)")
+    token = (cfg.device_token or "").strip()
+    if (not 32 <= len(token) <= 256
+            or any(ord(ch) < 33 or ord(ch) > 126 for ch in token)):
+        raise ValueError(
+            "remote relay device_token must be 32-256 printable ASCII characters")
+    if not isinstance(cfg.home_id, str) or not re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", cfg.home_id):
+        raise ValueError("remote relay home_id must be 1-64 URL-safe characters")
 
 
 class _WsSendGuard:
@@ -167,16 +211,26 @@ def _headers_to_scope(header_list: Iterable[Any]) -> list[tuple[bytes, bytes]]:
     """Turn a JSON ``[[name, value], ...]`` header list into ASGI raw headers
     (lowercased bytes), DROPPING any inbound auth carrier (auth headers are not
     valid tunnel carriers; the principal is injected separately)."""
+    if not isinstance(header_list, list):
+        raise ProtocolError("request headers must be a list")
     raw: list[tuple[bytes, bytes]] = []
-    for item in header_list or []:
-        try:
-            name, value = item
-        except (TypeError, ValueError):
-            continue
-        nb = str(name).lower().encode("latin-1", "replace")
+    separators = frozenset('()<>@,;:\\"/[]?={} \t')
+    for item in header_list:
+        if not isinstance(item, (list, tuple)) or len(item) != 2:
+            raise ProtocolError("request header must be a name/value pair")
+        name, value = item
+        if not isinstance(name, str) or not isinstance(value, str):
+            raise ProtocolError("request header name/value must be text")
+        if (not name or any(ord(ch) <= 32 or ord(ch) >= 127
+                            or ch in separators for ch in name)):
+            raise ProtocolError("invalid request header name")
+        if any((ord(ch) < 32 and ch != "\t")
+               or ord(ch) == 127 or ord(ch) > 255 for ch in value):
+            raise ProtocolError("invalid request header value")
+        nb = name.lower().encode("latin-1")
         if nb in _STRIPPED_INBOUND_HEADERS:
             continue
-        raw.append((nb, str(value).encode("latin-1", "replace")))
+        raw.append((nb, value.encode("latin-1")))
     return raw
 
 
@@ -201,15 +255,31 @@ class _RequestStream:
     def __init__(self, stream_id: int, send_frame: Callable[[Frame], Awaitable[None]]):
         self.stream_id = stream_id
         self._send_frame = send_frame
-        self._body: asyncio.Queue[tuple[bytes, bool]] = asyncio.Queue()
+        self._body: asyncio.Queue[tuple[bytes, bool]] = asyncio.Queue(
+            maxsize=_REQUEST_BODY_CHUNKS_MAX)
         self._aborted = False
+        self._received_bytes = 0
+        self.response_started = False
+        self.response_complete = False
 
-    def feed_body(self, chunk: bytes, eof: bool) -> None:
-        self._body.put_nowait((chunk, eof))
+    def feed_body(self, chunk: bytes, eof: bool) -> bool:
+        if self._aborted:
+            return False
+        self._received_bytes += len(chunk)
+        if self._received_bytes > _REQUEST_BODY_BYTES_MAX:
+            return False
+        try:
+            self._body.put_nowait((chunk, eof))
+            return True
+        except asyncio.QueueFull:
+            return False
 
     def abort(self) -> None:
         self._aborted = True
         # Unblock a receive() awaiting more body so the app task can unwind.
+        with contextlib.suppress(asyncio.QueueEmpty):
+            while True:
+                self._body.get_nowait()
         self._body.put_nowait((b"", True))
 
     async def receive(self) -> dict:
@@ -224,10 +294,24 @@ class _RequestStream:
             "more_body": not eof,
         }
 
+    async def send_frame(self, frame: Frame) -> None:
+        """Send on the exact tunnel generation that created this stream."""
+        if self._aborted:
+            raise ConnectionError("request stream is aborted")
+        await self._send_frame(frame)
+
+    async def send_terminal_frame(self, frame: Frame) -> None:
+        """Send relay-owned terminal metadata after fencing the ASGI task.
+
+        Only the overflow handler uses this bypass. Application ``send`` calls
+        remain blocked once ``abort()`` has fenced the stream.
+        """
+        await self._send_frame(frame)
+
     async def send(self, message: dict) -> None:
         mtype = message.get("type")
         if mtype == "http.response.start":
-            await self._send_frame(Frame(
+            await self.send_frame(Frame(
                 type=FrameType.RESP_HEAD,
                 stream_id=self.stream_id,
                 header={
@@ -235,6 +319,7 @@ class _RequestStream:
                     "headers": _scope_headers_to_list(message.get("headers", [])),
                 },
             ))
+            self.response_started = True
         elif mtype == "http.response.body":
             body = message.get("body", b"") or b""
             more = bool(message.get("more_body", False))
@@ -243,20 +328,24 @@ class _RequestStream:
             # send -> the app is naturally backpressured by the WSS write.
             mv = memoryview(body)
             if not mv:
-                await self._send_frame(Frame(
+                await self.send_frame(Frame(
                     type=FrameType.RESP_DATA, stream_id=self.stream_id,
                     header={"eof": not more}, payload=b""))
+                if not more:
+                    self.response_complete = True
                 return
             total = len(mv)
             off = 0
             while off < total:
                 end = min(off + DEFAULT_MAX_PAYLOAD, total)
                 last = end >= total
-                await self._send_frame(Frame(
+                await self.send_frame(Frame(
                     type=FrameType.RESP_DATA, stream_id=self.stream_id,
                     header={"eof": last and not more},
                     payload=bytes(mv[off:end])))
                 off = end
+            if not more:
+                self.response_complete = True
 
 
 class RelayClient:
@@ -288,7 +377,8 @@ class RelayClient:
         self._send_lock = asyncio.Lock()
         self._reqs: dict[int, _RequestStream] = {}
         self._req_tasks: dict[int, asyncio.Task] = {}
-        self._ws_streams: dict[int, asyncio.Task] = {}
+        self._ws_streams: dict[Any, asyncio.Task] = {}
+        self._reapers: set[asyncio.Task] = set()
 
     # -- public lifecycle ------------------------------------------------------
 
@@ -307,14 +397,14 @@ class RelayClient:
         is logged once and retried; the home runs local-only meanwhile."""
         attempt = 0
         while not self._stop.is_set():
-            cfg = self._config()
-            if not (cfg.enabled and cfg.relay_url):
-                # Disabled / unconfigured: idle until stop (the lifespan only
-                # launches us when enabled, but re-check defensively for a live
-                # config edit toggling us off).
-                return
             started = time.monotonic()
             try:
+                cfg = self._config()
+                if not (cfg.enabled and cfg.relay_url):
+                    # Disabled / unconfigured: idle until stop (the lifespan
+                    # normally launches us only when enabled, but re-check
+                    # defensively for a live config edit toggling us off).
+                    return
                 self._generation += 1
                 await self._serve_once(cfg)
                 attempt = 0  # a clean session resets the backoff
@@ -359,26 +449,53 @@ class RelayClient:
         """Open the outbound WSS. Lazy-imports ``websockets`` so the dependency is
         only required when the relay is actually used."""
         import websockets  # lazy: optional dependency, only on the remote path
-        return await websockets.connect(url, max_size=None)
+        return await websockets.connect(
+            url,
+            max_size=DEFAULT_MAX_WIRE_SIZE,
+            max_queue=16,
+            # Compression can amplify a tiny malicious frame into the message
+            # limit and consumes CPU/memory before protocol validation. Tunnel
+            # payloads are already JSON/images/FITS and gain little from it.
+            compression=None,
+        )
 
     async def _serve_once(self, cfg: RemoteConfig) -> None:
         """One full connection lifetime: connect, HELLO, dispatch frames until the
         socket closes. Cleans up all per-connection state on exit."""
+        _validate_relay_config(cfg)
         ws = await self._connect(cfg.relay_url)
         self._ws = ws
+        # A task stuck on an older transport must never hold the next
+        # generation's writer lock.
+        self._send_lock = asyncio.Lock()
         self._reqs = {}
         self._req_tasks = {}
         self._ws_streams = {}
+        config_watch: asyncio.Task | None = None
         try:
-            await self._raw_send(encode_frame(
+            await self._raw_send_on(ws, encode_frame(
                 FrameType.HELLO, 0, {
                     "device_token": cfg.device_token,
                     "home_id": cfg.home_id,
                     "generation": self._generation,
                     "proto_version": PROTO_VERSION,
                 }))
-            bus.log("info", f"relay dialed (gen={self._generation})", "remote")
-            async for raw in self._iter_messages(ws):
+            messages = self._iter_messages(ws).__aiter__()
+            try:
+                raw_ack = await asyncio.wait_for(
+                    messages.__anext__(), timeout=_HELLO_ACK_TIMEOUT_S)
+            except (asyncio.TimeoutError, StopAsyncIteration) as exc:
+                raise ProtocolError("relay did not complete HELLO handshake") from exc
+            ack = decode_frame(raw_ack)
+            if ack.type != FrameType.HELLO_ACK or ack.header.get("ok") is not True:
+                # Do not reflect an untrusted relay-supplied reason into the
+                # local event log; it can contain control characters or secret
+                # material. The operator still gets the failure class.
+                raise ProtocolError("relay HELLO rejected")
+            bus.log("info", f"relay authenticated (gen={self._generation})", "remote")
+            config_watch = asyncio.create_task(
+                self._watch_connection_config(ws, cfg))
+            async for raw in messages:
                 try:
                     frame = decode_frame(raw)
                 except Exception as exc:  # noqa: BLE001 - a bad frame closes the conn
@@ -386,7 +503,42 @@ class RelayClient:
                     raise
                 await self._dispatch(frame)
         finally:
+            if config_watch is not None:
+                config_watch.cancel()
+                with contextlib.suppress(BaseException):
+                    await config_watch
             await self._teardown_connection(ws)
+
+    async def _watch_connection_config(self, ws: Any, initial: RemoteConfig) -> None:
+        """Close a live tunnel promptly when its local kill switch/config changes."""
+        fingerprint = (
+            initial.enabled, initial.relay_url, initial.device_token,
+            initial.home_id,
+        )
+        while True:
+            await asyncio.sleep(1.0)
+            try:
+                current = self._config()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - config failure is fail-closed
+                bus.log(
+                    "warning",
+                    "relay configuration became unreadable "
+                    f"({type(exc).__name__}); closing the remote tunnel",
+                    "remote",
+                )
+                with contextlib.suppress(Exception):
+                    await ws.close()
+                return
+            current_fingerprint = (
+                current.enabled, current.relay_url, current.device_token,
+                current.home_id,
+            )
+            if self._stop.is_set() or current_fingerprint != fingerprint:
+                with contextlib.suppress(Exception):
+                    await ws.close()
+                return
 
     async def _iter_messages(self, ws: Any):
         """Yield each inbound message. ``websockets`` connections are themselves
@@ -402,18 +554,34 @@ class RelayClient:
                 return
 
     async def _teardown_connection(self, ws: Any) -> None:
-        for task in list(self._req_tasks.values()):
-            task.cancel()
-        for task in list(self._ws_streams.values()):
-            task.cancel()
+        # Make every captured-generation send fail before cancellation starts.
+        # A handler that is slow to honour cancellation can then never write a
+        # late response onto a subsequent relay connection.
+        if self._ws is ws:
+            self._ws = None
         for stream in list(self._reqs.values()):
             stream.abort()
+        tasks = set(self._req_tasks.values()) | set(self._ws_streams.values())
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            done, pending = await asyncio.wait(
+                tasks, timeout=_TASK_TEARDOWN_TIMEOUT_S)
+            for task in done:
+                with contextlib.suppress(BaseException):
+                    task.result()
+            if pending:
+                bus.log(
+                    "warning",
+                    f"relay teardown: {len(pending)} task(s) ignored cancellation; "
+                    "their stale-socket writes remain fenced",
+                    "remote",
+                )
         self._reqs.clear()
         self._req_tasks.clear()
         self._ws_streams.clear()
         with contextlib.suppress(Exception):
             await ws.close()
-        self._ws = None
 
     # -- sending ---------------------------------------------------------------
 
@@ -421,16 +589,29 @@ class RelayClient:
         """Serialize all WSS sends through one lock (one writer per connection)."""
         ws = self._ws
         if ws is None:
-            return
-        async with self._send_lock:
+            raise ConnectionError("relay connection is not active")
+        await self._raw_send_on(ws, data)
+
+    async def _raw_send_on(self, ws: Any, data: bytes) -> None:
+        """Write only if ``ws`` is still the current tunnel generation."""
+        if ws is None or self._ws is not ws:
+            raise ConnectionError("stale relay connection")
+        lock = self._send_lock
+        async with lock:
+            if self._ws is not ws:
+                raise ConnectionError("stale relay connection")
             await ws.send(data)
 
     async def _send_frame(self, frame: Frame) -> None:
         await self._raw_send(encode_frame(
             frame.type, frame.stream_id, frame.header, frame.payload))
 
+    async def _send_frame_on(self, ws: Any, frame: Frame) -> None:
+        await self._raw_send_on(ws, encode_frame(
+            frame.type, frame.stream_id, frame.header, frame.payload))
+
     async def _send_ws_event(self, wire_stream_id: int, ws_id: Any, seq: int,
-                             obj: dict, guard: _WsSendGuard) -> None:
+                             obj: dict, guard: _WsSendGuard, ws: Any = None) -> None:
         """Encode + send ONE /ws event as a WS_DATA frame, ISOLATING an encode
         failure so it can never tear down the shared telemetry stream.
 
@@ -455,26 +636,28 @@ class RelayClient:
         except Exception as exc:  # noqa: BLE001 - oversize/unserializable: drop 1 event
             guard.note_drop(exc)
             return
-        await self._raw_send(data)
+        if ws is None:
+            await self._raw_send(data)
+        else:
+            await self._raw_send_on(ws, data)
 
     # -- dispatch --------------------------------------------------------------
 
     async def _dispatch(self, frame: Frame) -> None:
         t = frame.type
         if t == FrameType.REQ_OPEN:
-            self._open_request(frame)
+            await self._open_request(frame)
         elif t == FrameType.REQ_DATA:
             stream = self._reqs.get(frame.stream_id)
-            if stream is not None:
-                stream.feed_body(frame.payload, frame.eof)
+            if stream is not None and not stream.feed_body(
+                    frame.payload, frame.eof):
+                await self._reject_request_body_overflow(frame.stream_id, stream)
         elif t == FrameType.REQ_ABORT:
-            stream = self._reqs.get(frame.stream_id)
-            if stream is not None:
-                stream.abort()
+            await self._abort_request(frame.stream_id)
         elif t == FrameType.WS_OPEN:
-            self._open_ws(frame)
+            await self._open_ws(frame)
         elif t == FrameType.WS_CLOSE:
-            self._close_ws(frame)
+            await self._close_ws(frame)
         elif t == FrameType.PING:
             await self._raw_send(encode_frame(FrameType.PONG, 0, frame.header))
         elif t in (FrameType.PONG, FrameType.HELLO_ACK, FrameType.WINDOW,
@@ -515,19 +698,103 @@ class RelayClient:
             "state": state,
         }
 
-    def _open_request(self, frame: Frame) -> None:
+    async def _open_request(self, frame: Frame) -> None:
         sid = frame.stream_id
+        ws = self._ws
+        if ws is None:
+            raise ConnectionError("relay connection is not active")
         if sid in self._reqs:
-            # Duplicate live stream_id: protocol violation. Abort the prior; the
-            # relay must not reuse a live id.
-            self._reqs[sid].abort()
-        stream = _RequestStream(sid, self._send_frame)
+            # Reuse would let one request overwrite another request's routing
+            # state and make the older task remove the newer one on completion.
+            raise ProtocolError(f"duplicate live request stream_id {sid}")
+        if len(self._reqs) >= _OPEN_REQUESTS_MAX:
+            await self._send_http_failure(
+                sid, 503, b"too many requests",
+                send_frame=lambda out: self._send_frame_on(ws, out))
+            return
+        stream = _RequestStream(
+            sid, lambda out: self._send_frame_on(ws, out))
         self._reqs[sid] = stream
         scope = self._build_http_scope(frame)
         if not frame.header.get("has_body", False):
             stream.feed_body(b"", True)  # bodyless request: immediate EOF
         task = asyncio.create_task(self._run_request(sid, scope, stream))
         self._req_tasks[sid] = task
+
+    async def _send_http_failure(
+            self, sid: int, status: int, body: bytes = b"", *,
+            send_frame: Callable[[Frame], Awaitable[None]] | None = None) -> None:
+        sender = send_frame or self._send_frame
+        await sender(Frame(
+            type=FrameType.RESP_HEAD, stream_id=sid,
+            header={"status": status,
+                    "headers": [["content-type", "text/plain; charset=utf-8"]]}))
+        await sender(Frame(
+            type=FrameType.RESP_DATA, stream_id=sid,
+            header={"eof": True}, payload=body[:DEFAULT_MAX_PAYLOAD]))
+
+    async def _abort_request(self, sid: int) -> None:
+        """Abort and fence one isolated in-process request task.
+
+        Reaping is detached because this method runs on the single tunnel
+        reader, which must not wait for a hostile handler that suppresses
+        cancellation.
+        """
+        stream = self._reqs.get(sid)
+        if stream is not None:
+            stream.abort()
+        task = self._req_tasks.get(sid)
+        if task is not None and task is not asyncio.current_task():
+            self._cancel_and_reap(task, f"request {sid}")
+        if self._reqs.get(sid) is stream:
+            self._reqs.pop(sid, None)
+        if self._req_tasks.get(sid) is task:
+            self._req_tasks.pop(sid, None)
+
+    async def _reject_request_body_overflow(
+            self, sid: int, stream: _RequestStream) -> None:
+        """Cancel only the request whose bounded upload queue filled.
+
+        Waiting on ``Queue.put`` here would block the single tunnel reader and
+        let one slow endpoint starve every other stream. Cancelling the isolated
+        ASGI task keeps the rest of the home connection responsive.
+        """
+        stream.abort()
+        task = self._req_tasks.get(sid)
+        if task is not None:
+            self._cancel_and_reap(task, f"overflowed request {sid}")
+        if not stream.response_started:
+            await self._send_http_failure(
+                sid, 413, b"request body not consumed",
+                send_frame=stream.send_terminal_frame)
+        elif not stream.response_complete:
+            await stream.send_terminal_frame(Frame(
+                type=FrameType.RESP_DATA, stream_id=sid,
+                header={"eof": True}, payload=b""))
+        if self._reqs.get(sid) is stream:
+            self._reqs.pop(sid, None)
+        if self._req_tasks.get(sid) is task:
+            self._req_tasks.pop(sid, None)
+
+    def _cancel_and_reap(self, task: asyncio.Task, label: str) -> None:
+        """Cancel without blocking the tunnel reader; bound exception reaping."""
+        task.cancel()
+        reaper = asyncio.create_task(self._reap_cancelled(task, label))
+        self._reapers.add(reaper)
+        reaper.add_done_callback(self._reapers.discard)
+
+    async def _reap_cancelled(self, task: asyncio.Task, label: str) -> None:
+        done, pending = await asyncio.wait(
+            {task}, timeout=_TASK_TEARDOWN_TIMEOUT_S)
+        for finished in done:
+            with contextlib.suppress(BaseException):
+                finished.result()
+        if pending:
+            bus.log(
+                "warning",
+                f"tunneled {label} ignored cancellation; its writes are fenced",
+                "remote",
+            )
 
     async def _run_request(self, sid: int, scope: dict, stream: _RequestStream) -> None:
         """Replay one request against the in-process app, isolated so a handler
@@ -539,19 +806,21 @@ class RelayClient:
         except Exception as exc:  # noqa: BLE001 - surface a 500, keep the conn alive
             bus.log("warning", f"tunneled request failed: {exc}", "remote")
             with contextlib.suppress(Exception):
-                await self._send_frame(Frame(
+                await stream.send_frame(Frame(
                     type=FrameType.RESP_HEAD, stream_id=sid,
                     header={"status": 500, "headers": []}))
-                await self._send_frame(Frame(
+                await stream.send_frame(Frame(
                     type=FrameType.RESP_DATA, stream_id=sid,
                     header={"eof": True}, payload=b""))
         finally:
-            self._reqs.pop(sid, None)
-            self._req_tasks.pop(sid, None)
+            if self._reqs.get(sid) is stream:
+                self._reqs.pop(sid, None)
+            if self._req_tasks.get(sid) is asyncio.current_task():
+                self._req_tasks.pop(sid, None)
 
     # -- tunneled /ws fanout (server->client ONLY) -----------------------------
 
-    def _open_ws(self, frame: Frame) -> None:
+    async def _open_ws(self, frame: Frame) -> None:
         # ``ws_id`` is OPAQUE to the home: the relay allocates it (a STRING like
         # "ws1" so it never collides with the integer stream_id namespace -- see
         # relay/registry.py). We must NOT coerce it to int. The frame's wire
@@ -559,22 +828,35 @@ class RelayClient:
         # the opaque ``ws_id`` is echoed in the header so the relay routes the
         # fan-out to exactly this browser.
         ws_id = frame.header.get("ws_id")
-        if ws_id is None or ws_id in self._ws_streams:
+        ws = self._ws
+        if ws is None:
+            raise ConnectionError("relay connection is not active")
+        if (not isinstance(ws_id, str) or not 1 <= len(ws_id) <= 64
+                or any(ch not in "abcdefghijklmnopqrstuvwxyz"
+                       "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-" for ch in ws_id)):
+            raise ProtocolError("invalid ws_id")
+        if ws_id in self._ws_streams:
+            raise ProtocolError(f"duplicate live ws_id {ws_id!r}")
+        if len(self._ws_streams) >= _OPEN_WS_STREAMS_MAX:
+            await self._send_frame_on(ws, Frame(
+                type=FrameType.WS_CLOSE, stream_id=frame.stream_id,
+                header={"ws_id": ws_id, "code": 1013}))
             return
         wire_stream_id = frame.stream_id
         # Thread the WHOLE WS_OPEN frame into the ws task: its header carries the
         # browser's cookie/headers + an optional home-verifiable principal_token
         # that _run_ws needs to AUTHORIZE this viewer before it joins the bus.
-        task = asyncio.create_task(self._run_ws(ws_id, wire_stream_id, frame))
+        task = asyncio.create_task(
+            self._run_ws(ws_id, wire_stream_id, frame, ws))
         self._ws_streams[ws_id] = task
 
-    def _close_ws(self, frame: Frame) -> None:
+    async def _close_ws(self, frame: Frame) -> None:
         ws_id = frame.header.get("ws_id")
         if ws_id is None:
             return
         task = self._ws_streams.pop(ws_id, None)
         if task is not None:
-            task.cancel()
+            self._cancel_and_reap(task, f"websocket {ws_id!r}")
 
     def _ws_auth_request(self, frame: Frame):
         """Build a Starlette ``Request`` for per-viewer authorization from a
@@ -591,7 +873,8 @@ class RelayClient:
         from starlette.requests import Request
         return Request(self._build_http_scope(frame))
 
-    async def _run_ws(self, ws_id, wire_stream_id: int, frame: Frame) -> None:
+    async def _run_ws(self, ws_id, wire_stream_id: int, frame: Frame,
+                      ws: Any = None) -> None:
         """Mirror the on-LAN /ws: AUTHORIZE the viewer, then subscribe to the bus
         and stream each REDACTED event down as WS_DATA (server->client ONLY -- there
         is NO upstream control channel, exactly like the send-only /ws). Per-ws
@@ -613,35 +896,30 @@ class RelayClient:
         from ..auth import resolve_principal
         from ..auth.capabilities import CAP_VIEW_STATUS
 
-        req = self._ws_auth_request(frame)
-        # Accept-time gate: an unauthorized remote viewer must NEVER join the bus.
-        # ``remote=True`` makes the open ``none`` provider hard-deny, so an
-        # unauthenticated remote viewer is refused here (returns None).
-        principal = await resolve_principal(req, remote=True)
-        if principal is None or not principal.has(CAP_VIEW_STATUS):
-            # 4401 = application "unauthorized" (the SPA re-opens login). Send it
-            # WITHOUT subscribing, then drop the stream bookkeeping and return.
-            with contextlib.suppress(Exception):
-                await self._send_frame(Frame(
-                    type=FrameType.WS_CLOSE, stream_id=wire_stream_id,
-                    header={"ws_id": ws_id, "code": 4401}))
-            self._ws_streams.pop(ws_id, None)
+        if ws is None:
+            ws = self._ws
+        if ws is None:
             return
-
-        q = bus.subscribe()
-        seq = 0
-        # Periodic re-authentication (revocation + session-exp + downgrade). Auth is
-        # otherwise only resolved at open, so a revoked jti / lapsed session would
-        # keep streaming for the whole unattended run. Re-resolve at least every
-        # WS_AUTH_RECHECK_S and close 4401 the instant it stops resolving / loses
-        # view.status; a still-valid but downgraded viewer's redaction tracks its
-        # refreshed caps. Read the cadence live (a test shrinks it).
-        import time as _t
-        next_check = _t.monotonic() + redact.WS_AUTH_RECHECK_S
-        # Per-ws guard: an oversize/unsendable event drops itself (keeping the
-        # telemetry stream alive) instead of tearing down the whole stream.
-        guard = _WsSendGuard()
+        q = None
         try:
+            req = self._ws_auth_request(frame)
+            # Accept-time gate: an unauthorized remote viewer must NEVER join
+            # the bus. ``remote=True`` makes the open ``none`` provider deny.
+            principal = await resolve_principal(req, remote=True)
+            if principal is None or not principal.has(CAP_VIEW_STATUS):
+                with contextlib.suppress(Exception):
+                    await self._send_frame_on(ws, Frame(
+                        type=FrameType.WS_CLOSE, stream_id=wire_stream_id,
+                        header={"ws_id": ws_id, "code": 4401}))
+                return
+
+            q = bus.subscribe()
+            seq = 0
+            # Re-authenticate even on a quiet socket so revocation and session
+            # expiry take effect without waiting for telemetry.
+            import time as _t
+            next_check = _t.monotonic() + redact.WS_AUTH_RECHECK_S
+            guard = _WsSendGuard()
             # Mirror the on-LAN hello frame (REDACTED) so a remote viewer renders
             # immediately without leaking precise site coords it may not hold.
             from ..hub import hub
@@ -649,7 +927,7 @@ class RelayClient:
             await self._send_ws_event(wire_stream_id, ws_id, seq, {
                 "type": "hello",
                 "data": redact._redact_site_for(hub.summary(), principal),
-                "ts": 0}, guard)
+                "ts": 0}, guard, ws)
             while True:
                 # Wake for either the next event or the recheck deadline, so a quiet
                 # socket is still re-validated on schedule (not only on traffic).
@@ -661,7 +939,7 @@ class RelayClient:
                 if _t.monotonic() >= next_check:
                     principal = await resolve_principal(req, remote=True)
                     if principal is None or not principal.has(CAP_VIEW_STATUS):
-                        await self._send_frame(Frame(
+                        await self._send_frame_on(ws, Frame(
                             type=FrameType.WS_CLOSE, stream_id=wire_stream_id,
                             header={"ws_id": ws_id, "code": 4401}))
                         return
@@ -671,18 +949,20 @@ class RelayClient:
                     if out is not None:  # None = dropped event (weather spec §8)
                         seq += 1
                         await self._send_ws_event(
-                            wire_stream_id, ws_id, seq, out, guard)
+                            wire_stream_id, ws_id, seq, out, guard, ws)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - close just this ws stream
             bus.log("warning", f"tunneled ws failed: {exc}", "remote")
             with contextlib.suppress(Exception):
-                await self._send_frame(Frame(
+                await self._send_frame_on(ws, Frame(
                     type=FrameType.WS_CLOSE, stream_id=wire_stream_id,
                     header={"ws_id": ws_id, "code": 1011}))
         finally:
-            bus.unsubscribe(q)
-            self._ws_streams.pop(ws_id, None)
+            if q is not None:
+                bus.unsubscribe(q)
+            if self._ws_streams.get(ws_id) is asyncio.current_task():
+                self._ws_streams.pop(ws_id, None)
 
 
 def _event_payload(obj: dict) -> bytes:

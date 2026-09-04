@@ -1,0 +1,57 @@
+[Unit]
+Description=AstroDeck controller (unprivileged, loopback only)
+Documentation=https://github.com/epim/astrodeck
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=astrodeck
+Group=astrodeck
+UMask=0077
+WorkingDirectory=/var/lib/astrodeck
+StateDirectory=astrodeck
+StateDirectoryMode=0700
+RuntimeDirectory=astrodeck
+RuntimeDirectoryMode=0700
+Environment=ASTRODECK_CONFIG_DIR=/var/lib/astrodeck/config
+Environment=ASTRODECK_CAPTURE_DIR=/var/lib/astrodeck/captures
+Environment=ASTRODECK_FORWARDED_ALLOW_IPS=127.0.0.1
+Environment=ASTRODECK_UVICORN_ACCESS_LOG=false
+Environment=ASTRODECK_REQUIRE_AUTH=true
+ExecStart=/opt/astrodeck/venv/bin/python -m astrodeck run --host 127.0.0.1 --port 8800
+Restart=on-failure
+RestartSec=3s
+KillSignal=SIGTERM
+TimeoutStopSec=90s
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=~@clock @cpu-emulation @debug @module @mount @obsolete @raw-io @reboot @swap
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+ReadWritePaths=/var/lib/astrodeck
+LimitCORE=0
+TasksMax=256
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target

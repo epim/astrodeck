@@ -1,109 +1,159 @@
-# Running AstroDeck in Docker (including on a Raspberry Pi)
+# Running AstroDeck in Docker
 
-One container, two folders, one port. Everything else is configured in the UI.
+AstroDeck supplies two deliberately different Compose profiles:
 
-## Quick start
+- the root `docker-compose.yml` is a hardened, loopback-only development and
+  maintenance profile;
+- `deploy/reverse-proxy/docker-compose.yml` is the supported LAN or public
+  profile, where nginx is the only published service and terminates TLS/WSS.
+
+Do not publish the application's port 8800 directly to a LAN or the internet.
+
+## Loopback quick start
+
+Build the image, initialize a named administrator interactively, then start the
+service:
 
 ```bash
 git clone https://github.com/epim/astrodeck
 cd astrodeck
+docker compose build
+docker compose run --rm astrodeck \
+  python -m astrodeck create-admin <username>
 docker compose up -d
 ```
 
-Then open `http://<the-machine's-address>:8800` from a phone, tablet or laptop on
-the same network.
+The command prompts for the password. Do not put it in the command line, an
+environment variable, `.env`, shell history, or Compose metadata. Open
+`http://127.0.0.1:8800` on the Docker host.
 
-Your data lives in `./data` beside the compose file — `data/config` for the rig
-profile, site and accounts, `data/captures` for every frame. They are ordinary
-files: copy them off with anything, back them up with anything. `docker compose
-down` does not touch them.
+The local profile binds only `127.0.0.1`, runs as numeric UID/GID 10001, drops
+all capabilities, enables no-new-privileges, and uses a read-only root
+filesystem. Only `/data/config`, `/data/captures`, and the bounded `/tmp` tmpfs
+are writable. Configuration and captures live in the `astrodeck-config` and
+`astrodeck-captures` named volumes, so `docker compose down` does not remove
+them. Back up both volumes before upgrades; never use `down --volumes` unless
+you intend to destroy their contents.
 
-## Letting the container see your rig
+`ASTRODECK_TOKEN` is a legacy direct-API transport credential. It is not a
+working browser/Compose bootstrap and is intentionally absent from the supplied
+profiles. The named account created above enables browser authentication.
 
-A container cannot see a USB device that has not been passed in, so a fresh
-container finds no hardware. `docker-compose.yml` has both options commented in;
-uncomment one.
+### Upgrading from the former bind-mount profile
 
-**Everything (simplest).** The container sees every USB device, including ones
-you plug in later:
-
-```yaml
-privileged: true
-volumes:
-  - /dev/bus/usb:/dev/bus/usb
-```
-
-**Named devices (narrower).** Safer, but a device that appears after the
-container starts stays invisible until you restart it:
-
-```yaml
-devices:
-  - /dev/ttyUSB0:/dev/ttyUSB0
-  - /dev/ttyACM0:/dev/ttyACM0
-```
-
-Find yours with `ls -l /dev/serial/by-id/` — that listing names the actual
-hardware, so you can tell the mount from the focuser without guessing.
-
-Network devices need none of this. An ASIAIR, a NINA instance, an Alpaca server
-or PHD2 elsewhere on the network are reached over the network, so they work with
-no device passthrough at all.
-
-## Raspberry Pi
-
-A Pi 4 or 5 with 4 GB and a 64-bit OS runs this. Build it on the Pi:
+Older versions mounted `./data/config` and `./data/captures`. The hardened
+profile uses named volumes instead; upgrading does not delete those folders,
+but it also does not import them automatically. Stop AstroDeck and back up the
+entire `data` directory before migrating. Initialize the new volumes, then copy
+each old tree with a one-shot container that retains the image's unprivileged
+UID and sandbox:
 
 ```bash
-docker compose up -d --build
+docker compose down
+docker compose build
+docker compose run --rm --entrypoint true astrodeck
+docker run --rm --read-only --cap-drop ALL \
+  --security-opt no-new-privileges \
+  --mount type=bind,src="$(pwd)/data/config",dst=/source,readonly \
+  --mount type=volume,src=astrodeck-local_astrodeck-config,dst=/target \
+  --entrypoint sh astrodeck:latest -c \
+  'cp -R /source/. /target/ && find /target -type d -exec chmod 0700 {} \; && find /target -type f -exec chmod 0600 {} \;'
+docker run --rm --read-only --cap-drop ALL \
+  --security-opt no-new-privileges \
+  --mount type=bind,src="$(pwd)/data/captures",dst=/source,readonly \
+  --mount type=volume,src=astrodeck-local_astrodeck-captures,dst=/target \
+  --entrypoint sh astrodeck:latest -c \
+  'cp -R /source/. /target/ && find /target -type d -exec chmod 0700 {} \; && find /target -type f -exec chmod 0600 {} \;'
 ```
 
-Expect the first build to take a while — it compiles nothing, but it does
-install the Python scientific stack and build the web UI.
+Run these commands from the repository root. If UID 10001 cannot read the old
+bind mount, stop and correct its host ownership deliberately; do not make the
+tree world-readable. Confirm the old account, configuration, and a sample
+capture are visible before archiving the old `data` directory.
 
-Two things worth doing on a Pi:
+## LAN or public access
 
-- **Put captures on real storage.** An SD card will fill and will eventually
-  wear out under a night of writes. Point `./data/captures` at a USB SSD by
-  editing the volume line in `docker-compose.yml`.
-- **Give it swap** if you are on a 4 GB Pi and the UI build gets killed. The
-  build is the memory-hungry part; running the server is not.
+Use the TLS reverse-proxy profile and follow its deployment README. On a fresh
+production config volume, bootstrap before bringing up the stack:
 
-Cross-building on a faster machine also works:
+```bash
+docker compose -f deploy/reverse-proxy/docker-compose.yml build
+docker compose -f deploy/reverse-proxy/docker-compose.yml run --rm astrodeck \
+  python -m astrodeck create-admin <username>
+docker compose -f deploy/reverse-proxy/docker-compose.yml up -d
+```
+
+The application has only an internal `expose` entry in that profile. nginx is
+the sole published listener, and the application trusts forwarded metadata only
+from nginx's fixed internal address. Keep the host firewall closed to upstream
+port 8800.
+
+## Letting the container see hardware
+
+Network devices—an Alpaca server, NINA, PHD2, or an ASIAIR elsewhere on the
+network—need no host device access.
+
+For a stable serial device, create a local rootful override using its
+`/dev/serial/by-id/...` path and the GID of a narrowly scoped udev group:
+
+```yaml
+services:
+  astrodeck:
+    devices:
+      - /dev/serial/by-id/<stable-id>:/dev/ttyUSB0:rwm
+    group_add:
+      - "${ASTRODECK_DEVICE_GID:?set the host device group GID}"
+```
+
+For approved hot-plugged libusb cameras, the checked-in
+`docker-compose.usb.yml` override grants only USB character major 189, mounts
+only `/dev/bus/usb`, and retains the zero-capability policy. Host udev rules must
+limit node ownership to the known vendors:
+
+```bash
+export ASTRODECK_USB_GID=<udev-group-gid>
+docker compose -f docker-compose.yml -f docker-compose.usb.yml up -d
+```
+
+Never grant the container blanket device access, the Docker socket, host
+network/PID namespaces, host root, `/dev/mem`, or `/dev/gpiomem`. Do not add
+capabilities. USB access is not claimed for rootless Docker until it has been
+verified with the intended host, kernel, udev rules, cameras, and hotplug flow.
+
+## Raspberry Pi and Orange Pi
+
+Use a 64-bit operating system. Building on the target produces its native arm64
+image:
+
+```bash
+docker compose build
+```
+
+Cross-building on a faster machine is also possible:
 
 ```bash
 docker buildx build --platform linux/arm64 -t astrodeck:arm64 .
 ```
 
-**Verified so far:** the amd64 image is built, run and checked end-to-end
-(health, UI, assets). The arm64 image has not yet been run on Pi hardware — if
-you get there first, the failure worth reporting is anything at *build* time,
-since the runtime is identical Python either way.
+Put captures on durable SSD storage, not the boot SD card. The supported
+rootless profile uses named volumes because arbitrary host bind ownership does
+not map reliably to container UID 10001. If an operator chooses a rootful SSD
+bind override, pre-create exact source directories as UID/GID 10001 with mode
+0700 and use long Compose mount syntax with `create_host_path: false`; never let
+Compose silently create a root-owned path.
 
-On an Apple-silicon Mac the arm64 build is worth doing even without a Pi to hand:
-Docker runs arm64 Linux natively there rather than under emulation, so
-`docker buildx build --platform linux/arm64 .` both builds and *runs* the real
-Pi image at full speed. That is a genuine check; QEMU on an x86 machine often is
-not, and on some setups cannot execute arm64 binaries at all.
-
-## Notes
-
-- The container runs as an unprivileged user (uid 10001). If you bind-mount a
-  folder that already exists, make sure that uid can write it:
-  `sudo chown -R 10001:10001 data`.
-- `0.0.0.0` inside the container is the container's own interface. What your
-  network can reach is decided by the `ports:` line, not by that.
-- **There is no authentication until you configure it.** Anything that can reach
-  port 8800 can move your mount. On a home network behind a router that is
-  usually fine; before exposing it any further, set up sign-in under
-  Settings → Auth. See [`docs/SECURITY.md`](../SECURITY.md).
-- To move it off port 8800, change the LEFT side of `"8800:8800"`. The right
-  side is inside the container and should stay as it is.
+Before releasing either architecture, run the live container-security gate on
+native Linux amd64 and arm64. Hardware releases additionally have to prove
+serial/libusb discovery and hotplug with no added capability or privilege.
 
 ## Updating
 
 ```bash
 git pull
-docker compose up -d --build
+docker compose build --pull
+docker compose up -d
 ```
 
-Your config and captures are untouched — they are in `./data`, not in the image.
+Image replacement leaves the named configuration and capture volumes intact.
+Confirm the service becomes healthy and perform an authenticated browser check
+before pruning the previous image.

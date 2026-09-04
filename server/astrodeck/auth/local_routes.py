@@ -45,7 +45,10 @@ reports ``methods == []`` -- "no login screen").
 from __future__ import annotations
 
 import hmac
+import hashlib
 import secrets
+import threading
+import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -58,7 +61,8 @@ from .capabilities import CAP_ADMIN_USERS, ROLES
 from .deps import _scope_is_remote, require
 from .passwords import PasswordTooLongError, PasswordTooShortError
 from .users import InvalidEmailError
-from .session import sign_session
+from .login_rate_limit import LoginAttemptLimiter
+from .session import credential_fingerprint, session_secret, sign_session
 
 router = APIRouter(tags=["auth-local"])
 
@@ -102,7 +106,8 @@ def _google_configured(auth_cfg: Any) -> bool:
 
 def _admin_token(auth_cfg: Any) -> str:
     """The configured break-glass admin token (stripped), or '' when unset."""
-    return (getattr(auth_cfg, "admin_token", "") or "").strip()
+    token = (getattr(auth_cfg, "admin_token", "") or "").strip()
+    return token if len(token.encode("utf-8")) >= 32 else ""
 
 
 def _session_ttl(auth_cfg: Any) -> int:
@@ -117,13 +122,28 @@ def _store() -> users_mod.UserStore:
 
 
 def _is_secure(request: Request) -> bool:
-    """True when the request arrived over HTTPS (sets the Secure cookie flag).
-    Honors ``X-Forwarded-Proto`` for a TLS-terminating proxy; False on plain HTTP
-    so the cookie is still delivered on a LAN/dev rig."""
-    xfp = request.headers.get("x-forwarded-proto", "")
-    if xfp:
-        return xfp.split(",")[0].strip().lower() == "https"
+    """Trust only the ASGI scheme normalized by the configured proxy peer."""
     return request.url.scheme == "https"
+
+
+_LOGIN_LIMITER_TAG = b"astrodeck.local-login-limiter.v1"
+_login_limiter_lock = threading.Lock()
+_login_limiter: LoginAttemptLimiter | None = None
+_login_limiter_key: bytes | None = None
+
+
+def _active_login_limiter() -> LoginAttemptLimiter:
+    """Return a limiter derived from the live, domain-separated session key."""
+    global _login_limiter, _login_limiter_key
+    derived = hmac.new(
+        session_secret(), _LOGIN_LIMITER_TAG, hashlib.sha256
+    ).digest()
+    with _login_limiter_lock:
+        if (_login_limiter is None or _login_limiter_key is None
+                or not hmac.compare_digest(_login_limiter_key, derived)):
+            _login_limiter = LoginAttemptLimiter(derived)
+            _login_limiter_key = derived
+        return _login_limiter
 
 
 def _new_jti() -> str:
@@ -138,11 +158,18 @@ def _set_session_cookie(resp: Response, token: str, *, secure: bool,
 
 
 def _mint_session_response(body: dict, *, role: str, email: str | None,
-                           request: Request, ttl_s: int) -> JSONResponse:
+                           request: Request, ttl_s: int,
+                           authn: str, subject: str | None = None,
+                           account_epoch: int | None = None,
+                           credential_tag: str | None = None) -> JSONResponse:
     """Mint a signed session for ``role`` and attach it as the ``ad_session``
     cookie (the SAME cookie family google login mints)."""
     jti = _new_jti()
-    token = sign_session(role, email=email, jti=jti, ttl_s=ttl_s)
+    token = sign_session(
+        role, email=email, jti=jti, ttl_s=ttl_s, authn=authn,
+        subject=subject, account_epoch=account_epoch,
+        credential_tag=credential_tag,
+    )
     resp = JSONResponse(body)
     _set_session_cookie(resp, token, secure=_is_secure(request), ttl_s=ttl_s)
     return resp
@@ -205,16 +232,29 @@ async def local_login(body: LocalLogin, request: Request):
     if not _local_enabled(auth_cfg):
         raise HTTPException(status_code=404, detail="local auth not enabled")
 
+    normalized_username = (body.username or "").strip().casefold()
+    limiter = _active_login_limiter()
+    retry_after = limiter.begin_attempt(normalized_username, now=time.monotonic())
+    if retry_after is not None:
+        raise HTTPException(
+            status_code=429,
+            detail="invalid username or password",
+            headers={"Retry-After": str(retry_after)},
+        )
+
     user = _store().verify(body.username, body.password)
     if user is None:
         # One generic failure: unknown user, wrong password, and disabled account
         # are indistinguishable to the caller (no account-enumeration oracle).
         raise HTTPException(status_code=401, detail="invalid username or password")
 
+    limiter.record_success(normalized_username)
+
     return _mint_session_response(
         {"role": user.role, "email": user.email},
         role=user.role, email=user.email, request=request,
-        ttl_s=_session_ttl(auth_cfg))
+        ttl_s=_session_ttl(auth_cfg), authn="local", subject=user.id,
+        account_epoch=user.session_epoch)
 
 
 # --------------------------------------------------------- POST /auth/setup/local
@@ -272,10 +312,16 @@ async def setup_local_admin(body: SetupLocal, request: Request):
         # blank/duplicate username, unknown role (role is fixed admin here)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    # This is a durable one-way latch, not just an emptiness heuristic.  If an
+    # account is later removed from disk, setup must not silently reopen.
+    config_store.set_auth(auth_cfg.model_copy(
+        update={"local_enabled_first_run": False}))
+
     return _mint_session_response(
         user.to_public() | {"role": user.role},
         role=user.role, email=user.email, request=request,
-        ttl_s=_session_ttl(auth_cfg))
+        ttl_s=_session_ttl(auth_cfg), authn="local", subject=user.id,
+        account_epoch=user.session_epoch)
 
 
 # --------------------------------------------------------------- POST /auth/token
@@ -303,7 +349,8 @@ async def token_login(body: TokenLogin, request: Request):
     return _mint_session_response(
         {"role": "admin", "email": None},
         role="admin", email=None, request=request,
-        ttl_s=_session_ttl(auth_cfg))
+        ttl_s=_session_ttl(auth_cfg), authn="admin_token",
+        credential_tag=credential_fingerprint(configured))
 
 
 # --------------------------------------------------------- GET /api/auth/methods
@@ -390,9 +437,7 @@ async def patch_user(user_id: str, body: UserPatch):
         if body.enabled is not None:
             store.set_enabled(user_id, body.enabled)
         if body.email is not None:
-            user = store.get(user_id)
-            user.email = body.email  # email is non-secret metadata; no store helper
-            store._save()  # noqa: SLF001 - persist the email edit through the store
+            store.set_email(user_id, body.email)
     except HTTPException:
         raise
     except ValueError as exc:
