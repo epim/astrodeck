@@ -172,20 +172,34 @@ It is not the provisioner, the sandbox, the cipher config, or the password:
   read-only `/proc/sys` warning the sandbox produces
   (`drop_unicast_in_l2_multicast`) is non-fatal and is present or absent
   without changing the outcome.
-- During the ten seconds the laptop was associating, the board's own
-  `wpa_supplicant` journal in AP mode records nothing: no association, no
-  EAPOL, no station event. The radio never handed the client's frames up.
+- While the client associated, the board's `wpa_supplicant` AP journal recorded
+  nothing: no association, no EAPOL, no station event. The radio never handed
+  the client's frames up.
 - Every hotspot bring-up logs `brcmfmac: brcmf_vif_set_mgmt_ie: vndr ie set
-  error: -52`, the Broadcom firmware rejecting the beacon's management IE.
+  error: -52`.
 
-Conclusion: an AP-mode firmware fault on this board's BCM4345 (brcmfmac,
-firmware dated 2017), below everything the provisioner controls. The whole
-provisioning stack is verified up to the radio; a real client cannot associate
-on this particular board. Options for the appliance, none of them provisioner
-work: a newer brcmfmac firmware and nvram for this chip, a different onboard
-radio on the shipping hardware, or a small external USB Wi-Fi adapter used only
-for the setup access point. This does not affect the board running as a station
-on the home network, which works throughout.
+Root cause, confirmed 2026-09-04: not firmware, a radio-state regression. The
+Broadcom brcmfmac radio will not service access-point clients when the access
+point is raised on a radio that was just an associated station, in this case on
+5 GHz. The provisioner's `ap_up` stops the client supplicant but does not reset
+the radio, so it works on a factory-fresh board whose radio is idle at first
+boot (which is why August worked) and fails on any board already joined to
+home Wi-Fi. Proven by a control that fully reloaded the driver
+(`modprobe -r brcmfmac; modprobe brcmfmac`) so the radio started clean, then
+raised the same access point with the same config: the laptop associated and
+`EAPOL-4WAY-HS-COMPLETED` at 96% signal with a DHCP lease of 10.42.0.46. So the
+whole provisioning stack works; the gap is that AP bring-up must reset the radio
+when it has been a station. Station mode on the home network is unaffected.
+
+The fix is a real design decision, not yet implemented, because a full module
+reload needs `CAP_SYS_MODULE`, which the broker's sandbox deliberately excludes.
+The candidates: (a) on a recovery boot, keep the client supplicant from
+associating before the access point so the radio stays clean, which covers the
+shipped recovery path and needs no new capability; (b) a soft radio reset the
+broker can do with its existing `CAP_NET_ADMIN` (rfkill block/unblock, or an
+interface down/up), if one proves to clear the firmware band state; (c) grant
+the broker `CAP_SYS_MODULE` for a driver reload, the most reliable and the
+biggest sandbox concession.
 
 ## Not verified
 
