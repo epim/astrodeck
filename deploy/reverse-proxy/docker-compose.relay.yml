@@ -1,0 +1,150 @@
+name: astrodeck-relay-edge
+
+services:
+  relay:
+    build:
+      context: ../..
+      dockerfile: relay/Dockerfile
+    user: "10001:10001"
+    environment:
+      RELAY_BIND_HOST: 0.0.0.0
+      RELAY_BIND_PORT: "8080"
+      RELAY_ORIGIN: "https://${RELAY_PUBLIC_HOST:?Set RELAY_PUBLIC_HOST}:${RELAY_HTTPS_PORT:-8443}"
+      RELAY_HTTPS: "1"
+      RELAY_FORWARDED_ALLOW_IPS: 172.31.0.2
+      RELAY_UVICORN_ACCESS_LOG: "false"
+      RELAY_DEVICE_TOKENS_FILE: /run/secrets/device_tokens
+    expose: ["8080"]
+    secrets:
+      - source: device_tokens
+        target: device_tokens
+        uid: "10001"
+        gid: "10001"
+        mode: 0400
+    networks:
+      backend:
+        ipv4_address: 172.31.0.3
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    init: true
+    pids_limit: 128
+    ulimits:
+      nofile:
+        soft: 4096
+        hard: 4096
+    stop_signal: SIGTERM
+    stop_grace_period: 30s
+    restart: unless-stopped
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=128m,mode=1777
+    logging:
+      driver: local
+      options:
+        max-size: 10m
+        max-file: "5"
+
+  proxy:
+    # Multi-architecture index digest for the reviewed official stable image.
+    image: nginx:1.30.4-alpine@sha256:02b1b2a0445514891a14aa371845f6085d5d9d10d385b30d6aad606a50a29a05
+    user: "101:101"
+    depends_on: [relay]
+    environment:
+      RELAY_PUBLIC_HOST: "${RELAY_PUBLIC_HOST:?Set RELAY_PUBLIC_HOST}"
+      RELAY_PUBLIC_HTTPS_PORT: "${RELAY_HTTPS_PORT:-8443}"
+    entrypoint: ["/bin/sh", "-e", "-c"]
+    command:
+      - |
+        case "$$RELAY_PUBLIC_HOST" in
+          ""|*[!A-Za-z0-9.-]*)
+            echo 'RELAY_PUBLIC_HOST must be one DNS hostname or IPv4 address' >&2
+            exit 2
+            ;;
+        esac
+        if [ "$${#RELAY_PUBLIC_HOST}" -gt 253 ] || \
+           ! printf '%s\n' "$$RELAY_PUBLIC_HOST" | grep -Eq '^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$$'; then
+          echo 'RELAY_PUBLIC_HOST must be one DNS hostname or IPv4 address' >&2
+          exit 2
+        fi
+        case "$$RELAY_PUBLIC_HTTPS_PORT" in
+          ""|0|0*|*[!0-9]*)
+            echo 'RELAY_PUBLIC_HTTPS_PORT must be an integer from 1 to 65535' >&2
+            exit 2
+            ;;
+        esac
+        if [ "$${#RELAY_PUBLIC_HTTPS_PORT}" -gt 5 ] || \
+           [ "$$RELAY_PUBLIC_HTTPS_PORT" -gt 65535 ]; then
+          echo 'RELAY_PUBLIC_HTTPS_PORT must be an integer from 1 to 65535' >&2
+          exit 2
+        fi
+        umask 077
+        envsubst '$${RELAY_PUBLIC_HOST} $${RELAY_PUBLIC_HTTPS_PORT}' < /etc/nginx/site.conf.template > /tmp/site.conf
+        nginx -t -c /etc/nginx/nginx.conf
+        exec nginx -c /etc/nginx/nginx.conf -g 'daemon off;'
+    ports:
+      - target: 8080
+        published: "${RELAY_HTTP_PORT:-8080}"
+        protocol: tcp
+      - target: 8443
+        published: "${RELAY_HTTPS_PORT:-8443}"
+        protocol: tcp
+    volumes:
+      - type: bind
+        source: ./nginx/nginx.conf
+        target: /etc/nginx/nginx.conf
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./nginx/relay.conf.template
+        target: /etc/nginx/site.conf.template
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${RELAY_CERT_DIR:-./certs}/fullchain.pem"
+        target: /certs/fullchain.pem
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${RELAY_CERT_DIR:-./certs}/privkey.pem"
+        target: /certs/privkey.pem
+        read_only: true
+        bind:
+          create_host_path: false
+    networks:
+      backend:
+        ipv4_address: 172.31.0.2
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    init: true
+    pids_limit: 64
+    ulimits:
+      nofile:
+        soft: 4096
+        hard: 4096
+    stop_signal: SIGTERM
+    stop_grace_period: 30s
+    restart: unless-stopped
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=128m,mode=1777
+    logging:
+      driver: local
+      options:
+        max-size: 10m
+        max-file: "5"
+
+secrets:
+  device_tokens:
+    # Unlike file-backed Compose secrets, environment-backed secrets honor the
+    # uid/gid/mode above.  The value is not added to the service environment.
+    environment: RELAY_DEVICE_TOKENS_JSON
+
+networks:
+  backend:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.31.0.0/24

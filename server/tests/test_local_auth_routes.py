@@ -26,6 +26,7 @@ from astrodeck.auth.users import UserStore
 from astrodeck.config import AuthConfig, ConfigStore
 
 SESSION_COOKIE = "ad_session"
+ADMIN_TOKEN = "tok-secret-123-0123456789-abcdef"
 
 
 # --------------------------------------------------------------------- fixtures
@@ -76,9 +77,12 @@ def _make_app(tmp_path, monkeypatch, *, methods=None, first_run=True,
     return app, temp_users, temp_store
 
 
-def _login_cookie(role: str, email: str = "u@x") -> str:
+def _login_cookie(user) -> str:
     """A signed session cookie for ``role`` (mirrors what local login mints)."""
-    return sign_session(role, email=email, jti=f"j-{role}")
+    return sign_session(
+        user.role, email=user.email, jti=f"j-{user.id}", authn="local",
+        subject=user.id, account_epoch=user.session_epoch,
+    )
 
 
 # ----------------------------------------------------- non-breaking default open
@@ -91,7 +95,7 @@ def test_default_open_serves_everything_and_user_crud(tmp_path, monkeypatch):
         assert c.get("/api/status").status_code == 200
         # admin.users CRUD is open (caller resolves to admin under no methods)
         assert c.get("/api/users").status_code == 200
-        r = c.post("/api/users", json={"username": "v1@example.com", "password": "pw",
+        r = c.post("/api/users", json={"username": "v1@example.com", "password": "correct-horse",
                                        "role": "viewer"})
         assert r.status_code == 201, r.text
         assert "password_hash" not in r.json()
@@ -111,11 +115,11 @@ def test_local_login_404_when_local_not_enabled(tmp_path, monkeypatch):
 
 def test_local_login_happy_path_sets_cookie(tmp_path, monkeypatch):
     app, users, _ = _make_app(tmp_path, monkeypatch, methods=["local"])
-    users.create(username="alice", password="hunter2", role="operator",
+    users.create(username="alice", password="hunter2-long", role="operator",
                  email="a@rig")
     with TestClient(app) as c:
         r = c.post("/auth/local",
-                   json={"username": "alice", "password": "hunter2"})
+                   json={"username": "alice", "password": "hunter2-long"})
         assert r.status_code == 200, r.text
         assert r.json() == {"role": "operator", "email": "a@rig"}
         # a session cookie was set
@@ -127,20 +131,20 @@ def test_local_login_happy_path_sets_cookie(tmp_path, monkeypatch):
 
 
 def _seed_wrong_password(users) -> dict:
-    users.create(username="bob", password="right", role="admin")
+    users.create(username="bob", password="right-password", role="admin")
     return {"username": "bob", "password": "WRONG"}
 
 
 def _seed_unknown_user(users) -> dict:
-    users.create(username="bob", password="right", role="admin")
+    users.create(username="bob", password="right-password", role="admin")
     return {"username": "ghost", "password": "x"}
 
 
 def _seed_disabled_user(users) -> dict:
-    users.create(username="admin1", password="pw", role="admin")  # keep an admin
-    u = users.create(username="carol", password="pw", role="operator")
+    users.create(username="admin1", password="correct-horse", role="admin")
+    u = users.create(username="carol", password="correct-horse", role="operator")
     users.set_enabled(u.id, False)
-    return {"username": "carol", "password": "pw"}
+    return {"username": "carol", "password": "correct-horse"}
 
 
 @pytest.mark.parametrize("seed", [
@@ -178,7 +182,7 @@ def test_first_run_creates_one_admin_then_closes(tmp_path, monkeypatch):
         # the UI signal advertises first-run
         assert c.get("/api/auth/methods").json()["first_run"] is True
         r = c.post("/auth/setup/local",
-                   json={"username": "root", "password": "s3cret",
+                   json={"username": "root", "password": "s3cret-longer",
                          "email": "root@rig"})
         assert r.status_code == 200, r.text
         body = r.json()
@@ -190,7 +194,18 @@ def test_first_run_creates_one_admin_then_closes(tmp_path, monkeypatch):
         assert users.is_empty() is False
         again = c.post("/auth/setup/local",
                        json={"username": "root2", "password": "x2"})
-        assert again.status_code == 409
+        assert again.status_code == 404
+        assert c.get("/api/auth/methods").json()["first_run"] is False
+
+        # The latch survives account-file loss; emptiness alone can never
+        # reopen this unauthenticated admin-creation endpoint.
+        users._path.unlink()
+        users._users = None
+        assert c.get("/api/auth/methods").json()["first_run"] is False
+        assert c.post(
+            "/auth/setup/local",
+            json={"username": "attacker", "password": "attacker-password"},
+        ).status_code == 404
         # and the signal no longer advertises first-run
         assert c.get("/api/auth/methods").json()["first_run"] is False
 
@@ -212,6 +227,19 @@ def test_first_run_404_when_flag_off(tmp_path, monkeypatch):
         assert r.status_code == 404
 
 
+def test_corrupt_user_store_cannot_reopen_first_run(tmp_path, monkeypatch):
+    app, users, _ = _make_app(tmp_path, monkeypatch, methods=["local"])
+    original = b'{"users": ['
+    users._path.write_bytes(original)
+    with TestClient(app, raise_server_exceptions=False) as c:
+        r = c.post(
+            "/auth/setup/local",
+            json={"username": "attacker", "password": "attacker-password"},
+        )
+    assert r.status_code == 500
+    assert users._path.read_bytes() == original
+
+
 # ------------------------------------------------------- break-glass token login
 
 def test_token_login_mints_admin_session(tmp_path, monkeypatch):
@@ -219,9 +247,9 @@ def test_token_login_mints_admin_session(tmp_path, monkeypatch):
     normal admin ad_session cookie (astrotown-representative: a method is enabled
     so the active MultiAuthProvider reads the minted cookie on the next request)."""
     app, _users, _ = _make_app(tmp_path, monkeypatch, methods=["local"],
-                               admin_token="tok-secret-123")
+                               admin_token=ADMIN_TOKEN)
     with TestClient(app) as c:
-        r = c.post("/auth/token", json={"token": "tok-secret-123"})
+        r = c.post("/auth/token", json={"token": ADMIN_TOKEN})
         assert r.status_code == 200, r.text
         assert r.json()["role"] == "admin"
         assert SESSION_COOKIE in r.cookies or SESSION_COOKIE in c.cookies
@@ -232,7 +260,7 @@ def test_token_login_mints_admin_session(tmp_path, monkeypatch):
 
 def test_token_login_wrong_token_is_generic_401(tmp_path, monkeypatch):
     app, _users, _ = _make_app(tmp_path, monkeypatch, methods=["local"],
-                               admin_token="tok-secret-123")
+                               admin_token=ADMIN_TOKEN)
     with TestClient(app) as c:
         r = c.post("/auth/token", json={"token": "WRONG"})
         assert r.status_code == 401
@@ -241,7 +269,7 @@ def test_token_login_wrong_token_is_generic_401(tmp_path, monkeypatch):
 
 def test_token_login_blank_token_401(tmp_path, monkeypatch):
     app, _users, _ = _make_app(tmp_path, monkeypatch, methods=["local"],
-                               admin_token="tok-secret-123")
+                               admin_token=ADMIN_TOKEN)
     with TestClient(app) as c:
         assert c.post("/auth/token", json={"token": ""}).status_code == 401
         assert c.post("/auth/token", json={"token": "   "}).status_code == 401
@@ -263,12 +291,12 @@ def test_methods_reports_admin_token_configured(tmp_path, monkeypatch):
     with TestClient(app_off) as c:
         assert c.get("/api/auth/methods").json()["admin_token_configured"] is False
     app_on, _u2, _ = _make_app(tmp_path / "b", monkeypatch, methods=[],
-                               admin_token="tok-secret-123")
+                               admin_token=ADMIN_TOKEN)
     with TestClient(app_on) as c:
         m = c.get("/api/auth/methods").json()
         assert m["admin_token_configured"] is True
         # the token value is never disclosed anywhere in the signal
-        assert "tok-secret-123" not in c.get("/api/auth/methods").text
+        assert ADMIN_TOKEN not in c.get("/api/auth/methods").text
 
 
 # --------------------------------------------------- W3 remote interlock (relay)
@@ -299,7 +327,7 @@ def test_first_run_setup_denied_over_relay(tmp_path, monkeypatch):
     # the SAME request over the LAN (no remote flag) still creates the admin.
     with TestClient(app) as c:
         ok = c.post("/auth/setup/local",
-                    json={"username": "root", "password": "s3cret"})
+                    json={"username": "root", "password": "s3cret-longer"})
         assert ok.status_code == 200, ok.text
         assert ok.json()["username"] == "root"
     assert users.is_empty() is False
@@ -324,9 +352,11 @@ def test_auth_me_remote_denied_on_open_default(tmp_path, monkeypatch):
 
 def test_user_crud_denied_for_viewer(tmp_path, monkeypatch):
     app, users, _ = _make_app(tmp_path, monkeypatch, methods=["local"])
-    users.create(username="root", password="pw", role="admin")
+    users.create(username="root", password="correct-horse", role="admin")
+    viewer = users.create(username="viewer", password="viewer-password",
+                          role="viewer")
     with TestClient(app) as c:
-        c.cookies.set(SESSION_COOKIE, _login_cookie("viewer"))
+        c.cookies.set(SESSION_COOKIE, _login_cookie(viewer))
         # a viewer holds NOT admin.users -> 403 on every CRUD verb
         assert c.get("/api/users").status_code == 403
         assert c.post("/api/users",
@@ -336,11 +366,11 @@ def test_user_crud_denied_for_viewer(tmp_path, monkeypatch):
 
 def test_user_crud_allowed_for_admin_session(tmp_path, monkeypatch):
     app, users, _ = _make_app(tmp_path, monkeypatch, methods=["local"])
-    users.create(username="root", password="pw", role="admin")
+    root = users.create(username="root", password="correct-horse", role="admin")
     with TestClient(app) as c:
-        c.cookies.set(SESSION_COOKIE, _login_cookie("admin"))
+        c.cookies.set(SESSION_COOKIE, _login_cookie(root))
         assert c.get("/api/users").status_code == 200
-        r = c.post("/api/users", json={"username": "newbie@example.com", "password": "pw",
+        r = c.post("/api/users", json={"username": "newbie@example.com", "password": "correct-horse",
                                        "role": "operator"})
         assert r.status_code == 201, r.text
         uid = r.json()["id"]
@@ -349,7 +379,7 @@ def test_user_crud_allowed_for_admin_session(tmp_path, monkeypatch):
         assert pr.status_code == 200 and pr.json()["role"] == "viewer"
         # reset password
         assert c.post(f"/api/users/{uid}/password",
-                      json={"password": "new"}).status_code == 200
+                      json={"password": "new-password"}).status_code == 200
         # disable
         assert c.patch(f"/api/users/{uid}",
                        json={"enabled": False}).json()["enabled"] is False
@@ -360,9 +390,9 @@ def test_user_crud_allowed_for_admin_session(tmp_path, monkeypatch):
 
 def test_create_duplicate_user_409(tmp_path, monkeypatch):
     app, users, _ = _make_app(tmp_path, monkeypatch, methods=["local"])
-    users.create(username="root@example.com", password="pw", role="admin")
+    root = users.create(username="root@example.com", password="correct-horse", role="admin")
     with TestClient(app) as c:
-        c.cookies.set(SESSION_COOKIE, _login_cookie("admin"))
+        c.cookies.set(SESSION_COOKIE, _login_cookie(root))
         # same address, different case -> still a duplicate
         r = c.post("/api/users", json={"username": "ROOT@example.com", "password": "pw",
                                        "role": "viewer"})
@@ -371,9 +401,9 @@ def test_create_duplicate_user_409(tmp_path, monkeypatch):
 
 def test_delete_last_admin_409(tmp_path, monkeypatch):
     app, users, _ = _make_app(tmp_path, monkeypatch, methods=["local"])
-    root = users.create(username="root", password="pw", role="admin")
+    root = users.create(username="root", password="correct-horse", role="admin")
     with TestClient(app) as c:
-        c.cookies.set(SESSION_COOKIE, _login_cookie("admin"))
+        c.cookies.set(SESSION_COOKIE, _login_cookie(root))
         r = c.delete(f"/api/users/{root.id}")
         assert r.status_code == 409
         assert "last admin" in r.json()["detail"]
@@ -381,9 +411,9 @@ def test_delete_last_admin_409(tmp_path, monkeypatch):
 
 def test_create_user_too_long_password_422(tmp_path, monkeypatch):
     app, users, _ = _make_app(tmp_path, monkeypatch, methods=["local"])
-    users.create(username="root", password="pw", role="admin")
+    root = users.create(username="root", password="correct-horse", role="admin")
     with TestClient(app) as c:
-        c.cookies.set(SESSION_COOKIE, _login_cookie("admin"))
+        c.cookies.set(SESSION_COOKIE, _login_cookie(root))
         r = c.post("/api/users", json={"username": "big@example.com", "role": "viewer",
                                        "password": "a" * 100})
         assert r.status_code == 422
@@ -398,12 +428,16 @@ def test_create_admin_cli_seeds_user(tmp_path, monkeypatch):
 
     temp_users = UserStore(path=tmp_path / "users.json")
     monkeypatch.setattr(users_mod, "user_store", temp_users)
+    import astrodeck.config as config_mod
+    temp_config = ConfigStore(path=tmp_path / "astrodeck.json")
+    monkeypatch.setattr(config_mod, "config_store", temp_config)
 
-    pub = create_admin("rootadmin", "p@ssw0rd")
+    pub = create_admin("rootadmin", "p@ssw0rd-long")
     assert pub["role"] == "admin" and pub["username"] == "rootadmin"
     assert "password_hash" not in pub
     # actually persisted + verifiable
-    assert temp_users.verify("rootadmin", "p@ssw0rd") is not None
+    assert temp_users.verify("rootadmin", "p@ssw0rd-long") is not None
+    assert "local" in temp_config.cfg().auth.methods_effective()
 
 
 def test_create_admin_cli_resets_existing(tmp_path, monkeypatch):
@@ -413,15 +447,18 @@ def test_create_admin_cli_resets_existing(tmp_path, monkeypatch):
 
     temp_users = UserStore(path=tmp_path / "users.json")
     # keep a second admin so demote/disable churn never trips last-admin
-    temp_users.create(username="keeper", password="pw", role="admin")
-    u = temp_users.create(username="demoted", password="old", role="viewer")
+    temp_users.create(username="keeper", password="correct-horse", role="admin")
+    u = temp_users.create(username="demoted", password="old-password", role="viewer")
     temp_users.set_enabled(u.id, False)
     monkeypatch.setattr(users_mod, "user_store", temp_users)
+    import astrodeck.config as config_mod
+    temp_config = ConfigStore(path=tmp_path / "astrodeck.json")
+    monkeypatch.setattr(config_mod, "config_store", temp_config)
 
-    pub = create_admin("demoted", "fresh")
+    pub = create_admin("demoted", "fresh-password")
     assert pub["role"] == "admin" and pub["enabled"] is True
-    assert temp_users.verify("demoted", "fresh") is not None
-    assert temp_users.verify("demoted", "old") is None
+    assert temp_users.verify("demoted", "fresh-password") is not None
+    assert temp_users.verify("demoted", "old-password") is None
 
 
 def test_create_admin_requires_password(tmp_path, monkeypatch):
@@ -442,10 +479,10 @@ def test_logout_kills_the_cookie_immediately(tmp_path, monkeypatch):
     just on disk), so the same cookie stops authenticating on its next use --
     without waiting for an unrelated admin write or a restart."""
     app, users, _ = _make_app(tmp_path, monkeypatch, methods=["local"])
-    users.create(username="alice", password="hunter2", role="operator")
+    users.create(username="alice", password="hunter2-long", role="operator")
     with TestClient(app) as c:
         r = c.post("/auth/local",
-                   json={"username": "alice", "password": "hunter2"})
+                   json={"username": "alice", "password": "hunter2-long"})
         assert r.status_code == 200, r.text
         cookie = c.cookies.get(SESSION_COOKIE)
         assert cookie
@@ -456,6 +493,81 @@ def test_logout_kills_the_cookie_immediately(tmp_path, monkeypatch):
         # Re-present the SAME cookie: it must now be rejected (revoked live).
         c.cookies.set(SESSION_COOKIE, cookie)
         assert c.get("/auth/me").status_code == 401
+
+
+@pytest.mark.parametrize("mutation", ["password", "role", "disable", "delete"])
+def test_account_security_mutation_invalidates_existing_session(
+        tmp_path, monkeypatch, mutation):
+    app, users, _ = _make_app(tmp_path, monkeypatch, methods=["local"])
+    users.create(username="root", password="correct-horse", role="admin")
+    victim = users.create(username="victim", password="victim-password",
+                          role="operator")
+    with TestClient(app) as c:
+        login = c.post("/auth/local", json={
+            "username": "victim", "password": "victim-password"})
+        assert login.status_code == 200
+        cookie = c.cookies.get(SESSION_COOKIE)
+        assert c.get("/auth/me").status_code == 200
+
+        if mutation == "password":
+            users.set_password(victim.id, "replacement-password")
+        elif mutation == "role":
+            users.set_role(victim.id, "viewer")
+        elif mutation == "disable":
+            users.set_enabled(victim.id, False)
+        else:
+            users.delete(victim.id)
+
+        c.cookies.set(SESSION_COOKIE, cookie)
+        assert c.get("/auth/me").status_code == 401
+
+
+def test_disabled_account_session_cannot_open_websocket(tmp_path, monkeypatch):
+    from starlette.websockets import WebSocketDisconnect
+
+    app, users, _ = _make_app(tmp_path, monkeypatch, methods=["local"])
+    users.create(username="root", password="correct-horse", role="admin")
+    victim = users.create(username="victim", password="victim-password",
+                          role="viewer")
+    with TestClient(app) as c:
+        c.post("/auth/local", json={
+            "username": "victim", "password": "victim-password"})
+        cookie = c.cookies.get(SESSION_COOKIE)
+        users.set_enabled(victim.id, False)
+        c.cookies.set(SESSION_COOKIE, cookie)
+        with pytest.raises(WebSocketDisconnect):
+            with c.websocket_connect("/ws") as ws:
+                ws.receive_json()
+
+
+def test_admin_token_rotation_invalidates_exchanged_cookie(tmp_path, monkeypatch):
+    first = "A" * 32
+    second = "B" * 32
+    app, _users, store = _make_app(
+        tmp_path, monkeypatch, methods=["local"], admin_token=first)
+    with TestClient(app) as c:
+        assert c.post("/auth/token", json={"token": first}).status_code == 200
+        cookie = c.cookies.get(SESSION_COOKIE)
+        assert c.get("/auth/me").status_code == 200
+        store.set_auth(store.cfg().auth.model_copy(update={"admin_token": second}))
+        c.cookies.set(SESSION_COOKIE, cookie)
+        assert c.get("/auth/me").status_code == 401
+
+
+def test_required_runtime_rejects_disabling_last_auth_method(
+        tmp_path, monkeypatch):
+    app, users, store = _make_app(
+        tmp_path, monkeypatch, methods=["local"], first_run=False)
+    root = users.create(username="root", password="correct-horse", role="admin")
+    monkeypatch.setenv("ASTRODECK_REQUIRE_AUTH", "true")
+    monkeypatch.delenv("ASTRODECK_TOKEN", raising=False)
+    with TestClient(app) as c:
+        c.cookies.set(SESSION_COOKIE, _login_cookie(root))
+        body = c.get("/api/config").json()["auth"]
+        body["methods"] = []
+        denied = c.post("/api/auth/config", json=body)
+        assert denied.status_code == 400
+        assert store.cfg().auth.methods_effective() == ["local"]
 
 
 # ---- Fix 4 (medium): no empty-password admin over the HTTP surfaces ---------
@@ -489,9 +601,9 @@ def test_create_user_with_no_password_is_a_google_only_account(tmp_path, monkeyp
     The unauthenticated first-run path still demands a password; that one is
     covered separately."""
     app, users, _ = _make_app(tmp_path, monkeypatch, methods=["local"])
-    users.create(username="root@example.com", password="pw", role="admin")
+    root = users.create(username="root@example.com", password="correct-horse", role="admin")
     with TestClient(app) as c:
-        c.cookies.set(SESSION_COOKIE, _login_cookie("admin"))
+        c.cookies.set(SESSION_COOKIE, _login_cookie(root))
         r = c.post("/api/users", json={"username": "ghost@example.com",
                                        "password": "", "role": "viewer"})
         assert r.status_code == 201, r.text

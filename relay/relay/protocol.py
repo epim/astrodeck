@@ -43,7 +43,7 @@ PROTO_VERSION: Final[int] = 1
 CONTROL_STREAM_ID: Final[int] = 0
 
 # Default per-frame payload cap. One 125 MB FITS is sliced into <=64 KiB chunks
-# so it never head-of-line-blocks the 2 s status poll on the one socket.
+# so a single websocket message has a strict allocation ceiling.
 MAX_PAYLOAD: Final[int] = 64 * 1024
 
 # Header JSON is bounded so a malicious/buggy peer can't make us allocate a huge
@@ -53,6 +53,11 @@ MAX_HEADER: Final[int] = 64 * 1024
 # Fixed prefix size: type(1) + stream_id(8) + header_len(4).
 _PREFIX = struct.Struct(">BQI")
 _PREFIX_LEN: Final[int] = _PREFIX.size  # 13
+
+# Maximum size of one websocket message carrying a frame. The websocket layer
+# must enforce this too; otherwise it may allocate an arbitrarily large message
+# before ``decode`` gets a chance to reject its header/payload lengths.
+MAX_WIRE_SIZE: Final[int] = _PREFIX_LEN + MAX_HEADER + MAX_PAYLOAD
 
 
 class FrameType:
@@ -74,9 +79,9 @@ class FrameType:
     WINDOW = 0x15     # both          hdr {stream_id,credit}    per-stream byte credit
 
 
-# Frame-stream classes (the scheduling hint carried in REQ_OPEN/WS_OPEN headers).
-# The scope's writer round-robins ready streams and caps each ``bulk`` stream's
-# per-turn quota so a 125 MB FITS never head-of-line-blocks ``event`` frames.
+# Frame-stream classes carried as reserved scheduling hints in REQ_OPEN/WS_OPEN.
+# The current writer does not implement class round-robin or WINDOW credits;
+# bounded queues, chunks, concurrency, and timeouts provide flow control today.
 CLASS_EVENT: Final[str] = "event"      # /ws status/preview/sequence frames
 CLASS_CONTROL: Final[str] = "control"  # small request/response (deliver-or-error)
 CLASS_BULK: Final[str] = "bulk"        # FITS/PNG/large GET (chunked, drop-never)

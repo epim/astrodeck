@@ -3,7 +3,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import astrodeck.api.app as app_module
-from astrodeck.config import ConfigStore
+from astrodeck.config import ConfigStore, UpdateConfig
 from astrodeck.update import github, signing
 from astrodeck.update import service as SVC
 from astrodeck.update.state import update_state
@@ -31,7 +31,14 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(hub_mod, "config_store", temp_store)
     monkeypatch.setattr(app_module, "config_store", temp_store)
     monkeypatch.setattr(hub_mod, "CAPTURE_DIR", tmp_path / "captures")
-    with TestClient(app_module.create_app()) as c:
+    # The production server now refuses update mutation under the unauthenticated
+    # open-admin provider. Exercise the route through the legacy shared-token
+    # gate, and provision the code-signing trust root out of band.
+    monkeypatch.setenv(app_module.AUTH_ENV_VAR, "test-update-token-0123456789abcdef")
+    temp_store.set_update_config(UpdateConfig(signing_pubkey=PUB))
+    with TestClient(
+            app_module.create_app(),
+            headers={"X-Auth-Token": "test-update-token-0123456789abcdef"}) as c:
         yield c, temp_store
 
 
@@ -75,7 +82,27 @@ def test_set_update_config(client):
     assert store.cfg().update.signing_pubkey == PUB
 
 
+def test_set_update_config_rejects_web_rotation_of_code_trust_root(client):
+    c, _ = client
+    _, other_pub = signing.generate_keypair()
+    r = c.post("/api/update/config",
+               json={"channel": "stable", "signing_pubkey": other_pub,
+                     "repo": "attacker/project"})
+    assert r.status_code == 403
+    assert r.json()["detail"]["code"] == "update_trust_root_offline_only"
+
+
 def test_set_update_config_rejects_bad_channel(client):
     c, _ = client
-    r = c.post("/api/update/config", json={"channel": "nope"})
+    r = c.post("/api/update/config",
+               json={"channel": "nope", "signing_pubkey": PUB,
+                     "repo": "epim/astrodeck"})
     assert r.status_code == 400
+
+
+def test_update_mutation_is_blocked_when_server_is_open(client, monkeypatch):
+    c, _ = client
+    monkeypatch.delenv(app_module.AUTH_ENV_VAR, raising=False)
+    r = c.post("/api/update/apply")
+    assert r.status_code == 403
+    assert r.json()["code"] == "authentication_required"

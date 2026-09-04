@@ -1,7 +1,7 @@
 # AstroDeck relay -- standalone, host-agnostic image.
 # Multi-stage: install deps into a venv, copy only the relay package + venv into
-# a slim runtime. No secrets baked in; device tokens + signing seeds are mounted
-# at runtime (RELAY_DEVICE_TOKENS_FILE / RELAY_OIDC_SEED_FILE / RELAY_VIEWER_SEED_FILE).
+# a slim runtime. No secrets are baked in; mount the device-token map at runtime.
+# Optional signing seeds are used only by reserved OIDC/share components.
 
 FROM python:3.12-slim AS build
 WORKDIR /app
@@ -11,17 +11,24 @@ RUN python -m venv /opt/venv \
     && /opt/venv/bin/pip install --no-cache-dir -r requirements.txt
 
 FROM python:3.12-slim AS runtime
-# Run as a non-root user.
-RUN useradd --create-home --uid 10001 relay
+# Use an explicit numeric identity so Compose, rootless engines, and persistent
+# mounts all agree on runtime ownership after an image replacement.
+RUN groupadd --gid 10001 relay && useradd --no-log-init --uid 10001 --gid 10001 --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin relay
 WORKDIR /app
 COPY --from=build /opt/venv /opt/venv
 COPY relay ./relay
 ENV PATH="/opt/venv/bin:$PATH" \
+    HOME=/tmp/home \
+    TMPDIR=/tmp \
+    XDG_CACHE_HOME=/tmp/.cache \
+    XDG_CONFIG_HOME=/tmp/.config \
+    PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     RELAY_BIND_HOST=0.0.0.0 \
     RELAY_BIND_PORT=8080
-USER relay
+USER 10001:10001
 EXPOSE 8080
+STOPSIGNAL SIGTERM
 # Liveness: the relay exposes /healthz.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz').status==200 else 1)"

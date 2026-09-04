@@ -38,6 +38,8 @@ from relay.connection import ScopeConnection  # noqa: E402
 from relay.proxy import BrowserWS  # noqa: E402
 from relay.registry import HomeRegistry, ScopeTunnel  # noqa: E402
 
+TEST_DEVICE_TOKEN = "e" * 43
+
 
 # ============================================================ harness
 
@@ -143,7 +145,7 @@ class E2ERig:
     """Wires the home RelayClient <-> a live relay ScopeConnection/Multiplexer
     over two in-memory pipes, and drives the relay read loop as a task."""
 
-    def __init__(self, app, *, device_token="dev-tok", home_id="home-e2e"):
+    def __init__(self, app, *, device_token=TEST_DEVICE_TOKEN, home_id="home-e2e"):
         self.down = _Pipe()   # relay -> home
         self.up = _Pipe()     # home -> relay
         self.home_ep = HomeEndpoint(self.down, self.up)
@@ -354,7 +356,7 @@ def test_safe_degrade_when_relay_down(tmp_path, monkeypatch):
 
     async def _scenario():
         cfg = RemoteConfig(enabled=True, relay_url="wss://relay.test/scope",
-                           device_token="tok")
+                           device_token=TEST_DEVICE_TOKEN, home_id="home-1")
         client = RelayClient(app, lambda: cfg, connect=_bad_connect)
         import astrodeck.remote.relay_client as rc
         orig = rc._backoff_delay

@@ -211,13 +211,32 @@ def test_compose_hardens_app_and_proxy_and_only_publishes_the_edge():
     assert len(internal) == 1
     network = internal[0]
     app_networks = app.get("networks", {}) or {}
-    assert set(app_networks) == {network}, "app must attach only to the internal backend"
+    # Outbound integrations need one project-private egress bridge, while all
+    # inbound proxy traffic remains on the exact internal backend.
+    egress = set(app_networks) - {network}
+    assert len(egress) == 1, "app needs exactly one dedicated outbound bridge"
+    egress_network = next(iter(egress))
+    egress_cfg = networks.get(egress_network, {}) or {}
+    assert not bool(egress_cfg.get("internal"))
+    assert not bool(egress_cfg.get("external")), (
+        "the controller egress bridge must remain project-private"
+    )
+    for service_name, service in services.items():
+        if service_name != "astrodeck":
+            assert egress_network not in (service.get("networks", {}) or {}), (
+                "the outbound bridge must be private to the controller"
+            )
     assert network in (proxy.get("networks", {}) or {})
     proxy_ip = _network_ip(proxy, network)
     app_ip = _network_ip(app, network)
     assert proxy_ip and app_ip and proxy_ip != app_ip
     app_environment = _environment(app)
     assert app_environment.get("ASTRODECK_FORWARDED_ALLOW_IPS") == proxy_ip
+    assert app_environment.get("ASTRODECK_REQUIRE_AUTH", "").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
     assert app_environment.get("ASTRODECK_UVICORN_ACCESS_LOG", "").lower() in {
         "0",
         "false",
@@ -283,12 +302,24 @@ def test_relay_has_a_separate_hardened_edge_stack_with_exact_proxy_trust():
     )
     assert "RELAY_DEVICE_TOKENS" not in relay_environment
     attached_secrets = relay.get("secrets", []) or []
-    secret_names = {
-        str(item.get("source")) if isinstance(item, dict) else str(item)
-        for item in attached_secrets
-    }
-    assert secret_names == {"device_tokens"}
-    assert "device_tokens" in (compose.get("secrets", {}) or {})
+    assert len(attached_secrets) == 1
+    mounted_secret = attached_secrets[0]
+    assert isinstance(mounted_secret, dict), (
+        "the relay secret needs explicit target ownership and mode"
+    )
+    assert mounted_secret.get("source") == "device_tokens"
+    assert mounted_secret.get("target") == "device_tokens"
+    assert str(mounted_secret.get("uid")) == "10001"
+    assert str(mounted_secret.get("gid")) == "10001"
+    mode = mounted_secret.get("mode")
+    assert mode == 0o400 or str(mode) == "0400"
+
+    top_secret = (compose.get("secrets", {}) or {}).get("device_tokens")
+    assert top_secret == {"environment": "RELAY_DEVICE_TOKENS_JSON"}, (
+        "file-backed Compose secrets ignore uid/gid/mode and strand a 0400 "
+        "secret as root; use the environment-backed secret provider without "
+        "adding the value to service metadata"
+    )
 
 
 def test_compose_persistent_mounts_are_explicit_and_only_expected_paths_are_writable():
@@ -432,6 +463,8 @@ def test_bare_metal_systemd_units_use_dedicated_unprivileged_identities():
         if module == "astrodeck":
             assert "--host 127.0.0.1" in start
             assert f"--port {port}" in start
+            environment = " ".join(values.get("Environment", []))
+            assert "ASTRODECK_REQUIRE_AUTH=true" in environment
         else:
             environment = " ".join(values.get("Environment", []))
             assert "RELAY_BIND_HOST=127.0.0.1" in environment

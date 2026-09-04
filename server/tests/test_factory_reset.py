@@ -201,6 +201,23 @@ def test_reset_auth_opt_in_clears_accounts_and_bumps_epoch(env):
     assert not (cfg_dir / "users.json").exists()
 
 
+def test_managed_reset_cannot_reopen_listener(env, monkeypatch):
+    c, store, cfg_dir, cap = env
+    _dirty(store, cfg_dir, cap)
+    before = store.cfg().model_dump()
+    monkeypatch.setenv(config_mod.REQUIRE_AUTH_ENV, "true")
+    monkeypatch.delenv(config_mod.DIRECT_TOKEN_ENV, raising=False)
+
+    r = c.post("/api/system/factory-reset",
+               json={"confirm": "RESET", "reset_auth": True})
+
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "authentication_required"
+    assert store.cfg().model_dump() == before
+    assert (cfg_dir / "users.json").exists()
+    assert (cap / "M31" / "light_0001.fits").exists()
+
+
 # ------------------------------------------------------------------- the route
 
 def test_route_requires_the_typed_word(env):

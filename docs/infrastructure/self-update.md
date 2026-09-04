@@ -79,6 +79,7 @@ python -m supervisor.supervisor \
 
   [Service]
   WorkingDirectory=/opt/astrodeck
+  EnvironmentFile=/etc/astrodeck.env
   ExecStart=/usr/bin/python3 -m supervisor.supervisor --root /opt/astrodeck --python /opt/astrodeck/venv/bin/python --host 0.0.0.0 --port 8800
   Restart=always
   RestartSec=3
@@ -86,6 +87,9 @@ python -m supervisor.supervisor \
   [Install]
   WantedBy=multi-user.target
   ```
+  Store a long `ASTRODECK_TOKEN` (or the environment needed by your configured
+  auth provider) in `/etc/astrodeck.env`, owned by root with mode `0600`. The
+  server refuses this non-loopback bind if authentication is absent.
   `systemctl daemon-reload && systemctl enable --now astrodeck`.
   (The supervisor must be importable — run from the repo/install dir, or
   `pip install` the supervisor package.)

@@ -49,7 +49,7 @@ def test_the_api_policy_requires_an_email(store):
     """`require_email` is the PRODUCT policy and the route passes it. Everything
     a person can create through the UI goes through this path."""
     with pytest.raises(InvalidEmailError):
-        store.create(username="bob", password="hunter22", role="admin",
+        store.create(username="bob", password="hunter22-long", role="admin",
                      require_email=True)
 
 
@@ -58,7 +58,7 @@ def test_the_store_itself_still_holds_a_bare_username(store):
     and nothing but a console, and records predating unification carry one — a
     store that refused what it must still be able to hold would be lying about
     its own data."""
-    u = store.create(username="bob", password="hunter22", role="admin")
+    u = store.create(username="bob", password="hunter22-long", role="admin")
     assert u.username == "bob"
 
 
@@ -80,33 +80,33 @@ def test_an_omitted_password_stores_no_hash_at_all(store):
 
 
 def test_a_password_account_still_verifies(store):
-    store.create(username="admin@example.com", password="hunter22", role="admin")
-    assert store.verify("admin@example.com", "hunter22") is not None
+    store.create(username="admin@example.com", password="hunter22-long", role="admin")
+    assert store.verify("admin@example.com", "hunter22-long") is not None
     assert store.verify("admin@example.com", "wrong") is None
 
 
 def test_clearing_a_password_makes_it_google_only(store):
-    u = store.create(username="a@example.com", password="hunter22", role="admin")
-    assert store.verify("a@example.com", "hunter22") is not None
+    u = store.create(username="a@example.com", password="hunter22-long", role="admin")
+    assert store.verify("a@example.com", "hunter22-long") is not None
     store.clear_password(u.id)
-    assert store.verify("a@example.com", "hunter22") is None
+    assert store.verify("a@example.com", "hunter22-long") is None
     assert store.get(u.id).can_sign_in_locally is False
 
 
 def test_verify_is_case_insensitive_on_the_address(store):
-    store.create(username="Mixed@Example.com", password="hunter22", role="viewer")
-    assert store.verify("mixed@example.com", "hunter22") is not None
-    assert store.verify("MIXED@EXAMPLE.COM", "hunter22") is not None
+    store.create(username="Mixed@Example.com", password="hunter22-long", role="viewer")
+    assert store.verify("mixed@example.com", "hunter22-long") is not None
+    assert store.verify("MIXED@EXAMPLE.COM", "hunter22-long") is not None
 
 
 # ------------------------------------------------------------ the shared lookup
 
 def test_google_and_password_resolve_the_same_record(store):
     """One person, one role. The whole point of unifying the stores."""
-    u = store.create(username="both@example.com", password="hunter22",
+    u = store.create(username="both@example.com", password="hunter22-long",
                      role="operator")
     assert store.get_by_email("both@example.com").id == u.id
-    assert store.verify("both@example.com", "hunter22").id == u.id
+    assert store.verify("both@example.com", "hunter22-long").id == u.id
 
 
 def test_get_by_email_finds_a_password_less_account(store):
@@ -125,10 +125,10 @@ def test_a_legacy_record_resolves_by_its_email_field(store):
     """Pre-unification records have a bare username and email as metadata.
     They must keep working — an upgrade that locks somebody out of their own
     rig on a clear night is not an acceptable migration."""
-    u = store.create(username="oldbob", password="hunter22", role="admin",
+    u = store.create(username="oldbob", password="hunter22-long", role="admin",
                      email="bob@example.com", require_email=False)
     assert store.get_by_email("bob@example.com").id == u.id
-    assert store.verify("oldbob", "hunter22") is not None
+    assert store.verify("oldbob", "hunter22-long") is not None
 
 
 # ----------------------------------------------------------------- role lookup
@@ -182,7 +182,7 @@ def test_no_email_is_always_denied(monkeypatch, store):
 
 def test_last_admin_protection_survives(store):
     """Unification must not weaken the anti-lockout guard."""
-    u = store.create(username="only@example.com", password="hunter22", role="admin")
+    u = store.create(username="only@example.com", password="hunter22-long", role="admin")
     with pytest.raises(ValueError, match="last admin"):
         store.set_enabled(u.id, False)
     with pytest.raises(ValueError, match="last admin"):

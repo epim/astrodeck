@@ -1,17 +1,18 @@
 # Securing an AstroDeck deployment
 
 AstroDeck's control surface lets a client slew the mount, toggle power, and
-start/abort sequences. By default the server is **open** (no auth) so a backyard
-rig on a trusted home network "just works" for the LAN tablet. That default is
-fine on a network you trust; it is **not** safe to expose to an untrusted network
-or the public internet without the steps below.
+start/abort sequences. A fresh server has no authentication configured, but the
+CLI binds to **loopback by default** and refuses an unauthenticated non-loopback
+bind. This keeps convenient local setup without silently publishing an
+admin-for-all controller to the LAN or internet.
 
 ## Optional shared-token auth (`ASTRODECK_TOKEN`)
 
-Auth is **OFF by default**. Set the `ASTRODECK_TOKEN` environment variable to a
-non-empty secret to require that token on **every** REST request and on the
-WebSocket. When the variable is unset (or empty), behavior is unchanged — fully
-open — so existing LAN access keeps working.
+Auth is **unconfigured by default**. Set the `ASTRODECK_TOKEN` environment variable to a
+non-empty secret to require that token on direct REST requests and on the direct
+WebSocket. Relay-tunneled scopes deliberately cannot use this local transport
+  credential; they use home-verified sessions instead. When the variable is unset
+(or empty), direct loopback behavior remains open for initial setup.
 
 When a token is set, clients must supply it via any one of:
 
@@ -37,7 +38,10 @@ ASTRODECK_TOKEN="a-long-random-secret" python -m astrodeck
 ```
 
 The comparison is constant-time. This is a single shared secret, not a user
-system — it is the minimum bar to keep the rig from being wide open.
+system; it is the minimum bootstrap bar. Prefer headers over `?token=` for REST
+calls because URLs are commonly retained in browser history and proxy logs. The
+browser WebSocket uses the query form because browser WebSocket APIs cannot set
+an authorization header.
 
 ## Bind loopback for a local-only rig
 
@@ -48,9 +52,37 @@ the same box), bind the loopback interface so nothing off-box can connect at all
 python -m astrodeck --host 127.0.0.1
 ```
 
-The default bind is `0.0.0.0` (all interfaces) so the LAN tablet can reach it.
-On startup, binding a non-loopback interface **without** a token logs a loud
-`SECURITY WARNING`.
+The default bind is `127.0.0.1`. To serve a LAN tablet, deliberately select a
+non-loopback bind and configure a shared token or local/Google authentication:
+
+```sh
+ASTRODECK_TOKEN="a-long-random-secret" \
+  python -m astrodeck --host 0.0.0.0
+```
+
+An unauthenticated non-loopback bind exits with status 2. The explicit
+`--allow-insecure-open` (or `ASTRODECK_ALLOW_INSECURE_OPEN=1`) override exists
+only for isolated development networks; do not ship or supervise production
+with that override.
+
+## Private configuration on Windows
+
+AstroDeck treats the configuration tree as secret-bearing state: it can contain
+session keys, login credentials, relay/update tokens, exact site coordinates,
+and driver/profile extras. On Windows, startup requires that tree to reside on
+NTFS or ReFS and applies a protected DACL with exactly three trustees: the
+process account, `SYSTEM`, and `BUILTIN\Administrators`. Broad inherited access,
+reparse points, unexpected ownership, an ACL API error, or a FAT/exFAT config
+volume makes startup fail before the server listens. This protects the state
+from other standard local accounts; it does not protect it from administrators,
+SYSTEM, same-account malware, kernel compromise, or offline disk access.
+
+For a Windows service, use a dedicated non-administrator service account and
+set `ASTRODECK_CONFIG_DIR` to an NTFS/ReFS directory created and owned by that
+identity. Do not run AstroDeck as Administrator or LocalSystem, and do not let
+other standard users write the installed executable, its supervisor, or its
+current-release directory: protecting data does not help if another account can
+replace the code that reads it.
 
 ### Testing role gating from loopback (`auth.trust_loopback`)
 
@@ -92,3 +124,18 @@ trusted LAN:
 
 There is currently no TLS, no rate-limiting, and no audit log inside AstroDeck
 itself — those belong at the reverse proxy for now.
+
+## Relay and self-update trust boundaries
+
+- The public WebSocket relay must use `wss://` (plain `ws://` is accepted only
+  for a loopback development relay). The relay can observe and replay the home's
+  signed session cookie, so operate it as a trusted bearer-token intermediary.
+  Raw `ASTRODECK_TOKEN` headers and query parameters are never valid tunnel
+  credentials. Identity-management, relay-configuration, factory-reset, and
+  self-update mutation routes are direct-only at the home. Configuration,
+  alert-destination, driver/profile mutation, discovery, and connection-setup
+  routes are also direct-only because they can select or probe host/LAN resources.
+- `update.repo` and `update.signing_pubkey` are code-execution trust roots. The
+  HTTP API cannot set or rotate them. Provision them offline in the persistent
+  config or installer, protect that file with OS permissions, and keep the
+  Ed25519 private signing key outside every AstroDeck host and relay.

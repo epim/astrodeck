@@ -95,6 +95,11 @@ class _ScopeWebSocket:
         self._incoming.put_nowait(WebSocketDisconnect(code))
 
 
+class _FailingAckWebSocket(_ScopeWebSocket):
+    async def send_bytes(self, data):
+        raise ConnectionResetError("ACK write failed")
+
+
 def _state(monkeypatch, **overrides):
     monkeypatch.delenv("RELAY_DEVICE_TOKENS_FILE", raising=False)
     monkeypatch.delenv("RELAY_DEVICE_TOKENS", raising=False)
@@ -233,3 +238,29 @@ async def test_higher_generation_physically_evicts_old_scope_socket(monkeypatch)
 
     await new_ws.close(1000)
     await asyncio.wait_for(asyncio.gather(old_task, new_task), timeout=1.0)
+
+
+@pytest.mark.asyncio
+async def test_failed_new_generation_ack_preserves_the_live_scope(monkeypatch):
+    state = _state(monkeypatch)
+    state.registry.provision("device-token", "home-1")
+    old_ws = _ScopeWebSocket(
+        protocol.hello("device-token", "home-1", 1), "192.0.2.20")
+    old_task = asyncio.create_task(_scope_endpoint(state, old_ws))
+    for _ in range(100):
+        if "home-1" in state.connections:
+            break
+        await asyncio.sleep(0)
+    old_conn = state.connections["home-1"]
+
+    failed_ws = _FailingAckWebSocket(
+        protocol.hello("device-token", "home-1", 2), "192.0.2.21")
+    await _scope_endpoint(state, failed_ws)
+
+    assert state.connections["home-1"] is old_conn
+    assert state.registry.get("home-1") is old_conn.reg
+    assert old_conn.tunnel.closed is False
+    assert 1012 not in old_ws.closed
+
+    await old_ws.close(1000)
+    await asyncio.wait_for(old_task, timeout=1.0)

@@ -24,14 +24,19 @@ from enum import IntEnum
 from typing import Any
 
 # Per-frame payload bound. The relay chunks request/response bodies so a 125 MB
-# FITS never lands in one frame (and never HOL-blocks the status class). The
-# decoder enforces this as a hard ceiling -- an over-size frame is a protocol
-# error, not a silent truncation.
+# FITS never lands in one allocation-sized frame. The decoder enforces this as a
+# hard ceiling -- an over-size frame is a protocol error, not a silent truncation.
 DEFAULT_MAX_PAYLOAD = 64 * 1024  # 64 KiB
+
+# Header JSON is attacker-controlled by the relay. Bound it independently from
+# the payload so the websocket client and decoder agree on one finite message
+# ceiling.
+DEFAULT_MAX_HEADER = 64 * 1024  # 64 KiB
 
 # Header prefix layout: type(1) + stream_id(8, uint64 BE) + header_len(4, uint32 BE).
 _PREFIX = struct.Struct(">BQI")
 _PREFIX_LEN = _PREFIX.size  # 13
+DEFAULT_MAX_WIRE_SIZE = _PREFIX_LEN + DEFAULT_MAX_HEADER + DEFAULT_MAX_PAYLOAD
 
 PROTO_VERSION = 1
 
@@ -88,9 +93,9 @@ class Frame:
         return bool(self.header.get("eof", False))
 
     @property
-    def ws_id(self) -> int | None:
-        v = self.header.get("ws_id")
-        return int(v) if v is not None else None
+    def ws_id(self) -> Any:
+        """Opaque relay-allocated browser id (currently a bounded string)."""
+        return self.header.get("ws_id")
 
 
 def encode_frame(
@@ -113,8 +118,9 @@ def encode_frame(
             f"payload {len(payload)}B exceeds max {max_payload}B")
     hdr = header or {}
     hdr_bytes = json.dumps(hdr, separators=(",", ":")).encode("utf-8")
-    if len(hdr_bytes) > 0xFFFFFFFF:
-        raise ProtocolError("header too large")
+    if len(hdr_bytes) > DEFAULT_MAX_HEADER:
+        raise ProtocolError(
+            f"header {len(hdr_bytes)}B exceeds max {DEFAULT_MAX_HEADER}B")
     return _PREFIX.pack(int(type), stream_id, len(hdr_bytes)) + hdr_bytes + payload
 
 
@@ -132,6 +138,9 @@ def decode_frame(
     if len(raw) < _PREFIX_LEN:
         raise ProtocolError("frame shorter than prefix")
     type_byte, stream_id, header_len = _PREFIX.unpack_from(raw, 0)
+    if header_len > DEFAULT_MAX_HEADER:
+        raise ProtocolError(
+            f"header {header_len}B exceeds max {DEFAULT_MAX_HEADER}B")
     try:
         ftype = FrameType(type_byte)
     except ValueError as exc:
@@ -170,5 +179,6 @@ def decode_frame(
 __all__ = [
     "FrameType", "Frame", "ProtocolError",
     "encode_frame", "decode_frame",
-    "DEFAULT_MAX_PAYLOAD", "CONTROL_STREAM_ID", "PROTO_VERSION",
+    "DEFAULT_MAX_PAYLOAD", "DEFAULT_MAX_HEADER", "DEFAULT_MAX_WIRE_SIZE",
+    "CONTROL_STREAM_ID", "PROTO_VERSION",
 ]

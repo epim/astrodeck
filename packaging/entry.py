@@ -47,6 +47,18 @@ def main() -> None:
     capture_dir = os.environ.get("ASTRODECK_CAPTURE_DIR") or str(state / "captures")
     os.environ.setdefault("ASTRODECK_CONFIG_DIR", config_dir)
     os.environ.setdefault("ASTRODECK_CAPTURE_DIR", capture_dir)
+    # Import only after the environment is final: config paths are module-level
+    # constants in the application package.  Secure config before the generic
+    # directory loop and before printing paths/status to a double-click console.
+    from astrodeck.persist import secure_private_tree
+    try:
+        secure_private_tree(Path(config_dir))
+    except RuntimeError as e:
+        print(
+            f"cannot secure private configuration at {config_dir}: {e}",
+            file=sys.stderr,
+        )
+        raise SystemExit(2) from e
     for d in (config_dir, capture_dir):
         try:
             Path(d).mkdir(parents=True, exist_ok=True)

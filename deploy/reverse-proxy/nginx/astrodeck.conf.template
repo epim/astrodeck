@@ -1,0 +1,220 @@
+limit_req_zone $binary_remote_addr zone=static:10m rate=30r/s;
+limit_req_zone $binary_remote_addr zone=general:10m rate=20r/s;
+limit_req_zone $binary_remote_addr zone=auth:10m rate=5r/m;
+limit_req_zone $binary_remote_addr zone=critical:10m rate=2r/m;
+limit_req_zone $binary_remote_addr zone=ws_open:10m rate=10r/m;
+limit_conn_zone $binary_remote_addr zone=per_ip:10m;
+limit_conn_zone $server_name zone=per_host:1m;
+
+log_format astrodeck_audit escape=json
+    '{"ts":"$time_iso8601","request_id":"$request_id",'
+    '"client_ip":"$remote_addr","method":"$request_method",'
+    '"uri":"$uri","status":$status,"bytes":$body_bytes_sent,'
+    '"duration":$request_time,"upstream_status":"$upstream_status"}';
+
+upstream astrodeck_upstream {
+    server 172.30.0.3:8800;
+    keepalive 16;
+}
+
+server {
+    listen 8080 default_server;
+    server_name _;
+    return 444;
+}
+
+server {
+    listen 8080;
+    server_name ${ASTRODECK_PUBLIC_HOST};
+    if ($arg_token != "") { return 400; }
+    return 308 https://$host:${ASTRODECK_PUBLIC_HTTPS_PORT}$uri;
+}
+
+server {
+    listen 8443 ssl default_server;
+    server_name _;
+    ssl_certificate /certs/fullchain.pem;
+    ssl_certificate_key /certs/privkey.pem;
+    ssl_reject_handshake on;
+    # Also reject an HTTP Host mismatch after a valid named SNI handshake.
+    return 444;
+}
+
+server {
+    listen 8443 ssl;
+    server_name ${ASTRODECK_PUBLIC_HOST};
+
+    ssl_certificate /certs/fullchain.pem;
+    ssl_certificate_key /certs/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_tickets off;
+    add_header Strict-Transport-Security "max-age=31536000" always;
+
+    access_log /dev/stdout astrodeck_audit;
+    error_log /dev/stderr crit;
+    limit_conn per_ip 32;
+    limit_conn per_host 128;
+
+    proxy_request_buffering on;
+    proxy_buffering off;
+    proxy_connect_timeout 5s;
+    proxy_read_timeout 60s;
+    proxy_send_timeout 60s;
+    proxy_next_upstream off;
+
+    if ($arg_token != "") { return 400; }
+
+    location = /auth/local {
+        limit_req zone=auth burst=5 nodelay;
+        client_max_body_size 4k;
+        proxy_http_version 1.1;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header Forwarded "";
+        proxy_set_header X-Real-IP "";
+        proxy_set_header X-Forwarded-Host "";
+        proxy_set_header X-Request-ID $request_id;
+        proxy_pass http://astrodeck_upstream;
+    }
+
+    location = /auth/token {
+        limit_req zone=auth burst=5 nodelay;
+        client_max_body_size 4k;
+        proxy_http_version 1.1;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header Forwarded "";
+        proxy_set_header X-Real-IP "";
+        proxy_set_header X-Forwarded-Host "";
+        proxy_set_header X-Request-ID $request_id;
+        proxy_pass http://astrodeck_upstream;
+    }
+
+    location = /auth/setup/local {
+        limit_req zone=auth burst=5 nodelay;
+        client_max_body_size 4k;
+        proxy_http_version 1.1;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header Forwarded "";
+        proxy_set_header X-Real-IP "";
+        proxy_set_header X-Forwarded-Host "";
+        proxy_set_header X-Request-ID $request_id;
+        proxy_pass http://astrodeck_upstream;
+    }
+
+    location = /api/update/check {
+        limit_req zone=critical burst=2 nodelay;
+        proxy_http_version 1.1;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header Forwarded "";
+        proxy_set_header X-Real-IP "";
+        proxy_set_header X-Forwarded-Host "";
+        proxy_set_header X-Request-ID $request_id;
+        proxy_pass http://astrodeck_upstream;
+    }
+
+    location = /api/update/apply {
+        limit_req zone=critical burst=2 nodelay;
+        proxy_http_version 1.1;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header Forwarded "";
+        proxy_set_header X-Real-IP "";
+        proxy_set_header X-Forwarded-Host "";
+        proxy_set_header X-Request-ID $request_id;
+        proxy_pass http://astrodeck_upstream;
+    }
+
+    location = /api/update/config {
+        limit_req zone=critical burst=2 nodelay;
+        proxy_http_version 1.1;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header Forwarded "";
+        proxy_set_header X-Real-IP "";
+        proxy_set_header X-Forwarded-Host "";
+        proxy_set_header X-Request-ID $request_id;
+        proxy_pass http://astrodeck_upstream;
+    }
+
+    location = /api/system/factory-reset {
+        limit_req zone=critical burst=2 nodelay;
+        proxy_http_version 1.1;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header Forwarded "";
+        proxy_set_header X-Real-IP "";
+        proxy_set_header X-Forwarded-Host "";
+        proxy_set_header X-Request-ID $request_id;
+        proxy_pass http://astrodeck_upstream;
+    }
+
+    location ^~ /api/connect/ {
+        limit_req zone=general burst=60 nodelay;
+        proxy_read_timeout 140s;
+        proxy_http_version 1.1;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header Forwarded "";
+        proxy_set_header X-Real-IP "";
+        proxy_set_header X-Forwarded-Host "";
+        proxy_set_header X-Request-ID $request_id;
+        proxy_pass http://astrodeck_upstream;
+    }
+
+    location ^~ /api/ {
+        limit_req zone=general burst=60 nodelay;
+        proxy_http_version 1.1;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header Forwarded "";
+        proxy_set_header X-Real-IP "";
+        proxy_set_header X-Forwarded-Host "";
+        proxy_set_header X-Request-ID $request_id;
+        proxy_pass http://astrodeck_upstream;
+    }
+
+    location = /ws {
+        limit_req zone=ws_open burst=5 nodelay;
+        limit_conn per_ip 8;
+        limit_conn per_host 128;
+        if ($args != "") { return 400; }
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header Forwarded "";
+        proxy_set_header X-Real-IP "";
+        proxy_set_header X-Forwarded-Host "";
+        proxy_set_header X-Request-ID $request_id;
+        proxy_read_timeout 75s;
+        proxy_send_timeout 60s;
+        proxy_pass http://astrodeck_upstream;
+    }
+
+    location / {
+        limit_req zone=static burst=120 nodelay;
+        proxy_http_version 1.1;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header Forwarded "";
+        proxy_set_header X-Real-IP "";
+        proxy_set_header X-Forwarded-Host "";
+        proxy_set_header X-Request-ID $request_id;
+        proxy_pass http://astrodeck_upstream;
+    }
+}

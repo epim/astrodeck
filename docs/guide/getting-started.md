@@ -23,15 +23,15 @@ python -m venv .venv
 .venv\Scripts\python -m astrodeck          # serves on http://localhost:8800
 ```
 
-The last line starts the server. By default it binds `0.0.0.0:8800` (reachable
-from other machines on your LAN). Flags:
+The last line starts the server. By default it binds `127.0.0.1:8800` (reachable
+only from the same machine). Flags:
 
-- `--host 127.0.0.1` — bind loopback only, for a local-only rig.
+- `--host 0.0.0.0` — serve other LAN devices; authentication is required.
 - `--port 8800` — change the port.
 
-On start it prints a one-line security posture. If it is bound to a non-loopback
-interface with no authentication, it prints a **loud warning** — on your own LAN
-that's expected; before any remote exposure, read
+On start it prints a one-line security posture. An unauthenticated non-loopback
+bind is refused, not merely warned about. Set `ASTRODECK_TOKEN` or configure a
+local/Google method before serving the LAN; read
 [remote-access-and-roles.md](remote-access-and-roles.md).
 
 > **You do not need to build the UI.** A pre-built copy in `ui/dist` is served by

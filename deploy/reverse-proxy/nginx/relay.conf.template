@@ -1,0 +1,130 @@
+limit_req_zone $binary_remote_addr zone=relay_http:10m rate=20r/s;
+limit_req_zone $binary_remote_addr zone=relay_scope:10m rate=2r/s;
+limit_req_zone $binary_remote_addr zone=relay_ws:10m rate=1r/s;
+limit_conn_zone $binary_remote_addr zone=relay_per_ip:10m;
+limit_conn_zone $server_name zone=relay_total:1m;
+
+map $uri $relay_audit_uri {
+    ~^/h/[^/]+$ /h/:home;
+    ~^/h/[^/]+/ /h/:home/;
+    default $uri;
+}
+
+log_format relay_audit escape=json
+    '{"ts":"$time_iso8601","request_id":"$request_id",'
+    '"client_ip":"$remote_addr","method":"$request_method",'
+    '"uri":"$relay_audit_uri","status":$status,"bytes":$body_bytes_sent,'
+    '"duration":$request_time,"upstream_status":"$upstream_status"}';
+
+upstream relay_upstream {
+    server 172.31.0.3:8080;
+    keepalive 16;
+}
+
+server {
+    listen 8080 default_server;
+    server_name _;
+    return 444;
+}
+
+server {
+    listen 8080;
+    server_name ${RELAY_PUBLIC_HOST};
+    if ($arg_token != "") { return 400; }
+    return 308 https://$host:${RELAY_PUBLIC_HTTPS_PORT}$uri;
+}
+
+server {
+    listen 8443 ssl default_server;
+    server_name _;
+    ssl_certificate /certs/fullchain.pem;
+    ssl_certificate_key /certs/privkey.pem;
+    ssl_reject_handshake on;
+    # Also reject an HTTP Host mismatch after a valid named SNI handshake.
+    return 444;
+}
+
+server {
+    listen 8443 ssl;
+    server_name ${RELAY_PUBLIC_HOST};
+
+    ssl_certificate /certs/fullchain.pem;
+    ssl_certificate_key /certs/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_tickets off;
+    add_header Strict-Transport-Security "max-age=31536000" always;
+
+    access_log /dev/stdout relay_audit;
+    error_log /dev/stderr crit;
+    limit_conn relay_per_ip 32;
+    limit_conn relay_total 256;
+
+    proxy_request_buffering on;
+    proxy_buffering off;
+    proxy_connect_timeout 5s;
+    proxy_read_timeout 60s;
+    proxy_send_timeout 60s;
+    proxy_next_upstream off;
+
+    if ($arg_token != "") { return 400; }
+
+    location = /scope {
+        limit_req zone=relay_scope burst=10 nodelay;
+        if ($args != "") { return 400; }
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header Forwarded "";
+        proxy_set_header X-Real-IP "";
+        proxy_set_header X-Forwarded-Host "";
+        proxy_set_header X-Request-ID $request_id;
+        proxy_read_timeout 75s;
+        proxy_pass http://relay_upstream;
+    }
+
+    location ~ ^/h/[^/]+/ws$ {
+        limit_req zone=relay_ws burst=5 nodelay;
+        if ($args != "") { return 400; }
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header Forwarded "";
+        proxy_set_header X-Real-IP "";
+        proxy_set_header X-Forwarded-Host "";
+        proxy_set_header X-Request-ID $request_id;
+        proxy_read_timeout 75s;
+        proxy_pass http://relay_upstream;
+    }
+
+    location /h/ {
+        limit_req zone=relay_http burst=40 nodelay;
+        proxy_http_version 1.1;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header Forwarded "";
+        proxy_set_header X-Real-IP "";
+        proxy_set_header X-Forwarded-Host "";
+        proxy_set_header X-Request-ID $request_id;
+        proxy_pass http://relay_upstream;
+    }
+
+    location / {
+        limit_req zone=relay_http burst=40 nodelay;
+        proxy_http_version 1.1;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header Forwarded "";
+        proxy_set_header X-Real-IP "";
+        proxy_set_header X-Forwarded-Host "";
+        proxy_set_header X-Request-ID $request_id;
+        proxy_pass http://relay_upstream;
+    }
+}

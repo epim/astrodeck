@@ -82,6 +82,8 @@ def test_reference_runbook_covers_bootstrap_firewall_certificates_and_rootless_l
         "rootless",
         "source ip",
         "docker-compose.relay.yml",
+        "public_https_port",
+        "1 to 65535",
     ):
         assert required in text, f"reverse-proxy runbook omits {required!r}"
     assert "privileged: true" not in text
@@ -217,7 +219,10 @@ def test_proxy_overwrites_forwarding_headers_and_logs_no_secrets_or_queries():
             template_source,
             re.S,
         )
-    assert re.search(r"return\s+30[178]\s+https://\$host\$uri\s*;", source)
+    assert re.search(
+        r"return\s+30[178]\s+https://\$host:\$\{(?:ASTRODECK|RELAY)_PUBLIC_HTTPS_PORT\}\$uri\s*;",
+        source,
+    )
     assert re.search(
         r"if\s*\(\s*\$arg_token\s*!=\s*['\"]?['\"]?\s*\)\s*\{\s*return\s+400\s*;",
         source,
@@ -260,6 +265,9 @@ def test_proxy_overwrites_forwarding_headers_and_logs_no_secrets_or_queries():
         re.S,
     )
     assert "/h/:home/" in relay
+    assert re.search(r"~\^/h/\[\^/\]\+\$\s+/h/:home\s*;", relay), (
+        "the bare /h/<home-id> path must not leak the identifier into logs"
+    )
     assert re.search(
         r"access_log\s+/dev/stdout\s+astrodeck_audit\s*;",
         _named_nginx("astrodeck.conf.template"),
@@ -272,10 +280,12 @@ def test_home_and_relay_templates_keep_route_specific_limits_separate():
     home = _named_nginx("astrodeck.conf.template")
     relay = _named_nginx("relay.conf.template")
     assert set(re.findall(r"\$\{([A-Z][A-Z0-9_]*)\}", home)) == {
-        "ASTRODECK_PUBLIC_HOST"
+        "ASTRODECK_PUBLIC_HOST",
+        "ASTRODECK_PUBLIC_HTTPS_PORT",
     }
     assert set(re.findall(r"\$\{([A-Z][A-Z0-9_]*)\}", relay)) == {
-        "RELAY_PUBLIC_HOST"
+        "RELAY_PUBLIC_HOST",
+        "RELAY_PUBLIC_HTTPS_PORT",
     }
 
     for path in ("/auth/local", "/auth/token", "/auth/setup/local"):

@@ -100,14 +100,7 @@ def _oidc_client(auth_cfg: Any) -> GoogleOIDCClient:
 
 
 def _is_secure(request: Request) -> bool:
-    """True when the request arrived over HTTPS (sets the Secure cookie flag).
-
-    Honors ``X-Forwarded-Proto`` so a TLS-terminating reverse proxy is handled,
-    falling back to the request scheme. On plain-HTTP LAN dev this is False so
-    the cookie is still delivered."""
-    xfp = request.headers.get("x-forwarded-proto", "")
-    if xfp:
-        return xfp.split(",")[0].strip().lower() == "https"
+    """Trust only the ASGI scheme normalized by the configured proxy peer."""
     return request.url.scheme == "https"
 
 
@@ -264,8 +257,18 @@ async def auth_callback(request: Request, code: str = "", state: str = "",
         # Authenticated by Google but not authorized for any role here.
         raise HTTPException(status_code=403, detail="email not authorized")
 
+    from .users import user_store
+    try:
+        account = user_store.get_by_email(email)
+    except Exception as exc:  # corrupted/unreadable identity state is fatal
+        raise HTTPException(status_code=503,
+                            detail="identity store unavailable") from exc
     jti = _new_jti()
-    token = sign_session(role, email=email, jti=jti, ttl_s=_SESSION_TTL_S)
+    token = sign_session(
+        role, email=email, jti=jti, ttl_s=_SESSION_TTL_S, authn="google",
+        subject=account.id if account is not None else None,
+        account_epoch=account.session_epoch if account is not None else None,
+    )
 
     resp = RedirectResponse(url=_post_login_path(auth_cfg), status_code=302)
     secure = _is_secure(request)
@@ -301,8 +304,8 @@ def _role_for_email(auth_cfg: Any, email: str | None) -> str | None:
     try:
         from .users import user_store
         u = user_store.get_by_email(email)
-    except Exception:  # noqa: BLE001 - a broken store must not break login
-        u = None
+    except Exception:  # noqa: BLE001 - identity uncertainty must deny
+        return None
     if u is not None:
         return u.role if u.enabled else None
     allow = getattr(auth_cfg, "role_allowlist", {}) or {}

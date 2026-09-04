@@ -24,9 +24,11 @@ from fastapi.testclient import TestClient
 
 from astrodeck.auth import google as g
 from astrodeck.auth import routes as auth_routes
+from astrodeck.auth import users as users_mod
 from astrodeck.auth.google import (GoogleOIDCClient, GoogleOIDCConfig, OIDCError,
                                    pkce_challenge, verify_id_token)
 from astrodeck.config import AuthConfig, ConfigStore
+from astrodeck.auth.users import UserStore
 
 
 @pytest.fixture(autouse=True)
@@ -273,7 +275,9 @@ def _client_with_google(tmp_path, monkeypatch, *, role_allowlist=None,
     import astrodeck.config as config_mod
     monkeypatch.setattr(config_mod, "config_store", store)
     monkeypatch.setattr(auth_routes, "config_store", store)
-    monkeypatch.setenv("ASTRODECK_SECRET", "test-session-secret-xyz")
+    monkeypatch.setattr(users_mod, "user_store",
+                        UserStore(path=tmp_path / "users.json"))
+    monkeypatch.setenv("ASTRODECK_SECRET", "test-session-secret-xyz-0123456789")
 
     # Install the configured provider (google -> session-cookie resolution) so
     # /auth/me resolves the minted session. The autouse ``_reset_provider``
@@ -351,7 +355,7 @@ def test_login_activates_when_google_in_methods(tmp_path, monkeypatch):
     cfg = store.cfg()
     cfg.auth = auth
     store._save()
-    monkeypatch.setenv("ASTRODECK_SECRET", "test-session-secret-xyz")
+    monkeypatch.setenv("ASTRODECK_SECRET", "test-session-secret-xyz-0123456789")
     app = _mount_auth_router(store, monkeypatch)
     with TestClient(app) as c:
         r = c.get("/auth/login", follow_redirects=False)
@@ -391,7 +395,7 @@ def test_login_activates_via_legacy_provider(tmp_path, monkeypatch):
     cfg = store.cfg()
     cfg.auth = auth
     store._save()
-    monkeypatch.setenv("ASTRODECK_SECRET", "test-session-secret-xyz")
+    monkeypatch.setenv("ASTRODECK_SECRET", "test-session-secret-xyz-0123456789")
     app = _mount_auth_router(store, monkeypatch)
     with TestClient(app) as c:
         r = c.get("/auth/login", follow_redirects=False)
@@ -521,8 +525,18 @@ def test_revoked_session_rejected_by_provider(tmp_path, monkeypatch):
     from astrodeck.auth.providers import SessionCookieProvider
     from astrodeck.auth.session import sign_session
 
-    monkeypatch.setenv("ASTRODECK_SECRET", "test-session-secret-xyz")
-    tok = sign_session("admin", email="a@x.com", jti="JTI-1", ttl_s=3600)
+    monkeypatch.setenv("ASTRODECK_SECRET", "test-session-secret-xyz-0123456789")
+    auth = AuthConfig(methods=["google"],
+                      role_allowlist={"a@x.com": "admin"})
+    import astrodeck.config as config_mod
+    # The provider re-reads the live store on every request, so the config has
+    # to be there; through monkeypatch so the worker-shared store is restored
+    # (a leaked ['google'] here turned later route tests on the worker to 401).
+    monkeypatch.setattr(config_mod.config_store.cfg(), "auth", auth)
+    monkeypatch.setattr(users_mod, "user_store",
+                        UserStore(path=tmp_path / "users.json"))
+    tok = sign_session("admin", email="a@x.com", jti="JTI-1", ttl_s=3600,
+                       authn="google")
 
     class _Req:
         cookies = {"ad_session": tok}

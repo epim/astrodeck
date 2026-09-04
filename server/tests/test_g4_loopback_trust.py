@@ -169,14 +169,14 @@ def test_false_plus_valid_login_honors_role(tmp_path, monkeypatch, username, rol
     viewer, per R3-ROLE-01)."""
     app, users, _ = _make_app(tmp_path, monkeypatch, methods=["local"],
                               trust_loopback=False)
-    users.create(username=username, password="hunter2", role=role, email=email)
+    users.create(username=username, password="hunter2-long", role=role, email=email)
     with TestClient(app, client=LOOPBACK) as c:
         # methods=["local"] -> MultiAuthProvider is active, not "none" at all,
         # so trust_loopback was never in play here to begin with: unauthenticated
         # is 401 pre-login, same as it always was for a configured method.
         assert c.get("/api/me").status_code == 401
         r = c.post("/auth/local",
-                   json={"username": username, "password": "hunter2"})
+                   json={"username": username, "password": "hunter2-long"})
         assert r.status_code == 200, r.text
         me = c.get("/api/me")
         assert me.status_code == 200

@@ -10,18 +10,20 @@ the home app and streams the response back. The home serves the **whole app**
 (SPA + REST API + `/ws`), so the relay forwards **everything** — there is no
 separate frontend host and **zero UI component changes**.
 
-The relay is a **dumb byte-forwarder**. It holds **NO home signing secret** and
-**cannot forge a principal**. Every tunnelled request is **re-authenticated and
-re-authorized at the home** (`remote=True`, so the open "none" provider is denied
-remotely), and the sun-avoidance / RBAC / safety gates all enforce at the home —
-even if the relay is fully compromised.
+The relay transforms hop-by-hop headers and forwards the home's signed session
+cookie. Every tunnelled request is **re-authenticated and re-authorized at the
+home** (`remote=True`, so the open "none" provider is denied remotely), and the
+sun-avoidance, RBAC, and safety gates still enforce at the home.
 
-> Security note: TLS terminates **at** the relay, so a compromised relay can read
-> tunnelled traffic and act as an already-authenticated **viewer** in real time.
-> This is an accepted, documented risk. Token **minting** is withheld (the relay
-> holds a PUBLIC key only), and the privilege-defining writes (`admin`/`config`/
-> remote-config) are **tunnel-blocked at the home**. Bind the scope↔relay dial
-> with **mTLS** in production. See `docs/architecture/2026-06-17-remote-access-architecture.md`.
+> Security note: TLS terminates **at** the relay. It is therefore a trusted
+> bearer-token intermediary, not a blind pipe. A compromised relay can observe
+> and replay a captured session cookie and exercise that session's tunneled
+> capabilities, including rig control. Identity/trust-root changes, host/LAN
+> destination and connection setup, relay configuration, factory reset, and
+> self-update mutations are blocked on the tunnel at the home, but that does not
+> make relay compromise harmless. Use a
+> dedicated, hardened relay host and mTLS where available; mTLS protects the
+> dial from impersonation, not from compromise of the relay itself.
 
 ---
 
@@ -59,12 +61,13 @@ Each frame (in EITHER direction, inside one WSS binary message) is:
 | `0x14` | `REVOKE`    | both           | `{jti[],ws_id[]}`  (stream_id=0)                 | —       |
 | `0x15` | `WINDOW`    | both           | `{stream_id,credit}`                             | —       |
 
-Rules: relay allocates `stream_id`; payload bounded (64 KiB); per-stream credit
-backpressure (`WINDOW`); class round-robin (`event`|`control`|`bulk`) so a
-125 MB FITS never head-of-line-blocks status; a duplicate live `stream_id`
-`REQ_OPEN`/`WS_OPEN` is rejected; an orphan `REQ_DATA`/`RESP_DATA`/`WS_DATA`
-(unknown `stream_id`) is an **error** (never silently buffered); `PING`/`PONG`/
-`REVOKE` ride reserved `stream_id=0` and are exempt from the orphan rule.
+Rules: relay allocates `stream_id`; headers and payloads are bounded; duplicate
+live request or WebSocket ids are rejected; orphan HTTP response frames are an
+error; late WebSocket frames after a normal close are dropped. `PING`/`PONG` and
+`REVOKE` ride reserved `stream_id=0`. `WINDOW` and the `class` field are reserved
+for a future credit scheduler; they are not active flow control today. Current
+backpressure comes from bounded wire queues, bounded per-browser queues, request
+timeouts, and per-home/process concurrency caps.
 
 The codec lives in `relay/relay/protocol.py` and is kept **byte-for-byte compatible**
 with the home-side `server/astrodeck/remote/protocol.py` (the scope client).
@@ -73,14 +76,15 @@ with the home-side `server/astrodeck/remote/protocol.py` (the scope client).
 
 | route                              | who         | purpose |
 |------------------------------------|-------------|---------|
-| `GET /healthz`                     | anyone      | liveness + connected-home list |
+| `GET /healthz`                     | anyone      | liveness only |
 | `WS  /scope`                       | the **home**| outbound tunnel (device-token auth via `HELLO`) |
 | `WS  /h/{home_id}/ws`              | a browser   | tunnelled `/ws` event stream |
 | `ANY /h/{home_id}/{path:path}`     | a browser   | tunnelled HTTP (SPA, `/assets`, `/api`, `/auth`) |
-| `GET /auth/google/callback`        | a browser   | relay-terminated Google OIDC (mints a home-verifiable principal) |
-| `GET /share/{token}`               | a browser   | redeem a viewer link |
 
-`home_id` in the path is the **stable routing key** (single-instance affinity).
+`home_id` in the path is the stable routing key. Because path tenants share one
+browser origin and cookie namespace, this build deliberately accepts tokens for
+only **one distinct home per relay hostname/instance**. Deploy a separate relay
+hostname/instance per home until subdomain isolation is implemented.
 
 ---
 
@@ -100,20 +104,29 @@ Run the relay (binds `0.0.0.0:8080` by default):
 
 ```bash
 # Provision a device token -> home_id map (NEVER bake into an image):
-echo '{"my-device-token":"home-1"}' > /tmp/device_tokens.json
+python -c "import json,secrets; print(json.dumps({secrets.token_urlsafe(32): 'home-1'}))" > /tmp/device_tokens.json
 RELAY_DEVICE_TOKENS_FILE=/tmp/device_tokens.json \
 RELAY_ORIGIN=localhost:8080 \
+RELAY_HTTPS=0 \
   .venv/Scripts/python -m relay
 ```
 
-Without `RELAY_OIDC_SEED_FILE` / `RELAY_VIEWER_SEED_FILE` the relay runs with a
-**LOUD dev-HMAC signer** (logs a warning) — fine for local dev, never production.
-For production, mount two 32-byte Ed25519 seeds and load the matching **public**
-keys into the home config as `relay_pubkey` / `viewer_link_pubkey`.
+Without `RELAY_OIDC_SEED_FILE` / `RELAY_VIEWER_SEED_FILE`, the network server
+constructs **no signer** and cannot mint principal or viewer tokens. The current
+build exposes neither relay-terminated OIDC nor viewer-link routes, so that is
+the recommended minimal-secret posture. If those reserved features are later
+enabled, mount distinct 32-byte Ed25519 seeds and load the matching **public**
+keys into the home config as `relay_pubkey` / `viewer_link_pubkey`; never use the
+unit-test-only dev-HMAC helper in a network process.
 
 On the **home** side, enable the scope client (`RemoteConfig.enabled = True`,
-`relay_url = wss://<relay>/scope`, `device_token = my-device-token`). The home
-dials out; a browser then loads `http://<relay>/h/home-1/`.
+`relay_url = wss://<relay>/scope`, `device_token` = the token in the JSON file).
+Plain
+`ws://` is rejected except for a loopback development relay. The home dials out;
+a browser then loads `https://<relay>/h/home-1/`.
+
+Device tokens must contain 32-256 printable ASCII characters. Generate them
+with `secrets.token_urlsafe(32)`; do not use a human password.
 
 ### Tests
 
@@ -153,8 +166,6 @@ docker build -t astrodeck-relay .
 docker run -p 8080:8080 \
   -v $PWD/secrets:/secrets:ro \
   -e RELAY_DEVICE_TOKENS_FILE=/secrets/device_tokens.json \
-  -e RELAY_OIDC_SEED_FILE=/secrets/oidc_seed.bin \
-  -e RELAY_VIEWER_SEED_FILE=/secrets/viewer_seed.bin \
   -e RELAY_ORIGIN=relay.example.com \
   astrodeck-relay
 ```
@@ -163,8 +174,8 @@ docker run -p 8080:8080 \
 
 ```bash
 fly launch --no-deploy            # accept the bundled fly.toml
-# Provision tokens + seeds as MOUNTED FILES (a Fly volume / secrets-as-files),
-# then point the RELAY_*_FILE env vars at them. Set the public origin:
+# Provision the token map as a mounted file (or RELAY_DEVICE_TOKENS secret).
+# Set the public origin:
 fly secrets set RELAY_ORIGIN=relay.example.com
 fly deploy
 ```
@@ -178,13 +189,22 @@ no scale-to-zero) so a home's persistent WSS stays on the same instance, exposes
 | var | default | meaning |
 |-----|---------|---------|
 | `RELAY_BIND_HOST` / `RELAY_BIND_PORT` | `0.0.0.0` / `8080` | listen address |
-| `RELAY_ORIGIN` | `""` | public host (rewrites `Set-Cookie Domain`) |
+| `RELAY_ORIGIN` | `""` | canonical public browser host used for exact Origin checks; required on non-loopback binds |
 | `RELAY_HTTPS` | `1` | forces cookie `Secure` |
 | `RELAY_PING_INTERVAL_S` / `RELAY_PING_MAX_MISSES` | `10` / `3` | keepalive |
-| `RELAY_WS_EGRESS_MAX` | `200` | per-browser `/ws` egress buffer bound |
+| `RELAY_WS_EGRESS_MAX` | `64` | per-browser `/ws` egress buffer bound |
 | `RELAY_HTTP_RATE` / `RELAY_HTTP_BURST` | `20` / `40` | per-IP HTTP token bucket |
 | `RELAY_WS_RATE` / `RELAY_WS_BURST` | `1` / `5` | per-IP `/ws`-open token bucket |
-| `RELAY_MAX_BODY` | `134217728` | max tunnelled request body bytes |
+| `RELAY_MAX_BODY` | `8388608` | max tunnelled request body bytes |
+| `RELAY_SCOPE_RATE` / `RELAY_SCOPE_BURST` | `2` / `10` | per-IP `/scope` handshake bucket |
+| `RELAY_SCOPE_PENDING_MAX` | `32` | process-wide incomplete `/scope` handshakes |
+| `RELAY_SCOPE_HELLO_TIMEOUT_S` | `5` | deadline for the first authenticated HELLO |
+| `RELAY_REQUEST_BODY_TIMEOUT_S` | `30` | maximum idle time between browser upload chunks |
+| `RELAY_REQUEST_TOTAL_TIMEOUT_S` | `900` | total browser upload lifetime |
+| `RELAY_UPSTREAM_TIMEOUT_S` | `30` | maximum idle wait on home response data / tunnel writes |
+| `RELAY_HTTP_EGRESS_CHUNKS` | `8` | per-browser response chunks buffered at the relay |
+| `RELAY_HTTP_MAX_PER_HOME` / `RELAY_HTTP_MAX_TOTAL` | `32` / `128` | concurrent tunneled HTTP exchanges |
+| `RELAY_WS_MAX_PER_HOME` / `RELAY_WS_MAX_TOTAL` | `16` / `64` | concurrent browser WebSockets |
 | `RELAY_DEVICE_TOKENS_FILE` | `""` | JSON `{device_token: home_id}` (mounted) |
 | `RELAY_DEVICE_TOKENS` | `""` | same JSON inline, when a file mount isn't available (e.g. Fly/most-PaaS secrets-as-env) |
 | `RELAY_OIDC_SEED_FILE` | `""` | 32-byte Ed25519 seed for the OIDC key |

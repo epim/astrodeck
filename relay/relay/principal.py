@@ -21,12 +21,12 @@ mint a home-trusted ADMIN.** Concretely:
     home can revoke ALL viewer links (rotate that one key) without touching the
     OIDC-principal path.
 
-Preferred crypto: **Ed25519 (EdDSA)** via the ``cryptography`` wheel -- a small,
-JWS-shaped ``header.payload.sig`` token (alg ``EdDSA``) the home verifies with
-the public key. If ``cryptography`` is NOT installed, this module falls back to
-a **LOUD, dev-only HMAC** mode (alg ``HS256-DEV``) so the off-wire unit tests run
-in a bare venv; that mode is symmetric and is NEVER acceptable in production --
-``signer_is_dev()`` reports it and the relay logs a warning at boot.
+Production crypto is **Ed25519 (EdDSA)** via the ``cryptography`` wheel -- a
+small, JWS-shaped ``header.payload.sig`` token (alg ``EdDSA``) the home verifies
+with the public key. Missing cryptography or missing seeds fails closed: the
+network server constructs no signer. The explicit ``dev_hmac`` constructor
+(alg ``HS256-DEV``) exists only for off-wire unit tests and is never selected by
+runtime startup.
 
 Token claims:
     {sub, email, role, caps[], jti, iat, exp, kind}   kind in {"oidc","viewer"}
@@ -50,7 +50,7 @@ try:  # pragma: no cover - import branch, exercised by whichever env runs
     )
 
     _HAVE_ED25519 = True
-except Exception:  # noqa: BLE001 - any import failure => dev HMAC fallback
+except Exception:  # noqa: BLE001 - any import failure => Ed25519 unavailable
     _HAVE_ED25519 = False
 
 

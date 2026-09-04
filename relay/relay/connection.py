@@ -18,7 +18,7 @@ from typing import Optional
 
 from . import protocol
 from .protocol import Frame, FrameType, ProtocolError
-from .proxy import TunnelMultiplexer
+from .proxy import DEFAULT_WS_EGRESS_MAX, TunnelMultiplexer
 from .registry import HomeRegistration, HomeRegistry, RegistrationError, ScopeTunnel
 
 
@@ -36,16 +36,19 @@ class ScopeConnection:
       4. ``close()`` unregisters + tears down the multiplexer (browsers
          re-resolve + resync against the next tunnel)."""
 
-    def __init__(self, registry: HomeRegistry, tunnel: ScopeTunnel):
+    def __init__(self, registry: HomeRegistry, tunnel: ScopeTunnel, *,
+                 ws_egress_max: int = DEFAULT_WS_EGRESS_MAX):
         self.registry = registry
         self.tunnel = tunnel
+        self.ws_egress_max = ws_egress_max
         self.reg: Optional[HomeRegistration] = None
         self.mux: Optional[TunnelMultiplexer] = None
         self.registered = False
+        self._registration_committed = False
 
     # -- handshake ------------------------------------------------------------
 
-    def handle_hello(self, frame: Frame) -> Frame:
+    def handle_hello(self, frame: Frame, *, defer_commit: bool = False) -> Frame:
         """Process the first frame. Returns the ``HELLO_ACK`` to send back.
 
         Rejects (ok=False) a non-HELLO first frame, an incompatible major
@@ -63,10 +66,22 @@ class ScopeConnection:
             self.reg = self.registry.register(frame, self.tunnel)
         except RegistrationError as exc:
             return protocol.hello_ack(False, reason=str(exc))
-        self.mux = TunnelMultiplexer(self.reg)
+        self.mux = TunnelMultiplexer(
+            self.reg, ws_egress_max=self.ws_egress_max)
         self.registered = True
+        if not defer_commit:
+            self.commit_registration()
         endpoint = f"/h/{self.reg.home_id}/"
         return protocol.hello_ack(True, endpoint=endpoint)
+
+    def commit_registration(self) -> bool:
+        """Fence the previous generation after our ACK reached the peer."""
+
+        if self.reg is None:
+            return False
+        committed = self.registry.commit(self.reg)
+        self._registration_committed = committed
+        return committed
 
     # -- frame routing --------------------------------------------------------
 
@@ -124,6 +139,9 @@ class ScopeConnection:
         disconnect every browser so they re-resolve + resync."""
         self.tunnel.closed = True
         if self.reg is not None:
-            self.registry.unregister(self.reg.home_id, self.tunnel)
+            if self._registration_committed:
+                self.registry.unregister(self.reg.home_id, self.tunnel)
+            else:
+                self.registry.rollback(self.reg)
         if self.mux is not None:
             await self.mux.shutdown(code)

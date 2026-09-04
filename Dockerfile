@@ -62,25 +62,32 @@ RUN apt-get update \
 # emulation is a known way for that sparse write to fail the whole build. Cheap
 # insurance on the arm64 (Raspberry Pi) build, which is emulated wherever it is
 # not built on real hardware.
-RUN useradd --no-log-init --create-home --uid 10001 astrodeck
+RUN groupadd --gid 10001 astrodeck && useradd --no-log-init --uid 10001 --gid 10001 --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin astrodeck
 
 COPY --from=build /opt/venv /opt/venv
 # The built SPA, inside the installed package.
 COPY --from=ui /ui/dist /opt/venv/lib/python3.12/site-packages/astrodeck/webui
 
 ENV PATH="/opt/venv/bin:$PATH" \
+    HOME=/tmp/home \
+    TMPDIR=/tmp \
+    XDG_CACHE_HOME=/tmp/.cache \
+    XDG_CONFIG_HOME=/tmp/.config \
+    PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     ASTRODECK_CONFIG_DIR=/data/config \
     ASTRODECK_CAPTURE_DIR=/data/captures
 
 # Both are bind/volume mount points. Config holds the rig profile, the site and
-# the user store; captures holds every frame. Losing either is losing a night.
+# the user store; captures holds every frame. Seed exact ownership and private
+# modes so a newly created named volume inherits them on first attachment.
+RUN install -d -o 10001 -g 10001 -m 0700 /data/config /data/captures
 VOLUME ["/data/config", "/data/captures"]
-RUN mkdir -p /data/config /data/captures && chown -R astrodeck:astrodeck /data
 
-USER astrodeck
-WORKDIR /home/astrodeck
+USER 10001:10001
+WORKDIR /app
 EXPOSE 8800
+STOPSIGNAL SIGTERM
 
 # /healthz is unauthenticated by design (the supervisor and any load balancer
 # probe it) and touches no device, so this stays green on a rig with nothing
@@ -88,6 +95,7 @@ EXPOSE 8800
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8800/healthz', timeout=4).status==200 else 1)"
 
-# 0.0.0.0 inside the container is the container's own interface, not the host's:
-# what the LAN can reach is decided by the port publish (-p), not by this.
+# A published container port needs an internal 0.0.0.0 bind. AstroDeck's CLI
+# refuses this non-loopback bind until a named account or another supported
+# authentication method has been provisioned in the persistent config volume.
 CMD ["python", "-m", "astrodeck", "run", "--host", "0.0.0.0", "--port", "8800"]
