@@ -153,6 +153,40 @@ were re-verified on the board.
 - The second commission's refusal prints a Python traceback on the factory
   console rather than a one-line message.
 
+## Client association fails on this board's radio (2026-09-04)
+
+Follow-up on the phone-join item. A phone and, separately, this laptop's Intel
+BE200 both fail to join the setup hotspot: the client reaches "associating",
+waits about ten seconds, and drops with "authentication problem" on the phone
+and Windows reason "the specific network is not available" on the laptop. The
+scan sees the SSID at strong signal (around -30 dBm), so this is the WPA
+association, not signal, not the portal, not DHCP.
+
+It is not the provisioner, the sandbox, the cipher config, or the password:
+
+- The commissioned label password is byte-for-byte the access point's active
+  secret, checked on disk.
+- The same hotspot raised as plain unsandboxed root, the way the earlier
+  single-process portal did, fails a driven client exactly the same way. So
+  the privilege separation and the systemd hardening are not the cause. The
+  read-only `/proc/sys` warning the sandbox produces
+  (`drop_unicast_in_l2_multicast`) is non-fatal and is present or absent
+  without changing the outcome.
+- During the ten seconds the laptop was associating, the board's own
+  `wpa_supplicant` journal in AP mode records nothing: no association, no
+  EAPOL, no station event. The radio never handed the client's frames up.
+- Every hotspot bring-up logs `brcmfmac: brcmf_vif_set_mgmt_ie: vndr ie set
+  error: -52`, the Broadcom firmware rejecting the beacon's management IE.
+
+Conclusion: an AP-mode firmware fault on this board's BCM4345 (brcmfmac,
+firmware dated 2017), below everything the provisioner controls. The whole
+provisioning stack is verified up to the radio; a real client cannot associate
+on this particular board. Options for the appliance, none of them provisioner
+work: a newer brcmfmac firmware and nvram for this chip, a different onboard
+radio on the shipping hardware, or a small external USB Wi-Fi adapter used only
+for the setup access point. This does not affect the board running as a station
+on the home network, which works throughout.
+
 ## Not verified
 
 - A real power pull, three times. The mechanism was exercised with software

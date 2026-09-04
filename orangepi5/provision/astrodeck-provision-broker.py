@@ -820,7 +820,11 @@ def ap_up(ssid: str, psk: str) -> None:
         "bringing up the WiFi interface",
     )
     for attempt in range(3):
-        p = run(["wpa_supplicant", "-B", "-i", IFACE, "-c", WPA_CONF,
+        # -s: the hotspot supplicant reports each client's association and
+        # handshake outcome to the journal (station addresses and state
+        # names only; key material is never logged at this level). Without
+        # it a phone that cannot join leaves no trace on the board.
+        p = run(["wpa_supplicant", "-B", "-s", "-i", IFACE, "-c", WPA_CONF,
                  "-P", WPA_PID], timeout=20)
         if p.returncode == 0:
             break

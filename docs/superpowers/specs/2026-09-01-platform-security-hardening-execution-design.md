@@ -450,9 +450,13 @@ Disposable Orange Pi 5 hardware gate:
 Record commands, properties, timestamps, and observed results in the release
 artifact. A desktop test cannot substitute for this gate.
 
-Run 2026-09-03 on a disposable Orange Pi 5 Pro: steps 1 to 8 pass on the
-mechanism, with software reboots in place of power pulls and no phone join;
-those two remain unverified. Artifact:
+Run 2026-09-03..04 on a disposable Orange Pi 5 Pro: steps 1 to 8 pass on the
+mechanism. Real power pulls confirmed the recovery gesture arms but showed
+the 60-second healthy-boot clear is easy to trip by hand (see the residual
+risks above). The phone/laptop join is BLOCKED by an AP-mode firmware fault
+on this board's BCM4345 radio: a driven client never associates, the radio
+logs nothing, and the same failure occurs with the sandbox removed, so it is
+below the provisioner. Artifact:
 `docs/hardware/orange-pi-5-hardware-gate-2026-09-03.md`.
 
 ---
