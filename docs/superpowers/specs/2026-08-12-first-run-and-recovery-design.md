@@ -5,6 +5,14 @@
 first run and the shipped credential"*. Depends on sub-project 1 (image bake).
 **Charter:** `2026-08-10-appliance-product-program.md` (D2, D3, D6, D8).
 
+> **Partial security supersession (2026-09-01):** The Orange Pi WiFi setup
+> credential and three-power-cycle behavior are now implemented only as the
+> one-shot onboarding recovery described in
+> `2026-09-01-platform-security-hardening-execution-design.md`. It restores the
+> printed factory WiFi credential without changing application users, sessions,
+> or claim state. The broader account-recovery design below remains unimplemented
+> and must not be inferred from the WiFi provisioner.
+
 Evidence convention: **[v]** verified by reading the file or running it during
 this work; **[r]** reported, not independently checked.
 

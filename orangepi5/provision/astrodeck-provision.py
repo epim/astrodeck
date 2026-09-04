@@ -1,23 +1,22 @@
 #!/usr/bin/env python3
-"""AstroDeck WiFi provisioning hotspot.
+"""Unprivileged network frontend for AstroDeck WiFi onboarding.
 
-Runs at every boot on the appliance. If the board reaches a network, exits
-quietly. If not, raises a WPA2 hotspot (SSID AstroDeck-XXXX) with a captive
-portal; the user submits home WiFi credentials from a phone, the board writes
-a netplan config and joins. See
-docs/superpowers/specs/2026-08-08-wifi-provisioning-design.md.
-
-Stdlib only — the image this ships on cannot install packages.
+This process parses hostile HTTP/DNS traffic and never executes network tools,
+writes system configuration, reads setup identity state, or talks to systemd.
+All privileged effects are fixed operations on a credential-checked local
+broker.  The broker independently owns the one-shot authorization deadline.
 """
 
 import argparse
+import errno
 import html
 import json
-import os
+import math
 import re
+import secrets
+import signal
 import socket
 import socketserver
-import subprocess
 import sys
 import threading
 import time
@@ -25,289 +24,206 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 AP_IP = "10.42.0.1"
-AP_CIDR = "10.42.0.1/24"
-AP_FREQ = 2437  # 2.4 GHz channel 6: phones universally see it
-AP_PSK = "astrodeck"
-IFACE = "wlan0"
-RUN_DIR = "/run/astrodeck"
-STATE_DIR = "/var/lib/astrodeck"
-STATE_PATH = os.path.join(STATE_DIR, "provision-state.json")
-NETPLAN_PATH = "/etc/netplan/30-astrodeck-wifi.yaml"
-# 05- so it outranks netplan's generated 10-netplan-wlan0.network: systemd-networkd
-# applies the first file (lexicographically) that matches an interface, and after a
-# reboot with a netplan yaml present both files exist while the AP is up.
-NETWORKD_PATH = "/run/systemd/network/05-astrodeck-ap.network"
-PERSIST_LOG = "/var/lib/astrodeck/provision.log"
-WPA_CONF = os.path.join(RUN_DIR, "ap.conf")
-WPA_PID = os.path.join(RUN_DIR, "wpa-ap.pid")
-ONLINE_WAIT_S = 90
-JOIN_WAIT_S = 45
+PORTAL_LIFETIME_S = 15 * 60
+# networkd assigns the hotspot address a beat after the beacon starts; bind
+# attempts before that fail with EADDRNOTAVAIL. Bounded by the broker's own
+# window deadline, which is the real limit.
+ADDRESS_WAIT_S = 20.0
+MAX_FORM_BYTES = 4096
+MAX_SSID_BYTES = 32
+MAX_HTTP_WORKERS = 16
+MAX_BROKER_REQUEST_BYTES = 8192
+MAX_BROKER_RESPONSE_BYTES = 64 * 1024
+BROKER_SOCKET = "/run/astrodeck-provision-broker.sock"
 
-# Portal state shared between the join thread and request handlers.
 STATUS = {"phase": "portal", "error": "", "ssid": ""}
 SCAN_CACHE: list[dict] = []
 DONE = threading.Event()
+SERVER_FAILED = threading.Event()
+JOIN_LOCK = threading.Lock()
+SCAN_LOCK = threading.Lock()
+CSRF_TOKEN = secrets.token_urlsafe(32)
 
 
-def log(msg: str) -> None:
-    print(f"[provision] {msg}", flush=True)
-    # journald is volatile under armbian-ramlog and dies with hard resets;
-    # keep our own breadcrumb trail somewhere that survives power loss.
+def log(message: str) -> None:
+    # The frontend has no writable durable path. systemd captures stdout and
+    # applies the journal's retention/rate policy.
+    print(f"[provision-frontend] {message}", flush=True)
+
+
+def valid_ssid(ssid: str) -> bool:
+    if not isinstance(ssid, str):
+        return False
     try:
-        os.makedirs(STATE_DIR, exist_ok=True)
-        with open(PERSIST_LOG, "a") as f:
-            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg}\n")
-    except OSError:
-        pass
-
-
-def run(cmd: list[str], timeout: int = 30) -> subprocess.CompletedProcess:
-    log("+ " + " ".join(cmd))
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-
-
-# ---------------------------------------------------------------- pure logic
-
-def derive_ssid(mac: str) -> str:
-    """AstroDeck-XXXX from the last 4 hex digits of a MAC address."""
-    digits = re.sub(r"[^0-9a-fA-F]", "", mac)
-    return "AstroDeck-" + digits[-4:].upper()
-
-
-def yaml_dq(s: str) -> str:
-    """Escape a string into a YAML double-quoted scalar."""
-    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+        encoded = ssid.encode("utf-8")
+    except UnicodeError:
+        return False
+    return (
+        bool(encoded)
+        and len(encoded) <= MAX_SSID_BYTES
+        and all(ord(ch) >= 0x20 and ord(ch) != 0x7F for ch in ssid)
+    )
 
 
 def valid_psk(psk: str) -> bool:
-    """WPA2 passphrase length rule; empty means an open network."""
-    return psk == "" or 8 <= len(psk) <= 63
-
-
-def emit_netplan(ssid: str, psk: str, sae: bool = False) -> str:
-    if "\n" in ssid or "\n" in psk:
-        raise ValueError("newline in credentials")
-    if psk and sae:
-        # WPA3-only network: plain `password:` emits WPA-PSK, which a
-        # WPA3-only AP rejects regardless of the password being right.
-        body = (f"          {yaml_dq(ssid)}:\n"
-                "            auth:\n"
-                "              key-management: sae\n"
-                f"              password: {yaml_dq(psk)}\n")
-    elif psk:
-        body = (f"          {yaml_dq(ssid)}:\n"
-                f"            password: {yaml_dq(psk)}\n")
-    else:
-        # an open network needs an explicit empty mapping value
-        body = f"          {yaml_dq(ssid)}: {{}}\n"
-    return (
-        "# Written by astrodeck-provision. Do not hand-edit; rerun setup instead.\n"
-        "network:\n"
-        "  version: 2\n"
-        "  renderer: networkd\n"
-        "  wifis:\n"
-        f"    {IFACE}:\n"
-        "      dhcp4: true\n"
-        "      dhcp6: true\n"
-        "      access-points:\n"
-        f"{body}"
-    )
-
-
-def emit_wpa_ap_conf(ssid: str, psk: str, freq: int = AP_FREQ) -> str:
-    return (
-        f"ctrl_interface=DIR=/run/wpa_supplicant\n"
-        "ap_scan=1\n"
-        "network={\n"
-        f'    ssid="{ssid}"\n'
-        "    mode=2\n"
-        "    key_mgmt=WPA-PSK\n"
-        f'    psk="{psk}"\n'
-        "    proto=RSN\n"
-        "    pairwise=CCMP\n"
-        "    group=CCMP\n"
-        f"    frequency={freq}\n"
-        "}\n"
-    )
-
-
-def emit_networkd_ap() -> str:
-    return (
-        "[Match]\n"
-        f"Name={IFACE}\n"
-        "\n"
-        "[Network]\n"
-        f"Address={AP_CIDR}\n"
-        "DHCPServer=yes\n"
-        "\n"
-        "[DHCPServer]\n"
-        "PoolOffset=10\n"
-        "PoolSize=64\n"
-        "EmitDNS=yes\n"
-        f"DNS={AP_IP}\n"
-    )
-
-
-# ------------------------------------------------------------------- network
-
-def wlan_mac() -> str | None:
-    try:
-        with open(f"/sys/class/net/{IFACE}/address") as f:
-            return f.read().strip()
-    except OSError:
-        return None
-
-
-def have_default_route() -> bool:
-    try:
-        p = run(["ip", "route", "show", "default"], timeout=10)
-        return bool(p.stdout.strip())
-    except Exception:
+    if not isinstance(psk, str):
         return False
-
-
-def wait_route(seconds: int) -> bool:
-    deadline = time.monotonic() + seconds
-    while time.monotonic() < deadline:
-        if have_default_route():
-            return True
-        time.sleep(3)
-    return have_default_route()
-
-
-def parse_scan(text: str) -> list[dict]:
-    """Parse `iw dev wlan0 scan` output → [{ssid, signal, akm}] strongest first.
-
-    akm collects RSN authentication suites across all BSSes broadcasting the
-    SSID (e.g. {"PSK"}, {"SAE"}, {"PSK","SAE"} for WPA2/WPA3 mixed mode).
-    """
-    nets: dict[str, dict] = {}
-
-    def commit(ssid, sig, akm):
-        if not ssid or "\\x00" in ssid:
-            return
-        e = nets.setdefault(ssid, {"signal": -100.0, "akm": set()})
-        if sig is not None and sig > e["signal"]:
-            e["signal"] = sig
-        e["akm"] |= akm
-
-    ssid, sig, akm = None, None, set()
-    for raw in text.splitlines():
-        line = raw.strip()
-        if raw.startswith("BSS "):
-            commit(ssid, sig, akm)
-            ssid, sig, akm = None, None, set()
-        elif line.startswith("signal:"):
-            m = re.search(r"(-?\d+(?:\.\d+)?)", line)
-            sig = float(m.group(1)) if m else None
-        elif line.startswith("SSID:"):
-            ssid = line[5:].strip()
-        elif line.startswith("* Authentication suites:"):
-            akm |= set(line.split(":", 1)[1].split())
-    commit(ssid, sig, akm)
-    return [
-        {"ssid": s, "signal": v["signal"], "akm": sorted(v["akm"])}
-        for s, v in sorted(nets.items(), key=lambda kv: -kv[1]["signal"])
-    ]
-
-
-def needs_sae(ssid: str, nets: list[dict]) -> bool:
-    """True when the scanned network offers SAE but not plain PSK (WPA3-only)."""
-    for n in nets:
-        if n["ssid"] == ssid:
-            akm = set(n.get("akm", ()))
-            return "SAE" in akm and "PSK" not in akm
-    return False
-
-
-def scan_networks() -> list[dict]:
-    """Best-effort scan; returns [{ssid, signal, akm}] sorted strongest first."""
-    run(["ip", "link", "set", IFACE, "up"], timeout=10)
-    try:
-        p = run(["iw", "dev", IFACE, "scan"], timeout=25)
-    except subprocess.TimeoutExpired:
-        return SCAN_CACHE
-    if p.returncode != 0:
-        log(f"scan failed: {p.stderr.strip()[:200]}")
-        return SCAN_CACHE
-    return parse_scan(p.stdout)
-
-
-def ap_up(ssid: str) -> None:
-    os.makedirs(RUN_DIR, exist_ok=True)
-    # netplan's own supplicant fights us for wlan0 whenever a netplan wifi yaml
-    # exists (i.e. after any previous provisioning attempt). Mask it for the
-    # lifetime of the AP so systemd cannot restart it mid-handoff, then kill
-    # whatever is currently attached to the interface.
-    run(["systemctl", "mask", "--runtime", f"netplan-wpa-{IFACE}.service"],
-        timeout=20)
-    run(["systemctl", "stop", f"netplan-wpa-{IFACE}.service"], timeout=20)
-    run(["pkill", "-F", WPA_PID], timeout=10)
-    with open(WPA_CONF, "w") as f:
-        f.write(emit_wpa_ap_conf(ssid, AP_PSK))
-    os.makedirs(os.path.dirname(NETWORKD_PATH), exist_ok=True)
-    with open(NETWORKD_PATH, "w") as f:
-        f.write(emit_networkd_ap())
-    run(["networkctl", "reload"], timeout=20)
-    run(["ip", "link", "set", IFACE, "up"], timeout=10)
-    last_err = ""
-    for attempt in range(3):
-        p = run(["wpa_supplicant", "-B", "-i", IFACE, "-c", WPA_CONF,
-                 "-P", WPA_PID], timeout=20)
-        if p.returncode == 0:
-            break
-        last_err = p.stderr.strip()
-        log(f"wpa_supplicant AP start attempt {attempt + 1} failed: {last_err}")
-        run(["pkill", "-f", f"wpa_supplicant.*{IFACE}"], timeout=10)
-        time.sleep(2)
-    else:
-        raise RuntimeError(f"wpa_supplicant AP start failed: {last_err}")
-    for _ in range(20):
-        info = run(["iw", "dev", IFACE, "info"], timeout=10)
-        if "type AP" in info.stdout:
-            log(f"AP up: {ssid}")
-            return
-        time.sleep(1)
-    log("warning: interface never reported type AP; continuing anyway")
-
-
-def ap_down() -> None:
-    run(["pkill", "-F", WPA_PID], timeout=10)
-    try:
-        os.remove(NETWORKD_PATH)
-    except OSError:
-        pass
-    run(["systemctl", "unmask", "--runtime", f"netplan-wpa-{IFACE}.service"],
-        timeout=20)
-    run(["networkctl", "reload"], timeout=20)
-    run(["ip", "addr", "flush", "dev", IFACE], timeout=10)
-
-
-def try_join(ssid: str, psk: str, sae: bool = False) -> bool:
-    log(f"joining {ssid!r} (sae={sae})")
-    content = emit_netplan(ssid, psk, sae)
-    fd = os.open(NETPLAN_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        f.write(content)
-    ap_down()
-    run(["netplan", "apply"], timeout=60)
-    if wait_route(JOIN_WAIT_S):
-        os.makedirs(STATE_DIR, exist_ok=True)
-        with open(STATE_PATH, "w") as f:
-            json.dump({"ssid": ssid, "joined_at": time.time(),
-                       "result": "ok"}, f)
-        log("joined; provisioning complete")
+    if psk == "":
         return True
-    log("no route after join; reverting to hotspot")
     try:
-        os.remove(NETPLAN_PATH)
-    except OSError:
-        pass
-    run(["netplan", "apply"], timeout=60)
+        encoded = psk.encode("utf-8")
+    except UnicodeError:
+        return False
+    return (
+        8 <= len(encoded) <= 63
+        and all(ord(ch) >= 0x20 and ord(ch) != 0x7F for ch in psk)
+    )
+
+
+def needs_sae(ssid: str, networks: list[dict]) -> bool:
+    for network in networks:
+        if network.get("ssid") == ssid:
+            suites = set(network.get("akm", ()))
+            return "SAE" in suites and "PSK" not in suites
     return False
 
 
-# -------------------------------------------------------------------- portal
+def _json_object_without_duplicates(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON field: {key}")
+        result[key] = value
+    return result
+
+
+def _validated_networks(value) -> list[dict]:
+    if not isinstance(value, list) or len(value) > 64:
+        raise ValueError("invalid broker network list")
+    result = []
+    for item in value:
+        if not isinstance(item, dict) or set(item) != {"ssid", "signal", "akm"}:
+            raise ValueError("invalid broker network entry")
+        ssid = item["ssid"]
+        signal_value = item["signal"]
+        suites = item["akm"]
+        if not valid_ssid(ssid):
+            raise ValueError("invalid broker SSID")
+        if (
+            isinstance(signal_value, bool)
+            or not isinstance(signal_value, (int, float))
+            or not math.isfinite(float(signal_value))
+            or not -200 <= float(signal_value) <= 100
+        ):
+            raise ValueError("invalid broker signal")
+        if (
+            not isinstance(suites, list)
+            or len(suites) > 16
+            or any(
+                not isinstance(suite, str)
+                or len(suite) > 32
+                or not re.fullmatch(r"[A-Z0-9_-]+", suite)
+                for suite in suites
+            )
+        ):
+            raise ValueError("invalid broker authentication suite")
+        result.append({"ssid": ssid, "signal": float(signal_value), "akm": list(suites)})
+    return result
+
+
+class BrokerClient:
+    """One-request-per-connection client for the fixed-operation root broker."""
+
+    def __init__(self, path: str = BROKER_SOCKET):
+        self.path = path
+
+    def _request(self, message: dict, *, timeout: float = 240.0) -> dict:
+        encoded = (json.dumps(message, separators=(",", ":")) + "\n").encode("utf-8")
+        if len(encoded) > MAX_BROKER_REQUEST_BYTES:
+            raise RuntimeError("broker request is too large")
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(timeout)
+            client.connect(self.path)
+            client.sendall(encoded)
+            client.shutdown(socket.SHUT_WR)
+            chunks = []
+            total = 0
+            while True:
+                block = client.recv(8192)
+                if not block:
+                    break
+                total += len(block)
+                if total > MAX_BROKER_RESPONSE_BYTES:
+                    raise RuntimeError("broker response is too large")
+                chunks.append(block)
+        raw = b"".join(chunks)
+        try:
+            response = json.loads(
+                raw.decode("utf-8"),
+                object_pairs_hook=_json_object_without_duplicates,
+            )
+        except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
+            raise RuntimeError("broker returned an invalid response") from exc
+        if not isinstance(response, dict) or not isinstance(response.get("ok"), bool):
+            raise RuntimeError("broker returned an invalid response")
+        if response["ok"] is not True:
+            raise RuntimeError("privileged WiFi operation was rejected")
+        return response
+
+    def open_window(self) -> dict:
+        response = self._request({"version": 1, "operation": "open"}, timeout=360.0)
+        authorized = response.get("authorized")
+        if not isinstance(authorized, bool):
+            raise RuntimeError("broker returned an invalid authorization state")
+        if not authorized:
+            if set(response) != {"ok", "authorized"}:
+                raise RuntimeError("broker returned an invalid closed response")
+            return response
+        if set(response) != {"ok", "authorized", "ssid", "remaining_s", "networks"}:
+            raise RuntimeError("broker returned an invalid open response")
+        if not valid_ssid(response["ssid"]):
+            raise RuntimeError("broker returned an invalid setup SSID")
+        remaining = response["remaining_s"]
+        if (
+            isinstance(remaining, bool)
+            or not isinstance(remaining, (int, float))
+            or not math.isfinite(float(remaining))
+            or not 0 < float(remaining) <= PORTAL_LIFETIME_S
+        ):
+            raise RuntimeError("broker returned an invalid setup deadline")
+        response["remaining_s"] = float(remaining)
+        response["networks"] = _validated_networks(response["networks"])
+        return response
+
+    def scan(self) -> list[dict]:
+        response = self._request({"version": 1, "operation": "scan"}, timeout=45.0)
+        if set(response) != {"ok", "networks"}:
+            raise RuntimeError("broker returned an invalid scan response")
+        return _validated_networks(response["networks"])
+
+    def join(self, ssid: str, psk: str, sae: bool) -> bool:
+        response = self._request(
+            {
+                "version": 1,
+                "operation": "join",
+                "ssid": ssid,
+                "psk": psk,
+                "sae": sae,
+            },
+            timeout=600.0,
+        )
+        if set(response) != {"ok", "joined"} or not isinstance(response["joined"], bool):
+            raise RuntimeError("broker returned an invalid join response")
+        return response["joined"]
+
+    def close(self) -> None:
+        response = self._request({"version": 1, "operation": "close"}, timeout=30.0)
+        if set(response) != {"ok", "closed"} or response["closed"] is not True:
+            raise RuntimeError("broker returned an invalid close response")
+
+
+BROKER = BrokerClient()
+
 
 PAGE_CSS = (
     "body{font-family:system-ui;margin:0;background:#101418;color:#e8e6e3}"
@@ -325,27 +241,30 @@ PAGE_CSS = (
 )
 
 
-def render_portal(nets: list[dict], error: str = "", ssid: str = "") -> str:
+def render_portal(networks: list[dict], error: str = "", ssid: str = "") -> str:
     items = "".join(
-        f'<li><a href="/?ssid={urllib.parse.quote(n["ssid"])}">'
-        f'{html.escape(n["ssid"])}<small>{int(n["signal"])} dBm</small></a></li>'
-        for n in nets[:12]
+        f'<li><a href="/?ssid={urllib.parse.quote(network["ssid"])}">'
+        f'{html.escape(network["ssid"])}<small>{int(network["signal"])} dBm</small></a></li>'
+        for network in networks[:12]
     )
-    err = f'<div class="err">{html.escape(error)}</div>' if error else ""
+    rendered_error = f'<div class="err">{html.escape(error)}</div>' if error else ""
     return f"""<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>AstroDeck setup</title><style>{PAGE_CSS}</style></head><body><div class="w">
 <h1><span>AstroDeck</span> WiFi setup</h1>
 <p>Pick your home network and enter its password. The device will join it and
-this hotspot will disappear.</p>{err}
+this hotspot will disappear.</p>{rendered_error}
 <form method="post" action="/connect">
+<input type="hidden" name="csrf" value="{html.escape(CSRF_TOKEN, quote=True)}">
 <label>Network</label>
 <input name="ssid" required value="{html.escape(ssid, quote=True)}" placeholder="Your WiFi name">
 <label>Password</label>
 <input name="psk" type="password" placeholder="WiFi password (blank if open)">
 <button type="submit">Connect</button></form>
 <h1>Nearby networks</h1><ul>{items or "<li>none seen yet</li>"}</ul>
-<p><a style="color:#e8a33d" href="/rescan">Rescan</a></p>
+<form method="post" action="/rescan">
+<input type="hidden" name="csrf" value="{html.escape(CSRF_TOKEN, quote=True)}">
+<button type="submit">Rescan</button></form>
 </div></body></html>"""
 
 
@@ -355,17 +274,20 @@ def render_joining(ssid: str) -> str:
 <title>AstroDeck setup</title><style>{PAGE_CSS}</style></head><body><div class="w">
 <h1><span>AstroDeck</span> is joining {html.escape(ssid)}</h1>
 <p>This hotspot will now switch off. If the join works you will find the device
-on your network as <b>astropi</b> (try <b>http://astropi.local</b> or your
-router's device list).</p>
-<p>If the password was wrong, the <b>AstroDeck</b> hotspot reappears in about a
-minute — reconnect to it and try again.</p>
+on your network through its configured AstroDeck address or your router's device list.</p>
+<p>If the password was wrong, reconnect to the same setup hotspot and try again
+before the setup window expires.</p>
 </div></body></html>"""
 
 
 class Portal(BaseHTTPRequestHandler):
     server_version = "AstroDeckSetup/1"
 
-    def log_message(self, fmt, *args):  # journald, not stderr spam
+    def setup(self):
+        super().setup()
+        self.connection.settimeout(10)
+
+    def log_message(self, fmt, *args):
         log("http " + (fmt % args))
 
     def _send(self, body: str, code: int = 200, ctype: str = "text/html"):
@@ -374,8 +296,73 @@ class Portal(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'none'; style-src 'unsafe-inline'; "
+            "form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+        )
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
         self.end_headers()
         self.wfile.write(data)
+
+    def _reject(self, body: str, code: int) -> None:
+        self.close_connection = True
+        self._send(body, code=code, ctype="text/plain")
+
+    def _trusted_request_metadata(self) -> bool:
+        hosts = self.headers.get_all("Host", [])
+        if len(hosts) != 1 or hosts[0].lower() not in {AP_IP, f"{AP_IP}:80"}:
+            self._reject("Misdirected request", 421)
+            return False
+        origins = self.headers.get_all("Origin", [])
+        if len(origins) > 1 or (
+            origins and origins[0].lower() not in {f"http://{AP_IP}", f"http://{AP_IP}:80"}
+        ):
+            self._reject("Forbidden", 403)
+            return False
+        fetch_sites = self.headers.get_all("Sec-Fetch-Site", [])
+        if len(fetch_sites) > 1 or (
+            fetch_sites and fetch_sites[0].lower() not in {"same-origin", "none"}
+        ):
+            self._reject("Forbidden", 403)
+            return False
+        return True
+
+    def _form(self) -> dict[str, list[str]] | None:
+        if self.headers.get_all("Transfer-Encoding", []):
+            self._reject("Transfer-Encoding is not supported", 400)
+            return None
+        lengths = self.headers.get_all("Content-Length", [])
+        if not lengths:
+            self._reject("Length required", 411)
+            return None
+        if len(lengths) != 1 or re.fullmatch(r"(?:0|[1-9][0-9]*)", lengths[0]) is None:
+            self._reject("Invalid Content-Length", 400)
+            return None
+        length = int(lengths[0])
+        if length > MAX_FORM_BYTES:
+            self._reject("Request too large", 413)
+            return None
+        try:
+            raw = self.rfile.read(length)
+            if len(raw) != length:
+                raise ValueError("short request body")
+            return urllib.parse.parse_qs(
+                raw.decode("utf-8"),
+                keep_blank_values=True,
+                max_num_fields=8,
+                strict_parsing=True,
+            )
+        except (OSError, UnicodeError, ValueError):
+            self._reject("Invalid form", 400)
+            return None
+
+    def _csrf_ok(self, form: dict[str, list[str]]) -> bool:
+        values = form.get("csrf", [])
+        return len(values) == 1 and bool(values[0]) and secrets.compare_digest(
+            values[0], CSRF_TOKEN
+        )
 
     def _redirect_to_portal(self):
         self.send_response(302)
@@ -384,154 +371,301 @@ class Portal(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        global SCAN_CACHE
+        if not self._trusted_request_metadata():
+            return
         path = urllib.parse.urlparse(self.path).path
         if path == "/":
-            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            self._send(render_portal(SCAN_CACHE, STATUS["error"],
-                                     q.get("ssid", [""])[0]))
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            self._send(
+                render_portal(SCAN_CACHE, STATUS["error"], query.get("ssid", [""])[0])
+            )
         elif path == "/rescan":
-            SCAN_CACHE = scan_networks() or SCAN_CACHE
             self._redirect_to_portal()
         elif path == "/status":
             self._send(json.dumps(STATUS), ctype="application/json")
         else:
-            # captive-portal probes from every OS land here
             self._redirect_to_portal()
 
     def do_POST(self):
-        if urllib.parse.urlparse(self.path).path != "/connect":
+        global SCAN_CACHE
+        if not self._trusted_request_metadata():
+            return
+        if DONE.is_set():
+            self._reject("Setup window closed", 503)
+            return
+        path = urllib.parse.urlparse(self.path).path
+        if path not in {"/connect", "/rescan"}:
+            self._reject("Not found", 404)
+            return
+        form = self._form()
+        if form is None:
+            return
+        if not self._csrf_ok(form):
+            self._send("Forbidden", code=403, ctype="text/plain")
+            return
+        if path == "/rescan":
+            if SCAN_LOCK.acquire(blocking=False):
+                try:
+                    SCAN_CACHE = BROKER.scan() or SCAN_CACHE
+                except Exception:
+                    STATUS["error"] = "Could not scan for networks; try again."
+                finally:
+                    SCAN_LOCK.release()
             self._redirect_to_portal()
             return
-        length = int(self.headers.get("Content-Length", "0") or "0")
-        form = urllib.parse.parse_qs(self.rfile.read(length).decode())
-        ssid = form.get("ssid", [""])[0].strip()
-        psk = form.get("psk", [""])[0]
-        if not ssid or "\n" in ssid or "\n" in psk:
-            STATUS["error"] = "Network name is required."
+        ssids = form.get("ssid", [])
+        psks = form.get("psk", [])
+        if len(ssids) != 1 or len(psks) != 1:
+            self._reject("Invalid form", 400)
+            return
+        ssid = ssids[0].strip()
+        psk = psks[0]
+        if not valid_ssid(ssid):
+            STATUS["error"] = "Network name must be 1-32 bytes without control characters."
             self._redirect_to_portal()
             return
         if not valid_psk(psk):
-            STATUS["error"] = "WiFi passwords are 8-63 characters (or blank for open networks)."
+            STATUS["error"] = (
+                "WiFi passwords are 8-63 bytes without control characters "
+                "(or blank for open networks)."
+            )
             self._redirect_to_portal()
+            return
+        if not JOIN_LOCK.acquire(blocking=False):
+            self._send("A connection attempt is already running.", code=409, ctype="text/plain")
             return
         sae = needs_sae(ssid, SCAN_CACHE)
         STATUS.update(phase="joining", ssid=ssid, error="")
-        self._send(render_joining(ssid))
-        threading.Thread(target=self._join, args=(ssid, psk, sae),
-                         daemon=True).start()
+        try:
+            self._send(render_joining(ssid))
+            threading.Thread(
+                target=self._join,
+                args=(ssid, psk, sae),
+                daemon=True,
+            ).start()
+        except BaseException:
+            JOIN_LOCK.release()
+            raise
 
     def _join(self, ssid: str, psk: str, sae: bool):
-        time.sleep(1.5)  # let the response reach the phone before the AP drops
         try:
-            if try_join(ssid, psk, sae):
-                DONE.set()
+            time.sleep(1.5)
+            if DONE.is_set():
                 return
-            STATUS.update(phase="portal",
-                          error=f"Could not join {ssid!r} — check the password.")
-        except Exception as e:
-            STATUS.update(phase="portal", error=f"Join failed: {e}")
+            try:
+                if BROKER.join(ssid, psk, sae):
+                    DONE.set()
+                    return
+                STATUS.update(
+                    phase="portal",
+                    error=f"Could not join {ssid!r} — check the password.",
+                )
+            except Exception:
+                STATUS.update(phase="portal", error="WiFi join failed; try again.")
+        finally:
+            JOIN_LOCK.release()
+
+
+class BoundedHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+    request_queue_size = MAX_HTTP_WORKERS
+
+    def __init__(self, *args, max_workers: int = MAX_HTTP_WORKERS, **kwargs):
+        if isinstance(max_workers, bool) or not isinstance(max_workers, int) or max_workers < 1:
+            raise ValueError("max_workers must be a positive integer")
+        self.request_queue_size = max_workers
+        self._slots = threading.BoundedSemaphore(max_workers)
+        super().__init__(*args, **kwargs)
+
+    def process_request(self, request, client_address):
+        if not self._slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
         try:
-            ap_up(derive_ssid(wlan_mac() or "000000000000"))
-        except Exception as e:
-            log(f"FATAL: could not re-raise AP after failed join: {e}")
-            DONE.set()
+            super().process_request(request, client_address)
+        except BaseException:
+            self._slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._slots.release()
 
 
-class CaptiveDNS(socketserver.ThreadingUDPServer):
+class CaptiveDNS(socketserver.UDPServer):
     allow_reuse_address = True
 
 
 class DNSHandler(socketserver.BaseRequestHandler):
-    """Answer every A query with the portal IP so phones open the sheet."""
-
     def handle(self):
-        data, sock = self.request
+        data, response_socket = self.request
         if len(data) < 12:
             return
-        # copy ID, set QR|AA, echo question, one answer pointing at us
-        tid = data[:2]
-        flags = b"\x84\x00"
-        q = data[12:]
-        end = q.find(b"\x00")
-        if end == -1 or len(q) < end + 5:
+        transaction_id = data[:2]
+        question_data = data[12:]
+        end = question_data.find(b"\x00")
+        if end == -1 or len(question_data) < end + 5:
             return
-        question = q[: end + 5]
-        qtype = int.from_bytes(q[end + 1: end + 3], "big")
-        if qtype not in (1, 255):  # A or ANY; stay silent otherwise
-            resp = tid + b"\x84\x00" + b"\x00\x01\x00\x00\x00\x00\x00\x00" + question
-            sock.sendto(resp, self.client_address)
-            return
-        answer = (b"\xc0\x0c" + b"\x00\x01\x00\x01" + b"\x00\x00\x00\x0a"
-                  + b"\x00\x04" + socket.inet_aton(AP_IP))
-        resp = (tid + flags + b"\x00\x01\x00\x01\x00\x00\x00\x00"
-                + question + answer)
-        sock.sendto(resp, self.client_address)
+        question = question_data[: end + 5]
+        query_type = int.from_bytes(question_data[end + 1: end + 3], "big")
+        if query_type not in (1, 255):
+            response = (
+                transaction_id
+                + b"\x84\x00\x00\x01\x00\x00\x00\x00\x00\x00"
+                + question
+            )
+        else:
+            answer = (
+                b"\xc0\x0c\x00\x01\x00\x01\x00\x00\x00\x0a"
+                + b"\x00\x04"
+                + socket.inet_aton(AP_IP)
+            )
+            response = (
+                transaction_id
+                + b"\x84\x00\x00\x01\x00\x01\x00\x00\x00\x00"
+                + question
+                + answer
+            )
+        response_socket.sendto(response, self.client_address)
 
 
-# ---------------------------------------------------------------------- main
+def _serve_until_stopped(server, label: str) -> None:
+    try:
+        server.serve_forever()
+    except BaseException:
+        log(f"{label} server stopped unexpectedly")
+        SERVER_FAILED.set()
+        DONE.set()
+
+
+def _bind_when_addressed(factory, label: str):
+    """Construct a server once the hotspot address exists on the interface.
+
+    The broker reports the AP up when the radio beacons; systemd-networkd
+    assigns 10.42.0.1 shortly after that, and binding it earlier raises
+    EADDRNOTAVAIL (seen on the appliance 2026-09-03). Any other error, or the
+    address never arriving, propagates unchanged.
+    """
+    deadline = time.monotonic() + ADDRESS_WAIT_S
+    waited = False
+    while True:
+        try:
+            server = factory()
+        except OSError as exc:
+            if exc.errno != errno.EADDRNOTAVAIL or time.monotonic() >= deadline:
+                raise
+            if not waited:
+                log(f"{label}: waiting for the hotspot address")
+                waited = True
+            time.sleep(0.5)
+            continue
+        return server
+
 
 def main_run() -> int:
-    log("astrodeck-provision starting")
-    if wlan_mac() is None:
-        log(f"no {IFACE} present — WiFi driver missing? exiting without blocking boot")
-        return 0
-    if wait_route(ONLINE_WAIT_S):
-        log("network already up; nothing to do")
-        return 0
-    log("no network after wait; entering hotspot mode")
     global SCAN_CACHE
-    SCAN_CACHE = scan_networks()
-    log(f"scanned {len(SCAN_CACHE)} networks")
-    ssid = derive_ssid(wlan_mac() or "000000000000")
+    DONE.clear()
+    SERVER_FAILED.clear()
+    STATUS.update(phase="portal", error="", ssid="")
     try:
-        ap_up(ssid)
-    except Exception as e:
-        log(f"FATAL: cannot raise AP: {e}")
+        opened = BROKER.open_window()
+    except Exception:
+        log("privileged WiFi broker is unavailable")
+        return 1
+    if not opened["authorized"]:
+        log("no setup authorization is armed; provisioning remains closed")
         return 0
-    httpd = ThreadingHTTPServer(("0.0.0.0", 80), Portal)
-    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+
+    SCAN_CACHE = opened["networks"]
+    deadline = time.monotonic() + opened["remaining_s"]
+    httpd = None
+    dns = None
+    http_started = False
+    dns_started = False
+    old_handlers = {}
+    result = 0
     try:
-        dns = CaptiveDNS((AP_IP, 53), DNSHandler)
-        threading.Thread(target=dns.serve_forever, daemon=True).start()
-    except OSError as e:
-        log(f"captive DNS unavailable ({e}); portal reachable at http://{AP_IP}/")
-    log(f"portal serving on http://{AP_IP}/ (SSID {ssid}, password {AP_PSK})")
-    DONE.wait()
-    httpd.shutdown()
-    log("exiting")
-    return 0
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            old_handlers[signum] = signal.getsignal(signum)
+            signal.signal(signum, lambda _signum, _frame: DONE.set())
+        httpd = _bind_when_addressed(lambda: BoundedHTTPServer((AP_IP, 80), Portal), "HTTP")
+        threading.Thread(
+            target=_serve_until_stopped, args=(httpd, "HTTP"), daemon=True
+        ).start()
+        http_started = True
+        dns = _bind_when_addressed(lambda: CaptiveDNS((AP_IP, 53), DNSHandler), "DNS")
+        threading.Thread(
+            target=_serve_until_stopped, args=(dns, "DNS"), daemon=True
+        ).start()
+        dns_started = True
+        log(f"portal serving on http://{AP_IP}/ for SSID {opened['ssid']}")
+        while not DONE.is_set():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                log("portal authorization window expired")
+                DONE.set()
+                break
+            DONE.wait(min(remaining, 1.0))
+        if SERVER_FAILED.is_set():
+            result = 1
+    except Exception as exc:
+        # class and errno only: enough to diagnose a bind or broker failure on
+        # a headless board, never a value that could carry a credential.
+        log(f"provisioning portal failed: {type(exc).__name__} errno={getattr(exc, 'errno', None)}")
+        result = 1
+    finally:
+        DONE.set()
+        for server, started, label in (
+            (dns, dns_started, "DNS"),
+            (httpd, http_started, "HTTP"),
+        ):
+            if server is None:
+                continue
+            try:
+                if started:
+                    server.shutdown()
+            except Exception:
+                log(f"{label} server shutdown failed")
+                result = 1
+            try:
+                server.server_close()
+            except Exception:
+                log(f"{label} socket close failed")
+                result = 1
+        try:
+            BROKER.close()
+        except Exception:
+            # The broker's independent deadline remains the final fail-safe.
+            log("privileged WiFi broker close failed")
+            result = 1
+        for signum, handler in old_handlers.items():
+            try:
+                signal.signal(signum, handler)
+            except Exception:
+                result = 1
+        log("provisioning portal closed")
+    return result
 
 
 def main_selftest() -> int:
-    assert derive_ssid("aa:bb:cc:dd:ee:ff") == "AstroDeck-EEFF"
-    assert valid_psk("astrodeck") and valid_psk("") and not valid_psk("short")
-    y = emit_netplan('Cafe "42"\\home', "pass word 8")
-    assert '"Cafe \\"42\\"\\\\home"' in y and "password:" in y
-    assert emit_netplan("open-net", "").strip().endswith("{}")
-    assert "key-management: sae" in emit_netplan("w3", "12345678", sae=True)
-    scan = parse_scan(
-        "BSS aa:bb(on wlan0)\n\tsignal: -40.0 dBm\n\tSSID: W3Net\n"
-        "\tRSN:\n\t\t * Authentication suites: SAE\n"
-        "BSS cc:dd(on wlan0)\n\tsignal: -50.0 dBm\n\tSSID: Mixed\n"
-        "\tRSN:\n\t\t * Authentication suites: PSK SAE\n")
-    assert needs_sae("W3Net", scan) and not needs_sae("Mixed", scan)
-    c = emit_wpa_ap_conf("AstroDeck-BEEF", AP_PSK)
-    assert "mode=2" in c and f"frequency={AP_FREQ}" in c
-    n = emit_networkd_ap()
-    assert "DHCPServer=yes" in n and AP_CIDR in n
-    for page in (render_portal([{"ssid": "x<y", "signal": -40}], "err", 'a"b'),
-                 render_joining("net<script>")):
+    assert valid_psk("example88") and valid_psk("") and not valid_psk("short")
+    assert valid_ssid("home") and not valid_ssid("x" * 33)
+    for page in (
+        render_portal([{"ssid": "x<y", "signal": -40, "akm": []}], "err", 'a"b'),
+        render_joining("net<script>"),
+    ):
         assert "<script>" not in page.replace("&lt;script&gt;", "")
-    print("self-test OK")
+    print("frontend self-test OK")
     return 0
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
-    ap.add_argument("mode", nargs="?", default="run", choices=["run", "self-test"])
-    ap.add_argument("--self-test", action="store_true")
-    args = ap.parse_args()
-    if args.self_test or args.mode == "self-test":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("mode", nargs="?", default="run", choices=["run", "self-test"])
+    parser.add_argument("--self-test", action="store_true")
+    arguments = parser.parse_args()
+    if arguments.self_test or arguments.mode == "self-test":
         sys.exit(main_selftest())
     sys.exit(main_run())
