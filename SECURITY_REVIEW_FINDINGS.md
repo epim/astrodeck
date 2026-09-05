@@ -178,3 +178,14 @@ Each entry: disposition then what shipped. Committed locally; not yet pushed.
   (server test_remote_relay::test_device_token_redacted). Operator flow:
   relay/README. Asymmetric/mTLS device identity remains a documented future
   redesign; the accepted blast radius of a leaked static token is unchanged.
+
+- OPEN-004 FIXED (ownership transfer). Factory reset gained a third opt-in,
+  `reset_remote` (default OFF at module, route, and UI). When chosen it clears
+  `cfg.remote` (relay pairing including the device_token) and scrubs
+  `update.github_token`, keeping the PUBLIC signing key/repo/channel so the new
+  owner's self-update still verifies. Ordinary resets still preserve pairing so a
+  QA handoff within one org does not orphan a remotely-managed box. The
+  FactoryResetPanel shows the transfer switch only when the box is actually
+  paired (`preview.remote_paired`) and the confirm dialog states the loss.
+  Tests: server/tests/test_factory_reset.py (transfer clears, non-transfer
+  preserves, preview reports pairing, route passes it through).

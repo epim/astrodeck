@@ -1222,13 +1222,17 @@ class FactoryResetBody(BaseModel):
 
     ``confirm`` is a typed-word interlock, not decoration: the panel makes the
     admin type RESET, and the server refuses anything else, so a stray curl or a
-    replayed request can never wipe a rig by accident. The two destructive
-    extras are SEPARATE fields (not one "everything" flag) because captured
-    frames and sign-in accounts are different kinds of loss and each must be
-    chosen on its own — see ``factory_reset.py`` for the tier contract."""
+    replayed request can never wipe a rig by accident. The destructive extras
+    are SEPARATE fields (not one "everything" flag) because captured frames,
+    sign-in accounts and relay pairing are different kinds of loss and each must
+    be chosen on its own. ``reset_remote`` is the ownership-transfer opt-in
+    (OPEN-004): it clears relay pairing + the stored update credential so a
+    resold box carries no path back to the previous operator — see
+    ``factory_reset.py`` for the tier contract."""
     confirm: str = ""
     delete_captures: bool = False
     reset_auth: bool = False
+    reset_remote: bool = False
 
 
 class SiteSaveBody(BaseModel):
@@ -2138,7 +2142,11 @@ def create_app(*, bind_host: str | None = None,
             factory_reset_module.factory_reset, config_store,
             config_module.CONFIG_DIR, hub_module.CAPTURE_DIR,
             delete_captures=body.delete_captures,
-            reset_auth=body.reset_auth)
+            reset_auth=body.reset_auth,
+            reset_remote=body.reset_remote)
+        # The relay client reads remote config at startup (like every other
+        # remote change, it applies on the next restart); a transferred box is
+        # powered down and handed off, so no live tunnel outlives the handover.
         if body.reset_auth:
             # Rebuild the auth provider off the now-default block, so the change
             # takes effect without a restart (the /api/auth/config idiom).

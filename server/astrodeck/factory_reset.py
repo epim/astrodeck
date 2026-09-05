@@ -36,12 +36,18 @@ surprises you about what it took is worse than no reset at all:
      at all because a tester who creates a local admin would otherwise lock the
      NEXT tester out, which is precisely the trap this feature exists to remove.
 
-3. **Never cleared, at all** — install plumbing that was never part of "setup"
-   and whose loss costs real money or a support call:
-   - ``remote`` (relay pairing) — clearing it orphans a remotely-managed rig
-     from its owner, with no way back in over the WAN.
-   - ``update`` (signing pubkey / repo / channel / GH token) — clearing it
-     breaks self-update on a deployed box.
+3. **Kept unless the OWNERSHIP-TRANSFER opt-in is chosen** — ``reset_remote``,
+   the third separately-labelled choice (default OFF), for resale or transfer
+   (OPEN-004). Within one org a QA handoff must NOT orphan a remotely-managed
+   box, so ordinary resets keep this; but a box changing hands must not carry
+   the previous operator's path to future traffic. When chosen it clears:
+   - ``remote`` (relay pairing, including the ``device_token``) — otherwise the
+     previous owner's relay still routes to the box over the WAN.
+   - the ``update.github_token`` SECRET — the previous owner's credential. The
+     PUBLIC signing key / repo / channel stay so the new owner's self-update
+     still verifies without re-provisioning.
+   Everything else here is never cleared under any mode: the offline
+   ``_survey_pack`` (multi-GB), the network caches, and ``logs``.
    - under the capture root: ``_survey_pack`` (the offline HiPS sky pack — a
      multi-GB download), ``_survey`` / ``_weather_tiles`` (network caches) and
      ``logs``. None of these are "setup" and none are the tester's data; see
@@ -56,7 +62,7 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-from .config import AppConfig, AuthConfig, ConfigStore
+from .config import AppConfig, AuthConfig, ConfigStore, RemoteConfig
 from .events import bus
 
 # ---------------------------------------------------------------- config dir
@@ -175,6 +181,11 @@ def preview(store: ConfigStore, config_dir: Path, capture_dir: Path) -> dict:
         "drivers": len(cfg.drivers),
         "alert_sinks": len(cfg.alerts),
         "users": users,
+        # OPEN-004: whether there is relay pairing the transfer opt-in would
+        # clear, so the panel can show/hide that choice honestly.
+        "remote_paired": bool(
+            cfg.remote.enabled or cfg.remote.device_token
+            or cfg.remote.relay_url or cfg.remote.home_id),
         "captures": capture_inventory(capture_dir),
         "preserved_capture_entries": sorted(PRESERVED_CAPTURE_ENTRIES),
     }
@@ -182,12 +193,14 @@ def preview(store: ConfigStore, config_dir: Path, capture_dir: Path) -> dict:
 
 def factory_reset(store: ConfigStore, config_dir: Path, capture_dir: Path, *,
                   delete_captures: bool = False,
-                  reset_auth: bool = False) -> dict:
+                  reset_auth: bool = False,
+                  reset_remote: bool = False) -> dict:
     """Do the reset. Returns a report of what was actually cleared.
 
-    Both destructive extras default to False here as well as at the route and in
-    the UI — the safe value is the default at every layer, so no single missing
-    argument anywhere in the stack can turn a settings reset into data loss.
+    All three destructive extras default to False here as well as at the route
+    and in the UI — the safe value is the default at every layer, so no single
+    missing argument anywhere in the stack can turn a settings reset into data
+    loss (or orphan a legitimately-owned box).
     """
     cfg = store.cfg()
 
@@ -197,8 +210,17 @@ def factory_reset(store: ConfigStore, config_dir: Path, capture_dir: Path, *,
     #    concurrency race rather than accidentally match a rewound counter.
     fresh = AppConfig()
     fresh.version = cfg.version
-    fresh.remote = cfg.remote
-    fresh.update = cfg.update
+    if reset_remote:
+        # Ownership transfer (OPEN-004): drop relay pairing entirely so the
+        # previous operator's relay keeps NO path to future traffic, and scrub
+        # the stored update credential (the previous owner's GitHub token). The
+        # PUBLIC signing key / repo / channel stay so the new owner's updates
+        # still verify without re-provisioning.
+        fresh.remote = RemoteConfig()
+        fresh.update = cfg.update.model_copy(update={"github_token": ""})
+    else:
+        fresh.remote = cfg.remote
+        fresh.update = cfg.update
 
     if reset_auth:
         # Defaults, EXCEPT the session epoch, which is monotonic by contract
@@ -249,7 +271,8 @@ def factory_reset(store: ConfigStore, config_dir: Path, capture_dir: Path, *,
     bus.log("warning",
             f"factory reset: config restored to defaults"
             f"{', captures deleted' if delete_captures else ''}"
-            f"{', sign-in accounts cleared' if reset_auth else ''}",
+            f"{', sign-in accounts cleared' if reset_auth else ''}"
+            f"{', remote pairing cleared' if reset_remote else ''}",
             "config")
 
     return {
@@ -259,5 +282,6 @@ def factory_reset(store: ConfigStore, config_dir: Path, capture_dir: Path, *,
         "captures_deleted": delete_captures,
         "capture_entries_removed": captures_removed,
         "auth_reset": reset_auth,
+        "remote_reset": reset_remote,
         "version": cleared_config.version,
     }
