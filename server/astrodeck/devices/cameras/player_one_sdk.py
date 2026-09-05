@@ -188,6 +188,11 @@ _SIGNATURES: dict[str, list] = {
 
 
 def _loads_with_exports(path: Path, exports: list[str]):
+    from ..vendor_verify import verify_if_vendored
+    # OPEN-007: a bundled binary is hash-pinned; a tampered/swapped one under
+    # vendor/ raises before it can execute in-process. A user's own install
+    # (env/system path) is not ours to pin and passes through.
+    verify_if_vendored(path)
     try:
         dll = ctypes.CDLL(str(path))
     except OSError:

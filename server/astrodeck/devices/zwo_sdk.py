@@ -93,6 +93,10 @@ def _loads_with_exports(path: Path, exports: list[str]):
     stdcall on x64 anyway), and CDLL exists on every platform — a Linux host
     simply fails the load with OSError and degrades to None instead of
     AttributeError-ing on a missing WinDLL (review C-critical)."""
+    from .vendor_verify import verify_if_vendored
+    # OPEN-007: refuse a tampered/swapped BUNDLED binary before it executes
+    # in-process; a user's own installed SDK is not hash-pinned.
+    verify_if_vendored(path)
     try:
         dll = ctypes.CDLL(str(path))
     except OSError:

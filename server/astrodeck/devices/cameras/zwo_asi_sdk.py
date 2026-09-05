@@ -165,6 +165,10 @@ def _loads_with_exports(path: Path, exports: list[str]):
     """Return the loaded DLL when it loads AND exports everything, else None.
     ``CDLL`` (cdecl, Linux-safe) — a non-Windows host fails the load with OSError
     and degrades to None rather than AttributeError-ing on WinDLL."""
+    from ..vendor_verify import verify_if_vendored
+    # OPEN-007: refuse a tampered/swapped BUNDLED binary before it executes
+    # in-process; a user's own installed SDK is not hash-pinned.
+    verify_if_vendored(path)
     try:
         dll = ctypes.CDLL(str(path))
     except OSError:
