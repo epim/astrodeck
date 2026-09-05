@@ -36,7 +36,7 @@ and a full local CI dry-run is green, the loop completes.
 | OPEN-012 | Med | FIXED | DONE | The one pre-paint inline script moved to ui/public/bootstrap.js (external, blocking, served 'self'); CSP `script-src` drops `'unsafe-inline'`. style-src keeps it as a documented exception (React/Vite runtime styles). Tests: test_csp_headers (2) + ui cspBootstrap (3); build confirms dist/index.html has no inline script. | server, ui |
 | OPEN-013 | Low | FIXED | DONE | `cargo audit` runs on every native CI build (folded into OPEN-006); plain audit keeps the `paste` unmaintained warning release-visible (exit 0) while failing on any real vuln. Tracked to its nalgebra origin, removed when upstream drops it. | native, ci |
 | OPEN-014 | Low | ACCEPTED | TODO | Single-home-per-origin is the intended safe design after cookie isolation. Document it; record explicit flow-control/fair-scheduling as a future step before any high-density multi-tenant hosting. | n/a (docs) |
-| OPEN-015 | Low | FIXED | TODO | Migrate the Uvicorn/WebSockets integration off the deprecated API so the relay + server emit no legacy deprecation warnings; keep on a scanned supported release. | relay, server |
+| OPEN-015 | Low | FIXED | DONE | The code already uses top-level `websockets.connect`, which is the modern asyncio impl on websockets>=14; raised the floor to `websockets>=14.0` (server pyproject now declares it directly; relay pyproject + requirements) so no legacy default can resolve, and added test_websockets_modern (connect is asyncio, floors >=14). Dep-audit gates (OPEN-006) keep it on a scanned release. | relay, server |
 
 ## Per-iteration playbook (for the loop)
 
