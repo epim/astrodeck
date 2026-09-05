@@ -293,3 +293,68 @@ def test_preview_counts_what_would_go(env):
     assert set(snap["preserved_capture_entries"]) == set(PRESERVED_CAPTURE_ENTRIES)
     # ...and are excluded from the "will be deleted" tally
     assert snap["captures"]["entries"] == 3  # M31 + sessions + reports
+
+
+# ------------------------------------------------ OPEN-004: ownership transfer
+
+def test_transfer_reset_clears_remote_pairing_and_credentials(env):
+    """The transfer opt-in removes relay pairing (incl. the device token) and the
+    stored update credential, so a previous operator keeps NO path to future
+    traffic. The non-secret signing key stays so updates still verify."""
+    _c, store, cfg_dir, cap = env
+    _dirty(store, cfg_dir, cap)
+    cfg = store.cfg()
+    cfg.remote.device_token = "x" * 40
+    cfg.remote.home_id = "home-1"
+    cfg.update.github_token = "ghp_previous_owner_secret"
+    store.bump_and_save()
+
+    factory_reset(store, cfg_dir, cap, reset_remote=True)
+
+    cfg = store.reload()
+    assert cfg.remote.enabled is False
+    assert cfg.remote.relay_url == ""
+    assert cfg.remote.device_token == ""
+    assert cfg.remote.home_id == ""
+    assert cfg.update.github_token == ""
+    assert cfg.update.signing_pubkey == "A" * 43 + "="
+
+
+def test_remote_pairing_survives_without_the_transfer_opt_in(env):
+    """Every non-transfer mode keeps relay pairing: a QA handoff within one org
+    must not orphan a remotely-managed box."""
+    _c, store, cfg_dir, cap = env
+    _dirty(store, cfg_dir, cap)
+    cfg = store.cfg()
+    cfg.remote.device_token = "x" * 40
+    cfg.update.github_token = "ghp_keep_me"
+    store.bump_and_save()
+
+    factory_reset(store, cfg_dir, cap)  # reset_remote defaults False
+
+    cfg = store.reload()
+    assert cfg.remote.enabled is True
+    assert cfg.remote.device_token == "x" * 40
+    assert cfg.update.github_token == "ghp_keep_me"
+
+
+def test_preview_reports_remote_pairing_present(env):
+    from astrodeck.factory_reset import preview
+    _c, store, cfg_dir, cap = env
+    _dirty(store, cfg_dir, cap)
+    snap = preview(store, cfg_dir, cap)
+    assert snap["remote_paired"] is True
+
+
+def test_route_transfer_reset_clears_pairing(env):
+    c, store, cfg_dir, cap = env
+    _dirty(store, cfg_dir, cap)
+    cfg = store.cfg()
+    cfg.remote.device_token = "x" * 40
+    store.bump_and_save()
+
+    r = c.post("/api/system/factory-reset",
+               json={"confirm": "RESET", "reset_remote": True})
+    assert r.status_code == 200, r.text
+    assert r.json()["remote_reset"] is True
+    assert store.reload().remote.device_token == ""
