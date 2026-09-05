@@ -7258,6 +7258,22 @@ def create_app(*, bind_host: str | None = None,
         _reconfigure_provider()
         return {"revoked": list(new.revoked_jti)}
 
+    @app.post("/api/auth/ws-ticket",
+              dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
+    async def mint_ws_ticket():
+        """Exchange the caller's ALREADY-authenticated request (session cookie or
+        X-Auth-Token header -- never a query string) for a single-use, short-TTL
+        ticket to authenticate the /ws upgrade (OPEN-011).
+
+        A browser cannot set an Authorization header on a WebSocket, so without
+        this a shared token would have to ride ``?token=`` and leak into history,
+        telemetry, and proxy logs. The ticket is one-time and expires in seconds,
+        so a leaked one is inert; RBAC is still re-resolved and re-checked on the
+        socket itself."""
+        from ..auth import ws_ticket
+        return {"ticket": ws_ticket.issue(), "expires_in": ws_ticket.ttl_s()}
+
     # ------------------------------------------------------------ websocket
 
     @app.websocket("/ws")
@@ -7275,13 +7291,20 @@ def create_app(*, bind_host: str | None = None,
         # non-browser clients). On failure close BEFORE accept with 1008
         # (policy violation) so an unauthenticated client never joins the bus.
         if auth_enabled():
-            supplied = _present_token(
-                header=websocket.headers.get("x-auth-token"),
-                authorization=websocket.headers.get("authorization"),
-                query=websocket.query_params.get("token"))
-            if not _token_ok(supplied):
-                await websocket.close(code=1008)
-                return
+            # Prefer a single-use ticket (OPEN-011): a browser cannot set a WS
+            # auth header, and a one-time ticket in the query is inert if it
+            # lands in a log, unlike the long-lived shared token. Fall back to
+            # the header / bearer / ?token= carriers for non-browser clients.
+            from ..auth import ws_ticket
+            ticket = websocket.query_params.get("ticket")
+            if not (ticket and ws_ticket.consume(ticket)):
+                supplied = _present_token(
+                    header=websocket.headers.get("x-auth-token"),
+                    authorization=websocket.headers.get("authorization"),
+                    query=websocket.query_params.get("token"))
+                if not _token_ok(supplied):
+                    await websocket.close(code=1008)
+                    return
         # RBAC accept-time subscribe gate (W2.2). The WS is SEND-ONLY (it never
         # calls receive()), so there is no control channel to gate -- the only
         # gate is "may this principal subscribe to the status stream?", i.e.
