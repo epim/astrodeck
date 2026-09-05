@@ -227,9 +227,24 @@ hardware because the board was down when it was written:
   available; a lighter reset can replace the module reload later if one proves
   to clear the firmware's band state.
 
-On-hardware validation still owed: that the broker's `systemctl start --wait`
-of the reset unit succeeds under its sandbox, that a client then joins the
-recovery access point end to end, and that the watchdog heals a real crash.
+Validated on hardware 2026-09-04:
+
+- The reset unit reloads the driver in about two seconds and the broker's
+  `systemctl start --wait` of it succeeds under the broker's sandbox; the
+  effective capabilities confirm `CAP_SYS_MODULE` on the reset unit and only
+  `CAP_NET_ADMIN CAP_NET_RAW` on the broker.
+- The watchdog healed a deliberately removed driver: `wlan0` vanished, the
+  watchdog reloaded it, and the interface returned with no power cycle.
+- End to end through the product path: with the fixed `ap_up`, the laptop
+  joined the recovery access point at full signal, took a DHCP lease, and
+  fetched the captive portal (HTTP 200). This is the join that failed on an
+  already-joined board before the fix.
+
+One operational note the run exposed: the broker is a persistent process, so a
+live in-place code update must restart it or a stale broker keeps serving the
+old code. The installer now does this on a live install; the appliance ships
+the code at image-bake time and starts fresh at boot, so production is
+unaffected.
 
 ## Not verified
 
