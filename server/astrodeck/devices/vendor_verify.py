@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 
 #: Root of the bundled-SDK tree. ``vendor_verify`` lives in astrodeck/devices/,
@@ -61,10 +62,21 @@ def iter_vendor_binaries(root: Path = VENDOR_ROOT) -> list[Path]:
     )
 
 
+def _lexical(path: Path) -> Path:
+    """Absolute, ``..``-normalised path WITHOUT following symlinks.
+
+    Containment and the manifest key must be judged on the path as named, not
+    on what it points at: ``resolve()`` would let a symlink planted at
+    ``vendor/zwo/ASICamera2.dll`` escape to ``/tmp/evil.dll`` (outside vendor ->
+    check skipped) or re-key onto a different manifested binary (a name that
+    still hashes clean). Found in re-review 2026-09-05."""
+    return Path(os.path.normpath(os.path.abspath(str(path))))
+
+
 def _rel(path: Path, root: Path = VENDOR_ROOT) -> str:
     """POSIX-style path relative to the vendor root -- the manifest key, stable
-    across OSes."""
-    return path.resolve().relative_to(root.resolve()).as_posix()
+    across OSes. Lexical (see ``_lexical``)."""
+    return _lexical(path).relative_to(_lexical(root)).as_posix()
 
 
 def build_manifest(root: Path = VENDOR_ROOT) -> dict:
@@ -91,7 +103,7 @@ def load_manifest(path: Path = MANIFEST_PATH) -> dict:
 
 def _is_under_vendor(path: Path, root: Path = VENDOR_ROOT) -> bool:
     try:
-        path.resolve().relative_to(root.resolve())
+        _lexical(path).relative_to(_lexical(root))
         return True
     except ValueError:
         return False
@@ -108,7 +120,20 @@ def verify_if_vendored(path: Path, *, manifest: dict | None = None,
     path = Path(path)
     if not _is_under_vendor(path, root):
         return
-    man = manifest if manifest is not None else load_manifest()
+    # Our bundled binaries are never symlinks (a wheel and a git checkout ship
+    # real files). A symlink under vendor/ is a planted redirect; refuse it
+    # outright rather than hash whatever it happens to point at.
+    if path.is_symlink():
+        raise VendorIntegrityError(
+            f"bundled SDK path is a symlink: {_rel(path, root)} "
+            f"(refusing to follow a redirect out of vendor/)")
+    try:
+        man = manifest if manifest is not None else load_manifest()
+    except (OSError, ValueError) as exc:
+        # A missing/corrupt manifest is fail-closed too, with a clear reason.
+        raise VendorIntegrityError(
+            f"vendor manifest unavailable, refusing to load a bundled SDK: {exc}"
+        ) from exc
     rel = _rel(path, root)
     entry = man.get("binaries", {}).get(rel)
     if entry is None:

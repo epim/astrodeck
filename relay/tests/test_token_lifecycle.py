@@ -46,7 +46,9 @@ def test_revoke_removes_mapping_and_evicts_live_tunnel():
     # the token no longer authenticates anything
     with pytest.raises(RegistrationError):
         reg.validate_token(GOOD, "home-1")
-    # and the session it was holding is torn down immediately
+    # and the home is fenced at the REGISTRY layer (flags + dropped from the
+    # table). These flags alone do not close the socket: that is
+    # RelayState.evict_home, covered by the teardown test at the end of file.
     assert t1.evicted is True and t1.closed is True
     assert reg.get("home-1") is None
 
@@ -118,7 +120,6 @@ def test_replace_tokens_evicts_homes_whose_token_vanished():
 
 def test_replace_tokens_keeps_home_if_any_token_remains():
     reg = _registry()
-    reg.rotate(GOOD, NEWTOK) if False else None
     reg.provision(NEWTOK, "home-1")   # home-1 now has GOOD and NEWTOK
     t1 = _live(reg, GOOD, "home-1")
     evicted = reg.replace_tokens({NEWTOK: "home-1", GOOD2: "home-2"})
@@ -186,3 +187,56 @@ def test_valid_device_token_bounds():
     assert not valid_device_token("x" * 300)
     assert not valid_device_token("has space " + "y" * 30)
     assert valid_device_token("y" * 40)
+
+
+# ------------------------------------------ re-review 2026-09-05: real teardown
+
+import asyncio
+
+from relay.config import RelayConfig
+from relay.server import RelayState
+
+
+class ClosingTunnel(FakeScopeTunnel):
+    """A fake tunnel that records a PHYSICAL close, like the real WSS wrapper
+    does. The plain FakeScopeTunnel only carries flags, which is exactly how
+    the incomplete eviction slipped past the first tests."""
+
+    def __init__(self, conn_id: str = "fake"):
+        super().__init__(conn_id)
+        self.closed_with: int | None = None
+
+    async def close_socket(self, code: int = 1012) -> None:
+        self.closed_with = code
+        self.closed = True
+
+
+async def test_reload_tears_down_the_live_socket_and_routing(tmp_path, monkeypatch):
+    """The registry alone only refuses a re-HELLO. Browser traffic resolves the
+    home through RelayState.connections and the WSS stays open, so a revoked
+    token would keep the session it already holds. The reload must close the
+    socket and drop the affinity."""
+    f = tmp_path / "tokens.json"
+    f.write_text('{"%s": "home-1"}' % GOOD, encoding="utf-8")
+    monkeypatch.setenv("RELAY_DEVICE_TOKENS_FILE", str(f))
+    state = RelayState(RelayConfig(bind_host="127.0.0.1", origin="relay.test"))
+
+    tunnel = ClosingTunnel("t1")
+    conn = ScopeConnection(state.registry, tunnel)
+    ack = conn.handle_hello(protocol.hello(GOOD, "home-1", generation=1))
+    assert ack.header["ok"] is True
+    state.connections["home-1"] = conn  # what _scope_endpoint does on HELLO_ACK
+
+    f.write_text("{}", encoding="utf-8")  # the operator removes the token
+    summary = state.reload_tokens()
+    await asyncio.gather(*state._evict_tasks)
+
+    assert summary["evicted"] == ["home-1"]
+    assert "home-1" not in state.connections      # no longer routable
+    assert tunnel.closed_with == 1008             # socket physically closed
+    assert state.registry.get("home-1") is None   # and fenced at the registry
+
+
+async def test_evict_home_is_a_noop_for_an_unknown_home():
+    state = RelayState(RelayConfig(bind_host="127.0.0.1", origin="relay.test"))
+    assert await state.evict_home("never-connected") is False

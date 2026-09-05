@@ -186,6 +186,9 @@ def preview(store: ConfigStore, config_dir: Path, capture_dir: Path) -> dict:
         "remote_paired": bool(
             cfg.remote.enabled or cfg.remote.device_token
             or cfg.remote.relay_url or cfg.remote.home_id),
+        # The transfer opt-in also scrubs the stored update credential, so the
+        # panel must offer it when ONLY that exists (re-review 2026-09-05).
+        "update_credential": bool(cfg.update.github_token),
         "captures": capture_inventory(capture_dir),
         "preserved_capture_entries": sorted(PRESERVED_CAPTURE_ENTRIES),
     }

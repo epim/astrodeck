@@ -55,6 +55,7 @@ interface ResetPreview {
   alert_sinks: number;
   users: number;
   remote_paired: boolean;
+  update_credential: boolean;
   captures: CaptureInventory;
   preserved_capture_entries: string[];
   can_reset: boolean;
@@ -386,7 +387,7 @@ export default function FactoryResetPanel(): JSX.Element {
             do it when the last tester made an account you can't hand on, not out
             of habit.
           </SwitchRow>
-          {snap?.remote_paired ? (
+          {snap && (snap.remote_paired || snap.update_credential) ? (
             <SwitchRow
               checked={alsoRemote}
               onChange={setAlsoRemote}
@@ -395,7 +396,10 @@ export default function FactoryResetPanel(): JSX.Element {
               Off by default. Turn this on ONLY when the box is changing hands:
               it removes the relay pairing and the stored update credential so the
               previous owner keeps no way in over the internet. A normal reset
-              keeps pairing so a box stays reachable by its owner.
+              keeps pairing so a box stays reachable by its owner. It does NOT
+              remove sign-in accounts — when handing the box to someone else,
+              turn on "Also remove sign-in accounts" too, or the seller's login
+              stays.
             </SwitchRow>
           ) : null}
         </div>

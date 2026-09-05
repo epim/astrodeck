@@ -113,13 +113,18 @@ jobs:
         run: python scripts/sign_release.py "dist/astrodeck-${GITHUB_REF_NAME#v}.tar.gz"
 
       # Software bill of materials for the release (OPEN-006): a CycloneDX
-      # inventory of the Python, npm, and Rust dependencies actually present in
-      # the built tree, published alongside the artifact so a consumer can audit
-      # exactly what shipped.
+      # inventory of what actually SHIPS. Scan the unpacked release tarball,
+      # not the repo checkout -- the checkout carries node_modules dev tooling
+      # and the references/ reference SDKs, none of which are in the artifact,
+      # and an over-inclusive SBOM is a false inventory (re-review 2026-09-05).
+      - name: Unpack the release tarball for the SBOM
+        run: |
+          rm -rf sbom-src && mkdir sbom-src
+          tar -xzf "dist/astrodeck-${GITHUB_REF_NAME#v}.tar.gz" -C sbom-src
       - name: Generate SBOM (CycloneDX)
         uses: anchore/sbom-action@v0
         with:
-          path: .
+          path: sbom-src
           format: cyclonedx-json
           output-file: dist/astrodeck-sbom.cdx.json
           upload-release-assets: false

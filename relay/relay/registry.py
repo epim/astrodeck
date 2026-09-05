@@ -137,10 +137,15 @@ class HomeRegistry:
         self._token_to_home[device_token] = home_id
 
     def _evict_home(self, home_id: str) -> bool:
-        """Tear down the live tunnel for ``home_id`` right now (revocation).
+        """Fence ``home_id`` at the REGISTRY layer: drop it from the routing
+        table and flag its tunnel evicted/closed.
 
-        The home is forced to re-authenticate; it reconnects only if it still
-        holds a valid token. Returns True if a live tunnel was evicted."""
+        This alone does NOT close the physical socket, and the relay server
+        resolves browser traffic through its own ``connections`` affinity table,
+        not this registry -- so a caller that wants the live session gone must
+        also run ``RelayState.evict_home`` (the SIGHUP reload does). The registry
+        is transport-free by design; it cannot close a WebSocket. Returns True if
+        a registration was removed."""
         reg = self._homes.pop(home_id, None)
         if reg is None:
             return False

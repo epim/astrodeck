@@ -50,3 +50,14 @@ and a full local CI dry-run is green, the loop completes.
 
 - `AstroDeck-review3-codex.md` UX field-review ("Top 10 by user pain").
 - The 8 unverified NEW audit findings at the bottom of the broken-promises audit backlog.
+
+## Re-review (2026-09-05, Fable 5.1)
+
+The loop ran on Opus 4.8; every production diff was re-read adversarially the
+same day. Two real defects were found and fixed with tests that observe the
+real behaviour rather than a double's flags: OPEN-002's eviction never closed
+the socket or cleared routing affinity (a revoked token kept its live session),
+and OPEN-007's containment followed symlinks (a planted symlink escaped the
+hash check). OPEN-004 and OPEN-006 were tightened, and the OPEN-007 closure's
+"signed manifest" wording corrected. Details and the accepted residuals are in
+the Re-review section of SECURITY_REVIEW_FINDINGS.md.
