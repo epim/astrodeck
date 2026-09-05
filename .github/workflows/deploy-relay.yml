@@ -31,12 +31,13 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install -e ".[dev]"
+      - run: pytest -q
       # Never deploy a relay with a known-vulnerable dependency (OPEN-006).
+      # After the tests so the audit tool cannot perturb what they graded.
       - name: pip-audit (fail on a vulnerable dependency)
         run: |
           pip install pip-audit
           pip-audit
-      - run: pytest -q
 
   deploy:
     needs: test

@@ -46,17 +46,19 @@ jobs:
           # than no cache at all.
           cache-dependency-path: '**/pyproject.toml'
       - run: pip install -e ".[dev]"
-      # Dependency vulnerability gate (OPEN-006). pip-audit fails the build on a
-      # known-vulnerable installed dependency; local editable packages
-      # (astrodeck, astrodeck-native) are skipped, not failed.
-      - name: pip-audit (fail on a vulnerable dependency)
-        run: |
-          pip install pip-audit
-          pip-audit
       # -n auto overrides the repo addopts' -n 12 (tuned for the multi-core dev
       # box): hosted runners have 2-4 cores, and 12 workers oversubscribes them
       # enough to consistently trip wall-clock perf gates (test_render_perf_768).
       - run: pytest -q -n auto
+      # Dependency vulnerability gate (OPEN-006). pip-audit fails the build on a
+      # known-vulnerable installed dependency; local editable packages
+      # (astrodeck, astrodeck-native) are skipped, not failed. Runs AFTER the
+      # tests so installing the audit tool cannot perturb the environment the
+      # tests just graded.
+      - name: pip-audit (fail on a vulnerable dependency)
+        run: |
+          pip install pip-audit
+          pip-audit
 
   # The setter and the independent verifier both call Win32 directly, so a
   # Linux-only unit lane cannot establish that protected DACLs really persist.
@@ -133,12 +135,13 @@ jobs:
       # install the relay package + dev extras (pytest, pytest-asyncio, httpx --
       # Starlette's TestClient needs httpx, which requirements.txt omits)
       - run: pip install -e ".[dev]"
-      # Dependency vulnerability gate (OPEN-006).
+      - run: pytest -q
+      # Dependency vulnerability gate (OPEN-006), after the tests so the audit
+      # tool's install cannot perturb the environment the tests just graded.
       - name: pip-audit (fail on a vulnerable dependency)
         run: |
           pip install pip-audit
           pip-audit
-      - run: pytest -q
 
   # Container isolation has architecture-specific release requirements: the
   # image must be exercised by a native Linux kernel on both the ordinary
