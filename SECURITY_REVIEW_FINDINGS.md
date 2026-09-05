@@ -238,3 +238,16 @@ Each entry: disposition then what shipped. Committed locally; not yet pushed.
   reintroduces a raw `uvicorn --host` bind fails CI, and deploy/systemd/README
   states custom ASGI hosting is unsupported. The CLI's non-loopback interlock
   (exit 2 on an unauthenticated off-box bind) is the enforcement it protects.
+
+- OPEN-011 FIXED. A browser cannot set a WS Authorization header, so a shared
+  token had to ride ?token=. New astrodeck/auth/ws_ticket provides a single-use,
+  short-TTL (30s) ticket store, and POST /api/auth/ws-ticket lets an already
+  authenticated caller (session cookie or X-Auth-Token header -- never a query)
+  mint one; the /ws gate accepts ?ticket= and redeems it once, so no long-lived
+  credential need appear in a URL, and a leaked ticket is inert. The UI already
+  connects by same-origin session cookie (the finding's preferred path). Query
+  redaction was already in place: the astrodeck nginx logs $uri (path only, no
+  query), the reverse proxy sets the uvicorn access-log off, and the relay strips
+  ?token= from tunneled queries. First-message auth was the alternative; the
+  ticket keeps the send-only /ws contract unchanged. Tests: test_ws_ticket
+  (single-use, expiry, bound, endpoint, accept/reuse/unknown over the socket).
