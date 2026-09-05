@@ -251,3 +251,17 @@ Each entry: disposition then what shipped. Committed locally; not yet pushed.
   ?token= from tunneled queries. First-message auth was the alternative; the
   ticket keeps the send-only /ws contract unchanged. Tests: test_ws_ticket
   (single-use, expiry, bound, endpoint, accept/reuse/unknown over the socket).
+
+- OPEN-012 FIXED (script-src) + documented exception (style-src). The SPA shell
+  had one inline pre-paint script (anti-flash night/brightness), which forced
+  script-src 'unsafe-inline'. It moved to ui/public/bootstrap.js, loaded as an
+  external blocking <script src="./bootstrap.js"> (still runs before first
+  paint), so the CSP now serves script-src 'self' with NO 'unsafe-inline' -- an
+  injected inline <script> is refused by the browser. style-src retains
+  'unsafe-inline' because React/Vite set element style attributes and inject
+  <style> at runtime, which nonces/hashes cannot cover without a styling-layer
+  rewrite; that is the documented residual, and script injection (the
+  higher-value class) is closed. Tests: server test_csp_headers (script-src has
+  no unsafe-inline; style-src keeps it) and ui cspBootstrap (index.html carries
+  no inline script and loads the external bootstrap); the production build
+  confirms dist/index.html has only external scripts.
