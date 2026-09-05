@@ -1,0 +1,43 @@
+[Unit]
+Description=AstroDeck WiFi radio reset (reload the brcmfmac driver)
+# No network dependencies: this unit's whole job is to reload the WiFi driver so
+# the radio starts clean, either before the setup access point is raised or after
+# a firmware crash removed wlan0. It takes no input and is idempotent.
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/bin/python3 /usr/local/lib/astrodeck/astrodeck-provision-broker.py radio-reset
+# CAP_SYS_MODULE is the whole reason this is a separate unit: it is deliberately
+# kept out of the network-facing broker's sandbox. CAP_NET_ADMIN lets it down
+# the interface before the reload. Nothing else.
+CapabilityBoundingSet=CAP_SYS_MODULE CAP_NET_ADMIN
+AmbientCapabilities=CAP_SYS_MODULE CAP_NET_ADMIN
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectProc=invisible
+ProtectControlGroups=yes
+ProtectKernelTunables=yes
+# ProtectKernelModules is intentionally NOT set: this unit must load and unload
+# brcmfmac. That is the one capability it exists to exercise, and why it is kept
+# this small and this isolated.
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+# Note: @module is deliberately NOT denied here; init_module/delete_module are
+# this unit's purpose. Everything else dangerous is still refused.
+SystemCallFilter=~@clock @cpu-emulation @debug @mount @obsolete @raw-io @reboot @swap
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+LimitCORE=0
+TasksMax=16
+LimitNOFILE=64

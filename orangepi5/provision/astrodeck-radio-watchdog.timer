@@ -1,0 +1,14 @@
+[Unit]
+Description=AstroDeck WiFi radio watchdog schedule
+
+[Timer]
+# Start checking a minute after boot, then every 30 s. A crashed radio removes
+# wlan0 until the driver is reloaded, so a customer's rig recovers on its own
+# within about half a minute rather than staying offline until it is unplugged.
+OnBootSec=60s
+OnUnitActiveSec=30s
+AccuracySec=5s
+Unit=astrodeck-radio-watchdog.service
+
+[Install]
+WantedBy=timers.target

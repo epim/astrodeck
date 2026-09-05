@@ -30,7 +30,10 @@ for unit in \
     astrodeck-provision-broker.socket \
     astrodeck-recovery-record.service \
     astrodeck-recovery-clear.service \
-    astrodeck-recovery-clear.timer
+    astrodeck-recovery-clear.timer \
+    astrodeck-radio-reset.service \
+    astrodeck-radio-watchdog.service \
+    astrodeck-radio-watchdog.timer
 do
     sed 's/\r$//' "$HERE/$unit" > "$ROOT/etc/systemd/system/$unit"
     chmod 644 "$ROOT/etc/systemd/system/$unit"
@@ -41,5 +44,11 @@ ln -sf ../astrodeck-recovery-record.service \
     "$ROOT/etc/systemd/system/network-pre.target.wants/astrodeck-recovery-record.service"
 ln -sf ../astrodeck-recovery-clear.timer \
     "$ROOT/etc/systemd/system/timers.target.wants/astrodeck-recovery-clear.timer"
+# The radio watchdog heals a crashed WiFi driver on its own so an appliance
+# never needs a customer to unplug it; astrodeck-radio-reset.service is pulled
+# in on demand by the watchdog and by the broker, so it is installed but not
+# enabled on its own.
+ln -sf ../astrodeck-radio-watchdog.timer \
+    "$ROOT/etc/systemd/system/timers.target.wants/astrodeck-radio-watchdog.timer"
 
-echo "installed AstroDeck provisioning and physical WiFi recovery into $ROOT"
+echo "installed AstroDeck provisioning, physical WiFi recovery, and radio self-heal into $ROOT"

@@ -60,6 +60,7 @@ BROKER_PROTOCOL_VERSION = 1
 MAX_BROKER_REQUEST_BYTES = 8192
 MAX_BROKER_RESPONSE_BYTES = 64 * 1024
 BROKER_OPERATIONS = frozenset({"open", "scan", "join", "close"})
+RADIO_RESET_UNIT = "astrodeck-radio-reset.service"
 
 # Root-owned cache of already validated scan results. It contains no HTTP/DNS
 # state; all Internet-facing protocol parsing lives in the unprivileged file.
@@ -287,6 +288,68 @@ def log(msg: str) -> None:
                 os.close(fd)
     except (OSError, RuntimeError):
         pass
+
+
+def _wlan_present() -> bool:
+    return os.path.isdir(f"/sys/class/net/{IFACE}")
+
+
+def reset_radio() -> bool:
+    """Reload the WiFi driver so the radio starts clean.
+
+    brcmfmac refuses to service AP clients after a station association and can
+    crash on AP transitions; a full reload is the only reliable recovery for
+    both (hardware-proven 2026-09-04). This needs CAP_SYS_MODULE and therefore
+    runs ONLY from astrodeck-radio-reset.service, never the broker. It takes no
+    input and is idempotent.
+    """
+    run(["ip", "link", "set", IFACE, "down"], timeout=10)
+    run(["modprobe", "-r", "brcmfmac_wcc"], timeout=30)
+    run(["modprobe", "-r", "brcmfmac"], timeout=30)
+    if run(["modprobe", "brcmfmac"], timeout=30).returncode != 0:
+        log("radio reset: modprobe brcmfmac failed")
+        return False
+    for _ in range(20):
+        if _wlan_present():
+            log("radio reset: wlan0 present after reload")
+            return True
+        time.sleep(1)
+    log("radio reset: wlan0 did not reappear after reload")
+    return False
+
+
+def request_radio_reset() -> bool:
+    """Broker-side trigger for the isolated reset unit.
+
+    The broker never holds CAP_SYS_MODULE; the privileged reload lives in
+    astrodeck-radio-reset.service. Best effort: a factory-fresh radio does not
+    need a reset, so a missing or failing unit is logged and tolerated rather
+    than blocking onboarding.
+    """
+    result = run(["systemctl", "start", "--wait", RADIO_RESET_UNIT], timeout=90)
+    if result.returncode != 0:
+        log("radio reset unit unavailable or failed; continuing")
+        return False
+    return True
+
+
+def radio_watchdog() -> int:
+    """Heal a crashed radio without human intervention.
+
+    A brcmfmac firmware crash removes the wlan0 device node entirely (distinct
+    from an ordinary disconnect, where the node remains). Only that signature
+    triggers a reset, and only after a recheck, so a normal AP reload window is
+    never mistaken for a crash. An appliance must recover on its own here; a
+    customer cannot be asked to unplug it.
+    """
+    if _wlan_present():
+        return 0
+    time.sleep(5)
+    if _wlan_present():
+        return 0
+    log("radio watchdog: wlan0 absent; requesting a driver reload")
+    run(["systemctl", "start", RADIO_RESET_UNIT], timeout=90)
+    return 0
 
 
 def run(cmd: list[str], timeout: int = 30) -> subprocess.CompletedProcess:
@@ -806,6 +869,15 @@ def ap_up(ssid: str, psk: str) -> None:
     run(["systemctl", "stop", client_unit], timeout=20)
     if run(["systemctl", "is-active", "--quiet", client_unit], timeout=10).returncode == 0:
         raise RuntimeError("the client supplicant remained active")
+    run(["pkill", "-F", WPA_PID], timeout=10)
+    # Reload the driver so the AP is raised on a clean radio: brcmfmac will
+    # not serve clients on a radio that was just a station (hardware-proven
+    # 2026-09-04). Done via the isolated CAP_SYS_MODULE unit so the broker
+    # keeps no module-loading privilege. The reload makes wlan0 briefly
+    # vanish and reappear; re-stop the client so a device-reappearance
+    # trigger cannot reassociate it before the AP comes up.
+    request_radio_reset()
+    run(["systemctl", "stop", client_unit], timeout=20)
     run(["pkill", "-F", WPA_PID], timeout=10)
     _ensure_private_dir(os.path.join(RUN_DIR, "wpa_supplicant"))
     _write_private(WPA_CONF, emit_wpa_ap_conf(ssid, psk))
@@ -1416,6 +1488,8 @@ def main_selftest() -> int:
     assert "mode=2" in c and f"frequency={AP_FREQ}" in c
     n = emit_networkd_ap()
     assert "DHCPServer=yes" in n and AP_CIDR in n
+    assert callable(reset_radio) and callable(request_radio_reset)
+    assert callable(radio_watchdog) and RADIO_RESET_UNIT.endswith(".service")
     print("self-test OK")
     return 0
 
@@ -1433,6 +1507,8 @@ if __name__ == "__main__":
             "rotate",
             "record-boot",
             "clear-boots",
+            "radio-reset",
+            "radio-watchdog",
         ],
     )
     ap.add_argument("--self-test", action="store_true")
@@ -1445,6 +1521,10 @@ if __name__ == "__main__":
         if args.identity_path != SETUP_IDENTITY_PATH or args.ssid is not None:
             ap.error("broker mode does not accept paths or setup values")
         sys.exit(main_broker())
+    if args.mode == "radio-reset":
+        sys.exit(0 if reset_radio() else 1)
+    if args.mode == "radio-watchdog":
+        sys.exit(radio_watchdog())
     if args.mode == "commission":
         if args.identity_path == SETUP_IDENTITY_PATH:
             _require_durable_data_mount()

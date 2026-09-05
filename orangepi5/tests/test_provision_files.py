@@ -102,3 +102,79 @@ def test_hotspot_networkd_file_is_readable_by_networkd_and_nothing_else_is(prov,
         assert stat.S_IMODE(private.stat().st_mode) == 0o600
         assert stat.S_IMODE(shared.stat().st_mode) == 0o644
     assert "10.42.0.1/24" in shared.read_text(encoding="utf-8")
+
+
+def _record_run(prov, monkeypatch, rc_for=None):
+    """Replace prov.run with a recorder. rc_for: callable(args)->int or None."""
+    calls = []
+
+    def fake_run(args, timeout=30):
+        calls.append(list(args))
+        import subprocess
+        rc = 0 if rc_for is None else rc_for(args)
+        return subprocess.CompletedProcess(args, rc, "", "")
+
+    monkeypatch.setattr(prov, "run", fake_run)
+    monkeypatch.setattr(prov.time, "sleep", lambda _s: None)
+    return calls
+
+
+def test_reset_radio_reloads_the_driver_and_waits_for_wlan0(prov, monkeypatch):
+    calls = _record_run(prov, monkeypatch)
+    monkeypatch.setattr(prov, "_wlan_present", lambda: True)
+    assert prov.reset_radio() is True
+    assert ["modprobe", "-r", "brcmfmac"] in calls
+    assert ["modprobe", "brcmfmac"] in calls
+    # the remove must precede the load
+    assert calls.index(["modprobe", "-r", "brcmfmac"]) < calls.index(["modprobe", "brcmfmac"])
+
+
+def test_reset_radio_fails_closed_if_wlan0_never_returns(prov, monkeypatch):
+    _record_run(prov, monkeypatch)
+    monkeypatch.setattr(prov, "_wlan_present", lambda: False)
+    assert prov.reset_radio() is False
+
+
+def test_reset_radio_fails_when_the_module_will_not_load(prov, monkeypatch):
+    def rc_for(args):
+        return 1 if args[:2] == ["modprobe", "brcmfmac"] else 0
+    _record_run(prov, monkeypatch, rc_for)
+    monkeypatch.setattr(prov, "_wlan_present", lambda: True)
+    assert prov.reset_radio() is False
+
+
+def test_request_radio_reset_starts_the_isolated_unit(prov, monkeypatch):
+    calls = _record_run(prov, monkeypatch)
+    assert prov.request_radio_reset() is True
+    assert ["systemctl", "start", "--wait", prov.RADIO_RESET_UNIT] in calls
+
+
+def test_request_radio_reset_tolerates_a_missing_unit(prov, monkeypatch):
+    _record_run(prov, monkeypatch, rc_for=lambda args: 1)
+    # a factory-fresh radio needs no reset, so a failing/absent unit must not
+    # block onboarding: it is logged and reported False, never raised.
+    assert prov.request_radio_reset() is False
+
+
+def test_radio_watchdog_resets_only_when_wlan0_is_truly_absent(prov, monkeypatch):
+    calls = _record_run(prov, monkeypatch)
+    # present -> nothing
+    monkeypatch.setattr(prov, "_wlan_present", lambda: True)
+    assert prov.radio_watchdog() == 0
+    assert not any(a[:2] == ["systemctl", "start"] for a in calls)
+    # a transient absence that recovers on the recheck -> still nothing
+    seq = iter([False, True])
+    monkeypatch.setattr(prov, "_wlan_present", lambda: next(seq))
+    assert prov.radio_watchdog() == 0
+    assert not any(a[:2] == ["systemctl", "start"] for a in calls)
+    # absent on both checks -> ask the reset unit to run
+    monkeypatch.setattr(prov, "_wlan_present", lambda: False)
+    assert prov.radio_watchdog() == 0
+    assert ["systemctl", "start", prov.RADIO_RESET_UNIT] in calls
+
+
+def test_ap_up_resets_the_radio_before_starting_the_supplicant(prov):
+    import inspect
+    src = inspect.getsource(prov.ap_up)
+    assert "request_radio_reset()" in src
+    assert src.index("request_radio_reset()") < src.index("wpa_supplicant")
