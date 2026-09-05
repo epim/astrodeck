@@ -14,7 +14,7 @@
 # survive being packaged — see api/app.py::_resolve_ui_dist.
 
 # ----------------------------------------------------------------- UI build
-FROM --platform=$BUILDPLATFORM node:20-slim AS ui
+FROM --platform=$BUILDPLATFORM node:20-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0 AS ui
 WORKDIR /ui
 # package files first: this layer is cached until a dependency actually changes,
 # which is the difference between a 20-second and a 4-minute rebuild on a Pi.
@@ -24,7 +24,7 @@ COPY ui/ ./
 RUN npm run build
 
 # ------------------------------------------------------------- python build
-FROM python:3.12-slim AS build
+FROM python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea AS build
 WORKDIR /src
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
@@ -38,7 +38,7 @@ COPY server/ ./server/
 RUN pip install --no-cache-dir --no-deps ./server
 
 # ------------------------------------------------------------------ runtime
-FROM python:3.12-slim AS runtime
+FROM python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea AS runtime
 LABEL org.opencontainers.image.title="AstroDeck" \
       org.opencontainers.image.description="Open, vendor-neutral astrophotography rig controller" \
       org.opencontainers.image.source="https://github.com/epim/astrodeck" \
