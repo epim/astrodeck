@@ -115,12 +115,53 @@ class RelayState:
         # Strong ref to the housekeeping loop; a bare create_task() result can be
         # garbage-collected mid-flight.
         self.housekeeping_task: "asyncio.Task | None" = None
+        # Strong refs to in-flight evictions scheduled from the SIGHUP reload.
+        self._evict_tasks: set = set()
+
+    async def evict_home(self, home_id: str) -> bool:
+        """FINISH revoking a home: drop its routing affinity and physically
+        close its tunnel socket.
+
+        The registry's own eviction only fences the registry layer (a re-HELLO
+        with the revoked token is refused, and the home leaves ``_homes``). But
+        browser traffic resolves the home through ``self.connections`` and the
+        WSS stays open with its read/ping tasks -- so without this step a
+        revoked home keeps serving the session an attacker already holds. That
+        gap shipped and was caught in re-review (2026-09-05). Returns True if a
+        live connection was torn down."""
+        conn = self.connections.pop(home_id, None)
+        if conn is None:
+            return False
+        close_socket = getattr(conn.tunnel, "close_socket", None)
+        with contextlib.suppress(Exception):
+            if close_socket is not None:
+                await close_socket(1008)   # policy violation: token revoked
+            await conn.close()
+        return True
 
     def reload_tokens(self) -> dict:
         """Re-read the device-token file and apply it to the live registry
-        (OPEN-002 durable rotation/revocation, no restart). Returns a
+        (OPEN-002 durable rotation/revocation, no restart). Homes whose token
+        vanished are evicted at BOTH layers: the registry refuses their
+        re-HELLO and ``evict_home`` closes their live socket. Returns a
         counts-only summary; never returns or logs token material."""
-        return reload_device_tokens(self.registry)
+        summary = reload_device_tokens(self.registry)
+        for home_id in summary["evicted"]:
+            self._schedule(self.evict_home(home_id))
+        return summary
+
+    def _schedule(self, coro) -> None:
+        """Run ``coro`` on the event loop from a sync context (a signal
+        callback), holding a strong reference so the task is not collected
+        mid-flight. Off-loop (unit tests) the caller awaits evict_home itself."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            coro.close()
+            return
+        task = loop.create_task(coro)
+        self._evict_tasks.add(task)
+        task.add_done_callback(self._evict_tasks.discard)
 
     def try_begin_scope_handshake(self) -> bool:
         if self._pending_scope_handshakes >= self.cfg.scope_pending_max:

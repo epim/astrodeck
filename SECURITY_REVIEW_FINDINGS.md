@@ -314,3 +314,64 @@ Each entry: disposition then what shipped. Committed locally; not yet pushed.
   relay (end-to-end request encryption + device-bound / mutually authenticated
   keys) is a deliberate future redesign, not attempted here. See
   [[broken-promises-bug-class]], [[astrodeck-security-hardening]] in memory.
+
+## Re-review of the closure loop (2026-09-05, Fable 5.1)
+
+The OPEN-item loop above ran on Opus 4.8. A fresh adversarial pass over every
+production diff found two real defects and several honesty gaps, all fixed the
+same day. Corrections to the entries above:
+
+- OPEN-002 (CORRECTED). The registry's revoke/replace_tokens only fenced the
+  registry layer: they popped the home from the routing table and set two flags
+  on the tunnel, but the relay resolves browser traffic through
+  RelayState.connections and never closed the WebSocket. A revoked token
+  therefore kept the session it already held; only a NEW HELLO was refused. The
+  claim "a leaked token cannot keep or resume a session" was false. The unit
+  tests passed because FakeScopeTunnel exposes only those flags (a test double
+  hiding the code under test). Fix: RelayState.evict_home drops the affinity
+  entry and physically closes the socket (1008), and the SIGHUP reload schedules
+  it for every evicted home; test_reload_tears_down_the_live_socket_and_routing
+  asserts the close code and the cleared affinity against a tunnel that records
+  a real close.
+- OPEN-007 (CORRECTED). (1) Containment and the manifest key used
+  Path.resolve(), which follows symlinks: a symlink planted at a bundled name
+  resolved OUTSIDE vendor/ (check skipped, the target loaded) or onto a
+  different manifested binary (a name that still hashed clean). Fix: lexical
+  containment with no symlink resolution, plus an outright refusal of any
+  symlink under vendor/. test_verify_refuses_a_symlink_planted_under_vendor
+  runs on Linux CI (skips where the runner cannot create symlinks); a WSL probe
+  confirmed the old logic bypassed and the new one refuses. A missing or corrupt
+  manifest now raises VendorIntegrityError rather than a bare OSError. (2) The
+  closure said binaries are verified "against the signed release manifest". The
+  manifest is covered by the release tarball's Ed25519 signature at download
+  time; it is NOT authenticated at runtime, and an attacker who can write
+  site-packages/astrodeck/vendor/ can rewrite it alongside a binary. The runtime
+  check defends against a non-privileged swap or plant and against accident;
+  write-protection of the install (the Windows private DACL, the non-root
+  service identity) is what keeps the manifest itself trustworthy.
+- OPEN-004 (TIGHTENED). "Prepare for sale or transfer" left the seller's admin
+  sign-in on the box unless "Also remove sign-in accounts" was ticked too; for a
+  consumer that is a trap. The switch copy now says so. It was also hidden when
+  only an update credential (no relay pairing) existed, though it scrubs that
+  too; preview now reports update_credential and the panel offers the switch for
+  either.
+- OPEN-006 (TIGHTENED). Pinning base images by digest freezes them: without a
+  bump process the pin accumulates every base-image CVE fixed after it was
+  taken, which is worse over time than a floating tag. Added
+  .github/dependabot.yml (docker for / and /relay, github-actions) so digest and
+  action bumps are proposed weekly and graded by the audit gates. The SBOM
+  scanned the repo checkout (node_modules dev tooling, the references/ reference
+  SDKs) rather than the artifact; it now unpacks the release tarball and
+  inventories exactly what ships.
+
+Noted, not changed (judged acceptable or out of scope): the audit log records
+the attempted username on a failed login, so a password typed into the username
+field is logged (a known audit-log trade-off); behind the reverse proxy the
+audit ip is the proxy's (correlate with the nginx request_id); a brute-forcer
+can churn the 200-entry in-app log ring with deny lines; the ws-ticket mint
+endpoint, like every route, still accepts the shared token in a query string if
+a caller chooses to send it that way; the SIGHUP reload re-reads the FILE, so it
+is a no-op for env-sourced tokens (Fly secrets), where a redeploy is the
+rotation path; npm audit --omit=dev fails on any severity including low, which
+may block a release on an unfixable advisory (--audit-level=moderate is the
+lever); third-party actions are pinned by tag per repo convention, not by SHA.

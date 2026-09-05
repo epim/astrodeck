@@ -71,3 +71,37 @@ def test_all_bundled_paths_declare_a_vendor():
     for rel, entry in man["binaries"].items():
         assert entry["vendor"] in {"playerone", "zwo"}, rel
         assert entry["sha256"] and entry["size"] > 0
+
+
+# --------------------------------------------- re-review 2026-09-05: symlinks
+
+import os
+
+
+def test_verify_refuses_a_symlink_planted_under_vendor(tmp_path):
+    """A symlink at a bundled name must not escape the check. Resolving it
+    would either land outside vendor/ (check skipped) or on a DIFFERENT
+    manifested binary (a name that still hashes clean). Refuse it outright."""
+    (tmp_path / "zwo").mkdir()
+    real = tmp_path / "zwo" / "real.dll"
+    real.write_bytes(b"real-bytes")
+    other = tmp_path / "zwo" / "other.dll"
+    other.write_bytes(b"other-bytes")
+    man = build_manifest(tmp_path)  # pins real.dll and other.dll
+
+    # case 1: the bundled name now redirects OUTSIDE vendor/
+    evil = tmp_path.parent / f"evil-{tmp_path.name}.dll"
+    evil.write_bytes(b"evil-bytes")
+    real.unlink()
+    try:
+        os.symlink(evil, real)
+    except OSError:
+        pytest.skip("creating symlinks needs a privilege this runner lacks")
+    with pytest.raises(VendorIntegrityError):
+        verify_if_vendored(real, manifest=man, root=tmp_path)
+
+    # case 2: the bundled name redirects to ANOTHER manifested binary
+    real.unlink()
+    os.symlink(other, real)
+    with pytest.raises(VendorIntegrityError):
+        verify_if_vendored(real, manifest=man, root=tmp_path)
