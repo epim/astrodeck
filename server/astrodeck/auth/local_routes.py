@@ -61,6 +61,7 @@ from .capabilities import CAP_ADMIN_USERS, ROLES
 from .deps import _scope_is_remote, require
 from .passwords import PasswordTooLongError, PasswordTooShortError
 from .users import InvalidEmailError
+from . import audit
 from .login_rate_limit import LoginAttemptLimiter
 from .session import credential_fingerprint, session_secret, sign_session
 
@@ -236,6 +237,8 @@ async def local_login(body: LocalLogin, request: Request):
     limiter = _active_login_limiter()
     retry_after = limiter.begin_attempt(normalized_username, now=time.monotonic())
     if retry_after is not None:
+        audit.record("login", ok=False, request=request,
+                     user=normalized_username, reason="rate_limited")
         raise HTTPException(
             status_code=429,
             detail="invalid username or password",
@@ -246,9 +249,12 @@ async def local_login(body: LocalLogin, request: Request):
     if user is None:
         # One generic failure: unknown user, wrong password, and disabled account
         # are indistinguishable to the caller (no account-enumeration oracle).
+        audit.record("login", ok=False, request=request,
+                     user=normalized_username, reason="bad_credentials")
         raise HTTPException(status_code=401, detail="invalid username or password")
 
     limiter.record_success(normalized_username)
+    audit.record("login", ok=True, request=request, user=normalized_username)
 
     return _mint_session_response(
         {"role": user.role, "email": user.email},
@@ -317,6 +323,8 @@ async def setup_local_admin(body: SetupLocal, request: Request):
     config_store.set_auth(auth_cfg.model_copy(
         update={"local_enabled_first_run": False}))
 
+    audit.record("first_run_admin", ok=True, request=request,
+                 user=body.username)
     return _mint_session_response(
         user.to_public() | {"role": user.role},
         role=user.role, email=user.email, request=request,
@@ -345,7 +353,10 @@ async def token_login(body: TokenLogin, request: Request):
         raise HTTPException(status_code=404, detail="token auth not enabled")
     supplied = (body.token or "").strip()
     if not supplied or not hmac.compare_digest(supplied, configured):
+        audit.record("token_login", ok=False, request=request,
+                     reason="bad_token")
         raise HTTPException(status_code=401, detail="invalid access token")
+    audit.record("token_login", ok=True, request=request)
     return _mint_session_response(
         {"role": "admin", "email": None},
         role="admin", email=None, request=request,
