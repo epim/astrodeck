@@ -3,5 +3,5 @@
 # the stdlib + cryptography; starlette/uvicorn/websockets are the server shell.
 starlette>=1.6.0
 uvicorn[standard]>=0.30
-websockets>=12.0
+websockets>=14.0
 cryptography>=50.0.0

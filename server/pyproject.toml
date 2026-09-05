@@ -7,6 +7,10 @@ dependencies = [
     "fastapi>=0.141.1",
     "starlette>=1.6.0",
     "uvicorn[standard]>=0.30",
+    # Direct import on the remote/nina/polar paths (relay_client, hub, polar).
+    # >=14 guarantees websockets.connect is the modern asyncio implementation
+    # (14.0 made it the default), so no legacy API and no deprecation (OPEN-015).
+    "websockets>=14.0",
     "numpy>=1.26",
     "astropy>=6.0",
     "astropy-healpix>=1.0",
