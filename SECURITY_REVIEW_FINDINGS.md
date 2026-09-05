@@ -217,3 +217,14 @@ Each entry: disposition then what shipped. Committed locally; not yet pushed.
   (`python -m astrodeck.devices.vendor_verify --write`). Out-of-process driver
   isolation remains a future option; the in-process check is the reachable
   control today.
+
+- OPEN-008 FIXED (audit log) + VERIFIED (rate limit / loopback / proxy). New
+  astrodeck/auth/audit.py emits a redacted line to the dedicated `astrodeck.audit`
+  logger (and the event bus) for each security-relevant auth event -- local login
+  success/failure, rate-limited login, break-glass token login, and first-run
+  admin creation -- recording who/outcome/ip/reason and NEVER a password or
+  token (proven by test_auth_audit). Per-account login rate limiting
+  (LoginAttemptLimiter) and the loopback-default bind (python -m astrodeck, exits
+  2 on an unauthenticated non-loopback bind) already existed; a maintained TLS
+  reverse proxy ships in deploy/reverse-proxy/ and is the required front for any
+  non-loopback listener.
