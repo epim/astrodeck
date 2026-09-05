@@ -1,0 +1,22 @@
+# Keep the supply-chain pins from rotting.
+#
+# The container base images are pinned by digest (OPEN-006), which makes a
+# build reproducible but also FREEZES the base image: without a bump process
+# the pin silently accumulates every base-image CVE fixed after it was taken,
+# which is worse over time than a floating tag. Dependabot proposes the digest
+# bumps; the dependency-audit CI gates and the container-security job grade
+# each one before it merges. GitHub Actions are pinned by tag; bump those too.
+version: 2
+updates:
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker
+    directory: /relay
+    schedule:
+      interval: weekly
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

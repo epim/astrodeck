@@ -358,3 +358,19 @@ def test_route_transfer_reset_clears_pairing(env):
     assert r.status_code == 200, r.text
     assert r.json()["remote_reset"] is True
     assert store.reload().remote.device_token == ""
+
+
+def test_preview_reports_an_update_credential_on_its_own(env):
+    """The transfer opt-in also scrubs the update credential, so the panel must
+    be able to offer it when only that exists (no relay pairing)."""
+    from astrodeck.factory_reset import preview
+    _c, store, cfg_dir, cap = env
+    _dirty(store, cfg_dir, cap)
+    cfg = store.cfg()
+    cfg.remote.enabled = False
+    cfg.remote.relay_url = ""
+    cfg.update.github_token = "ghp_only_this"
+    store.bump_and_save()
+    snap = preview(store, cfg_dir, cap)
+    assert snap["remote_paired"] is False
+    assert snap["update_credential"] is True
