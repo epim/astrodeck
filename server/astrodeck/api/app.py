@@ -1962,7 +1962,14 @@ def create_app(*, bind_host: str | None = None,
             "Content-Security-Policy",
             "default-src 'self'; base-uri 'self'; object-src 'none'; "
             "frame-ancestors 'none'; form-action 'self'; "
-            "script-src 'self' 'unsafe-inline'; "
+            # OPEN-012: no 'unsafe-inline' for scripts. The one pre-paint inline
+            # script was moved to public/bootstrap.js (served 'self'), so an
+            # injected inline <script> is now refused by the browser.
+            "script-src 'self'; "
+            # style-src keeps 'unsafe-inline': React/Vite set element style
+            # attributes and inject <style> at runtime, which nonces/hashes can't
+            # cover without a styling-layer rewrite. Tracked as a documented
+            # exception; script injection is the higher-value class and is closed.
             "style-src 'self' 'unsafe-inline'; "
             "img-src 'self' data: blob: https:; "
             "font-src 'self' data:; connect-src 'self' ws: wss:")
