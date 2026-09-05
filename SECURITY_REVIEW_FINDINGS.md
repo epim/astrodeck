@@ -276,3 +276,41 @@ Each entry: disposition then what shipped. Committed locally; not yet pushed.
   resolve. test_websockets_modern pins that websockets.connect is the asyncio
   impl and every floor is >=14. The dependency-audit gates (OPEN-006) keep the
   library on a scanned supported release.
+
+- OPEN-003 VERIFIED (software) + ACCEPTED (enclosure QR). The Orange Pi
+  provisioner generates a per-device AP credential (not the public factory
+  string), commissioning is one-shot (rotation does not re-arm the AP), and three
+  distinct short boots re-arm the factory secret for physical recovery -- all
+  covered by orangepi5/tests (75 passed), incl.
+  test_generated_credentials_are_independent_and_label_safe,
+  test_commission_is_exclusive_and_rotation_does_not_arm_ap, and
+  test_only_three_distinct_current_boots_rearm_factory_secret. A printed/QR
+  per-device bootstrap secret on the enclosure is retail-hardware and remains a
+  manufacturing step, not a software change.
+- OPEN-005 VERIFIED. runtime_security.py (server + relay) refuses an
+  over-privileged identity at startup (require_unprivileged_runtime); the images
+  run as uid 10001 (Dockerfile + relay/Dockerfile) and the systemd units set
+  User=astrodeck / astrodeck-relay, never root. Tests: server
+  test_runtime_security (5), relay test_runtime_security (3), and the
+  container-security live gate exercises the isolated container.
+- OPEN-010 VERIFIED. windows_acl.py creates and verifies a private DACL
+  (handle-based, no broad Users/Everyone read) and rejects reparse points /
+  junctions; test_windows_private_acl (18) and the live NTFS acceptance gate
+  test_windows_acl_contract (14 passed, 1 skipped where the runner lacks the
+  create-symlink privilege) gate it on the windows-private-state CI job.
+- OPEN-014 ACCEPTED. One home per public origin/process is the intended safe
+  design after the cookie-isolation fix -- config.load_device_tokens refuses a
+  token map with more than one home id, so cookies/origins can never be shared
+  across homes on /h/<home_id>. Per-stream fairness / flow-control windows are a
+  future availability step before any high-density multi-tenant hosting; deploy
+  one hostname or trusted edge partition per home until then.
+- OPEN-001 ACCEPTED (documented threat boundary; not a code change). The relay
+  terminates TLS and forwards the home-signed session cookie: it is a trusted
+  bearer-token intermediary, NEVER zero-trust. Existing mitigations: one home per
+  origin, browser-cookie isolation, TLS at the edge, minimal/ redacted logs, and
+  -- belt and suspenders -- admin/config.* routes are tunnel-blocked at the home
+  regardless of the forwarded principal, and the relay holds NO signing secret
+  that mints a home-trusted admin (see relay/relay/principal.py). A zero-trust
+  relay (end-to-end request encryption + device-bound / mutually authenticated
+  keys) is a deliberate future redesign, not attempted here. See
+  [[broken-promises-bug-class]], [[astrodeck-security-hardening]] in memory.
