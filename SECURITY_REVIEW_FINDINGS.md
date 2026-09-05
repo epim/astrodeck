@@ -265,3 +265,14 @@ Each entry: disposition then what shipped. Committed locally; not yet pushed.
   no unsafe-inline; style-src keeps it) and ui cspBootstrap (index.html carries
   no inline script and loads the external bootstrap); the production build
   confirms dist/index.html has only external scripts.
+
+- OPEN-015 FIXED. The deprecation the review saw came from old websockets (12.x),
+  where top-level websockets.connect was the legacy asyncio client. websockets
+  14.0 made websockets.connect the modern asyncio implementation, which is what
+  the server already imports (remote relay client, NINA bridge, polar). Raised
+  the declared floor to websockets>=14.0 -- server/pyproject now declares it
+  directly (it was only a transitive of uvicorn[standard] despite a direct
+  import), and relay/pyproject + relay/requirements -- so no legacy default can
+  resolve. test_websockets_modern pins that websockets.connect is the asyncio
+  impl and every floor is >=14. The dependency-audit gates (OPEN-006) keep the
+  library on a scanned supported release.
