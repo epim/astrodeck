@@ -46,6 +46,13 @@ jobs:
           # than no cache at all.
           cache-dependency-path: '**/pyproject.toml'
       - run: pip install -e ".[dev]"
+      # Dependency vulnerability gate (OPEN-006). pip-audit fails the build on a
+      # known-vulnerable installed dependency; local editable packages
+      # (astrodeck, astrodeck-native) are skipped, not failed.
+      - name: pip-audit (fail on a vulnerable dependency)
+        run: |
+          pip install pip-audit
+          pip-audit
       # -n auto overrides the repo addopts' -n 12 (tuned for the multi-core dev
       # box): hosted runners have 2-4 cores, and 12 workers oversubscribes them
       # enough to consistently trip wall-clock perf gates (test_render_perf_768).
@@ -126,6 +133,11 @@ jobs:
       # install the relay package + dev extras (pytest, pytest-asyncio, httpx --
       # Starlette's TestClient needs httpx, which requirements.txt omits)
       - run: pip install -e ".[dev]"
+      # Dependency vulnerability gate (OPEN-006).
+      - name: pip-audit (fail on a vulnerable dependency)
+        run: |
+          pip install pip-audit
+          pip-audit
       - run: pytest -q
 
   # Container isolation has architecture-specific release requirements: the
@@ -181,6 +193,9 @@ jobs:
           cache: npm
           cache-dependency-path: ui/package-lock.json
       - run: npm ci
+      # Dependency vulnerability gate (OPEN-006): production deps only, so a dev
+      # tool advisory never blocks a release. Fails on a vulnerable dependency.
+      - run: npm audit --omit=dev
       # The 99 UI test files gated nothing until now: each prints its own tally
       # and exits zero either way, so a failing file was visible only to somebody
       # running it by hand and reading the output. run-tests.mjs runs each in its
@@ -207,6 +222,16 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: native
+      # Dependency vulnerability gate (OPEN-006 / OPEN-013). Plain `cargo audit`
+      # fails on a VULNERABILITY but only warns (exit 0) on the unmaintained
+      # `paste` crate (RUSTSEC-2024-0436) -- kept release-visible in the log and
+      # tracked in OPEN-013 until nalgebra drops it.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - name: cargo audit
+        working-directory: native
+        run: cargo audit
       - name: cargo fmt
         working-directory: native
         run: cargo fmt --all -- --check
