@@ -160,3 +160,21 @@ Reference design guidance used during remediation:
 - [OWASP CSRF Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html)
 - [RustSec RUSTSEC-2026-0177 (PyO3)](https://rustsec.org/advisories/RUSTSEC-2026-0177.html)
 - [RustSec RUSTSEC-2026-0204 (crossbeam-epoch)](https://rustsec.org/advisories/RUSTSEC-2026-0204.html)
+
+## OPEN-item closure log (2026-09-05)
+
+Tracked in docs/superpowers/specs/2026-09-05-security-open-items-triage.md.
+Each entry: disposition then what shipped. Committed locally; not yet pushed.
+
+- OPEN-002 FIXED (rotation/revocation) + ACCEPTED (mTLS as future). The relay
+  gained `HomeRegistry.revoke` (drops the mapping and evicts the live tunnel, so
+  a leaked token dies at once), `rotate` (atomic swap that keeps the live tunnel
+  for a planned rotation), and `replace_tokens` + `config.reload_device_tokens`
+  for a durable file reload, wired to SIGHUP in the server lifespan. A shared
+  `config.valid_device_token` governs the format everywhere and
+  `config.new_device_token` mints one. No error, log, or registration repr
+  echoes token material (redaction tests in relay/tests/test_token_lifecycle.py).
+  The home already scrubs `device_token` in `redacted()`
+  (server test_remote_relay::test_device_token_redacted). Operator flow:
+  relay/README. Asymmetric/mTLS device identity remains a documented future
+  redesign; the accepted blast radius of a leaked static token is unchanged.

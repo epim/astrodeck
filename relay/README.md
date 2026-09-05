@@ -128,6 +128,34 @@ a browser then loads `https://<relay>/h/home-1/`.
 Device tokens must contain 32-256 printable ASCII characters. Generate them
 with `secrets.token_urlsafe(32)`; do not use a human password.
 
+### Rotating or revoking a home token
+
+The device token is a long-lived bearer credential (OPEN-002). It can be rotated
+or revoked WITHOUT restarting the relay by editing the mounted token file and
+sending the relay `SIGHUP`:
+
+```bash
+# mint a fresh token (run on the relay host, print once, never log it):
+python -c "from relay.config import new_device_token; print(new_device_token())"
+# edit /secrets/device_tokens.json, then apply it live:
+kill -HUP "$(pgrep -f 'python -m relay')"
+```
+
+The relay logs a counts-only line (`homes=.. tokens=.. evicted=..`), never the
+token itself. Two paths, chosen by intent:
+
+- **Planned rotation (seamless):** add the new token alongside the old, reload,
+  point the home at the new token and let it re-dial (its `generation` bumps and
+  fences the old socket), then remove the old token and reload again. The live
+  tunnel is never dropped by the reload while a valid token for the home remains.
+- **Compromise (immediate):** delete the leaked token and reload. The home's
+  live tunnel is evicted at once, so a stolen token cannot keep or resume a
+  session; the owner reconnects only with a still-valid token.
+
+Programmatic equivalents on `HomeRegistry` are `rotate(old, new)`,
+`revoke(token)`, and `replace_tokens(map)`. Asymmetric/mTLS device identity that
+would remove the static-bearer blast radius entirely is a future redesign.
+
 ### Tests
 
 ```bash

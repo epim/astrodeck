@@ -136,6 +136,76 @@ class HomeRegistry:
         """Register a valid ``device_token -> home_id`` mapping (out-of-band)."""
         self._token_to_home[device_token] = home_id
 
+    def _evict_home(self, home_id: str) -> bool:
+        """Tear down the live tunnel for ``home_id`` right now (revocation).
+
+        The home is forced to re-authenticate; it reconnects only if it still
+        holds a valid token. Returns True if a live tunnel was evicted."""
+        reg = self._homes.pop(home_id, None)
+        if reg is None:
+            return False
+        reg.tunnel.evicted = True
+        reg.tunnel.closed = True
+        return True
+
+    def revoke(self, device_token: str) -> bool:
+        """Invalidate a device token IMMEDIATELY (OPEN-002).
+
+        Removes the mapping and evicts the home's live tunnel so a leaked token
+        cannot keep or resume a session. If the home still holds another valid
+        token it re-dials and reconnects; otherwise it stays offline until an
+        operator provisions a fresh one. Returns True if a mapping was removed."""
+        home_id = self._token_to_home.pop(device_token, None)
+        if home_id is None:
+            return False
+        self._evict_home(home_id)
+        return True
+
+    def rotate(self, old_token: str, new_token: str) -> str:
+        """Swap a home's device token WITHOUT dropping its live tunnel.
+
+        The planned-rotation path: the new token authenticates future HELLOs,
+        the old one stops working, and the current session is undisturbed (for a
+        compromised token use ``revoke``). Atomic: a bad ``new_token`` leaves the
+        old mapping intact. Returns the affected ``home_id``. Never echoes token
+        material in errors."""
+        from .config import valid_device_token
+
+        home_id = self._token_to_home.get(old_token)
+        if home_id is None:
+            raise RegistrationError("unknown device_token")
+        if not valid_device_token(new_token):
+            raise RegistrationError(
+                "new device_token must be 32-256 printable ASCII characters")
+        bound = self._token_to_home.get(new_token)
+        if bound is not None and bound != home_id:
+            raise RegistrationError(
+                "new device_token is already bound to another home")
+        self._token_to_home[new_token] = home_id
+        if new_token != old_token:
+            del self._token_to_home[old_token]
+        return home_id
+
+    def replace_tokens(self, token_to_home: dict) -> list:
+        """Replace the whole provisioning map (a reloaded token file).
+
+        Validates every token BEFORE mutating (atomic), then evicts any home
+        whose id no longer has ANY accepted token -- durable revocation without a
+        relay restart. Returns the sorted list of evicted home ids."""
+        from .config import valid_device_token
+
+        cleaned: dict = {}
+        for tok, home in dict(token_to_home).items():
+            if not valid_device_token(tok) or not str(home):
+                raise RegistrationError("invalid device-token map")
+            cleaned[str(tok)] = str(home)
+        self._token_to_home = cleaned
+        live = set(cleaned.values())
+        evicted = [h for h in list(self._homes) if h not in live]
+        for home_id in evicted:
+            self._evict_home(home_id)
+        return sorted(evicted)
+
     def validate_token(self, device_token: str, claimed_home_id: str) -> str:
         """Resolve a ``device_token`` to its ``home_id``, fail-closed.
 

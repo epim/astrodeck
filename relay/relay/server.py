@@ -29,11 +29,18 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hmac
+import logging
+import signal
 import time
 from typing import Optional
 from urllib.parse import urlsplit
 
-from .config import RelayConfig, load_device_tokens, load_seed
+from .config import (
+    RelayConfig,
+    load_device_tokens,
+    load_seed,
+    reload_device_tokens,
+)
 from .connection import ScopeConnection
 from .headers import transform_request_headers, transform_response_headers
 from .principal import PrincipalSigner
@@ -47,6 +54,8 @@ from .protocol import (
 from .proxy import BrowserWS
 from .ratelimit import RateLimiter
 from .registry import HomeRegistry, ScopeTunnel
+
+log = logging.getLogger("relay.server")
 
 try:  # Starlette/uvicorn/websockets are optional at import time so the pure
     # core + tests run in a bare venv; the server shell needs them.
@@ -106,6 +115,12 @@ class RelayState:
         # Strong ref to the housekeeping loop; a bare create_task() result can be
         # garbage-collected mid-flight.
         self.housekeeping_task: "asyncio.Task | None" = None
+
+    def reload_tokens(self) -> dict:
+        """Re-read the device-token file and apply it to the live registry
+        (OPEN-002 durable rotation/revocation, no restart). Returns a
+        counts-only summary; never returns or logs token material."""
+        return reload_device_tokens(self.registry)
 
     def try_begin_scope_handshake(self) -> bool:
         if self._pending_scope_handshakes >= self.cfg.scope_pending_max:
@@ -688,14 +703,37 @@ def create_app(cfg: Optional[RelayConfig] = None) -> "Starlette":
                 with contextlib.suppress(Exception):
                     limiter.prune()
 
+    def _reload_tokens_signal() -> None:
+        # SIGHUP: the operator edited the mounted device-token file (rotated or
+        # revoked a token). Apply it without a restart; log COUNTS ONLY.
+        try:
+            summary = state.reload_tokens()
+            log.info(
+                "device tokens reloaded: homes=%d tokens=%d evicted=%d",
+                summary["homes"], summary["tokens"], len(summary["evicted"]),
+            )
+        except Exception as exc:  # noqa: BLE001 - reload must never crash the relay
+            log.warning("device-token reload failed: %s", exc)
+
     @contextlib.asynccontextmanager
     async def _lifespan(_app):
         # `on_startup=` was removed in Starlette 0.5x; lifespan is the one
         # surviving hook. Keep the task on `state` so it is not collected.
         state.housekeeping_task = asyncio.create_task(_housekeeping())
+        loop = asyncio.get_running_loop()
+        sighup = getattr(signal, "SIGHUP", None)   # absent on Windows
+        if sighup is not None:
+            # add_signal_handler is unavailable on some loops (Windows Proactor);
+            # a missing reload signal is a soft degradation, not a startup error.
+            with contextlib.suppress(NotImplementedError, RuntimeError):
+                loop.add_signal_handler(sighup, _reload_tokens_signal)
         try:
             yield
         finally:
+            if sighup is not None:
+                with contextlib.suppress(
+                        NotImplementedError, RuntimeError, ValueError):
+                    loop.remove_signal_handler(sighup)
             state.housekeeping_task.cancel()
             with contextlib.suppress(BaseException):
                 await state.housekeeping_task

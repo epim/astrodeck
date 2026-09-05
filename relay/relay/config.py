@@ -46,6 +46,7 @@ import ipaddress
 import math
 import os
 import re
+import secrets
 from dataclasses import dataclass
 
 
@@ -232,6 +233,25 @@ class RelayConfig:
         )
 
 
+def valid_device_token(token: object) -> bool:
+    """True iff ``token`` meets the device-token rule: 32-256 printable ASCII.
+
+    Shared by the loader and the registry's rotate/replace paths so one rule
+    governs everywhere a token is accepted. Generate one with
+    ``new_device_token`` (or ``secrets.token_urlsafe(32)``)."""
+    return (
+        isinstance(token, str)
+        and 32 <= len(token) <= 256
+        and all(33 <= ord(ch) <= 126 for ch in token)
+    )
+
+
+def new_device_token() -> str:
+    """Mint a fresh, conforming device token for provisioning (or rotating) a
+    home. Print it once for the operator; NEVER log or bake it into an image."""
+    return secrets.token_urlsafe(32)
+
+
 def load_device_tokens(path: str = "") -> dict:
     """Load the ``{device_token: home_id}`` provisioning map.
 
@@ -254,8 +274,7 @@ def load_device_tokens(path: str = "") -> dict:
     if any(not token or not home_id for token, home_id in tokens.items()):
         raise ValueError("device tokens and home ids must not be blank")
     for token in tokens:
-        if (not 32 <= len(token) <= 256
-                or any(ord(ch) < 33 or ord(ch) > 126 for ch in token)):
+        if not valid_device_token(token):
             raise ValueError(
                 "device tokens must be 32-256 printable ASCII characters; "
                 "generate one with secrets.token_urlsafe(32)")
@@ -273,6 +292,24 @@ def load_device_tokens(path: str = "") -> dict:
             "per-home subdomain isolation is implemented"
         )
     return tokens
+
+
+def reload_device_tokens(registry, path: str = "") -> dict:
+    """Re-read the device-token file and apply it to a LIVE registry.
+
+    This is the durable rotation/revocation path (OPEN-002): the operator edits
+    the mounted token file (adding a rotated token, or removing a leaked one),
+    then triggers a reload -- no full relay restart. Any home whose token was
+    removed is evicted immediately (``replace_tokens``), so a leaked token dies
+    at once. Returns a COUNTS-ONLY summary (home ids are not secret; tokens are
+    NEVER included) suitable for logging."""
+    tokens = load_device_tokens(path)          # validates + single-home rule
+    evicted = registry.replace_tokens(tokens)
+    return {
+        "homes": len(set(tokens.values())),
+        "tokens": len(tokens),
+        "evicted": evicted,
+    }
 
 
 def _decode_seed(raw: bytes, name: str) -> bytes:
