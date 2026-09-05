@@ -112,6 +112,18 @@ jobs:
           RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
         run: python scripts/sign_release.py "dist/astrodeck-${GITHUB_REF_NAME#v}.tar.gz"
 
+      # Software bill of materials for the release (OPEN-006): a CycloneDX
+      # inventory of the Python, npm, and Rust dependencies actually present in
+      # the built tree, published alongside the artifact so a consumer can audit
+      # exactly what shipped.
+      - name: Generate SBOM (CycloneDX)
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: dist/astrodeck-sbom.cdx.json
+          upload-release-assets: false
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -120,6 +132,7 @@ jobs:
             dist/astrodeck-*.tar.gz
             dist/astrodeck-*.tar.gz.sha256
             dist/astrodeck-*.tar.gz.sig
+            dist/astrodeck-sbom.cdx.json
 
   # Single-file binaries: download one thing, run it, no Python install.
   #

@@ -189,3 +189,17 @@ Each entry: disposition then what shipped. Committed locally; not yet pushed.
   paired (`preview.remote_paired`) and the confirm dialog states the loss.
   Tests: server/tests/test_factory_reset.py (transfer clears, non-transfer
   preserves, preview reports pairing, route passes it through).
+
+- OPEN-006 FIXED (audit gates + digest pins + SBOM) with hash-locked constraints
+  ACCEPTED as future. Dependency vulnerability gates now run on every CI build
+  and fail on a known-vulnerable dependency: pip-audit (server, relay, and the
+  relay deploy gate), `npm audit --omit=dev` (ui), `cargo audit` (native). All
+  four verified green locally. Container base images are pinned by digest in
+  Dockerfile and relay/Dockerfile (python:3.12-slim, node:20-slim). A CycloneDX
+  SBOM is generated and published alongside each GitHub Release. Cross-platform
+  hash-locked constraints (Windows/Linux x amd64/arm64) and cosign image signing
+  are recorded as future hardening; the artifact tarball is already Ed25519-signed.
+- OPEN-013 FIXED. `cargo audit` runs on every native CI build. Plain audit keeps
+  the `paste` 1.0.15 unmaintained advisory (RUSTSEC-2024-0436) visible in the log
+  and exit-0, while any real vulnerability fails the build. Removed when the
+  nalgebra dependency chain drops the crate.
