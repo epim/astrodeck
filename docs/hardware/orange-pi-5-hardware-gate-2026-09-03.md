@@ -201,6 +201,36 @@ interface down/up), if one proves to clear the firmware band state; (c) grant
 the broker `CAP_SYS_MODULE` for a driver reload, the most reliable and the
 biggest sandbox concession.
 
+### Radio crash on AP teardown, and the self-heal (2026-09-04)
+
+While chasing the reset mechanism, an aborted access-point teardown crashed the
+brcmfmac firmware and removed the `wlan0` device node entirely; the board fell
+off the network and only a power cycle brought it back. For an appliance that
+is a reliability defect on its own: a customer cannot be asked to unplug the
+unit, and the same crash during a normal night would take the rig offline.
+
+The fix chosen for both problems, implemented but not yet validated on
+hardware because the board was down when it was written:
+
+- The reliable reset is a full driver reload, proven above. It needs
+  `CAP_SYS_MODULE`, so it lives in its own one-shot unit,
+  `astrodeck-radio-reset.service`, with that capability and nothing else, kept
+  out of the network-facing broker. The broker triggers it with
+  `systemctl start --wait` before raising the access point, so onboarding
+  always runs on a clean radio, and keeps no module-loading power itself.
+- `astrodeck-radio-watchdog.timer` checks every 30 s and, only when the
+  `wlan0` device node has vanished (the crash signature, not an ordinary
+  disconnect) and is still gone after a recheck, asks the reset unit to reload
+  the driver. The board heals itself within about half a minute instead of
+  needing a power cycle.
+- rfkill is not installed on the image, so a soft off/on reset was not
+  available; a lighter reset can replace the module reload later if one proves
+  to clear the firmware's band state.
+
+On-hardware validation still owed: that the broker's `systemctl start --wait`
+of the reset unit succeeds under its sandbox, that a client then joins the
+recovery access point end to end, and that the watchdog heals a real crash.
+
 ## Not verified
 
 - A real power pull, three times. The mechanism was exercised with software
