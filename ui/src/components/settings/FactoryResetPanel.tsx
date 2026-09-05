@@ -54,6 +54,7 @@ interface ResetPreview {
   drivers: number;
   alert_sinks: number;
   users: number;
+  remote_paired: boolean;
   captures: CaptureInventory;
   preserved_capture_entries: string[];
   can_reset: boolean;
@@ -149,6 +150,7 @@ export default function FactoryResetPanel(): JSX.Element {
   const [typed, setTyped] = useState("");
   const [alsoCaptures, setAlsoCaptures] = useState(false); // default OFF — data
   const [alsoAuth, setAlsoAuth] = useState(false);         // default OFF — lockout
+  const [alsoRemote, setAlsoRemote] = useState(false);     // default OFF — orphaning
   const [busy, setBusy] = useState(false);
 
   const refresh = useCallback(async () => {
@@ -257,6 +259,14 @@ export default function FactoryResetPanel(): JSX.Element {
           ) : (
             <>Sign-in accounts are <b>kept</b>.</>
           )}{" "}
+          {alsoRemote ? (
+            <b>
+              Remote-relay pairing WILL be cleared — this box loses its link to
+              the current owner's relay (for resale or transfer).
+            </b>
+          ) : (
+            <>Remote-relay pairing is <b>kept</b>.</>
+          )}{" "}
           This cannot be undone.
         </>
       ),
@@ -268,6 +278,7 @@ export default function FactoryResetPanel(): JSX.Element {
         confirm: typed,
         delete_captures: alsoCaptures,
         reset_auth: alsoAuth,
+        reset_remote: alsoRemote,
       });
       // Server first, then THIS browser, then a full reload — landing the tester
       // on a genuine first run instead of a fresh server behind a stale client.
@@ -335,7 +346,11 @@ export default function FactoryResetPanel(): JSX.Element {
                   {count(snap?.users, "sign-in account")}
                 </span>
               </li>
-              <li>Remote-relay pairing and self-update settings</li>
+              <li className={alsoRemote ? "line-through opacity-60" : ""}>
+                <span className="text-ink">Remote-relay pairing</span>{" "}
+                — this box's link to its owner's relay
+              </li>
+              <li>Self-update signing key, repo and channel</li>
               <li>
                 Offline sky pack, survey/radar caches and logs
                 {snap
@@ -371,6 +386,18 @@ export default function FactoryResetPanel(): JSX.Element {
             do it when the last tester made an account you can't hand on, not out
             of habit.
           </SwitchRow>
+          {snap?.remote_paired ? (
+            <SwitchRow
+              checked={alsoRemote}
+              onChange={setAlsoRemote}
+              title="Prepare for sale or transfer (clear remote-relay pairing)"
+            >
+              Off by default. Turn this on ONLY when the box is changing hands:
+              it removes the relay pairing and the stored update credential so the
+              previous owner keeps no way in over the internet. A normal reset
+              keeps pairing so a box stays reachable by its owner.
+            </SwitchRow>
+          ) : null}
         </div>
 
         {/* -------------------------------------------------- typed-word arming */}
