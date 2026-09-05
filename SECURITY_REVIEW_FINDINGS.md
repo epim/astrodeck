@@ -228,3 +228,13 @@ Each entry: disposition then what shipped. Committed locally; not yet pushed.
   2 on an unauthenticated non-loopback bind) already existed; a maintained TLS
   reverse proxy ships in deploy/reverse-proxy/ and is the required front for any
   non-loopback listener.
+
+- OPEN-009 FIXED (policy test) + VERIFIED (interlock). Every shipped launch
+  definition already used the guarded entrypoint -- deploy/systemd/astrodeck.service
+  (`python -m astrodeck run --host 127.0.0.1`), astrodeck-relay.service
+  (`python -m relay`), the server Dockerfile CMD (`python -m astrodeck run`) and
+  the relay Dockerfile CMD (`python -m relay`) -- and none bind uvicorn directly.
+  test_deployment_entrypoint_policy now pins that invariant so a future edit that
+  reintroduces a raw `uvicorn --host` bind fails CI, and deploy/systemd/README
+  states custom ASGI hosting is unsupported. The CLI's non-loopback interlock
+  (exit 2 on an unauthenticated off-box bind) is the enforcement it protects.
