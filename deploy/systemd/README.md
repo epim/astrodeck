@@ -5,6 +5,13 @@ service identities. Both applications listen only on loopback and are intended
 to sit behind a host TLS reverse proxy. Never change either `User` to `root` and
 never publish the Uvicorn listener directly.
 
+Always launch via the guarded entrypoint (`python -m astrodeck run`, `python -m
+relay`), never a raw `uvicorn ... --host 0.0.0.0`: the CLI carries the
+non-loopback interlock that refuses an unauthenticated off-box bind (it exits 2,
+which a supervisor reads as a crash loop). Custom ASGI hosting is unsupported and
+a policy test (`test_deployment_entrypoint_policy`) fails CI if a shipped unit
+reintroduces a direct uvicorn bind.
+
 ## AstroDeck server
 
 Install the application under `/opt/astrodeck/venv`, then create and prepare the
