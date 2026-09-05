@@ -84,6 +84,14 @@ _NO_UI_CALLER = {
         "path is reachable, and test_frame_settings.py asserts the two doors "
         "open onto one room. The path stays because external clients and "
         "test_polar_solve_settings.py name it",
+    "/api/auth/ws-ticket":
+        "deliberately not called by the browser UI (OPEN-011): the SPA "
+        "authenticates the /ws upgrade by same-origin session cookie, which "
+        "needs no ticket. This endpoint mints a single-use, short-TTL ticket for "
+        "TOKEN-based / non-cookie clients that cannot set a WS auth header, so "
+        "they need not put a long-lived token in the ?token= query. Reachability "
+        "is proven by test_ws_ticket.py (mint + accept/reuse over a socket), not "
+        "by a UI caller",
 }
 
 #: Routes that are UNREACHABLE AND SHOULD NOT BE — found by this test on
