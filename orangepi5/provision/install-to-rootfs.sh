@@ -52,3 +52,17 @@ ln -sf ../astrodeck-radio-watchdog.timer \
     "$ROOT/etc/systemd/system/timers.target.wants/astrodeck-radio-watchdog.timer"
 
 echo "installed AstroDeck provisioning, physical WiFi recovery, and radio self-heal into $ROOT"
+
+# A live in-place install must reload systemd and restart the persistent broker,
+# or a broker already running keeps the OLD code and a fresh socket connection
+# reuses it (observed 2026-09-04: an updated ap_up did not run until the broker
+# was restarted). Offline installs into a mounted rootfs skip this; the appliance
+# ships the code at image-bake time and starts fresh at boot.
+if [ "$(readlink -f "$ROOT")" = "/" ] && [ -d /run/systemd/system ]; then
+    systemctl daemon-reload || true
+    # keep the socket, drop the running broker so the next connection is fresh
+    systemctl restart astrodeck-provision-broker.socket 2>/dev/null || true
+    systemctl stop astrodeck-provision-broker.service 2>/dev/null || true
+    systemctl enable --now astrodeck-radio-watchdog.timer 2>/dev/null || true
+    echo "live install: reloaded systemd, restarted the provisioning broker, armed the radio watchdog"
+fi
