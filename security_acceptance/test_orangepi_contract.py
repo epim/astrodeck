@@ -532,6 +532,39 @@ def test_hotspot_network_file_is_readable_by_networkd_and_the_portal_waits_for_i
     assert "EADDRNOTAVAIL" in inspect.getsource(frontend._bind_when_addressed)
 
 
+def test_radio_reset_is_isolated_and_the_broker_uses_it_without_gaining_it():
+    """The AP must be raised on a clean radio (brcmfmac will not serve clients
+    after a station association, and can crash on AP transitions), so the driver
+    is reloaded. That needs CAP_SYS_MODULE, which the network-facing broker must
+    NOT hold: the reload lives in a dedicated one-shot unit, and the broker only
+    triggers it. Observed on hardware 2026-09-04."""
+    reset = PROVISION_DIR / "astrodeck-radio-reset.service"
+    watchdog_svc = PROVISION_DIR / "astrodeck-radio-watchdog.service"
+    watchdog_timer = PROVISION_DIR / "astrodeck-radio-watchdog.timer"
+    for path in (reset, watchdog_svc, watchdog_timer):
+        assert path.exists(), path.name
+
+    reset_v = _unit_values(reset.read_text(encoding="utf-8"))
+    assert "CAP_SYS_MODULE" in " ".join(reset_v.get("CapabilityBoundingSet", []))
+    # ProtectKernelModules would block the reload and must be absent here.
+    assert "ProtectKernelModules" not in reset_v
+    assert reset_v.get("NoNewPrivileges") in (["yes"], ["true"])
+
+    broker_v = _unit_values(BROKER_SERVICE.read_text(encoding="utf-8"))
+    assert "CAP_SYS_MODULE" not in " ".join(broker_v.get("CapabilityBoundingSet", []))
+
+    broker = _load_broker()
+    assert "request_radio_reset()" in inspect.getsource(broker.ap_up)
+    # the reset trigger must not itself load modules; it delegates to the unit.
+    assert "systemctl" in inspect.getsource(broker.request_radio_reset)
+    assert "modprobe" not in inspect.getsource(broker.request_radio_reset)
+    # the watchdog only acts on a vanished device, the firmware-crash signature.
+    assert "_wlan_present" in inspect.getsource(broker.radio_watchdog)
+
+    installer = ROOTFS_INSTALLER.read_text(encoding="utf-8")
+    assert "astrodeck-radio-watchdog.timer" in installer
+
+
 def test_recovery_units_make_service_restart_insufficient_for_recovery():
     for path in (
         RECOVERY_RECORD_SERVICE,

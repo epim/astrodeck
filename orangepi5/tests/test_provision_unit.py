@@ -23,6 +23,9 @@ RECORD_SERVICE = PROVISION_DIR / "astrodeck-recovery-record.service"
 CLEAR_SERVICE = PROVISION_DIR / "astrodeck-recovery-clear.service"
 CLEAR_TIMER = PROVISION_DIR / "astrodeck-recovery-clear.timer"
 INSTALLER = PROVISION_DIR / "install-to-rootfs.sh"
+RADIO_RESET_SERVICE = PROVISION_DIR / "astrodeck-radio-reset.service"
+RADIO_WATCHDOG_SERVICE = PROVISION_DIR / "astrodeck-radio-watchdog.service"
+RADIO_WATCHDOG_TIMER = PROVISION_DIR / "astrodeck-radio-watchdog.timer"
 
 
 def _unit_values(path: Path) -> dict[str, list[str]]:
@@ -337,3 +340,43 @@ def test_frontend_bind_gives_up_at_the_deadline_and_on_other_errors(prov, monkey
     with pytest.raises(OSError):
         prov._bind_when_addressed(denied, "HTTP")
     assert len(calls) == 1
+
+
+def test_radio_reset_unit_isolates_cap_sys_module_from_the_broker():
+    values = _unit_values(RADIO_RESET_SERVICE)
+    assert values["Type"] == ["oneshot"]
+    assert values["User"] == ["root"]
+    caps = set(values["CapabilityBoundingSet"][0].split())
+    assert caps == {"CAP_SYS_MODULE", "CAP_NET_ADMIN"}
+    assert set(values["AmbientCapabilities"][0].split()) == {"CAP_SYS_MODULE", "CAP_NET_ADMIN"}
+    assert values["NoNewPrivileges"] == ["yes"]
+    assert values["ProtectSystem"] == ["strict"]
+    # ProtectKernelModules MUST be absent: this unit's whole job is (un)loading
+    # brcmfmac, and the setting would block it.
+    assert "ProtectKernelModules" not in values
+    assert any("radio-reset" in v for v in values["ExecStart"])
+    # and the broker itself must NOT gain module-loading power.
+    broker = _unit_values(BROKER_SERVICE)
+    assert "CAP_SYS_MODULE" not in " ".join(broker.get("CapabilityBoundingSet", []))
+
+
+def test_radio_watchdog_holds_no_capabilities_and_runs_on_a_timer():
+    svc = _unit_values(RADIO_WATCHDOG_SERVICE)
+    assert svc["Type"] == ["oneshot"]
+    assert svc["CapabilityBoundingSet"] == [""]
+    assert any("radio-watchdog" in v for v in svc["ExecStart"])
+    timer = _unit_values(RADIO_WATCHDOG_TIMER)
+    assert timer["OnBootSec"] == ["60s"]
+    assert timer["OnUnitActiveSec"] == ["30s"]
+    assert timer["Unit"] == ["astrodeck-radio-watchdog.service"]
+
+
+def test_installer_ships_and_enables_the_radio_self_heal():
+    text = INSTALLER.read_text(encoding="utf-8")
+    for unit in (
+        "astrodeck-radio-reset.service",
+        "astrodeck-radio-watchdog.service",
+        "astrodeck-radio-watchdog.timer",
+    ):
+        assert unit in text, unit
+    assert "timers.target.wants/astrodeck-radio-watchdog.timer" in text

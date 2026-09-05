@@ -460,7 +460,11 @@ client associate and complete the 4-way handshake, so August worked (idle
 radio on a fresh board) and an already-joined board fails. The reset belongs
 in AP bring-up; the how is an open design choice (recovery boot keeps the
 station off the radio / soft reset with CAP_NET_ADMIN / CAP_SYS_MODULE for a
-module reload). Artifact:
+module reload). Implemented as an isolated `astrodeck-radio-reset.service`
+(CAP_SYS_MODULE only) that the broker triggers before AP-up, plus an
+`astrodeck-radio-watchdog` that reloads the driver when wlan0 vanishes (a
+firmware crash observed on AP teardown), so the appliance self-heals rather
+than needing a power cycle. Not yet validated on hardware. Artifact:
 `docs/hardware/orange-pi-5-hardware-gate-2026-09-03.md`.
 
 ---
