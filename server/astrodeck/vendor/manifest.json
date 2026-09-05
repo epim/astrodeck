@@ -1,0 +1,50 @@
+{
+  "binaries": {
+    "playerone/PlayerOneCamera.dll": {
+      "sha256": "7a6097316b73cb0889dc8ccd65e7c8efebc73a077193ba693edfb1227a25514a",
+      "size": 443648,
+      "vendor": "playerone"
+    },
+    "playerone/macos/libPlayerOneCamera.dylib": {
+      "sha256": "5ec7a593ed4ea32b47ecdd307514171f9570125e9bbb025dee2d618a8a1827b5",
+      "size": 891607,
+      "vendor": "playerone"
+    },
+    "zwo/ASICamera2.dll": {
+      "sha256": "0c8778c3cce2012961b079e3c7d0d8348a8b3823939335d9e98148cb5d5dc34a",
+      "size": 2852352,
+      "vendor": "zwo"
+    },
+    "zwo/CAARotator.dll": {
+      "sha256": "23b880eeded0cb0cfbbcbd5c024468af1fab2820aa5dd4789bdda908ea8f92bd",
+      "size": 58368,
+      "vendor": "zwo"
+    },
+    "zwo/EAF_focuser.dll": {
+      "sha256": "705ee6f55f7b959ac8721892bdd9166ad2f2b5ca570ec382a840063cb7c9f0f1",
+      "size": 1243744,
+      "vendor": "zwo"
+    },
+    "zwo/linux-arm64/libASICamera2.so": {
+      "sha256": "3ecf511979ed571131e7d7f4a467112aba21940b4dc91d63bd109b9683bf67c4",
+      "size": 4042678,
+      "vendor": "zwo"
+    },
+    "zwo/linux-arm64/libCAARotator.so": {
+      "sha256": "680286a000d203883fc626e1ea4d4addadf5d93e940c33135a7ee20d98abe901",
+      "size": 393248,
+      "vendor": "zwo"
+    },
+    "zwo/linux-arm64/libEAFFocuser.so": {
+      "sha256": "0ce25b248a727ec4cad07cc4de4ffeb256773f9bc23794a66a8a527132d5df6d",
+      "size": 766816,
+      "vendor": "zwo"
+    },
+    "zwo/macos/libASICamera2.dylib": {
+      "sha256": "4c83b50b4b1ac7f2253c36b7889ddcbd28eaccb63e2ee9cdaea1c1f35f5cc716",
+      "size": 6598544,
+      "vendor": "zwo"
+    }
+  },
+  "schema": 1
+}

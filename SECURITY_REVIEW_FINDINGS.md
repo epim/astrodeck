@@ -203,3 +203,17 @@ Each entry: disposition then what shipped. Committed locally; not yet pushed.
   the `paste` 1.0.15 unmaintained advisory (RUSTSEC-2024-0436) visible in the log
   and exit-0, while any real vulnerability fails the build. Removed when the
   nalgebra dependency chain drops the crate.
+
+- OPEN-007 FIXED. The bundled ZWO / Player One SDK binaries run in-process via
+  ctypes; a new `astrodeck.devices.vendor_verify` module pins each one's SHA-256
+  (and size + vendor) in `astrodeck/vendor/manifest.json`, and the three loaders
+  (player_one_sdk, zwo_asi_sdk, zwo_sdk) call `verify_if_vendored(path)` before
+  `ctypes.CDLL`. A tampered or planted binary UNDER `vendor/` fails closed with a
+  clear error before it can execute; a user's own separately-installed SDK
+  (ASTRODECK_*_SDK_DIR or a system path) is out of our provenance and is not
+  hash-pinned. The manifest ships in package-data (covered by the Ed25519
+  release signature), and a CI test (test_vendor_verify) fails if a bundled
+  binary is updated without regenerating the manifest
+  (`python -m astrodeck.devices.vendor_verify --write`). Out-of-process driver
+  isolation remains a future option; the in-process check is the reachable
+  control today.

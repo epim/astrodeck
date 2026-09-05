@@ -136,6 +136,10 @@ include = ["astrodeck*"]
 # _VENDOR_DIR), so they must land in site-packages/astrodeck/vendor/.
 [tool.setuptools.package-data]
 astrodeck = [
+    # Integrity manifest for the bundled SDK binaries (devices/vendor_verify.py,
+    # OPEN-007). Must ship beside them or the runtime hash check has nothing to
+    # verify against.
+    "vendor/manifest.json",
     "vendor/zwo/*.dll",
     "vendor/zwo/*.txt",
     "vendor/zwo/*.md",
