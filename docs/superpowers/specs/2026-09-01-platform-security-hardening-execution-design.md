@@ -464,7 +464,10 @@ module reload). Implemented as an isolated `astrodeck-radio-reset.service`
 (CAP_SYS_MODULE only) that the broker triggers before AP-up, plus an
 `astrodeck-radio-watchdog` that reloads the driver when wlan0 vanishes (a
 firmware crash observed on AP teardown), so the appliance self-heals rather
-than needing a power cycle. Not yet validated on hardware. Artifact:
+than needing a power cycle. Validated on hardware 2026-09-04: the reset,
+the watchdog self-heal, the capability isolation, and an end-to-end client
+join through the fixed ap_up (associate, DHCP, portal HTTP 200) all pass.
+Artifact:
 `docs/hardware/orange-pi-5-hardware-gate-2026-09-03.md`.
 
 ---
