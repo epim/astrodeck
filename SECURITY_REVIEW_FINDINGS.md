@@ -384,3 +384,23 @@ lever); third-party actions are pinned by tag per repo convention, not by SHA.
   see it; CI could. The iterator now judges on every suffix ("so" anywhere),
   the manifest covers 13 binaries, and test_manifest_covers_versioned_linux_sonames
   pins the arm64 and x86_64 entries.
+
+## 0.3.23 in production: the Host allowlist broke the relay path (2026-09-05)
+
+Deployed to the rig the same evening, 0.3.23 answered 421 "unrecognized Host
+authority" to every request that arrived through the relay: the round-2 Host
+allowlist ran before the remote-scope check, and a tunneled request carries the
+relay's public hostname, which is never a listener name. The LAN kept working,
+the remote display "kept disconnecting", and the relay itself was healthy.
+
+Fix (0.3.24): the allowlist guards the LISTENER only. A relay-tunneled scope
+is marked in ASGI state by the scope-side client (not forgeable over the
+wire) and skips the Host check; on the listener the relay's name stays refused
+as rebinding-shaped. Rebinding and Host injection need a listener; a hostile
+Host on the tunnel requires a hostile relay, which can already forge every
+header and which the home never trusts for auth. Regression test:
+test_relay_tunneled_requests_bypass_the_listener_host_allowlist, verified to
+fail against the 0.3.23 middleware. Lesson recorded: a listener allowlist must
+be exercised on the RELAY path, not only loopback, before a release is called
+deployable.
+
