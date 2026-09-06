@@ -1859,12 +1859,19 @@ def create_app(*, bind_host: str | None = None,
     # is unset, so default LAN behavior is byte-for-byte unchanged.
     @app.middleware("http")
     async def _auth_mw(request, call_next):
-        if not _host_allowed(request.headers, host_allowlist):
+        remote = _scope_is_remote(request)
+        # The Host allowlist guards the LISTENER against DNS rebinding and Host
+        # injection. A relay-tunneled request never touched the listener: the
+        # home dialed OUT to its configured relay over TLS and the relay client
+        # stamps the scope (ASGI state, not a header). The Host it carries is
+        # the relay's public name, which is never a listener name and may not
+        # even be the dial address (a custom domain in front of the relay).
+        # 0.3.23 checked Host first and answered 421 to every tunneled request.
+        if not remote and not _host_allowed(request.headers, host_allowlist):
             return JSONResponse(
                 {"detail": "unrecognized Host authority",
                  "code": "invalid_host"},
                 status_code=421)
-        remote = _scope_is_remote(request)
         unsafe_method = request.method.upper() not in {"GET", "HEAD", "OPTIONS"}
         if unsafe_method and not _browser_origin_allowed(
                 request.scope, request.headers):
@@ -7285,7 +7292,10 @@ def create_app(*, bind_host: str | None = None,
 
     @app.websocket("/ws")
     async def ws(websocket: WebSocket):
-        if not _host_allowed(websocket.headers, host_allowlist):
+        # Listener-only, exactly as in the HTTP middleware: a tunneled socket
+        # carries the relay's Host, not ours.
+        if (not _scope_is_remote(websocket)
+                and not _host_allowed(websocket.headers, host_allowlist)):
             await websocket.close(code=1008)
             return
         if not _browser_origin_allowed(websocket.scope, websocket.headers):

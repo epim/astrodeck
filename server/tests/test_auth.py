@@ -10,8 +10,11 @@ and required-when-set.
 """
 from __future__ import annotations
 
+import contextlib
+
 import pytest
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 import astrodeck.api.app as app_module
 from astrodeck.config import ConfigStore
@@ -140,6 +143,46 @@ def test_loopback_listener_rejects_dns_rebinding_host(tmp_path, monkeypatch):
         assert denied.json()["code"] == "invalid_host"
         assert c.get("/api/status", headers={"Host": "evil.example"}).status_code == 421
         assert c.get("/api/status", headers={"Host": "127.0.0.1:8800"}).status_code == 200
+
+
+def _tunneled(app):
+    """Stamp every http/websocket scope exactly as the relay client does (ASGI
+    scope STATE, never a header), so the app sees a relay-tunneled request."""
+    async def _wrapped(scope, receive, send):
+        if scope.get("type") in {"http", "websocket"}:
+            scope.setdefault("state", {})["astrodeck_remote"] = True
+        await app(scope, receive, send)
+    return _wrapped
+
+
+def test_relay_tunneled_requests_bypass_the_listener_host_allowlist(
+        tmp_path, monkeypatch):
+    """The Host allowlist guards the listener. A tunneled request carries the
+    relay's public hostname, which is never a listener name: 0.3.23 checked it
+    first and answered 421 to every relay request, so the remote display
+    "kept disconnecting" while the LAN worked. The relay client marks the scope
+    in ASGI state (not forgeable over the wire), and that mark, not the Host,
+    is what says the request did not arrive on the listener."""
+    app = _make_client(tmp_path, monkeypatch, token=None, bind_host="127.0.0.1")
+    relay_host = {"Host": "astrodeck-relay.fly.dev"}
+    with TestClient(app) as c:
+        # On the listener the relay's name is rebinding-shaped and stays refused.
+        assert c.get("/healthz", headers=relay_host).status_code == 421
+    with TestClient(_tunneled(app)) as t:
+        assert t.get("/healthz", headers=relay_host).status_code == 200
+        # A custom domain in front of the relay is equally fine on the tunnel:
+        # the dial address and the public name need not match.
+        assert t.get("/healthz", headers={"Host": "scope.example.org"}).status_code == 200
+
+        # The websocket gate must agree. Its host denial and its auth denial
+        # both close 1008, so grade the mechanism: the listener allowlist must
+        # not be consulted at all for a tunneled socket.
+        def _not_for_tunnels(headers, allowed):
+            raise AssertionError("listener Host allowlist consulted for a tunneled scope")
+        monkeypatch.setattr(app_module, "_host_allowed", _not_for_tunnels)
+        with contextlib.suppress(WebSocketDisconnect):
+            with t.websocket_connect("/ws", headers=relay_host):
+                pass
 
 
 def test_explicit_public_host_is_exact_not_wildcard(tmp_path, monkeypatch):

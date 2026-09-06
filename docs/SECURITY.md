@@ -135,6 +135,16 @@ itself — those belong at the reverse proxy for now.
   self-update mutation routes are direct-only at the home. Configuration,
   alert-destination, driver/profile mutation, discovery, and connection-setup
   routes are also direct-only because they can select or probe host/LAN resources.
+- The home accepts only the Host names it expects on its listener: loopback,
+  the bind address, and whatever `ASTRODECK_ALLOWED_HOSTS` adds (a comma-separated
+  list of exact names, no wildcards). Anything else is answered 421, which is
+  what stops a DNS-rebinding page from reaching the LAN listener. Relay-tunneled
+  requests are exempt: they never touched the listener (the home dialed out to
+  its configured relay over TLS, and the relay client marks the scope in ASGI
+  state that no network client can set), and the Host they carry is the relay's
+  public name, which may be a custom domain in front of it. So a relay rename
+  needs no allowlist change, and a reverse proxy in front of the LAN listener
+  needs its public name in `ASTRODECK_ALLOWED_HOSTS`.
 - `update.repo` and `update.signing_pubkey` are code-execution trust roots. The
   HTTP API cannot set or rotate them. Provision them offline in the persistent
   config or installer, protect that file with OS permissions, and keep the
