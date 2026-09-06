@@ -4,6 +4,13 @@ One ``SerialLink`` owns one pyserial handle. All blocking pyserial calls run in
 ``asyncio.to_thread``; a single ``asyncio.Lock`` serializes whole
 request/response exchanges so concurrent hub polls can never interleave frames.
 
+``request_sync`` is the one exception, and a deliberate one: a pulse-guide STOP
+command must reach the mount even while the event loop is blocked (GN-02), so it
+is callable from ANY thread and never touches the loop. Because it cannot take
+the ``asyncio.Lock``, the port is ALSO guarded at the thread level by
+``_port_lock``, which both it and the async exchange's worker hold for the whole
+write+read.
+
 Reply modes mirror the AM5 wire truth (see devices/lx200.py):
   - ``"hash"``  : read until ``#``; returns the reply WITHOUT the ``#``.
   - ``"ack"``   : read ONE byte (``1``/``0``); if that byte is ``e`` the refusal
@@ -14,6 +21,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import threading
+import time
 
 try:  # guarded: absent pyserial must not break imports (non-serial installs)
     import serial  # type: ignore
@@ -33,6 +42,11 @@ class SerialLink:
         self.baud = baud            # USB-CDC: value is a no-op on the AM5
         self._ser = None
         self._lock = asyncio.Lock()
+        #: THREAD-level guard on the handle, held for the whole write+read by
+        #: the async exchange's worker AND by ``request_sync``. The asyncio lock
+        #: cannot serialize those two against each other: one of them has no
+        #: loop to await on.
+        self._port_lock = threading.Lock()
         #: Set by ``_abandon``, cleared by ``open``/``close``. See ``needs_reopen``.
         self._abandoned = False
 
@@ -89,6 +103,13 @@ class SerialLink:
         worker thread is still using it."""
         self._ser = None
         self._abandoned = True
+        # ...and neither is the thread guard: the orphan holds ``_port_lock``
+        # and will never release it. Handing that lock to the REOPENED port
+        # would wedge every later exchange behind a dead thread — the whole
+        # failure this method exists to avoid, one layer down. The orphan keeps
+        # the old lock (it still guards the handle it is using); the next open
+        # gets a fresh one.
+        self._port_lock = threading.Lock()
         task.add_done_callback(
             lambda t: None if t.cancelled() else t.exception())
         try:
@@ -126,6 +147,66 @@ class SerialLink:
             return b.decode("ascii", "replace")
         raise LinkError(f"timeout waiting for ack on {self.port_path}")
 
+    def _raw_exchange(self, cmd: str, reply: str, timeout: float) -> str | None:
+        """One write + read on the handle. CALLER HOLDS ``_port_lock``.
+
+        Blocking; runs on a worker thread (``request``) or on whatever thread
+        called ``request_sync``. Never on the event loop."""
+        self._ser.reset_input_buffer()
+        self._ser.write(lx200.build(cmd))
+        deadline = time.monotonic() + timeout
+        if reply == "hash":
+            return self._read_until_hash(deadline)
+        if reply == "ack":
+            # Read it even though nobody wants the value: an unread ack byte is
+            # left in the input buffer and answers the NEXT command instead.
+            return self._read_ack(deadline)
+        return None
+
+    def _shut_error(self) -> LinkError:
+        """Which kind of shut is this? (See ``request`` for why it matters.)"""
+        return LinkError(
+            "the link was dropped after a stalled exchange and has not been "
+            "reopened" if self._abandoned else "link not open")
+
+    def request_sync(self, cmd: str, *, reply: str = "hash",
+                     timeout: float = 1.5) -> str | None:
+        """``request`` for callers that have no event loop to await on.
+
+        WHY THIS EXISTS (GN-02, rig 2026-09-06). ``pulse_guide`` emulates a
+        pulse as start / sleep / stop, and the mount moves at 15 arcsec per
+        second in between — so the sleep is not a delay, it is the LENGTH OF THE
+        MOVE. When something blocks the loop thread (a synchronous frame
+        readout, a filter-wheel move) the stop is queued behind it and the mount
+        keeps going: +83, +128 and +35 arcsec jumps in one night. A stop must be
+        able to leave from a plain thread timer, which means a door into this
+        transport that does not go through the loop.
+
+        Safe against the async path because both take ``_port_lock`` for the
+        whole write+read. The wait for it is BOUNDED (``timeout + 0.5``, the
+        same bound ``request`` uses to join an orphan) and failing it raises
+        ``LinkError``: a caller on a timer thread must never be parked behind a
+        stuck exchange, it must fall back to whoever can recover the port.
+
+        No relink and no ``_abandon`` here, deliberately — both are loop-thread
+        recovery paths. This door reports the failure and lets the coroutine
+        that armed it deal with the consequences."""
+        # Fail fast BEFORE the lock: after an abandonment the orphan holds the
+        # old lock forever, and a dead port is not worth two seconds of a
+        # watchdog thread's life to discover.
+        if self._ser is None:
+            raise self._shut_error()
+        if not self._port_lock.acquire(timeout=timeout + 0.5):
+            raise LinkError(
+                f"{self.port_path} is busy: an exchange did not finish within "
+                f"{timeout + 0.5:.1f}s")
+        try:
+            if self._ser is None:       # closed while we waited for the lock
+                raise self._shut_error()
+            return self._raw_exchange(cmd, reply, timeout)
+        finally:
+            self._port_lock.release()
+
     async def request(self, cmd: str, *, reply: str = "hash",
                       timeout: float = 1.5) -> str | None:
         """Send ``cmd`` (unframed, e.g. ``"GR"``) and read per ``reply`` mode.
@@ -160,15 +241,10 @@ class SerialLink:
                     "been reopened" if self._abandoned else "link not open")
 
             def _exchange():
-                import time
-                self._ser.reset_input_buffer()
-                self._ser.write(lx200.build(cmd))
-                deadline = time.monotonic() + timeout
-                if reply == "hash":
-                    return self._read_until_hash(deadline)
-                if reply == "ack":
-                    return self._read_ack(deadline)
-                return None
+                # The thread guard, not just the asyncio one: request_sync can
+                # be writing from a timer thread while this worker reads.
+                with self._port_lock:
+                    return self._raw_exchange(cmd, reply, timeout)
             task = asyncio.ensure_future(asyncio.to_thread(_exchange))
             try:
                 return await asyncio.shield(task)
@@ -200,6 +276,21 @@ class SerialLink:
             self._abandoned = False
             if ser is not None:
                 try:
-                    await asyncio.to_thread(ser.close)
+                    await asyncio.to_thread(self._close_under_port_lock, ser)
                 except Exception:  # noqa: BLE001 - best-effort close
                     pass
+
+    def _close_under_port_lock(self, ser) -> None:
+        """Close the handle once no thread is mid-exchange on it (bounded).
+
+        ``request_sync`` runs OUTSIDE the asyncio lock, so the lock above does
+        not wait for it; the thread guard does. A guard that never comes free
+        (an orphaned exchange) must not stop the close: after the bound the
+        handle is closed regardless, which is what ``_abandon`` would have
+        left it to anyway."""
+        got = self._port_lock.acquire(timeout=2.0)
+        try:
+            ser.close()
+        finally:
+            if got:
+                self._port_lock.release()

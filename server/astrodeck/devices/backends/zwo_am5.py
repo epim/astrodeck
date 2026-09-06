@@ -12,6 +12,8 @@ the first real citizen of sub-project A's discovery mechanism.
 from __future__ import annotations
 
 import asyncio
+import logging
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -22,6 +24,14 @@ from ..serial_link import LinkError, SerialLink
 
 #: Seam for tests: the link factory used by ZwoAm5Session.
 _make_link = SerialLink
+
+#: Logger for the pulse watchdog THREAD. Not ``bus.log``: EventBus.publish
+#: hands each event to ``asyncio.Queue.put_nowait``, which sets futures and
+#: calls ``loop.call_soon`` — loop-affine, not thread-safe (and its night-log
+#: append does file I/O). Anything the watchdog needs to say to the operator is
+#: recorded on the object and logged to the bus by the coroutine afterwards,
+#: on the loop thread.
+_log = logging.getLogger(__name__)
 
 #: Wall-clock cap on a slew settle (spec: no motion path may hang).
 SLEW_TIMEOUT_S = 120.0
@@ -75,6 +85,12 @@ _TRACKING_RATE_CMD = {"sidereal": "TQ", "lunar": "TL", "solar": "TS"}
 #:   north/south = R1 + Mn/Ms: +/-0.5x sid (dec has no tracking to fight).
 #: Sky sign of N/S depends on pier side — guider calibration owns that, as
 #: with every ASCOM mount.
+#:
+#: A PULSE IS A TIMED MOVE, and that is the whole hazard (GN-02, rig
+#: 2026-09-06). There is no "move for N ms" command on this wire: the driver
+#: starts the axis, waits, and stops it, so the wait IS the move. Two defences,
+#: both below: the stop is armed on a thread timer at pulse start so a blocked
+#: event loop cannot delay it, and every pulse is capped at _PULSE_MAX_MS.
 _PULSE_DEC_RATE_CMD = "R1"
 _PULSE_WEST_RATE_CMD = "R2"
 #: measured pulse rates, deg/s (10s GR/GD deltas, 2026-07-20): ra = 1.0x
@@ -83,6 +99,119 @@ _PULSE_RA_RATE_DEG_S = 0.004178
 _PULSE_DEC_RATE_DEG_S = 0.002089
 _PULSE_MOVE = {"n": "Mn", "s": "Ms", "e": "Me", "w": "Mw"}
 _PULSE_STOP = {"n": "Qn", "s": "Qs", "e": "Qe", "w": "Qw"}
+
+#: Hard ceiling on ONE pulse, ms. At the measured 1x-sidereal RA emulation this
+#: is 15 arcsec — an error a guider recovers from in a frame or two. The night
+#: of 2026-09-06 produced +83, +128 and +35 arcsec jumps from stalls of 5-8 s;
+#: with this cap the same stall costs 15 arcsec, whatever else goes wrong. A
+#: guider that wants a longer correction must issue several pulses (and can see
+#: the ceiling coming: ``ZwoAm5Telescope.max_pulse_ms``).
+_PULSE_MAX_MS = 1000
+#: How long the coroutine waits for the pulse thread to stop the mount after a
+#: cancellation, on top of the pulse itself. Bounded: a thread wedged on a dead
+#: port must not hold up the cancel it is answering.
+_PULSE_CANCEL_JOIN_S = 2.0
+#: Rate limit on the "capped" warning: a mis-tuned guider asks for oversized
+#: pulses every correction, and one line per correction would bury the night.
+_PULSE_CAP_WARN_S = 60.0
+#: Monotonic stamp of the last "capped" warning (module-level: the rate limit is
+#: about the operator's log, not about one telescope object).
+_cap_warn_last = 0.0
+
+
+class _Pulse:
+    """One whole emulated pulse — start, wait, stop — on ONE worker thread.
+
+    WHY THE WHOLE THING AND NOT JUST THE STOP (GN-02, rig 2026-09-06). There is
+    no "move for N ms" command on this wire: the driver starts the axis, waits,
+    and stops it, so the wait IS the move and whatever measures it decides how
+    far the mount travels. Measuring it on the event loop made the loop part of
+    the mount's control path, and the loop is regularly blocked for seconds by a
+    synchronous frame readout, a filter-wheel move or thumbnail generation:
+    +83, +128 and +35 arcsec of unwanted travel in one night.
+
+    Handing the STOP to a timer armed by the coroutine was not enough, because
+    the arming itself waits for the loop: between the worker thread putting
+    ``:Mn#`` on the wire and the coroutine resuming to arm anything, the loop
+    runs whatever was already queued — and if that is the readout, the move is
+    running with no watchdog behind it. So the start, the wait and the stop all
+    happen here, on the thread, with nothing between them that a busy loop can
+    delay. The coroutine just awaits the thread.
+
+    Nothing in here touches the event loop or ``bus`` (``EventBus.publish``
+    feeds ``asyncio.Queue`` and is loop-affine): failures are recorded on the
+    object for the coroutine to report, and logged to stdlib ``logging`` here.
+    ``run`` never raises."""
+
+    def __init__(self, link, name: str, start: list[tuple[str, str]],
+                 stop: tuple[str, str], secs: float):
+        self.link = link
+        self.name = name
+        self.start = start          # [(cmd, reply)] — the move, in order
+        self.stop = stop            # (cmd, reply)
+        self.secs = secs
+        #: Set by the coroutine on cancellation: stop the mount NOW, don't wait
+        #: out the duration. (Which is why the wait is an Event, not a sleep.)
+        self.abort = threading.Event()
+        #: Set when the thread is finished, however it finished.
+        self.done = threading.Event()
+        #: True once every start command is out and any ack was ACK_OK — i.e.
+        #: the mount is moving and the stop is owed.
+        self.started = False
+        #: A start command's non-ACK_OK ack ("0", "e14"): the mount said no.
+        self.start_reply: str | None = None
+        #: The start command that refused or raised (for the error message).
+        self.start_cmd: str | None = None
+        self.stop_sent = False
+        self.stop_reply: str | None = None
+        #: Any ack-class command got an ANSWER. Mirrors ``_cmd_ack``: a mount
+        #: that answered has disproven the halt window (cleared on the loop).
+        self.answered = False
+        self.error: BaseException | None = None
+
+    def run(self) -> None:
+        """Worker thread. Total: never raises, always sets ``done``."""
+        try:
+            self._run()
+        except BaseException as exc:    # noqa: BLE001 - a thread must not raise
+            self.error = exc
+            _log.warning("%s: pulse thread failed (%s)", self.name, exc)
+        finally:
+            self.done.set()
+
+    def _run(self) -> None:
+        for cmd, reply in self.start:
+            try:
+                out = self.link.request_sync(cmd, reply=reply)
+            except BaseException as exc:  # noqa: BLE001 - reported, not raised
+                self.error = exc
+                self.start_cmd = cmd
+                return                  # nothing started, so nothing to stop
+            if reply == "ack":
+                self.answered = True
+                if out != lx200.ACK_OK:
+                    self.start_cmd, self.start_reply = cmd, out
+                    return
+        self.started = True
+        try:
+            # NOT time.sleep: a cancelled pulse must stop the mount at once.
+            self.abort.wait(self.secs)
+        finally:
+            self._send_stop()
+
+    def _send_stop(self) -> None:
+        cmd, reply = self.stop
+        try:
+            out = self.link.request_sync(cmd, reply=reply)
+        except BaseException as exc:    # noqa: BLE001 - the loop re-sends
+            self.error = exc
+            _log.warning("%s: the pulse thread could not send :%s# (%s)",
+                         self.name, cmd, exc)
+            return
+        self.stop_sent = True
+        if reply == "ack":
+            self.answered = True
+            self.stop_reply = out
 
 
 def _utcnow() -> datetime:
@@ -103,6 +232,9 @@ class ZwoAm5Telescope(Telescope):
     backend = "zwo-am5"
     hardware = True
     can_pulse_guide = True    # EMULATED: timed R1 moves (native :Mg*# is inert)
+    #: Published so a guider can size its corrections to what this mount will
+    #: actually perform, instead of having them silently truncated.
+    max_pulse_ms = _PULSE_MAX_MS
     can_set_tracking_rate = True
     can_find_home = True      # :hP# homes (and parks); find_home unparks after
 
@@ -753,32 +885,148 @@ class ZwoAm5Telescope(Telescope):
         await self._request(rate_cmd, reply="none")
         await self._request(_MOVE_CMD[(axis, rate_deg_s > 0)], reply="none")
 
-    async def pulse_guide(self, direction: str, ms: int) -> None:
-        """EMULATED pulse guide (native :Mg*# is inert; :M<dir># during
-        tracking REPLACES the drive — see the module notes). Strategies:
-        east = tracking-suspend (exact 1x sidereal drift), falling back to
-        R1+Me at 0.5x sidereal if tracking is already off; west = R2+Mw
-        (measured exactly 1x sidereal west); n/s = R1 moves. Every path
-        restores state in a ``finally`` so cancellation can't leave the
-        mount drifting."""
-        d = direction.lower()[0]
-        if d not in "nsew":
-            raise DeviceError(f"{self.name}: bad guide direction {direction!r}")
-        secs = int(ms) / 1000.0
-        if d == "e" and await self.get_tracking():
-            await self._cmd_ack("Td", "pulse east (suspend tracking)")
-            try:
-                await asyncio.sleep(secs)
-            finally:
-                await self._cmd_ack("Te", "pulse east (resume tracking)")
-            return
+    def _capped_ms(self, direction: str, ms: int) -> int:
+        """Bound one pulse to ``_PULSE_MAX_MS``, warning (rarely) when it bites.
+
+        The cap is not a tuning knob, it is the blast radius: 15 arcsec is what
+        a stall of ANY length can cost once the move itself is bounded."""
+        global _cap_warn_last
+        ms = max(0, int(ms))
+        if ms <= _PULSE_MAX_MS:
+            return ms
+        now = time.monotonic()
+        if now - _cap_warn_last >= _PULSE_CAP_WARN_S:
+            _cap_warn_last = now
+            bus.log("warning",
+                    f"{self.name}: pulse {direction} {ms} ms capped to "
+                    f"{_PULSE_MAX_MS} ms (one move may not exceed ~15 arcsec)",
+                    "mount")
+        return _PULSE_MAX_MS
+
+    def _pulse_plan(self, d: str):
+        """(start commands, stop command, what-started, what-stopped) for one
+        direction. ``d`` == "e" here means east WITHOUT the tracking suspend --
+        the caller decides that, since it costs a :GAT# read."""
         rate_cmd = _PULSE_WEST_RATE_CMD if d == "w" else _PULSE_DEC_RATE_CMD
-        await self._request(rate_cmd, reply="none")
-        await self._request(_PULSE_MOVE[d], reply="none")
+        return ([(rate_cmd, "none"), (_PULSE_MOVE[d], "none")],
+                (_PULSE_STOP[d], "none"),
+                f"pulse {d}", f"pulse {d} (stop)")
+
+    async def _pulse_on_the_loop(self, start, stop, secs, what_start,
+                                 what_stop) -> None:
+        """The pre-GN-02 shape: start, ``asyncio.sleep``, stop, all on the loop.
+
+        Kept for any transport with no thread-side door (an older test double,
+        a link class that predates ``request_sync``). It carries the defect this
+        row is about -- a blocked loop lengthens the move -- so it is a
+        compatibility path, not a choice: every real link has ``request_sync``."""
+        for cmd, reply in start:
+            if reply == "ack":
+                await self._cmd_ack(cmd, what_start)
+            else:
+                await self._request(cmd, reply="none")
         try:
             await asyncio.sleep(secs)
         finally:
-            await self._request(_PULSE_STOP[d], reply="none")
+            await self._send_stop_on_the_loop(stop, what_stop)
+
+    async def _send_stop_on_the_loop(self, stop, what_stop) -> None:
+        """The stop through the async path -- the one that can relink a dropped
+        port (``_request``) and the one that raises on a refusal (``_cmd_ack``).
+        The pulse thread can do neither, so every failure lands back here."""
+        if stop[1] == "ack":
+            await self._cmd_ack(stop[0], what_stop)
+        else:
+            await self._request(stop[0], reply="none")
+
+    async def pulse_guide(self, direction: str, ms: int) -> None:
+        """EMULATED pulse guide (native :Mg*# is inert; :M<dir># during
+        tracking REPLACES the drive -- see the module notes). Strategies:
+        east = tracking-suspend (exact 1x sidereal drift), falling back to
+        R1+Me at 0.5x sidereal if tracking is already off; west = R2+Mw
+        (measured exactly 1x sidereal west); n/s = R1 moves.
+
+        THE EVENT LOOP IS NOT IN THE TIMING PATH (GN-02). The whole pulse --
+        start, wait, stop -- runs on one worker thread (``_Pulse``), so a loop
+        blocked by a frame readout or a filter-wheel move cannot lengthen the
+        move: on 2026-09-06 it lengthened three of them into +83, +128 and +35
+        arcsec jumps that took the guider 12-30 s each to walk back. The
+        coroutine only awaits that thread and reports what it found, and ``ms``
+        is capped at ``_PULSE_MAX_MS`` so even a stop that fails outright costs
+        ~15 arcsec.
+
+        Cancellation still stops the mount immediately (the thread waits on an
+        Event, not a sleep), and a stop that could not be written is re-sent
+        through the async path, which can reopen a dropped port -- the thread
+        deliberately cannot."""
+        d = direction.lower()[0]
+        if d not in "nsew":
+            raise DeviceError(f"{self.name}: bad guide direction {direction!r}")
+        secs = self._capped_ms(direction, ms) / 1000.0
+        if d == "e" and await self.get_tracking():
+            start = [("Td", "ack")]
+            stop = ("Te", "ack")
+            what_start = "pulse east (suspend tracking)"
+            what_stop = "pulse east (resume tracking)"
+        else:
+            start, stop, what_start, what_stop = self._pulse_plan(d)
+        if not hasattr(self._link, "request_sync"):
+            await self._pulse_on_the_loop(start, stop, secs, what_start,
+                                          what_stop)
+            return
+
+        pulse = _Pulse(self._link, self.name, start, stop, secs)
+        try:
+            await asyncio.to_thread(pulse.run)
+        except asyncio.CancelledError:
+            # The thread is still inside abort.wait: tell it to stop the mount
+            # NOW, and wait for that OFF the loop (bounded) before propagating.
+            pulse.abort.set()
+            await asyncio.to_thread(pulse.done.wait, secs + _PULSE_CANCEL_JOIN_S)
+            if pulse.answered:
+                self._halting = False
+            if pulse.started and not pulse.stop_sent:
+                # The cancel is not the emergency here; a mount still moving is.
+                try:
+                    await self._send_stop_on_the_loop(stop, what_stop)
+                except Exception:   # noqa: BLE001 - the cancel still wins
+                    pass
+            raise
+        # An ack-class command was ANSWERED: the same evidence _cmd_ack acts on.
+        if pulse.answered:
+            self._halting = False
+        if not pulse.started:
+            if pulse.start_reply is not None:
+                if pulse.start_reply == lx200.REFUSED:
+                    raise await self._refused_error(what_start)
+                raise DeviceError(f"{self.name}: {what_start} rejected "
+                                  f"(reply {pulse.start_reply!r})")
+            exc = pulse.error
+            if isinstance(exc, LinkError):
+                raise self._link_error(what_start, exc) from exc
+            if exc is not None:
+                raise exc
+            raise DeviceError(f"{self.name}: {what_start} did not start")
+        if not pulse.stop_sent:
+            # The port died mid-pulse. The async path is the one that can
+            # reopen it, so the stop goes out from here -- the mount is moving.
+            bus.log("warning",
+                    f"{self.name}: could not stop the pulse from the pulse "
+                    f"thread (:{stop[0]}# -- {pulse.error or 'no reply'}); "
+                    "sending it again now", "mount")
+            await self._send_stop_on_the_loop(stop, what_stop)
+            return
+        if pulse.stop_reply is not None and pulse.stop_reply != lx200.ACK_OK:
+            # ANSWERED, and the answer was no. For the east strategy that means
+            # tracking did not resume: the star now drifts east at sidereal
+            # rate, which the guider must be told rather than left to infer.
+            bus.log("warning",
+                    f"{self.name}: could not stop the pulse -- the mount "
+                    f"refused :{stop[0]}# (reply {pulse.stop_reply!r})", "mount")
+            if pulse.stop_reply == lx200.REFUSED:
+                raise await self._refused_error(what_stop)
+            raise DeviceError(f"{self.name}: {what_stop} rejected "
+                              f"(reply {pulse.stop_reply!r})")
 
     async def is_slewing(self) -> bool:
         # DELIBERATELY not widened to include the halt window. "_halting" means

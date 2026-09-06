@@ -3,6 +3,7 @@ framework integration. All coordinates fictional (site privacy)."""
 from __future__ import annotations
 
 import asyncio
+import time
 
 import pytest
 
@@ -10,17 +11,26 @@ from astrodeck.devices.serial_link import LinkError, SerialLink
 
 
 class FakeLink:
-    """Test double for SerialLink: same ``request``/``close`` surface.
+    """Test double for SerialLink: same ``request``/``request_sync``/``close``
+    surface.
 
     ``script`` maps an unframed command string to either a reply string, a list
     of replies (consumed in order; last repeats), or a callable(cmd)->reply.
     Unscripted "hash"/"ack" requests raise LinkError (like a silent mount);
     unscripted "none" requests are simply logged.
+
+    ``sent_at`` timestamps EVERY command (from either entry point) with
+    ``time.monotonic``, which is what lets a test prove a stop command left the
+    driver while the event loop was blocked (GN-02).
     """
 
     def __init__(self, script: dict | None = None):
         self.script = dict(script or {})
         self.sent: list[str] = []
+        #: (cmd, time.monotonic()) for every command, async or sync.
+        self.sent_at: list[tuple[str, float]] = []
+        #: the subset that went out through ``request_sync`` (thread side).
+        self.sync_sent: list[str] = []
         self.closed = False
         # Mirrors SerialLink's abandoned/needs_reopen surface. Not optional:
         # the driver consults it on every LinkError, and a double missing it
@@ -49,8 +59,8 @@ class FakeLink:
         self._open = True
         self._abandoned = False
 
-    async def request(self, cmd: str, *, reply: str = "hash",
-                      timeout: float = 1.5):
+    def _exchange(self, cmd: str, reply: str):
+        """Shared body of ``request``/``request_sync`` (recording included)."""
         if self._abandoned:
             # A dropped port answers NOTHING, including fire-and-forget writes.
             # A double that kept replying would let the reopen tests pass
@@ -58,6 +68,7 @@ class FakeLink:
             raise LinkError("the link was dropped after a stalled exchange and "
                             "has not been reopened")
         self.sent.append(cmd)
+        self.sent_at.append((cmd, time.monotonic()))
         entry = self.script.get(cmd)
         if callable(entry):
             entry = entry(cmd)
@@ -68,6 +79,18 @@ class FakeLink:
         if entry is None:
             raise LinkError(f"unscripted command {cmd!r}")
         return entry
+
+    async def request(self, cmd: str, *, reply: str = "hash",
+                      timeout: float = 1.5):
+        return self._exchange(cmd, reply)
+
+    def request_sync(self, cmd: str, *, reply: str = "hash",
+                     timeout: float = 1.5):
+        """Thread-side entry point (SerialLink parity). Called from the pulse
+        watchdog thread, so it must never touch the event loop."""
+        out = self._exchange(cmd, reply)
+        self.sync_sent.append(cmd)
+        return out
 
     async def close(self) -> None:
         self.closed = True
@@ -636,16 +659,28 @@ async def test_pulse_guide_direction_strategies(fixed_env):
 
 
 async def test_pulse_guide_cancel_restores_state(fixed_env):
+    """A cancelled pulse stops the mount AT ONCE, not when the duration it was
+    asked for would have run out. The pulse thread waits on an Event precisely
+    so a cancel can cut the wait short: waiting it out would leave the mount
+    driving for the rest of a pulse nobody wants any more."""
     fl, tel = await _connected_tel(_connect_script())
     fl.script["GAT"] = "1"
     fl.script["Td"] = "1"
     fl.script["Te"] = "1"
     task = asyncio.create_task(tel.pulse_guide("east", 5000))
-    await asyncio.sleep(0.05)
+    for _ in range(400):                       # the suspend is on the wire
+        if "Td" in fl.sent:
+            break
+        await asyncio.sleep(0.005)
+    cancelled_at = time.monotonic()
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
     assert fl.sent == ["GAT", "Td", "Te"]         # finally resumed tracking
+    resumed_at = next(ts for c, ts in fl.sent_at if c == "Te")
+    assert resumed_at - cancelled_at < 0.3, (
+        f"the mount kept moving for {resumed_at - cancelled_at:.2f}s "
+        "after the cancel")
 
 
 # ------------------------------------------------- backend + framework integration
