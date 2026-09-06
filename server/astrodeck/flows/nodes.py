@@ -232,7 +232,7 @@ NODE_DEFS: dict[str, NodeDef] = {
     "condition": NodeDef(
         type="condition", label="CONDITION", cat="LOGIC",
         ins=(_e("events", "events"),), outs=(_e("fire", "fire"),),
-        params={"when": "HFR above", "threshold": 3.2, "window": "3 frames",
+        params={"when": "HFR above (x focus)", "threshold": 1.3, "window": "3 frames",
                 "once": "Every time"}),
     # -------------------------------------------------------- ACTIONS + SINKS
     "holdresume": NodeDef(

@@ -120,9 +120,18 @@ export const THRESHOLD_SEED: Record<"hfr_above" | "guide_rms_above", number> = {
 
 /** Placeholder + "what does normal look like" hint for the threshold box. */
 export const THRESHOLD_HINT: Record<"hfr_above" | "guide_rms_above", string> = {
-  hfr_above: "e.g. 4.0 — typical good focus is 2–3",
+  hfr_above: "e.g. 4.0 px — typical good focus is 2–3 px",
   guide_rms_above: "e.g. 1.5 — under 1 is good guiding",
 };
+
+/** GN-08: the hint for the RELATIVE form of hfr_above — a factor of the
+ *  post-focus baseline HFR (the first accepted frame after each autofocus),
+ *  not a pixel value. Kept separate from THRESHOLD_HINT because the same
+ *  trigger's two forms want opposite advice: an absolute rule is told what a
+ *  typical pixel value is, a relative one is told what it is a multiple OF. */
+export const RELATIVE_HFR_HINT =
+  "e.g. 1.3x — fires when HFR climbs above this multiple of the HFR measured "
+  + "right after the last autofocus";
 
 /** Seeded clock for the at_time trigger — same reason as THRESHOLD_SEED: an
  *  empty "HH:MM" box is an instant validation error. */
@@ -298,7 +307,11 @@ const rmsUnit = (o?: DescribeOpts) => (o?.rmsArcsec === true ? "\"" : " px");
 /** One leaf predicate as plain language (no leading "When"). */
 export function describePredicate(p: Predicate, opts?: DescribeOpts): string {
   switch (p.kind) {
-    case "hfr_above": return `HFR > ${p.threshold}`;
+    // GN-08: relative reads as a multiple of the post-focus baseline ("x
+    // focus"); absolute keeps its pixel unit, spelled out rather than left
+    // bare so the two forms can never be misread as the same number.
+    case "hfr_above": return p.relative
+      ? `HFR > ${p.threshold}x focus` : `HFR > ${p.threshold} px`;
     case "guide_rms_above": return `guide error > ${p.threshold}${rmsUnit(opts)}`;
     case "frame_rejected": return "a frame is rejected";
     case "target_complete": return "target complete";
@@ -320,7 +333,8 @@ export function describeInstruction(
   }
   switch (i.trigger) {
     case "on_hfr_above":
-      cond = `When HFR > ${i.threshold}`;
+      cond = i.relative
+        ? `When HFR > ${i.threshold}x focus` : `When HFR > ${i.threshold} px`;
       break;
     case "on_guide_rms_above":
       cond = `When guide error > ${i.threshold}${rmsUnit(opts)}`;

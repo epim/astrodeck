@@ -490,12 +490,21 @@ export const NODE_DEFS: Record<FlowNodeType, NodeDef> = {
     colorVar: "--accent-dim",
     ins: [_e("events", "events")],
     outs: [_e("fire", "fire")],
-    params: { when: "HFR above", threshold: 3.2, window: "3 frames", once: "Every time" },
+    params: { when: "HFR above (x focus)", threshold: 1.3, window: "3 frames", once: "Every time" },
     fields: [
       // A CLOSED predicate set, deliberately. nodes.py's docstring: the graph
       // compiles to what the engine already runs, so "just add a script node"
       // is refused by construction.
-      { key: "when", label: "When", control: "select", options: ["HFR above", "FWHM above", "Guide RMS above", "Guide star lost", "Frame rejected", "Star count below", "Sky background above", "Wind gust above", "Dew margin below", "Sensor temp off setpoint", "Disk space below", "Airmass above", "Meridian flip within", "Target complete"] },
+      //
+      // "HFR above (x focus)" (GN-08) and "HFR above" compile to the SAME
+      // engine trigger (`on_hfr_above`, see flows/compile.py `_trigger_for`)
+      // but mean different things: the former's Threshold is a FACTOR of the
+      // HFR measured right after the last autofocus, the latter's is an
+      // absolute pixel value. FieldDef.unit is one static string for the
+      // whole field and cannot vary by the selected option, so the unit lives
+      // in each option's own label instead — "(x focus)" vs. the bare,
+      // implicitly-pixels "HFR above" that shipped before it.
+      { key: "when", label: "When", control: "select", options: ["HFR above (x focus)", "HFR above", "FWHM above", "Guide RMS above", "Guide star lost", "Frame rejected", "Star count below", "Sky background above", "Wind gust above", "Dew margin below", "Sensor temp off setpoint", "Disk space below", "Airmass above", "Meridian flip within", "Target complete"] },
       { key: "threshold", label: "Threshold", control: "text" },
       { key: "window", label: "Within", control: "select", options: ["1 frame", "3 frames", "5 frames"] },
       { key: "once", label: "Fire", control: "select", options: ["Every time", "Once per run"] },

@@ -166,17 +166,35 @@ def _bad_hhmm(value: str | None) -> bool:
     return not m or int(m.group(1)) >= 24 or int(m.group(2)) >= 60
 
 
+def _bad_relative_factor(threshold: float) -> bool:
+    """GN-08: a ``relative`` threshold is a FACTOR of the post-focus baseline
+    HFR, not a pixel value. A factor at or below 1.0 would fire on the
+    baseline itself (or below it, which can never happen); the 5.0 ceiling
+    keeps a fat-fingered '30' from compiling to a watchdog that never fires."""
+    return not (1.0 < threshold <= 5.0)
+
+
 class Predicate(BaseModel):
     """One leaf term of a compound condition. Mirrors a flat trigger's inputs."""
     kind: PredicateKind
     threshold: float = Field(0.0, ge=0)   # hfr_above / guide_rms_above value
     at_time: str | None = None            # "HH:MM" 24h local; required when kind==at_time
+    # GN-08: when True (hfr_above terms only), `threshold` is a FACTOR of the
+    # post-focus baseline HFR (the HFR measured on the first accepted frame
+    # after each autofocus) rather than an absolute pixel value. Default False
+    # keeps every existing compound predicate byte-identical.
+    relative: bool = False
 
     @model_validator(mode="after")
     def _validate_at_time(self) -> "Predicate":
         if self.kind == "at_time" and _bad_hhmm(self.at_time):
             raise ValueError(
                 "predicate 'at_time' requires at_time in 'HH:MM' 24h form")
+        if self.relative and _bad_relative_factor(self.threshold):
+            raise ValueError(
+                "a relative threshold is a FACTOR of the post-focus baseline "
+                "HFR: it must be greater than 1.0 (at or below fires on the "
+                f"baseline itself) and at most 5.0, got {self.threshold:g}")
         return self
 
 
@@ -209,6 +227,12 @@ class Instruction(BaseModel):
     enabled: bool = True
     trigger: TriggerKind
     threshold: float = Field(0.0, ge=0)     # on_hfr_above / on_guide_rms_above value
+    # GN-08: when True (on_hfr_above only), `threshold` is a FACTOR of the
+    # post-focus baseline HFR rather than an absolute pixel value — see
+    # `Predicate.relative` above (the same flag, on the flat-trigger shape).
+    # Default False: every plan saved before this existed keeps meaning
+    # absolute pixels, no migration needed.
+    relative: bool = False
     at_time: str | None = None              # "HH:MM" 24h local; required when trigger==at_time
     action: ActionKind
     message: str = ""                       # notify text / log + abort reason
@@ -237,6 +261,11 @@ class Instruction(BaseModel):
                 self.target_arg or "").strip():
             raise ValueError(
                 f"action '{self.action}' requires target_arg (a target name)")
+        if self.relative and _bad_relative_factor(self.threshold):
+            raise ValueError(
+                "a relative threshold is a FACTOR of the post-focus baseline "
+                "HFR: it must be greater than 1.0 (at or below fires on the "
+                f"baseline itself) and at most 5.0, got {self.threshold:g}")
         return self
 
 
