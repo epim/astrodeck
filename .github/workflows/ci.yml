@@ -5,6 +5,11 @@ on:
   # was disabled for a stretch, and re-enabling it left no way to verify the
   # backlog until something happened to land on a non-ignored path.
   workflow_dispatch:
+    inputs:
+      binary_smoke:
+        description: 'build and smoke-test the Windows binary on the hosted runner'
+        type: boolean
+        default: false
   push:
     branches: [main]
     # A docs- or scratch-only push should not spend five jobs (one of them
@@ -331,3 +336,34 @@ jobs:
           tests/test_comhost_simulators.py
           tests/test_ascom_local_gate.py
           -rs
+
+  # Proof that the release workflow's windows-latest binary leg can smoke-test
+  # what it builds. Hosted Windows runners hand every process an elevated
+  # Administrator token and the server refuses to start elevated (OPEN-005), so
+  # build_binary.py launches the binary de-elevated via runas and finds it by
+  # port/image name. Nothing but a hosted runner reproduces that: a maintainer's
+  # box is not elevated, so the branch never executes locally.
+  #
+  # DISPATCH-ONLY ON PURPOSE. Windows bills at 2x and this is a full UI build +
+  # PyInstaller run (~20 min). It is a proof to be run when the smoke harness
+  # changes, not a gate on every push -- the release workflow is where it
+  # actually has to hold, and this job exists so that can be verified without
+  # cutting a tag. Run it from the Actions tab with "binary smoke" ticked.
+  binary-smoke-windows:
+    if: github.event_name == 'workflow_dispatch' && inputs.binary_smoke
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # No artefact upload: the question this job answers is whether the smoke
+      # test passes, and release.yml is what publishes binaries.
+      - name: Build + smoke-test the binary
+        run: python packaging/build_binary.py
