@@ -107,13 +107,17 @@ def _is_campaign(graph: FlowGraph):
     return None
 
 
-def check(graph: FlowGraph, *, standards=None) -> list[Issue]:
-    """All thirteen rules, in the prototype's order, plus one that reads the rig.
+def check(graph: FlowGraph, *, standards=None, mount=None) -> list[Issue]:
+    """All thirteen rules, in the prototype's order, plus two that read the rig.
 
     ``standards`` is the rig's :class:`~astrodeck.config.StandardsConfig` when
-    the caller has one (the compile route passes it). KEYWORD AND OPTIONAL on
-    purpose: every existing caller and test calls ``check(graph)`` positionally
-    and must keep seeing exactly the list it saw before, so a rule that depends
+    the caller has one (the compile route passes it). ``mount`` is the
+    connected ``Telescope`` when the caller has one (same route, GN-09):
+    when its ``needs_guiding`` capability flag is set, the unguided-capture
+    rule below fires for every sub length, not just the ones long enough to
+    trail on a well-behaved mount. BOTH KEYWORD AND OPTIONAL on purpose:
+    every existing caller and test calls ``check(graph)`` positionally and
+    must keep seeing exactly the list it saw before, so a rule that depends
     on rig state is simply not run when no rig state was offered. This module
     stays importable without config, which is what lets the UI-facing tests and
     the structural guard in `test_flows_doctor_agrees_with_the_engine` reason
@@ -132,10 +136,27 @@ def check(graph: FlowGraph, *, standards=None) -> list[Issue]:
                 out.append(Issue(f"▸ {d.label} - '{p.label}' input unwired", "warn"))
 
     # 2-4. what a capture stage needs upstream of it
+    #
+    # GN-09: on a mount whose `needs_guiding` flag is set (a harmonic drive
+    # whose unguided tracking cannot hold a sub of ordinary length -- the AM5
+    # trailed unguided 60 s subs by 15 px on 2026-09-06), the generic "120 s
+    # or more" trailing rule below is the WRONG rule: it read clean on a 60 s
+    # unguided cycle the night this defect was found. When `mount` names such
+    # a mount, every capture stage with no GUIDE upstream gets the
+    # mount-specific line INSTEAD, at any sub length -- not doubled with the
+    # generic line, because a doctor that says two things about one wire
+    # teaches the operator to skim past both.
+    needs_guide_mount = mount is not None and getattr(mount, "needs_guiding", False)
+    mount_name = getattr(mount, "name", "this mount") if needs_guide_mount else ""
     for n in [x for x in graph.nodes if x.type in _CAPTURE_TYPES]:
         up = _flow_upstream_types(graph, n.id)
         exp = _longest_sub_s(n)
-        if exp >= 120 and "guide" not in up:
+        if needs_guide_mount and "guide" not in up:
+            out.append(Issue(
+                f"▸ {exp:g}s subs with no GUIDE upstream on a mount that needs "
+                f"guiding ({mount_name}: the harmonic drive trailed unguided "
+                f"60 s subs by 15 px on 2026-09-06). Add Guide.", "warn"))
+        elif exp >= 120 and "guide" not in up:
             out.append(Issue(
                 f"▸ {exp:g}s subs with no GUIDE upstream - stars will trail at "
                 f"any real focal length. Add Guide, or shorten the subs.", "warn"))

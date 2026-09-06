@@ -237,6 +237,12 @@ class ZwoAm5Telescope(Telescope):
     max_pulse_ms = _PULSE_MAX_MS
     can_set_tracking_rate = True
     can_find_home = True      # :hP# homes (and parks); find_home unparks after
+    #: GN-09: this is a harmonic drive with large periodic error. Measured on
+    #: 2026-09-06: switched to UNGUIDED at 03:04 after the guider misbehaved,
+    #: and every unguided 60 s sub afterward trailed by ~15 px (fixture
+    #: pedrift_L60.fits.gz). The flow doctor's own "will this trail" rule only
+    #: fired at 120 s and up, so a 60 s unguided cycle on this mount read clean.
+    needs_guiding = True
 
     def __init__(self, link, name: str = "ZWO AM5"):
         super().__init__(name)

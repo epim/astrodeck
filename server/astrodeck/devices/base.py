@@ -252,6 +252,14 @@ class Telescope(Device):
     #: work (house rule: no dead controls).
     can_find_home: bool = False
 
+    #: capability flag (GN-09, 2026-09-06) -- set True only by backends whose
+    #: unguided tracking cannot hold a sub of ordinary length: a mount with a
+    #: harmonic drive and large periodic error. Read by the flow doctor, which
+    #: has no other way to know that a 60 s unguided sub on THIS mount is not
+    #: the safe default a shorter focal length would suggest. Default False
+    #: keeps every other mount's doctor output unchanged.
+    needs_guiding: bool = False
+
     async def find_home(self) -> None:
         """Send the mount to its mechanical home and leave it USABLE there.
 
