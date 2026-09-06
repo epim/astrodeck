@@ -194,7 +194,16 @@ async def test_flip_calibration_mid_session_keeps_guiding_bounded(
     assert guiding resumes without a runaway — the sim doesn't physically
     model a pier flip, so this is a stability/contract check (dossier §9
     item 4: flip_calibration must complete cleanly and guiding must keep
-    running and reporting finite, bounded stats), not a reconvergence check."""
+    running and reporting finite, bounded stats), not a reconvergence check.
+
+    MODE: the MIRROR path (``recalibrate_after_pier_change`` OFF). GN-01 made
+    discarding the calibration the default, so with the setting at its default
+    this test would exercise a file delete rather than the engine's flip
+    transform — and the transform applied to a LIVE session is exactly what
+    this scenario is for. The default (discard, then exactly one fresh
+    calibration on the restart) is covered by
+    ``test_native_guider_pier_change.py::
+    test_flip_discards_instead_of_flipping_and_restart_calibrates_once``."""
     from astrodeck.guide.native import NativeGuider
 
     rig = build_sim_rig()
@@ -202,7 +211,8 @@ async def test_flip_calibration_mid_session_keeps_guiding_bounded(
     await cam.connect()
     await tel.connect()
     g = NativeGuider(cam, tel, config={"image_scale_arcsec": 2.0,
-                                       "exposure_s": 0.2},
+                                       "exposure_s": 0.2,
+                                       "recalibrate_after_pier_change": False},
                      profile_id=_profile_id("flip"))
     await g.connect()
     await asyncio.wait_for(g.start_guiding(), timeout=120.0)
