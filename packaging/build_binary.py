@@ -107,6 +107,17 @@ def smoke(exe: Path) -> None:
     env["ASTRODECK_CONFIG_DIR"] = str(tmp / "config")
     env["ASTRODECK_CAPTURE_DIR"] = str(tmp / "captures")
 
+    # A leftover server on the smoke port would answer every check below and
+    # the test would grade a stranger. That happened: the previous release's
+    # smoke binary was still alive from an earlier build on the same machine,
+    # because a onefile bootloader's child outlives terminate(). Refuse the
+    # port unless it is free, and insist the answer is THIS build's version.
+    if _port_in_use(SMOKE_PORT):
+        raise SystemExit(
+            f"port {SMOKE_PORT} is already in use; the smoke test would talk "
+            "to whatever is listening there instead of the binary just built")
+    expected_version = _source_version()
+
     print(f"\n$ {exe} run --host 127.0.0.1 --port {SMOKE_PORT}   (smoke test)")
     proc = subprocess.Popen([str(exe), "run", "--host", "127.0.0.1",
                              "--port", str(SMOKE_PORT)], env=env)
@@ -127,6 +138,11 @@ def smoke(exe: Path) -> None:
                 time.sleep(1)
         if health is None:
             raise SystemExit("the binary never answered /healthz")
+        if health.get("version") != expected_version:
+            raise SystemExit(
+                f"the server on port {SMOKE_PORT} reports version "
+                f"{health.get('version')!r}, but this tree is {expected_version!r}: "
+                "that is not the binary just built")
         print(f"  healthz     ok (version {health.get('version')})")
 
         with urllib.request.urlopen(base + "/", timeout=5) as r:
@@ -150,12 +166,41 @@ def smoke(exe: Path) -> None:
                 "entry-point metadata, so every native driver is missing")
         print(f"  backends    ok ({len(names)} registered)")
     finally:
-        proc.terminate()
-        try:
-            proc.wait(timeout=15)
-        except subprocess.TimeoutExpired:
-            proc.kill()
+        _stop_tree(proc)
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _port_in_use(port: int) -> bool:
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.5)
+        return s.connect_ex(("127.0.0.1", port)) == 0
+
+
+def _source_version() -> str:
+    """The version this tree declares, read from the file rather than an
+    import, so a stale install in the build interpreter cannot answer for it."""
+    import re
+    text = (ROOT / "server" / "astrodeck" / "__init__.py").read_text(encoding="utf-8")
+    m = re.search(r'^__version__\s*=\s*"([^"]+)"', text, re.M)
+    if not m:
+        raise SystemExit("could not read __version__ from server/astrodeck/__init__.py")
+    return m.group(1)
+
+
+def _stop_tree(proc: subprocess.Popen) -> None:
+    """Stop the smoke server AND its children. A PyInstaller onefile binary is
+    a bootloader that runs the real program as a child; on Windows terminating
+    the parent leaves that child serving the port for the next build to find."""
+    if sys.platform == "win32":
+        subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    else:
+        proc.terminate()
+    try:
+        proc.wait(timeout=15)
+    except subprocess.TimeoutExpired:
+        proc.kill()
 
 
 def main() -> int:
