@@ -27,6 +27,8 @@ Flags:
 from __future__ import annotations
 
 import argparse
+import csv
+import io
 import json
 import os
 import shutil
@@ -118,18 +120,17 @@ def smoke(exe: Path) -> None:
             "to whatever is listening there instead of the binary just built")
     expected_version = _source_version()
 
-    print(f"\n$ {exe} run --host 127.0.0.1 --port {SMOKE_PORT}   (smoke test)")
-    proc = subprocess.Popen([str(exe), "run", "--host", "127.0.0.1",
-                             "--port", str(SMOKE_PORT)], env=env)
+    proc = _launch_smoke(exe, SMOKE_PORT, env)
     try:
         base = f"http://127.0.0.1:{SMOKE_PORT}"
         health = None
         # A frozen binary unpacks itself on first run, so first boot is slower
         # than any subsequent one. 60s is generous rather than tight.
         for _ in range(60):
-            if proc.poll() is not None:
+            code = proc.poll()
+            if code is not None:
                 raise SystemExit(f"the binary exited during startup "
-                                 f"(code {proc.returncode})")
+                                 f"(code {code})")
             try:
                 with urllib.request.urlopen(f"{base}/healthz", timeout=2) as r:
                     health = json.load(r)
@@ -166,7 +167,7 @@ def smoke(exe: Path) -> None:
                 "entry-point metadata, so every native driver is missing")
         print(f"  backends    ok ({len(names)} registered)")
     finally:
-        _stop_tree(proc)
+        proc.stop()
         shutil.rmtree(tmp, ignore_errors=True)
 
 
@@ -201,6 +202,196 @@ def _stop_tree(proc: subprocess.Popen) -> None:
         proc.wait(timeout=15)
     except subprocess.TimeoutExpired:
         proc.kill()
+
+
+def _is_elevated() -> bool:
+    """Whether THIS process holds an administrator/root token.
+
+    Hosted GitHub Windows runners do, which is why the smoke test needed this:
+    the server refuses to start elevated (runtime_security, OPEN-005) and that
+    refusal is deliberate and has no override.
+
+    Detection never raises. A failure to detect means "assume not elevated",
+    which takes the plain launch — and if the process really was elevated the
+    server still refuses, loudly, exactly as it does today. Guessing the other
+    way would put every ordinary build through the de-elevating path.
+    """
+    try:
+        if sys.platform == "win32":
+            try:
+                from astrodeck.runtime_security import is_elevated_runtime
+                return bool(is_elevated_runtime())
+            except Exception:
+                # The server is installed into the build interpreter by step 3,
+                # so the import normally works; --skip-install may mean it does
+                # not. shell32 answers the same question well enough here.
+                import ctypes
+                return bool(ctypes.windll.shell32.IsUserAnAdmin())
+        try:
+            from astrodeck.runtime_security import _posix_is_elevated
+            return bool(_posix_is_elevated())
+        except Exception:
+            return False
+    except Exception:
+        return False
+
+
+#: The directories the smoke test redirects so it never touches real state.
+#: runas hands the child the CALLER's environment, so these have to be in
+#: os.environ, not merely in a Popen env= dict the child will never see.
+SMOKE_ENV_KEYS = ("ASTRODECK_CONFIG_DIR", "ASTRODECK_CAPTURE_DIR")
+#: A basic-user token: no administrator group, no elevation. Needs no password.
+RUNAS_TRUSTLEVEL = "/trustlevel:0x20000"
+
+
+def _run_text(cmd: list[str]) -> str:
+    """stdout of a short helper command (netstat/tasklist/taskkill), or "" if
+    it could not run. These are probes: a failed probe is "found nothing"."""
+    try:
+        completed = subprocess.run(cmd, capture_output=True, text=True)
+    except OSError:
+        return ""
+    return completed.stdout or ""
+
+
+def _netstat_listener_pid(text: str, port: int) -> int | None:
+    """The PID LISTENING on 127.0.0.1:<port> in `netstat -ano` output.
+
+    Only IPv4 loopback/wildcard lines count: the smoke server binds 127.0.0.1,
+    and an unrelated IPv6 listener on the same port number is not it. Connected
+    sockets to the port (ESTABLISHED) are somebody's client, not the server.
+    """
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) < 4 or parts[0].upper() not in ("TCP", "TCPV6"):
+            continue
+        if not any(p.upper() == "LISTENING" for p in parts):
+            continue
+        local = parts[1]
+        head, _, tail = local.rpartition(":")
+        if tail != str(port) or head not in ("127.0.0.1", "0.0.0.0"):
+            continue
+        try:
+            return int(parts[-1])
+        except ValueError:
+            continue
+    return None
+
+
+def _tasklist_pids(text: str, image: str = "astrodeck.exe") -> list[int]:
+    """PIDs of an image in `tasklist /FO CSV /NH` output. The "INFO: No tasks"
+    line parses as a one-field row and is ignored like any other non-match."""
+    pids: list[int] = []
+    for row in csv.reader(io.StringIO(text)):
+        if len(row) < 2 or row[0].strip().lower() != image.lower():
+            continue
+        try:
+            pids.append(int(row[1].strip()))
+        except ValueError:
+            continue
+    return pids
+
+
+class SmokeProcess:
+    """A handle on the smoke server, however it was started.
+
+    Two shapes behind one interface. The ordinary one wraps the Popen we own.
+    The runas one owns nothing: `runas` returns the moment it has spawned the
+    child, so there is no handle to wait on and the server has to be FOUND —
+    by the port it listens on, and by image name so the onefile bootloader
+    parent can be reaped along with the child that actually serves.
+    """
+
+    def __init__(self, port: int, popen: subprocess.Popen | None = None,
+                 runner=None, find_timeout: float = 60.0):
+        self.port = port
+        self._popen = popen
+        self._run = runner or _run_text
+        self._find_timeout = find_timeout
+        self._started = time.monotonic()
+        self._listener_pid: int | None = None
+        self._image_pids: list[int] = []
+        self._seen = False
+
+    @property
+    def pid(self) -> int | None:
+        if self._popen is not None:
+            return self._popen.pid
+        if self._listener_pid is not None:
+            return self._listener_pid
+        return self._image_pids[0] if self._image_pids else None
+
+    def _refresh(self) -> bool:
+        """Look for the server. True if anything of it is running now."""
+        pid = _netstat_listener_pid(self._run(["netstat", "-ano"]), self.port)
+        images = _tasklist_pids(self._run(
+            ["tasklist", "/FI", "IMAGENAME eq astrodeck.exe", "/FO", "CSV", "/NH"]))
+        if pid is not None:
+            self._listener_pid = pid
+        for extra in images:
+            if extra not in self._image_pids:
+                self._image_pids.append(extra)
+        alive = pid is not None or bool(images)
+        if alive:
+            self._seen = True
+        return alive
+
+    def poll(self) -> int | None:
+        if self._popen is not None:
+            return self._popen.poll()
+        if self._refresh():
+            return None
+        if self._seen:
+            return 1  # it was there and now it is not: it died starting up
+        if time.monotonic() - self._started > self._find_timeout:
+            return 1  # runas spawned something that never listened
+        return None
+
+    def stop(self) -> None:
+        if self._popen is not None:
+            _stop_tree(self._popen)
+            return
+        # /healthz may have answered before poll() ever saw the listener, so
+        # look once more rather than kill nothing.
+        self._refresh()
+        targets: list[int] = []
+        if self._listener_pid is not None:
+            targets.append(self._listener_pid)
+        targets += [p for p in self._image_pids if p not in targets]
+        for pid in targets:
+            self._run(["taskkill", "/PID", str(pid), "/T", "/F"])
+        for _ in range(15):
+            if not _port_in_use(self.port):
+                return
+            time.sleep(1)
+
+
+def _launch_smoke(exe: Path, port: int, env: dict) -> SmokeProcess:
+    """Start the binary for the smoke test, de-elevating if we have to."""
+    argv = [str(exe), "run", "--host", "127.0.0.1", "--port", str(port)]
+    if not (sys.platform == "win32" and _is_elevated()):
+        print(f"\n$ {exe} run --host 127.0.0.1 --port {port}   (smoke test)")
+        return SmokeProcess(port, popen=subprocess.Popen(argv, env=env))
+
+    print("this process is elevated and the server refuses to run elevated, "
+          "so the smoke test launches the binary de-elevated via runas")
+    # runas gives the child the caller's environment; a variable that exists
+    # only in `env` would never reach it, and the smoke server would write to
+    # the real config and capture directories.
+    for key in SMOKE_ENV_KEYS:
+        if key in env:
+            os.environ[key] = env[key]
+    command = subprocess.list2cmdline(argv)
+    print(f"\n$ runas {RUNAS_TRUSTLEVEL} \"{command}\"   (smoke test)")
+    completed = subprocess.run(["runas", RUNAS_TRUSTLEVEL, command],
+                               capture_output=True, text=True)
+    output = (completed.stdout or "") + (completed.stderr or "")
+    if completed.returncode != 0:
+        raise SystemExit(f"runas could not start the binary de-elevated "
+                         f"(code {completed.returncode}): {output.strip()}")
+    if output.strip():
+        print("  " + output.strip().replace("\n", "\n  "))
+    return SmokeProcess(port)
 
 
 def main() -> int:
