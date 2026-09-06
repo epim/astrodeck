@@ -234,6 +234,11 @@ class Telescope(Device):
     #: an actionable error rather than silently issuing pulses that go nowhere.
     can_pulse_guide: bool = False
 
+    #: Longest single pulse (ms) this mount will actually perform, or None when
+    #: it has no cap — a guider reads it so it never asks for a move the driver
+    #: silently truncates (see the AM5's ``_PULSE_MAX_MS``).
+    max_pulse_ms: int | None = None
+
     #: capability flag (multi-rate mount tracking, 2026-07-21) -- set True only
     #: by backends that have confirmed the mount accepts a lunar/solar drive
     #: rate (AM5N, Alpaca, sim). Gates whether the UI even offers the rate
