@@ -457,15 +457,23 @@ async def test_rejected_frames_do_not_feed_hfr_median(sim_hub):
 async def test_max_eccentricity_gate(sim_hub):
     """The max_eccentricity ceiling rejects frames whose median star ecc is above
     the plan limit (trailing / tilt / coma), skips calibration frames, and abstains
-    when no ecc scalar is present. 0 = off."""
+    when no ecc scalar is present. 0 = off.
+
+    The companion elongated-star rule and the fixtures behind the 0.65 default
+    live in test_eccentricity_gate_rejects_trailed_subs.py (GN-04); this stays
+    on the median ceiling alone."""
     engine = SequenceEngine(sim_hub)
     engine.plan = SequencePlan(name="p", targets=[], max_eccentricity=0.6)
     assert engine._check_quality({"ecc": 0.80}) is False   # elongated -> reject
     assert engine._check_quality({"ecc": 0.50}) is True    # round enough -> keep
     assert engine._check_quality({"ecc": 0.80}, calibration=True) is True  # calib skips
     assert engine._check_quality({}) is True               # no ecc -> abstain
-    engine.plan = SequencePlan(name="p", targets=[])       # 0 = off
+    # 0 = off, and it now has to be SAID: an unset plan field inherits the rig's
+    # 0.65 standard, which is the whole of GN-04.
+    engine.plan = SequencePlan(name="p", targets=[], max_eccentricity=0.0)
     assert engine._check_quality({"ecc": 0.99}) is True
+    engine.plan = SequencePlan(name="p", targets=[])       # inherits 0.65
+    assert engine._check_quality({"ecc": 0.99}) is False
 
 
 # ----------------------------------- report finalize vs snapshot write do not race

@@ -45,11 +45,8 @@ from .imaging import (
     compute_histogram,
     detect_stars,
     display_histogram,
-    frame_eccentricity,
-    frame_tilt,
-    measure_stars,
+    grade_frame,
     save_fits,
-    star_flux_median,
     stretch_with,
     to_jpeg,
     to_png,
@@ -3408,7 +3405,14 @@ class Hub:
             # display-domain histogram (handles have travel) + the true linear one
             stretched = await asyncio.to_thread(stretch_with, data, black, mid, white)
             hist_display = await asyncio.to_thread(display_histogram, stretched)
-            hfr, count, marks = measure_stars(stars, full_well=info["full_well"])
+            # EVERY per-frame quality number, from the one detection pass above
+            # (`stars`), in the one place the engine's gate can also be pointed
+            # at: hfr / stars / star_list / star_flux_median / ecc / tilt. See
+            # `imaging.stars.grade_frame` for why this is a function and not
+            # six inline blocks.
+            grade = await asyncio.to_thread(
+                grade_frame, sub, full_well=info["full_well"], stars=stars)
+            hfr, count = grade.get("hfr"), grade.get("stars")
             info.update({
                 "histogram": hist_display,
                 "histogram_linear": await asyncio.to_thread(compute_histogram, sub),
@@ -3417,28 +3421,25 @@ class Hub:
                 "mime": "image/jpeg", "has_lossless": True,
                 "auto_levels": {"black": round(black, 4), "mid": round(mid, 4),
                                 "white": round(white, 4)},
-                "star_list": marks,
+                "star_list": grade["star_list"],
             })
             # Absolute per-SUB SNR input (polish grab-bag (b)): the median
             # background-subtracted flux of the SAME trusted mid-bright stars the
             # marks come from, over the same single detection pass. The client
             # multiplies by its own e-/ADU gain to show a real "this sub" SNR.
             # Omitted entirely when no star passes the gate — honest abstain.
-            fmed = star_flux_median(stars, full_well=info["full_well"])
-            if fmed is not None:
-                info["star_flux_median"] = round(fmed, 1)
+            if "star_flux_median" in grade:
+                info["star_flux_median"] = grade["star_flux_median"]
             # Representative frame eccentricity = median of the trusted marks'
             # ecc (no second detection pass). setdefault so a backend-supplied
             # ecc (native/NINA) wins, mirroring hfr/stars below.
-            fecc = frame_eccentricity(marks)
-            if fecc is not None:
-                info.setdefault("ecc", round(fecc, 3))
+            if "ecc" in grade:
+                info.setdefault("ecc", grade["ecc"])
             # Sensor-tilt / corner-vs-center inspector (PRO-13) — additive zone
             # map + pattern classification over the same trusted marks, no new
             # detection pass. None (too sparse) => key omitted entirely.
-            tilt = frame_tilt(marks, info["data_width"], info["data_height"])
-            if tilt is not None:
-                info["tilt"] = tilt
+            if "tilt" in grade:
+                info["tilt"] = grade["tilt"]
             # Image-derived cloud verdict, reusing the star count from the single
             # detection pass above (no second detect). Linear frames only — the
             # contrast metric needs unstretched pixels. Complements the

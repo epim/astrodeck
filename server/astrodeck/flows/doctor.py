@@ -107,8 +107,18 @@ def _is_campaign(graph: FlowGraph):
     return None
 
 
-def check(graph: FlowGraph) -> list[Issue]:
-    """All thirteen rules, in the prototype's order."""
+def check(graph: FlowGraph, *, standards=None) -> list[Issue]:
+    """All thirteen rules, in the prototype's order, plus one that reads the rig.
+
+    ``standards`` is the rig's :class:`~astrodeck.config.StandardsConfig` when
+    the caller has one (the compile route passes it). KEYWORD AND OPTIONAL on
+    purpose: every existing caller and test calls ``check(graph)`` positionally
+    and must keep seeing exactly the list it saw before, so a rule that depends
+    on rig state is simply not run when no rig state was offered. This module
+    stays importable without config, which is what lets the UI-facing tests and
+    the structural guard in `test_flows_doctor_agrees_with_the_engine` reason
+    about the graph alone.
+    """
     graph = graph.with_defaults()
     out: list[Issue] = []
 
@@ -216,5 +226,19 @@ def check(graph: FlowGraph) -> list[Issue]:
     if not any(x.type == "report" for x in graph.nodes):
         out.append(Issue(
             "▸ no session report sink - the night leaves no ledger", "note"))
+
+    # 14. the rig's frame grading, not the graph's. The only rule here that
+    # reads state outside the canvas, and it earns that: on 2026-09-06 a flow
+    # shot 170 subs through a runaway guider and the grader accepted every one,
+    # because `max_eccentricity` was 0 and nothing anywhere said so. The flow
+    # cannot express the setting, so the flow's own doctor is where an operator
+    # who never opens Settings will see it.
+    if (standards is not None
+            and not getattr(standards, "max_eccentricity", 0)
+            and any(x.type in _CAPTURE_TYPES for x in graph.nodes)):
+        out.append(Issue(
+            "▸ eccentricity rejection is off: trailed subs will be accepted "
+            "and stacked in. Set Settings > Standards > 'Reject rounder than' "
+            "to 0.65.", "warn"))
 
     return out

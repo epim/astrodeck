@@ -80,15 +80,19 @@ test("the panel's defaults cover every field", () => {
   deepEq(Object.keys(STANDARDS_DEFAULTS).sort(), [...PY_FIELDS].sort());
 });
 
-test("the defaults are the values SequencePlan used to carry", () => {
+test("the defaults are the values SequencePlan used to carry, bar the one that moved", () => {
   // Hardcoded on purpose: these are the PRE-migration plan defaults, and the
   // whole no-change guarantee of stage A rests on them being exactly these.
+  // One exception since 2026-09-06 (GN-04): max_eccentricity is 0.65, on by
+  // default, matching the server's StandardsConfig and its schema-2
+  // migration of a stored 0. A 0 here would show the gate as off on a rig
+  // where it is on.
   deepEq(STANDARDS_DEFAULTS, {
     apply_filter_offsets: true,
     refocus_on_temp_delta_c: 0,
     min_stars: 0,
     max_guide_rms: 0,
-    max_eccentricity: 0,
+    max_eccentricity: 0.65,
     max_consecutive_rejects: 10,
     max_consecutive_rejects_night: 20,
   });

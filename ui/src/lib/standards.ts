@@ -15,7 +15,10 @@ export const STANDARDS_DEFAULTS: StandardsConfig = {
   refocus_on_temp_delta_c: 0,
   min_stars: 0,
   max_guide_rms: 0,
-  max_eccentricity: 0,
+  // GN-04 (2026-09-06): on by default. The server's own default and its
+  // schema-2 migration both say 0.65; a stale 0 here would show the gate as
+  // off on a rig where it is on.
+  max_eccentricity: 0.65,
   max_consecutive_rejects: 10,
   max_consecutive_rejects_night: 20,
 };
@@ -40,8 +43,10 @@ export const STANDARDS_NUMBER_FIELDS: StandardsNumberField[] = [
   { key: "max_guide_rms", label: "Reject above", unit: "″ RMS",
     hint: "Guide error while the frame was open. 0 turns it off." },
   { key: "max_eccentricity", label: "Reject rounder than", unit: "ecc",
-    hint: "Median star eccentricity, 0 to 1 — catches trailing and tilt. "
-        + "0 turns it off." },
+    hint: "Median star eccentricity, 0 to 1. A frame is also rejected when "
+        + "more than a quarter of its stars sit 0.15 above this, which is "
+        + "what a staircase trail looks like. Clean nights read 0.5 to 0.56; "
+        + "0.65 is the default. 0 turns it off." },
   { key: "refocus_on_temp_delta_c", label: "Refocus after", unit: "°C drift",
     hint: "Re-run autofocus once the focuser has drifted this far since the "
         + "last one. 0 turns it off." },

@@ -72,7 +72,11 @@ def test_every_moved_field_resolves_and_names_its_layer():
 
 def test_a_bare_plan_resolves_to_the_old_model_defaults():
     """The no-change guarantee, stated as a test: a plan nobody edited and a
-    config nobody opened resolve to exactly what SequencePlan used to carry."""
+    config nobody opened resolve to exactly what SequencePlan used to carry.
+
+    With one deliberate exception since GN-04: `max_eccentricity` was 0 (gate
+    off) on every rig, which is how a whole night of trailed subs was accepted,
+    so it now resolves to the measured 0.65."""
     p = resolve_policy(SequencePlan(), AppConfig())
     assert p.dither_pixels == 3.0
     assert p.recover_guiding is True
@@ -83,7 +87,7 @@ def test_a_bare_plan_resolves_to_the_old_model_defaults():
     assert p.refocus_on_temp_delta_c == 0.0
     assert p.min_stars == 0
     assert p.max_guide_rms == 0.0
-    assert p.max_eccentricity == 0.0
+    assert p.max_eccentricity == 0.65   # was 0.0; see the docstring
     assert p.max_consecutive_rejects == 10
     assert p.max_consecutive_rejects_night == 20
 

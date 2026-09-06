@@ -1450,3 +1450,47 @@ def measure_frame(data: np.ndarray, *, full_well: int | None = None,
     Returns ``(median_hfr, star_count, star_marks)`` so the capture hot path
     never detects twice (spec §6 / §4.6)."""
     return measure_stars(detect_stars(data), full_well=full_well, min_stars=min_stars)
+
+
+def grade_frame(data: np.ndarray, *, full_well: int | None = None,
+                stars: list[Star] | None = None,
+                min_stars: int = 3) -> dict:
+    """Every per-frame quality number the sequence engine grades a sub on, from
+    ONE detection pass: ``{hfr, stars, star_list, star_flux_median, ecc, tilt}``.
+
+    A key is present only when it could be measured -- an honest abstain, the
+    same contract each underlying helper already has: no star passes the
+    mid-bright gate and there is no ``star_flux_median``; no mark carries an
+    ecc and there is no ``ecc``; too few populated zones and there is no
+    ``tilt``. ``star_list`` is always present (possibly empty).
+
+    WHY THIS EXISTS AS A FUNCTION. ``hub._publish_preview`` computed these six
+    inline, interleaved with JPEG rendering and histograms, and
+    ``engine._check_quality`` grades the dict that came out of it. So the gate
+    could only ever be tested against a hand-built ``info``, and on 2026-09-06
+    every trailed sub of the night was accepted by a gate whose tests were all
+    green. Lifting the pure half out is what lets a test put a real trailed
+    frame through the real grader and the real gate.
+
+    ``stars`` lets a caller that already ran ``detect_stars`` (the hub, which
+    also feeds cloud detection and the live stacker from that one pass) reuse
+    it rather than detect twice.
+    """
+    if stars is None:
+        stars = detect_stars(data)
+    hfr, count, marks = measure_stars(stars, full_well=full_well,
+                                      min_stars=min_stars)
+    out: dict = {"star_list": marks}
+    if hfr is not None:
+        out["hfr"] = round(float(hfr), 2)
+        out["stars"] = int(count)
+    fmed = star_flux_median(stars, full_well=full_well)
+    if fmed is not None:
+        out["star_flux_median"] = round(fmed, 1)
+    fecc = frame_eccentricity(marks)
+    if fecc is not None:
+        out["ecc"] = round(fecc, 3)
+    tilt = frame_tilt(marks, float(data.shape[1]), float(data.shape[0]))
+    if tilt is not None:
+        out["tilt"] = tilt
+    return out

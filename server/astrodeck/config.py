@@ -519,7 +519,7 @@ class GuideConfig(BaseModel):
     #: GN-03 (2026-09-06). How many guide-star RE-LOCKS inside
     #: ``relock_window_min`` mean the field is walking rather than the star
     #: flickering. A re-lock resets the guide error to zero around a new star,
-    #: so the RMS cannot see the jump â€” 2.3 arcsec was reported over 40 arcmin
+    #: so the RMS cannot see the jump — 2.3 arcsec was reported over 40 arcmin
     #: of walk. At this many the sequence engine stops shooting, re-centres by
     #: plate solve and recalibrates. 0 turns the gate off, the same convention
     #: the other thresholds here use; the cost of a false positive is one
@@ -877,6 +877,11 @@ class DriverEntry(BaseModel):
         return self
 
 
+#: The shipped eccentricity ceiling, named because the schema-2 migration has
+#: to write the SAME number the model defaults to. See StandardsConfig below.
+DEFAULT_MAX_ECCENTRICITY = 0.65
+
+
 class StandardsConfig(BaseModel):
     """The operator's standards for a usable frame, and the focus policy that
     keeps frames usable (#239 stage A).
@@ -905,9 +910,17 @@ class StandardsConfig(BaseModel):
     min_stars: int = Field(0, ge=0, le=100000)
     #: Reject a light frame taken while guide RMS exceeded this, arcsec. 0 = off.
     max_guide_rms: float = Field(0.0, ge=0, le=60)
-    #: Reject a light frame whose median star eccentricity exceeds this, 0..1.
-    #: 0 = off.
-    max_eccentricity: float = Field(0.0, ge=0, le=1)
+    #: Reject a light frame whose median star eccentricity exceeds this, 0..1,
+    #: or whose elongated-star fraction exceeds the companion limit derived
+    #: from it (see `sequence.policy.ECC_ELONGATED_FRACTION`). 0 = off.
+    #:
+    #: 0.65 is MEASURED, not chosen: over every full frame of 2026-09-06 the
+    #: clean subs read median <= 0.56 and the trailed ones 0.61 upward. It
+    #: shipped at 0 -- off -- and so every staircase-trailed sub of that night
+    #: was accepted at HFR 3.10 and stacked in. A stored 0 written before the
+    #: schema-2 migration is raised to this default exactly once (see `_load`);
+    #: after that a 0 is the operator saying "off".
+    max_eccentricity: float = Field(DEFAULT_MAX_ECCENTRICITY, ge=0, le=1)
     #: Give up on a STEP after this many consecutive rejects. 0 = off.
     max_consecutive_rejects: int = Field(10, ge=0, le=1000)
     #: End the NIGHT after this many consecutive rejects across all targets.
@@ -933,7 +946,13 @@ class StandardsConfig(BaseModel):
 #:     being silently stripped of every field this build has never heard of.
 #: A config with no stamp at all reads back as version 0, which is itself the
 #: evidence "this predates the marker" that a future migration will want.
-CONFIG_SCHEMA = 1
+#:
+#: 2 (2026-09-06, GN-04): `standards.max_eccentricity` gained a real default.
+#: The stamp is what lets the migration tell a 0 that was the old built-in
+#: from a 0 the operator typed, which is the exact distinction the note above
+#: says a version number cannot usually recover -- it works here only because
+#: the raise happens ONCE, on the way past 1, and never again.
+CONFIG_SCHEMA = 2
 
 
 def _stored_schema(raw: dict) -> int:
@@ -1602,11 +1621,33 @@ class ConfigStore:
                     "preserved untouched",
                     "config")
 
-        # Nothing to migrate yet -- CONFIG_SCHEMA is 1 and there has never been
-        # a 0->1 change worth making, because everything before the marker was
-        # additive. The stamp is applied so the NEXT change has a floor to
-        # migrate from, and `_stamped` makes the write happen once rather than
-        # on every boot.
+        # MIGRATIONS. Each is keyed off `stored` -- the stamp read off disk
+        # before the model was built -- never off `cfg.schema_version`, which
+        # pydantic would have invented for an unstamped file. There was no 0->1
+        # change worth making (everything before the marker was additive); the
+        # stamp existed so this one would have a floor.
+        #
+        # 1 -> 2 (GN-04, 2026-09-06). `standards.max_eccentricity` shipped at 0
+        # = no eccentricity gate at all, and on the night of 2026-09-06 every
+        # staircase-trailed sub was accepted at HFR 3.10 and stacked in because
+        # of it. The default is now 0.65 (measured; see StandardsConfig), but a
+        # rig that already has a config on disk would go on running with the
+        # gate off for ever -- the fix shipped to nobody. A 0 written under
+        # schema 1 was the built-in, not a decision, because there was no UI
+        # state and no default that could mean anything else, so it is raised
+        # ONCE here. From schema 2 on, a 0 is the operator turning the gate off
+        # and is left alone.
+        if stored < 2 and cfg.standards.max_eccentricity == 0:
+            cfg.standards.max_eccentricity = DEFAULT_MAX_ECCENTRICITY
+            bus.log("info",
+                    "frame eccentricity rejection is now on by default at "
+                    + f"{DEFAULT_MAX_ECCENTRICITY:.2f}"
+                    + " - this config had it off, which was the old built-in "
+                      "rather than a setting anyone chose. Trailed subs will "
+                      "now be rejected; set it back to 0 in Settings to shoot "
+                      "without the gate.",
+                    "config")
+
         if cfg.schema_version < CONFIG_SCHEMA:
             cfg.schema_version = CONFIG_SCHEMA
             self._cfg = cfg

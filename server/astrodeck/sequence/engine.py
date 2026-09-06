@@ -4911,7 +4911,7 @@ class SequenceEngine:
         ``_maybe_recover_guiding`` above only ever fires when ``is_active()``
         goes false, and on 2026-09-06 it never did. The guider lost the star,
         the engine re-established lock one frame later on whatever star was
-        under the search box, and the error â€” measured around the NEW star â€”
+        under the search box, and the error — measured around the NEW star —
         reset to zero. The RMS read 2.3 arcsec all night while the field walked
         40 arcmin in half an hour, one invisible jump at a time, and the run
         kept exposing.
@@ -4920,9 +4920,9 @@ class SequenceEngine:
         cloud), so the gate is a RATE: ``guide.relock_limit`` of them inside
         ``guide.relock_window_min``. At that point the pointing is no longer
         what the plan believes it is, so this does the same three things the
-        HOLD/RESUME checklist does by hand â€” stop, throw the calibration away
+        HOLD/RESUME checklist does by hand — stop, throw the calibration away
         so the restart measures a fresh one (GN-01's discard latch makes that
-        stick), re-centre by plate solve â€” and only then guides again.
+        stick), re-centre by plate solve — and only then guides again.
 
         Every guider attribute is read through ``getattr``: the PHD2/NINA
         bridge cannot see its own lock position and reports the ``GuideStats``
@@ -5680,11 +5680,15 @@ class SequenceEngine:
                                    f'{self._policy.max_guide_rms:.2f}"', "sequence")
                 accepted = False
         if accepted and not calibration and self._policy.max_eccentricity > 0:
-            ecc = info.get("ecc") if isinstance(info, dict) else None
-            if ecc is not None and float(ecc) > self._policy.max_eccentricity:
+            # TWO statistics, ONE dial: the median ceiling plus the
+            # elongated-star fraction that catches a staircase whose truncated
+            # faint stars drag the median back under it. The rule and the
+            # measured margins that chose it live on RunPolicy
+            # (`eccentricity_reject_reason`), beside the setting they read.
+            reason = self._policy.eccentricity_reject_reason(info)
+            if reason:
                 self._rejected += 1
-                bus.log("warning", f"frame eccentricity {float(ecc):.2f} above ceiling "
-                                   f"{self._policy.max_eccentricity:.2f} — trailing/tilt", "sequence")
+                bus.log("warning", reason, "sequence")
                 accepted = False
         if accepted and record and factor and hfr is not None:
             self._recent_hfr.append(float(hfr))
