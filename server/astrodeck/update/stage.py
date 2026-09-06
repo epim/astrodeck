@@ -14,6 +14,8 @@ import subprocess
 import tarfile
 from pathlib import Path
 
+from ..devices import vendor_verify
+
 
 def _is_within(base: Path, target: Path) -> bool:
     try:
@@ -116,3 +118,81 @@ def snapshot_env(python_exe: str, timeout_s: float = 120.0) -> "str | None":
             continue
         pins.append(line.strip())
     return "\n".join(pins) + "\n" if pins else ""
+
+
+def carry_forward_vendor_libraries(src_vendor: Path, dst_vendor: Path) -> dict:
+    """Copy into a staged release the bundled SDK libraries its tarball may not
+    carry, when this install already has them and the NEW release's manifest
+    pins them.
+
+    ``scripts/build_release.py`` omits vendor binaries we are not licensed to
+    redistribute (Player One, #199). Their SHA-256 stays in ``vendor/manifest.json``
+    because the operator obtains them once and ``vendor_verify`` refuses anything
+    else. Without this step every self-update dropped the Player One library and
+    the imaging camera vanished on the next boot: the hand deploy of 0.3.23
+    copied it by hand, the updater did not.
+
+    Rules: regular files that look like shared libraries only; never a symlink
+    (a planted redirect); never overwrite a file the tarball shipped; only when
+    the staged manifest pins that exact path AND the local bytes match it. A
+    library that does not qualify is left behind and named in ``skipped`` so the
+    log can say what to do.
+
+    Returns ``{"carried": [rel, ...], "skipped": [(rel, why), ...], "reason": str}``
+    where ``reason`` explains an early return (no manifest, no source tree).
+    """
+    result: dict = {"carried": [], "skipped": [], "reason": ""}
+    if not src_vendor.is_dir():
+        result["reason"] = "no bundled SDK tree on this install"
+        return result
+    manifest_path = dst_vendor / "manifest.json"
+    if not manifest_path.is_file():
+        result["reason"] = "staged release has no vendor manifest"
+        return result
+    try:
+        manifest = vendor_verify.load_manifest(manifest_path)
+    except (OSError, ValueError, vendor_verify.VendorIntegrityError) as exc:
+        result["reason"] = f"staged vendor manifest unreadable: {exc}"
+        return result
+    pinned = manifest.get("binaries") or {}
+    for path in sorted(src_vendor.rglob("*")):
+        if path.is_symlink() or not vendor_verify._is_shared_library(path):
+            continue
+        rel = path.relative_to(src_vendor).as_posix()
+        dst = dst_vendor / rel
+        if dst.exists() or dst.is_symlink():
+            continue  # the release shipped its own; the older local copy never wins
+        entry = pinned.get(rel)
+        if not isinstance(entry, dict) or not entry.get("sha256"):
+            result["skipped"].append((rel, "not pinned by the staged manifest"))
+            continue
+        if vendor_verify._sha256(path) != entry["sha256"]:
+            result["skipped"].append((rel, "does not match the staged manifest"))
+            continue
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, dst)
+        result["carried"].append(rel)
+    return result
+
+
+def _main(argv: "list[str] | None" = None) -> int:
+    """``python -m astrodeck.update.stage carry-forward SRC_VENDOR DST_VENDOR``:
+    the same carry-forward the updater runs, for a hand deploy."""
+    import argparse
+    import json
+
+    ap = argparse.ArgumentParser(prog="python -m astrodeck.update.stage")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    cf = sub.add_parser(
+        "carry-forward",
+        help="copy manifest-pinned SDK libraries this install has into a staged release")
+    cf.add_argument("src_vendor", help="this install's astrodeck/vendor directory")
+    cf.add_argument("dst_vendor", help="the staged release's astrodeck/vendor directory")
+    args = ap.parse_args(argv)
+    print(json.dumps(carry_forward_vendor_libraries(
+        Path(args.src_vendor), Path(args.dst_vendor)), indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())

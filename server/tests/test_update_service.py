@@ -271,3 +271,38 @@ def test_exit_code_handoff():
     SVC.request_apply_exit()
     assert s.should_exit is True
     assert SVC.consume_exit_code() == 92
+
+
+async def test_apply_carries_forward_vendor_libraries_into_the_staged_release(
+        monkeypatch, tmp_path):
+    """The 0.3.23 hand deploy copied Player One's library into the new release
+    by hand; the updater must do the same or the imaging camera is gone."""
+    import hashlib
+
+    from astrodeck.devices import sdk_paths
+
+    _patch_pipeline(monkeypatch)
+    lib = b"player one bytes"
+    current_vendor = tmp_path / "current-vendor"
+    (current_vendor / "playerone").mkdir(parents=True)
+    (current_vendor / "playerone" / "PlayerOneCamera.dll").write_bytes(lib)
+    monkeypatch.setattr(sdk_paths, "VENDOR_ROOT", current_vendor)
+
+    def fake_stage(tb, releases, v):
+        staged = releases / v
+        vendor = staged / "server" / "astrodeck" / "vendor"
+        vendor.mkdir(parents=True)
+        (vendor / "manifest.json").write_text(json.dumps({"schema": 1, "binaries": {
+            "playerone/PlayerOneCamera.dll": {
+                "sha256": hashlib.sha256(lib).hexdigest(),
+                "size": len(lib), "vendor": "playerone"}}}))
+        return staged
+    monkeypatch.setattr(stage, "stage_release", fake_stage)
+
+    svc = UpdateService(cfg_getter=_cfg(), hub=FakeHub(), install_root=tmp_path,
+                        server_signal=lambda: None, now=lambda: 1.0)
+    update_state.set_available("0.2.0", "hello")
+    await svc.apply()
+    carried = (tmp_path / "releases" / "0.2.0" / "server" / "astrodeck"
+               / "vendor" / "playerone" / "PlayerOneCamera.dll")
+    assert carried.read_bytes() == lib
