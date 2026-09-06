@@ -5,6 +5,26 @@
       "size": 443648,
       "vendor": "playerone"
     },
+    "playerone/linux-arm32/libPlayerOneCamera.so.3.10.0": {
+      "sha256": "76bf84c811b53bbdab2f52cb3ad5171773e585a2824b018eb53164d7a2779ccd",
+      "size": 425480,
+      "vendor": "playerone"
+    },
+    "playerone/linux-arm64/libPlayerOneCamera.so.3.10.0": {
+      "sha256": "d3c8eff03613785b21014484f47f39431c52c5d723484b6dde74fb9667e7d637",
+      "size": 474808,
+      "vendor": "playerone"
+    },
+    "playerone/linux-x86/libPlayerOneCamera.so.3.10.0": {
+      "sha256": "bfccdb9e7ce663a83e03a7f511f77c2cd4f344cf63adc27d33635e02a421d2e4",
+      "size": 517396,
+      "vendor": "playerone"
+    },
+    "playerone/linux-x86_64/libPlayerOneCamera.so.3.10.0": {
+      "sha256": "117536d98ebe7b8d1af23eb6c07ea44a018584c54d142d03580bed71db7bb83d",
+      "size": 497064,
+      "vendor": "playerone"
+    },
     "playerone/macos/libPlayerOneCamera.dylib": {
       "sha256": "5ec7a593ed4ea32b47ecdd307514171f9570125e9bbb025dee2d618a8a1827b5",
       "size": 891607,

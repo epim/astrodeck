@@ -375,3 +375,12 @@ is a no-op for env-sourced tokens (Fly secrets), where a redeploy is the
 rotation path; npm audit --omit=dev fails on any severity including low, which
 may block a release on an unfixable advisory (--audit-level=moderate is the
 lever); third-party actions are pinned by tag per repo convention, not by SHA.
+- OPEN-007 (CORRECTED AGAIN, from the first Linux CI run). The manifest
+  builder matched shared libraries on Path.suffix alone, and the Linux vendor
+  libs ship as fully versioned sonames (libPlayerOneCamera.so.3.10.0, suffix
+  ".0"), so all four Player One Linux builds were absent from the manifest and
+  the fail-closed check refused them as "not in the manifest" -- Player One
+  would not have loaded on the Orange Pi. The Windows-only local runs could not
+  see it; CI could. The iterator now judges on every suffix ("so" anywhere),
+  the manifest covers 13 binaries, and test_manifest_covers_versioned_linux_sonames
+  pins the arm64 and x86_64 entries.
