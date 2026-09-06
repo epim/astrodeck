@@ -710,10 +710,15 @@ pub fn sanity_advisories(cal: &Cal, ra_steps: u32, dec_steps: u32) -> Vec<String
         ];
     }
 
-    // 2. Non-orthogonal RA/Dec axes (scope.cpp:890-897).
-    let non_ortho_deg = (norm_angle(cal.x_angle - cal.y_angle).abs() - PI / 2.0)
-        .abs()
-        .to_degrees();
+    // 2. Non-orthogonal RA/Dec axes (scope.cpp:890-897). Judged on the
+    //    parity-folded error (`Cal::y_angle_error_folded`): a rig whose Dec
+    //    axis is reversed relative to RA calibrates at |y_angle_error| near
+    //    π and is perfectly square, so the raw value would read 178° out.
+    //    Algebraically identical to upstream's
+    //    `fabs(fabs(norm_angle(xAngle - yAngle)) - M_PI/2)` for any cal whose
+    //    `y_angle_error` came from `Cal::y_angle_error_from` (all of them);
+    //    see `orthogonality_fold_matches_upstream_formula`.
+    let non_ortho_deg = cal.y_angle_error_folded().abs().to_degrees();
     if non_ortho_deg > CAL_ALERT_ORTHOGONALITY_TOLERANCE_DEG {
         return vec![
             "Advisory: Calibration completed but RA/Dec axis angles are questionable and guiding may be impaired"

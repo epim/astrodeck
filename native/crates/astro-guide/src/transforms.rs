@@ -18,8 +18,20 @@
 //! [`camera_to_mount`] and [`mount_to_camera`] convert a star offset between
 //! the camera's pixel frame and the mount's RA/Dec axis frame using those
 //! two angles. When the axes are non-orthogonal the reverse transform is not
-//! an exact inverse of the forward one; error grows with `y_angle_error`.
-//! PHD2 accepts this, and so do we.
+//! an exact inverse of the forward one: the round trip returns the input to
+//! within a relative error of `|`[`Cal::y_angle_error_folded`]`|` radians
+//! (0.05 rad of non-orthogonality costs 5% of the offset's magnitude, and
+//! that bound is tight). PHD2 accepts this, and so do we.
+//!
+//! A rig whose Dec axis moves the star opposite to the right-handed sense of
+//! its RA axis (reversed Dec parity) calibrates with `y_angle_error` near
+//! ±π, not near 0. That is a normal, orthogonal calibration, not a broken
+//! one, and the transforms need the unfolded value: [`camera_to_mount`] uses
+//! it directly and [`mount_to_camera`] flips its rotation sense when
+//! [`Cal::dec_axis_reversed`] holds. Anything a human reads or judges wants
+//! the parity folded out instead — [`Cal::y_angle_error_folded`] turns 178°
+//! into -2° — because the raw value makes a good calibration look 178° out
+//! of square.
 //!
 //! This module holds no state and performs no I/O: every function is a pure
 //! function of its inputs, matching this crate's synchronous, I/O-free
@@ -108,8 +120,48 @@ impl Cal {
     /// The orthogonality error between the measured RA/Dec axes
     /// (dossier §5; `Mount::SetCalibration`, `mount.cpp:1570`):
     /// `norm_angle(x_angle - y_angle + PI/2)`.
+    ///
+    /// Near 0 when the Dec axis runs right-handed from RA and near ±π when
+    /// its parity is reversed — both orthogonal. Fold the parity out with
+    /// [`fold_y_angle_error`](Cal::fold_y_angle_error) before reporting or
+    /// judging the number.
     pub fn y_angle_error_from(x_angle: f64, y_angle: f64) -> f64 {
         norm_angle(x_angle - y_angle + PI / 2.0)
+    }
+
+    /// Remove the Dec-parity reversal from a raw orthogonality error: an
+    /// error measured against a reversed axis (`|e| > π/2`) is re-expressed
+    /// relative to π instead of 0, so +178° folds to -2° and -175° folds to
+    /// +5°, while an already right-handed +3° is returned unchanged.
+    ///
+    /// The folded value is "how far from square is this mount", which is the
+    /// number to show a human and the number a sanity check should judge.
+    /// The transforms deliberately keep the raw, unfolded value — see the
+    /// module docs.
+    pub fn fold_y_angle_error(e: f64) -> f64 {
+        if e.abs() > PI / 2.0 {
+            norm_angle(e - PI)
+        } else {
+            e
+        }
+    }
+
+    /// Whether this calibration's Dec axis runs reversed relative to its RA
+    /// axis (`|y_angle_error| > π/2`).
+    ///
+    /// This is the predicate [`mount_to_camera`] uses to flip its rotation
+    /// sense, and it calls this method, so the reported hand and the
+    /// transform's hand cannot disagree.
+    pub fn dec_axis_reversed(&self) -> bool {
+        self.y_angle_error.abs() > PI / 2.0
+    }
+
+    /// This calibration's orthogonality error with the Dec-parity reversal
+    /// folded out ([`fold_y_angle_error`](Cal::fold_y_angle_error)): the
+    /// value to report and to judge for validity, never the value to
+    /// transform with.
+    pub fn y_angle_error_folded(&self) -> f64 {
+        Self::fold_y_angle_error(self.y_angle_error)
     }
 }
 
@@ -137,9 +189,10 @@ pub fn mount_to_camera(mnt: (f64, f64), cal: &Cal) -> (f64, f64) {
     let hyp = mx.hypot(my);
     let mut theta = my.atan2(mx);
 
-    // axis-reversal case: a very non-orthogonal calibration flips the sense
-    // of rotation.
-    if cal.y_angle_error.abs() > PI / 2.0 {
+    // axis-reversal case: a calibration whose Dec parity is reversed flips
+    // the sense of rotation. Same predicate as `Cal::dec_axis_reversed`, by
+    // construction.
+    if cal.dec_axis_reversed() {
         theta = -theta;
     }
 

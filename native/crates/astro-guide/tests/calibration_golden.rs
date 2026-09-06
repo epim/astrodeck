@@ -272,8 +272,11 @@ fn sanity_advisories_flags_few_steps() {
 fn sanity_advisories_flags_non_orthogonality() {
     let mut cal = base_cal();
     // 75 degrees apart -> 15 degrees off the nearest multiple of 90, over
-    // the 12.5 degree tolerance.
+    // the 12.5 degree tolerance. `y_angle_error` is the derived field the
+    // advisory reads (every real Cal stamps it from the angles), so move it
+    // with the angle.
     cal.y_angle = (90.0_f64 - 15.0).to_radians();
+    cal.y_angle_error = Cal::y_angle_error_from(cal.x_angle, cal.y_angle);
     let msgs = sanity_advisories(&cal, 12, 12);
     assert_eq!(msgs.len(), 1);
     assert!(msgs[0].contains("axis angles"));
@@ -586,4 +589,70 @@ fn clear_backlash_proceeds_anyway_when_cumulative_at_least_three_px() {
     );
     assert_eq!(leg_count(&pulses, CalLeg::GoSouth), 17);
     assert_eq!(leg_count(&pulses, CalLeg::NudgeSouth), 4);
+}
+
+// ---------------------------------------------------------------------------
+// GN-06: the orthogonality advisory judges the PARITY-FOLDED error. Three
+// fresh calibrations on the AM5N reported `y_angle_error` 174.9-178.2 deg
+// with `is_valid` true and no orthogonality advisory: that rig's Dec axis is
+// reversed relative to RA, so a square calibration lands near ±π.
+// ---------------------------------------------------------------------------
+
+/// A calibration on a rig whose Dec axis is reversed, `err_rad` out of square.
+fn reversed_dec_cal(err_rad: f64) -> Cal {
+    let mut cal = base_cal();
+    cal.x_angle = 0.3;
+    cal.y_angle = 0.3 - PI / 2.0 + err_rad;
+    cal.y_angle_error = Cal::y_angle_error_from(cal.x_angle, cal.y_angle);
+    cal
+}
+
+#[test]
+fn orthogonality_fold_matches_upstream_formula() {
+    // The folded error and upstream's
+    // `fabs(fabs(norm_angle(xAngle - yAngle)) - M_PI/2)` (scope.cpp:890-897,
+    // what this check used before the fold) are the same number for every
+    // calibration whose `y_angle_error` came from `y_angle_error_from` --
+    // on BOTH hands. The fold only changes which value gets reported.
+    for err in [0.0, 0.05, 0.3, -0.2, 0.9] {
+        for cal in [reversed_dec_cal(err), {
+            let mut c = base_cal();
+            c.x_angle = 0.3;
+            c.y_angle = 0.3 + PI / 2.0 + err;
+            c.y_angle_error = Cal::y_angle_error_from(c.x_angle, c.y_angle);
+            c
+        }] {
+            let upstream = (norm_angle(cal.x_angle - cal.y_angle).abs() - PI / 2.0).abs();
+            let folded = cal.y_angle_error_folded().abs();
+            assert!(
+                (folded - upstream).abs() < 1e-9,
+                "err={err} folded={folded} upstream={upstream}"
+            );
+        }
+    }
+}
+
+#[test]
+fn sanity_advisories_silent_for_a_square_reversed_dec_axis() {
+    // Last night's shape: raw error ~178 deg, real error 2.9 deg.
+    let cal = reversed_dec_cal(0.05);
+    assert!(
+        cal.y_angle_error.to_degrees() > 170.0,
+        "raw error should look terrible: {} deg",
+        cal.y_angle_error.to_degrees()
+    );
+    assert!(cal.dec_axis_reversed());
+    assert!(
+        sanity_advisories(&cal, 12, 12).is_empty(),
+        "a square reversed-Dec calibration is not an orthogonality problem"
+    );
+}
+
+#[test]
+fn sanity_advisories_flags_a_real_error_on_a_reversed_dec_axis() {
+    // 0.3 rad = 17.2 deg, over the 12.5 deg tolerance.
+    let cal = reversed_dec_cal(0.3);
+    let msgs = sanity_advisories(&cal, 12, 12);
+    assert_eq!(msgs.len(), 1, "msgs={msgs:?}");
+    assert!(msgs[0].contains("axis angles"), "msgs={msgs:?}");
 }
