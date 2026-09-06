@@ -538,6 +538,13 @@ def sweep_metric(frame, min_stars: int = MIN_STARS_PER_POINT
     the metric actually saw when a point is refused, instead of the sweep
     inferring a cause it cannot know.
 
+    Near focus that number is now ``median_hfr``'s, exactly — ``star_size``
+    answers from the star population when the population is trustworthy
+    (``SourceSize.source == "stars"``, GN-05), and from the binned pyramid only
+    where nothing resolves. So the vertex this curve fits and the HFR every sub
+    is then graded with are the same measurement, which is what they were not on
+    2026-09-06: the sweep landed 74 steps off and the grader disagreed with it.
+
     THE WHOLE FRAME, not ``frame.data``. The real metric only ever reads pixels,
     but the sweep now exposes the next point while this one is being measured
     (`focus.pipeline`) — so the focuser is no longer standing at the position
@@ -1050,38 +1057,43 @@ async def run_autofocus(camera: Camera, focuser: Focuser, *,
         span = int(xs.max() - xs.min())
         swing = float(ys.max() - ys.min())
         flat = is_flat_sweep(ys)
+        # A SWEEP THAT ONLY EVER GOES ONE WAY IS NOT FLAT, IT IS OFF TARGET.
+        #
+        # On a monotonic ramp a parabola has a ~ 0 and the SIGN of it is
+        # decided by noise, so one physical situation - focus outside the
+        # window, only one arm ever measured - landed on "flat or inverted"
+        # or on the bracket guard by rounding. Which message appears is the
+        # whole value of having one: "too narrow, or your focuser is not
+        # moving" sends someone to check hardware, "outside the swept range"
+        # tells them to recentre. Decided here from the SHAPE, which cannot
+        # flip. `xs`/`ys` were sorted by position above, so the sign of the
+        # successive differences is the whole test.
+        #
+        # Computed once and read twice: here, and again after the fit, because a
+        # curve that never turned round is unbracketed WHEREVER the parabola put
+        # its vertex (see the guard below the fit).
+        deltas = np.diff(ys)
+        monotonic = bool(deltas.size) and bool(np.all(deltas > 0) or np.all(deltas < 0))
+
+        def _never_turned_round() -> AutofocusResult:
+            side = "above" if ys[0] > ys[-1] else "below"
+            advice = _thin_advice(
+                f"every point is {'lower' if side == 'above' else 'higher'} "
+                f"than the one before it across {span} steps, so the sweep "
+                f"never turned round: true focus is {side} the swept range. "
+                f"Recentre the sweep there, or raise the step size.")
+            bus.publish("focus", state="failed",
+                        points=[{"position": p, "hfr": h} for p, h in points],
+                        best=None, advice=advice)
+            return AutofocusResult(
+                False, start_pos, None, points,
+                "minimum not bracketed — true focus is outside the swept "
+                "range (widen the sweep or recentre)", advice=advice)
+
         if a <= 0 or flat:
-            # A SWEEP THAT ONLY EVER GOES ONE WAY IS NOT FLAT, IT IS OFF TARGET.
-            #
-            # On a monotonic ramp a parabola has a ~ 0 and the SIGN of it is
-            # decided by noise, so one physical situation - focus outside the
-            # window, only one arm ever measured - landed on "flat or inverted"
-            # or on the bracket guard by rounding. Which message appears is the
-            # whole value of having one: "too narrow, or your focuser is not
-            # moving" sends someone to check hardware, "outside the swept range"
-            # tells them to recentre. Decided here from the SHAPE, which cannot
-            # flip. Only inside this branch: a curve that DID fit (a > 0) still
-            # goes to the bracket guard below, whose advice quotes how far
-            # outside the vertex fell and is better than anything here.
-            #
-            # `xs`/`ys` were sorted by position above, so the sign of the
-            # successive differences is the whole test.
-            deltas = np.diff(ys)
-            if deltas.size and (np.all(deltas > 0) or np.all(deltas < 0)):
-                side = "above" if ys[0] > ys[-1] else "below"
-                advice = _thin_advice(
-                    f"every point is {'lower' if side == 'above' else 'higher'} "
-                    f"than the one before it across {span} steps, so the sweep "
-                    f"never turned round: true focus is {side} the swept range. "
-                    f"Recentre the sweep there, or raise the step size.")
+            if monotonic:
                 await focuser.move_to(start_pos)
-                bus.publish("focus", state="failed",
-                            points=[{"position": p, "hfr": h} for p, h in points],
-                            best=None, advice=advice)
-                return AutofocusResult(
-                    False, start_pos, None, points,
-                    "minimum not bracketed — true focus is outside the swept "
-                    "range (widen the sweep or recentre)", advice=advice)
+                return _never_turned_round()
             # Say how flat. A V-curve that barely moves over the whole swept
             # range is either a sweep far too narrow to see the V, or a focuser
             # that reported moves it did not make — and the measured spread
@@ -1115,6 +1127,21 @@ async def run_autofocus(camera: Camera, focuser: Focuser, *,
         # park the focuser at a boundary that is NOT in focus. Fail loudly instead
         # so the caller can widen / recentre the sweep.
         lo_edge, hi_edge = float(xs.min()), float(xs.max())
+        # AND A CURVE THAT NEVER TURNED ROUND IS NOT BRACKETED EITHER, wherever
+        # the parabola put its vertex (GN-05). A defocus ramp is not straight —
+        # it steepens away from focus — so a parabola through ONE arm can come
+        # back a > 0 with a vertex a few steps INSIDE the sampled range, and
+        # then this guard waves it through and the run reports success at a
+        # position where nothing was ever measured to be smallest. Reproduced
+        # on the simulator with true focus 3000 steps past the top of the
+        # window: nine strictly falling points, vertex 20520, "ok". Which way
+        # the fit happens to bend is not evidence about where focus is; nine
+        # points that never turned round are, and they say it is not in here.
+        # The vertex-OUTSIDE case is left to the guard below, whose advice can
+        # say which way and (sometimes) how far.
+        if monotonic and lo_edge < vertex < hi_edge:
+            await focuser.move_to(start_pos)
+            return _never_turned_round()
         if not (lo_edge < vertex < hi_edge):
             # Name the direction, and the distance ONLY while the fit is
             # entitled to one. Which way focus lies is knowledge — the sweep
