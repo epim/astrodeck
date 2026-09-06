@@ -2467,6 +2467,10 @@ class SequenceEngine:
             await self._reconnect_gate()
             await self._maybe_meridian_flip(target, step.exposure_s)
             await self._maybe_recover_guiding(target)
+            # ...and the loss the line above CANNOT see (GN-03): a guider that
+            # re-locks within a frame never reports itself inactive, so a field
+            # walking one re-lock at a time reaches here with a healthy RMS.
+            await self._maybe_hold_for_relocks(target)
             await self._enforce_tracking(step, target)
             await self._enforce_cooling()
 
@@ -4899,6 +4903,107 @@ class SequenceEngine:
             bus.log("warning", f"guiding recovery failed: {e}", "sequence")
             return
         # ...and do not hand control back until the guider has stopped pulsing.
+        await self._await_guider_quiet("the next frame")
+
+    async def _maybe_hold_for_relocks(self, target=None) -> None:
+        """GN-03: treat a guider that keeps RE-LOCKING as a guiding failure.
+
+        ``_maybe_recover_guiding`` above only ever fires when ``is_active()``
+        goes false, and on 2026-09-06 it never did. The guider lost the star,
+        the engine re-established lock one frame later on whatever star was
+        under the search box, and the error â€” measured around the NEW star â€”
+        reset to zero. The RMS read 2.3 arcsec all night while the field walked
+        40 arcmin in half an hour, one invisible jump at a time, and the run
+        kept exposing.
+
+        A re-lock is not by itself a failure (a star flickers behind thin
+        cloud), so the gate is a RATE: ``guide.relock_limit`` of them inside
+        ``guide.relock_window_min``. At that point the pointing is no longer
+        what the plan believes it is, so this does the same three things the
+        HOLD/RESUME checklist does by hand â€” stop, throw the calibration away
+        so the restart measures a fresh one (GN-01's discard latch makes that
+        stick), re-centre by plate solve â€” and only then guides again.
+
+        Every guider attribute is read through ``getattr``: the PHD2/NINA
+        bridge cannot see its own lock position and reports the ``GuideStats``
+        defaults, so this must be a silent no-op for it rather than a nightly
+        exception."""
+        if not (self.plan and self.plan.guide and self._policy.recover_guiding):
+            return
+        g = self.hub.guider
+        if not g or not g.connected:
+            return
+        cfg = self._cfg or config_store.cfg()
+        gcfg = getattr(cfg, "guide", None)
+        limit = int(getattr(gcfg, "relock_limit", 0) or 0)
+        if limit <= 0:
+            return                      # 0 is off, as everywhere else here
+        window_min = float(getattr(gcfg, "relock_window_min", 10.0) or 10.0)
+        try:
+            events = list(getattr(g.stats(), "relock_events", None) or [])
+        except Exception:
+            return
+        if not events:
+            return
+        now = time.time()
+        # Events from BEFORE the last hold are already paid for: the restart it
+        # ran is what they bought, and counting them again would hold on every
+        # frame until they aged out of the window. Created on the first hold of
+        # the run.
+        floor = max(now - window_min * 60.0, getattr(self, "_relock_hold_at", 0.0))
+        recent = [e for e in events
+                  if float(e.get("t", 0.0) or 0.0) > floor]
+        if len(recent) < limit:
+            return
+        self._relock_hold_at = now
+        bus.log("warning",
+                f"guiding re-locked {len(recent)} times in {window_min:.0f} "
+                f"min: the field is walking; holding to re-centre and "
+                f"recalibrate", "sequence")
+        self._set_state(detail="holding: the guided field is walking")
+
+        try:
+            await g.stop_guiding()
+        except Exception as e:
+            bus.log("warning",
+                    f"could not stop guiding for the re-lock hold ({e}); "
+                    "continuing", "sequence")
+        # Throw the calibration away so the restart MEASURES one. A field that
+        # walks under guiding is the signature of a calibration that no longer
+        # describes the mount (GN-01: every runaway that night started from a
+        # reused or mirrored one), and start_guiding would otherwise reuse it.
+        clear = getattr(g, "clear_calibration", None)
+        if callable(clear):
+            try:
+                res = clear()
+                if asyncio.iscoroutine(res):
+                    await res
+            except Exception as e:
+                bus.log("warning",
+                        f"could not clear the guider calibration ({e}); the "
+                        "restart may reuse it", "sequence")
+        # Re-centre FIRST, for the same reason recovery does: it slews, and a
+        # slew would tear down guiding just paid for. ``target.center`` is the
+        # existing statement of intent, honoured here exactly as there.
+        if target is not None and getattr(target, "center", False) \
+                and not getattr(target, "calibration", False):
+            try:
+                self._set_state(detail="re-centring: the guided field walked")
+                await self.hub.goto_and_center(target.ra_hours, target.dec_deg,
+                                               rotation_deg=target.rotation_deg)
+            except Exception as e:
+                # Non-fatal by design (same as recovery): a failed re-centre
+                # leaves the mount where it already was.
+                bus.log("warning",
+                        f"re-centring after the re-lock hold failed ({e}); "
+                        f"recalibrating at the current pointing", "sequence")
+        try:
+            await g.start_guiding()
+        except Exception as e:
+            bus.log("warning",
+                    f"guiding restart after the re-lock hold failed: {e}",
+                    "sequence")
+            return
         await self._await_guider_quiet("the next frame")
 
     async def _refocus_due(self) -> bool:

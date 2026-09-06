@@ -516,6 +516,16 @@ class GuideConfig(BaseModel):
     #: config dict since the flip path was written, but nothing DECLARED it, so
     #: no rig could ever set it (the same shape as the offset above).
     flip_requires_dec_flip: bool = False
+    #: GN-03 (2026-09-06). How many guide-star RE-LOCKS inside
+    #: ``relock_window_min`` mean the field is walking rather than the star
+    #: flickering. A re-lock resets the guide error to zero around a new star,
+    #: so the RMS cannot see the jump â€” 2.3 arcsec was reported over 40 arcmin
+    #: of walk. At this many the sequence engine stops shooting, re-centres by
+    #: plate solve and recalibrates. 0 turns the gate off, the same convention
+    #: the other thresholds here use; the cost of a false positive is one
+    #: re-centre plus one calibration walk.
+    relock_limit: int = Field(3, ge=0, le=100)
+    relock_window_min: float = Field(10.0, gt=0, le=120)
 
 
 # ------------------------------------------------- frame settings, by PURPOSE
