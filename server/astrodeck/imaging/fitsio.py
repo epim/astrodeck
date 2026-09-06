@@ -30,6 +30,16 @@ class FrameMeta:
     radesys: str = "ICRS"
     objctra: str | None = None              # 'HH MM SS.s' (J2000)
     objctdec: str | None = None             # '+DD MM SS'  (J2000)
+    # GN-07: the mount's own raw report, recorded alongside whichever pointing
+    # actually won OBJCTRA/OBJCTDEC above -- a plate-solved centre, a known
+    # goto target, or (last resort) this same mount report. `pointing_source`
+    # says which. Written even when it equals OBJCTRA/OBJCTDEC (source
+    # "mount"), so a reader never has to guess.
+    mountra: str | None = None              # 'HH MM SS.s' (J2000), mount's raw report
+    mountdec: str | None = None             # '+DD MM SS'  (J2000), mount's raw report
+    mount_ra_hours: float | None = None
+    mount_dec_deg: float | None = None
+    pointing_source: str | None = None      # "solved" | "target" | "mount"
     # per-frame device telemetry
     set_temp_c: float | None = None
     focuser_pos: int | None = None
@@ -122,6 +132,28 @@ def save_fits(frame: CameraFrame, path: Path, *, target: str = "",
         hdr["OBJCTRA"] = (m.objctra, "RA of target (J2000)")
     if m.objctdec:
         hdr["OBJCTDEC"] = (m.objctdec, "Dec of target (J2000)")
+    # --- GN-07: the mount's raw report + which pointing OBJCTRA/OBJCTDEC is.
+    #     Sexagesimal cards always; the numeric pair (MOUNTRAD/MOUNTDCD, deg)
+    #     added too since it's one line each and saves a re-parse of the
+    #     sexagesimal string for any consumer that just wants a float. ---
+    if m.mountra:
+        hdr["MOUNTRA"] = (m.mountra, "RA reported by the mount (J2000)")
+    if m.mountdec:
+        hdr["MOUNTDEC"] = (m.mountdec, "Dec reported by the mount (J2000)")
+    if _finite(m.mount_ra_hours):
+        hdr["MOUNTRAD"] = (float(m.mount_ra_hours) * 15.0,
+                           "RA reported by the mount (deg, J2000)")
+    if _finite(m.mount_dec_deg):
+        hdr["MOUNTDCD"] = (float(m.mount_dec_deg),
+                           "Dec reported by the mount (deg, J2000)")
+    if m.pointing_source:
+        # Spelled out (solved/target/mount) rather than the fuller sentence
+        # the spec first phrased this as -- that sentence plus any of the
+        # three values overruns FITS's 80-column card and astropy silently
+        # truncates the comment mid-word ("...target or m"). The VALUE is
+        # unaffected either way; this only keeps the comment itself legible.
+        hdr["PNTGSRC"] = (m.pointing_source,
+                          "OBJCTRA/OBJCTDEC source (solved/target/mount)")
     # --- device telemetry ---
     if _finite(m.set_temp_c):
         hdr["SET-TEMP"] = (float(m.set_temp_c), "Cooler setpoint (C)")

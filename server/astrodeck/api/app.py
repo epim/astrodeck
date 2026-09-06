@@ -5181,6 +5181,9 @@ def create_app(*, bind_host: str | None = None,
                 # old one, which is this rig's actual AM5 failure mode. So the
                 # explicit call is the primary and the delta is the backstop.
                 hub.invalidate_field_solve("the mount is slewing to a new target")
+                # A commanded move is what retires a plate-solved centre
+                # (GN-07); the mount's own drifting report is not.
+                hub.note_pointing_moved()
                 await tel.slew(body.ra_hours, body.dec_deg)
             bus.publish("mount", action="slew_complete")
         return _spawn("goto", plain_goto())
@@ -5356,6 +5359,7 @@ def create_app(*, bind_host: str | None = None,
             tel = hub.require("telescope")
             async with hub._motion_lock:
                 hub.invalidate_field_solve("the mount is parking")
+                hub.note_pointing_moved()
                 await tel.park()
             # PARK IS THE ONE EVENT AN UNATTENDED NIGHT MUST BE ABLE TO PROVE.
             #
@@ -5399,6 +5403,7 @@ def create_app(*, bind_host: str | None = None,
             t = hub.require("telescope")
             async with hub._motion_lock:
                 hub.invalidate_field_solve("the mount is homing")
+                hub.note_pointing_moved()
                 await t.find_home()
             bus.log("info", "mount homed", "mount")   # see park, above
         return _spawn("goto", _home(), replace=True)
@@ -5417,6 +5422,7 @@ def create_app(*, bind_host: str | None = None,
         try:
             tel = hub.require("telescope")
             hub.invalidate_field_solve("the mount was unparked")
+            hub.note_pointing_moved()
             await tel.unpark()
             # The counterpart to the park line: without it the log shows a rig
             # that parked and then, with no entry between, is somehow moving
@@ -5472,6 +5478,7 @@ def create_app(*, bind_host: str | None = None,
                 if (tel is not None and getattr(tel, "connected", False)
                         and getattr(dome, "requires_park_before_close", True)):
                     hub.invalidate_field_solve("the mount is parking for the roof")
+                    hub.note_pointing_moved()
                     await tel.park()
                 from ..sequence.roof import close_observatory
                 return await close_observatory(dome, tel, log=bus.log)

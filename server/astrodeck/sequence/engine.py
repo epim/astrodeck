@@ -2038,6 +2038,10 @@ class SequenceEngine:
                     bus.log("warning",
                             f"{target.name}: the mount would not start tracking "
                             f"before the slew ({e}); slewing first", "sequence")
+                # A commanded slew retires any plate-solved centre the header
+                # writer was carrying (GN-07); the centering that follows
+                # records a fresh one. Guarded: test hubs are bare doubles.
+                getattr(self.hub, "note_pointing_moved", lambda: None)()
                 await _bounded(tel.slew(target.ra_hours, target.dec_deg),
                                SLEW_TIMEOUT_S, f"slew to {target.name}")
                 try:
@@ -5395,6 +5399,9 @@ class SequenceEngine:
             except Exception:            # noqa: BLE001 - best effort
                 pass
         side_before = await self._pier_side_now()
+        # The park retires the solved centre (GN-07); the re-centre below
+        # records a fresh one or clears the verdict.
+        getattr(self.hub, "note_pointing_moved", lambda: None)()
         await _bounded(tel.park(), PARK_TIMEOUT_S, "park for limit recovery")
         await _bounded(tel.unpark(), PARK_TIMEOUT_S, "unpark for limit recovery")
         await _bounded(tel.set_tracking(True), MOUNT_QUERY_TIMEOUT_S,

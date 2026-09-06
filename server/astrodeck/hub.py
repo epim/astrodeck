@@ -520,6 +520,14 @@ class Hub:
         # reads other code was already paying for (the capture header, the solve
         # hint) so identification never adds a device round-trip to the hot path.
         self._last_pointing: tuple[float, float, float] | None = None
+        # GN-07: (ra_hours, dec_deg, unix) of the last PLATE SOLVE result, kept
+        # separate from `_last_pointing` above (the mount's own, possibly-lying
+        # report -- GN-10 measured it walking 50' across a run while the star
+        # field held). Consulted by the capture-metadata builder (`_frame_meta`
+        # / `_resolve_pointing`) only while `_pointing_verified` is also still
+        # True; both are cleared together by `note_pointing_moved()` and by
+        # `note_pointing_verified(False, ...)`.
+        self._solved_pointing: tuple[float, float, float] | None = None
         #: WAS THE POINTING ACTUALLY VERIFIED? A centering that fell back to a
         #: raw GoTo used to leave no trace but one log line, so the screen showed
         #: a confident TRACKING and a panel full of coordinates nobody had
@@ -1182,6 +1190,7 @@ class Hub:
         # rig went away describes the rig that comes back.
         self.invalidate_field_solve("the rig disconnected")
         self._last_pointing = None
+        self._solved_pointing = None
         # Warm ramp: FINALIZE (cooler off), do not merely cancel. The devices are
         # about to be disconnected a few lines below, so a cancelled ramp would
         # leave the camera holding whatever mid-ramp setpoint it happened to be
@@ -2506,13 +2515,54 @@ class Hub:
         except Exception:  # noqa: BLE001
             return None
 
+    def _resolve_pointing(self, ra_hours: float | None,
+                          dec_deg: float | None
+                          ) -> tuple[float | None, float | None, str | None]:
+        """The BEST KNOWN pointing for a captured frame's header (GN-07), and
+        which source it came from -- "solved", or (failing that) "mount".
+
+        A plate solve recorded while `_pointing_verified` is still current
+        outranks the mount's own report: the AM5's reported RA/Dec has been
+        measured walking up to 50 arcmin across a single run while the star
+        field itself held to a dither (GN-10). `_solved_pointing` and
+        `_pointing_verified` are cleared together by `note_pointing_moved()`
+        and by `note_pointing_verified(False, ...)`, so neither can outlive
+        the centre it describes.
+
+        Deliberately no third "target" branch: Hub does not keep the target of
+        an in-flight goto anywhere independent of a solve, so there is nothing
+        honest to fall back to between "solved" and the mount's raw report --
+        adding one here would be inventing state the rest of Hub does not
+        keep (see the GN-07 landing report)."""
+        if ra_hours is None or dec_deg is None:
+            return ra_hours, dec_deg, None
+        if self._pointing_verified and self._solved_pointing is not None:
+            solved_ra, solved_dec, _at = self._solved_pointing
+            return solved_ra, solved_dec, "solved"
+        return ra_hours, dec_deg, "mount"
+
     async def _frame_meta(self, frame, ra_hours: float | None,
-                          dec_deg: float | None) -> "FrameMeta":
+                          dec_deg: float | None, best_ra: float | None = None,
+                          best_dec: float | None = None,
+                          pointing_source: str | None = None) -> "FrameMeta":
         """Best-effort telemetry snapshot for the FITS header (spec §8/§9). Every
         read is individually guarded: an absent/hung device or a failed read
         leaves its value None (its card omitted) and never blocks or fails the
-        save. Only Hub.capture builds this; save_fits stays device-free."""
+        save. Only Hub.capture builds this; save_fits stays device-free.
+
+        ``ra_hours``/``dec_deg`` are the MOUNT's own report (unchanged from
+        before GN-07); ``best_ra``/``best_dec``/``pointing_source`` are the
+        resolved best-known pointing the caller already computed via
+        ``_resolve_pointing`` -- passed in rather than recomputed here so a
+        capture's header and its ``save_fits`` RA/DEC cards can never disagree
+        with each other about which pointing won (see ``Hub.capture``). When
+        the caller omits them (no other production caller does; kept as
+        defaults so this stays callable in isolation) they fall back to the
+        mount's own report, i.e. the pre-GN-07 behaviour."""
         from .catalog import coords
+        if best_ra is None and best_dec is None and pointing_source is None:
+            best_ra, best_dec, pointing_source = ra_hours, dec_deg, (
+                "mount" if ra_hours is not None and dec_deg is not None else None)
         meta = FrameMeta()
         # optics (config; FOCALLEN always available, pixel size only when known)
         try:
@@ -2536,14 +2586,25 @@ class Hub:
             lat = lon = None
         # pointing geometry (needs J2000 RA/Dec; alt/airmass also need a real site)
         if ra_hours is not None and dec_deg is not None:
+            # GN-07: OBJCTRA/OBJCTDEC (and OBJCTALT/AIRMASS below) carry the
+            # BEST KNOWN pointing (`best_ra`/`best_dec`), not necessarily the
+            # mount's raw report -- see `_resolve_pointing`. The mount's own
+            # report rides along too, always, as MOUNTRA/MOUNTDEC/MOUNTRAD/
+            # MOUNTDCD, so a reader can see both and PNTGSRC says which one
+            # OBJCTRA/OBJCTDEC actually is.
             try:
-                meta.objctra = coords.format_ra_fits(ra_hours)
-                meta.objctdec = coords.format_dec_fits(dec_deg)
+                meta.objctra = coords.format_ra_fits(best_ra)
+                meta.objctdec = coords.format_dec_fits(best_dec)
+                meta.pointing_source = pointing_source
+                meta.mount_ra_hours = float(ra_hours)
+                meta.mount_dec_deg = float(dec_deg)
+                meta.mountra = coords.format_ra_fits(ra_hours)
+                meta.mountdec = coords.format_dec_fits(dec_deg)
             except Exception:
                 pass
             if lat is not None and lon is not None:
                 try:
-                    alt, _az = coords.altaz(ra_hours, dec_deg, lat, lon,
+                    alt, _az = coords.altaz(best_ra, best_dec, lat, lon,
                                             frame.timestamp)
                     if alt > 0:
                         meta.obj_alt_deg = alt
@@ -2666,13 +2727,28 @@ class Hub:
             # ride THIS read — the one the header was already paying for — so
             # naming the field never adds a device round-trip to the capture path.
             self._note_pointing(ra, dec)
-            self.note_pointing_moved()
+            # NOT self.note_pointing_moved() here (GN-07/GN-10). This call used
+            # to run unconditionally on every saved frame, which invalidated
+            # `_pointing_verified`/`_solved_pointing` before the header for THIS
+            # SAME frame was even built -- a plate-solved centre could never
+            # survive past the first sub of a run, defeating the whole point of
+            # carrying a solved pointing forward. Capturing (even right after a
+            # dither) is not evidence the tube left a solved centre; only an
+            # actual slew/park/sync/unpark/home is, and those already run
+            # through `note_pointing_verified(False, ...)` (a failed re-centre)
+            # or overwrite it with a fresh `note_pointing_verified(True, ...)`.
+            #
+            # Resolved ONCE, here, and threaded into both the meta builder and
+            # the save_fits call below so OBJCTRA/OBJCTDEC and the numeric
+            # RA/DEC cards can never disagree about which pointing won.
+            best_ra, best_dec, pointing_source = self._resolve_pointing(ra, dec)
             # Gather header telemetry (best-effort; never fails the save) and the
             # OTA name for TELESCOP (omitted when blank). Wrapping the whole meta
             # build keeps spec §9 (a header write never fails a capture) structural,
             # not dependent on CameraFrame's field set staying non-raising.
             try:
-                meta = await self._frame_meta(frame, ra, dec)
+                meta = await self._frame_meta(frame, ra, dec, best_ra, best_dec,
+                                              pointing_source)
             except Exception:
                 meta = FrameMeta()
             try:
@@ -2705,7 +2781,10 @@ class Hub:
             await asyncio.to_thread(
                 save_fits, frame, local_save_path, target=object_name,
                 filter_name=filt,
-                frame_type=frame_type, ra_hours=ra, dec_deg=dec,
+                # BEST KNOWN pointing (GN-07), not necessarily the mount's raw
+                # `ra`/`dec` -- see `_resolve_pointing` above. `meta` carries
+                # the mount's own report separately as MOUNTRA/MOUNTDEC.
+                frame_type=frame_type, ra_hours=best_ra, dec_deg=best_dec,
                 telescope=telescope_name, instrument=cam.name, meta=meta,
                 extra_cards=(dark_cards or []) + beam_cards + id_cards)
             # carry the path on the frame so _publish_preview reports a correct
@@ -5158,6 +5237,15 @@ class Hub:
         # (measured: 4 degrees, after a restart) — recording the pointing before
         # it would make this solve stale the instant it was adopted.
         self._note_pointing(result.ra_hours, result.dec_deg)
+        # GN-07: this IS a plate-solve result (ASTAP/SimSolver), the same kind
+        # of measurement goto_and_center's success branch records -- keep it
+        # even when this call did not run through goto_and_center (rotator
+        # sync, a bare solve_and_sync from the API), so `_solved_pointing` is
+        # never staler than the freshest solve actually on record. It only
+        # feeds a header while `_pointing_verified` is ALSO True (see
+        # `_resolve_pointing`); recording it here does not by itself claim the
+        # pointing is verified.
+        self._solved_pointing = (result.ra_hours, result.dec_deg, time.time())
         if result.wcs is not None and isinstance(solve_preview, dict):
             await self.note_field_solve(
                 result.wcs, preview_id=solve_preview.get("id"),
@@ -5408,14 +5496,29 @@ class Hub:
                 (reason or "centering failed")
                 + " — the mount went to raw GoTo coordinates, so the pointing "
                   "is only as good as its model")
+            # GN-07: a verdict of "not verified" must not leave a stale solved
+            # centre standing behind it -- the capture-metadata builder only
+            # ever trusts `_solved_pointing` while `_pointing_verified` is also
+            # True, but clearing both here (rather than relying on that AND)
+            # means a caller that later reads `_solved_pointing` directly finds
+            # it honestly empty instead of a value nothing vouches for any more.
+            self._solved_pointing = None
 
     def note_pointing_moved(self) -> None:
         """Invalidate a previous verdict. A 'verified' that outlives the pointing
         it described is worse than none — it is a green tick about somewhere the
-        tube no longer is."""
+        tube no longer is.
+
+        Call this from an actual slew/park/sync/unpark/home -- something that
+        can move the tube off a solved centre. A capture (even right after a
+        dither) is deliberately NOT one of those: a 2-3 px dither does not
+        invalidate a solved centre, and GN-07's header fix depends on that
+        centre surviving every frame of an untouched imaging run, not just the
+        first one."""
         self._pointing_verified = False
         self._pointing_error_arcmin = None
         self._pointing_reason = "the mount has moved since the last plate solve"
+        self._solved_pointing = None
 
     async def goto_and_center(self, ra_hours: float, dec_deg: float,
                               tolerance_deg: float = 0.02,
@@ -5465,6 +5568,10 @@ class Hub:
         # camera is actively swinging away from, and that is the one moment the
         # user is most likely to be looking at the label.
         self.invalidate_field_solve("the mount is slewing to a new target")
+        # The solved centre goes with it (GN-07): a commanded slew is the
+        # motion that retires it, and the success branch below records a
+        # fresh one from the solve that lands.
+        self.note_pointing_moved()
         async with self._motion_lock:
             if not self._motion_committed_clean(epoch):
                 bus.log("warning", "goto abandoned: aborted before motion", "mount")
@@ -5543,6 +5650,13 @@ class Hub:
             bus.log("info", f"centering attempt {attempt}: {err * 60:.1f}' off target", "solve")
             if err <= tolerance_deg:
                 bus.publish("mount", action="centered", error_arcmin=err * 60)
+                # GN-07: record the SOLVE's own coordinates, not the goto target
+                # -- `solved` is what the sky actually measured at, `ra_hours`/
+                # `dec_deg` are only where we asked the mount to point. They
+                # agree to within `tolerance_deg` here, but the header should
+                # carry the measurement, not the request.
+                self._solved_pointing = (
+                    solved["ra_hours"], solved["dec_deg"], time.time())
                 self.note_pointing_verified(True, error_arcmin=err * 60)
                 return {"centered": True, "error_arcmin": err * 60, "attempts": attempt} | _rot_keys
             # The correction slew commanded the FULL remaining error; if the
