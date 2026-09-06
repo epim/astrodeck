@@ -52,6 +52,42 @@ MOVED_FIELDS: tuple[str, ...] = (
     "max_consecutive_rejects_night",
 )
 
+#: THE ECCENTRICITY GATE'S SECOND STATISTIC, and why one dial drives two rules.
+#:
+#: Measured over every full frame of 2026-09-06 still on disk (the triage spec
+#: docs/superpowers/specs/2026-09-06-guider-night-defects-triage.md, table
+#: "Whole-frame eccentricity"): NO single median ceiling has margin on both
+#: sides. The clean frames top out at median 0.56; the mildest staircase --
+#: G_0003, a frame whose guider walked the field away under a flipped
+#: calibration -- sits at 0.61, because a staircase's box-truncated fainter
+#: stars read as one round lobe and drag the median back down.
+#:
+#: The DISTRIBUTION does separate them. At the shipped 0.65 default:
+#:
+#:     rule       clean frames        limit     mildest rejected frame
+#:     median     <= 0.56             0.65      0.61  (staircase G_0003)
+#:     fraction   <= 0.10 above 0.80  0.25      0.26  (staircase G_0031)
+#:
+#: so a frame is rejected when its median exceeds `max_eccentricity` OR when
+#: more than ECC_ELONGATED_FRACTION of its trusted mid-bright marks exceed
+#: `max_eccentricity + ECC_ELONGATED_MARGIN`. Both move with the operator's one
+#: number, so raising the ceiling loosens both rules together and a deliberate
+#: 0 disarms both -- a companion rule with its own hidden constant would be a
+#: setting that does not do what it says.
+#:
+#: The pair knowingly passes the jump-then-settle class (R_0002, S_0017 at
+#: median 0.50) and the faint tail (Ha_0018, 0.62): a single guide jump is not
+#: an eccentricity signature, and GN-02 (pulse cap) and GN-03 (re-lock
+#: surfacing) are what stop that class at the source.
+ECC_ELONGATED_FRACTION = 0.25
+ECC_ELONGATED_MARGIN = 0.15
+
+#: Below this many marks carrying an ecc, "the fraction above" is noise -- one
+#: star of six is 17% -- so only the median rule runs. The whole-frame
+#: measurements behind the numbers above all had hundreds of marks; a 512px
+#: crop can have eight.
+ECC_MIN_MARKS_FOR_FRACTION = 8
+
 #: field -> the config block that holds the rig-level value.
 _RIG_BLOCK: dict[str, str] = {
     "dither_pixels": "guide",
@@ -98,6 +134,47 @@ class RunPolicy:
         """``{field: {"value": v, "source": "plan"|"rig"}}`` for the report."""
         return {f: {"value": getattr(self, f), "source": self.sources.get(f, "rig")}
                 for f in MOVED_FIELDS}
+
+    def eccentricity_reject_reason(self, info: Any) -> str | None:
+        """Why this frame fails the eccentricity gate, or ``None`` to keep it.
+
+        Reads the grader's ``ecc`` (the median over the trusted mid-bright
+        marks) and the ``star_list`` those marks came from, and applies the two
+        rules documented at ECC_ELONGATED_FRACTION. The returned sentence names
+        WHICH rule fired and both numbers, because "frame rejected" with no
+        figures is a night of missing subs nobody can explain in the morning.
+
+        Lives on the policy rather than in the engine so the rule sits beside
+        the dial it interprets and the measured margins that chose it. Abstains
+        (``None``) whenever the frame carries nothing to judge -- no ``ecc`` and
+        too few marks -- rather than guessing.
+        """
+        if self.max_eccentricity <= 0 or not isinstance(info, dict):
+            return None
+        ceiling = float(self.max_eccentricity)
+        elongated = ceiling + ECC_ELONGATED_MARGIN
+        marks = info.get("star_list")
+        eccs = ([float(m["ecc"]) for m in marks
+                 if isinstance(m, dict) and m.get("ecc") is not None]
+                if isinstance(marks, list) else [])
+        n = len(eccs)
+        frac = (sum(1 for e in eccs if e > elongated) / n) if n else 0.0
+        # The companion measure is only quoted when it was actually judged, so
+        # a sentence never implies a rule that did not run.
+        tail = (f", {frac:.0%} of {n} stars above {elongated:.2f}"
+                if n >= ECC_MIN_MARKS_FOR_FRACTION else "")
+
+        ecc = info.get("ecc")
+        if ecc is not None and float(ecc) > ceiling:
+            return (f"frame eccentricity median {float(ecc):.2f} above ceiling "
+                    f"{ceiling:.2f}{tail} - trailing/tilt")
+        if n >= ECC_MIN_MARKS_FOR_FRACTION and frac > ECC_ELONGATED_FRACTION:
+            med = f"median {float(ecc):.2f} is under the {ceiling:.2f} ceiling" \
+                if ecc is not None else f"median under the {ceiling:.2f} ceiling"
+            return (f"frame eccentricity {frac:.0%} of {n} stars above "
+                    f"{elongated:.2f}, over the {ECC_ELONGATED_FRACTION:.0%} "
+                    f"limit ({med}) - trailing")
+        return None
 
 
 def resolve_policy(plan: "SequencePlan", cfg: "AppConfig | None") -> RunPolicy:

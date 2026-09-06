@@ -4103,7 +4103,11 @@ def create_app(*, bind_host: str | None = None,
             # refusal is reported in the same list as every other loss.
             unmapped = [{"key": "plan", "detail": str(e), "level": "danger"}]
         return {"plan": compiled, "structural": structural,
-                "issues": [i.to_json() for i in flow_doctor(graph)],
+                # WITH the rig's standards: rule 14 asks whether frame grading
+                # is armed, which no graph can say. Same store the run reads.
+                "issues": [i.to_json() for i in
+                           flow_doctor(graph,
+                                       standards=config_store.cfg().standards)],
                 "unmapped": unmapped}
 
     @app.get("/api/flows", dependencies=[Depends(require(CAP_VIEW_STATUS))])
