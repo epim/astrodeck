@@ -500,6 +500,22 @@ class GuideConfig(BaseModel):
     #: answered with a LITERAL 30 that nothing could change. Same shape as the
     #: constructor-frozen exposure above; same fix.
     offset: int = Field(30, ge=0, le=255)
+    #: GN-01 (2026-09-06). After a pier-side change, RE-MEASURE the calibration
+    #: instead of mirroring the stored one. On the AM5N both sessions that
+    #: started from a mirrored calibration ran the field away within minutes
+    #: (00:43, 03:30); the fresh calibrations at 01:05 and 03:42 guided (the
+    #: 02:47 one ran away too, under default loop params, which is the pulse
+    #: overrun class fixed in the driver, not a flip). A harmonic-drive
+    #: mount's flip is evidently not the clean geometric mirror the transform
+    #: assumes. The mirror path stays reachable (set this False) for a mount
+    #: that is known to want it; the cost of the default is one calibration
+    #: walk per flip.
+    recalibrate_after_pier_change: bool = True
+    #: PHD2's ``CalFlipRequiresDecFlip``: this mount's meridian flip reverses
+    #: the Dec sense as well as RA. ``guide/native.py`` has read it out of its
+    #: config dict since the flip path was written, but nothing DECLARED it, so
+    #: no rig could ever set it (the same shape as the offset above).
+    flip_requires_dec_flip: bool = False
 
 
 # ------------------------------------------------- frame settings, by PURPOSE

@@ -170,12 +170,24 @@ def guide_algo_config() -> dict:
     (P2-T3; PRO-12 Tier 1 added the latter two). Defensive: any failure (no
     config store, an old config without the block) yields ``{}`` so
     ``_build_engine_config`` falls back to its dossier §15 defaults rather than
-    raising during connect."""
+    raising during connect.
+
+    Also carries the two HOST-side meridian-flip settings
+    (``flip_requires_dec_flip``, ``recalibrate_after_pier_change``). They never
+    reach the engine — ``_build_engine_config`` forwards an allowlist — but this
+    is the one dict both guider factories (``build_native_guider`` below and
+    ``sim_backend.native_guider``) spread into the constructor's config, so it
+    is the only place a persisted setting can reach BOTH."""
     try:
         from ..config import config_store
         g = config_store.cfg().guide
         return {"ra_algorithm": g.ra_algorithm, "dec_algorithm": g.dec_algorithm,
                  "dec_guide_mode": g.dec_guide_mode, "blc_pulse_ms": g.blc_pulse_ms,
+                 # GN-01: host-side flip policy (read in NativeGuider.__init__,
+                 # stripped from the engine config by the allowlist).
+                 "flip_requires_dec_flip": bool(g.flip_requires_dec_flip),
+                 "recalibrate_after_pier_change":
+                     bool(g.recalibrate_after_pier_change),
                  # PRO-12 Tier 2 (T6): per-axis tunable overrides, exclude_none so
                  # an unset param stays an engine default (never sent as null) —
                  # an all-default GuideConfig emits empty sub-dicts here.
@@ -267,6 +279,11 @@ class NativeGuider(Guider):
     #: §9 item 4) — the meridian-flip path (hub.meridian_flip) calls
     #: ``flip_calibration``; the guiding-START flip is the host contract below.
     can_flip_calibration = True
+    #: GN-01 discard latch, declared on the CLASS as well as set in
+    #: ``__init__``: the persistence layer's unit tests build a guider with
+    #: ``NativeGuider.__new__`` (no devices needed), so every attribute the
+    #: persistence methods read has to have a class-level answer.
+    _cal_discarded: bool = False
 
     def __init__(self, guide_camera: Camera, telescope: Telescope, *,
                  config: dict, profile_id: str | None = None,
@@ -359,6 +376,20 @@ class NativeGuider(Guider):
         # default False matches the common GEM. Used by BOTH the guiding-start
         # host contract and the meridian-flip ABC method.
         self._flip_requires_dec_flip = bool(cfg.get("flip_requires_dec_flip", False))
+        # GN-01 (2026-09-06): RE-MEASURE the calibration after a pier-side
+        # change rather than mirroring the stored one. Default True because on
+        # the AM5N every flipped calibration ran the field away and every fresh
+        # one guided. False restores the pre-GN-01 mirror path in full (the
+        # guiding-start auto-flip AND the flip-and-persist in
+        # ``flip_calibration``) for a mount known to want it.
+        self._recalibrate_after_pier_change = bool(
+            cfg.get("recalibrate_after_pier_change", True))
+        # Latched by ``clear_calibration`` and by the meridian-flip discard:
+        # while it is set, ``_persist_calibration`` writes nothing, so no later
+        # stop or flip can resurrect a calibration the operator (or the flip)
+        # threw away. Cleared only by a calibration this session actually
+        # established — a fresh walk, or a persisted cal genuinely reused.
+        self._cal_discarded = False
 
     # ------------------------------------------------------- camera settings
 
@@ -535,6 +566,14 @@ class NativeGuider(Guider):
             # (sequence/engine.py:1908-1924), which would otherwise pay a
             # full ~20+ s recalibration on every recovery.
             persisted = self._load_persisted_calibration()
+            # GN-01: the pier gate comes BEFORE the reuse, not after it. The
+            # old order loaded the other side's calibration and handed it to
+            # ``_maybe_flip_for_pier`` to mirror; on the AM5N that mirror ran
+            # the field away twice in one night. Refusing here means the
+            # default never mirrors a REUSED calibration at all.
+            if (persisted is not None and self._recalibrate_after_pier_change
+                    and await self._pier_changed_since(persisted)):
+                persisted = None
             reused = False
             if persisted is not None and self._cal_reusable(persisted):
                 try:
@@ -573,6 +612,9 @@ class NativeGuider(Guider):
                     await self._apply_scope_pointing()
                     self._engine.begin_guiding()
                     reused = True
+                    # This session now HAS a calibration again, so a clear or a
+                    # flip-discard that preceded it is spent (GN-01).
+                    self._cal_discarded = False
                     bus.log("info",
                             f"native guider: reusing persisted calibration "
                             f"for profile {self.profile_id}", "guide")
@@ -598,6 +640,10 @@ class NativeGuider(Guider):
                             f"calibration ({e}); recalibrating", "guide")
             if not reused:
                 await self._calibrate()           # blocks; raises on failure
+                # A calibration was actually MEASURED, so whatever was
+                # discarded before it no longer has anything to resurrect
+                # (GN-01) and the persist below is allowed to write again.
+                self._cal_discarded = False
             # HOST CONTRACT (T8 / upstream mount.cpp:1338-1344): auto-flip the
             # calibration at guiding start if the mount's pier side differs from
             # the stored calibration's. A no-op for a fresh calibration (the
@@ -861,11 +907,43 @@ class NativeGuider(Guider):
         self._engine.set_scope_pointing(
             dec_rad, pier, "unknown", "unknown", 0.0, self._binning)
 
+    async def _pier_changed_since(self, cal: dict) -> bool:
+        """GN-01: has the mount changed pier side since ``cal`` was measured?
+
+        Answers False whenever it cannot KNOW (either side unreadable or
+        "unknown"), because the consequence of a True here is a calibration
+        walk: an unreadable pier must not cost the operator one on every
+        recovery restart. Logs the refusal itself, so the reason a walk is
+        running appears in the same place the reuse would have been announced.
+
+        Same guarded read as ``_maybe_flip_for_pier`` below — deliberately, so
+        the two never disagree about what the mount said."""
+        cal_pier = cal.get("pier_side")
+        if cal_pier in (None, "unknown"):
+            return False
+        cur = None
+        with contextlib.suppress(Exception):
+            cur = (await self.tel.pier_side()).value
+        if cur in (None, "unknown") or cur == cal_pier:
+            return False
+        bus.log("info",
+                f"native guider: mount pier side changed ({cal_pier}->{cur}) "
+                f"since the persisted calibration; recalibrating", "guide")
+        return True
+
     async def _maybe_flip_for_pier(self) -> None:
         """Guiding-start auto-flip host contract (T8; upstream
         mount.cpp:1338-1344). Compares the stored calibration's pier side with
         the mount's current pier side and flips when they differ so guiding
-        never runs the mount away from the star."""
+        never runs the mount away from the star.
+
+        GN-01 left this exactly as it was, but it is now unreachable for a
+        REUSED calibration under the default: ``start_guiding`` refuses the
+        reuse on a pier change first (``_pier_changed_since``), so the only
+        calibration this ever sees is a fresh one already stamped with the
+        mount's current side. It fires only with
+        ``recalibrate_after_pier_change`` off — the mirror path, kept for a
+        mount whose flip really is a clean geometric mirror."""
         cal = self._engine.dump_calibration()
         if not cal or not cal.get("is_valid"):
             return
@@ -1455,10 +1533,23 @@ class NativeGuider(Guider):
     # -------------------------------------------------------- meridian flip
 
     async def flip_calibration(self) -> bool:
-        """Flip the stored calibration across a meridian flip (dossier §9 item 4;
-        hub.meridian_flip calls this between stopping and restarting guiding).
-        Returns False (logged no-op) when there is no valid calibration to flip
-        — the flip still completes and guiding re-calibrates on restart."""
+        """Handle the stored calibration across a meridian flip (dossier §9
+        item 4; hub.meridian_flip and the sequence engine's limit-recovery path
+        call this between stopping and restarting guiding).
+
+        Under ``recalibrate_after_pier_change`` (the default, GN-01) the
+        calibration is DISCARDED rather than mirrored: the persisted file and
+        PPEC model go, and the discard is latched so nothing re-persists them,
+        which means the restart calibrates fresh on the new side whatever the
+        mount then reports about its pier. That last clause is the 03:30
+        defect: this method used to flip AND persist, ``start_guiding`` reloaded
+        the flipped file, and the AM5 — still reporting the pre-flip side —
+        made ``_maybe_flip_for_pier`` flip it a second time. Off, the old
+        mirror-and-persist behaviour is restored verbatim.
+
+        Returns True when the calibration was handled for the flip (mirrored OR
+        discarded) and False when there was nothing valid to handle — in which
+        case the flip still completes and guiding re-calibrates on restart."""
         if self._engine is None:
             bus.log("warning", "native guider: no calibration to flip; will rely "
                     "on a fresh calibration after the flip", "guide")
@@ -1468,6 +1559,16 @@ class NativeGuider(Guider):
             bus.log("warning", "native guider: no valid calibration to flip; will "
                     "rely on a fresh calibration after the flip", "guide")
             return False
+        if self._recalibrate_after_pier_change:
+            # No engine call: ``start_guiding`` builds a NEW GuideEngine, so the
+            # in-memory Cal here dies with this session's engine anyway. What
+            # has to go is the PERSISTED copy, plus the latch that stops the
+            # next persist from writing it back.
+            self.clear_calibration()
+            bus.log("info", "native guider: meridian flip: discarding the "
+                    "calibration; guiding will recalibrate on the new side",
+                    "guide")
+            return True
         ok = self._engine.flip_calibration(self._flip_requires_dec_flip)
         if ok:
             self._persist_calibration()
@@ -1559,8 +1660,19 @@ class NativeGuider(Guider):
     def _persist_calibration(self) -> None:
         """Persist the current calibration to ``CONFIG_DIR/guider/<profile>.json``
         so P2 can offer calibration REUSE. Best-effort: a write failure is a
-        logged warning, never fatal to guiding."""
+        logged warning, never fatal to guiding.
+
+        Refuses while the calibration is DISCARDED (GN-01): a clear made
+        mid-session, or a meridian flip, must not be undone by the next persist
+        — and there are three of those (guiding start, the flip itself, and the
+        stop's PPEC save alongside it)."""
         if not self.profile_id:
+            return
+        if self._cal_discarded:
+            bus.log("debug",
+                    "native guider: not saving the calibration — it was "
+                    "discarded (cleared, or dropped for a meridian flip); the "
+                    "next start will calibrate fresh", "guide")
             return
         try:
             cal = self._engine.dump_calibration()
@@ -1591,7 +1703,15 @@ class NativeGuider(Guider):
         ``start_guiding`` drives a fresh calibration walk and a fresh model
         (dossier §8.4/§6.8.6). Best-effort and non-fatal (used by
         ``DELETE /api/guide/calibration``); returns True when a file was
-        removed. Does not disturb an in-flight guide loop."""
+        removed. Does not disturb an in-flight guide loop.
+
+        LATCHES the discard (GN-01). Deleting the files was never enough: the
+        in-memory calibration outlived the delete, and the next
+        ``_persist_calibration`` — the stop, or the meridian flip — wrote it
+        straight back, so the 02:14 clear on 2026-09-06 was silently undone and
+        the next start reused the very calibration the operator had thrown
+        away. Cleared again only by a calibration this session establishes."""
+        self._cal_discarded = True
         if not self.profile_id:
             return False
         removed = False
@@ -1646,8 +1766,16 @@ class NativeGuider(Guider):
         ...]}`` — ``dumped_at`` feeds the restore-side retain-or-reset
         downtime gate (amended spec §3-A5). Best-effort; nothing to save for a
         non-PPEC RA algorithm or an untrained model (the dump — completed
-        measurements only, no pending row — is empty or a single point)."""
+        measurements only, no pending row — is empty or a single point).
+
+        Refuses while the calibration is discarded, for the same reason
+        ``_persist_calibration`` does (GN-01): ``clear_calibration`` deletes
+        BOTH files, the model is only ever restored alongside a reused
+        calibration, and the stop that follows a clear must not put half of
+        what was cleared back."""
         if not self.profile_id or self._engine is None:
+            return
+        if self._cal_discarded:
             return
         try:
             window = self._engine.dump_gp_window()
