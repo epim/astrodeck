@@ -799,6 +799,13 @@ class SimTelescope(Telescope):
     #: control is exercisable without hardware.
     can_find_home = True
 
+    #: GN-09: True here NOT because the sim mount trails -- it doesn't, it has
+    #: no periodic error to trail with -- but so the flow doctor's
+    #: needs-guiding rule (see ``ZwoAm5Telescope.needs_guiding``) is
+    #: exercisable on the sim rig, where every other doctor rule is
+    #: exercisable.
+    needs_guiding = True
+
     def __init__(self, rig: SimRig, name: str = "Sim Mount EQ6-R"):
         super().__init__(name)
         self.rig = rig

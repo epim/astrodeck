@@ -255,6 +255,27 @@ class TestCompile:
     def test_compiling_something_absent_is_a_404(self, client):
         assert client.post("/api/flows/nope/compile").status_code == 404
 
+    def test_the_route_warns_when_the_connected_mount_needs_guiding(
+            self, client, monkeypatch):
+        """GN-09 is a driver capability, not a graph or config value, so the
+        route has to read it off whatever mount is actually connected --
+        absent with nothing connected, present once one that declares
+        ``needs_guiding`` is, gone again once it disconnects."""
+        class _Mount:
+            needs_guiding = True
+            name = "AM5N"
+
+        out = client.post("/api/flows/compile", json={"graph": GRAPH}).json()
+        assert not any("needs guiding" in i["text"] for i in out["issues"])
+
+        monkeypatch.setitem(app_module.hub.devices, "telescope", _Mount())
+        out = client.post("/api/flows/compile", json={"graph": GRAPH}).json()
+        assert any("needs guiding" in i["text"] for i in out["issues"])
+
+        monkeypatch.delitem(app_module.hub.devices, "telescope")
+        out = client.post("/api/flows/compile", json={"graph": GRAPH}).json()
+        assert not any("needs guiding" in i["text"] for i in out["issues"])
+
 
 class TestTonight:
     def test_it_resolves_for_a_stored_flow(self, client):

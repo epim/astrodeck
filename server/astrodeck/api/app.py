@@ -4105,9 +4105,15 @@ def create_app(*, bind_host: str | None = None,
         return {"plan": compiled, "structural": structural,
                 # WITH the rig's standards: rule 14 asks whether frame grading
                 # is armed, which no graph can say. Same store the run reads.
+                # WITH the connected telescope: GN-09's needs-guiding rule asks
+                # whether THIS mount's unguided tracking can hold the sub the
+                # graph asks for, which is a driver capability, not a config
+                # value. None on a disconnected rig -- the rule simply does
+                # not run, same as `standards=None`.
                 "issues": [i.to_json() for i in
                            flow_doctor(graph,
-                                       standards=config_store.cfg().standards)],
+                                       standards=config_store.cfg().standards,
+                                       mount=hub.devices.get("telescope"))],
                 "unmapped": unmapped}
 
     @app.get("/api/flows", dependencies=[Depends(require(CAP_VIEW_STATUS))])
