@@ -190,7 +190,19 @@ def test_an_elevated_windows_build_relaunches_de_elevated(monkeypatch, tmp_path,
     assert argv[1] == "/trustlevel:0x20000"
     assert len(argv) == 3, ("runas takes the child's whole command line as one "
                             f"argument, got {argv!r}")
-    assert argv[2] == f'"{exe}" run --host 127.0.0.1 --port 8811'
+    # runas detaches the child into its own console, so the command it runs is
+    # a batch wrapper that redirects the child's output into a log the harness
+    # can print when the server dies during startup (the first proof run on a
+    # hosted runner died in eight seconds and left no trace).
+    state = tmp_path / "state"
+    wrapper, log = state / "smoke.cmd", state / "smoke.log"
+    assert argv[2] == subprocess.list2cmdline(["cmd", "/c", str(wrapper)])
+    body = wrapper.read_text(encoding="utf-8")
+    assert f'"{exe}" run --host 127.0.0.1 --port 8811 > "{log}" 2>&1' in body
+    assert handle.log_path == log
+    assert handle.output_tail() == "", "nothing written yet"
+    log.write_text("line1\nRuntimeError: it refused\n", encoding="utf-8")
+    assert handle.output_tail().endswith("RuntimeError: it refused")
     # runas starts the child with the CALLER's environment, so a variable that
     # existed only in the env= dict would never reach it and the smoke server
     # would write to the operator's real config and capture directories.

@@ -129,8 +129,10 @@ def smoke(exe: Path) -> None:
         for _ in range(60):
             code = proc.poll()
             if code is not None:
-                raise SystemExit(f"the binary exited during startup "
-                                 f"(code {code})")
+                tail = proc.output_tail()
+                raise SystemExit(
+                    f"the binary exited during startup (code {code})"
+                    + (f"\n--- what it wrote ---\n{tail}" if tail else ""))
             try:
                 with urllib.request.urlopen(f"{base}/healthz", timeout=2) as r:
                     health = json.load(r)
@@ -303,11 +305,14 @@ class SmokeProcess:
     """
 
     def __init__(self, port: int, popen: subprocess.Popen | None = None,
-                 runner=None, find_timeout: float = 60.0):
+                 runner=None, find_timeout: float = 60.0,
+                 log_path: Path | None = None):
         self.port = port
         self._popen = popen
         self._run = runner or _run_text
         self._find_timeout = find_timeout
+        #: Where the runas wrapper redirected the child's output, if anywhere.
+        self.log_path = log_path
         self._started = time.monotonic()
         self._listener_pid: int | None = None
         self._image_pids: list[int] = []
@@ -335,6 +340,14 @@ class SmokeProcess:
         if alive:
             self._seen = True
         return alive
+
+    def output_tail(self, lines: int = 40) -> str:
+        """The last lines the child wrote, or "" when nothing was captured
+        (the Popen path inherits the console, so there is nothing to read)."""
+        if self.log_path is None or not self.log_path.exists():
+            return ""
+        text = self.log_path.read_text(encoding="utf-8", errors="replace")
+        return "\n".join(text.splitlines()[-lines:])
 
     def poll(self) -> int | None:
         if self._popen is not None:
@@ -381,8 +394,23 @@ def _launch_smoke(exe: Path, port: int, env: dict) -> SmokeProcess:
     for key in SMOKE_ENV_KEYS:
         if key in env:
             os.environ[key] = env[key]
-    command = subprocess.list2cmdline(argv)
+    # runas detaches the child into its own console, so everything it prints
+    # is lost -- the first proof run on a hosted runner died eight seconds
+    # after launch and the log said nothing at all. A batch wrapper redirects
+    # the child's stdout and stderr into a file next to the smoke state, and
+    # the harness prints that file when the server dies during startup.
+    state_dir = Path(env.get("ASTRODECK_CONFIG_DIR",
+                             str(ROOT / "build" / "smoke-state" / "config"))).parent
+    state_dir.mkdir(parents=True, exist_ok=True)
+    log_path = state_dir / "smoke.log"
+    wrapper = state_dir / "smoke.cmd"
+    wrapper.write_text(
+        "@echo off\r\n"
+        f"{subprocess.list2cmdline(argv)} > \"{log_path}\" 2>&1\r\n",
+        encoding="utf-8")
+    command = subprocess.list2cmdline(["cmd", "/c", str(wrapper)])
     print(f"\n$ runas {RUNAS_TRUSTLEVEL} \"{command}\"   (smoke test)")
+    print(f"  wrapper: {subprocess.list2cmdline(argv)} > {log_path}")
     completed = subprocess.run(["runas", RUNAS_TRUSTLEVEL, command],
                                capture_output=True, text=True)
     output = (completed.stdout or "") + (completed.stderr or "")
@@ -391,7 +419,7 @@ def _launch_smoke(exe: Path, port: int, env: dict) -> SmokeProcess:
                          f"(code {completed.returncode}): {output.strip()}")
     if output.strip():
         print("  " + output.strip().replace("\n", "\n  "))
-    return SmokeProcess(port)
+    return SmokeProcess(port, log_path=log_path)
 
 
 def main() -> int:
