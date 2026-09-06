@@ -973,6 +973,25 @@ fn cal_leg_label(l: CalLeg) -> &'static str {
     }
 }
 
+/// A calibration as a Python dict.
+///
+/// Round-trip contract with [`dict_to_cal`]: every STORED field appears here
+/// under its Rust field name and is read back by name, so
+/// `dict_to_cal(cal_to_dict(c)) == c`. Two keys are DERIVED and are not part
+/// of that round trip:
+///
+/// * `"ortho_error"` — `y_angle_error` with the Dec-parity reversal folded
+///   out (`Cal::y_angle_error_folded`), radians. This is the number to
+///   report: a rig whose Dec axis is reversed calibrates at
+///   `y_angle_error` near ±π and is perfectly square, so the raw field reads
+///   ~178° out of orthogonal.
+/// * `"dec_axis_reversed"` — whether that reversal is present
+///   (`Cal::dec_axis_reversed`), i.e. which hand the calibration is.
+///
+/// Both are recomputed from `y_angle_error` on every dump.
+/// [`dict_to_cal`] never reads them, so a calibration persisted before they
+/// existed still loads, and a dict round-tripped through them cannot carry a
+/// stale copy back in.
 fn cal_to_dict<'py>(py: Python<'py>, c: &Cal) -> PyResult<Bound<'py, PyDict>> {
     let d = PyDict::new(py);
     d.set_item("x_rate", c.x_rate)?;
@@ -987,9 +1006,16 @@ fn cal_to_dict<'py>(py: Python<'py>, c: &Cal) -> PyResult<Bound<'py, PyDict>> {
     d.set_item("rotator_angle", c.rotator_angle)?;
     d.set_item("binning", c.binning)?;
     d.set_item("is_valid", c.is_valid)?;
+    // Derived, never stored (see this function's doc comment).
+    d.set_item("ortho_error", c.y_angle_error_folded())?;
+    d.set_item("dec_axis_reversed", c.dec_axis_reversed())?;
     Ok(d)
 }
 
+/// Read a calibration dict written by [`cal_to_dict`] (or persisted by an
+/// older build that predates its derived keys). Only the stored fields are
+/// read; `"ortho_error"` and `"dec_axis_reversed"` are ignored if present and
+/// are not required if absent.
 fn dict_to_cal(d: &Bound<'_, PyDict>) -> PyResult<Cal> {
     Ok(Cal {
         x_rate: get_req(d, "x_rate")?,
@@ -1500,8 +1526,9 @@ impl GuideEngine {
     }
 
     /// The current calibration as a dict (see [`cal_to_dict`] for the exact
-    /// shape, including `"pier_side"`), or `None` if no calibration is
-    /// stored. Serializable for persistence across sessions.
+    /// shape, including `"pier_side"` and the derived `"ortho_error"` /
+    /// `"dec_axis_reversed"`), or `None` if no calibration is stored.
+    /// Serializable for persistence across sessions.
     fn dump_calibration<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
         match self.inner.calibration() {
             Some(cal) => Ok(cal_to_dict(py, &cal)?.into()),
@@ -1512,6 +1539,9 @@ impl GuideEngine {
     /// Install a calibration dict (e.g. one persisted from a prior session or
     /// round-tripped from [`dump_calibration`](Self::dump_calibration)).
     /// Stored verbatim; follow with [`begin_guiding`](Self::begin_guiding).
+    /// The derived `"ortho_error"` / `"dec_axis_reversed"` keys are optional
+    /// and ignored, so calibrations persisted before they existed still
+    /// load.
     fn load_calibration(&mut self, cal: Bound<'_, PyDict>) -> PyResult<()> {
         let c = dict_to_cal(&cal)?;
         self.inner.set_calibration(c);
@@ -1620,4 +1650,90 @@ fn astrodeck_native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<FocusSweep>()?;
     m.add_class::<GuideEngine>()?;
     Ok(())
+}
+
+// --------------------------------------------------------------------------
+// tests
+// --------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::f64::consts::PI;
+
+    /// A calibration off a rig whose Dec axis runs reversed relative to RA
+    /// (last night's shape): 0.05 rad of real non-orthogonality, which
+    /// `y_angle_error` records as ~+178 deg.
+    fn reversed_dec_cal() -> Cal {
+        let x_angle = 0.3;
+        let y_angle = 0.3 - PI / 2.0 + 0.05;
+        Cal {
+            x_rate: 0.02,
+            y_rate: 0.018,
+            x_angle,
+            y_angle,
+            y_angle_error: Cal::y_angle_error_from(x_angle, y_angle),
+            declination: 0.5,
+            pier_side: PierSide::West,
+            ra_parity: Parity::Even,
+            dec_parity: Parity::Odd,
+            rotator_angle: 0.0,
+            binning: 1,
+            is_valid: true,
+        }
+    }
+
+    /// The round-trip contract from [`cal_to_dict`]: stored fields survive,
+    /// the two derived keys report the FOLDED orthogonality error and the
+    /// reversal, and [`dict_to_cal`] neither requires nor reads them (so a
+    /// calibration persisted before they existed still loads, and a stale
+    /// derived value cannot be smuggled back in).
+    #[test]
+    fn cal_dict_derived_keys_are_folded_and_never_read_back() {
+        Python::initialize();
+        Python::attach(|py| {
+            let c = reversed_dec_cal();
+            let d = cal_to_dict(py, &c).unwrap();
+
+            let raw: f64 = d
+                .get_item("y_angle_error")
+                .unwrap()
+                .unwrap()
+                .extract()
+                .unwrap();
+            assert!(
+                raw.to_degrees() > 170.0,
+                "the stored error is the unfolded one: {raw}"
+            );
+            let ortho: f64 = d
+                .get_item("ortho_error")
+                .unwrap()
+                .unwrap()
+                .extract()
+                .unwrap();
+            assert!(
+                (ortho + 0.05).abs() < 1e-12,
+                "ortho_error must be the folded error (-0.05 rad), got {ortho}"
+            );
+            let reversed: bool = d
+                .get_item("dec_axis_reversed")
+                .unwrap()
+                .unwrap()
+                .extract()
+                .unwrap();
+            assert!(reversed, "this cal's Dec axis is reversed");
+
+            assert_eq!(dict_to_cal(&d).unwrap(), c, "stored fields round-trip");
+
+            // A dict persisted before the derived keys existed still loads.
+            d.del_item("ortho_error").unwrap();
+            d.del_item("dec_axis_reversed").unwrap();
+            assert_eq!(dict_to_cal(&d).unwrap(), c, "derived keys are optional");
+
+            // A stale derived value is ignored, not stored.
+            d.set_item("ortho_error", 42.0).unwrap();
+            d.set_item("dec_axis_reversed", false).unwrap();
+            assert_eq!(dict_to_cal(&d).unwrap(), c, "derived keys are never read");
+        });
+    }
 }

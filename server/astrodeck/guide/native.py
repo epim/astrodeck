@@ -1627,10 +1627,17 @@ class NativeGuider(Guider):
     def calibration_report(self) -> dict | None:
         """Surface the engine's calibration geometry + advisories (UX-23) so a
         bad/flipped calibration is visible BEFORE it runs the mount away from the
-        star. ``y_angle_error`` is the orthogonality deviation (radians →
-        degrees); ``declination`` is radians (997.0 = unknown sentinel). Rates
-        (px/ms) and raw axis angles are intentionally omitted rather than
-        mislabeled. None when there is no engine / calibration."""
+        star. ``ortho_error_deg`` is the orthogonality deviation with the
+        Dec-parity reversal FOLDED OUT (GN-06): a rig whose Dec axis runs
+        reversed relative to RA calibrates with a raw ``y_angle_error`` near
+        +-pi and is perfectly square, and last night's three fresh calibrations
+        reported 172-178 deg here while the advisory (which folds) stayed
+        silent. The engine dumps the folded value as ``ortho_error`` and the
+        hand as ``dec_axis_reversed``; both are re-derived here from the raw
+        field for an older wheel or a bare dict. ``declination`` is radians
+        (997.0 = unknown sentinel). Rates (px/ms) and raw axis angles are
+        intentionally omitted rather than mislabeled. None when there is no
+        engine / calibration."""
         if self._engine is None:
             return None
         try:
@@ -1645,9 +1652,21 @@ class NativeGuider(Guider):
             advisories = []
         dec_rad = float(cal.get("declination", _UNKNOWN_DECLINATION))
         dec_deg = math.degrees(dec_rad)
+        raw_err = float(cal.get("y_angle_error", 0.0))
+        reversed_dec = bool(cal.get("dec_axis_reversed", abs(raw_err) > math.pi / 2))
+        if "ortho_error" in cal:
+            folded = float(cal["ortho_error"])
+        else:
+            # Same fold as the engine's Cal::fold_y_angle_error: an error
+            # measured against a reversed axis is re-expressed relative to pi.
+            folded = raw_err
+            if abs(folded) > math.pi / 2:
+                folded = math.atan2(math.sin(folded - math.pi),
+                                    math.cos(folded - math.pi))
         return {
             "is_valid": bool(cal.get("is_valid")),
-            "ortho_error_deg": round(abs(math.degrees(float(cal.get("y_angle_error", 0.0)))), 2),
+            "ortho_error_deg": round(abs(math.degrees(folded)), 2),
+            "dec_axis_reversed": reversed_dec,
             "declination_deg": round(dec_deg, 1) if abs(dec_deg) <= 90.5 else None,
             "pier_side": cal.get("pier_side"),
             "binning": int(cal.get("binning", 1)),
