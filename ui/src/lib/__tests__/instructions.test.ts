@@ -57,6 +57,22 @@ test("describe is human + mentions trigger and action", () => {
   assert(s.includes("3.5") && /refocus/i.test(s), `got: ${s}`);
 });
 
+// GN-08: a relative hfr rule reads as a multiple of the post-focus baseline,
+// never as a bare number that could be misread for a pixel value.
+test("an absolute hfr rule describes itself in px", () => {
+  const i = { ...defaultInstruction(), trigger: "on_hfr_above" as const, threshold: 4 };
+  const s = describeInstruction(i);
+  assert(s.includes("4 px"), `absolute HFR must carry its px unit, got: ${s}`);
+});
+
+test("a relative hfr rule describes itself as a multiple of focus", () => {
+  const i = { ...defaultInstruction(), trigger: "on_hfr_above" as const,
+              threshold: 1.3, relative: true };
+  const s = describeInstruction(i);
+  assert(s.includes("1.3x focus"), `relative HFR must read as 1.3x focus, got: ${s}`);
+  assert(!s.includes(" px"), `relative HFR must not also claim px, got: ${s}`);
+});
+
 // ------------------------------------------- control-flow expansion helpers
 const P = (kind: "hfr_above" | "guide_rms_above" | "at_time", threshold = 0,
            at_time: string | null = null) => ({ kind, threshold, at_time });

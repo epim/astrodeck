@@ -77,6 +77,14 @@ _PREDICATE_OF = {
 class TriggerContext:
     now_ts: float
     frame_hfr: float | None = None
+    # GN-08: the HFR measured on the first ACCEPTED frame after the most
+    # recent autofocus (or, if the flow never autofocuses, the run's own first
+    # accepted frame — see engine._run_steps). None until the engine has seen
+    # one such frame, or after a fresh autofocus invalidates the old baseline.
+    # A `hfr_above` rule with `relative=True` reads this instead of a fixed
+    # pixel value; None makes it indeterminate, the same as an unreadable
+    # `frame_hfr`.
+    focus_baseline_hfr: float | None = None
     guide_rms: float | None = None
     frame_rejected: bool = False
     target_complete: bool = False
@@ -158,13 +166,26 @@ def parse_hhmm(at_time: str | None, now_ts: float) -> float | None:
 
 
 def _eval_predicate(kind: str, threshold: float, at_time: str | None,
-                    ctx: TriggerContext) -> bool | None:
+                    ctx: TriggerContext, relative: bool = False) -> bool | None:
     """Evaluate ONE leaf predicate as a LEVEL. ``None`` = indeterminate (the
     metric is unreadable this frame) — callers must not treat it as False.
-    Pure; carries no arm/once/cooldown state (those are the caller's gates)."""
+    Pure; carries no arm/once/cooldown state (those are the caller's gates).
+
+    ``relative`` (GN-08) only changes ``hfr_above``: ``threshold`` is then a
+    FACTOR of ``ctx.focus_baseline_hfr`` rather than an absolute pixel value,
+    and a missing baseline (no autofocus/accepted frame yet this run) is
+    indeterminate — the same "I do not know" treatment an unreadable
+    ``frame_hfr`` already gets, so a relative watchdog cannot fire on nothing.
+    """
     if kind in ("hfr_above", "guide_rms_above"):
         v = ctx.frame_hfr if kind == "hfr_above" else ctx.guide_rms
-        return None if v is None else v > threshold
+        if v is None:
+            return None
+        if kind == "hfr_above" and relative:
+            if ctx.focus_baseline_hfr is None:
+                return None
+            return v > threshold * ctx.focus_baseline_hfr
+        return v > threshold
     if kind == "frame_rejected":
         return ctx.frame_rejected
     if kind == "target_complete":
@@ -202,7 +223,7 @@ def _eval_condition(cond: Condition, ctx: TriggerContext) -> bool | None:
     Indeterminate rule: a ``None`` term only matters when it is still NEEDED to
     decide the expression — ``all`` short-circuits on any decisive False,
     ``any`` on any decisive True. Mirrors the flat unreadable-metric path."""
-    vals = [_eval_predicate(t.kind, t.threshold, t.at_time, ctx)
+    vals = [_eval_predicate(t.kind, t.threshold, t.at_time, ctx, t.relative)
             for t in cond.terms]
     if cond.op == "all":
         if any(v is False for v in vals):
@@ -246,7 +267,7 @@ def evaluate_instructions(
                 eligible = rec.armed             # fire only on the rising edge
         elif is_level:
             v = _eval_predicate(_PREDICATE_OF[i.trigger], i.threshold,
-                                i.at_time, ctx)
+                                i.at_time, ctx, i.relative)
             if v is None:
                 eligible = False                 # unreadable metric — leave armed as-is
             elif not v:

@@ -502,7 +502,12 @@ test("sum() over the defaults renders the prototype's footer lines verbatim", ()
     calib: "darks → bias → flats · ×20 each, then wait",
     pool: "4 candidates · best available · quota ×45",
     cycle: "7 filters · 1/pass · ×45",
-    condition: "hfr above 3.2 · 3 frames",
+    // GN-08: the CONDITION node's default watchdog is now RELATIVE (a factor
+    // of the post-focus baseline HFR, not an absolute pixel value) - see
+    // nodeDefs.ts's condition.params and the module-header comment on why the
+    // unit lives in the option label ("(x focus)") rather than a per-option
+    // FieldDef.unit.
+    condition: "hfr above (x focus) 1.3 · 3 frames",
     holdresume: "resume: re-center · refocus if hfr drifted",
     notify: "ntfy · rig-alerts",
     refocus: "autofocus, then resume",

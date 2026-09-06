@@ -134,7 +134,15 @@ def _trigger_for(node: FlowNode, from_port: str) -> str:
         # kinds, and the only place they are minted.
         return f"on_clouds_{from_port}"
     if node.type == "condition":
-        when = str(node.params.get("when") or "").strip().lower().replace(" ", "_")
+        when = str(node.params.get("when") or "").strip().lower()
+        if when == "hfr above (x focus)":
+            # GN-08: the relative form of the HFR watchdog is still the ENGINE'S
+            # `on_hfr_above` trigger — only the meaning of `threshold` changes
+            # (a factor of the post-focus baseline, not a pixel value). That
+            # extra bit travels on the rule as `relative`, minted in
+            # `compile_plan` below, not folded into a trigger name of its own.
+            return "on_hfr_above"
+        when = when.replace(" ", "_")
         return f"on_{when}" if when else "on_condition"
     if node.type == "safety":
         return "on_unsafe"
@@ -357,6 +365,12 @@ def compile_plan(graph: FlowGraph, name: str = "") -> dict:
         thr = src.params.get("threshold")
         if thr is not None:
             rule["threshold"] = _num(thr)
+        if (src.type == "condition"
+                and str(src.params.get("when") or "").strip().lower()
+                == "hfr above (x focus)"):
+            # GN-08: carries the factor-vs-pixel distinction through to
+            # `to_plan._instructions`, which reads it to set `Instruction.relative`.
+            rule["relative"] = True
         instructions.append(rule)
 
     out = {

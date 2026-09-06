@@ -16,7 +16,7 @@ import type {
 } from "../../types";
 import {
   ACTION_CONSEQUENCE, ACTION_GROUPS, ACTION_LABELS, MAX_TERMS, MIN_TERMS,
-  PREDICATE_LABELS, PREDICATE_OF, THRESHOLD_HINT, TRIGGER_LABELS,
+  PREDICATE_LABELS, PREDICATE_OF, RELATIVE_HFR_HINT, THRESHOLD_HINT, TRIGGER_LABELS,
   actionChangePatch, actionNeedsTarget, defaultInstruction, defaultPredicate,
   describeInstruction, predicateChangePatch,
   predicateNeedsThreshold, predicateNeedsTime, toCompound, toFlat,
@@ -55,9 +55,13 @@ export function instructionsSummary(descriptions: readonly string[]): string {
   return rest.length === 0 ? first : `${first}  ·  +${rest.length} more`;
 }
 
-/** Threshold placeholder/hint for whichever metric this trigger reads. */
-function thresholdHint(t: TriggerKind): string | null {
+/** Threshold placeholder/hint for whichever metric this trigger reads.
+ *  GN-08: hfr_above's RELATIVE form needs opposite advice from its absolute
+ *  one (a multiple of the post-focus baseline, not a pixel value), so a
+ *  relative rule gets its own hint rather than the trigger's usual one. */
+function thresholdHint(t: TriggerKind, relative?: boolean): string | null {
   const k = PREDICATE_OF[t];
+  if (k === "hfr_above" && relative) return RELATIVE_HFR_HINT;
   return k === "hfr_above" || k === "guide_rms_above" ? THRESHOLD_HINT[k] : null;
 }
 
@@ -77,8 +81,9 @@ function TermRow({ term, idx, ruleIdx, canRemove, onPatch, onRemove }: {
   onRemove: () => void;
 }) {
   const tag = `Rule ${ruleIdx + 1} condition ${idx + 1}`;
-  const hint = term.kind === "hfr_above" || term.kind === "guide_rms_above"
-    ? THRESHOLD_HINT[term.kind] : null;
+  const hint = term.kind === "hfr_above"
+    ? (term.relative ? RELATIVE_HFR_HINT : THRESHOLD_HINT.hfr_above)
+    : term.kind === "guide_rms_above" ? THRESHOLD_HINT.guide_rms_above : null;
   return (
     <div className="flex items-center gap-2 flex-wrap">
       <select
@@ -241,7 +246,7 @@ function RuleRow({ ins, idx, targetNames, descOpts, onPatch, onRemove }: {
             type="number"
             step="0.1"
             min="0"
-            title={thresholdHint(ins.trigger) ?? undefined}
+            title={thresholdHint(ins.trigger, ins.relative) ?? undefined}
             aria-label={`Rule ${idx + 1} threshold`}
             value={ins.threshold}
             onChange={(e) => onPatch({ threshold: Math.max(0, num(e.target.value, ins.threshold)) })}
@@ -296,8 +301,8 @@ function RuleRow({ ins, idx, targetNames, descOpts, onPatch, onRemove }: {
 
       {/* Visible hint, not only title=: title never fires on touch, and "4.0"
           means nothing without knowing what normal looks like. */}
-      {!when && thresholdHint(ins.trigger) && (
-        <p className="text-[10px] text-dim">{thresholdHint(ins.trigger)}</p>
+      {!when && thresholdHint(ins.trigger, ins.relative) && (
+        <p className="text-[10px] text-dim">{thresholdHint(ins.trigger, ins.relative)}</p>
       )}
       {/* Persistent note instead of a picker entry the browser would let them
           choose anyway (see the honest-disabled comment above). */}

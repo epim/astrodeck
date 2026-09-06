@@ -325,6 +325,12 @@ class SequenceEngine:
         self._frames_since_dither = 0
         self._frames_since_focus = 0
         self._last_focus_temp: float | None = None
+        #: GN-08: the HFR of the first ACCEPTED frame since the last successful
+        #: autofocus (or, absent any autofocus this run, the run's own first
+        #: accepted frame). Read by a relative `hfr_above` rule; reset to None
+        #: at run start and after every successful `_autofocus` so the NEXT
+        #: accepted frame re-seeds it.
+        self._focus_baseline_hfr: float | None = None
         self._recent_hfr: list[float] = []
         #: one line per cooling excursion, not one per frame
         self._cooling_reasserted = False
@@ -549,6 +555,7 @@ class SequenceEngine:
         self._frames_since_dither = 0
         self._frames_since_focus = 0
         self._last_focus_temp = None
+        self._focus_baseline_hfr = None
         self._recent_hfr = []
         self._cooling_reasserted = False
         self._warned_no_cooler = False
@@ -2532,6 +2539,7 @@ class SequenceEngine:
                 ctx = TriggerContext(
                     now_ts=_now,
                     frame_hfr=(info.get("hfr") if isinstance(info, dict) else None),
+                    focus_baseline_hfr=self._focus_baseline_hfr,
                     guide_rms=self._guide_rms(),
                     frame_rejected=(not accepted),
                     target_complete=False,
@@ -2546,6 +2554,20 @@ class SequenceEngine:
             if accepted:
                 step_rejects = 0
                 self._night_rejects = 0            # resets on ANY accepted frame
+                # GN-08: seed the relative-watchdog baseline from the first
+                # accepted frame after a (re)focus. A flow with no autofocus at
+                # all still seeds it here, from the run's own first good frame
+                # — a relative rule on such a flow measures against "however
+                # good this rig's first sub was", which is the only baseline
+                # available when nothing ever measured focus explicitly.
+                if self._focus_baseline_hfr is None:
+                    _hfr = info.get("hfr") if isinstance(info, dict) else None
+                    if _hfr is not None:
+                        self._focus_baseline_hfr = float(_hfr)
+                        bus.log("info",
+                                f"focus baseline HFR {self._focus_baseline_hfr:.2f} px "
+                                f"(relative watchdogs measure against this)",
+                                "sequence")
                 self._record_frame(key, i, target, step, info)
                 i += 1
                 taken_this_visit += 1
@@ -5691,6 +5713,13 @@ class SequenceEngine:
             if not result.success:
                 bus.log("warning", f"{label} failed: {result.message}", "sequence")
                 failed_reason = result.message or "autofocus failed"
+            else:
+                # GN-08: a successful autofocus invalidates the relative
+                # watchdog's baseline — the NEXT accepted frame re-seeds it
+                # (see the `if accepted:` block above), so a relative rule
+                # always measures against what THIS focus achieved, not a
+                # stale one from before the sweep.
+                self._focus_baseline_hfr = None
             self._frames_since_focus = 0
             self._record_event_cost("autofocus", time.time() - _t0)
             await self._capture_focus_temp()

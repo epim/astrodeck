@@ -1376,6 +1376,10 @@ export interface Predicate {
   kind: PredicateKind;
   threshold: number;
   at_time: string | null;
+  // GN-08: hfr_above only — threshold is a FACTOR of the post-focus baseline
+  // HFR rather than an absolute pixel value. Optional/absent === false, so a
+  // plan saved before this existed round-trips unchanged.
+  relative?: boolean;
 }
 export interface Condition {
   op: "all" | "any";                    // all = AND, any = OR
@@ -1386,6 +1390,9 @@ export interface Instruction {
   enabled: boolean;
   trigger: TriggerKind;
   threshold: number;                    // on_hfr_above / on_guide_rms_above value
+  // GN-08: on_hfr_above only — threshold is a FACTOR of the post-focus
+  // baseline HFR rather than an absolute pixel value. Mirrors Predicate.relative.
+  relative?: boolean;
   at_time: string | null;               // "HH:MM" 24h local, when trigger === at_time
   action: ActionKind;
   message: string;                      // notify text / log + abort reason

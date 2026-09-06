@@ -414,6 +414,24 @@ def _instructions(compiled: dict, out: list[dict]) -> list[dict]:
         legal = {"trigger": trigger, "action": action}
         if rule.get("threshold") is not None:
             legal["threshold"] = rule["threshold"]
+            if trigger == "on_hfr_above" and rule.get("relative"):
+                # GN-08: the CONDITION node's "HFR above (x focus)" form. The
+                # SAME 1.0 < factor <= 5.0 bound `Instruction` enforces at the
+                # model layer is checked here first — a rule that failed it
+                # would otherwise reach `SequencePlan.model_validate` and turn
+                # a bad canvas value into an unhandled ValidationError at
+                # /run, instead of a note on the PLAN tab like every other
+                # unmappable thing in this function.
+                factor = float(rule["threshold"])
+                if not (1.0 < factor <= 5.0):
+                    out.append(_note(
+                        f"instructions[{trigger}].threshold",
+                        f"this rule will not run: a relative HFR-above-focus "
+                        f"factor must be above 1.0 (at or below fires on the "
+                        f"baseline itself) and at most 5.0 - got {factor:g}x",
+                        "warn"))
+                    continue
+                legal["relative"] = True
             if trigger in BOOLEAN_TRIGGERS:
                 # A DIAL WIRED TO NOTHING. `_eval_predicate` reads `threshold`
                 # for the MEASURED triggers (hfr_above, guide_rms_above) and
