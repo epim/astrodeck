@@ -153,3 +153,68 @@ def test_wcs_writeback_roundtrips(tmp_path):
     # +Y: Dec increases ~scale north (cd22 > 0), RA ~unchanged
     assert py[1] == pytest.approx(world[1] + scale, abs=5e-5)
     assert py[0] == pytest.approx(world[0], abs=1e-5)
+
+
+# ------------------------------------------------------- GN-07 (mount lies)
+# Evidence: OBJCTDEC +30 47 -> +31 51 across subs whose star fields matched
+# within a dither. The header must carry the BEST KNOWN pointing (a plate
+# solve, when there is one) in OBJCTRA/OBJCTDEC/RA/DEC, the mount's own raw
+# report in MOUNTRA/MOUNTDEC, and which one OBJCTRA/OBJCTDEC actually is in
+# PNTGSRC -- so a stacker (or a human) can tell the two apart instead of
+# silently trusting a card that walked 50 arcmin between subs of the same
+# field.
+
+def test_objctra_carries_the_solved_pointing_not_the_mount(tmp_path):
+    # A solved centre 50 arcmin from what the mount itself reports -- the
+    # measured gap from the night this row exists for.
+    solved_ra, solved_dec = 5.5, -5.39
+    mount_ra, mount_dec = 5.5 + (50.0 / 60.0) / 15.0, -5.39  # +50' of RA
+    meta = FrameMeta(
+        objctra="05 30 00.0", objctdec="-05 23 24",
+        mountra="05 33 20.0", mountdec="-05 23 24",
+        mount_ra_hours=mount_ra, mount_dec_deg=mount_dec,
+        pointing_source="solved")
+    path = save_fits(_frame(), tmp_path / "light.fits",
+                     ra_hours=solved_ra, dec_deg=solved_dec, meta=meta)
+    with fits.open(path) as hdul:
+        h = hdul[0].header
+    assert h["OBJCTRA"] == "05 30 00.0"
+    assert h["OBJCTDEC"] == "-05 23 24"
+    assert h["RA"] == pytest.approx(solved_ra * 15.0)
+    assert h["DEC"] == pytest.approx(solved_dec)
+    assert h["MOUNTRA"] == "05 33 20.0"
+    assert h["MOUNTDEC"] == "-05 23 24"
+    assert h["MOUNTRAD"] == pytest.approx(mount_ra * 15.0)
+    assert h["MOUNTDCD"] == pytest.approx(mount_dec)
+    assert h["PNTGSRC"] == "solved"
+    # the two really are 50' apart in this fixture -- prove the test itself
+    # exercises the defect, not a no-op
+    assert abs(h["RA"] - h["MOUNTRAD"]) == pytest.approx(50.0 / 60.0, abs=1e-3)
+
+
+def test_objctra_falls_back_to_the_mount_when_that_is_all_there_is(tmp_path):
+    meta = FrameMeta(
+        objctra="05 33 20.0", objctdec="-05 23 24",
+        mountra="05 33 20.0", mountdec="-05 23 24",
+        mount_ra_hours=5.5556, mount_dec_deg=-5.39,
+        pointing_source="mount")
+    path = save_fits(_frame(), tmp_path / "light.fits",
+                     ra_hours=5.5556, dec_deg=-5.39, meta=meta)
+    with fits.open(path) as hdul:
+        h = hdul[0].header
+    assert h["OBJCTRA"] == h["MOUNTRA"] == "05 33 20.0"
+    assert h["OBJCTDEC"] == h["MOUNTDEC"] == "-05 23 24"
+    assert h["PNTGSRC"] == "mount"
+
+
+def test_mount_cards_omitted_when_absent_not_placeholdered(tmp_path):
+    # omit-not-placeholder (spec Sec8): no mount fields on this meta at all
+    # (the throwaway-solve caller shape) -> no MOUNT* cards, no PNTGSRC.
+    meta = FrameMeta(objctra="05 33 20.0", objctdec="-05 23 24")
+    path = save_fits(_frame(), tmp_path / "light.fits",
+                     ra_hours=5.5556, dec_deg=-5.39, meta=meta)
+    with fits.open(path) as hdul:
+        h = hdul[0].header
+    assert h["OBJCTRA"] == "05 33 20.0"
+    for absent in ("MOUNTRA", "MOUNTDEC", "MOUNTRAD", "MOUNTDCD", "PNTGSRC"):
+        assert absent not in h, absent
