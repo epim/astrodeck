@@ -15,6 +15,7 @@ import sys
 import time
 from pathlib import Path
 
+from ..devices import sdk_paths
 from ..events import bus
 from . import download, github, stage, verify
 from .protocol import (EXIT_APPLY_UPDATE, InstallLayout, supervised_install_root)
@@ -181,6 +182,15 @@ class UpdateService:
                 self._publish("staging")
                 staged = await asyncio.to_thread(
                     stage.stage_release, artifact, layout.releases, rel.version)
+                # The tarball omits SDK libraries we may not redistribute; this
+                # install obtained them once and the new manifest still pins
+                # them. Carry them into the staged tree, or the imaging camera
+                # is gone on the next boot (0.3.23 hand deploy, #199).
+                carried = await asyncio.to_thread(
+                    stage.carry_forward_vendor_libraries,
+                    sdk_paths.VENDOR_ROOT,
+                    staged / "server" / "astrodeck" / "vendor")
+                self._report_vendor_carry(carried)
 
                 # POINT OF NO RETURN: re-check the rig-idle gate. The download/stage
                 # took time; if a sequence/slew/exposure started meanwhile, abort
@@ -222,6 +232,23 @@ class UpdateService:
             except Exception as e:  # noqa: BLE001 - surface, then fail the op
                 self._publish("idle", error=f"apply failed: {e}")
                 raise UpdateError(f"apply failed: {e}") from e
+
+    @staticmethod
+    def _report_vendor_carry(result: dict) -> None:
+        if result["carried"]:
+            bus.log("info",
+                    "carried forward bundled SDK libraries the release does not "
+                    "ship: " + ", ".join(result["carried"]), "update")
+        for rel, why in result["skipped"]:
+            vendor = rel.split("/", 1)[0].upper()
+            bus.log("warning",
+                    f"bundled SDK library {rel} {why}; not carried forward. "
+                    f"Point ASTRODECK_{vendor}_SDK_DIR at a copy that matches "
+                    "the release, or the device it drives will be missing.",
+                    "update")
+        if result.get("reason") and not result["carried"]:
+            bus.log("info", f"vendor carry-forward skipped: {result['reason']}",
+                    "update")
 
     def _write_rollback_freeze(self, layout: InstallLayout, freeze: str) -> None:
         """Persist the pre-update venv snapshot under state/ for the supervisor to

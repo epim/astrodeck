@@ -163,9 +163,20 @@ You don't need the UI. To install a version by hand:
 tar -xzf astrodeck-X.Y.Z.tar.gz -C <root>/releases     # yields releases/astrodeck-X.Y.Z/
 mv <root>/releases/astrodeck-X.Y.Z <root>/releases/X.Y.Z
 <root>/venv/bin/pip install <root>/releases/X.Y.Z/server
+# carry forward the SDK libraries the tarball does not ship (see below)
+cd <root>/releases/X.Y.Z/server && <root>/venv/bin/python -m astrodeck.update.stage     carry-forward <root>/releases/<current>/server/astrodeck/vendor                   <root>/releases/X.Y.Z/server/astrodeck/vendor
 # point current at it and restart the supervisor
 echo X.Y.Z > <root>/current
 ```
+
+**Bundled SDK libraries the tarball does not ship.** The release omits vendor
+binaries we are not licensed to redistribute (Player One's camera SDK), but
+`vendor/manifest.json` still pins their SHA-256. The automatic updater copies
+those libraries from the running install into the staged release, and only
+when the bytes match the new manifest; a library that does not match is left
+behind and named in the log with the `ASTRODECK_<VENDOR>_SDK_DIR` variable to
+set instead. The `carry-forward` command above is the same code for a hand
+update. Skipping it is how the imaging camera disappears after an update.
 
 **Roll back by hand:** set `current` to a known-good version (it's still under
 `releases/`) and restart the supervisor:
