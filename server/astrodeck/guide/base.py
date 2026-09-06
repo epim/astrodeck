@@ -41,6 +41,21 @@ class GuideStats:
     #: spread and the ``bus.publish("guide", **stats().__dict__)`` calls for
     #: free.
     phase: str = ""
+    #: GN-03. How many times this guiding session has LOST the star and then
+    #: re-established lock on a (possibly different) star. The RMS above is
+    #: measured around whatever star is currently locked, so it resets to zero
+    #: across a re-lock and cannot see the jump: on 2026-09-06 the native
+    #: guider reported 2.3 arcsec while the field walked 40 arcmin in half an
+    #: hour, one re-lock at a time. ``relock_arcsec_total`` is the summed
+    #: displacement between consecutive locks and ``relock_events`` the last 50
+    #: of them as ``[{t, arcsec}]`` — SAME unit contract as ``recent``, so
+    #: ``is_arcsec`` governs whether "arcsec" really is arcsec or raw
+    #: guide-camera pixels. Only a guider that can see its own lock position
+    #: fills these; the PHD2/NINA bridge leaves them at these defaults, and the
+    #: sequence engine's re-lock hold is a no-op against them.
+    relocks: int = 0
+    relock_arcsec_total: float = 0.0
+    relock_events: list[dict] = field(default_factory=list)
 
 
 def rms_total_arcsec(stats: "GuideStats | None") -> float | None:

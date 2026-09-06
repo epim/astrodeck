@@ -76,6 +76,24 @@ _CAL_TARGET_STEPS = 12
 _CAL_MS_MIN = 300
 _CAL_MS_MAX = 2500
 
+# The engine's own calibration defaults, mirrored here so the pulse-cap clamp
+# below can reason about the values it is about to override: 60 steps per leg
+# (astro-guide/src/calibration.rs:83, i.e. 5x the _CAL_TARGET_STEPS nominal)
+# and a 2500 ms ceiling on one correction (engine.rs:103).
+_CAL_DEFAULT_MAX_STEPS = 60
+_CAL_DEFAULT_DURATION_MS = 750
+_ENGINE_MAX_DURATION_MS = 2500
+
+# GN-03: two lock positions this close together are the SAME star coming back
+# after a flicker, not a walk. Guide-camera pixels; the engine's own centroid
+# jitters by a fraction of one.
+_RELOCK_SAME_STAR_PX = 1.5
+
+# ...and how many re-lock events the guider keeps for the UI and for the
+# sequence engine's window test. A night is thousands of frames; this is a
+# feed, not a log (the log is the bus).
+_RELOCK_EVENTS_MAX = 50
+
 # Wall-clock backstop for a full calibration walk (~6 legs).
 #
 # This was 180 s, chosen against the SIM, whose ``pulse_guide`` merely sleeps
@@ -188,6 +206,12 @@ def guide_algo_config() -> dict:
                  "flip_requires_dec_flip": bool(g.flip_requires_dec_flip),
                  "recalibrate_after_pier_change":
                      bool(g.recalibrate_after_pier_change),
+                 # GN-03: the re-lock thresholds. Also host-side — the SEQUENCE
+                 # ENGINE is what acts on them; the guider carries them so a
+                 # reader (UI, report) can see the rule the counters are
+                 # measured against without a second config read.
+                 "relock_limit": int(g.relock_limit),
+                 "relock_window_min": float(g.relock_window_min),
                  # PRO-12 Tier 2 (T6): per-axis tunable overrides, exclude_none so
                  # an unset param stays an engine default (never sent as null) —
                  # an all-default GuideConfig emits empty sub-dicts here.
@@ -334,6 +358,21 @@ class NativeGuider(Guider):
         self._reacquire = 0
         self._fault_frames = 0
 
+        # GN-03 re-lock accounting. ``_lock_xy`` is the last LOCKED guide-star
+        # position in guide-camera px (the engine exposes no lock position
+        # through ``process()`` or ``stats()`` — only ``secondaries`` — so the
+        # host re-finds it from the frame it already has, and only on the two
+        # frames that matter: the session's first lock and each re-lock).
+        # ``_relock_pending`` is raised by a ``star_lost`` and lowered by the
+        # next frame on which the engine reports a lock again; that transition
+        # IS the re-lock, and it is invisible to every other signal the host
+        # has, because the error resets to zero around the new star.
+        self._lock_xy: tuple[float, float] | None = None
+        self._relock_pending = False
+        self._relocks = 0
+        self._relock_arcsec_total = 0.0
+        self._relock_events: list[dict] = []
+
         # NOV-7: a small host hint set during the finding/calibrating steps
         # (which precede ``_active`` going True and are otherwise invisible to
         # ``_current_phase()``), and cleared once the guide loop owns the
@@ -384,6 +423,12 @@ class NativeGuider(Guider):
         # ``flip_calibration``) for a mount known to want it.
         self._recalibrate_after_pier_change = bool(
             cfg.get("recalibrate_after_pier_change", True))
+        # GN-03: the re-lock thresholds the SEQUENCE ENGINE enforces. Carried
+        # here (never sent to the engine — the allowlist in
+        # ``_build_engine_config`` strips them) so a reader of the guider can
+        # see the rule its counters are measured against.
+        self._relock_limit = int(cfg.get("relock_limit", 3))
+        self._relock_window_min = float(cfg.get("relock_window_min", 10.0))
         # Latched by ``clear_calibration`` and by the meridian-flip discard:
         # while it is set, ``_persist_calibration`` writes nothing, so no later
         # stop or flip can resurrect a calibration the operator (or the flip)
@@ -555,6 +600,18 @@ class NativeGuider(Guider):
             self._reacquire = 0
             self._fault_frames = 0
             self._settle_open = False
+            # GN-03: a start is a fresh SESSION and its re-lock counters start
+            # at zero. A recovery restart (the sequence engine's
+            # ``_maybe_recover_guiding``, or the re-lock hold itself) comes
+            # through this same call and is not distinguishable from an
+            # operator's Start — nothing in the signature says which — so it
+            # resets too, and the engine-side hold keeps its OWN window clock
+            # rather than relying on these surviving a restart.
+            self._lock_xy = None
+            self._relock_pending = False
+            self._relocks = 0
+            self._relock_arcsec_total = 0.0
+            self._relock_events = []
             rates = await self._read_guide_rates()
             self._engine = _native.GuideEngine(self._build_engine_config(rates))
 
@@ -1003,6 +1060,10 @@ class NativeGuider(Guider):
                 self._fault_frames = 0
                 action = self._engine.process(
                     frame.data, frame.timestamp, self._exposure_s)
+                # BEFORE the dispatch: a pulse action resets ``_reacquire``,
+                # and the re-lock this is looking for is exactly the frame on
+                # which that happens (GN-03).
+                self._note_lock(action, frame)
                 await self._dispatch(action)
                 self._sync_settle_window(action)
                 self._last_stats = self.stats()
@@ -1140,6 +1201,10 @@ class NativeGuider(Guider):
         false (the P1-T7 review contract)."""
         if reason == "star_lost":
             self._reacquire += 1
+            # GN-03: arm the re-lock watch. Whatever the engine locks onto next
+            # may not be the star we were guiding, and if it is not, the guide
+            # error resets to zero around it and the RMS never mentions the gap.
+            self._relock_pending = True
             bus.log("warning",
                     f"native guider lost the guide star "
                     f"(reacquire {self._reacquire}/{_REACQUIRE_BUDGET})", "guide")
@@ -1158,6 +1223,101 @@ class NativeGuider(Guider):
         self._lost = True
         self._active = False
         self._stop.set()
+
+    # ------------------------------------------------------------- re-locking
+
+    def _find_lock_position(self, frame) -> tuple[float, float] | None:
+        """Where the locked guide star is on ``frame``, in guide-camera px, or
+        None when the frame has no star (or no wheel to ask).
+
+        The engine keeps the lock internally and publishes neither the lock nor
+        the primary star through ``process()`` (whose Actions carry only
+        pulses) or ``stats()`` (which carries ``secondaries`` — the OTHER
+        stars, empty in single-star mode), so the host re-derives it from the
+        frame it has already paid for, with the same brightest-first
+        ``guide_star_find`` pick ``_calibrate`` uses to choose the star in the
+        first place. Called on two frames per lock — the first and each
+        re-lock — never on the steady-state path."""
+        if _native is None or frame is None:
+            return None
+        try:
+            stars, _meta = _native.guide_star_find(frame.data)
+            if not stars:
+                return None
+            return float(stars[0]["x"]), float(stars[0]["y"])
+        except Exception:  # pragma: no cover - defensive; a miss is not fatal
+            return None
+
+    def _note_lock(self, action: dict, frame) -> None:
+        """Track the lock position across a star loss and COUNT the re-locks
+        (GN-03).
+
+        The night of 2026-09-06: the guider reported 2.3 arcsec RMS while the
+        field walked 40 arcmin in 30 minutes. Nothing was wrong with the RMS —
+        it measures the error around the CURRENT lock, and each ``star_lost``
+        was followed one frame later by a lock on whatever star was under the
+        search box, at which point the error was zero again by construction.
+        The walk lived entirely in the gaps, and no signal the host had could
+        see it: ``is_active()`` never went false (the reacquire budget was
+        never exhausted), so the sequence engine's recovery never fired either.
+
+        So each re-lock is measured against the position we held before the
+        loss, narrated with that displacement, and counted into
+        ``GuideStats``. A re-lock within ``_RELOCK_SAME_STAR_PX`` is the same
+        star returning after a flicker — still counted (a rig re-locking three
+        times in ten minutes is not guiding, whatever the displacement), but
+        said quietly, or every thin cloud edge would cry wolf."""
+        kind = action.get("action")
+        if kind in ("lock_lost", "cal_step"):
+            return
+        # The engine reports ``guiding`` from the moment it is asked to guide,
+        # INCLUDING on the idle lock-establishment frames after a loss — which
+        # is exactly the frame this wants.
+        try:
+            if not self._engine.stats().get("guiding", False):
+                return
+        except Exception:  # pragma: no cover - defensive
+            return
+        if self._lock_xy is not None and not self._relock_pending:
+            return                     # steady state: no star-find to pay for
+        pos = self._find_lock_position(frame)
+        if pos is None:
+            return                     # nothing locked yet; try the next frame
+        prev = self._lock_xy
+        self._lock_xy = pos
+        if not self._relock_pending:
+            return                     # the session's first lock: a baseline
+        self._relock_pending = False
+        # ``_reacquire`` is deliberately NOT reset here. It is the budget for
+        # consecutive losses and only a dispatched correction spends it
+        # (``_dispatch``), which is the very next frame once the engine is
+        # really guiding again; resetting it on the lock-establishment frame
+        # would let a rig that re-locks and immediately loses the star again
+        # ride the budget forever.
+        if prev is None:               # pragma: no cover - baseline missing
+            return
+        # Same unit contract as ``stats()``'s ``recent``: multiply by the image
+        # scale (1.0 when there is none), and let ``is_arcsec`` say what the
+        # number means. Only the LOG needs to name the unit out loud.
+        d_px = math.hypot(pos[0] - prev[0], pos[1] - prev[1])
+        scale = self._image_scale if self._image_scale > 0 else 1.0
+        d = d_px * scale
+        unit = "arcsec" if (self._image_scale_known
+                            and self._image_scale > 0) else "px"
+        self._relocks += 1
+        self._relock_arcsec_total += d
+        self._relock_events.append({"t": round(time.time(), 3),
+                                    "arcsec": round(d, 3)})
+        del self._relock_events[:-_RELOCK_EVENTS_MAX]
+        if d_px <= _RELOCK_SAME_STAR_PX:
+            bus.log("info",
+                    f"native guider: re-acquired the same star ({d:.1f} {unit} "
+                    f"from the last lock; re-lock {self._relocks} this "
+                    f"session)", "guide")
+            return
+        bus.log("warning",
+                f"native guider: re-locked on a star {d:.1f} {unit} from the "
+                f"last lock (re-lock {self._relocks} this session)", "guide")
 
     # -------------------------------------------------------------- exposures
 
@@ -1253,6 +1413,52 @@ class NativeGuider(Guider):
                 ms = cal_dist / px_s / _CAL_TARGET_STEPS * 1000.0
                 engine_cfg["calibration_duration_ms"] = int(
                     max(_CAL_MS_MIN, min(_CAL_MS_MAX, ms)))
+
+        # GN-02 FOLLOW-THROUGH (2026-09-06): honour a mount that caps ONE
+        # pulse. The AM5 driver caps every pulse at _PULSE_MAX_MS = 1000 and
+        # publishes that as ``Telescope.max_pulse_ms``; until now nothing read
+        # it. A calibration step longer than the cap is TRUNCATED by the
+        # driver, and the engine still divides the measured travel by the
+        # duration it ASKED for — so the px/ms rate comes out low by exactly
+        # the truncation ratio and every correction for the rest of the night
+        # is scaled down by it. Above ~7.2 arcsec/px of guide scale the derived
+        # step already exceeds 1000 ms, so this is the common case on a short
+        # guide scope, not a corner. Applied AFTER the derivation above so it
+        # catches both the derived duration and a pinned one.
+        cap = getattr(self.tel, "max_pulse_ms", None)
+        try:
+            cap = int(cap) if cap else 0
+        except (TypeError, ValueError):  # pragma: no cover - defensive
+            cap = 0
+        if cap > 0:
+            step = int(engine_cfg.get("calibration_duration_ms",
+                                      _CAL_DEFAULT_DURATION_MS))
+            if step > cap:
+                engine_cfg["calibration_duration_ms"] = cap
+                bus.log("info",
+                        f"native guider: calibration step {step} ms clamped to "
+                        f"the mount's {cap} ms pulse cap", "guide")
+                # A shorter step crosses less sky, so a leg needs
+                # proportionally MORE of them to cross calibration_distance —
+                # and the engine fails the calibration at ``max_steps``. Scale
+                # the nominal step count by the truncation ratio and keep the
+                # engine's own 5x headroom over it (its default max_steps of 60
+                # is 5 x _CAL_TARGET_STEPS), so a hard cap lengthens the walk
+                # instead of failing it.
+                need = math.ceil(_CAL_TARGET_STEPS * step / cap)
+                budget = int(need * _CAL_DEFAULT_MAX_STEPS / _CAL_TARGET_STEPS)
+                engine_cfg["max_steps"] = max(
+                    int(engine_cfg.get("max_steps", _CAL_DEFAULT_MAX_STEPS)),
+                    budget)
+            lowered = False
+            for k in ("max_ra_duration_ms", "max_dec_duration_ms"):
+                if int(engine_cfg.get(k, _ENGINE_MAX_DURATION_MS)) > cap:
+                    engine_cfg[k] = cap
+                    lowered = True
+            if lowered:
+                bus.log("info",
+                        f"native guider: per-axis correction cap clamped to "
+                        f"the mount's {cap} ms pulse cap", "guide")
         return engine_cfg
 
     # ------------------------------------------------------- guiding assistant
@@ -1598,7 +1804,8 @@ class NativeGuider(Guider):
         flows through ``hub.py``'s ``stats().__dict__`` poll and the
         ``bus.publish("guide", **stats().__dict__)`` calls for free."""
         if self._engine is None:
-            return GuideStats(guiding=False, phase=self._current_phase())
+            return GuideStats(guiding=False, phase=self._current_phase(),
+                              **self._relock_fields())
         try:
             s = self._engine.stats()
         except Exception:  # pragma: no cover - defensive
@@ -1622,7 +1829,16 @@ class NativeGuider(Guider):
             is_arcsec=arcsec,
             image_scale=round(self._image_scale, 3) if arcsec else 0.0,
             phase=self._current_phase(s),
+            **self._relock_fields(),
         )
+
+    def _relock_fields(self) -> dict:
+        """The GN-03 re-lock counters as ``GuideStats`` kwargs. A COPY of the
+        event list: it is published on the bus and read by the sequence engine
+        between frames, and the guide loop appends to the original."""
+        return {"relocks": self._relocks,
+                "relock_arcsec_total": round(self._relock_arcsec_total, 3),
+                "relock_events": list(self._relock_events)}
 
     def calibration_report(self) -> dict | None:
         """Surface the engine's calibration geometry + advisories (UX-23) so a
