@@ -246,3 +246,54 @@ Sample captures on the box: `C:\Users\James\AstroDeck\mountprobe.pcap` (the LX20
 
 > Site latitude/longitude returned by `:Gt#`/`:Gg#` are redacted here (the mount reports
 > the observatory's precise location); the live values are visible only on the rig.
+
+## The reported RA/Dec walks during a run (measured 2026-08-21 and 2026-09-06)
+
+The coordinates the AM5N reports (`:GR#`/`:GD#`, and the alt/az it derives from
+them) drift away from where the telescope is actually pointing while a guided
+run is in progress. The tube does not move: star fields matched frame to frame
+within a dither while the report walked. This is the mount's model of itself
+diverging, not a transport or parsing fault (reported alt/az stay
+self-consistent with the reported dec throughout).
+
+| night | window | what the report did | what the field did |
+|---|---|---|---|
+| 2026-08-21 | autofocus runs + guider calibration and start | +12.9 arcmin/min in dec | held (two L frames 36 min apart match star for star) |
+| 2026-08-21 | plain imaging with dithers | -10.3 arcsec/min, smooth | held |
+| 2026-09-06 | guided cycle, 30 min | +50 arcmin north (OBJCTDEC +30 47 -> +31 51 in consecutive subs) | held within a dither (field_shift star matching) |
+
+Mechanism SUSPECTED, not proven: the emulated pulse guide (`:Mn#`/`:Ms#`/`:Mw#`
+rate moves plus the tracking suspend used for east) is applied by the firmware
+to its own coordinate model at a rate that does not match the physical motion.
+The fast regime coincides with the phases that pulse the most.
+
+What AstroDeck does about it (shipped):
+
+- the meridian flip, the altitude floor and the horizon gates are scheduled
+  from the TARGET's coordinates and the clock, never from the report
+  (`sequence/engine.py`, since 0.3.2x);
+- sub headers carry the last plate-solved pointing in `OBJCTRA`/`OBJCTDEC`
+  and the raw report in `MOUNTRA`/`MOUNTDEC`, with `PNTGSRC` naming the source
+  (2026-09-06, spec GN-07);
+- when the field identification is cleared because "the mount has moved" by
+  more than the field, the right response is a re-solve and re-sync, which the
+  rig can do on demand.
+
+At-scope checks still owed (do these with the guider idle, tracking on):
+
+1. `:Gm#` pier-side semantics across a real meridian flip. At 03:30 on
+   2026-09-06 the mount still answered `W` after the flip goto had completed
+   and re-centred, so either the report lags the flip or the goto did not
+   change sides. Read `:Gm#` and `:GU#` before the goto, after it settles, and
+   again 60 s later; log all three with `:GR#`/`:GD#`. The guider's
+   pier-change recalibration (spec GN-01) no longer depends on this answer,
+   but the doctor and the flip scheduler would like to know it.
+2. Bench test of the walk itself: park, unpark, sync to a plate solve, then
+   drive a known count of 500 ms pulses per direction with the guider stopped
+   and read `:GR#`/`:GD#` after each block. Compare the reported displacement
+   to the physical one measured by a second solve. This decides whether the
+   model drift is proportional to pulse count (firmware bookkeeping) or to
+   time (a clock or rate error).
+3. Whether `:Q#` disturbs tracking on this firmware (open runbook item from
+   the halt-window work), since the same suspend-and-resume pattern is what
+   the east pulse uses.
