@@ -35,6 +35,20 @@ from astrodeck.sequence import schedule
 from astrodeck.sequence.engine import StopTarget
 from astrodeck.sequence.models import ExposureStep, Target
 from astrodeck.sequence.schedule import MERIDIAN_FLIP_LEAD_MIN
+from astrodeck.providers import NATIVE_AVAILABLE
+
+#: The five autofocus-sweep tests below drive the sequence engine's REAL
+#: autofocus path, which on this rig is the native Rust V-curve engine. With the
+#: wheel absent the engine reports "autofocus unavailable: no backend autofocus
+#: and the native engine is not installed" and returns False before any sweep
+#: runs, so they cannot grade the tracking guard at all -- they ran red on the
+#: wheel-less `server` CI job from the day they landed (2026-08-22) while
+#: passing on every dev box that has the wheel. Skip them without it; the
+#: `native` CI job builds the wheel and runs exactly these five.
+native_only = pytest.mark.skipif(
+    not NATIVE_AVAILABLE,
+    reason="native wheel absent: the sequence autofocus sweep is the native engine",
+)
 
 
 @pytest.fixture
@@ -743,6 +757,7 @@ async def test_a_sweep_does_not_apply_a_result_measured_while_stopped(
         "applied a focus position measured while the mount was not tracking")
 
 
+@native_only
 async def test_the_engines_sweep_aborts_when_tracking_dies_mid_way(
         sim_hub, monkeypatch):
     """THE PATH THE RIG ACTUALLY RUNS, not the one that is easiest to test.
@@ -776,6 +791,7 @@ async def test_the_engines_sweep_aborts_when_tracking_dies_mid_way(
         f"left the focuser at {await foc.get_position()} instead of {start}")
 
 
+@native_only
 async def test_a_dark_frame_sweep_is_not_gated_on_tracking(sim_hub, monkeypatch):
     """Darks are shot parked on purpose - the same exemption a light-frame gate
     already makes - so a calibration step must not lose its refocus."""
@@ -807,6 +823,7 @@ async def _noop_gate(context="", target=None):
 
 # --------------------------------------------- one sample is not a verdict
 
+@native_only
 async def test_one_sampled_dropout_does_not_abandon_a_sweep(
         sim_hub, monkeypatch):
     """THE EAST GUIDE PULSE IS A TRACKING-OFF WINDOW ON THIS MOUNT.
@@ -838,6 +855,7 @@ async def test_one_sampled_dropout_does_not_abandon_a_sweep(
     assert st["n"] > 4, "the False was believed without ever being re-asked"
 
 
+@native_only
 async def test_a_dropout_that_lasts_is_still_believed(sim_hub, monkeypatch):
     """...and the confirm must not become a way of never noticing. A mount at
     its meridian limit stays stopped for MINUTES; the confirm window is
@@ -874,6 +892,7 @@ def test_the_confirm_window_outlasts_a_guide_pulse():
         f"guide pulse - one pulse can still cover every sample")
 
 
+@native_only
 async def test_a_calibration_target_sweep_is_not_gated_on_tracking(
         sim_hub, monkeypatch):
     """The dark-STEP exemption has a test; the calibration-TARGET one did not,

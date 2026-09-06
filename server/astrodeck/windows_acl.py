@@ -14,6 +14,15 @@ import ctypes
 import os
 import re
 from contextlib import contextmanager
+
+# ``ctypes.set_last_error`` / ``get_last_error`` exist only on Windows. The
+# Win32 paths below are only ever *invoked* on Windows, but the portable ACL
+# orchestration tests drive them on every platform with a fake kernel32 (that
+# is the point of those tests: the DACL logic is graded on Linux CI too), and
+# the first Linux run tripped on the bare attribute (2026-09-05). On Windows
+# these are the real functions; elsewhere they are inert.
+_set_last_error = getattr(ctypes, "set_last_error", lambda code: None)
+_get_last_error = getattr(ctypes, "get_last_error", lambda: 0)
 from ctypes import wintypes
 from pathlib import Path
 from typing import Iterator
@@ -143,7 +152,7 @@ def _format_error(code: int) -> str:
 
 
 def _last_error(operation: str, path: Path | str | None = None) -> PrivateAclError:
-    code = int(ctypes.get_last_error())
+    code = int(_get_last_error())
     suffix = f" for {path}" if path is not None else ""
     return PrivateAclError(
         f"{operation} failed{suffix}: {_format_error(code)} ({code})"
@@ -314,7 +323,7 @@ def current_user_sid() -> str:
         raise _last_error("OpenProcessToken")
     try:
         needed = wintypes.DWORD()
-        ctypes.set_last_error(0)
+        _set_last_error(0)
         ok = advapi32.GetTokenInformation(
             token,
             _TOKEN_USER_CLASS,
@@ -322,7 +331,7 @@ def current_user_sid() -> str:
             0,
             ctypes.byref(needed),
         )
-        error = int(ctypes.get_last_error())
+        error = int(_get_last_error())
         if ok or error != _ERROR_INSUFFICIENT_BUFFER or not needed.value:
             raise PrivateAclError(
                 "GetTokenInformation(size) failed: "
@@ -363,7 +372,7 @@ def require_acl_capable_filesystem(path: Path) -> None:
             str(probe), root_buffer, len(root_buffer)
         ):
             break
-        error = int(ctypes.get_last_error())
+        error = int(_get_last_error())
         parent = probe.parent
         if (
             error not in (_ERROR_FILE_NOT_FOUND, _ERROR_PATH_NOT_FOUND)
@@ -444,7 +453,7 @@ def _open_component_handle(kernel32, path: Path):
     ``None`` means this component (and necessarily its suffix) is absent.
     Every other open failure is security-significant and fails closed.
     """
-    ctypes.set_last_error(0)
+    _set_last_error(0)
     handle = kernel32.CreateFileW(
         str(path),
         _FILE_READ_ATTRIBUTES,
@@ -458,7 +467,7 @@ def _open_component_handle(kernel32, path: Path):
     if handle != invalid:
         return handle
 
-    error = int(ctypes.get_last_error())
+    error = int(_get_last_error())
     if error in (_ERROR_FILE_NOT_FOUND, _ERROR_PATH_NOT_FOUND):
         return None
     raise PrivateAclError(
@@ -729,7 +738,7 @@ def _create_private_directory(kernel32, advapi32, path: Path, user_sid: str) -> 
     )
     try:
         if not kernel32.CreateDirectoryW(str(path), ctypes.byref(attributes)):
-            error = int(ctypes.get_last_error())
+            error = int(_get_last_error())
             if error != _ERROR_ALREADY_EXISTS:
                 raise PrivateAclError(
                     f"CreateDirectoryW failed for {path}: "

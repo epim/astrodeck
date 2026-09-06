@@ -34,8 +34,23 @@ from pathlib import Path
 VENDOR_ROOT = Path(__file__).resolve().parent.parent / "vendor"
 MANIFEST_PATH = VENDOR_ROOT / "manifest.json"
 
-#: The binary extensions we ship and load in-process.
-_BINARY_SUFFIXES = (".dll", ".so", ".dylib")
+#: The binary kinds we ship and load in-process.
+_BINARY_SUFFIXES = (".dll", ".dylib")
+
+
+def _is_shared_library(p: Path) -> bool:
+    """True for a .dll, a .dylib, or ANY ``.so`` -- including the fully
+    versioned sonames the Linux vendor libs actually ship as
+    (``libPlayerOneCamera.so.3.10.0``, whose ``Path.suffix`` is ``.0``).
+
+    The first manifest matched on ``suffix`` alone and silently omitted every
+    versioned ``.so``; the fail-closed check then refused Player One on Linux
+    (the Orange Pi) as "not in the manifest". Caught by the first Linux CI run,
+    2026-09-05. Judge on all suffixes, not the last one."""
+    if not p.is_file():
+        return False
+    suffixes = [s.lower() for s in p.suffixes]
+    return p.suffix.lower() in _BINARY_SUFFIXES or ".so" in suffixes
 
 MANIFEST_SCHEMA = 1
 
@@ -56,10 +71,7 @@ def iter_vendor_binaries(root: Path = VENDOR_ROOT) -> list[Path]:
     """Every bundled binary under ``root`` (sorted, for a stable manifest)."""
     if not root.is_dir():
         return []
-    return sorted(
-        p for p in root.rglob("*")
-        if p.is_file() and p.suffix.lower() in _BINARY_SUFFIXES
-    )
+    return sorted(p for p in root.rglob("*") if _is_shared_library(p))
 
 
 def _lexical(path: Path) -> Path:

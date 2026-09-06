@@ -105,3 +105,17 @@ def test_verify_refuses_a_symlink_planted_under_vendor(tmp_path):
     os.symlink(other, real)
     with pytest.raises(VendorIntegrityError):
         verify_if_vendored(real, manifest=man, root=tmp_path)
+
+
+def test_manifest_covers_versioned_linux_sonames():
+    """The Linux vendor libs ship as fully-versioned sonames
+    (libPlayerOneCamera.so.3.10.0, whose Path.suffix is '.0'). The first
+    manifest matched on suffix alone and omitted every one of them, so the
+    fail-closed check refused Player One on Linux. Judge on all suffixes."""
+    man = load_manifest()["binaries"]
+    versioned = [k for k in man if ".so." in k]
+    assert versioned, "no versioned .so in the manifest -- the iterator regressed"
+    assert "playerone/linux-x86_64/libPlayerOneCamera.so.3.10.0" in man
+    assert "playerone/linux-arm64/libPlayerOneCamera.so.3.10.0" in man
+    # and a header beside the binaries is NOT a binary
+    assert not any(k.endswith(".h") for k in man)
