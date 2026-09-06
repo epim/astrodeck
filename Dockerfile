@@ -14,7 +14,7 @@
 # survive being packaged — see api/app.py::_resolve_ui_dist.
 
 # ----------------------------------------------------------------- UI build
-FROM --platform=$BUILDPLATFORM node:20-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0 AS ui
+FROM --platform=$BUILDPLATFORM node:26-slim@sha256:c0753125a3789977aefe869cbebccf70e3cfd7ea84ca48547458f02e4f1d7146 AS ui
 WORKDIR /ui
 # package files first: this layer is cached until a dependency actually changes,
 # which is the difference between a 20-second and a 4-minute rebuild on a Pi.
