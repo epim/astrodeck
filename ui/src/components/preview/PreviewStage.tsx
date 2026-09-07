@@ -562,7 +562,7 @@ export function PreviewStage(props: Props) {
     return (
       <div
         ref={stageRef}
-        className="preview-stage astro-surface relative w-full overflow-hidden flex items-center justify-center"
+        className="preview-stage astro-surface relative w-full max-w-full overflow-hidden flex items-center justify-center"
         style={{ aspectRatio: compact ? "3 / 2" : undefined, minHeight: stageMinH }}
       >
         {standIn ? (
@@ -623,7 +623,7 @@ export function PreviewStage(props: Props) {
       role="group"
       aria-label={`Live preview, frame ${preview.id}. Arrow keys pan; plus and minus zoom; 0 fits; 1 is 100%.`}
       onKeyDown={onStageKeyDown}
-      className="preview-stage astro-surface relative w-full overflow-hidden outline-none"
+      className="preview-stage astro-surface relative w-full max-w-full overflow-hidden outline-none"
       style={{
         aspectRatio: compact ? "3 / 2" : undefined,
         minHeight: stageMinH,

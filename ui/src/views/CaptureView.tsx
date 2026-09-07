@@ -966,8 +966,23 @@ export default function CaptureView() {
           viewport. It was present, visible and unreachable.
           No DOM test can catch this: jsdom has no layout, so the dial's
           ResizeObserver never fires, `box` stays null, and dialRadius returns
-          the full radius in every test that has ever run. */}
-      <div className="relative h-fit">
+          the full radius in every test that has ever run.
+
+          `min-w-0` is ALSO load-bearing, and belongs on THIS div specifically:
+          below `md` this grid has no explicit column ("grid" alone, no
+          `grid-cols-*`), so the single implicit column is an auto track sized
+          by the GRID ITEM's automatic minimum size -- which defaults to its
+          content's un-shrunk width, not 0. `<LivePreview/>`'s own root already
+          carries `min-w-0` (added for the CameraDial fix above), but that panel
+          is nested ONE level inside this div, and setting the override on a
+          descendant does not relax the auto-track sizing of the actual grid
+          item. Measured on a live rig at a 412px-equivalent container: without
+          this, the track sized itself to the panel's full-bleed content
+          (~1170px) and only THEN got clipped by <main>'s overflow-x-hidden --
+          which is what took the meta line, the focus verdict, the preview
+          image and the scale bar overlay all off the right edge of the screen
+          at once, together, on a phone. */}
+      <div className="relative h-fit min-w-0">
         <LivePreview />
         {/* Camera settings where the thumb is while the eye is on the frame —
             the same dial the Align reticle and the Focus stage carry. */}

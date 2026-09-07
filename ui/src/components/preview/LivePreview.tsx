@@ -134,13 +134,27 @@ export function LivePreview() {
     // and the histogram's own SVG (72px tall with a 256x72 viewBox) carries a
     // 256px intrinsic-ratio min-content contribution that keeps that floor high.
     <Panel className="min-w-0" title="Live Preview" right={
-      <span className="flex items-center gap-3">
+      // `min-w-0` here too: this row holds the mono meta line (frame size,
+      // exposure, gain, bin), which on the real camera settings ("6252x4176 -
+      // 60s - gain 125 - bin 1") is long enough that without it the row
+      // refused to shrink and ran off the right of a phone screen instead of
+      // wrapping. The `right` div above it (Panel) already shrinks; this makes
+      // the row it wraps do the same.
+      <span className="flex items-center gap-3 min-w-0">
         <LiveStackReadout preview={shown} />
         <PreviewMeta preview={shown} />
       </span>
     }>
       <div className="flex flex-col gap-3">
-        <FocusVerdict preview={shown} prev={prev} hfrGood={hfrGood} hfrWarn={hfrWarn} />
+        {/* `min-w-0` wraps FocusVerdict from the outside rather than editing its
+            markup: the verdict's own row is `flex flex-wrap`, which already
+            lets its text wrap once given a properly-shrunk box, but this panel
+            sits in a CSS grid column that can only shrink that far if nothing
+            between here and the grid item refuses to. Belt-and-suspenders
+            alongside the grid-item fix in CaptureView.tsx. */}
+        <div className="min-w-0">
+          <FocusVerdict preview={shown} prev={prev} hfrGood={hfrGood} hfrWarn={hfrWarn} />
+        </div>
 
         {/* The wrapper exists to be MEASURED. The stage is `w-full` inside it,
             so this box's clientWidth is the stage's CSS width — which is what
