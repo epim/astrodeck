@@ -22,6 +22,17 @@
 // bolt went the wrong way, and the error climbed 430′ → 500′. The label is now
 // at both ends, which is the part these tests pin — from one tick the handedness
 // can be inferred backwards, and it was.
+//
+// 2026-09-07 added the rest of the chain, after the same instrument was reported
+// mirrored again on a night when every NUMBER was right (server-side signs
+// re-verified against an independent forward model in
+// server/tests/test_tppa_engine_geometry.py). What was wrong was the picture:
+// the skew vector's arrowhead sat on the DOT, so the loudest mark on the screen
+// pointed from the pole out to the axis while "◀ AZ turn W" sat beside it saying
+// the opposite — and nothing anywhere said whether the dot meant "you are here"
+// or "go here". Pinned below: the arrow runs dot → pole, the legend names both
+// marks, and the altitude term is held to the identical convention so the two
+// axes can never drift apart again.
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -88,6 +99,7 @@ const { PolarReticle, knobHint } = await import("../polar");
 
 // The reticle's own geometry constants (PolarReticle: size 380, R 165).
 const CX = 190;
+const CY = 190;
 
 const root = createRoot(win.document.getElementById("root"));
 const render = (az: number, alt: number) =>
@@ -111,12 +123,27 @@ const dotX = (): number => {
   assert.ok(c, "no error dot in the reticle — nothing to compare a label against");
   return Number(c.getAttribute("cx"));
 };
-/** The skew vector's tip, computed from the same dx by different markup. */
-const vectorTipX = (): number => {
+/** …and its y, for the altitude half of the same convention. */
+const dotY = (): number => {
+  const c: any = Array.from(win.document.querySelectorAll("circle"))
+    .find((el: any) => el.getAttribute("r") === "7");
+  assert.ok(c, "no error dot in the reticle");
+  return Number(c.getAttribute("cy"));
+};
+/** The skew vector, as { tail, head } points. The line is drawn dot → pole, so
+ *  the TAIL sits on the dot and the arrowhead (x2/y2) sits just short of centre:
+ *  the head names the CORRECTION. Computed from the same dx/dy as the dot but by
+ *  entirely different markup, which is what makes comparing them worth anything. */
+const vector = () => {
   const l: any = win.document.querySelector("line[marker-end]");
   assert.ok(l, "no skew vector drawn");
-  return Number(l.getAttribute("x2"));
+  return {
+    tail: { x: Number(l.getAttribute("x1")), y: Number(l.getAttribute("y1")) },
+    head: { x: Number(l.getAttribute("x2")), y: Number(l.getAttribute("y2")) },
+  };
 };
+const dist = (p: { x: number; y: number }, q: { x: number; y: number }) =>
+  Math.hypot(p.x - q.x, p.y - q.y);
 
 // ----------------------------------------------------------------------------
 
@@ -159,7 +186,8 @@ test("a POSITIVE azimuth error puts the dot on the AZ E side", () => {
     "engine's sign convention disagree");
   assert.ok(Math.abs(d - e.x) < Math.abs(d - w.x),
     `az=+4′ put the dot at x=${d}, nearer the AZ W label (x=${w.x}) than the AZ E one (x=${e.x})`);
-  assert.equal(vectorTipX(), d, "the vector and the dot disagree about where the error is");
+  assert.equal(vector().tail.x, d,
+    "the vector's tail and the dot disagree about where the error is");
 });
 
 test("a NEGATIVE azimuth error puts the dot on the AZ W side", () => {
@@ -185,6 +213,79 @@ test("the label agrees with the knob hint, which agrees with the engine", () => 
     "the reticle and the hint are pointing opposite ways");
   assert.equal(knobHint(null, -4, "az")?.text, "turn E",
     "a mount axis west of the pole is corrected by turning east");
+});
+
+test("the correction arrow points AT the pole, not at the axis", () => {
+  /* THE 2026-09-05 REPORT. The dot's side was right, the "turn W" was right,
+     and the operator still read the instrument as mirrored — because the arrow
+     ran centre → dot, so the biggest directional mark on the screen pointed
+     from the pole out to the axis while the words a few units away said the
+     opposite. An arrow is an instruction to everybody who has ever seen one.
+     It now runs dot → pole, which IS the correction, and stops short of the
+     centre so the pole target stays visible under it. */
+  render(4, 3);
+  const v = vector();
+  const centre = { x: CX, y: CY };
+  assert.equal(v.tail.x, dotX(), "the arrow does not start at the dot");
+  assert.ok(dist(v.head, centre) < dist(v.tail, centre),
+    `the arrowhead (${v.head.x},${v.head.y}) is FURTHER from the pole than its tail ` +
+    `(${v.tail.x},${v.tail.y}) — it is pointing at the error instead of at the fix`);
+  assert.ok(dist(v.head, centre) > 1,
+    "the arrowhead lands on the pole target itself, hiding the mark being aimed at");
+});
+
+test("the reticle says which mark is which", () => {
+  // Both readings of a bullseye exist ("you are here" / "go here") and they are
+  // opposites, so the instrument has to name its own convention. Nothing on
+  // this screen did until 2026-09-07.
+  render(4, 3);
+  const legend = texts().find((t) => /DOT\s*=/.test(t.text));
+  assert.ok(legend,
+    "the reticle never says what the dot means — the ambiguity that let a " +
+    "correctly plotted dot be reported as mirrored");
+  assert.ok(/AXIS/.test(legend!.text) && /POLE/.test(legend!.text),
+    `the legend reads "${legend!.text}" — it must name BOTH marks, or the reader ` +
+    "still has to guess which of the two conventions is in force");
+});
+
+test("a POSITIVE altitude error puts the dot ABOVE centre and asks you to lower it", () => {
+  /* The axis that was NOT reported wrong, pinned to the SAME convention as
+     azimuth: the dot is where the axis IS. +alt means the axis sits above the
+     pole (error_det.rs: alt_err = axis_alt − pole_alt), so the dot goes up and
+     the instruction is "lower" — you move AWAY from the dot, exactly as a dot
+     on the east is corrected by turning west. If one axis is ever re-pointed
+     without the other, these two tests disagree. */
+  render(0.5, 4);
+  assert.ok(dotY() < CY,
+    `alt=+4′ drew the dot at y=${dotY()}, below centre (${CY}) — on screen, up is up`);
+  const hint = texts().find((t) => /ALT/.test(t.text) && /raise|lower/.test(t.text));
+  assert.ok(hint, "no altitude knob hint drawn for a +4′ altitude error");
+  assert.ok(/lower/.test(hint!.text) && /▼/.test(hint!.text),
+    `alt=+4′ (axis above the pole) is instructed as "${hint!.text}"`);
+
+  render(0.5, -4);
+  assert.ok(dotY() > CY, `alt=-4′ drew the dot at y=${dotY()}, above centre (${CY})`);
+  const up = texts().find((t) => /ALT/.test(t.text) && /raise|lower/.test(t.text));
+  assert.ok(up && /raise/.test(up.text) && /▲/.test(up.text),
+    `alt=-4′ (axis below the pole) is instructed as "${up?.text}"`);
+});
+
+test("axis east of the pole: dot east, arrow west, words 'turn W'", () => {
+  /* The whole chain in one assertion set, at the level the operator reads it.
+     A payload whose axis is east of the pole must draw the dot on the side the
+     reticle labels east, aim the correction arrow back toward the west half,
+     and print "turn W". Any one of the three flipping on its own is the defect
+     this file exists for. */
+  render(6, 0.5);
+  const e = label("AZ E")!;
+  assert.ok(dotX() > CX && e.x > CX, "the dot is not on the labelled-east side");
+  const v = vector();
+  assert.ok(v.head.x < v.tail.x,
+    `the correction arrow runs east-ward (tail x=${v.tail.x} → head x=${v.head.x}) ` +
+    "for an axis that is already east of the pole");
+  const hint = texts().find((t) => /AZ/.test(t.text) && /turn/.test(t.text));
+  assert.ok(hint && /turn W/.test(hint.text) && /◀/.test(hint.text),
+    `the azimuth instruction for an east axis reads "${hint?.text}"`);
 });
 
 test("altitude stays one-sided BECAUSE the top-centre slot is taken", () => {
