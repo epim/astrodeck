@@ -22,6 +22,27 @@ class DeviceError(RuntimeError):
     """Raised when a device call fails. Message is user-presentable."""
 
 
+class GotoRefused(DeviceError):
+    """A mount answered a goto with a refusal code instead of moving.
+
+    Lives here rather than in a vendor backend so the layers above (the
+    sequence engine, the recovery ladder) can tell "the mount said no" from
+    "the link died" or "the coordinate was bad" WITHOUT importing a driver or
+    matching on message text. On 2026-09-06 the auto-resume ladder reported a
+    ZWO ``e6`` verbatim to the operator, because a bare ``DeviceError`` was all
+    it had to go on and one refusal looked exactly like another.
+
+    ``code`` is the mount's own reply, kept because it is the only thing that
+    can be looked up against a firmware. ``reason`` is what the driver believes
+    it means in words - which is what a caller should put in front of a person.
+    """
+
+    def __init__(self, message: str, *, code: str, reason: str):
+        super().__init__(message)
+        self.code = code
+        self.reason = reason
+
+
 class PierSide(enum.Enum):
     EAST = "east"
     WEST = "west"
