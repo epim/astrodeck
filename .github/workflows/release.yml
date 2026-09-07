@@ -155,18 +155,24 @@ jobs:
   # does not run is the normal failure mode here, so "it compiled" is not a
   # result worth publishing on.
   #
-  # KNOWN GAP (v0.3.23, 2026-09-05): the windows-latest leg FAILS at the smoke
-  # step, not the build. Hosted Windows runners run every process with an
-  # elevated Administrator token, and the server's privilege interlock
-  # (runtime_security.require_unprivileged_runtime, OPEN-005) refuses to start
-  # elevated -- correctly; that is the behaviour a consumer double-clicking the
-  # .exe relies on. The interlock has no override on purpose. The fix is in the
-  # smoke harness, not the server: launch the binary de-elevated on Windows
-  # (`runas /trustlevel:0x20000 <exe> ...` needs no password and yields a basic
-  # user token; find/terminate it by port or image name since runas detaches).
-  # Until then the Windows .exe is built and smoke-tested on a maintainer's
-  # non-elevated box from the tagged commit and uploaded with `gh release
-  # upload`; the Linux, macOS, tarball, image, and SBOM legs are unaffected.
+  # KNOWN GAP (v0.3.23, 2026-09-05; narrowed 2026-09-07): the windows-latest
+  # leg FAILED at the smoke step, not the build. Hosted Windows runners run
+  # every process with an elevated Administrator token, and the server's
+  # privilege interlock (runtime_security.require_unprivileged_runtime,
+  # OPEN-005) refuses to start elevated -- correctly; that is the behaviour a
+  # consumer double-clicking the .exe relies on, and it has no override on
+  # purpose. The fix is in the smoke harness, not the server: it creates a
+  # throwaway unprivileged local account and launches the binary under it
+  # (CreateProcessWithLogonW). `runas /trustlevel:0x20000` was the first
+  # attempt and does NOT work -- the SAFER token keeps TokenIsElevated set.
+  #
+  # That harness now runs end to end on an elevated Windows 11 box (see the
+  # binary-smoke-windows note in ci.yml for what was measured). What it has
+  # not yet done is run on a hosted runner: dispatch ci.yml with "binary
+  # smoke" ticked before trusting this leg with a tag. Until that passes the
+  # Windows .exe is still built and smoke-tested on a maintainer's box from
+  # the tagged commit and uploaded with `gh release upload`; the Linux,
+  # macOS, tarball, image, and SBOM legs are unaffected.
   binaries:
     needs: selftest
     strategy:

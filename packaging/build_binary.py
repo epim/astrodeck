@@ -130,8 +130,10 @@ def smoke(exe: Path) -> None:
             code = proc.poll()
             if code is not None:
                 tail = proc.output_tail()
+                hint = STARTUP_EXIT_HINTS.get(code & 0xFFFFFFFF)
                 raise SystemExit(
                     f"the binary exited during startup (code {code})"
+                    + (f" -- {hint}" if hint else "")
                     + (f"\n--- what it wrote ---\n{tail}" if tail else ""))
             try:
                 with urllib.request.urlopen(f"{base}/healthz", timeout=2) as r:
@@ -257,6 +259,27 @@ LOGON_ERROR_HINTS = {
     1326: "the smoke account's credentials were rejected",
     1385: "the smoke account is not granted this logon type",
 }
+#: A child that dies inside the loader has written nothing anywhere, so the
+#: exit code is the whole of the evidence unless we name it.
+STARTUP_EXIT_HINTS = {
+    0xC0000142: "STATUS_DLL_INIT_FAILED, which on the de-elevated path means "
+                "the smoke account could not open this build's window station, "
+                "so user32 never initialised in the child",
+}
+#: Window station and desktop rights, and the DACL security information class.
+#: Every process attaches to both at load time.
+WINSTA_ALL_ACCESS = 0x000F037F
+DESKTOP_ALL_ACCESS = 0x000F01FF
+GENERIC_ALL_ACCESS = 0xF0000000
+DACL_SECURITY_INFORMATION = 0x4
+GRANT_ACCESS = 1
+TRUSTEE_IS_NAME = 1
+TRUSTEE_IS_USER = 1
+NO_INHERITANCE = 0x0
+#: OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE | INHERIT_ONLY_ACE: the entry
+#: that reaches the desktops under a window station without granting anything
+#: on the station object itself.
+INHERIT_ONLY_CHILDREN = 0xB
 
 
 def _run_text(cmd: list[str]) -> str:
@@ -388,6 +411,189 @@ def _grant_smoke_access(name: str, exe: Path, state_dir: Path) -> list[Path]:
         _icacls(path, f"{name}:{rights}")
         granted.append(path)
     return granted
+
+
+def _window_station_and_desktop() -> tuple[int, int]:
+    """The two user objects this process is attached to. Neither handle is
+    ours to close -- both are owned by the process and the thread."""
+    import ctypes
+    from ctypes import wintypes
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    user32.GetProcessWindowStation.restype = wintypes.HANDLE
+    user32.GetThreadDesktop.restype = wintypes.HANDLE
+    user32.GetThreadDesktop.argtypes = [wintypes.DWORD]
+    kernel32.GetCurrentThreadId.restype = wintypes.DWORD
+    return (user32.GetProcessWindowStation(),
+            user32.GetThreadDesktop(kernel32.GetCurrentThreadId()))
+
+
+def _user_object_dacl_grant(handle: int, name: str, rights: int,
+                            inheritable: bool):
+    """Add one allow entry for `name` to a window station or desktop DACL and
+    return the descriptor that was there before, to put back afterwards.
+
+    Restoring the whole descriptor rather than removing our entry is the
+    honest undo here: SetEntriesInAclW rebuilds the ACL, so there is no ACE
+    to subtract, and nothing else edits a build machine's window station
+    while a build is running.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    class TRUSTEE_W(ctypes.Structure):
+        pass
+
+    TRUSTEE_W._fields_ = [
+        ("pMultipleTrustee", ctypes.POINTER(TRUSTEE_W)),
+        ("MultipleTrusteeOperation", ctypes.c_int),
+        ("TrusteeForm", ctypes.c_int),
+        ("TrusteeType", ctypes.c_int),
+        ("ptstrName", wintypes.LPWSTR),
+    ]
+
+    class EXPLICIT_ACCESS_W(ctypes.Structure):
+        _fields_ = [
+            ("grfAccessPermissions", wintypes.DWORD),
+            ("grfAccessMode", ctypes.c_int),
+            ("grfInheritance", wintypes.DWORD),
+            ("Trustee", TRUSTEE_W),
+        ]
+
+    class SECURITY_DESCRIPTOR(ctypes.Structure):
+        _fields_ = [
+            ("Revision", ctypes.c_ubyte), ("Sbz1", ctypes.c_ubyte),
+            ("Control", wintypes.WORD), ("Owner", ctypes.c_void_p),
+            ("Group", ctypes.c_void_p), ("Sacl", ctypes.c_void_p),
+            ("Dacl", ctypes.c_void_p),
+        ]
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    user32.GetUserObjectSecurity.argtypes = [
+        wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p,
+        wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+    user32.SetUserObjectSecurity.argtypes = [
+        wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p]
+    advapi32.GetSecurityDescriptorDacl.argtypes = [
+        ctypes.c_void_p, ctypes.POINTER(wintypes.BOOL),
+        ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.BOOL)]
+    advapi32.SetEntriesInAclW.argtypes = [
+        wintypes.ULONG, ctypes.c_void_p, ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_void_p)]
+    advapi32.SetEntriesInAclW.restype = wintypes.DWORD
+    advapi32.InitializeSecurityDescriptor.argtypes = [ctypes.c_void_p,
+                                                      wintypes.DWORD]
+    advapi32.SetSecurityDescriptorDacl.argtypes = [
+        ctypes.c_void_p, wintypes.BOOL, ctypes.c_void_p, wintypes.BOOL]
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+
+    info = wintypes.DWORD(DACL_SECURITY_INFORMATION)
+    needed = wintypes.DWORD()
+    user32.GetUserObjectSecurity(handle, ctypes.byref(info), None, 0,
+                                 ctypes.byref(needed))
+    before = ctypes.create_string_buffer(max(needed.value, 1))
+    if not user32.GetUserObjectSecurity(handle, ctypes.byref(info), before,
+                                        needed.value, ctypes.byref(needed)):
+        raise OSError(ctypes.get_last_error(),
+                      "GetUserObjectSecurity: "
+                      + _windows_error_text(ctypes.get_last_error()))
+
+    present, defaulted = wintypes.BOOL(), wintypes.BOOL()
+    old_acl = ctypes.c_void_p()
+    if not advapi32.GetSecurityDescriptorDacl(before, ctypes.byref(present),
+                                              ctypes.byref(old_acl),
+                                              ctypes.byref(defaulted)):
+        raise OSError(ctypes.get_last_error(), "GetSecurityDescriptorDacl")
+
+    def entry(permissions: int, inheritance: int) -> EXPLICIT_ACCESS_W:
+        access = EXPLICIT_ACCESS_W()
+        access.grfAccessPermissions = permissions
+        access.grfAccessMode = GRANT_ACCESS
+        access.grfInheritance = inheritance
+        access.Trustee.TrusteeForm = TRUSTEE_IS_NAME
+        access.Trustee.TrusteeType = TRUSTEE_IS_USER
+        access.Trustee.ptstrName = name
+        return access
+
+    entries = [entry(rights, NO_INHERITANCE)]
+    if inheritable:
+        # The station's desktops are separate objects with their own DACLs.
+        entries.insert(0, entry(GENERIC_ALL_ACCESS, INHERIT_ONLY_CHILDREN))
+    array = (EXPLICIT_ACCESS_W * len(entries))(*entries)
+
+    new_acl = ctypes.c_void_p()
+    status = advapi32.SetEntriesInAclW(
+        len(entries), array, old_acl if present else None,
+        ctypes.byref(new_acl))
+    if status != 0:
+        raise OSError(status, "SetEntriesInAclW: " + _windows_error_text(status))
+    try:
+        descriptor = SECURITY_DESCRIPTOR()
+        if not advapi32.InitializeSecurityDescriptor(ctypes.byref(descriptor), 1):
+            raise OSError(ctypes.get_last_error(),
+                          "InitializeSecurityDescriptor")
+        if not advapi32.SetSecurityDescriptorDacl(ctypes.byref(descriptor),
+                                                  True, new_acl, False):
+            raise OSError(ctypes.get_last_error(), "SetSecurityDescriptorDacl")
+        if not user32.SetUserObjectSecurity(handle, ctypes.byref(info),
+                                            ctypes.byref(descriptor)):
+            raise OSError(ctypes.get_last_error(),
+                          "SetUserObjectSecurity: "
+                          + _windows_error_text(ctypes.get_last_error()))
+    finally:
+        kernel32.LocalFree(new_acl)
+    return before
+
+
+def _restore_user_object_dacl(handle: int, before) -> None:
+    import ctypes
+    from ctypes import wintypes
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.SetUserObjectSecurity.argtypes = [
+        wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p]
+    info = wintypes.DWORD(DACL_SECURITY_INFORMATION)
+    user32.SetUserObjectSecurity(handle, ctypes.byref(info), before)
+
+
+def _grant_station_access(name: str):
+    """Let the smoke account attach to the window station and desktop this
+    build runs on, and hand back the undo.
+
+    Measured on Windows 11 on 2026-09-07: without this EVERY child launched
+    by CreateProcessWithLogonW dies at 0xC0000142 before its first
+    instruction -- `whoami.exe` as surely as the binary under test, which is
+    what proves it is the launch and not the build. A build that runs in a
+    service logon rather than at an interactive desktop gets a window
+    station of its own ("Service-0x0-<luid>$") whose DACL names only that
+    session's user, and a brand-new account is not that user. An SSH session
+    is such a logon; so is a CI runner started as a service.
+
+    Best-effort by design. Where the station already admits the account this
+    changes nothing, and where the grant cannot be made the launch that
+    follows says so in the exit code we now name.
+    """
+    try:
+        station, desktop = _window_station_and_desktop()
+        saved = [(station, _user_object_dacl_grant(
+                      station, name, WINSTA_ALL_ACCESS, inheritable=True)),
+                 (desktop, _user_object_dacl_grant(
+                      desktop, name, DESKTOP_ALL_ACCESS, inheritable=False))]
+    except Exception as exc:
+        print(f"  could not grant {name} the window station "
+              f"({exc}); the launch may fail at load time")
+        return lambda: None
+    print(f"  window station and desktop opened to {name}")
+
+    def restore() -> None:
+        for handle, before in reversed(saved):
+            try:
+                _restore_user_object_dacl(handle, before)
+            except Exception:
+                pass
+
+    return restore
 
 
 def _delete_smoke_account(name: str, granted: list[Path]) -> None:
@@ -612,18 +818,28 @@ def _launch_smoke(exe: Path, port: int, env: dict) -> SmokeProcess:
     name, password = _new_smoke_credentials()
     _create_smoke_user(name, password)
     granted: list[Path] = []
+    restore_station = None
+
+    def cleanup() -> None:
+        """Whatever happened, and once: the station DACL back the way it was,
+        then the ACEs, the profile and the account."""
+        if restore_station is not None:
+            restore_station()
+        _delete_smoke_account(name, granted)
+
     try:
         granted = _grant_smoke_access(name, exe, state_dir)
+        restore_station = _grant_station_access(name)
         cmdline = f'cmd /c "{wrapper}"'
         print(f"\n$ {cmdline}   (smoke test, as {name})")
         print(f"  wrapper: {subprocess.list2cmdline(argv)} > {log_path}")
         handle, pid = _create_process_as_user(name, password, cmdline, state_dir)
     except BaseException:
-        _delete_smoke_account(name, granted)
+        cleanup()
         raise
     print(f"  started pid {pid}")
     return SmokeProcess(port, log_path=log_path, handle=handle, pid=pid,
-                        cleanup=lambda: _delete_smoke_account(name, granted))
+                        cleanup=cleanup)
 
 
 def main() -> int:

@@ -341,11 +341,23 @@ jobs:
   # what it builds. Hosted Windows runners hand every process an elevated
   # Administrator token and the server refuses to start elevated (OPEN-005), so
   # build_binary.py runs the binary as a throwaway unprivileged local account
-  # (CreateProcessWithLogonW), which needs an elevated caller to create -- so
-  # nothing but a hosted runner reproduces it: a maintainer's box is not
-  # elevated, and the branch never executes locally.
+  # (CreateProcessWithLogonW), which needs an elevated caller to create.
   # (`runas /trustlevel:0x20000` was tried first and does not work: the SAFER
   # token keeps TokenIsElevated set and the server still refuses.)
+  #
+  # PROVEN ON REAL HARDWARE, 2026-09-07: the whole elevated path ran on a
+  # Windows 11 box through an SSH session whose token is elevated -- account
+  # created, /healthz served by the binary at its own version, SPA served,
+  # ten backends registered, then the account, its profile, the ACEs and the
+  # window-station grant all taken back off. That run is also what found the
+  # window-station defect: every child of CreateProcessWithLogonW was dying
+  # at 0xC0000142 before its first instruction -- `whoami.exe` as surely as
+  # the binary -- because a logon that is not interactive gets a window
+  # station of its own that a brand-new account cannot open.
+  #
+  # STILL UNPROVEN: this job. A hosted runner is elevated the same way but is
+  # not an SSH logon, so its window station may differ again. The first
+  # dispatch is a real test, not a formality.
   #
   # DISPATCH-ONLY ON PURPOSE. Windows bills at 2x and this is a full UI build +
   # PyInstaller run (~20 min). It is a proof to be run when the smoke harness
