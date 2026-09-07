@@ -28,6 +28,7 @@ import FlowHeader from "./FlowHeader";
 import FlowLibrary from "./FlowLibrary";
 import FlowEditor from "./FlowEditor";
 import FlowWizard from "./FlowWizard";
+import QuickFlow from "./QuickFlow";
 
 /** Viewport tier, per §C.1. Exported because it is the one piece of layout
  *  policy the whole surface shares; every screen below takes it as a prop so
@@ -60,6 +61,11 @@ export default function FlowsView(): JSX.Element {
           through `Overlay`, so its position here costs nothing and decides
           nothing about where it paints. */}
       <FlowWizard />
+      {/* Mounted beside the wizard for the same reason: it is armed from the
+          LIBRARY and its result is a flow the library then lists. It reads its
+          own open flag, renders null when closed, and portals through
+          `Overlay`, so sitting here costs nothing and decides nothing. */}
+      <QuickFlow />
     </div>
   );
 }

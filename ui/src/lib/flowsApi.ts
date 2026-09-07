@@ -62,6 +62,31 @@ export interface FlowCompileResult {
   unmapped: FlowUnmapped[];
 }
 
+/** The quick sheet's payload. `target` carries the three strings the TARGET
+ *  node stores -- the name alone is not enough, because `to_plan` reads ra/dec
+ *  and never the name, so a flow with a name and no coordinates slews to the
+ *  node's shipped default and files the frames under the name that was typed. */
+export interface QuickFlowAnswers {
+  target: { name: string; ra: string; dec: string };
+  subs: number;
+  /** Ticked wheel slots, in any order -- the server sorts them into wheel order.
+   *  Empty means one channel (colour camera / no wheel). */
+  filters: string[];
+  /** Seconds per filter. What the sheet displayed, so the operator gets the
+   *  numbers they were looking at. In the one-channel case it carries a single
+   *  entry whose key is a label, not a slot. */
+  exposures?: Record<string, number>;
+  guided: boolean;
+  run: boolean;
+  name?: string;
+}
+
+export interface QuickFlowResult {
+  flow: { id: string; name: string; [k: string]: unknown };
+  started: boolean;
+  run?: FlowRunResult;
+}
+
 export interface FlowRunResult {
   started: boolean;
   flow_id: string;
@@ -77,6 +102,7 @@ export const FLOWS_BASE = "/api/flows";
 export const FLOWS_FOLDERS = "/api/flows/folders";
 export const FLOWS_COMPILE_DRAFT = "/api/flows/compile";
 export const FLOWS_WIZARD = "/api/flows/wizard";
+export const FLOWS_QUICK = "/api/flows/quick";
 export const CALIBRATION_HEALTH = "/api/calibration/health";
 
 const one = (id: string) => `${FLOWS_BASE}/${encodeURIComponent(id)}`;
@@ -97,6 +123,20 @@ export const flowsApi = {
   generateFromWizard: (answers: {
     kind: string; options: string[]; target: string;
   }) => api.post<unknown>(FLOWS_WIZARD, answers),
+
+  /** The quick sheet's four answers -> a generated, SAVED flow, optionally
+   *  already running.
+   *
+   *  Same division of labour as the wizard: the graph shape lives in
+   *  server/astrodeck/flows/wizard.py and this sends answers, not a graph. The
+   *  route reuses `POST /api/flows/{id}/run`'s own handler for `run`, so a
+   *  quick flow cannot start behind a guard that route applies.
+   *
+   *  `filters: []` is the ONE-CHANNEL rig (a colour camera, or no wheel). It is
+   *  an answer, not an omission -- there is nothing to tick -- and the server
+   *  builds a capture loop with no filter name rather than inventing a slot. */
+  quick: (answers: QuickFlowAnswers) =>
+    api.post<QuickFlowResult>(FLOWS_QUICK, answers),
   save: (id: string, flow: unknown) => api.put<unknown>(one(id), { flow }),
   remove: (id: string) => api.del<{ deleted: string }>(one(id)),
 
