@@ -40,6 +40,7 @@ from .events import bus
 from .guide import Guider, PHD2Guider
 from .imaging import (
     FrameMeta,
+    SessionStacker,
     auto_levels,
     cloud_score,
     compute_histogram,
@@ -479,6 +480,11 @@ class Hub:
         # Live View (NOV-1): the single EAA running-mean accumulator, non-None while
         # armed. Fed each raw linear sub in _publish_preview; None = feature off.
         self.live_stacker = None
+        # Session stack: the monitor page's colour composite over the WHOLE run,
+        # one running mean per filter. Always allocated (the object is a few
+        # bytes until something is stacked) so the user's on/off choice survives
+        # a run ending; `enabled` is the switch and `stop()` frees the planes.
+        self.session_stack = SessionStacker()
         # Bahtinov focus aid (NOV-12): None = off; {"tol_px","invert"} = armed. When
         # armed, each raw linear sub gets an additive preview.bahtinov analysis.
         self.bahtinov: dict | None = None
@@ -4822,6 +4828,73 @@ class Hub:
     def stop_live_stack(self) -> dict:
         self.live_stacker = None
         return {"active": False}
+
+    # ------------------------------------------- Session stack (run composite)
+    # Live View above stacks what the camera is looking at RIGHT NOW, in one
+    # channel, for as long as the loop runs. This stacks what the SEQUENCE has
+    # accepted, per filter, for as long as the target lasts, and composites the
+    # filters into colour. Different question, different lifetime, different
+    # object -- see imaging/sessionstack.py.
+
+    def start_session_stack(self) -> dict:
+        st = self.session_stack.start()
+        bus.log("info", "Session stack on: accepted subs stack per filter",
+                "capture")
+        return st
+
+    def stop_session_stack(self) -> dict:
+        return self.session_stack.stop()
+
+    def reset_session_stack(self) -> dict:
+        """Throw the pixels away, keep the switch AND the identity. Dropping the
+        target/run here would make the next accepted frame reset a second time,
+        which is harmless but means the count the user just cleared briefly
+        comes back."""
+        st = self.session_stack
+        return st.reset(st.target, st.session)
+
+    def session_stack_status(self) -> dict:
+        return self.session_stack.status()
+
+    def session_stack_preview(self, size: int = 1600):
+        """(jpeg, meta) for the composite, or None when nothing is stacked."""
+        return self.session_stack.rgb_preview(size)
+
+    def session_stack_add(self, info: dict, *, target: str = "") -> str | None:
+        """Fold the light frame ``info`` describes into the session stack.
+
+        Called from the sequence engine's frame loop with the frames its quality
+        gate ACCEPTED, so what the composite shows is exactly what the run is
+        keeping. The pixels are not in ``info`` -- they are the linear sub the
+        preview ring retained for this frame id (``PREVIEW_LINEAR_KEEP`` == 2,
+        and this runs one statement after the capture that filled it).
+
+        TOTAL BY CONSTRUCTION. A preview feature must not be able to end a
+        night: every failure path here returns None, and the one that could
+        surprise us (a numpy/PIL error deep in the stacker) is logged once per
+        run rather than raised into the frame loop.
+        """
+        if not self.session_stack.enabled or not isinstance(info, dict):
+            return None
+        entry = self.previews.get(info.get("id"))
+        sub = getattr(entry, "linear", None) if entry is not None else None
+        if sub is None:
+            # A NINA frame carries no linear pixels (display-domain bytes only),
+            # and a frame that has aged out of the linear window has none left.
+            return None
+        try:
+            # The run's report id is its identity: a second run on the same
+            # target starts a new picture rather than resuming the last one.
+            run = getattr(getattr(self.engine, "reporter", None), "id", "") or ""
+            return self.session_stack.add(
+                sub, info.get("filter"), float(info.get("exposure_s") or 0.0),
+                target=target, session=str(run))
+        except Exception as e:                      # pragma: no cover - guard
+            if not getattr(self, "_session_stack_warned", False):
+                self._session_stack_warned = True
+                bus.log("warning", f"session stack disabled for this frame: {e}",
+                        "capture")
+            return None
 
     # ---------------------------------------------------- Bahtinov focus aid
 

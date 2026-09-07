@@ -21,6 +21,10 @@ from .livestack import (
     LiveStacker, StackOutcome, brightest_centroid, align_offset,
     DEFAULT_REJECT_FRAC, DEFAULT_REANCHOR_AFTER,
 )
+from .sessionstack import (
+    SessionStacker, channel_for, downsample_factor, block_mean,
+    stretch_channels, CHANNEL_MIX, CHANNEL_ORDER,
+)
 from .share import build_caption, compose_share_jpeg, fmt_exposure, fmt_share_date
 
 __all__ = [
@@ -34,5 +38,8 @@ __all__ = [
     "frame_contrast", "FrameMeta", "save_fits", "write_wcs",
     "LiveStacker", "StackOutcome", "brightest_centroid", "align_offset",
     "DEFAULT_REJECT_FRAC", "DEFAULT_REANCHOR_AFTER",
+    "SessionStacker", "channel_for", "downsample_factor", "block_mean",
+    "stretch_channels",
+    "CHANNEL_MIX", "CHANNEL_ORDER",
     "build_caption", "compose_share_jpeg", "fmt_exposure", "fmt_share_date",
 ]
