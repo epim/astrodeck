@@ -122,6 +122,14 @@ class FocusCalibration:
     #: how old the number it is acting on is, not for any decision -- an optical
     #: train's f-ratio does not go stale.
     measured_on: str = ""
+    #: Focuser temperature when the sweep ran, degrees C, or None where the
+    #: focuser does not report one (``Focuser.get_temperature`` defaults to
+    #: None). Carried, like ``measured_on``, so the log line can say what the
+    #: number was measured under -- and so the record answers "was this the same
+    #: night" without anyone guessing. It decides NOTHING: the slope is a
+    #: property of the optical train, and a thermal correction would be a
+    #: separate measurement this project has not made.
+    temperature_c: float | None = None
 
     def to_json(self) -> dict:
         return asdict(self)
@@ -144,6 +152,8 @@ class FocusCalibration:
                 best_position=int(raw.get("best_position", 0)),
                 swept_half_span=float(raw.get("swept_half_span", 0.0) or 0.0),
                 measured_on=str(raw.get("measured_on", "")),
+                temperature_c=(None if raw.get("temperature_c") is None
+                               else float(raw["temperature_c"])),
             )
         except (KeyError, TypeError, ValueError):
             return None
@@ -271,6 +281,8 @@ def sweep_geometry(cal: FocusCalibration | None, *,
             step = widest
             notes.append(f"narrowed to fit the focuser's {focuser_max}-step travel")
     when = f" on {cal.measured_on}" if cal.measured_on else ""
+    if cal.temperature_c is not None:
+        when += f" at {cal.temperature_c:.1f} C"
     basis = (f"{step} steps (±{step * sides}) — sized from a defocus slope of "
              f"{cal.slope_px_per_step:.4f} px/step measured{when} over "
              f"{cal.n_points} points at bin {cal.binning}, to put the outer "

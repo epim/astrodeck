@@ -711,18 +711,32 @@ def resolve_sweep(focuser, step: int | None, steps_each_side: int):
         return SweepGeometry(int(step), sides,
                              f"{int(step)} steps (±{int(step) * sides}), as "
                              f"requested by the caller", False)
-    from ..config import load_focus_calibration
+    from ..config import focus_calibration_path, load_focus_calibration
     try:
         cal = load_focus_calibration(calibration_key(focuser))
     except Exception:      # noqa: BLE001 - an unreadable file is "not measured"
         cal = None
-    return sweep_geometry(cal, steps_each_side=sides,
-                          focuser_max=getattr(focuser, "max_position", None),
-                          default_step=DEFAULT_STEP)
+    geometry = sweep_geometry(cal, steps_each_side=sides,
+                              focuser_max=getattr(focuser, "max_position", None),
+                              default_step=DEFAULT_STEP)
+    if cal is None:
+        # NAME THE STORE. On 2026-09-07 this line said "no completed sweep has
+        # measured this focuser's defocus slope yet" after a restart on a night
+        # whose earlier sweep had logged 0.0749 px/step, and there was nothing
+        # in the message to check: the record lives in a file, under a key, in a
+        # directory the supervisor can move (ASTRODECK_CONFIG_DIR). Saying which
+        # turns "it did not persist" into something the next person can look at.
+        from .span import SweepGeometry
+        key = calibration_key(focuser) or "default"
+        geometry = SweepGeometry(
+            geometry.step, geometry.steps_each_side,
+            f"{geometry.basis} (looked for key '{key}' in "
+            f"{focus_calibration_path()})", geometry.measured)
+    return geometry
 
 
-def record_measured_span(focuser, points, best_position: int,
-                         binning: int) -> None:
+async def record_measured_span(focuser, points, best_position: int,
+                               binning: int) -> None:
     """Learn this focuser's defocus slope from a sweep that SUCCEEDED.
 
     Silent when the curve cannot supply one — arm points on both sides, far
@@ -732,9 +746,23 @@ def record_measured_span(focuser, points, best_position: int,
 
     Never raises: this is a by-product of a focus run that has already
     succeeded, and it must not be able to turn that success into a failure.
+
+    ASYNC ONLY so it can read the focuser's temperature, which is what makes the
+    stored record self-describing: "0.0749 px/step, 2026-09-06, 14.2 C" says
+    what the number was measured under, where "0.0749 px/step" alone does not.
+    Nothing DECIDES on the temperature — see ``FocusCalibration.temperature_c``.
+
+    AND IT READS THE RECORD BACK. ``save_focus_calibration`` swallows every
+    exception by design (bookkeeping must not fail a focus run), so a store it
+    cannot write to was indistinguishable from a store it wrote to. On
+    2026-09-07 a sweep logged 0.0749 px/step and the sweep after the restart
+    said "no completed sweep has measured this focuser's defocus slope yet",
+    with nothing in between to say which of the two had lied. Now the write is
+    verified where it happens and says so.
     """
     try:
-        from ..config import save_focus_calibration
+        from ..config import (focus_calibration_path, load_focus_calibration,
+                              save_focus_calibration)
         from .span import FocusCalibration, defocus_slope, half_span_steps
         rows = [(float(p), float(h)) for p, h in points]
         if not rows:
@@ -744,23 +772,43 @@ def record_measured_span(focuser, points, best_position: int,
         if slope is None:
             return
         import datetime as _dt
+        temperature = None
+        try:
+            # BOUNDED. This runs at the end of a sweep that already succeeded,
+            # and a temperature is a nicety; a focuser on a serial link that has
+            # gone away must not be able to hang the completion of a focus run
+            # waiting for one. Two seconds is ten times any healthy probe.
+            raw = await asyncio.wait_for(focuser.get_temperature(), timeout=2.0)
+            temperature = None if raw is None else float(raw)
+        except Exception:      # noqa: BLE001 - a probe, not a requirement
+            temperature = None
         positions = [p for p, _h in rows]
+        key = calibration_key(focuser)
         cal = FocusCalibration(
             slope_px_per_step=slope, in_focus_px=y0, binning=int(binning),
             n_points=len(rows), best_position=int(best_position),
             swept_half_span=(max(positions) - min(positions)) / 2.0,
-            measured_on=_dt.date.today().isoformat())
-        save_focus_calibration(calibration_key(focuser), cal)
+            measured_on=_dt.date.today().isoformat(),
+            temperature_c=temperature)
+        save_focus_calibration(key, cal)
+        if load_focus_calibration(key) is None:
+            bus.log("warning",
+                    f"autofocus: measured {slope:.4f} px/step but could not "
+                    f"store it in {focus_calibration_path()} (key "
+                    f"'{key or 'default'}') — the next sweep will fall back to "
+                    f"the shipped default", "focus")
         # THE NUMBER THIS PROJECT HAS NEVER HAD. The #219 close-out left the
         # sweep width open because "narrowing it wants the focuser's critical
         # focus zone, which has never been measured". This line is that
         # measurement, in the log, on every successful sweep.
         want = half_span_steps(slope, y0)
+        at_temp = "" if temperature is None else f" at {temperature:.1f} C"
         bus.log("info",
                 f"autofocus: this focuser defocuses at {slope:.4f} px/step "
                 f"(from {len(rows)} points at bin {binning}, {y0:.2f} px at "
-                f"focus) — the next sweep will span "
-                f"±{int(round(min(want, cal.swept_half_span or want)))} steps",
+                f"focus{at_temp}) — the next sweep will span "
+                f"±{int(round(min(want, cal.swept_half_span or want)))} steps, "
+                f"and the record is stored for the next restart",
                 "focus")
     except Exception as e:      # noqa: BLE001 - never cost a successful run
         bus.log("debug", f"could not record the defocus slope: {e}", "focus")
@@ -1224,7 +1272,7 @@ async def run_autofocus(camera: Camera, focuser: Focuser, *,
     # A sweep can succeed on thin evidence. Say so on the WAY OUT too, rather than
     # letting a confident-looking vertex stand on four 5-star samples.
     advice = _thin_advice()
-    record_measured_span(focuser, points, best, binning)
+    await record_measured_span(focuser, points, best, binning)
     bus.publish("focus", state="done",
                 points=[{"position": p, "hfr": h} for p, h in points],
                 best={"position": best, "hfr": final_hfr}, advice=advice)

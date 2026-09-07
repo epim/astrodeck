@@ -714,8 +714,8 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                             best = int(round(salvage.best_position))
                             best_hfr = min(h for _p, h, _s in points)
                             advice = _advice(ok=True)
-                            record_measured_span(focuser, _result_pts(), best,
-                                                 binning)
+                            await record_measured_span(
+                                focuser, _result_pts(), best, binning)
                             await focuser.move_to(best)
                             bus.publish("focus", state="done", points=_pts(),
                                         best={"position": best,
@@ -813,7 +813,7 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                 # WHAT THIS SWEEP TAUGHT THE NEXT ONE. A curve the engine
                 # accepted is the only kind worth learning a defocus slope from
                 # — a rejected one describes something that is not a V.
-                record_measured_span(focuser, _result_pts(), best, binning)
+                await record_measured_span(focuser, _result_pts(), best, binning)
                 # Settle the focuser on the position we CHOSE — the fitted vertex,
                 # or the best measured sample when the confirming frame refused it.
                 await focuser.move_to(best)
@@ -871,7 +871,7 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                     # five of them.)
                     best_hfr = min(h for _p, h, _s in points)
                     advice = _advice(ok=True)
-                    record_measured_span(focuser, _result_pts(), best, binning)
+                    await record_measured_span(focuser, _result_pts(), best, binning)
                     await focuser.move_to(best)
                     bus.publish("focus", state="done", points=_pts(),
                                 best={"position": best, "hfr": best_hfr},
