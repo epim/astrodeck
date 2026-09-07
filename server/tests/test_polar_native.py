@@ -101,15 +101,61 @@ async def test_native_recovers_injected_error(sim_hub):
     assert abs(st["total_error"] - expected) < 0.5, st
     assert abs(st["az_error"] - inj_az) < 0.5, st
     assert abs(st["alt_error"] - inj_alt) < 0.5, st
-    # Knob-direction hints are surfaced additively for the native wizard.
-    assert st.get("alt_direction") in ("up", "down")
-    assert st.get("az_direction") in ("left_west", "left_east",
-                                      "right_west", "right_east")
+    # Knob-direction hints are surfaced additively for the native wizard —
+    # and they name the OPPOSITE half of the sky from the error, which is the
+    # whole content of a direction hint. Accepting any of the four labels (what
+    # this asserted until 2026-09-07) cannot fail on a mirror, and a mirror in
+    # exactly this field is what the operator reported from the 2026-09-05
+    # session. The injected error is +5' azimuth (axis EAST of the pole) and
+    # +6' altitude (axis ABOVE it), so the bolts go west and down. See
+    # test_the_published_signs_say_where_the_axis_is below for the convention
+    # spelled out, and the pointers there for where it is proved exhaustively.
+    assert st.get("az_direction") == "left_west", st
+    assert st.get("alt_direction") == "down", st
 
     # Stop lands on a clean terminal idle state.
     await h.polar.stop()
     assert not h.polar.running
     assert h.polar.state["state"] == "idle"
+
+
+async def test_the_published_signs_say_where_the_axis_is(sim_hub):
+    """THE CONVENTION, on the event the UI reads, in the quadrant nothing else
+    on this path covers.
+
+    A NEGATIVE ``az_error`` means the mount's RA axis sits WEST of the celestial
+    pole and the azimuth bolt goes EAST; a NEGATIVE ``alt_error`` means the axis
+    sits BELOW the pole and the altitude bolt goes UP. Both fields say where the
+    axis IS — never which way to move it — and the ``*_direction`` strings carry
+    the movement.
+
+    Written down here because on 2026-09-05 the reticle was reported mirrored in
+    azimuth with the vertical term fine, and the first thing anyone needs is a
+    single worked example of what the published sign is supposed to mean. The
+    number itself is proved against forward models that share no code with the
+    engine, exhaustively and in both hemispheres, by
+    ``test_tppa_engine_geometry.py`` (the three-point fit) and
+    ``test_tppa_adjust_and_report.py`` (the live re-scale, including the
+    overshoot reversal); what this adds is the assertion at the far end of the
+    publish path, on ``PolarAlignSession.state`` as ``/api/polar/state`` and the
+    ``polar`` event serve it, with the opposite sign from the test above.
+    """
+    h = sim_hub
+    h.sim_rig.set_polar_misalignment(-5.0, -6.0, lat_deg=_LAT, lon_deg=_LON)
+    await h.polar.start()
+    assert await _wait(lambda: h.polar.state.get("phase") == "adjusting"), \
+        h.polar.state
+
+    st = h.polar.state
+    assert st["az_error"] < 0.0 and abs(st["az_error"] + 5.0) < 0.5, st
+    assert st["alt_error"] < 0.0 and abs(st["alt_error"] + 6.0) < 0.5, st
+    assert st["az_direction"] == "right_east", st
+    assert st["alt_direction"] == "up", st
+    # The rule, not the two literals: the instruction is always the far side of
+    # the pole from the error, on BOTH axes. Stated this way because the defect
+    # being guarded against is one axis being mirrored while the other is not.
+    assert ("west" in st["az_direction"]) == (st["az_error"] > 0), st
+    assert (st["alt_direction"] == "down") == (st["alt_error"] > 0), st
 
 
 async def test_native_respects_stop_during_measuring(sim_hub):

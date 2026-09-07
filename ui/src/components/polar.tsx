@@ -1,5 +1,6 @@
 /** Polar alignment bullseye reticle (HERO 2 — the TPPA wizard's spatial view).
- *  Center = the true pole; the dot is the mount's axis; the vector is the skew.
+ *  Center = the true pole; the dot is the mount's axis; the vector is the skew,
+ *  drawn dot → center so its head names the CORRECTION and not the error.
  *
  *  The reticle ZOOMS. Its outer ring is whichever rung of `CEIL_LADDER` currently
  *  contains the error, from 300′ (tripod is pointing at the wrong bit of sky)
@@ -54,9 +55,27 @@ export function knobHint(
   if (dir === "right_east") return { arrow: "▶", text: "turn E" };
   if (dir === "up" || dir === "down") return null; // wrong-axis label
   if (!Number.isFinite(signedArcmin) || signedArcmin === 0) return null;
+  /* NO ENGINE LABEL — a NINA or simulator reading. Northern sense, which is
+     what this branch has always assumed: a POSITIVE azimuth error means the
+     mount axis sits EAST of the pole (astro-tppa error_det.rs, proved against
+     forward models that share no code with the engine in
+     server/tests/test_tppa_engine_geometry.py), so the bolt goes WEST. And
+     west is ◀ on this instrument — the reticle draws "AZ W" at its left edge
+     and the authoritative branch above pairs left_west with ◀.
+     Until 2026-09-07 these two lines carried the arrows the OTHER way round:
+     "turn W" shipped with ▶ and "turn E" with ◀, so on every reading that
+     arrived without a knob label the azimuth arrow pointed at the wrong half
+     of the sky while the altitude arrow above stayed right. Found while
+     chasing the 2026-09-05 report ("azimuth mirrored, the vertical term
+     fine"); that session ran the NATIVE engine, which does send labels, so
+     the operator saw the branch above and not this one. What they saw was
+     the skew arrow (see POLE_GAP below). The text here was never wrong,
+     which is why this survived: the unit test checked the arrow only for
+     az < 0 and the text only for az > 0, so neither half was ever compared
+     with the other. */
   return signedArcmin < 0
-    ? { arrow: "◀", text: "turn E" }
-    : { arrow: "▶", text: "turn W" };
+    ? { arrow: "▶", text: "turn E" }
+    : { arrow: "◀", text: "turn W" };
 }
 
 /* Verdict tier from total error (spec §HERO2): <2′ excellent · 2–10′ good ·
@@ -431,6 +450,25 @@ export function PolarReticle({
   const dx = cx + eAz * k * scale;
   const dy = cy - eAlt * k * scale;
 
+  /* WHERE THE ARROWHEAD GOES, AND WHY IT IS NOT ON THE DOT.
+     The dot is WHERE YOUR AXIS IS, not where to move it — center is the pole
+     and the job is to drive the dot into it. The vector between them therefore
+     carries the correction only when it is read from the dot INWARD, and until
+     2026-09-07 the arrowhead sat on the dot: the most salient mark on the
+     instrument pointed from the pole out to the axis, i.e. the exact opposite
+     of "◀ AZ turn W" printed a few units away from it. An arrow means "go this
+     way" to everyone who has ever seen one, so the picture and the words were
+     telling the operator to turn opposite bolts, which is how a correctly
+     plotted dot gets reported as mirrored (2026-09-05 session).
+     The head stops POLE_GAP short of center so it never covers the pole
+     target — the one mark you are aiming at — and is dropped entirely once the
+     dot is inside that gap, where there is no direction left to name. */
+  const vecLen = Math.hypot(dx - cx, dy - cy);
+  const POLE_GAP = 14;
+  const hasHead = vecLen > POLE_GAP;
+  const hx = hasHead ? cx + (dx - cx) * (POLE_GAP / vecLen) : cx;
+  const hy = hasHead ? cy + (dy - cy) * (POLE_GAP / vecLen) : cy;
+
   /* RINGS — re-derived from the rung, not the old fixed 2′/10′ pair.
      During a step we draw the union of the outgoing and incoming sets so no
      circle pops out of existence: rings that are leaving fade out while the
@@ -679,6 +717,16 @@ export function PolarReticle({
       <text x={cx} y={cy + R - 1} fill="var(--text-dim)" fontSize={10} fontFamily="IBM Plex Mono"
         letterSpacing="2" textAnchor="middle" style={labelHalo}>ALT −</text>
 
+      {/* WHICH OF THE TWO MARKS IS WHICH. Both readings of a bullseye are in
+          circulation — "the dot is where you are" and "the dot is where to go"
+          — and they are opposites, so an instrument that does not say cannot be
+          read: on 2026-09-05 a correctly plotted dot east of the pole, with a
+          correct "turn W" beside it, was reported as mirrored. Nothing on this
+          screen, or in the docs, had ever named the convention. Six words in
+          the one empty gutter, and the ambiguity is gone. */}
+      <text x={10} y={size - 8} fill="var(--text-dim)" fontSize={9} fontFamily="IBM Plex Mono"
+        letterSpacing="1" style={labelHalo}>DOT = YOUR AXIS · CENTER = THE POLE</text>
+
       {/* knob-direction hints — the actionable "which way" cue, from the native
           engine's knob labels (fallback: the error's sign). Top = altitude bolt,
           right = azimuth bolt, matching the design reference. */}
@@ -697,10 +745,14 @@ export function PolarReticle({
 
       {/* skew vector + error dot (converges toward center as the user adjusts).
           Gated on the EASED magnitude, not the reading: this asks "is there a
-          mark to draw right now", which is a question about the tween. */}
+          mark to draw right now", which is a question about the tween.
+          The line runs DOT → POLE so its head names the correction; see the
+          POLE_GAP block above for why it is that way round. */}
       {active && eTotal > 0.02 && (
         <>
-          <line x1={cx} y1={cy} x2={dx} y2={dy} stroke="var(--accent)" strokeWidth={2} markerEnd="url(#pa-arrow)" filter="drop-shadow(0 0 4px var(--glow))" />
+          <line x1={dx} y1={dy} x2={hx} y2={hy} stroke="var(--accent)" strokeWidth={2}
+            markerEnd={hasHead ? "url(#pa-arrow)" : undefined}
+            filter="drop-shadow(0 0 4px var(--glow))" />
           <circle cx={dx} cy={dy} r={7} fill="var(--bg)" stroke="var(--accent)" strokeWidth={2} filter="drop-shadow(0 0 4px var(--glow))"
             style={{ transition: dotTrans }} />
           <circle cx={dx} cy={dy} r={2.5} fill="var(--accent)" style={{ transition: dotTrans }} />

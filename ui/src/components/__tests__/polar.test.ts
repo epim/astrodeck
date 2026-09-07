@@ -15,6 +15,7 @@ import {
   polarTier, knobHint, polarInstruction, boundaryArcmin, ladderRings, CEIL_LADDER,
   tierMarks, ringNote, TIER_BOUNDS, mergeStepRings, freshRings,
 } from "../polar";
+import type { KnobDir } from "../polar";
 
 // ------------------------------------------------------------ harness
 let passed = 0;
@@ -59,11 +60,56 @@ test("azimuth knob labels (authoritative, from the native engine)", () => {
 });
 
 test("azimuth fallback (NINA/sim emit no knob label)", () => {
-  eq(knobHint(null, -3, "az")?.arrow, "◀", "az<0 fallback arrow");
+  // BOTH halves of both readings. This test used to check the ARROW only for
+  // az < 0 and the TEXT only for az > 0, so the two were never compared — and
+  // for two years the fallback shipped "turn W" with ▶ and "turn E" with ◀,
+  // i.e. every arrow pointing at the wrong half of the sky on any reading that
+  // arrived without an engine knob label (NINA and the simulator). Found while
+  // chasing the rig's 2026-09-05 report ("the azimuth is mirrored, the
+  // declination is fine"); that session ran the native engine, whose labels
+  // take the other branch, so this was latent there. The altitude fallback
+  // below has always been self-consistent.
   eq(knobHint(null, -3, "az")?.text, "turn E", "az<0 fallback text");
+  eq(knobHint(null, -3, "az")?.arrow, "▶", "az<0 fallback arrow (east is ▶)");
   eq(knobHint(null, 3, "az")?.text, "turn W", "az>0 fallback text");
+  eq(knobHint(null, 3, "az")?.arrow, "◀", "az>0 fallback arrow (west is ◀)");
   isNull(knobHint(null, 0, "az"), "az=0 fallback null");
   isNull(knobHint(undefined, NaN, "az"), "az NaN fallback null");
+});
+
+test("an azimuth arrow NEVER contradicts its own words", () => {
+  /* The invariant behind the defect above, asserted over every input that can
+     produce an azimuth hint rather than over the four that happen to be listed:
+     ◀ is the left edge of the reticle, which is labelled AZ W, so ◀ must say
+     "turn W" and ▶ must say "turn E" — whatever produced the hint. The engine
+     labels and the no-label fallback both go through here, so a future edit to
+     either one cannot re-open the mirror. */
+  const inputs: Array<[KnobDir | null, number]> = [
+    ["left_west", 3], ["right_east", -3], ["left_west", -3], ["right_east", 3],
+    [null, 3], [null, -3], [null, 0.05], [null, -0.05], [null, 900], [null, -900],
+  ];
+  for (const [dir, az] of inputs) {
+    const h = knobHint(dir, az, "az");
+    if (!h) continue;
+    eq(h.arrow === "◀" ? "turn W" : "turn E", h.text,
+      `hint(${String(dir)}, ${az}) draws ${h.arrow} beside "${h.text}" — ` +
+      "the arrow and the words name opposite halves of the sky");
+  }
+});
+
+test("an altitude arrow NEVER contradicts its own words", () => {
+  // The same invariant on the axis that was NOT broken, so the pair of them
+  // says the two axes are held to one rule.
+  const inputs: Array<[KnobDir | null, number]> = [
+    ["up", 3], ["down", -3], ["up", -3], ["down", 3],
+    [null, 3], [null, -3], [null, 0.05], [null, -0.05],
+  ];
+  for (const [dir, alt] of inputs) {
+    const h = knobHint(dir, alt, "alt");
+    if (!h) continue;
+    eq(h.arrow === "▲" ? "raise" : "lower", h.text,
+      `hint(${String(dir)}, ${alt}) draws ${h.arrow} beside "${h.text}"`);
+  }
 });
 
 test("altitude knob labels + fallback", () => {
