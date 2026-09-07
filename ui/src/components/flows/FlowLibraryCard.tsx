@@ -1,4 +1,5 @@
-// FlowLibraryCard.tsx — one flow card, plus the dashed `+ NEW FLOW` card.
+// FlowLibraryCard.tsx -- one flow card, plus the `+ NEW FLOW` cell that closes
+// the My-flows grid.
 //
 // A card is built from the FlowCard PROJECTION (`GET /api/flows`), never from a
 // graph. flowsApi's own header says why: thirty flows at up to four hundred
@@ -67,16 +68,36 @@ const CARD_SHADOW = "shadow-[inset_0_1px_1px_rgba(255,255,255,0.05)]";
 const CARD_HOVER =
   "hover:border-accent hover:shadow-[0_0_14px_var(--glow),inset_0_1px_1px_rgba(255,255,255,0.05)]";
 
+/** A card's floor height, phone first.
+ *
+ *  THE 150px FLOOR WAS MEASURED AS THE PROBLEM. At 412x915 the library's
+ *  heading, its paragraph and the toolbar spend the first ~350px, so a 150px
+ *  card plus the 14px grid gap left room for one and a bit -- and since the
+ *  new-flow cell used to lead the grid, the one thing on screen was a control
+ *  for making MORE flows, over a folder heading that said there were seven.
+ *  112px is the same card with its tagline clamped to two lines (below), which
+ *  is what makes two of them plus their heading fit above the fold.
+ *
+ *  The 150px design height comes back at `lg`, where it was never the problem
+ *  and where a three-column grid of short cards looks like a toolbar. */
+const CARD_MIN_H = "min-h-[112px] lg:min-h-[150px]";
+
 export interface FlowLibraryCardProps {
   card: FlowCard;
   onOpen: (id: string) => void;
+  /** The flow that was just created, so a library that reloaded under the
+   *  operator says WHICH row is theirs. A quick flow lands in a folder that may
+   *  already hold thirty, sorted by nothing they chose; "it saved" with no
+   *  pointer is a claim they have to go and verify. Ringed AND labelled -- the
+   *  ring alone would be colour-only. */
+  highlight?: boolean;
 }
 
 /** `React.memo`'d and store-free: the card takes everything it draws as props,
  *  so re-rendering the library's toolbar (a keystroke in the filter box) does
  *  not re-render every card body. */
 export const FlowLibraryCard = memo(function FlowLibraryCard(
-  { card, onOpen }: FlowLibraryCardProps,
+  { card, onOpen, highlight = false }: FlowLibraryCardProps,
 ) {
   const status = cardStatus(card.last_result);
   return (
@@ -85,15 +106,30 @@ export const FlowLibraryCard = memo(function FlowLibraryCard(
       // The harness resolves `("open-flow","example-m16")` through this and
       // requires it VISIBLE — it is the only handle on a card.
       data-flow-id={card.id}
+      data-flow-highlight={highlight ? "true" : undefined}
       onClick={() => onOpen(card.id)}
-      className={`text-left flex flex-col gap-2 p-4 min-h-[150px] rounded-2xl
-                  bg-panel border border-line backdrop-blur-[14px] text-ink
-                  cursor-pointer transition-colors ${CARD_SHADOW} ${CARD_HOVER}`}
+      className={`text-left flex flex-col gap-1.5 lg:gap-2 p-3 lg:p-4 rounded-2xl
+                  bg-panel backdrop-blur-[14px] text-ink border
+                  cursor-pointer transition-colors ${CARD_MIN_H} ${CARD_SHADOW} ${
+                    highlight ? "border-accent" : `border-line ${CARD_HOVER}`}`}
     >
       <span className="font-display font-semibold text-[12.5px] tracking-[0.1em] uppercase">
         {card.name}
       </span>
-      <span className="text-[12px] text-dim leading-[1.45] flex-1 [text-wrap:pretty]">
+      {/* The word, not only the ring. A card picked out by border colour alone
+          is a card nobody colour-blind can find, and it is the whole answer to
+          "did my flow save?". */}
+      {highlight && (
+        <span className="font-mono text-[10px] text-accent">JUST SAVED</span>
+      )}
+      {/* CLAMPED TO TWO LINES. The tagline is the one variable-height thing on
+          a card, and a generated one runs long ("12 subs each of L, R, G, B, Ha
+          on NGC 6946: 60 frames, guided") -- four lines of it on a 372px phone
+          made a 200px card and pushed the second flow off the screen. Two lines
+          is enough to tell two flows apart, and the whole string is still there
+          for anyone who opens it. */}
+      <span className="text-[12px] text-dim leading-[1.45] flex-1 line-clamp-2
+                       lg:line-clamp-none [text-wrap:pretty]">
         {card.tagline}
       </span>
       <span className="font-mono text-[10px] text-faint">{cardMeta(card)}</span>
@@ -105,24 +141,75 @@ export const FlowLibraryCard = memo(function FlowLibraryCard(
   );
 });
 
-/** The dashed `+ NEW FLOW` cell. First cell of MY FLOWS, and only when the
- *  filter box is empty — a card that is not a search result must not sit inside
- *  a list of search results. */
+/** The `+ NEW FLOW` cell that CLOSES the My-flows grid.
+ *
+ *  THREE THINGS CHANGED HERE AND ALL THREE ARE THE SAME DEFECT (phone review,
+ *  2026-09-07, 412x915).
+ *
+ *  It used to be the FIRST cell. Under a heading reading "MY FLOWS 7", the only
+ *  thing a phone could see was a 150px control for making an eighth -- the
+ *  library's own contents were entirely below the fold, with nothing on screen
+ *  saying so. A creation control belongs after the things it creates.
+ *
+ *  It used to be DASHED, on a surface with no drag-and-drop anywhere in it
+ *  (there is no `onDrop`, `dragover` or file input in this codebase). A dashed
+ *  rectangle is the web's drop-zone idiom, so it promised a gesture that does
+ *  nothing -- and the promise was loudest on the one screen where the affordance
+ *  cost the most room. It is an accent BUTTON now: same action, no invitation
+ *  to drop a file on it.
+ *
+ *  It used to be CARD-SIZED everywhere. Below `lg` it is a 46px button, so it
+ *  costs the height of a control rather than the height of a card; from `lg`
+ *  it grows back into the grid's rhythm, because a three-column wall of 150px
+ *  cards with a 46px stub in the corner reads as a rendering fault. Never
+ *  taller than a card either way.
+ *
+ *  Still only rendered when the filter box is empty -- a cell that is not a
+ *  search result must not sit inside a list of search results. */
 export function NewFlowCard({ onClick }: { onClick: () => void }) {
   return (
     <button
       type="button"
+      data-flow-new
       onClick={onClick}
-      className="flex flex-col items-center justify-center gap-2 min-h-[150px]
-                 bg-transparent border border-dashed border-line2 rounded-2xl
-                 text-dim cursor-pointer transition-colors
-                 hover:border-accent hover:text-accent"
+      className="flex flex-row lg:flex-col items-center justify-center gap-2
+                 min-h-[46px] lg:min-h-[150px] rounded-[10px] lg:rounded-2xl
+                 border border-accent2 bg-accent-fill text-accent
+                 cursor-pointer transition-colors hover:border-accent"
     >
       {/* aria-hidden so the accessible name is exactly `NEW FLOW`, which is
           the substring the harness's ("click","NEW FLOW") step matches. */}
-      <span className="text-[22px] leading-none" aria-hidden="true">+</span>
+      <span className="text-[17px] lg:text-[22px] leading-none" aria-hidden="true">+</span>
       <span className="font-display font-semibold text-[11px] tracking-[0.14em]">
         NEW FLOW
+      </span>
+    </button>
+  );
+}
+
+/** The `QUICK FLOW` cell beside it. Same geometry, quieter chrome.
+ *
+ *  Two creation controls, one accent between them: NEW FLOW opens a canvas and
+ *  QUICK FLOW skips it, and painting both in the accent would make the grid's
+ *  last row shout twice and say nothing about which is which. */
+export function QuickFlowCard({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      data-flow-quick-card
+      onClick={onClick}
+      className="flex flex-row lg:flex-col items-center justify-center gap-2
+                 min-h-[46px] lg:min-h-[150px] rounded-[10px] lg:rounded-2xl
+                 border border-line2 bg-transparent text-dim
+                 cursor-pointer transition-colors
+                 hover:border-accent hover:text-accent"
+    >
+      <span className="font-display font-semibold text-[11px] tracking-[0.14em]">
+        QUICK FLOW
+      </span>
+      <span className="font-mono text-[10px] text-faint hidden lg:block px-3
+                       text-center leading-[1.4]">
+        target, subs, filters, go
       </span>
     </button>
   );

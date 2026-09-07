@@ -1,5 +1,6 @@
 // FlowLibrary.tsx — the library screen: heading, sub-paragraph, toolbar
-// (search + three folder chips), and one section per folder.
+// (search + the two creation buttons, then the three folder chips), and one
+// section per folder.
 //
 // Two things here are worth knowing before changing anything.
 //
@@ -16,12 +17,12 @@ import type { FlowCard } from "../../lib/flowsApi";
 import { useStore } from "../../store";
 import { EmptyState } from "../ui";
 import { Icon } from "../icons";
-import { FlowLibraryCard, NewFlowCard } from "./FlowLibraryCard";
+import { FlowLibraryCard, NewFlowCard, QuickFlowCard } from "./FlowLibraryCard";
 
-/** Mirrors `MY_FLOWS_FOLDER` in server/astrodeck/flows/models.py:35. The dashed
- *  card leads THIS grid because it is where a wizard/blank creation is saved
- *  (wizard.py:358) — offering "new flow" at the head of a read-only folder
- *  would promise something the server refuses. */
+/** Mirrors `MY_FLOWS_FOLDER` in server/astrodeck/flows/models.py:35. The two
+ *  creation cells close THIS grid and no other, because this is where a wizard,
+ *  blank or quick creation is saved -- offering "new flow" under a read-only
+ *  folder would promise something the server refuses. */
 const MY_FLOWS_FOLDER = "My flows";
 
 const CHIPS = [
@@ -44,9 +45,34 @@ function FolderGlyph() {
   );
 }
 
+/** Where the search glyph sits, how wide it is, and therefore where the input's
+ *  text has to start. Three numbers rather than three magic values in the JSX,
+ *  because the bug they fix was the two halves disagreeing.
+ *
+ *  THE GLYPH SAT ON TOP OF THE PLACEHOLDER (phone review 2026-09-07, 412px).
+ *  The gutter was written as the Tailwind utility `pl-[30px]`, and `.field` sets
+ *  `padding: 6px 9px` in index.css, which has no `@layer` wrapper. An unlayered
+ *  declaration beats every `@layer utilities` one no matter the order, so the
+ *  padding stayed 9px and "Filter flows…" started underneath a glyph that runs
+ *  from 10px to 23px. It is the same cascade trap the `!text-[12px]` on the same
+ *  element already carries a comment about -- the `!` is what makes that one
+ *  stick, and the padding never got one.
+ *
+ *  Fixed with an INLINE style rather than a second `!`. Inline beats an
+ *  unlayered rule outright, it needs no knowledge of layer order to read, and
+ *  it is a number a test can measure: `flowLibraryDom.test.tsx` asserts the
+ *  input's own paddingLeft clears the glyph's right edge, which no assertion
+ *  about a class name could do. */
+export const SEARCH_GLYPH_LEFT_PX = 10;
+export const SEARCH_GLYPH_SIZE_PX = 13;
+/** 7px of clear air between the glyph and the first character. */
+export const SEARCH_TEXT_INSET_PX =
+  SEARCH_GLYPH_LEFT_PX + SEARCH_GLYPH_SIZE_PX + 7;
+
 function SearchGlyph() {
   return (
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    <svg width={SEARCH_GLYPH_SIZE_PX} height={SEARCH_GLYPH_SIZE_PX}
+         viewBox="0 0 24 24" fill="none" stroke="currentColor"
          strokeWidth={2} strokeLinecap="round" aria-hidden="true" focusable="false">
       <circle cx="11" cy="11" r="7" />
       <path d="m20 20-3.8-3.8" />
@@ -72,6 +98,7 @@ export function FlowLibrary() {
   const libraryError = useStore((s) => s.flows.libraryError);
   const query = useStore((s) => s.flows.ui.query);
   const folderChip = useStore((s) => s.flows.ui.folderChip);
+  const highlightId = useStore((s) => s.flows.ui.highlightId);
   const flowsLoadLibrary = useStore((s) => s.flowsLoadLibrary);
   const flowsSetUi = useStore((s) => s.flowsSetUi);
   const flowsOpen = useStore((s) => s.flowsOpen);
@@ -92,6 +119,7 @@ export function FlowLibrary() {
   // keystroke in the filter box.
   const openFlow = useCallback((id: string) => { void flowsOpen(id); }, [flowsOpen]);
   const openWizard = useCallback(() => flowsSetUi({ wizardOpen: true }), [flowsSetUi]);
+  const openQuick = useCallback(() => flowsSetUi({ quickOpen: true }), [flowsSetUi]);
 
   const sections = useMemo<Section[]>(() => {
     // Verbatim from the prototype (dc.html:1513): substring over name + tagline,
@@ -129,9 +157,23 @@ export function FlowLibrary() {
           instructions and runs on the engine, fail-closed.
         </p>
 
-        <div className="mt-[22px] flex flex-wrap items-center gap-2.5">
-          <div className="flex-1 min-w-[200px] max-w-[340px] relative">
-            <span className="absolute left-[10px] top-1/2 -translate-y-1/2 pointer-events-none text-faint">
+        {/* TWO ROWS, and the split is deliberate. The filter and the two things
+            that MAKE a flow are what a phone reaches for; the folder chips are
+            a refinement of a list that has to be on screen first. Keeping all
+            five controls in one wrapping row cost three rows at 412px and put
+            the first card below the fold. */}
+        <div className="mt-[18px] flex flex-wrap items-center gap-2">
+          {/* MEASURED, not guessed. At a 412px viewport this row is 340px wide
+              (the app shell's own padding takes the rest), and the two buttons
+              spend 202 of it -- so the field's floor is what decides whether
+              QUICK FLOW gets its own row, and a third row cost the first card
+              40px of screen. 112 keeps all three on one row at 412 and lets
+              them wrap at 360, where they genuinely do not fit. */}
+          <div className="flex-1 min-w-[112px] max-w-[340px] relative">
+            <span
+              className="absolute top-1/2 -translate-y-1/2 pointer-events-none text-faint"
+              style={{ left: SEARCH_GLYPH_LEFT_PX }}
+            >
               <SearchGlyph />
             </span>
             <input
@@ -144,28 +186,52 @@ export function FlowLibrary() {
               // rule, and an unlayered declaration beats any Tailwind utility
               // regardless of order — the same cascade trap that once ate a
               // tooltip's z-index. The `!` is what makes the design's 12px stick.
-              className="field pl-[30px] min-h-[40px] rounded-[10px] !text-[12px]"
+              // The left gutter is inline for the same cascade reason and one
+              // more: see SEARCH_TEXT_INSET_PX.
+              className="field min-h-[40px] rounded-[10px] !text-[12px]"
+              style={{ paddingLeft: SEARCH_TEXT_INSET_PX }}
             />
           </div>
-          <div className="flex flex-wrap gap-[7px]">
-            {CHIPS.map((c) => {
-              const on = folderChip === c.key;
-              return (
-                <button
-                  key={c.key}
-                  type="button"
-                  aria-pressed={on}
-                  onClick={() => flowsSetUi({ folderChip: c.key })}
-                  className={`min-h-[40px] px-3.5 py-1.5 rounded-full border font-mono
-                              text-[11px] cursor-pointer transition-colors ${
-                    on ? "border-accent text-accent bg-accent-fill"
-                       : "border-line2 text-dim bg-transparent"}`}
-                >
-                  {c.label}
-                </button>
-              );
-            })}
-          </div>
+          <button
+            type="button"
+            onClick={openWizard}
+            className="flex-none min-h-[40px] px-2.5 rounded-[10px] border border-accent2
+                       bg-accent-fill text-accent font-display font-semibold
+                       text-[11px] tracking-[0.08em] whitespace-nowrap cursor-pointer
+                       transition-colors hover:border-accent"
+          >
+            <span aria-hidden="true" className="mr-1.5">+</span>NEW FLOW
+          </button>
+          <button
+            type="button"
+            data-flow-quick-open
+            onClick={openQuick}
+            className="flex-none min-h-[40px] px-2.5 rounded-[10px] border border-line2
+                       bg-transparent text-dim font-display font-semibold
+                       text-[11px] tracking-[0.08em] whitespace-nowrap cursor-pointer
+                       transition-colors hover:border-accent hover:text-accent"
+          >
+            QUICK FLOW
+          </button>
+        </div>
+        <div className="mt-2 flex flex-wrap gap-[7px]">
+          {CHIPS.map((c) => {
+            const on = folderChip === c.key;
+            return (
+              <button
+                key={c.key}
+                type="button"
+                aria-pressed={on}
+                onClick={() => flowsSetUi({ folderChip: c.key })}
+                className={`min-h-[36px] px-3.5 py-1.5 rounded-full border font-mono
+                            text-[11px] cursor-pointer transition-colors ${
+                  on ? "border-accent text-accent bg-accent-fill"
+                     : "border-line2 text-dim bg-transparent"}`}
+              >
+                {c.label}
+              </button>
+            );
+          })}
         </div>
 
         {/* A library the client could not reach must never render as an empty
@@ -213,10 +279,16 @@ export function FlowLibrary() {
               className="grid gap-[14px]"
               style={{ gridTemplateColumns: "repeat(auto-fill, minmax(232px, 1fr))" }}
             >
-              {sec.hasNew && <NewFlowCard onClick={openWizard} />}
+              {/* THE FLOWS COME FIRST. Under "MY FLOWS 7" a phone used to show
+                  one control for making an eighth and nothing else -- see
+                  NewFlowCard for the measurement. A creation control goes after
+                  the things it creates, at every width. */}
               {sec.cards.map((c) => (
-                <FlowLibraryCard key={c.id} card={c} onOpen={openFlow} />
+                <FlowLibraryCard key={c.id} card={c} onOpen={openFlow}
+                                 highlight={c.id === highlightId} />
               ))}
+              {sec.hasNew && <NewFlowCard onClick={openWizard} />}
+              {sec.hasNew && <QuickFlowCard onClick={openQuick} />}
             </div>
           </section>
         ))}

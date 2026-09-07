@@ -1353,6 +1353,42 @@ class FlowWizardBody(BaseModel):
         return v
 
 
+class FlowQuickTarget(BaseModel):
+    """What the picker hands over: the three strings the TARGET node stores.
+
+    RA AND DEC ARE REQUIRED, and that is the whole point of taking a target
+    object instead of a name. A flow whose TARGET carries a name and the node's
+    shipped M31 coordinates slews to Andromeda and files the frames under the
+    name that was typed -- ``to_plan`` reads ra/dec and never the name.
+    """
+    name: str = Field(min_length=1, max_length=120)
+    ra: str = Field(min_length=1, max_length=64)
+    dec: str = Field(min_length=1, max_length=64)
+
+
+class FlowQuickBody(BaseModel):
+    """The quick sheet's four answers, plus what to do with the result.
+
+    ``filters`` EMPTY MEANS ONE CHANNEL (a colour camera, or a rig with no
+    wheel) -- see ``wizard.quick``. It is not a missing answer: the sheet shows
+    a single "OSC" row and no checkboxes when the rig has no wheel, and there is
+    nothing there to tick.
+
+    ``exposures`` is optional and per filter; anything omitted takes the
+    generator's default (broadband 60 s, narrowband 180 s). The sheet sends what
+    it displayed, so the operator gets the numbers they were looking at.
+    """
+    target: FlowQuickTarget
+    subs: int = Field(10, ge=1, le=10_000)
+    filters: list[str] = Field(default_factory=list)
+    exposures: dict[str, float] | None = None
+    guided: bool = True
+    #: Start it on the engine as well. Refused exactly as POST
+    #: /api/flows/{id}/run refuses -- it IS that route's handler.
+    run: bool = False
+    name: str | None = Field(None, max_length=120)
+
+
 class FlowSaveBody(BaseModel):
     """The record to persist.
 
@@ -4159,6 +4195,95 @@ def create_app(*, bind_host: str | None = None,
             flow_wizard.generate_record,
             body.kind, body.options, body.target, body.unguided_exposure_s)
         return await _persist_flow(record)
+
+    def _rig_wheel() -> list[str] | None:
+        """The connected wheel's usable slot names, or None when there is none.
+
+        NONE IS NOT AN EMPTY LIST. None means "no wheel connected", and
+        ``wizard.quick`` then validates against the assumed seven so a flow can
+        still be built on a laptop with the rig switched off -- building a flow
+        is a planning activity, and every shipped example is required to run on
+        the simulator with no hardware. An empty list would mean "this wheel has
+        no filters", which would refuse every name.
+
+        BLACKOUT AND UNNAMED SLOTS ARE EXCLUDED, matching ``resolveWheel`` in
+        ui/src/components/flows/cyclePlanRows.ts. An opaque slot passes no light,
+        so a Light frame through it is a black frame with IMAGETYP=Light on it;
+        a slot called "Slot 6" names nothing and makes a frame unfilable.
+        """
+        fw = hub.devices.get("filterwheel")
+        if fw is None or not getattr(fw, "connected", False):
+            return None
+        names = list(getattr(fw, "filter_names", []) or [])
+        usable = [n for i, n in enumerate(names)
+                  if (n or "").strip()
+                  and (n or "").strip().lower() != f"slot {i + 1}"
+                  and not fw.is_opaque(i)]
+        return usable or None
+
+    @app.post("/api/flows/quick",
+              dependencies=[Depends(require(CAP_CONTROL_CAPTURE)),
+                            Depends(require(CAP_CONTROL_MOUNT))])
+    @declare(CAP_CONTROL_CAPTURE, CAP_CONTROL_MOUNT,
+             reaches={"SequenceEngine.start"})
+    async def quick_flow(body: FlowQuickBody):
+        """Pick a target, say how many subs, tick the filters, go.
+
+        THE GRAPH IS THE PROVEN ONE. ``wizard.quick`` wraps the same
+        ``generate()`` the guided sheet uses -- dusk window, target, slew +
+        center, autofocus, guide, the capture stage, session report, with the
+        relative HFR watchdog on it and a safety monitor that aborts and parks.
+        There is no second generator, for the reason wizard.py's header gives.
+
+        BOTH CAPS ARE ENFORCED, ``run`` or not. Invariant (3) in auth/rbac.py is
+        that a route reaching ``SequenceEngine.start`` must be GATED on
+        control.mount as a dependency, not merely labelled with it -- and this
+        route reaches it, on the ``run`` path, through the very handler
+        /api/flows/{id}/run uses. Making the gate conditional on a field of the
+        body is exactly the shape that invariant exists to refuse. Nothing is
+        lost by it in practice: the operator role holds control.mount alongside
+        control.capture (auth/capabilities.py), and a viewer holds neither.
+
+        THE RUN GOES THROUGH ``run_flow``, not through a copy of it. That
+        handler applies five guards in a fixed order -- structural errors, the
+        dome refusal, the unmapped list, an unbounded quota, the horizon and the
+        sun -- and its own docstring says a second start path that quietly omits
+        one is how a guard stops being a guard. So this calls it.
+
+        ``accept_unmapped`` IS TRUE, and only that. Every wizard-shaped graph
+        carries the same list of node settings the compiler does not carry into
+        the plan (slew tolerances, guide settle, report format), so a quick flow
+        would 409 on every single run otherwise -- and the sheet has no canvas
+        on which to show the operator what they would be accepting. The dome
+        refusal is NOT waived by it, which is the point of that flag: a roof
+        that will not close is never clickable-past.
+
+        A REFUSED RUN STILL REPORTS THE SAVED FLOW. The save already happened
+        and undoing it would throw away work the operator asked for; the id
+        travels in the refusal so the sheet can offer to open it.
+        """
+        try:
+            record = await asyncio.to_thread(
+                flow_wizard.quick, body.target.model_dump(), body.subs,
+                body.filters, body.exposures, body.guided, body.name,
+                wheel=_rig_wheel())
+        except ValueError as e:
+            raise HTTPException(422, detail={"detail": str(e),
+                                             "code": "invalid_quick_flow"})
+        saved = await _persist_flow(record)
+        if not body.run:
+            return {"flow": saved, "started": False}
+        try:
+            started = await run_flow(saved.id, FlowRunBody(accept_unmapped=True))
+        except HTTPException as e:
+            detail = e.detail
+            if isinstance(detail, dict):
+                detail = {**detail, "flow_id": saved.id, "saved": True}
+            else:
+                detail = {"detail": str(detail), "flow_id": saved.id,
+                          "saved": True}
+            raise HTTPException(e.status_code, detail=detail) from None
+        return {"flow": saved, "started": True, "run": started}
 
     @app.get("/api/flows/folders", dependencies=[Depends(require(CAP_VIEW_STATUS))])
     @declare(CAP_VIEW_STATUS)

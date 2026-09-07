@@ -38,6 +38,13 @@ export interface FlowsUiState {
   tonightOpen: boolean;
   tonightTab: TonightTab;
   wizardOpen: boolean;
+  /** The one-screen "pick a target, tick the filters, go" sheet. Independent of
+   *  `wizardOpen` for the reason above: two overlays are two questions. */
+  quickOpen: boolean;
+  /** The flow that was just created, so the library that reloads under the
+   *  operator can say which row is theirs. Cleared when they open something --
+   *  a highlight that outlives the moment it explains becomes decoration. */
+  highlightId: string | null;
   paletteOpen: boolean;
   notesOpen: boolean;
   logOpen: boolean;
@@ -103,6 +110,7 @@ export const FLOWS_INIT: FlowsState = {
   calHealth: null,
   ui: { screen: "library", phoneTab: "flow", query: "", folderChip: "all",
         tonightOpen: false, tonightTab: "timeline", wizardOpen: false,
+        quickOpen: false, highlightId: null,
         paletteOpen: false, notesOpen: false, logOpen: false },
 };
 
@@ -205,7 +213,9 @@ export function createFlowsActions(set: SetFn, get: GetFn): FlowsActions {
           graph: rec.graph ?? { nodes: [], edges: [] },
           dirty: false, sel: null, editNode: null,
           compiled: null, tonight: null, calHealth: null,
-          ui: { ...s.flows.ui, screen: "editor" },
+          // The highlight has done its job the moment a flow is opened, and it
+          // would otherwise still be ringing a card on the next visit.
+          ui: { ...s.flows.ui, screen: "editor", highlightId: null },
         }));
         await get().flowsCompile();
       } catch (e) {
