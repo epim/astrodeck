@@ -405,3 +405,188 @@ async def test_the_recenter_gate_gets_the_plan_not_just_the_config(sim_hub,
     assert seen[0]["plan"] is not None, (
         "plan must be passed, or the pier-collision branch is silently inert")
     assert engine.plan is None or seen[0]["plan"] is not None
+
+
+# --------------------------------------------------------------- the target's
+# own start floor (rig, 2026-09-06)
+
+#: NGC 604 in M33 - the target the rig actually tried to re-centre on at 20:47
+#: PDT, when it was nine degrees up and its own plan would not have started it
+#: for another two hours.
+NGC604_RA, NGC604_DEC = 1.5720, 30.7853
+
+
+def _plan_with_floor(floor: float, ra: float = NGC604_RA,
+                     dec: float = NGC604_DEC) -> SequencePlan:
+    from astrodeck.sequence.models import Schedule
+    return SequencePlan(
+        name="floor", guide=False, dither_every=0, autofocus_every=0,
+        meridian_flip=False,
+        targets=[Target(name="NGC 604", ra_hours=ra, dec_deg=dec, center=False,
+                        autofocus_first=False,
+                        schedule=Schedule(min_altitude_deg=floor),
+                        steps=[ExposureStep(filter="L", exposure_s=0.05,
+                                            count=1)])])
+
+
+def _when_altitude_between(site, ra: float, dec: float, lo: float,
+                           hi: float, t0: float = 1_700_000_000.0) -> float:
+    """A clock reading at which the target really is between ``lo`` and ``hi``
+    degrees for THIS rig's configured site.
+
+    Searched rather than hardcoded: the site comes from the config store, so a
+    baked-in timestamp would silently stop meaning "nine degrees up" the day
+    somebody changed the default site, and the test would go on passing against
+    an altitude nobody chose.
+    """
+    from astrodeck.catalog import altaz
+    for i in range(24 * 60):
+        t = t0 + i * 60.0
+        alt, _ = altaz(ra, dec, site["latitude"], site["longitude"], t)
+        if lo <= alt <= hi:
+            return t
+    raise AssertionError(
+        f"no time in the next day puts {ra}h {dec}deg between {lo} and {hi} "
+        f"deg from {site}")
+
+
+def _trust_focus(monkeypatch) -> None:
+    """Keep the focus step out of the way: these tests are about step 3."""
+    from astrodeck.devices import fingerprint as _fp
+    monkeypatch.setattr(_fp, "verdict",
+                        lambda **kw: _fp.Verdict(focus_trusted=True))
+
+
+def _spy_slew_limits(engine, monkeypatch) -> list:
+    """Stand in for the MOUNT floor gate so these tests see only the TARGET's
+    own floor. That gate passed on the rig - which is the whole point."""
+    seen: list = []
+
+    async def spy(target, *, cfg=None, plan=None, projected=True):
+        seen.append(target)
+    monkeypatch.setattr(engine, "check_slew_limits", spy)
+    return seen
+
+
+async def test_recover_will_not_slew_to_a_target_below_its_own_start_floor(
+        sim_hub, monkeypatch):
+    """2026-09-06, 20:47 PDT. The armed session auto-resumed, the blind solve
+    worked, the MOUNT floor gate passed - and the ladder then asked the AM5 to
+    slew to a target at nine degrees that its own plan would not have started
+    for two hours (``min_altitude_deg`` 30). The mount refused with ``e6`` and
+    the resume held, retrying every ten minutes until the target rose.
+
+    Nothing was wrong with the retry. What was wrong is that the plan already
+    knew the answer and nobody asked it.
+    """
+    _trust_focus(monkeypatch)
+    engine = SequenceEngine(sim_hub)
+    moved = _record_motion(sim_hub, monkeypatch)
+    gated = _spy_slew_limits(engine, monkeypatch)
+
+    t = _when_altitude_between(sim_hub.site, NGC604_RA, NGC604_DEC, 8.0, 10.0)
+    arm = ResumeArm(engine, sim_hub, clock=lambda: t)
+    refusal = await arm._recover(Session(name="floor",
+                                         plan=_plan_with_floor(30.0)))
+
+    assert refusal is not None, "the ladder slewed to a target below its floor"
+    assert "below its 30 deg start floor" in refusal, refusal
+    assert "NGC 604" in refusal, refusal
+    # ...and say how long the wait is, from the scheduler's own gate-crossing
+    # search. "Not yet" with no number is the hold that gets diagnosed at 2am.
+    assert "reaches 30 deg in about" in refusal, refusal
+    assert "goto" not in moved, f"the mount was moved anyway: {moved}"
+    assert gated == [], (
+        "the target's own floor must be read BEFORE the mount gate - that gate "
+        "passed on the rig, which is how the slew got out")
+
+
+async def test_recover_slews_when_the_target_is_above_its_start_floor(
+        sim_hub, monkeypatch):
+    """The same session two hours later: nothing on this path changes."""
+    _trust_focus(monkeypatch)
+    engine = SequenceEngine(sim_hub)
+    moved = _record_motion(sim_hub, monkeypatch)
+    _spy_slew_limits(engine, monkeypatch)
+
+    t = _when_altitude_between(sim_hub.site, NGC604_RA, NGC604_DEC, 40.0, 60.0)
+    arm = ResumeArm(engine, sim_hub, clock=lambda: t)
+    refusal = await arm._recover(Session(name="floor",
+                                         plan=_plan_with_floor(30.0)))
+
+    assert refusal is None, refusal
+    assert moved == ["solve", "goto"], moved
+
+
+async def test_recover_ignores_the_altitude_when_the_plan_sets_no_floor(
+        sim_hub, monkeypatch):
+    """``min_altitude_deg`` 0 is "no gate" everywhere else in this model and it
+    stays "no gate" here: a plan that never asked for a floor resumes from
+    exactly where it always did, nine degrees or not."""
+    _trust_focus(monkeypatch)
+    engine = SequenceEngine(sim_hub)
+    moved = _record_motion(sim_hub, monkeypatch)
+    _spy_slew_limits(engine, monkeypatch)
+
+    t = _when_altitude_between(sim_hub.site, NGC604_RA, NGC604_DEC, 8.0, 10.0)
+    arm = ResumeArm(engine, sim_hub, clock=lambda: t)
+    refusal = await arm._recover(Session(name="floor",
+                                         plan=_plan_with_floor(0.0)))
+
+    assert refusal is None, refusal
+    assert moved == ["solve", "goto"], moved
+
+
+async def test_recover_skips_the_floor_check_when_the_site_is_unknown(
+        sim_hub, monkeypatch):
+    """No lat/lon means nobody can say how high the target is, and "nobody can
+    say" must not read as "below the floor" - the same tri-state the engine's
+    own floor gate keeps."""
+    _trust_focus(monkeypatch)
+    engine = SequenceEngine(sim_hub)
+    moved = _record_motion(sim_hub, monkeypatch)
+    _spy_slew_limits(engine, monkeypatch)
+    monkeypatch.setattr(type(sim_hub), "site",
+                        property(lambda self: {"name": "nowhere"}))
+
+    arm = ResumeArm(engine, sim_hub, clock=lambda: 1_700_000_000.0)
+    refusal = await arm._recover(Session(name="floor",
+                                         plan=_plan_with_floor(30.0)))
+
+    assert refusal is None, refusal
+    assert moved == ["solve", "goto"], moved
+
+
+async def test_a_mount_goto_refusal_reaches_the_hold_in_words(
+        sim_hub, monkeypatch, bus_lines):
+    """What the operator read at 20:47 was "goto rejected (reply 'e6')". The
+    code is worth keeping; on its own it is not a sentence anybody can act on,
+    and the repo documented only ``e14``."""
+    from astrodeck.devices.base import GotoRefused
+
+    _trust_focus(monkeypatch)
+    engine = SequenceEngine(sim_hub)
+    await _dormant_armed(sim_hub, engine)
+    _record_motion(sim_hub, monkeypatch)
+    _spy_slew_limits(engine, monkeypatch)
+
+    async def refuse(*a, **kw):
+        raise GotoRefused(
+            "ZWO AM5 (native serial): goto rejected (the target is outside the "
+            "mount's slew limits; reply 'e6')",
+            code="e6",
+            reason="the target is outside the mount's slew limits")
+    monkeypatch.setattr(sim_hub, "goto_and_center", refuse)
+
+    now = {"t": 1_700_000_000.0}
+    arm = ResumeArm(engine, sim_hub, clock=lambda: now["t"])
+    monkeypatch.setattr(ResumeArm, "_window_open", lambda self, s, t: True)
+    await arm.tick()
+
+    assert arm.hold is not None, "a refused goto must leave a visible hold"
+    reason = arm.hold["reason"]
+    assert "refused by the mount" in reason, reason
+    assert "slew limits" in reason, reason
+    assert any("refused by the mount" in m for _lv, m, _s in bus_lines), \
+        f"the hold must be logged in words: {bus_lines}"
+    assert not engine.running

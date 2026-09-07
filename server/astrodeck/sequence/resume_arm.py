@@ -35,6 +35,7 @@ import asyncio
 import time
 
 from ..config import config_store
+from ..devices.base import GotoRefused
 from ..events import bus
 from . import schedule
 from .models import quota_unbounded, replan_cooling
@@ -543,6 +544,37 @@ class ResumeArm:
         #    above, which costs one exposure and confirms the sky is usable.
         tgt = next((t for t in session.plan.targets if not t.calibration), None)
         if tgt is not None:
+            # THE TARGET'S OWN START FLOOR, and it is asked FIRST.
+            #
+            # The gate below is the MOUNT's floor - config, horizon, wedges,
+            # pier. The plan carries a second, usually higher one:
+            # ``Schedule.min_altitude_deg``, the altitude at which this target
+            # is worth shooting, which the engine enforces when a run starts a
+            # target (``_enforce_altitude_floor``). The re-centre happens
+            # before any of that, so on 2026-09-06 at 20:47 the ladder asked
+            # the AM5 to slew to NGC 604 at nine degrees - a target its own
+            # plan would not have started for two more hours. The mount refused
+            # (e6, its own horizon limit) and the resume held on a ten-minute
+            # retry until the target rose, which is the right outcome reached
+            # by the wrong route: the plan already knew the answer.
+            #
+            # A refusal, not a wait, because RETRY_INTERVAL_S is already the
+            # cadence for exactly this - come back in ten minutes and ask the
+            # sky again.
+            floor = float(getattr(getattr(tgt, "schedule", None),
+                                  "min_altitude_deg", 0.0) or 0.0)
+            if floor > 0:
+                from .engine import _frame_altitude
+                alt = _frame_altitude(tgt, self.hub.site, self._clock())
+                # ``None`` is "nobody can say" - an unset site, a bad
+                # coordinate - and it must not read as "below the floor". The
+                # engine's own floor gate makes the same tri-state distinction,
+                # and for the same reason: refusing on an unreadable altitude
+                # would strand every rig whose site is not configured.
+                if alt is not None and alt < floor:
+                    return (f"{tgt.name} is at {alt:.0f} deg, below its "
+                            f"{floor:.0f} deg start floor; not slewing yet"
+                            + self._floor_eta_note(tgt, floor))
             # The altitude floor, horizon, no-go wedges, pier limits and the
             # zenith keep-out — the SAME gate every in-run slew passes. It lived
             # only inside the run, so this slew, the one made unattended by a
@@ -561,9 +593,37 @@ class ResumeArm:
                 return f"re-centering after restart refused: {e}"
             try:
                 await self.hub.goto_and_center(tgt.ra_hours, tgt.dec_deg)
+            except GotoRefused as e:
+                # THE MOUNT SAID NO, which is a different thing from the slew
+                # failing, and the operator can act on the difference: a
+                # refusal names a limit to wait out or clear, a failure names
+                # something broken. The driver's own words, not the wire code
+                # the log used to carry alone.
+                return f"re-centering after restart refused by the mount: {e.reason}"
             except Exception as e:  # noqa: BLE001
                 return f"re-centering after restart failed: {e}"
         return None
+
+    def _floor_eta_note(self, target, floor: float) -> str:
+        """How long the wait above is, as a parenthetical, or empty when
+        nobody can say.
+
+        Reuses the scheduler's own gate-crossing search - the one that fills
+        ``gating_status``'s ``eta_s`` for a target waiting on altitude - so the
+        hold and the Tonight page cannot quote different numbers for the same
+        wait. Best-effort throughout: no site, no crossing inside a sidereal
+        day, or any arithmetic failure simply means no note."""
+        try:
+            lat, lon = schedule._lat_lon(self.hub.site)
+            eta = schedule._time_to_gate(target, lat, lon, floor,
+                                         self._clock(), None)
+        except Exception:  # noqa: BLE001 - a missing ETA is not a failure
+            return ""
+        if eta is None or eta <= 0:
+            return ""
+        mins = eta / 60.0
+        return (f" (it reaches {floor:.0f} deg in about "
+                + (f"{mins:.0f} min)" if mins < 90 else f"{mins / 60.0:.1f} h)"))
 
     def _devices_ready(self) -> bool:
         """Are the devices a resume needs actually connected yet?

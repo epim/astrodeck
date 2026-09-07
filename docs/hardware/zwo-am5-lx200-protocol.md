@@ -110,6 +110,17 @@ command class is disabled on this interface. Dec stayed pinned at `+90*00:00` an
 never left `nGM000000005#` through all of it. `e14#` is a ZWO "command refused in current
 state" reply.
 
+**`e6#` = outside the mount's own slew limits (observed 2026-09-06, 20:47 PDT, fw 1.8.8).**
+The post-restart re-centre asked for NGC 604 at **~9 degrees altitude** and `:MS#` answered
+`e6#`; the solve-and-sync's re-slew to the pole region a minute earlier was accepted, and
+the identical goto succeeded later the same night once the target had risen. That is the
+AM5's own horizon/altitude limit refusing the destination — not AstroDeck's safety floor,
+which had already passed it. **The rest of the `eN` table is UNVERIFIED**: ZWO publishes no
+e-code list, and `e14` and `e6` are the only two this project has seen on the wire, so the
+driver (`_GOTO_REFUSALS` in `server/astrodeck/devices/backends/zwo_am5.py`) puts words to
+those two and says only "altitude, meridian or park limits are the usual reasons" for any
+other code. Do not add a meaning here without a capture to back it.
+
 The reason: **the mount was PARKED, and the unpark command is ZWO-specific — `:Spu#`, not
 the LX200/OnStep `:hR#`/`:hU#`/`:hP#` I had tried.** This was confirmed by capturing ZWO's
 own ASIMount ASCOM driver driving the mount over COM3 (its trace log at

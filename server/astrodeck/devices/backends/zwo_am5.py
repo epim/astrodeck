@@ -19,7 +19,8 @@ from datetime import datetime, timezone
 
 from ...events import bus
 from .. import lx200
-from ..base import DeviceError, PierSide, Telescope, TRACKING_RATES
+from ..base import (DeviceError, GotoRefused, PierSide, Telescope,
+                    TRACKING_RATES)
 from ..serial_link import LinkError, SerialLink
 
 #: Seam for tests: the link factory used by ZwoAm5Session.
@@ -74,6 +75,34 @@ _MOVE_CMD = {("ra", True): "Me", ("ra", False): "Mw",
 
 #: rate name (TRACKING_RATES) -> classic LX200 drive-rate select command.
 _TRACKING_RATE_CMD = {"sidereal": "TQ", "lunar": "TL", "solar": "TS"}
+
+#: What an ``eN`` reply to ``:MS#`` means, AS FAR AS ANYBODY HAS EVIDENCE.
+#:
+#: ZWO publishes no e-code table, and this driver is written from capture, so
+#: this holds only codes that have actually been seen on this wire. Anything
+#: else gets the generic sentence below - which names the usual causes without
+#: claiming to know which one it was. Guessing here would be worse than the
+#: bare code it replaces: an operator who reads "parked" and unparks a mount
+#: that was never parked has been sent the wrong way by their own logs.
+#:
+#: e6 was observed on the rig on 2026-09-06 at 20:47 PDT: the post-restart
+#: re-centre asked for NGC 604 at ~9 degrees altitude and got e6, while the
+#: solve-and-sync's re-slew to the pole region a minute earlier was accepted -
+#: and the identical goto succeeded later the same night once the target had
+#: risen. That is the mount's own horizon/slew limit, not our safety floor.
+_GOTO_REFUSALS: dict[str, str] = {
+    "e14": "the mount refused in its current state - parked, a slew already "
+           "running, or no target set",
+    "e6": "the target is outside the mount's slew limits (below its horizon "
+          "limit)",
+}
+
+
+def _goto_refusal_words(code: str) -> str:
+    """Plain words for an ``:MS#`` refusal code; honest when it is unknown."""
+    return _GOTO_REFUSALS.get(code) or (
+        f"the mount refused the goto (code {code}); its altitude, meridian or "
+        f"park limits are the usual reasons")
 
 #: Pulse-guide emulation (fw 1.8.8, all verified at scope 2026-07-20):
 #: - The LX200 :Mg*# pulse commands PARSE but are INERT over serial.
@@ -827,8 +856,19 @@ class ZwoAm5Telescope(Telescope):
         if reply == lx200.REFUSED:
             raise await self._refused_error("goto")
         # LX200 :MS# convention: '0' = slew accepted; anything else = refused.
+        #
+        # THE CODE ALONE IS NOT A SENTENCE. This used to raise the bare reply,
+        # and on 2026-09-06 the operator's whole explanation for a held resume
+        # was "goto rejected (reply 'e6')" - a string that appears nowhere in
+        # this repo or in any ZWO document. The words come from
+        # ``_GOTO_REFUSALS``, the code is kept verbatim beside them because it
+        # is the only part a firmware can be searched for, and the class says
+        # "the mount said no" so a caller need not read the prose to know it.
         if reply != "0":
-            raise DeviceError(f"{self.name}: goto rejected (reply {reply!r})")
+            words = _goto_refusal_words(reply)
+            raise GotoRefused(
+                f"{self.name}: goto rejected ({words}; reply {reply!r})",
+                code=reply, reason=words)
         self._slewing = True
         try:
             deadline = asyncio.get_running_loop().time() + SLEW_TIMEOUT_S

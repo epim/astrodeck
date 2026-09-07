@@ -1239,3 +1239,49 @@ async def test_connect_rehandshakes_a_dropped_link_instead_of_short_circuiting(
     assert fl.sent[:2] == ["GVP", "GV"], (
         f"and the mount was re-identified rather than assumed: {fl.sent}")
     assert tel.connected is True
+
+
+async def test_goto_refused_for_slew_limits_is_said_in_words(fixed_env):
+    """2026-09-06, 20:47 PDT on the rig. Auto-resume re-centred on a target at
+    nine degrees altitude and the mount answered ``:MS#`` with ``e6``. All the
+    driver could say was "goto rejected (reply 'e6')", and ``e6`` appears
+    nowhere in this repo - the only documented code was ``e14``. The same goto
+    was accepted once the target had risen, which is the evidence for calling
+    it a limit."""
+    s = _connect_script()
+    s["Sr11:00:00"] = "1"; s["Sd+45*00:00"] = "1"
+    s["MS"] = "e6"
+    fl, tel = await _connected_tel(s)
+    with pytest.raises(DeviceError) as exc:
+        await tel.slew(11.0, 45.0)
+    msg = str(exc.value)
+    assert "slew limits" in msg, msg
+    assert "e6" in msg, f"the raw code must stay visible: {msg}"
+    assert getattr(exc.value, "code", None) == "e6", (
+        "a caller must be able to tell a LIMIT refusal from a link failure "
+        "without matching on message text")
+
+
+async def test_an_unevidenced_goto_code_still_gets_a_sentence(fixed_env):
+    """Only ``e14`` and ``e6`` have been seen on the wire. Everything else gets
+    the honest generic reading rather than an invented meaning."""
+    s = _connect_script()
+    s["Sr11:00:00"] = "1"; s["Sd+45*00:00"] = "1"
+    s["MS"] = "e3"
+    fl, tel = await _connected_tel(s)
+    with pytest.raises(DeviceError) as exc:
+        await tel.slew(11.0, 45.0)
+    msg = str(exc.value)
+    assert "code e3" in msg, msg
+    assert "limits" in msg, msg
+
+
+async def test_goto_accepted_reply_is_unchanged(fixed_env, monkeypatch):
+    """``0`` is still "accepted" and nothing about the settle poll moved."""
+    monkeypatch.setattr(am5, "SETTLE_POLL_S", 0.01)
+    s = _connect_script()
+    s["Sr11:00:00"] = "1"; s["Sd+45*00:00"] = "1"; s["MS"] = "0"
+    s["GR"] = "11:00:00"; s["GD"] = "+45*00:00"
+    fl, tel = await _connected_tel(s)
+    await tel.slew(11.0, 45.0)
+    assert fl.sent[:3] == ["Sr11:00:00", "Sd+45*00:00", "MS"]
