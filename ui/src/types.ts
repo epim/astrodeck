@@ -756,14 +756,20 @@ export interface CatalogEntry {
   type: string;
   ra_hours: number;
   dec_deg: number;
-  mag: number;
+  // Not every catalogued object has a published magnitude (NGC 604, IC 1604):
+  // the server sends an explicit null rather than a sentinel number, so a
+  // caller must check before formatting it. See lib/catalogFormat.ts.
+  mag: number | null;
   size_arcmin: number;
-  alt: number;
-  az: number;
+  // Only present when the caller holds view.site_derived (api/app.py's
+  // /api/catalog handler attaches alt/az to the response after the fact); a
+  // viewer-role search gets rows with neither field at all.
+  alt?: number;
+  az?: number;
   // NOV-3 (additive): server-derived beginner difficulty. Optional so payloads
   // that predate it (older /api/catalog, test doubles) still type-check.
   difficulty?: DifficultyTier;
-  surface_brightness?: number;              // mag/arcmin^2
+  surface_brightness?: number | null;       // mag/arcmin^2; null alongside a null mag
   difficulty_source?: "heuristic" | "curated";
 }
 

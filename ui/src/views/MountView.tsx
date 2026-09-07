@@ -10,9 +10,13 @@ import { useBusyOrPending } from "../lib/useBusy";
 import ReadOnlyBadge from "../components/ReadOnlyBadge";
 import GotoStrip from "../components/GotoStrip";
 import type { CatalogEntry, LogLine, PreflightAlt } from "../types";
+import { altTone, fmtAlt, fmtMag } from "../lib/catalogFormat";
 
-/** Severity glyph for an altitude cell — shape, not colour-only (spec §5 / critique3 #7). */
-function AltGlyph({ alt }: { alt: number }) {
+/** Severity glyph for an altitude cell — shape, not colour-only (spec §5 / critique3 #7).
+ *  `alt` is absent for a viewer-role search result (no view.site_derived), in
+ *  which case there is nothing to grade and no glyph is shown. */
+function AltGlyph({ alt }: { alt?: number }) {
+  if (alt == null) return null;
   if (alt < 0) return <span className="text-bad" aria-label="below horizon" title="below the visible horizon">⚠</span>;
   if (alt < 20) return <span className="text-warn" aria-label="low on the horizon" title="low on the horizon">↓</span>;
   return null;
@@ -614,14 +618,14 @@ export default function MountView() {
                   <td className="pr-3">
                     {r.name}
                     <span className="lg:hidden block text-[10px] text-dim">
-                      {r.type} · mag {r.mag.toFixed(1)}
+                      {r.type} · mag {fmtMag(r.mag)}
                     </span>
                   </td>
                   <td className="pr-3 text-dim hidden lg:table-cell">{r.type}</td>
-                  <td className="mono pr-3 hidden lg:table-cell">{r.mag.toFixed(1)}</td>
-                  <td className={`mono pr-3 whitespace-nowrap ${r.alt < 20 ? "text-warn" : r.alt > 40 ? "text-good" : ""}`}>
+                  <td className="mono pr-3 hidden lg:table-cell">{fmtMag(r.mag)}</td>
+                  <td className={`mono pr-3 whitespace-nowrap ${altTone(r.alt)}`}>
                     <span className="inline-flex items-center gap-1">
-                      {r.alt.toFixed(0)}°<AltGlyph alt={r.alt} />
+                      {fmtAlt(r.alt)}<AltGlyph alt={r.alt} />
                     </span>
                   </td>
                   <td className="text-right">

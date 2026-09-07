@@ -291,17 +291,39 @@ test("sweep constants are sane", () => {
     "App must gate the preload sweep on the websocket being up");
 });
 
-test("the failure pane offers a reload, and does NOT offer a fake retry", () => {
+test("the chunk-load failure pane offers a reload, and does NOT offer a fake retry", () => {
   const vbRaw = fs.readFileSync(pathOf("../../components/ViewBoundary.tsx"), "utf8");
-  // Strip comments: the file EXPLAINS at length why there is no "Try again", and
-  // that prose must not trip the check that there is no such button.
+  // Strip comments: the file EXPLAINS at length why ViewLoadFailed has no "Try
+  // again", and that prose must not trip the check that the PANE has no such
+  // button. Scoped to ViewLoadFailed itself (not ViewRenderError, a few lines
+  // below it) — a genuine render throw gets a real "Try again" now, because
+  // unlike a poisoned module-map entry, re-mounting the subtree can actually
+  // recover. See viewBoundaryDom.test.tsx for that pane's own coverage.
   const vb = vbRaw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/[^\n]*$/gm, "");
-  assert(/window\.location\.reload\(\)/.test(vb), "the failure pane must offer a reload — the only real recovery");
-  assert(!/Try again/i.test(vb),
-    "a 'Try again' button cannot work: the failed import is cached in the module map, " +
-      "so re-importing makes no network request. Offer a reload instead.");
-  assert(/Couldn't load this screen/.test(vb), "the failure pane must explain itself, never render blank");
-  assert(/role="alert"/.test(vb), "the failure pane should announce itself");
+  const viewLoadFailedSrc = vb.slice(
+    vb.indexOf("function ViewLoadFailed"), vb.indexOf("function ViewRenderError"));
+  assert(viewLoadFailedSrc.length > 0, "could not locate ViewLoadFailed in the source — test is stale");
+  assert(/window\.location\.reload\(\)/.test(viewLoadFailedSrc),
+    "the chunk-failure pane must offer a reload — the only real recovery");
+  assert(!/Try again/i.test(viewLoadFailedSrc),
+    "a 'Try again' button on the CHUNK-failure pane cannot work: the failed import is cached " +
+      "in the module map, so re-importing makes no network request. Offer a reload instead.");
+  assert(/Couldn't load this screen/.test(viewLoadFailedSrc),
+    "the chunk-failure pane must explain itself, never render blank");
+  assert(/role="alert"/.test(viewLoadFailedSrc), "the chunk-failure pane should announce itself");
+});
+
+test("the render-error pane's Try again resets state locally, not via a reload", () => {
+  const vbRaw = fs.readFileSync(pathOf("../../components/ViewBoundary.tsx"), "utf8");
+  const vb = vbRaw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/[^\n]*$/gm, "");
+  const viewRenderErrorSrc = vb.slice(
+    vb.indexOf("function ViewRenderError"), vb.indexOf("function LazyViewHost"));
+  assert(viewRenderErrorSrc.length > 0, "could not locate ViewRenderError in the source — test is stale");
+  assert(/This screen hit an error/.test(viewRenderErrorSrc),
+    "a render throw must not reuse the chunk-download wording — see the NGC 604 incident");
+  assert(/Try again/.test(viewRenderErrorSrc), "the render-error pane must offer a working retry");
+  assert(/window\.location\.reload\(\)/.test(viewRenderErrorSrc),
+    "the render-error pane must still offer Reload alongside Try again");
 });
 
 // ---------------------------------------------------------------- report

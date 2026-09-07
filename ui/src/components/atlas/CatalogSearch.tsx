@@ -22,6 +22,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type JSX } from "react";
 import { api } from "../../api";
 import type { CatalogEntry } from "../../types";
 import { catalogScopeHint } from "../../lib/catalogHint";
+import { altTone, fmtAlt } from "../../lib/catalogFormat";
 import { Icon } from "../icons";
 
 /** Movement (CSS px) allowed between pointerdown and pointerup before the
@@ -260,8 +261,8 @@ export function CatalogSearch({
               <button key={r.id} type="button" onClick={() => pick(r)}
                 className="w-full text-left px-3 py-2 text-xs hover:bg-raise transition-colors flex justify-between cursor-pointer">
                 <span><span className="mono text-accent">{r.id}</span> {r.name}</span>
-                <span className={`mono ${r.alt > 40 ? "text-good" : r.alt < 20 ? "text-warn" : "text-dim"}`}>
-                  {r.alt.toFixed(0)}°
+                <span className={`mono ${altTone(r.alt, "text-dim")}`}>
+                  {fmtAlt(r.alt)}
                 </span>
               </button>
             ))
