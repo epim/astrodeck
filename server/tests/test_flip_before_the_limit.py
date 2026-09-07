@@ -1015,7 +1015,14 @@ def test_the_recovery_bound_is_bigger_than_the_steps_it_wraps():
     the budget and the outer `wait_for` cancels a plate-solving re-slew
     MID-MOTION, which the generic handler then reports as "the recovery
     failed" instead of the SafetyAbort teardown a wedged device is promised.
-    Recomputed from the constants so the two cannot drift apart again."""
+    Recomputed from the constants so the two cannot drift apart again.
+
+    The guide restart is counted at ``GUIDE_CALIBRATE_TIMEOUT_S``, not the
+    shorter ``GUIDE_START_TIMEOUT_S`` (2026-09-07): a park and an unpark are
+    exactly what changes the pier side, GN-01 discards the calibration on a
+    pier change, and the restart is therefore a full calibration walk on the
+    path this bound wraps. Counting the cheap start here would put the
+    guillotine back."""
     from astrodeck.sequence import engine as E
     inner = (E.GUIDE_OP_TIMEOUT_S            # stop guiding
              + E.PARK_TIMEOUT_S              # park
@@ -1024,7 +1031,7 @@ def test_the_recovery_bound_is_bigger_than_the_steps_it_wraps():
              + E.MOUNT_QUERY_TIMEOUT_S       # readback
              + E.GOTO_TIMEOUT_S + 300.0      # re-centre (+ rotation)
              + E.GUIDE_OP_TIMEOUT_S          # guider calibration flip
-             + E.GUIDE_START_TIMEOUT_S       # restart guiding
+             + E.GUIDE_CALIBRATE_TIMEOUT_S   # restart guiding, fresh walk
              + E.MOUNT_QUERY_TIMEOUT_S)      # final readback
     assert E.TRACKING_RECOVERY_TIMEOUT_S >= inner, (
         f"the outer bound ({E.TRACKING_RECOVERY_TIMEOUT_S:.0f}s) is smaller "

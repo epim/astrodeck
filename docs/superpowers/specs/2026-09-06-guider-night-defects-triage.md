@@ -208,3 +208,78 @@ S_0017, Ha_0018) and the mild smear B_0032, which GN-02 and GN-03 address at
 the source. The crop fixture `jump_R60` therefore CANNOT be a must-reject for
 GN-04; its row is corrected below. `m33core_G60` is a crop of the staircase
 frame G_0003 and is rightly rejected.
+
+## Follow-ups found in the field 2026-09-07
+
+Three more defects the rig produced on the night AFTER this backlog was
+written, all fixed against the same rules (a test that fails on the old code,
+sabotage-verified, no push). They are recorded here because each one is the
+same shape as an item above: a guard that fires on its own evidence, a bound
+sized for the wrong operation, and a sentence that names a cause the number
+cannot distinguish.
+
+### F-01 The cloud hold recursed through the safety gate until RecursionError
+
+Measured on astrotown at 2026-09-06 22:13:46 (v0.3.25). A low run produced a
+frame the cloud detector called cloudy. No safety monitor was assigned and
+`safety.sky_fallback_hold` was on, so the frame-boundary gate ran
+`_safety_gate(context="frame")` -> `_no_safety_source` -> `_hold_for_clear`.
+The first thing the hold's own loop does is take that same gate again - by
+design, so dawn and a real monitor keep their say while the run sits - and the
+verdict that started the hold is still cloudy, so the gate answered it with a
+second hold. 323 "holding for clear sky" lines and 325 "native guider stopped"
+lines went out in one second until Python hit its recursion limit. The run
+died, and it took the night-log file writer with it (the ring buffer kept
+working, so nothing in the UI said so).
+
+Fixed with two guards. `_no_safety_source` stands aside while
+`_holding_for_clear` is set: the running hold's probe loop owns the sky
+verdict, and the gate inside the hold exists for the OTHER safety reasons.
+`_hold_for_clear` refuses to nest at all - one warning, one return - which also
+covers the `hold_for_clear` instruction path, and keeps the outer hold's own
+45-minute bound counting instead of restarting it.
+
+### F-02 The guide-start bound cut a fresh calibration; the run went unguided
+
+At 03:39 a meridian-limit recovery parked, unparked and re-centred. That
+changed the pier side, GN-01 discarded the calibration, and the restart had to
+walk a fresh one - three to five minutes on this rig. It was bounded at
+`GUIDE_START_TIMEOUT_S = 180.0`, `_bounded` cancels the awaitable on timeout,
+and the walk was severed part way. The recovery's handler reported only
+"guiding did not restart after the recovery ... continuing unguided" and the
+target ran unguided for twenty minutes, losing a frame to trailing.
+
+One bound could not fit both starts: 180 s is generous for a start that REUSES
+a calibration and is inside the normal duration of one that MEASURES it. Fixed
+by asking. `Guider.needs_calibration` is a new vendor-neutral question (default
+"cannot say"); the native guider answers it with exactly the checks its own
+`start_guiding` is about to make - the GN-01 discard latch, a persisted file,
+`_cal_reusable`, and the pier gate read silently so the walk is announced once.
+The engine's `_guide_start_bound` picks `GUIDE_CALIBRATE_TIMEOUT_S` (660 s) for
+a walk and for "cannot say", `GUIDE_START_TIMEOUT_S` for a reuse, and labels
+the bound so a timeout says what was cut. 660 rather than 600 because the
+guider's own walk backstop is `_CAL_TIMEOUT_S = 600` and fails with the
+evidence attached; an outer bound at the same number races that and replaces a
+diagnosis with "timed out - aborting". `TRACKING_RECOVERY_TIMEOUT_S` moved
+1800 -> 2400 for the same guillotine rule: the recovery it wraps is exactly the
+path whose guide restart is now a full walk.
+
+Two things fell out of checking what a cancelled start leaves behind. The loop
+task is never created and `_active` is never set (both are the last lines of
+the start), and the AM5 pulse driver already stops the mount on its own cancel.
+But `_phase_hint` leaked: the calibration path clears it in a `finally` and the
+REUSE path relied on the success line, so a cut reuse left `stats().phase`
+narrating "finding" for the rest of the session - and GuideView dims Start,
+Force Recalibrate and Stop on that hint, so the controls that would restart
+guiding after the cut were the ones that went away.
+
+### F-03 The eccentricity reject sentence blamed "trailing/tilt" for donuts
+
+Between 00:38 and 00:44 on 2026-09-07 every sub was a donut (the focuser sat 75
+steps off) and the gate rejected all of them, correctly, saying "trailing/tilt".
+A defocused star measures eccentricity 0.7-0.8 exactly as a trailed one does -
+`donut_L60` in the whole-frame table above reads 0.86 - so the statistic cannot
+separate them and the sentence must not pretend it can. It said "the mount
+moved" over a night whose mount was fine and the morning chased a guiding fault
+that did not exist. Both sentences in `eccentricity_reject_reason` now read
+"defocus or trailing". No UI string duplicated the old wording.

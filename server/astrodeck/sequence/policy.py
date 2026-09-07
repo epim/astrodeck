@@ -148,6 +148,17 @@ class RunPolicy:
         the dial it interprets and the measured margins that chose it. Abstains
         (``None``) whenever the frame carries nothing to judge -- no ``ecc`` and
         too few marks -- rather than guessing.
+
+        THE CAUSE WORDS NAME DEFOCUS FIRST, and that is a field correction
+        (2026-09-07 00:38-00:44). Every sub of that stretch was a DONUT -- the
+        focuser sat 75 steps off its true position -- and the gate rejected all
+        of them, correctly, while the sentence said "trailing/tilt". A
+        defocused star measures eccentricity 0.7-0.8 just as a trailed one
+        does; the statistic cannot tell them apart, so the sentence must not
+        pretend it can. It said "the mount moved" over a night whose mount was
+        fine, and the morning went looking for a guiding fault that did not
+        exist. "defocus or trailing" is the honest reading of the number: the
+        stars are not round, and both a bad focus and a bad guide do that.
         """
         if self.max_eccentricity <= 0 or not isinstance(info, dict):
             return None
@@ -167,13 +178,13 @@ class RunPolicy:
         ecc = info.get("ecc")
         if ecc is not None and float(ecc) > ceiling:
             return (f"frame eccentricity median {float(ecc):.2f} above ceiling "
-                    f"{ceiling:.2f}{tail} - trailing/tilt")
+                    f"{ceiling:.2f}{tail} - defocus or trailing")
         if n >= ECC_MIN_MARKS_FOR_FRACTION and frac > ECC_ELONGATED_FRACTION:
             med = f"median {float(ecc):.2f} is under the {ceiling:.2f} ceiling" \
                 if ecc is not None else f"median under the {ceiling:.2f} ceiling"
             return (f"frame eccentricity {frac:.0%} of {n} stars above "
                     f"{elongated:.2f}, over the {ECC_ELONGATED_FRACTION:.0%} "
-                    f"limit ({med}) - trailing")
+                    f"limit ({med}) - defocus or trailing")
         return None
 
 

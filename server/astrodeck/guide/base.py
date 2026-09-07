@@ -118,6 +118,35 @@ class Guider(ABC):
     async def start_guiding(self) -> None:
         """Select star, calibrate if needed, begin guiding; returns once settled."""
 
+    async def needs_calibration(self) -> bool | None:
+        """Will the NEXT ``start_guiding`` have to drive a CALIBRATION WALK?
+
+        ``True`` = yes, no usable calibration is on file for this session;
+        ``False`` = a calibration will be reused and the start is the quick
+        one; ``None`` = this guider cannot say.
+
+        WHY THE ENGINE ASKS. Every engine await on a device is bounded so a
+        wedged transport cannot hang the night, and ``start_guiding`` was
+        bounded at 180 s — sized for "select a star and settle", which is what
+        it costs when a calibration is on file. A fresh walk on a real mount is
+        three to five minutes, and on 2026-09-07 at 03:39 a limit recovery
+        changed the pier side, GN-01 discarded the calibration, and that bound
+        CUT THE WALK HALF WAY. The run continued unguided for twenty minutes
+        and lost a frame to trailing. A backstop that fires inside the normal
+        duration of the thing it wraps is not a backstop.
+
+        So the answer picks the bound. ``None`` is treated as ``True`` by the
+        sequence engine, deliberately: a guider that cannot say may still
+        calibrate (PHD2's ``guide`` RPC does whenever PHD2 has none on file),
+        and being wrong the roomy way costs a few extra minutes ONCE on a
+        genuinely wedged guider, while being wrong the tight way costs the
+        calibration and the target's guiding.
+
+        Must be cheap and must never raise — the engine treats any failure as
+        ``None``.
+        """
+        return None
+
     @abstractmethod
     async def stop_guiding(self) -> None: ...
 

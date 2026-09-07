@@ -394,3 +394,38 @@ def test_grade_frame_is_the_hubs_own_grading_and_carries_the_marks():
     assert len(eccs) >= ECC_MIN_MARKS_FOR_FRACTION
     assert info["ecc"] == pytest.approx(float(np.median(eccs)), abs=0.001), (
         "`ecc` must be the median of the very marks the fraction rule counts")
+
+
+# ------------------------------------ what the sentence BLAMES (2026-09-07)
+#
+# The gate was right and the sentence was wrong. Between 00:38 and 00:44 on
+# 2026-09-07 every sub was a DONUT - the focuser sat 75 steps off - and the
+# gate rejected all of them, saying "trailing/tilt". A defocused star reads
+# eccentricity 0.7-0.8 exactly as a trailed one does; the statistic cannot
+# separate them, and the morning went looking for a guiding fault that was
+# not there. `donut_L60` in the table above IS one of those frames.
+
+@pytest.mark.parametrize("stem", ["donut_L60", "staircase_G60"])
+def test_the_median_rule_blames_defocus_as_well_as_the_mount(stem):
+    """Two real rejects, one defocused and one trailed, get the SAME sentence -
+    because the number they failed on is the same number and it cannot tell
+    them apart. Naming only the mount is a guess dressed as a diagnosis."""
+    reason = _engine()._policy.eccentricity_reject_reason(_graded(stem))
+    assert reason, f"{stem} must still be rejected with a reason"
+    assert "defocus or trailing" in reason, reason
+    assert "trailing/tilt" not in reason, (
+        f"{stem}: the sentence still blames tilt for a frame that may simply "
+        f"be out of focus: {reason!r}")
+
+
+def test_the_fraction_rule_blames_defocus_too():
+    """The second rule fires on a frame whose MEDIAN is under the ceiling, so
+    it has its own sentence - and that one said plain "trailing". The donuts of
+    2026-09-07 came through the median rule, but a milder defocus lands here."""
+    marks = ([{"ecc": 0.90}] * 6) + ([{"ecc": 0.30}] * 6)   # 50% above 0.80
+    info = {"ecc": 0.60, "star_list": marks}                # median under 0.65
+    reason = _engine()._policy.eccentricity_reject_reason(info)
+    assert reason, "the fraction rule must still fire on this frame"
+    assert "under the 0.65 ceiling" in reason, (
+        f"the wrong rule fired: {reason!r}")
+    assert "defocus or trailing" in reason, reason

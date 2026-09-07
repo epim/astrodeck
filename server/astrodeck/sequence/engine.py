@@ -147,7 +147,31 @@ SLEW_TIMEOUT_S = 300.0          # plain slew (+settle)
 GOTO_TIMEOUT_S = 420.0          # slew + iterated solve→sync→re-slew centering
 PARK_TIMEOUT_S = 240.0          # park / unpark
 FLIP_TIMEOUT_S = 420.0          # meridian flip = re-slew + solve + restart guiding
-GUIDE_START_TIMEOUT_S = 180.0   # start_guiding incl. settle
+#: ``start_guiding`` when a usable calibration is ALREADY ON FILE: one guide
+#: exposure, a star-find, load the calibration, settle. 180 s is generous for
+#: that and always has been.
+GUIDE_START_TIMEOUT_S = 180.0
+#: ``start_guiding`` when the guider says it must CALIBRATE FIRST
+#: (``Guider.needs_calibration``), and when it cannot say at all.
+#:
+#: MEASURED FAILURE, 2026-09-07 03:39. A meridian-limit recovery parked,
+#: unparked and re-centred; that changed the pier side, GN-01 discarded the
+#: calibration, and the restart therefore had to walk a fresh one — three to
+#: five minutes on this rig. It was bounded at the 180 s above, ``_bounded``
+#: cancelled the coroutine, and the walk was CUT HALF WAY. The recovery's
+#: handler logged "guiding did not restart ... continuing unguided" and the run
+#: shot for twenty more minutes without a guider, losing a frame to trailing.
+#:
+#: IT HAS TO BE BIGGER THAN THE WALK'S OWN BACKSTOP, for the same reason
+#: ``TRACKING_RECOVERY_TIMEOUT_S`` has to be bigger than the steps it wraps: the
+#: native guider caps its own walk at ``guide.native._CAL_TIMEOUT_S`` (600 s)
+#: and fails there with the evidence attached — how many pulses landed, which
+#: leg, how far the star walked. An outer bound set to the same 600 s would race
+#: that and usually win, replacing a diagnosis with "timed out — aborting". 660
+#: leaves the inner backstop to fire first and still ends a genuinely wedged
+#: guider inside eleven minutes. ``test_the_guide_start_bound_outlasts_the_walk``
+#: recomputes it from the guider's own constant so the two cannot drift apart.
+GUIDE_CALIBRATE_TIMEOUT_S = 660.0
 GUIDE_OP_TIMEOUT_S = 120.0      # dither / stop-guiding / quick guider ops
 
 #: Guider phases in which the guider is DELIBERATELY COMMANDING THE MOUNT, so a
@@ -176,9 +200,13 @@ TRACKING_CONFIRM_S = 1.0
 #:
 #: IT HAS TO BE BIGGER THAN THE STEPS IT WRAPS, or it is not a backstop, it is
 #: a guillotine. The inner bounds sum to
-#: ``GUIDE_OP + 2*PARK + 3*MOUNT_QUERY + GOTO(+rotation) + GUIDE_START`` =
-#: 1290 s, or 1590 s when the target carries a rotation angle. At the 600 s
-#: this shipped with, a park and an unpark that were merely SLOW (200 s each,
+#: ``2*GUIDE_OP + 2*PARK + 3*MOUNT_QUERY + GOTO(+rotation) + GUIDE_CALIBRATE``
+#: = 1890 s, or 2190 s when the target carries a rotation angle. The guide
+#: restart is counted at ``GUIDE_CALIBRATE_TIMEOUT_S``, not the shorter
+#: ``GUIDE_START_TIMEOUT_S``: THIS recovery is the one that changes the pier
+#: side, which is exactly what discards the calibration and forces a fresh
+#: walk (2026-09-07 03:39), so the worst case is the normal case here. At the
+#: 600 s this shipped with, a park and an unpark that were merely SLOW (200 s each,
 #: well inside their own 240 s bounds) left the plate-solving re-slew to be
 #: CANCELLED MID-MOTION, and the generic handler below reports that as "the
 #: recovery failed" - a soft set-aside - instead of the SafetyAbort teardown a
@@ -188,7 +216,7 @@ TRACKING_CONFIRM_S = 1.0
 #: thing is nevertheless going nowhere. `test_the_recovery_bound_is_bigger_than
 #: _the_steps_it_wraps` recomputes the sum from the constants so the two cannot
 #: drift apart again.
-TRACKING_RECOVERY_TIMEOUT_S = 1800.0
+TRACKING_RECOVERY_TIMEOUT_S = 2400.0
 MOUNT_RECONNECT_TIMEOUT_S = 30.0  # reopening a dropped link so a wind-down can park
 FILTER_MOVE_TIMEOUT_S = 90.0    # a filter-wheel slot change (incl. settle)
 FOCUSER_MOVE_TIMEOUT_S = 180.0  # a focuser offset move (a big Ha offset can crawl)
@@ -231,16 +259,26 @@ MISSED_GRACE_S = 300.0
 _MAX_PENDING_THUMBS = 4
 
 
-async def _bounded(awaitable, timeout_s: float, what: str):
+async def _bounded(awaitable, timeout_s: float, what: str, *, note: str = ""):
     """Await ``awaitable`` under ``asyncio.wait_for`` (P0-2). On timeout, raise a
     ``SafetyAbort`` so the run tears down through the existing shielded park/warm
     wind-down instead of hanging on an unbounded await. ``CancelledError`` (a real
-    user/engine abort) propagates untouched."""
+    user/engine abort) propagates untouched.
+
+    ``note`` says WHAT THE CANCEL COST, in the log line and in the abort. A
+    timeout here does not merely give up waiting: ``wait_for`` cancels the
+    awaitable, so whatever it was half way through is now half done. "start
+    guiding timed out after 180s" told the morning nothing about the fresh
+    calibration walk it had just severed (2026-09-07 03:39). Callers whose
+    cancel leaves something behind say so."""
+    tail = f" — {note}" if note else ""
     try:
         return await asyncio.wait_for(awaitable, timeout_s)
     except asyncio.TimeoutError:
-        bus.log("error", f"{what} timed out after {timeout_s:.0f}s — aborting", "sequence")
-        raise SafetyAbort(f"{what} timed out after {timeout_s:.0f}s")
+        bus.log("error",
+                f"{what} timed out after {timeout_s:.0f}s{tail} — aborting",
+                "sequence")
+        raise SafetyAbort(f"{what} timed out after {timeout_s:.0f}s{tail}")
 
 
 def _mint_report_id(plan_name: str, started_at: float, taken: list[str]) -> str:
@@ -2111,9 +2149,14 @@ class SequenceEngine:
                 # hang the night. The default action is "warn" → log + continue
                 # unguided (legacy behavior unchanged). "abort" → SafetyAbort
                 # (no all-night trailed run). "skip" → skip this target.
+                #
+                # THE BOUND IS CHOSEN, not fixed: a start that has to walk a
+                # fresh calibration needs minutes, and the flat 180 s used to
+                # cut one (see `_guide_start_bound`).
+                bound_s, bound_what, bound_note = await self._guide_start_bound()
                 try:
                     await _bounded(self.hub.guider.start_guiding(),
-                                   GUIDE_START_TIMEOUT_S, "start guiding")
+                                   bound_s, bound_what, note=bound_note)
                 except SafetyAbort:
                     raise
                 except Exception as e:
@@ -3045,6 +3088,29 @@ class SequenceEngine:
                 and getattr(cfg.safety, "sky_fallback_hold", False)):
             verdict = self._clouds.cloudy(time.time())
             if verdict is True:
+                # THE HOLD ALREADY OWNS THE SKY VERDICT. `_hold_for_clear`'s
+                # own loop re-enters this gate every pass, deliberately, so
+                # dawn and a REAL monitor keep their say while the run sits.
+                # But the verdict that started the hold is still cloudy — that
+                # is what a hold IS — so answering it with another hold makes
+                # this function call itself through the gate, one stack frame
+                # per pass, for as long as the sky stays shut.
+                #
+                # MEASURED, astrotown 2026-09-06 22:13:46 (v0.3.25). A low run
+                # produced one cloudy frame with no monitor assigned and
+                # `sky_fallback_hold` on: 323 "holding for clear sky" lines and
+                # 325 "native guider stopped" lines went out in ONE SECOND
+                # until Python hit its recursion limit, and the run died —
+                # taking the night-log file writer with it.
+                #
+                # The hold's probe loop is the only thing that may decide the
+                # sky has cleared. While it is running, this fallback has
+                # nothing to add, so it stands aside. `_hold_for_clear` carries
+                # the same guard itself (belt and braces, and for the
+                # `hold_for_clear` INSTRUCTION path, which reaches it by
+                # another route).
+                if self._holding_for_clear:
+                    return
                 if not self._warned_no_safety_source:
                     self._warned_no_safety_source = True
                     bus.log("warning",
@@ -3501,7 +3567,23 @@ class SequenceEngine:
         mechanism: the cloud verdict comes from frames, and a hold that took
         none would age its last reading out to "unknown" and then hold forever
         on no evidence at all.
+
+        NOT RE-ENTRANT, AND IT SAYS SO. The loop above calls ``_safety_gate``
+        on every pass, and on a rig with no monitor that gate reads the same
+        cloudy verdict this hold is already waiting out. Before the guard
+        below, that answered with a SECOND hold, which called the gate, which
+        held again: astrotown 2026-09-06 22:13:46 logged 323 "holding for clear
+        sky" lines in one second and the run died on ``RecursionError``. One
+        hold owns the sky at a time; a second request is a warning and a
+        return, so the outer hold's probe loop and its 45-minute bound keep
+        running exactly as they were.
         """
+        if self._holding_for_clear:
+            bus.log("warning",
+                    f"already holding for clear sky — ignoring a second hold "
+                    f"request ({reason}); the running hold keeps its own probe "
+                    f"loop and timeout", "sequence")
+            return
         max_hold_s = 60.0 * CLOUD_MAX_HOLD_MIN
         started = time.time()
         clear_streak = 0
@@ -5594,10 +5676,17 @@ class SequenceEngine:
                             f"{target.name}: could not flip the guider "
                             f"calibration after the recovery ({e})", "sequence")
         if was_guiding and self.hub.guider is not None:
+            # THE SAME CHOICE THE TARGET START MAKES, and this is the path that
+            # needs it most: the park/unpark above is what changes the pier
+            # side, the pier change is what discards the calibration, and the
+            # discarded calibration is what makes this restart a full walk.
+            # Bounded at the flat 180 s on 2026-09-07 03:39 it cut that walk
+            # and the target ran unguided for twenty minutes.
+            bound_s, bound_what, bound_note = await self._guide_start_bound()
             try:
-                await _bounded(self.hub.guider.start_guiding(),
-                               GUIDE_START_TIMEOUT_S,
-                               "restart guiding after limit recovery")
+                await _bounded(self.hub.guider.start_guiding(), bound_s,
+                               f"{bound_what} after limit recovery",
+                               note=bound_note)
             except Exception as e:       # noqa: BLE001
                 bus.log("warning",
                         f"{target.name}: guiding did not restart after the "
@@ -5605,6 +5694,48 @@ class SequenceEngine:
         # The last word is the mount's, not ours.
         return bool(await _bounded(tel.get_tracking(), MOUNT_QUERY_TIMEOUT_S,
                                    "tracking readback after re-centring"))
+
+    async def _guide_start_bound(self) -> tuple[float, str, str]:
+        """``(timeout_s, label, note)`` for the NEXT ``start_guiding``.
+
+        ONE BOUND CANNOT FIT BOTH STARTS. Reusing a calibration is a guide
+        exposure and a settle; walking a fresh one is three to five minutes of
+        measured pulses on a real mount. The single 180 s bound was sized for
+        the first and applied to both, and on 2026-09-07 at 03:39 it cut a
+        fresh walk half way through, after a limit recovery changed the pier
+        side and GN-01 discarded the calibration. Twenty minutes unguided and a
+        frame lost to trailing followed, under a log line that said only
+        "guiding did not restart".
+
+        So ask. ``Guider.needs_calibration`` is the vendor-neutral question and
+        the native guider answers it with exactly the checks its own
+        ``start_guiding`` is about to make. A guider that cannot say (the
+        PHD2/NINA bridge, the sim) gets the ROOMY bound: PHD2's ``guide`` RPC
+        calibrates too whenever PHD2 has nothing on file, and the cost of being
+        wrong that way is a few extra minutes once on a wedged guider, against
+        a severed calibration for being wrong the other way.
+
+        Never raises. An exception out of the probe is "cannot say".
+        """
+        guider = self.hub.guider
+        needs: bool | None = None
+        probe = getattr(guider, "needs_calibration", None)
+        if callable(probe):
+            try:
+                # NOT `_bounded`. This is a question about a bound, not a step
+                # of the night: a guider too wedged to answer it must fall
+                # through to the roomy bound and let the START be the thing
+                # that fails, rather than tearing the run down here with an
+                # "aborting" line about a probe.
+                needs = await asyncio.wait_for(probe(), MOUNT_QUERY_TIMEOUT_S)
+            except Exception:   # noqa: BLE001 - a probe never decides the night
+                needs = None
+        if needs is False:
+            return (GUIDE_START_TIMEOUT_S, "start guiding", "")
+        label = ("start guiding (fresh calibration)" if needs
+                 else "start guiding (a calibration may be needed)")
+        return (GUIDE_CALIBRATE_TIMEOUT_S, label,
+                "the fresh calibration walk was cut part way")
 
     def _guide_rms(self) -> float | None:
         """Current total guide RMS in ARCSEC, or None when unguided/unreadable
