@@ -74,6 +74,7 @@ import {
   stallLevel,
   THUMB_BRIGHTNESS_NIGHT_DEFAULT,
 } from "../lib/eta";
+import SessionStack from "../components/preview/SessionStack";
 import { SkyDomePanel } from "../components/cloudmap/SkyDomePanel";
 import { diagnoseFailure, runFailureLog } from "../lib/troubleshoot";
 import type { MonitorSnapshot, PreviewInfo } from "../types";
@@ -960,6 +961,14 @@ export default function MonitorView() {
             reducedMotion={reducedMotion}
           />
         </Panel>
+
+        {/* ============================================= SESSION STACK
+            Directly under the last sub, because it is the same question asked
+            over a different span: that tile is the last five minutes, this one
+            is the whole run added up and in colour. Opt-in and off by default
+            (it costs the server memory and CPU per accepted frame), so an
+            operator who only wants the health readout pays nothing. */}
+        <SessionStack />
 
         {/* ================================================== GUIDE */}
         <Panel className="col-span-full sm:col-span-1 lg:col-span-3" title="Guiding">

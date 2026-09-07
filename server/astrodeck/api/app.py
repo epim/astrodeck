@@ -4805,6 +4805,55 @@ def create_app(*, bind_host: str | None = None,
         hub.stop_loop()
         return hub.stop_live_stack()
 
+    # ---- Session stack: the run's colour composite -------------------------
+    # Live View above owns the CAMERA (it starts a loop); this owns nothing. It
+    # is a switch on the sequence's own frames, so it never conflicts with a
+    # running plan -- it needs one -- and there is deliberately no 409 here.
+    @app.post("/api/sequence/stack/start",
+              dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
+    async def session_stack_start():
+        return hub.start_session_stack()
+
+    @app.post("/api/sequence/stack/stop",
+              dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
+    async def session_stack_stop():
+        return hub.stop_session_stack()
+
+    @app.post("/api/sequence/stack/reset",
+              dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
+    async def session_stack_reset():
+        return hub.reset_session_stack()
+
+    @app.get("/api/sequence/stack",
+             dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
+    async def session_stack_state():
+        return hub.session_stack_status()
+
+    # CAP_VIEW_PREVIEW, not CAP_VIEW_STATUS: this route returns PIXELS OF THE
+    # SKY, which is the thing every other preview route is gated on. Counts and
+    # integration time are status; an image is an image.
+    @app.get("/api/sequence/stack/preview.jpg",
+             dependencies=[Depends(require(CAP_VIEW_PREVIEW))])
+    @declare(CAP_VIEW_PREVIEW)
+    async def session_stack_preview(size: int = 1600):
+        got = await asyncio.to_thread(hub.session_stack_preview,
+                                      max(256, min(4096, int(size))))
+        if got is None:
+            raise HTTPException(404, "nothing stacked yet")
+        jpeg, meta = got
+        # NOT cacheable: the same URL returns a different picture every time a
+        # frame lands. `seq` is the client's change signal (from the status
+        # route), and it is echoed here so a stale render is recognisable.
+        return Response(jpeg, media_type="image/jpeg", headers={
+            "Cache-Control": "no-store",
+            "X-Stack-Seq": str(meta.get("seq", 0)),
+            "X-Stack-Frames": str(meta.get("frames", 0)),
+        })
+
     # ---- live-preview routes (live-preview spec §4.4) ---------------------
     # Canonical URL: the client builds `/api/preview/{id}` and reads `mime` from
     # the event. `/lossless.png` / `/thumb.jpg` / `/fits` / `/png` are the
