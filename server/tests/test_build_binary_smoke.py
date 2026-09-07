@@ -190,6 +190,17 @@ def elevated(monkeypatch):
     monkeypatch.setattr(bb, "_create_process_as_user", fake_create)
     monkeypatch.setattr(bb, "_close_handle", lambda handle: None)
     monkeypatch.setattr(bb, "_port_in_use", lambda port: False)
+
+    # The real one rewrites the DACL of the window station this very test
+    # process is attached to. Faked, so the suite records the call.
+    fake.stations: list[str] = []
+    fake.stations_restored: list[str] = []
+
+    def fake_station(name):
+        fake.stations.append(name)
+        return lambda: fake.stations_restored.append(name)
+
+    monkeypatch.setattr(bb, "_grant_station_access", fake_station)
     return fake
 
 
@@ -255,6 +266,11 @@ def test_an_elevated_build_runs_the_binary_as_a_throwaway_account(
            (str(state), f"{name}:(OI)(CI)M")])
     assert not any("/T" in argv for argv in elevated.calls("icacls"))
 
+    # 2b. the window station. A process attaches to one before it runs a
+    # single instruction, and an account with no access to this build's
+    # station cannot even load user32.
+    assert elevated.stations == [name]
+
     # 3. the wrapper: the environment carrier and the log capture in one.
     wrapper, log = state / "smoke.cmd", state / "smoke.log"
     body = wrapper.read_text(encoding="utf-8")
@@ -315,6 +331,62 @@ def test_a_launch_that_fails_still_deletes_the_account(elevated, tmp_path, smoke
     removes = [argv for argv in elevated.calls("icacls") if "/remove" in argv]
     assert removes, "the ACEs the failed launch added must come off too"
     assert all(argv[-1] == name for argv in removes)
+
+
+def test_the_window_station_goes_back_the_way_it_was(elevated, tmp_path, smoke_env):
+    """The grant outlives the launch and must not outlive the smoke test. The
+    account is deleted either way, but a DACL entry naming a deleted account
+    is exactly the orphaned SID the icacls cleanup exists to avoid."""
+    handle = bb._launch_smoke(tmp_path / "dist" / "astrodeck.exe", 8811, smoke_env)
+    name = _net_user_add(elevated)[2]
+    assert elevated.stations_restored == [], "not while the child is running"
+
+    handle.stop()
+
+    assert elevated.stations_restored == [name]
+    assert ["net", "user", name, "/delete"] in elevated.calls("net")
+
+
+def test_a_launch_that_fails_also_puts_the_window_station_back(
+        elevated, tmp_path, smoke_env):
+    elevated.create_error = SystemExit("CreateProcessWithLogonW failed")
+
+    with pytest.raises(SystemExit):
+        bb._launch_smoke(tmp_path / "dist" / "astrodeck.exe", 8811, smoke_env)
+
+    assert elevated.stations_restored == elevated.stations
+
+
+def test_a_window_station_that_cannot_be_granted_is_not_fatal(monkeypatch, capsys):
+    """Where the station already admits the account the grant is unnecessary,
+    and where it cannot be made the launch fails next with an exit code we
+    name. Neither is a reason to abandon the build here."""
+    def boom():
+        raise OSError(5, "Access is denied")
+
+    monkeypatch.setattr(bb, "_window_station_and_desktop", boom)
+
+    restore = bb._grant_station_access("astrodeck-sm-abc123")
+
+    assert restore() is None, "the undo is still callable"
+    assert "could not grant" in capsys.readouterr().out
+
+
+def test_the_loader_failure_that_says_nothing_is_named(elevated, monkeypatch,
+                                                       tmp_path, smoke_env):
+    """0xC0000142 is what a child that never reached its first instruction
+    exits with: no traceback, no log, nothing but the number. Measured on an
+    elevated Windows 11 box before the window station was granted."""
+    monkeypatch.setattr(bb, "_process_exit_code", lambda handle: 0xC0000142)
+    monkeypatch.setattr(bb, "_source_version", lambda: "9.9.9")
+    monkeypatch.setattr(bb, "ROOT", tmp_path)
+    exe = tmp_path / "dist" / "astrodeck.exe"
+
+    with pytest.raises(SystemExit) as excinfo:
+        bb.smoke(exe)
+
+    assert "STATUS_DLL_INIT_FAILED" in str(excinfo.value)
+    assert "window station" in str(excinfo.value)
 
 
 def test_the_handle_path_polls_the_real_process(elevated, monkeypatch, tmp_path, smoke_env):
