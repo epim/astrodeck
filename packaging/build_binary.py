@@ -239,11 +239,24 @@ def _is_elevated() -> bool:
 
 
 #: The directories the smoke test redirects so it never touches real state.
-#: runas hands the child the CALLER's environment, so these have to be in
-#: os.environ, not merely in a Popen env= dict the child will never see.
+#: The de-elevated child gets its OWN profile environment, so these travel in
+#: the batch wrapper as `set` lines rather than in a Popen env= dict it would
+#: never see.
 SMOKE_ENV_KEYS = ("ASTRODECK_CONFIG_DIR", "ASTRODECK_CAPTURE_DIR")
-#: A basic-user token: no administrator group, no elevation. Needs no password.
-RUNAS_TRUSTLEVEL = "/trustlevel:0x20000"
+#: Local SAM account names are capped at 20 characters, so the prefix is short
+#: on purpose: "astrodeck-smoke-<6 hex>" would be 22 and `net user` rejects it.
+SMOKE_USER_PREFIX = "astrodeck-sm-"
+LOGON_WITH_PROFILE = 0x1
+CREATE_NO_WINDOW = 0x08000000
+CREATE_UNICODE_ENVIRONMENT = 0x400
+STILL_ACTIVE = 259
+#: The three ways this fails on a hosted runner, named so the log diagnoses
+#: itself instead of printing a bare number.
+LOGON_ERROR_HINTS = {
+    1058: "the Secondary Logon service is disabled, and CreateProcessWithLogonW needs it",
+    1326: "the smoke account's credentials were rejected",
+    1385: "the smoke account is not granted this logon type",
+}
 
 
 def _run_text(cmd: list[str]) -> str:
@@ -294,52 +307,231 @@ def _tasklist_pids(text: str, image: str = "astrodeck.exe") -> list[int]:
     return pids
 
 
+def _new_smoke_credentials() -> tuple[str, str]:
+    """A name nothing else will hold and a password nothing will ever read.
+
+    The password LEADS with a fixed "Aa1!" so it satisfies any complexity
+    policy the runner image happens to carry, and so no argument can begin
+    with a "-" that `net` might read as a switch.
+    """
+    import secrets
+    return (SMOKE_USER_PREFIX + secrets.token_hex(3),
+            "Aa1!" + secrets.token_urlsafe(24))
+
+
+def _redact(text: str, secret: str) -> str:
+    """Nothing prints or raises the password, including an error message we
+    did not write ourselves."""
+    return text.replace(secret, "<redacted>") if secret else text
+
+
+def _windows_error_text(code: int) -> str:
+    import ctypes
+    buffer = ctypes.create_unicode_buffer(512)
+    ctypes.windll.kernel32.FormatMessageW(
+        0x1000 | 0x200,  # FORMAT_MESSAGE_FROM_SYSTEM | IGNORE_INSERTS
+        None, code, 0, buffer, len(buffer), None)
+    return buffer.value.strip() or "no description"
+
+
+def _create_smoke_user(name: str, password: str) -> None:
+    """Add the throwaway local account. Default membership is Users -- no
+    administrator group, which is the entire point: `runas /trustlevel:0x20000`
+    did NOT clear the elevation flag (TokenIsElevated stayed set on the hosted
+    runner and the child still died in require_unprivileged_runtime), and what
+    the interlock's own message asks for is a dedicated unprivileged account.
+    """
+    completed = subprocess.run(["net", "user", name, password, "/add", "/y"],
+                               capture_output=True, text=True)
+    if completed.returncode != 0:
+        detail = ((completed.stdout or "") + (completed.stderr or "")).strip()
+        raise SystemExit(f"could not create the unprivileged smoke account "
+                         f"{name} (code {completed.returncode}): "
+                         + _redact(detail, password))
+    print(f"  smoke account {name} (throwaway, deleted when the smoke ends)")
+
+
+def _icacls(path: Path, spec: str) -> None:
+    completed = subprocess.run(["icacls", str(path), "/grant", spec],
+                               capture_output=True, text=True)
+    if completed.returncode != 0:
+        detail = ((completed.stdout or "") + (completed.stderr or "")).strip()
+        raise SystemExit(f"could not grant the smoke account access to {path} "
+                         f"(code {completed.returncode}): {detail}")
+
+
+def _traversal_dirs(*targets: Path) -> list[Path]:
+    """Every directory from the drive down to each target, drive first. An
+    access check walks the whole path, so a grant on the leaf is not enough."""
+    chain: list[Path] = []
+    for target in targets:
+        for parent in reversed(target.parents):
+            if parent not in chain:
+                chain.append(parent)
+    return chain
+
+
+def _grant_smoke_access(name: str, exe: Path, state_dir: Path) -> list[Path]:
+    """The narrowest set of grants that lets the new user run the binary.
+
+    Never recursive over the checkout: an `icacls /T` across node_modules is
+    minutes and none of it is needed. Read+execute on the binary and the
+    directory it sits in, modify on the state directory it writes, and
+    traverse-only (no inheritance) on the ancestors so the paths resolve.
+    """
+    granted: list[Path] = []
+    for directory in _traversal_dirs(exe.parent, state_dir):
+        _icacls(directory, f"{name}:RX")
+        granted.append(directory)
+    for path, rights in ((exe.parent, "(OI)(CI)RX"), (exe, "RX"),
+                         (state_dir, "(OI)(CI)M")):
+        _icacls(path, f"{name}:{rights}")
+        granted.append(path)
+    return granted
+
+
+def _delete_smoke_account(name: str, granted: list[Path]) -> None:
+    """Always, even on a failed smoke. ACEs first: `icacls /remove` cannot
+    resolve a name that no longer exists and would leave orphaned SIDs."""
+    for path in granted:
+        _run_text(["icacls", str(path), "/remove", name])
+    # LOGON_WITH_PROFILE created a profile for the account (that is what gave
+    # the bootloader a TEMP it could write). `net user /delete` leaves that
+    # C:\Users\<name> tree behind; the profile object is what removes it, so
+    # a maintainer's box that ran the elevated path is not left with a stray
+    # home directory. Best-effort, like the rest of the cleanup.
+    _run_text(["powershell", "-NoProfile", "-NonInteractive", "-Command",
+               "Get-CimInstance Win32_UserProfile | Where-Object { "
+               f"$_.LocalPath -like '*\\{name}' }} | Remove-CimInstance"])
+    _run_text(["net", "user", name, "/delete"])
+    print(f"  smoke account {name} deleted")
+
+
+def _create_process_as_user(name: str, password: str, cmdline: str,
+                            cwd: Path) -> tuple[int, int]:
+    """CreateProcessWithLogonW: the one seam that touches the Win32 API.
+
+    LOGON_WITH_PROFILE matters more than it looks. It loads the new user's
+    profile, which is what gives the PyInstaller onefile bootloader a %TEMP%
+    it can extract itself into; lpEnvironment=NULL then means "the environment
+    of that profile", not the caller's.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    class STARTUPINFOW(ctypes.Structure):
+        _fields_ = [
+            ("cb", wintypes.DWORD),
+            ("lpReserved", wintypes.LPWSTR),
+            ("lpDesktop", wintypes.LPWSTR),
+            ("lpTitle", wintypes.LPWSTR),
+            ("dwX", wintypes.DWORD), ("dwY", wintypes.DWORD),
+            ("dwXSize", wintypes.DWORD), ("dwYSize", wintypes.DWORD),
+            ("dwXCountChars", wintypes.DWORD),
+            ("dwYCountChars", wintypes.DWORD),
+            ("dwFillAttribute", wintypes.DWORD),
+            ("dwFlags", wintypes.DWORD),
+            ("wShowWindow", wintypes.WORD), ("cbReserved2", wintypes.WORD),
+            ("lpReserved2", ctypes.POINTER(ctypes.c_byte)),
+            ("hStdInput", wintypes.HANDLE),
+            ("hStdOutput", wintypes.HANDLE),
+            ("hStdError", wintypes.HANDLE),
+        ]
+
+    class PROCESS_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("hProcess", wintypes.HANDLE), ("hThread", wintypes.HANDLE),
+            ("dwProcessId", wintypes.DWORD), ("dwThreadId", wintypes.DWORD),
+        ]
+
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    advapi32.CreateProcessWithLogonW.argtypes = [
+        wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD,
+        wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD, wintypes.LPVOID,
+        wintypes.LPCWSTR, ctypes.POINTER(STARTUPINFOW),
+        ctypes.POINTER(PROCESS_INFORMATION),
+    ]
+    advapi32.CreateProcessWithLogonW.restype = wintypes.BOOL
+
+    startup = STARTUPINFOW()
+    startup.cb = ctypes.sizeof(STARTUPINFOW)
+    info = PROCESS_INFORMATION()
+    # The API is documented as possibly writing to the command line, so it
+    # gets a mutable buffer rather than an interned literal.
+    buffer = ctypes.create_unicode_buffer(cmdline, len(cmdline) + 1)
+    ctypes.set_last_error(0)
+    ok = advapi32.CreateProcessWithLogonW(
+        name, ".", password, LOGON_WITH_PROFILE, None, buffer,
+        CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT, None, str(cwd),
+        ctypes.byref(startup), ctypes.byref(info))
+    if not ok:
+        code = ctypes.get_last_error()
+        hint = LOGON_ERROR_HINTS.get(code)
+        raise SystemExit(
+            f"CreateProcessWithLogonW could not start the smoke binary as "
+            f"{name} (error {code}: {_windows_error_text(code)})"
+            + (f" -- {hint}" if hint else ""))
+    ctypes.windll.kernel32.CloseHandle(info.hThread)
+    return int(info.hProcess), int(info.dwProcessId)
+
+
+def _process_exit_code(handle: int) -> int | None:
+    """None while the process is alive, its exit code once it is not."""
+    import ctypes
+    from ctypes import wintypes
+    code = wintypes.DWORD()
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    if not kernel32.GetExitCodeProcess(wintypes.HANDLE(handle),
+                                       ctypes.byref(code)):
+        return 1  # the handle cannot be queried: treat it as gone
+    return None if code.value == STILL_ACTIVE else int(code.value)
+
+
+def _close_handle(handle: int) -> None:
+    try:
+        import ctypes
+        from ctypes import wintypes
+        ctypes.windll.kernel32.CloseHandle(wintypes.HANDLE(handle))
+    except Exception:
+        pass
+
+
 class SmokeProcess:
     """A handle on the smoke server, however it was started.
 
     Two shapes behind one interface. The ordinary one wraps the Popen we own.
-    The runas one owns nothing: `runas` returns the moment it has spawned the
-    child, so there is no handle to wait on and the server has to be FOUND —
-    by the port it listens on, and by image name so the onefile bootloader
-    parent can be reaped along with the child that actually serves.
+    The de-elevated one wraps a real process handle from
+    CreateProcessWithLogonW: `cmd /c wrapper.cmd` waits for the onefile
+    bootloader, which waits for the server, so the wrapper's exit IS the
+    server's. It also carries the throwaway account, which has to be deleted
+    whatever happens to the smoke test.
     """
 
     def __init__(self, port: int, popen: subprocess.Popen | None = None,
-                 runner=None, find_timeout: float = 60.0,
-                 log_path: Path | None = None):
+                 runner=None, log_path: Path | None = None,
+                 handle: int | None = None, pid: int | None = None,
+                 cleanup=None):
         self.port = port
         self._popen = popen
         self._run = runner or _run_text
-        self._find_timeout = find_timeout
-        #: Where the runas wrapper redirected the child's output, if anywhere.
+        #: Where the wrapper redirected the child's output, if anywhere.
         self.log_path = log_path
-        self._started = time.monotonic()
-        self._listener_pid: int | None = None
+        self._handle = handle
+        self._pid = pid
+        self._cleanup = cleanup
         self._image_pids: list[int] = []
-        self._seen = False
+        self._stopped = False
 
     @property
     def pid(self) -> int | None:
         if self._popen is not None:
             return self._popen.pid
-        if self._listener_pid is not None:
-            return self._listener_pid
-        return self._image_pids[0] if self._image_pids else None
+        return self._pid
 
-    def _refresh(self) -> bool:
-        """Look for the server. True if anything of it is running now."""
-        pid = _netstat_listener_pid(self._run(["netstat", "-ano"]), self.port)
-        images = _tasklist_pids(self._run(
-            ["tasklist", "/FI", "IMAGENAME eq astrodeck.exe", "/FO", "CSV", "/NH"]))
-        if pid is not None:
-            self._listener_pid = pid
-        for extra in images:
-            if extra not in self._image_pids:
-                self._image_pids.append(extra)
-        alive = pid is not None or bool(images)
-        if alive:
-            self._seen = True
-        return alive
+    def listener_pid(self) -> int | None:
+        """Whoever holds the smoke port. The wrapper PID is cmd.exe; the
+        listener is the bootloader's child, two processes further down."""
+        return _netstat_listener_pid(self._run(["netstat", "-ano"]), self.port)
 
     def output_tail(self, lines: int = 40) -> str:
         """The last lines the child wrote, or "" when nothing was captured
@@ -352,31 +544,53 @@ class SmokeProcess:
     def poll(self) -> int | None:
         if self._popen is not None:
             return self._popen.poll()
-        if self._refresh():
-            return None
-        if self._seen:
-            return 1  # it was there and now it is not: it died starting up
-        if time.monotonic() - self._started > self._find_timeout:
-            return 1  # runas spawned something that never listened
+        if self._handle is not None:
+            return _process_exit_code(self._handle)
         return None
 
     def stop(self) -> None:
         if self._popen is not None:
             _stop_tree(self._popen)
             return
-        # /healthz may have answered before poll() ever saw the listener, so
-        # look once more rather than kill nothing.
-        self._refresh()
-        targets: list[int] = []
-        if self._listener_pid is not None:
-            targets.append(self._listener_pid)
-        targets += [p for p in self._image_pids if p not in targets]
-        for pid in targets:
-            self._run(["taskkill", "/PID", str(pid), "/T", "/F"])
-        for _ in range(15):
-            if not _port_in_use(self.port):
-                return
-            time.sleep(1)
+        if self._stopped:
+            return
+        self._stopped = True
+        try:
+            # /T reaps the tree: cmd.exe -> onefile bootloader -> the server.
+            if self._pid:
+                self._run(["taskkill", "/PID", str(self._pid), "/T", "/F"])
+            # Backstop. A onefile bootloader's child has outlived its parent
+            # here before, and a survivor would answer the NEXT build's checks.
+            for pid in _tasklist_pids(self._run(
+                    ["tasklist", "/FI", "IMAGENAME eq astrodeck.exe",
+                     "/FO", "CSV", "/NH"])):
+                if pid != self._pid and pid not in self._image_pids:
+                    self._image_pids.append(pid)
+                    self._run(["taskkill", "/PID", str(pid), "/T", "/F"])
+            if self._handle is not None:
+                _close_handle(self._handle)
+            for _ in range(15):
+                if not _port_in_use(self.port):
+                    break
+                time.sleep(1)
+        finally:
+            if self._cleanup is not None:
+                self._cleanup()
+
+
+def _write_smoke_wrapper(wrapper: Path, log_path: Path, argv: list[str],
+                         env: dict) -> None:
+    """The wrapper carries the environment as well as the log capture.
+
+    The de-elevated child runs under its own profile, so the redirected state
+    directories have to be set inside it; and its output has to go to a file,
+    because the first hosted proof run died eight seconds in with its console
+    somewhere nobody could read it.
+    """
+    lines = ["@echo off"]
+    lines += [f"set {key}={env[key]}" for key in SMOKE_ENV_KEYS if key in env]
+    lines.append(f"{subprocess.list2cmdline(argv)} > \"{log_path}\" 2>&1")
+    wrapper.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
 
 
 def _launch_smoke(exe: Path, port: int, env: dict) -> SmokeProcess:
@@ -386,40 +600,30 @@ def _launch_smoke(exe: Path, port: int, env: dict) -> SmokeProcess:
         print(f"\n$ {exe} run --host 127.0.0.1 --port {port}   (smoke test)")
         return SmokeProcess(port, popen=subprocess.Popen(argv, env=env))
 
-    print("this process is elevated and the server refuses to run elevated, "
-          "so the smoke test launches the binary de-elevated via runas")
-    # runas gives the child the caller's environment; a variable that exists
-    # only in `env` would never reach it, and the smoke server would write to
-    # the real config and capture directories.
-    for key in SMOKE_ENV_KEYS:
-        if key in env:
-            os.environ[key] = env[key]
-    # runas detaches the child into its own console, so everything it prints
-    # is lost -- the first proof run on a hosted runner died eight seconds
-    # after launch and the log said nothing at all. A batch wrapper redirects
-    # the child's stdout and stderr into a file next to the smoke state, and
-    # the harness prints that file when the server dies during startup.
+    print("this process is elevated and the server refuses to run elevated, so "
+          "the smoke test runs the binary as a throwaway unprivileged account")
     state_dir = Path(env.get("ASTRODECK_CONFIG_DIR",
                              str(ROOT / "build" / "smoke-state" / "config"))).parent
     state_dir.mkdir(parents=True, exist_ok=True)
     log_path = state_dir / "smoke.log"
     wrapper = state_dir / "smoke.cmd"
-    wrapper.write_text(
-        "@echo off\r\n"
-        f"{subprocess.list2cmdline(argv)} > \"{log_path}\" 2>&1\r\n",
-        encoding="utf-8")
-    command = subprocess.list2cmdline(["cmd", "/c", str(wrapper)])
-    print(f"\n$ runas {RUNAS_TRUSTLEVEL} \"{command}\"   (smoke test)")
-    print(f"  wrapper: {subprocess.list2cmdline(argv)} > {log_path}")
-    completed = subprocess.run(["runas", RUNAS_TRUSTLEVEL, command],
-                               capture_output=True, text=True)
-    output = (completed.stdout or "") + (completed.stderr or "")
-    if completed.returncode != 0:
-        raise SystemExit(f"runas could not start the binary de-elevated "
-                         f"(code {completed.returncode}): {output.strip()}")
-    if output.strip():
-        print("  " + output.strip().replace("\n", "\n  "))
-    return SmokeProcess(port, log_path=log_path)
+    _write_smoke_wrapper(wrapper, log_path, argv, env)
+
+    name, password = _new_smoke_credentials()
+    _create_smoke_user(name, password)
+    granted: list[Path] = []
+    try:
+        granted = _grant_smoke_access(name, exe, state_dir)
+        cmdline = f'cmd /c "{wrapper}"'
+        print(f"\n$ {cmdline}   (smoke test, as {name})")
+        print(f"  wrapper: {subprocess.list2cmdline(argv)} > {log_path}")
+        handle, pid = _create_process_as_user(name, password, cmdline, state_dir)
+    except BaseException:
+        _delete_smoke_account(name, granted)
+        raise
+    print(f"  started pid {pid}")
+    return SmokeProcess(port, log_path=log_path, handle=handle, pid=pid,
+                        cleanup=lambda: _delete_smoke_account(name, granted))
 
 
 def main() -> int:

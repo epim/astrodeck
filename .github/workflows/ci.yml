@@ -340,9 +340,12 @@ jobs:
   # Proof that the release workflow's windows-latest binary leg can smoke-test
   # what it builds. Hosted Windows runners hand every process an elevated
   # Administrator token and the server refuses to start elevated (OPEN-005), so
-  # build_binary.py launches the binary de-elevated via runas and finds it by
-  # port/image name. Nothing but a hosted runner reproduces that: a maintainer's
-  # box is not elevated, so the branch never executes locally.
+  # build_binary.py runs the binary as a throwaway unprivileged local account
+  # (CreateProcessWithLogonW), which needs an elevated caller to create -- so
+  # nothing but a hosted runner reproduces it: a maintainer's box is not
+  # elevated, and the branch never executes locally.
+  # (`runas /trustlevel:0x20000` was tried first and does not work: the SAFER
+  # token keeps TokenIsElevated set and the server still refuses.)
   #
   # DISPATCH-ONLY ON PURPOSE. Windows bills at 2x and this is a full UI build +
   # PyInstaller run (~20 min). It is a proof to be run when the smoke harness
