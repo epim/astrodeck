@@ -5,16 +5,25 @@ failed, every time, at the smoke step: hosted GitHub Windows runners hand every
 process an elevated Administrator token, and the server refuses to run elevated
 (runtime_security.require_unprivileged_runtime, OPEN-005) with no override --
 correctly, because that refusal is what a consumer double-clicking the .exe
-relies on. So the fix belongs in the harness: launch the binary de-elevated
-with `runas /trustlevel:0x20000`, and then FIND it, because runas returns as
-soon as it has spawned the child and leaves no handle behind.
+relies on.
+
+The first fix, `runas /trustlevel:0x20000`, did not work: proof run 34067961326
+captured the child's output and it still died in require_unprivileged_runtime.
+The SAFER-restricted token that /trustlevel produces keeps TokenIsElevated set,
+which is what _windows_is_elevated keys on. So the smoke test now does what the
+interlock's own message asks for: it creates a throwaway unprivileged local
+account, grants it the narrowest access that lets it run the binary, launches
+through CreateProcessWithLogonW, and deletes the account afterwards whatever
+happened.
 
 None of that path can run here. This box is not elevated, so the plain launch
-is the only branch a local build ever takes, and the release workflow only runs
-on a tag. These tests grade the pieces that a machine can grade -- the two
-output parsers, which branch is chosen, the exact runas command line, and the
-find/kill lifecycle -- plus the dispatch-only CI job that exists so the real
-thing can be proven on a hosted runner without cutting a release.
+is the only branch a local build ever takes, and it cannot create users anyway.
+These tests grade the pieces a machine can grade -- which branch is chosen, the
+account and grants and wrapper the elevated path builds, that the password
+never reaches stdout or an exception, that the account is deleted even when the
+launch fails, the process lifecycle around the real handle, and the two output
+parsers -- plus the dispatch-only CI job that exists so the whole thing can be
+proven on a hosted runner without cutting a release.
 """
 from __future__ import annotations
 
@@ -54,7 +63,7 @@ def test_the_script_still_guards_main_so_importing_it_builds_nothing():
 
 
 # --------------------------------------------------------------------------
-# a) netstat: which PID is LISTENING on the smoke port
+# the netstat parser: which PID is LISTENING on the smoke port
 
 NETSTAT = """
 Active Connections
@@ -86,7 +95,7 @@ def test_netstat_with_nothing_listening_finds_no_pid():
 
 
 # --------------------------------------------------------------------------
-# b) tasklist: the onefile bootloader parent and its child, by image name
+# the tasklist parser: the onefile bootloader and its child, by image name
 
 TASKLIST = (
     '"astrodeck.exe","4321","Console","1","98,765 K"\n'
@@ -106,7 +115,7 @@ def test_tasklist_with_no_match_returns_nothing():
 
 
 # --------------------------------------------------------------------------
-# c) which launch strategy, and the exact command line
+# the launch strategy
 
 
 class FakePopen:
@@ -120,14 +129,19 @@ class FakePopen:
 
 
 class FakeSubprocess:
-    """Stands in for the subprocess module inside build_binary."""
+    """Stands in for the subprocess module inside build_binary, so net user,
+    icacls, taskkill, netstat and tasklist are all recorded and none run."""
 
     list2cmdline = staticmethod(subprocess.list2cmdline)
 
-    def __init__(self, returncode: int = 0):
+    def __init__(self):
         self.popens: list[FakePopen] = []
         self.runs: list[tuple[list[str], dict]] = []
-        self._returncode = returncode
+        self.stdout_map: dict[str, str] = {}
+        self.returncode_map: dict[str, int] = {}
+        #: tools whose stdout repeats their own command line, so a test can
+        #: check that a message we did not write cannot leak the password
+        self.echo_argv: set[str] = set()
 
     def Popen(self, argv, env=None, **kw):  # noqa: N802 - mirrors subprocess
         proc = FakePopen(argv, env)
@@ -135,8 +149,15 @@ class FakeSubprocess:
         return proc
 
     def run(self, argv, **kw):
-        self.runs.append((list(argv), kw))
-        return subprocess.CompletedProcess(argv, self._returncode, "", "")
+        argv = list(argv)
+        self.runs.append((argv, kw))
+        stdout = (subprocess.list2cmdline(argv) if argv[0] in self.echo_argv
+                  else self.stdout_map.get(argv[0], ""))
+        return subprocess.CompletedProcess(
+            argv, self.returncode_map.get(argv[0], 0), stdout, "")
+
+    def calls(self, tool: str) -> list[list[str]]:
+        return [argv for argv, _ in self.runs if argv and argv[0] == tool]
 
 
 @pytest.fixture
@@ -150,6 +171,40 @@ def smoke_env(monkeypatch, tmp_path):
     return env
 
 
+@pytest.fixture
+def elevated(monkeypatch):
+    """An elevated Windows build with every OS call faked."""
+    fake = FakeSubprocess()
+    fake.launches: list[tuple] = []
+    fake.create_error: BaseException | None = None
+    monkeypatch.setattr(bb, "subprocess", fake)
+    monkeypatch.setattr(bb.sys, "platform", "win32")
+    monkeypatch.setattr(bb, "_is_elevated", lambda: True)
+
+    def fake_create(name, password, cmdline, cwd):
+        fake.launches.append((name, password, cmdline, cwd))
+        if fake.create_error is not None:
+            raise fake.create_error
+        return 0xABC, 4321
+
+    monkeypatch.setattr(bb, "_create_process_as_user", fake_create)
+    monkeypatch.setattr(bb, "_close_handle", lambda handle: None)
+    monkeypatch.setattr(bb, "_port_in_use", lambda port: False)
+    return fake
+
+
+def _net_user_add(fake) -> list[str]:
+    for argv in fake.calls("net"):
+        if argv[1:2] == ["user"] and "/add" in argv:
+            return argv
+    raise AssertionError(f"no `net user ... /add` among {fake.calls('net')}")
+
+
+def _grants(fake) -> list[tuple[str, str]]:
+    return [(argv[1], argv[3]) for argv in fake.calls("icacls")
+            if "/grant" in argv]
+
+
 def test_a_plain_popen_when_this_process_is_not_elevated(monkeypatch, tmp_path, smoke_env):
     """The path every local build and both the Linux and macOS legs take. It
     must not change: nothing else exercises the smoke test day to day."""
@@ -160,7 +215,7 @@ def test_a_plain_popen_when_this_process_is_not_elevated(monkeypatch, tmp_path, 
 
     handle = bb._launch_smoke(exe, 8811, smoke_env)
 
-    assert fake.runs == [], "an unelevated build must not shell out to runas"
+    assert fake.runs == [], "an unelevated build must not create an account"
     assert len(fake.popens) == 1
     assert fake.popens[0].argv == [str(exe), "run", "--host", "127.0.0.1",
                                    "--port", "8811"]
@@ -171,143 +226,140 @@ def test_a_plain_popen_when_this_process_is_not_elevated(monkeypatch, tmp_path, 
         "business rewriting this process's environment")
 
 
-def test_an_elevated_windows_build_relaunches_de_elevated(monkeypatch, tmp_path, smoke_env):
-    """What the hosted runner needs. /trustlevel:0x20000 is a basic-user token
-    and needs no password; the whole child command line is ONE argument."""
-    fake = FakeSubprocess()
-    monkeypatch.setattr(bb, "subprocess", fake)
-    monkeypatch.setattr(bb.sys, "platform", "win32")
-    monkeypatch.setattr(bb, "_is_elevated", lambda: True)
-    # A space in the path, because runas re-parses the string we hand it.
-    exe = tmp_path / "Program Files" / "astrodeck.exe"
+def test_an_elevated_build_runs_the_binary_as_a_throwaway_account(
+        elevated, tmp_path, smoke_env, capsys):
+    """What the hosted runner needs, end to end: an unprivileged account, the
+    access it needs, a wrapper carrying the environment, and a logon launch."""
+    exe = tmp_path / "dist" / "astrodeck.exe"
+    state = tmp_path / "state"
 
     handle = bb._launch_smoke(exe, 8811, smoke_env)
 
-    assert fake.popens == [], "the elevated path must not Popen the binary"
-    assert len(fake.runs) == 1
-    argv, _kw = fake.runs[0]
-    assert argv[0] == "runas"
-    assert argv[1] == "/trustlevel:0x20000"
-    assert len(argv) == 3, ("runas takes the child's whole command line as one "
-                            f"argument, got {argv!r}")
-    # runas detaches the child into its own console, so the command it runs is
-    # a batch wrapper that redirects the child's output into a log the harness
-    # can print when the server dies during startup (the first proof run on a
-    # hosted runner died in eight seconds and left no trace).
-    state = tmp_path / "state"
+    # 1. the account. Local SAM names cap at 20 characters, so the name is
+    # short by design -- a longer prefix is rejected by `net user` itself.
+    argv = _net_user_add(elevated)
+    name, password = argv[2], argv[3]
+    assert argv == ["net", "user", name, password, "/add", "/y"]
+    assert re.fullmatch(r"astrodeck-sm-[0-9a-f]{6}", name), name
+    assert len(name) <= 20, f"{name} is {len(name)} characters; SAM caps at 20"
+    assert len(password) >= 24
+    assert not password.startswith("-"), "net would read that as a switch"
+
+    # 2. the grants, and nothing wider. `icacls /T` over the checkout would
+    # walk node_modules and take minutes.
+    ancestors = list(reversed((tmp_path / "dist").parents))
+    assert _grants(elevated) == (
+        [(str(p), f"{name}:RX") for p in ancestors]
+        + [(str(tmp_path / "dist"), f"{name}:(OI)(CI)RX"),
+           (str(exe), f"{name}:RX"),
+           (str(state), f"{name}:(OI)(CI)M")])
+    assert not any("/T" in argv for argv in elevated.calls("icacls"))
+
+    # 3. the wrapper: the environment carrier and the log capture in one.
     wrapper, log = state / "smoke.cmd", state / "smoke.log"
-    assert argv[2] == subprocess.list2cmdline(["cmd", "/c", str(wrapper)])
     body = wrapper.read_text(encoding="utf-8")
-    assert f'"{exe}" run --host 127.0.0.1 --port 8811 > "{log}" 2>&1' in body
-    assert handle.log_path == log
-    assert handle.output_tail() == "", "nothing written yet"
-    log.write_text("line1\nRuntimeError: it refused\n", encoding="utf-8")
-    assert handle.output_tail().endswith("RuntimeError: it refused")
-    # runas starts the child with the CALLER's environment, so a variable that
-    # existed only in the env= dict would never reach it and the smoke server
-    # would write to the operator's real config and capture directories.
-    assert os.environ["ASTRODECK_CONFIG_DIR"] == smoke_env["ASTRODECK_CONFIG_DIR"]
-    assert os.environ["ASTRODECK_CAPTURE_DIR"] == smoke_env["ASTRODECK_CAPTURE_DIR"]
-    assert handle.pid is None, "runas detaches: the server has yet to be found"
+    assert body.startswith("@echo off")
+    assert f"set ASTRODECK_CONFIG_DIR={state / 'config'}" in body
+    assert f"set ASTRODECK_CAPTURE_DIR={state / 'captures'}" in body
+    assert (f"{subprocess.list2cmdline([str(exe), 'run', '--host', '127.0.0.1', '--port', '8811'])}"
+            f" > \"{log}\" 2>&1") in body
 
-
-def test_a_runas_that_cannot_start_the_binary_fails_the_build(monkeypatch, tmp_path, smoke_env):
-    fake = FakeSubprocess(returncode=1)
-    monkeypatch.setattr(bb, "subprocess", fake)
-    monkeypatch.setattr(bb.sys, "platform", "win32")
-    monkeypatch.setattr(bb, "_is_elevated", lambda: True)
-    with pytest.raises(SystemExit) as excinfo:
-        bb._launch_smoke(tmp_path / "astrodeck.exe", 8811, smoke_env)
-    assert "runas" in str(excinfo.value)
-
-
-def test_elevation_detection_never_raises(monkeypatch):
-    """A detection failure means "not elevated": the plain launch then fails
-    loudly on the interlock, which is a better outcome than de-elevating every
-    ordinary build on the strength of a broken probe."""
-    # None in sys.modules makes the import raise, which is the shape of the
-    # real failure: --skip-install, or a server that will not import.
-    monkeypatch.setitem(sys.modules, "astrodeck.runtime_security", None)
-    monkeypatch.setattr(bb.sys, "platform", "linux")
-    assert bb._is_elevated() is False
-
-
-# --------------------------------------------------------------------------
-# d) the runas handle: find the server, then reap it
-
-LISTENING = ("  TCP    127.0.0.1:8811         0.0.0.0:0              "
-             "LISTENING       4321\n")
-NOTHING = ("  TCP    0.0.0.0:135            0.0.0.0:0              "
-           "LISTENING       900\n")
-
-
-class FakeWindows:
-    """netstat / tasklist / taskkill, with a world they actually describe."""
-
-    def __init__(self):
-        self.calls: list[list[str]] = []
-        self.listening = False
-        self.images: list[int] = []
-
-    def __call__(self, cmd):
-        self.calls.append(list(cmd))
-        if cmd[0] == "netstat":
-            return LISTENING if self.listening else NOTHING
-        if cmd[0] == "tasklist":
-            if not self.images:
-                return TASKLIST_NONE
-            return "".join(f'"astrodeck.exe","{pid}","Console","1","1 K"\n'
-                           for pid in self.images)
-        if cmd[0] == "taskkill":
-            self.listening = False
-            self.images = []
-            return ""
-        raise AssertionError(f"unexpected command {cmd!r}")
-
-    def kills(self):
-        return [c for c in self.calls if c[0] == "taskkill"]
-
-
-def test_the_runas_handle_finds_the_server_then_kills_the_whole_tree(monkeypatch):
-    fake = FakeWindows()
-    monkeypatch.setattr(bb, "_port_in_use", lambda port: False)
-    handle = bb.SmokeProcess(8811, runner=fake)
-
-    assert handle.poll() is None, "nothing listening yet is still starting up"
-    assert handle.pid is None
-
-    fake.listening = True
-    fake.images = [4321, 4322]
-    assert handle.poll() is None
+    # 4. the launch itself.
+    assert len(elevated.launches) == 1
+    launched_name, launched_password, cmdline, cwd = elevated.launches[0]
+    assert (launched_name, launched_password) == (name, password)
+    assert cmdline == f'cmd /c "{wrapper}"'
+    assert cwd == state
     assert handle.pid == 4321
+    assert handle.log_path == log
+
+    # 5. the child gets its own profile environment, so nothing is smuggled
+    # through this process's -- the old runas path had to and it is gone.
+    assert os.environ["ASTRODECK_CONFIG_DIR"] == "sentinel-real-directory"
+    assert password not in capsys.readouterr().out
+
+
+def test_the_smoke_password_reaches_neither_stdout_nor_an_exception(
+        elevated, tmp_path, smoke_env, capsys):
+    """Including through an error message we did not write: `net` is told to
+    echo its own command line back, password and all."""
+    elevated.returncode_map["net"] = 2
+    elevated.echo_argv.add("net")
+
+    with pytest.raises(SystemExit) as excinfo:
+        bb._launch_smoke(tmp_path / "dist" / "astrodeck.exe", 8811, smoke_env)
+
+    password = _net_user_add(elevated)[3]
+    assert password not in str(excinfo.value)
+    assert "<redacted>" in str(excinfo.value)
+    assert password not in capsys.readouterr().out
+
+
+def test_a_failed_grant_names_the_path_it_could_not_reach(elevated, tmp_path, smoke_env):
+    elevated.returncode_map["icacls"] = 5
+    with pytest.raises(SystemExit) as excinfo:
+        bb._launch_smoke(tmp_path / "dist" / "astrodeck.exe", 8811, smoke_env)
+    assert "could not grant" in str(excinfo.value)
+
+
+def test_a_launch_that_fails_still_deletes_the_account(elevated, tmp_path, smoke_env):
+    """Create, fail, clean up. An orphaned local account on a runner is only
+    untidy; on a maintainer's box it would be a real one."""
+    elevated.create_error = SystemExit("CreateProcessWithLogonW failed")
+
+    with pytest.raises(SystemExit):
+        bb._launch_smoke(tmp_path / "dist" / "astrodeck.exe", 8811, smoke_env)
+
+    name = _net_user_add(elevated)[2]
+    assert ["net", "user", name, "/delete"] in elevated.calls("net")
+    removes = [argv for argv in elevated.calls("icacls") if "/remove" in argv]
+    assert removes, "the ACEs the failed launch added must come off too"
+    assert all(argv[-1] == name for argv in removes)
+
+
+def test_the_handle_path_polls_the_real_process(elevated, monkeypatch, tmp_path, smoke_env):
+    """`cmd /c wrapper` waits for the bootloader, which waits for the server,
+    so the wrapper's exit code IS the server's -- no port-watching guesswork."""
+    codes = [None, None, 3]
+    monkeypatch.setattr(bb, "_process_exit_code", lambda handle: codes.pop(0))
+    handle = bb._launch_smoke(tmp_path / "dist" / "astrodeck.exe", 8811, smoke_env)
+    assert handle.poll() is None
+    assert handle.poll() is None
+    assert handle.poll() == 3
+
+
+def test_stop_kills_the_wrapper_tree_then_deletes_the_account(
+        elevated, tmp_path, smoke_env):
+    elevated.stdout_map["tasklist"] = TASKLIST
+    handle = bb._launch_smoke(tmp_path / "dist" / "astrodeck.exe", 8811, smoke_env)
+    name = _net_user_add(elevated)[2]
 
     handle.stop()
-    kills = fake.kills()
+
+    kills = elevated.calls("taskkill")
     assert ["taskkill", "/PID", "4321", "/T", "/F"] in kills
     assert ["taskkill", "/PID", "4322", "/T", "/F"] in kills, (
-        "the onefile bootloader parent outlives its child; killing only the "
-        "listener leaves the port held for the next build to find")
-    assert all("/T" in c and "/F" in c for c in kills)
+        "a onefile bootloader's child has outlived its parent here before, and "
+        "a survivor would answer the next build's checks")
+    assert all("/T" in argv and "/F" in argv for argv in kills)
+    assert ["net", "user", name, "/delete"] in elevated.calls("net")
 
 
-def test_a_server_that_vanishes_reports_that_it_exited(monkeypatch):
-    """The Popen path reports "exited during startup" from returncode; the
-    runas path has no handle, so disappearing IS the exit."""
-    fake = FakeWindows()
-    fake.listening = True
-    fake.images = [4321]
-    handle = bb.SmokeProcess(8811, runner=fake)
-    assert handle.poll() is None
+def test_stop_after_a_reported_death_still_deletes_the_account(
+        elevated, monkeypatch, tmp_path, smoke_env):
+    """The failure path: /healthz never answers, smoke() raises, and the
+    finally: still has to take the account away."""
+    monkeypatch.setattr(bb, "_process_exit_code", lambda handle: 1)
+    handle = bb._launch_smoke(tmp_path / "dist" / "astrodeck.exe", 8811, smoke_env)
+    name = _net_user_add(elevated)[2]
+    assert handle.poll() == 1
 
-    fake.listening = False
-    fake.images = []
-    assert handle.poll() is not None
+    handle.stop()
+    assert ["net", "user", name, "/delete"] in elevated.calls("net")
 
-
-def test_a_child_that_never_listens_gives_up_rather_than_hanging():
-    fake = FakeWindows()
-    handle = bb.SmokeProcess(8811, runner=fake, find_timeout=-1)
-    assert handle.poll() is not None
+    # ...and only once, however many times stop() is reached.
+    handle.stop()
+    assert elevated.calls("net").count(["net", "user", name, "/delete"]) == 1
 
 
 def test_the_popen_path_delegates_poll_and_stop(monkeypatch):
@@ -321,8 +373,29 @@ def test_the_popen_path_delegates_poll_and_stop(monkeypatch):
     assert stopped == [proc], "the plain path must still stop the process tree"
 
 
+def test_output_tail_reports_what_the_child_wrote(tmp_path):
+    """The whole reason the wrapper redirects: the first hosted proof run died
+    eight seconds in and the log said nothing at all."""
+    log = tmp_path / "smoke.log"
+    handle = bb.SmokeProcess(8811, log_path=log)
+    assert handle.output_tail() == "", "nothing written yet"
+    log.write_text("Traceback\nRuntimeError: it refused\n", encoding="utf-8")
+    assert handle.output_tail().endswith("RuntimeError: it refused")
+
+
+def test_elevation_detection_never_raises(monkeypatch):
+    """A detection failure means "not elevated": the plain launch then fails
+    loudly on the interlock, which is a better outcome than creating a local
+    user on every ordinary build on the strength of a broken probe."""
+    # None in sys.modules makes the import raise, which is the shape of the
+    # real failure: --skip-install, or a server that will not import.
+    monkeypatch.setitem(sys.modules, "astrodeck.runtime_security", None)
+    monkeypatch.setattr(bb.sys, "platform", "linux")
+    assert bb._is_elevated() is False
+
+
 # --------------------------------------------------------------------------
-# e) the CI job that can prove this on a hosted runner without a release
+# the CI job that can prove this on a hosted runner without a release
 
 
 def _ci_text() -> str:
