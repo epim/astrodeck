@@ -123,28 +123,149 @@ def test_a_real_donut_field_still_measures_and_still_dwarfs_a_focused_one():
 def test_the_compactness_discriminator_separates_a_ring_from_a_star():
     """The gate, graded on real pixels rather than on its own definition.
 
-    ``_box_truncation`` measures each of the brightest stars twice — once with
-    ``detect_stars``' fixed 15px box, once on its own radial profile out to the
-    noise — and reports the ratio. A star that fits in the box reads ~1.0; a
+    ``_box_truncation`` measures each of the GRADER'S voting stars twice — once
+    with ``detect_stars``' fixed 15px box, once on its own radial profile out to
+    the noise — and reports the ratio. A star that fits in the box reads ~1.0; a
     ring's rim fragment reads what the box is MISSING. The threshold is a
     constant so that changing it is graded by these frames."""
     from astrodeck.imaging.stars import (
         SIZE_FINE_MAX_TRUNCATION, _bg_sigma, _box_truncation)
     reads = {}
-    for name in ("clean_R60", "m33core_G60", "donut_L60"):
+    for name in ("clean_R60", "m33core_G60", "m33field_G60",
+                 "donut_L60", "donutfield_L60"):
         data = _frame(name)
         bg, sigma = _bg_sigma(data)
         probe = _box_truncation(data, bg, sigma, detect_stars(data),
                                 min(data.shape) / 2.0)
         assert probe is not None, f"{name}: nothing measurable to probe"
         reads[name] = probe[0]
-    assert reads["donut_L60"] > SIZE_FINE_MAX_TRUNCATION, (
-        f"donut_L60 reads {reads['donut_L60']:.2f}, threshold "
-        f"{SIZE_FINE_MAX_TRUNCATION} — a ring is on the compact side of the gate")
-    for name in ("clean_R60", "m33core_G60"):
+    for name in ("donut_L60", "donutfield_L60"):
+        assert reads[name] > SIZE_FINE_MAX_TRUNCATION, (
+            f"{name} reads {reads[name]:.2f}, threshold "
+            f"{SIZE_FINE_MAX_TRUNCATION} — a ring is on the compact side of "
+            "the gate")
+    for name in ("clean_R60", "m33core_G60", "m33field_G60"):
         assert reads[name] < SIZE_FINE_MAX_TRUNCATION, (
             f"{name} reads {reads[name]:.2f}, threshold "
             f"{SIZE_FINE_MAX_TRUNCATION} — a focused star is on the ring side")
+
+
+def test_the_discriminator_does_not_read_the_frame_s_SIZE(caplog=None):
+    """THE 2026-09-07 DEFECT, stated as the property it broke.
+
+    The probe used to read the brightest FIVE detections with the aperture free
+    to grow to SIZE_R_CAP. On a 512 px crop that is five ordinary stars; on the
+    FULL 6248x4176 frame the same crop came out of it is five near-saturated
+    ones, whose halos the aperture follows out past 100 px while the 15 px box
+    stays where it is. So the ratio measured how BRIGHT the field was, and on
+    every clean whole frame of 2026-09-05/06 it read 1.30-1.37 against a
+    threshold of 1.20 — the fine path never fired on a full frame at all.
+
+    m33field_G60 is 2048x1536 of G_0003 including its bright stars, so the halo
+    is present; m33core_G60 is a 512 px crop of the same field. A discriminator
+    that answers the question it claims to answer gives them the same verdict.
+    """
+    from astrodeck.imaging.stars import (
+        SIZE_FINE_MAX_TRUNCATION, SIZE_TRUNCATION_CAP_PX, _bg_sigma,
+        _box_truncation)
+    assert SIZE_TRUNCATION_CAP_PX <= 2 * 15, (
+        "an uncapped aperture is what let a bright star's halo decide this")
+    wide, small = _frame("m33field_G60"), _frame("m33core_G60")
+    bright = [max(s.flux for s in detect_stars(d)) for d in (wide, small)]
+    assert bright[0] > 4 * bright[1], (
+        f"fixture drifted: the wide crop's brightest star ({bright[0]:.0f} ADU) "
+        f"is no brighter than the 512px crop's ({bright[1]:.0f}), so it no "
+        "longer carries the halo the defect needed")
+    reads = []
+    for data in (wide, small):
+        bg, sigma = _bg_sigma(data)
+        probe = _box_truncation(data, bg, sigma, detect_stars(data),
+                                min(data.shape) / 2.0)
+        assert probe is not None
+        reads.append(probe[0])
+    assert all(r < SIZE_FINE_MAX_TRUNCATION for r in reads), (
+        f"wide crop {reads[0]:.2f}, 512 crop {reads[1]:.2f}, threshold "
+        f"{SIZE_FINE_MAX_TRUNCATION} — the same field read two ways")
+
+
+def test_a_full_frame_field_answers_from_its_stars():
+    """The consequence, at the only scale that matters: the engine grades and
+    sweeps WHOLE frames. At HEAD m33field_G60 answered 5.97 px from the pyramid
+    at scale 16 while its stars measured 3.43 — 74% high, and the M33 core is
+    what the coarse level had found."""
+    data = _frame("m33field_G60")
+    grader, n = median_hfr(data)
+    size = star_size(data)
+    assert grader is not None and size is not None
+    assert n >= 100, f"fixture drifted: {n} stars"
+    assert _path(size) == "stars", (
+        f"a 2048x1536 field of {n} stars answered from the pyramid at "
+        f"{size.radius:.2f}px (scale {size.scale}) while the grader read "
+        f"{grader:.2f}px")
+    assert size.radius == grader
+
+
+def test_the_ring_gate_reads_where_the_profile_peaks():
+    """Gate 3, and the one reading a halo cannot move: a star peaks at its own
+    centre whatever its brightness, an annulus peaks on its rim.
+
+    It is not redundant with gate 2. A synthetic donut field of radius 45 px
+    reads a truncation ratio of 1.01 — the box and the capped profile are
+    measuring the same rim fragment — and only this gate and the box-HFR gate
+    see it."""
+    from astrodeck.imaging.stars import (
+        SIZE_FINE_MAX_PEAK_R, _bg_sigma, _box_truncation)
+    reads = {}
+    for name in ("clean_R60", "m33field_G60", "donut_L60", "donutfield_L60"):
+        data = _frame(name)
+        bg, sigma = _bg_sigma(data)
+        probe = _box_truncation(data, bg, sigma, detect_stars(data),
+                                min(data.shape) / 2.0)
+        assert probe is not None and len(probe) == 3, (
+            f"{name}: _box_truncation reports no peak radius, so nothing asks "
+            "where the light actually is")
+        reads[name] = probe[2]
+    for name in ("clean_R60", "m33field_G60"):
+        assert reads[name] < SIZE_FINE_MAX_PEAK_R, (
+            f"{name} peaks at r={reads[name]:.0f}px — a focused star peaks at "
+            "its centre")
+    for name in ("donut_L60", "donutfield_L60"):
+        assert reads[name] >= SIZE_FINE_MAX_PEAK_R, (
+            f"{name} peaks at r={reads[name]:.0f}px, threshold "
+            f"{SIZE_FINE_MAX_PEAK_R} — a ring read as a star")
+
+
+def test_a_wide_donut_field_stays_on_the_pyramid():
+    """"Must not fire on donut frames of any size" — the 1024x1024 counterpart
+    of donut_L60, cut from the same L_0001 the first autofocus of the night
+    produced."""
+    donut = star_size(_frame("donutfield_L60"))
+    clean = star_size(_frame("m33field_G60"))
+    assert donut is not None and clean is not None
+    assert _path(donut) == "pyramid", (
+        f"a 1024px donut field answered from the fine path at "
+        f"{donut.radius:.2f}px")
+    assert donut.radius > 2.0 * clean.radius, (
+        f"donut {donut.radius:.2f}px against focused {clean.radius:.2f}px")
+
+
+def test_the_defocus_readout_and_the_sweep_share_one_definition_of_a_star_field():
+    """``imaging.defocus`` must not have its own opinion about this. Two answers
+    to "are these stars" is how one frame came back as an in-focus 3.43 px field
+    to the sweep and a 932 px defocus blob to the preview, in the same second.
+    """
+    from astrodeck.imaging.defocus import measure_defocus
+    from astrodeck.imaging.stars import compact_star_population
+    for name in ("clean_R60", "m33core_G60", "m33field_G60",
+                 "donut_L60", "donutfield_L60"):
+        data = _frame(name)
+        fine = compact_star_population(data)
+        size = star_size(data)
+        assert size is not None
+        assert (fine is not None) == (_path(size) == "stars"), (
+            f"{name}: the sweep and the shared screen disagree")
+        assert (measure_defocus(data) is None) == (fine is not None), (
+            f"{name}: the defocus readout disagrees with the screen")
 
 
 def test_the_box_hfr_gate_sits_under_the_boxs_own_ceiling():

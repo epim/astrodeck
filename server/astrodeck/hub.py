@@ -3495,9 +3495,18 @@ class Hub:
             # and 1393 "stars", and the Focus panel called it FAIR. A number
             # that cannot exceed 7 cannot report a 440px blob, so the honest
             # signal has to come from a measurement that has no such ceiling.
+            #
+            # `measure_defocus`, not `measure_blob`: the blob is only a defocus
+            # reading on a frame whose stars are NOT resolved. On 2026-09-07 at
+            # 01:17 this line published r80 1134 on an in-focus 60 s L sub of
+            # NGC 604 (grader HFR 3.32, 1294 stars) because the dominant source
+            # in the frame was M33, and the panel read "far out of focus - blob
+            # is 2268 px across - run coarse focus first". The star list from
+            # the single detection pass above is handed over so the wrapper's
+            # screen costs no second scan.
             if data_is_linear:
-                from .imaging.defocus import measure_blob
-                blob = await asyncio.to_thread(measure_blob, sub)
+                from .imaging.defocus import measure_defocus
+                blob = await asyncio.to_thread(measure_defocus, sub, stars=stars)
                 if blob is not None:
                     info["defocus_r80"] = round(blob.r80, 1)
                     info["defocus_snr"] = round(blob.snr, 1)

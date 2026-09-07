@@ -7,7 +7,9 @@
 // FAIR. A number that cannot exceed 7 cannot describe a 440px blob.
 //
 // The server publishes defocus_r80 from imaging/defocus.py, which has no such
-// ceiling. When it says the blob is large, that outranks HFR.
+// ceiling. When it says the blob is large, that outranks HFR — UNLESS the frame
+// also carries a resolved star population, which is the 2026-09-07 repair
+// below.
 
 // The two bars below are MEASURED, not chosen. Both come from the ground-truth
 // sweep committed at server/tests/fixtures/focus_sweep (one rich field, true
@@ -36,6 +38,27 @@ export const HFR_MEANINGLESS_R80_PX = 12;
  *  coarse focus from a position an ordinary sweep fixes in a minute. */
 export const DEFOCUS_COARSE_R80_PX = 100;
 
+/** Detections a frame needs before its star population outranks a blob.
+ *
+ *  A floor, not a discriminator, and the fixtures say why it cannot be one: the
+ *  real donut frame L_0001 yields 200 detections (rim fragments) while a clean
+ *  512px crop yields 19, so no count separates the two. What separates them is
+ *  the HFR bar below. 30 is set where a preview always clears it — a full frame
+ *  reports the detector's 200-star cap — while a handful of coincidental
+ *  detections cannot vote. */
+export const RESOLVED_MIN_STARS = 30;
+
+/** And a box HFR the 15px box can still faithfully describe. Equal to the
+ *  server's SIZE_FINE_MAX_BOX_HFR (imaging/stars.py), where the same question
+ *  is decided on the pixels themselves.
+ *
+ *  MEASURED on the 2026-09-05/06 frames: every clean frame grades 2.61-3.43 and
+ *  every defocused one grades 3.94-5.00, because past this point the box is
+ *  measuring its own geometry. Anything above the bar therefore keeps the
+ *  blob's vote — a donut field looks like "hundreds of stars at HFR 4.5" and
+ *  must never be allowed to talk its way out of the defocus verdict. */
+export const RESOLVED_MAX_HFR = 3.8;
+
 export type FocusState =
   | { kind: "no-frame" }
   /** Too big for HFR to describe, but within reach of an autofocus sweep. */
@@ -46,12 +69,42 @@ export type FocusState =
   | { kind: "measured"; hfr: number };
 
 /**
+ * Does this frame carry stars the optics have plainly resolved?
+ *
+ * THE 2026-09-07 DEFECT. A 60s L sub of NGC 604 that the run's own grader read
+ * at HFR 3.32 with 1294 stars was shown as "Far out of focus — blob is 2268 px
+ * across — further out than an autofocus sweep can bracket. Run coarse focus
+ * first", because the server's blob measurer had locked onto M33's extended
+ * light and this file let any large blob outrank HFR. A frame with a healthy
+ * star population is not far out of focus, whatever a blob measurer says.
+ *
+ * The server now declines to publish defocus_r80 at all on such a frame
+ * (imaging/stars.compact_star_population, which screens the actual pixels).
+ * This is the second layer, for an older server and for a blob that clears the
+ * server's gates on a frame the star count plainly contradicts.
+ */
+export function resolvedStarField(p: {
+  hfr?: number | null;
+  stars?: number | null;
+} | null | undefined): boolean {
+  if (!p) return false;
+  const hfr = p.hfr;
+  return (p.stars ?? 0) >= RESOLVED_MIN_STARS
+    && hfr != null && hfr > 0 && hfr < RESOLVED_MAX_HFR;
+}
+
+/**
  * What the Focus panel should say about a frame.
  *
- * Order matters: blob size is checked FIRST, because once the star outgrows the
+ * Blob size is checked before HFR, because once the star outgrows the
  * measurement box both the star count and the HFR are artefacts — the count is
  * ring fragments and the HFR is the box's ceiling. Reporting "FAIR" there is
  * worse than reporting nothing, because it tells the user to stop adjusting.
+ *
+ * But it is checked SECOND to the star population, because that inversion is
+ * only true where the box is lying: on a frame whose stars are resolved and
+ * compact, HFR is the faithful measurement and the blob is describing
+ * something that is not the PSF.
  */
 export function focusState(p: {
   hfr?: number | null;
@@ -60,8 +113,10 @@ export function focusState(p: {
 } | null | undefined): FocusState {
   if (!p) return { kind: "no-frame" };
   const r80 = p.defocus_r80;
-  if (r80 != null && r80 > DEFOCUS_COARSE_R80_PX) return { kind: "defocused", r80 };
-  if (r80 != null && r80 > HFR_MEANINGLESS_R80_PX) return { kind: "soft", r80 };
+  if (!resolvedStarField(p)) {
+    if (r80 != null && r80 > DEFOCUS_COARSE_R80_PX) return { kind: "defocused", r80 };
+    if (r80 != null && r80 > HFR_MEANINGLESS_R80_PX) return { kind: "soft", r80 };
+  }
   const hfr = p.hfr;
   if ((p.stars ?? 0) < 3 || hfr == null) return { kind: "few-stars" };
   return { kind: "measured", hfr };

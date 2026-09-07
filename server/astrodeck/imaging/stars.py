@@ -536,27 +536,86 @@ SIZE_FINE_MIN_STARS = 10
 #: that must not, and 70% of the box's own ceiling (0.77 * 15//2 = 5.39).
 SIZE_FINE_MAX_BOX_HFR = 3.8
 
-#: Gate 2: how much of the source the box is MISSING, as the ratio of the
-#: radial-profile mean radius (aperture set by the source, `_measure_source`) to
-#: the box's answer for the same star. A star that fits reads ~1.0; a defocused
-#: ring's rim fragment reads what the box cannot see. Measured over the
-#: brightest SIZE_FINE_PROBE_STARS of each frame:
+#: How far the truncation probe's aperture may grow: ONE box width, i.e. 2.1x
+#: the 7 px half-width the box actually measures in.
 #:
-#:     must take the fine path   clean_R60 1.00  m33core_G60 1.06
-#:                               sigma=1.2 synth 1.10  sigma=1.5 1.04  sigma=2 1.03
-#:     must not                  Gaussian sigma=4 1.37 (true 5.01, box 3.75)
-#:                               donut_L60 1.98  9px-ring synth 2.02  sigma=12 3.31
-#:
-#: 1.20 is 9% above the highest frame that must pass and 14% below the lowest
-#: that must not. The binding case on the far side is a sigma=4 Gaussian, whose
-#: TRUE radius is 5.01px while the box says 3.75 -- a 25% error, i.e. exactly
-#: the point at which the box stops being a faithful description of the star.
-SIZE_FINE_MAX_TRUNCATION = 1.20
+#: This cap is half of the 2026-09-07 repair. The probe used to let the aperture
+#: run to SIZE_R_CAP, and on a bright star it duly followed the halo out past
+#: 100 px while the 15 px box stayed where it was. That is a measurement of
+#: BRIGHTNESS, not of defocus, and it is why the ratio below read one thing on a
+#: 512 px crop and another on the full frame the same crop came out of: R_0030
+#: reads 1.14 capped here and 1.53 uncapped, on the same stars. The question the
+#: gate asks is "what is the box missing", which is a question about the source
+#: near the box, so the answer is taken near the box.
+SIZE_TRUNCATION_CAP_PX = float(HFR_BOX_PX)
 
-#: How many of the brightest stars gate 2 probes. Five, because three is noisy
-#: (clean_R60 reads 1.20 over three and 1.00 over five, and 1.20 IS the
-#: threshold) and because each probe costs a radial profile.
-SIZE_FINE_PROBE_STARS = 5
+#: Gate 2: how much of the source the box is MISSING, as the ratio of the
+#: radial-profile mean radius (aperture set by the source, `_measure_source`,
+#: capped at SIZE_TRUNCATION_CAP_PX) to the box's answer for the same star,
+#: medianed over the GRADER'S OWN voting population (`_bright_population`).
+#:
+#: BOTH of those were different until 2026-09-07 and both differences were
+#: brightness artefacts. The probe read the brightest FIVE detections with a
+#: free aperture, which on a 512 px crop is five ordinary stars and on a full
+#: 6248x4176 frame is five near-saturated ones. Measured on last night's WHOLE
+#: frames against the then-threshold of 1.20:
+#:
+#:     clean R_0007 1.35   clean S_0005 1.30   clean R_0030 1.99
+#:     M33 field G_0003 1.37                   donut L_0001 2.11
+#:
+#: so the fine path never fired on a full frame at all: the sweep answered 3.48
+#: against the grader's 2.73 on R_0007, 4.60 at pyramid scale 16 on G_0003, and
+#: 684 px on the rig at true focus at 00:31 on 2026-09-07.
+#:
+#: Measured with the population and the cap above (2026-09-07):
+#:
+#:     must take the fine path
+#:       full 6248x4176   R_0007 1.07  S_0005 1.09  R_0030 1.14  G_0003 1.11
+#:       wide crop        m33field_G60 (2048x1536) 1.14
+#:       512 crop         clean_R60 1.00  m33core_G60 1.05
+#:       synthetic        sigma=1.2 1.10  sigma=1.5 1.04  sigma=2 1.03
+#:                        200-sharp-star field 1.03
+#:     must not
+#:       full 6248x4176   donut L_0001 1.82
+#:       wide crop        donutfield_L60 (1024x1024) 1.80
+#:       512 crop         donut_L60 1.48
+#:       synthetic        Gaussian sigma=4 1.34 (true 5.01, box 3.75)
+#:                        sigma=12 1.58   9px-ring field 2.02
+#:
+#: 1.25 sits 10% above the highest frame that must pass and 7% below the lowest
+#: that must not, and the two sides no longer depend on the frame's SIZE, which
+#: is what the old bar could not survive. The binding case on the far side is
+#: still the sigma=4 Gaussian, whose TRUE radius is 5.01 px while the box says
+#: 3.75 -- a 25% error, i.e. exactly the point at which the box stops being a
+#: faithful description of the star.
+#:
+#: The frames BETWEEN the two lists are the trailed ones, and they land on the
+#: pyramid as they did before: jump_R60 1.24, staircase_G60 1.31.
+SIZE_FINE_MAX_TRUNCATION = 1.25
+
+#: Gate 3: WHERE the radial profile peaks, medianed over the same probes. A star
+#: peaks at its own centre whatever its brightness; a defocused annulus peaks on
+#: its rim. That makes this the one reading in the set that a halo cannot move,
+#: and it catches the donut fields gate 2 cannot see at all -- a synthetic
+#: 45 px-radius donut field reads a truncation ratio of 1.01, because the box
+#: and the capped profile are both measuring the same rim fragment.
+#: `_profile_edge` smooths the profile with a 3-wide kernel, so a source that
+#: peaks at r=0 reports 1, not 0. Measured (median peak radius, px):
+#:
+#:     must take the fine path   1.0 on EVERY frame measured, at every size:
+#:                               R_0007 S_0005 R_0030 G_0003 B_0004 L_0026
+#:                               L_0006 Ha_0018 (full 6248x4176), m33field_G60,
+#:                               clean_R60 m33core_G60 jump_R60 doubleblob_L60
+#:                               pedrift_L60 staircase_G60 tail_Ha300 (crops),
+#:                               sigma=1.2/1.5/2/4/12 synthetics
+#:     must not                  donut L_0001 6.0   donutfield_L60 6.0
+#:                               donut_L60 3.0      9px-ring synth 9.0
+#:                               synthetic donut fields r=8/20/45/90: 4/2/2/2
+#:
+#: 2 is the only value between them, and every frame that must pass reads the
+#: floor. (Sweep points read 1.0-2.0 here -- their seeds sit inside a blob far
+#: bigger than the probe -- and gate 1 holds all of them at box HFR 4.26-4.88.)
+SIZE_FINE_MAX_PEAK_R = 2.0
 
 
 @dataclass
@@ -888,18 +947,27 @@ SIZE_BIN_TRUST = 1.5
 
 
 def _box_truncation(img: np.ndarray, bg: float, sigma: float,
-                    stars: list[Star], cap: float,
-                    probes: int = SIZE_FINE_PROBE_STARS
-                    ) -> tuple[float, float] | None:
-    """``(how much the 15px box is missing, brightest probe's aperture SNR)``.
+                    stars: list[Star], cap: float
+                    ) -> tuple[float, float, float] | None:
+    """``(how much the 15px box is missing, brightest probe's aperture SNR,
+    how far out the profile peaks)``, over the GRADER'S voting population.
 
-    Measures the brightest few detections a SECOND time — same pixels, same
-    centre, but with the aperture grown until the radial profile falls into the
-    noise instead of stopping at the cutout's edge — and reports the median
-    ratio of the two answers. That ratio is THE question the fine path turns on:
-    a star that fits inside ``HFR_BOX_PX`` reads ~1.0, and a defocused ring
-    read off one arc of its rim reads however much of the ring the box could
-    not see. See SIZE_FINE_MAX_TRUNCATION for the measured table.
+    Measures each of ``_bright_population``'s stars a SECOND time — same pixels,
+    same centre, but with the aperture grown until the radial profile falls into
+    the noise instead of stopping at the cutout's edge — and reports the median
+    of both readings. They answer the two questions the fine path turns on: a
+    star that fits inside ``HFR_BOX_PX`` reads a ratio of ~1.0 and peaks at its
+    own centre, while a defocused ring read off one arc of its rim reads however
+    much of the ring the box could not see, and peaks on the rim. See
+    SIZE_FINE_MAX_TRUNCATION and SIZE_FINE_MAX_PEAK_R for the measured tables.
+
+    THE POPULATION IS THE GRADER'S, not "the brightest five", and the aperture
+    is capped at SIZE_TRUNCATION_CAP_PX. Both were the 2026-09-07 defect: on a
+    full frame the brightest five are near-saturated stars whose halos the free
+    aperture followed, so the ratio measured how bright the field was and the
+    fine path never fired on a whole frame at all. Sharing
+    ``_bright_population`` with ``_median_hfr_from`` also means a frame is
+    screened on the same stars it is graded on rather than on a different five.
 
     ``_lock_on`` before the second measurement for the same reason
     ``_measure_at_bin`` does it: a rim fragment's seed is on the ring, and a
@@ -909,28 +977,32 @@ def _box_truncation(img: np.ndarray, bg: float, sigma: float,
     ``None`` when nothing could be measured at all — the caller then falls
     through to the pyramid rather than guessing.
     """
+    probe_cap = float(min(cap, SIZE_TRUNCATION_CAP_PX))
     ratios: list[float] = []
+    peaks: list[float] = []
     snr = 0.0
-    for s in sorted(stars, key=lambda s: -s.flux)[:probes]:
+    for s in _bright_population(stars):
         if s.hfr <= 0.0:
             continue
-        m = _measure_source(img, bg, sigma, s.y, s.x, 8.0, cap)
+        m = _measure_source(img, bg, sigma, s.y, s.x, 8.0, probe_cap)
         if m is None:
             continue
         ny, nx = _lock_on(img, m["bg"], sigma, s.y, s.x, m["edge"])
         better = _measure_source(img, bg, sigma, ny, nx,
-                                 max(8.0, m["edge"] * 1.5), cap)
+                                 max(8.0, m["edge"] * 1.5), probe_cap)
         if better is not None and better["flux"] >= m["flux"]:
             m = better
         ratios.append(float(m["mean_r"]) / float(s.hfr))
+        peaks.append(float(m["peak_r"]))
         snr = max(snr, float(m["snr"]))
     if not ratios:
         return None
-    return float(np.median(ratios)), snr
+    return float(np.median(ratios)), snr, float(np.median(peaks))
 
 
 def _fine_size(img: np.ndarray, bg: float, sigma: float, k_sigma: float,
-               cap: float) -> SourceSize | None:
+               cap: float,
+               stars: list[Star] | None = None) -> SourceSize | None:
     """The frame's size from its UNBINNED stars, or ``None`` to use the pyramid.
 
     ONE detection pass — the same one ``median_hfr`` makes — and the answer is
@@ -938,8 +1010,13 @@ def _fine_size(img: np.ndarray, bg: float, sigma: float, k_sigma: float,
     this path answers. That equality is the point of GN-05: the number the sweep
     fits and the number every sub is graded with have to describe the same
     thing, and a comment claiming they did was the only thing holding it up.
+
+    ``stars`` lets a caller that has already detected them hand the list over
+    (the preview path grades every sub before it asks this question), so the
+    O(pixels) pass is made once per frame rather than once per consumer.
     """
-    stars = detect_stars(img, k_sigma=k_sigma)
+    if stars is None:
+        stars = detect_stars(img, k_sigma=k_sigma)
     if len(stars) < SIZE_FINE_MIN_STARS:
         return None                     # not a population; the pyramid's job
     pop = _bright_population(stars)
@@ -949,11 +1026,42 @@ def _fine_size(img: np.ndarray, bg: float, sigma: float, k_sigma: float,
     probe = _box_truncation(img, bg, sigma, stars, cap)
     if probe is None:
         return None
-    truncation, snr = probe
+    truncation, snr, peak_r = probe
+    if peak_r >= SIZE_FINE_MAX_PEAK_R:
+        return None                     # an annulus, not a star (gate 3)
     if truncation >= SIZE_FINE_MAX_TRUNCATION:
         return None                     # rim fragments, not stars (gate 2)
     return SourceSize(radius=radius, n_sources=len(pop), n_found=len(stars),
                       snr=snr, scale=1, lower_bound=False, source="stars")
+
+
+def compact_star_population(data: np.ndarray, *,
+                            stars: list[Star] | None = None,
+                            k_sigma: float = 5.0) -> SourceSize | None:
+    """This frame's stars WHEN THEY ARE A TRUSTWORTHY POPULATION, else ``None``.
+
+    ONE definition of "the optics are resolving this field, and the 15 px box is
+    a faithful description of what they resolved" — and it is ``star_size``'s
+    own fine path rather than a second opinion about it. Two callers need that
+    question answered and they must not come to different answers:
+
+    * the autofocus sweep, which answers with the grader's median wherever this
+      is not None and with the binning pyramid where it is;
+    * ``imaging.defocus``, which must not report a defocus blob on a frame whose
+      stars are sitting right there. On 2026-09-07 at 01:17 the preview told a
+      user running a 60 s L sub of NGC 604 — in focus, HFR 3.32, 1294 stars —
+      that the blob was "2268 px across, further out than an autofocus sweep can
+      bracket", because the blob measurer had found M33 and nothing asked the
+      stars.
+
+    ``stars`` is the caller's existing detection pass; omit it and one is made.
+    """
+    img = np.asarray(data, dtype=np.float64)
+    if img.ndim != 2 or min(img.shape) < 16:
+        return None
+    bg, sigma = _bg_sigma(img)
+    cap = float(min(SIZE_R_CAP, min(img.shape) / 2.0))
+    return _fine_size(img, bg, sigma, k_sigma, cap, stars=stars)
 
 
 def star_size(data: np.ndarray, *, k_sigma: float = 5.0,
@@ -965,7 +1073,8 @@ def star_size(data: np.ndarray, *, k_sigma: float = 5.0,
 
     * ``"stars"`` — FINE FIRST. When the unbinned population is large enough and
       compact (SIZE_FINE_MIN_STARS, SIZE_FINE_MAX_BOX_HFR,
-      SIZE_FINE_MAX_TRUNCATION), the answer IS ``median_hfr``: the same median
+      SIZE_FINE_MAX_TRUNCATION, SIZE_FINE_MAX_PEAK_R — see
+      ``compact_star_population``), the answer IS ``median_hfr``: the same median
       of the same estimator over the same stars. Near focus that is what the
       sweep should be fitting, because it is what every sub is then graded with.
     * ``"pyramid"`` — sources found on a pyramid of binned copies and measured

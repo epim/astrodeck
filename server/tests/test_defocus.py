@@ -23,10 +23,12 @@ import numpy as np
 import pytest
 
 from astrodeck.imaging.defocus import (
-    HANDOVER_R80_PX, BlobSize, focus_from_two, measure_blob, shrinking,
+    HANDOVER_R80_PX, BlobSize, focus_from_two, measure_blob, measure_defocus,
+    shrinking,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures" / "focus_sweep"
+NGC604 = Path(__file__).parent / "fixtures" / "ngc604_20260906"
 
 
 def _sweep_frame(position: int) -> np.ndarray:
@@ -276,3 +278,113 @@ def test_a_frame_that_recorded_no_source_gets_None_not_a_number():
     entry = next(e for e in manifest["entries"] if e["focuser_position"] == 14900)
     assert entry["usable_for_size_metric"] is False
     assert measure_blob(_sweep_frame(14900)) is None
+
+
+# ------------------------------- a star field is not a defocus blob (2026-09-07)
+#
+# THE DEFECT, from the rig at 01:17. A 60 s L sub of NGC 604 that the run's own
+# grader read at HFR 3.32 with 1294-1416 stars was shown as
+#
+#     Far out of focus - Blob is 2268 px across - further out than an autofocus
+#     sweep can bracket. Run coarse focus first
+#
+# because hub.py published `measure_blob`'s r80 on every linear preview and the
+# blob it found was M33. `measure_blob` is not wrong -- the dominant source in
+# that frame really is that big -- it is being asked the wrong question, and
+# `measure_defocus` is the one that asks the right one.
+
+
+def _ngc604(name: str) -> np.ndarray:
+    from astropy.io import fits
+    return fits.getdata(NGC604 / f"{name}.fits.gz").astype(np.float64)
+
+
+def test_the_blob_on_an_in_focus_galaxy_frame_is_not_a_defocus_reading():
+    """m33field_G60: 2048x1536 of last night's G sub, M33's core and its star
+    field together, graded HFR 3.43 over 200 detections. In focus.
+
+    `measure_blob` reads r80 466 px here -- 932 px across -- and every clean
+    WHOLE frame from the same night reads worse: R_0007 1154, R_0030 1266, on
+    fields whose stars measure 2.73 and 2.94 px. That number is what reached the
+    Focus panel."""
+    from astrodeck.imaging.stars import median_hfr
+    data = _ngc604("m33field_G60")
+    grader, n = median_hfr(data)
+    assert grader is not None and grader < 3.8 and n >= 100, (
+        f"fixture drifted: {n} stars at HFR {grader}")
+
+    raw = measure_blob(data)
+    assert raw is not None and raw.r80 > 100.0, (
+        f"fixture drifted: measure_blob reads {raw.r80 if raw else None} here, "
+        "so this frame no longer reproduces the defect")
+
+    assert measure_defocus(data) is None, (
+        f"a frame with {n} stars at HFR {grader:.2f} px was reported "
+        f"{2 * raw.r80:.0f} px across")
+
+
+def test_a_real_donut_field_still_reports_its_blob_at_every_size():
+    """The other half, and the half a looser rule would break. A donut field
+    ALSO carries hundreds of "stars" -- rim fragments -- at a box HFR of 3.9-5.0,
+    so no star COUNT and no HFR bar near 6 px separates the two. What separates
+    them is that the box cannot describe a rim fragment: see
+    `stars.compact_star_population`."""
+    for name in ("donut_L60", "donutfield_L60"):
+        data = _ngc604(name)
+        raw = measure_blob(data)
+        got = measure_defocus(data)
+        assert raw is not None
+        assert got is not None, (
+            f"{name}: a defocused frame was mistaken for a star field, so "
+            "coarse focus and the Focus panel both lose their only signal")
+        assert got.r80 == raw.r80
+
+
+def test_the_real_sweep_keeps_every_point_of_its_defocus_curve():
+    """The wrapper must not eat the sweep. Each of these is a real frame from
+    the 2026-07-31 ground-truth sweep and each has to keep the blob it had."""
+    for pos in (4900, 7900, 8900, 9300, 9600, 10200, 10500, 10900, 11900):
+        raw = measure_blob(_sweep_frame(pos))
+        got = measure_defocus(_sweep_frame(pos))
+        assert raw is not None and got is not None, f"{pos} lost its blob"
+        assert got.r80 == raw.r80
+
+
+def test_a_synthetic_field_of_sharp_stars_reports_no_defocus():
+    """And the same field defocused reports one, at every radius. The synthetic
+    control for the two real cases above, with everything else held equal."""
+    assert measure_defocus(_star_field()) is None
+    assert measure_defocus(_donut_field(60, 0)) is None, (
+        "radius 0 IS a field of sharp stars")
+    for radius in (8, 20, 45, 90):
+        assert measure_defocus(_donut_field(60, radius)) is not None, (
+            f"radius {radius}: coarse focus dies here")
+
+
+def test_the_wrapper_reuses_the_callers_detection_pass():
+    """The hub grades every sub before it asks this, and hands the star list
+    over. Passing it must not change the answer -- if it could, the preview and
+    a bare call would disagree about the same frame."""
+    from astrodeck.imaging.stars import detect_stars
+    for name in ("m33field_G60", "donut_L60"):
+        data = _ngc604(name)
+        stars = detect_stars(data)
+        a, b = measure_defocus(data), measure_defocus(data, stars=stars)
+        assert (a is None) == (b is None), name
+        if a is not None:
+            assert a.r80 == b.r80
+
+
+def test_coarse_focus_still_calls_the_unconditional_measurement():
+    """`focus.coarse` must NOT go through the wrapper: on a frame it cannot
+    measure it has to say "nothing bright enough to measure" and stop, not
+    "your stars look fine". Read from the source so a future edit that points
+    it at `measure_defocus` fails here rather than on the rig at 2am."""
+    import inspect
+
+    from astrodeck.focus import coarse
+    src = inspect.getsource(coarse)
+    assert "measure_defocus" not in src, (
+        "coarse focus now screens its own frames for a star population, and a "
+        "coarse-focus frame by definition has none")
+    assert "measure_blob" in src

@@ -181,6 +181,58 @@ def measure_blob(data: np.ndarray, *, bin_: int = BIN,
                     n_sources=len(sources))
 
 
+def measure_defocus(data: np.ndarray, *, stars=None) -> BlobSize | None:
+    """The defocus blob, or ``None`` when the frame is a RESOLVED STAR FIELD.
+
+    ``measure_blob`` answers "how big is the dominant source" and must keep
+    answering that on every frame — declining is what bricked coarse focus once
+    already, and its docstring says why. But "how big is the dominant source" is
+    not the same question as "how far out of focus is this rig", and the preview
+    path was publishing the first as an answer to the second.
+
+    MEASURED 2026-09-07 01:17, on the rig. A 60 s L sub of NGC 604 that the
+    run's own grader read at HFR 3.32 with 1294 stars came back from
+    ``measure_blob`` at r80 1134 px, and the Focus panel said "Far out of focus
+    — blob is 2268 px across — further out than an autofocus sweep can bracket.
+    Run coarse focus first". The blob was M33. Re-measured on the whole frames
+    that survived the night, ``measure_blob`` alone reads:
+
+        R_0007  clean, grader 2.73  → r80 1154      L_0026 clean-ish 4.13 → 1086
+        R_0030  clean, grader 2.94  → r80 1266      S_0005 clean 2.80    → 6
+        m33field_G60 (2048x1536 crop of G_0003, grader 3.43) → r80 466
+
+    so this is not a galaxy-only failure: on a wide field the dominant source is
+    whatever extended light happens to be brightest, and it is not the PSF.
+
+    A FRAME WITH A HEALTHY STAR POPULATION IS NOT FAR OUT OF FOCUS, whatever a
+    blob measurer says, and ``stars.compact_star_population`` is the ONE place
+    that judges "healthy" — the same gates, on the same stars, that decide
+    whether the autofocus sweep may answer with the grader's HFR. A true
+    coarse-defocus frame fails them: every donut frame measured (real L_0001
+    4.06, donutfield_L60 4.01, donut_L60 3.94, synthetic donut fields 4.51-5.00)
+    grades above SIZE_FINE_MAX_BOX_HFR, and its rim fragments peak off-centre.
+
+    NOT A COUNT TEST, and the brief asked for one. A count cannot do this job
+    and the fixtures say so: the real donut frame L_0001 yields 200 detections
+    (rim fragments) and the 512 px donut crop yields 12, while a clean crop
+    yields 19 — so no bar between 12 and 200 separates them. What separates them
+    is the SHAPE of what was detected, which is what the gates measure. The only
+    count here is SIZE_FINE_MIN_STARS (10), the bar below which a median is not
+    a population.
+
+    ``stars`` is the caller's existing ``detect_stars`` pass — the preview path
+    grades every sub before it asks this — so the frame is scanned once.
+
+    ``focus.coarse`` deliberately does NOT come through here: it calls
+    ``measure_blob``, because on a frame it cannot measure it must say "nothing
+    bright enough to measure" and stop, not "your stars look fine".
+    """
+    from .stars import compact_star_population
+    if compact_star_population(data, stars=stars) is not None:
+        return None
+    return measure_blob(data)
+
+
 def focus_from_two(p1: int, r1: float, p2: int, r2: float) -> float | None:
     """Extrapolate the in-focus position from two blob measurements.
 

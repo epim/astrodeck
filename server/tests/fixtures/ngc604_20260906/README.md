@@ -22,5 +22,15 @@ not synthetic ones. The night's story is in the memory note
 | `clean_R60.fits.gz` | clean | guided on a fresh calibration: round stars; grader HFR 2.73, ecc 0.51 |
 | `m33core_G60.fits.gz` | galaxy | M33 core / NGC 604: resolved structure the autofocus size metric counts as "sources" |
 
+Two WIDE crops were added on 2026-09-07 for the focus-metric repair, because
+both defects it fixes are invisible at 512 px: the discriminators they broke
+read the brightness of the frame's brightest stars, and a 512 px crop does not
+contain them.
+
+| file | size | verdict | what it shows |
+|---|---|---|---|
+| `m33field_G60.fits.gz` | 2048x1536 | galaxy, in focus | M33's core AND its star field: 200 detections at grader HFR 3.43. At the 2026-09-06 HEAD `measure_blob` read r80 466 px here (932 px across, published to the Focus panel as "far out of focus") and `star_size` answered 5.97 px from pyramid scale 16 |
+| `donutfield_L60.fits.gz` | 1024x1024 | defocused | the same L_0001 as `donut_L60`, wide enough to hold a field of donuts: 43 detections, grader HFR 4.01, and it must stay on the pyramid |
+
 `clean_R60` and `jump_R60` are the same crop window of consecutive R subs,
 so their star lists should match star for star.

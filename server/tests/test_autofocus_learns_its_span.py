@@ -128,7 +128,7 @@ async def test_a_span_the_operator_typed_is_used_verbatim():
     """The Focus screen's Advanced panel exists so someone can overrule us. A
     number they typed must never be quietly replaced by ours."""
     _rig, _cam, foc = await _connected_sim()
-    record_measured_span(
+    await record_measured_span(
         foc, [(19200 + d, 3.0 + abs(d) * 0.08) for d in
               (-1400, -700, -350, 0, 350, 700, 1400)], 19200, 1)
     assert load_focus_calibration(None) is not None
@@ -231,8 +231,8 @@ async def test_recording_never_costs_a_run_that_already_succeeded():
     disk full, a record it cannot parse — none of that may turn a successful
     autofocus into a failed one."""
     _rig, _cam, foc = await _connected_sim()
-    record_measured_span(foc, [("not", "numbers")], 19200, 1)   # must not raise
-    record_measured_span(foc, [], 19200, 1)
+    await record_measured_span(foc, [("not", "numbers")], 19200, 1)  # no raise
+    await record_measured_span(foc, [], 19200, 1)
     assert load_focus_calibration(None) is None
 
 
@@ -246,3 +246,120 @@ async def test_an_unreadable_calibration_reads_as_never_measured(monkeypatch):
     g = resolve_sweep(foc, None, 4)
     assert g.step == DEFAULT_STEP
     assert not g.measured
+
+
+# ------------------------------------------- it has to survive a restart (2026-09-07)
+#
+# THE SYMPTOM. On the night of 2026-09-06/07 a sweep logged "this focuser
+# defocuses at 0.0749 px/step". After a server restart the next sweep logged
+# "no completed sweep has measured this focuser's defocus slope yet". Only one
+# of those can be true, and nothing in either line said which.
+#
+# The record IS file-backed -- config.focus_calibration_path(), keyed by the
+# focuser's driver id -- so these grade the property end to end: what one
+# process writes, a process that shares nothing but the filesystem must read.
+
+
+def _sweep_points(best=19200):
+    return [(best + d, 3.0 + abs(d) * 0.08)
+            for d in (-1400, -700, -350, 0, 350, 700, 1400)]
+
+
+async def test_the_measured_slope_survives_a_restart():
+    """Written by one call, read back from the FILE with no shared state — the
+    only thing a restart preserves. Reconstructed through
+    ``FocusCalibration.from_json`` rather than through the loader, so this
+    cannot pass on a value the loader was holding in memory."""
+    import json
+
+    import astrodeck.config as config_mod
+    _rig, _cam, foc = await _connected_sim()
+    assert load_focus_calibration(None) is None, "started with a stale file"
+
+    await record_measured_span(foc, _sweep_points(), 19200, 1)
+
+    path = config_mod.focus_calibration_path()
+    assert path.exists(), f"nothing was written to {path}"
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    key = config_mod._FOCUSER_DEFAULT_KEY
+    assert key in raw, f"the record is filed under {list(raw)}, not {key}"
+    stored = FocusCalibration.from_json(raw[key])
+    assert stored is not None, f"the stored record does not parse back: {raw}"
+    assert stored.slope_px_per_step > 0
+    assert stored.n_points == 7
+    assert stored.swept_half_span == 1400
+
+    # And a restart's first sweep is sized from it, which is the whole point.
+    g = resolve_sweep(foc, None, 4)
+    assert g.measured, g.basis
+    assert f"{stored.slope_px_per_step:.4f} px/step" in g.basis, g.basis
+
+
+async def test_the_record_says_when_and_at_what_temperature():
+    """A slope with no date and no temperature cannot answer "was this measured
+    tonight, on this train". The sim focuser reports 4.2 C; a focuser that
+    reports none stores None rather than a zero that reads as freezing."""
+    import datetime as dt
+
+    _rig, _cam, foc = await _connected_sim()
+    await record_measured_span(foc, _sweep_points(), 19200, 1)
+    cal = load_focus_calibration(None)
+    assert cal is not None
+    assert cal.measured_on == dt.date.today().isoformat()
+    assert cal.temperature_c == pytest.approx(4.2), (
+        "the focuser's temperature was not recorded with the slope")
+    assert "4.2 C" in resolve_sweep(foc, None, 4).basis
+
+    class _NoThermometer:
+        _state_key = "chilly"
+
+        async def get_temperature(self):
+            return None
+
+    await record_measured_span(_NoThermometer(), _sweep_points(), 19200, 1)
+    silent = load_focus_calibration("chilly")
+    assert silent is not None and silent.temperature_c is None, (
+        "a focuser with no thermometer invented a temperature")
+
+
+async def test_a_slope_that_could_not_be_stored_says_so():
+    """``save_focus_calibration`` swallows every exception on purpose —
+    bookkeeping must not fail a focus run — so a store it cannot write to used
+    to be indistinguishable from one it wrote to, and the only evidence was a
+    contradiction between two log lines hours apart. The write is verified
+    where it happens now."""
+    import astrodeck.config as config_mod
+    _rig, _cam, foc = await _connected_sim()
+
+    def _refuse(_path, _data):
+        raise OSError("read-only file system")
+
+    q = bus.subscribe()
+    try:
+        original = config_mod.write_json_atomic
+        config_mod.write_json_atomic = _refuse
+        try:
+            await record_measured_span(foc, _sweep_points(), 19200, 1)
+        finally:
+            config_mod.write_json_atomic = original
+        said = _logs(q)
+    finally:
+        bus.unsubscribe(q)
+
+    assert load_focus_calibration(None) is None, "precondition: nothing stored"
+    assert any("could not store it" in m for m in said), (
+        f"a lost calibration was silent; the log said: {said}")
+    assert any(str(config_mod.focus_calibration_path()) in m for m in said), (
+        "the warning does not say WHERE it tried to write")
+
+
+async def test_the_never_measured_line_says_where_it_looked():
+    """The line the rig printed after the restart. It has to name the store and
+    the key, or "it did not persist" is not a checkable claim."""
+    import astrodeck.config as config_mod
+    _rig, _cam, foc = await _connected_sim()
+    g = resolve_sweep(foc, None, 4)
+    assert not g.measured
+    assert "no completed sweep" in g.basis
+    assert str(config_mod.focus_calibration_path()) in g.basis, g.basis
+    assert "key 'default'" in g.basis, g.basis
