@@ -115,6 +115,17 @@ export function getLazyView(v: ViewName): LazyExoticComponent<ComponentType> | n
   return c;
 }
 
+/** Test seam: pin `getLazyView(v)` to a caller-built lazy component instead of
+ *  the real chunk loader — e.g. `lazy(() => Promise.reject(new Error(...)))`
+ *  or one that resolves to a component that throws on render. Used by
+ *  ViewBoundary's tests to drive both failure shapes without touching the
+ *  network. Not used by app code. */
+export function __setLazyComponentForTest(
+  v: ViewName, c: LazyExoticComponent<ComponentType>,
+): void {
+  cache.set(v, c);
+}
+
 // --- background preload -----------------------------------------------------
 // The whole justification for splitting. See the header for why this is not
 // optional, and why it is careful about when it spends each view's one attempt.
