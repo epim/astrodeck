@@ -73,14 +73,17 @@ def test_a_fresh_config_is_stamped_and_the_stamp_reaches_disk(tmp_path):
 def test_an_unstamped_file_is_stamped_once_and_keeps_its_settings(tmp_path):
     """The upgrade path every existing rig takes. It must not lose anything."""
     path = tmp_path / "astrodeck.json"
+    # Invented coordinates, per the standing rule; any non-default pair does
+    # the job here, because what is graded is that the migration KEEPS them.
     _write(path, {"version": 12, "deadman_url": "https://example.invalid/ping",
-                  "site": {"latitude": [SITE-LAT], "longitude": -[SITE-LON],
+                  "site": {"latitude": 40.0, "longitude": -105.0,
                            "elevation_m": 0.0, "is_default": False}})
     cfg = ConfigStore(path=path).cfg()
     assert cfg.schema_version == CONFIG_SCHEMA
     assert cfg.version == 12
     assert cfg.deadman_url == "https://example.invalid/ping"
-    assert cfg.site.latitude == pytest.approx([SITE-LAT])
+    assert cfg.site.latitude == pytest.approx(40.0)
+    assert cfg.site.longitude == pytest.approx(-105.0)
     assert _read(path)["schema_version"] == CONFIG_SCHEMA, (
         "the stamp has to be persisted, or every boot re-migrates for ever")
 

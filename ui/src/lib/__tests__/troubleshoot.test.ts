@@ -161,10 +161,71 @@ test("runFailureLog: empty/absent logs are safe", () => {
 });
 
 // --- privacy guard (Global Constraints)
-test("privacy: no real coords/label in help content", () => {
-  const blob = JSON.stringify(HELP) + JSON.stringify(TROUBLESHOOTING);
-  for (const bad of ["[SITE-LAT]", "[SITE-LON]", "[SITE-LABEL]"]) assert(!blob.includes(bad), `leaked ${bad}`);
-});
+//
+// The values this asserts the absence of are NOT in the repository. This guard
+// used to spell them out — which made the guard itself the most reliable copy
+// of the thing it forbade, and the history rewrite of 2026-09-08 purged them.
+// They now come from outside the tree, on the same contract as
+// tools/privacy_scan.py: ASTRODECK_PRIVACY_NEEDLES (newline- or
+// comma-separated), else the file named by ASTRODECK_PRIVACY_NEEDLES_FILE,
+// else ~/.astrodeck/privacy-needles.txt. With none of those there is nothing
+// to grade, so the guard says out loud that it skipped and passes — a check
+// that cannot fail must at least admit it, rather than counting as a pass.
+//
+// Same dependency-free node access idiom as gallery.test.ts: the project
+// installs no @types/node and `tsc -b` type-checks everything under src/.
+interface NodeFsLike { readFileSync(path: string, encoding: string): string }
+interface NodeOsLike { homedir(): string }
+const nodeImport = (m: string): Promise<unknown> =>
+  (Function("m", "return import(m)") as (m: string) => Promise<unknown>)(m);
+const nodeFs = (await nodeImport("node:fs")) as NodeFsLike;
+const nodeOs = (await nodeImport("node:os")) as NodeOsLike;
+const nodeEnv =
+  (globalThis as unknown as { process?: { env?: Record<string, string | undefined> } })
+    .process?.env ?? {};
+
+const splitNeedles = (raw: string): string[] =>
+  raw.replace(/,/g, "\n").split("\n").map((s) => s.trim()).filter(Boolean);
+
+function loadNeedles(): string[] {
+  const inline = (nodeEnv.ASTRODECK_PRIVACY_NEEDLES ?? "").trim();
+  if (inline) return splitNeedles(inline);
+  const named = (nodeEnv.ASTRODECK_PRIVACY_NEEDLES_FILE ?? "").trim();
+  const file = named || `${nodeOs.homedir()}/.astrodeck/privacy-needles.txt`;
+  try { return splitNeedles(nodeFs.readFileSync(file, "utf8")); } catch { return []; }
+}
+
+/** Each needle, plus — for a numeric one — its truncation to three decimals: a
+ *  three-decimal prefix still places the rig to about 100 m. Two decimals are
+ *  about a kilometre and stay legal; that shape is all over the catalogs.
+ *  Lower-cased, so a label matches whatever case it was pasted in. */
+function forbiddenStrings(needles: string[]): string[] {
+  const out: string[] = [];
+  for (const needle of needles) {
+    out.push(needle.toLowerCase());
+    const decimals = /^[+-]?\d+\.(\d+)$/.exec(needle);
+    if (decimals && decimals[1].length > 3) {
+      out.push(needle.slice(0, needle.indexOf(".") + 4));
+    }
+  }
+  return out;
+}
+
+const FORBIDDEN = forbiddenStrings(loadNeedles());
+if (FORBIDDEN.length === 0) {
+  // eslint-disable-next-line no-console
+  console.log("troubleshoot.test: privacy guard SKIPPED, no needles configured "
+    + "(set ASTRODECK_PRIVACY_NEEDLES or ~/.astrodeck/privacy-needles.txt)");
+} else {
+  test("privacy: no real coords/label in help content", () => {
+    const blob = (JSON.stringify(HELP) + JSON.stringify(TROUBLESHOOTING)).toLowerCase();
+    // The failure message never names what matched. This output reaches CI
+    // logs, which are as public as the repository.
+    for (const bad of FORBIDDEN) {
+      assert(!blob.includes(bad), "a forbidden site value reached the troubleshooting export");
+    }
+  });
+}
 
 // ---------------------------------------------------------------- summary
 const total = passed + failed;

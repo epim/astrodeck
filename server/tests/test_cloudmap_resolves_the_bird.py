@@ -22,7 +22,12 @@ from astrodeck.config import ConfigStore
 
 # Well clear of the 106.1 W crossover in both directions, so no test here is
 # secretly about a boundary -- test_cloudmap_platform owns that.
-WEST = ([SITE-LAT], -[SITE-LON])          # the rig: San Jose
+#
+# WEST is a FICTIONAL site: round degrees, chosen only for being ~31 deg west
+# of the crossover and inside GOES-West's CONUS sector. The developer's own
+# coordinates are not in this repository and no fixture is allowed to imply
+# them; see tools/privacy_scan.py.
+WEST = (44.0, -120.0)              # fictional
 EAST = (40.713, -74.006)           # New York
 
 
@@ -48,7 +53,7 @@ def test_auto_never_reaches_the_state_or_the_credit(store):
 
     _at(store, WEST)
     west = svc.payload()
-    assert west["platform"] == "G18", "San Jose is GOES-West"
+    assert west["platform"] == "G18", "120 W is GOES-West"
     assert "goes18" in west["credit"]["url"], west["credit"]
 
     _at(store, EAST)

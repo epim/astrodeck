@@ -1,0 +1,42 @@
+# The observing-site scan, in its own workflow ON PURPOSE.
+#
+# It used to be a job inside ci.yml, and ci.yml carries
+# `paths-ignore: ['**/*.md', 'docs/**', ...]` so that a documentation edit does
+# not spend twenty minutes of runner time on a Rust build. That exemption
+# applies to the WHOLE workflow, jobs included -- so the privacy gate was
+# switched off for exactly the commits that have leaked the site every time it
+# has been leaked: 26 spec documents on 2026-08-04, and two lines of a plan
+# document found on 2026-09-08, after a history rewrite, still carrying the
+# coordinates in an escaped regex. Both were docs-only changes. Both would
+# have sailed past the gate that exists to stop them.
+#
+# So this workflow has no paths-ignore at all. It is one checkout and one
+# grep-shaped scan; it costs seconds, and it is the only CI job that must
+# never be skipped for being "only docs".
+name: privacy
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: privacy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  site:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Refuse the real observing site
+        env:
+          ASTRODECK_PRIVACY_NEEDLES: ${{ secrets.ASTRODECK_PRIVACY_NEEDLES }}
+        run: |
+          if [ -z "$ASTRODECK_PRIVACY_NEEDLES" ]; then
+            echo "privacy: no ASTRODECK_PRIVACY_NEEDLES secret available -- scan skipped."
+            echo "privacy: expected on a fork; on this repo it means the secret is unset."
+            exit 0
+          fi
+          python tools/privacy_scan.py --require

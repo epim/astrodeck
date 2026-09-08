@@ -800,6 +800,35 @@ the working tree, but **git history still carries them** -- decide whether that
 warrants a history rewrite. `ui/src/lib/__tests__/troubleshoot.test.ts` keeps
 the literals ON PURPOSE: it is the guard asserting they never reach an export.
 
+**RESOLVED 2026-09-08 (history rewritten).** Option A was taken. `git
+filter-repo` ran in three passes over every revision, replacing: both
+coordinates and the site label with placeholder tokens; each coordinate's
+truncation to three decimals, which is still the site to about 100 m; the
+two-decimal forms inside seven fixture files, where the surrounding data made
+even a kilometre identifying; the string parts `tools/privacy_scan.py`
+assembled its constants from; and one commit message. `tools/privacy_scan.py`
+itself was removed from all history rather than edited -- a scanner that holds
+what it forbids is the easiest place in a public clone to recover it, which is
+the same mistake as the boilerplate above and a worse one, because it was
+deliberate.
+
+The scanner has been rewritten to take its needles from OUTSIDE the tree:
+`ASTRODECK_PRIVACY_NEEDLES`, else the file named by
+`ASTRODECK_PRIVACY_NEEDLES_FILE` (default `~/.astrodeck/privacy-needles.txt`).
+CI reads them from a repository secret and passes `--require` so an unset
+secret fails the job instead of quietly scanning nothing; a fork, which cannot
+read the secret, prints that it skipped. The troubleshoot guard reads the same
+two sources and skips with one printed line when neither is available, so it
+no longer needs the literals it was exempted for. The three server tests and
+the UI guard that carried the values now use fictional sites.
+
+**Force push still pending**, and with it the rest of the checklist in
+`2026-08-05-site-coords-in-history-decision.md`: both collaborators must
+delete and re-clone, the old objects stay reachable by SHA on GitHub until
+they are purged (support ticket, or recreate the repo from the scrubbed
+mirror), the three tags need verifying, and every SHA cited in this directory
+from `43a08fe` onward stops resolving.
+
 ---
 
 # Found by CI after the sweep — FIXED
