@@ -88,3 +88,53 @@ neighbour, which trips the confirm-the-fit override; the override then moves
 one step in, shorter than the slack, so it turns the motor and not the tube.
 That is the 2026-08-19 "the confirming frame read worse than a sample already
 in hand" observation with a cause attached.
+
+### 2026-09-08 after lane 1 (git 79563f8, measure the centre once)
+
+```
+metric                 rich_at_focus  rich_turnround       sparse_83         rich_83
+--------------------  --------------  --------------  --------------  --------------
+wall_s                         157.1           163.2           248.8           151.0
+exposures                         11              12              11              11
+wasted_frames                      0               1               0               0
+rust_passes (frac)         1 (1.00)        1 (1.00)        1 (1.00)        1 (1.00)
+size_passes (frac)        10 (0.16)       10 (0.16)       10 (1.00)       10 (0.16)
+moves / reversals           11 / 2          12 / 3          11 / 3          11 / 3
+camera_idle_s                   67.0            65.1           149.7            60.6
+physical_error_steps             -39               7             -39             -39
+approach_of_final                out              in              in              in
+```
+
+The rich sweep is 4.4x faster (690 s to 157 s) with one Rust pass per run
+and every size pass on 16 percent of the pixels. The sparse field keeps the
+whole frame by design (34 stars has nothing to give away), so its saving is
+the Rust pass alone (503 s to 249 s) and its size passes at the wings are
+now the cost that remains. The backlash figures are unchanged: that is
+lane 3's.
+
+### 2026-09-08 after lanes 2 and 3 (predict with the engine, probe overlap, one-side approach)
+
+```
+metric                 rich_at_focus  rich_turnround       sparse_83         rich_83
+--------------------  --------------  --------------  --------------  --------------
+wall_s                         153.4           144.5           251.1           148.4
+exposures                         11              11              11              11
+wasted_frames                      0               0               0               0
+rust_passes (frac)         1 (1.00)        1 (1.00)        1 (1.00)        1 (1.00)
+size_passes (frac)        10 (0.16)       10 (0.16)       10 (1.00)       10 (0.16)
+moves / reversals           13 / 3          14 / 5          13 / 3          13 / 3
+camera_idle_s                   63.3            54.4           153.1            58.1
+physical_error_steps               0               0               0               0
+approach_of_final                 in              in              in              in
+```
+
+The turn-round stops costing anything at all: `peek_next` turns with the sweep,
+so `rich_turnround` takes the same eleven exposures as a centred run (it was
+twelve) and gets its overlap back for the second half of the sweep, which is
+the 163 s to 145 s. Every scenario now ends with the tube exactly where the run
+says it is -- the overshoot makes the first move, the validation frame and the
+final settle all arrive inward, so the outermost point reads its own position,
+the validation frame reads what its neighbour read, `confirmed_best` has nothing
+to override, and the fitted vertex lands ON the modelled focus instead of 1 to 5
+steps off it. The two extra legs per outward move cost 2 to 3 s, paid back by
+the probe's measurement now running over the first move and exposure.

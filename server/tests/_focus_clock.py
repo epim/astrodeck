@@ -125,6 +125,71 @@ FOUR THINGS THE LOOP DOES THAT THE PLAN DID NOT PREDICT, all visible above:
 4. ``rust_passes == size_passes + 1`` on every scenario: the probe pays a Rust
    pass and no ``focus_size``, every point pays both.
 
+-------------------------------------------------------------------------------
+AFTER LANES 2 AND 3, 2026-09-08 (predict with the engine, probe overlap,
+one-side approach). Lane 1's table is in the spec's changelog,
+docs/superpowers/specs/2026-09-08-autofocus-efficiency.md.
+-------------------------------------------------------------------------------
+
+    metric                 rich_at_focus  rich_turnround       sparse_83         rich_83
+    --------------------  --------------  --------------  --------------  --------------
+    success                         True            True            True            True
+    wall_s                         153.4           144.5           251.1           148.4
+    exposures                         11              11              11              11
+    wasted_frames                      0               0               0               0
+    rust_passes                        1               1               1               1
+    rust_mean_frac                  1.00            1.00            1.00            1.00
+    size_passes                       10              10              10              10
+    size_mean_frac                  0.16            0.16            1.00            0.16
+    moves                             13              14              13              13
+    total_steps                     6400            8900            2128            2128
+    reversals                          3               5               3               3
+    camera_idle_s                   63.3            54.4           153.1            58.1
+    cpu_s                           87.2            76.6           224.7            86.2
+    final_commanded                11200           11900           11176           11200
+    final_physical                 11200           11900           11176           11200
+    physical_error_steps               0               0               0               0
+    approach_of_final                 in              in              in              in
+
+    rich_at_focus:  12600:29.89 12250:22.48 11900:15.10 11550:7.86 11200:2.50
+                    10850:7.86 10500:15.10 10150:22.48 9800:29.89 11200:2.50
+    rich_turnround: 12600:15.10 12250:7.86 11900:2.50 11550:7.86 11200:15.10
+                    10850:22.48 10500:29.89 12950:22.48 13300:29.89 11900:2.50
+    sparse_83:      11508:27.89 11425:21.04 11342:14.27 11259:7.75 11176:3.50
+                    11093:7.75 11010:14.27 10927:21.04 10844:27.89 11176:3.50
+    rich_83:        11532:27.89 11449:21.04 11366:14.27 11283:7.75 11200:3.50
+                    11117:7.75 11034:14.27 10951:21.04 10868:27.89 11200:3.50
+
+Against the status quo above: 690 s to 153 s on the rich centred sweep, 700 s
+to 145 s on the one that turns round, 503 s to 251 s on the sparse replay. The
+four observations above, one at a time:
+
+1. GONE. Every point now reads its own position -- 12600 measures 29.89 where
+   the model says 29.89, 11508 reads 27.89 -- because every outward move
+   overshoots by 200 steps and returns, so the first move to the top of the
+   window arrives inward like all the others.
+2. GONE, and with it the override it caused. ``physical_error_steps`` is 0 on
+   all four scenarios and ``approach_of_final`` is ``in`` on all four. The
+   validation frame reads 3.50 px where the swept neighbour read 3.50, so
+   ``confirmed_best`` has nothing to refuse and the fitted vertex lands ON the
+   model's focus (11200, 11900, 11176, 11200) instead of 1 to 5 steps off it.
+3. STILL TRUE, and unfixable from the host: ``rich_turnround`` still walks 8900
+   steps to a centred sweep's 6400 with two more reversals, because the engine
+   extends to quota on one side before turning. What it no longer pays is the
+   WASTED FRAME -- ``wasted_frames`` is 0 everywhere and it takes 11 exposures
+   like every other scenario, because ``peek_next`` turns round with it.
+4. Now ``rust_passes == 1`` and ``size_passes == 10``: the probe pays the one
+   full-frame Rust pass (which is also what sizes the window), and each point
+   pays one ``focus_size`` -- over 16 percent of the pixels on a rich field,
+   over the whole frame on the 34-star one, which is why the sparse replay is
+   now the most expensive of the four.
+
+The probe's own measurement is no longer serial: the engine is asked for its
+first move before the probe is measured, so that move and its exposure run
+underneath the probe's 26-to-58 s Rust pass. That is worth about 10 s on a rich
+field and is why ``rich_at_focus`` (153.4 s) beats its post-lane-1 number
+(157.1 s) despite the two extra overshoot legs it now pays for.
+
 Run it: ``python tests/_focus_clock.py`` from ``server/``.
 """
 from __future__ import annotations
