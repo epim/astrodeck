@@ -26,6 +26,18 @@ different filter measures the wrong thing and then needs an offset applied to
 guess back. Exposing longer through the filter actually in use measures the
 thing we care about directly.
 
+WHAT CHANGED 2026-09-08, AND WHY THIS FILE NOW TURNS `apply_filter_offsets` OFF.
+Scaling makes a narrowband sweep possible; it does not make it cheap. The two
+meridian-flip sweeps of the night of 2026-09-07/08 ran at 24 s a point because
+the wheel sat on Ha - 7.5 and 8 minutes each, against about 2.5 through L. So
+when the offsets ARE applied the sweep now moves to luminance and back through
+the sequence's own filter change, which applies the offset delta out and its
+exact inverse back; the paragraph above is precisely WHY it may only do that
+when something puts the offset back. Everything below is the path taken when
+nothing can - offsets off by policy, no offset measured for one of the two
+slots, no luminance slot on the wheel, no wheel at all - and it is unchanged.
+The swap itself is graded in `test_the_flip_stops_paying_for_itself.py`.
+
 THE NUMBERS ARE NOT NEW: 4x exposure, and gain never left below the sensor's
 high-conversion-gain knee (measured 3.96 e- to 1.36 e- read noise on the IMX571
 at gain 125). A narrowband focus frame is read-noise limited, so the knee is the
@@ -41,7 +53,7 @@ import astrodeck.sequence.engine as engine_mod
 from astrodeck.focus.filter_offsets import (NARROWBAND_EXPOSURE_MULTIPLE,
                                             narrowband_sweep_settings)
 from astrodeck.hub import Hub
-from astrodeck.sequence import SequenceEngine
+from astrodeck.sequence import SequenceEngine, SequencePlan
 
 
 class _Result:
@@ -82,8 +94,15 @@ BASE_EXP, BASE_GAIN, BASE_BIN = 2.0, 120, 2
 
 
 async def _focus_through(sim_hub, slot: int, *, narrowband: list[bool],
-                         hcg: int | None = 125, monkeypatch=None):
-    """Park the wheel on ``slot``, mark the wheel up, and run one autofocus."""
+                         hcg: int | None = 125, monkeypatch=None,
+                         offsets: bool = False):
+    """Park the wheel on ``slot``, mark the wheel up, and run one autofocus.
+
+    ``offsets=False`` by default, and that is the subject of this file: with the
+    per-filter offsets applied the sweep MOVES to luminance instead of scaling
+    its exposure (see the module docstring), so the scaling is only reachable -
+    and only correct - with nothing available to put the offset back.
+    """
     if monkeypatch is not None:
         focus = hub_module.config_store.cfg().frames.focus
         monkeypatch.setattr(focus, "exposure_s", BASE_EXP)
@@ -96,6 +115,7 @@ async def _focus_through(sim_hub, slot: int, *, narrowband: list[bool],
     cam = sim_hub.devices["camera"]
     cam.hcg_threshold_gain = hcg
     e = SequenceEngine(sim_hub)
+    e.plan = SequencePlan(apply_filter_offsets=offsets)
     await e._autofocus("test focus")
     return e
 

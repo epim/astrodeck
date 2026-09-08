@@ -41,7 +41,7 @@ import astrodeck.hub as hub_module
 import astrodeck.sequence.engine as engine_mod
 from astrodeck.focus.filter_offsets import NARROWBAND_EXPOSURE_MULTIPLE
 from astrodeck.hub import Hub
-from astrodeck.sequence import SequenceEngine
+from astrodeck.sequence import SequenceEngine, SequencePlan
 
 
 class _Result:
@@ -127,7 +127,20 @@ class TestTheGuardIsPassed:
 class TestNarrowbandScalesTHESCOPE:
     """The two fixes compose: the scope decides the base frame, narrowband
     multiplies it. Scaling a hardcoded constant instead would silently undo the
-    operator's setting on exactly the filters that need it most."""
+    operator's setting on exactly the filters that need it most.
+
+    `apply_filter_offsets` is turned OFF for both, and that is not a workaround:
+    since 2026-09-08 a sweep whose offsets can put the focus back MOVES to
+    luminance rather than exposing four times as long through the narrowband
+    slot, so the scaling this class is about is reached only when nothing can
+    put it back. See `test_autofocus_sees_through_narrowband.py`.
+    """
+
+    @staticmethod
+    def _engine(sim_hub):
+        e = SequenceEngine(sim_hub)
+        e.plan = SequencePlan(apply_filter_offsets=False)
+        return e
 
     async def test_it_multiplies_the_scopes_exposure_not_a_constant(
             self, sim_hub, af_calls, monkeypatch):
@@ -136,7 +149,7 @@ class TestNarrowbandScalesTHESCOPE:
         fw.filter_names = ["L", "R", "G", "B", "S", "Ha", "Oiii", "Dark"]
         fw.filter_narrowband = [False] * 4 + [True] * 3 + [False]
         await fw.set_position(5)                       # Ha
-        await SequenceEngine(sim_hub)._autofocus("in-run")
+        await self._engine(sim_hub)._autofocus("in-run")
         assert af_calls[0]["exposure_s"] == pytest.approx(
             5.0 * NARROWBAND_EXPOSURE_MULTIPLE), af_calls[0]
 
@@ -150,7 +163,7 @@ class TestNarrowbandScalesTHESCOPE:
         fw.filter_names = ["L", "R", "G", "B", "S", "Ha", "Oiii", "Dark"]
         fw.filter_narrowband = [False] * 4 + [True] * 3 + [False]
         await fw.set_position(6)
-        await SequenceEngine(sim_hub)._autofocus("in-run")
+        await self._engine(sim_hub)._autofocus("in-run")
         assert af_calls[0]["binning"] == 1
 
 

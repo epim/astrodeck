@@ -244,6 +244,12 @@ CENTERING_STUCK_MIN_ERR_FACTOR = 5.0
 #: slow approach is not mistaken for divergence.
 ROTATE_MIN_GAIN_DEG = 0.5
 
+#: Bound on the one pier-side read ``meridian_flip`` takes either side of its
+#: re-slew. The same 30 s the sequence engine gives every other mount query
+#: (``sequence.engine.MOUNT_QUERY_TIMEOUT_S``); a driver that never answers must
+#: degrade to "nobody can say" and leave the flip conservative, never hang it.
+PIER_SIDE_QUERY_TIMEOUT_S = 30.0
+
 #: how many full display frames the ring keeps (memory cap on the Pi), how many
 #: tiny thumbnails it keeps for the filmstrip, and how many linear arrays it
 #: retains for /crop and /render (a 6200 frame is ~125 MB, so only the latest
@@ -5768,10 +5774,53 @@ class Hub:
         return {"centered": False, "error_arcmin": (last_err or 0) * 60,
                 "attempts": max_attempts} | _rot_keys
 
+    async def pier_side_now(self) -> str | None:
+        """The mount's pier side as a lower-case string, or ``None``.
+
+        ``None`` means NOBODY CAN SAY — no mount, a dropped link, a driver that
+        raised. ``"unknown"`` means the driver answered and the answer was
+        "unknown"; both are kept distinct from a real side so two failures to
+        read can never be compared and called "unchanged".
+
+        Deliberately the same read, with the same tri-state, that
+        ``SequenceEngine._pier_side_now`` makes: ``meridian_flip`` and the
+        engine's flip step must not be able to disagree about what the mount
+        said, and the hub cannot import the engine to borrow it.
+        """
+        tel = self.devices.get("telescope")
+        if tel is None or not getattr(tel, "connected", False):
+            return None
+        try:
+            side = await asyncio.wait_for(tel.pier_side(),
+                                          PIER_SIDE_QUERY_TIMEOUT_S)
+        except asyncio.CancelledError:
+            raise
+        except Exception:                # noqa: BLE001
+            return None
+        return getattr(side, "value", None) or None
+
     async def meridian_flip(self, ra_hours: float, dec_deg: float) -> dict:
         """Flip a German equatorial mount across the meridian: stop guiding,
         re-slew (the mount chooses the far side of the pier), plate-solve
-        re-center, and restart guiding."""
+        re-center, and restart guiding.
+
+        THE RE-SLEW DOES NOT ALWAYS FLIP, and everything expensive here used to
+        be spent as if it always did. The AM5 picks its pier side from the HOUR
+        ANGLE, so the engine's lead-time attempt — issued while the target is
+        still east of the meridian — is answered by staying exactly where it is.
+        Measured 2026-09-07/08: that no-op re-slew still discarded the guider
+        calibration and paid 4.7 minutes to walk a fresh one, on a side whose
+        old calibration was still perfectly valid, and the real flip twelve
+        minutes later paid for it all again.
+
+        So the side is read either side of the slew. Unchanged AND readable
+        means nothing flipped: guiding restarts on the calibration it already
+        has (``needs_calibration`` reuses it), and the result says
+        ``flipped: False`` so the caller can skip the rest of the post-flip
+        programme too. A side that CHANGED — or that could not be read, which
+        is not evidence of anything — keeps today's conservative behaviour:
+        discard the calibration and recalibrate on the new side (GN-01).
+        """
         bus.publish("mount", action="meridian_flip")
         bus.log("info", "meridian flip: stopping guiding and re-slewing", "sequence")
         was_guiding = False
@@ -5781,7 +5830,12 @@ class Hub:
                 await self.guider.stop_guiding()
             except Exception:
                 pass
+        side_before = await self.pier_side_now()
         result = await self.goto_and_center(ra_hours, dec_deg)
+        side_after = await self.pier_side_now()
+        # Both reads have to have SUCCEEDED for "unchanged" to mean anything.
+        flipped = not (side_before not in (None, "unknown")
+                       and side_after == side_before)
         # Flip the guider's calibration for the far side of the pier BEFORE
         # restarting guiding (review 7d). On a real GEM the RA/Dec sense reverses
         # across the meridian, so guiding with the pre-flip calibration runs
@@ -5789,7 +5843,7 @@ class Hub:
         # (sim) or errors must not abort the flip. The guider method itself logs
         # its own success/failure; this call is guarded only so a missing method
         # or an unexpected raise can never break the flip.
-        if self.guider and self.guider.connected:
+        if flipped and self.guider and self.guider.connected:
             flip_cal = getattr(self.guider, "flip_calibration", None)
             if callable(flip_cal):
                 try:
@@ -5798,13 +5852,20 @@ class Hub:
                     bus.log("warning",
                             f"meridian flip: guider calibration flip failed: {e}",
                             "sequence")
+        elif not flipped:
+            bus.log("info",
+                    f"meridian flip: the mount still reports pier side "
+                    f"{side_after} after the re-slew — nothing flipped, so the "
+                    f"calibration for this side is kept rather than discarded "
+                    f"and re-walked", "sequence")
         if was_guiding:
             try:
                 await self.guider.start_guiding()
             except Exception as e:
                 bus.log("warning", f"meridian flip: guiding restart failed: {e}", "sequence")
         bus.log("info", "meridian flip complete", "sequence")
-        return result
+        return dict(result or {}, flipped=flipped,
+                    pier_side_before=side_before, pier_side_after=side_after)
 
     # ------------------------------------------------------------ NINA events
 
