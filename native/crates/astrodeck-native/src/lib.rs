@@ -36,7 +36,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
 use astro_focus::{
-    AfMethod, BacklashModel, CurveFitting, FailReason, FitOutcome, FocusConfig, Step,
+    AfMethod, BacklashModel, CurveFitting, FailReason, FitOutcome, FocusConfig, PendingKind, Step,
 };
 use astro_guide::calibration::{default_calibration_distance, DecMode};
 use astro_guide::engine::{AlgoKind, AxisAlgoParams, EngineConfig, ScopePointing};
@@ -619,6 +619,16 @@ fn build_focus_config(d: &Bound<'_, PyDict>) -> PyResult<FocusConfig> {
     Ok(c)
 }
 
+fn pending_kind_label(k: PendingKind) -> &'static str {
+    match k {
+        PendingKind::None => "none",
+        PendingKind::Baseline => "baseline",
+        PendingKind::Point => "point",
+        PendingKind::Validation => "validation",
+        PendingKind::Restore => "restore",
+    }
+}
+
 fn fail_reason_label(r: FailReason) -> &'static str {
     match r {
         FailReason::NotEnoughSpread => "not_enough_spread",
@@ -634,6 +644,9 @@ fn fail_reason_label(r: FailReason) -> &'static str {
 /// Construct with a `config` dict (mirrors `FocusConfig` field names; missing
 /// keys take NINA defaults) and an integer `start_position`. Drive it by
 /// alternating [`FocusSweep::next`] and [`FocusSweep::add_measurement`].
+/// [`FocusSweep::peek_next`] answers the same question for a *hypothetical*
+/// measurement without advancing the machine, so a host can move and expose
+/// the next point while the current one is still being measured.
 #[pyclass]
 struct FocusSweep {
     inner: astro_focus::FocusSweep,
@@ -652,10 +665,55 @@ impl FocusSweep {
     }
 
     /// Advance the state machine and return the next action:
-    /// `{action: "move_to", position}`, `{action: "done", outcome}`, or
-    /// `{action: "failed", reason}`.
+    /// `{action: "move_to", position, kind}`, `{action: "done", outcome, kind}`,
+    /// or `{action: "failed", reason, kind}`. `kind` is what the move expects
+    /// back -- `"baseline"`, `"point"`, `"validation"`, `"restore"`, or
+    /// `"none"` for the terminal actions -- so the caller can recognise the
+    /// validation move instead of counting points to it.
     fn next<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let step = self.inner.next();
+        let kind = self.inner.pending_kind();
+        self.step_to_dict(py, step, kind)
+    }
+
+    /// What `next()` *would* return if the most recent `move_to` position
+    /// measured `hfr`/`stdev`/`star_count` -- same dict shape as `next()`,
+    /// including `kind`, and the machine is left untouched.
+    ///
+    /// The hypothetical runs on a clone of the state machine, so the caller can
+    /// start the next move and exposure while the current point is still being
+    /// measured, right through the sweep's turn-round. A speculatively exposed
+    /// frame is still only ever usable for the position `next()` actually asks
+    /// for.
+    fn peek_next<'py>(
+        &self,
+        py: Python<'py>,
+        position: i32,
+        hfr: f64,
+        stdev: f64,
+        star_count: u32,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let (step, kind) = self.inner.peek_next(position, hfr, stdev, star_count);
+        self.step_to_dict(py, step, kind)
+    }
+
+    /// Supply the measurement for the most recent `move_to` position: the
+    /// frame-averaged `hfr` (pixels), its `stdev`, and the detected
+    /// `star_count` (`0` triggers the no-star sentinel).
+    fn add_measurement(&mut self, position: i32, hfr: f64, stdev: f64, star_count: u32) {
+        self.inner.add_measurement(position, hfr, stdev, star_count);
+    }
+}
+
+impl FocusSweep {
+    /// Serialise one `Step` and the kind of measurement it expects back, so
+    /// `next` and `peek_next` cannot drift into different dict shapes.
+    fn step_to_dict<'py>(
+        &self,
+        py: Python<'py>,
+        step: Step,
+        kind: PendingKind,
+    ) -> PyResult<Bound<'py, PyDict>> {
         let d = PyDict::new(py);
         match step {
             Step::MoveTo(pos) => {
@@ -676,14 +734,8 @@ impl FocusSweep {
                 d.set_item("reason", fail_reason_label(reason))?;
             }
         }
+        d.set_item("kind", pending_kind_label(kind))?;
         Ok(d)
-    }
-
-    /// Supply the measurement for the most recent `move_to` position: the
-    /// frame-averaged `hfr` (pixels), its `stdev`, and the detected
-    /// `star_count` (`0` triggers the no-star sentinel).
-    fn add_measurement(&mut self, position: i32, hfr: f64, stdev: f64, star_count: u32) {
-        self.inner.add_measurement(position, hfr, stdev, star_count);
     }
 }
 

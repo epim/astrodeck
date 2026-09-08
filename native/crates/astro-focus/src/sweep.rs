@@ -16,6 +16,16 @@
 //! [`Step::Done`] carries the [`FitOutcome`]; [`Step::Failed`] carries a
 //! [`FailReason`] after the focuser has been told to restore to the start.
 //!
+//! The host may also ask what the next step *would* be for a hypothetical
+//! measurement: [`FocusSweep::peek_next`] clones the machine, feeds the clone
+//! that measurement and returns the `(Step, PendingKind)` the clone would
+//! emit, leaving `self` untouched. That is what lets a host expose
+//! speculatively straight through the sweep's turn-round instead of guessing
+//! with a rule of thumb that only describes the descending half. The
+//! [`PendingKind`] rides along on both `peek_next` and
+//! [`FocusSweep::pending_kind`] so the host can *recognise* the validation
+//! move (and the restore, and the baseline) rather than count points to it.
+//!
 //! All positions are focuser encoder steps. This machine emits **absolute**
 //! target positions: NINA's relative "reposition then step" moves are folded
 //! into the equivalent absolute measurement position (the intermediate stops
@@ -68,13 +78,20 @@ struct Meas {
     star_count: u32,
 }
 
-/// What the most recently emitted `MoveTo` expects back.
+/// What the most recently emitted [`Step::MoveTo`] expects back, reported by
+/// [`FocusSweep::pending_kind`] and by [`FocusSweep::peek_next`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Pending {
+pub enum PendingKind {
+    /// Nothing is outstanding: the machine has not run yet, or the last step
+    /// was [`Step::Done`]/[`Step::Failed`].
     None,
+    /// The pre-sweep baseline HFR at the start position.
     Baseline,
+    /// A sweep or extension point to be added to the curve.
     Point,
+    /// The re-measure at the fitted focus that validates the run.
     Validation,
+    /// The restore to the start position emitted just before [`Step::Failed`].
     Restore,
 }
 
@@ -106,7 +123,7 @@ pub struct FocusSweep {
     trend: Option<TrendlineFit>,
 
     stage: Stage,
-    pending: Pending,
+    pending: PendingKind,
     last_measurement: Option<Meas>,
 
     sweep_positions: Vec<i32>,
@@ -139,7 +156,7 @@ impl FocusSweep {
             points: Vec::new(),
             trend: None,
             stage: Stage::Init,
-            pending: Pending::None,
+            pending: PendingKind::None,
             last_measurement: None,
             sweep_positions: Vec::new(),
             sweep_idx: 0,
@@ -160,6 +177,37 @@ impl FocusSweep {
     /// The focus points collected so far (position-sorted).
     pub fn points(&self) -> &[FocusPoint] {
         &self.points
+    }
+
+    /// What the most recently emitted [`Step::MoveTo`] expects back.
+    /// [`PendingKind::None`] before the first [`FocusSweep::next`] and once the
+    /// run is terminal.
+    pub fn pending_kind(&self) -> PendingKind {
+        self.pending
+    }
+
+    /// What [`FocusSweep::next`] *would* return if the most recent
+    /// [`Step::MoveTo`] position measured `hfr`/`stdev`/`star_count` — without
+    /// advancing this machine.
+    ///
+    /// The hypothetical is run on a clone (`self` is not mutated), so the host
+    /// can start the next move and exposure while the current point is still
+    /// being measured, and keep doing so across the sweep's turn-round. The
+    /// second element is the clone's [`PendingKind`]: what that step would
+    /// expect back, which is how a host recognises the validation move rather
+    /// than counting points to it. A speculative frame is still only ever
+    /// usable for the position the machine actually asks for.
+    pub fn peek_next(
+        &self,
+        position: i32,
+        hfr: f64,
+        stdev: f64,
+        star_count: u32,
+    ) -> (Step, PendingKind) {
+        let mut probe = self.clone();
+        probe.add_measurement(position, hfr, stdev, star_count);
+        let step = probe.next();
+        (step, probe.pending)
     }
 
     /// Supply the measurement for the position of the most recent
@@ -184,16 +232,16 @@ impl FocusSweep {
     pub fn next(&mut self) -> Step {
         if let Some(m) = self.last_measurement.take() {
             match self.pending {
-                Pending::Baseline => {
+                PendingKind::Baseline => {
                     self.initial_hfr = if m.star_count == 0 { 0.0 } else { m.value };
                     self.baseline_done = true;
                 }
-                Pending::Point => self.record_point(m),
-                Pending::Validation => self.consume_validation(m),
-                Pending::Restore | Pending::None => {}
+                PendingKind::Point => self.record_point(m),
+                PendingKind::Validation => self.consume_validation(m),
+                PendingKind::Restore | PendingKind::None => {}
             }
         }
-        self.pending = Pending::None;
+        self.pending = PendingKind::None;
         self.decide()
     }
 
@@ -227,7 +275,7 @@ impl FocusSweep {
         match self.stage {
             Stage::Init => {
                 if self.cfg.baseline_needed() && !self.baseline_done {
-                    self.pending = Pending::Baseline;
+                    self.pending = PendingKind::Baseline;
                     return Step::MoveTo(self.start);
                 }
                 self.setup_initial_sweep();
@@ -238,7 +286,7 @@ impl FocusSweep {
                 if self.sweep_idx < self.sweep_positions.len() {
                     let pos = self.sweep_positions[self.sweep_idx];
                     self.sweep_idx += 1;
-                    self.pending = Pending::Point;
+                    self.pending = PendingKind::Point;
                     Step::MoveTo(pos)
                 } else {
                     self.stage = Stage::Extending;
@@ -250,12 +298,12 @@ impl FocusSweep {
             Stage::AwaitValidation => {
                 // Reached only if the host calls next() without add_measurement
                 // after a validation move; re-emit the validation move.
-                self.pending = Pending::Validation;
+                self.pending = PendingKind::Validation;
                 Step::MoveTo(self.final_move)
             }
             Stage::RestoreFail => {
                 self.stage = Stage::EmitFail;
-                self.pending = Pending::Restore;
+                self.pending = PendingKind::Restore;
                 Step::MoveTo(self.start)
             }
             Stage::EmitFail => {
@@ -342,7 +390,7 @@ impl FocusSweep {
             return self.decide();
         };
 
-        self.pending = Pending::Point;
+        self.pending = PendingKind::Point;
         Step::MoveTo(target)
     }
 
@@ -377,7 +425,7 @@ impl FocusSweep {
         self.final_fits = Some(fits);
         self.final_move = fx.trunc() as i32;
         self.stage = Stage::AwaitValidation;
-        self.pending = Pending::Validation;
+        self.pending = PendingKind::Validation;
         Step::MoveTo(self.final_move)
     }
 
@@ -426,5 +474,308 @@ impl FocusSweep {
             self.fail_reason = Some(reason);
             self.stage = Stage::RestoreFail;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{CurveFitting, FocusConfig};
+
+    const STEP: i32 = 350;
+    const OFFSET: i32 = 4;
+
+    fn cfg() -> FocusConfig {
+        FocusConfig {
+            step_size: STEP,
+            offset_steps: OFFSET,
+            curve_fitting: CurveFitting::Hyperbolic,
+            r_squared_threshold: 0.7,
+            ..FocusConfig::default()
+        }
+    }
+
+    /// The V shape the rig actually measures: a hyperbola with a 2.5 px waist
+    /// and a 47-steps-per-pixel flank, so `focus +/- offset*step` reaches about
+    /// 30 px the way a real nine-point sweep does.
+    fn hyperbola(focus: i32) -> impl Fn(i32) -> (f64, f64, u32) {
+        move |pos| {
+            let d = (pos - focus) as f64 / 47.0;
+            ((2.5f64 * 2.5 + d * d).sqrt(), 0.1, 30)
+        }
+    }
+
+    /// `Step` carries a `FitOutcome` that is not `PartialEq`; the derived
+    /// `Debug` is the whole value, so compare that.
+    fn label(s: &Step) -> String {
+        format!("{s:?}")
+    }
+
+    #[test]
+    fn peek_does_not_move_the_machine() {
+        // Two identical machines, one of which is peeked at every point with
+        // both the true measurement and a nonsense one. They must stay in
+        // lockstep: same emitted positions, same curve, same terminal step.
+        let focus = 12_000;
+        let curve = hyperbola(focus);
+        let mut peeked = FocusSweep::new(cfg(), focus);
+        let mut plain = FocusSweep::new(cfg(), focus);
+
+        let mut a = peeked.next();
+        let mut b = plain.next();
+        for _ in 0..500 {
+            let pos = match (&a, &b) {
+                (Step::MoveTo(p), Step::MoveTo(q)) => {
+                    assert_eq!(p, q, "the peeked run emitted a different position");
+                    *p
+                }
+                _ => break,
+            };
+            let (hfr, sd, n) = curve(pos);
+
+            let points_before = peeked.points().to_vec();
+            let kind_before = peeked.pending_kind();
+            let attempt_before = peeked.attempt();
+            let _ = peeked.peek_next(pos, hfr, sd, n);
+            let _ = peeked.peek_next(pos, 99.0, 9.0, 0);
+            assert_eq!(
+                peeked.points(),
+                points_before.as_slice(),
+                "peek added a point"
+            );
+            assert_eq!(
+                peeked.pending_kind(),
+                kind_before,
+                "peek changed the pending kind"
+            );
+            assert_eq!(peeked.attempt(), attempt_before, "peek changed the attempt");
+
+            peeked.add_measurement(pos, hfr, sd, n);
+            plain.add_measurement(pos, hfr, sd, n);
+            a = peeked.next();
+            b = plain.next();
+        }
+
+        assert!(matches!(a, Step::Done(_)), "expected Done, got {a:?}");
+        assert_eq!(
+            label(&a),
+            label(&b),
+            "the peeked run diverged from the plain one"
+        );
+        assert_eq!(peeked.points(), plain.points());
+    }
+
+    #[test]
+    fn peek_agrees_with_the_step_the_engine_actually_takes() {
+        // THE PROPERTY THE HOST BETS AN EXPOSURE ON. At every point of a clean
+        // sweep, what peek says the engine will ask for is what it then asks
+        // for -- the extensions, the validation move and Done included.
+        let focus = 12_000;
+        let curve = hyperbola(focus);
+        let mut sweep = FocusSweep::new(cfg(), focus);
+
+        let mut step = sweep.next();
+        let mut checked = 0usize;
+        for _ in 0..500 {
+            let pos = match &step {
+                Step::MoveTo(p) => *p,
+                _ => break,
+            };
+            let (hfr, sd, n) = curve(pos);
+            let (peeked, peeked_kind) = sweep.peek_next(pos, hfr, sd, n);
+            sweep.add_measurement(pos, hfr, sd, n);
+            step = sweep.next();
+            assert_eq!(label(&peeked), label(&step), "peek disagreed after {pos}");
+            assert_eq!(
+                peeked_kind,
+                sweep.pending_kind(),
+                "peeked kind disagreed after {pos}"
+            );
+            checked += 1;
+        }
+
+        assert!(matches!(step, Step::Done(_)), "expected Done, got {step:?}");
+        assert!(
+            checked >= 9,
+            "only {checked} points checked, expected the full sweep"
+        );
+    }
+
+    #[test]
+    fn peek_sees_the_turn_round_the_descending_rule_of_thumb_cannot() {
+        // Focus two steps ABOVE the start: the initial pass and the left
+        // extensions all walk down, then the engine turns and extends UP from
+        // the highest point measured. A `pos - step` guess is wrong exactly
+        // there; peek is not.
+        let start = 10_000;
+        let focus = start + 2 * STEP;
+        let curve = hyperbola(focus);
+        let mut sweep = FocusSweep::new(cfg(), start);
+
+        let mut highest = i32::MIN;
+        let mut turn: Option<(i32, i32, PendingKind)> = None;
+        let mut step = sweep.next();
+        for _ in 0..500 {
+            let pos = match &step {
+                Step::MoveTo(p) => *p,
+                _ => break,
+            };
+            highest = highest.max(pos);
+            let (hfr, sd, n) = curve(pos);
+            let (peeked, kind) = sweep.peek_next(pos, hfr, sd, n);
+            if let Step::MoveTo(next_pos) = peeked {
+                if next_pos > pos && turn.is_none() {
+                    turn = Some((highest, next_pos, kind));
+                }
+            }
+            sweep.add_measurement(pos, hfr, sd, n);
+            step = sweep.next();
+        }
+
+        let (highest_at_turn, target, kind) = turn.expect("the sweep never turned round");
+        assert_eq!(
+            target,
+            highest_at_turn + STEP,
+            "the right extension must continue one step above the highest point"
+        );
+        assert_eq!(
+            kind,
+            PendingKind::Point,
+            "the turn-round is still a curve point"
+        );
+        assert!(matches!(step, Step::Done(_)), "expected Done, got {step:?}");
+    }
+
+    #[test]
+    fn peek_recognises_the_validation_move() {
+        // Once both sides are satisfied the engine fits and moves to the
+        // fitted focus. The host must not have to count points to know that:
+        // the peeked kind says so, and the position is the focus.
+        let focus = 12_000;
+        let curve = hyperbola(focus);
+        let mut sweep = FocusSweep::new(cfg(), focus);
+
+        let mut validation: Option<i32> = None;
+        let mut kinds_before_it: Vec<PendingKind> = Vec::new();
+        let mut step = sweep.next();
+        for _ in 0..500 {
+            let pos = match &step {
+                Step::MoveTo(p) => *p,
+                _ => break,
+            };
+            let (hfr, sd, n) = curve(pos);
+            let (peeked, kind) = sweep.peek_next(pos, hfr, sd, n);
+            if kind == PendingKind::Validation && validation.is_none() {
+                match peeked {
+                    Step::MoveTo(p) => validation = Some(p),
+                    other => panic!("a validation kind must carry a MoveTo, got {other:?}"),
+                }
+            } else if validation.is_none() {
+                kinds_before_it.push(kind);
+            }
+            sweep.add_measurement(pos, hfr, sd, n);
+            step = sweep.next();
+        }
+
+        let target = validation.expect("no validation move was ever peeked");
+        assert!(
+            (target - focus).abs() <= STEP,
+            "the validation move went to {target}, more than a step from {focus}"
+        );
+        assert!(
+            kinds_before_it.iter().all(|k| *k == PendingKind::Point),
+            "everything before the validation move is a curve point: {kinds_before_it:?}"
+        );
+        assert!(matches!(step, Step::Done(_)), "expected Done, got {step:?}");
+    }
+
+    #[test]
+    fn pending_kind_names_every_move_of_a_good_run() {
+        let focus = 12_000;
+        let curve = hyperbola(focus);
+
+        // The baseline pass exists only when the R^2 gate is off (STARHFR).
+        let baseline_cfg = FocusConfig {
+            r_squared_threshold: 0.0,
+            curve_fitting: CurveFitting::Trendlines,
+            ..cfg()
+        };
+        let mut baseline_run = FocusSweep::new(baseline_cfg, focus);
+        assert_eq!(
+            baseline_run.pending_kind(),
+            PendingKind::None,
+            "before the first next()"
+        );
+        match baseline_run.next() {
+            Step::MoveTo(p) => assert_eq!(p, focus, "the baseline is measured at the start"),
+            other => panic!("expected the baseline MoveTo, got {other:?}"),
+        }
+        assert_eq!(baseline_run.pending_kind(), PendingKind::Baseline);
+
+        // The gated config skips the baseline: every swept point is a Point,
+        // the last move is the Validation, and Done clears the kind.
+        let mut sweep = FocusSweep::new(cfg(), focus);
+        let mut kinds: Vec<PendingKind> = Vec::new();
+        let mut step = sweep.next();
+        for _ in 0..500 {
+            let pos = match &step {
+                Step::MoveTo(p) => *p,
+                _ => break,
+            };
+            kinds.push(sweep.pending_kind());
+            let (hfr, sd, n) = curve(pos);
+            sweep.add_measurement(pos, hfr, sd, n);
+            step = sweep.next();
+        }
+
+        assert!(matches!(step, Step::Done(_)), "expected Done, got {step:?}");
+        assert_eq!(
+            sweep.pending_kind(),
+            PendingKind::None,
+            "Done leaves nothing pending"
+        );
+        assert_eq!(kinds.last(), Some(&PendingKind::Validation));
+        assert!(
+            kinds[..kinds.len() - 1]
+                .iter()
+                .all(|k| *k == PendingKind::Point),
+            "every swept move is a Point: {kinds:?}"
+        );
+        assert_eq!(OFFSET, 4, "the shape above assumes the nine-point sweep");
+    }
+
+    #[test]
+    fn pending_kind_names_the_restore_on_the_failure_path() {
+        // A perfectly flat curve has no trend on either side: NotEnoughSpread,
+        // preceded by a restore move back to the start.
+        let start = 12_000;
+        let mut sweep = FocusSweep::new(cfg(), start);
+
+        let mut last_move: Option<(i32, PendingKind)> = None;
+        let mut step = sweep.next();
+        for _ in 0..500 {
+            let pos = match &step {
+                Step::MoveTo(p) => *p,
+                _ => break,
+            };
+            last_move = Some((pos, sweep.pending_kind()));
+            sweep.add_measurement(pos, 3.0, 0.1, 30);
+            step = sweep.next();
+        }
+
+        assert!(
+            matches!(step, Step::Failed(FailReason::NotEnoughSpread)),
+            "expected NotEnoughSpread, got {step:?}"
+        );
+        assert_eq!(
+            last_move,
+            Some((start, PendingKind::Restore)),
+            "the move before Failed is the restore to the start"
+        );
+        assert_eq!(
+            sweep.pending_kind(),
+            PendingKind::None,
+            "Failed leaves nothing pending"
+        );
     }
 }
