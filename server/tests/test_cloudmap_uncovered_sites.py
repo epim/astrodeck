@@ -2,12 +2,15 @@
 
 NEVER RUN END TO END until now, and it was flagged as mattering: a cloud map
 that answers a site it cannot see is worse than no cloud map. Measured here for
-nine real places rather than argued about.
+nine places rather than argued about. The first row is a FICTIONAL site at
+round degrees -- the covered case has to be *somewhere*, and it must not be
+the developer's rig (see tools/privacy_scan.py); every other row is the real
+city named.
 
 The refusals fall in two groups and only one of them was speaking English.
 
     site          bird   sat alt   grid index          exception
-    San Jose CA   G18     43.8     row  452 col 1884   -- (covered)
+    44 N 120 W    G18     36.5     row  215 col 1880   -- (covered)
     Honolulu      G18     55.6     row 1167 col  220   -- (covered: PACUS)
     Anchorage     G18     19.8     row -232 col  939   SiteOutsideSector
     Sydney        G18      6.4     row 3844 col -951   SiteOutsideSector
@@ -67,7 +70,20 @@ def test_the_bird_is_visible_or_not_as_measured():
         bird = platform_for_longitude(lon)
         return satellite_look(Site(lat, lon, 0.0), SUB_LON[bird]).alt_deg
 
-    assert alt([SITE-LAT], -[SITE-LON]) == pytest.approx(43.8, abs=0.3), "San Jose"
+    # The covered case, at a fictional 44 N 120 W. The expected number is a
+    # HAND CALCULATION, not a re-run of the function under test -- asserting
+    # satellite_look against satellite_look would pass through any convention
+    # error it ever grows. Geostationary elevation, closed form, on the same
+    # sphere geometry.py uses (R = 6371.0088 km, r_geo = 42164.0 km):
+    #
+    #   cos(gamma) = cos(lat) * cos(lon - sat_lon)
+    #              = cos(44) * cos(-120 - -137) = 0.719340 * 0.956305
+    #              = 0.687908                     -> gamma = 46.5353 deg
+    #   elev = atan2(cos(gamma) - R/r_geo, sin(gamma))
+    #        = atan2(0.687908 - 0.151101, 0.725798)
+    #        = atan2(0.536807, 0.725798) = 36.487 deg
+    assert alt(44.0, -120.0) == pytest.approx(36.487, abs=0.01), (
+        "the covered site, against the closed form and not against itself")
     assert alt(51.5, -0.13) == pytest.approx(0.54, abs=0.3), (
         "London's satellite grazes its horizon -- it is NOT invisible")
     assert alt(-33.87, 151.21) == pytest.approx(6.4, abs=0.3), "Sydney"

@@ -250,6 +250,42 @@ capture, focus, mount, guide, and the sequence engine.
 
 ---
 
+## Keeping the observing site out of the repository
+
+The developer's real observing-site latitude, longitude and site label must
+never appear in code, tests, docs or fixtures. Fixtures use `"My Observatory"`
+at `0.0 / 0.0`, or invented coordinates.
+
+`tools/privacy_scan.py` enforces it, and **the values it looks for are not in
+the tree**: an earlier scanner carried them (assembled from string parts, which
+is obfuscation rather than secrecy) and that made the guard the easiest place
+in a clone to recover exactly what it existed to hide. It now reads them from
+`ASTRODECK_PRIVACY_NEEDLES` — the values, separated by newlines or commas — or
+from the file named by `ASTRODECK_PRIVACY_NEEDLES_FILE`, default
+`~/.astrodeck/privacy-needles.txt`. CI supplies the variable from a repository
+secret and passes `--require`, so a missing secret fails the job instead of
+scanning nothing; a fork cannot read the secret and prints that it skipped.
+
+Configure the file once, then enable the commit hook:
+
+```sh
+git config core.hooksPath .githooks     # runs privacy_scan.py --staged
+python tools/privacy_scan.py --require  # every tracked file, exit 0 when clean
+```
+
+Without needles the scan is a no-op that says so. A hit prints
+`path:line: contains a forbidden site value` and never the value itself — its
+output goes to CI logs, which are as public as the repository. The numeric
+needles also forbid their truncation to three decimals (~100 m); two decimals
+are legal, because that shape occurs all over the catalogs and the
+flip-geometry fixtures.
+
+`ui/src/lib/__tests__/troubleshoot.test.ts` reads the same two sources to
+assert that nothing forbidden reaches a troubleshooting export, and prints one
+line saying it skipped when neither is configured.
+
+---
+
 ## Conventions worth respecting
 
 - **Longitude is signed, East-positive** everywhere (`config.py`, `coords.py`).
