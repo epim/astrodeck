@@ -508,6 +508,25 @@ SIZE_CONFIDENT_SNR = 50.0
 # equality above is the whole point. The sweep exposes the next point while this
 # one is measured (`focus.pipeline`), so the extra ~250 ms sits under a 4 s
 # exposure rather than beside it.
+#
+# WHAT THIS STILL GETS WRONG, measured 2026-09-08 and left alone deliberately.
+# `_bright_population` ranks by the 15 px box's flux, and that box subtracts
+# only its own border median -- so a star sitting on a bright galaxy carries the
+# galaxy's pedestal in its flux and is ranked ABOVE the field. Once the top half
+# of the population is on the nebulosity its probes read 1.3-1.8 and the median
+# crosses gate 2, and the PYRAMID then answers with the galaxy: B_0032, a real
+# 6252x4176 B sub of the M33 field with 200 detections and a grader HFR of 3.69,
+# comes back 839.61 px at scale 64. (Refusing the fine path there is right --
+# its stars are 30 px smears -- but 839.61 px is not an answer about them.)
+#
+# No threshold fixes it, which is why nothing here moved. The frames we hold put
+# the highest must-pass reading at 1.242 (jump_R60) and the lowest must-not at
+# 1.287 (B_0032), and a galaxy walks the median smoothly through that gap as its
+# surface brightness rises; counting compact probes instead of medianing them
+# does no better (the synthetic galaxy field scores 41%, staircase_G60, which
+# must be refused, scores 44%). The fix belongs to whatever claims the nebula at
+# scale 64, not to a new number here. Pinned as a known defect in
+# test_star_gate_is_brightness_independent.py so it stays visible.
 # ---------------------------------------------------------------------------
 
 #: Level-1 detections needed before the fine path will answer. A median over
@@ -567,30 +586,50 @@ SIZE_TRUNCATION_CAP_PX = float(HFR_BOX_PX)
 #: against the grader's 2.73 on R_0007, 4.60 at pyramid scale 16 on G_0003, and
 #: 684 px on the rig at true focus at 00:31 on 2026-09-07.
 #:
-#: Measured with the population and the cap above (2026-09-07):
+#: Measured with the population and the cap above, on EVERY 6252x4176 sub of
+#: that night still on disk plus the crops and the synthetics (re-measured
+#: 2026-09-08; the earlier table listed four of the fourteen full frames):
 #:
-#:     must take the fine path
-#:       full 6248x4176   R_0007 1.07  S_0005 1.09  R_0030 1.14  G_0003 1.11
-#:       wide crop        m33field_G60 (2048x1536) 1.14
-#:       512 crop         clean_R60 1.00  m33core_G60 1.05
+#:     compact side (this gate passes them)
+#:       full frames      B_0004 1.05  Ha_0018 1.06  R_0007 1.07  S_0005 1.09
+#:                        L_0006 1.08  G_0003 1.11  L_0026 1.12  R_0030 1.14
+#:                        R_0002 1.16  S_0017 1.18
+#:       crops            clean_R60 1.00  m33core_G60 1.05  tail_Ha300 1.08
+#:                        m33field_G60 1.14  jump_R60 1.24
 #:       synthetic        sigma=1.2 1.10  sigma=1.5 1.04  sigma=2 1.03
 #:                        200-sharp-star field 1.03
-#:     must not
-#:       full 6248x4176   donut L_0001 1.82
-#:       wide crop        donutfield_L60 (1024x1024) 1.80
-#:       512 crop         donut_L60 1.48
+#:     ring side (this gate refuses them)
+#:       full frames      B_0032 1.29  B_0025 1.34  G_0031 1.43
+#:                        donut L_0001 1.82
+#:       crops            staircase_G60 1.31  donut_L60 1.48
+#:                        donutfield_L60 (1024x1024) 1.80
 #:       synthetic        Gaussian sigma=4 1.34 (true 5.01, box 3.75)
 #:                        sigma=12 1.58   9px-ring field 2.02
 #:
-#: 1.25 sits 10% above the highest frame that must pass and 7% below the lowest
-#: that must not, and the two sides no longer depend on the frame's SIZE, which
-#: is what the old bar could not survive. The binding case on the far side is
-#: still the sigma=4 Gaussian, whose TRUE radius is 5.01 px while the box says
-#: 3.75 -- a 25% error, i.e. exactly the point at which the box stops being a
-#: faithful description of the star.
+#: THE MARGIN IS 0.6%, not the 10% an earlier draft of this comment claimed.
+#: That draft was true of the frames it had in front of it and not of the
+#: fourteen full ones: jump_R60 at 1.242 is the highest reading that must pass
+#: and B_0032 at 1.287 the lowest that must not, so 1.25 sits 0.6% above one
+#: and 2.9% below the other. The binding case on the far side is still the
+#: sigma=4 Gaussian, whose TRUE radius is 5.01 px while the box says 3.75 -- a
+#: 25% error, i.e. exactly the point at which the box stops being a faithful
+#: description of the star.
 #:
-#: The frames BETWEEN the two lists are the trailed ones, and they land on the
-#: pyramid as they did before: jump_R60 1.24, staircase_G60 1.31.
+#: Two of the readings on the compact side never reach the fine path anyway,
+#: and it is worth knowing which: L_0006 (1.08) and L_0026 (1.12) are trailed,
+#: and GATE 1 holds them at box HFR 4.05 and 4.13. tail_Ha300 (1.08) is held by
+#: the count gate at 8 detections. jump_R60 -- one guide jump, then settle --
+#: DOES take the fine path at 1.24, which is the right answer: it is trailed
+#: and not defocused, so its stars are graded with the number it hands back.
+#: An earlier draft said it landed on the pyramid; it does not.
+#:
+#: What the cap and the shared population bought is that neither side depends
+#: on the frame's SIZE or on its LEVEL any more. Every number in this path is a
+#: ratio or a multiple of sigma, so the whole gate -- detection count, all
+#: three readings, and star_size's own answer -- comes back identical to one
+#: part in a million under gains from x0.0137 to x997 and sky pedestals from
+#: -100 to +5000 ADU. test_star_gate_is_brightness_independent.py is that
+#: check, and it is what stops the next absolute number creeping back in.
 SIZE_FINE_MAX_TRUNCATION = 1.25
 
 #: Gate 3: WHERE the radial profile peaks, medianed over the same probes. A star
@@ -602,15 +641,21 @@ SIZE_FINE_MAX_TRUNCATION = 1.25
 #: `_profile_edge` smooths the profile with a 3-wide kernel, so a source that
 #: peaks at r=0 reports 1, not 0. Measured (median peak radius, px):
 #:
-#:     must take the fine path   1.0 on EVERY frame measured, at every size:
-#:                               R_0007 S_0005 R_0030 G_0003 B_0004 L_0026
-#:                               L_0006 Ha_0018 (full 6248x4176), m33field_G60,
+#:     this gate must NOT fire   1.0 on EVERY frame measured, at every size:
+#:                               R_0007 S_0005 R_0030 R_0002 S_0017 G_0003
+#:                               G_0031 B_0004 B_0025 B_0032 L_0026 L_0006
+#:                               Ha_0018 (full 6252x4176), m33field_G60,
 #:                               clean_R60 m33core_G60 jump_R60 doubleblob_L60
 #:                               pedrift_L60 staircase_G60 tail_Ha300 (crops),
 #:                               sigma=1.2/1.5/2/4/12 synthetics
-#:     must not                  donut L_0001 6.0   donutfield_L60 6.0
+#:     this gate must fire       donut L_0001 6.0   donutfield_L60 6.0
 #:                               donut_L60 3.0      9px-ring synth 9.0
 #:                               synthetic donut fields r=8/20/45/90: 4/2/2/2
+#:
+#: The first list is "the profile peaks at the centre", NOT "the fine path
+#: answers": B_0025/B_0032/G_0031/L_0006/L_0026 read the floor here and are
+#: still refused, by gate 1 or gate 2. This gate is the one that only ever
+#: says "annulus".
 #:
 #: 2 is the only value between them, and every frame that must pass reads the
 #: floor. (Sweep points read 1.0-2.0 here -- their seeds sit inside a blob far
