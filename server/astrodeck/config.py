@@ -929,7 +929,7 @@ class StandardsConfig(BaseModel):
 
 
 class FocusConfig(BaseModel):
-    """How the focuser is DRIVEN during an autofocus sweep (2026-09-08).
+    """How the focuser is DRIVEN -- in a sweep and outside one (2026-09-08).
 
     Not what the sweep measures and not how wide it is -- those are the
     engine's geometry and the measured span. This is the mechanical half: which
@@ -953,6 +953,21 @@ class FocusConfig(BaseModel):
     ``Backlash`` Overshoot model with only OUT backlash set, applied by the
     host (the engine's own backlash layer is left at its defaults, because
     turning it on there would also reverse the sweep direction).
+
+    IT COVERS THE PER-FILTER OFFSET MOVE TOO, and that is the move it matters
+    most to. The sequence engine shifts focus by the offset delta on every
+    filter change (``engine._apply_filter``), and on this rig those deltas are
+    18 to 20 steps against about 40 steps of slack -- so an OUTWARD offset move
+    turns the motor and never moves the tube, and L and G shoot at R and B's
+    focus while the log says the offset was applied. A sweep at least measures
+    itself afterwards; a 20-step offset move measures nothing, so a knob that
+    only the sweep obeyed would have left the worse half uncorrected.
+
+    WHAT OBEYS IT, exactly: the native sweep (``focus.native``) and the
+    engine's filter-offset move, both through ``focus.approach.approach``. What
+    does NOT: the legacy numpy sweep, and ``POST /api/focuser/move`` — an
+    operator driving the focuser by hand is watching it, and a move they did
+    not ask for would be the surprise.
 
     0 disables it: a focuser with no measurable backlash pays two moves per
     outward step for nothing.

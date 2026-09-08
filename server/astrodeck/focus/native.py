@@ -41,6 +41,7 @@ from ..devices.base import Camera, DeviceError, Focuser
 from ..events import bus
 from ..providers import NATIVE_AVAILABLE
 from ..imaging.stars import OVEREXPOSED_FRAC, focus_size, saturation_fraction
+from .approach import approach as approach_position, configured_overshoot
 from .autofocus import (MAX_DROPS_PER_POSITION, MIN_STARS_PER_POINT,
                         assert_tracking, confirmed_best,
                         over_swept_advice,
@@ -304,15 +305,9 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
     if approach_overshoot_steps is not None:
         overshoot = max(0, int(approach_overshoot_steps))
     else:
-        try:
-            from ..config import config_store
-            overshoot = max(
-                0, int(config_store.cfg().focus.approach_overshoot_steps))
-        except Exception:      # noqa: BLE001 - see below
-            # An unreadable config is not a reason to refuse to focus, and the
-            # overshoot is an improvement rather than a precondition: without it
-            # the sweep behaves exactly as it did before 2026-09-08.
-            overshoot = 0
+        # An unreadable config reads back 0, so the sweep behaves exactly as it
+        # did before 2026-09-08 rather than refusing to focus.
+        overshoot = configured_overshoot()
 
     async def _approach(pos: int) -> None:
         """Move to ``pos``, ARRIVING FROM ABOVE whenever the move is outward.
@@ -324,26 +319,18 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
         A sweep whose points were measured one way and whose vertex was reached
         the other is measuring one focus and settling on a different one.
 
-        The current position is TRACKED rather than read back per move. A read
-        would cost a device round trip per point, and on the EAF it would
-        answer with the commanded count anyway — the same number tracked here —
-        so it would buy nothing and could not see the slack this is about.
+        The rule itself lives in ``focus.approach``, because the sequence
+        engine's per-filter offset move needs the same one on the same focuser
+        for the same backlash. What stays here is the TRACKED position: reading
+        it back would cost a device round trip per point, and on the EAF it
+        would answer with the commanded count anyway — the same number tracked
+        here — so it would buy nothing and could not see the slack this is
+        about.
         """
         nonlocal current_pos
-        pos = int(pos)
-        if overshoot > 0 and pos > current_pos:
-            ceiling = getattr(focuser, "max_position", None)
-            over = pos + overshoot
-            if ceiling is not None:
-                over = min(over, int(ceiling))
-            # Clamped away entirely at the top of the focuser's travel: there is
-            # no room to overshoot into, so this move arrives outward and the
-            # slack stays where it is. Better than refusing the move.
-            if over > pos:
-                await focuser.move_to(over)
-                current_pos = over
-        await focuser.move_to(pos)
-        current_pos = pos
+        await approach_position(focuser, pos, overshoot=overshoot,
+                                current=current_pos)
+        current_pos = int(pos)
 
     async def _move_and_expose(pos: int):
         """One point's device work, as a unit — so it can run as a speculative

@@ -58,6 +58,82 @@ RESUME_GIVE_UP_AFTER = 3
 RECOVERY_SOLVE_EXPOSURE_S = 12.0
 
 
+def window_open(session: Session, site, twilight_deg: float, now: float) -> bool:
+    """True when tonight's window for ANY of the session's targets is open
+    (calibration targets shoot any time). Reuses schedule.resolve_window —
+    the same resolution a run's scheduler freezes at start.
+
+    A DARK SKY IS THE OUTER BOUND, and it has to be checked here rather
+    than left to the per-target schedule. The default ``Schedule`` is
+    ``start_mode="now"`` / ``stop_mode="none"``, so ``resolve_window``
+    returns ``(now, None)`` and the test below reduces to ``now <= now and
+    True`` — open, unconditionally, forever. On 2026-08-11 that had
+    auto-resume burning a 4 s exposure and a full ASTAP run every ten
+    minutes at 07:36, ninety minutes after sunrise, on a mount the dawn
+    daemon had already parked. The refusal it kept logging was correct; the
+    retrying was not.
+
+    Calibration is exempt on purpose and stays first: darks and flats are
+    SUPPOSED to be shot in daylight with the mount parked, and the dark-plan
+    test harness depends on passing this gate at any hour.
+
+    MODULE-LEVEL BECAUSE TWO CALLERS NEED THE SAME ANSWER. The resume tick asks
+    it to decide whether to start; the end-of-run wind-down asks it to decide
+    whether the cooler may warm. Two copies of "is the night still on" would
+    drift, and the way they would drift is silent.
+    """
+    for t in session.plan.targets:
+        if t.calibration:
+            return True
+    if not schedule.dark_enough(site, twilight_deg, now):
+        return False
+    for t in session.plan.targets:
+        start, stop = schedule.resolve_window(t.schedule, site, twilight_deg, now)
+        if start is not None and start <= now and (stop is None or now < stop):
+            return True
+    return False
+
+
+def resume_expected_tonight(hub, now: float | None = None) -> Session | None:
+    """The session that is going to be resumed TONIGHT, if there is one.
+
+    ``session_store.armed()`` says what is armed; ``window_open`` says whether
+    the tick would act on it before the sky closes. Both, and only both, mean
+    "this rig is going to image again in a few minutes".
+
+    WHAT ASKS. The end-of-run wind-down, before it warms the camera. On
+    2026-09-08 the NGC 7331 run ended at 04:18 and warmed the sensor while the
+    NGC 604 session sat armed behind it; the resumed run then sat waiting for
+    the TEC to walk back from -7 to -10 before it could take its first frame.
+
+    AN UNKNOWN SITE ANSWERS None, which is the one place this deliberately does
+    NOT match the tick. ``dark_enough`` fails OPEN for a default site — "we
+    cannot tell where you are" must not stand auto-resume down — but the
+    failure modes here are not symmetric: warming a camera that is about to
+    shoot again costs a few minutes of cooling, while holding a TEC at -10 all
+    day because we could not tell whether it was still night costs power, dew
+    and an unattended cooler nobody asked to leave running. So this withholds
+    the warm only when it can show the night is still on.
+    """
+    try:
+        armed = session_store.armed()
+    except Exception:      # noqa: BLE001 - bookkeeping must not block a warm
+        return None
+    if armed is None:
+        return None
+    site = getattr(hub, "site", None) or {}
+    get = site.get if isinstance(site, dict) else (
+        lambda k, d=None: getattr(site, k, d))
+    if get("is_default", True):
+        return None
+    cfg = config_store.cfg()
+    twilight = cfg.safety.twilight_deg if cfg else -12.0
+    if not window_open(armed, site, twilight,
+                       time.time() if now is None else now):
+        return None
+    return armed
+
+
 class ResumeArm:
     def __init__(self, engine, hub, *, clock=None, weather=None):
         self.engine = engine
@@ -148,37 +224,15 @@ class ResumeArm:
         return self._weather.veto_reason(self._clock())
 
     def _window_open(self, session: Session, now: float) -> bool:
-        """True when tonight's window for ANY of the session's targets is open
-        (calibration targets shoot any time). Reuses schedule.resolve_window —
-        the same resolution a run's scheduler freezes at start.
+        """``window_open`` against the LIVE site and twilight setting.
 
-        A DARK SKY IS THE OUTER BOUND, and it has to be checked here rather
-        than left to the per-target schedule. The default ``Schedule`` is
-        ``start_mode="now"`` / ``stop_mode="none"``, so ``resolve_window``
-        returns ``(now, None)`` and the test below reduces to ``now <= now and
-        True`` — open, unconditionally, forever. On 2026-08-11 that had
-        auto-resume burning a 4 s exposure and a full ASTAP run every ten
-        minutes at 07:36, ninety minutes after sunrise, on a mount the dawn
-        daemon had already parked. The refusal it kept logging was correct; the
-        retrying was not.
-
-        Calibration is exempt on purpose and stays first: darks and flats are
-        SUPPOSED to be shot in daylight with the mount parked, and the dark-plan
-        test harness depends on passing this gate at any hour.
+        Kept as a method because the suite monkeypatches it to drive the tick
+        without a sky; the predicate itself is module-level so the end-of-run
+        wind-down can ask the same question (see ``resume_expected_tonight``).
         """
         cfg = config_store.cfg()
-        site = self.hub.site
         twilight = cfg.safety.twilight_deg if cfg else -12.0
-        for t in session.plan.targets:
-            if t.calibration:
-                return True
-        if not schedule.dark_enough(site, twilight, now):
-            return False
-        for t in session.plan.targets:
-            start, stop = schedule.resolve_window(t.schedule, site, twilight, now)
-            if start is not None and start <= now and (stop is None or now < stop):
-                return True
-        return False
+        return window_open(session, self.hub.site, twilight, now)
 
     async def tick(self) -> None:
         now = self._clock()

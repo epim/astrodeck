@@ -36,6 +36,7 @@ from ..config import config_store, frames_payload
 from ..devices.base import DeviceError, DomeShutterState, PierSide
 from ..events import bus
 from ..focus import run_autofocus
+from ..focus.approach import approach, configured_overshoot
 from ..focus.autofocus import SWEEP_EXPOSURE_S, SWEEP_GAIN, TrackingLost
 from ..focus.filter_offsets import narrowband_sweep_settings, solve_filter_slot
 from ..guide.base import rms_total_arcsec
@@ -4664,12 +4665,33 @@ class SequenceEngine:
                 and not fw.is_opaque(new_slot) and not fw.is_opaque(old_slot):
             delta = offsets[new_slot] - offsets[old_slot]
             if delta:
+                # ARRIVES FROM THE SAME SIDE AS EVERY OTHER MOVE (focus.approach).
+                # This is the move most likely to be swallowed whole by backlash
+                # and least likely to be noticed: the offsets on this rig are 18
+                # to 20 steps on a focuser with about 40 steps of slack, so an
+                # OUTWARD offset turns the motor and leaves the tube where it
+                # was — L and G then shoot at R and B's focus, with this log
+                # line saying the offset was applied and nothing anywhere
+                # disagreeing. An autofocus sweep at least measures itself; a
+                # 20-step offset move measures nothing.
                 foc = self.hub.require("focuser")
                 pos = await _bounded(foc.get_position(), FOCUSER_MOVE_TIMEOUT_S,
                                      "focuser get_position")
-                await _bounded(foc.move_to(pos + delta), FOCUSER_MOVE_TIMEOUT_S,
-                               "focuser offset move")
+                overshoot = configured_overshoot()
+                await _bounded(
+                    approach(foc, pos + delta, overshoot=overshoot, current=pos),
+                    FOCUSER_MOVE_TIMEOUT_S, "focuser offset move",
+                    note="the focuser may be left above the offset position")
                 bus.log("info", f"applied filter offset {delta:+d} for {label}", "sequence")
+                if overshoot and delta > 0:
+                    # "up to", because the extra leg is clamped to the
+                    # focuser's ceiling and dropped entirely at the top of its
+                    # travel — where there is no room, the tube arrives outward
+                    # and this line must not claim otherwise.
+                    bus.log("debug", f"that offset was outward, so the move went "
+                                     f"up to {overshoot} steps past "
+                                     f"{pos + delta} and came back down onto it",
+                            "sequence")
 
     async def _maybe_meridian_flip(self, target: Target,
                                    next_exposure_s: float = 0.0) -> None:
@@ -6544,6 +6566,39 @@ class SequenceEngine:
         # the wind-down the frames are taken.
         if day_darks:
             await self._day_darks()
+
+        # DO NOT WARM WHAT IS ABOUT TO SHOOT AGAIN.
+        #
+        # On 2026-09-08 the NGC 7331 run ended at 04:18 and warmed the camera
+        # while the NGC 604 session was armed behind it. Auto-resume started
+        # that session minutes later and it then sat waiting for the TEC to walk
+        # back from -7 to -10 before its first frame — the wind-down had undone,
+        # unasked, the one piece of state the next run needed most.
+        #
+        # THE NIGHT ENDING IS STILL A REASON TO WARM, and that case needs no
+        # special test here: ``resume_expected_tonight`` asks whether the armed
+        # session's window is still open, so a run that stopped because the sky
+        # ran out answers None and warms exactly as before. A run that ends
+        # mid-night with something armed behind it — a quality stop, a crash, a
+        # dawn cutoff on one target while another is still up — keeps the cooler
+        # where the next run needs it. Park is untouched either way: the mount
+        # is stowed between runs regardless of what happens next.
+        if warm:
+            try:
+                from .resume_arm import resume_expected_tonight
+                resuming = resume_expected_tonight(self.hub)
+            except Exception as e:      # noqa: BLE001 - never block the warm
+                bus.log("debug", f"could not tell whether a resume is due "
+                                 f"({e}) — warming as usual", "sequence")
+                resuming = None
+            if resuming is not None:
+                warm = False
+                bus.log("info",
+                        f"leaving the cooler at its setpoint: "
+                        f"'{resuming.name}' is armed to resume and tonight's "
+                        f"window is still open, so warming now would only cost "
+                        f"that run its first frames while the TEC cools back "
+                        f"down", "sequence")
 
         if warm:
             cam = self.hub.devices.get("camera")
