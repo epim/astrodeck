@@ -99,16 +99,15 @@ async def test_near_empty_points_never_reach_the_fit(monkeypatch):
     exactly like a frame with 900 stars. It must be refused — and the refusal
     must show up in the advice rather than being swallowed as a skip."""
     _rig, cam, foc = await _connected_sim()
-    real_detect = N._native.detect_and_measure
     real_sweep = N._native.FocusSweep
     POISON_HFR = 0.4242          # unmistakable: no real sweep point looks like this
-    calls = {"n": 0}
-
-    def detector(data, params):
-        calls["n"] += 1
-        if calls["n"] == 5:      # mid-sweep, well past the probe
-            return [], {"star_count": 2, "hfr_median": POISON_HFR, "hfr_mad": 0.0}
-        return real_detect(data, params)
+    #: DRIVEN FROM THE METRIC SEAM, once. It used to be driven from a counter on
+    #: ``_native.detect_and_measure``, which now runs ONCE per run (the probe
+    #: keeps it; the loop dropped it) — so that counter would sit at 1 forever
+    #: and this test would report success while intercepting nothing the fit
+    #: reads, which is the exact failure ``native_sweep_metric``'s docstring
+    #: warns about. The fourth measurement is mid-sweep, well past the probe.
+    fired = {"n": 0}
 
     fitted: list[tuple[int, float, float, int]] = []
 
@@ -124,12 +123,20 @@ async def test_near_empty_points_never_reach_the_fit(monkeypatch):
             fitted.append((position, hfr, sigma, star_count))
             return self._s.add_measurement(position, hfr, sigma, star_count)
 
-    monkeypatch.setattr(N._native, "detect_and_measure", detector)
+    # The probe's count sizes the measurement window. 20 stars is under the
+    # crop threshold, so every point is measured on the whole frame and the
+    # single poisoned point cannot be re-measured by the window fallback —
+    # which is a different mechanism, tested in
+    # test_autofocus_measures_the_centre.py.
+    monkeypatch.setattr(N._native, "detect_and_measure",
+                        lambda data, params: ([], {"star_count": 20,
+                                                   "hfr_median": 3.0,
+                                                   "hfr_mad": 0.2}))
     monkeypatch.setattr(N._native, "FocusSweep", SpySweep)
 
-    def metric(data):
-        # Mirror the detector stub through the seam the fit actually reads.
-        return (POISON_HFR, 2) if calls["n"] == 5 else (3.0, 500)
+    def metric(frame):
+        fired["n"] += 1
+        return (POISON_HFR, 2) if fired["n"] == 4 else (3.0, 500)
     monkeypatch.setattr(N, "native_sweep_metric", metric)
 
     res = await N.run_native_autofocus(cam, foc, exposure_s=0.05, gain=200,
@@ -195,20 +202,26 @@ async def test_a_frame_full_of_stars_never_earns_expose_longer(monkeypatch):
     and telling someone with 50 stars in the frame to expose longer is the same
     wrong turn as telling them to check a clear sky."""
     _rig, cam, foc = await _connected_sim()
-    real_detect = N._native.detect_and_measure
     calls = {"n": 0}
 
-    def detector(data, params):
-        calls["n"] += 1
-        if calls["n"] == 5:
-            return [], {"star_count": 50, "hfr_median": None, "hfr_mad": 0.0}
-        return real_detect(data, params)
+    # A probe rich enough to sweep and too thin to crop, so every point is
+    # measured whole and the one unsizeable frame is not re-measured by the
+    # window fallback (a different mechanism — see
+    # test_autofocus_measures_the_centre.py).
+    monkeypatch.setattr(N._native, "detect_and_measure",
+                        lambda data, params: ([], {"star_count": 30,
+                                                   "hfr_median": 3.0,
+                                                   "hfr_mad": 0.2}))
 
-    monkeypatch.setattr(N._native, "detect_and_measure", detector)
-    # "Found them, could not size them" is now a property of the SIZE seam: a
-    # rich frame whose sources the metric could not measure.
-    monkeypatch.setattr(N, "native_sweep_metric",
-                        lambda data: (None, 50) if calls["n"] == 5 else (3.0, 200))
+    # "Found them, could not size them" is a property of the SIZE seam: a rich
+    # frame whose sources the metric could not measure. COUNTED ON THAT SEAM —
+    # the Rust detector now runs once per run, so a counter on it would sit at
+    # 1 and poison nothing.
+    def metric(frame):
+        calls["n"] += 1
+        return (None, 50) if calls["n"] == 4 else (3.0, 200)
+
+    monkeypatch.setattr(N, "native_sweep_metric", metric)
     res = await N.run_native_autofocus(cam, foc, exposure_s=0.05, gain=200,
                                        step=350, steps_each_side=4, binning=2)
 

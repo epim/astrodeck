@@ -106,7 +106,8 @@ def test_focus_size_agrees_with_the_sweep():
     orig = stars_mod.star_size
     stars_mod.star_size = fake_star_size
     try:
-        value, _ = stars_mod.focus_size(np.zeros((4, 4), dtype=np.uint16))
+        value, _n, _detail = stars_mod.focus_size(
+            np.zeros((4, 4), dtype=np.uint16))
     finally:
         stars_mod.star_size = orig
     assert calls["n"] == 1

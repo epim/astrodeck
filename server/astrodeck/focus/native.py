@@ -42,6 +42,7 @@ from .autofocus import (MAX_DROPS_PER_POSITION, MIN_STARS_PER_POINT,
                         resolve_sweep, sweep_levers, thin_points_phrase)
 from .pipeline import Prefetch, SweepPredictor
 from .span import DEFAULT_STEP
+from .window import measure_window, window_frame
 
 # Guarded handle to the Rust wheel. ``NATIVE_AVAILABLE`` (the single source of
 # truth) already told us whether the import can succeed; we re-import here only
@@ -170,8 +171,9 @@ def _fit_payload(outcome: dict) -> dict:
     }
 
 
-def native_sweep_metric(frame) -> tuple[float | None, int]:
-    """The size a native sweep point contributes: ``(px | None, sources)``.
+def native_sweep_metric(frame) -> tuple[float | None, int, object | None]:
+    """The size a native sweep point contributes:
+    ``(px | None, sources, the SourceSize | None)``.
 
     THE seam the native sweep measures through, deliberately one named function
     — it is what tests substitute, and it is where the choice of metric lives so
@@ -183,11 +185,40 @@ def native_sweep_metric(frame) -> tuple[float | None, int]:
     intercepting is worse than no stub: the test still reports success, while
     testing something else entirely.
 
-    Takes the whole frame for the reason ``sweep_metric`` does: the next point
-    is already exposing while this one is measured, so the focuser's live
-    position no longer identifies the frame in hand.
+    Takes a FRAME, not an array, for the reason ``sweep_metric`` does: the next
+    point is already exposing while this one is measured, so the focuser's live
+    position no longer identifies the frame in hand and a substitute has to be
+    able to read the position off the frame it was handed.
+
+    It is NOT necessarily the whole frame any more (2026-09-08): the sweep hands
+    it a centred window sized once from the probe's star count — see
+    ``focus.window`` for the rig measurements. The seam does not choose the
+    window; it measures whatever pixels it is given, so a substitute that only
+    cares about the size still works unchanged.
+
+    THE THIRD VALUE is the ``SourceSize``, carrying the scatter that sets this
+    point's σ and the resolved count that "thin"/"rich" are judged on. The loop
+    reads it defensively — a substitute returning the old ``(size, n)`` pair
+    still works and takes the documented 5% scatter fallback — because half the
+    sweep tests in this suite return exactly that pair.
     """
     return focus_size(frame.data)
+
+
+def _read_metric(measured) -> tuple[float | None, int, object | None]:
+    """Unpack whatever ``native_sweep_metric`` answered with.
+
+    The real seam returns ``(size, sources, SourceSize)``. Substitutes in this
+    suite — and any harness that stubs the metric to replay a modelled V-curve —
+    return the older ``(size, sources)`` pair, and must go on working: a stub
+    that stops intercepting is worse than no stub, and a stub that CRASHES the
+    run it is measuring is worse still. A missing third value means no measured
+    scatter and no resolved count, both of which have documented fallbacks at
+    the call site.
+    """
+    size, n = measured[0], int(measured[1])
+    detail = measured[2] if len(measured) > 2 else None
+    return size, n, detail
 
 
 def point_sigma(hfr: float, mad: float, n_stars: int) -> float:
@@ -515,6 +546,28 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                     f"run out of measurable points as it defocuses. If it "
                     f"fails, try {levers}.", "focus")
 
+        # HOW MUCH OF EACH FRAME THE SWEEP WILL MEASURE, decided ONCE, here,
+        # from the only full-frame star count this run will make. See
+        # `focus.window` for the rig numbers: on 26 MP frames the two per-point
+        # measurements cost 27 s + 5-20 s against a 6 s exposure, and the
+        # central 0.4 of each axis measures the same size for a sixth of that.
+        #
+        # ONCE and not per point, because the window is not merely a cheaper
+        # sample: corner stars are bigger on this optic (the rig's Ha light read
+        # 3.27 px windowed against 3.98 whole-frame), so a window that changed
+        # mid-sweep would put a centre-versus-corner step into the curve itself.
+        frac = measure_window(n0)
+        if frac < 1.0:
+            bus.log("info",
+                    f"autofocus: measuring the central {frac:.0%} of each axis "
+                    f"(about {max(1, int(round(n0 * frac * frac)))} of {n0} "
+                    f"stars): the centre's focus, for a measurement "
+                    f"{1 / (frac * frac):.1f}x cheaper", "focus")
+        else:
+            bus.log("info",
+                    f"autofocus: measuring the whole frame — {n0} stars is too "
+                    f"few to crop", "focus")
+
         # How far the search may roam. The requested window is
         # start +/- step*steps_each_side; the leash is twice that half-span,
         # clamped to the focuser's real travel, so bracketing has room and a
@@ -610,14 +663,14 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                     prefetch = Prefetch(
                         nxt, asyncio.create_task(_move_and_expose(nxt)))
                 _activity("measuring", index=attempted - 1)
-                # detect_and_measure releases the GIL but is CPU-heavy; offload it
-                # so focuser/camera awaits and the event stream stay responsive.
-                _stars, stats = await asyncio.to_thread(
-                    _native.detect_and_measure, frame.data, params)
-
-                n = int(stats.get("star_count") or 0)
-                rust_hfr = stats.get("hfr_median")
-
+                # ONE MEASUREMENT PER POINT, AND ONLY THE CENTRE OF IT.
+                #
+                # The Rust `detect_and_measure` used to run here too, on the
+                # whole frame: 27 s of a 40 s point on the rig's 26 MP frames
+                # (60-67 s on a rich light), for a star count and a MAD the size
+                # metric can supply itself. It is gone from the loop and lives
+                # only at the probe, whose count sized the window above.
+                #
                 # THE SIZE COMES FROM focus_size, NOT FROM THE DETECTOR'S HFR.
                 #
                 # The engine's hfr_median is measured inside a fixed cutout, so
@@ -635,18 +688,62 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                 # a clean V with its minimum at focus, on the very field where
                 # the detector's HFR was inverted.
                 #
-                # focus_size costs 2-4s on a 26MP frame against a 4s exposure,
-                # so this roughly doubles per-point time; a correct sweep that
-                # takes half a minute longer is not a trade worth agonising over.
                 # Offloaded because it is numpy-heavy and would otherwise stall
                 # the event stream the UI is drawing from.
-                size, size_n = await asyncio.to_thread(native_sweep_metric, frame)
+                size, n, detail = _read_metric(
+                    await asyncio.to_thread(native_sweep_metric,
+                                            window_frame(frame, frac)))
+                if frac < 1.0 and (size is None or n < MIN_STARS_PER_POINT):
+                    # THE WINDOW RAN OUT OF SOURCES — measure this ONE point
+                    # whole rather than drop it. A point measured from two
+                    # donuts is worse than a slow point measured from twenty.
+                    #
+                    # This is allowed to change the pixels mid-sweep, and the
+                    # window above is not, because of WHERE it can fire. A
+                    # window that held 40 stars at the probe still holds them
+                    # near focus, so this only ever fires at the wings — and out
+                    # there defocus dominates the size, so the centre-versus-
+                    # corner offset (1.5 px of a 20 px blob on the rig's worst
+                    # filter) adds in quadrature: sqrt(20² + 1.5²) = 20.06. Near
+                    # focus the same offset WOULD be a visible step in the
+                    # curve, which is why this must not be turned into a
+                    # per-point choice about which window is better.
+                    whole = _read_metric(
+                        await asyncio.to_thread(native_sweep_metric, frame))
+                    bus.log("info",
+                            f"autofocus: the central {frac:.0%} of {pos} held "
+                            f"only {n} measurable source"
+                            f"{'' if n == 1 else 's'} — measuring the whole "
+                            f"frame for this point", "focus")
+                    size, n, detail = whole
                 hfr = size
-                if size_n > n:
-                    # focus_size found sources the star detector did not — at
-                    # heavy defocus that is the normal case, and the count is
-                    # what the fit weights by.
-                    n = size_n
+                # WHICH COUNT IS "n", now that the Rust detector no longer
+                # supplies one. `focus_size` reports two different numbers and
+                # they are not interchangeable:
+                #
+                #   n (n_sources) — the sources that VOTED for the median, 5..25
+                #     by construction (`_bright_population` lets the top flux
+                #     quartile vote, capped). This is the sample size of the
+                #     median, so it is the honest √n for `point_sigma` and the
+                #     honest thing to compare against MIN_STARS_PER_POINT, whose
+                #     docstring is about medians over one or two detections. The
+                #     old Rust count over-stated it: √(1000/25) = 6x.
+                #
+                #   found (n_found) — the sources RESOLVED at all, the count
+                #     that means "how rich was this frame". This is what
+                #     THIN_POINT_STARS (10), RICH_FIELD_STARS (50) and
+                #     `curve_verdict`'s tip gate were all measured against —
+                #     NGC 5907, 2026-08-08: 460 stars at the best point, 2 at
+                #     the eleventh — so `counts` carries this one. Feeding them
+                #     the voter count instead would quietly quadruple the "thin"
+                #     threshold (10 voters needs 40 detections) and make
+                #     RICH_FIELD_STARS unreachable, which is the #114 wrong turn
+                #     coming back in through the arithmetic.
+                #
+                # A substitute that returns only (size, n) has no n_found, so
+                # the voter count stands in — the same number the legacy path's
+                # `sweep_metric` has always reported.
+                found = getattr(detail, "n_found", None) or n
                 # REFUSE unmeasurable and near-empty frames — do not merely skip
                 # the starless ones. A median over one or two detections is a hot
                 # pixel's opinion, and this sweep used to record such a point with
@@ -763,25 +860,36 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                 # engine weights by 1/σ². Publish the same σ as the whisker so the
                 # chart's confidence and the fit's agree — a five-star point that
                 # drew a hairline whisker was the chart lying about its evidence.
-                # The engine reports MAD for ITS estimator, not for focus_size.
-                # Population scatter is a property of the FIELD though, not of
-                # which estimator measures it, so carry the measured RELATIVE
-                # scatter across rather than inventing an absolute one. When the
-                # detector could not supply a ratio, fall back to a 5% floor —
-                # no size is known better than that, and point_sigma's √n term
-                # is what actually separates a measurement from a rumour.
+                #
+                # The scatter is now the SIZE METRIC'S OWN, over the sources that
+                # voted for this median (`SourceSize.mad`). It used to be the
+                # Rust detector's MAD for the Rust detector's estimator, carried
+                # across as a RATIO because the two measured different things;
+                # measuring the scatter of the population we actually fit
+                # removes the translation and the second full-frame pass with
+                # it. Still expressed relatively so the 2% floor keeps its
+                # meaning. No scatter (a single donut, or a substitute that does
+                # not model one) falls back to 5%: no size is known better than
+                # that, and point_sigma's √n term is what actually separates a
+                # measurement from a rumour.
                 rel = 0.05
-                if rust_hfr and float(rust_hfr) > 0 and stats.get("hfr_mad"):
-                    rel = max(0.02, float(stats["hfr_mad"]) / float(rust_hfr))
+                mad = getattr(detail, "mad", None)
+                if mad is not None and float(hfr) > 0:
+                    rel = max(0.02, float(mad) / float(hfr))
                 sigma = point_sigma(float(hfr), rel * float(hfr), n)
+                # The engine's own star_count argument is the fit's weight input
+                # beside σ, so it gets the same voter count σ was computed from.
                 sweep.add_measurement(pos, float(hfr), sigma, n)
                 points.append((pos, float(hfr), sigma))
-                counts.append(n)
+                counts.append(found)
                 # The count on a GOOD point is the margin: a sweep that works
                 # with 9 stars and one that works with 90 look identical in a
-                # log that only mentions failures.
+                # log that only mentions failures. BOTH numbers, because they
+                # now differ and the morning log is the only forensic record:
+                # how rich the frame was, and how many of those actually voted.
                 bus.log("info",
-                        f"autofocus: {pos} -> HFR {hfr:.2f} ({n} stars)", "focus")
+                        f"autofocus: {pos} -> HFR {hfr:.2f} ({found} stars, "
+                        f"{n} sized)", "focus")
                 bus.publish("focus", state="running", points=_pts(), best=None,
                             activity=None, point_index=attempted - 1,
                             points_planned=points_planned)

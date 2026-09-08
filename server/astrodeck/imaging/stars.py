@@ -633,6 +633,17 @@ class SourceSize:
     #: its own radial profile. Defaulted so every existing construction (and
     #: every test that builds a SourceSize by hand) keeps working.
     source: str = "pyramid"
+    #: MAD of the per-source radii that VOTED for ``radius`` — the population
+    #: scatter behind the median, in the same pixels. ``None`` when a single
+    #: source answered, because one sample has no scatter and reporting 0.0
+    #: would make it the most certain point in a sweep (the 2026-07-31 failure
+    #: ``focus.native.point_sigma``'s floor exists for).
+    #:
+    #: Here because the autofocus sweep needs it and used to get it from the
+    #: Rust detector's MAD for the RUST detector's estimator — a number about a
+    #: different measurement of a different population, carried across as a
+    #: ratio because nothing better existed. Now the estimator reports its own.
+    mad: float | None = None
 
 
 def _mean_binned(a: np.ndarray, k: int) -> np.ndarray:
@@ -1000,6 +1011,20 @@ def _box_truncation(img: np.ndarray, bg: float, sigma: float,
     return float(np.median(ratios)), snr, float(np.median(peaks))
 
 
+def _radius_mad(radii, median: float) -> float | None:
+    """Scatter of the radii that voted for ``median``, as a MAD — or ``None``.
+
+    ONE definition for both paths, so the fine path's stars and the pyramid's
+    donuts describe their spread the same way. ``None`` for a single sample:
+    one source has no scatter, and 0.0 would read as infinite precision to
+    anything weighting by it (see ``focus.native.point_sigma``).
+    """
+    values = np.asarray(list(radii), dtype=np.float64)
+    if values.size < 2:
+        return None
+    return float(np.median(np.abs(values - float(median))))
+
+
 def _fine_size(img: np.ndarray, bg: float, sigma: float, k_sigma: float,
                cap: float,
                stars: list[Star] | None = None) -> SourceSize | None:
@@ -1020,7 +1045,8 @@ def _fine_size(img: np.ndarray, bg: float, sigma: float, k_sigma: float,
     if len(stars) < SIZE_FINE_MIN_STARS:
         return None                     # not a population; the pyramid's job
     pop = _bright_population(stars)
-    radius = float(np.median([s.hfr for s in pop]))
+    hfrs = [s.hfr for s in pop]
+    radius = float(np.median(hfrs))
     if radius >= SIZE_FINE_MAX_BOX_HFR:
         return None                     # the box is measuring itself (gate 1)
     probe = _box_truncation(img, bg, sigma, stars, cap)
@@ -1032,7 +1058,8 @@ def _fine_size(img: np.ndarray, bg: float, sigma: float, k_sigma: float,
     if truncation >= SIZE_FINE_MAX_TRUNCATION:
         return None                     # rim fragments, not stars (gate 2)
     return SourceSize(radius=radius, n_sources=len(pop), n_found=len(stars),
-                      snr=snr, scale=1, lower_bound=False, source="stars")
+                      snr=snr, scale=1, lower_bound=False, source="stars",
+                      mad=_radius_mad(hfrs, radius))
 
 
 def compact_star_population(data: np.ndarray, *,
@@ -1179,10 +1206,12 @@ def star_size(data: np.ndarray, *, k_sigma: float = 5.0,
     solid.sort(key=lambda m: -m["flux"])
     brightest = solid[0]
     voters = [m for m in solid if m["flux"] >= SIZE_POPULATION_FRAC * brightest["flux"]]
+    radii = [m["mean_r"] for m in voters]
+    radius = float(np.median(radii))
     return SourceSize(
-        radius=float(np.median([m["mean_r"] for m in voters])),
-        n_sources=len(voters), n_found=len(found),
-        snr=brightest["snr"], scale=int(brightest["scale"]), lower_bound=False)
+        radius=radius, n_sources=len(voters), n_found=len(found),
+        snr=brightest["snr"], scale=int(brightest["scale"]), lower_bound=False,
+        mad=_radius_mad(radii, radius))
 
 
 def size_advice(size: SourceSize | None, *,
@@ -1265,29 +1294,46 @@ def saturation_fraction(data: np.ndarray) -> float:
 MIN_SIZE_PX = 1.0
 
 
-def focus_size(data: np.ndarray, min_stars: int = 3) -> tuple[float | None, int]:
-    """``(size in px, sources behind it)`` — the drop-in an autofocus sweep wants.
+def focus_size(data: np.ndarray,
+               min_stars: int = 3
+               ) -> tuple[float | None, int, SourceSize | None]:
+    """``(size in px, sources behind it, the SourceSize it came from)`` — the
+    drop-in an autofocus sweep wants.
 
-    Same shape as ``median_hfr``, and near focus the SAME NUMBER — ``star_size``
-    answers there with the grader's own median over the grader's own population
-    (GN-05) — but it keeps rising all the way out instead of turning over once
-    the star outgrows a cutout. ``min_stars`` still guards the fit, with one
-    deliberate exception:
+    Same shape as ``median_hfr`` in its first two values, and near focus the
+    SAME NUMBER — ``star_size`` answers there with the grader's own median over
+    the grader's own population (GN-05) — but it keeps rising all the way out
+    instead of turning over once the star outgrows a cutout. ``min_stars`` still
+    guards the fit, with one deliberate exception:
     a single source measured at SIZE_CONFIDENT_SNR is admitted alone, because
     at 1000 steps out a rich field legitimately yields two or three measurable
     donuts and dropping those points is precisely how the sweep came back
-    'not_enough_spread' with a perfect V sitting in the data."""
+    'not_enough_spread' with a perfect V sitting in the data.
+
+    THE THIRD VALUE, added 2026-09-08: the ``SourceSize`` itself, ``None`` only
+    when nothing measurable was found. The native sweep dropped its per-point
+    Rust ``detect_and_measure`` (27 s of a 40 s point on the rig's 26 MP frames)
+    and that pass was the only supplier of two facts the sweep still needs — the
+    population's scatter (``.mad``, which sets each point's σ and so its weight
+    in the fit) and how many stars the frame actually held (``.n_found``, which
+    is what "thin", "rich" and "over-swept" are measured against). Handing back
+    the object rather than widening the tuple again keeps ONE function to
+    substitute — the sweep, and the cost harness that measures it, both stub
+    ``focus_size`` — and gives the next fact somewhere to live.
+
+    A caller wanting only the pair writes ``size, n, _ = focus_size(...)``.
+    """
     size = star_size(data)
     if size is None:
-        return None, 0
+        return None, 0, None
     if size.n_sources < min_stars and size.snr < SIZE_CONFIDENT_SNR:
-        return None, size.n_sources
+        return None, size.n_sources, size
     # A half-flux radius inside one pixel is a pixel, not a star. Mirrors
     # `focus.autofocus._size_point` - the two are one rule in two places by
     # design, and a floor on only one of them is how they drift (#219).
     if size.radius < MIN_SIZE_PX:
-        return None, size.n_sources
-    return size.radius, size.n_sources
+        return None, size.n_sources, size
+    return size.radius, size.n_sources, size
 
 
 def _mid_bright_gate(stars: list[Star], full_well: int | None) -> tuple[float, float | None]:

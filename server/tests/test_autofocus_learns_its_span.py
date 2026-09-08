@@ -85,14 +85,26 @@ async def test_a_fast_scope_gets_a_narrower_second_sweep():
     sweep measures the slope, the second is a fraction of the width, and it
     still finds focus.
 
-    Steepened to 200 rather than to the rig's own rate: at the real thing's
+    Steepened to 250 rather than to the rig's own rate: at the real thing's
     bloat the ±1400 sweep does not survive its own wings on a sim frame — the
     outer stars run off the sensor and the run dies `not_enough_spread`, which
     is precisely the failure this change exists to stop but is no use as a
     fixture for measuring the narrowing.
+
+    250 rather than the 200 this used until 2026-09-08, one notch further in
+    for a related reason. At 200 steps/px the NARROWED ±700 sweep bloats its own
+    outer point by 3.5 px, where the sim's 1216x912 field resolves two sources —
+    so that point was dropped, the run aborted, and the whole test rested on
+    `curve_verdict` salvaging a tip the size metric measures NINE sources at. It
+    did, because the per-point Rust pass counted fifteen detections on that same
+    frame and `counts` took the larger. That pass is gone (27 s a point on the
+    rig's 26 MP frames) and the count now comes from the metric that measures
+    the size, so nine is under the tip gate. At 250 the narrow sweep measures
+    every point it asks for, which is what "the narrowed sweep still works" was
+    always meant to mean.
     """
     rig, cam, foc = await _connected_sim()
-    rig.defocus_steps_per_px = 200.0
+    rig.defocus_steps_per_px = 250.0
     rig.best_focus = await foc.get_position()
 
     import astrodeck.focus.native as N
