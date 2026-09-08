@@ -208,7 +208,7 @@ async def test_the_reported_hfr_is_the_size_measured_at_the_reported_position():
     assert result.success, result.message
 
     frame = await cam.expose(EXPOSURE_S, GAIN, 30, binning=BINNING)
-    again, _ = focus_size(frame.data)
+    again, _n, _size = focus_size(frame.data)
     assert again == pytest.approx(result.best_hfr, abs=1e-9)
 
 

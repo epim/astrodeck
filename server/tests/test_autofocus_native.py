@@ -640,9 +640,22 @@ async def test_a_curve_that_ran_out_of_range_is_accepted_not_discarded(monkeypat
     # the unmeasurable point arrives.
     seen = _blank_beyond(cam, foc, start + step * 6)
 
+    # BIN 2, because the salvage this models needs a TIP worth salvaging. The
+    # NGC 5907 run it comes from measured 460 stars at its best point and 2 at
+    # the eleventh, and `curve_verdict` refuses a tip under THIN_POINT_STARS
+    # for exactly that reason. The sim's bin-1 frame is a 1216x912 postage
+    # stamp whose best point resolves nine sources — itself a thin tip, so it
+    # fails the gate on its own merits. At bin 2 the same field resolves 21-28
+    # and the fixture is the shape it claims to be.
+    #
+    # (It passed at bin 1 until 2026-09-08 only because the per-point Rust
+    # `detect_and_measure` counted 11-15 detections on that frame where
+    # `star_size` resolves nine. That pass is gone — it cost 27 s a point on
+    # the rig — and the count now comes from the metric that measures the size.
+    # On a real 26 MP field the fine path answers with hundreds either way.)
     result = await run_native_autofocus(
         cam, foc, exposure_s=0.05, gain=200, step=step,
-        steps_each_side=side, binning=1)
+        steps_each_side=side, binning=2)
 
     assert seen["n"] > 0, (
         "the sweep never reached the blanked position, so this test proves "

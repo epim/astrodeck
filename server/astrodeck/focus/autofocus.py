@@ -1248,7 +1248,7 @@ async def run_autofocus(camera: Camera, focuser: Focuser, *,
         # would let a run that landed badly still print a healthy-looking 4.5px,
         # because that number cannot exceed its own measurement box — the exact
         # lie that made every frame this week look identically "FAIR".
-        final_hfr, _ = await asyncio.to_thread(focus_size, frame.data)
+        final_hfr, _n, _size = await asyncio.to_thread(focus_size, frame.data)
     except BaseException:
         # Never leave the focuser parked at an arbitrary sweep position. Restore
         # start_pos best-effort (shielded so even a cancel completes the move

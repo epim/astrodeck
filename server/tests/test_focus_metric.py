@@ -136,7 +136,7 @@ def test_frames_with_no_recorded_source_measure_nothing_and_say_so(position):
     precisely the failure the whole night turned on."""
     assert _entry(position)["usable_for_size_metric"] is False
     assert star_size(_frame(position)) is None
-    assert focus_size(_frame(position)) == (None, 0)
+    assert focus_size(_frame(position)) == (None, 0, None)
 
 
 def test_the_advice_names_the_exposure_rather_than_blaming_the_sky():
@@ -166,7 +166,7 @@ def test_focus_size_is_a_drop_in_for_median_hfr_and_answers_at_every_point():
     these are the points that were DROPPED for having too few stars, and a
     sweep that drops its wings has no spread left to fit."""
     for pos in BAND:
-        value, n = focus_size(_frame(pos), 3)
+        value, n, _size = focus_size(_frame(pos), 3)
         assert value is not None, f"{pos} dropped: only {n} sources"
         assert n >= 1
 
