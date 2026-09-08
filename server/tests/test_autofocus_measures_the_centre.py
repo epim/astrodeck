@@ -570,3 +570,27 @@ async def test_a_metric_that_reports_no_scatter_still_gets_a_sigma(monkeypatch):
     expected = N.point_sigma(3.4, 0.05 * 3.4, 25)
     assert pts[-1]["sigma"] == pytest.approx(expected)
     assert pts[-1]["sigma"] > 0
+
+
+def test_the_window_keeps_the_array_type_the_camera_produced():
+    """A camera (or a test double) may hand over an ndarray SUBCLASS carrying
+    facts on the pixels themselves; the window is a view of that array and
+    must not downcast it. `np.asarray` would, silently, and the clocked
+    replay harness (tests/_focus_clock.py) reads the focuser position off
+    exactly such a subclass to answer for a windowed frame."""
+    import numpy as np
+    from astrodeck.devices.base import CameraFrame
+    from astrodeck.focus.window import window_frame
+
+    class Tagged(np.ndarray):
+        def __array_finalize__(self, obj):
+            self.tag = getattr(obj, "tag", None)
+
+    data = np.zeros((100, 200), dtype=np.uint16).view(Tagged)
+    data.tag = "from the camera"
+    frame = CameraFrame(data=data, exposure_s=1.0, gain=1, offset=0, binning=1,
+                        bayer_pattern=None, temperature_c=None, timestamp=0.0)
+    out = window_frame(frame, 0.5)
+    assert isinstance(out.data, Tagged)
+    assert out.data.tag == "from the camera"
+    assert out.data.shape == (50, 100)

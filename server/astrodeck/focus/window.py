@@ -101,5 +101,9 @@ def window_frame(frame, frac: float):
     """
     if float(frac) >= 1.0:
         return frame
-    data = np.asarray(frame.data)
+    # asanyarray, not asarray: the window is a VIEW of whatever the camera
+    # produced, and a subclass the camera chose to hand over (a test double
+    # that carries the focuser position on the pixels, say) must survive the
+    # slice. asarray would quietly downcast it to a bare ndarray.
+    data = np.asanyarray(frame.data)
     return replace(frame, data=data[centre_slice(data.shape, frac)])
