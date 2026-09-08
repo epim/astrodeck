@@ -251,6 +251,7 @@ class DawnPark:
             self._clear_failure()
             bus.log("info", f"dawn: the Sun has reached {alt:+.1f}° and the "
                             f"mount is already parked", "safety")
+            await self._release_cooler(alt)
             return
 
         # ASK AGAIN, because the answer above cost up to MOUNT_QUERY_TIMEOUT_S
@@ -303,6 +304,57 @@ class DawnPark:
         bus.log("warning", "dawn park: mount parked. The night ended without a "
                            "sequence wind-down, so nothing else was going to "
                            "stop it tracking into the Sun", "safety")
+        await self._release_cooler(alt)
+
+    async def _release_cooler(self, alt: float) -> None:
+        """Let the camera warm, now that the night is definitively over.
+
+        THE NET UNDER A PROMISE MADE ELSEWHERE. Since 2026-09-08 the sequence
+        wind-down SKIPS its warm ramp when another session is armed and
+        tonight's window is still open, so the resumed run does not have to
+        wait for the TEC to walk back down (measured: NGC 604 sat waiting for
+        -7 to reach -10). That is right whenever the resume happens. When it
+        does not — a weather veto that lasts the rest of the night, a rig
+        nobody comes back to — the cooler is left holding a setpoint with
+        nothing on the horizon that would ever release it, and on a 40 C day
+        a sensor held at -10 inside a warm enclosure is a condensation risk,
+        not just wasted power.
+
+        So the same tick that decides "the night ended and nobody is using
+        this rig" releases the cooler as well as parking the mount. Reached
+        only after the hands-off checks above, and it uses the ordinary warm
+        path, so the operator's SETPOINT survives (warming stops the cooler;
+        it does not change what temperature this rig images at) and the ramp
+        config is honoured.
+
+        Never raises. This runs at the end of a watchdog whose whole value is
+        that it cannot fail loudly enough to matter: a rig with no camera, no
+        cooler, or a camera that will not answer must leave the parked mount
+        parked and the log honest, not raise into the tick.
+        """
+        try:
+            cam = self.hub.devices.get("camera")
+            if cam is None or not getattr(cam, "connected", False):
+                return
+            if not getattr(cam, "can_cool", False):
+                return
+            state = await self.hub.warm_camera(source="dawn")
+        except Exception as e:      # noqa: BLE001 - see the docstring
+            bus.log("warning", f"dawn: could not release the cooler ({e}); it "
+                               f"is still holding its setpoint with the night "
+                               f"over", "safety")
+            return
+        note = (state or {}).get("note") if isinstance(state, dict) else None
+        if note:
+            # "already at ambient", "no cooler" and friends: nothing happened,
+            # and saying so beats a line claiming a warm that did not start.
+            bus.log("info", f"dawn: the cooler needed no action ({note})",
+                    "safety")
+        else:
+            bus.log("info", f"dawn: the Sun is at {alt:+.1f}° and no run is "
+                            f"going to use this camera tonight — warming it "
+                            f"rather than leaving the cooler holding its "
+                            f"setpoint through the day", "safety")
 
     # -------------------------------------------------------------- internals
 
