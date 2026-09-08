@@ -33,5 +33,5 @@ pub use gaussian::GaussianFit;
 pub use hyperbolic::HyperbolicFit;
 pub use point::{average_measurements, insert_sorted, FocusPoint, MeasureAndError};
 pub use quadratic::QuadraticFit;
-pub use sweep::{FailReason, FocusSweep, Step};
+pub use sweep::{FailReason, FocusSweep, PendingKind, Step};
 pub use trendline::{Trendline, TrendlineFit};
