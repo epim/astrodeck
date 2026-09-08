@@ -99,12 +99,32 @@ class FakeHub:
         self._motion_lock = asyncio.Lock()
         self.epoch_bumps = 0
         self.lanes: list[str] = []
+        #: Every ``warm_camera`` call this hub was asked to make, and what it
+        #: should answer with (or raise). The dawn tick releases the cooler
+        #: once the night is over; see ``DawnPark._release_cooler``.
+        self.warm_calls: list[str] = []
+        self.warm_note: str | None = None
+        self.warm_error: Exception | None = None
 
     def bump_motion_epoch(self) -> None:
         self.epoch_bumps += 1
 
     def busy_lanes(self) -> list[str]:
         return list(self.lanes)
+
+    async def warm_camera(self, *, source: str = "user", ramp: bool = True):
+        if self.warm_error is not None:
+            raise self.warm_error
+        self.warm_calls.append(source)
+        return {"note": self.warm_note} if self.warm_note else {"active": True}
+
+
+class FakeCam:
+    """A camera that may or may not have a cooler to release."""
+
+    def __init__(self, *, connected: bool = True, can_cool: bool = True) -> None:
+        self.connected = connected
+        self.can_cool = can_cool
 
 
 class FakeEngine:
@@ -656,3 +676,125 @@ async def test_a_recovered_net_says_so_and_rearms_the_counter(cfg, bus_lines):
 
     assert tel.parked is True
     assert _said(bus_lines, "recovered after 2 failed attempts"), bus_lines
+
+
+# ------------------------------------------------- releasing the cooler
+#
+# The wind-down stopped warming the camera when another session is armed and
+# tonight's window is still open (2026-09-08), so the resumed run does not
+# wait for the TEC to walk back down. When that resume never happens, nothing
+# else would ever release the cooler -- and a sensor held at -10 inside a
+# warm enclosure on a 40 C day is a condensation risk, not just wasted power.
+# The same tick that decides "the night is over and nobody is using this rig"
+# is the net.
+
+
+async def _idle_daytime_rig(*, parked: bool = False, cam=None):
+    hub = FakeHub()
+    tel = FakeTel(hub=hub)
+    tel.parked = parked
+    hub.devices["telescope"] = tel
+    tel._hub = hub
+    if cam is not None:
+        hub.devices["camera"] = cam
+    ts, _alt = _daytime()
+    return hub, tel, ts
+
+
+async def test_the_cooler_is_released_once_the_mount_is_parked(cfg, bus_lines):
+    hub, tel, ts = await _idle_daytime_rig(cam=FakeCam())
+
+    await DawnPark(hub, FakeEngine(), clock=lambda: ts).tick()
+
+    assert tel.park_calls == 1, "precondition: this is the parking path"
+    assert hub.warm_calls == ["dawn"], (
+        "the night ended with nothing armed that will use this camera, so the "
+        "cooler must not be left holding its setpoint through the day")
+    assert _said(bus_lines, "warming it"), bus_lines
+
+
+async def test_an_already_parked_rig_still_gets_its_cooler_released(cfg):
+    """The mount being parked already says nothing about the cooler: the run
+    that parked it may well be the one that deliberately skipped its warm."""
+    hub, tel, ts = await _idle_daytime_rig(parked=True, cam=FakeCam())
+
+    await DawnPark(hub, FakeEngine(), clock=lambda: ts).tick()
+
+    assert tel.park_calls == 0, "precondition: nothing to park"
+    assert hub.warm_calls == ["dawn"]
+
+
+async def test_a_camera_with_no_cooler_is_not_asked(cfg):
+    hub, _tel, ts = await _idle_daytime_rig(cam=FakeCam(can_cool=False))
+
+    await DawnPark(hub, FakeEngine(), clock=lambda: ts).tick()
+
+    assert hub.warm_calls == []
+
+
+async def test_a_disconnected_camera_is_not_asked(cfg):
+    hub, _tel, ts = await _idle_daytime_rig(cam=FakeCam(connected=False))
+
+    await DawnPark(hub, FakeEngine(), clock=lambda: ts).tick()
+
+    assert hub.warm_calls == []
+
+
+async def test_no_camera_at_all_is_not_an_error(cfg, bus_lines):
+    hub, tel, ts = await _idle_daytime_rig()
+
+    await DawnPark(hub, FakeEngine(), clock=lambda: ts).tick()
+
+    assert tel.parked is True, "the park must still have happened"
+    assert hub.warm_calls == []
+
+
+async def test_a_cooler_that_refuses_does_not_unpark_the_mount(cfg, bus_lines):
+    """A watchdog that raises is worse than none. The park has already
+    happened by this point and must stand, with the failure said out loud."""
+    hub, tel, ts = await _idle_daytime_rig(cam=FakeCam())
+    hub.warm_error = RuntimeError("cooler link down")
+
+    await DawnPark(hub, FakeEngine(), clock=lambda: ts).tick()
+
+    assert tel.parked is True
+    assert _said(bus_lines, "could not release the cooler"), bus_lines
+    assert _said(bus_lines, "still holding its setpoint"), (
+        "the log has to say what state the rig was left in, not just that a "
+        "call failed")
+
+
+async def test_a_camera_already_at_ambient_says_so_rather_than_claiming_a_warm(cfg, bus_lines):
+    hub, _tel, ts = await _idle_daytime_rig(cam=FakeCam())
+    hub.warm_note = "already at ambient"
+
+    await DawnPark(hub, FakeEngine(), clock=lambda: ts).tick()
+
+    assert hub.warm_calls == ["dawn"]
+    assert _said(bus_lines, "needed no action"), bus_lines
+    assert not _said(bus_lines, "warming it"), (
+        "a line claiming a warm that never started is the kind of log that "
+        "makes the next morning undiagnosable")
+
+
+async def test_a_running_sequence_keeps_its_own_cooler(cfg):
+    """Hands off means hands off: a live run owns the camera, and its own
+    wind-down is what decides whether that camera warms."""
+    hub, _tel, ts = await _idle_daytime_rig(cam=FakeCam())
+
+    await DawnPark(hub, FakeEngine(running=True), clock=lambda: ts).tick()
+
+    assert hub.warm_calls == []
+
+
+async def test_it_does_not_warm_while_it_is_still_night(cfg):
+    hub = FakeHub()
+    tel = FakeTel(hub=hub)
+    hub.devices["telescope"] = tel
+    hub.devices["camera"] = FakeCam()
+    tel._hub = hub
+    ts, _alt = _night()
+
+    await DawnPark(hub, FakeEngine(), clock=lambda: ts).tick()
+
+    assert hub.warm_calls == []
