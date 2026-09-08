@@ -37,7 +37,7 @@ from ..devices.base import DeviceError, DomeShutterState, PierSide
 from ..events import bus
 from ..focus import run_autofocus
 from ..focus.autofocus import SWEEP_EXPOSURE_S, SWEEP_GAIN, TrackingLost
-from ..focus.filter_offsets import narrowband_sweep_settings
+from ..focus.filter_offsets import narrowband_sweep_settings, solve_filter_slot
 from ..guide.base import rms_total_arcsec
 from ..hub import Hub
 from ..imaging.processing import to_jpeg
@@ -126,6 +126,38 @@ MAX_JUMPS = 64
 #: ride out a sweep beaten by a passing cloud, few enough that a focuser which
 #: cannot focus does not spend the night sweeping.
 MAX_REARM_AFTER_FAILURE = 3
+
+#: How recently a SUCCESSFUL sweep has to have run for the POST-FLIP one to be
+#: skipped. Seconds, against ``time.monotonic()``.
+#:
+#: A flip is not a focus event. Nothing a flip does moves the focuser, and the
+#: thing that DOES move focus over a night — temperature — already has its own
+#: trigger (``refocus_on_temp_delta_c``) and its own baseline. Measured
+#: 2026-09-08 00:37: an eight-minute post-flip sweep, thirty minutes after a
+#: temperature refocus, with no temperature change between them.
+#:
+#: SO THE TEMPERATURE CLAUSE IS THE REAL GATE and this number is the backstop
+#: behind it, for the rig whose focuser has no temperature probe or whose
+#: operator has left the delta at 0. It is a CHOICE, not a measurement: thirty
+#: minutes is short enough that a night cooling at any plausible rate trips the
+#: temperature clause first when one is armed, and long enough that the two
+#: flips of one crossing do not each buy a sweep. Raising it without arming the
+#: temperature delta is how a rig ends up focusing once a night.
+FRESH_FOCUS_S = 30 * 60.0
+
+#: An autofocus longer than this, run UNGUIDED, earns a re-centre before guiding
+#: starts. Seconds.
+#:
+#: MEASURED ON THE RIG, 2026-09-07: centred to 0.08 arcmin at 22:12, first light
+#: frame 2.0 arcmin off at 22:21 — about 15 arcsec/min of unguided drift with
+#: the polar axis where it was that night. The sweep sits exactly in that gap:
+#: the engine centres, autofocuses UNGUIDED, then starts guiding on WHEREVER the
+#: field has drifted to, and the plate-solved centring it paid for is spent.
+#: At that measured rate a 60 s sweep drifts 15 arcsec — well inside the 1.2
+#: arcmin (0.02°) the centring loop itself calls converged — so a sweep short
+#: enough not to matter does not buy a re-slew, and today's ~2.5 min sweep,
+#: which drifts about 40 arcsec, does.
+RECENTRE_AFTER_UNGUIDED_S = 60.0
 # --- meridian-flip trigger (server HA countdown) ---------------------------
 # Slack added to the next exposure when deciding "would this frame cross the flip
 # point?": we never START an exposure that cannot finish (plus download/settle
@@ -363,6 +395,18 @@ class SequenceEngine:
         self._frames_since_dither = 0
         self._frames_since_focus = 0
         self._last_focus_temp: float | None = None
+        #: ``time.monotonic()`` of the last SUCCESSFUL sweep, or None.
+        #:
+        #: Monotonic, not wall clock: this is only ever read as an AGE, and a
+        #: night that crosses a DST change or has its clock stepped by NTP must
+        #: not be able to call a sweep from four minutes ago "fresh enough to
+        #: skip" or a fresh one stale.
+        #:
+        #: CLEARED BY A FAILED SWEEP, so the field answers two questions with
+        #: one value: how long since focus was found, and did the last attempt
+        #: find it. A run whose most recent sweep failed has no fresh focus to
+        #: stand on whatever the clock says, and must focus again.
+        self._last_focus_at: float | None = None
         #: GN-08: the HFR of the first ACCEPTED frame since the last successful
         #: autofocus (or, absent any autofocus this run, the run's own first
         #: accepted frame). Read by a relative `hfr_above` rule; reset to None
@@ -593,6 +637,7 @@ class SequenceEngine:
         self._frames_since_dither = 0
         self._frames_since_focus = 0
         self._last_focus_temp = None
+        self._last_focus_at = None
         self._focus_baseline_hfr = None
         self._recent_hfr = []
         self._cooling_reasserted = False
@@ -2110,7 +2155,17 @@ class SequenceEngine:
                         raise
 
         if target.autofocus_first and "focuser" in self.hub.devices:
+            # THE CENTRING IS SPENT BY THE TIME GUIDING STARTS. Measured
+            # 2026-09-07: centred to 0.08' at 22:12, first light frame 2.0' off
+            # at 22:21 — the sweep runs UNGUIDED between the two, and this rig
+            # drifts about 15"/min unguided. See `_recentre_after_unguided_focus`.
+            guided_before = await self._guiding_active_now()
+            _af_t0 = time.monotonic()
             await self._autofocus("initial autofocus", target=target)
+            af_s = time.monotonic() - _af_t0
+            guided_through = guided_before and await self._guiding_active_now()
+            await self._recentre_after_unguided_focus(
+                target, af_s, guided=bool(guided_through))
 
         # THE DECISION IS MADE WHENEVER THE PLAN ASKED FOR GUIDING — not only
         # when a guider happens to be present. This whole block used to sit
@@ -4767,8 +4822,9 @@ class SequenceEngine:
         side_before = await self._pier_side_now()
         # the flip = stop-guide + re-slew + solve + restart-guide; bound it (P0-2)
         # so a wedged flip can't hang the night mid-slew across the meridian.
+        flip_result: dict | None = None
         try:
-            await _bounded(
+            flip_result = await _bounded(
                 self.hub.meridian_flip(target.ra_hours, target.dec_deg),
                 FLIP_TIMEOUT_S, "meridian flip")
         except SafetyAbort:
@@ -4805,11 +4861,32 @@ class SequenceEngine:
         side_after = await self._pier_side_now()
         unchanged = (side_before not in (None, "unknown")
                      and side_after == side_before)
+        # THE HUB NOW ANSWERS THE SAME QUESTION, and it answers it from INSIDE
+        # the flip — between the slew and the guider restart, which is the only
+        # place the answer can still save the calibration. This comparison is
+        # kept as the cross-check: the two read the same mount through the same
+        # tri-state helper, so a disagreement means one of the reads flickered
+        # and is worth a line rather than a silent preference for either.
+        hub_flipped = None
+        if isinstance(flip_result, dict) and "flipped" in flip_result:
+            hub_flipped = bool(flip_result["flipped"])
+            if hub_flipped == unchanged:        # i.e. the two disagree
+                bus.log("warning",
+                        f"{target.name}: the flip's own pier-side check says "
+                        f"{'flipped' if hub_flipped else 'nothing flipped'} and "
+                        f"the engine's says the opposite — the mount's answer "
+                        f"changed between the two reads; treating it as "
+                        f"nothing flipped", "sequence")
+        # Either witness saying "nothing moved" is enough: both cost a latch and
+        # a post-flip programme that buys nothing, and neither can be wrong in
+        # the direction that hurts (an unreadable side reads as FLIPPED in both,
+        # which keeps the conservative behaviour).
+        nothing_flipped = unchanged or hub_flipped is False
         # one flip per meridian crossing: the target now tracks counterweight-down
         # on the far side and the server countdown stays negative for hours, so
         # disarm until the next target re-arms in _setup_target.
         self._flip_armed = False
-        if unchanged and key not in self._flip_no_op:
+        if nothing_flipped and key not in self._flip_no_op:
             # A FLIP THAT DID NOT FLIP IS NOT A FLIP, and spending the
             # crossing's one latch on it is how the mount reaches its limit
             # with the engine believing it is safely on the far side. Keep the
@@ -4838,7 +4915,20 @@ class SequenceEngine:
         # dither/AF blocks (P2-1).
         self._frame_had_event = True
         if "focuser" in self.hub.devices:
-            await self._autofocus("post-flip autofocus", target=target)
+            if nothing_flipped:
+                # 7.5 MINUTES FOR NOTHING, 2026-09-08 00:25. The lead-time
+                # attempt did not move the mount an inch, and the engine ran a
+                # full sweep afterwards anyway — at 24 s a point, because the
+                # wheel happened to be on Ha. A post-flip focus exists because
+                # a flip swings the tube through 180 degrees; a re-slew that
+                # ended where it started has changed nothing that focus depends
+                # on.
+                bus.log("info",
+                        f"{target.name}: skipping the post-flip autofocus — "
+                        f"the mount did not change pier side, so nothing moved "
+                        f"that focus depends on", "sequence")
+            elif await self._post_flip_focus_is_owed():
+                await self._autofocus("post-flip autofocus", target=target)
 
     def _flip_lead_s(self, target: Target | None = None) -> float:
         """Seconds before transit at which this plan wants its GEM flip.
@@ -4949,6 +5039,80 @@ class SequenceEngine:
                 announced = True
             await asyncio.sleep(GUIDE_QUIET_POLL_S)
         return True
+
+    async def _guiding_active_now(self) -> bool:
+        """Is the guider CURRENTLY holding the field? Bounded; False on doubt.
+
+        False for "no guider", "link down" and "the guider would not say",
+        because every caller is asking whether the mount is being held still,
+        and a guider that cannot answer is not evidence that it is.
+        """
+        g = self.hub.guider
+        if g is None or not getattr(g, "connected", False):
+            return False
+        try:
+            return bool(await asyncio.wait_for(g.is_active(),
+                                               GUIDE_OP_TIMEOUT_S))
+        except asyncio.CancelledError:
+            raise
+        except Exception:               # noqa: BLE001
+            return False
+
+    async def _recentre_after_unguided_focus(self, target: Target,
+                                             elapsed_s: float, *,
+                                             guided: bool) -> None:
+        """Re-centre after an initial autofocus that ran with nothing holding
+        the field.
+
+        MEASURED, 2026-09-07. The target start is: slew, plate-solve to 0.08
+        arcmin, autofocus, start guiding. The autofocus is UNGUIDED and the
+        mount's unguided drift on this rig is about 15 arcsec/min (the polar
+        axis was ~30 arcmin out), so the guider locks on wherever the field has
+        walked to: the first light frame came back 2.0 arcmin off, nine minutes
+        after a centring that had put it on 0.08. Everything downstream then
+        believes the pointing the solve reported.
+
+        The fix is the one the resume and re-lock paths already make: re-centre
+        BEFORE guiding starts, because a slew tears down guiding, and the
+        centring is what makes the pointing true again. Non-fatal for the same
+        reason it is there — a failed re-centre leaves the mount exactly where
+        it would have been without this at all.
+
+        ``guided`` is the explicit statement of the condition rather than an
+        assumption: today the initial sweep is ALWAYS unguided (guiding starts
+        after it), and a field held still through the sweep does not drift and
+        must not buy a re-slew. Writing it down is what stops the day the order
+        changes from silently costing a slew per target.
+        """
+        if guided:
+            return
+        if elapsed_s < RECENTRE_AFTER_UNGUIDED_S:
+            return
+        if "telescope" not in self.hub.devices:
+            return
+        # `target.center` is the existing statement of intent — "this target is
+        # to be plate-solved onto the sensor" — honoured here exactly as the
+        # recovery and re-lock re-centres honour it. A target that opted out of
+        # centring still opts out.
+        if not (getattr(target, "center", False)
+                and not getattr(target, "calibration", False)):
+            return
+        bus.log("info",
+                f"{target.name}: the initial autofocus ran {elapsed_s / 60:.1f} "
+                f"min unguided — re-centring before guiding starts, because "
+                f"this rig was measured drifting about 15 arcsec/min with "
+                f"nothing holding the field", "sequence")
+        try:
+            self._set_state(detail="re-centring after the unguided sweep")
+            await self.hub.goto_and_center(target.ra_hours, target.dec_deg,
+                                           rotation_deg=target.rotation_deg)
+        except Exception as e:          # noqa: BLE001
+            # Non-fatal by design (same as the recovery and re-lock re-centres):
+            # a failed re-centre leaves the mount where it already was.
+            bus.log("warning",
+                    f"{target.name}: re-centring after the autofocus failed "
+                    f"({e}); starting guiding at the current pointing",
+                    "sequence")
 
     async def _maybe_recover_guiding(self, target=None) -> None:
         if not (self.plan.guide and self._policy.recover_guiding):
@@ -5924,6 +6088,152 @@ class SequenceEngine:
             return base_exp, base_gain
         return exposure_s, gain
 
+    async def _sweep_through_luminance(self, label: str) -> str | None:
+        """Put luminance in the beam for this sweep. Returns the filter name to
+        put BACK afterwards, or ``None`` when the sweep stays where it is.
+
+        THE OTHER HALF OF THE NARROWBAND PROBLEM. Scaling the exposure
+        (``_sweep_settings_for_current_filter``) makes a narrowband sweep
+        POSSIBLE; it does not make it cheap. Measured 2026-09-08: the two flip
+        sweeps ran at 24 s a point because the wheel happened to be on Ha,
+        7.5 and 8 minutes each, against about 2.5 minutes through L. The
+        exposure scaling is still what runs when this cannot.
+
+        WHY THIS IS SAFE HERE AND WAS NOT BEFORE. Focus position is
+        filter-dependent — that is the whole reason per-filter offsets exist —
+        so a focus found through L is the WRONG focus for Ha unless something
+        puts the offset back. That something is the sequence's own filter
+        change, which is why this moves the wheel through ``_apply_filter``
+        rather than driving it directly: the move out applies
+        ``offsets[L] - offsets[Ha]``, the move back applies the exact inverse
+        relative to whatever focus the sweep just found, and neither this
+        method nor the sweep has to know the arithmetic. With
+        ``apply_filter_offsets`` off, or with no offset measured for either
+        slot, nothing would put it back — so nothing moves, and the sweep runs
+        through the filter in the beam exactly as it did before.
+
+        ``solve_filter_slot`` picks the slot, unchanged, for the reason its
+        docstring gives: a slot that already passes broad light is left alone
+        (an L/R/G/B sweep must not buy two wheel moves for nothing), and a
+        narrowband or opaque one prefers luminance when the wheel has it.
+
+        Never costs the focus run: any wheel error returns None and the sweep
+        proceeds where it is.
+        """
+        fw = self.hub.devices.get("filterwheel")
+        if fw is None or not getattr(fw, "connected", False):
+            return None
+        if "focuser" not in self.hub.devices:
+            return None
+        if not self._policy.apply_filter_offsets:
+            return None
+        try:
+            names = list(getattr(fw, "filter_names", []) or [])
+            cur = int(await _bounded(fw.get_position(), FILTER_MOVE_TIMEOUT_S,
+                                     "filter get_position"))
+            lum = solve_filter_slot(
+                names, narrowband=getattr(fw, "filter_narrowband", None),
+                opaque=getattr(fw, "filter_opaque", None), current_slot=cur)
+            if lum is None:
+                return None
+            offsets = list(getattr(fw, "filter_offsets", []) or [])
+            if len(offsets) <= max(lum, cur):
+                # The same guard `_apply_filter` applies before it moves the
+                # focuser: with no offset for one of these slots the move back
+                # is a no-op, and the sweep would leave Ha sitting on L's focus.
+                return None
+            if fw.is_opaque(lum) or fw.is_opaque(cur):
+                return None
+            back = names[cur]
+            if names.index(back) != cur:
+                # `_apply_filter` addresses a filter BY NAME and takes the first
+                # match, so a wheel with two slots called the same thing cannot
+                # be put back reliably. Stay put rather than restore the wrong
+                # slot with the wrong offset.
+                return None
+            await self._apply_filter(ExposureStep(filter=names[lum],
+                                                  exposure_s=1.0, count=1))
+            bus.log("info",
+                    f"{label}: sweeping through {names[lum]!r} instead of "
+                    f"{back!r} — a broadband sweep is minutes shorter, and the "
+                    f"per-filter offset puts the focus back for {back!r} "
+                    f"afterwards", "sequence")
+            self._set_state(detail=label)
+            return back
+        except SafetyAbort:
+            raise
+        except Exception as e:      # noqa: BLE001 — a wheel must never cost focus
+            bus.log("debug", f"{label}: could not move to luminance for the "
+                             f"sweep ({e}); focusing through the filter in the "
+                             f"beam", "sequence")
+            return None
+
+    async def _restore_filter_after_sweep(self, name: str, label: str) -> None:
+        """Put ``name`` back after a luminance sweep, applying the offset.
+
+        Guarded to the point of swallowing everything, INCLUDING a SafetyAbort
+        raised by the move itself: this runs in a ``finally``, and an exception
+        from it would replace whatever the sweep was already reporting — a
+        failed focus, or the SafetyAbort that caused it. The wheel being left
+        on luminance is self-healing: the next step's own ``_apply_filter``
+        moves it and applies the delta from wherever it actually is.
+        """
+        try:
+            await self._apply_filter(ExposureStep(filter=name, exposure_s=1.0,
+                                                  count=1))
+        except Exception as e:      # noqa: BLE001
+            bus.log("warning",
+                    f"{label}: could not put {name!r} back after the luminance "
+                    f"sweep ({e}); the next frame's filter change will",
+                    "sequence")
+
+    async def _post_flip_focus_is_owed(self) -> bool:
+        """Whether the POST-FLIP sweep is worth its minutes. Only that one.
+
+        Measured 2026-09-08 00:37: eight minutes of sweep, thirty minutes after
+        a temperature refocus, with no temperature change in between. A flip
+        does not move the focuser and does not change the tube's temperature;
+        the only reason to re-focus after one is that time has passed, and
+        ``refocus_on_temp_delta_c`` already owns the question of how much
+        passing time matters.
+
+        Two conditions to skip, both required: a SUCCESSFUL sweep inside
+        ``FRESH_FOCUS_S``, and a focuser temperature that has not moved past
+        the operator's delta since. A run that has never focused, or whose last
+        sweep failed (``_last_focus_at`` cleared), focuses. A delta of 0 means
+        the operator has the temperature trigger OFF, so the age alone decides.
+        A temperature that cannot be READ decides nothing and the sweep runs —
+        this is spending minutes, not skipping a safety gate, so the fallback
+        is the old behaviour.
+        """
+        if self._last_focus_at is None:
+            return True
+        age_s = time.monotonic() - self._last_focus_at
+        if age_s >= FRESH_FOCUS_S:
+            return True
+        delta_c = float(self._policy.refocus_on_temp_delta_c or 0.0)
+        moved: float | None = None
+        if delta_c > 0:
+            t = None
+            try:
+                t = await self.hub.require("focuser").get_temperature()
+            except Exception:       # noqa: BLE001
+                t = None
+            if t is None or self._last_focus_temp is None:
+                return True
+            moved = abs(float(t) - float(self._last_focus_temp))
+            if moved >= delta_c:
+                return True
+        temp_note = (f" and the focuser is {moved:.1f}°C from where it was, "
+                     f"inside the {delta_c:.1f}°C refocus delta"
+                     if moved is not None else
+                     " and no temperature refocus delta is set")
+        bus.log("info",
+                f"skipping the post-flip autofocus: the last successful focus "
+                f"was {age_s / 60:.0f} min ago{temp_note} — a flip does not "
+                f"move the focuser", "sequence")
+        return False
+
     async def _autofocus(self, label: str, *, step=None,
                          target: Target | None = None) -> bool:
         """Run one autofocus. Returns True if it found focus.
@@ -5948,9 +6258,14 @@ class SequenceEngine:
         # the light-frame gate uses, so the two cannot disagree.
         needs_tracking = self._is_light(step) and not getattr(
             target, "calibration", False)
+        restore_filter: str | None = None
         try:
             cam = self.hub.require("camera")
             foc = self.hub.require("focuser")
+            # Broad light first if the offsets can put the focus back: minutes,
+            # not seconds (see `_sweep_through_luminance`). The settings read
+            # below then describe whatever is ACTUALLY in the beam afterwards.
+            restore_filter = await self._sweep_through_luminance(label)
             exposure_s, gain = await self._sweep_settings_for_current_filter(label)
             _e, _g, binning = self._focus_scope_frame()
             # `expose_guard` was missing here alone of the three callers:
@@ -5963,6 +6278,9 @@ class SequenceEngine:
             if not result.success:
                 bus.log("warning", f"{label} failed: {result.message}", "sequence")
                 failed_reason = result.message or "autofocus failed"
+                # A run standing on a focus that was never found is a run that
+                # must focus again — see `_last_focus_at`.
+                self._last_focus_at = None
             else:
                 # GN-08: a successful autofocus invalidates the relative
                 # watchdog's baseline — the NEXT accepted frame re-seeds it
@@ -5970,6 +6288,7 @@ class SequenceEngine:
                 # always measures against what THIS focus achieved, not a
                 # stale one from before the sweep.
                 self._focus_baseline_hfr = None
+                self._last_focus_at = time.monotonic()
             self._frames_since_focus = 0
             self._record_event_cost("autofocus", time.time() - _t0)
             await self._capture_focus_temp()
@@ -5991,14 +6310,23 @@ class SequenceEngine:
                     f"{label} abandoned: {e} — leaving it to the mount's own "
                     f"tracking gate, which can recover it", "sequence")
             self._record_event_cost("autofocus", time.time() - _t0)
+            self._last_focus_at = None
             return False
         except Exception as e:
             bus.log("warning", f"{label} error: {e}", "sequence")
             failed_reason = str(e)
+            self._last_focus_at = None
             # A RAISED autofocus must re-anchor the baseline too — otherwise the
             # drift that triggered it is still there at the next frame boundary
             # and the same failing autofocus fires between every single frame.
             await self._capture_focus_temp()
+        finally:
+            # Whatever happened to the sweep, the beam goes back the way it was
+            # — including on the SafetyAbort re-raise, where leaving the wheel
+            # on luminance would have the wind-down's own frames shot through
+            # the wrong filter.
+            if restore_filter is not None:
+                await self._restore_filter_after_sweep(restore_filter, label)
         # P1-7: honor cfg.escalation.af_failure_action on a failed/errored focus.
         # Default "warn" is the legacy behavior (log above + continue). "abort"
         # tears the night down; "skip" advances the scheduler past this target
