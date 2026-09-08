@@ -379,26 +379,33 @@ def _stick_the_sweep(monkeypatch, stick_at: int):
 
 
 def _starless_once_sweeping(cam, made):
-    """Flat noise, but ONLY after the sweep has started asking for positions.
+    """Flat noise, but ONLY after the probe frame.
 
-    Gated on the sweep rather than applied to every frame, and that gate is the
-    point: a pre-flight probe runs first and refuses the whole run when the
-    START position has no stars ("only 0 stars at the current focus"). Blanking
-    that frame too makes every test here pass on the probe's refusal instead of
-    the stall guard — which is what the first draft did, green, proving nothing.
+    Gated rather than applied to every frame, and that gate is the point: a
+    pre-flight probe runs first and refuses the whole run when the START
+    position has no stars ("only 0 stars at the current focus"). Blanking that
+    frame too makes every test here pass on the probe's refusal instead of the
+    stall guard — which is what the first draft did, green, proving nothing.
+
+    THE GATE IS "the first exposure of the run", not "the sweep has been asked
+    for a position". Since 2026-09-08 the loop asks the engine for its first
+    move BEFORE the probe, so the probe's measurement can overlap that move and
+    exposure — which means ``sweep.asks`` is already 1 while the probe is being
+    taken, and the old gate blanked the probe itself.
 
     Flat noise rather than zeros: a live sensor on a field with nothing bright
     enough to size, which is what the rig had, not a dead camera.
     """
     import numpy as np
     real = cam.expose
-    state = {"n": 0}
+    state = {"n": 0, "exposures": 0}
     rng = np.random.default_rng(3)
 
     async def fake(*a, **kw):
         frame = await real(*a, **kw)
+        state["exposures"] += 1
         sweep = made.get("sweep")
-        if sweep is None or not sweep.asks:
+        if sweep is None or state["exposures"] == 1:
             return frame
         state["n"] += 1
         data = np.asarray(frame.data)

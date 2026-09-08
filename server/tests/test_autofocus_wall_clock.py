@@ -9,15 +9,18 @@ series at 10, and neither costs a fifth of a real second), and the cost
 accounting is tested by moving one constant and checking the bill moves with
 it.
 
-The second half runs the four scenarios and asserts STRUCTURAL facts about the
-status quo: not "the sweep takes 690 s" -- which is a number in a cost model
-and would have to be edited every time the model improves -- but "every
-measured frame pays a full-frame Rust pass", "the turn-round wastes exactly one
-exposure", "the run ends on the wrong side of the backlash". Those are the
-things the three lanes of the autofocus-efficiency plan are meant to change,
-and each of these assertions is written to FAIL when its lane lands. That is
-the point of them: a status-quo test that survives the change it was written
-for measured nothing.
+The second half runs the four scenarios and asserts STRUCTURAL facts: not "the
+sweep takes 153 s" -- which is a number in a cost model and would have to be
+edited every time the model improves -- but "one Rust pass per run", "nothing
+is wasted at the turn-round", "the tube ends where the run says it does".
+
+Those three sentences used to read the other way round. They were written as
+status-quo assertions, each one designed to FAIL when its lane of the
+autofocus-efficiency plan landed, because a status-quo test that survives the
+change it was written for measured nothing. All three lanes have now landed
+(2026-09-08), so each of those assertions has been turned over to state the
+contract that replaced it -- and the number it used to hold is kept in its
+docstring, because "4.5x faster" is only meaningful next to what it was.
 
 Run with `-s` to see the report table.
 
@@ -113,15 +116,33 @@ def test_the_measurement_stubs_are_restored_after_a_scenario():
 # ------------------------------------------------------------- the accounting
 
 def test_cpu_time_is_billed_on_the_virtual_clock():
-    """Doubling what a Rust pass costs must move `cpu_s` and `wall_s`, not just
-    a counter. A harness whose "cost model" the run does not actually pay would
-    report the same wall time for every change to it."""
+    """Move a constant and the bill must move with it, on both clocks. A harness
+    whose "cost model" the run does not actually pay would report the same wall
+    time for every change to it.
+
+    BOTH constants now, because the run pays them in very different amounts and
+    that difference IS lane 1. Doubling the Rust pass moves the bill by ONE pass
+    -- the probe's 25.7 s on this 34-star field -- where before lane 1 it moved
+    it by eleven (the assertion here used to be `+200`). Doubling the size
+    metric's base moves it by all ten points. A test left doubling only the Rust
+    constant would now be nearly silent, and would pass just as well against a
+    harness that had stopped billing the per-point measurement at all.
+    """
     base = clock.run_scenario(clock.sparse_83())
+
     sc = clock.sparse_83()
     sc.cost = dataclasses.replace(sc.cost, rust_base_s=sc.cost.rust_base_s * 2)
-    doubled = clock.run_scenario(sc)
-    assert doubled.cpu_s > base.cpu_s + 200
-    assert doubled.wall_s > base.wall_s + 200
+    rust = clock.run_scenario(sc)
+    assert rust.cpu_s > base.cpu_s + 20
+    assert rust.wall_s > base.wall_s + 20
+    assert rust.cpu_s < base.cpu_s + 60, (
+        "one Rust pass per run, not eleven -- the probe's, and no other")
+
+    sc = clock.sparse_83()
+    sc.cost = dataclasses.replace(sc.cost, size_base_s=sc.cost.size_base_s * 2)
+    size = clock.run_scenario(sc)
+    assert size.cpu_s > base.cpu_s + 50
+    assert size.wall_s > base.wall_s + 50
 
 
 def test_the_exposure_hides_under_the_measurement():
@@ -142,9 +163,9 @@ def test_the_exposure_hides_under_the_measurement():
 
 
 def test_a_smaller_frame_costs_less_to_measure():
-    """The pixel-fraction accounting, exercised directly. Nothing in the loop
-    crops anything today (`rust_mean_frac` is 1.00 everywhere), so this is the
-    only place the harness can prove it would notice one."""
+    """The pixel-fraction accounting, exercised directly rather than through a
+    run: the sweep crops its size passes now (`size_mean_frac` 0.16 on a rich
+    field), and this is where the harness proves it can price a crop at all."""
     sc = clock.sparse_83()
     bill = clock.Bill()
     detect, size_fn, rust, size, measured = clock.measurement_stubs(sc, bill)
@@ -244,129 +265,240 @@ def test_every_scenario_still_finds_focus(reports):
             f"{sc.name} settled at {r.final_commanded}, focus is {sc.focus}")
 
 
-def test_every_measured_frame_pays_a_full_frame_rust_pass(reports):
-    """LANE 1'S TARGET. Today the loop runs `detect_and_measure` over all 26
-    million pixels of every frame it measures, for a star count and a MAD that
-    `focus_size` can supply itself. When lane 1 lands, the probe keeps its pass
-    and the points lose theirs -- so this test is meant to fail."""
+def test_the_run_pays_one_rust_pass_and_measures_the_centre(reports):
+    """LANE 1, LANDED. The loop used to run `detect_and_measure` over all 26
+    million pixels of EVERY frame it measured -- eleven full-frame passes, all
+    at `rust_mean_frac` 1.00 -- for a star count and a MAD that `focus_size` can
+    supply itself. Now the probe pays that pass once (whole, because its count
+    is what sizes the window) and each point pays one `focus_size` over the
+    central 0.4 of each axis: 16 percent of the pixels.
+
+    `sparse_83` keeps the whole frame BY DESIGN. 34 stars has nothing to give
+    away (`focus.window.measure_window` returns 1.0 below 40), so its size
+    passes stay at 1.00 and its whole saving is the Rust pass.
+    """
     for name, r in reports.items():
-        assert r.rust_passes == r.exposures - r.wasted_frames, (
-            f"{name}: {r.rust_passes} passes over "
-            f"{r.exposures - r.wasted_frames} measured frames")
+        assert r.rust_passes == 1, (
+            f"{name}: {r.rust_passes} Rust passes -- the probe's, and no other")
         assert r.rust_mean_frac == pytest.approx(1.0), name
-        assert r.size_mean_frac == pytest.approx(1.0), name
-        # The probe pays a Rust pass and no focus_size; every point pays both.
-        assert r.size_passes == r.rust_passes - 1, name
+        # One size pass per measured frame except the probe, which pays the
+        # Rust pass instead.
+        assert r.size_passes == r.exposures - r.wasted_frames - 1, name
+    for name in ("rich_at_focus", "rich_turnround", "rich_83"):
+        assert reports[name].size_mean_frac == pytest.approx(0.16, abs=0.005), (
+            f"{name}: {reports[name].size_mean_frac:.3f} of the pixels")
+    assert reports["sparse_83"].size_mean_frac == pytest.approx(1.0), (
+        "a 34-star field has no window to give")
 
 
-def test_the_turn_round_wastes_exactly_one_exposure(reports):
-    """LANE 2'S TARGET. The predictor descends by one step and stops at its
-    first miss, so a sweep whose focus sits above its start pays for one frame
-    it never measures and then overlaps nothing for the rest of the run. A
-    centred sweep never turns round and wastes nothing."""
-    assert reports["rich_turnround"].wasted_frames == 1
-    assert reports["rich_at_focus"].wasted_frames == 0
-    assert reports["sparse_83"].wasted_frames == 0
-    assert reports["rich_83"].wasted_frames == 0
+def test_the_turn_round_wastes_nothing_now(reports):
+    """LANE 2, LANDED. The predictor used to descend by one step and stop at its
+    first miss, so a sweep whose focus sits above its start paid for one frame
+    it never measured AND overlapped nothing for the rest of the run:
+    `rich_turnround` took 12 exposures to everyone else's 11. The engine's own
+    `peek_next` turns with the sweep, so the guess survives the pivot and the
+    frame count is the same as a centred run's."""
+    for name, r in reports.items():
+        assert r.wasted_frames == 0, f"{name} threw away {r.wasted_frames}"
+    assert (reports["rich_turnround"].exposures
+            == reports["rich_at_focus"].exposures == 11)
 
 
-def test_the_turn_round_costs_travel_as_well_as_a_frame(reports):
-    """The wasted guess is a MOVE as well as an exposure: the sweep descends
-    one more step, then has to climb back across the whole window."""
+def test_the_turn_round_still_costs_the_travel(reports):
+    """What lane 2 did NOT fix, kept so nobody assumes it did. The wasted
+    exposure is gone; the mileage is not. A sweep whose focus sits above its
+    start still descends to its quota before turning, and then has to climb back
+    across the whole window -- 8900 steps against 6400, with two more reversals.
+    Nothing in the host can change that: it is the engine's search order."""
     turn = reports["rich_turnround"]
     centred = reports["rich_at_focus"]
-    assert turn.total_steps > centred.total_steps * 1.4
+    assert turn.total_steps > centred.total_steps + 2000
     assert turn.reversals > centred.reversals
 
 
-def test_the_run_settles_on_the_wrong_side_of_the_backlash(reports):
-    """LANE 3'S TARGET, and the one place the loop did something the plan did
-    not predict -- so this records what ACTUALLY happens.
+def test_the_run_settles_exactly_where_it_says_it_does(reports):
+    """LANE 3, LANDED. Every swept point used to be approached moving IN and the
+    vertex reached moving OUT, so the tube ended 39 of its 40 steps of slack
+    short of the position the run reported. Two of the centred scenarios then
+    went one step further: the validation frame, exposed 40 steps low, read
+    4.78 px against the 3.50 already measured one step away, and
+    `confirmed_best` refused the fit over it -- then moved ONE step back in, a
+    reversal far shorter than the slack, which turns the motor and not the tube.
 
-    Every swept point is approached moving IN, and the vertex is reached moving
-    OUT, so the tube ends up ``backlash`` steps short of the position the run
-    reports. Two of the three centred scenarios then go one step further: the
-    validation frame, exposed 40 steps low, reads 4.78 px against the 3.50
-    already measured one step away, and `confirmed_best` refuses the fit over
-    it. The loop moves ONE step back in -- a reversal far shorter than the
-    slack, so it turns the motor and not the tube. The error is unchanged and
-    the recorded approach flips to "in".
-
-    `rich_turnround` is the exception: the engine extends left to quota before
-    turning right, so its last swept point sits ABOVE the vertex and the
-    validation move is already an IN move. The penalty belongs to sweeps that
-    end below their vertex.
+    Now every outward move overshoots by `config.focus.approach_overshoot_steps`
+    and returns, so the last leg of every move is inward, on a focuser this
+    harness gives 40 steps of backlash. The tube is where the run says it is, on
+    all four scenarios, and the fitted vertex lands ON the model's focus rather
+    than 1 to 5 steps off it.
     """
-    backlash = clock.Cost().backlash_steps
-    for name in ("rich_at_focus", "sparse_83", "rich_83"):
-        r = reports[name]
-        assert -backlash <= r.physical_error_steps <= -backlash + 1, (
-            f"{name}: physical error {r.physical_error_steps}")
-
-    # The one that reaches its vertex from above pays nothing.
-    turn = reports["rich_turnround"]
-    assert turn.approach_of_final == "in"
-    assert turn.physical_error_steps >= 0
-
-    # And the approach recorded for the others: "out" where the fit stood,
-    # "in" where confirmed_best overrode it by a single step.
-    assert reports["rich_at_focus"].approach_of_final == "out"
-    assert reports["sparse_83"].approach_of_final == "in"
-    assert reports["rich_83"].approach_of_final == "in"
+    for make in clock.SCENARIOS:
+        sc = make()
+        r = reports[sc.name]
+        assert r.physical_error_steps == 0, (
+            f"{sc.name}: commanded {r.final_commanded}, tube at "
+            f"{r.final_physical}")
+        assert r.approach_of_final == "in", sc.name
+        assert r.final_commanded == sc.focus, (
+            f"{sc.name} settled at {r.final_commanded}, focus is {sc.focus}")
 
 
-def test_the_first_point_of_every_sweep_is_measured_low(reports):
-    """The same backlash, at the other end of the run, and a cost nobody has
-    counted: the initial move to the top of the window is the only OUT move
-    before the validation, so it eats the whole slack and the outermost point
-    of the curve is measured 40 steps in from where the run thinks it is. That
-    is what pulls the fitted vertex 1 to 5 steps off a focus this model puts
-    exactly on a swept point."""
+def test_the_first_point_of_every_sweep_reads_its_own_position(reports):
+    """The same backlash at the other end of the run. The initial move to the
+    top of the window was the only OUT move before the validation, so it ate the
+    whole slack and the outermost point of the curve was measured 40 steps in
+    from where the run thought it was: 12600 read 29.04 px against the model's
+    29.89, 11508 read 24.58 against 27.89. That is what pulled the fitted vertex
+    off the focus this model puts exactly on a swept point. The first move now
+    arrives inward like every other, so the point reads its own position."""
     for make in clock.SCENARIOS:
         sc = make()
         r = reports[sc.name]
         first_pos, first_hfr = r.points[0]
-        assert first_hfr == pytest.approx(
-            sc.hfr(first_pos - clock.Cost().backlash_steps), rel=1e-6), sc.name
-        assert first_hfr < sc.hfr(first_pos)
+        assert first_hfr == pytest.approx(sc.hfr(first_pos), rel=1e-6), (
+            f"{sc.name}: {first_hfr:.2f} at {first_pos}, model says "
+            f"{sc.hfr(first_pos):.2f}")
 
 
-def test_the_camera_is_idle_for_most_of_the_run(reports):
-    """THE HEADLINE. The shutter is open for 6 s of a 50-to-70 s point; the
-    rest is 26 million pixels being measured twice. Every lane of the plan is
-    an attempt to move this number."""
+def test_the_camera_now_does_most_of_the_work(reports):
+    """THE HEADLINE, INVERTED. The shutter used to be open for 6 s of a 50-to-70
+    s point and the camera idle for four fifths of the run; the rest was 26
+    million pixels being measured twice.
+
+    Measured now: on the three rich scenarios the camera is busy for 57 to 61
+    percent of the wall clock (88 s of shutter and download in a 144-153 s run),
+    and total measurement is about the same as total camera time rather than
+    five times it.
+
+    `sparse_83` is the honest exception at 35 percent busy (88 s of 251 s): its
+    field is too thin to crop, so ten whole-frame `focus_size` passes still
+    dominate it. That is the remaining cost, and it is named here rather than
+    averaged away.
+    """
     for name, r in reports.items():
         busy = r.exposures * (6.0 + 2.0)
-        assert r.camera_idle_s > 0.7 * r.wall_s, (
-            f"{name}: idle {r.camera_idle_s:.1f} of {r.wall_s:.1f}")
-        assert r.cpu_s > 5 * busy, (
+        assert r.cpu_s < 3.0 * busy, (
             f"{name}: {r.cpu_s:.1f} s of measurement against {busy:.1f} s of "
             f"camera")
+    for name in ("rich_at_focus", "rich_turnround", "rich_83"):
+        r = reports[name]
+        busy = r.exposures * (6.0 + 2.0)
+        assert busy > 0.5 * r.wall_s, (
+            f"{name}: busy {busy:.1f} of {r.wall_s:.1f}")
+        assert r.cpu_s < 1.2 * busy, name
+    sparse = reports["sparse_83"]
+    fraction = sparse.exposures * 8.0 / sparse.wall_s
+    assert 0.30 <= fraction <= 0.45, (
+        f"the whole-frame field is {fraction:.0%} busy, not the ~35 percent "
+        f"this test recorded")
 
 
-def test_the_2026_09_07_sweep_replays_within_fifteen_percent(reports):
-    """THE CALIBRATION. `sparse_83` is the logged sweep of 2026-09-07 21:39:38,
-    which took 9 min 11 s to its validation frame with its probe measured at
-    +35 s. Nothing in the cost model was fitted to it -- the constants were
-    measured on the rig against real frames -- so this is what says the model
-    describes the rig and not just itself."""
+def test_the_probe_still_replays_the_2026_09_07_sweep(reports):
+    """THE CALIBRATION, on the part of the run the three lanes did not touch.
+
+    `sparse_83` is the logged sweep of 2026-09-07 21:39:38, whose probe was
+    measured at +35 s: one full-frame Rust pass on the starting frame, which is
+    exactly what the probe still does. So this remains a live check that the
+    cost model describes the rig.
+
+    The WHOLE-SWEEP target is retired. That sweep took 9 min 11 s to its
+    validation frame and the OLD loop replayed it at 503.2 s -- 8.5 percent
+    under, with no constant fitted to it. The point of the three lanes is that
+    the same sweep no longer costs that, so the anchor moves to the probe and to
+    the per-pass constants (next test).
+    """
     r = reports["sparse_83"]
-    assert abs(r.wall_s - 550.0) <= 0.15 * 550.0, r.wall_s
     assert abs(r.probe_s - 35.0) <= 5.0, r.probe_s
     # Nine swept points plus the validation, in the order the log records them.
+    # The validation lands on 11176 rather than the 11177 the backlashed run
+    # fitted -- see the settles-where-it-says-it-does test above.
     assert len(r.point_times) == 10
     assert [p for p, _h in r.points] == [
-        11508, 11425, 11342, 11259, 11176, 11093, 11010, 10927, 10844, 11177]
+        11508, 11425, 11342, 11259, 11176, 11093, 11010, 10927, 10844, 11176]
 
 
-def test_a_rich_field_costs_more_than_a_sparse_one_to_measure(reports):
-    """Same nine points, same geometry, same exposures -- and three minutes
-    more, entirely in the detector's per-star half. It is worth stating because
-    the intuition runs the other way: a sparse field is the one that FAILS, so
-    it is easy to assume it is also the one that is slow."""
-    assert reports["rich_83"].wall_s > reports["sparse_83"].wall_s + 120
-    assert reports["rich_83"].exposures == reports["sparse_83"].exposures
-    assert reports["rich_83"].moves == reports["sparse_83"].moves
+def test_the_cost_constants_are_the_ones_measured_on_the_rig():
+    """The other half of the calibration: each constant priced back into the
+    measurement it came from (rig benchmark, 2026-09-08, real 26 MP frames).
+
+    Stated as BANDS with the residual named, because the model is two terms and
+    the rig is not: it reproduces the rich end of `detect_and_measure` to within
+    a second and the sparse end about 7 percent low, and it reads whole-frame
+    `focus_size` about 1.2 s high. Those residuals were acceptable when the
+    constants were chosen (the allowed bands were 3..12 s for the size pass and
+    0.5..1.5 s for its windowed form) and they are pinned here so a later edit
+    to the model has to argue with the rig rather than with a test.
+    """
+    cost = clock.Cost()
+    assert (cost.rust_base_s, cost.rust_per_star_s) == (25.0, 0.021)
+    assert (cost.size_fixed_s, cost.size_base_s, cost.size_per_px_s) == (
+        0.5, 6.0, 0.9)
+
+    def rust(stars, frac=1.0):
+        return cost.rust_base_s * frac + cost.rust_per_star_s * stars
+
+    def size(hfr, frac=1.0):
+        return cost.size_fixed_s + (cost.size_base_s
+                                    + cost.size_per_px_s * hfr) * frac
+
+    # Whole-frame detector: 67.1 s at 1999 stars and 59.9 s at 1462 on the rig.
+    assert rust(1999) == pytest.approx(67.1, abs=1.0)
+    assert rust(1462) == pytest.approx(59.9, rel=0.10)   # 55.7 s: 7 percent low
+    # The 34-star probe of the replay, logged at about 27 s.
+    assert rust(34) == pytest.approx(27.0, abs=2.0)
+    # Whole-frame size pass: 8.8 s at 4.0 px and 9.5 s at 4.6 on the rig; the
+    # model reads 10.1 and 10.6, inside the 3..12 s band it was fitted across.
+    assert 8.0 <= size(3.0) <= 12.0
+    assert 8.0 <= size(4.6) <= 12.0
+    assert size(4.6) > size(4.0) > size(3.0)
+    # And on the 0.4-per-axis window the sweep actually measures: 1.0-2.2 s
+    # measured, 1.9-2.1 s modelled.
+    assert 0.5 <= size(3.0, 0.16) <= 2.5
+    assert 0.5 <= size(4.6, 0.16) <= 2.5
+
+
+def test_the_sparse_field_is_now_the_expensive_one(reports):
+    """THE INVERSION, and the surprising half of the result. Same nine points,
+    same geometry, same exposures -- and the RICH field is now 100 s FASTER than
+    the sparse one (148 s against 251), where before lane 1 it was 175 s slower.
+
+    Why: the measurement window is sized from the probe's star count, and 34
+    stars has nothing to give away, so `sparse_83` measures every point over the
+    whole frame while `rich_83` measures 16 percent of it. The detector's
+    per-star cost -- what used to make a rich field the expensive one -- is now
+    paid once, at the probe.
+    """
+    rich, sparse = reports["rich_83"], reports["sparse_83"]
+    assert rich.wall_s < sparse.wall_s - 80
+    assert rich.exposures == sparse.exposures
+    assert rich.moves == sparse.moves
+    assert rich.size_mean_frac < sparse.size_mean_frac
+
+
+#: What each scenario cost on the tree that landed all three lanes, from
+#: `python tests/_focus_clock.py` on 2026-09-08. A MEASUREMENT, not a target:
+#: when a change moves one of these legitimately, re-run the harness, update
+#: this dict AND the table in `_focus_clock.py`'s docstring, and say in the
+#: commit which way it moved. The margin below is what stops a silent
+#: regression -- a re-added full-frame pass or a lost overlap costs tens of
+#: seconds, which is many times the tolerance.
+_WALL_S = {
+    "rich_at_focus": 153.4,
+    "rich_turnround": 144.5,
+    "sparse_83": 251.1,
+    "rich_83": 148.4,
+}
+
+
+def test_each_scenario_still_costs_what_it_did_when_it_was_measured(reports):
+    """The budget, both ways. Over is a regression; UNDER by more than the
+    margin means the cost model got cheaper rather than the sweep getting
+    faster, which is the failure mode a harness cannot otherwise notice about
+    itself."""
+    for name, expected in _WALL_S.items():
+        wall = reports[name].wall_s
+        assert abs(wall - expected) <= 0.10 * expected, (
+            f"{name}: {wall:.1f} s against the {expected:.1f} s measured on "
+            f"2026-09-08 -- re-run tests/_focus_clock.py and update the table")
 
 
 def test_the_report_table_renders(reports):

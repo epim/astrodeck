@@ -51,7 +51,7 @@ def _config():
     return {
         "step_size": STEP,
         "offset_steps": SIDES,
-        "max_position": 40000,
+        "max_step": 40000,
         "curve_fitting": CURVE_FITTING,
         "r_squared_threshold": R_SQUARED_THRESHOLD,
     }

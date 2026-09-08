@@ -16,6 +16,14 @@ engine is a pure state machine we alternate ``next()`` / ``add_measurement`` on:
         move_to(step.position); measure; sweep.add_measurement(...)
         # until step.action is "done" (a FitOutcome) or "failed" (a reason)
 
+Two things the loop below does that this sketch does not (2026-09-08, the
+autofocus-efficiency spec). The FIRST ``next()`` happens before the probe frame
+is measured, so the probe's full-frame star count — 27 to 67 s on the rig —
+overlaps the first point's move and exposure; and every move goes through
+``_approach``, which passes an OUTWARD target and returns to it so the drawtube
+arrives moving in at every point, at the validation frame and at the vertex the
+run settles on.
+
 We publish the SAME ``focus`` bus events the UI already consumes
 (``state`` running|done|failed, ``points``, ``best``), PLUS an additive ``fit``
 object (method, R², fitted curve, trendlines) so the rebuilt Focus view can draw
@@ -244,7 +252,9 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                                step: int | None = None, steps_each_side: int = 4,
                                binning: int = 2, expose_guard=None,
                                hfr_method: str | None = None,
-                               tracking_check=None) -> AutofocusResult:
+                               tracking_check=None,
+                               approach_overshoot_steps: int | None = None
+                               ) -> AutofocusResult:
     """Run a V-curve autofocus sweep driven by the native Rust engine.
 
     ``step`` None — the default — sizes the sweep from this focuser's MEASURED
@@ -264,6 +274,13 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
     ``focus.autofocus.assert_tracking`` and the 2026-08-21 sweep that returned
     HFR 8.40 px measured entirely on a stopped mount.
 
+    ``approach_overshoot_steps`` None — the default — reads
+    ``config.focus.approach_overshoot_steps``, which is how far past an OUTWARD
+    target every move travels before returning to it so the drawtube always
+    arrives moving IN (see ``config.FocusConfig`` for the backlash this exists
+    for). An explicit value overrides the config and is what the tests use; 0
+    disables the overshoot entirely.
+
     Raises ``DeviceError`` (user-presentable) when the wheel is absent or the
     engine rejects an input; ALWAYS restores the focuser to its start position on
     failure/cancel so a stranded sweep never leaves the rig shooting defocused.
@@ -280,10 +297,58 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
         async with guard:
             return await camera.expose(exposure_s, gain, 30, binning=binning)
 
+    #: How far past an OUTWARD target to travel before returning to it, so the
+    #: last leg of every move is inward. Read ONCE, here, for the same reason
+    #: the measurement window is: a value that changed mid-sweep would put a
+    #: mechanical step into the middle of the curve.
+    if approach_overshoot_steps is not None:
+        overshoot = max(0, int(approach_overshoot_steps))
+    else:
+        try:
+            from ..config import config_store
+            overshoot = max(
+                0, int(config_store.cfg().focus.approach_overshoot_steps))
+        except Exception:      # noqa: BLE001 - see below
+            # An unreadable config is not a reason to refuse to focus, and the
+            # overshoot is an improvement rather than a precondition: without it
+            # the sweep behaves exactly as it did before 2026-09-08.
+            overshoot = 0
+
+    async def _approach(pos: int) -> None:
+        """Move to ``pos``, ARRIVING FROM ABOVE whenever the move is outward.
+
+        EVERY focuser move this run makes goes through here — the swept points,
+        the validation frame, the final settle and every restore-to-start —
+        because the point is not that the final position is approached inward
+        but that ALL of them are, including the frames the curve is fitted from.
+        A sweep whose points were measured one way and whose vertex was reached
+        the other is measuring one focus and settling on a different one.
+
+        The current position is TRACKED rather than read back per move. A read
+        would cost a device round trip per point, and on the EAF it would
+        answer with the commanded count anyway — the same number tracked here —
+        so it would buy nothing and could not see the slack this is about.
+        """
+        nonlocal current_pos
+        pos = int(pos)
+        if overshoot > 0 and pos > current_pos:
+            ceiling = getattr(focuser, "max_position", None)
+            over = pos + overshoot
+            if ceiling is not None:
+                over = min(over, int(ceiling))
+            # Clamped away entirely at the top of the focuser's travel: there is
+            # no room to overshoot into, so this move arrives outward and the
+            # slack stays where it is. Better than refusing the move.
+            if over > pos:
+                await focuser.move_to(over)
+                current_pos = over
+        await focuser.move_to(pos)
+        current_pos = pos
+
     async def _move_and_expose(pos: int):
         """One point's device work, as a unit — so it can run as a speculative
         task while the previous frame is being measured (see `focus.pipeline`)."""
-        await focuser.move_to(pos)
+        await _approach(pos)
         return await _expose()
 
     # Detector params: None selects the shipped Typical preset; an explicit
@@ -291,6 +356,9 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
     params = {"profile": hfr_method} if hfr_method else None
 
     start_pos = await focuser.get_position()
+    #: Where the focuser is, as far as this run knows — see `_approach`, the
+    #: only thing that moves it and therefore the only thing that updates this.
+    current_pos = int(start_pos)
     geometry = resolve_sweep(focuser, step, steps_each_side)
     step = geometry.step
     # Missing config keys (backlash strategy, max attempts, outlier policy) take
@@ -298,7 +366,11 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
     config = {
         "step_size": step,
         "offset_steps": steps_each_side,
-        "max_position": focuser.max_position,
+        # `max_step` IS THE KEY THE ENGINE READS (build_focus_config in
+        # native/crates/astrodeck-native/src/lib.rs). This said "max_position"
+        # until 2026-09-08, which the engine has never looked at, so the
+        # focuser's travel ceiling was never reaching it at all.
+        "max_step": focuser.max_position,
         # Both were already the engine's defaults; stated here so the failure
         # record can quote the gate a rejected fit was measured against rather
         # than assuming it (see CURVE_FITTING / R_SQUARED_THRESHOLD).
@@ -331,6 +403,15 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
     # reason would leave "why is it sweeping ±300 tonight" unanswerable from the
     # morning's log alone.
     bus.log("info", f"autofocus span: {geometry.basis}", "focus")
+    # WHICH WAY THE TUBE ARRIVES, said once. A curve measured one way and a
+    # vertex reached the other differ by the focuser's backlash, and nothing in
+    # a night log distinguishes the two — so a run that is compensating says so,
+    # and a run that is not (overshoot 0) says nothing rather than claiming it.
+    if overshoot > 0:
+        bus.log("info",
+                f"autofocus: every outward move overshoots by {overshoot} "
+                f"steps and returns, so each point is reached moving in",
+                "focus")
 
     def _pts() -> list[dict]:
         return [{"position": p, "hfr": h, "sigma": s} for p, h, s in points]
@@ -394,7 +475,7 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
     #: the model that decides where to aim it. See `focus.pipeline`: a frame is
     #: only ever used for the position the engine actually asks for, so this
     #: cannot change what is measured — only when.
-    predictor = SweepPredictor(step, steps_each_side)
+    predictor = SweepPredictor()
     prefetch: Prefetch | None = None
 
     async def _settle(*, cancel: bool = False) -> None:
@@ -486,12 +567,48 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
         # Before the probe frame, so a stopped mount costs one mount read and
         # not five minutes of exposures.
         await assert_tracking(tracking_check, "before the sweep")
+
+        # How far the search may roam. The requested window is
+        # start +/- step*steps_each_side; the leash is twice that half-span,
+        # clamped to the focuser's real travel, so bracketing has room and a
+        # runaway does not. See the move_to guard below for what this is for.
+        #
+        # Computed BEFORE the probe because the first speculative move happens
+        # before the probe is measured, and a speculative move is exactly the
+        # kind this leash exists to bound.
+        half_span = step * steps_each_side
+        leash_lo = max(0, start_pos - LEASH_FACTOR * half_span)
+        leash_hi = min(getattr(focuser, "max_position", start_pos + half_span),
+                       start_pos + LEASH_FACTOR * half_span)
+
+        # THE ENGINE IS ASKED FOR ITS FIRST MOVE BEFORE THE PROBE IS MEASURED.
+        # It can answer: the first step of a sweep is geometry, not a response
+        # to anything measured. That is what lets the probe's own measurement
+        # — a full-frame Rust pass, 27 s on the rig's sparsest field and 60+ on
+        # a rich one — overlap the first point's move and exposure instead of
+        # holding the camera shut through it.
+        sweep = _native.FocusSweep(config, start_pos)
+        first = sweep.next()
+
         # ONE frame before committing to the whole sweep. The failure this
         # prevents is not a crash: it is five minutes of moving the focuser to
         # reach "not_enough_spread", with nothing on screen saying the field was
         # too sparse to measure before it started.
         _activity("exposing")
         probe = await _expose()
+        # AFTER the shutter closes, never before: the probe's star count is the
+        # count AT THE START POSITION, and it sizes the measurement window for
+        # the whole run. Starting the first move under the probe's EXPOSURE
+        # would make it a count of somewhere else.
+        if (first.get("action") == "move_to"
+                and leash_lo <= int(first["position"]) <= leash_hi):
+            nxt = int(first["position"])
+            # Seeded, not guessed: the accounting must not read the run's one
+            # certain move as a miss and turn speculation off before the first
+            # point (see `SweepPredictor.seed`).
+            predictor.seed(nxt)
+            prefetch = Prefetch(
+                nxt, asyncio.create_task(_move_and_expose(nxt)))
         _activity("measuring")
         _s, pstats = await asyncio.to_thread(
             _native.detect_and_measure, probe.data, params)
@@ -525,7 +642,13 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                 # sky. Built here rather than by _advice, which speaks only
                 # from what a SWEEP measured and this run has not swept.
                 advice = "Try " + levers + "."
-            await focuser.move_to(start_pos)
+            # THE SPECULATIVE MOVE IS ALREADY IN FLIGHT. It was started under
+            # the probe's measurement, and it owns the focuser until it
+            # finishes, so restoring the start position without settling first
+            # is two moves on one focuser — on the sim, two loops chasing each
+            # other's target for ever.
+            await _settle()
+            await _approach(start_pos)
             bus.publish("focus", state="failed", points=[], best=None,
                         message=reason, advice=advice)
             bus.log("warning",
@@ -568,19 +691,17 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                     f"autofocus: measuring the whole frame — {n0} stars is too "
                     f"few to crop", "focus")
 
-        # How far the search may roam. The requested window is
-        # start +/- step*steps_each_side; the leash is twice that half-span,
-        # clamped to the focuser's real travel, so bracketing has room and a
-        # runaway does not. See the move_to guard below for what this is for.
-        half_span = step * steps_each_side
-        leash_lo = max(0, start_pos - LEASH_FACTOR * half_span)
-        leash_hi = min(getattr(focuser, "max_position", start_pos + half_span),
-                       start_pos + LEASH_FACTOR * half_span)
-
-        sweep = _native.FocusSweep(config, start_pos)
+        #: The step the engine gave us before the probe, waiting to be handled
+        #: by the first turn of the loop. ``next()`` IS NOT IDEMPOTENT — it
+        #: advances the machine — so asking again here would skip the very
+        #: point already being exposed for. Every later turn asks the engine.
+        pending_step = first
 
         while True:
-            s = sweep.next()
+            if pending_step is not None:
+                s, pending_step = pending_step, None
+            else:
+                s = sweep.next()
             action = s.get("action")
 
             if action == "move_to":
@@ -622,7 +743,7 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                     # The leash is deliberately generous — twice the requested
                     # half-span — so this can only ever fire on a search that
                     # has genuinely lost the plot, never on honest bracketing.
-                    await focuser.move_to(start_pos)
+                    await _approach(start_pos)
                     reason = (f"the sweep tried to move to {pos}, outside the "
                               f"window this run asked for ({leash_lo}..{leash_hi}) "
                               f"— stopping rather than walking the focuser away")
@@ -648,17 +769,24 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                     return AutofocusResult(False, start_pos, None,
                                            _result_pts(), reason, advice=advice)
                 if frame is None:
-                    await focuser.move_to(pos)
+                    await _approach(pos)
                     _activity("exposing", index=attempted)
                     frame = await _expose()
                 attempted += 1
                 # ARM THE NEXT POINT BEFORE MEASURING THIS ONE. That overlap is
-                # the whole speedup: the camera spends the 3-6 s of star
-                # detection exposing instead of waiting for it. The frame it
-                # produces is used only if the engine asks for this exact
-                # position next — see `focus.pipeline` for the rules that bound
-                # what a wrong guess costs.
-                nxt = predictor.predict()
+                # the whole speedup: the camera spends the star detection
+                # exposing instead of waiting for it. The frame it produces is
+                # used only if the engine asks for this exact position next —
+                # see `focus.pipeline` for the rule that bounds a wrong guess.
+                #
+                # THE ENGINE IS ASKED, not a rule of thumb: `peek_next` runs the
+                # hypothetical on a clone of the state machine, so the guess
+                # survives the sweep's turn-round and the validation move
+                # arrives LABELLED rather than counted to. `pos` is the point
+                # whose frame is about to be measured; `points`/`counts` are
+                # what has been measured so far, which is what the expected
+                # measurement is extrapolated from.
+                nxt = predictor.predict(sweep, pos, points, counts)
                 if nxt is not None and leash_lo <= nxt <= leash_hi:
                     prefetch = Prefetch(
                         nxt, asyncio.create_task(_move_and_expose(nxt)))
@@ -813,7 +941,7 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                             advice = _advice(ok=True)
                             await record_measured_span(
                                 focuser, _result_pts(), best, binning)
-                            await focuser.move_to(best)
+                            await _approach(best)
                             bus.publish("focus", state="done", points=_pts(),
                                         best={"position": best,
                                               "hfr": best_hfr},
@@ -831,7 +959,7 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                                 f"out of measurable range at {pos}: "
                                 f"{salvage.reason}", advice=advice)
 
-                        await focuser.move_to(start_pos)
+                        await _approach(start_pos)
                         reason = (
                             f"the sweep could not measure {pos} on "
                             f"{drops_here} tries in a row ({why}), and the "
@@ -924,7 +1052,7 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                 await record_measured_span(focuser, _result_pts(), best, binning)
                 # Settle the focuser on the position we CHOSE — the fitted vertex,
                 # or the best measured sample when the confirming frame refused it.
-                await focuser.move_to(best)
+                await _approach(best)
                 bus.publish("focus", state="done", points=_pts(),
                             best={"position": best, "hfr": best_hfr,
                                   "model_hfr": model_hfr,
@@ -980,7 +1108,7 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                     best_hfr = min(h for _p, h, _s in points)
                     advice = _advice(ok=True)
                     await record_measured_span(focuser, _result_pts(), best, binning)
-                    await focuser.move_to(best)
+                    await _approach(best)
                     bus.publish("focus", state="done", points=_pts(),
                                 best={"position": best, "hfr": best_hfr},
                                 advice=advice)
@@ -1013,7 +1141,7 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                             f"that calibration so the next run uses the "
                             f"{DEFAULT_STEP}-step default", "focus")
                 # Restore start: never park the focuser at an arbitrary sweep point.
-                await focuser.move_to(start_pos)
+                await _approach(start_pos)
                 bus.publish("focus", state="failed", points=_pts(), best=None,
                             message=reason, advice=advice)
                 bus.log("warning", f"native autofocus failed: {reason}"
@@ -1052,7 +1180,7 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
         with contextlib.suppress(Exception):
             await _settle(cancel=True)
         with contextlib.suppress(Exception):
-            await asyncio.shield(focuser.move_to(start_pos))
+            await asyncio.shield(_approach(start_pos))
         bus.publish("focus", state="failed", points=_pts(), best=None,
                     message=str(e) or "native autofocus failed",
                     advice=_advice(ok=False))

@@ -928,6 +928,51 @@ class StandardsConfig(BaseModel):
     max_consecutive_rejects_night: int = Field(20, ge=0, le=1000)
 
 
+class FocusConfig(BaseModel):
+    """How the focuser is DRIVEN during an autofocus sweep (2026-09-08).
+
+    Not what the sweep measures and not how wide it is -- those are the
+    engine's geometry and the measured span. This is the mechanical half: which
+    way the drawtube is moving when it arrives.
+
+    WHY IT EXISTS, in numbers. The EAF on this rig has backlash measured in the
+    tens of steps. The sweep walks DOWNWARD through its points, so every point
+    of the curve is reached moving IN and the slack sits on one side -- but the
+    validation frame and the final settle go UP to the fitted vertex, so they
+    are reached moving OUT and the tube stops that many steps short of the
+    position the curve named. On the virtual-clock replay of 2026-09-08 that
+    put the run's final physical position 39 steps below its commanded one, and
+    made the validation frame read 4.78 px where a swept neighbour one step
+    away had measured 3.50 -- 36 percent worse, which trips the
+    confirm-the-fit override, which then moves ONE step in: a reversal shorter
+    than the slack, so it turns the motor and not the tube.
+
+    Overshooting an OUT target and returning to it makes the last leg of every
+    move an IN move, so every frame of the sweep and the final position are
+    reached the same way the curve was measured. It is the astro-focus
+    ``Backlash`` Overshoot model with only OUT backlash set, applied by the
+    host (the engine's own backlash layer is left at its defaults, because
+    turning it on there would also reverse the sweep direction).
+
+    0 disables it: a focuser with no measurable backlash pays two moves per
+    outward step for nothing.
+
+    WHERE IT IS SET, honestly: in ``astrodeck.json``, with the server stopped
+    (the store loads the file once and rewrites it on every save, so an edit
+    made while it is running is lost at the next write). It is READ back on
+    every ``/api/config``, so what the rig is doing is always visible. There is
+    deliberately no write route: an endpoint no screen calls is a feature no
+    user can reach, and ``test_routes_have_callers`` says so out loud. The
+    shipped 200 is right for this rig's EAF, so the knob is a mechanical
+    correction for a DIFFERENT focuser rather than a nightly setting — when one
+    turns up that needs it often, it earns a control and a route together.
+    """
+    #: How far past an OUT target to travel before returning to it, in focuser
+    #: steps. Comfortably larger than the tens of steps measured on the EAF,
+    #: and small enough to cost well under a second of travel.
+    approach_overshoot_steps: int = Field(200, ge=0, le=5000)
+
+
 #: On-disk shape of ``astrodeck.json``. Bump when a change needs a MIGRATION --
 #: not for an added field, which pydantic already tolerates in both directions
 #: (``_load`` fills defaults for keys an old file lacks).
@@ -1043,6 +1088,11 @@ class AppConfig(BaseModel):
     # --- file-sync push destination (Phase 2; appended — old configs load fine
     #     and the default is OFF, so nothing changes for anyone who ignores it) ---
     sync_push: SyncPushConfig = Field(default_factory=SyncPushConfig)
+    # --- how the focuser is driven during a sweep (autofocus-efficiency lane 3,
+    #     2026-09-08; appended — old configs load fine and INHERIT the overshoot,
+    #     which is the point: the rigs that need it are the ones nobody is going
+    #     to go and enable it on) ---
+    focus: FocusConfig = Field(default_factory=FocusConfig)
 
 
 # ------------------------------------------------------- filter slot-name store
