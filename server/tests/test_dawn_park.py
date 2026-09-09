@@ -132,6 +132,18 @@ class FakeEngine:
         self.running = running
 
 
+@pytest.fixture(autouse=True)
+def nothing_armed(monkeypatch):
+    """Every test here runs with NO session armed unless it says otherwise.
+
+    The real answer comes from the session store on disk, and the developer's
+    own captures/sessions may well hold an armed dormant session -- which
+    would make the warm tests pass on one machine and fail on another for a
+    reason that has nothing to do with the code under test."""
+    import astrodeck.sequence.session as sess
+    monkeypatch.setattr(sess.session_store, "armed", lambda: None)
+
+
 @pytest.fixture
 def cfg(monkeypatch):
     """The REAL AppConfig (defaults), served to the module under test.
@@ -798,3 +810,37 @@ async def test_it_does_not_warm_while_it_is_still_night(cfg):
     await DawnPark(hub, FakeEngine(), clock=lambda: ts).tick()
 
     assert hub.warm_calls == []
+
+
+async def test_an_armed_session_keeps_its_cooler(cfg, bus_lines, monkeypatch):
+    """MEASURED ON THE FIRST LIVE TICK, 2026-09-08 16:59: a deploy restarted the
+    rig with the Sun up, the net warmed the camera "because no run is going to
+    use it tonight", and NGC 604 was armed to resume at dusk. An armed session
+    IS a run that is going to use this camera."""
+    hub, tel, ts = await _idle_daytime_rig(cam=FakeCam())
+    import astrodeck.sequence.session as sess
+    armed = type("S", (), {"name": "NGC 604 - LRGB+SHO cycle"})()
+    monkeypatch.setattr(sess.session_store, "armed", lambda: armed)
+
+    await DawnPark(hub, FakeEngine(), clock=lambda: ts).tick()
+
+    assert tel.parked is True, "the mount is still parked: only the cooler differs"
+    assert hub.warm_calls == [], "an armed session's camera stays cold"
+    assert _said(bus_lines, "NGC 604"), (
+        "the line has to name the session the cooler is being kept for")
+    assert not _said(bus_lines, "warming it")
+
+
+async def test_a_session_store_that_raises_reads_as_nothing_armed(cfg, monkeypatch):
+    """Bookkeeping must not decide a cooler's fate by crashing: an unreadable
+    store means the pre-2026-09-08 behaviour, which warms."""
+    import astrodeck.sequence.session as sess
+
+    def boom():
+        raise RuntimeError("store unreadable")
+    monkeypatch.setattr(sess.session_store, "armed", boom)
+    hub, _tel, ts = await _idle_daytime_rig(cam=FakeCam())
+
+    await DawnPark(hub, FakeEngine(), clock=lambda: ts).tick()
+
+    assert hub.warm_calls == ["dawn"]
