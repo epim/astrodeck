@@ -88,12 +88,14 @@ $env:PYTHONPATH = Join-Path $Rel "server"
     --filter L `
     --bias    "C:\Users\James\AstroDeck\captures\Calibration" `
     --flats   "C:\Users\James\AstroDeck\captures\Flats" `
-    --sn-ra 339.2670 --sn-dec 34.4159 `
+    --sn-ra 339.27341 --sn-dec 34.409825 `
     --crop 1600x1100 --comparison 5 --frame-ms 700
 ```
 
-(`--sn-ra` / `--sn-dec` are decimal **degrees**. Substitute the transient's
-actual position; the pair above is a placeholder near NGC 7331.)
+(`--sn-ra` / `--sn-dec` are decimal **degrees**. The pair above is SN
+2026aaiv's position from the Transient Name Server: 22:37:05.618
++34:24:35.37, a Type Ia at z 0.003, discovered 2026-09-01. For another
+transient, substitute its own position.)
 
 Output lands in `C:\Users\James\AstroDeck\captures\_animation\NGC 7331\`
 unless `--out` says otherwise:
