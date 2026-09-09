@@ -208,9 +208,17 @@ jobs:
       - name: Name the artefact for its platform
         shell: bash
         run: mv "${{ matrix.path }}" "dist/${{ matrix.asset }}"
+      # hashlib, not shasum: the Windows runner's Git Bash has no shasum, and
+      # that one missing command failed the v0.3.26 Windows leg AFTER the
+      # binary had built and passed its smoke test. Python is set up on every
+      # row of this matrix, and the output keeps shasum's "<hex>  <name>" shape
+      # that the self-update poller and `sha256sum -c` both read.
       - name: Checksum
         shell: bash
-        run: cd dist && shasum -a 256 "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256"
+        run: |
+          cd dist
+          python -c "import hashlib, sys; p = sys.argv[1]; print(hashlib.sha256(open(p, 'rb').read()).hexdigest() + '  ' + p)" "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256"
+          cat "${{ matrix.asset }}.sha256"
       - name: Attach to the release
         uses: softprops/action-gh-release@v2
         with:
