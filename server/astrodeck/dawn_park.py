@@ -338,6 +338,20 @@ class DawnPark:
                 return
             if not getattr(cam, "can_cool", False):
                 return
+            armed = self._armed_session()
+            if armed is not None:
+                # MEASURED ON THE FIRST LIVE TICK, 2026-09-08 16:59. The rig
+                # restarted for a deploy with the Sun up, this warmed the
+                # camera "because no run is going to use it tonight" -- and
+                # NGC 604 was armed to resume at dusk, so that run would have
+                # spent its first quarter hour walking the TEC back down. An
+                # armed session is a run that is going to use this camera; the
+                # cooler it wants is the one it already has.
+                bus.log("info", f"dawn: leaving the cooler at its setpoint: "
+                                f"'{getattr(armed, 'name', '?')}' is armed to "
+                                f"resume tonight and will want the camera cold",
+                        "safety")
+                return
             state = await self.hub.warm_camera(source="dawn")
         except Exception as e:      # noqa: BLE001 - see the docstring
             bus.log("warning", f"dawn: could not release the cooler ({e}); it "
@@ -351,10 +365,21 @@ class DawnPark:
             bus.log("info", f"dawn: the cooler needed no action ({note})",
                     "safety")
         else:
-            bus.log("info", f"dawn: the Sun is at {alt:+.1f}° and no run is "
-                            f"going to use this camera tonight — warming it "
+            bus.log("info", f"dawn: the Sun is at {alt:+.1f}° and nothing is "
+                            f"armed to use this camera tonight — warming it "
                             f"rather than leaving the cooler holding its "
                             f"setpoint through the day", "safety")
+
+    @staticmethod
+    def _armed_session():
+        """The session armed to resume, or None. Never raises: the answer
+        decides whether a cooler is left cold, and a bookkeeping failure must
+        read as "nothing armed", which is the behaviour before 2026-09-08."""
+        try:
+            from .sequence.session import session_store
+            return session_store.armed()
+        except Exception:      # noqa: BLE001
+            return None
 
     # -------------------------------------------------------------- internals
 
