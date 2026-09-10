@@ -43,11 +43,40 @@ come out red, and per-channel white points would normalise exactly that
 difference away. An asinh curve on top pulls the faint end up. Deliberately
 NOT the app's MTF auto-stretch, which derives its own black AND white per
 frame: that per-channel freedom is the thing a composite must not have.
+
+**A one-shot-colour frame is debayered, not block-averaged.** ``channel_for``
+maps ``OSC`` and an empty filter name onto ``L``, which for a MONO camera with
+no filter is the honest answer. For a bayered sensor it was quietly the wrong
+one, and the reason is worth stating because it looks like it ought to work:
+:func:`downsample_factor` only ever returns EVEN factors, so the block mean
+above averages whole 2x2 Bayer cells and produces a clean, artefact-free
+image -- of ``(R + 2G + B) / 4``. No colour survives it, so an OSC rig's
+composite was grey no matter how many hours went into it. When a frame carries
+a Bayer pattern AND the filter claims no bandpass, it is split by
+:func:`debayer_superpixel` into R, G and B at half resolution first, and the
+REMAINING binning (``factor // 2``) is done on the three planes. Net reduction
+is identical, so an OSC channel and a mono channel land on the same grid and
+composite together. A bayered frame through a NAMED filter keeps the old path
+on purpose: the operator has told us the bandpass, there is no colour in the
+frame the filter did not put there, and the 2x2 mean is then exactly the
+luminance we want. See :func:`channels_for`.
+
+**Backfill and the live path share one lock.** ``add`` is called from the
+sequence engine's frame loop (on the event loop thread) and, while a backfill
+runs, from a worker thread reading old subs off disk. Everything that touches
+the accumulators is inside ``self._lock``; the disk read and the FITS decode
+are the caller's job and happen outside it, so the lock is held for one
+already-binned frame's accumulation and never for I/O. The de-duplication
+check is inside the same critical section as the accumulation it guards --
+checking "have I seen this frame" and then stacking it in two separate locked
+regions is exactly how the same sub gets folded in twice.
 """
 from __future__ import annotations
 
 import io
 import math
+import os
+import threading
 import time
 from dataclasses import dataclass
 
@@ -103,10 +132,128 @@ CHANNEL_MIX: dict[str, tuple[str, ...]] = {
 CHANNEL_ORDER = ("L", "R", "G", "B", "Ha", "Oiii", "Sii")
 
 
+#: The three planes a debayered one-shot-colour frame feeds, in composite order.
+OSC_CHANNELS = ("R", "G", "B")
+
+#: Bayer patterns this rig can see, and the two spellings they arrive in. The
+#: FITS ``BAYERPAT`` card and the Alpaca/NINA paths give the full four-letter
+#: form; the native ZWO and Player One bindings report the TOP-LEFT PAIR only
+#: (``devices/cameras/zwo_asi_sdk.py`` ``_BAYER``), and ``CameraFrame`` carries
+#: whichever the driver produced. Both are accepted so an OSC camera is not
+#: debayered on one backend and averaged to grey on another.
+_BAYER_4 = ("RGGB", "BGGR", "GRBG", "GBRG")
+_BAYER_2 = {"RG": "RGGB", "BG": "BGGR", "GR": "GRBG", "GB": "GBRG"}
+
+
 def channel_for(filter_name: str | None) -> str:
     """The composite channel a filter name feeds. Never raises, never empty."""
     key = (filter_name or "").strip().upper()
     return _ALIASES.get(key, "L")
+
+
+def normalise_bayer(pattern: str | None) -> str | None:
+    """A Bayer pattern as one of :data:`_BAYER_4`, or None when there is none.
+
+    None is the answer for a mono sensor, for an empty card, AND for anything
+    unrecognised -- guessing a pattern would swap red for blue over the whole
+    session, which is worse than the grey composite this replaces.
+    """
+    p = (pattern or "").strip().upper()
+    if p in _BAYER_4:
+        return p
+    return _BAYER_2.get(p)
+
+
+def effective_bayer(pattern: str | None, binning: int | None = 1) -> str | None:
+    """The pattern to actually debayer with, given the frame's binning.
+
+    Binning above 1x1 SUMS a 2x2 (or larger) block on the sensor, so the colours
+    are already mixed in the pixels that arrive and the mosaic is gone. The card
+    still says ``RGGB`` -- it describes the sensor, not the readout -- so a
+    debayer driven off the card alone would split a binned frame into three
+    planes of the same grey. Both callers (the live frame loop and the backfill)
+    go through here.
+    """
+    if int(binning or 1) > 1:
+        return None
+    return normalise_bayer(pattern)
+
+
+def channels_for(filter_name: str | None,
+                 bayer_pattern: str | None = None) -> tuple[str, ...]:
+    """The composite channels one frame feeds.
+
+    ``("R", "G", "B")`` for a bayered frame whose filter claims no bandpass --
+    an OSC camera shooting broadband, which is the whole point of owning one.
+    A single channel otherwise, including for a bayered frame through a NAMED
+    filter: ``Ha`` on an OSC is a monochrome measurement of one line, and the
+    only thing splitting it into three planes would show is the sensor's colour
+    filter array.
+    """
+    ch = channel_for(filter_name)
+    if ch == "L" and normalise_bayer(bayer_pattern):
+        return OSC_CHANNELS
+    return (ch,)
+
+
+def debayer_superpixel(data: np.ndarray,
+                       pattern: str | None) -> dict[str, np.ndarray] | None:
+    """Split a Bayer mosaic into R, G, B at HALF resolution. None if not bayered.
+
+    One 2x2 cell becomes one output pixel: the single R photosite, the mean of
+    the two G photosites, the single B photosite. No interpolation at all, which
+    is the right trade here for three reasons and not merely the cheap one:
+
+      * the accumulator is binned to ``MAX_STACK_SIDE`` regardless, so a
+        bilinear or VNG demosaic's extra detail is thrown away one step later;
+      * halving both axes IS half of the binning the memory policy already
+        demands, so this composes with :func:`block_mean` instead of fighting
+        it -- the caller finishes the job with ``factor // 2`` and every channel
+        lands on the same grid as a mono channel binned by ``factor``;
+      * an interpolating demosaic invents correlations between neighbouring
+        pixels, and the stacker's sigma clip reads those as signal.
+
+    The frame is cropped to whole cells, which also means the crop starts at the
+    sensor origin -- the only place the pattern in the header is known to apply.
+    """
+    pat = normalise_bayer(pattern)
+    if pat is None:
+        return None
+    a = np.asarray(data)
+    if a.ndim != 2:
+        return None
+    h = (a.shape[0] // 2) * 2
+    w = (a.shape[1] // 2) * 2
+    if h < 2 or w < 2:
+        return None
+    q = a[:h, :w].astype(np.float32)
+    tl, tr = q[0::2, 0::2], q[0::2, 1::2]
+    bl, br = q[1::2, 0::2], q[1::2, 1::2]
+    #: (red cell, the two green cells, blue cell) for each pattern.
+    layout = {
+        "RGGB": (tl, (tr, bl), br),
+        "BGGR": (br, (tr, bl), tl),
+        "GRBG": (tr, (tl, br), bl),
+        "GBRG": (bl, (tl, br), tr),
+    }
+    r, (g1, g2), b = layout[pat]
+    planes = {"R": r, "G": (g1 + g2) * 0.5, "B": b}
+    return {c: np.clip(np.rint(v), 0, 65535).astype(np.uint16)
+            for c, v in planes.items()}
+
+
+def frame_key(path: str | os.PathLike | None) -> str:
+    """A stable identity for one sub on disk, or "" when it has none.
+
+    Used to make the backfill idempotent, so it must agree between the live path
+    (which knows the frame as ``info["saved_path"]``) and the backfill (which
+    knows it as the session ledger's ``path``). Both are strings the app itself
+    wrote, so ``normcase``/``normpath`` is enough and, unlike ``resolve()``,
+    costs no stat and cannot be changed under us by a symlink.
+    """
+    if not path:
+        return ""
+    return os.path.normcase(os.path.normpath(str(path)))
 
 
 def downsample_factor(shape: tuple[int, int], *, max_side: int = MAX_STACK_SIDE,
@@ -157,6 +304,47 @@ class ChannelStatus:
                 "rejected": self.rejected}
 
 
+@dataclass
+class BackfillProgress:
+    """Where the "stack the subs I already shot" pass has got to.
+
+    Lives on the stacker rather than on whatever spawned the pass because the
+    STATUS ROUTE is what the UI polls, and a counter the UI cannot reach is not
+    a progress counter. The stacker still reads nothing off disk: the caller
+    walks the files and reports each one through :meth:`SessionStacker.
+    backfill_step`.
+
+    ``done`` counts frames CONSIDERED (added + skipped + failed), so
+    ``done == total`` is the completion test whatever happened to each frame,
+    and a stall is visible as a ``done`` that stops moving.
+    """
+    running: bool = False
+    total: int = 0
+    done: int = 0
+    #: folded into a channel
+    added: int = 0
+    #: already in the stack -- the live path or an earlier backfill took it
+    skipped: int = 0
+    #: unreadable, or refused by the stacker (no stars, drifted off the field)
+    failed: int = 0
+    #: the channel the frame in hand landed on, for a live caption
+    channel: str = ""
+    #: set when the pass itself died; a single frame failing only bumps `failed`
+    error: str = ""
+    started_ts: float = 0.0
+    finished_ts: float = 0.0
+
+    def to_dict(self) -> dict:
+        return {
+            "running": self.running, "total": self.total, "done": self.done,
+            "added": self.added, "skipped": self.skipped,
+            "failed": self.failed, "channel": self.channel,
+            "error": self.error,
+            "started_ts": round(self.started_ts, 3) or None,
+            "finished_ts": round(self.finished_ts, 3) or None,
+        }
+
+
 def stretch_channels(planes: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
     """Every channel's running mean -> display [0,1], on ONE scale.
 
@@ -186,8 +374,10 @@ class SessionStacker:
     """One ``LiveStacker`` per filter plus the composite over them.
 
     ``enabled`` is the user's switch and survives a run ending; ``reset`` throws
-    the pixels away. ``add`` is the only write path and is called from the
-    sequence engine's frame loop, once per ACCEPTED light.
+    the pixels away. ``add`` is the only write path; it is called from the
+    sequence engine's frame loop once per ACCEPTED light, and from a backfill
+    worker for the subs the run accepted BEFORE the switch was flipped. Both
+    hold ``self._lock`` for the whole accumulation -- see the module docstring.
     """
 
     def __init__(self, *, max_side: int = MAX_STACK_SIDE,
@@ -197,7 +387,23 @@ class SessionStacker:
         self.clip_sigma = float(clip_sigma)
         self.min_render_interval_s = float(min_render_interval_s)
         self.enabled = False
+        #: Guards every read and write of the accumulators, the identity, the
+        #: seen-set and the render cache. RLock because ``add`` can call
+        #: ``reset`` and ``rgb_preview`` calls ``status``.
+        self._lock = threading.RLock()
         self._stacks: dict[str, LiveStacker] = {}
+        #: Frames already folded in, by :func:`frame_key`. THE reason enabling,
+        #: disabling and re-enabling cannot double-count, and the reason a
+        #: backfill skips whatever the live path has already taken. A frame with
+        #: no key (a NINA sub, an unsaved capture) is stacked and not recorded:
+        #: there is nothing to compare a later sighting against.
+        self._seen: set[str] = set()
+        #: Bumped by ``reset``/``stop``. A backfill worker carries the value it
+        #: started with and gives up when it changes, so switching the stack off
+        #: or pressing Reset stops the disk reads instead of filling a stack the
+        #: operator just threw away.
+        self._generation = 0
+        self._backfill = BackfillProgress()
         self._target = ""
         #: Which RUN these pixels belong to (the engine's report id). A second
         #: run on the same target is a new picture -- the mount was re-centred,
@@ -227,7 +433,32 @@ class SessionStacker:
         return self.status()
 
     def reset(self, target: str = "", session: str = "") -> dict:
+        """Throw the pixels away. The OPERATOR's reset (and ``stop``), so it
+        bumps the generation and any backfill in flight gives up -- carrying on
+        filling a stack somebody just cleared would undo the button press."""
+        with self._lock:
+            self._generation += 1
+            if not self._backfill.running:
+                self._backfill = BackfillProgress()
+            # A pass IN FLIGHT keeps its counters: the generation bump is what
+            # stops it, and it stamps its own "stopped" on the way out. Handing
+            # it a fresh zeroed block instead would leave the operator with
+            # "1 of 0" -- the worker's remaining steps landing on a counter that
+            # never knew about them.
+            self._reseed(target, session)
+            return self.status()
+
+    def _reseed(self, target: str, session: str) -> None:
+        """Drop the pixels and adopt a new (target, run) identity.
+
+        Deliberately does NOT bump the generation: ``add`` calls this the first
+        time a frame names a target, which on a freshly started stack is EVERY
+        first frame -- including the backfill's own. Aborting a backfill on the
+        reseed its own first frame caused would make the feature a one-frame
+        no-op. The worker watches the identity instead (see ``run_backfill``).
+        """
         self._stacks.clear()
+        self._seen.clear()
         self._target = target
         self._session = session
         self._factor = 0
@@ -235,42 +466,166 @@ class SessionStacker:
         self._cache = None
         self._cache_seq = -1
         self._rendered_at = 0.0
-        return self.status()
 
     # ------------------------------------------------------------- accumulate
     def add(self, data: np.ndarray, filter_name: str | None,
             exposure_s: float, *, target: str | None = None,
-            session: str | None = None) -> str | None:
+            session: str | None = None,
+            bayer_pattern: str | None = None,
+            key: str | None = None) -> str | None:
         """Fold one accepted light into its filter's stack.
 
-        Returns the channel it landed on, or None when nothing was stacked
-        (disabled, no pixels, no stars to register on). A target or run
-        different from the one in hand resets first: a stack that spans two
-        objects is not a picture of either.
+        Returns the channels it landed on joined by ``+`` (``"L"``, ``"Ha"``,
+        or ``"R+G+B"`` for a debayered OSC sub), or None when nothing was
+        stacked -- disabled, no pixels, no stars to register on, or a frame this
+        stacker has already consumed. A target or run different from the one in
+        hand resets first: a stack that spans two objects is not a picture of
+        either.
+
+        ``bayer_pattern`` is the sub's own mosaic (``CameraFrame.bayer_pattern``
+        live, ``BAYERPAT`` off disk); pass it through :func:`effective_bayer`
+        with the frame's binning first. ``key`` is the frame's identity on disk
+        and is what makes a second sighting a no-op -- see :attr:`_seen`.
+
+        THE WHOLE BODY IS UNDER THE LOCK. The de-duplication check and the
+        accumulation it guards have to be one critical section, or a backfill
+        worker and the frame loop can both pass the check for the same sub and
+        both stack it. The caller does the expensive I/O (reading and decoding
+        the FITS) before it gets here.
         """
         if not self.enabled:
             return None
         arr = np.asarray(data)
         if arr.ndim != 2 or arr.size == 0:
             return None
-        new_target = self._target if target is None else (target or "")
-        new_session = self._session if session is None else (session or "")
-        if (new_target, new_session) != (self._target, self._session):
-            self.reset(new_target, new_session)
-        if not self._factor:
-            self._factor = downsample_factor(arr.shape, max_side=self.max_side)
-        small = block_mean(arr, self._factor)
+        ident = frame_key(key)
+        with self._lock:
+            if ident and ident in self._seen:
+                return None
+            new_target = self._target if target is None else (target or "")
+            new_session = self._session if session is None else (session or "")
+            if (new_target, new_session) != (self._target, self._session):
+                self._reseed(new_target, new_session)
+            if not self._factor:
+                self._factor = downsample_factor(arr.shape,
+                                                 max_side=self.max_side)
+            factor = self._factor
 
-        ch = channel_for(filter_name)
-        stack = self._stacks.get(ch)
-        if stack is None:
-            stack = LiveStacker(clip_sigma=self.clip_sigma)
-            self._stacks[ch] = stack
-        outcome = stack.add(small, float(exposure_s or 0.0))
-        if not outcome.accepted:
-            return None
-        self._seq += 1
-        return ch
+            planes, shared = self._planes(arr, filter_name, bayer_pattern,
+                                          factor)
+            landed: list[str] = []
+            for ch, small in planes.items():
+                stack = self._stacks.get(ch)
+                if stack is None:
+                    stack = LiveStacker(clip_sigma=self.clip_sigma)
+                    self._stacks[ch] = stack
+                outcome = stack.add(small, float(exposure_s or 0.0),
+                                    stars=shared)
+                if outcome.accepted:
+                    landed.append(ch)
+            if not landed:
+                return None
+            # Recorded only on a frame that actually contributed, so a sub the
+            # stacker refused can be retried by a later backfill rather than
+            # being permanently written off.
+            if ident:
+                self._seen.add(ident)
+            self._seq += 1
+            return "+".join(landed)
+
+    def _planes(self, arr: np.ndarray, filter_name: str | None,
+                bayer_pattern: str | None, factor: int
+                ) -> tuple[dict[str, np.ndarray], list | None]:
+        """The channel planes one frame contributes, binned to the stack grid,
+        plus the star list to register all of them against (None = let each
+        stacker detect its own).
+
+        For an OSC frame the three planes are registered against ONE
+        constellation, detected on the green plane. That is not an optimisation.
+        Left to themselves the R stacker would measure its own shift off the red
+        photosites and the B stacker off the blue, they would disagree by a
+        fraction of a pixel on a good night and by whole pixels on a red or blue
+        field with few stars, and every star in the composite would wear a
+        coloured fringe -- the one defect the module docstring calls out as
+        making a composite look broken rather than rough. Green is the reference
+        because it has two photosites per cell and so the best signal to detect
+        on. Identical inputs also mean the three stackers make identical
+        accept/reject/reseed decisions, so the channels stay frame-for-frame in
+        step.
+        """
+        chans = channels_for(filter_name, bayer_pattern)
+        if chans != OSC_CHANNELS:
+            return {chans[0]: block_mean(arr, factor)}, None
+        deb = debayer_superpixel(arr, bayer_pattern)
+        if deb is None:                       # unreachable via channels_for
+            return {channel_for(filter_name): block_mean(arr, factor)}, None
+        # The superpixel split already halved both axes, so it has done one
+        # power of two of the binning the memory policy asks for; finish the
+        # job. factor is even by construction (MIN_DOWNSAMPLE == 2, doubling
+        # only), so the two compose exactly and an OSC channel lands on the
+        # same grid as a mono channel binned by `factor`.
+        rest = max(1, factor // 2)
+        planes = {c: block_mean(p, rest) for c, p in deb.items()}
+        from .stars import detect_stars
+        return planes, detect_stars(planes["G"])
+
+    # -------------------------------------------------------------- backfill
+    @property
+    def generation(self) -> int:
+        """Bumped by every ``reset``/``stop``. A backfill worker compares this
+        against the value it started with to notice that the stack it is filling
+        has been thrown away."""
+        return self._generation
+
+    @property
+    def backfill(self) -> BackfillProgress:
+        return self._backfill
+
+    def has_frame(self, key: str | None) -> bool:
+        """Whether this sub is already in the stack. A cheap pre-check so a
+        backfill can skip the disk read; ``add`` re-checks under the lock, which
+        is the check that actually decides."""
+        ident = frame_key(key)
+        if not ident:
+            return False
+        with self._lock:
+            return ident in self._seen
+
+    def backfill_begin(self, total: int) -> BackfillProgress:
+        """Arm the progress counter for a pass over ``total`` frames."""
+        with self._lock:
+            self._backfill = BackfillProgress(running=True, total=int(total),
+                                              started_ts=time.time())
+            if not total:
+                # Nothing to do is DONE, not pending. A counter that sits at
+                # "0 of 0, running" forever is a hang as far as the UI can tell.
+                self._backfill.running = False
+                self._backfill.finished_ts = self._backfill.started_ts
+            return self._backfill
+
+    def backfill_step(self, *, added: str = "", skipped: bool = False,
+                      failed: bool = False) -> BackfillProgress:
+        """One frame considered. Exactly one of the three outcomes."""
+        with self._lock:
+            p = self._backfill
+            p.done += 1
+            if skipped:
+                p.skipped += 1
+            elif failed:
+                p.failed += 1
+            else:
+                p.added += 1
+                p.channel = added
+            return p
+
+    def backfill_finish(self, error: str = "") -> BackfillProgress:
+        with self._lock:
+            p = self._backfill
+            p.running = False
+            p.error = str(error or "")
+            p.finished_ts = time.time()
+            p.channel = ""
+            return p
 
     # ---------------------------------------------------------------- status
     @property
@@ -286,30 +641,33 @@ class SessionStacker:
         return self._session
 
     def channels(self) -> list[ChannelStatus]:
-        out = [ChannelStatus(ch, s.frames, s.integrated_s, s.rejected)
-               for ch, s in self._stacks.items()]
+        with self._lock:
+            out = [ChannelStatus(ch, s.frames, s.integrated_s, s.rejected)
+                   for ch, s in self._stacks.items()]
         out.sort(key=lambda c: CHANNEL_ORDER.index(c.channel)
                  if c.channel in CHANNEL_ORDER else 99)
         return out
 
     def status(self) -> dict:
-        chans = self.channels()
-        age = (round(time.time() - self._rendered_at, 1)
-               if self._rendered_at else None)
-        return {
-            "enabled": self.enabled,
-            "target": self._target,
-            "session": self._session,
-            "seq": self._seq,
-            "channels": [c.to_dict() for c in chans],
-            "frames": sum(c.frames for c in chans),
-            "integrated_s": round(sum(c.integrated_s for c in chans), 1),
-            "rejected": sum(c.rejected for c in chans),
-            "mode": self.mode(),
-            "downsample": self._factor,
-            "has_image": bool(chans),
-            "render_age_s": age,
-        }
+        with self._lock:
+            chans = self.channels()
+            age = (round(time.time() - self._rendered_at, 1)
+                   if self._rendered_at else None)
+            return {
+                "enabled": self.enabled,
+                "target": self._target,
+                "session": self._session,
+                "seq": self._seq,
+                "channels": [c.to_dict() for c in chans],
+                "frames": sum(c.frames for c in chans),
+                "integrated_s": round(sum(c.integrated_s for c in chans), 1),
+                "rejected": sum(c.rejected for c in chans),
+                "mode": self.mode(),
+                "downsample": self._factor,
+                "has_image": bool(chans),
+                "render_age_s": age,
+                "backfill": self._backfill.to_dict(),
+            }
 
     def mode(self) -> str | None:
         """What kind of composite the channels in hand make: broadband colour,
@@ -385,10 +743,15 @@ class SessionStacker:
         correctly: a session with nothing but L has zero colour, so the same
         line produces grey rather than needing a second code path.
         """
-        got = self._aligned_planes()
-        if got is None:
-            return None
-        planes, h, w = got
+        with self._lock:
+            got = self._aligned_planes()
+            if got is None:
+                return None
+            planes, h, w = got
+        # Out of the lock from here: `planes` is already a private copy of every
+        # channel's mean, so a frame landing mid-render changes the NEXT picture
+        # rather than this one -- and the render is the slowest thing the
+        # stacker does, which is exactly what must not block the frame loop.
         stretched = stretch_channels(planes)
 
         rgb = np.zeros((h, w, 3), dtype=np.float32)
@@ -413,10 +776,16 @@ class SessionStacker:
         costs one dict lookup rather than a percentile over seven channels.
         """
         now = time.time()
-        if (self._cache is not None and self._cache_size == int(size)
-                and (self._cache_seq == self._seq
-                     or now - self._rendered_at < self.min_render_interval_s)):
-            return self._cache
+        with self._lock:
+            if (self._cache is not None and self._cache_size == int(size)
+                    and (self._cache_seq == self._seq
+                         or now - self._rendered_at < self.min_render_interval_s)):
+                return self._cache
+            # The seq the render is ABOUT to be built from, read before the lock
+            # is dropped. Stamping the cache with the seq as it stands AFTER the
+            # render would label this picture with a frame it does not contain,
+            # and the next poll would be served the stale one as current.
+            seq_at_start = self._seq
 
         rgb = self.compose()
         if rgb is None:
@@ -431,10 +800,11 @@ class SessionStacker:
         buf = io.BytesIO()
         pil.save(buf, format="JPEG", quality=quality, optimize=False)
 
-        self._rendered_at = now
-        self._cache_seq = self._seq
-        self._cache_size = int(size)
-        meta = dict(self.status())
-        meta.update({"width": pil.width, "height": pil.height})
-        self._cache = (buf.getvalue(), meta)
-        return self._cache
+        with self._lock:
+            self._rendered_at = now
+            self._cache_seq = seq_at_start
+            self._cache_size = int(size)
+            meta = dict(self.status())
+            meta.update({"width": pil.width, "height": pil.height})
+            self._cache = (buf.getvalue(), meta)
+            return self._cache

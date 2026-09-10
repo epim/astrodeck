@@ -15,7 +15,8 @@ import pytest
 
 from astrodeck.imaging.sessionstack import (
     CHANNEL_ORDER, MAX_STACK_SIDE, SessionStacker, block_mean, channel_for,
-    downsample_factor, stretch_channels,
+    channels_for, debayer_superpixel, downsample_factor, effective_bayer,
+    stretch_channels,
 )
 
 STARS = [(60, 70, 1.0), (180, 120, 0.7), (300, 200, 0.55),
@@ -301,3 +302,230 @@ def test_a_different_size_is_not_served_from_the_cache():
     large = s.rgb_preview(240)
     assert large is not None and large[1]["width"] == 240
     assert small[1]["width"] == 120
+
+
+# ---------------------------------------------------------- one-shot colour
+# A bayered sensor was the composite's blind spot. `channel_for` folds "OSC"
+# and an empty filter name onto L, which is right for a MONO camera with no
+# wheel and quietly wrong for a colour one -- and it failed in the way that is
+# hardest to notice, because a block mean over a Bayer mosaic with an EVEN
+# factor produces a clean, artefact-free image. Clean, and grey: (R+2G+B)/4,
+# with the colour averaged out of it. These tests are about the colour actually
+# surviving.
+
+def bayer_planes(dx=0.0, dy=0.0, *, red=1.0, green=0.5, blue=0.2, seed=3,
+                 shape=(400, 480)) -> dict:
+    """The three colour planes of one synthetic scene, at full frame size.
+
+    Same stars in all three (stars are broadly white, and they are what the
+    registration has to work on) and a nebula glow whose amplitude is the
+    colour: red brightest, blue dimmest.
+    """
+    return {c: field(dx, dy, scale=s, seed=seed, shape=shape)
+            for c, s in (("R", red), ("G", green), ("B", blue))}
+
+
+def mosaic(planes: dict, pattern: str = "RGGB") -> np.ndarray:
+    """Sample three planes into one Bayer mosaic. ``pattern`` reads left to
+    right, top to bottom over the 2x2 cell, which is the FITS convention."""
+    h, w = next(iter(planes.values())).shape
+    m = np.zeros((h, w), dtype=np.uint16)
+    for i, c in enumerate(pattern):
+        oy, ox = divmod(i, 2)
+        m[oy::2, ox::2] = planes[c][oy::2, ox::2]
+    return m
+
+
+@pytest.mark.parametrize("name,pattern,expected", [
+    # No bandpass claimed + a mosaic = one-shot colour: three channels.
+    ("OSC", "RGGB", ("R", "G", "B")),
+    ("", "BGGR", ("R", "G", "B")),
+    (None, "GRBG", ("R", "G", "B")),
+    ("Clear", "GBRG", ("R", "G", "B")),
+    # The native ZWO/Player One bindings report the top-left PAIR, not four
+    # letters; the same camera must not be debayered on one backend and
+    # averaged to grey on another.
+    ("OSC", "RG", ("R", "G", "B")),
+    ("OSC", "bg", ("R", "G", "B")),
+    # A dual-band on an OSC claims no bandpass we know, so it is still colour.
+    ("L-eXtreme", "RGGB", ("R", "G", "B")),
+    # An L or Clear filter over a COLOUR sensor is still a broadband exposure
+    # and the mosaic under it still carries colour. Every name that folds onto
+    # the L channel means "no bandpass I can name", which over a mosaic means
+    # one-shot colour.
+    ("L", "RGGB", ("R", "G", "B")),
+    ("Lum", "RGGB", ("R", "G", "B")),
+    # Mono, exactly as before.
+    ("OSC", None, ("L",)),
+    ("", "", ("L",)),
+    ("L", None, ("L",)),
+    # A NAMED filter over a mosaic is a monochrome measurement of one band.
+    # Splitting it into three planes would only show the colour filter array.
+    ("Ha", "RGGB", ("Ha",)),
+    ("R", "RGGB", ("R",)),
+    ("OIII", "BGGR", ("Oiii",)),
+    # Nonsense in the header is not a guess: swapping red for blue across a
+    # whole session is worse than the grey it replaces.
+    ("OSC", "XYZW", ("L",)),
+])
+def test_channels_for_reads_the_mosaic_and_the_filter(name, pattern, expected):
+    assert channels_for(name, pattern) == expected
+
+
+def test_binning_takes_the_mosaic_away_even_though_the_card_stays():
+    # BAYERPAT describes the SENSOR. A 2x2-binned readout has already summed
+    # the colours into each pixel, so a debayer driven off the card alone would
+    # split one grey into three greys and call it colour.
+    assert effective_bayer("RGGB", 1) == "RGGB"
+    assert effective_bayer("RGGB", 2) is None
+    assert effective_bayer("RG", None) == "RGGB"
+    assert effective_bayer(None, 1) is None
+
+
+@pytest.mark.parametrize("pattern", ["RGGB", "BGGR", "GRBG", "GBRG"])
+def test_the_red_plane_really_is_the_red_one(pattern):
+    # The assertion the whole feature turns on. A demosaic that is off by one
+    # photosite produces a plausible picture with the colours swapped, and
+    # nothing downstream would ever notice.
+    planes = bayer_planes(red=1.0, green=0.5, blue=0.2)
+    out = debayer_superpixel(mosaic(planes, pattern), pattern)
+    assert set(out) == {"R", "G", "B"}
+    for c, p in out.items():
+        assert p.shape == (200, 240), (c, p.shape)
+
+    # The glow peaks at row 200, column 240 full-frame, so at (100, 120) after
+    # the 2x2 split. Background is ~400 ADU and the glow adds scale * 3000.
+    def peak(p):
+        return float(np.mean(p[95:105, 115:125]))
+
+    assert peak(out["R"]) == pytest.approx(3400, rel=0.05), peak(out["R"])
+    assert peak(out["G"]) == pytest.approx(1900, rel=0.05), peak(out["G"])
+    assert peak(out["B"]) == pytest.approx(1000, rel=0.08), peak(out["B"])
+
+
+def test_the_green_plane_averages_both_green_photosites():
+    # Two G cells per 2x2, and using one of them would throw away half the
+    # signal in the plane the OSC registration is measured on.
+    m = np.zeros((2, 2), dtype=np.uint16)
+    m[0, 0], m[0, 1], m[1, 0], m[1, 1] = 100, 200, 300, 50   # R G G B
+    out = debayer_superpixel(m, "RGGB")
+    assert int(out["R"][0, 0]) == 100
+    assert int(out["G"][0, 0]) == 250            # (200 + 300) / 2
+    assert int(out["B"][0, 0]) == 50
+
+
+def test_an_odd_sized_mosaic_is_cropped_to_whole_cells():
+    m = np.zeros((5, 7), dtype=np.uint16)
+    out = debayer_superpixel(m, "RGGB")
+    assert out["R"].shape == (2, 3)
+
+
+def test_a_mono_frame_is_not_debayered():
+    assert debayer_superpixel(field(), None) is None
+    assert debayer_superpixel(field(), "not a pattern") is None
+
+
+def test_an_osc_sub_lands_on_three_channels_not_on_luminance():
+    s = SessionStacker()
+    s.start()
+    landed = s.add(mosaic(bayer_planes()), "OSC", 60.0, target="M42",
+                   bayer_pattern="RGGB")
+    assert landed == "R+G+B", landed
+    st = s.status()
+    assert [c["channel"] for c in st["channels"]] == ["R", "G", "B"]
+    assert st["mode"] == "rgb"
+    # Integration time is the SUB's, once per channel: three channels of one
+    # 60 s frame is one 60 s frame in each, not 180 s of imaging.
+    assert all(c["integrated_s"] == 60.0 for c in st["channels"])
+
+
+def test_an_osc_composite_is_coloured_and_the_old_path_was_not():
+    # Two stackers, the same photons. One is told the sensor is bayered.
+    scene = [mosaic(bayer_planes(dx, dy, seed=10 + i))
+             for i, (dx, dy) in enumerate([(0, 0), (1.5, -2.0), (-2.0, 1.0)])]
+
+    grey = SessionStacker()
+    grey.start()
+    colour = SessionStacker()
+    colour.start()
+    for m in scene:
+        grey.add(m, "OSC", 60.0, target="M42")
+        colour.add(m, "OSC", 60.0, target="M42", bayer_pattern="RGGB")
+
+    g = grey.compose()
+    assert grey.mode() == "mono"
+    assert np.allclose(g[:, :, 0], g[:, :, 2]), \
+        "the old path stopped producing grey; this test no longer proves anything"
+
+    c = colour.compose()
+    assert colour.mode() == "rgb"
+    h, w, _ = c.shape
+    ys = slice(h // 2 - 12, h // 2 + 12)
+    xs = slice(w // 2 - 12, w // 2 + 12)
+    r, gg, b = (float(np.mean(c[ys, xs, i])) for i in range(3))
+    assert r > gg > b, f"the nebula came out r={r:.3f} g={gg:.3f} b={b:.3f}"
+    assert r - b > 0.1, "there is a colour difference but it is invisible"
+
+
+@pytest.mark.parametrize("factor", [2, 4, 8, 16])
+@pytest.mark.parametrize("shape", [(400, 480), (401, 483), (1000, 1200)])
+def test_an_osc_channel_lands_on_the_same_grid_as_a_mono_one(factor, shape):
+    # The superpixel split does one power of two of the binning the memory
+    # policy asks for and block_mean finishes the job, so the two compose
+    # instead of fighting. If they did not, an OSC channel and an L channel
+    # could never appear in the same composite -- and the odd frame sizes are
+    # here because that is where a "halve, then bin by half the factor" scheme
+    # is most likely to lose a row and drift a pixel apart.
+    s = SessionStacker()
+    osc, stars = s._planes(mosaic(bayer_planes(shape=shape)), "OSC", "RGGB",
+                           factor)
+    mono, none = s._planes(field(shape=shape), "L", None, factor)
+    assert set(osc) == {"R", "G", "B"} and set(mono) == {"L"}
+    assert {p.shape for p in osc.values()} == {mono["L"].shape},         f"{ {c: p.shape for c, p in osc.items()} } vs {mono['L'].shape}"
+    # ...and the OSC planes carry a shared star list while a mono frame does
+    # not, which is what keeps the three channels in step.
+    assert stars is not None and none is None
+
+
+def test_an_osc_and_a_mono_channel_end_up_the_same_size_in_a_real_stack():
+    mono = SessionStacker()
+    mono.start()
+    mono.add(field(), "L", 60.0, target="M42")
+
+    osc = SessionStacker()
+    osc.start()
+    osc.add(mosaic(bayer_planes()), "OSC", 60.0, target="M42",
+            bayer_pattern="RGGB")
+
+    assert mono.status()["downsample"] == osc.status()["downsample"] >= 2
+    assert osc._stacks["R"].mean().shape == mono._stacks["L"].mean().shape
+
+
+def test_the_osc_channels_are_registered_as_one_frame_not_three():
+    # Three planes of the SAME exposure cannot drift apart. Left to detect
+    # their own stars, the red stacker measures its shift off the red
+    # photosites and the blue off the blue; they disagree by a fraction of a
+    # pixel on a good night and by whole pixels on a colour-poor field, and
+    # every star in the composite wears a fringe. Identical inputs also mean
+    # identical accept/reject decisions, which is what this checks.
+    s = SessionStacker()
+    s.start()
+    for i, (dx, dy) in enumerate([(0, 0), (2.0, -1.0), (-1.5, 2.5), (1.0, 1.0)]):
+        s.add(mosaic(bayer_planes(dx, dy, seed=60 + i)), "", 60.0,
+              target="M42", bayer_pattern="RGGB")
+    counts = {c["channel"]: (c["frames"], c["rejected"])
+              for c in s.status()["channels"]}
+    assert len(set(counts.values())) == 1, \
+        f"the three planes of the same subs disagreed about them: {counts}"
+    assert counts["R"][0] == 4, counts
+
+
+def test_a_bayered_sub_through_a_named_filter_keeps_the_old_path():
+    # Ha on an OSC is a monochrome measurement of one line. Splitting it would
+    # show the colour filter array and nothing else.
+    s = SessionStacker()
+    s.start()
+    landed = s.add(mosaic(bayer_planes()), "Ha", 300.0, target="M42",
+                   bayer_pattern="RGGB")
+    assert landed == "Ha"
+    assert [c["channel"] for c in s.status()["channels"]] == ["Ha"]

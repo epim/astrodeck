@@ -11,6 +11,7 @@ import contextlib
 import json
 import os
 import shutil
+import threading
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -55,6 +56,8 @@ from .imaging import (
     write_wcs,
 )
 from .imaging.processing import frame_stats, to_png
+from .imaging.sessionstack import effective_bayer
+from .imaging.stackbackfill import plan_backfill, run_backfill
 from .polar import PolarAlignSession
 from .profiles import Profile, ProfileDevice, profiles, resolve_optics
 from . import rotation as _rotation
@@ -4851,14 +4854,34 @@ class Hub:
     # filters into colour. Different question, different lifetime, different
     # object -- see imaging/sessionstack.py.
 
-    def start_session_stack(self) -> dict:
-        st = self.session_stack.start()
+    def start_session_stack(self, *, backfill: bool = False) -> dict:
+        """Switch the stack on, optionally folding in what the run already shot.
+
+        ``backfill`` DEFAULTS OFF, and that is a decision rather than caution.
+        The pass reads every accepted sub of the run back off disk, debayers or
+        bins it and registers it; on this rig's 26-megapixel frames that is
+        roughly a second each, so an eight-hour night is several minutes of a
+        Pi's CPU spent while a sequence is running. A switch labelled "stack the
+        subs" must not be able to do minutes of unannounced work to somebody who
+        only wanted the next frame stacked. The UI ticks the box for them --
+        with the count of what it will read shown next to it -- because that is
+        an informed press; a bare POST keeps the behaviour it has always had.
+        """
+        self.session_stack.start()
         bus.log("info", "Session stack on: accepted subs stack per filter",
                 "capture")
-        return st
+        if backfill:
+            return self.session_stack_backfill()
+        # Through session_stack_status, not the stacker's own status: every one
+        # of these four routes answers the SAME shape, so the client has one
+        # type for the reply and never has to ask which call it came from.
+        return self.session_stack_status()
 
     def stop_session_stack(self) -> dict:
-        return self.session_stack.stop()
+        """Off, pixels released, and any backfill in flight abandoned (``stop``
+        resets, which moves the generation the worker watches)."""
+        self.session_stack.stop()
+        return self.session_stack_status()
 
     def reset_session_stack(self) -> dict:
         """Throw the pixels away, keep the switch AND the identity. Dropping the
@@ -4866,10 +4889,94 @@ class Hub:
         which is harmless but means the count the user just cleared briefly
         comes back."""
         st = self.session_stack
-        return st.reset(st.target, st.session)
+        st.reset(st.target, st.session)
+        return self.session_stack_status()
+
+    # ------------------------------------------------- Session stack backfill
+
+    def _live_session(self):
+        """The run's session ledger, or None when no run is live.
+
+        The ledger is the ONLY record of which subs the quality gate accepted --
+        a rejected frame is written to disk under the same name as an accepted
+        one (``hfr_reject_action`` defaults to ``warn``) -- so with no live run
+        there is nothing to backfill, however many FITS are sitting in the
+        capture directory.
+        """
+        return getattr(getattr(self, "engine", None), "_session", None)
+
+    def session_stack_backfill_items(self) -> list:
+        """The subs the backfill would fold in, right now. Cheap: the ledger is
+        already in memory and no file is opened."""
+        session = self._live_session()
+        if session is None:
+            return []
+        try:
+            return plan_backfill(session, stacker=self.session_stack)
+        except Exception as e:                      # pragma: no cover - guard
+            bus.log("warning", f"session stack backfill plan failed: {e}",
+                    "capture")
+            return []
+
+    def session_stack_backfill(self) -> dict:
+        """Start the backfill on a worker thread. Returns the status at once.
+
+        A thread rather than a task: the work is a blocking FITS read followed
+        by a numpy accumulation, neither of which yields, so on the event loop
+        it would stall the frame loop, the WebSocket and the whole API for as
+        long as it ran. The stacker's lock is what makes the two paths safe --
+        see ``imaging/stackbackfill.run_backfill``.
+        """
+        st = self.session_stack
+        if not st.enabled:
+            return st.status()
+        if st.backfill.running:
+            return self.session_stack_status()     # one pass at a time
+        items = self.session_stack_backfill_items()
+        st.backfill_begin(len(items))
+        if not items:
+            bus.log("info", "Session stack: nothing earlier in this run to "
+                            "stack", "capture")
+            return self.session_stack_status()
+
+        def _work() -> None:
+            def _note(msg: str) -> None:
+                bus.log("warning", f"session stack backfill: {msg}", "capture")
+            p = run_backfill(st, items, on_error=_note)
+            bus.log("info", f"Session stack backfill done: {p.added} of "
+                            f"{p.total} subs stacked"
+                            + (f", {p.skipped} already in" if p.skipped else "")
+                            + (f", {p.failed} unusable" if p.failed else ""),
+                    "capture")
+
+        bus.log("info", f"Session stack: reading {len(items)} earlier subs of "
+                        "this run", "capture")
+        try:
+            threading.Thread(target=_work, name="session-stack-backfill",
+                             daemon=True).start()
+        except RuntimeError as e:               # out of threads
+            # The counter is already armed, so failing to start the worker
+            # without closing it would leave the panel reading "running, 0 of
+            # 90" for the rest of the night.
+            st.backfill_finish(f"could not start: {e}")
+            bus.log("warning", f"session stack backfill did not start: {e}",
+                    "capture")
+        return self.session_stack_status()
 
     def session_stack_status(self) -> dict:
-        return self.session_stack.status()
+        """The stacker's own status plus what a backfill COULD still fold in.
+
+        ``backfill.available`` is the stacker's blind spot: it knows which
+        frames it has consumed and nothing about which exist. Counting them is a
+        list comprehension over an in-memory ledger, so it is honest to compute
+        it on every poll rather than caching a number that goes stale one
+        exposure later.
+        """
+        st = self.session_stack.status()
+        block = st.get("backfill")
+        if isinstance(block, dict):
+            block["available"] = len(self.session_stack_backfill_items())
+        return st
 
     def session_stack_preview(self, size: int = 1600):
         """(jpeg, meta) for the composite, or None when nothing is stacked."""
@@ -4888,6 +4995,11 @@ class Hub:
         night: every failure path here returns None, and the one that could
         surprise us (a numpy/PIL error deep in the stacker) is logged once per
         run rather than raised into the frame loop.
+
+        The sub's own ``saved_path`` is passed as its identity so that a later
+        backfill skips it instead of stacking the same photons twice, and its
+        Bayer pattern is passed so a one-shot-colour rig gets a colour composite
+        rather than the grey one a block mean over a mosaic produces.
         """
         if not self.session_stack.enabled or not isinstance(info, dict):
             return None
@@ -4903,7 +5015,10 @@ class Hub:
             run = getattr(getattr(self.engine, "reporter", None), "id", "") or ""
             return self.session_stack.add(
                 sub, info.get("filter"), float(info.get("exposure_s") or 0.0),
-                target=target, session=str(run))
+                target=target, session=str(run),
+                bayer_pattern=effective_bayer(info.get("bayer_pattern"),
+                                              info.get("binning")),
+                key=info.get("saved_path"))
         except Exception as e:                      # pragma: no cover - guard
             if not getattr(self, "_session_stack_warned", False):
                 self._session_stack_warned = True

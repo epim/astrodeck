@@ -38,10 +38,12 @@ class SpyStack:
         self.calls: list[dict] = []
         self.target = ""
 
-    def add(self, data, filter_name, exposure_s, *, target=None, session=None):
+    def add(self, data, filter_name, exposure_s, *, target=None, session=None,
+            bayer_pattern=None, key=None):
         self.calls.append({"data": data, "filter": filter_name,
                            "exposure_s": exposure_s, "target": target,
-                           "session": session})
+                           "session": session, "bayer_pattern": bayer_pattern,
+                           "key": key})
         return "L"
 
 
@@ -113,6 +115,14 @@ async def test_the_stack_gets_linear_pixels_and_the_resolved_filter(sim_hub):
         assert call["exposure_s"] == pytest.approx(0.05)
         assert call["target"] == "M42"
         assert call["session"], "no run identity, so a second run would resume the first"
+        # The sub's own file, so a later backfill recognises it and does not
+        # stack the same photons a second time. Without this the ONLY thing
+        # standing between "enable, backfill" and a double-counted stack is
+        # luck.
+        assert call["key"], \
+            "the frame reached the stack with no identity: a backfill cannot " \
+            "tell it is already in there"
+        assert str(call["key"]).lower().endswith(".fits"), call["key"]
 
 
 async def test_a_disabled_stack_is_never_called(sim_hub):

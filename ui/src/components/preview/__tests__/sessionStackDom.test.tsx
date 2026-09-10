@@ -15,6 +15,11 @@
 //   * the per-filter breakdown is the SERVER's channel list. A panel that says
 //     "12 frames" without saying which filters they were through is the number
 //     an operator cannot act on;
+//   * the BACKFILL option is really an option: the box next to the switch
+//     changes what is posted, so a decorative checkbox is caught here;
+//   * the progress counter is the server's numbers and it clears when the pass
+//     ends -- a counter frozen at "7 of 9" is how a finished pass looks like a
+//     hung one;
 //   * a viewer cannot press any of it.
 //
 // WHAT THIS CANNOT DO: jsdom fetches no images, so the <img> is asserted by its
@@ -39,6 +44,16 @@ win.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
 
 // ------------------------------------------------------------- fake server
 type Chan = { channel: string; frames: number; integrated_s: number; rejected: number };
+/** The backfill block every reply carries. All zero = no pass has ever
+ *  run, which is the state of a stack that has only ever stacked live. */
+function backfill(over: Partial<any> = {}): any {
+  return {
+    running: false, total: 0, done: 0, added: 0, skipped: 0, failed: 0,
+    channel: "", error: "", started_ts: null, finished_ts: null,
+    available: 0,
+    ...over,
+  };
+}
 function status(over: Partial<any> = {}): any {
   const channels: Chan[] = over.channels ?? [];
   return {
@@ -48,6 +63,7 @@ function status(over: Partial<any> = {}): any {
     rejected: 0, mode: null, downsample: 4,
     has_image: channels.length > 0, render_age_s: null,
     ...over,
+    backfill: backfill(over.backfill ?? {}),
   };
 }
 
@@ -63,11 +79,31 @@ let server: any = status();
 win.fetch = async (input: any, init?: any) => {
   const path = String(input);
   const method = (init?.method ?? "GET").toUpperCase();
+  // The route, without the query. /start now takes ?backfill=true, and a fake
+  // that matched on the whole string would answer "not the start route" to
+  // exactly the press this feature added.
+  const route = path.split("?")[0];
+  const wantsBackfill = /[?&]backfill=true/.test(path);
   if (method === "POST") {
     posts.push(path);
-    if (path.endsWith("/start")) server = { ...server, enabled: true };
-    if (path.endsWith("/stop")) server = status();
-    if (path.endsWith("/reset")) {
+    if (route.endsWith("/start")) {
+      server = {
+        ...server, enabled: true,
+        backfill: wantsBackfill
+          ? backfill({ running: true, total: server.backfill.available,
+                       available: 0 })
+          : server.backfill,
+      };
+    }
+    if (route.endsWith("/backfill")) {
+      server = {
+        ...server,
+        backfill: backfill({ running: true, total: server.backfill.available,
+                             available: 0 }),
+      };
+    }
+    if (route.endsWith("/stop")) server = status();
+    if (route.endsWith("/reset")) {
       server = { ...status(), enabled: true, target: server.target };
     }
   }
@@ -141,11 +177,23 @@ const resetBtn = (): any =>
   [...container.querySelectorAll("button")].find(
     (b: any) => /reset/i.test(b.textContent || ""),
   );
+const checkboxEl = (): any => container.querySelector('input[type="checkbox"]');
+const earlierBtn = (): any =>
+  [...container.querySelectorAll("button")].find(
+    (b: any) => /earlier sub/i.test(b.textContent || ""),
+  );
 
 async function click(el: any): Promise<void> {
   await act(async () => {
     el.dispatchEvent(new win.MouseEvent("click", { bubbles: true }));
   });
+  await settle();
+}
+
+/** A checkbox needs .click() rather than a synthesised MouseEvent: the
+ *  activation behaviour is what flips `checked` before React reads it. */
+async function clickInput(el: any): Promise<void> {
+  await act(async () => { el.click(); });
   await settle();
 }
 
@@ -169,7 +217,7 @@ await test("the switch posts to the server, it does not just flip a local flag",
   posts.length = 0;
   await mount();
   await click(toggleEl());
-  assert(posts.some((p) => p.endsWith("/api/sequence/stack/start")),
+  assert(posts.some((p) => p.includes("/api/sequence/stack/start")),
     `nothing was posted; the switch is decorative. posts=${JSON.stringify(posts)}`);
   assert(toggleEl().getAttribute("aria-checked") === "true",
     "the switch did not adopt the server's reply");
@@ -253,6 +301,128 @@ await test("a viewer sees the stack but cannot touch it", async () => {
   assert(resetBtn().disabled === true, "a viewer can throw away the stack");
   assert(/access/i.test(text()), "nothing tells the viewer why the controls are dead");
   assert(img() != null, "a viewer cannot see the picture either");
+});
+
+await test("off, it offers to stack the subs already shot and says how many", async () => {
+  setPrincipal(["control.capture"]);
+  server = status({ backfill: { available: 137 } });
+  await mount();
+  const box = checkboxEl();
+  assert(box != null, "no control for stacking the run's earlier subs");
+  assert(box.checked === true,
+    "the box is unticked, so switching on still ignores the 137 subs already " +
+    "shot -- which is the behaviour this feature exists to change");
+  assert(/137 subs/.test(text()),
+    `the count is not on the label, so the cost of the press is invisible: ${
+      text().slice(0, 400)}`);
+  assert(/few minutes/i.test(text()),
+    "nothing says the pass takes real time, so a long night is a surprise");
+});
+
+await test("ticked, switching on asks the server for the backfill", async () => {
+  setPrincipal(["control.capture"]);
+  server = status({ backfill: { available: 12 } });
+  posts.length = 0;
+  await mount();
+  assert(checkboxEl().checked === true, "precondition: the box starts ticked");
+  await click(toggleEl());
+  assert(posts.some((p) => /\/api\/sequence\/stack\/start\?backfill=true/.test(p)),
+    `the box is decorative -- switching on posted ${JSON.stringify(posts)}`);
+});
+
+await test("unticked, switching on stacks only what comes next", async () => {
+  setPrincipal(["control.capture"]);
+  server = status({ backfill: { available: 12 } });
+  posts.length = 0;
+  await mount();
+  await clickInput(checkboxEl());
+  assert(checkboxEl().checked === false, "the box would not untick");
+  await click(toggleEl());
+  const start = posts.filter((p) => p.includes("/stack/start"));
+  assert(start.length === 1, `posts=${JSON.stringify(posts)}`);
+  assert(!/backfill=true/.test(start[0]),
+    `unticking the box changed nothing: ${start[0]}`);
+});
+
+await test("a reading pass shows a counter, not a spinner", async () => {
+  setPrincipal(["control.capture"]);
+  server = status({
+    enabled: true, target: "NGC 6946",
+    backfill: { running: true, total: 90, done: 34, added: 30, skipped: 4 },
+  });
+  await mount();
+  const t = text();
+  assert(/34/.test(t) && /90/.test(t),
+    `no "34 of 90" anywhere: a pass with no numbers cannot be told from a ` +
+    `hung one. ${t.slice(0, 400)}`);
+  assert(/earlier subs/i.test(t), `nothing says what is being read: ${t.slice(0, 400)}`);
+  // While a pass is reading there is nothing to press: offering "stack them"
+  // again would start a second pass over the same files.
+  assert(earlierBtn() == null, "a second pass can be started over a running one");
+});
+
+await test("a finished pass reports its tally and stops nagging", async () => {
+  setPrincipal(["control.capture"]);
+  server = status({
+    enabled: true, target: "NGC 6946", seq: 41, mode: "rgb", channels: LIVE,
+    backfill: { running: false, total: 90, done: 90, added: 86, skipped: 2,
+                failed: 2, available: 0 },
+  });
+  await mount();
+  const t = text();
+  assert(/86 earlier subs stacked/.test(t), `no tally: ${t.slice(0, 400)}`);
+  assert(/2 unusable/.test(t),
+    "the frames it could not use are not mentioned, so 86 of 90 looks like a bug");
+  assert(earlierBtn() == null,
+    "it still offers to stack earlier subs with none left to stack");
+});
+
+await test("a pass stopped early says so rather than looking finished", async () => {
+  setPrincipal(["control.capture"]);
+  server = status({
+    enabled: true, target: "NGC 6946", seq: 41, mode: "rgb", channels: LIVE,
+    backfill: { running: false, total: 90, done: 12, added: 12,
+                error: "stopped", available: 78 },
+  });
+  await mount();
+  assert(/stopped at 12 of 90/i.test(text()),
+    `a pass that gave up reads as a completed one: ${text().slice(0, 400)}`);
+});
+
+await test("an already-running stack can be caught up without a restart", async () => {
+  // Reaching the pass by switching off and on again would throw away every
+  // frame stacked since, so there has to be a way that does not.
+  setPrincipal(["control.capture"]);
+  server = status({
+    enabled: true, target: "NGC 6946", seq: 41, mode: "rgb", channels: LIVE,
+    backfill: { available: 41 },
+  });
+  posts.length = 0;
+  await mount();
+  const btn = earlierBtn();
+  assert(btn != null, "a stack that is on cannot be caught up at all");
+  assert(/41/.test(btn.textContent || ""),
+    `the button does not say how many it would read: ${btn.textContent}`);
+  await click(btn);
+  assert(posts.some((p) => p.endsWith("/api/sequence/stack/backfill")),
+    `the catch-up button posted nothing. posts=${JSON.stringify(posts)}`);
+  assert(!posts.some((p) => p.includes("/stop")),
+    "catching up switched the stack off, which discards the live frames");
+});
+
+await test("a viewer cannot start a backfill either", async () => {
+  setPrincipal(["view.status", "view.preview"]);
+  server = status({
+    enabled: true, target: "NGC 6946", seq: 41, mode: "rgb", channels: LIVE,
+    backfill: { available: 41 },
+  });
+  await mount();
+  assert(earlierBtn().disabled === true,
+    "a viewer can spend minutes of the box's CPU reading the night back");
+
+  server = status({ backfill: { available: 41 } });
+  await mount();
+  assert(checkboxEl().disabled === true, "a viewer can arm the backfill");
 });
 
 // ------------------------------------------------------------------- report
