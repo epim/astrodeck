@@ -58,6 +58,8 @@ export const OPTICS_KEYS = [
   "auto_from_camera",
   "guide_focal_length_mm",
   "telescope_name",
+  "aperture_mm",
+  "reducer",
 ] as const;
 export type OpticsKey = (typeof OPTICS_KEYS)[number];
 

@@ -25,9 +25,16 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit, urlunsplit
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .events import bus
+# The temperature-compensation model lives with the code that USES it
+# (focus/tempcomp.py is pure: pydantic + a dataclass + arithmetic, no imports
+# back into this module), so it is imported rather than re-declared here. Every
+# other block below is declared HERE precisely because its module imports the
+# config store -- ``dew.py`` and ``planning.py`` both do, so declaring their
+# models in those files and importing them from here would close a cycle.
+from .focus.tempcomp import TempCompConfig
 from .naming import DEFAULT_TEMPLATE, validate_template
 from .persist import ensure_dir, read_json, read_json_or, write_json_atomic
 
@@ -82,6 +89,26 @@ class Optics(BaseModel):
     # Written to the FITS TELESCOP card when set, omitted when blank. NOT the
     # mount device name (a wrong string pollutes stacker grouping).
     telescope_name: str = ""
+    #: Clear aperture in millimetres. 0 = not set, which is the same "nobody
+    #: filled this in" convention pixel_size_um and the sensor dimensions use
+    #: (provenance.py's _CAMERA_FILLED note). No camera fallback exists and
+    #: none is possible: a camera knows nothing about the telescope in front of
+    #: it, so an unset aperture stays unset and f_ratio stays null rather than
+    #: being computed from a guess.
+    aperture_mm: float = Field(0.0, ge=0, le=5000)
+    #: Focal reducer / extender factor, e.g. 0.8 for a 0.8x reducer, 2.0 for a
+    #: Barlow. 1.0 means none.
+    #:
+    #: THIS DOES NOT CHANGE WHAT THE RIG FRAMES, and that is a deliberate
+    #: refusal rather than an omission. focal_length_mm stays EXPLICIT: the
+    #: number the framing maths, the plate solve hint and the FITS header all
+    #: use is the one the operator typed, so nothing can silently multiply it
+    #: behind their back. The reducer is recorded so the UI can offer "USE THE
+    #: REDUCED FOCAL LENGTH", which writes focal_length_mm and is the ONLY
+    #: thing that changes framing. Multiplying on save was considered and
+    #: rejected: it turns a label into a control the user does not know they
+    #: are operating.
+    reducer: float = Field(1.0, gt=0, le=10)
 
 
 # ------------------------------------------------------- automation (Batch 4b)
@@ -986,6 +1013,180 @@ class FocusConfig(BaseModel):
     #: steps. Comfortably larger than the tens of steps measured on the EAF,
     #: and small enough to cost well under a second of travel.
     approach_overshoot_steps: int = Field(200, ge=0, le=5000)
+    #: Move the focuser between frames as the tube cools (#D-RIG-2). The model
+    #: lives in ``focus/tempcomp.py`` next to the rule table that reads it; only
+    #: the persistence is here. It is NOT
+    #: ``standards.refocus_on_temp_delta_c`` -- that one is a TRIGGER that
+    #: spends minutes on a sweep, this is an OFFSET that spends one short move.
+    #: See ``TEMP_COMP_PRECEDENCE`` in that module for which runs first (both
+    #: do).
+    temp_comp: TempCompConfig = Field(default_factory=TempCompConfig)
+
+
+# ------------------------------------------------------------ dew (#D-RIG-3)
+
+class DewConfig(BaseModel):
+    """Drive the dew heaters from the margin between air temperature and dew
+    point (#D-RIG-3).
+
+    THE MARGIN, NOT THE HUMIDITY. Relative humidity says how close the air is
+    to saturation at ITS OWN temperature; the glass is colder than the air, so
+    what actually decides whether it fogs is how many degrees the surface has
+    left before it reaches the dew point. `weather.now` already publishes both
+    numbers (weather.py surface_now), and their difference is the whole input.
+
+    TWO THRESHOLDS, NOT ONE. A single "turn on below N degrees" makes the
+    heater a switch, and a switch that flaps around one number is how a heater
+    spends a night at 0 and 100 and never at 40. `margin_full_c` is where the
+    heater reaches `max_power` and `margin_off_c` is where it reaches
+    `min_power`; in between the power ramps linearly. The gap between them IS
+    the hysteresis.
+    """
+    enabled: bool = False
+    #: Margin (air temperature minus dew point, degrees C) at or below which
+    #: the heater runs at ``max_power``. Negative is legal: the air can already
+    #: be at its own dew point.
+    margin_full_c: float = Field(1.0, ge=-5, le=20)
+    #: Margin at or above which the heater drops to ``min_power``. Must be
+    #: ABOVE ``margin_full_c`` -- the gap between them is the ramp, and the ramp
+    #: is what keeps the heater off the two rails.
+    margin_off_c: float = Field(5.0, ge=-5, le=30)
+    #: Floor the ramp never goes below while the loop is running.
+    min_power: int = Field(0, ge=0, le=100)
+    #: Ceiling the ramp never goes above.
+    max_power: int = Field(100, ge=0, le=100)
+    #: Also heat the camera window, not only the objective.
+    camera_window: bool = True
+    #: How long a hand-set power level suppresses the loop before it takes the
+    #: heaters back. 0 = the override never expires on its own.
+    manual_override_s: int = Field(7200, ge=0, le=86400)
+    #: How often the loop re-reads the weather and re-computes the ramp.
+    interval_s: float = Field(120.0, ge=10, le=3600)
+
+    @model_validator(mode="after")
+    def _check_ramp(self) -> "DewConfig":
+        """The two relational rules pydantic cannot express per-field.
+
+        Both are ordering rules and both have the same failure mode if left
+        unchecked: the ramp inverts silently, so the heater does the OPPOSITE
+        of what the panel says, all night, with nothing to look at.
+        """
+        if self.margin_off_c <= self.margin_full_c:
+            raise ValueError("dew.margin_off_c must be above margin_full_c")
+        if self.max_power < self.min_power:
+            raise ValueError("dew.max_power must be at least min_power")
+        return self
+
+
+# ----------------------------------------------------- planning (#D-PLAN-1/2)
+
+#: How many targets the pool may hold. Named because the model constraint and
+#: any message about a rejected save have to be the same number.
+MAX_POOL = 200
+
+#: The ceiling on every remembered per-slot map, and on the length of one key
+#: in one. A wheel has eight slots; the cap exists so a malformed client cannot
+#: grow the config file without bound, not to express a real limit.
+_MAX_QUICK_KEYS = 64
+_MAX_QUICK_KEY_LEN = 64
+
+
+class QuickDefaults(BaseModel):
+    """What the quick-plan sheet was left set to, so the next night opens where
+    the last one did (#D-PLAN-1).
+
+    Remembered rather than defaulted because the answer is a property of the
+    rig and the operator, not of the software: which filters this wheel
+    actually has, how long this f/5 refractor needs per sub, whether this
+    operator dithers every three frames or not at all. A shipped default is a
+    guess about all four.
+    """
+    model_config = ConfigDict(extra="forbid")
+    #: How long the quick plan runs, in hours. Ignored when ``dawn`` is set.
+    hours: float = Field(2.0, gt=0, le=24)
+    #: "until dawn" was CHOSEN, and it is a different thing from a number of
+    #: hours -- dawn is a different length every night, so remembering the
+    #: hours it happened to work out to last time would silently shorten or
+    #: overrun tonight. The flag is stored beside the number, never folded into
+    #: it.
+    dawn: bool = False
+    #: Per-slot "shoot this filter", keyed by WHEEL SLOT NAME. ABSENT MEANS
+    #: CHECKED: a wheel that gains a slot, or a rig whose slot names are
+    #: re-typed, must not silently drop the new filter out of every plan.
+    on: dict[str, bool] = Field(default_factory=dict)
+    #: Per-slot exposure in seconds, keyed the same way. Finite positives only.
+    exp: dict[str, float] = Field(default_factory=dict)
+    #: The sheet's other toggles (dither, autofocus, and whatever the sheet
+    #: grows), keyed by name so this block does not have to move when it does.
+    extras: dict[str, bool] = Field(default_factory=dict)
+    #: Dither every N frames. 0 = never.
+    dither_n: int = Field(3, ge=0, le=100)
+    #: Has anything ever been learned here? Without this an operator who
+    #: genuinely wants every filter unchecked is indistinguishable from a rig
+    #: that has never had a quick plan built on it, and the sheet cannot tell
+    #: whether to seed itself from the wheel or to honour the empty maps.
+    learned: bool = False
+
+    @model_validator(mode="after")
+    def _check_maps(self) -> "QuickDefaults":
+        for name in ("on", "exp", "extras"):
+            m = getattr(self, name)
+            if len(m) > _MAX_QUICK_KEYS:
+                raise ValueError(
+                    f"planning.quick.{name} holds at most {_MAX_QUICK_KEYS} "
+                    "keys")
+            for key in m:
+                if not key or len(key) > _MAX_QUICK_KEY_LEN:
+                    raise ValueError(
+                        f"planning.quick.{name} keys must be 1.."
+                        f"{_MAX_QUICK_KEY_LEN} characters")
+        for key, seconds in self.exp.items():
+            # NaN and the infinities survive float() and every ge/le bound
+            # pydantic can express, and a NaN exposure reaches the camera as a
+            # NaN. `not (seconds > 0)` catches NaN as well as zero/negative.
+            if not (seconds > 0) or seconds == float("inf"):
+                raise ValueError(
+                    f"planning.quick.exp[{key!r}] must be a positive, finite "
+                    "number of seconds")
+        return self
+
+
+class PlanningConfig(BaseModel):
+    """The planning surface's own persisted state (#D-PLAN-1/2)."""
+    model_config = ConfigDict(extra="forbid")
+    quick: QuickDefaults = Field(default_factory=QuickDefaults)
+    #: The operator's shortlist of target ids, in THEIR order. A list and not a
+    #: set: the order is the shortlist's running order, and re-sorting it would
+    #: throw away the only thing the user actually did.
+    pool: list[str] = Field(default_factory=list, max_length=MAX_POOL)
+
+    @model_validator(mode="after")
+    def _clean_pool(self) -> "PlanningConfig":
+        """Trim, bound and de-duplicate, preserving first-seen order.
+
+        De-duplication is SILENT because a double-tap on "add" is not an error
+        the user needs told about. An empty or over-long id is NOT silent,
+        because it is a client bug, and swallowing it would put a target in the
+        pool that no lookup can ever resolve.
+        """
+        seen: set[str] = set()
+        cleaned: list[str] = []
+        for raw in self.pool:
+            tid = (raw or "").strip()
+            if not tid:
+                raise ValueError("planning.pool entries must not be empty")
+            if len(tid) > 64:
+                raise ValueError(
+                    "planning.pool entries must be at most 64 characters")
+            if tid in seen:
+                continue
+            seen.add(tid)
+            cleaned.append(tid)
+        if cleaned != self.pool:
+            # Written through __dict__: assigning through the model inside an
+            # "after" validator re-enters validation.
+            self.__dict__["pool"] = cleaned
+        return self
 
 
 #: On-disk shape of ``astrodeck.json``. Bump when a change needs a MIGRATION --
@@ -1037,6 +1238,20 @@ class AppConfig(BaseModel):
     site: Site = Field(default_factory=Site)
     optics: Optics = Field(default_factory=Optics)
     active_profile_id: str | None = None
+    #: Which entry of the locations library the site currently came from, or
+    #: None when the coordinates were typed in rather than applied. An id, not
+    #: a copy: the coordinates themselves stay in ``site``, which is what every
+    #: sky calculation reads.
+    #:
+    #: IT SITS OUT HERE, next to active_profile_id, and NOT inside
+    #: PlanningConfig. A block a settings panel replaces WHOLESALE cannot hold
+    #: a pointer the panel has never heard of -- the client would echo the
+    #: block back without it and erase which location is applied, which is the
+    #: same shape as cooling.setpoint_c being cancelled by a panel that had no
+    #: field for it. Written by ``apply_location`` inside its existing single
+    #: mutation (so the site and the pointer move in one atomic save) and
+    #: cleared by the matching delete.
+    active_location_id: str | None = None
     # --- automation (Batch 4b; appended — old configs without these load fine) ---
     safety: SafetyConfig = Field(default_factory=SafetyConfig)
     escalation: EscalationConfig = Field(default_factory=EscalationConfig)
@@ -1108,6 +1323,15 @@ class AppConfig(BaseModel):
     #     which is the point: the rigs that need it are the ones nobody is going
     #     to go and enable it on) ---
     focus: FocusConfig = Field(default_factory=FocusConfig)
+    # --- dew heaters (#D-RIG-3; appended - old configs load fine and the
+    #     default is OFF, so a rig that takes an update starts driving nothing
+    #     it was not already driving) ---
+    dew: DewConfig = Field(default_factory=DewConfig)
+    # --- the planning surface's remembered state (#D-PLAN-1/2; appended - old
+    #     configs load fine and `quick.learned` stays False, which is how the
+    #     sheet tells "nothing was ever learned here" from "everything was
+    #     deliberately unchecked") ---
+    planning: PlanningConfig = Field(default_factory=PlanningConfig)
 
 
 # ------------------------------------------------------- filter slot-name store
@@ -1337,6 +1561,27 @@ def image_scale_arcsec_px(focal_mm: float, pixel_um: float, binning: int = 1) ->
     if focal_mm <= 0:
         return 0.0
     return ARCSEC_PER_RAD * (pixel_um * binning) / focal_mm
+
+
+def f_ratio(focal_mm: float, aperture_mm: float) -> float | None:
+    """The focal ratio, or None when the aperture was never filled in.
+
+    None IS THE POINT. There is no camera fallback and none is possible -- a
+    camera knows nothing about the telescope in front of it -- so an unset
+    aperture has to read as "we do not know", never as a plausible number
+    derived from a guess. An f/5.3 printed next to a frame is taken as a fact
+    about the rig, and a wrong one silently mis-sizes every exposure estimate
+    built on it.
+
+    THE REDUCER IS NOT APPLIED HERE, deliberately. ``Optics.reducer`` is a
+    record, not a multiplier: if the operator pressed "use the reduced focal
+    length" then ``focal_length_mm`` already carries it, and applying it again
+    here would double-count. If they did not, the rig is genuinely framing at
+    the explicit focal length and that is the ratio they are shooting at.
+    """
+    if focal_mm <= 0 or aperture_mm <= 0:
+        return None
+    return round(focal_mm / aperture_mm, 2)
 
 
 def fov_deg(focal_mm: float, pixel_um: float, w_px: int, h_px: int) -> tuple[float, float, float]:
@@ -1838,6 +2083,45 @@ class ConfigStore:
         """
         cfg = self.cfg()
         cfg.standards = standards
+        return self.bump_and_save()
+
+    def set_focus(self, focus: "FocusConfig") -> AppConfig:
+        """Persist how the focuser is DRIVEN -- the approach overshoot and the
+        temperature-compensation block.
+
+        Wholesale-replace, like set_safety and set_standards: the panel echoes
+        the whole block back with its edit applied. Nothing here is exempt from
+        that, and the one field that looks like it should be --
+        ``temp_comp.reference_temp_c`` / ``reference_position``, which the run
+        re-anchors -- deliberately is not: the reference is only meaningful
+        with the coefficient it was measured against, so an operator who
+        retypes ``steps_per_c`` MUST invalidate the reference in the same save.
+        Carrying it forward would compensate tonight's drift off a reference
+        taken under a coefficient nobody uses any more.
+        """
+        cfg = self.cfg()
+        cfg.focus = focus
+        return self.bump_and_save()
+
+    def set_dew(self, dew: "DewConfig") -> AppConfig:
+        """Persist the dew-heater policy (#D-RIG-3). Wholesale-replace, like
+        set_safety -- every field in this block is policy the panel owns, and
+        the live heater power is not stored here at all (it is a device
+        reading, re-derived from the margin on every tick)."""
+        cfg = self.cfg()
+        cfg.dew = dew
+        return self.bump_and_save()
+
+    def set_planning(self, planning: "PlanningConfig") -> AppConfig:
+        """Persist the planning surface's remembered state (#D-PLAN-1/2).
+
+        Wholesale-replace, and it is safe to be: ``planning`` has its own route
+        rather than riding ``POST /api/config``, so the only client that sends
+        this block is the one that owns both halves of it. That is also why
+        ``active_location_id`` is NOT in here -- see AppConfig.
+        """
+        cfg = self.cfg()
+        cfg.planning = planning
         return self.bump_and_save()
 
     def set_cooling(self, cooling: "CoolingConfig") -> AppConfig:

@@ -56,6 +56,8 @@ const FMT: Record<OpticsKey, (v: unknown) => string> = {
   auto_from_camera: (v) => (v ? "on" : "off"),
   guide_focal_length_mm: (v) => `${v} mm`,
   telescope_name: (v) => `“${v}”`,
+  aperture_mm: (v) => `${v} mm`,
+  reducer: (v) => `${v}x`,
 };
 
 /** The override banner is the answer to "what is my rig actually using", so it

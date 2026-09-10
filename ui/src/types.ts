@@ -945,6 +945,18 @@ export interface Optics {
   // set and omitted when blank. Not the mount device name — stackers group on
   // this, so a wrong string splits one target across two groups.
   telescope_name: string;
+  // D-SET-1: clear aperture in mm. 0 = not set, the same "nobody filled this
+  // in" convention pixel_size_um and the sensor dimensions use. There is no
+  // camera fallback and none is possible, so an unset aperture leaves
+  // OpticsComputed.f_ratio null rather than showing a guess.
+  aperture_mm: number;
+  // D-SET-1: focal reducer / extender factor (0.8 for a 0.8x reducer, 2.0 for
+  // a Barlow, 1.0 for none). RECORDED, NOT APPLIED: focal_length_mm stays the
+  // explicit number the framing maths, the solve hint and the FITS header all
+  // use, so nothing multiplies it behind the operator's back. The "use the
+  // reduced focal length" action writes focal_length_mm, and that write is the
+  // only thing that ever changes framing.
+  reducer: number;
 }
 
 export interface OpticsComputed {
@@ -958,6 +970,12 @@ export interface OpticsComputed {
   fov_w_deg: number | null;
   fov_h_deg: number | null;
   fov_diag_deg: number | null;
+  // D-SET-1. Derived server-side (focal_length_mm / aperture_mm, 2 dp) and
+  // never stored. null when the aperture is unset — which must render as "we
+  // do not know", never as a plausible number.
+  aperture_mm: number;
+  reducer: number;
+  f_ratio: number | null;
 }
 
 // ---------------------------------------------------------------- provenance

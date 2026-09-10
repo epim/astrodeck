@@ -293,8 +293,22 @@ def test_the_echo_carries_it_so_the_rig_can_be_asked(tmp_path, monkeypatch):
     from astrodeck.api import app as app_module
 
     with TestClient(app_module.create_app()) as c:
+        # Still an EXACT dict, deliberately: this test's job is to notice when
+        # the focus block gains or loses a key, because the block is echoed
+        # WHOLE and a panel that round-trips it can erase a field it has never
+        # heard of. `temp_comp` (#D-RIG-2) is the first such addition; the
+        # defaults below are `focus.tempcomp.TempCompConfig`'s.
         assert c.get("/api/config").json()["focus"] == {
-            "approach_overshoot_steps": 200}
+            "approach_overshoot_steps": 200,
+            "temp_comp": {
+                "enabled": False,
+                "steps_per_c": 0.0,
+                "reference_temp_c": None,
+                "reference_position": None,
+                "max_step_per_move": 200,
+                "deadband_steps": 5,
+            },
+        }
     # And a file written with a different value is what the run then reads.
     (tmp_path / "astrodeck.json").write_text(
         '{"version": 1, "focus": {"approach_overshoot_steps": 0}}',
