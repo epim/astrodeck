@@ -1,4 +1,4 @@
-// RECONSTRUCTED (lane 1A owns this file) — restored to spec after an isolation
+// RECONSTRUCTED (lane 1A owns this file) - restored to spec after an isolation
 // type-check overwrote the original. 1A's canonical version takes precedence at
 // merge. See reliability spec §7.3.
 import type {
@@ -61,12 +61,12 @@ export function ninaTitle(h: NinaHealth): string {
 // HEALTH STRIP (implementation brief §5 / doc 03-personas-roles-attention §5 /
 // doc 04-failure-2am-ux-spec §6 rec 1). The single "is my night OK?" verdict:
 // folds safety, disk, backend_links, meridian, nina_link, status.providers and
-// the engine's end_reason into ranked Tier-1 (Notice — persistent amber chip,
-// non-blocking) / Tier-2 (Act — sticky red banner, never auto-dismissed)
-// issues. Tier-0 (nothing wrong) is the empty array — MonitorView renders one
+// the engine's end_reason into ranked Tier-1 (Notice - persistent amber chip,
+// non-blocking) / Tier-2 (Act - sticky red banner, never auto-dismissed)
+// issues. Tier-0 (nothing wrong) is the empty array - MonitorView renders one
 // calm ambient line for it, nothing loud. Pure + DOM-free (this module never
 // touches `window`) so it runs directly with `npx tsx`, same as the polar/
-// autofocus verdict suites — no jsdom, no component mount required.
+// autofocus verdict suites - no jsdom, no component mount required.
 // ============================================================================
 export interface HealthIssue {
   tier: 1 | 2;
@@ -109,20 +109,20 @@ export function deriveHealthIssues(input: {
     issues.push({
       tier: 2,
       icon: "alert",
-      text: "Link down — reconnecting; the sequence keeps running locally",
+      text: "Link down - reconnecting; the sequence keeps running locally",
     });
   }
   if (safety?.reading?.stale) {
-    issues.push({ tier: 2, icon: "alert", text: "Safety reading stale — treating as unsafe" });
+    issues.push({ tier: 2, icon: "alert", text: "Safety reading stale - treating as unsafe" });
   } else if (safety?.reading && safety.reading.is_safe === false) {
     const why = safety.reading.reason || safety.reading.source || "unknown cause";
-    issues.push({ tier: 2, icon: "alert", text: `Unsafe — ${why}` });
+    issues.push({ tier: 2, icon: "alert", text: `Unsafe - ${why}` });
   }
   if (disk?.critical) {
     issues.push({
       tier: 2,
       icon: "alert",
-      text: `Disk critical — ${disk.free_gb.toFixed(1)} GB free`,
+      text: `Disk critical - ${disk.free_gb.toFixed(1)} GB free`,
     });
   }
   if (seqState === "aborted" || seqState === "error") {
@@ -130,7 +130,7 @@ export function deriveHealthIssues(input: {
     issues.push({
       tier: 2,
       icon: "x",
-      text: `Sequence ${word}${endReason ? ` — ${endReason}` : ""}`,
+      text: `Sequence ${word}${endReason ? ` - ${endReason}` : ""}`,
     });
   }
   const droppedRole = (backendLinks ?? []).find((l) => l.attempted && !l.ok);
@@ -179,15 +179,15 @@ export function deriveHealthIssues(input: {
   // ------------------------------------------------------- tier 1 (notice)
   // Telemetry stale (UX-40): socket up but no status frame for a while, so every
   // value on the dashboard is seconds old. Amber notice, matching the
-  // ConnectionBanner — so "Night looks OK" no longer contradicts it.
+  // ConnectionBanner - so "Night looks OK" no longer contradicts it.
   if (telemetryStale && wsConnected) {
-    issues.push({ tier: 1, icon: "clock", text: "Telemetry stale — values may be seconds old" });
+    issues.push({ tier: 1, icon: "clock", text: "Telemetry stale - values may be seconds old" });
   }
   if (disk?.low && !disk.critical) {
     issues.push({
       tier: 1,
       icon: "alert",
-      text: `Disk getting low — ${disk.free_gb.toFixed(1)} GB free`,
+      text: `Disk getting low - ${disk.free_gb.toFixed(1)} GB free`,
     });
   }
   if (ninaLink?.active && !ninaLink.healthy && !ninaLink.warming_up) {
@@ -196,7 +196,7 @@ export function deriveHealthIssues(input: {
   // (the meridian notice is pushed by the three-way block in the tier-2 section
   // above, so all three flip_disabled outcomes are decided in one place)
   if (bootConnectFailed) {
-    issues.push({ tier: 1, icon: "info", text: "Rig partially connected on boot — check status below" });
+    issues.push({ tier: 1, icon: "info", text: "Rig partially connected on boot - check status below" });
   }
   for (const [cap, label] of [
     ["autofocus", "Autofocus"],
@@ -205,10 +205,10 @@ export function deriveHealthIssues(input: {
   ] as const) {
     const choice = providers?.[cap];
     if (choice?.kind === "unavailable") {
-      issues.push({ tier: 1, icon: "info", text: `${label} unavailable — ${choice.reason}` });
+      issues.push({ tier: 1, icon: "info", text: `${label} unavailable - ${choice.reason}` });
     }
   }
-  // weather (sub-project C §10): ADVISORY — always Tier-1 amber, never Tier-2
+  // weather (sub-project C §10): ADVISORY - always Tier-1 amber, never Tier-2
   // red (red is for safety/disk/link). "Night looks OK" therefore requires no
   // active cloud alert. Non-holders never carry a weather slice at all.
   if (weather?.alert) {

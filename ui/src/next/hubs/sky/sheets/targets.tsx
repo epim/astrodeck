@@ -9,7 +9,7 @@
 // WHAT IT WILL NOT DO:
 //
 //  * It does not invent a status. A cloud reading that does not exist renders as
-//    "UP · cloud —", never as CLEAR - `decorate()` owns that and is shared with
+//    "UP · cloud -", never as CLEAR - `decorate()` owns that and is shared with
 //    the finder, so the sheet and the marker under the reticle cannot disagree.
 //  * IT NOW SHOWS SATELLITES AND COMETS (D-SKY-1), in their own section under
 //    the ranked list rather than inside it, and that split is the honest one:
@@ -135,7 +135,7 @@ export function TargetsSheet(_p: SheetProps): JSX.Element {
   const onPick = (e: CatalogEntry): void => aim(e.id);
 
   const sub = [
-    model.clearPct == null ? "clear —" : `clear ${model.clearPct}%`,
+    model.clearPct == null ? "clear -" : `clear ${model.clearPct}%`,
     model.darkLine,
     model.moonLine,
     model.siteName,

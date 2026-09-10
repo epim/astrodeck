@@ -39,7 +39,7 @@ export interface SessionStackBackfill {
    *  is completion whatever happened to each frame. */
   done: number;
   added: number;
-  /** Already in the stack — the live path or an earlier pass took them. */
+  /** Already in the stack - the live path or an earlier pass took them. */
   skipped: number;
   /** Unreadable, or refused by the stacker (no stars, drifted off field). */
   failed: number;
@@ -49,7 +49,7 @@ export interface SessionStackBackfill {
   error: string;
   started_ts: number | null;
   finished_ts: number | null;
-  /** Subs of this run that are not in the stack yet — what pressing it now
+  /** Subs of this run that are not in the stack yet - what pressing it now
    *  would read. Recomputed on every poll from the in-memory ledger. */
   available: number;
 }
@@ -77,7 +77,7 @@ export const getSessionStack = (): Promise<SessionStackStatus> =>
   api.get<SessionStackStatus>("/api/sequence/stack");
 
 /** Switch the stack on. `backfill` also folds in the subs this run has already
- *  accepted — off by default on the server, because it is minutes of disk on a
+ *  accepted - off by default on the server, because it is minutes of disk on a
  *  full night and a switch must not do that unasked. */
 export const startSessionStack = (backfill = false): Promise<SessionStackStatus> =>
   api.post<SessionStackStatus>(
@@ -151,7 +151,7 @@ export function channelSummary(channels: SessionStackChannel[]): string {
  *  Three states worth distinguishing and one that is not: reading (a count, so
  *  a stalled pass is visible as a number that stops moving), finished with a
  *  tally, and stopped early. A pass that added everything it read says so
- *  briefly and then has nothing more to contribute — the frame count and the
+ *  briefly and then has nothing more to contribute - the frame count and the
  *  channel list above it are the real result. */
 export function backfillLabel(b: SessionStackBackfill | undefined): string | null {
   if (!b) return null;

@@ -48,7 +48,7 @@ import { SinkForm } from "./SinkForm";
 import {
   ADD_VERB, CONFLICT_TOAST, DEADMAN_LOCK_NOTE, DEADMAN_NOTE, DEADMAN_VERB, DELETE_VERB,
   EDIT_VERB, LOADING_CONFIG, NOTHING_WATCHING_BODY, NOTHING_WATCHING_LEAD, SECRET_UNCHANGED,
-  SINKS_INTRO, SINKS_LOCK_NOTE, TEST_VERB, hyphens, lockSentence, setMarker, sinkDestination,
+  SINKS_INTRO, SINKS_LOCK_NOTE, TEST_VERB, lockSentence, setMarker, sinkDestination,
 } from "./alertsModel";
 
 /** `HealthVerdict.tone` is already the primitive library's tone vocabulary. */
@@ -59,7 +59,7 @@ function VerdictPill({ v, testId }: { v: HealthVerdict; testId?: string }): JSX.
 const toastError = (e: unknown, fallback: string): void => {
   useStore.getState().enqueueToast({
     level: "error",
-    title: hyphens(e instanceof Error ? e.message : fallback),
+    title: e instanceof Error ? e.message : fallback,
   });
 };
 
@@ -109,7 +109,7 @@ export function AlertsEditor({ health, onRefreshHealth }: {
     if (!draft || saving) return;
     const err = validateDraft(draft, draftTokenConfigured);
     if (err) {
-      useStore.getState().enqueueToast({ level: "error", title: hyphens(err) });
+      useStore.getState().enqueueToast({ level: "error", title: err });
       return;
     }
     setSaving(true);
@@ -143,7 +143,7 @@ export function AlertsEditor({ health, onRefreshHealth }: {
       const res = await testAlert(id);
       useStore.getState().enqueueToast({
         level: res.ok ? "success" : "error",
-        title: res.ok ? "Test alert delivered" : hyphens(res.error || "Test alert failed"),
+        title: res.ok ? "Test alert delivered" : res.error || "Test alert failed",
       });
       await useStore.getState().loadConfig();   // the verified badge
       onRefreshHealth();
@@ -274,7 +274,7 @@ export function AlertsEditor({ health, onRefreshHealth }: {
                       <VerdictPill v={v} />
                     </span>
                     <Mono size={10.5} tone="dim">{sinkDestination(s)}</Mono>
-                    <Mono size={10} tone="dim">{hyphens(v.detail)}</Mono>
+                    <Mono size={10} tone="dim">{v.detail}</Mono>
                   </span>
                   <span className="nx-alerts-rowacts">
                     <ActionButton

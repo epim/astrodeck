@@ -201,7 +201,7 @@ def sun_block_reason() -> str | None:
 
     cone = getattr(config_store.cfg().safety, "solar_exclusion_deg", 30.0)
     return (f"The Sun is not offered as a target: sun avoidance is armed and "
-            f"the mount refuses anything within {cone:.0f}° of it. Solar "
+            f"the mount refuses anything within {cone:.0f} degrees of it. Solar "
             f"observing needs a filtered scope and a solar session "
             f"(Settings > Safety, admin only).")
 
@@ -423,7 +423,7 @@ def describe(body: Body, p: dict, sun_sep_deg: float, cone_deg: float) -> str:
     # fix a setting that is already correct.
     why = p.get("geocentric_reason")
     if body.key == "moon" and why == "site_unset":
-        parts.append("geocentric until you set your site (moves it up to 1°)")
+        parts.append("geocentric until you set your site (moves it up to 1 degree)")
     elif body.key == "moon" and why == "not_permitted":
         parts.append("geocentric for your role, so up to 1 degree off - where "
                      "the Moon appears would give away this rig's location")

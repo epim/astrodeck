@@ -403,7 +403,7 @@ await testAsync("a viewer sees AUTOFOCUS NOW, told why, and pressing it asks not
     assert(af != null, "a viewer cannot see AUTOFOCUS NOW at all - the screen was replaced");
     eq(af.getAttribute("aria-disabled"), "true",
       "AUTOFOCUS NOW is live for a viewer");
-    eq(af.getAttribute("title"), "Read-only — focusing needs operator access",
+    eq(af.getAttribute("title"), "Read-only - focusing needs operator access",
       "the viewer is not given focusButtonState's own sentence for this button");
     assert(af.hasAttribute("disabled") === false,
       "AUTOFOCUS NOW uses the native disabled attribute, which takes the reason "

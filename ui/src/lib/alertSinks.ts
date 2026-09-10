@@ -1,7 +1,7 @@
-// lib/alertSinks.ts — pure logic behind the Settings → Alerts panel (PRO-9).
+// lib/alertSinks.ts - pure logic behind the Settings → Alerts panel (PRO-9).
 // Load-bearing: per-kind draft defaults, per-kind validation, and the health/
 // deadman verdict derivation. The panel (AlertsPanel.tsx) binds to these
-// helpers directly — no decision logic is duplicated in the component.
+// helpers directly - no decision logic is duplicated in the component.
 import type { AlertSink, AlertSinkInput, AlertHealth } from "../types";
 
 export type AlertKind = AlertSink["kind"];
@@ -71,7 +71,7 @@ export function validateDraft(d: AlertSinkInput, tokenConfigured: boolean): stri
     case "email": {
       if (!(d.smtp_host ?? "").trim()) return "SMTP host is required";
       const port = d.smtp_port ?? 0;
-      if (!(port >= 1 && port <= 65535)) return "SMTP port must be 1–65535";
+      if (!(port >= 1 && port <= 65535)) return "SMTP port must be 1-65535";
       if (!(d.smtp_from ?? "").trim()) return "From address is required";
       if (!(d.smtp_to ?? "").trim()) return "At least one recipient is required";
       return null;   // auth optional (open relays exist)
@@ -84,7 +84,7 @@ export interface HealthVerdict { tone: "good" | "warn" | "bad" | "dim"; label: s
 export function deriveSinkHealth(sink: AlertSink, health: AlertHealth | null): HealthVerdict {
   if (!sink.enabled) return { tone: "dim", label: "Disabled", detail: "Not receiving alerts" };
   const queued = health?.undelivered_by_sink[sink.id] ?? 0;
-  if (queued > 0) return { tone: "bad", label: `${queued} queued`, detail: "Delivery is failing — retrying" };
+  if (queued > 0) return { tone: "bad", label: `${queued} queued`, detail: "Delivery is failing - retrying" };
   if (sink.verified) return { tone: "good", label: "Verified", detail: "Last test delivered" };
   return { tone: "warn", label: "Untested", detail: "Send a test to verify delivery" };
 }
@@ -94,5 +94,5 @@ export function deadmanVerdict(health: AlertHealth | null): HealthVerdict {
   if (!dm?.configured) return { tone: "dim", label: "Not set", detail: "No external monitor configured" };
   return dm.healthy
     ? { tone: "good", label: "Pinging", detail: "External monitor is being pinged" }
-    : { tone: "bad", label: "Unreachable", detail: "Monitor URL is not being reached — check it" };
+    : { tone: "bad", label: "Unreachable", detail: "Monitor URL is not being reached - check it" };
 }

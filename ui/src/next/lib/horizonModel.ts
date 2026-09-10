@@ -1,4 +1,4 @@
-// horizonModel.ts — the per-site horizon polyline: altitude lookup, edit
+// horizonModel.ts - the per-site horizon polyline: altitude lookup, edit
 // helpers (add/move/remove a point) and the photosphere auto-trace (README
 // "12. Sites and Horizon" + "Formulas to lift" -> Horizon: "polyline of (az,
 // alt) points per site, linear between points, wraps at 360; a target is
@@ -8,7 +8,7 @@
 //
 // `ui/src/lib/horizon.ts` (24 lines) already owns the single-altitude verdict
 // (`horizonVerdict`: ok/low/below/unknown for one alt against `horizon_min_deg`)
-// but has no polyline math at all — re-exported below rather than duplicated.
+// but has no polyline math at all - re-exported below rather than duplicated.
 // Everything else here (interpolation, wrap, point editing, auto-trace) is new.
 //
 // `horizonAltAt`/point-editing clamps are lifted verbatim from the prototype's
@@ -17,7 +17,7 @@
 // azimuth clamped strictly between its neighbours (altitude -8..88).
 //
 // ASSUMPTION: `movePoint`/neighbour clamping expects `points` already sorted
-// by `az` (as the prototype's stored horizon arrays are) — callers that add a
+// by `az` (as the prototype's stored horizon arrays are) - callers that add a
 // point out of order should re-sort (see `insertPoint`, which does).
 
 export { horizonVerdict } from "../../lib/horizon";
@@ -61,7 +61,7 @@ export function insertPoint(points: HorizonPoint[], az: number, alt: number): Ho
 }
 
 /** Move point `i`, clamping az strictly between its neighbours (or 0/359 at
- *  the ends) and alt to -8..88 — matches the prototype's drag clamp so a
+ *  the ends) and alt to -8..88 - matches the prototype's drag clamp so a
  *  dragged point can never cross a neighbour or invert the polyline. */
 export function movePoint(points: HorizonPoint[], i: number, az: number, alt: number): HorizonPoint[] {
   if (i < 0 || i >= points.length) return points;
@@ -75,7 +75,7 @@ export function movePoint(points: HorizonPoint[], i: number, az: number, alt: nu
   return next;
 }
 
-/** Remove point `i` (no confirm — README: "tap a point to delete (no confirm)"). */
+/** Remove point `i` (no confirm - README: "tap a point to delete (no confirm)"). */
 export function removePoint(points: HorizonPoint[], i: number): HorizonPoint[] {
   if (i < 0 || i >= points.length) return points;
   return points.filter((_, idx) => idx !== i);
@@ -95,7 +95,7 @@ export function summary(points: HorizonPoint[]): string {
  * the luminance of row `r` (top of frame first) in azimuth column `c`, the
  * columns spanning 0..360 evenly. `altTop`/`altBottom` map row 0 / the last
  * row to an altitude (ASSUMPTION: no source altitude range for the panorama
- * sweep; defaults to a typical handheld sweep, 90 deg down to -10 deg — flag
+ * sweep; defaults to a typical handheld sweep, 90 deg down to -10 deg - flag
  * this in the report). A column with no luminance drop is treated as clear to
  * the bottom of the frame (horizon at `altBottom`).
  */

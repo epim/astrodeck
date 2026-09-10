@@ -1,18 +1,18 @@
-// lib/autofocus.ts — pure helpers for the persisted latest-autofocus-run
+// lib/autofocus.ts - pure helpers for the persisted latest-autofocus-run
 // record (F5: R2-FOC-01/DOC-FOC-01). No React, no DOM: npx-tsx testable
 // (lib/weather.ts precedent).
 //
-// The `focus` WS event (types.ts FocusEvent — state/points/best, untouched)
+// The `focus` WS event (types.ts FocusEvent - state/points/best, untouched)
 // plus the native engine's additive `fit`/`message` fields (server
 // focus/native.py _fit_payload) already flow through the store's `focus`
-// slice on every tick, including the terminal done/failed tick — so the
+// slice on every tick, including the terminal done/failed tick - so the
 // *raw* event data was never local-component-only. What the bus event does
 // NOT carry is which provider ran the sweep or which filter was active (the
 // server publishes neither), and it has no first-class timestamp of its own.
 // normalizeAutofocusResult snapshots those two from the store's own live
 // `status` at the exact moment a run reaches a terminal state, stamps the
 // event's `ts`, and produces the canonical record the Focus view's Result
-// panel renders — separate from the live `focus` slice (which keeps
+// panel renders - separate from the live `focus` slice (which keeps
 // streaming intermediate "running" ticks for the in-progress V-curve chart)
 // so a fresh run's early empty tick can never blank out the last completed
 // run's evidence before its own terminal tick lands.
@@ -49,8 +49,7 @@ export interface AutofocusResult {
   /** The server's OWN guidance for this run, in its own words. Additive and
    *  optional: null means the provider could not say (an older server, or a
    *  backend/NINA result), NOT that everything was fine. The Result panel
-   *  renders this instead of the client's per-enum sentence when present —
-   *  the server knows the exposure, the per-point star counts and the frames
+   *  renders this instead of the client's per-enum sentence when present - *  the server knows the exposure, the per-point star counts and the frames
    *  themselves, and the client knows none of that. */
   advice: string | null;
   provider: AutofocusProvider | null;
@@ -99,13 +98,13 @@ function normalizeFit(raw: unknown): AutofocusFit | null {
 }
 
 /** Build the canonical persisted record from a raw `focus` bus event's
- *  `data` payload — ONLY for a terminal state (done|failed); returns null
+ *  `data` payload - ONLY for a terminal state (done|failed); returns null
  *  for "running" (and any unrecognized state) so the store's case handler
  *  can call this unconditionally on every `focus` tick without an extra
  *  state check of its own. `ctx.provider`/`ctx.filter` are snapshots the
  *  caller reads from its own live `status` slice (the bus event carries
  *  neither); `ctx.tsMs` is the event's own timestamp (ws.ts's `ev.ts`,
- *  seconds, * 1000), not `Date.now()` — so a slow/backpressured bus frame
+ *  seconds, * 1000), not `Date.now()` - so a slow/backpressured bus frame
  *  still stamps the moment the server actually finished, not when the
  *  client happened to receive it. */
 export function normalizeAutofocusResult(
@@ -141,7 +140,7 @@ export function normalizeAutofocusResult(
 }
 
 /** The currently-selected filter name from `status.filterwheel`
- *  ({position, names}) — index-of-names, defensively bounds-checked. */
+ *  ({position, names}) - index-of-names, defensively bounds-checked. */
 export function filterNameFromStatus(
   fw: { position: number; names: string[] } | null | undefined,
 ): string | null {
@@ -151,7 +150,7 @@ export function filterNameFromStatus(
 
 /** Compact "how long ago" label for the Result panel's persisted-run line
  *  (mirrors lib/weather.ts's agoLabel phrasing but without the staleness
- *  framing — a persisted AF result never goes "stale," it's just old). */
+ *  framing - a persisted AF result never goes "stale," it's just old). */
 export function afResultAgeLabel(tsMs: number, nowMs: number): string {
   const ageS = Math.max(0, (nowMs - tsMs) / 1000);
   if (ageS < 60) return "just now";
@@ -164,7 +163,7 @@ export function afResultAgeLabel(tsMs: number, nowMs: number): string {
 
 // ============================================================ AUTOFOCUS VERDICT
 // The autofocus-RESULT verdict (implementation brief §3 / design-reference §02):
-// "Focus — excellent · HFR 1.82 px · 2.4″ · R² 0.997 · hyperbolic" — verdict word
+// "Focus - excellent · HFR 1.82 px · 2.4″ · R² 0.997 · hyperbolic" - verdict word
 // first, raw numbers second (brief §0.1). Distinct from FocusVerdict, which
 // judges the CURRENT live frame; this judges the completed sweep from the engine's
 // best HFR + fit R² + state. Pure mapping is exported for unit testing.
@@ -221,8 +220,8 @@ export const AF_FALLBACK_BIN = 1;
  *
  *  This exists because on 2026-07-31 there was no way to tell. The Focus screen
  *  could not start the camera, so its live preview read "No capture yet" all
- *  night, so every derivation below fell through to the office defaults — 2s,
- *  gain 120, bin 2 — and said nothing about it. At those settings the field
+ *  night, so every derivation below fell through to the office defaults - 2s,
+ *  gain 120, bin 2 - and said nothing about it. At those settings the field
  *  measured 8 stars; at 4s / gain 220 / bin 1 the same field measures 2100.
  *  Two four-minute sweeps died on that and the screen looked identical to a
  *  sweep that had copied a real frame.
@@ -253,10 +252,10 @@ export interface DeriveAfInputs {
   liveHfr: number | null; // shown?.hfr
   /** Whether a live frame exists AT ALL, independent of what it measured.
    *  Optional: PreviewInfo.exposure_s is a required field, so a non-null
-   *  liveExposureS already implies a frame — but a caller holding the preview
+   *  liveExposureS already implies a frame - but a caller holding the preview
    *  object should say so outright rather than have this infer it. */
   hasLiveFrame?: boolean;
-  /** `status.focuser?.sweep` — the geometry the SERVER will use, sized from
+  /** `status.focuser?.sweep` - the geometry the SERVER will use, sized from
    *  this focuser's measured defocus slope, with its own explanation.
    *
    *  It wins over the derivation below, and it has to: the browser cannot
@@ -272,7 +271,7 @@ export interface DerivedAfParams {
   step: number;
   steps_each_side: number;
   binning: number;
-  /** Provenance of exposure/gain/binning — see AfParamSource. Callers must
+  /** Provenance of exposure/gain/binning - see AfParamSource. Callers must
    *  surface this: a guessed sweep that looks exactly like a measured one is
    *  the bug this whole field was added for. */
   source: AfParamSource;
@@ -283,7 +282,7 @@ const clampI = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, 
 const round1 = (v: number) => Math.round(v * 10) / 10;
 
 export function deriveAutofocusParams(inp: DeriveAfInputs): DerivedAfParams {
-  // exposure — reuse the live frame only if it is already showing stars
+  // exposure - reuse the live frame only if it is already showing stars
   const liveUsable =
     inp.liveExposureS != null && Number.isFinite(inp.liveExposureS) &&
     (inp.liveStars ?? 0) >= AF_STAR_FLOOR && inp.liveHfr != null;
@@ -292,18 +291,18 @@ export function deriveAutofocusParams(inp: DeriveAfInputs): DerivedAfParams {
   const rawExp = liveUsable ? (inp.liveExposureS as number) : AF_EXPOSURE_FALLBACK_S;
   const exposure_s = Math.min(AF_EXPOSURE_MAX_S, Math.max(AF_EXPOSURE_MIN_S, round1(rawExp)));
   // Name the SOURCE, not just the value. "default 2s" reads like a decision;
-  // "guessed — nothing has been measured" reads like what it is.
+  // "guessed - nothing has been measured" reads like what it is.
   const exposure = liveUsable
     ? `matched the live frame (${round1(rawExp)}s, ${inp.liveStars} stars)` +
       (exposure_s !== round1(rawExp) ? `, clamped to ${exposure_s}s` : "")
     : hasFrame
-      ? `${AF_EXPOSURE_FALLBACK_S}s default — the live frame measured only ${inp.liveStars ?? 0} stars, too few to copy from`
-      : `${AF_EXPOSURE_FALLBACK_S}s guess — no frame has been taken, so there was nothing to copy`;
+      ? `${AF_EXPOSURE_FALLBACK_S}s default - the live frame measured only ${inp.liveStars ?? 0} stars, too few to copy from`
+      : `${AF_EXPOSURE_FALLBACK_S}s guess - no frame has been taken, so there was nothing to copy`;
 
-  // binning — COPIED from the live frame, clamped to the sensor's ceiling.
+  // binning - COPIED from the live frame, clamped to the sensor's ceiling.
   // Like gain (below) this is a setting the user chose rather than something
   // the frame measured, so it survives a star-poor frame. It was previously
-  // derived from the camera's bin ceiling alone — min(2, cap) — while the
+  // derived from the camera's bin ceiling alone - min(2, cap) - while the
   // Camera panel defaulted to bin 1 and three sentences on this screen claimed
   // the frame's binning had been copied. A user could shoot 4s / gain 220 /
   // bin 1, be told all three were copied, and get a bin-2 sweep: the exact
@@ -315,14 +314,14 @@ export function deriveAutofocusParams(inp: DeriveAfInputs): DerivedAfParams {
   const binning = Math.min(liveBin ?? AF_FALLBACK_BIN, cap);
   // No "camera bins no higher" case to write: the fallback is 1× and every
   // sensor can do 1×, so with no frame the guess is never clamped. It is still
-  // a guess and says so — the whole point of the source/basis split.
+  // a guess and says so - the whole point of the source/basis split.
   const binBasis = liveBin != null
     ? `copied from the live frame (bin ${binning})`
-      + (binning !== liveBin ? ` — clamped to this camera's ${cap}× ceiling` : "")
-    : `bin ${binning} guess — no frame has been taken; bin ${AF_FALLBACK_BIN} is the `
+      + (binning !== liveBin ? ` - clamped to this camera's ${cap}× ceiling` : "")
+    : `bin ${binning} guess - no frame has been taken; bin ${AF_FALLBACK_BIN} is the `
       + "setting that leaves the most stars to measure as the sweep defocuses";
 
-  // gain — reuse live gain else default, clamp to sensor ceiling.
+  // gain - reuse live gain else default, clamp to sensor ceiling.
   // The live frame's gain is copied whenever a frame exists, even a star-poor
   // one: gain is a setting the user chose, not a measurement, so it survives a
   // frame whose star count does not. With NO frame it is pure invention, and
@@ -333,9 +332,9 @@ export function deriveAutofocusParams(inp: DeriveAfInputs): DerivedAfParams {
     ? clampI(rawGain, 0, inp.maxGain) : Math.max(0, Math.round(rawGain));
   const gainBasis = inp.liveGain != null && Number.isFinite(inp.liveGain)
     ? `copied from the live frame (gain ${gain})`
-    : `gain ${gain} guess — no frame has been taken, so nothing has shown this exposes stars`;
+    : `gain ${gain} guess - no frame has been taken, so nothing has shown this exposes stars`;
 
-  // step — the server's measured span when it has one, else the proven default
+  // step - the server's measured span when it has one, else the proven default
   // rescaled only at focuser-range extremes.
   let step = AF_DEFAULT_STEP;
   let stepBasis = `default ${AF_DEFAULT_STEP} steps`;
@@ -343,7 +342,7 @@ export function deriveAutofocusParams(inp: DeriveAfInputs): DerivedAfParams {
   const srv = inp.serverSweep;
   if (srv && Number.isFinite(srv.step) && srv.step > 0) {
     // The server sized this from what a completed sweep MEASURED. Its
-    // explanation comes with it rather than being reconstructed here — the
+    // explanation comes with it rather than being reconstructed here - the
     // slope, the date and the point count are facts only it has.
     return { exposure_s, gain, step: Math.round(srv.step), steps_each_side: AF_STEPS_EACH_SIDE,
              binning, source,
@@ -353,7 +352,7 @@ export function deriveAutofocusParams(inp: DeriveAfInputs): DerivedAfParams {
     const frac = (AF_DEFAULT_STEP * AF_STEPS_EACH_SIDE * 2) / fm;
     if (frac > AF_SPAN_MAX_FRAC || frac < AF_SPAN_MIN_FRAC) {
       step = clampI((fm * AF_SPAN_TARGET_FRAC) / (AF_STEPS_EACH_SIDE * 2), AF_STEP_MIN, AF_STEP_MAX);
-      stepBasis = `${step} steps — sized to sweep ~${Math.round(AF_SPAN_TARGET_FRAC * 100)}% of focuser travel`;
+      stepBasis = `${step} steps - sized to sweep ~${Math.round(AF_SPAN_TARGET_FRAC * 100)}% of focuser travel`;
     } else {
       stepBasis = `default ${AF_DEFAULT_STEP} steps (~${Math.round(frac * 100)}% of travel)`;
     }
@@ -369,13 +368,13 @@ export function deriveAutofocusParams(inp: DeriveAfInputs): DerivedAfParams {
 // The engine reports failures as machine tokens (native/crates/astrodeck-native/
 // src/lib.rs `fail_reason_label`), and the Result panel printed the token
 // VERBATIM directly under a sentence that contradicted it: "Not enough stars to
-// lock onto — check the sky is clear" above "r_squared_below_threshold", which
+// lock onto - check the sky is clear" above "r_squared_below_threshold", which
 // is a fit-quality failure that happens perfectly well with two thousand stars.
 // The user followed the sentence, not the token, and spent the night chasing
 // star count while the actual complaint was the shape of the curve.
 //
 // So: recognise the token, and say the SAME thing the token says. This is the
-// fallback for a provider that sends no `advice` — when the server sends its
+// fallback for a provider that sends no `advice` - when the server sends its
 // own (it knows the exposure, the per-point counts and the frames), that wins.
 const FAIL_REASONS: { code: string; explain: string }[] = [
   {
@@ -387,7 +386,7 @@ const FAIL_REASONS: { code: string; explain: string }[] = [
   {
     code: "r_squared_below_threshold",
     explain: "The measured points did not lie on a focus curve, so the fit was too "
-      + "poor to trust — this is about the SHAPE of the sweep, not the number of "
+      + "poor to trust - this is about the SHAPE of the sweep, not the number of "
       + "stars. Usual causes: focuser backlash, a step size too small to move HFR, "
       + "or cloud/seeing changing between points.",
   },
@@ -405,7 +404,7 @@ const FAIL_REASONS: { code: string; explain: string }[] = [
   },
   {
     code: "fit_unavailable",
-    explain: "Too few measurable points to fit a curve at all — most frames in the "
+    explain: "Too few measurable points to fit a curve at all - most frames in the "
       + "sweep had no stars the detector could use. Longer exposure, bin 1, or a "
       + "richer field.",
   },
@@ -413,7 +412,7 @@ const FAIL_REASONS: { code: string; explain: string }[] = [
 
 export interface FocusFailure {
   /** The engine's own token, when we recognise one. Kept so the technical chip
-   *  can still show it — a breadcrumb for a bug report — now that the sentence
+   *  can still show it - a breadcrumb for a bug report - now that the sentence
    *  above it explains that exact token instead of arguing with it. */
   code: string | null;
   /** The token said in words, or null when the message is not one we know
@@ -458,9 +457,9 @@ export function plainFocusVerdict(args: {
     // A SUCCESS is where the server's advice matters most, and it was being
     // thrown away here. focus/native.py calls _advice(ok=True) precisely to
     // stop "letting a confident R² stand on four five-star samples", and the
-    // sentence it produces — "N of M points came from fewer than X stars and
+    // sentence it produces - "N of M points came from fewer than X stars and
     // carry little weight in the fit, so this is thinner evidence than the R²
-    // suggests" — only ever fires on a run that fitted well enough to reach
+    // suggests" - only ever fires on a run that fitted well enough to reach
     // `excellent` (R² ≥ 0.98). Printing "Stars are tight" over it deleted the
     // one warning the server took the trouble to compute. The headline and
     // tone stay: the HFR and R² beside them are genuinely good and the caveat
@@ -468,29 +467,29 @@ export function plainFocusVerdict(args: {
     case "excellent":
       return {
         level, tone: "good", headline: "Sharp!",
-        detail: args.advice ?? "Stars are tight — you're focused.",
+        detail: args.advice ?? "Stars are tight - you're focused.",
       };
     case "good":
       return {
         level, tone: "good", headline: "Focused.",
-        detail: args.advice ?? "Stars look good — you're ready to shoot.",
+        detail: args.advice ?? "Stars look good - you're ready to shoot.",
       };
     case "soft":
       return {
         level, tone: "warn", headline: "Almost there.",
         // A run can succeed and still be worth explaining ("the minimum sat at
         // the edge of the range swept"), so advice outranks the canned line
-        // here too — a soft SUCCESS is the case where the server's extra
+        // here too - a soft SUCCESS is the case where the server's extra
         // knowledge most often changes what the user should do next.
         detail: args.advice
-          ?? "Stars are still a little soft — tap Focus my scope to try again.",
+          ?? "Stars are still a little soft - tap Focus my scope to try again.",
       };
     case "failed":
       return {
         level, tone: "bad", headline: "Couldn't focus.",
         // Order of authority: the server's advice (it saw the frames), then the
-        // engine token said in words, then — only when nobody could tell us
-        // anything — a sentence that does NOT invent a cause. The generic used
+        // engine token said in words, then - only when nobody could tell us
+        // anything - a sentence that does NOT invent a cause. The generic used
         // to read "Not enough stars to lock onto", which sent the user after a
         // star count on a run that failed on curve shape.
         detail: args.advice
@@ -528,15 +527,14 @@ export function focusButtonState(a: {
   canFocus: boolean;
   hasFocuser: boolean;
   running: boolean;
-  /** Why the SWEEP cannot honestly start even though the focuser is ready —
-   *  today: nothing has been measured for it to copy (see lib/focusCapture.ts
+  /** Why the SWEEP cannot honestly start even though the focuser is ready - *  today: nothing has been measured for it to copy (see lib/focusCapture.ts
    *  sweepReadiness). Optional so the gate's older three-condition callers
    *  compile unchanged. Ranked last: a permission or hardware problem is a
    *  bigger fact about the rig than an unmeasured parameter. */
   sweepBlock?: string | null;
 }): FocusButtonState {
   if (!a.canFocus) {
-    return { disabled: true, label: "Focus my scope", reason: "Read-only — focusing needs operator access", locked: true };
+    return { disabled: true, label: "Focus my scope", reason: "Read-only - focusing needs operator access", locked: true };
   }
   if (!a.hasFocuser) {
     return { disabled: true, label: "Focus my scope", reason: "Connect a focuser to enable one-tap focus", locked: false };
@@ -552,7 +550,7 @@ export function focusButtonState(a: {
 
 // ======================================================= NARROWBAND SWEEPS
 // The mirror of server/astrodeck/focus/filter_offsets.py
-// ``narrowband_sweep_settings`` — deliberately the same arithmetic in both
+// ``narrowband_sweep_settings`` - deliberately the same arithmetic in both
 // places, because the offsets dialog PRINTS these numbers and then sends them,
 // and a dialog whose preview and payload disagree is the "looks applied but
 // ignored" control this codebase has deleted twice.
@@ -561,13 +559,13 @@ export function focusButtonState(a: {
 // comment). A star is a continuum source, so the light a filter passes scales
 // with its passband: 3-7 nm of narrowband against ~300 nm of luminance is the
 // same star 40-100x fainter. Matching that with exposure would be 400-1000 s a
-// point — three to seven hours for three slots, which is the night. Bin is
+// point - three to seven hours for three slots, which is the night. Bin is
 // already spent (the sweep runs binned) and gain is past its knee on the rig
 // that filed this. So exposure carries it, bounded by the run's own clock: the
 // 2026-08-08 run measured four broadband slots at 10 s a point, ~2 minutes a
 // filter; x4 puts three narrowband slots at ~21 minutes, the same order as the
 // broadband half that worked. It buys 1.5 magnitudes on a read-noise-limited
-// frame (SNR grows with t there, not with sqrt(t)), not parity — the operator
+// frame (SNR grows with t there, not with sqrt(t)), not parity - the operator
 // can raise it, which is why the field is editable.
 export const NARROWBAND_EXPOSURE_MULTIPLE = 4;
 
@@ -575,8 +573,8 @@ export const NARROWBAND_EXPOSURE_MULTIPLE = 4;
  *
  *  Gain is only ever raised to the sensor's high-conversion-gain threshold
  *  when the camera reports one (measured 3.96 e- -> 1.36 e- at gain 125 on the
- *  IMX571): on a read-noise-limited frame — which a narrowband focus frame is
- *  — read noise is the whole noise budget. A rig already above it sees no
+ *  IMX571): on a read-noise-limited frame - which a narrowband focus frame is
+ *  - read noise is the whole noise budget. A rig already above it sees no
  *  change. */
 export function narrowbandSweepSettings(
   exposureS: number, gain: number, hcgThresholdGain?: number | null,

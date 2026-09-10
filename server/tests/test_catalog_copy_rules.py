@@ -168,13 +168,21 @@ def test_stale_placeholder_text_returns_a_note_not_a_silent_empty():
 # ----------------------------------------------------------------- the sweep
 
 #: S7a already swept these clean; keeping them here means a NEW offender in
-#: either one fails this suite immediately instead of waiting for a future
+#: any one of them fails this suite immediately instead of waiting for a future
 #: audit to notice.
+#:
+#: `weather.py` joined the list in T-R7-21a (item 22). It was graded by a
+#: separate strict-xfail below, because it built its live "high cloud forecast
+#: tonight" bus.log line with an EN DASH between the two clock times, and the
+#: marker existed to keep that finding visible without failing the suite. The
+#: string is a hyphen now, so the marker is gone and the module is graded like
+#: every other: a regression FAILS here rather than xpassing there.
 _CLEAN_MODULES = [
     "catalog/objects.py",
     "catalog/solar_system.py",
     "catalog/region.py",
     "sequence/policy.py",
+    "weather.py",
 ]
 
 
@@ -187,25 +195,5 @@ def test_no_user_facing_server_string_carries_an_em_dash(relpath):
     # (A `re.compile(...)` pattern argument is excluded too - see
     # `_regex_pattern_constant_ids` - because it matches what a user TYPES, it
     # is never text shown TO one.)
-    offenders = _offenders(relpath)
-    assert not offenders, "\n" + "\n".join(offenders)
-
-
-#: weather.py is NOT in _CLEAN_MODULES: it is currently red (see the offender
-#: below), and this test's job is to catch a REGRESSION in a module already
-#: known clean, not to silently pass over one that is not. Marked xfail so the
-#: finding stays visible in the run without blocking the suite; strict=True so
-#: this flips to a hard failure - not a quiet pass - the day someone fixes the
-#: string and forgets to remove the marker.
-@pytest.mark.xfail(
-    reason=(
-        "weather.py:894 builds a live bus.log forecast message with an "
-        "en dash between start_hhmm and end_hhmm; a real offender, not yet "
-        "fixed - tracked as the S7k copy-rules follow-up."
-    ),
-    strict=True,
-)
-@pytest.mark.parametrize("relpath", ["weather.py"])
-def test_no_user_facing_server_string_carries_an_em_dash_followup(relpath):
     offenders = _offenders(relpath)
     assert not offenders, "\n" + "\n".join(offenders)

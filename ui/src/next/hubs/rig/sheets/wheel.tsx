@@ -104,7 +104,15 @@ export const FLOW_OWNS_WHEEL =
   + "stay locked until the run stops. Stop or pause it on Session - Now; nothing "
   + "here will interrupt it for you.";
 
-const EM_DASH = "—";
+/** The stand-in a cell prints when the setting does not APPLY - a blackout slot
+ *  has no light path, so a default sub or a focus offset through it is not a
+ *  number that is missing, it is a number that does not exist. It was an em
+ *  dash; the house copy rule is hyphens everywhere in the new UI, and the two
+ *  normalisers that already map a lone em dash to "-" (`flows/canvas/
+ *  canvasModel.ts`, `gallery/frames/frameCopy.ts`) are what settle which glyph
+ *  the placeholder is. The `aria-label` beside every one of these carries the
+ *  reason, which a glyph of any width never could. */
+const NOT_APPLICABLE = "-";
 
 /** The arrays `POST /api/filterwheel/names` writes, parallel to `names`. */
 interface WheelArrays {
@@ -265,7 +273,7 @@ export function WheelSheet(_p: SheetProps): JSX.Element {
         .then(() => { setPending((p) => { const q = { ...p }; delete q[key]; return q; }); })
         .catch((e: Error) => {
           setPending((p) => { const q = { ...p }; delete q[key]; return q; });
-          showToast("error", e.message);
+          showToast("error", e.message, { verbatim: true });
         });
     }, WRITE_DEBOUNCE_MS);
   };
@@ -299,7 +307,7 @@ export function WheelSheet(_p: SheetProps): JSX.Element {
         // The command never reached the wheel, so there is no move to narrate -
         // leaving it would pulse "-> L" over a request the server refused.
         setCmd(null);
-        showToast("error", e.message);
+        showToast("error", e.message, { verbatim: true });
       });
   };
 
@@ -357,7 +365,7 @@ export function WheelSheet(_p: SheetProps): JSX.Element {
       nb_exposure_s: nbExposure ?? derivedNbExposure,
       nb_gain: nbGain ?? derivedNbGain,
     }).then(() => showToast("info", "Learning filter offsets…"))
-      .catch((e: Error) => showToast("error", e.message));
+      .catch((e: Error) => showToast("error", e.message, { verbatim: true }));
   };
 
   // ------------------------------------------------------------ the ring
@@ -619,7 +627,7 @@ export function WheelSheet(_p: SheetProps): JSX.Element {
                         style={{ color: "var(--text-faint)", opacity: .6 }}
                         aria-label={`Slot ${i + 1} default sub - not applicable, blackout slot`}
                       >
-                        {EM_DASH}
+                        {NOT_APPLICABLE}
                       </span>
                     ) : (
                       <button
@@ -641,7 +649,7 @@ export function WheelSheet(_p: SheetProps): JSX.Element {
                           textAlign: "right",
                         }}
                       >
-                        {exp != null ? `${exp} s` : EM_DASH}
+                        {exp != null ? `${exp} s` : NOT_APPLICABLE}
                       </button>
                     )}
                   </div>
@@ -653,7 +661,7 @@ export function WheelSheet(_p: SheetProps): JSX.Element {
                         style={{ color: "var(--text-faint)", opacity: .6 }}
                         aria-label={`Slot ${i + 1} focuser offset - not applicable, blackout slot`}
                       >
-                        {EM_DASH}
+                        {NOT_APPLICABLE}
                       </span>
                     ) : (
                       <Stepper2
@@ -805,7 +813,7 @@ export function WheelSheet(_p: SheetProps): JSX.Element {
                   kind="danger"
                   full
                   onPress={() => void api.post("/api/filterwheel/learn-offsets/cancel", {})
-                    .catch((e: Error) => showToast("error", e.message))}
+                    .catch((e: Error) => showToast("error", e.message, { verbatim: true }))}
                   lockedReason={stopLearnReason}
                   onExplain={onExplain}
                 >
@@ -874,7 +882,7 @@ export function WheelSheet(_p: SheetProps): JSX.Element {
                       style={{ color: "var(--text-faint)", opacity: .6 }}
                       aria-label={`Slot ${i + 1} narrowband - not applicable, blackout slot`}
                     >
-                      {EM_DASH}
+                      {NOT_APPLICABLE}
                     </span>
                   ) : (
                     <Checkbox22

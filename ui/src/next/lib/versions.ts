@@ -1,4 +1,4 @@
-// versions.ts — the build-time UI version string (ARCHITECTURE.md #12, S6:
+// versions.ts - the build-time UI version string (ARCHITECTURE.md #12, S6:
 // "the UI version is injected at build time (`define: { __APP_VERSION__ }`
 // from `ui/package.json`)"). Guarded with `typeof` so this module (and any
 // test importing it under plain Node/tsx, with no bundler define pass) never
