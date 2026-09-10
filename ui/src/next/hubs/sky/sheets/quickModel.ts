@@ -166,31 +166,141 @@ export function wheelModel(
 }
 
 /**
+ * WHAT COLOUR THIS RIG IS, resolved to one claim with one confidence
+ * (ruling Q7 / WAVE2-RULINGS line 19).
+ *
+ * THIS USED TO BE ONE STRING. `RigStatus.camera` carried no colour or bayer
+ * field at all, so the only signal the client had was `PreviewInfo.
+ * bayer_pattern` on a captured FRAME - a fact that cannot exist until a sub
+ * has already been shot, so a camera sitting there the whole session before
+ * the first exposure was described as if it had said nothing. S7c put the
+ * camera's own self-report on the status bus (`camera.bayer_pattern`,
+ * `camera.is_color`, `types.ts:206-221`), and that self-report is read FIRST
+ * because it is live from the moment the camera connects, not just after the
+ * first frame comes back.
+ *
+ * The frame is kept as the fallback, not retired: an engine older than S7c
+ * publishes no `bayer_pattern` on `camera` at all (ABSENT, per `types.ts`'s
+ * own comment), and that rig must not go mute the day this ships.
+ *
+ * Four-way precedence, read top to bottom, first answer wins:
+ *
+ *   1. `camera.bayer_pattern` - the sensor's own matrix, server-normalised to
+ *      the full four letters (`imaging/sessionstack.py normalise_bayer`) or
+ *      `null`, never a guess. Non-empty wins outright.
+ *   2. `camera.is_color` - the same self-report with no matrix named. `true`
+ *      is STILL one-shot colour; the label says so without inventing a
+ *      pattern. `false` is MONO, and it is a REAL ANSWER: it must not be
+ *      re-derived one rung down from "no pattern was sent", or a mono camera
+ *      that answered honestly would be overruled by a stale frame that once
+ *      happened to carry a matrix.
+ *   3. `preview.bayer_pattern` - the last captured FRAME said so. Weaker: a
+ *      fact about a sub already banked, not the sensor sitting there now, and
+ *      the only signal an engine older than S7c ever sends.
+ *   4. Neither has spoken - `isColor: null`, not `false`. "Nobody answered"
+ *      and "the rig said mono" are different nights and must not share a
+ *      sentence.
+ *
+ * `source` records which rung answered, so the copy can tell "the camera
+ * reports RGGB" (live, rung 1) from "the last frame carried RGGB" (rung 3, a
+ * fact about a sub already shot) - two different confidences, not the same
+ * sentence with a different noun.
+ */
+export interface ResolvedColour {
+  pattern: string | null;
+  isColor: boolean | null;
+  source: "status" | "frame" | "none";
+}
+
+/** The status bus fields `resolveColour` reads, as a narrow local shape - like
+ *  `WheelStatusLike` above, this module stays pure and untyped against the
+ *  wire rather than importing `CameraStatus`. `is_color` accepts `null` too,
+ *  defensively, though the wire only ever sends `boolean | undefined`. */
+export interface CameraColourLike {
+  bayer_pattern?: string | null;
+  is_color?: boolean | null;
+}
+
+export function resolveColour(
+  camera: CameraColourLike | null | undefined,
+  previewBayer: string | null | undefined,
+): ResolvedColour {
+  const statusPattern = (camera?.bayer_pattern ?? "").trim();
+  if (statusPattern !== "") return { pattern: statusPattern, isColor: true, source: "status" };
+  if (typeof camera?.is_color === "boolean") {
+    return { pattern: null, isColor: camera.is_color, source: "status" };
+  }
+  const framePattern = (previewBayer ?? "").trim();
+  if (framePattern !== "") return { pattern: framePattern, isColor: true, source: "frame" };
+  return { pattern: null, isColor: null, source: "none" };
+}
+
+/**
+ * RUNTIME SAFETY NET for a caller mid-integration.
+ *
+ * `oscLabel`'s TYPE is `ResolvedColour`, full stop - `tsc` must keep refusing
+ * `quick.tsx`'s unmodified `channelLabel(wheel, bayerPattern)` call site until
+ * T-U7b-11 applies the delivered line (see the T-U7b-10 report for the exact
+ * line). But that call site's actual
+ * RUNTIME value is still whatever `preview?.bayer_pattern ?? null` was before
+ * this file existed - a bare string, or `null` - and `null.isColor` would
+ * throw and take the whole sheet's render down with it. A crashed screen is a
+ * strictly worse defect than a stale label, so a non-object argument is
+ * coerced rather than trusted: a non-empty string reads as the FRAME rung of
+ * `resolveColour` (exactly what it always meant before this file existed),
+ * anything else as no signal at all. A genuine `ResolvedColour` - anything
+ * carrying its own `source` - passes through untouched.
+ */
+function coerceColour(colour: ResolvedColour): ResolvedColour {
+  const c: unknown = colour;
+  if (c != null && typeof c === "object" && "source" in c) return colour;
+  if (typeof c === "string") {
+    const pattern = c.trim();
+    if (pattern !== "") return { pattern, isColor: true, source: "frame" };
+  }
+  return { pattern: null, isColor: null, source: "none" };
+}
+
+/**
  * What the one-channel card calls a rig with a camera and no filter wheel.
  *
- * THE ONLY COLOUR SIGNAL THE CLIENT HAS is `PreviewInfo.bayer_pattern`, which
- * reaches it on a captured FRAME and nowhere else: `RigStatus.camera` carries
- * no colour or bayer flag at all. So this says "one-shot colour" only when a
- * frame has said so, and "one channel" otherwise. The card used to read "RGB -
- * no wheel" unconditionally, which is a colour claim about a mono camera that
- * shoots luminance, made by the UI and not by the rig.
- *
- * (When the status bus later carries `camera.is_color`/`camera.bayer_pattern`,
- * that becomes a second caller of this same helper - not a second sentence.)
+ * Reads a `ResolvedColour` (see `resolveColour` above) rather than a bare
+ * string: the same three answers - a named matrix, an unnamed one-shot-colour
+ * claim, and an explicit mono - now reach here from either the status bus or
+ * a captured frame, and the confidence travels with the claim so the sub line
+ * can say which one it is. The card used to read "RGB - no wheel"
+ * unconditionally, which was a colour claim about a mono camera that shoots
+ * luminance, made by the UI and not by the rig; this only ever repeats a
+ * claim the rig itself made, and says so plainly when the rig has made none.
  */
-export function oscLabel(
-  bayerPattern: string | null | undefined,
-): { title: string; sub: string } {
-  const pattern = (bayerPattern ?? "").trim();
-  return pattern !== ""
-    ? {
-      title: "ONE-SHOT COLOUR - NO WHEEL",
-      sub: `the camera's own ${pattern} matrix - one channel, no filter changes`,
-    }
-    : {
-      title: "ONE CHANNEL - NO WHEEL",
-      sub: "no filter wheel is connected, so every sub is the same channel",
+export function oscLabel(resolved: ResolvedColour): { title: string; sub: string } {
+  const colour = coerceColour(resolved);
+  if (colour.isColor === false) {
+    return {
+      title: "MONO - NO WHEEL",
+      sub: "the camera reports a mono sensor, so every sub is the same channel",
     };
+  }
+  const pattern = (colour.pattern ?? "").trim();
+  if (pattern !== "") {
+    const claim = colour.source === "status"
+      ? `the camera reports ${pattern}`
+      : `the last frame carried ${pattern}`;
+    return {
+      title: "ONE-SHOT COLOUR - NO WHEEL",
+      sub: `${claim} - one channel, no filter changes`,
+    };
+  }
+  if (colour.isColor === true) {
+    return {
+      title: "ONE-SHOT COLOUR - NO WHEEL",
+      sub: "the camera reports one-shot colour - one channel, no filter changes",
+    };
+  }
+  return {
+    title: "ONE CHANNEL - NO WHEEL",
+    sub: "no filter wheel is connected, so every sub is the same channel",
+  };
 }
 
 /**
@@ -202,7 +312,7 @@ export function oscLabel(
  */
 export function channelLabel(
   wheel: WheelModel,
-  bayerPattern: string | null | undefined,
+  colour: ResolvedColour,
 ): { title: string; sub: string } {
   if (wheel.source === "one-slot") {
     const name = wheel.slots[0]?.name ?? OSC_LABEL;
@@ -217,7 +327,7 @@ export function channelLabel(
       sub: "the wheel reports no named, clear slot, so every sub is the same channel",
     };
   }
-  return oscLabel(bayerPattern);
+  return oscLabel(colour);
 }
 
 /**
