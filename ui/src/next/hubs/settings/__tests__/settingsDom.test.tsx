@@ -57,20 +57,29 @@
 //     `astrodeck-coach-seen`: inventing a second flag would show the guide
 //     again to someone who finished it in the classic UI, and the localStorage
 //     assertion is what catches that.
-// 12. the quick-defaults sheet. With nothing stored it must SAY so and offer no
-//     reset - seeding itself from the wheel and calling the seed "learned from
-//     your last session" is the defect the empty-state assertion guards. With a
-//     value stored, the filter rows come from the wheel and a BLACKOUT slot is
-//     not among them.
+// 12. the quick-defaults sheet, now over the RIG's planning block (D-FU-1).
+//     With nothing learned it must SAY so and offer no reset - seeding itself
+//     from the wheel and calling the seed "learned from your last session" is
+//     the defect the empty-state assertion guards, and the flag it reads is
+//     `config.planning.quick.learned` rather than "a browser key exists". With
+//     a learned block, the filter rows come from the wheel and a BLACKOUT slot
+//     is not among them.
 //
-//     THE EDIT ASSERTION NAMES THE CONSUMER, NOT THE KEY THIS SHEET OWNS. It
-//     used to assert that the sheet wrote `astrodeck-next-quick`, which was
-//     true and useless: the sheet owned that key, nothing else read it, and the
-//     assertion was green for the entire time Settings and the Sky hub were
-//     two disconnected halves (review #4, #46). What it asserts now is that
-//     `skyPrefs.getQuick()` - the parser the SKY hub's quick sheet reads on
-//     GENERATE FLOW - sees the edit. Point this sheet back at a private key and
-//     it goes red, which is the whole point of it.
+//     THE EDIT ASSERTION NAMES THE CONSUMER, NOT A KEY THIS SHEET OWNS. It once
+//     asserted that the sheet wrote `astrodeck-next-quick`, which was true and
+//     useless: the sheet owned that key, nothing else read it, and the assertion
+//     was green for the entire time Settings and the Sky hub were two
+//     disconnected halves (review #4, #46). What it asserts now is that
+//     `usePlanning().quick` - the same hook, the same module state, that
+//     `sky/sheets/quick.tsx` hands to `wheelModel` - sees the edit. Point this
+//     sheet at a private key again and it goes red.
+//
+//     AND IT ASSERTS THE SHAPE ON THE WIRE. A whole-block quick write looks
+//     identical on screen and erases every per-filter exposure a narrower
+//     client never knew about, so the recorded PUT body must carry exactly the
+//     key that changed (`planning.py:122-153`). The viewer case is here for the
+//     same reason the other read-only cases are: the same screen, the reason in
+//     words, and nothing sent.
 // 13. the composed registry. Every name from all four settings tasks must be
 //     present, and `sites`/`horizon` must be the SKY hub's own component
 //     objects - `hubs/index.ts` throws at load on two DIFFERENT components
@@ -135,9 +144,37 @@ const asked: string[] = [];
 const ok = (data: unknown) => ({
   ok: true, status: 200, statusText: "OK", json: async () => data,
 });
-g.fetch = async (url: string, init?: { method?: string }) => {
+
+// ------------------------------------------------------- the planning block
+// The quick-session defaults are the RIG's now (D-FU-1), so this file stubs
+// `GET/PUT /api/planning` and MERGES the way the server does: `quick` nested
+// partially (`planning.py:122-153`), `pool` replaced whole. A stub that
+// answered with the block it was sent would be green whether the sheet sent one
+// changed key or all seven, which is the one thing block 8 has to grade.
+interface WireQuick {
+  hours: number; dawn: boolean;
+  on: Record<string, boolean>; exp: Record<string, number>;
+  extras: Record<string, boolean>; dither_n: number; learned: boolean;
+}
+const NOTHING_LEARNED: WireQuick = {
+  hours: 2, dawn: false, on: {}, exp: {}, extras: {}, dither_n: 3, learned: false,
+};
+let planningBlock: { quick: WireQuick; pool: string[] } =
+  { quick: { ...NOTHING_LEARNED }, pool: [] };
+const planningPuts: { quick?: Record<string, unknown>; pool?: string[] }[] = [];
+
+g.fetch = async (url: string, init?: { method?: string; body?: string }) => {
   const u = String(url);
   asked.push(`${init?.method ?? "GET"} ${u}`);
+  if (u.includes("/api/planning")) {
+    if ((init?.method ?? "GET") === "PUT") {
+      const body = JSON.parse(init?.body ?? "{}");
+      planningPuts.push(body);
+      if (body.quick) planningBlock.quick = { ...planningBlock.quick, ...body.quick };
+      if (body.pool) planningBlock.pool = body.pool;
+    }
+    return ok({ quick: { ...planningBlock.quick }, pool: [...planningBlock.pool] });
+  }
   if (u.includes("/healthz")) return ok({ ok: true, version: "1.9.2" });
   if (u.includes("/api/remote/status")) {
     return ok({
@@ -468,15 +505,35 @@ act(() => { root2.unmount(); });
 
 // ================================================= 8. the quick-defaults sheet
 {
-  const { QuickDefaultsSheet, QUICK_KEY } = await import("../sheets/QuickDefaultsSheet");
-  // The SKY hub's own reader, imported here on purpose: this block grades the
-  // settings sheet against the module that consumes what it writes.
-  const { skyPrefs } = await import("../../sky/finder");
+  const { QuickDefaultsSheet } = await import("../sheets/QuickDefaultsSheet");
+  // The store BOTH sheets read, imported here on purpose: this block grades the
+  // settings sheet against the module that consumes what it writes, which is
+  // the whole reason it exists (review #4).
+  const { usePlanning, resetPlanningForTests } = await import("../../../lib/planning");
 
-  win.localStorage.removeItem(QUICK_KEY);
+  // A probe rendered beside the sheet, so an assertion can read exactly what
+  // `sky/sheets/quick.tsx` would read on its next open - the same hook, the
+  // same module state, no key in the middle.
+  let seen: ReturnType<typeof usePlanning> | null = null;
+  const Probe = (): null => { seen = usePlanning(); return null; };
+
+  const mountSheet = async (root: ReturnType<typeof createRoot>) => {
+    act(() => {
+      root.render(createElement(
+        "div", null,
+        createElement(QuickDefaultsSheet, { params: {}, depth: 0 }),
+        createElement(Probe),
+      ));
+    });
+    await settle();
+  };
+
+  // ---- nothing learned: the rig says so, and the sheet says so -------------
+  planningBlock = { quick: { ...NOTHING_LEARNED }, pool: [] };
+  resetPlanningForTests();
   const empty = createRoot(host);
   seed(ADMIN);
-  act(() => { empty.render(createElement(QuickDefaultsSheet, { params: {}, depth: 0 })); });
+  await mountSheet(empty);
 
   test("with nothing learned the quick-defaults sheet says so and offers no reset", () => {
     assert(q('[data-testid="quick-empty"]') != null,
@@ -484,24 +541,25 @@ act(() => { root2.unmount(); });
     assert(q('[data-testid="quick-reset"]') == null,
       "a RESET button was offered for defaults that do not exist");
   });
+
+  test("the empty face is the RIG's learned flag, not an absent browser key", () => {
+    assert(asked.includes("GET /api/planning"),
+      "the sheet never asked the rig for the block: " + asked.join(", "));
+    eq(seen?.mode, "rig", "the mode the store settled on after the rig answered:");
+    eq(seen?.learned, false, "config.planning.quick.learned, as the sheet reads it:");
+  });
   act(() => { empty.unmount(); });
 
-  test("the one key is the Sky hub's own, not a second one this sheet invented", () => {
-    eq(QUICK_KEY, "astrodeck-next-sky-quick",
-      "the quick-session defaults key the settings sheet reads and writes:");
-  });
-
-  // Written the way the SKY hub writes it, through the shared parser - so the
-  // fixture cannot quietly be a shape only this sheet understands.
-  skyPrefs.setQuick({
-    ...skyPrefs.getQuick(),
-    hours: 2,
-    dawn: false,
-    on: { L: true, Ha: false },
-    exp: { L: 60, Ha: 180 },
-    ditherN: 3,
-  });
-
+  // ---- a rig that HAS learned ---------------------------------------------
+  planningBlock = {
+    quick: {
+      hours: 2, dawn: false, on: { L: true, Ha: false }, exp: { L: 60, Ha: 180 },
+      extras: {}, dither_n: 3, learned: true,
+    },
+    pool: [],
+  };
+  resetPlanningForTests();
+  planningPuts.length = 0;
   const loaded = createRoot(host);
   seed(ADMIN, {
     status: {
@@ -509,7 +567,7 @@ act(() => { root2.unmount(); });
       filterwheel: { position: 0, names: ["L", "Ha", "DARK"], opaque: [false, false, true] },
     },
   });
-  act(() => { loaded.render(createElement(QuickDefaultsSheet, { params: {}, depth: 0 })); });
+  await mountSheet(loaded);
 
   test("the filter rows come from the WHEEL, and a blackout slot is not one", () => {
     assert(q('[data-testid="quick-filter-L"]') != null, "no row for the wheel's L slot");
@@ -518,47 +576,97 @@ act(() => { root2.unmount(); });
       "a blackout slot was offered as a filter to image with");
   });
 
-  test("the sheet reads what the SKY hub wrote, including a filter left OFF", () => {
+  test("the sheet reads what the RIG holds, including a filter left OFF", () => {
     const ha = q('[data-testid="quick-filter-Ha"]');
     assert(ha != null, "no Ha row to read - the fixture is wrong, not the component");
     eq(ha.getAttribute("aria-checked"), "false",
-      "Ha was stored OFF by the Sky hub and the settings sheet shows:");
+      "Ha is stored OFF on the rig and the settings sheet shows:");
     const l = q('[data-testid="quick-filter-L"]');
-    eq(l?.getAttribute("aria-checked"), "true", "L was stored ON and shows:");
+    eq(l?.getAttribute("aria-checked"), "true", "L is stored ON and shows:");
   });
 
-  test("an edit here is what the SKY hub's own parser reads back", () => {
-    click(q('[data-testid="quick-filter-Ha"]'));
-    // The CONSUMER, not the key: `skyPrefs.getQuick` is what `sheets/quick.tsx`
-    // calls on mount and hands to `wheelModel`. Asserting the raw key would be
-    // green even if nothing else in the app could read the shape written under
-    // it, which is exactly how the split shipped.
-    const seen = skyPrefs.getQuick();
-    eq(seen.on.Ha, true, "Ha after ticking it, as the Sky quick sheet reads it:");
-    eq(seen.on.L, true, "L is untouched by the edit:");
+  click(q('[data-testid="quick-filter-Ha"]'));
+  await settle();
+
+  // The CONSUMER, not the key: `usePlanning().quick` is what `sheets/quick.tsx`
+  // hands to `wheelModel`. Asserting a raw localStorage key would be green even
+  // if nothing else in the app could read the shape written under it, which is
+  // exactly how the split shipped.
+  test("an edit here is what the SKY hub's own store reads back", () => {
+    eq(seen?.quick.on.Ha, true, "Ha after ticking it, as the Sky quick sheet reads it:");
+    eq(seen?.quick.on.L, true, "L is untouched by the edit:");
   });
+
+  test("the edit travels as the CHANGED KEY ONLY, so learned exposures survive", () => {
+    const last = planningPuts[planningPuts.length - 1];
+    assert(last?.quick != null,
+      "no quick write reached the rig: " + JSON.stringify(planningPuts));
+    eq(Object.keys(last.quick ?? {}).join(","), "on",
+      "the keys PUT /api/planning was sent under quick:");
+    // A whole-block send would look identical on screen and erase every
+    // per-filter exposure a client with a narrower type never knew about -
+    // `planning.py:122-153` is written against exactly that.
+    eq(seen?.quick.exp.Ha, 180, "the exposure this sheet never touched:");
+  });
+
+  click(q('[data-testid="quick-hours"] [data-value="dawn"]'));
+  await settle();
+  const dawnPut = planningPuts[planningPuts.length - 1];
+  click(q('[data-testid="quick-hours"] [data-value="3"]'));
+  await settle();
+  const hoursPut = planningPuts[planningPuts.length - 1];
 
   test("TO DAWN survives as a CHOICE, not as tonight's number of hours", () => {
-    click(q('[data-testid="quick-hours"] [data-value="dawn"]'));
-    const seen = skyPrefs.getQuick();
-    eq(seen.dawn, true, "the dawn flag the Sky sheet resolves against tonight:");
-    click(q('[data-testid="quick-hours"] [data-value="3"]'));
-    const back = skyPrefs.getQuick();
-    eq(back.dawn, false, "picking a fixed length clears the dawn choice:");
-    eq(back.hours, 3, "and stores the hours:");
+    eq(JSON.stringify(dawnPut?.quick), JSON.stringify({ dawn: true }),
+      "the dawn choice, as it goes on the wire:");
+    eq(JSON.stringify(hoursPut?.quick), JSON.stringify({ hours: 3, dawn: false }),
+      "picking a fixed length clears the dawn choice:");
+    eq(seen?.quick.dawn, false, "and the store the Sky sheet reads agrees:");
+    eq(seen?.quick.hours, 3, "with the hours:");
   });
 
+  // `liveStack` vs `stack` was one label over two settings: the row here and
+  // the chip on the quick sheet wrote different keys, so turning live stacking
+  // off in Settings left it on in the night that ran.
+  click(q('[data-testid="quick-extra-stack"]'));
+  await settle();
   test("the automation rows key on the names the Sky hub's chips write", () => {
-    // `liveStack` vs `stack` was one label over two settings: the row here and
-    // the chip on the quick sheet wrote different keys, so turning live
-    // stacking off in Settings left it on in the night that ran.
-    click(q('[data-testid="quick-extra-stack"]'));
-    eq(skyPrefs.getQuick().extras.stack, false,
+    eq(seen?.quick.extras.stack, false,
       "live stacking after switching it off here, as the Sky quick sheet reads it:");
   });
 
+  test("nothing about the defaults was written to this phone", () => {
+    eq(win.localStorage.getItem("astrodeck-next-sky-quick"), null,
+      "the settings sheet wrote the browser key the rig now owns:");
+  });
+
   act(() => { loaded.unmount(); });
-  win.localStorage.removeItem(QUICK_KEY);
+
+  // ---- a viewer: the whole screen, read-only, and no write -----------------
+  resetPlanningForTests();
+  planningPuts.length = 0;
+  const ro = createRoot(host);
+  seed(VIEWER, {
+    status: {
+      connected: {}, looping: false, mode: "sim", busy: null, busy_lanes: [],
+      filterwheel: { position: 0, names: ["L", "Ha"], opaque: [false, false] },
+    },
+  });
+  await mountSheet(ro);
+  click(q('[data-testid="quick-filter-L"]'));
+  await settle();
+
+  test("a viewer sees the rig's plan, is told why it is read-only, and writes nothing", () => {
+    assert(q('[data-testid="quick-filter-L"]') != null,
+      "a viewer must see the same rows - this is what the rig shoots tonight");
+    const note = q(".nx-locknote");
+    assert(note != null, "no read-only sentence for a role that cannot write the block");
+    assert(String(note.textContent).includes("needs operator or admin access"),
+      "the reason must name the access level, got: " + String(note?.textContent));
+    eq(planningPuts.length, 0, "a viewer's tap reached the rig; writes sent:");
+  });
+  act(() => { ro.unmount(); });
+  resetPlanningForTests();
 }
 
 // ============================================== 9. the composed sheet registry

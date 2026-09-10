@@ -1,51 +1,53 @@
 // QuickDefaultsSheet.tsx - QUICK SESSION DEFAULTS (plan section C.3).
 //
-// THERE IS NO SERVER STORE FOR THIS. It is this phone's memory of the last quick
-// session it generated, and the Sky hub's quick-session sheet is what writes it
-// on GENERATE FLOW.
+// THE DEFAULTS LIVE ON THE RIG (D-FU-1). They were this phone's memory of the
+// last quick session it generated; they are `config.planning.quick` now, read
+// and written through `next/lib/planning.ts`, so the tablet in the warm room
+// and the phone at the scope are looking at one answer - and the rig itself can
+// finally tell a client what it has learned. On an engine with no
+// `/api/planning` the store falls back to the browser key and this screen
+// behaves exactly as it shipped.
 //
-// THE KEY AND THE PARSER ARE THE SKY HUB'S, NOT THIS FILE'S. They used to be
-// this file's: `astrodeck-next-quick` with its own shape, its own coercions and
-// its own `readQuickDefaults`, while the sheet that actually generates the night
-// read and wrote `astrodeck-next-sky-quick` through `sky/finder/prefs.ts`. The
+// THIS FILE OWNS EXACTLY ONE THING: the screen. It used to own a key as well -
+// `astrodeck-next-quick`, with its own shape and its own coercions - while the
+// sheet that actually generates the night used `astrodeck-next-sky-quick`. The
 // two never met (review #4): this sheet said "nothing learned yet" forever no
 // matter how many sessions had been generated, and every edit made here was
 // ignored by the sheet it claimed to be the defaults for. Both directions were
 // broken, and both were green in their own tests, because each test asserted the
-// sheet against the key the sheet itself owned.
+// sheet against the key the sheet itself owned. There is one store now, and the
+// test grades this screen against what the SKY sheet reads.
 //
-// So the reader, the writer, the shape and the coercions now come from
-// `skyPrefs`, and this file owns exactly one thing: the screen. The surviving
-// key is the SKY one because it is the one holding real data - a phone that has
-// generated quick sessions has learned defaults there, and nothing but this
-// sheet's own edits ever reached the other.
+// NOTHING IS INVENTED. With nothing learned the sheet says so and stops - it
+// does NOT seed itself from the wheel and then present the seed as "learned from
+// your last session", because a default nobody chose, labelled as a choice, is
+// the shape of every "the app changed my settings" bug report. The rig's
+// `quick.learned` flag is what distinguishes that from "the defaults happen to
+// be empty" (`config.py:1124-1128`), and it is set by the sheet that learns -
+// the Sky hub's - never implicitly by the route.
 //
-// NOTHING IS INVENTED. With nothing stored the sheet says so and stops - it does
-// NOT seed itself from the wheel and then present the seed as "learned from your
-// last session", because a default nobody chose, labelled as a choice, is the
-// shape of every "the app changed my settings" bug report. `skyPrefs.hasQuick()`
-// is what distinguishes that from "the defaults happen to be empty".
+// A ROLE THAT CANNOT WRITE STILL SEES ALL OF IT, honest-disabled: the pool and
+// the defaults read at `view.status`, and hiding what a viewer cannot change
+// would hide what the rig is about to do tonight.
 //
 // FILTER NAMES COME FROM THE WHEEL (README "Ground rules": never ask the user to
 // type one). The rows are the union of the wheel's current slot names and
 // whatever the stored value already knows, so a night's defaults do not vanish
 // from the screen because the wheel is unplugged right now.
 
-import { useMemo, useState, type JSX } from "react";
+import { useMemo, type JSX } from "react";
 import {
-  ActionButton, Card, Checkbox22, EmptyCard, Label, Mono, Segmented, Sheet,
+  ActionButton, Card, Checkbox22, EmptyCard, Label, LockNote, Mono, Segmented, Sheet,
   Stepper2, Switch,
 } from "../../../ui";
 import { NxIcon } from "../../../icons";
 import { nav } from "../../../router";
+import { explainLock } from "../../../shell/explain";
 import { useStore } from "../../../../store";
 import { confirmDialog } from "../../../../components/ConfirmDialog";
 import type { SheetProps } from "../../sheets";
-import { skyPrefs, type QuickPrefs } from "../../sky/finder";
-
-/** Re-exported so a caller (and the test) names ONE key. It is
- *  `astrodeck-next-sky-quick`; this file no longer declares one of its own. */
-export const QUICK_KEY = skyPrefs.SKY_PREF_KEYS.quick;
+import { usePlanning } from "../../../lib/planning";
+import { type QuickPrefs } from "../../sky/finder";
 
 export type QuickHours = 1 | 2 | 3 | 4 | "dawn";
 
@@ -68,8 +70,11 @@ export function hoursValue(q: QuickPrefs): QuickHours {
   return n === 1 || n === 3 || n === 4 ? (n as QuickHours) : 2;
 }
 
-export function withHours(q: QuickPrefs, v: QuickHours): QuickPrefs {
-  return v === "dawn" ? { ...q, dawn: true } : { ...q, hours: v, dawn: false };
+/** The CHANGED KEYS for a night-length pick, not a whole block: the rig merges
+ *  the quick block field by field, and sending the rest of it back would
+ *  overwrite whatever another client learned in the meantime. */
+export function withHours(v: QuickHours): Partial<QuickPrefs> {
+  return v === "dawn" ? { dawn: true } : { hours: v, dawn: false };
 }
 
 /** The automation rows, keyed EXACTLY as `QuickPrefs.extras` and the Sky
@@ -95,8 +100,10 @@ const FILTER_ROW = {
 } as const;
 
 export function QuickDefaultsSheet(_p: SheetProps): JSX.Element {
-  const [q, setQ] = useState<QuickPrefs | null>(() =>
-    (skyPrefs.hasQuick() ? skyPrefs.getQuick() : null));
+  const planning = usePlanning();
+  // `learned` is the rig's answer to "has anything ever been learned here", so
+  // `q` is null for exactly the case the empty face is written for.
+  const q: QuickPrefs | null = planning.learned ? planning.quick : null;
   const enqueueToast = useStore((s) => s.enqueueToast);
   const wheelNames = useStore((s) => s.status?.filterwheel?.names ?? null);
   const wheelOpaque = useStore((s) => s.status?.filterwheel?.opaque ?? null);
@@ -116,9 +123,16 @@ export function QuickDefaultsSheet(_p: SheetProps): JSX.Element {
     return out;
   }, [wheelNames, wheelOpaque, q]);
 
-  const save = (next: QuickPrefs) => { setQ(next); skyPrefs.setQuick(next); };
+  // Only the keys that moved. This sheet never sends `learned`: it renders
+  // nothing at all until the rig says something was learned, so it cannot be
+  // the screen that learns it.
+  const save = (patch: Partial<QuickPrefs>) => {
+    if (planning.lockedReason) { explainLock(planning.lockedReason); return; }
+    planning.putQuick(patch);
+  };
 
   const reset = () => {
+    if (planning.lockedReason) { explainLock(planning.lockedReason); return; }
     void confirmDialog({
       title: "Forget these defaults?",
       body:
@@ -129,8 +143,7 @@ export function QuickDefaultsSheet(_p: SheetProps): JSX.Element {
       confirmLabel: "FORGET",
     }).then((ok) => {
       if (!ok) return;
-      skyPrefs.clearQuick();
-      setQ(null);
+      planning.forgetQuick();
       enqueueToast({ level: "info", title: "Quick session defaults forgotten." });
     });
   };
@@ -139,7 +152,9 @@ export function QuickDefaultsSheet(_p: SheetProps): JSX.Element {
     <Sheet
       data-testid="settings-quick-defaults"
       title="QUICK SESSION DEFAULTS"
-      sub="learned from your last session"
+      sub={planning.mode === "rig"
+        ? "learned from your last session, kept on the rig"
+        : "learned from your last session, kept on this phone"}
       icon={<NxIcon name="clock" />}
       onBack={nav.back}
       footer={
@@ -149,12 +164,17 @@ export function QuickDefaultsSheet(_p: SheetProps): JSX.Element {
             full
             onPress={reset}
             data-testid="quick-reset"
+            lockedReason={planning.lockedReason}
+            onExplain={explainLock}
           >
             RESET TO THE WHEEL&rsquo;S DEFAULTS
           </ActionButton>
         ) : undefined
       }
     >
+      {/* One sentence for a role that can read the rig's plan but not change
+          it, in the same words every locked press repeats. */}
+      <LockNote reason={planning.lockedReason} />
       {!q ? (
         <EmptyCard
           title="NOTHING LEARNED YET"
@@ -168,7 +188,7 @@ export function QuickDefaultsSheet(_p: SheetProps): JSX.Element {
             <Segmented<QuickHours>
               options={HOURS}
               value={hoursValue(q)}
-              onChange={(v) => save(withHours(q, v))}
+              onChange={(v) => save(withHours(v))}
               label="How long the quick session runs"
               data-testid="quick-hours"
             />
@@ -198,14 +218,14 @@ export function QuickDefaultsSheet(_p: SheetProps): JSX.Element {
                     <Checkbox22
                       checked={on}
                       onChange={(next) =>
-                        save({ ...q, on: { ...q.on, [f]: next } })}
+                        save({ on: { ...q.on, [f]: next } })}
                       label={f}
                       data-testid={`quick-filter-${f}`}
                     />
                     <span style={{ flex: 1 }} />
                     <Stepper2
                       value={exp}
-                      onChange={(v) => save({ ...q, exp: { ...q.exp, [f]: v } })}
+                      onChange={(v) => save({ exp: { ...q.exp, [f]: v } })}
                       step={30}
                       min={1}
                       max={1800}
@@ -225,7 +245,7 @@ export function QuickDefaultsSheet(_p: SheetProps): JSX.Element {
               <Switch
                 key={r.key}
                 checked={q.extras[r.key] !== false}
-                onChange={(v) => save({ ...q, extras: { ...q.extras, [r.key]: v } })}
+                onChange={(v) => save({ extras: { ...q.extras, [r.key]: v } })}
                 label={r.label}
                 note={r.note}
                 data-testid={`quick-extra-${r.key}`}
@@ -237,7 +257,7 @@ export function QuickDefaultsSheet(_p: SheetProps): JSX.Element {
               </span>
               <Stepper2
                 value={q.ditherN}
-                onChange={(v) => save({ ...q, ditherN: v })}
+                onChange={(v) => save({ ditherN: v })}
                 step={1}
                 min={1}
                 max={10}

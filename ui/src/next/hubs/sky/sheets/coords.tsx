@@ -10,8 +10,9 @@ import { nav } from "../../../router";
 import type { SheetProps } from "../../sheets";
 import { ActionButton, Field, Mono, Sheet, TextInput } from "../../../ui";
 import { useLock } from "../../../lib/gateHook";
+import { explainLock } from "../../../shell/explain";
 import { raDecFromAltAz, raHmsStr, decDmsStr } from "../finder/equatorial";
-import { getPool, setPool } from "../finder/prefs";
+import { usePlanning } from "../../../lib/planning";
 import { useMount, useStore } from "../../../../store";
 import { api } from "../../../../api";
 import type { CatalogEntry } from "../../../../types";
@@ -120,13 +121,19 @@ export function CoordsSheet({ params }: SheetProps): JSX.Element {
   };
 
   // ------------------------------------------------------------------ + PLAN
+  //
+  // The pool is the RIG's shortlist now (D-FU-1), not this phone's, so a typed
+  // position added here is on the list a tablet opens too. Writing it needs
+  // `control.capture`; on an engine with no planning block `lockedReason` is
+  // null and the phone remembers, exactly as it did before.
+  const { pool, putPool, lockedReason: poolLocked } = usePlanning();
   const addToPlan = () => {
+    if (poolLocked) { explainLock(poolLocked); return; }
     if (!resolved) {
       enqueueToast({ level: "warning", title: "Type a position the server recognises first." });
       return;
     }
-    const pool = getPool();
-    if (!pool.includes(resolved.id)) setPool([...pool, resolved.id]);
+    if (!pool.includes(resolved.id)) putPool([...pool, resolved.id]);
     enqueueToast({ level: "success", title: `Added ${resolved.id} to tonight's pool.` });
   };
 
@@ -143,7 +150,8 @@ export function CoordsSheet({ params }: SheetProps): JSX.Element {
             onPress={imageThisPosition} data-testid="image-this-position">
             IMAGE THIS POSITION
           </ActionButton>
-          <ActionButton kind="secondary" size="lg" onPress={addToPlan} data-testid="plus-plan">
+          <ActionButton kind="secondary" size="lg" onPress={addToPlan} data-testid="plus-plan"
+            lockedReason={poolLocked} onExplain={explainLock}>
             + PLAN
           </ActionButton>
         </div>

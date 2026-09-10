@@ -36,6 +36,7 @@ import { Card, IconButton48 } from "../../ui";
 import { buildHash, nav, useRoute } from "../../router";
 import { useBreakpoint } from "../../breakpoint";
 import { useLock } from "../../lib/gateHook";
+import { usePlanning } from "../../lib/planning";
 import { finishesAt } from "../../lib/allocation";
 import { fmtClock } from "../../lib/format";
 import {
@@ -214,7 +215,11 @@ export function SkyHub(): JSX.Element {
   const [surveyOpen, setSurveyOpen] = useState(false);
   const surveyAnchor = useRef<HTMLElement | null>(null);
   const [frame, setFrame] = useState<FrameState>({ on: false, set: false, id: null });
-  const [pool, setPool] = useState<string[]>(() => skyPrefs.getPool());
+  // THE POOL AND THE QUICK DEFAULTS ARE THE RIG'S, not this phone's (D-FU-1).
+  // `usePlanning` holds one `GET /api/planning` for the whole app and falls
+  // back to the browser keys on an engine that does not carry the block, so
+  // this screen reads the same shortlist a tablet would.
+  const { pool, putPool, quick } = usePlanning();
   // Both of these are PERSISTED CHOICES with a control that writes them again
   // (`SurveyPopover`). They were read-only `useState` seeds with no setter, so
   // `prefs.setFrameMode` and `prefs.setSurveyBright` were exported and never
@@ -224,7 +229,6 @@ export function SkyHub(): JSX.Element {
   const [surveyBright, setSurveyBrightState] = useState<number>(() => skyPrefs.getSurveyBright());
   const [surveyDegraded, setSurveyDegraded] = useState(false);
   const [pack, setPack] = useState<PackStatus | null>(null);
-  const quick = useMemo(() => skyPrefs.getQuick(), []);
 
   const setFrameMode = useCallback((m: "survey" | "schematic") => {
     setFrameModeState(m);
@@ -731,8 +735,7 @@ export function SkyHub(): JSX.Element {
       return;
     }
     const next = pool.includes(lock.id) ? pool.filter((id) => id !== lock.id) : [...pool, lock.id];
-    setPool(next);
-    skyPrefs.setPool(next);
+    putPool(next);
   };
 
   const pressPatch = (patch: PatchModel) =>

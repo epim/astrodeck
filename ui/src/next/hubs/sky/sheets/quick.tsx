@@ -26,11 +26,12 @@ import { useEffect, useMemo, useRef, useState, type JSX, type ReactNode } from "
 import { useShallow } from "zustand/react/shallow";
 import type { SheetProps } from "../../sheets";
 import {
-  ActionButton, Card, Checkbox22, Chip, Label, Mono, Sheet,
+  ActionButton, Card, Checkbox22, Chip, Label, LockNote, Mono, Sheet,
 } from "../../../ui";
 import { NxIcon } from "../../../icons";
 import { nav } from "../../../router";
 import { useLock } from "../../../lib/gateHook";
+import { usePlanning } from "../../../lib/planning";
 import { windowLabel } from "../../../lib/reach";
 import { useFrameSettings, useFraming, useSite, useStore, useWeather } from "../../../../store";
 import { apiErrorPayload } from "../../../../lib/apiError";
@@ -52,7 +53,7 @@ import {
   type QuickTarget,
 } from "../../session/flows/create/quickPayload";
 import type { FlowGraphRec, FlowRecordRec } from "../../../../components/flows/flowsTypes";
-import { skyPrefs, type QuickPrefs } from "../finder";
+import type { QuickPrefs } from "../finder";
 import {
   ASSUMED_WHEEL_NOTE, FILTER_FOOTER, INFO, NO_FILTER_REASON,
   floorLegend, mosaicPlanNote, oscFooter,
@@ -224,10 +225,30 @@ export function QuickSessionSheet({ params }: SheetProps): JSX.Element {
     (s) => resolveColour(s.status?.camera, s.preview?.bayer_pattern ?? null),
   ));
 
-  const [prefs, setPrefs] = useState(() => skyPrefs.getQuick());
-  const persist = (next: QuickPrefs): void => {
-    setPrefs(next);
-    skyPrefs.setQuick(next);
+  /**
+   * THE DEFAULTS ARE THE RIG'S, AND THIS SHEET IS THE ONE THAT LEARNS THEM.
+   *
+   * They were per phone (`astrodeck-next-sky-quick`), which meant the same
+   * operator opening the same rig from a tablet got the shipped exposures back
+   * and the rig itself could not tell a second client what it had learned
+   * (D-FU-1). `usePlanning` holds them now, with the browser key as the
+   * fallback for an engine that has no `/api/planning`.
+   *
+   * `persist` takes the CHANGED KEYS ONLY. `PUT /api/planning` merges the quick
+   * block nested-partially (`planning.py:122-153`), so sending the whole thing
+   * would overwrite per-filter exposures a narrower client never knew about -
+   * which is the exact defect that merge rule exists to prevent.
+   *
+   * `learned: true` rides on every write from HERE and from nowhere else. The
+   * route never sets it implicitly (`planning.py:190-198`), and this is the
+   * sheet the flag is about: the settings screen distinguishes "nothing has
+   * ever been learned" from "everything is switched off" by reading it.
+   */
+  const planning = usePlanning();
+  const prefs = planning.quick;
+  const persist = (patch: Partial<QuickPrefs>): void => {
+    if (planning.lockedReason) { capture.onExplain(planning.lockedReason); return; }
+    planning.putQuick({ ...patch, learned: true });
   };
 
   /**
@@ -240,7 +261,7 @@ export function QuickSessionSheet({ params }: SheetProps): JSX.Element {
    * sheet reads and writes the same flag through the same parser.
    */
   const chooseHours = (h: number): void =>
-    persist({ ...prefs, hours: h, dawn: isDawnStop(h, dawnH) });
+    persist({ hours: h, dawn: isDawnStop(h, dawnH) });
 
   const wheel = useMemo(
     () => wheelModel(
@@ -525,6 +546,12 @@ export function QuickSessionSheet({ params }: SheetProps): JSX.Element {
       }
     >
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        {/* The choices below are the RIG's now, so a role that cannot write
+            them sees the whole screen and is told why nothing sticks - once,
+            here, in the same sentence every press repeats. Renders nothing
+            when the write is allowed, and nothing at all on an engine with no
+            planning block, where the phone still remembers. */}
+        <LockNote reason={planning.lockedReason} />
         {/* ------------------------------------------------------ night arc */}
         <section style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <HeaderRow
@@ -600,7 +627,6 @@ export function QuickSessionSheet({ params }: SheetProps): JSX.Element {
                     className="nx-chip"
                     data-testid="quick-osc-exposure"
                     onClick={() => persist({
-                      ...prefs,
                       exp: { ...prefs.exp, [channelName]: nextExposure(oscExposure) },
                     })}
                   >
@@ -651,7 +677,7 @@ export function QuickSessionSheet({ params }: SheetProps): JSX.Element {
                 >
                   <Checkbox22
                     checked={r.checked}
-                    onChange={(next) => persist({ ...prefs, on: { ...prefs.on, [r.name]: next } })}
+                    onChange={(next) => persist({ on: { ...prefs.on, [r.name]: next } })}
                     label={
                       <span style={{ display: "flex", flexDirection: "column", gap: 1, minWidth: 0 }}>
                         <span data-filter-label={r.name} className="nx-display" style={{ fontSize: 12, letterSpacing: ".1em" }}>{r.name}</span>
@@ -664,7 +690,7 @@ export function QuickSessionSheet({ params }: SheetProps): JSX.Element {
                     className="nx-chip"
                     data-testid="quick-exposure"
                     data-filter={r.name}
-                    onClick={() => persist({ ...prefs, exp: { ...prefs.exp, [r.name]: nextExposure(r.exposure) } })}
+                    onClick={() => persist({ exp: { ...prefs.exp, [r.name]: nextExposure(r.exposure) } })}
                   >
                     {`${r.exposure} s`}
                   </button>
@@ -693,12 +719,12 @@ export function QuickSessionSheet({ params }: SheetProps): JSX.Element {
                 testid="quick-auto"
                 label={a.key === "dither" ? `Dither · every ${prefs.ditherN}` : a.label}
                 on={prefs.extras[a.key] !== false}
-                onToggle={() => persist({ ...prefs, extras: { ...prefs.extras, [a.key]: prefs.extras[a.key] === false } })}
+                onToggle={() => persist({ extras: { ...prefs.extras, [a.key]: prefs.extras[a.key] === false } })}
                 onHold={() => {
                   if (a.key !== "dither") { openBrief(a.key); return; }
                   const i = DITHER_STEPS.indexOf(prefs.ditherN);
                   const next = DITHER_STEPS[(i + 1) % DITHER_STEPS.length];
-                  persist({ ...prefs, ditherN: next, extras: { ...prefs.extras, dither: true } });
+                  persist({ ditherN: next, extras: { ...prefs.extras, dither: true } });
                   enqueueToast({ level: "info", title: `Dither every ${next} frames.` });
                 }}
               />
@@ -717,7 +743,7 @@ export function QuickSessionSheet({ params }: SheetProps): JSX.Element {
                 label={c.label}
                 on={prefs.extras[c.key] === true}
                 dashed
-                onToggle={() => persist({ ...prefs, extras: { ...prefs.extras, [c.key]: prefs.extras[c.key] !== true } })}
+                onToggle={() => persist({ extras: { ...prefs.extras, [c.key]: prefs.extras[c.key] !== true } })}
                 onHold={() => openBrief(c.info)}
               />
             ))}

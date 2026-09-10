@@ -3,6 +3,10 @@
 // one file in this directory that imports React and the store, and keeping it
 // out of this barrel means importing `next/lib` never pulls React/zustand into
 // a plain-Node/tsx test. Import it directly: `next/lib/gateHook`.
+//
+// `planning.ts` is out for the same reason and one more: it is a live store
+// with a fetch in it, and a barrel import is not a thing that should start a
+// request. Import it directly: `next/lib/planning`.
 
 export * from "./gate";
 export * from "./incidents";
@@ -18,3 +22,7 @@ export * from "./format";
 // `hubs/settings/sheets/QrCode.tsx`.
 export * from "./qr";
 export * from "./versions";
+// `storageMigration.ts` moves one browser key onto the rig. It is pure - no
+// React, no store, no fetch, everything it needs passed in - so it belongs
+// here; the store that calls it for the planning keys does not.
+export * from "./storageMigration";
