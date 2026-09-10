@@ -19,19 +19,98 @@
    the shared arithmetic.
    ===================================================================== */
 
+/* -------------------------------------------------- host (the canvas column) */
+
+/* WHERE THE CANVAS GETS ITS HEIGHT, AND WHY IT IS NOT `flex: 1` ALONE.
+
+   Every child of the surface is absolutely positioned - the grid, the world
+   layer, the zoom cluster, the add control, the log strip - so the surface's
+   own content height is ZERO. It has a height only if something hands it one,
+   and `flex: 1` hands it one only when every ancestor up to the scrolling hub
+   body is a flex column with a definite height. One of them is not: the hub
+   switch (`SessionHub.tsx`) puts a plain block between `.nx-body` and this
+   host, so the row under the toolbar was content-sized, and content-sized
+   meant two different wrong answers:
+
+     * TABLET (820): the row holds the surface alone, whose content height is
+       zero, so the canvas measured 716 x 0 - all sixteen stage cards present
+       in the DOM inside a zero-height `overflow: hidden` box. A blank pane.
+     * DESKTOP (1440): the row took the PALETTE RAIL's content height instead,
+       592 x 2648 inside a 1016 px hub body, so the graph's own zoom cluster
+       and log strip sat about 1700 px below the fold and the body scrolled.
+
+   Two rules fix it, and neither one reads a sibling:
+
+     1. `.nx-flow-host` restores the flex column the chain is missing, at the
+        one level it is missing from. `:has(> .nx-flow-host)` names WHATEVER
+        contains this host rather than another area's element, so this stays an
+        area-local rule and keeps working if the hub switch is rewritten. The
+        row then fills the hub body exactly, and the rail and the inspector -
+        both already `overflow-y: auto` - scroll INSIDE it instead of setting
+        it.
+     2. `.nx-flow-fill` is the surface's own floor, for the day that chain is
+        broken again from above (or `:has()` is unavailable). It is a viewport
+        fraction that is always smaller than what a hub body can offer, so a
+        broken chain costs a SHORTER canvas, never a blank one. */
+
+div:has(> .nx-flow-host) {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.nx-flow-host {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  gap: 8px;
+}
+
+/* The toolbar's row: rail, surface, inspector. `min-height: 0` is what lets it
+   SHRINK to the space the host gives it rather than growing to the tallest
+   child, which is the rail. */
+.nx-flow-row {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+
+/* The same row with no flow open: one card, and the card wants a margin the
+   graph does not - plus `flex-start`, because a card is a card. The graph fills
+   the row; a two-line "NO FLOW OPEN" stretched to the full height of the hub
+   body would read as a broken panel rather than an explained absence. */
+.nx-flow-row[data-empty="true"] { padding: 14px; align-items: flex-start; }
+
 /* ------------------------------------------------------------- surface */
 
+/* No `min-height: 0` here: the surface's height floor is `.nx-flow-fill`
+   below, and two single-class rules setting the same property on the same
+   element would make the answer depend on the order they appear in this file. */
 .nx-flow-canvas {
   position: relative;
   flex: 1;
   min-width: 0;
-  min-height: 0;
   overflow: hidden;
   background-image:
     linear-gradient(rgba(6, 7, 11, .86), rgba(6, 7, 11, .93)),
     url("/bg_nebula.png");
   background-size: cover;
   background-position: center;
+}
+
+/* THE SURFACE'S OWN FLOOR (see the host section above). Read it as "half the
+   window, and never more than 520 px": a hub body at this breakpoint always has
+   more room than that below the header, banners, sub-nav and toolbar, so this
+   never fights the fill above and never pushes the body into a scroll. It only
+   ever binds when nothing hands the surface a height at all - which is exactly
+   the 716 x 0 pane this class exists to make impossible. It names no sibling,
+   so removing the palette rail cannot change it. */
+.nx-flow-fill {
+  min-height: min(50dvh, 520px);
 }
 
 /* The grid is a SIBLING of the world layer, so it does not pan and does not
