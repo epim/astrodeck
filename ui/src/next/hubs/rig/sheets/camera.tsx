@@ -23,6 +23,16 @@
 //     (`status.camera.egain` / `egain_learned`), read-only, and the home for
 //     the e-/ADU learn loop, which would otherwise have none in the new IA.
 //
+// THE WINDOW HEATER FOLLOWS THE DEW MARGIN (D-RIG-3, T-U7b-6). The engine now
+// carries a loop that drives this heater from air temperature minus dew point,
+// so the sheet stopped saying "set the power by hand" and started saying what
+// the loop is doing - but ONLY where `status.dew` exists. An engine without the
+// loop publishes no node, and this sheet then renders no FOLLOW DEW control at
+// all: a switch bound to a field that is not there is worse than the missing
+// feature. The hand power control stays live even while the loop is following,
+// because a hand write IS a real override on the server (`dew.py:444-502` pauses
+// following for `manual_override_s`), and the note beside it says so.
+//
 // WRITE SEMANTICS (plan 0.4). Gain / offset / binning go through
 // `setFrameSettings`, which is optimistic-then-authoritative and rolls back on
 // a refusal. Everything else here is CONFIRMED-ONLY: the cooler switch and the
@@ -33,8 +43,8 @@
 import { useEffect, useMemo, useRef, useState, type JSX } from "react";
 import type { SheetProps } from "../../sheets";
 import {
-  ActionButton, Card, Dial, EmptyCard, Field, Label, ListRow, Mono,
-  ReadoutGrid, ReadoutTile, Segmented, Sheet, Stepper2, Switch, TextInput,
+  ActionButton, Card, Dial, Disclosure, EmptyCard, Field, Label, ListRow, Mono,
+  NumberField, ReadoutGrid, ReadoutTile, Segmented, Sheet, Stepper2, Switch, TextInput,
 } from "../../../ui";
 import { NxIcon } from "../../../icons";
 import { nav } from "../../../router";
@@ -47,15 +57,19 @@ import {
 // The polar sentence and its two-channel test, shared with Rig - Capture rather
 // than re-spelled here: one alignment, one string (r4 #25).
 import { POLAR_REASON, isPolarBusy } from "../capture/captureGate";
-import { resolveRoleConnected } from "../../../../lib/caps";
+import { resolveRoleConnected, useCanViewWeather } from "../../../../lib/caps";
 import { warmReadout } from "../../../../lib/cooling";
 import { suggestSubLength } from "../../../../lib/photometry";
 import { api } from "../../../../api";
-import { setCoolingConfig } from "../../../../api/backends";
-import type { CoolingConfig, RigStatus } from "../../../../types";
+import { setCoolingConfig, setDewConfig } from "../../../../api/backends";
+import type { CoolingConfig, DewConfig, RigStatus } from "../../../../types";
 import {
   BUILDING_NOTE, CURVE_H, CURVE_W, coolerCurve, pushTemp, ringDash, ringFraction,
 } from "../lib/coolerCurve";
+import {
+  DEW_DEFAULTS, DEW_NOT_TICKED, DEW_RAMP_NOTE, dewCameraNote, dewFollowNote,
+  dewRefusal, dewView,
+} from "../lib/dewModel";
 
 type CameraInfo = NonNullable<RigStatus["camera"]>;
 
@@ -84,9 +98,25 @@ const RAMP_OFF_WARNING =
   'With the ramp off, "Park and warm" cuts the cooler dead. It is still logged '
   + "as a warning every time, but nothing slows it down.";
 
-/** E23: the design says this heater "follows the dew margin from Weather". No
- *  part of the engine drives the camera window heater from the dew margin. */
-const DEW_NOTE = "anti-dew on the sensor window · set the power by hand";
+/** The window heater's note on an engine with NO dew loop (`status.dew` absent).
+ *  Deviation E23 - "follows the dew margin from Weather" - is closed by D-RIG-3
+ *  where the loop exists; where it does not, the hand-set sentence is still the
+ *  true one and stays. */
+const DEW_MANUAL_NOTE = "anti-dew on the sensor window · set the power by hand";
+
+/** The same heater once the loop is in the engine: the switch says what the
+ *  surface is, and the live line under it says what is driving it. */
+const DEW_SURFACE_NOTE = "anti-dew on the sensor window";
+
+/** What FOLLOW DEW does, in the terms `dew.py` decides in - the MARGIN, never
+ *  the humidity. */
+const FOLLOW_DEW_NOTE =
+  "the loop sets this heater from the margin between air temperature and the dew point";
+
+/** Appended to a refused ramp edit. The field keeps the number that was typed
+ *  (it is the user's draft, not the rig's answer), so the line has to say which
+ *  of the two the heaters are actually on. */
+const DEW_REFUSED_TAIL = " - the rig is still following the numbers it had.";
 
 /** The design's closing sentence, verbatim. */
 const DEFAULTS_LINE =
@@ -342,6 +372,50 @@ export function CameraSheet(_p: SheetProps): JSX.Element {
   const [dewSent, setDewSent] = useState<number | null>(null);
   const dewLevel = dewReported ?? dewSent ?? 0;
 
+  // ---- the dew LOOP (D-RIG-3), which is a different thing from the heater
+  // register above: the register is what the window is at, the loop is what is
+  // deciding it. `status.dew` absent = this engine has no loop; null = it has
+  // one that has not ticked. `dewView` keeps those apart - see dewModel.ts.
+  const canViewWeather = useCanViewWeather();
+  const dewLoop = dewView(status?.dew, canViewWeather);
+  const dewCfg = config?.dew;
+  const dewFollowsWindow = dewLoop.kind === "following" && dewCfg?.camera_window !== false;
+  const dewLine = dewCameraNote(dewLoop, dewCfg?.camera_window);
+  const [dewRefused, setDewRefused] = useState<string | null>(null);
+  // The ramp is `config.safety` like the warm ramp; the extra reason is the one
+  // state where the block exists but nothing has decided anything with it yet.
+  const dewCfgLock = useLock({
+    cap: "config.safety",
+    extra: dewLoop.kind === "idle" ? DEW_NOT_TICKED : null,
+  });
+
+  /** WHOLESALE, from a FRESH read of the block. `POST /api/config {dew}` binds
+   *  the whole `DewConfig` model (`config.py:1026-1077`), so a partial body is
+   *  not "the rest unchanged" - every omitted field lands on the server
+   *  default, and a FOLLOW DEW tap would silently reset both margins. The base
+   *  is read out of the store at press time rather than closed over at render,
+   *  so two taps in a row cannot write a stale ramp. */
+  const writeDew = async (patch: Partial<DewConfig>): Promise<void> => {
+    const base = useStore.getState().config?.dew ?? DEW_DEFAULTS;
+    const next: DewConfig = { ...base, ...patch };
+    // Refuse the two orderings the server refuses, in its own words, BEFORE the
+    // press: a 422 after the fact leaves the panel showing numbers the rig
+    // never took, and an inverted ramp runs the heater backwards all night.
+    const refusal = dewRefusal(next);
+    if (refusal) {
+      setDewRefused(refusal);
+      showToast("error", refusal);
+      return;
+    }
+    setDewRefused(null);
+    try {
+      await setDewConfig(next);
+      await useStore.getState().loadConfig();
+    } catch (e) {
+      showToast("error", (e as Error).message);
+    }
+  };
+
   const curve = useMemo(() => coolerCurve(samples, cooler?.on ? deviceTarget : setpoint),
     [samples, cooler?.on, deviceTarget, setpoint]);
 
@@ -590,7 +664,7 @@ export function CameraSheet(_p: SheetProps): JSX.Element {
             <Switch
               checked={dewLevel > 0}
               label="SENSOR WINDOW HEATER"
-              note={DEW_NOTE}
+              note={dewLoop.kind === "absent" ? DEW_MANUAL_NOTE : DEW_SURFACE_NOTE}
               onChange={(on) => {
                 const power = on ? 100 : 0;
                 setDewSent(power);
@@ -621,6 +695,124 @@ export function CameraSheet(_p: SheetProps): JSX.Element {
                     : "this camera reports no level back"}
               </Mono>
             </div>
+
+            {/* The hand control stays LIVE while the loop follows: a hand write
+                is a real override on the rig, not a race with it. The sentence
+                is what the override costs, in the loop's own numbers. */}
+            {dewFollowsWindow && (
+              <div data-testid="dew-manual-note">
+                <Mono size={10} tone="dim">{dewFollowNote(dewCfg?.manual_override_s)}</Mono>
+              </div>
+            )}
+
+            {/* ---- the loop itself. Rendered only where the engine has one. */}
+            {dewLoop.kind !== "absent" && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 4,
+                borderTop: "1px solid var(--line)", paddingTop: 10 }}>
+                <Switch
+                  checked={!!dewCfg?.enabled && dewCfg.camera_window !== false}
+                  label="FOLLOW DEW"
+                  note={FOLLOW_DEW_NOTE}
+                  // ON turns the loop on as well: `camera_window` alone with
+                  // `enabled` false is a switch that promises following and
+                  // starts nothing. OFF leaves `enabled` where it is, because
+                  // switch ports may still be following it.
+                  onChange={(on) => void writeDew(
+                    on ? { enabled: true, camera_window: true } : { camera_window: false })}
+                  lockedReason={dewCfgLock.lockedReason}
+                  onExplain={dewCfgLock.onExplain}
+                  data-testid="camera-follow-dew"
+                />
+                {dewLine != null && (
+                  <div data-testid="dew-loop-line">
+                    <Mono size={10.5} tone={dewLoop.kind === "following" ? "accent" : "dim"}>
+                      {dewLine}
+                    </Mono>
+                  </div>
+                )}
+                <Disclosure
+                  summary="DEW RAMP"
+                  sub={dewCfg
+                    ? `full ${dewCfg.margin_full_c}°C -> off ${dewCfg.margin_off_c}°C · `
+                      + `${dewCfg.min_power}-${dewCfg.max_power}%`
+                    : "not read from the rig yet"}
+                  // The GROUP is never locked, only the fields inside it: a
+                  // locked disclosure hides the ramp from every role that
+                  // cannot edit it, and ARCHITECTURE section 8's rule is that a
+                  // viewer sees the same screen, read-only with the reason.
+                  data-testid="dew-ramp"
+                >
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8, paddingTop: 8 }}>
+                    <Mono size={10.5} tone="dim">{DEW_RAMP_NOTE}</Mono>
+                    <NumberField
+                      label="FULL POWER AT"
+                      value={dewCfg?.margin_full_c ?? DEW_DEFAULTS.margin_full_c}
+                      onCommit={(margin_full_c) => void writeDew({ margin_full_c })}
+                      unit="°C" min={-5} max={20} step={0.5}
+                      hint="margin at or below which the heater runs at MAX"
+                      ariaLabel="Dew margin at full heater power, degrees Celsius"
+                      lockedReason={dewCfgLock.lockedReason}
+                      onExplain={dewCfgLock.onExplain}
+                      data-testid="dew-margin-full"
+                    />
+                    <NumberField
+                      label="BACK TO MIN AT"
+                      value={dewCfg?.margin_off_c ?? DEW_DEFAULTS.margin_off_c}
+                      onCommit={(margin_off_c) => void writeDew({ margin_off_c })}
+                      unit="°C" min={-5} max={30} step={0.5}
+                      hint="margin at or above which the heater falls back to MIN"
+                      ariaLabel="Dew margin at minimum heater power, degrees Celsius"
+                      lockedReason={dewCfgLock.lockedReason}
+                      onExplain={dewCfgLock.onExplain}
+                      data-testid="dew-margin-off"
+                    />
+                    <NumberField
+                      label="MIN POWER"
+                      value={dewCfg?.min_power ?? DEW_DEFAULTS.min_power}
+                      onCommit={(min_power) => void writeDew({ min_power })}
+                      unit="%" min={0} max={100} integer
+                      hint="some strips take ten minutes to come back from cold"
+                      zeroMeans="the heater goes fully off above the margin above"
+                      ariaLabel="Minimum dew heater power, percent"
+                      lockedReason={dewCfgLock.lockedReason}
+                      onExplain={dewCfgLock.onExplain}
+                      data-testid="dew-min-power"
+                    />
+                    <NumberField
+                      label="MAX POWER"
+                      value={dewCfg?.max_power ?? DEW_DEFAULTS.max_power}
+                      onCommit={(max_power) => void writeDew({ max_power })}
+                      unit="%" min={0} max={100} integer
+                      hint="the ceiling the ramp never goes above - some strips are sized for a 5 A fuse"
+                      ariaLabel="Maximum dew heater power, percent"
+                      lockedReason={dewCfgLock.lockedReason}
+                      onExplain={dewCfgLock.onExplain}
+                      data-testid="dew-max-power"
+                    />
+                    <NumberField
+                      label="HAND-SET OVERRIDE"
+                      // Minutes on screen, seconds on the wire: the server field
+                      // is `manual_override_s` and 7200 is not a number anyone
+                      // reads as two hours.
+                      value={Math.round((dewCfg?.manual_override_s ?? DEW_DEFAULTS.manual_override_s) / 60)}
+                      onCommit={(min) => void writeDew({ manual_override_s: Math.round(min * 60) })}
+                      unit="min" min={0} max={1440} integer
+                      hint="how long a level set by hand suppresses the loop before it takes the heaters back"
+                      zeroMeans="the override never expires on its own"
+                      ariaLabel="Hand-set override, minutes"
+                      lockedReason={dewCfgLock.lockedReason}
+                      onExplain={dewCfgLock.onExplain}
+                      data-testid="dew-override"
+                    />
+                    {dewRefused != null && (
+                      <div data-testid="dew-refusal">
+                        <Mono size={10.5} tone="warn">{dewRefused + DEW_REFUSED_TAIL}</Mono>
+                      </div>
+                    )}
+                  </div>
+                </Disclosure>
+              </div>
+            )}
           </div>
         )}
       </Card>
