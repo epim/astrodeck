@@ -26,10 +26,16 @@ const toNum = (raw: string): number => (raw.trim() === "" ? NaN : Number(raw));
  *
  *  `onCommit` fires only when the committed number DIFFERS from `value`. Twenty
  *  call sites hang a config PATCH off it, and tabbing through a form would
- *  otherwise re-write every field it passed through. */
+ *  otherwise re-write every field it passed through.
+ *
+ *  `resetKey` IS FOR THE WRITE THAT WAS REFUSED. The draft re-syncs when
+ *  `value` changes, and a refused write is exactly the case where it does not:
+ *  the user types 45, the server says no, `value` is still 30, and 45 sits in
+ *  the box looking saved. Bumping `resetKey` in the catch puts the rig's own
+ *  number back, so the box and the rig never disagree without saying so. */
 export function NumberField({
   label, value, onCommit, unit, min, max, step, integer = false, hint, zeroMeans,
-  lockedReason = null, onExplain, ariaLabel, className = "", ...rest
+  lockedReason = null, onExplain, ariaLabel, className = "", resetKey, ...rest
 }: {
   /** The visible eyebrow on the row. */
   label: string;
@@ -55,6 +61,9 @@ export function NumberField({
   zeroMeans?: string;
   lockedReason?: string | null;
   onExplain?: (reason: string) => void;
+  /** Bump this to throw the typed draft away and show `value` again, even when
+   *  `value` itself did not change. The refused-write case; see the note above. */
+  resetKey?: number | string;
   /** Required: the visible label is an eyebrow word and the unit is decorative,
    *  so the full sentence a reader hears lives here ("Dither size, pixels"). */
   ariaLabel: string;
@@ -68,8 +77,10 @@ export function NumberField({
   // when a prop changes" idiom) rather than in an effect: an effect would
   // paint one frame of the stale number after a save lands.
   const seen = useRef<number>(value);
-  if (seen.current !== value) {
+  const seenReset = useRef<number | string | undefined>(resetKey);
+  if (seen.current !== value || seenReset.current !== resetKey) {
     seen.current = value;
+    seenReset.current = resetKey;
     setText(String(value));
   }
 

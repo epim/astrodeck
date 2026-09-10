@@ -87,8 +87,8 @@ export function QuickActions(): JSX.Element {
       : flowOwns ? FLOW_OWNS_MOUNT : null,
   });
 
-  const toast = (level: string, message: string) =>
-    useStore.getState().showToast(level, message);
+  const toast = (level: string, message: string, opts?: { verbatim?: boolean }) =>
+    useStore.getState().showToast(level, message, opts);
   const explain = (reason: string) => toast("warning", reason);
 
   const coolLabel = warming
@@ -111,7 +111,7 @@ export function QuickActions(): JSX.Element {
           `Cooling to ${setpoint}°C - ramp limited, capture unlocks when stable.`);
       }
     } catch (e) {
-      toast("error", e instanceof Error ? e.message : "the cooler refused");
+      toast("error", e instanceof Error ? e.message : "the cooler refused", { verbatim: true });
     }
   })();
 
@@ -121,7 +121,7 @@ export function QuickActions(): JSX.Element {
     try {
       await api.post(parked ? "/api/mount/unpark" : "/api/mount/park");
     } catch (e) {
-      toast("error", e instanceof Error ? e.message : "the mount refused");
+      toast("error", e instanceof Error ? e.message : "the mount refused", { verbatim: true });
     }
   })();
 

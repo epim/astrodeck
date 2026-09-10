@@ -236,7 +236,7 @@ export function MountSheet(_props: SheetProps): JSX.Element {
     if (sending) return false;
     setSending(what);
     try { await fn(); return true; }
-    catch (e) { showToast("error", (e as Error).message); return false; }
+    catch (e) { showToast("error", (e as Error).message, { verbatim: true }); return false; }
     finally { setSending(null); }
   };
 
@@ -281,7 +281,7 @@ export function MountSheet(_props: SheetProps): JSX.Element {
     } catch (e) {
       setMotion(null);
       const msg = (e as Error).message;
-      showToast("error", msg);
+      showToast("error", msg, { verbatim: true });
       // The sun cone is the SERVER's refusal (`solar_avoidance` /
       // `solar_exclusion_deg`). Its message is shown verbatim above; this adds
       // the one thing the server cannot say - where the cone is set.
@@ -465,7 +465,7 @@ export function MountSheet(_props: SheetProps): JSX.Element {
       }
       // 409: the horizon guard, the sun cone, or the goto lane. The server's
       // sentence is the only one that knows which, so it is shown verbatim.
-      showToast("error", (e as Error).message);
+      showToast("error", (e as Error).message, { verbatim: true });
     }
   };
 
@@ -511,7 +511,7 @@ export function MountSheet(_props: SheetProps): JSX.Element {
       .then(() => solve.arm())
       .catch((e) => {
         solveAskedFrom.current = undefined;
-        showToast("error", (e as Error).message);
+        showToast("error", (e as Error).message, { verbatim: true });
       })
       .finally(() => setSending(null));
   };

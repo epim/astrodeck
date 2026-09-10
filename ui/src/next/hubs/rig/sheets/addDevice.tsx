@@ -250,8 +250,8 @@ export function AddDeviceSheet({ params }: SheetProps): JSX.Element {
   // other, and the loser must not clear the busy flag the winner owns.
   const gen = useRef(0);
 
-  const toast = (level: string, message: string) =>
-    useStore.getState().showToast(level, message);
+  const toast = (level: string, message: string, opts?: { verbatim?: boolean }) =>
+    useStore.getState().showToast(level, message, opts);
   const explain = (reason: string) => toast("warning", reason);
 
   // Returns the fresh list, or null when this load was superseded or failed.
@@ -341,7 +341,7 @@ export function AddDeviceSheet({ params }: SheetProps): JSX.Element {
       const found = await discoverHardware();
       setHw({ found, scanned });
     } catch (e) {
-      toast("error", e instanceof Error ? e.message : "hardware detection failed");
+      toast("error", e instanceof Error ? e.message : "hardware detection failed", { verbatim: true });
     } finally {
       setBusyWhat(null);
     }
@@ -414,7 +414,7 @@ export function AddDeviceSheet({ params }: SheetProps): JSX.Element {
       else toast("success", `${f.name} added - assign it to a role below.`);
     } catch (e) {
       await reload();
-      toast("error", e instanceof Error ? e.message : "could not add that driver");
+      toast("error", e instanceof Error ? e.message : "could not add that driver", { verbatim: true });
     } finally {
       setBusyWhat(null);
     }
@@ -440,7 +440,7 @@ export function AddDeviceSheet({ params }: SheetProps): JSX.Element {
       toast("error",
         `Added ${added} of ${list.length} driver${list.length === 1 ? "" : "s"}, then `
         + `${e instanceof Error ? e.message : "the next one failed"} - the ones that landed `
-        + "are listed below; re-run the scan to add the rest.");
+        + "are listed below; re-run the scan to add the rest.", { verbatim: true });
     } finally {
       setBusyWhat(null);
     }
@@ -451,14 +451,14 @@ export function AddDeviceSheet({ params }: SheetProps): JSX.Element {
   const toggleDriver = (d: DriverInfo) => void (async () => {
     setBusyWhat("save");
     try { await updateDriver(d.id, { enabled: !d.enabled }); await reload(); }
-    catch (e) { toast("error", e instanceof Error ? e.message : "could not change that driver"); }
+    catch (e) { toast("error", e instanceof Error ? e.message : "could not change that driver", { verbatim: true }); }
     finally { setBusyWhat(null); }
   })();
 
   const probeOne = (d: DriverInfo) => void (async () => {
     setBusyWhat("scan");
     try { setData(await probeDriver(d.id)); }
-    catch (e) { toast("error", e instanceof Error ? e.message : "probe failed"); }
+    catch (e) { toast("error", e instanceof Error ? e.message : "probe failed", { verbatim: true }); }
     finally { setBusyWhat(null); }
   })();
 
@@ -473,7 +473,7 @@ export function AddDeviceSheet({ params }: SheetProps): JSX.Element {
     if (!ok) return;
     setBusyWhat("save");
     try { await deleteDriver(d.id); await reload(); }
-    catch (e) { toast("error", e instanceof Error ? e.message : "delete failed"); }
+    catch (e) { toast("error", e instanceof Error ? e.message : "delete failed", { verbatim: true }); }
     finally { setBusyWhat(null); }
   })();
 
@@ -585,7 +585,7 @@ export function AddDeviceSheet({ params }: SheetProps): JSX.Element {
         + `${devices.length === 1 ? "" : "s"}, not yet proven. Connect the rig, then save `
         + "again from PROFILES to store what actually came up.");
     } catch (e) {
-      toast("error", e instanceof Error ? e.message : "profile save failed");
+      toast("error", e instanceof Error ? e.message : "profile save failed", { verbatim: true });
     } finally {
       setBusyWhat(null);
     }

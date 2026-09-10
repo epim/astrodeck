@@ -76,17 +76,20 @@ export function slewStops(maxRateDegS: number | null | undefined): SlewRateOptio
   const out = SLEW_RATES.filter((r) => r.rateDegS <= ceiling);
   const top = () => out[out.length - 1].rateDegS;
 
-  // `id` stays `"set"` for both: `SlewRateId` in `types.ts` is a closed union of
-  // three and this task does not own that file. Nothing here looks a stop up by
-  // id (the tile and the pad address stops by INDEX), and `rateGlyph` reads the
-  // id only to size its shape glyph, where "one of the fast ones" is what it
-  // means anyway - the label carries the number.
+  // BOTH COMPUTED STOPS ARE `"ceiling"`, not `"set"`. They exist only because
+  // this mount reported a ceiling the shipped ladder never assumed, and the
+  // pad's glyph encodes the speed CLASS by shape - the one channel a red-adapted
+  // eye still reads. Under `"set"` a 1.44 deg/s mount drew ▰▰▰ on 0.5 and ▰▰▰ on
+  // 1.44, telling the thumb the two were the same class when one is nearly
+  // three times the other. Nothing looks a stop up by id (the tile and the pad
+  // address stops by INDEX), so the id is free to say what the stop IS; within
+  // the pair the label carries the number.
   const half = ceiling / 2;
   if (half >= top() * DISTINCT_RATIO && ceiling >= half * DISTINCT_RATIO) {
-    out.push({ id: "set", label: rateStopLabel(half), rateDegS: half });
+    out.push({ id: "ceiling", label: rateStopLabel(half), rateDegS: half });
   }
   if (ceiling >= top() * DISTINCT_RATIO) {
-    out.push({ id: "set", label: rateStopLabel(ceiling), rateDegS: ceiling });
+    out.push({ id: "ceiling", label: rateStopLabel(ceiling), rateDegS: ceiling });
   }
   return out;
 }

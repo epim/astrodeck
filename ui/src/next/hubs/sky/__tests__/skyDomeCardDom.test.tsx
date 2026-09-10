@@ -159,7 +159,11 @@ for (const k of [
 g.IS_REACT_ACT_ENVIRONMENT = true;
 
 const realNow = Date.now;
-Date.now = () => NOW;
+/** The frozen clock, in milliseconds. Movable, because `api/cloudmap.ts`'s dome
+ *  cache is keyed on `Date.now()` and one of the tests below has to stand on
+ *  the far side of its TTL. Everything else reads it as the constant it was. */
+let clockMs = NOW;
+Date.now = () => clockMs;
 
 const { createElement, act } = await import("react");
 const { createRoot } = await import("react-dom/client");
@@ -167,6 +171,8 @@ const { useStore } = await import("../../../../store");
 const { SkyHub } = await import("../SkyHub");
 const { SkyDomePanel } = await import("../../../../components/cloudmap/SkyDomePanel");
 const { DOME_CARD_ID, DOME_NEEDS_WEATHER } = await import("../cards/DomeCard");
+const { DOME_TTL_MS, getCloudmapDome, resetCloudmapDomeCache } =
+  await import("../../../../api/cloudmap");
 
 // ------------------------------------------------------------------ harness
 let passed = 0;
@@ -273,6 +279,10 @@ function seed(caps: string[]): void {
 // ===================================================== the operator's screen
 seed(CAPS_OPERATOR);
 win.location.hash = "#/sky";
+// The dome cache is module state that outlives a mount. Cleared here so the
+// request count below is this mount's own, whatever else in the process has
+// asked for a grid.
+resetCloudmapDomeCache();
 const root = createRoot(container);
 await act(async () => { root.render(createElement(SkyHub)); });
 await settle();
@@ -308,20 +318,43 @@ test("it is the LAST card, and the lock card is above it", () => {
   );
 });
 
-test("the card adds ONE dome request to the mount, not one per render", () => {
-  const domes = asked.filter((a) => a.includes("/api/cloudmap/dome"));
-  // TWO, and the count is exact on purpose. One is the card's
-  // (`SkyDomePanel.tsx`, every 60 s); the other is the finder's own cloud
-  // layer, which has asked for the identical 6 x 10 grid since long before
-  // this card existed (`finder/model.ts:350`). That duplication is a real
-  // finding and it is reported as one - it is NOT this test's business to
-  // hide it behind a `>= 1`. What this pins is that the card contributes
-  // exactly one: a panel mounted per render, or mounted twice, reads 3+ here.
-  eq(domes.length, 2, `dome grid requests on one mount (finder + card = 2):`);
+const domeAsks = (): string[] => asked.filter((a) => a.includes("/api/cloudmap/dome"));
+
+test("the two consumers of the dome grid make ONE request between them", () => {
+  const domes = domeAsks();
+  // ONE, and the count is exact on purpose.
+  //
+  // TWO widgets want this grid on `#/sky`: the card's own panel
+  // (`SkyDomePanel.tsx`, every 60 s) and the finder's cloud layer, which has
+  // asked for the identical 6 x 10 grid since long before this card existed
+  // (`finder/model.ts`). It used to be TWO REQUESTS, and this test pinned that
+  // number rather than hiding it behind a `>= 1`, because the server WALKS 540
+  // rays through the cloud volume for each one. T-R7-21a item 21 put a TTL
+  // cache with a shared in-flight promise behind `getCloudmapDome`, so the
+  // second consumer is answered from the first one's grid.
+  //
+  // The count still has to be exact: a panel mounted per render, or mounted
+  // twice with the cache reset between, reads 2+ here.
+  eq(domes.length, 1, `dome grid requests on one mount (finder + card, coalesced = 1):`);
   assert(
     domes.every((d) => d.startsWith("GET ") && d.includes("/api/cloudmap/dome?alt_step=")),
     `a dome request is not the one the panel documents: "${domes.join(" | ")}"`,
   );
+});
+
+await testAsync("and a fresh grid is fetched once the TTL is behind us", async () => {
+  // The saving must not become a freeze. Both consumers poll every 60 s, the
+  // cache holds for `DOME_TTL_MS` (55 s), and past that the next poll is a real
+  // request again - otherwise the card would draw one granule all night.
+  const before = domeAsks().length;
+  clockMs += DOME_TTL_MS + 1;
+  const grid = await getCloudmapDome(6, 10);
+  eq(domeAsks().length, before + 1,
+    "the cache outlived its TTL - the dome would stop updating:");
+  assert(grid != null, "the refetch returned nothing");
+  assert(DOME_TTL_MS < 60_000,
+    `DOME_TTL_MS is ${DOME_TTL_MS} ms, at or above the consumers' own 60 s poll`);
+  clockMs = NOW;
 });
 
 test("the new Card is the only frame: no legacy Panel chrome inside it", () => {

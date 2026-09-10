@@ -378,7 +378,7 @@ export function FocuserSheet(_p: SheetProps): JSX.Element {
   }, [cmd, retire]);
 
   const act = async (fn: () => Promise<unknown>) => {
-    try { await fn(); } catch (e) { showToast("error", (e as Error).message); }
+    try { await fn(); } catch (e) { showToast("error", (e as Error).message, { verbatim: true }); }
   };
 
   const moveTo = async (p: number) => {
@@ -394,7 +394,7 @@ export function FocuserSheet(_p: SheetProps): JSX.Element {
       // Nothing is claimed: the command never landed, so there is no move to
       // narrate - drawing "-> 22000" for it would be the failure this narrator
       // exists to remove, pointing the other way.
-      showToast("error", (e as Error).message);
+      showToast("error", (e as Error).message, { verbatim: true });
       return;
     } finally {
       sendingRef.current = false;
@@ -519,7 +519,7 @@ export function FocuserSheet(_p: SheetProps): JSX.Element {
         // answer is a claim about a frame that may never have started.
         if (kind === "single") { setShotAt(Date.now()); setNow(Date.now()); }
       } catch (e) {
-        showToast("error", (e as Error).message);
+        showToast("error", (e as Error).message, { verbatim: true });
       } finally {
         setShutterPending(null);
       }
@@ -589,7 +589,7 @@ export function FocuserSheet(_p: SheetProps): JSX.Element {
       exposureS: s, gain: focusFrame.gain, binning: focusFrame.binning,
     })).catch((e: Error) => {
       setFrameSettings("focus", { exposure_s: was });
-      showToast("error", e.message);
+      showToast("error", e.message, { verbatim: true });
     });
   };
 
@@ -743,6 +743,13 @@ export function FocuserSheet(_p: SheetProps): JSX.Element {
   const [tcDraft, setTcDraft] = useState<Partial<TempCompConfig>>({});
   const tcPending = useRef<Partial<TempCompConfig>>({});
   const tcTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Bumped on every REFUSED temp-comp write, so the boxes below throw away the
+   *  typed draft and show the rig's own number again. Clearing `tcDraft` gets
+   *  there only while the optimistic patch is what moved `value`; a refusal
+   *  that never moved it at all (no `focus` block to merge into, a 4xx on a
+   *  field whose committed number matched the config) would otherwise leave the
+   *  typed number sitting in the box looking saved. `NumberField.resetKey`. */
+  const [tcResetKey, setTcResetKey] = useState(0);
   const writeTempComp = (patch: Partial<TempCompConfig>) => {
     tcPending.current = { ...tcPending.current, ...patch };
     setTcDraft(tcPending.current);
@@ -751,7 +758,7 @@ export function FocuserSheet(_p: SheetProps): JSX.Element {
       tcTimer.current = null;
       const sending = tcPending.current;
       tcPending.current = {};
-      void act(async () => {
+      void (async () => {
         try {
           // A FRESH READ FIRST, then the whole block. `POST /api/config {focus}`
           // REPLACES `focus` (`config_store.set_focus`), so a body built from a
@@ -760,16 +767,23 @@ export function FocuserSheet(_p: SheetProps): JSX.Element {
           // would push back a reference the engine had re-anchored since.
           await loadConfig();
           const block = useStore.getState().config?.focus ?? null;
-          if (!block) { showToast("error", NO_FOCUS_BLOCK_REASON); return; }
+          if (!block) {
+            showToast("error", NO_FOCUS_BLOCK_REASON);
+            setTcResetKey((n) => n + 1);
+            return;
+          }
           await setFocusConfig({
             ...block,
             temp_comp: { ...block.temp_comp, ...sending },
           });
           await loadConfig();
+        } catch (e) {
+          showToast("error", (e as Error).message, { verbatim: true });
+          setTcResetKey((n) => n + 1);
         } finally {
           setTcDraft({});
         }
-      });
+      })();
     }, 400);
   };
 
@@ -1370,6 +1384,7 @@ export function FocuserSheet(_p: SheetProps): JSX.Element {
             ariaLabel="Temperature compensation coefficient, focuser steps per degree Celsius"
             lockedReason={tcWriteReason}
             onExplain={onExplain}
+            resetKey={tcResetKey}
             data-testid="tempcomp-coefficient"
           />
           {/* The sign, in words, twice over: the rule that never changes, then
@@ -1462,6 +1477,7 @@ export function FocuserSheet(_p: SheetProps): JSX.Element {
               ariaLabel="Largest compensation move, focuser steps"
               lockedReason={tcWriteReason}
               onExplain={onExplain}
+              resetKey={tcResetKey}
               data-testid="tempcomp-maxstep"
             />
             )}
@@ -1480,6 +1496,7 @@ export function FocuserSheet(_p: SheetProps): JSX.Element {
               ariaLabel="Compensation deadband, focuser steps"
               lockedReason={tcWriteReason}
               onExplain={onExplain}
+              resetKey={tcResetKey}
               data-testid="tempcomp-deadband"
             />
             )}

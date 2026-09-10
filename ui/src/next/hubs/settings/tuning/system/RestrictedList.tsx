@@ -68,7 +68,7 @@ export function RestrictedList(): JSX.Element {
         ? `${a.title} is off again - ${a.without}.`
         : `${a.title} is on for everyone using this AstroDeck.`);
     } catch (e) {
-      showToast("error", (e as Error).message);
+      showToast("error", (e as Error).message, { verbatim: true });
     } finally {
       setBusy(null);
     }

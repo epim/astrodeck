@@ -287,7 +287,7 @@ export function GuiderSheet(): JSX.Element {
   const act = async (fn: () => Promise<unknown>) => {
     if (acting) return;
     setActing(true);
-    try { await fn(); } catch (e) { showToast("error", (e as Error).message); }
+    try { await fn(); } catch (e) { showToast("error", (e as Error).message, { verbatim: true }); }
     finally { setActing(false); }
   };
 
@@ -347,7 +347,7 @@ export function GuiderSheet(): JSX.Element {
         blc_pulse_ms: v.blcPulseMs,
       });
     } catch (e) {
-      showToast("error", (e as Error).message);
+      showToast("error", (e as Error).message, { verbatim: true });
       if (cfg.raw) setDraft(draftFromRaw(cfg.raw));
     }
   };
@@ -1074,7 +1074,7 @@ function GuidingAssistant({ connected, onOpenInTuning, onCalibrationChanged }: {
           setSelected(new Set(r.report.recommendations.filter((x) => !x.advanced).map((x) => x.key)));
         }
       })
-      .catch((e) => showToast("error", (e as Error).message));
+      .catch((e) => showToast("error", (e as Error).message, { verbatim: true }));
   }, [progress, showToast]);
 
   useEffect(() => { if (!running) setStopping(false); }, [running]);
@@ -1087,14 +1087,14 @@ function GuidingAssistant({ connected, onOpenInTuning, onCalibrationChanged }: {
       // Only after the POST is accepted: arming on a 409/403 would show a
       // progress bar for a run that never started.
       armRun();
-    } catch (e) { showToast("error", (e as Error).message); }
+    } catch (e) { showToast("error", (e as Error).message, { verbatim: true }); }
   };
 
   const stop = async () => {
     if (stopping) return;
     setStopping(true);
     try { await api.post("/api/guide/assistant/stop"); }
-    catch (e) { setStopping(false); showToast("error", (e as Error).message); }
+    catch (e) { setStopping(false); showToast("error", (e as Error).message, { verbatim: true }); }
   };
 
   const apply = async (keys?: string[]) => {
@@ -1125,12 +1125,12 @@ function GuidingAssistant({ connected, onOpenInTuning, onCalibrationChanged }: {
         try {
           const r = await api.del<{ cleared?: boolean }>("/api/guide/calibration");
           cleared = !!r?.cleared;
-        } catch (e) { showToast("warning", (e as Error).message); }
+        } catch (e) { showToast("warning", (e as Error).message, { verbatim: true }); }
         onCalibrationChanged(cleared);
       }
       showToast("success", "Recommended guide settings applied - they take effect on the next guiding start");
     } catch (e) {
-      showToast("error", (e as Error).message);
+      showToast("error", (e as Error).message, { verbatim: true });
     } finally { setBusy(false); }
   };
 

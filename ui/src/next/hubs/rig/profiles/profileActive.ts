@@ -20,11 +20,12 @@
 // bodies with comments and whitespace normalised away - the same guard
 // `create/quickPayload.ts` uses for the quick flow's helpers.
 //
-// STILL IMPORTING THE LEGACY ONE, AND NAMED AS THE FOLLOW-UP:
-// `ui/src/next/hubs/rig/devices/rigConnect.ts:23`. That file belongs to no R7
-// task, so this wave does not edit it; switching its import to this module is a
-// one-line follow-up that removes the last `ProfileList` reference from
-// `ui/src/next/**`.
+// EVERY next-side importer now reads THIS module. `hubs/rig/devices/
+// rigConnect.ts` was the last one still pulling the helper out of
+// `ProfileList.tsx`; it was switched in T-R7-21a (item 20), so there is no
+// `components/settings/ProfileList` reference left anywhere under
+// `ui/src/next/**` and the legacy render tree it drags with it is out of the
+// next bundle for good. `#/classic` keeps its own copy, untouched.
 
 import { listProfiles } from "../../../../api/backends";
 import type { ProfileRow } from "../../../../types";

@@ -289,7 +289,7 @@ export function CaptureScreen(): JSX.Element {
   });
 
   const act = async (fn: () => Promise<unknown>) => {
-    try { await fn(); } catch (e) { showToast("error", (e as Error).message); }
+    try { await fn(); } catch (e) { showToast("error", (e as Error).message, { verbatim: true }); }
   };
 
   const fire = (overrideSave?: boolean) => {
