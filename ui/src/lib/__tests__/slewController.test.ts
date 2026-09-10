@@ -280,6 +280,70 @@ test("rate above the touch cap is clamped at post time", () => {
   c.stopHold();
 });
 
+// ------------------------------------------------- D-RIG-4: the driver's ceiling
+//
+// The clamp used to be one number for every mount: 0.6 deg/s, a conservative
+// guess about somebody else's gearbox. A driver that can say how fast it will
+// actually slew now publishes `max_rate_deg_s` (the AM5N reports 1.44) and both
+// ends prefer it - `getattr(tel, "max_rate_deg_s", None) or TOUCH_MAX_RATE_DEG_S`
+// server-side, `getMaxRate` here. Three cases, and the third is the one that
+// keeps `#/classic` safe.
+test("a driver that reports 1.44 deg/s is not clamped to 0.6", () => {
+  const h = makeHarness({
+    getRate: () => ({ id: "set", label: "1.2 deg/s", rateDegS: 1.2 }),
+    getMaxRate: () => 1.44,
+  });
+  const c = new SlewController(h.opts);
+  c.startHold("ra", 1);
+  eq(h.moves[0].rate, 1.2, "the mount's own ceiling was ignored and the old cap applied");
+  c.stopHold();
+});
+
+test("a driver that says nothing (null) is clamped at the 0.6 fallback", () => {
+  // `null` is UNKNOWN, not unlimited. Reading it as "no limit" would hand an
+  // unclamped rate to the one mount that could not tell us what it can take.
+  const h = makeHarness({
+    getRate: () => ({ id: "set", label: "1.2 deg/s", rateDegS: 1.2 }),
+    getMaxRate: () => null,
+  });
+  const c = new SlewController(h.opts);
+  c.startHold("ra", 1);
+  eq(h.moves[0].rate, TOUCH_MAX_RATE_DEG_S, "an unreported ceiling did not fall back to 0.6");
+  c.stopHold();
+});
+
+test("a driver reporting 0 falls back too, exactly as the server's `or` does", () => {
+  const h = makeHarness({
+    getRate: () => ({ id: "set", label: "1.2 deg/s", rateDegS: 1.2 }),
+    getMaxRate: () => 0,
+  });
+  const c = new SlewController(h.opts);
+  c.startHold("ra", 1);
+  eq(h.moves[0].rate, TOUCH_MAX_RATE_DEG_S,
+    "a 0.0 ceiling was taken literally - the pad would post, light up and never move");
+  c.stopHold();
+});
+
+test("THE CLASSIC-SAFETY CASE: with no getMaxRate the clamp is byte-identical to today", () => {
+  // `#/classic`'s MountView mounts SlewPad with no props at all, so its
+  // controller is built without this option. Nothing about its behaviour may
+  // change: same cap, same clamped value, same sign.
+  const h = makeHarness({ getRate: () => ({ id: "set", label: "x", rateDegS: 4.0 }) });
+  assert(h.opts.getMaxRate === undefined, "the fixture passed getMaxRate - it is not the classic case");
+  const c = new SlewController(h.opts);
+  c.startHold("ra", 1);
+  eq(h.moves[0].rate, TOUCH_MAX_RATE_DEG_S, "the no-option path stopped clamping at 0.6");
+  c.stopHold();
+  const rev = makeHarness({
+    getRate: () => ({ id: "set", label: "x", rateDegS: 4.0 }),
+    reverseRa: () => true,
+  });
+  const c2 = new SlewController(rev.opts);
+  c2.startHold("ra", 1);
+  eq(rev.moves[0].rate, -TOUCH_MAX_RATE_DEG_S, "the negative half of the clamp moved");
+  c2.stopHold();
+});
+
 test("reverse flips the commanded sign", () => {
   const h = makeHarness({ reverseRa: () => true });
   const c = new SlewController(h.opts);

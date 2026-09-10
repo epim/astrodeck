@@ -63,8 +63,23 @@ g.IS_REACT_ACT_ENVIRONMENT = true;
 
 // ------------------------------------------------------------- fetch recorder
 const asked: string[] = [];
-g.fetch = async (url: string, init?: { method?: string }) => {
+/** The BODIES too, because the nudge assertions are about the number sent, not
+ *  about the route being reached: `{axis: "ra", arcmin: 10}` and
+ *  `{axis: "ra", arcmin: -10}` are the same URL and opposite moves. */
+const sent: { url: string; body: unknown }[] = [];
+/** A refusal to plant for the next request whose URL contains this key. Set by
+ *  the 422 test and cleared by it; nothing else may leave one armed. */
+let refuse: { match: string; status: number; body: unknown } | null = null;
+g.fetch = async (url: string, init?: { method?: string; body?: string }) => {
   asked.push(`${init?.method ?? "GET"} ${String(url)}`);
+  let parsed: unknown = undefined;
+  try { parsed = init?.body != null ? JSON.parse(init.body) : undefined; } catch { /* not json */ }
+  sent.push({ url: String(url), body: parsed });
+  if (refuse && String(url).includes(refuse.match)) {
+    const r = refuse;
+    refuse = null;
+    return { ok: false, status: r.status, statusText: "REFUSED", json: async () => r.body };
+  }
   if (String(url).includes("/api/catalog")) {
     return { ok: true, status: 200, statusText: "OK", json: async () => [] };
   }
@@ -163,6 +178,36 @@ const q = (sel: string) => container.querySelector(sel) as any;
 const text = () => (container.textContent || "") as string;
 const posted = (needle: string) => asked.some((a) => a === `POST ${needle}`);
 
+/** A native pointer event jsdom will carry: it implements no PointerEvent
+ *  constructor worth using, and React reads `pointerId` off whatever arrives.
+ *  Same shape `components/__tests__/slewPadDom.test.tsx` uses. */
+function pointer(type: string, id: number): any {
+  const ev = new win.Event(type, { bubbles: true, cancelable: true });
+  ev.pointerId = id;
+  ev.pointerType = "touch";
+  ev.button = 0;
+  ev.isPrimary = true;
+  return ev;
+}
+
+/** Press one pad key and ALWAYS release it. `activePointerId` is a ref inside
+ *  SlewPad that outlives this test file, and a press left un-released rejects
+ *  every press after it at the multi-touch guard - which would make the next
+ *  test fail for a reason that has nothing to do with what it grades. */
+async function tapPad(label: string, id: number): Promise<void> {
+  const node = q(`[aria-label="slew ${label}"]`);
+  assert(node != null, `no ${label} key on the pad`);
+  act(() => { node.dispatchEvent(pointer("pointerdown", id)); });
+  act(() => { node.dispatchEvent(pointer("pointerup", id)); });
+  await settle();
+}
+
+const lastToast = (): string => {
+  const t = (useStore.getState().toasts ?? []) as { title?: string; detail?: string }[];
+  const top = t[t.length - 1];
+  return top ? `${top.title ?? ""} ${top.detail ?? ""}` : "";
+};
+
 // ============================================================ 1. precondition
 seed();
 mount();
@@ -255,6 +300,163 @@ await testAsync("PARK fires /api/mount/park", async () => {
   click(q('[data-testid="mount-park"]'));
   await settle();
   assert(posted("/api/mount/park"), `PARK sent nothing - asked: ${JSON.stringify(asked)}`);
+});
+
+// ============================ 3b. the rate ceiling and the step tiles (D-RIG-4)
+//
+// These close deviations E8 and E9. E8 said there was no SLEW RATE tile because
+// every mount was clamped to 0.6 deg/s; E9 said there was no per-tap arcminute
+// verb. Both are engine facts that stopped being true, and the tests below are
+// about the two ways the new controls could lie: a ladder that offers a rate the
+// server will silently clamp, and a tap that sends a number the tile does not
+// show.
+await testAsync("a mount that reports 1.44 deg/s gets 1.44 on the tile and in the warning", async () => {
+  seed({ status: mountStatus({ max_rate_deg_s: 1.44 }) });
+  mount();
+  await settle();
+  const tile = q('[data-testid="mount-slew-rate"]');
+  assert(tile != null, "no SLEW RATE tile - deviation E8 was closed on paper only");
+  assert(/1\.44 deg\/s/.test(tile.textContent || ""),
+    `the ladder does not reach the mount's own ceiling: ${tile.textContent}`);
+  assert(text().includes(
+    "If the link drops mid-slew the rig stops the mount within 1.2 seconds"
+    + " - at 1.44 deg/s that is up to 1.73 degrees of travel."),
+  "the deadman sentence is missing or is not computed from this mount's ceiling");
+  assert(/The mount reports 1\.44 deg\/s/.test(text()),
+    "the tile does not say where the ceiling came from");
+});
+
+await testAsync("a mount that reports nothing is held at 0.6, and says so", async () => {
+  seed();   // the fixture carries no max_rate_deg_s, like an engine older than S7c
+  mount();
+  await settle();
+  eq((useStore.getState().status as any).mount.max_rate_deg_s, undefined,
+    "precondition: the seeded mount must NOT report a ceiling");
+  eq(container.querySelectorAll('[data-testid="mount-slew-rate"] .nx-dial-stop').length, 3,
+    "an unreported ceiling grew the ladder - a stop the server would clamp");
+  assert(/did not report a ceiling - held at 0\.6 deg\/s/.test(text()),
+    `the tile does not say the ceiling is a fallback: ${text().slice(0, 200)}`);
+  assert(text().includes("at 0.6 deg/s that is up to 0.72 degrees of travel."),
+    "the worst-case travel still quotes another mount's number");
+});
+
+await testAsync("the rate tile and the pad's centre cell are ONE value, both ways", async () => {
+  // Ruling 1. Two copies of a rate is the shape of defect where the tile reads
+  // `1.44 deg/s` over a pad still commanding 0.5 - and the pad is the half that
+  // reaches the mount.
+  seed({ status: mountStatus({ max_rate_deg_s: 1.44 }) });
+  mount();
+  await settle();
+  const radios = () =>
+    [...container.querySelectorAll('[aria-label="Slew rate"] [role="radio"]')] as any[];
+  const stop = (i: number) => q(`[data-testid="mount-slew-rate"] [data-value="${i}"]`);
+  eq(radios().length, 5, "the pad is not offering the ladder the tile built");
+  eq(stop(4) != null, true, "the tile has no stop for the mount's ceiling");
+
+  click(stop(4));                                  // tile -> pad
+  await settle();
+  eq(radios()[4].getAttribute("aria-checked"), "true",
+    "the pad's centre cell did not follow the tile - there are two rate states");
+  click(radios()[1]);                              // pad -> tile
+  await settle();
+  eq(stop(1).getAttribute("data-selected"), "true",
+    "the tile did not follow the pad's centre cell - there are two rate states");
+});
+
+await testAsync("a pad tap sends the RA STEP as arcminutes, once, and no timed move", async () => {
+  seed();
+  mount();
+  await settle();
+  assert(q('[data-testid="mount-ra-step"]') != null && q('[data-testid="mount-dec-step"]') != null,
+    "no RA STEP / DEC STEP tiles - deviation E9 was closed on paper only");
+  assert(/RA STEP · 10′/.test(text()), "the RA STEP tile does not open on the 10 arcminute stop");
+  asked.length = 0;
+  sent.length = 0;
+  await tapPad("east", 11);
+  const nudges = sent.filter((s) => s.url.includes("/api/mount/nudge"));
+  eq(nudges.length, 1, `one tap should send one nudge - asked: ${JSON.stringify(asked)}`);
+  const body = nudges[0].body as { axis: string; arcmin: number };
+  eq(body.axis, "ra", "an east tap did not move the RA axis");
+  eq(body.arcmin, 10, "the tap did not send the step the tile shows");
+  // THE OLD PATH IS GONE, not merely unused: the pulse branch drove
+  // /api/mount/move for 250 ms and could not say how far the mount went.
+  assert(!asked.some((a) => a.includes("/api/mount/move")),
+    `the timed-pulse nudge still fired alongside the arcminute one: ${JSON.stringify(asked)}`);
+});
+
+await testAsync("reverse RA flips the sign, and only on the axis it is set for", async () => {
+  seed({
+    touch: {
+      hapticsEnabled: true, touchSizing: "auto",
+      reverseRa: true, reverseDec: false, autoLockMs: null,
+    },
+  });
+  mount();
+  await settle();
+  sent.length = 0;
+  await tapPad("east", 12);
+  await tapPad("north", 13);
+  const nudges = sent.filter((s) => s.url.includes("/api/mount/nudge"))
+    .map((s) => s.body as { axis: string; arcmin: number });
+  eq(nudges.length, 2, "two taps did not produce two nudges");
+  eq(nudges[0].arcmin, -10,
+    "reverse RA did not flip the commanded sign - the tile and the pad disagree about which way west is");
+  eq(nudges[1].arcmin, 10, "reverse RA leaked onto the Dec axis");
+  eq(nudges[1].axis, "dec", "a north tap did not move the Dec axis");
+});
+
+await testAsync("a 422 says it in the tile's own units and puts the tile back", async () => {
+  seed();
+  mount();
+  await settle();
+  click(q('[data-testid="mount-ra-step"] [data-value="600"]'));
+  await settle();
+  assert(/RA STEP · 10 deg/.test(text()), "the step tile did not take the 10 degree stop");
+  // The server disagreeing with a stop the picker offered is a defect in the
+  // PICKER, so the sentence is about the picker and the tile goes back to a
+  // stop that is known to work.
+  refuse = {
+    match: "/api/mount/nudge",
+    status: 422,
+    body: { detail: { detail: "a nudge is 1 to 600 arcminutes", code: "out_of_range" } },
+  };
+  await tapPad("west", 14);
+  assert(lastToast().includes("A nudge is 1 arcminute to 10 degrees."),
+    `the 422 was not said in the units on screen: ${lastToast()}`);
+  assert(/RA STEP · 10′/.test(text()),
+    "the tile is still sitting on the stop the rig just refused");
+  refuse = null;
+});
+
+await testAsync("an engine without the route says what still works", async () => {
+  // The rig on the other end can be older than this UI - the normal case during
+  // a rollout - and `Not Found` in a red toast reads as a broken mount.
+  seed();
+  mount();
+  await settle();
+  refuse = { match: "/api/mount/nudge", status: 404, body: { detail: "Not Found" } };
+  await tapPad("south", 15);
+  assert(lastToast().includes("does not carry the arcminute nudge yet"),
+    `an older engine's 404 reached the user raw: ${lastToast()}`);
+  assert(!/Not Found/.test(lastToast()), "the raw 404 text was passed through");
+  refuse = null;
+});
+
+await testAsync("a run owns the step tiles as well as the pad", async () => {
+  seed({ sequence: { state: "running", target: "NGC 6946" } });
+  mount();
+  await settle();
+  for (const id of ["mount-slew-rate", "mount-ra-step", "mount-dec-step"]) {
+    const track = q(`[data-testid="${id}"] .nx-dial-track`);
+    assert(track != null, `${id} did not render its dial`);
+    eq(track.getAttribute("aria-disabled"), "true", `${id} is live while a flow owns the mount`);
+    eq(track.getAttribute("title"), FLOW_OWNS_MOUNT, `${id} carries no reason`);
+  }
+  sent.length = 0;
+  click(q('[data-testid="mount-ra-step"] [data-value="600"]'));
+  await settle();
+  assert(/RA STEP · 10′/.test(text()),
+    "a locked step tile still changed its value - the lock is decoration");
 });
 
 // ================================================================ 4. viewer

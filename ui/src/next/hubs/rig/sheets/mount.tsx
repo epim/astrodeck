@@ -25,16 +25,24 @@
 // DEVIATIONS (plan E7-E10), all engine facts, none of them cosmetic:
 //   E7  no `king` tracking rate - `TRACKING_RATES` is sidereal/lunar/solar and
 //       the server's own comment says King is out of scope.
-//   E8  no SLEW RATE tile - `/api/mount/move` is clamped to 0.6 deg/s
-//       (TOUCH_MAX_RATE_DEG_S), so the design's 800x is refused. The rate lives
-//       in the pad's centre cell, where it is the pad's own selector, so the
-//       number shown and the number sent cannot drift apart.
-//   E9  no RA STEP / DEC STEP tiles - there is no per-tap arcminute verb.
 //   E10 the offset readout is the last SOLVE's `pointing.error_arcmin`, not a
 //       cumulative pad offset: the engine publishes no such number, and the
 //       prototype's is fixture state.
+//
+// E8 AND E9 ARE CLOSED (D-RIG-4), and what closed them was the engine, not a
+// change of mind up here:
+//   E8  said there was no SLEW RATE tile because every mount was clamped to
+//       0.6 deg/s. The clamp now prefers the driver's own measured ceiling
+//       (`hub.py:221-232`; the AM5N reports 1.44 deg/s) and publishes it as
+//       `status.mount.max_rate_deg_s`, so there is a real number to offer. The
+//       tile is the editor and the pad's centre cell is the same value lifted -
+//       ONE state, two views, which is what E8 was protecting.
+//   E9  said there was no per-tap arcminute verb. `POST /api/mount/nudge`
+//       (`mount_offset.py`) is one: it takes a signed size in arcminutes, does
+//       the cos(dec) division a client cannot be trusted with, and slews the
+//       answer through the same horizon and sun guards a goto passes.
 
-import { useEffect, useRef, useState, type JSX, type SyntheticEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type JSX, type SyntheticEvent } from "react";
 import type { SheetProps } from "../../sheets";
 import {
   ActionButton, BannerCard, Card, Dial, Label, ListRow, Mono,
@@ -44,10 +52,18 @@ import { NxIcon } from "../../../icons";
 import { nav } from "../../../router";
 import { useLock } from "../../../lib/gateHook";
 import { usePendingValue } from "../lib/pendingValue";
+import {
+  ceilingNote, deadmanNote, nudgeStopLabel, nudgeStops, slewStops,
+} from "../lib/slewStops";
 import { api } from "../../../../api";
+import {
+  NUDGE_ABSENT_NOTE, NUDGE_OUT_OF_RANGE_NOTE, isNudgeAbsent, isNudgeOutOfRange, nudgeMount,
+} from "../../../../api/mount";
 import { useConfig, usePolar, useSequence, useStatus, useStore } from "../../../../store";
 import { useBusyOrPending } from "../../../../lib/useBusy";
 import { useCanControlMount } from "../../../../lib/caps";
+import { useTouchSettings } from "../../../../lib/touchStore";
+import type { Axis, Dir } from "../../../../lib/slewController";
 import { altTone, fmtAlt, fmtMag } from "../../../../lib/catalogFormat";
 import { confirmDialog } from "../../../../components/ConfirmDialog";
 import SlewPad from "../../../../components/SlewPad";
@@ -78,9 +94,25 @@ export const FOREIGN_MOTION_TITLE =
   + "the move is itself a park, this restarts it.";
 
 const FOOTER_NOTE =
-  "Pad taps nudge at the rate shown in the centre; hold a pad key to slew "
-  + "continuously. Tracking follows the object unless you pin it here. The pad "
-  + "is locked while a flow owns the mount.";
+  "At the GUIDE rate a pad tap moves the mount by the RA STEP or DEC STEP above; "
+  + "at any faster rate a tap does nothing and holding a pad key slews until you "
+  + "let go. Tracking follows the object unless you pin it here. The pad and the "
+  + "steps are locked while a flow owns the mount.";
+
+/** The step each tile starts on, in arcminutes.
+ *
+ *  10' is a centring correction: far enough to see move on a wide field, small
+ *  enough that a mistaken tap is one more tap to undo. It is NOT remembered
+ *  between visits, and that is deliberate - `finder/prefs.ts`'s own header
+ *  argues that a control which reopens where it was left is worse than one that
+ *  reopens usefully, and a 10-degree step left over from last night is exactly
+ *  the shape of thing that argument is about. */
+const DEFAULT_STEP_ARCMIN = 10;
+
+/** The step ladder as dial stops. Module scope because `nudgeStops()` answers
+ *  the same ten every time - it is bounded by the route's limits, not by
+ *  anything on this screen. */
+const STEP_OPTIONS = nudgeStops().map((s) => ({ value: s.arcmin, label: s.label }));
 
 /** The sentence the SERVER's sun-cone refusal cannot carry: where the cone is
  *  set. The refusal itself is surfaced verbatim in the error toast. */
@@ -371,6 +403,72 @@ export function MountSheet(_props: SheetProps): JSX.Element {
   // never-blocked list names it, and a fence around the escape hatch is the
   // exact bug the inventory records three times.
   const padReason = firstReason(base.lockedReason, flowExtra);
+
+  // ------------------------------------------------- the rate and step tiles
+  //
+  // ONE slew-rate state, and the tile is where it is edited. The pad's centre
+  // cell renders the same index through `rateIndex`/`onRateIndex`, so the two
+  // are views of one value: a tile that kept its own copy would sit there
+  // reading `1.44 deg/s` over a pad still commanding 0.5, and the pad is the
+  // half that reaches the mount.
+  const maxRate = m?.max_rate_deg_s ?? null;
+  const rates = useMemo(() => slewStops(maxRate), [maxRate]);
+  const [rateIdx, setRateIdx] = useState(0);
+  // The ladder shrinks when a mount reconnects reporting a lower ceiling; the
+  // index is clamped rather than reset, so the choice survives where it can.
+  const rateAt = Math.min(rateIdx, rates.length - 1);
+
+  // Per-visit, per-axis. Separate because the two axes are not interchangeable:
+  // a dec correction and an RA correction on a mis-framed target are routinely
+  // different sizes, and one shared step would make the second tap wrong.
+  const [raStep, setRaStep] = useState(DEFAULT_STEP_ARCMIN);
+  const [decStep, setDecStep] = useState(DEFAULT_STEP_ARCMIN);
+  // The last step the ROUTE accepted, per axis. A 422 means the picker asked
+  // for something outside 1..600, which is a defect in the picker and not
+  // something the operator did, so the tile goes back to a stop that is known
+  // to work instead of sitting on one that cannot.
+  const lastLegal = useRef({ ra: DEFAULT_STEP_ARCMIN, dec: DEFAULT_STEP_ARCMIN });
+
+  // The reverse toggles are the PAD's, read here at post time from the same
+  // store slice the controller reads (`lib/touchStore.ts`). Not copied into
+  // local state: the toggles live inside SlewPad, so a copy would go stale the
+  // moment somebody flipped one, and the pad and the tiles would disagree about
+  // which way west is - on the one screen where that is not survivable.
+  const touch = useTouchSettings();
+  const touchRef = useRef(touch);
+  touchRef.current = touch;
+
+  const nudge = async (axis: Axis, dir: Dir): Promise<void> => {
+    if (padReason) { explain(padReason); return; }
+    const step = axis === "ra" ? raStep : decStep;
+    const reversed = axis === "ra"
+      ? touchRef.current.reverseRa
+      : touchRef.current.reverseDec;
+    const arcmin = step * dir * (reversed ? -1 : 1);
+    try {
+      await nudgeMount(axis, arcmin);
+      lastLegal.current[axis] = step;
+    } catch (e) {
+      if (isNudgeOutOfRange(e)) {
+        // The picker's fault, said in the picker's units, and the picker is put
+        // back where it worked.
+        showToast("error", NUDGE_OUT_OF_RANGE_NOTE);
+        if (axis === "ra") setRaStep(lastLegal.current.ra);
+        else setDecStep(lastLegal.current.dec);
+        return;
+      }
+      if (isNudgeAbsent(e)) {
+        // An engine older than the route. Say what still works rather than
+        // passing on a bare "Not Found", which reads as a broken mount.
+        showToast("error", NUDGE_ABSENT_NOTE);
+        return;
+      }
+      // 409: the horizon guard, the sun cone, or the goto lane. The server's
+      // sentence is the only one that knows which, so it is shown verbatim.
+      showToast("error", (e as Error).message);
+    }
+  };
+
   const lastExplain = useRef(0);
   const padGuard = (e: SyntheticEvent) => {
     if (!padReason) return;
@@ -582,6 +680,44 @@ export function MountSheet(_props: SheetProps): JSX.Element {
         <Mono size={10.5} tone="dim">{trackingLine}</Mono>
       </div>
 
+      {/* The three tiles that drive the pad (D-RIG-4). They ride the same lock
+          the pad does, because a flow that owns the mount owns the steps too. */}
+      <Dial<number>
+        label={`SLEW RATE · ${rates[rateAt].label}`}
+        hint="drag or tap"
+        options={rates.map((r, i) => ({ value: i, label: r.label }))}
+        value={rateAt}
+        onChange={setRateIdx}
+        lockedReason={padReason}
+        onExplain={explain}
+        data-testid="mount-slew-rate"
+      />
+      <div data-testid="mount-rate-note">
+        <Mono size={10.5} tone="dim">{ceilingNote(maxRate)}</Mono>
+        <div><Mono size={10} tone="dim">{deadmanNote(maxRate)}</Mono></div>
+      </div>
+
+      <Dial<number>
+        label={`RA STEP · ${nudgeStopLabel(raStep)}`}
+        hint="per tap, east or west"
+        options={STEP_OPTIONS}
+        value={raStep}
+        onChange={setRaStep}
+        lockedReason={padReason}
+        onExplain={explain}
+        data-testid="mount-ra-step"
+      />
+      <Dial<number>
+        label={`DEC STEP · ${nudgeStopLabel(decStep)}`}
+        hint="per tap, north or south"
+        options={STEP_OPTIONS}
+        value={decStep}
+        onChange={setDecStep}
+        lockedReason={padReason}
+        onExplain={explain}
+        data-testid="mount-dec-step"
+      />
+
       {/* The pad, as-is. The wrapper carries the flow lock and the 64 px rule. */}
       <style>{PAD_CSS}</style>
       <div
@@ -594,7 +730,13 @@ export function MountSheet(_props: SheetProps): JSX.Element {
         onClickCapture={padGuard}
         onKeyDownCapture={padGuard}
       >
-        <SlewPad />
+        <SlewPad
+          rates={rates}
+          rateIndex={rateAt}
+          onRateIndex={setRateIdx}
+          maxRateDegS={maxRate}
+          onNudge={nudge}
+        />
       </div>
       {padReason && (
         <Mono size={10.5} tone="warn">{padReason}</Mono>
