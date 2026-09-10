@@ -1,8 +1,19 @@
+import { createRequire } from "node:module";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vite";
 
+// The UI's own version, injected at build time (next/ARCHITECTURE.md section 12,
+// S6). /healthz already reports the ENGINE version; without this the About page
+// could only report the engine's and call it the app's, which is the wrong
+// number the moment a UI-only release ships. `createRequire` rather than a JSON
+// import so this config stays valid under both CJS and ESM resolution.
+const pkg = createRequire(import.meta.url)("./package.json") as { version: string };
+
 export default defineConfig({
+  define: {
+    __APP_VERSION__: JSON.stringify(pkg.version),
+  },
   // relative asset paths so the SPA loads at the server root (/) AND tunnelled
   // under the relay (/h/<home_id>/). Runtime API/WS/auth URLs are base-prefixed
   // via src/lib/base.ts.
