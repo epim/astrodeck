@@ -1,0 +1,61 @@
+{
+  "_comment": "PLACEHOLDER route list for the NEW UI's hash routes (feat/ui-next hubs). These routes do NOT exist yet -- the hub views land one at a time and each one should flip its entry's '_pending' off (or just delete the flag) once #/<hub> actually renders and the marker text is real. The controller extends this file; do not treat a red run here as a probe bug until a hub has actually shipped.",
+  "routes": [
+    {
+      "url": "#/sky",
+      "name": "sky",
+      "click": [],
+      "marker": "SKY",
+      "shot": "sky",
+      "_pending": true
+    },
+    {
+      "url": "#/weather",
+      "name": "weather",
+      "click": [],
+      "marker": "WEATHER",
+      "shot": "weather",
+      "_pending": true
+    },
+    {
+      "url": "#/session",
+      "name": "session",
+      "click": [],
+      "marker": "SESSION",
+      "shot": "session",
+      "_pending": true
+    },
+    {
+      "url": "#/rig/devices",
+      "name": "rig-devices",
+      "click": [],
+      "marker": "DEVICES",
+      "shot": "rig-devices",
+      "_pending": true
+    },
+    {
+      "url": "#/rig/capture",
+      "name": "rig-capture",
+      "click": [],
+      "marker": "MANUAL CAPTURE",
+      "shot": "rig-capture",
+      "_pending": true
+    },
+    {
+      "url": "#/monitor",
+      "name": "monitor",
+      "click": [],
+      "marker": "MONITOR",
+      "shot": "monitor",
+      "_pending": true
+    },
+    {
+      "url": "#/settings",
+      "name": "settings",
+      "click": [],
+      "marker": "SETTINGS",
+      "shot": "settings",
+      "_pending": true
+    }
+  ]
+}
