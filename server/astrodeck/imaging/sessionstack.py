@@ -414,9 +414,16 @@ class SessionStacker:
         #: bumped on every accepted add, so a client can tell "the picture
         #: changed" from "I polled again" without decoding the JPEG.
         self._seq = 0
-        self._cache: tuple[bytes, dict] | None = None
-        self._cache_seq = -1
-        self._cache_size = 0
+        #: Rendered JPEGs by CHANNEL, with ``None`` for the composite. One
+        #: entry per view the UI can ask for, because a client watching the Ha
+        #: channel and a client watching the composite are polling the same
+        #: stacker and a single-slot cache would make each of them re-render
+        #: the other's picture on every poll.
+        self._cache: dict[str | None, tuple[bytes, dict]] = {}
+        #: ``(seq, size, rendered_at)`` per cache entry -- the age and the
+        #: identity have to be per entry too, or a fresh composite render would
+        #: make a stale channel render look current.
+        self._cache_stamp: dict[str | None, tuple[int, int, float]] = {}
         self._rendered_at = 0.0
 
     # ------------------------------------------------------------- lifecycle
@@ -463,8 +470,8 @@ class SessionStacker:
         self._session = session
         self._factor = 0
         self._seq += 1
-        self._cache = None
-        self._cache_seq = -1
+        self._cache.clear()
+        self._cache_stamp.clear()
         self._rendered_at = 0.0
 
     # ------------------------------------------------------------- accumulate
@@ -767,29 +774,71 @@ class SessionStacker:
             rgb += (lum - y)[:, :, None]
         return np.clip(rgb, 0.0, 1.0)
 
+    # ------------------------------------------------------------ render cache
+    def _cached(self, key: str | None, size: int,
+                now: float) -> tuple[bytes, dict] | None:
+        """The stored render for one view, or None. Call under the lock.
+
+        The rule is the one the composite has always used, applied per entry: a
+        render is reused until a frame is added AND ``min_render_interval_s``
+        has passed since THAT entry was built, so a phone polling every second
+        costs one dict lookup rather than a percentile over a few megapixels.
+        """
+        got = self._cache.get(key)
+        if got is None:
+            return None
+        seq, cached_size, at = self._cache_stamp.get(key, (-1, 0, 0.0))
+        if cached_size != int(size):
+            return None
+        if seq == self._seq or now - at < self.min_render_interval_s:
+            return got
+        return None
+
+    def _store(self, key: str | None, size: int, seq: int, now: float,
+               payload: tuple[bytes, dict]) -> tuple[bytes, dict]:
+        """Keep one render. Call under the lock.
+
+        ``seq`` is the value read BEFORE the render started, not the one that
+        stands now: stamping the entry with the current seq would label this
+        picture with a frame it does not contain, and the next poll would be
+        served the stale one as current.
+        """
+        self._cache[key] = payload
+        self._cache_stamp[key] = (int(seq), int(size), now)
+        self._rendered_at = now
+        # Bound the cache at one composite plus one per channel. It cannot grow
+        # past that by construction -- the keys are None and the output of
+        # `channel_for`, which is always one of CHANNEL_ORDER -- so this loop is
+        # unreachable today. It is here so that adding an alias that folds onto
+        # an eighth channel cannot quietly turn the cache into a leak, and it
+        # drops the entry from BOTH dicts rather than only flagging it.
+        while len(self._cache) > len(CHANNEL_ORDER) + 1:
+            oldest = min(self._cache,
+                         key=lambda k: self._cache_stamp.get(k, (0, 0, 0.0))[2])
+            self._cache.pop(oldest, None)
+            self._cache_stamp.pop(oldest, None)
+        return payload
+
     def rgb_preview(self, size: int = DEFAULT_PREVIEW_SIZE, *,
                     quality: int = 85) -> tuple[bytes, dict] | None:
         """(JPEG bytes, meta) for the composite, or None when nothing is stacked.
 
-        Cached: a render is reused until a frame is added AND
-        ``min_render_interval_s`` has passed, so a phone polling every second
-        costs one dict lookup rather than a percentile over seven channels.
+        Cached under the key ``None`` -- see :meth:`_cached`.
         """
         now = time.time()
         with self._lock:
-            if (self._cache is not None and self._cache_size == int(size)
-                    and (self._cache_seq == self._seq
-                         or now - self._rendered_at < self.min_render_interval_s)):
-                return self._cache
+            hit = self._cached(None, size, now)
+            if hit is not None:
+                return hit
             # The seq the render is ABOUT to be built from, read before the lock
-            # is dropped. Stamping the cache with the seq as it stands AFTER the
-            # render would label this picture with a frame it does not contain,
-            # and the next poll would be served the stale one as current.
+            # is dropped.
             seq_at_start = self._seq
 
         rgb = self.compose()
         if rgb is None:
-            self._cache = None
+            with self._lock:
+                self._cache.pop(None, None)
+                self._cache_stamp.pop(None, None)
             return None
         arr8 = (rgb * 255.0 + 0.5).astype(np.uint8)
         pil = Image.fromarray(arr8, mode="RGB")
@@ -801,10 +850,99 @@ class SessionStacker:
         pil.save(buf, format="JPEG", quality=quality, optimize=False)
 
         with self._lock:
-            self._rendered_at = now
-            self._cache_seq = seq_at_start
-            self._cache_size = int(size)
             meta = dict(self.status())
             meta.update({"width": pil.width, "height": pil.height})
-            self._cache = (buf.getvalue(), meta)
-            return self._cache
+            return self._store(None, size, seq_at_start, now,
+                               (buf.getvalue(), meta))
+
+    def channel_preview(self, channel: str, size: int = DEFAULT_PREVIEW_SIZE,
+                        *, quality: int = 85) -> tuple[bytes, dict] | None:
+        """(JPEG bytes, meta) for ONE channel's running mean, or None.
+
+        The accumulators were always per channel; this is the render that was
+        missing, so "show me just Ha" stops being a colour filter over the
+        composite and becomes the Ha stack.
+
+        ``channel`` may be either a channel name (``"Ha"``) or the operator's
+        own filter name (``"H-alpha"``, ``"HALPHA"``): it is resolved through
+        :func:`channel_for`, which is the same fold ``add`` used to decide which
+        accumulator the frame went into, so the two cannot disagree. The channel
+        it actually rendered comes back in ``meta["channel"]`` -- the caller
+        asked in the operator's vocabulary and has to be told the answer in the
+        stacker's.
+
+        None means REFUSE, and the route turns it into a 404. Two ways to get
+        there and both matter:
+
+          * an empty name is not "the L channel", it is "no channel asked for".
+            ``channel_for("")`` is ``L``, so folding it would serve one filter
+            to a caller who asked for the picture;
+          * a channel with no accumulator (``Sii`` on a night that shot none)
+            has no pixels. Rendering it anyway would produce a black frame,
+            which on a monitor page at 3am is indistinguishable from a dead
+            sensor or a closed shutter.
+        """
+        name = (channel or "").strip()
+        if not name:
+            return None
+        key = channel_for(name)
+        now = time.time()
+        with self._lock:
+            if key not in self._stacks:
+                return None
+            hit = self._cached(key, size, now)
+            if hit is not None:
+                return hit
+            mean = self._stacks[key].mean()
+            if mean is None:
+                return None
+            seq_at_start = self._seq
+
+        # Out of the lock from here: `LiveStacker.mean()` builds a fresh array,
+        # so a frame landing mid-render changes the NEXT picture, not this one.
+        #
+        # DELIBERATELY NOT `_aligned_planes`. That shifts every channel onto the
+        # busiest channel's reference frame, which is what stops a COMPOSITE
+        # wearing coloured fringes. One channel is already on its own reference
+        # frame -- it is the frame its own stacker registered every one of its
+        # subs against -- so there is nothing to align it to, and a shift here
+        # would move the picture for no reason.
+        #
+        # A one-entry `stretch_channels` degenerates correctly rather than
+        # accidentally: black is this channel's own background median, and the
+        # shared range is a max over a single channel, i.e. this channel's own
+        # 99.8th percentile. So the single-channel view is the composite's own
+        # scale RESTRICTED to one plane, not a second stretch model that could
+        # show the same pixels at a different brightness.
+        plane = stretch_channels({key: mean})[key]
+        arr8 = (np.clip(plane, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
+        pil = Image.fromarray(arr8, mode="L")
+        if size and pil.width > int(size):
+            scale = int(size) / pil.width
+            pil = pil.resize((int(size), max(1, int(pil.height * scale))),
+                             Image.BILINEAR)
+        buf = io.BytesIO()
+        pil.save(buf, format="JPEG", quality=quality, optimize=False)
+
+        with self._lock:
+            stack = self._stacks.get(key)
+            if stack is None:
+                # A reset landed while this was rendering. The picture is of a
+                # stack that no longer exists, so it must not be cached as the
+                # current one -- and it must not be returned either.
+                return None
+            meta = dict(self.status())
+            meta.update({
+                "width": pil.width, "height": pil.height,
+                "channel": key,
+                # THIS channel's counts, replacing the whole-stack totals
+                # `status()` carries. The caption under a single-channel view
+                # has to say how much went into that channel; reporting the
+                # night's total beside one filter's pixels is the caption
+                # lying about the picture it sits under.
+                "frames": stack.frames,
+                "integrated_s": round(stack.integrated_s, 1),
+                "rejected": stack.rejected,
+            })
+            return self._store(key, size, seq_at_start, now,
+                               (buf.getvalue(), meta))
