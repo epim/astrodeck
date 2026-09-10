@@ -128,6 +128,41 @@ def _wait_for_visible_text(page, text: str, timeout_ms: int = 8000,
     return None
 
 
+def _visible_css_matches(page, selector: str) -> list:
+    """Same shape as `_visible_matches`, for a CSS selector instead of a text
+    lookup -- used for `[data-testid=...]` assertions (routes_next.json).
+    Visible-only for the same reason as trap #1: the shell renders both a
+    desktop rail and a phone bottom nav (and, more relevant here, a sheet's
+    underlying hub screen stays mounted while a sheet is open on top of it),
+    so a hidden-but-present testid must never count as "found"."""
+    loc = page.locator(selector)
+    out = []
+    try:
+        n = loc.count()
+    except Exception:
+        return out
+    for i in range(n):
+        el = loc.nth(i)
+        try:
+            if el.is_visible():
+                out.append(el)
+        except Exception:
+            continue
+    return out
+
+
+def _wait_for_visible_testid(page, testid: str, timeout_ms: int = 8000,
+                              poll_ms: int = 200):
+    selector = f'[data-testid="{testid}"]'
+    deadline = time.monotonic() + timeout_ms / 1000.0
+    while time.monotonic() < deadline:
+        matches = _visible_css_matches(page, selector)
+        if matches:
+            return matches[0]
+        page.wait_for_timeout(poll_ms)
+    return None
+
+
 # ------------------------------------------------------------------- guards
 
 def _vacuity_guard(page) -> list[str]:
@@ -254,8 +289,28 @@ def _login(page, base: str, role: str, creds: dict) -> None:
     page.get_by_label("Password").fill(password)
     page.get_by_role("button", name="Sign in", exact=True).click()
 
-    landed = _wait_for_visible_text(page, "Devices", timeout_ms=10000)
-    if landed is None:
+    # "Landed" used to mean "the text 'Devices' became visible" -- a CLASSIC-UI
+    # marker (the Equipment view's inner panel title) that never appears after
+    # a routes_next.json login, because the default post-login screen there is
+    # the Sky hub, not Equipment. Waiting on a classic-only string here failed
+    # every `--auth` run against the new UI, not because login was broken, but
+    # because this helper was checking for the wrong app. The UI-agnostic
+    # signal both roots share is the login FORM itself going away (the
+    # Username field detaching/hiding once `Root()` swaps in the authenticated
+    # app shell) -- true whether that shell is classic `App` or `NextApp`.
+    deadline = time.monotonic() + 10.0
+    form_closed = False
+    while time.monotonic() < deadline:
+        try:
+            if not user_field.is_visible():
+                form_closed = True
+                break
+        except Exception:
+            form_closed = True  # detached from the DOM entirely also counts
+            break
+        page.wait_for_timeout(200)
+
+    if not form_closed:
         # Surface whatever error text the form is showing, if any.
         err_hint = ""
         try:
@@ -266,6 +321,17 @@ def _login(page, base: str, role: str, creds: dict) -> None:
         raise LoginError(
             f"login as {username!r} (role={role}) did not reach the app "
             f"shell within 10s{f' -- form said: {err_hint!r}' if err_hint else ''}")
+
+    # The form closing proves the credentials were accepted; it does not prove
+    # something real rendered behind it (a blank/broken landing would also
+    # make the form disappear). Reuse the same vacuity guard every route
+    # already passes through, rather than inventing a second, weaker check.
+    page.wait_for_timeout(300)
+    vacuity_reasons = _vacuity_guard(page)
+    if vacuity_reasons:
+        raise LoginError(
+            f"login as {username!r} (role={role}) closed the sign-in form but "
+            f"landed on what looks like a blank/broken shell: {vacuity_reasons}")
 
 
 # ------------------------------------------------------------------ routes
@@ -319,16 +385,39 @@ def _run_route(page, base: str, route: dict, out_dir: Path, width: int) -> dict:
 
     expected_errors = route.get("expected_errors", [])
 
+    testid_ok = None
+
     if not vacuity_reasons:
         click_log = _run_clicks(page, route.get("click", []))
         page.wait_for_timeout(400)
 
-        marker = route["marker"]
-        found = _wait_for_visible_text(page, marker, timeout_ms=8000)
-        marker_ok = found is not None
-        if not marker_ok:
-            reasons.append(f"marker {marker!r} not visible after clicks "
-                           f"(click log: {click_log})")
+        # A route asserts a data-testid (routes_next.json's primary check, see
+        # probe.py's extension for the new UI), a text marker (routes_classic.json's
+        # original check), or both -- whichever the route list supplies. At least
+        # one is required: a route with neither has nothing gating a false pass.
+        testid = route.get("testid")
+        marker = route.get("marker")
+
+        if testid:
+            found_testid = _wait_for_visible_testid(page, testid, timeout_ms=8000)
+            testid_ok = found_testid is not None
+            if not testid_ok:
+                reasons.append(f"testid {testid!r} ([data-testid={testid!r}]) not "
+                               f"visible after clicks (click log: {click_log})")
+
+        if marker:
+            found = _wait_for_visible_text(page, marker, timeout_ms=8000)
+            marker_ok = found is not None
+            if not marker_ok:
+                reasons.append(f"marker {marker!r} not visible after clicks "
+                               f"(click log: {click_log})")
+        else:
+            marker_ok = True  # no text marker required for this route
+
+        if not testid and not marker:
+            marker_ok = False
+            reasons.append("route defines neither 'testid' nor 'marker' -- "
+                           "nothing to assert, so it cannot pass")
 
         overflow_info = _measure_overflow(page)
         if overflow_info.get("overflow", 0) > 2:
@@ -366,7 +455,8 @@ def _run_route(page, base: str, route: dict, out_dir: Path, width: int) -> dict:
     passed = len(reasons) == 0
     return {
         "width": width, "route": name, "url": target, "marker": route.get("marker"),
-        "marker_ok": marker_ok, "passed": passed, "reasons": reasons,
+        "marker_ok": marker_ok, "testid": route.get("testid"), "testid_ok": testid_ok,
+        "passed": passed, "reasons": reasons,
         "click_log": click_log, "overflow": overflow_info,
         "console_errors": console_errors, "failed_requests": failed_requests,
         "screenshot": str(shot_path), "duration_s": round(time.monotonic() - t0, 2),
@@ -413,12 +503,22 @@ def main(argv: list[str] | None = None) -> int:
                         "server_ctl.py start --auth")
     ap.add_argument("--include-pending", action="store_true",
                     help="also attempt routes flagged _pending (routes_next.json)")
+    ap.add_argument("--only", default=None,
+                    help="comma-separated route 'name' values -- run only this "
+                        "subset (e.g. an --auth --role viewer smoke pass over a "
+                        "handful of routes rather than the whole file). Unknown "
+                        "names are silently ignored, matching nothing rather "
+                        "than erroring, since the caller may pass names that "
+                        "only exist in some route files.")
     ap.add_argument("--headed", action="store_true")
     args = ap.parse_args(argv)
 
     base = args.base or f"http://127.0.0.1:{args.port}"
     routes_path = _resolve_routes_path(args.routes)
     routes = _load_routes(routes_path, args.include_pending)
+    if args.only:
+        only_names = {n.strip() for n in args.only.split(",") if n.strip()}
+        routes = [r for r in routes if r.get("name") in only_names]
     widths = [int(w.strip()) for w in args.widths.split(",") if w.strip()]
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)

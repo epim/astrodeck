@@ -237,3 +237,160 @@ before any fix -- exactly what this harness is for)
   uvicorn process is a CHILD pid (confirmed via the server log: "Started
   server process [45580]" under launcher pid 32508). Killing only the
   launcher pid would leave uvicorn running and bound to the port.
+
+## `routes_next.json` -- the real route list (2026-09-10, `feat/ui-next`)
+
+Replaces the old placeholder (every entry `_pending`, none of it real). Built
+by reading the actual source, not by guessing: `ui/src/next/router.ts` (the
+hash grammar and the `SUBS` table, which is where the real sub-nav names for
+weather/session/rig/monitor/settings come from -- e.g. weather's subs are
+`conditions`/`sky`/`radar`, not `sky`/`radar`), `ui/src/next/hubs/index.ts`
+(`HUB_ORDER`, `HUB_META`, and the composed global `SHEETS` registry), every
+hub's own `sheets/index.ts` + its `reg-*.ts` fragments (the per-task sheet
+contributions six agents wrote in parallel for the Rig hub, four for
+Settings), and a full `data-testid="..."` grep across `ui/src/next/hubs/**`
+and `ui/src/next/shell/**` to get the REAL marker for every screen rather
+than inventing one.
+
+60 routes, none `_pending` -- every hub in `hubs/index.ts` is wired to a real
+component by this point in the branch:
+
+- 15 hub-root / sub-nav routes (one per entry in every hub's `SUBS[hub]`,
+  using the router's own default-resolution for a bare hub hash, e.g. `#/settings`
+  resolves to `general` because that is `SUBS.settings[0]`).
+- 44 sheet routes -- one per name actually present in a hub's composed
+  `sheets` registry object, reached through the sub-nav screen that actually
+  links to it (so Settings' MORE-group sheets sit under
+  `#/settings/general/<name>`, matching where `GeneralScreen`'s own rows
+  open them from). Left out on purpose: `driver` and `demo` (both in the Rig
+  hub's registry) -- `driver` is reachable only mid-flow through `addDevice`
+  (there is no nav path that lands on it cold) and `demo` is `SheetHost`
+  test scaffolding by its own doc comment, not a screen a real user reaches.
+- `#/classic` -- proves the legacy root (`ui/src/App.tsx`) still mounts.
+  Marker is the nav label `"Equipment"`, not the header's `STATUS` strip:
+  `STATUS` is `hidden md:flex` (App.tsx:599) and would false-FAIL the probe's
+  visible-only text match at 390px for a reason that has nothing to do with
+  whether classic actually mounted. `Equipment`'s nav-label collision risk
+  (see the trap notes above) does not apply here because this route clicks
+  nowhere -- it only has to prove SOME legacy default view rendered.
+
+Every route carries `"testid"` (a `data-testid` value, asserted via the new
+`probe.py` support below) as its primary, load-bearing check; a handful also
+carry a text `"marker"` as a cheap independent second check where the
+visible label is unambiguous. `marker` stays fully optional per-route (see
+the `probe.py` section below) -- most `routes_next.json` entries do not set
+one.
+
+One param correction worth flagging: `#/session/files` reads `params.src`,
+not `params.source` (`ui/src/next/hubs/session/sheets/files.tsx:177`), and
+the value the UI's own TONIGHT chip uses is `src=current`
+(`files.tsx:511`), not `src=tonight` -- used the real names.
+
+No `expected_failures` entries were pre-guessed, and after running the full
+list twice (see "2026-09-10 run notes" below) none were added: every failure
+the run produced traced back to a real gap (a stale server install, one
+screen missing a gate its sibling screen already has, a genuine overflow
+bug, or the server's own security header blocking a capability the new code
+calls) rather than a simulator limitation the UI is correctly reporting
+around. `expected_failures` stays empty on purpose -- adding one for any of
+these would have hidden a real finding rather than documented a legitimate
+gap.
+
+## 2026-09-10 run notes
+
+First full run against `routes_next.json` (60 routes x 3 widths = 180) was
+144/180. Almost all of that was environment, not the UI: `server/.venv` was
+a NON-editable install frozen at Sep 8 (`astrodeck==0.3.26`), five commits
+behind the Sep 10 repo source it was supposed to be serving -- missing `GET
+/api/site` and `GET /api/remote/status` entirely (confirmed both ways: `curl`
+straight to the running port returned `{"detail":"Not Found"}` for both, and
+a line-count diff against `server/astrodeck/api/app.py` showed the installed
+copy 259 lines short). Reinstalled editable (`pip install -e . --no-deps`
+from `server/`, no repo file touched -- `.venv/` is gitignored) and reran:
+166/180. The remaining 14 are real and are NOT probe bugs:
+
+- **`monitor-live` / `monitor-log` / `monitor-alerts` fetch radar tiles even
+  when weather is off**, 404ing on every tile (`{"detail":"weather
+  disabled"}`) and re-firing on `RadarMap`'s own refresh timer for as long as
+  the component stays mounted. `ui/src/next/hubs/monitor/live/LiveScreen.tsx:481-486`
+  mounts `<RadarMap />` behind `bp !== "phone" && canSeeWeather` only -- no
+  `weather.enabled` check. `ui/src/next/hubs/weather/radar/RadarScreen.tsx:44-68`
+  mounts the SAME component behind an explicit `off = !weather ||
+  !weather.enabled` gate, with its own comment explaining exactly why: "It
+  does NOT mount the map when weather is switched off. Mounting it would
+  fire a grid of tile requests through the server-side IEM proxy for a
+  feature the operator has turned off." LiveScreen is missing that gate.
+  Because every route in one width's run shares a single browser tab (a
+  hash-only `page.goto` is a same-document navigation, so the SPA never
+  reloads between routes), RadarMap's interval keeps firing after the probe
+  has moved on, which is why the 404s also landed on `settings` and
+  `settings-users-screen` at 1440px in one run -- those screens never
+  request tiles themselves, they were just the active route when a stale
+  timer tick resolved.
+- **Permissions-Policy blocks camera (`sky`, 390/820px) and geolocation
+  (`sky-sites`, all 3 widths).** The server's own security middleware
+  (`server/astrodeck/api/app.py:2026-2028`) sends
+  `Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(),
+  usb=()` on every response -- an empty allowlist, which blocks the API for
+  every origin including same-origin, not just third-party embeds. The new
+  UI calls both anyway (`ui/src/next/hubs/sky/finder/camera.ts`,
+  `ui/src/next/hubs/sky/sheets/photosphere.ts` for camera;
+  `ui/src/next/hubs/sky/sheets/sites.tsx`'s "fill from phone" for
+  geolocation), so those features cannot work in ANY browser against this
+  server as configured now, regardless of device permissions -- this predates
+  the new UI (the header looks written when the classic UI had no
+  camera/geolocation-calling code) and is a genuine cross-cutting
+  conflict, not a probe artifact.
+- **Two real horizontal-overflow bugs**, both under Rig > Devices:
+  `#/rig/devices/addDevice` (`scrollWidth` a FIXED 2454px regardless of
+  viewport -- 1634px overflow at 820px, 1014px at 1440px, confirmed visually
+  in the 820px screenshot: driver rows and the assignment table run off the
+  right edge with no scrollbar) and `#/rig/devices/mount/polar`'s sibling
+  `#/rig/devices/safety` (100px overflow, 820px only). Neither reproduces at
+  390px. Reported for the controller to trace; not fixed here per the
+  brief (probe tooling does not touch `ui/src`).
+
+Fixed here, in `probe.py`, because both were the harness's own fault, not
+the app's:
+
+- `_login()`'s post-login success check waited for the text "Devices" to
+  become visible -- the classic Equipment view's inner panel title. Every
+  `--auth` run against `routes_next.json` failed at the login step, not
+  because login was broken, but because the new UI's default post-login
+  screen is the Sky hub, which never shows that string. Replaced with a
+  UI-agnostic check: wait for the Username field to close, then run the
+  same `_vacuity_guard` every route already passes through. The
+  `--auth --role viewer` subset (`sky`, `session-now`, `rig-devices`,
+  `rig-devices-camera`, `settings`) is 15/15 after the fix.
+- Added `"testid"` route support and `--only` (see above).
+
+Full reports: `.probe/out-next/report.jsonl` (no-auth, all 60 routes x 3
+widths), `.probe/out-next-viewer/report.jsonl` (`--auth --role viewer`
+subset). Both directories are gitignored (`.probe/`), regenerated by
+`server_ctl.py` / `probe.py`, not committed.
+
+## `probe.py` extension: `"testid"` routes + `--only`
+
+Two additions, both needed to drive `routes_next.json`:
+
+- **`"testid": "some-id"`** on a route now asserts
+  `[data-testid="some-id"]` is VISIBLE (same visible-only discipline as text
+  markers, via a new `_visible_css_matches` / `_wait_for_visible_testid`,
+  mirroring `_visible_matches` / `_wait_for_visible_text`) before the route
+  can pass. `"marker"` is now optional (`route.get("marker")` instead of the
+  old `route["marker"]`, which would `KeyError` on any route that omits it).
+  A route must supply at least one of `testid` / `marker` or it fails with
+  an explicit reason ("route defines neither 'testid' nor 'marker'") rather
+  than silently passing on vacuity alone -- an empty gate is exactly the
+  false-pass shape this harness exists to catch. The JSON report line for
+  each route now also carries `"testid"` / `"testid_ok"` alongside the
+  existing `"marker"` / `"marker_ok"`.
+- **`--only name1,name2,...`** filters the loaded route list down to those
+  `"name"` values before walking widths. Added so the brief's
+  `--auth --role viewer` read-only smoke pass could run over a named
+  SUBSET of `routes_next.json` (sky, session/now, rig/devices,
+  rig/devices/camera, settings) without a second route file -- this tool's
+  file ownership is `routes_next.json` + this README + `probe.py` /
+  `server_ctl.py`, not arbitrary new JSON files. Unknown names match
+  nothing rather than erroring, since a caller may reuse `--only` against a
+  route file that does not have every name.
