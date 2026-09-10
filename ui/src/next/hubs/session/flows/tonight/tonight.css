@@ -1,0 +1,305 @@
+/* tonight.css - the Tonight sheet's own classes (wave R7's CSS rule: only
+   T-R7-0 may touch `next/next.css`, so every area writes its own sheet and
+   imports it from its root component).
+
+   Prefix `nx-tn-` so nothing here can collide with a `next.css` or `shell.css`
+   class name. Unlayered, like `index.css`, so utilities do not beat it; single
+   class selectors, variants on `data-*`. Tokens only - no hex, because the
+   night palette (`:root.night`) re-derives every one of them. */
+
+.nx-tn-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.nx-tn-tabs {
+  flex: none;
+}
+
+/* A vertical stack for a tab whose body is more than one block. */
+.nx-tn-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+/* A sentence where a chart would have been: every degraded state the design
+   does not draw, plus the server's own refusal, so the sheet never has a blank
+   body that reads as "nothing is wrong yet". */
+.nx-tn-note {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text);
+  text-wrap: pretty;
+}
+
+/* ------------------------------------------------------------- the timeline */
+
+.nx-tn-tl {
+  position: relative;
+  min-width: 0;
+}
+
+.nx-tn-tl-svg {
+  display: block;
+  width: 100%;
+}
+
+.nx-tn-tl-labels {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.nx-tn-tl-label {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 10px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.nx-tn-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 10px;
+  color: var(--text-faint);
+}
+
+.nx-tn-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+/* Shape carries the mark type, colour only confirms it: a block is a band, a
+   bar is the moon strip, a dash is the meridian-flip rule. */
+.nx-tn-legend-swatch {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  flex: none;
+}
+
+.nx-tn-legend-swatch[data-shape="bar"] {
+  height: 3px;
+  width: 12px;
+  border-radius: 999px;
+}
+
+.nx-tn-legend-swatch[data-shape="dash"] {
+  width: 2px;
+  height: 12px;
+  border-radius: 1px;
+}
+
+/* ---------------------------------------------------------------- the story */
+
+.nx-tn-brief {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.nx-tn-brief-text {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--text);
+  text-wrap: pretty;
+}
+
+.nx-tn-story {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.nx-tn-story-row {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr);
+  gap: 10px;
+  align-items: baseline;
+}
+
+/* 56 px is what "BUDGET" needs; a clock time and the ANY / BUDGET labels share
+   the column, so the right edge has to line up or the times stop scanning. */
+.nx-tn-story-stamp {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 10px;
+  color: var(--text-faint);
+  text-align: right;
+}
+
+.nx-tn-story-msg {
+  font-size: 12px;
+  line-height: 1.5;
+  min-width: 0;
+  text-wrap: pretty;
+}
+
+/* ----------------------------------------------------------------- the plan */
+
+.nx-tn-plan {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.nx-tn-plan-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.nx-tn-plan-json {
+  margin: 0;
+  white-space: pre;
+  overflow: auto;
+  max-height: 46dvh;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 10px;
+  line-height: 1.55;
+  color: var(--text-dim);
+}
+
+/* ------------------------------------------------------------- the campaign */
+
+.nx-tn-camp {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.nx-tn-camp-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.nx-tn-members {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.nx-tn-member {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.nx-tn-member-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  min-width: 0;
+}
+
+.nx-tn-member-name {
+  font-family: "Chakra Petch", ui-sans-serif, system-ui, sans-serif;
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nx-tn-member-status {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  flex: none;
+  color: var(--text);
+}
+
+.nx-tn-member-status[data-tone="faint"] { color: var(--text-faint); }
+.nx-tn-member-status[data-tone="good"] { color: var(--good); }
+.nx-tn-member-status[data-tone="accent"] { color: var(--accent); }
+
+/* An outlined track with NO fill is the "not counted" state - a bar sitting at
+   0% would say the rig looked and found nothing, which is a different night. */
+.nx-tn-member-track {
+  height: 6px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--line) 45%, transparent);
+  border: 1px solid var(--line);
+}
+
+.nx-tn-member-fill {
+  height: 100%;
+  border-radius: 999px;
+}
+
+/* ------------------------------------------------------------ library health */
+
+.nx-tn-cal {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.nx-tn-cal-row {
+  display: grid;
+  grid-template-columns: 46px minmax(0, 1fr) 44px 58px;
+  gap: 6px;
+  align-items: center;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 10px;
+}
+
+.nx-tn-cal-kind { color: var(--text-faint); }
+
+.nx-tn-cal-summary {
+  color: var(--text-dim);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nx-tn-cal-qty {
+  color: var(--text);
+  text-align: right;
+}
+
+.nx-tn-cal-verdict { text-align: right; }
+
+.nx-tn-cal-note {
+  margin: 0;
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--text-faint);
+  text-wrap: pretty;
+}
+
+.nx-tn-cal-note[data-tone="warn"] { color: var(--warn); }
+
+/* The sheet is 420 px at tablet/desktop and full width on a phone; below 420
+   the four-column health row and the story's stamp column are what give first,
+   so they narrow rather than forcing the body to scroll sideways. */
+@media (max-width: 419px) {
+  .nx-tn-cal-row { grid-template-columns: 40px minmax(0, 1fr) 38px 54px; }
+  .nx-tn-story-row { grid-template-columns: 48px minmax(0, 1fr); }
+}
