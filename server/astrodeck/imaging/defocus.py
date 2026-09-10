@@ -102,7 +102,8 @@ def _binned(a: np.ndarray, k: int = BIN) -> np.ndarray:
 
 
 def measure_blob(data: np.ndarray, *, bin_: int = BIN,
-                 window_px: int = WINDOW_PX) -> BlobSize | None:
+                 window_px: int = WINDOW_PX,
+                 max_r80: float | None = None) -> BlobSize | None:
     """Size of the DOMINANT source, or None when nothing rose above the noise.
 
     Works on a donut and on a star with the same code and the same units, which
@@ -129,6 +130,14 @@ def measure_blob(data: np.ndarray, *, bin_: int = BIN,
 
     ``None`` means only what it says: no source anywhere in the frame cleared
     the noise. Nothing to measure is the one thing this cannot measure.
+
+    ``max_r80`` skips sources bigger than that, in FULL-frame px. Default
+    ``None`` — ``focus.coarse`` calls this and must never be told a 400 px
+    donut is too big to be its blob. ``measure_defocus`` is the one caller that
+    passes it, and its docstring holds the measurements; a skipped source also
+    does not CLAIM its region, so the seeds behind it still get measured (on
+    L_0006 the M33 blob was the only source the twelve probes ever reached,
+    because a truncated claim reserves twice its own edge).
     """
     a = np.asarray(data, dtype=np.float32)
     if a.ndim != 2 or a.shape[0] < 8 * bin_ or a.shape[1] < 8 * bin_:
@@ -162,6 +171,8 @@ def measure_blob(data: np.ndarray, *, bin_: int = BIN,
             m = better
         if m["snr"] < SIZE_MIN_APERTURE_SNR:
             continue
+        if max_r80 is not None and m["r80"] * bin_ > max_r80:
+            continue            # not a defocus blob on a frame that resolves
         # A source whose aperture hit the frame edge is bigger than we measured,
         # so it claims further out than we measured. Without this a blob that
         # runs off the frame comes back as three "separate sources" — its own
@@ -220,17 +231,66 @@ def measure_defocus(data: np.ndarray, *, stars=None) -> BlobSize | None:
     count here is SIZE_FINE_MIN_STARS (10), the bar below which a median is not
     a population.
 
+    THE GATE ALONE WAS NOT ENOUGH, and the frames of that same night say so.
+    It is one bit — "are these stars healthy" — and a frame can fail it for a
+    reason that has nothing to do with defocus. Measured on the whole 6252x4176
+    subs (``measure_blob``'s answer, then this function's, against what the
+    frame's own stars grade):
+
+        G_0031  stars 3.78, gate refused (truncation 1.43) -> r80  734 -> 18
+        L_0006  stars 4.05, gate refused (box HFR 4.05)    -> r80 1110 -> 10
+        L_0026  stars 4.13, gate refused (box HFR 4.13)    -> r80 1086 -> 10
+        B_0025  stars 4.07, gate refused (box HFR 4.07)    -> r80   62 -> 18
+
+    All four are trailed or slightly bloated and all four are IN FOCUS; the
+    734-1110 px readings are M33 and the sky gradient, published to the Focus
+    panel as "far out of focus, run coarse focus first". So the blob is bounded
+    by the same fact ``star_size``'s pyramid is bounded by: a source more than
+    ``SIZE_MAX_STAR_MULTIPLE`` times the size of the stars this frame RESOLVES
+    is not one of its sources, let alone its defocus (``resolved_star_scale``,
+    which is the weaker of the module's two questions and the one L_0026 needs).
+
+    THE BOUND IS ON r80, the number this function publishes, and not on the
+    source's internal mean radius. Bounding the internal one has a wider margin
+    (highest reading that must pass 9.4x against a lowest that must not of 27x,
+    where r80 gives 10.3x against 17x) and it would let this function publish a
+    figure that violates its own bound — 62 px on B_0025, which
+    ``lib/focusVerdict.ts`` turns into "far out of focus" at anything over 25.
+    A bound on the published number cannot do that.
+
+    Every genuinely defocused frame is untouched, because it resolves no stars
+    to bound against: the nine off-focus sweep fixtures still read r80 26-94,
+    donut_L60 and donutfield_L60 still read 10, pedrift_L60 34, the synthetic
+    ring fields 6-10, and ``test_defocus``' hard-edged 60-donut fields 10-222.
+
+    WHAT IT COSTS, because ``hub`` runs this on every preview sub. Nothing on an
+    in-focus frame (14 ms on R_0007: the gate returns before any of this). On
+    the four frames above it is 240-620 ms MORE — 318 -> 807 ms on L_0006 —
+    because dropping the M33 blob is exactly what lets the other eleven probes
+    be measured at all instead of falling inside its claim. That is against a
+    60-300 s sub, in a thread, on frames where the readout was previously wrong
+    by two orders of magnitude.
+
     ``stars`` is the caller's existing ``detect_stars`` pass — the preview path
     grades every sub before it asks this — so the frame is scanned once.
 
     ``focus.coarse`` deliberately does NOT come through here: it calls
     ``measure_blob``, because on a frame it cannot measure it must say "nothing
-    bright enough to measure" and stop, not "your stars look fine".
+    bright enough to measure" and stop, not "your stars look fine". It therefore
+    passes no ``max_r80`` either, and a coarse-focus donut is never bounded.
     """
-    from .stars import compact_star_population
-    if compact_star_population(data, stars=stars) is not None:
+    from .stars import (SIZE_MAX_STAR_MULTIPLE, compact_star_population,
+                        detect_stars, resolved_star_scale)
+    img = np.asarray(data)
+    if img.ndim != 2:
         return None
-    return measure_blob(data)
+    if stars is None:
+        stars = detect_stars(img.astype(np.float64))
+    if compact_star_population(img, stars=stars) is not None:
+        return None
+    scale = resolved_star_scale(img, stars=stars)
+    return measure_blob(img, max_r80=(None if scale is None
+                                      else SIZE_MAX_STAR_MULTIPLE * scale))
 
 
 def focus_from_two(p1: int, r1: float, p2: int, r2: float) -> float | None:

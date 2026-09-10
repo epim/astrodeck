@@ -28,9 +28,11 @@ Two size measurements live here and they are NOT interchangeable:
   - ``"pyramid"`` — otherwise, by finding sources on a pyramid of downsampled
     copies and measuring each on its own azimuthally-median radial profile — an
     aperture set by the SOURCE, and escalated onto a binned copy when the source
-    outgrows what is affordable at full resolution, so the frame itself is the
-    only limit. See the section header further down for the sky data that
-    forced it.
+    outgrows what is affordable at full resolution, so on a frame that resolves
+    no stars the frame itself is the only limit. Where it DOES resolve stars,
+    they are: a source a dozen times their size is a galaxy or a sky gradient
+    and not one of this frame's sources (``resolved_star_scale``). See the
+    section header further down for the sky data that forced both halves.
 """
 from __future__ import annotations
 
@@ -509,24 +511,41 @@ SIZE_CONFIDENT_SNR = 50.0
 # one is measured (`focus.pipeline`), so the extra ~250 ms sits under a 4 s
 # exposure rather than beside it.
 #
-# WHAT THIS STILL GETS WRONG, measured 2026-09-08 and left alone deliberately.
-# `_bright_population` ranks by the 15 px box's flux, and that box subtracts
-# only its own border median -- so a star sitting on a bright galaxy carries the
-# galaxy's pedestal in its flux and is ranked ABOVE the field. Once the top half
-# of the population is on the nebulosity its probes read 1.3-1.8 and the median
-# crosses gate 2, and the PYRAMID then answers with the galaxy: B_0032, a real
-# 6252x4176 B sub of the M33 field with 200 detections and a grader HFR of 3.69,
-# comes back 839.61 px at scale 64. (Refusing the fine path there is right --
-# its stars are 30 px smears -- but 839.61 px is not an answer about them.)
+# LEAVING THE FINE PATH IS NOT A LICENCE TO MEASURE SOMETHING ELSE (fixed
+# 2026-09-10; pinned as a known defect here from 2026-09-08).
 #
-# No threshold fixes it, which is why nothing here moved. The frames we hold put
-# the highest must-pass reading at 1.242 (jump_R60) and the lowest must-not at
-# 1.287 (B_0032), and a galaxy walks the median smoothly through that gap as its
-# surface brightness rises; counting compact probes instead of medianing them
-# does no better (the synthetic galaxy field scores 41%, staircase_G60, which
-# must be refused, scores 44%). The fix belongs to whatever claims the nebula at
-# scale 64, not to a new number here. Pinned as a known defect in
-# test_star_gate_is_brightness_independent.py so it stays visible.
+# B_0032 -- a real 6252x4176 B sub of the M33 field, 200 detections, grader HFR
+# 3.69 -- was answering 839.61 px at pyramid scale 64. Refusing the FINE path
+# there is right (every one of its 25 probes is a ~30 px comet smear, ecc
+# 0.35-0.78, and the box really is missing a fifth of each), but 839.61 px is
+# not an answer about that frame. The 2026-09-08 note here blamed the ranking:
+# a star on nebulosity carrying the galaxy's pedestal in `Star.flux` and so
+# out-ranking the field. On this frame that is not what happens, and the crops
+# say so -- the 25 probes are spread right across the frame, and the annulus
+# under each sits 0.5 sigma (median) to 1.3 sigma (max) above the frame's own
+# sky. There is no pedestal under them to carry.
+#
+# What actually produced 839.61 is the PYRAMID's own bookkeeping. One seed at
+# level 64, near the middle of the frame, grew its aperture to edge 1720 px and
+# came back mean_r 839.61 with flux 1.075e8 -- 13x the brightest STAR the same
+# pass measured (8.3e6 at scale 4). SIZE_POPULATION_FRAC then left it the SOLE
+# voter over ten 6-7 px stars, because flux for an extended source scales with
+# its AREA and a galaxy therefore outvotes every star in any frame it appears
+# in. Rendered at 1/8 scale it is a 840 px circle around M33's disk.
+#
+# Neither of the two ranking repairs works, and both were measured rather than
+# reasoned about. An annulus-background flux makes the synthetic case strictly
+# WORSE (the galaxy's own smooth core out-ranks stars harder above an annulus
+# than above a box border: 17 of 17 voters on-galaxy instead of 8 of 17).
+# Excluding probes by local background cannot be calibrated at all: a bright
+# star's own wings put its 15 px box border 17 sigma (R_0007) to 88 sigma
+# (sweep 9900) above sky on frames with no nebulosity in them.
+#
+# So the rule is the one below, and it is about the ANSWER rather than about the
+# population: a source more than SIZE_MAX_STAR_MULTIPLE times the size of the
+# stars this frame RESOLVES is not one of this frame's sources. See
+# `resolved_star_scale`. It changes nothing on a donut frame or a sweep point,
+# because those resolve no stars for it to measure against.
 # ---------------------------------------------------------------------------
 
 #: Level-1 detections needed before the fine path will answer. A median over
@@ -662,6 +681,123 @@ SIZE_FINE_MAX_TRUNCATION = 1.25
 #: bigger than the probe -- and gate 1 holds all of them at box HFR 4.26-4.88.)
 SIZE_FINE_MAX_PEAK_R = 2.0
 
+#: Detections the 15 px box faithfully describes (``Star.hfr`` below
+#: SIZE_FINE_MAX_BOX_HFR) before this frame is credited with RESOLVING a star
+#: population at all. Not the same question as the fine path's count gate, and
+#: deliberately a lower bar: SIZE_FINE_MIN_STARS asks "is this a population
+#: whose median I may ANSWER with", while this asks only "does this frame
+#: contain resolved stars, so that a source a dozen times their size cannot be
+#: one of them" -- a bound, which is a weaker claim than an answer. 5 is the
+#: floor ``_bright_population`` already uses for the smallest list this module
+#: will vote with.
+#:
+#: Measured (compact detections per frame), and the two sides do not touch:
+#:
+#:     resolves stars   B_0032 159  G_0031 118  L_0006 151  B_0025 65
+#:                      R_0007/R_0030 200  m33field_G60 94  staircase_G60 10
+#:                      jump_R60 10  m33core_G60 8  L_0026 6
+#:                      synthetic galaxy fields 47-60
+#:     resolves none    every off-focus sweep point 0 (4900 7900 8900 9300 9600
+#:                      10200 10500 10900 11900), every synthetic ring field 0
+#:                      (r=8/20/45/90), sigma=12 synthetic 0, donut_L60 1,
+#:                      pedrift_L60 1, donutfield_L60 3
+#:
+#: The frames that must NOT be bounded top out at 3 and the lowest that may be
+#: is 6, so 5 sits between them with the whole sweep two-to-nothing clear of it.
+#:
+#: A COUNT IS NOT SUFFICIENT, and the shape test in ``resolved_star_scale`` is
+#: not decoration. A field of HARD-EDGED annuli crowded enough for the rings to
+#: intersect -- ``test_defocus``' own 60-donut synthetic -- puts 23-32
+#: detections at box HFR 3.3-3.5, because where two rims cross the overlap is a
+#: narrow bright wedge and a 15 px cutout on a wedge really is compact. Rendered
+#: at 4x that is plainly what they are. Real rims are seeing-softened and read
+#: nothing (every sweep fixture, every Gaussian-rim synthetic: 0), so this shape
+#: never came up until the bound needed it.
+SIZE_RESOLVED_MIN_STARS = 5
+
+#: How many times bigger than this frame's own resolved stars a source may be
+#: and still be one of THIS frame's sources. Above it the pyramid is describing
+#: a galaxy, a nebula or the sky gradient -- see the block above for B_0032,
+#: where a level-64 seed grew a 1720 px aperture around M33 and outvoted ten
+#: 6-7 px stars on flux alone.
+#:
+#: A ratio, so it carries across rigs, pixel scales and gains untouched.
+#: Measured as (the answer a frame must be allowed to give) / (the median box
+#: HFR of its compact detections):
+#:
+#:     must be allowed   staircase_G60 5.83 (19.23/3.30)   B_0025 2.11
+#:                       L_0001 2.14 (a real donut field)  G_0031 2.58
+#:                       B_0032's own stars 1.82           L_0006 1.74
+#:                       sigma=4 synthetic 1.35 (true 5.01)
+#:     must be refused   B_0032's M33 claim 230 (839.61/3.65)
+#:                       synthetic galaxy fields 26 (49.2/1.88)
+#:
+#: 12 sits 2.1x above the highest reading that must pass and 2.2x below the
+#: lowest that must not -- a factor of two either way, against the 0.6% margin
+#: SIZE_FINE_MAX_TRUNCATION has to live with. It is that wide because the two
+#: populations are not on one axis: one is a star, the other is a galaxy.
+SIZE_MAX_STAR_MULTIPLE = 12.0
+
+
+def _resolved_star_scale(img: np.ndarray, bg: float, sigma: float,
+                         stars: list[Star], cap: float) -> float | None:
+    """``resolved_star_scale`` with the frame's statistics already in hand."""
+    compact = [s for s in stars if s.hfr < SIZE_FINE_MAX_BOX_HFR]
+    if len(compact) < SIZE_RESOLVED_MIN_STARS:
+        return None
+    # ARE THEY STARS, OR PIECES OF SOMETHING BIGGER? Gate 3's own reading and
+    # gate 3's own threshold, on this population instead of the grader's: a star
+    # peaks at its own centre at any brightness, and a fragment of a ring peaks
+    # off it. The gate this reuses is the one ``SIZE_FINE_MAX_PEAK_R`` calls
+    # "the one that only ever says annulus", which is exactly the question here.
+    # Measured (median peak radius over the compact detections' own probes):
+    #
+    #     stars      1.0 on L_0026 L_0006 G_0031 B_0032 B_0025 clean_R60
+    #                m33field_G60 m33core_G60 jump_R60 staircase_G60 and every
+    #                step of the synthetic galaxy ramp;  L_0001 1.5
+    #     wedges     hard-edged 60-donut fields: r=90 2.5, r=45 4.0, r=8 5.0
+    #
+    # so the bar at 2.0 sits between 1.5 and 2.5 without being moved, and the
+    # truncation ratio could not do this job (hard r=90 reads 1.16 while the
+    # galaxy ramp reads up to 1.31). ~1-8 ms on a 26 MP frame.
+    probe = _box_truncation(img, bg, sigma, compact, cap)
+    if probe is None or probe[2] >= SIZE_FINE_MAX_PEAK_R:
+        return None
+    return float(np.median([s.hfr for s in compact]))
+
+
+def resolved_star_scale(data: np.ndarray, *, stars: list[Star] | None = None,
+                        k_sigma: float = 5.0) -> float | None:
+    """How big the sources this frame RESOLVES are, in px — or ``None``.
+
+    ONE definition, because two consumers bound themselves with it and must not
+    drift: ``star_size``'s pyramid (which refuses to claim a source a dozen
+    times this size) and ``imaging.defocus.measure_defocus`` (which refuses to
+    call one a defocus blob). It is deliberately NOT ``compact_star_population``
+    — that answers "may the box's number BE the answer", a stricter question
+    that a trailed or slightly-bloated frame legitimately fails while still
+    plainly resolving stars (L_0026 grades 4.13 and is refused by gate 1, yet
+    six of its detections sit inside the box and its blob measurer was reporting
+    1086 px).
+
+    TWO facts, and the second is what a count alone cannot supply: at least
+    SIZE_RESOLVED_MIN_STARS detections whose own ``hfr`` is inside the box, AND
+    a radial profile that peaks at their own centres rather than off them. See
+    both constants for the tables; ``None`` when either fails, which is every
+    donut field and every off-focus sweep point measured, and both consumers
+    then behave exactly as they did before this bound existed.
+
+    ``stars`` is the caller's existing detection pass; omit it and one is made.
+    """
+    img = np.asarray(data, dtype=np.float64)
+    if img.ndim != 2 or min(img.shape) < 16:
+        return None
+    if stars is None:
+        stars = detect_stars(img, k_sigma=k_sigma)
+    bg, sigma = _bg_sigma(img)
+    return _resolved_star_scale(img, bg, sigma, stars,
+                                float(min(SIZE_R_CAP, min(img.shape) / 2.0)))
+
 
 @dataclass
 class SourceSize:
@@ -672,11 +808,14 @@ class SourceSize:
     snr: float          #: brightest source's aperture flux / (sigma*sqrt(pixels))
     scale: int          #: pyramid level it was found at — 1 = a star, 64 = a donut
     lower_bound: bool   #: the aperture ran into the frame edge; radius is a FLOOR
-    #: which measurement answered: "stars" = the fine path, i.e. the median box
-    #: HFR over the population ``median_hfr`` grades with, so the two numbers are
-    #: the same one; "pyramid" = a source found on a binned copy and measured on
-    #: its own radial profile. Defaulted so every existing construction (and
-    #: every test that builds a SourceSize by hand) keeps working.
+    #: which measurement answered: "stars" = the median box HFR over the
+    #: population ``median_hfr`` grades with, so the two numbers are the same
+    #: one — either through the fine path's gates, or as the only credible
+    #: answer left when the pyramid found no source commensurate with the
+    #: frame's own stars; "pyramid" = a source found on a binned copy and
+    #: measured on its own radial profile. Defaulted so every existing
+    #: construction (and every test that builds a SourceSize by hand) keeps
+    #: working.
     source: str = "pyramid"
     #: MAD of the per-source radii that VOTED for ``radius`` — the population
     #: scatter behind the median, in the same pixels. ``None`` when a single
@@ -1072,7 +1211,8 @@ def _radius_mad(radii, median: float) -> float | None:
 
 def _fine_size(img: np.ndarray, bg: float, sigma: float, k_sigma: float,
                cap: float,
-               stars: list[Star] | None = None) -> SourceSize | None:
+               stars: list[Star] | None = None,
+               gated: bool = True) -> SourceSize | None:
     """The frame's size from its UNBINNED stars, or ``None`` to use the pyramid.
 
     ONE detection pass — the same one ``median_hfr`` makes — and the answer is
@@ -1084,6 +1224,13 @@ def _fine_size(img: np.ndarray, bg: float, sigma: float, k_sigma: float,
     ``stars`` lets a caller that has already detected them hand the list over
     (the preview path grades every sub before it asks this question), so the
     O(pixels) pass is made once per frame rather than once per consumer.
+
+    ``gated=False`` skips the three shape gates and answers from the population
+    regardless. ONE caller: ``star_size``, for the frame that resolves stars
+    (``resolved_star_scale``) and whose pyramid then found no source of a
+    commensurate size. The gates ask "may the box's number BE the answer"; when
+    nothing bigger is credible it is the only answer there is, and returning it
+    beats returning ``None`` on a frame holding sixty measurable stars.
     """
     if stars is None:
         stars = detect_stars(img, k_sigma=k_sigma)
@@ -1092,15 +1239,15 @@ def _fine_size(img: np.ndarray, bg: float, sigma: float, k_sigma: float,
     pop = _bright_population(stars)
     hfrs = [s.hfr for s in pop]
     radius = float(np.median(hfrs))
-    if radius >= SIZE_FINE_MAX_BOX_HFR:
+    if gated and radius >= SIZE_FINE_MAX_BOX_HFR:
         return None                     # the box is measuring itself (gate 1)
     probe = _box_truncation(img, bg, sigma, stars, cap)
     if probe is None:
         return None
     truncation, snr, peak_r = probe
-    if peak_r >= SIZE_FINE_MAX_PEAK_R:
+    if gated and peak_r >= SIZE_FINE_MAX_PEAK_R:
         return None                     # an annulus, not a star (gate 3)
-    if truncation >= SIZE_FINE_MAX_TRUNCATION:
+    if gated and truncation >= SIZE_FINE_MAX_TRUNCATION:
         return None                     # rim fragments, not stars (gate 2)
     return SourceSize(radius=radius, n_sources=len(pop), n_found=len(stars),
                       snr=snr, scale=1, lower_bound=False, source="stars",
@@ -1126,6 +1273,14 @@ def compact_star_population(data: np.ndarray, *,
       bracket", because the blob measurer had found M33 and nothing asked the
       stars.
 
+    NOT the same question as ``resolved_star_scale``, and keeping the two apart
+    is the 2026-09-10 repair. This one is strict on purpose — it decides whether
+    the box's number may BE the answer, so a trailed or slightly-bloated frame
+    fails it (L_0026 grades 4.13, refused by gate 1) even though it plainly
+    resolves stars. That is right for the sweep and wrong as a licence to
+    measure a galaxy, which is why both consumers now also bound themselves by
+    the weaker fact.
+
     ``stars`` is the caller's existing detection pass; omit it and one is made.
     """
     img = np.asarray(data, dtype=np.float64)
@@ -1149,9 +1304,15 @@ def star_size(data: np.ndarray, *, k_sigma: float = 5.0,
       ``compact_star_population``), the answer IS ``median_hfr``: the same median
       of the same estimator over the same stars. Near focus that is what the
       sweep should be fitting, because it is what every sub is then graded with.
+      Also the answer when the frame resolves stars (``resolved_star_scale``) and
+      the pyramid then finds no source of a size commensurate with them — the
+      same number, for the same reason, arrived at from the other side.
     * ``"pyramid"`` — sources found on a pyramid of binned copies and measured
       on their own radial profiles. The regime the fine path cannot reach: real
-      donuts, and the sparse far wings of a sweep where nothing resolves.
+      donuts, and the sparse far wings of a sweep where nothing resolves. Its
+      claims are bounded by SIZE_MAX_STAR_MULTIPLE whenever the frame resolves
+      stars to bound them against: a galaxy has the area, and therefore the
+      flux, to outvote every star in the frame it sits in.
 
     ``None`` means "no measurable source", which on a wide sweep is the literal
     truth and not a failure of the code: see ``size_advice``.
@@ -1162,13 +1323,29 @@ def star_size(data: np.ndarray, *, k_sigma: float = 5.0,
     bg, sigma = _bg_sigma(img)
     half = min(img.shape) / 2.0
     cap = float(min(r_cap, half))
-    fine = _fine_size(img, bg, sigma, k_sigma, cap)
+    stars = detect_stars(img, k_sigma=k_sigma)
+    fine = _fine_size(img, bg, sigma, k_sigma, cap, stars=stars)
     if fine is not None:
         return fine
+    # THE SCALE THIS FRAME'S OWN STARS SET. `None` on a donut field and on every
+    # off-focus sweep point, where it leaves the pyramid exactly as it was; a
+    # number wherever the frame resolves stars, and then no source a dozen times
+    # their size may be claimed as one of this frame's. See the block above
+    # B_0032, where the alternative was 839.61 px of M33.
+    ceiling = _resolved_star_scale(img, bg, sigma, stars, cap)
+    if ceiling is not None:
+        ceiling *= SIZE_MAX_STAR_MULTIPLE
+    # A level whose own resolution floor already exceeds the ceiling can produce
+    # nothing claimable (`SIZE_BIN_TRUST` below is the same bound from the other
+    # side), so not walking it is exact rather than an approximation — and it is
+    # what makes the bounded path CHEAPER than the unbounded one instead of the
+    # same cost plus a test.
+    levels = [k for k in reversed(_size_levels(img.shape))
+              if ceiling is None or k == 1 or SIZE_BIN_TRUST * k <= ceiling]
     binned: dict[int, tuple[np.ndarray, float, float]] = {}
     found: list[dict] = []
     claimed: list[tuple[float, float, float]] = []
-    for k in reversed(_size_levels(img.shape)):
+    for k in levels:
         # Coarse levels are a handful of big blobs; level 1 is a star field.
         limit = 6 if k >= 8 else (40 if k > 1 else 60)
         for (y, x) in _seed_positions(img, k, k_sigma, limit):
@@ -1224,6 +1401,17 @@ def star_size(data: np.ndarray, *, k_sigma: float = 5.0,
                         break   # this level held the whole source; go no coarser
             if m["snr"] < SIZE_MIN_APERTURE_SNR:
                 continue
+            # NOT ONE OF THIS FRAME'S SOURCES. It does not vote and it is not
+            # counted, but it DOES claim its region, because measuring the same
+            # nebula once per seed is what the pyramid's coarse-first ordering
+            # exists to avoid: without this a bright galaxy on a 512 px frame
+            # took the whole pass from 0.11 s to 3.8 s, having every one of 146
+            # seeds grow a 190 px aperture over the same object. Answer-neutral
+            # on every frame in the corpus — the stars that matter are outside
+            # the claim, and where they are not, the population below answers.
+            if ceiling is not None and m["mean_r"] > ceiling:
+                claimed.append((m["y"], m["x"], max(3.0, m["edge"])))
+                continue
             # Over the WHOLE aperture, not half of it. A donut's middle is dark,
             # so half the aperture can land entirely inside the hole, where the
             # brightest pixel is noise and fails the neighbour test — this guard
@@ -1237,6 +1425,15 @@ def star_size(data: np.ndarray, *, k_sigma: float = 5.0,
             claimed.append((m["y"], m["x"], max(3.0, m["edge"])))
             found.append(m)
     if not found:
+        # NOTHING BIGGER IS CREDIBLE, so the stars are the answer. Only
+        # reachable when the frame resolved a population in the first place; on
+        # a donut field or a far sweep point `ceiling` is None and "no source"
+        # is the literal truth (`size_advice` says what to change). The number
+        # is `median_hfr`'s own, so a sweep and its grader stay one measurement
+        # here too.
+        if ceiling is not None:
+            return _fine_size(img, bg, sigma, k_sigma, cap, stars=stars,
+                              gated=False)
         return None
     solid = [m for m in found if not m["truncated"]]
     if not solid:
