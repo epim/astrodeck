@@ -43,37 +43,75 @@ truth for BEHAVIOUR that already exists: the seam inventories in
 
 ## 1. Directory layout
 
+This is the tree as shipped (verified against the working tree, not the plan):
+
 ```
 ui/src/next/
   NextApp.tsx            root of the new UI (auth gate, shell, hubs, hosts)
-  ARCHITECTURE.md        a copy of this document (T0.1 copies it in)
+  ARCHITECTURE.md        this document
   router.ts              hash router: parse/build, nav API, useRoute
   breakpoint.ts          useBreakpoint(): "phone" | "tablet" | "desktop"
   legacyBridge.ts        store.view / helpTopic -> route mapping
   next.css               the new component classes (nx-* prefix), imported ONLY by NextApp
   icons.tsx              hub icons + device glyphs + misc (design SVG paths)
-  ui/                    primitives (section 6)
-  shell/                 Header, TabBar, Rail, Banners, CampaignStrip, SheetHost,
-                         SessionColumn, Toasts, ConfirmCard, Popover host
-  lib/                   pure modules: gate.ts, incidents.ts, allocation.ts,
-                         reach.ts, advection.ts, cloudTiles.ts, horizonModel.ts,
-                         fov.ts (thin re-export of lib/framing), format.ts, versions.ts
+  env.d.ts               ambient type for __APP_VERSION__ and other build-time globals
+  ui/                    primitives (section 6): ActionButton, BannerCard, Bar, Card,
+                         Checkbox22, Chip, DeviceGlyphTile, Dial, Divider, EmptyCard,
+                         Field, IconButton48, IncidentCard, Label, ListRow, Mono, Pill,
+                         Popover, Readout(Grid/Tile), RingGauge, Segmented, Sheet,
+                         StatusPill, Stepper2, SubNav, Switch, TextInput, Wordmark,
+                         honest.ts (the shared lock-press guard), index.ts, types.ts
+  shell/                 Header, Rail, TabBar, SubNav, Banners, CampaignStrip, SheetHost,
+                         SessionColumn, Toasts, ConfirmCard, HubBoundary (error boundary
+                         per hub), subContext.ts (per-hub chip/badge counts), explain.ts
+                         (explainLock), useIncidents.ts, shell.css, boundary.css
+  lib/                   pure modules: gate.ts, gateHook.ts, incidents.ts, allocation.ts,
+                         reach.ts, advection.ts, cloudTiles.ts, horizonModel.ts, fov.ts,
+                         format.ts, versions.ts, index.ts
   hubs/
-    sky/       SkyHub.tsx + finder/*, sheets/* (targets, sites, horizon, coords,
-               quickSession, flowCard)
-    weather/   WeatherHub.tsx (conditions, dome, radar)
-    session/   SessionHub.tsx + now/*, gallery/*, flows/*, sheets/* (files, report,
-               planEditor)
-    rig/       RigHub.tsx + devices/*, capture/*, sheets/* (camera, mount, polar,
-               focuser, wheel, guider, rotator, safety, power, addDevice, driver,
-               profiles, inspect)
-    monitor/   MonitorHub.tsx (live, log, alerts)
-    settings/  SettingsHub.tsx + sheets/* (setup, connection, optics, sites,
-               horizon, quickDefaults, account, users, about, help, ...)
+    index.ts             HUB_ORDER, HUB_META, the composed SubContext hook
+    sheets.ts            the SheetProps/SheetComponent contract every hub's sheets export follows
+    sky/       SkyHub.tsx + finder/* (SkyView, model, camera, gyro, projection,
+               equatorial, gestures, targets, clouds, wind, track, prefs), frame/*
+               (FrameHost, FrameTools, FramingCard, FramedOverlay, MosaicNightCard,
+               SurveyPopover, mosaic, zoom, degraded), cards/* (LockCard, LensDial,
+               LayersPopover, ReachStrip, StatusRow, BrowseBanner, PatchCard, glyphs,
+               lockCta), sheets/* (targets, sites, horizon, coords, quick, flow, brief,
+               photosphere + their model/copy/lane helper modules)
+    weather/   WeatherHub.tsx + conditions/* (ConditionsScreen, ConditionsBand,
+               CloudChart, moon, verdict), dome/* (DomeScreen, domeOverlay), radar/*
+               (RadarScreen), sheets/* (CloudmapSheet, WeatherSettingsSheet)
+    session/   SessionHub.tsx + now/* (NowScreen, IncidentStack, LiveStack,
+               ChannelStrip, VitalsBand, IntegrationBar, ArmedRules, CampaignLedger,
+               Interrupted, PoolChips, QuotaRows, RunControls, RunHeader, NowBanners,
+               NowEmpty + model/helper modules), gallery/*, flows/*, sheets/* (files,
+               archive, planEditor, report)
+    rig/       RigHub.tsx + devices/* (DevicesScreen, DeviceRow, ConnectOnceCard,
+               ProfileRow, ProfilesPopover, QuickActions, rigConnect, roster),
+               capture/* (CaptureScreen, CaptureStage, CaptureControls,
+               CaptureReadouts, CoolerRow, ResultCard, captureGate, useArm), sheets/*
+               (camera, mount, polar, focuser, wheel, guider, rotator, safety, power,
+               addDevice, driver, profiles, inspect, inspectStack + the reg-*.ts
+               sheet-registration fragments), lib/* (coolerCurve, guiderModel,
+               safetyBars, safetyChain, wheelRing, pendingValue)
+    monitor/   MonitorHub.tsx + live/* (LiveScreen, VitalsBand, FlipTile,
+               RecoveryCards, StallStrip, LockControls, RunProgress), log/* (LogScreen,
+               LogExport, logSources), alerts/* (AlertsScreen, NotifyRow)
+    settings/  SettingsHub.tsx + general/* (GeneralScreen, Group, MoreGroup,
+               PhoneGroup, SetupCard, setupSteps, useSetup), sheets/* (Connection,
+               Optics, Users, About, Help, Update, Sync, Standards, Calibration
+               (library + tolerances), Naming, WcsStamp, Restricted, FactoryReset,
+               Credits, AuthMethods, Account, QuickDefaults, LogExport, Setup +
+               connectionModel/opticsModel + set2/set3/set4 wiring modules)
   __tests__/             shell, router, bridge, breakpoint tests
-  hubs/<hub>/__tests__/  per-hub DOM tests
+  hubs/<hub>/__tests__/  per-hub DOM tests (also nested under finder/, frame/,
+                         sheets/, capture/, flows/, gallery/ inside sky/session/rig)
   lib/__tests__/         pure tests
+  ui/__tests__/          primitive tests
 ```
+
+`sites` (the Sites sheet) physically lives under `hubs/sky/sheets/` and Settings reuses the
+same registered component (section 5's "sites is shared ... registered once").
 
 File ownership is by directory. A task that needs a change outside its
 directory names it in the report and does NOT make it unless the task brief
@@ -354,7 +392,11 @@ Reason copy: link down: "the rig is not reachable"; cap: `needs ${accessPhrase(c
   toggles) render honest-disabled with the reason; nothing is hidden, so a
   viewer sees the same screen as the operator. Exception (design): the Files
   sheet shows FITS only when `view.media` is held (JPEG previews otherwise,
-  with the line "FITS originals need admin access").
+  with the line "FITS originals need syncer or admin access" - the roles that
+  hold `view.media` per `ui/src/lib/caps.ts`'s `ROLE_CAPS` table; a syncer
+  genuinely holds it, so naming only admin would be the exact defect class
+  `accessPhrase()` exists to prevent. Amended from the original "admin access"
+  wording during review).
 - Operator without `control.power` / `config.backend`: Power sheet, Add device,
   Profiles and driver declaration render read-only with the reason.
 - Site privacy: coordinates render only with `view.site_precise`; otherwise
@@ -454,36 +496,51 @@ README specifies the screen (device sheets, Settings groups, Files, Gallery).
 
 ## 12. Server additions (Wave S, Python, own tests, additive only)
 
+Status: landed. All five routes exist and are consumed by the UI named below.
+
 S1. Per-site horizon polyline: `Location.horizon_points: list[[az, alt]] | null`
-    on saved locations (`locations.py`), returned by `GET /api/locations`,
-    accepted by the create/update routes; when a location is applied as the
-    site (`/api/site` from a saved location), copy its points into
+    on saved locations (`server/astrodeck/locations.py`), returned by
+    `GET /api/locations`, accepted (partial-update: an omitted field leaves it
+    unchanged) by `PUT /api/locations/{loc_id}`; applying a location as the
+    site (`POST /api/locations/{loc_id}/apply`) copies its points into
     `config.safety.horizon` so the engine's obstruction rule uses the drawn
-    line. `GET /api/site` echoes `horizon_points`.
-S2. Weather feed fields: `/api/weather` gains `now: {temp_c, dewpoint_c,
+    line. `GET /api/site` echoes `horizon_points`. Consumed by the Sky hub's
+    Sites and Horizon sheets (`hubs/sky/sheets/sites.tsx`, `horizon.tsx`) -
+    the horizon is per-site, not the single global polyline this section
+    originally described as an interim state.
+S2. Weather feed fields: `GET /api/weather` gains `now: {temp_c, dewpoint_c,
     humidity_pct, wind_kmh, wind_dir_deg, gust_kmh, cloud_base_m}` and hourly
     `wind_kmh[]`, `wind_dir_deg[]`, `humidity_pct[]`, `dewpoint_c[]` from
-    Open-Meteo (`windspeed_10m`, `winddirection_10m`, `windgusts_10m`,
-    `relativehumidity_2m`, `dewpoint_2m`, `temperature_2m`); cloud base as the
-    lifting-condensation estimate `125 m * (T - Td)` when no feed value.
+    Open-Meteo. Consumed by the Weather hub's Conditions screen and the Sky
+    finder's wind arrows (`hubs/sky/finder/wind.ts`).
 S3. `GET /api/remote/status` (view.status): `{enabled, home_id, relay_host,
     connected, last_error, since_unix, via: "direct"|"relay"}` where `via` is
-    how THIS request arrived (`request.scope["state"]["astrodeck_remote"]`).
-S4. PWA: `ui/public/manifest.json` + `ui/public/sw.js` (network-first for
-    navigations, cache-first for `/assets/*`, never `/api`, `/ws`, `/auth`);
-    server adds `/sw.js` to `_AUTH_OPEN_EXACT`; SW registered only in
-    production builds and only under a secure context.
-S5. `GET /api/sessions/{id}/files` and `GET /api/sessions/current/files`:
-    per-filter `{filter, count, exposure_s, bytes, frames: [{id, path, bytes,
-    accepted, override, hfr}]}` plus totals (folded from the session ledger
-    and gallery index). If the Session plan finds an existing route that
-    serves this, S5 is dropped.
+    how THIS request arrived. Consumed by Settings > Connection
+    (`hubs/settings/sheets/ConnectionSheet.tsx`, `connectionModel.ts`).
+S4. PWA: `ui/public/manifest.json` + `ui/public/sw.js` ship; `/sw.js` is in
+    `_AUTH_OPEN_EXACT` alongside `/icon-192.png` / `/icon-512.png`
+    (`server/astrodeck/api/app.py`).
+S5. `GET /api/sessions/{id}/files` and `GET /api/sessions/current/files`
+    (`server/astrodeck/sequence/session_files.py`): per-filter `{filter,
+    count, accepted, exposure_s, bytes, integration_s, frames: [{id, ts,
+    bytes, accepted, override, hfr, stars, guide_rms, thumb}]}` plus totals.
+    **Amended from the original spec**: the frame row deliberately omits
+    `path`. `SessionFrame.path` is redacted below `config.backend`
+    (admin-only), so shipping it would blank on every row for the Files
+    sheet's real audience (operator/admin) and the grade join key does not
+    need it. Do not "fix" this back in.
 S6. Versions: `/healthz` already has the engine version; the UI version is
-    injected at build time (`define: { __APP_VERSION__ }` from `ui/package.json`).
+    injected at build time (`define: { __APP_VERSION__ }` from
+    `ui/package.json`), read by `SettingsHub.tsx` and the About sheet. Done as
+    a mechanism; `ui/package.json`'s `version` field itself is still `0.1.0`
+    and needs bumping as part of a release, not this contract (see
+    DEVIATIONS.md's Follow-ups).
 
-Each S-task: pytest tests beside the module, `-n0`, RBAC boot assertion must
-stay green, `test_rbac_enforcement.py::test_ws_valid_principal_survives_recheck`
-is a known pre-existing failure and is not ours.
+Each S-task shipped with pytest tests beside the module (`test_locations_horizon.py`,
+`test_remote_status.py`, `test_open_paths.py`, `test_session_files.py`,
+plus weather/RBAC coverage in the existing suites), run `-n0`.
+`test_rbac_enforcement.py::test_ws_valid_principal_survives_recheck` is a
+known pre-existing failure and is not ours.
 
 ## 13. Testing
 
@@ -504,43 +561,101 @@ is a known pre-existing failure and is not ours.
   walks every hub, opens every sheet, and screenshots to `<scratch>/e2e/`.
   Run by the controller after each hub.
 
-## 14. Work plan
+## 14. What landed
 
-Wave 0 (foundation)
-- T0.2 primitives + next.css + icons (opus) - `ui/src/next/ui/*`, `next.css`, `icons.tsx`, tests.
-- T0.3 pure libs (sonnet) - `ui/src/next/lib/*` + tests: gate, incidents (types
-  + derivation skeleton with the kinds fixed by the README), allocation, reach,
-  advection, cloudTiles, horizonModel, format, versions.
-- T0.1 shell (opus, after T0.2) - NextApp, router, breakpoint, legacyBridge,
-  shell/*, main.tsx switch, PWA files; hubs are placeholders that render their
-  sub-nav and an EmptyCard; tests for router/bridge/breakpoint/shell.
-- Wave S (opus, Python) in parallel with T0.1.
+The work plan (Wave 0 -> Wave S -> eight hub/chrome waves, each planned,
+implemented, reviewed and probed in order) ran as written in the superseded
+version of this section. What shipped, on `feat/ui-next`, 39 commits ahead of
+`main` (`fec53970` pure library modules through `a34338cf` the relay-fence and
+redaction fixes; `git log --oneline main..HEAD` for the full list):
 
-Hubs, in the user's priority order, each: planner (opus) writes
-`<scratch>/plan/hub-<name>.md` grounded in the inventories and proto
-fragments -> controller review -> implementers (opus for screens with
-math/gesture logic, sonnet for list/settings-style sheets) partitioned by
-directory -> reviewer (opus; re-runs tests, checks the inventory for lost
-features, checks viewer rendering) -> controller commits -> e2e probe.
+- Wave 0: primitives + `next.css` + icons; pure libs (`gate`, `incidents`,
+  `allocation`, `reach`, `advection`, `cloudTiles`, `horizonModel`, `format`,
+  `versions`); the shell (`NextApp`, `router`, `breakpoint`, `legacyBridge`,
+  `shell/*`, the `main.tsx` root switch, the PWA files).
+- Wave S: all five server additions (section 12) landed and are consumed.
+- All six hubs shipped with their device/screen sheets, in the plan's
+  priority order (Sky; Session + Rig - Capture; Rig - Devices; Weather;
+  Monitor; Settings), each hub's own plan document
+  (`<scratch>/plan/hub-<name>.md`) recording its screen-by-screen spec and its
+  own Deviations section (see `DEVIATIONS.md`, one table per hub).
+- Cross-hub chrome, campaign strip, session tab dot, error boundaries per
+  hub, PWA registration, and an end-to-end Playwright probe
+  (`tools/ui_probe/`) walking 60 real routes at 390/820/1440 px, both
+  unauthenticated and per-role.
+- A whole-branch review (`<scratch>/plan/REVIEW-FINDINGS.md`) found one P0 and
+  eleven P1 findings; a follow-up wave of commits fixed the P0, all four
+  dead-control-with-a-promise P1s (the dropped mosaic, the two orphaned
+  preference keys, the dead toast button), both server data-loss/leak P1s
+  (the horizon write paths, the meridian-flip longitude leak), the missing
+  error boundary, detect-my-hardware, polar's running message, and the
+  missing focus-scope shutter. `DEVIATIONS.md`'s "Legacy defects found and
+  fixed on this branch" list has the commit hashes.
+- Deferred, by name, to a later wave: several P2/P3 findings and the items in
+  `DEVIATIONS.md`'s Follow-ups list (a UI version bump, code-splitting the
+  hub bundle, restyling the reused legacy panels mounted in the new chrome,
+  the dome overlay's missing yaw hook, and others named there).
 
-1. Roles: in Wave 0 (gate.ts, viewer rendering in primitives, Login in chrome).
-2. SKY hub (search, survey tiles under FRAME, lens hides satellites/comets).
-3. SESSION hub (Now, incidents, live stack + Inspect, Files with grades and
-   FITS gating and stacking bundle, Gallery, Flows, campaign ledger + quotas
-   read-only, plan editor sheet) and RIG · Capture (still/loop/video-as-SER
-   where the backend supports it, Inspect).
-4. RIG · Devices (driver declaration, role assignment, providers, all device
-   sheets incl. rotator, safety with sun avoidance / pier floor / meridian /
-   escalation read-out).
-5. WEATHER hub (settings and states, dome pierce point, radar).
-6. MONITOR hub (live, log, alerts with sinks + test, interrupted-run recovery).
-7. SETTINGS hub (everything left, first-time setup, connection with relay
-   status, optics, sites, horizon, night, downloads, users, about).
-8. Cross-hub chrome, campaign strip, session dot, PWA, night check, e2e at
-   three widths, final whole-branch review.
+`npm test`, `npx tsc -b --pretty false` and the server pytest suites were
+green at hand-off (see the review document's "Command output" section for the
+exact runs); re-verify before shipping past this branch, since more commits
+may have landed since this document was last amended.
 
 ## 15. Copy
 
 Use the README's strings verbatim where given. Hold-to-learn explanations
 ("hold any control for a plain-language explanation") are one sentence each
 and state something the screen does not. Blocked reasons name the blocker.
+
+## 16. How to run it
+
+**Dev server (new UI, against a real or simulator rig).** The AstroDeck
+server must already be running on port 8800 (`server/.venv/Scripts/python -m
+astrodeck run --port 8800`, then connect a rig or the simulator over the API
+or the legacy UI). Then, in a second terminal:
+
+```
+cd ui
+npm run dev
+```
+
+Vite serves the new UI at `http://localhost:5173` and proxies `/api` to
+`http://127.0.0.1:8800` and `/ws` (websocket) to `ws://127.0.0.1:8800`
+(`ui/vite.config.ts`). The new root mounts by default; append `#/classic` to
+the URL (or use the footer link in Settings) for the legacy UI - see below.
+
+**Isolated probe server, for a clean rig with no manual setup.** `tools/ui_probe/`
+owns a fully isolated server (own config dir, own captures dir, own port,
+simulator rig auto-connected) built for the end-to-end walk but equally
+useful for manual poking:
+
+```
+python tools\ui_probe\server_ctl.py start --fresh
+#   -> prints {"base": "http://127.0.0.1:8801", "pid": ..., ...}
+```
+
+Point a browser (or a dev-mode `npm run dev` proxy target) at that base URL;
+`stop` it with `python tools\ui_probe\server_ctl.py stop` when done. Add
+`--auth` to start it with local auth bootstrapped and three probe accounts
+(`probe_admin` / `probe_operator` / `probe_viewer`) - see
+`tools/ui_probe/README.md`'s "Auth / first-run mechanism" section for exactly
+how those are seeded and why.
+
+**The probe itself**, one command (builds `ui/dist`, starts the isolated
+server, walks every hub/sheet at 390/820/1440 px, stops the server):
+
+```
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\ui_probe\run.ps1
+```
+
+Flags worth knowing: `-SkipBuild` (probe whatever is already in `ui/dist`),
+`-Auth -Role viewer|operator|admin` (walk the routes signed in as that role),
+`-Routes routes_next.json` (the new UI's 60 real hash routes; the default is
+`routes_classic.json`, the legacy UI). Screenshots and `report.jsonl` land in
+`<repo>/.probe/out/`. Full details, including the vacuity/false-pass guards
+and the quirks this harness has already caught, are in
+`tools/ui_probe/README.md` - read it before extending the route lists.
+
+**Legacy UI.** `#/classic` (and `#/classic/<view>` for any of the 16
+`ViewName`s in `ui/src/types.ts`) mounts the old root unchanged, in the same
+build, at the same dev server or probe server - no separate build step.
