@@ -1,32 +1,33 @@
-// ChannelStrip.tsx - which channels went into the picture, and how it is shown.
+// ChannelStrip.tsx - which channels the stack holds, and which one is on screen.
 //
-// TWO CONTROLS AND ONE SENTENCE, and the sentence is the important part.
+// TAPPING A CHIP FETCHES THAT CHANNEL (D-SES-1). `GET /api/sequence/stack/
+// preview.jpg` now takes `channel=`, answered from the stacker's own per-channel
+// accumulator (`imaging/sessionstack.py` `channel_preview`), so the picture
+// really is Ha alone rather than the colour composite with a tint over it. The
+// chip therefore has to name something the route can resolve, which is why the
+// chips are `status.channels[].channel` - the stacker's keys, R/G/B/L/Ha/Oiii/
+// Sii - and nothing else.
 //
-// Tapping a filter chip does NOT fetch that channel. `GET /api/sequence/stack/
-// preview.jpg` takes `size` and `seq` and nothing else - there is no channel
-// parameter and the server never renders one - so the chip greyscales the
-// COLOUR COMPOSITE and tints it, which is what the prototype does. Left at
-// that, the chip would claim a per-channel stack that does not exist, so the
-// line under the strip states what the picture actually is. That line is not
-// decoration and it is not optional (deviation D4).
-//
-// The counts are ACCEPTED FRAMES OF THIS NIGHT from the session ledger, not the
-// stack's own channel tallies: the stack folds R, G and B onto three composite
-// channels and a run with two red filters would come back as one number. When
-// there is no session ledger the stack's tallies are used and the chip says
-// which filter the STACK is calling it.
+// THIS MOVED A NUMBER SOMEBODY READS, so it is stated here. The chips used to be
+// the session ledger's per-FILTER rows and their counts were THIS NIGHT'S
+// ACCEPTED SUBS. Those are the WHEEL's names ("Ha", "H-alpha", "S2" for the same
+// glass); the route resolves a name only when `channel_for` maps it, and an
+// unmapped one folds onto L, so a chip built from a wheel name either 404s or
+// quietly shows L's picture under another label. The ledger counts are not lost:
+// they are the line under the strip, and it says which count is which. That line
+// appears only when the two disagree, which they do whenever the stack was
+// switched on mid-night (it counts from the press, the ledger counts from dusk)
+// or whenever two filters fold onto one channel.
 
 import type { JSX } from "react";
 
-import { useSeq } from "../../../../store";
 import { Chip, Mono, Segmented } from "../../../ui";
-import { acceptedByFilter, filterColor, plannedByFilter, tonightNightKey } from "./filters";
+import {
+  acceptedByFilter, filterColor, filterToken, plannedByFilter, tonightNightKey,
+} from "./filters";
 import { useActiveSession } from "./sessionData";
 import { paletteWord } from "./useCampaign";
 import { useSessionStackStatus, useStackView, type StretchMode } from "./stackView";
-
-export const TINT_NOTE =
-  "tinted from the colour composite - the rig does not serve one channel on its own yet.";
 
 const STRETCH_OPTIONS: { value: StretchMode; label: string }[] = [
   { value: "SOFT", label: "SOFT" },
@@ -34,29 +35,56 @@ const STRETCH_OPTIONS: { value: StretchMode; label: string }[] = [
   { value: "HARD", label: "HARD" },
 ];
 
+interface Row { name: string; count: number }
+
+/** One key per piece of glass, so "H-alpha" from the wheel and "Ha" from the
+ *  stacker are compared as the same thing and an unmapped name still compares
+ *  as itself rather than collapsing onto L. */
+const foldKey = (name: string): string => filterToken(name) ?? name.trim().toUpperCase();
+
+/** Do the ledger's per-filter counts say something the chips do not? Same
+ *  channels with the same totals is one fact printed twice; anything else is
+ *  two facts and the user needs both. */
+export function ledgerDiffers(chips: readonly Row[], ledger: readonly Row[]): boolean {
+  if (ledger.length === 0) return false;
+  const fold = (rows: readonly Row[]): Map<string, number> => {
+    const m = new Map<string, number>();
+    for (const r of rows) m.set(foldKey(r.name), (m.get(foldKey(r.name)) ?? 0) + r.count);
+    return m;
+  };
+  const a = fold(chips);
+  const b = fold(ledger);
+  if (a.size !== b.size) return true;
+  for (const [k, v] of b) if (a.get(k) !== v) return true;
+  return false;
+}
+
 export function ChannelStrip(): JSX.Element | null {
   const { session } = useActiveSession();
   const { status } = useSessionStackStatus();
   const { channel, setChannel, stretch, setStretch } = useStackView();
-  const seq = useSeq();
+
+  // The offered channels ARE the stack's channels. A chip for a channel the
+  // stack has no accumulator for is a chip that 404s.
+  const rows: Row[] = (status?.channels ?? []).map((c) => ({ name: c.channel, count: c.frames }));
 
   const planned = plannedByFilter(session?.plan);
   const accepted = acceptedByFilter(session, tonightNightKey(session));
-
-  // The wheel's own names when there is a ledger; the stack's composite channel
-  // names when there is not, because those are then the only names anything on
-  // this rig has said out loud.
-  const rows = planned.length > 0
-    ? planned.map((p) => ({ name: p.filter, count: accepted.get(p.filter) ?? 0 }))
-    : (status?.channels ?? []).map((c) => ({ name: c.channel, count: c.frames }));
+  const ledger: Row[] = planned.map((p) => ({ name: p.filter, count: accepted.get(p.filter) ?? 0 }));
 
   if (rows.length === 0 && !status?.enabled) return null;
 
-  const palette = status && Array.isArray(status.channels) && status.channels.length > 0
-    ? paletteWord(status.channels.map((c) => c.channel))
-    : paletteWord(rows.map((r) => r.name));
+  // Nothing stacked yet: the plan says what the composite is GOING to be, and
+  // when there is no plan either the chip says what it is rather than guessing
+  // a palette out of an empty list (`paletteWord([])` answers OSC).
+  const palette = rows.length > 0
+    ? paletteWord(rows.map((r) => r.name))
+    : planned.length > 0 ? paletteWord(planned.map((p) => p.filter)) : "COMBINED";
 
-  const live = seq.state === "running" || seq.state === "holding" || seq.state === "paused";
+  const ledgerLine = ledgerDiffers(rows, ledger)
+    ? "Chips count what the stack holds. This night's accepted subs: "
+      + ledger.map((r) => `${r.name} ${r.count}`).join(", ") + "."
+    : null;
 
   return (
     <div data-testid="now-channel-strip" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -95,13 +123,10 @@ export function ChannelStrip(): JSX.Element | null {
           data-testid="now-stretch"
         />
       </div>
-      {channel && (
-        <span data-testid="channel-tint-note">
-          <Mono size={10} tone="dim">{TINT_NOTE}</Mono>
+      {ledgerLine && (
+        <span data-testid="channel-ledger-note">
+          <Mono size={10} tone="dim">{ledgerLine}</Mono>
         </span>
-      )}
-      {!live && rows.length > 0 && (
-        <Mono size={10} tone="dim">counts are this night's accepted subs</Mono>
       )}
     </div>
   );
