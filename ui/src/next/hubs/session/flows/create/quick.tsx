@@ -44,6 +44,7 @@ import {
   DEFAULT_SUBS, OSC_LABEL, QUICK_RUN_FAILED, QUICK_SAVE_FAILED, quickPayload, targetFromEntry,
   type QuickTarget,
 } from "./quickPayload";
+import "./create.css";
 
 /** The two footers under the channel list. One of them is a claim about the rig
  *  in front of the operator, so which one shows is decided by `fromRig` and
@@ -119,13 +120,7 @@ export function FlowQuickSheet(): JSX.Element {
   const subsOk = Number.isFinite(subs) && subs >= 1;
   const frames = subsOk ? subs * (chosen.length || 1) : 0;
 
-  const close = (): void => {
-    // Idempotent, and not decoration: `FlowsScreen` still sets this flag to open
-    // the legacy overlay and `FlowsCanvasHost` still mounts the component that
-    // reads it, until T-R7-20 cuts both over.
-    setUi({ quickOpen: false });
-    nav.back();
-  };
+  const close = (): void => { nav.back(); };
 
   const saveReason = !canSave
     ? `Creating a flow needs ${accessPhrase("control.capture")}.`

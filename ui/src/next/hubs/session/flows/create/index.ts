@@ -6,32 +6,21 @@
 // area stops exporting is a compile error at the cutover rather than a sheet
 // that silently is not in the map.
 //
-// It is also the area's ONE CSS IMPORT SITE. `next.css` belongs to T-R7-0; every
-// other `nx-*` class this wave adds lives in its own area file, imported by that
-// area's root. One import site means the cascade order cannot depend on which
-// sheet React mounted first.
+// `create.css` is imported here and, since T-R7-21a item 16, by the two sheet
+// modules as well - `wizard.tsx` and `quick.tsx`. It is the same file, so there
+// is no cascade order to get wrong; what the second and third import sites buy
+// is that the stylesheet arrives with whichever chunk actually draws a sheet,
+// now that the registry no longer reaches this barrel at all. `next.css` still
+// belongs to T-R7-0 and no area file may touch a primitive class.
 
 import "./create.css";
 
-import type { SheetRegistry } from "../../../sheets";
-
-/** The two sheet names this area registers. Global across the app
- *  (`hubs/index.ts` throws on a collision), hence the `flow` prefix.
- *
- *  `{ id, load }`, not the components: sheets are code-split (D-FU-2). The
- *  loaders are dynamic on purpose - `hubs/index.ts` sits in the entry chunk and
- *  imports every hub's registry synchronously, so naming the components here
- *  would ship both sheets before first paint. */
-export const flowCreateSheets: SheetRegistry = {
-  flowNew: {
-    id: "session/flows/create/wizard",
-    load: () => import("./wizard").then((m) => ({ default: m.FlowNewSheet })),
-  },
-  flowQuick: {
-    id: "session/flows/create/quick",
-    load: () => import("./quick").then((m) => ({ default: m.FlowQuickSheet })),
-  },
-};
+/** The registry entries live in `reg.ts`, which imports no component and no
+ *  stylesheet. `session/sheets/index.ts` is in the entry chunk and imports
+ *  THAT, not this barrel: the `import "./create.css"` above and the static
+ *  re-exports below are the area, and pulling the area in to register two names
+ *  is what put both sheets in front of first paint (T-R7-21a item 16). */
+export { flowCreateSheets } from "./reg";
 
 export { FlowNewSheet } from "./wizard";
 export { FlowQuickSheet, ONE_CHANNEL_NOTE, WHEEL_NOTE, NO_FILTER_REASON } from "./quick";

@@ -24,9 +24,10 @@ export { InspectToolbar, type InspectToolbarProps } from "./InspectToolbar";
 export { StretchPanel, type StretchPanelProps } from "./StretchPanel";
 export { FrameMetaRow, FrameStatsGrid } from "./FrameReadouts";
 export { Filmstrip } from "./Filmstrip";
+// `LiveStackLine` and `AutofocusLine` are the two this area publishes for
+// screens OUTSIDE the inspect sheet: `hubs/rig/capture/CaptureControls.tsx`
+// mounts the first, `hubs/rig/sheets/focuser.tsx` the second.
 export { LiveStackLine } from "./LiveStackLine";
-// `AutofocusLine` is exported for the named follow-up at
-// `hubs/rig/sheets/focuser.tsx`, which still mounts the legacy `AutofocusVerdict`.
 export { FocusLine, AutofocusLine } from "./FocusLine";
 
 export {

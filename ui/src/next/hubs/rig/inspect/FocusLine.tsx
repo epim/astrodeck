@@ -13,10 +13,10 @@
 // precedence (grossly defocused, then saturation, then few stars, then the HFR
 // band) lives in `focusLine()` and is graded there; this file only paints it.
 //
-// SECOND MOUNT SITE. `hubs/rig/sheets/focuser.tsx` still mounts the legacy
-// `AutofocusVerdict`. `AutofocusLine` is exported here for it; the swap is a
-// named follow-up of this task, because that file is not in this task's
-// ownership.
+// WHERE EACH ONE IS MOUNTED. `FocusLine` is the inspect sheet's own
+// (`hubs/rig/sheets/inspect.tsx`). `AutofocusLine` is exported for the FOCUSER
+// SHEET, `hubs/rig/sheets/focuser.tsx:1589`, which mounts it in place of the
+// legacy `AutofocusVerdict` - the swap this file was written for is done.
 
 import type { JSX } from "react";
 import type { PreviewInfo } from "../../../../types";
@@ -48,7 +48,8 @@ export function FocusLine({ preview, prev, hfrGood, hfrWarn }: {
 }
 
 /** The completed sweep's verdict: "FOCUS EXCELLENT - HFR 1.82 px, 2.4", R2 0.997,
- *  hyperbolic". Exported for `hubs/rig/sheets/focuser.tsx`'s follow-up swap. */
+ *  hyperbolic". Mounted by `hubs/rig/sheets/focuser.tsx`, which is why it is
+ *  exported from the area root as well as defined here. */
 export function AutofocusLine({
   state, hfr, r2, method, pixelScaleArcsec, hfrGood, hfrWarn, message,
 }: {

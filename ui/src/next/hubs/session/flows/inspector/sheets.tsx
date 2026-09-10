@@ -31,7 +31,7 @@ import { PALETTE_TYPES } from "../../../../../components/flows/palette";
 import { nav } from "../../../../router";
 import { NxIcon } from "../../../../icons";
 import { EmptyCard, Sheet } from "../../../../ui";
-import type { SheetProps, SheetRegistry } from "../../../sheets";
+import type { SheetProps } from "../../../sheets";
 import { CalibrationMatrixCard } from "../tonight/CalibrationMatrixCard";
 import { FlowInspectorColumn } from "./FlowInspectorColumn";
 import { ADD_STAGE_TITLE, FlowPaletteRail } from "./FlowPaletteRail";
@@ -119,13 +119,9 @@ export function FlowPaletteSheet(_props: SheetProps): JSX.Element {
  *  would report the contract working as a collision. Both sheets live in THIS
  *  module, so both ids name it and the export disambiguates them, the same way
  *  `rig/sheets/index.ts` spells its in-file `demo` sheet. */
-export const flowInspectorSheets: SheetRegistry = {
-  flowNode: {
-    id: "session/flows/inspector/sheets:FlowNodeSheet",
-    load: () => import("./sheets").then((m) => ({ default: m.FlowNodeSheet })),
-  },
-  flowPalette: {
-    id: "session/flows/inspector/sheets:FlowPaletteSheet",
-    load: () => import("./sheets").then((m) => ({ default: m.FlowPaletteSheet })),
-  },
-};
+/** The registry entries live in `reg.ts` - a component-free module - because
+ *  `session/sheets/index.ts` is in the entry chunk and importing THIS file for
+ *  them would put both sheets, the inspector column, the palette rail, the
+ *  calibration matrix and `inspector.css` in front of first paint. Re-exported
+ *  here so the area barrel and every existing importer still resolve. */
+export { flowInspectorSheets } from "./reg";
