@@ -27,6 +27,7 @@ WITHOUT changing any existing ETA/resume bookkeeping:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from pathlib import Path
 from statistics import median
@@ -179,7 +180,8 @@ CAPTURE_MARGIN_S = 120.0        # added to the exposure for download/save/detect
 SLEW_TIMEOUT_S = 300.0          # plain slew (+settle)
 GOTO_TIMEOUT_S = 420.0          # slew + iterated solve→sync→re-slew centering
 PARK_TIMEOUT_S = 240.0          # park / unpark
-FLIP_TIMEOUT_S = 420.0          # meridian flip = re-slew + solve + restart guiding
+# (the meridian flip's bounds are below, because they are built out of the
+#  guide-start bounds that follow.)
 #: ``start_guiding`` when a usable calibration is ALREADY ON FILE: one guide
 #: exposure, a star-find, load the calibration, settle. 180 s is generous for
 #: that and always has been.
@@ -206,6 +208,45 @@ GUIDE_START_TIMEOUT_S = 180.0
 #: recomputes it from the guider's own constant so the two cannot drift apart.
 GUIDE_CALIBRATE_TIMEOUT_S = 660.0
 GUIDE_OP_TIMEOUT_S = 120.0      # dither / stop-guiding / quick guider ops
+
+# --- the meridian flip's bound ---------------------------------------------
+#: The flip's work BEFORE the guider restart: stop guiding, read the pier side,
+#: re-slew, run the plate-solve centring loop, read the side again, and — when
+#: the side changed — discard the calibration.
+#:
+#: MEASURED at 55 s on 2026-09-09: "00:30:48 meridian flip: stopping guiding
+#: and re-slewing" to "00:31:43 centering attempt 2: 0.4' off target", two
+#: plate solves included. Sized from the bounds of the steps it wraps rather
+#: than from that measurement, for the reason ``TRACKING_RECOVERY_TIMEOUT_S``
+#: gives below: an outer bound smaller than its inner ones is a guillotine, not
+#: a backstop. The re-slew IS a ``hub.goto_and_center`` (``GOTO_TIMEOUT_S``)
+#: and the stop-guide is a quick guider op (``GUIDE_OP_TIMEOUT_S``), so 540 s
+#: is ten times the measured cost and still cannot cut either of them short.
+FLIP_SLEW_TIMEOUT_S = GOTO_TIMEOUT_S + GUIDE_OP_TIMEOUT_S
+#: ``hub.meridian_flip`` in full when the re-slew did NOT change the pier side:
+#: the work above, plus a guide restart that RELOADS the calibration it already
+#: has. The AM5's lead-time attempt is this case and costs 67 s.
+FLIP_TIMEOUT_S = FLIP_SLEW_TIMEOUT_S + GUIDE_START_TIMEOUT_S
+#: ...and when it DID change the side: the same work plus a FRESH CALIBRATION
+#: WALK, because that is what a changed pier side buys (GN-01 discards the
+#: calibration from inside the flip and the restart has to measure a new one).
+#:
+#: MEASURED FAILURE, 2026-09-09 00:30. A real flip on NGC 6946 re-slewed and
+#: centred in 55 s, correctly discarded the calibration on the pier change, and
+#: started the walk at 00:31:45. Under cloud the guide star kept dropping and
+#: the walk did not converge. The WHOLE flip was bounded at one flat 420 s —
+#: SHORTER than ``GUIDE_CALIBRATE_TIMEOUT_S``, the allowance the same engine
+#: already grants that same walk on the target-start and limit-recovery paths —
+#: so at 00:37:48 ``_bounded`` cancelled the flip mid-calibration, the
+#: ``SafetyAbort`` tore the night down and the mount parked at 00:38:08. The
+#: run died at 34 frames of 105. Clear skies hide this: a walk fits in about
+#: five minutes and 420 s covers it by accident.
+#:
+#: Built out of ``GUIDE_CALIBRATE_TIMEOUT_S`` and not out of a fresh number, so
+#: the flip's allowance for a walk can never again be smaller than the one the
+#: rest of the engine grants the same walk. ``test_the_flip_bound_is_composed_
+#: from_the_bounds_it_wraps`` recomputes all three from their parts.
+FLIP_CALIBRATE_TIMEOUT_S = FLIP_SLEW_TIMEOUT_S + GUIDE_CALIBRATE_TIMEOUT_S
 
 #: Guider phases in which the guider is DELIBERATELY COMMANDING THE MOUNT, so a
 #: shutter must stay shut. Calibration is the one that cost frames on sky
@@ -292,6 +333,22 @@ MISSED_GRACE_S = 300.0
 _MAX_PENDING_THUMBS = 4
 
 
+def _timeout_abort(what: str, timeout_s: float, note: str = "") -> SafetyAbort:
+    """Log and BUILD (never raise) the abort a bound's expiry produces.
+
+    One wording, one place. ``_bounded`` is not the only caller any more — the
+    meridian flip's bound is decided in two stages (``_flip_bounded``) and so
+    cannot go through ``wait_for`` once — and two hand-written copies of
+    "``{what}`` timed out after ``{n}``s — aborting" would drift the day one of
+    them was reworded, taking every test that greps the line with it.
+    """
+    tail = f" — {note}" if note else ""
+    bus.log("error",
+            f"{what} timed out after {timeout_s:.0f}s{tail} — aborting",
+            "sequence")
+    return SafetyAbort(f"{what} timed out after {timeout_s:.0f}s{tail}")
+
+
 async def _bounded(awaitable, timeout_s: float, what: str, *, note: str = ""):
     """Await ``awaitable`` under ``asyncio.wait_for`` (P0-2). On timeout, raise a
     ``SafetyAbort`` so the run tears down through the existing shielded park/warm
@@ -304,14 +361,10 @@ async def _bounded(awaitable, timeout_s: float, what: str, *, note: str = ""):
     guiding timed out after 180s" told the morning nothing about the fresh
     calibration walk it had just severed (2026-09-07 03:39). Callers whose
     cancel leaves something behind say so."""
-    tail = f" — {note}" if note else ""
     try:
         return await asyncio.wait_for(awaitable, timeout_s)
     except asyncio.TimeoutError:
-        bus.log("error",
-                f"{what} timed out after {timeout_s:.0f}s{tail} — aborting",
-                "sequence")
-        raise SafetyAbort(f"{what} timed out after {timeout_s:.0f}s{tail}")
+        raise _timeout_abort(what, timeout_s, note)
 
 
 def _mint_report_id(plan_name: str, started_at: float, taken: list[str]) -> str:
@@ -4844,11 +4897,13 @@ class SequenceEngine:
         side_before = await self._pier_side_now()
         # the flip = stop-guide + re-slew + solve + restart-guide; bound it (P0-2)
         # so a wedged flip can't hang the night mid-slew across the meridian.
+        # `_flip_bounded`, not `_bounded`: the restart at the end of that list
+        # is a FRESH CALIBRATION whenever the side changed, and one flat number
+        # for both cases cut one at 420 s on 2026-09-09 and killed the run.
         flip_result: dict | None = None
         try:
-            flip_result = await _bounded(
-                self.hub.meridian_flip(target.ra_hours, target.dec_deg),
-                FLIP_TIMEOUT_S, "meridian flip")
+            flip_result = await self._flip_bounded(
+                self.hub.meridian_flip(target.ra_hours, target.dec_deg))
         except SafetyAbort:
             raise
         except Exception as e:           # noqa: BLE001
@@ -5922,6 +5977,112 @@ class SequenceEngine:
                  else "start guiding (a calibration may be needed)")
         return (GUIDE_CALIBRATE_TIMEOUT_S, label,
                 "the fresh calibration walk was cut part way")
+
+    async def _flip_bound(self) -> tuple[float, str, str]:
+        """``(timeout_s, label, note)`` for ``hub.meridian_flip`` — the same
+        question ``_guide_start_bound`` answers, asked about the whole flip.
+
+        ``hub.meridian_flip`` is stop-guide, re-slew, plate-solve centre,
+        discard the calibration if the pier side changed, and START GUIDING.
+        The last of those is the expensive one and its cost depends on the
+        fourth: a changed side means a FRESH CALIBRATION WALK, whose own
+        allowance elsewhere in this engine is ``GUIDE_CALIBRATE_TIMEOUT_S``.
+        So the flip's bound is the base work plus whatever the restart is
+        actually going to be, and it is composed from the very constants that
+        bound those pieces individually — never a fresh number that could end
+        up smaller than the walk it has to contain, which is exactly what one
+        flat 420 s was on 2026-09-09.
+
+        A flip with no guider in it cannot contain a calibration, so it gets
+        the base bound rather than ``_guide_start_bound``'s "cannot say means
+        roomy" default.
+        """
+        guider = self.hub.guider
+        if guider is None or not getattr(guider, "connected", False):
+            return (FLIP_TIMEOUT_S, "meridian flip", "")
+        guide_s, _label, guide_note = await self._guide_start_bound()
+        if guide_s <= GUIDE_START_TIMEOUT_S:
+            return (FLIP_SLEW_TIMEOUT_S + guide_s, "meridian flip", "")
+        return (FLIP_SLEW_TIMEOUT_S + guide_s,
+                "meridian flip (fresh calibration on the new pier side)",
+                f"{guide_note}; the flip is allowed "
+                f"{FLIP_SLEW_TIMEOUT_S:.0f}s for the re-slew and solves plus "
+                f"{guide_s:.0f}s for the calibration")
+
+    async def _flip_bounded(self, coro):
+        """Await ``hub.meridian_flip`` under a bound that GROWS ONLY WHEN THE
+        FLIP HAS EARNED IT: ``FLIP_TIMEOUT_S`` first, and
+        ``FLIP_CALIBRATE_TIMEOUT_S`` in all once the guider confirms a fresh
+        calibration walk is what the flip is still busy with.
+
+        THE ORDERING PROBLEM. The bound has to be decided before the call, and
+        WHICH bound is right is not known until after the re-slew inside it —
+        since 2026-09-08 ``hub.meridian_flip`` reads the pier side either side
+        of its own slew and returns ``flipped``, so the deciding fact is born
+        inside the very call being bounded. Two other answers were considered:
+
+        * BOUND FOR THE WORST CASE ALWAYS — one number,
+          ``FLIP_CALIBRATE_TIMEOUT_S``, whatever happens. Rejected because it
+          makes every flip that does NOT flip pay the calibration's twenty
+          minutes before it can fail. On this mount most flips are that: the
+          AM5 picks its pier side from the hour angle, so the lead-time attempt
+          re-slews and stays put, at a measured 67 s. Stretching that failure
+          path from seven minutes to twenty, at the meridian, on a mount that
+          stops tracking at its own limit, is a worse trade than the bug.
+        * SPLIT THE CALL IN CODE — have the engine bound the re-slew separately
+          from the guiding restart. Rejected because the two are one hub method
+          and the engine does not own the pieces: pulling them apart means
+          either editing ``hub.meridian_flip`` (out of scope here) or
+          re-implementing its pier reads, its GN-01 discard and its ``flipped``
+          result in the engine, where the two copies would drift.
+
+        So the call is split in TIME instead, which needs nobody's cooperation:
+        one coroutine, bounded twice. The first bound covers the whole flip
+        with a REUSED calibration. If it expires, the guider is asked the same
+        question ``_guide_start_bound`` asks — and by then it has a real answer,
+        because the discard the flip performs is exactly what makes
+        ``needs_calibration`` say yes. Only that answer buys the extension.
+
+        A wedge anywhere before the guider restart therefore still fails at
+        ``FLIP_TIMEOUT_S`` (nothing has been discarded, so nothing is owed a
+        walk), and the ``SafetyAbort``, the park and the ``flipped`` handling
+        downstream are all unchanged.
+        """
+        task = asyncio.ensure_future(coro)
+        started = time.monotonic()
+        total_s, what, note = FLIP_TIMEOUT_S, "meridian flip", ""
+        try:
+            try:
+                # SHIELDED so a first expiry does not cancel the flip: that is
+                # the whole point — `wait_for` cancelling the awaitable is what
+                # severed the calibration at 00:37:48.
+                return await asyncio.wait_for(asyncio.shield(task),
+                                              FLIP_TIMEOUT_S)
+            except asyncio.TimeoutError:
+                pass
+            grown_s, what, note = await self._flip_bound()
+            if grown_s > total_s:
+                total_s = grown_s
+                bus.log("warning",
+                        f"the meridian flip has run past {FLIP_TIMEOUT_S:.0f}s "
+                        f"and the guider says it is walking a fresh "
+                        f"calibration — allowing it {total_s:.0f}s in all "
+                        f"rather than cutting the walk", "sequence")
+                left = total_s - (time.monotonic() - started)
+                if left > 0:
+                    try:
+                        return await asyncio.wait_for(asyncio.shield(task),
+                                                      left)
+                    except asyncio.TimeoutError:
+                        pass
+            raise _timeout_abort(what, total_s, note)
+        finally:
+            # `wait_for` would have cancelled the awaitable; the shield means
+            # this has to be done by hand, on every exit that is not a return.
+            if not task.done():
+                task.cancel()
+                with contextlib.suppress(BaseException):
+                    await task
 
     def _guide_rms(self) -> float | None:
         """Current total guide RMS in ARCSEC, or None when unguided/unreadable
