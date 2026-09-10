@@ -63,8 +63,8 @@ g.IS_REACT_ACT_ENVIRONMENT = true;
 const { createElement, act, useRef, useState } = await import("react");
 const { createRoot } = await import("react-dom/client");
 const {
-  ActionButton, Bar, Dial, IncidentCard, Popover, ReadoutGrid, ReadoutTile,
-  Segmented, Sheet, Switch,
+  ActionButton, Bar, Dial, IncidentCard, Label, Mono, Popover, ReadoutGrid,
+  ReadoutTile, Segmented, Sheet, Switch, TextInput,
 } = await import("../index");
 
 // ------------------------------------------------------------------ harness
@@ -356,6 +356,158 @@ const DIAL_OPTS = [
     keydown(grp(), "ArrowRight");
     eq(picks.length, 2, "ArrowRight did nothing - the control is keyboard-dead");
     eq(picks[1], 2, "ArrowRight moved to the wrong option");
+  });
+}
+
+// ------------------------------------------- one option locked, group live
+
+{
+  const picks: number[] = [];
+  const explained: string[] = [];
+  const REASON = "this camera bins to 2x2 at most";
+  render(createElement(Segmented, {
+    label: "Binning", value: 1,
+    onChange: (v: number) => { picks.push(v); },
+    onExplain: (r: string) => { explained.push(r); },
+    options: [
+      { value: 1, label: "1x1" },
+      { value: 2, label: "2x2" },
+      { value: 4, label: "4x4", lockedReason: REASON },
+    ],
+    "data-testid": "bin-locked",
+  } as any));
+  const opt = (v: string) => q(`[data-testid="bin-locked"] [data-value="${v}"]`);
+
+  test("Segmented per-option lock: the locked option is still RENDERED and reachable", () => {
+    assert(opt("4") != null,
+      "the unavailable option VANISHED - a three-way choice that silently shows two " +
+      "makes the missing one unexplainable");
+    eq(opt("4").getAttribute("aria-disabled"), "true", "the locked option is not marked disabled");
+    eq(opt("4").getAttribute("title"), REASON, "the reason is not on hover");
+    assert(!opt("4").hasAttribute("disabled"),
+      "the native disabled attribute is on it, which strips it from the a11y tree");
+    assert(opt("2").getAttribute("aria-disabled") == null,
+      "a live option in the same group was marked disabled too");
+  });
+
+  test("Segmented per-option lock: pressing it explains, and does NOT change the value", () => {
+    click(opt("4"));
+    eq(picks.length, 0, "a locked option changed the setting anyway");
+    eq(explained.length, 1, "the blocked press said NOTHING - the silent-no-op defect");
+    eq(explained[0], REASON, "the wrong reason reached the user");
+  });
+
+  test("Segmented per-option lock: the live options in the same group still work", () => {
+    click(opt("2"));
+    eq(picks.length, 1, "one locked option locked the whole group");
+    eq(picks[0], 2, "the live option picked the wrong value");
+  });
+
+  test("Segmented per-option lock: arrowing ONTO it explains instead of selecting", () => {
+    keydown(q('[data-testid="bin-locked"]'), "ArrowLeft");
+    eq(picks.length, 1, "ArrowLeft selected the locked option - the keyboard route bypasses the lock");
+    eq(explained.length, 2, "the blocked key press said nothing");
+    eq(explained[1], REASON, "the wrong reason reached the user by keyboard");
+  });
+}
+
+// -------------------------------------------------- ActionButton kind=warn
+
+{
+  render(createElement(ActionButton, {
+    kind: "warn", size: "lg", onPress: () => {}, "data-testid": "clouded",
+  } as any, "SWITCH TARGET"));
+
+  test("ActionButton: the warn kind reaches the DOM as its own kind, not danger", () => {
+    eq(q('[data-testid="clouded"]').getAttribute("data-kind"), "warn",
+      "the amber CLOUDED CTA renders as some other kind, so it is painted the wrong colour");
+  });
+}
+
+// ================================================================ TextInput
+
+{
+  const typed: string[] = [];
+  const blurred: string[] = [];
+  const entered: string[] = [];
+  function InputHarness({ locked }: { locked: string | null }) {
+    const [v, setV] = useState("M 31");
+    return createElement(TextInput, {
+      value: v, ariaLabel: "Target",
+      onChange: (n: string) => { typed.push(n); setV(n); },
+      onBlur: (n: string) => { blurred.push(n); },
+      onEnter: (n: string) => { entered.push(n); },
+      lockedReason: locked,
+      "data-testid": "target",
+    } as any);
+  }
+  render(createElement(InputHarness, { locked: null }));
+  const inp = () => q('[data-testid="target"]');
+
+  test("precondition: TextInput renders its value and accessible name", () => {
+    eq(inp().value, "M 31", "the value never reached the input");
+    eq(inp().getAttribute("aria-label"), "Target", "the input has no accessible name");
+  });
+
+  test("TextInput: onEnter commits on the return key", () => {
+    keydown(inp(), "Enter");
+    eq(entered.length, 1,
+      "Enter did nothing: on a phone the return key dismisses the keyboard WITHOUT " +
+      "blurring, so an onBlur-only field looks like it swallowed the edit");
+    eq(entered[0], "M 31", "onEnter got the wrong value");
+  });
+
+  test("TextInput: a key that is not Enter does not commit", () => {
+    keydown(inp(), "a");
+    eq(entered.length, 1, "every keystroke commits - the field writes to the rig per character");
+  });
+
+  test("TextInput: onBlur commits when focus leaves", () => {
+    act(() => { inp().focus(); inp().blur(); });
+    eq(blurred.length, 1, "leaving the field never committed");
+    eq(blurred[0], "M 31", "onBlur got the wrong value");
+  });
+
+  test("TextInput locked: neither commit route fires, and the value stays readable", () => {
+    render(createElement(InputHarness, { locked: "needs operator or admin access" }));
+    eq(inp().readOnly, true, "a locked input is not readOnly");
+    assert(!inp().hasAttribute("disabled"),
+      "the native disabled attribute is on it: the value can no longer even be selected and copied");
+    keydown(inp(), "Enter");
+    act(() => { inp().focus(); inp().blur(); });
+    eq(entered.length, 1, "a locked field committed on Enter");
+    eq(blurred.length, 1, "a locked field committed on blur");
+    eq(inp().value, "M 31", "the locked field stopped showing its value");
+  });
+}
+
+// ============================================================= Mono / Label
+
+{
+  render(createElement("div", null,
+    createElement(Label, { "data-testid": "lbl", className: "mine", key: "l" } as any, "SETPOINT"),
+    createElement(Mono, { "data-testid": "val", className: "mine", size: 8, key: "m" } as any, "-10.0C"),
+  ));
+
+  test("Label and Mono forward data-testid, so a test can assert THE value, not the card", () => {
+    assert(q('[data-testid="lbl"]') != null,
+      "Label swallowed data-testid: a caller can only assert on the whole card's text, " +
+      "which passes for any string that happens to appear anywhere in it");
+    assert(q('[data-testid="val"]') != null, "Mono swallowed data-testid");
+    eq(q('[data-testid="lbl"]').textContent, "SETPOINT", "the Label text is wrong");
+    eq(q('[data-testid="val"]').textContent, "-10.0C", "the Mono text is wrong");
+  });
+
+  test("Label and Mono keep their own class alongside the caller's", () => {
+    assert(/nx-label/.test(q('[data-testid="lbl"]').className), "Label lost its own class");
+    assert(/mine/.test(q('[data-testid="lbl"]').className), "Label dropped the caller's className");
+    assert(/nx-mono/.test(q('[data-testid="val"]').className), "Mono lost its own class");
+    assert(/mine/.test(q('[data-testid="val"]').className), "Mono dropped the caller's className");
+  });
+
+  test("Mono still holds the 10 px floor a caller tried to undercut", () => {
+    eq(q('[data-testid="val"]').style.fontSize, "10px",
+      "an 8 px request got through: the floor is the one thing this wrapper is for");
   });
 }
 

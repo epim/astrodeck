@@ -90,10 +90,14 @@ test("cap: null (unlocked by the cap check) once the principal holds it", () => 
   eq(lockReason(inp, slice({ principal: admin() })), null);
 });
 
-test("role: telescope maps to \"mount\", switch to \"power switch\", filterwheel to \"filter wheel\"", () => {
+test("role: telescope maps to \"mount\", switch to \"power box\", filterwheel to \"filter wheel\", safety to \"safety monitor\"", () => {
   eq(roleLabel("telescope"), "mount");
-  eq(roleLabel("switch"), "power switch");
+  eq(roleLabel("switch"), "power box");
   eq(roleLabel("filterwheel"), "filter wheel");
+  // The two roles whose id is a common English word: without a case here they
+  // fall through to "connect a switch first" / "connect a safety first", which
+  // name nothing the user can go and plug in.
+  eq(roleLabel("safety"), "safety monitor");
   eq(roleLabel("camera"), "camera", "unmapped roles pass through unchanged");
   eq(roleLabel("guider"), "guider");
   eq(roleLabel("focuser"), "focuser");
@@ -107,7 +111,11 @@ test("role: \"connect a <role> first\" when the role is not connected, via lib/c
   );
   eq(
     lockReason({ needsRole: "switch" }, slice({ status: null, equipConnected: false })),
-    "connect a power switch first",
+    "connect a power box first",
+  );
+  eq(
+    lockReason({ needsRole: "safety" }, slice({ status: null, equipConnected: false })),
+    "connect a safety monitor first",
   );
 });
 

@@ -327,9 +327,9 @@ export function CameraSheet(_p: SheetProps): JSX.Element {
   // ---- dew heater. `status.camera.dew_heater` IS published when the camera can
   // be asked (server hub.py: absent means "cannot be asked", which is not 0), so
   // the level is read back where it exists and is otherwise this browser's own
-  // last write, said out loud. The field is not in `RigStatus` yet - narrowed
-  // here rather than editing types.ts, which this task does not own.
-  const dewReported = (cam as { dew_heater?: number } | undefined)?.dew_heater ?? null;
+  // last write, said out loud. The field is declared on `RigStatus.camera` in
+  // types.ts, so this reads the typed field and no cast narrows it.
+  const dewReported = cam?.dew_heater ?? null;
   const [dewSent, setDewSent] = useState<number | null>(null);
   const dewLevel = dewReported ?? dewSent ?? 0;
 

@@ -52,17 +52,24 @@ export interface GateStoreSlice {
 }
 
 /** Human name for a device role in a lock note — role ids from
- *  ARCHITECTURE.md #8's `needsRole` list; telescope/switch/filterwheel get the
- *  UI's own vocabulary (mount / power switch / filter wheel), the rest pass
- *  through unchanged. */
+ *  ARCHITECTURE.md #8's `needsRole` list; telescope/switch/filterwheel/safety
+ *  get the UI's own vocabulary (mount / power box / filter wheel / safety
+ *  monitor), the rest pass through unchanged.
+ *
+ *  `switch` is "power box", not "power switch": the rig plan's role table
+ *  (hub-rig.md #0.5) names the DEVICE, and "connect a power switch first" reads
+ *  as a toggle in this app rather than the mains box the user has to plug in.
+ *  `safety` would otherwise fall through to "connect a safety first". */
 export function roleLabel(role: string): string {
   switch (role) {
     case "telescope":
       return "mount";
     case "switch":
-      return "power switch";
+      return "power box";
     case "filterwheel":
       return "filter wheel";
+    case "safety":
+      return "safety monitor";
     default:
       return role;
   }

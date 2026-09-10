@@ -89,6 +89,38 @@ test("entries: seeAlso keys all resolve in HELP", () => {
 test("getTroubleshootEntry: null/undefined → undefined", () => {
   eq(getTroubleshootEntry(null), undefined); eq(getTroubleshootEntry(undefined), undefined);
 });
+// --- copy rule: this content is rendered by BOTH front-ends, and the new one
+// has no Guide/Mount/Capture/Equipment page — those are sheets under a Rig hub.
+// A fix step that sends the user to a screen that does not exist is worse than
+// one that names no screen at all. Asserting the ABSENCE of a page name is a
+// test that cannot pass by accident, and the four positive assertions below
+// pin the replacement text so "informative" was not traded away for "shorter".
+test("copy: no fix and no step sends the user to a named page", () => {
+  const probes = ["plate solve", "cooler", "guiding", "camera", "slew", "mount", "focus", "nina", "xyz"];
+  const copy: string[] = probes.map((p) => diagnoseFailure(p).fix);
+  for (const e of TROUBLESHOOTING) copy.push(...e.steps, e.cause, e.symptom);
+  const named = /\b(Guide|Mount|Capture|Equipment|Focus|Plan|Settings|Session|Rig)\s+page\b/i;
+  for (const c of copy) {
+    assert(!named.test(c), `copy names a screen instead of an action or a device: "${c}"`);
+  }
+});
+test("copy: the reworded fixes still say what to DO", () => {
+  eq(diagnoseFailure("guiding lost").fix,
+    "Pick a brighter, more central guide star, then re-run the guide calibration "
+    + "if the mount has slewed since the last one.");
+  eq(diagnoseFailure("mount slew aborted").fix,
+    "Unpark the mount and confirm it is tracking, then retry the slew.");
+  eq(diagnoseFailure("camera not responding").fix,
+    "Re-seat the camera USB cable (a powered hub helps), then reconnect the camera.");
+  const black = getTroubleshootEntry("black-frame");
+  assert(!!black?.steps.some((s) =>
+    s === "Confirm the camera is actually taking frames, not just connected - start a loop and watch one land."),
+    `the black-frame capture step lost its instruction: ${JSON.stringify(black?.steps)}`);
+  const trails = getTroubleshootEntry("star-trails");
+  assert(!!trails?.steps.some((s) =>
+    s === "Confirm the mount is tracking and not parked - unpark it if it is."),
+    `the star-trails tracking step lost its instruction: ${JSON.stringify(trails?.steps)}`);
+});
 // ==================================================== UX-2026-07-26 #23
 // A run the operator held ABORT to stop is not a fault, and the failure card
 // must not quote a PREVIOUS run's log lines back as if they explained it.

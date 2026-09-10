@@ -358,9 +358,17 @@ export default function SkyConditionsPanel() {
             </span>
           )}
           {alert && !weather.ignore_tonight && (
-            <span className="text-warn inline-flex items-center gap-1">
-              <Icon name="alert" size={11} />
-              high cloud tonight — auto-resume will hold unless overridden
+            // NOT "auto-resume will hold": the engine's auto-resume veto is
+            // rain-only and fail-open (server/astrodeck/weather.py `veto_reason`
+            // — "RAIN VETOES. CLOUD DOES NOT."). A cloud hold is measured in-run
+            // from the rig's own frames, so a cloud FORECAST holds nothing.
+            <span className="text-warn inline-flex items-baseline gap-1">
+              <Icon name="alert" size={11} className="self-center" />
+              <span>
+                high cloud tonight — the forecast does not hold a run: a running
+                session holds on what its own frames show, and only forecast rain
+                inside the hour blocks an auto-resume
+              </span>
             </span>
           )}
           {weather.ignore_tonight && (
