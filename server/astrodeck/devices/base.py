@@ -281,6 +281,20 @@ class Telescope(Device):
     #: keeps every other mount's doctor output unchanged.
     needs_guiding: bool = False
 
+    #: Fastest MANUAL (move_axis) rate this mount will actually deliver, deg/s,
+    #: or None when the backend cannot say. Read by the server clamp on
+    #: /api/mount/move and published on the status bus, so the touch pad's
+    #: ceiling is the DRIVER's number rather than a constant the client and the
+    #: server each keep their own copy of.
+    #:
+    #: None means UNKNOWN, and the server falls back to TOUCH_MAX_RATE_DEG_S -
+    #: the conservative 0.6 deg/s that was the universal ceiling before this
+    #: field existed. It does NOT mean "no limit": a backend that cannot report
+    #: its rates must not be handed a faster pad than one that can. Same rule
+    #: Focuser.is_moving keeps - a backend that cannot answer does not get to
+    #: claim the more permissive answer.
+    max_rate_deg_s: float | None = None
+
     async def find_home(self) -> None:
         """Send the mount to its mechanical home and leave it USABLE there.
 
@@ -650,6 +664,21 @@ class SwitchPort:
     min: float = 0.0
     max: float = 1.0
     unit: str = ""
+    #: May this port be switched while a run is live? None = decide by the
+    #: port's NAME (the /mount|camera|usb/i heuristic the UI has used since it
+    #: shipped); True = protected; False = explicitly not. Three states because
+    #: "nobody has said" and "the operator said no" must not look the same:
+    #: unset follows the heuristic and adapts when a port is renamed, while
+    #: False is a decision that survives a rename.
+    protect_during_run: bool | None = None
+    #: Derived, not stored: is this port protected RIGHT NOW? The server's
+    #: answer to the question the UI used to answer for itself, so a client and
+    #: the engine can never disagree about whether a tap will be refused.
+    protected_now: bool = False
+    #: Does this port's power follow the dew margin? Read by dew.DewController
+    #: (D-RIG-3); stored beside protect_during_run in power_guard, because two
+    #: stores for one port's settings is two stores that drift.
+    follow_dew: bool = False
 
 
 class Switch(Device):
