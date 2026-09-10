@@ -1,20 +1,26 @@
-// RigHub.tsx - PLACEHOLDER (T0.1 ships the shell, not the hubs).
+// RigHub.tsx - the RIG hub root: DEVICES and CAPTURE.
 //
-// The RIG hub's screens land here in a later task. Until then this renders
-// a named empty state so a walk through the tab bar shows six distinguishable
-// screens - a placeholder that said nothing would let a routing bug read as a
-// working app.
+// The chips themselves are the shell's (`shell/SubNav.tsx` renders them from
+// `HUB_META`), so this file's whole job is to mount ONE of the two screens for
+// the section the hash names. Both are real screens with their own state, and
+// only the named one is mounted: keeping the other alive would leave a capture
+// bench subscribed to the preview stream while the user is reading a driver
+// list, which is a phone's battery and a rig's bandwidth spent on a screen
+// nobody is looking at.
+//
+// DEVICES is the default (`SUBS.rig[0]`), which is the right first answer for a
+// hub whose first night starts with "connect something".
 
 import type { JSX } from "react";
-import { EmptyCard } from "../../ui";
+import { useRoute } from "../../router";
+import { DevicesScreen } from "./devices/DevicesScreen";
+import { CaptureScreen } from "./capture";
 
 export function RigHub(): JSX.Element {
+  const { sub } = useRoute();
   return (
     <div data-testid="hub-rig">
-      <EmptyCard
-        title="RIG HUB NOT BUILT YET"
-        hint="Every device, its state, and the manual capture bench."
-      />
+      {sub === "capture" ? <CaptureScreen /> : <DevicesScreen />}
     </div>
   );
 }
