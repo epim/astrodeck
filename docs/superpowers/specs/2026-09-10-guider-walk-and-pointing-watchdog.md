@@ -1,0 +1,651 @@
+# The 2026-09-10 guider walk: what happened, and a pointing watchdog
+
+Status: analysis complete, design proposed, nothing implemented.
+Night: 2026-09-09/10. Target: NGC 7331 + SN 2026aaiv. Rig: astrotown, 0.3.26
+capturing, 0.3.28 running the sequence.
+
+## 1. Summary
+
+Between 00:45 and 01:41 the mount walked **3.19 degrees off target**, 3.16 of
+it in RA, while the sequence kept exposing and the guider kept reporting that
+it was guiding. Twenty-three subs (0211 through 0223) were taken during the
+walk. The run was recovered by hand at 01:42 after the operator noticed the
+frames were trailing.
+
+Two separate defects are involved, and only one of them is fully diagnosable
+from the telemetry that exists:
+
+- **Defect A, PROVEN and quantified.** A 3.0 px dither is not executable on
+  this mount. It needs 1294 ms in RA and 2549 ms in Dec against a hard 1000 ms
+  per-move cap, so every dither is clamped short and every settle blows its
+  deadline. This ran all night, before and after the flip, and accounts for
+  every capped-pulse and dither-failure line in the log.
+- **Defect B, PARTIALLY diagnosable.** The walk itself: a continuous
+  one-directional RA drag at 117 arcsec/min, 15.3 percent duty cycle at the
+  calibrated guide rate. Its magnitude, rate, direction and start time are
+  established. Its mechanism is **not**, because the three telemetry streams
+  that would identify it are not recorded (section 4.2).
+
+The more important finding is the third one:
+
+- **Every guard that should have caught this missed it, and one of them
+  actually computed the answer and threw it away.** At 01:04:56 the system
+  logged that the mount had moved 0.85 degrees since the last plate solve, and
+  used that fact only to invalidate a display cache. The run continued for
+  another 38 minutes.
+
+## 2. The failure, measured
+
+### 2.1 Timeline
+
+All times PDT. Sources: `captures/logs/2026-09-09.jsonl` (963 entries) and the
+subs' own FITS headers.
+
+| time | event |
+|---|---|
+| 22:52:36 | run starts (105 frames, 195 min), after a by-hand restart at 22:50 |
+| 22:29 - 00:07 | 11 clamped pulses, mixed directions. Run healthy, frames accepted |
+| 00:26:52 | meridian flip begins: guiding stopped, re-slew |
+| 00:28:21 | persisted calibration and PPEC model cleared; "guiding will recalibrate on the new side" |
+| 00:28:21 | centring attempt 2: 0.3' off target (good) |
+| 00:28:27 | calibration walk starts |
+| 00:35:08 | calibration completes (**6 min 41 s**), advisory raised, saved, guiding |
+| 00:35:08 | flip complete, pier side west to east. Post-flip autofocus correctly skipped |
+| 00:36:40 | first dither settle timeout |
+| 00:40:50 | a dither settles (the last one that ever does) |
+| 00:45:47 | frame 0210: mount claims -0.33' from target. **Last clean frame** |
+| 00:46:40 | clamped pulse east 1257 ms |
+| 00:47:45 | dither settle fails |
+| 00:48:50 | frame 0211: **-7.34'**. The walk is underway |
+| 00:50:13 | guide star lost (reacquire 1/8) |
+| 00:50:20 | **re-lock 1: 448.5 arcsec from the last lock** |
+| 01:04:56 | **"field identification cleared: the mount has moved 0.85 deg since the last plate solve"** - computed, logged, discarded |
+| 01:12:48 | **re-lock 2: 881.7 arcsec from the last lock** |
+| 01:21:52 | frame 0219: -90.57' |
+| 01:24-01:26 | a refocus runs (temperature trigger), unaware anything is wrong |
+| 01:40:56 | frame 0223: **-107.77'**. Last frame of the walk |
+| 01:41:58 | operator intervention: guiding stopped |
+| 01:43:15 | **plate solve: "centering attempt 1: 190.6' off target"** |
+| 01:44:09 | re-centred to 0.4' after home + solve |
+| 01:45:24 | fresh calibration walk starts |
+| 01:51:59 | completes (6 min 35 s), same advisory |
+| 01:54:13 | "dithered 3.0px and settled" |
+
+### 2.2 The walk, from the subs' own headers
+
+`MOUNTRAD`/`MOUNTDCD` are the mount's live claim, written per frame. Offsets
+below are from the run's target (the SN's position), in arcmin, on-sky
+(RA scaled by cos dec).
+
+| frame | shot | filter | total off | dRA | dDec |
+|---|---|---|---|---|---|
+| 0207 | 00:39:44 | S | 2.10 | -0.13 | 2.09 |
+| 0208 | 00:41:57 | L | 2.63 | -0.13 | 2.63 |
+| 0209 | 00:43:50 | R | 3.05 | -0.13 | 3.04 |
+| 0210 | 00:45:47 | G | 3.49 | -0.33 | 3.48 |
+| 0211 | 00:48:50 | B | 8.59 | **-7.34** | 4.46 |
+| 0212 | 00:54:51 | Ha | 22.21 | -21.98 | 3.23 |
+| 0213 | 00:59:54 | Oiii | 36.86 | -35.11 | 11.23 |
+| 0214 | 01:04:56 | S | 51.17 | -47.59 | 18.81 |
+| 0215 | 01:08:00 | L | 60.02 | -55.14 | 23.69 |
+| 0216 | 01:10:57 | R | 66.83 | -61.05 | 27.18 |
+| 0217 | 01:13:51 | G | 71.01 | -66.62 | 24.56 |
+| 0218 | 01:16:51 | B | 77.15 | -74.49 | 20.06 |
+| 0219 | 01:21:52 | Ha | 92.15 | -90.57 | 16.96 |
+| 0220 | 01:29:39 | Oiii | 74.41 | -73.52 | -11.52 |
+| 0221 | 01:34:37 | S | 91.98 | -91.29 | -11.24 |
+| 0222 | 01:37:50 | L | 100.51 | -99.96 | -10.54 |
+| 0223 | 01:40:56 | R | 108.14 | **-107.77** | -8.82 |
+
+Derived: **107.44 arcmin of RA in 55.2 min = 1.95 arcmin/min = 116.9
+arcsec/min = 1.95 arcsec/s.**
+
+Three things to note about this table.
+
+**It is monotonic in RA.** The walk is a continuous drag, not a series of
+jumps. That distinction rules out the reference-jump mechanisms: a fault that
+moves the reference produces steps, and the re-locks at 00:50:20 and 01:12:48
+sit inside a ramp that was already running before the first of them and
+continued unchanged through both. The re-locks are consequences.
+
+**The mount under-reported by 43 percent.** The mount's own claim at 01:40:56
+was 108'. The plate solve two minutes later measured 190.6'. So the mount's
+report is directionally useful and quantitatively wrong, which matches the
+known AM5 behaviour recorded in `astrodeck-mount-coords-lie`. It cannot be the
+sole basis for a watchdog.
+
+**The re-lock magnitudes track the walk.** Re-lock 1 was 448.5 arcsec = 7.48'
+at 00:50:20; frame 0211 at 00:48:50 was 7.34' off. The guider was grabbing a
+different star because the field had slid, and each re-lock reset its error to
+zero around the new star. That is exactly the GN-03 failure mode from
+2026-09-06, and section 3.3 explains why the GN-03 guard did not fire.
+
+### 2.3 Calibration telemetry
+
+The good calibration (01:51:59), read from
+`config/guider/<profile>.json`. This is the complete persisted record:
+
+| field | value | derived |
+|---|---|---|
+| `x_rate` (RA) | 0.0023176934558 px/ms | 2.318 px/s = 12.75 arcsec/s = 0.848x sidereal |
+| `y_rate` (Dec) | 0.0011769677086 px/ms | 1.177 px/s = 6.47 arcsec/s = 0.430x sidereal |
+| `x_angle` | -0.08272880760 rad | -4.74 deg |
+| `y_angle` | 1.31142192312 rad | 75.14 deg |
+| `y_angle_error` | 0.17664559607 rad | 10.12 deg (the reported `ortho_error_deg`) |
+| `declination` | 0.60043689592 rad | 34.40 deg |
+| `pier_side` | east | correct for post-flip |
+| `ra_parity` | **unknown** | never determined |
+| `dec_parity` | **unknown** | never determined |
+| `image_scale_arcsec` | 5.5004 | from the 150 mm guide scope |
+| `is_valid` | true | |
+
+Correcting the RA rate for cos(dec) gives **15.45 arcsec/s = 1.027x
+sidereal**, so the mount's RA guide rate is 1.0x sidereal. The Dec rate is
+0.43x. **The two axes differ by a factor of 2.4**, which is what the standing
+advisory ("RA and Dec rates vary by an unexpected amount, often caused by
+large Dec backlash") has been reporting on every calibration on this mount for
+weeks. The advisory is chronic and true, and therefore useless as a signal.
+
+**`ortho_error_deg` is not a health signal.** The BROKEN calibration reported
+4.85 deg. The GOOD one reports 10.12 deg, twice as bad, and guides at 2.3
+arcsec total. Any health check built on orthogonality would gate on exactly
+the wrong number. This needs saying explicitly because it is the first field
+anyone reaches for.
+
+### 2.4 Guiding after recovery, for contrast
+
+Fresh calibration, fresh lock, same mount, same pier, 01:52 onward:
+
+```
+rms_ra 1.23   rms_dec 1.95   rms_total 2.3 arcsec   snr 234.7
+worst |RA| over 24 consecutive samples: 2.05 arcsec
+```
+
+During the failure, the same reading was **rms_ra 4515.68 arcsec** with
+`rms_dec 8.47` and `snr 391.8`: a 1.25 degree RA error, a healthy Dec, and a
+bright confident lock, all at once.
+
+## 3. Root cause
+
+### 3.1 Defect A: the dither cannot be executed on this mount (PROVEN)
+
+`dither_pixels` defaults to 3.0 (config.py:486). The AM5 driver caps any one
+guide move at 1000 ms, because a single move may not exceed about 15 arcsec.
+Using the measured calibration rates:
+
+| axis | 3.0 px requires | cap | verdict | undelivered |
+|---|---|---|---|---|
+| RA | **1294 ms** | 1000 ms | over by 294 ms (1.29x) | 0.68 px = 3.75 arcsec |
+| Dec | **2549 ms** | 1000 ms | over by 1549 ms (**2.55x**) | 1.82 px = 10.03 arcsec |
+
+Now compare against every clamped pulse actually logged that night:
+
+| axis | n | min | max | mean | predicted |
+|---|---|---|---|---|---|
+| east/west (RA) | 18 | 1004 | 1492 | **1254 ms** | **1294 ms** |
+| north/south (Dec) | 7 | 1316 | 2678 | **1986 ms** | **2549 ms** |
+
+The predicted dither pulse and the observed mean clamped pulse agree on both
+axes. **Every clamped pulse in the log is a dither pulse**, and the spread
+around the prediction is the guide error the dither was added to.
+
+Consequences:
+
+- Every dither is short by 0.68 px in RA or 1.82 px in Dec, so the settle
+  criterion is never met and the 90 s settle window expires. Thirteen dither
+  failures post-flip; the sequence catches the exception, logs a warning and
+  exposes anyway (`engine.py:2642`).
+- The Dec case is the severe one at 2.55x the cap. A dither that lands 1.82 px
+  from where it was commanded, every dither, all night, on a mount already
+  flagged for large Dec backlash.
+- This is independent of the flip and of Defect B. It was happening from 22:29.
+
+This is a straightforward bug with three candidate fixes, in preference order:
+split a dither across successive guide cycles until the commanded offset is
+reached; or clamp `dither_pixels` at calibration time to what one capped move
+can deliver on the *slower* axis (1.18 px here); or make the settle criterion
+aware of what was actually deliverable. The first is correct, the second is
+one line, the third is a workaround. **Whatever is chosen, the feasibility
+check itself must be logged at calibration time** so an impossible dither is
+never again silently attempted forty times a night.
+
+### 3.2 Defect B: the walk (mechanism NOT established)
+
+What is established: a continuous, monotonic, one-directional RA drag of 1.95
+arcsec/s, starting between 00:45:47 and 00:48:50, sustained for 55 minutes,
+reaching 3.19 degrees. 1.95 arcsec/s against a calibrated RA guide rate of
+12.75 arcsec/s is a **15.3 percent duty cycle**: the guider was issuing
+westward corrections about one cycle in seven, continuously, for an hour.
+
+What is ruled out by the data:
+
+- **Not a reference jump.** Monotonic ramp, not steps (section 2.2).
+- **Not the re-locks.** The ramp precedes re-lock 1 and continues unchanged
+  through both.
+- **Not tracking loss.** A tracking failure drifts at up to 15 arcsec/s; this
+  is 13 percent of that, and `tracking_rate` read `sidereal` throughout.
+- **Not accumulated dither residual.** 0.68 px per dither in RA over roughly
+  40 dithers is about 27 px = 150 arcsec. The walk was 1175 px = 6466 arcsec,
+  a factor of 43 too large.
+- **Not orthogonality.** The good calibration is twice as non-orthogonal.
+
+What remains, and cannot be separated with the telemetry that exists:
+
+1. **A bad RA rate or parity in the 00:35 calibration.** `ra_parity` is
+   recorded as `unknown` even on the good calibration, so the sign was never
+   determined and is inferred from the walk geometry each time. A rate that is
+   wrong low makes every computed pulse too long; combined with the 1000 ms
+   clamp the loop would push at the cap and never converge.
+2. **A stale or mis-signed reference surviving into the post-flip session.**
+   The flip explicitly discards the calibration (00:28:21) and re-walks it, and
+   `start_guiding` clears `_lock_xy` (native.py:611), so the obvious version of
+   this is refuted. A subtler variant inside the Rust engine's own reference is
+   not.
+3. **Multi-star correspondence.** `max_stars` means the offset is fitted over
+   a constellation. A bad match yields a large constant offset while every
+   individual star stays sharp and bright, which is precisely the observed
+   signature of snr 391 at a 1.25 degree error.
+
+**Why it cannot be narrowed further, exactly:**
+
+- The calibration's rates and angles are **deliberately not surfaced**.
+  `native.py:1912`: *"Rates (px/ms) and raw axis angles are intentionally
+  omitted rather than mislabeled."* The report exposes only validity,
+  orthogonality, dec-axis parity, declination, pier side and binning.
+- The persisted calibration file is **overwritten by the next calibration with
+  no history**. The 01:51 walk destroyed the 00:35 record. The one artifact
+  that would answer question 1 above existed on disk for 76 minutes and is
+  gone.
+- **Only clamped pulses are logged.** The other roughly 85 percent of guide
+  corrections leave no trace at all. A 15.3 percent duty cycle drag is
+  invisible by construction, and the pulses that *are* logged turn out to be
+  the dithers, so the log is systematically blind to the pulses that did the
+  damage.
+- The guide error series is a **rolling in-memory buffer of about 30 samples**
+  (`stats()["recent"]`), never persisted. An hour of 1.25 degree readings left
+  no record.
+
+That is the honest position: Defect A is solved, Defect B is characterised but
+not mechanised, and section 5 is written so that the *next* occurrence is
+diagnosable in one pass.
+
+### 3.3 Why every existing guard missed it
+
+Three guards were in place. Each failed for a different and specific reason.
+
+**Guard 1: `_maybe_recover_guiding` (engine.py:5194).** Fires when
+`guider.is_active()` goes false. It never went false. The guider was guiding
+the whole time, on a star, with snr 391. Working as designed and blind to
+this.
+
+**Guard 2: `_maybe_hold_for_relocks` (engine.py:5241), the GN-03 guard built
+after the 2026-09-06 walk.** Gates on a RATE: `relock_limit` (3) re-locks
+inside `relock_window_min` (10 minutes). The night produced **2 re-locks 22.5
+minutes apart**. At no point were there 3 in any 10-minute window, so it never
+fired while the field walked 1.8 degrees.
+
+This is the important one, because the guard was built for the previous
+failure's shape. 2026-09-06 walked 40 arcmin in half an hour in many small
+re-locks; 2026-09-10 walked 3.19 degrees in two. **The guard counts events
+when the quantity that matters is displacement** - and the code already tracks
+the displacement: `relock_arcsec_total` is summed in `stats()`
+(native.py:1897) and never used by any gate. Last night it reached 448.5 +
+881.7 = **1330 arcsec = 22 arcmin** of accumulated re-lock displacement, which
+is unambiguously a walking field. Adding a magnitude term to an
+already-plumbed metric is close to free.
+
+**Guard 3: `_current_field_solve` (hub.py:3067).** This one computed the
+answer. It compares the mount's live report against the report recorded at
+solve time:
+
+```python
+moved = angular_sep_deg(fs.mount_ra, fs.mount_dec, ra, dec)
+if moved > self._field_stale_threshold_deg():
+    self.invalidate_field_solve(
+        f"the mount has moved {moved:.2f}deg since the last plate solve")
+    return None
+```
+
+Threshold is `max(_FIELD_STALE_MIN_DEG 0.25, fov 1.123 * _FIELD_STALE_FOV_FRAC
+0.5)` = **0.5615 deg**. It fired at **01:04:56 with moved = 0.85 deg**.
+
+And its entire effect was to clear a cache so the UI would stop claiming to
+know what field the rig was looking at. No alert, no hold, no re-centre. The
+run continued for 38 more minutes and another 2.3 degrees.
+
+The docstring even anticipates the reason it cannot be promoted as-is: *"a
+mount that loses steps keeps reporting the old position, which is exactly the
+AM5 failure this rig has already had"*. That is correct, and it is why the
+design below does not trust the mount's report either - it uses it as a
+*trigger* for an authoritative plate solve, never as the measurement.
+
+## 4. Design: a pointing watchdog
+
+### 4.1 Principles
+
+1. **Never diagnose a pointing fault by asking the mount where it is.** Last
+   night the mount was 43 percent wrong about its own error and, on other
+   nights, has been confidently wrong by degrees.
+2. **The authoritative answer is already on disk.** The run takes 105
+   plate-solvable images of exactly where the scope is pointing, and solves
+   none of them. ASTAP solved these frames in about 1 second each during the
+   recovery. A verification solve on an already-captured sub costs no sky time
+   at all: no slew, no filter change, no extra exposure.
+3. **Detect on displacement, not on event counts.** Guard 2's failure is the
+   lesson.
+4. **Respond by re-establishing truth, in graded steps**, and never by
+   trusting the thing that failed.
+5. **Every detector must log the number it tested, not just its verdict.**
+   Guard 3 knew the answer and the log line was thrown away because it was
+   phrased as a cache event rather than a pointing measurement.
+
+### 4.2 Detector A: pointing truth from the subs already taken (primary)
+
+Every `verify_pointing_every` frames (proposed default 5, roughly 15 minutes
+at these exposures), solve the sub that was just written and compare the
+solution against the step's target.
+
+- Costs no sky time. Runs in the existing worker thread alongside the quality
+  grader, which already reads the frame.
+- Uses the same ASTAP path and FOV hint the centring code uses, so no new
+  dependency and no new failure mode.
+- The result is the one number the whole failure lacked: **actual
+  angular offset from target, measured, per N frames**.
+- Thresholds, all in plan/flow policy so they are tunable per target:
+  - under 0.5 x FOV: healthy, record and continue.
+  - 0.5 to 1.0 x FOV: advisory, tighten the cadence to every frame.
+  - over 1.0 x FOV: **the target has left the frame** - hold (response level
+    2).
+- Failure to solve is itself a signal. Last night frames 0217 and 0222 would
+  not solve at all; two consecutive unsolvable subs on a field that solved
+  earlier in the run is a hold condition, not a shrug.
+
+At last night's numbers this fires at frame 0212 (00:54:51, 22.21 arcmin,
+about 0.37 FOV as advisory) and unambiguously at 0213 (00:59:54, 36.86 arcmin,
+0.61 FOV). **That is 42 minutes before the operator noticed**, and 15 subs
+saved.
+
+### 4.3 Detector B: accumulated re-lock displacement (nearly free)
+
+Extend `_maybe_hold_for_relocks` with a magnitude term beside its existing
+count term:
+
+- hold if `relock_arcsec_total` within the window exceeds
+  `relock_arcsec_limit` (proposed default 300 arcsec = 5 arcmin, comfortably
+  inside one FOV and well above the 60-100 arcsec a genuine cloud-flicker
+  re-lock costs), **regardless of the count**.
+- keep the existing count gate unchanged; the two catch different shapes.
+- also gate on a single re-lock larger than, say, 120 arcsec: one jump of that
+  size is not a flickering star, it is a different star.
+
+At last night's numbers this fires at **re-lock 1, 00:50:20, 448.5 arcsec** -
+before the walk exceeded 8 arcmin. Cheapest useful detector of the three, and
+it reuses a metric that is already computed, already summed and already on the
+wire.
+
+### 4.4 Detector C: correction duty cycle and cap saturation
+
+Track per axis, over a rolling window (proposed 5 minutes):
+
+- fraction of guide cycles that issued a correction in the same direction;
+- count of pulses clamped by the driver cap;
+- signed sum of commanded correction, in arcsec.
+
+Raise when a single direction exceeds a duty-cycle threshold (proposed 40
+percent sustained over 5 minutes) or when the signed sum exceeds one FOV. A
+guider correcting one way seven cycles in ten is dragging the mount, not
+guiding it; a healthy loop is roughly balanced.
+
+At last night's numbers a 15.3 percent duty cycle would **not** trip a 40
+percent threshold, so this detector is honest about its own limits: it is
+there for the faster runaways (2026-09-06 style, and the 2026-09-06 pulse
+overruns), while Detector A carries the slow walk. Set the threshold from
+measured healthy nights before shipping it, not from this one incident.
+
+The cap-saturation half is worth having on its own merit and independent of
+any threshold: **two consecutive clamped pulses on the same axis** should log
+once, loudly, with the computed and the delivered durations. That single line
+would have exposed Defect A on the first night it happened.
+
+### 4.5 Detector D: dither feasibility at calibration time
+
+Not a watchdog, a precondition. When a calibration completes, compute the
+pulse duration each axis needs for the configured `dither_pixels` and compare
+against the driver's per-move cap. If it does not fit, say so once, with the
+numbers, and take the configured remedy (split across cycles, or clamp the
+dither). See section 3.1.
+
+### 4.6 Where this lives
+
+**In the sequence engine's per-frame loop, beside `_maybe_recover_guiding` and
+`_maybe_hold_for_relocks` (engine.py:2621-2625), not in the flows graph.**
+
+The user's instinct - a watchdog in the flows that re-slews to the target - is
+right about the response and I would put the mechanism one layer lower, for
+three reasons:
+
+1. Every frame of every run passes through that loop, including runs that do
+   not use flows and including resumed multi-night sessions. A flows-only
+   watchdog protects only the runs that happen to be built that way.
+2. The two sibling guards already live there, share the per-frame cadence, and
+   have the hold/re-centre machinery this needs.
+3. It has to keep working when the flow graph's own assumptions are what
+   broke. Last night's log carries "10 graph feature(s) are not honoured by
+   this run" - a watchdog inside a partially-honoured graph is a watchdog with
+   unknown reach.
+
+What **should** be exposed to flows and plans is the *policy*: cadence,
+thresholds, and which response level is permitted without a human. That is
+where per-target judgement belongs (a wide-field mosaic tolerates drift a
+planetary-nebula close-up does not), and it keeps the mechanism in one place.
+
+## 5. Response ladder
+
+Graded, each level only escalating when the level below has failed. Levels 1
+and 2 are unattended; 3 and 4 are the ones that need an explicit policy
+decision from the operator.
+
+**Level 1 - advisory.** Record the measurement in the session, log it as a
+pointing number, tighten the verification cadence. Keep exposing. Frames stay
+accepted; the grader is a separate judgement.
+
+**Level 2 - hold, re-establish, resume.** This is exactly what
+`_maybe_hold_for_relocks` already does and it should be reused verbatim: stop
+guiding; discard the calibration so the restart measures a fresh one (the
+GN-01 discard latch makes that stick); re-centre by plate solve; recalibrate;
+resume. Add one thing it does not do: **verify the outcome**. Guide for a
+bounded number of frames and require the error to converge before declaring
+the hold resolved, because last night's fresh post-flip calibration was
+accepted and was the thing that failed.
+
+**Level 3 - home, then re-establish.** If level 2 has fired twice in a run, or
+if the post-hold verification fails, the mount's pointing model has absorbed
+the walk and a re-centre alone will not clear it. Home the mount, then
+plate-solve centre. **This is the sequence that actually recovered the rig at
+01:42-01:44** (home to alt 37.3 az 360, then goto with centring, landing at
+0.44'), so it is proven on this hardware rather than proposed. It costs a few
+minutes and it is the only thing that worked.
+
+Level 3 must be gated on horizon and sun safety like any other slew, and it
+must refuse while a polar alignment session is active.
+
+**Level 4 - stop and shout.** Park, hold the session for resume, and alert.
+Note that last night's log carried "no dead-man's-switch URL is set, so
+nothing will notice if this machine stops" - a level 4 that no one hears is
+level 3 with extra steps. The alert path needs configuring before this level
+means anything.
+
+An important asymmetry: levels 1 and 2 are cheap and reversible and should run
+unattended. Level 3 moves the mount a long way and should be opt-in per plan.
+Level 4 ends the night's data collection and should never be automatic without
+the operator having chosen it.
+
+## 6. Telemetry recommendations
+
+Ordered by how much they would have shortened last night's diagnosis. The
+first three are the reason section 3.2 has no answer.
+
+### 6.1 Persist calibration rates and angles, with history
+
+Surface `x_rate`, `y_rate`, `x_angle`, `y_angle`, the raw `y_angle_error`, and
+both parities in `calibration_report()`. The comment at native.py:1912 says
+they are "intentionally omitted rather than mislabeled" - the right fix is to
+label them correctly, not to withhold them. They are the primary evidence
+about a calibration's quality.
+
+**And keep the previous ones.** Write each completed calibration to an
+append-only per-profile history (timestamp, pier side, declination, all rates
+and angles, the advisories, and the run id) instead of overwriting a single
+file. Last night's broken calibration was destroyed by the good one 76 minutes
+later. With a history, comparing the 00:35 and 01:51 rate vectors would have
+answered question 1 of section 3.2 in one line.
+
+Storage is trivial: one small JSON object per calibration, a handful per
+night.
+
+### 6.2 Log all guide corrections, not only the clamped ones
+
+Today the only pulses in the record are those the driver had to clamp, which
+this analysis shows are the dithers. Everything the guide loop actually did to
+the mount is unrecorded.
+
+Recommended: a per-minute aggregate per axis, at debug or into a dedicated
+guide log - cycles, corrections issued, signed sum in arcsec, clamped count,
+mean and max duration. That is about 120 rows an hour, cheap, and it makes a
+duty-cycle drag (Detector C) computable after the fact instead of only live.
+
+### 6.3 Persist the guide error series
+
+`stats()["recent"]` is roughly 30 samples in memory. Append the per-frame
+guide error (RA, Dec, total, snr, lock position, re-lock count) to the night
+log or a per-run CSV. One row per guide cycle at 2 s exposures is 1800 rows an
+hour, which is nothing, and it is the series that would show whether the error
+was a standing offset or a growing one.
+
+### 6.4 Enrich the frame headers
+
+Headers today carry a good pointing pair - `RA`/`DEC` (frozen at the last
+solve) alongside `MOUNTRAD`/`MOUNTDCD` (the mount's live claim), with
+`PNTGSRC` saying which source `OBJCTRA` came from. That pair is what made
+section 2.2 possible and it should be kept exactly as it is.
+
+Missing, and all of it computed already and thrown away:
+
+- `GUIDERMS`, `GDRMSRA`, `GDRMSDEC` - guide RMS at exposure time. The grader
+  and the guider both have these; no sub records them. A trailing frame
+  currently carries no evidence of why it trailed.
+- `PIERSIDE` - noted as absent in `nightstack.py`'s own docstring, and it
+  means a stack spanning a flip cannot tell a 180 degree rotation from a
+  drift.
+- `ECCENTR` and `HFR` - the quality grader computes both per frame, logs them
+  as prose ("frame eccentricity median 0.81 above ceiling 0.65") and discards
+  the numbers. Putting them in the header makes the whole archive queryable
+  for exactly this kind of forensics.
+- A per-frame verification solve result, when Detector A ran on that frame.
+
+### 6.5 Make the pointing discrepancy a first-class signal
+
+`_current_field_solve` already computes `moved`. Publish it on the status
+block and log it as a pointing measurement with its threshold, every time it
+is computed - not only when it crosses the line, and not phrased as a cache
+event. A number that is computed on a live path every few seconds and never
+recorded is the cheapest telemetry win available here.
+
+### 6.6 Two things noticed in passing
+
+**The dead-man's-switch is unset.** Logged as a warning every run start.
+Levels 4 and arguably 3 of the response ladder are meaningless until it is
+configured.
+
+**The subs carry the observatory's exact latitude and longitude in
+`SITELAT`/`SITELONG`.** Given the standing rule that the site location must
+not appear in code, tests, docs or output, and that the git history was
+rewritten four times on 2026-09-09 specifically to purge those values, every
+FITS file written by this rig currently exports them - and these are the files
+most likely to be shared or uploaded for plate solving and processing. Worth a
+decision: keep them (they are genuinely useful for airmass and for some
+processing tools), round them to a coarse grid, or make them opt-in. This is
+noted here because it surfaced while reading headers for this analysis; it is
+not part of the guiding defect. The values are deliberately not reproduced in
+this document.
+
+## 7. Suggested implementation order
+
+Each item is independently shippable and independently testable.
+
+1. **Detector B** (re-lock displacement gate). Smallest change, reuses a
+   metric already on the wire, would have fired at 00:50:20. Test: synthesise
+   a re-lock event stream and assert the hold fires on magnitude with a count
+   below the limit.
+2. **The cap-saturation log line** and **Detector D** (dither feasibility).
+   Pure diagnosis, no behaviour change, exposes Defect A permanently. Test:
+   assert the warning fires for a 3.0 px dither at the measured rates against
+   a 1000 ms cap.
+3. **Defect A's actual fix** (split the dither across cycles). Test: a dither
+   larger than one capped move completes over successive cycles and the settle
+   criterion is met.
+4. **Telemetry 6.1, 6.2, 6.3** (calibration history, pulse aggregate, error
+   series). No behaviour change; this is what makes the next occurrence
+   diagnosable in one pass instead of a night of forensics.
+5. **Detector A** (verification solve) and **response levels 1 and 2**. The
+   substantive change, and the one that catches the slow walk.
+6. **Response level 3** (home then re-centre), opt-in per plan.
+7. **Detector C** thresholds, calibrated against several healthy nights of the
+   telemetry from step 4 rather than against this one incident.
+
+A note on testing all of this: the failure signature to reproduce is *"the
+guider reports it is guiding, with a good SNR and a healthy Dec, while the
+field walks in RA"*. Any test double that reports a loss of lock, or an
+inactive guider, or a bad RMS, is testing a different failure - and every
+existing guard already catches those. The sim needs to be able to lie the way
+the real rig lied.
+
+## 8. Appendix: complete clamped-pulse record, 2026-09-09/10
+
+Every clamped pulse the night produced. Pre-flip entries are above the rule,
+post-flip below.
+
+| time | direction | asked | delivered | over by |
+|---|---|---|---|---|
+| 22:29:52 | east | 1207 | 1000 | 207 |
+| 22:40:08 | south | 1316 | 1000 | 316 |
+| 22:48:17 | east | 1217 | 1000 | 217 |
+| 23:07:45 | north | 2000 | 1000 | 1000 |
+| 23:17:44 | east | 1179 | 1000 | 179 |
+| 23:25:53 | north | 1511 | 1000 | 511 |
+| 23:33:56 | north | 1755 | 1000 | 755 |
+| 23:43:40 | east | 1010 | 1000 | 10 |
+| 23:49:59 | west | 1226 | 1000 | 226 |
+| 00:01:58 | north | 2006 | 1000 | 1006 |
+| 00:07:57 | west | 1233 | 1000 | 233 |
+| --- flip 00:26-00:35 --- | | | | |
+| 00:40:37 | east | 1492 | 1000 | 492 |
+| 00:46:40 | east | 1257 | 1000 | 257 |
+| 00:50:43 | west | 1004 | 1000 | 4 |
+| 00:55:45 | east | 1182 | 1000 | 182 |
+| 01:00:46 | west | 1475 | 1000 | 475 |
+| 01:05:54 | east | 1393 | 1000 | 393 |
+| 01:08:53 | south | 2678 | 1000 | 1678 |
+| 01:11:53 | east | 1414 | 1000 | 414 |
+| 01:14:42 | west | 1328 | 1000 | 328 |
+| 01:17:43 | west | 1389 | 1000 | 389 |
+| 01:22:40 | west | 1209 | 1000 | 209 |
+| 01:30:32 | north | 2633 | 1000 | 1633 |
+| 01:35:30 | west | 1051 | 1000 | 51 |
+| 01:38:48 | west | 1185 | 1000 | 185 |
+| --- recovery 01:42-01:52 --- | | | | |
+| 01:54:00 | west | 1292 | 1000 | 292 |
+
+Dither settle failures: 00:36:40, 00:47:45, 00:51:46, 00:56:45, 01:01:51,
+01:06:55, 01:09:52, 01:12:46, 01:15:46, 01:18:44, 01:23:41, 01:31:34,
+01:36:32, 01:39:49. Dithers that settled: 00:40:50, and 01:54:13 after
+recovery.
+
+Quality warnings during the walk: 00:50:11 ecc median 0.74; 01:08:33 27
+percent of 199 stars over 0.80; 01:17:24 median 0.68; 01:22:25 median 0.75, 26
+percent over; 01:35:14 median 0.81, **60 percent over**; 01:38:34 median 0.79,
+44 percent over; 01:42:09 median 0.69.
+
+Scripts used for this analysis, on the box:
+`guide_probe.py`, `walk_csv.py`, `home_and_reslew.py`, `guide_restart.py`.
+Local: `scratchpad/forensics.py`, `scratchpad/walk.csv`.
