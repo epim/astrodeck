@@ -2,7 +2,7 @@
 // series) + breachSpans golden cases + fmtHm/agoLabel (weather spec §9/§14).
 // Run with:  npx tsx src/lib/__tests__/weather.test.ts   (from ui/)
 
-import type { WeatherState } from "../../types";
+import type { WeatherNow, WeatherState, WeatherSurface } from "../../types";
 import {
   agoLabel, breachSpans, fmtHm, groupEndLabels, normalizeWeather, OPEN_METEO_STALE_S,
   weatherSourceLabel,
@@ -167,6 +167,75 @@ test("groupEndLabels: gap exactly at minGap merges; empty input -> []", () => {
 test("weatherSourceLabel: mechanically truthful — Astrospheric only when it's actually flowing", () => {
   assert(weatherSourceLabel(false) === "Open-Meteo", "Open-Meteo alone");
   assert(weatherSourceLabel(true) === "Open-Meteo + Astrospheric", "both sources named");
+});
+
+// --- surface conditions (server wave S2) -------------------------------------
+
+const surfaceRaw: WeatherSurface = {
+  times: ["2026-07-16T01:00:00Z", "2026-07-16T02:00:00Z"],
+  temp_c: [15, -3.5],
+  dewpoint_c: [11, null],
+  humidity_pct: [77, 90],
+  wind_kmh: [12, 18],
+  wind_dir_deg: [230, 15],
+  gust_kmh: [25, 30],
+  cloud_base_m: [500, null],
+};
+
+test("surface: series pass through unclamped — a sub-zero dew point is not 0 C", () => {
+  const w = normalizeWeather({ ...base, surface: surfaceRaw }, NOW)!;
+  const s = w.surface!;
+  assert(s.temp_c[1] === -3.5, `temp_c=${s.temp_c[1]}`);
+  assert(s.dewpoint_c[0] === 11, `dewpoint_c=${s.dewpoint_c[0]}`);
+  assert(s.wind_dir_deg[0] === 230, `wind_dir_deg=${s.wind_dir_deg[0]}`);
+  assert(s.cloud_base_m[0] === 500, `cloud_base_m=${s.cloud_base_m[0]}`);
+});
+
+test("surface: a missing value stays null, never 0 — nobody measured calm air", () => {
+  const w = normalizeWeather({ ...base, surface: surfaceRaw }, NOW)!;
+  assert(w.surface!.dewpoint_c[1] === null, `${w.surface!.dewpoint_c[1]}`);
+  assert(w.surface!.cloud_base_m[1] === null, `${w.surface!.cloud_base_m[1]}`);
+});
+
+test("surface: short/absent series pad to the times length so an index means one hour", () => {
+  const w = normalizeWeather(
+    { ...base, surface: { ...surfaceRaw, temp_c: [15], gust_kmh: undefined as never } },
+    NOW,
+  )!;
+  const s = w.surface!;
+  assert(s.temp_c.length === 2 && s.temp_c[1] === null, JSON.stringify(s.temp_c));
+  assert(s.gust_kmh.length === 2, `gust_kmh len=${s.gust_kmh.length}`);
+  assert(s.gust_kmh[0] === null, `gust_kmh[0]=${s.gust_kmh[0]}`);
+});
+
+test("surface: an empty or absent block is null, not an empty shell", () => {
+  assert(normalizeWeather(base, NOW)!.surface === null, "absent -> null");
+  const empty = normalizeWeather({ ...base, surface: { ...surfaceRaw, times: [] } }, NOW)!;
+  assert(empty.surface === null, "empty times -> null");
+});
+
+test("now: copied through with per-field null-safety; ts kept", () => {
+  const nowRaw: WeatherNow = {
+    ts: "2026-07-16T01:00:00Z",
+    temp_c: 15, dewpoint_c: 11, humidity_pct: 77,
+    wind_kmh: 12, wind_dir_deg: 230, gust_kmh: null, cloud_base_m: 500,
+  };
+  const w = normalizeWeather({ ...base, now: nowRaw }, NOW)!;
+  assert(w.now!.ts === "2026-07-16T01:00:00Z", `ts=${w.now!.ts}`);
+  assert(w.now!.temp_c === 15 && w.now!.cloud_base_m === 500, JSON.stringify(w.now));
+  assert(w.now!.gust_kmh === null, `gust_kmh=${w.now!.gust_kmh}`);
+  // a reading with no timestamp cannot say which hour it describes
+  const noTs = normalizeWeather({ ...base, now: { ...nowRaw, ts: undefined as never } }, NOW)!;
+  assert(noTs.now === null, "ts-less reading -> null");
+  assert(normalizeWeather(base, NOW)!.now === null, "absent -> null");
+});
+
+test("surface: an old payload normalizes exactly as it did before S2", () => {
+  const w = normalizeWeather(base, NOW)!;
+  assert(w.stale === false && w.threshold_pct === 50, "existing scalars unchanged");
+  assert(w.forecast!.cloud[1] === 100, "existing clamping unchanged");
+  assert(w.site_lat === 34.2, "existing site fix unchanged");
+  assert(w.surface === null && w.now === null, "new fields default to null");
 });
 
 console.log(`weather.test: ${passed} passed, ${failed} failed`);

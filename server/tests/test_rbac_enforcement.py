@@ -1078,9 +1078,13 @@ def test_admin_weather_get_and_ignore_roundtrip(tmp_path, monkeypatch):
         r = c.get("/api/weather")
         assert r.status_code == 200
         body = r.json()
-        assert set(body) == {"enabled", "fetched_ts", "stale", "ignore_tonight",
-                             "threshold_pct", "sustain_minutes", "site_lat",
-                             "site_lon", "forecast", "astrospheric", "alert"}
+        # A SUBSET, not an equality: this payload is additive by contract (the
+        # surface block landed in 2026-09 wave S2), so what this test is here
+        # to guard is that a view.weather holder gets the WHOLE payload with
+        # nothing stripped -- never that the payload stopped growing.
+        assert {"enabled", "fetched_ts", "stale", "ignore_tonight",
+                "threshold_pct", "sustain_minutes", "site_lat", "site_lon",
+                "forecast", "astrospheric", "alert"} <= set(body)
         assert body["enabled"] is False and body["forecast"] is None
         # site_lat/site_lon ride this payload for a view.weather holder (I2)
         assert body["site_lat"] == _PRECISE_LAT and body["site_lon"] == _PRECISE_LON

@@ -73,7 +73,7 @@ from ..config import (FRAME_SCOPES, REDACTED_SINK_FIELDS, AlertSink, AuthConfig,
                       config_store, frames_payload, publish_frames, redacted,
                       set_frame_settings)
 from ..locations import (LocationLibraryFull, LocationNameCollision,
-                         location_store)
+                         location_store, normalize_horizon_points)
 from .. import __version__
 from ..update.state import update_state
 from ..update.service import UpdateError, get_service as get_update_service
@@ -1258,6 +1258,18 @@ class LocationBody(BaseModel):
     longitude: float = Field(..., ge=-180, le=180)   # +E (East-positive)
     elevation_m: float = Field(..., ge=-430, le=9000)
     horizon_min_deg: float | None = Field(None, ge=0, le=90)
+    #: The site's drawn horizon PROFILE: ``[[az_deg, alt_deg], ...]``, az 0..360,
+    #: alt -10..90. Validated by the SAME rule the store applies (sorted, one
+    #: point per azimuth) so an out-of-range point 422s at the boundary instead
+    #: of raising inside LocationStore's post-model_copy re-validate. Absent/None
+    #: means "no drawn horizon"; ``[]`` means "no obstructions" (an explicit
+    #: clear) — the two are NOT the same on apply.
+    horizon_points: list[list[float]] | None = None
+
+    @field_validator("horizon_points", mode="before")
+    @classmethod
+    def _horizon_points_valid(cls, v):
+        return normalize_horizon_points(v)
 
     @field_validator("name")
     @classmethod
@@ -1613,7 +1625,14 @@ MAX_REQUEST_BODY_BYTES = 8 * 1024 * 1024
 # and must be reachable pre-session; ``/auth/logout`` is NOT here (it needs a
 # session). The RBAC boot assertion exempts these same auth-login paths.
 _AUTH_OPEN_PREFIXES = ("/assets", "/auth/login", "/auth/google/callback")
-_AUTH_OPEN_EXACT = {"/", "/index.html", "/favicon.ico", "/manifest.json", "/healthz"}
+# ``/sw.js`` joins ``/manifest.json`` here for the SAME reason the shell is open:
+# a service worker is fetched by the BROWSER, from the SW registration, before
+# any session exists and with no way to attach a token — a gated /sw.js simply
+# 401s and the PWA never installs. It is inert static JS with no rig state, and
+# it is an EXACT path: ``/api/sw.js`` is still gated, because the openness is
+# about that one file at the root, never about a suffix.
+_AUTH_OPEN_EXACT = {"/", "/index.html", "/favicon.ico", "/manifest.json",
+                    "/healthz", "/sw.js"}
 
 # These endpoints define identities/trust roots or perform whole-system
 # lifecycle operations. A relay-terminated session cookie is a replayable bearer
@@ -3327,6 +3346,58 @@ def create_app(*, bind_host: str | None = None,
                         principal: Principal = Depends(require(CAP_VIEW_STATUS))):
         return await put_site(body, principal)
 
+    def _active_horizon_points(cfg) -> list[list[float]] | None:
+        """``config.safety.horizon`` as ``[[az, alt], ...]`` (JSON pairs, not
+        tuples), or None when no profile is configured. ONE converter, used by
+        the read route and by the two write paths' round-trip."""
+        pts = cfg.safety.horizon
+        if pts is None:
+            return None
+        return [[float(a), float(h)] for a, h in pts]
+
+    def _location_is_active_site(loc, site) -> bool:
+        """Is this saved location the site the rig is CURRENTLY configured for?
+
+        Name (trimmed) plus coordinates within 1e-6 deg (~0.1 m — far below any
+        GPS fix, so it matches a round-trip through JSON and never two genuinely
+        different sites). A DEFAULT site never matches: it carries placeholder
+        coordinates (0,0) that a location could otherwise collide with."""
+        if getattr(site, "is_default", False):
+            return False
+        return (loc.name.strip() == (site.name or "").strip()
+                and abs(float(loc.latitude) - float(site.latitude)) <= 1e-6
+                and abs(float(loc.longitude) - float(site.longitude)) <= 1e-6)
+
+    def _write_active_horizon(points: list[list[float]] | None):
+        """Copy a location's control points into ``config.safety.horizon`` (the
+        list of ``(az, alt)`` tuples the engine's obstruction rule reads).
+        Blocking: call under ``asyncio.to_thread``."""
+        cur = config_store.cfg().safety
+        horizon = None if points is None else [
+            (float(a), float(h)) for a, h in points]
+        return config_store.set_safety(cur.model_copy(update={"horizon": horizon}))
+
+    @app.get("/api/site")
+    @declare(CAP_VIEW_STATUS)
+    async def get_site(
+            principal: Principal = Depends(require(CAP_VIEW_STATUS))):
+        """The active site, plus the horizon profile the engine is actually
+        gating slews with (``config.safety.horizon`` as ``[[az, alt], ...]``).
+
+        REDACTION: the site node rides the ONE precise-site seam
+        (``_redact_site_for``), so a caller lacking ``view.site_precise`` gets
+        the block without name/lat/lon/elevation. ``horizon_points`` is NOT
+        stripped, matching ``horizon_min_deg``, which ``redact.py`` retains by
+        name (``_SITE_STRIP_KEYS`` excludes it) — and the same control points
+        already ride the redacted config union on every WS ``config`` event and
+        ``GET /api/config``, so gating them only here would be a lock on a door
+        that stands open beside it."""
+        cfg = config_store.cfg()
+        site = cfg.site.model_dump()
+        site["horizon_points"] = _active_horizon_points(cfg)
+        return _redact_site_for({"site": site, "version": cfg.version},
+                                principal)
+
     @app.get("/api/site/mount-gps")
     @declare(CAP_CONFIG_SITE_OPTICS)
     async def site_mount_gps(
@@ -3362,7 +3433,7 @@ def create_app(*, bind_host: str | None = None,
         try:
             loc = await asyncio.to_thread(
                 location_store.create, body.name, body.latitude, body.longitude,
-                body.elevation_m, body.horizon_min_deg)
+                body.elevation_m, body.horizon_min_deg, body.horizon_points)
         except LocationNameCollision as e:
             raise HTTPException(409, detail={"code": "name_collision",
                                              "id": e.existing_id})
@@ -3375,16 +3446,100 @@ def create_app(*, bind_host: str | None = None,
     async def update_location(
             loc_id: str, body: LocationBody,
             principal: Principal = Depends(require(CAP_CONFIG_SITE_OPTICS))):
+        # Match against the row AS STORED, before the edit: "the location that
+        # is CURRENTLY the site" is a fact about the old name/coordinates, and
+        # this PUT may be changing them.
+        before = next((row for row in location_store.list()
+                       if row.id == loc_id), None)
+        cfg = config_store.cfg()
+        write_through = (before is not None
+                         and body.horizon_points is not None
+                         and _location_is_active_site(before, cfg.site))
+        # Field-level RBAC, the same shape as ``_require_site_field_caps``: the
+        # library itself is site description (config.site_optics), but the
+        # moment an edit reaches ``config.safety.horizon`` it is writing a
+        # safety floor. Checked BEFORE any write, so a refusal leaves both the
+        # library and the config untouched.
+        if write_through and not principal.has(CAP_CONFIG_SAFETY):
+            raise HTTPException(403, detail={
+                "detail": "config.safety required to change the active site's "
+                          "horizon",
+                "code": "forbidden"})
         try:
             loc = await asyncio.to_thread(
                 location_store.update, loc_id, body.name, body.latitude,
-                body.longitude, body.elevation_m, body.horizon_min_deg)
+                body.longitude, body.elevation_m, body.horizon_min_deg,
+                body.horizon_points)
         except KeyError:
             raise HTTPException(404, detail={"code": "not_found"})
         except LocationNameCollision as e:
             raise HTTPException(409, detail={"code": "name_collision",
                                              "id": e.existing_id})
+        if write_through:
+            # Editing the horizon of the site the rig is standing at takes effect
+            # NOW. The engine reads config.safety.horizon, never the library, so
+            # an edit that stopped at locations.json would be a drawn line that
+            # gates nothing until someone re-applied the location — a claim the
+            # UI would make and nothing would keep.
+            await asyncio.to_thread(_write_active_horizon, loc.horizon_points)
+            bus.publish("config", version=config_store.cfg().version)
         return loc.model_dump()
+
+    @app.post("/api/locations/{loc_id}/apply")
+    @declare(CAP_CONFIG_SITE_OPTICS)
+    async def apply_location(
+            loc_id: str,
+            principal: Principal = Depends(require(CAP_CONFIG_SITE_OPTICS))):
+        """Make a saved location the ACTIVE site: coordinates into
+        ``config.site`` (exactly what ``PUT /api/site`` writes, including the
+        ``horizon_min_deg`` floor), and the drawn polyline into
+        ``config.safety.horizon`` so the engine's obstruction rule gates slews
+        with the line the user traced at THIS site.
+
+        ``horizon_points is None`` (a location with no drawn horizon) leaves the
+        configured profile ALONE rather than clearing it: the field is new, so
+        every location predating it would otherwise silently erase a horizon
+        somebody configured through ``POST /api/config``. ``[]`` is the explicit
+        clear."""
+        loc = next((row for row in location_store.list()
+                    if row.id == loc_id), None)
+        if loc is None:
+            raise HTTPException(404, detail={"code": "not_found"})
+        # Same field-level rule as PUT /api/site: a horizon is a safety floor.
+        writes_safety = (loc.horizon_min_deg is not None
+                         or loc.horizon_points is not None)
+        if writes_safety and not principal.has(CAP_CONFIG_SAFETY):
+            raise HTTPException(403, detail={
+                "detail": "config.safety required to apply a location's horizon",
+                "code": "forbidden"})
+        cur_site = config_store.cfg().site
+        site = cur_site.model_copy(update={
+            "name": loc.name,
+            "latitude": loc.latitude,
+            "longitude": loc.longitude,
+            "elevation_m": loc.elevation_m,
+            # Same "absent means unchanged" rule PUT /api/site keeps: a location
+            # with no floor of its own must not reset the stored one to the
+            # model default.
+            "horizon_min_deg": (loc.horizon_min_deg
+                                if loc.horizon_min_deg is not None
+                                else cur_site.horizon_min_deg)})
+
+        def _apply():
+            cfg = config_store.set_site(site)
+            if loc.horizon_points is not None:
+                cfg = _write_active_horizon(loc.horizon_points)
+            return cfg
+
+        cfg = await asyncio.to_thread(_apply)
+        push = getattr(hub, "push_site_to_mount", None)
+        if callable(push):
+            try:
+                await push()
+            except Exception as e:
+                bus.log("warning", f"could not push site to mount: {e}", "config")
+        bus.publish("config", version=cfg.version)
+        return _config_payload(principal)
 
     @app.delete("/api/locations/{loc_id}")
     @declare(CAP_CONFIG_SITE_OPTICS)
@@ -7417,6 +7572,54 @@ def create_app(*, bind_host: str | None = None,
         _warn_insecure_session_secret()
         bus.publish("config", config=redacted(cfg))
         return redacted(cfg)["auth"]
+
+    @app.get("/api/remote/status")
+    @declare(CAP_VIEW_STATUS)
+    async def get_remote_status(
+            request: Request,
+            principal: Principal = Depends(require(CAP_VIEW_STATUS))):
+        """Is the relay tunnel up, and did THIS request come through it?
+
+        The read half of the W3 relay seam: ``POST /api/remote/config`` writes
+        the knobs and nothing could ever read back whether the dial-out was
+        actually connected, so a "relay: connected" badge had nothing to poll.
+
+        ``via`` answers a different question from ``connected``: it is how the
+        request in your hand arrived (the ASGI scope flag the relay client
+        stamps, never a header), so a LAN browser sees ``direct`` while the
+        tunnel is up and a remote browser sees ``relay``.
+
+        CARRIES NO SECRET. ``relay_host`` is the HOSTNAME parsed out of
+        ``relay_url`` -- never the url (which can carry userinfo credentials)
+        and never ``device_token``, which is the credential that registers this
+        home with the relay and is scrubbed everywhere else it appears
+        (``config.redacted``). view.status, because a viewer who is looking at
+        the rig through the relay is exactly the caller who needs to know the
+        link is up."""
+        remote_cfg = config_store.cfg().remote
+        try:
+            from ..remote.relay_client import relay_status
+            st = relay_status()
+        except Exception:  # noqa: BLE001 - a missing/failed module reads as "not running"
+            st = {"connected": False, "last_error": None, "since_unix": None,
+                  "gen": None}
+        host = None
+        try:
+            raw = (remote_cfg.relay_url or "").strip()
+            if raw:
+                host = urlsplit(raw).hostname or None
+        except Exception:  # noqa: BLE001 - an unparsable url is simply not shown
+            host = None
+        return {
+            "enabled": bool(remote_cfg.enabled),
+            "home_id": remote_cfg.home_id or None,
+            "relay_host": host,
+            "connected": bool(st.get("connected")),
+            "last_error": st.get("last_error"),
+            "since_unix": st.get("since_unix"),
+            "gen": st.get("gen"),
+            "via": "relay" if _scope_is_remote(request) else "direct",
+        }
 
     @app.post("/api/remote/config", dependencies=[Depends(require(CAP_ADMIN_USERS))])
     @declare(CAP_ADMIN_USERS)
