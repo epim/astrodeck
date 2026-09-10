@@ -59,6 +59,28 @@ def text_for_spdx(spdx: str | None) -> str:
 # ---------------------------------------------------------------------------
 
 TEXT_OVERRIDES: dict[str, dict] = {
+    "sgp4": {
+        # The wheel's metadata carries `License-Expression: MIT` and the wheel
+        # DOES ship its own LICENSE file, so the generator finds the text
+        # without this entry. The entry exists for the other two fields: the
+        # SPDX id, pinned so a future metadata change cannot quietly widen it,
+        # and the note, which is the only place the reader is told what this
+        # package is doing in an astrophotography controller.
+        "spdx": "MIT",
+        "title": "LICENSE (from the python-sgp4 wheel)",
+        "body": _text("sgp4-mit.txt"),
+        "note": (
+            "Turns a satellite's two-line element set into a position. By "
+            "Brandon Rhodes, and it is the reference implementation of AIAA "
+            "2006-6753 rather than a reading of it — the C++ that paper ships, "
+            "ported, with the paper's own verification corpus (SGP4-VER.TLE "
+            "and tcppver.out) inside the package. AstroDeck's test suite "
+            "propagates that corpus on every run.\n\n"
+            "Chosen over Skyfield, which is by the same author and equally "
+            "correct on satellites, because Skyfield's planetary half wants a "
+            "downloaded JPL kernel and this app has to work at a dark site "
+            "with no network. sgp4 ships no data files at all."),
+    },
     "pyserial": {
         # The wheel's METADATA says only "License: BSD", which is vaguer than
         # the truth: serial/__init__.py carries `SPDX-License-Identifier:
@@ -508,6 +530,52 @@ SERVICES: list[dict] = [
             "Pass-through credit their upstream asks for: \"Contains information "
             "licenced under the Data Server End-use Licence of Environment and "
             "Climate Change Canada.\""),
+    },
+    {
+        "name": "CelesTrak",
+        # Same shape as the IEM entry: a service re-delivering US Government
+        # data, asking to be identified rather than licensed. Deliberately NOT
+        # a new LicenseRef with an owner-decision flag on it -- a flag means
+        # "somebody has to read the terms and decide", and there is nothing
+        # here to decide: we fetch, we cache locally, we redistribute nothing.
+        "spdx": "LicenseRef-Public-Domain",
+        "url": "https://celestrak.org/",
+        "hosts": ["celestrak.org"],
+        "notes": (
+            "Where AstroDeck gets satellite orbital elements from — the GP "
+            "element sets behind the satellite search and the pass predictor. "
+            "CelesTrak is Dr T.S. Kelso's service, and has been the public "
+            "source for two-line element sets since 1985; the elements "
+            "themselves originate with the US Space Force's 18th Space Defense "
+            "Squadron and are US Government work.\n\n"
+            "WHAT WE DO WITH IT: AstroDeck fetches the curated `visual` group "
+            "(plus the ISS, Tiangong and Hubble by catalogue number), caches "
+            "the result on this rig's own disk so a dark site keeps working "
+            "offline, and does NOT redistribute it — no element set ships in a "
+            "release, and nothing is re-served to anyone else.\n\n"
+            "CelesTrak ask clients not to fetch a given file more than four "
+            "times a day and to identify themselves. Both are honoured: the "
+            "refresh interval is twelve hours and every request carries the "
+            "same `AstroDeck/0.1` user agent the weather client sends."),
+    },
+    {
+        "name": "IAU Minor Planet Center",
+        "spdx": "LicenseRef-Public-Domain",
+        "url": "https://www.minorplanetcenter.net/",
+        "hosts": ["minorplanetcenter.net", "www.minorplanetcenter.net"],
+        "notes": (
+            "Where AstroDeck gets comet orbital elements from: `CometEls.txt`, "
+            "the MPC's orbit file for every known comet. The Minor Planet "
+            "Center operates at the Smithsonian Astrophysical Observatory "
+            "under the auspices of Division F of the International "
+            "Astronomical Union, and is funded by NASA.\n\n"
+            "MPC data are freely available and the Center asks to be "
+            "acknowledged, which is what this entry does. The underlying "
+            "OBSERVATIONS belong to the observers who submitted them — "
+            "professional surveys and amateurs alike — and the orbits are "
+            "computed from their work; that credit passes through.\n\n"
+            "The file is fetched weekly at most (the MPC republish it weekly), "
+            "cached on this rig's disk, and never redistributed in a release."),
     },
     {
         "name": "Iowa Environmental Mesonet (Iowa State University)",
