@@ -234,6 +234,23 @@ def test_a_filter_with_no_frames_yet_still_appears(client, tmp_path):
     assert body["totals"]["frames"] == 0
 
 
+def test_a_damaged_session_file_is_named_not_a_traceback(client, tmp_path):
+    """A file that parses as JSON and is not a Session used to raise
+    ``ValidationError`` out of the route -- a 500 with a traceback and no
+    sentence, on six routes that each caught only ``KeyError``. It is still a
+    500 (the server IS broken in a way the caller cannot fix) but a named one,
+    and deliberately NOT a 404: the session is in the list, so saying it does
+    not exist would send the user looking for something they can see."""
+    s = _session_with_frames(tmp_path, status="dormant")
+    path = tmp_path / "captures" / "sessions" / f"{s.id}.json"
+    path.write_text('{"id": "' + s.id + '", "plan": 5}', encoding="utf-8")
+    for route in (f"/api/sessions/{s.id}", f"/api/sessions/{s.id}/files"):
+        r = client.get(route)
+        assert r.status_code == 500, route
+        assert r.json()["code"] == "session_unreadable", route
+        assert s.id in r.json()["detail"], route
+
+
 def test_unknown_session_404s(client):
     assert client.get("/api/sessions/nope/files").status_code == 404
 
@@ -253,6 +270,52 @@ def test_current_404s_with_no_active_session_and_200s_with_one(client, tmp_path)
     r = client.get("/api/sessions/current/files")
     assert r.status_code == 200
     assert r.json() == client.get(f"/api/sessions/{live.id}/files").json()
+
+
+def test_finding_the_live_session_does_not_validate_the_whole_archive(
+        client, tmp_path, monkeypatch):
+    """``active_session()`` folded ``load_all()``, which fully pydantic-
+    validates EVERY stored session -- 200 sessions x 170 frames is 34 000
+    ``SessionFrame`` models -- to read one string off each. Measured at the
+    store's own soft cap: ``active_session()`` 0.982 s, the fold it feeds
+    0.002 s, so the whole cost of opening the Files sheet was finding the
+    session. The count below is the assertion: one validation, not one per
+    stored session, whatever the library holds."""
+    from astrodeck.sequence import session as session_mod
+
+    live = _session_with_frames(tmp_path, status="active")
+    for _ in range(5):
+        _session_with_frames(tmp_path, status="complete")
+
+    real = session_mod.Session.model_validate
+    calls = {"n": 0}
+
+    def _counted(cls_arg, *a, **kw):
+        calls["n"] += 1
+        return real(cls_arg, *a, **kw)
+
+    monkeypatch.setattr(session_mod.Session, "model_validate",
+                        classmethod(lambda cls, *a, **kw: _counted(*a, **kw)))
+    r = client.get("/api/sessions/current/files")
+    assert r.status_code == 200
+    assert r.json()["target"] == "NGC 6946"
+    assert calls["n"] == 1, (
+        f"six stored sessions cost {calls['n']} full validations to find one")
+    # And it is still the RIGHT session -- most recently updated, status active.
+    assert r.json() == client.get(f"/api/sessions/{live.id}/files").json()
+
+
+def test_a_corrupt_archive_does_not_hide_the_live_session(client, tmp_path):
+    """The raw scan must keep ``load_all``'s skip-the-unreadable rule: a
+    session file that no longer validates is not a reason for the running
+    session to become unfindable."""
+    _session_with_frames(tmp_path, status="active")
+    junk = tmp_path / "captures" / "sessions" / "broken.json"
+    junk.write_text('{"status": "active", "updated_ts": 9e9, "plan": 5}',
+                    encoding="utf-8")
+    r = client.get("/api/sessions/current/files")
+    assert r.status_code == 200
+    assert r.json()["target"] == "NGC 6946"
 
 
 def test_current_is_not_matched_as_a_session_id(client, tmp_path):

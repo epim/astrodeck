@@ -72,7 +72,7 @@ from ..config import (FRAME_SCOPES, REDACTED_SINK_FIELDS, AlertSink, AuthConfig,
                       WeatherConfig,
                       config_store, frames_payload, publish_frames, redacted,
                       set_frame_settings)
-from ..locations import (LocationLibraryFull, LocationNameCollision,
+from ..locations import (UNCHANGED, LocationLibraryFull, LocationNameCollision,
                          location_store, normalize_horizon_points)
 from .. import __version__
 from ..update.state import update_state
@@ -125,11 +125,12 @@ from ..sequence.policy import resolve_policy
 from ..sequence.report import SessionReporter, _slug
 from ..sequence.bundle import (CalibrationLibraryAdapter, NullMasterLibrary,
                                build_bundle, bundle_materialize_plan,
-                               bundle_summary, build_script,
+                               bundle_summary, build_script, externalize_bundle,
                                manifest_json, readme_text, weights_csv)
 from ..sequence.resume_arm import ResumeArm
 from ..plans import migrate_plan_policy_fields
-from ..sequence.session import migrate_legacy_resume, session_store
+from ..sequence.session import (SessionUnreadable, migrate_legacy_resume,
+                                session_store)
 from ..sequence.session_files import active_session, files_index
 from ..weather import NoNightError, weather_service
 # Cloud-occlusion model (stage 6a). Imported HERE and nowhere near the sequence
@@ -1670,6 +1671,16 @@ _REMOTE_LOCAL_ONLY_MUTATION_PREFIXES = (
     "/api/profiles",
     "/api/connect",
     "/api/survey/pack",
+    # ``/api/locations`` is here because it is a SECOND DOOR into ``/api/config``
+    # and nothing else. ``PUT /api/locations/{id}`` writes ``config.safety.horizon``
+    # through the active-site write-through, and ``POST /api/locations/{id}/apply``
+    # writes both ``config.site`` and that same safety floor. Fencing POST /api/config
+    # while leaving those open meant a tunnelled cookie could set an 89-degree
+    # horizon (every slew of the night denied) or erase the tree line, which is
+    # the safety floor the engine's obstruction rule interpolates. Reads stay
+    # open: this list only catches unsafe methods, so GET /api/locations (the
+    # library the remote UI lists) still answers over the relay.
+    "/api/locations",
 )
 _UPDATE_MUTATION_PATHS = frozenset({
     "/api/update/check", "/api/update/apply", "/api/update/config",
@@ -2056,6 +2067,22 @@ def create_app(*, bind_host: str | None = None,
             response.headers.setdefault(
                 "Strict-Transport-Security", "max-age=31536000")
         return response
+
+    @app.exception_handler(SessionUnreadable)
+    async def _session_unreadable(request, exc: SessionUnreadable):
+        """A damaged session file is an answer, not a crash.
+
+        Six routes load a session and every one of them caught only
+        ``KeyError``, so a file that parsed as JSON and failed
+        ``Session.model_validate`` 500'd with a traceback and no sentence. It
+        is registered once, here, rather than repeated six times: the next
+        route to load a session gets the behaviour for free instead of
+        inheriting the omission. Still a 500 — the server IS broken in a way
+        the caller cannot fix — but a named one, and never a 404, which would
+        say a session the user can see in the list does not exist."""
+        return JSONResponse(
+            {"detail": str(exc), "code": "session_unreadable"},
+            status_code=500)
 
     # --------------------------------------------------------- atlas routers
     # The Sky-Atlas feature lanes own these as separate APIRouter modules
@@ -3469,9 +3496,34 @@ def create_app(*, bind_host: str | None = None,
         before = next((row for row in location_store.list()
                        if row.id == loc_id), None)
         cfg = config_store.cfg()
+        # ABSENT MEANS UNCHANGED, and only ``model_fields_set`` knows the
+        # difference. ``horizon_points`` defaults to None, so a body that never
+        # mentions it was indistinguishable from one that cleared it — and the
+        # legacy Site panel (ui/src/components/settings/SitePanel.tsx) sends
+        # exactly that body on every "save this location", which erased a drawn
+        # polyline through a route the user thought was renaming a site. ``[]``
+        # is still the explicit clear; ``UNCHANGED`` is the third state.
+        # ``horizon_min_deg`` carries the identical shape and the identical
+        # cost (it is a safety floor), so it takes the same rule.
+        sent = body.model_fields_set
+        points = body.horizon_points if "horizon_points" in sent else UNCHANGED
+        floor = (body.horizon_min_deg if "horizon_min_deg" in sent
+                 else UNCHANGED)
+        # What the row's polyline will BE after this write — computed before it,
+        # because the safety cap below has to be enforced before anything is
+        # written. ``body.horizon_points`` is already normalized by the boundary
+        # model's validator, so this compares like with like.
+        after_points = (body.horizon_points if points is not UNCHANGED
+                        else (before.horizon_points if before else None))
+        # THE POINTS CHANGED, not "the body carried points". Keyed on the
+        # latter, a pure rename echoed the library's stale polyline back into
+        # ``config.safety.horizon`` and clobbered a horizon somebody had edited
+        # by hand — irreversibly, through the API. The sites sheet echoes the
+        # stored points on every coordinate or name edit, so that fired
+        # routinely.
         write_through = (before is not None
-                         and body.horizon_points is not None
-                         and _location_is_active_site(before, cfg.site))
+                         and _location_is_active_site(before, cfg.site)
+                         and after_points != before.horizon_points)
         # Field-level RBAC, the same shape as ``_require_site_field_caps``: the
         # library itself is site description (config.site_optics), but the
         # moment an edit reaches ``config.safety.horizon`` it is writing a
@@ -3485,8 +3537,7 @@ def create_app(*, bind_host: str | None = None,
         try:
             loc = await asyncio.to_thread(
                 location_store.update, loc_id, body.name, body.latitude,
-                body.longitude, body.elevation_m, body.horizon_min_deg,
-                body.horizon_points)
+                body.longitude, body.elevation_m, floor, points)
         except KeyError:
             raise HTTPException(404, detail={"code": "not_found"})
         except LocationNameCollision as e:
@@ -3517,7 +3568,17 @@ def create_app(*, bind_host: str | None = None,
         configured profile ALONE rather than clearing it: the field is new, so
         every location predating it would otherwise silently erase a horizon
         somebody configured through ``POST /api/config``. ``[]`` is the explicit
-        clear."""
+        clear.
+
+        ATOMICITY + CONCURRENCY. Both fields land in ONE ``AppConfig`` mutation
+        and one save (see ``_apply``), so there is no window in which the new
+        coordinates are live against the old site's horizon. There is
+        deliberately no ``expected_version`` here, unlike ``PUT /api/site``:
+        this route does not carry field values a second editor could be
+        clobbering, it names a stored location and asks for it whole, so
+        last-apply-wins is the meaning of the request rather than a lost
+        update. The version still bumps, so an open client's stale token loses
+        its next field-level write."""
         loc = next((row for row in location_store.list()
                     if row.id == loc_id), None)
         if loc is None:
@@ -3543,10 +3604,21 @@ def create_app(*, bind_host: str | None = None,
                                 else cur_site.horizon_min_deg)})
 
         def _apply():
-            cfg = config_store.set_site(site)
+            # ONE mutation, ONE save, ONE version bump. This was
+            # ``set_site(...)`` followed by ``set_safety(...)`` — two
+            # ``bump_and_save`` calls with a window between them, and the
+            # partial state that window can leave on disk is the worst one
+            # available: the NEW site's coordinates active against the PREVIOUS
+            # site's horizon, i.e. a safety floor traced somewhere else gating
+            # tonight's slews, with a version number that says the config is
+            # consistent. ``set_site_and_safety`` cannot half-happen.
+            cur = config_store.cfg()
+            safety = cur.safety
             if loc.horizon_points is not None:
-                cfg = _write_active_horizon(loc.horizon_points)
-            return cfg
+                safety = safety.model_copy(update={
+                    "horizon": [(float(a), float(h))
+                                for a, h in loc.horizon_points]})
+            return config_store.set_site_and_safety(site, safety)
 
         cfg = await asyncio.to_thread(_apply)
         push = getattr(hub, "push_site_to_mount", None)
@@ -3861,7 +3933,15 @@ def create_app(*, bind_host: str | None = None,
         the download filename so the header can't carry CR/LF/quotes.
         ``weight_altitude`` (opt-in) folds a sin(alt) term into the sub weights;
         ``layout``/``keep_threshold`` are the PRO-10 enrichments (defaults keep the
-        one-click download byte-for-byte what it was)."""
+        one-click download byte-for-byte what it was).
+
+        NO ABSOLUTE PATH LEAVES HERE. Every member is built from an
+        EXTERNALIZED bundle, so ``src`` is capture-root-relative exactly as
+        ``saved_path`` is on ``GET /api/reports/{id}`` and on the frames CSV.
+        This route is ``view.status`` — every role — and it was the last one
+        shipping ``fr.saved_path`` verbatim, in three members at once. The
+        generated scripts read the user's own capture folder from
+        ``CAPTURE_ROOT`` so they still resolve."""
         report = await asyncio.to_thread(SessionReporter.load, report_id)
         if report is None:
             raise HTTPException(404, "report not found")
@@ -3872,6 +3952,7 @@ def create_app(*, bind_host: str | None = None,
                              keep_threshold=keep_threshold)
         except ValueError as e:
             raise HTTPException(400, str(e))
+        b = externalize_bundle(b, gallery_module.relpath_under_capture)
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
             z.writestr("manifest.json", json.dumps(manifest_json(b), indent=2))
@@ -6601,9 +6682,10 @@ def create_app(*, bind_host: str | None = None,
 
     # ----------------------------------------------------------------- monitor
 
-    @app.get("/api/monitor/snapshot", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @app.get("/api/monitor/snapshot")
     @declare(CAP_VIEW_STATUS)
-    async def monitor_snapshot():
+    async def monitor_snapshot(
+            principal: Principal = Depends(require(CAP_VIEW_STATUS))):
         """One-shot cold-load hydration for the Monitor view (monitor spec §8).
         Non-fatal: the WS catches up within ~2s, so the view never blocks on it.
         Uses the live engine state (running/paused), not just the last snapshot.
@@ -6619,7 +6701,16 @@ def create_app(*, bind_host: str | None = None,
         snap["sequence"] = engine.state | {
             "running": engine.running, "paused": engine.paused}
         snap["polar"] = hub.polar.state | {"running": hub.polar.running}
-        return snap
+        # SAME SEAM AS /api/status, and it was missing here. This route carries
+        # a whole ``poll_status()`` under ``snap["status"]`` — site block,
+        # mount alt/az and the meridian countdown included — one level deeper
+        # than ``_redact_site_for`` looks, so a viewer's cold-load hydration
+        # handed out the precise coordinates that every other surface strips.
+        # Redact the nested payload, then the envelope, so the rule holds
+        # wherever a future key puts a site block.
+        if isinstance(snap.get("status"), dict):
+            snap["status"] = _redact_site_for(snap["status"], principal)
+        return _redact_site_for(snap, principal)
 
     @app.get("/api/sequence/preflight",
              dependencies=[Depends(require(CAP_VIEW_SITE_DERIVED))])

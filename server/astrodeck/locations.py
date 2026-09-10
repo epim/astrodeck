@@ -33,6 +33,26 @@ HORIZON_ALT_MIN_DEG = -10.0
 HORIZON_ALT_MAX_DEG = 90.0
 
 
+class _Unchanged:
+    """The type of :data:`UNCHANGED`. Private: there is exactly one instance."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:            # pragma: no cover - debugging aid
+        return "UNCHANGED"
+
+
+#: "This field was not part of the edit." The THIRD state an optional field
+#: needs, and the one Python's ``None`` default cannot express: for
+#: ``horizon_points``, ``None`` means "this location has no drawn horizon" and
+#: ``[]`` means "this site has no obstructions", so a defaulted ``None`` on
+#: :meth:`LocationStore.update` erased a polyline every time a caller renamed a
+#: site without re-sending it. Only the caller knows which it meant — the API
+#: boundary reads ``model_fields_set`` and passes this through — so the store
+#: stops guessing.
+UNCHANGED = _Unchanged()
+
+
 def normalize_horizon_points(points) -> list[list[float]] | None:
     """Validate + canonicalize a per-site horizon polyline, or raise ValueError.
 
@@ -57,6 +77,14 @@ def normalize_horizon_points(points) -> list[list[float]] | None:
         return None
     if isinstance(points, (str, bytes)) or not isinstance(points, (list, tuple)):
         raise ValueError("horizon_points must be a list of [az_deg, alt_deg] pairs")
+    # BEFORE the loop, not after it. The cap used to be checked on the finished
+    # dict, so a body of a million points was fully walked and hashed first —
+    # admin-authenticated and bounded by MAX_REQUEST_BODY_BYTES, so never a
+    # denial of service, but a pointless megabyte of work to reach a refusal we
+    # could make from len(). Dedupe cannot make an over-cap input legal: it
+    # only ever removes points, and no real polyline sends duplicates.
+    if len(points) > MAX_HORIZON_POINTS:
+        raise ValueError(f"at most {MAX_HORIZON_POINTS} horizon points")
     by_az: dict[float, float] = {}
     for raw in points:
         if isinstance(raw, (str, bytes)) or not isinstance(raw, (list, tuple)):
@@ -255,8 +283,13 @@ class LocationStore:
 
     def update(self, loc_id: str, name: str, latitude: float, longitude: float,
                elevation_m: float,
-               horizon_min_deg: float | None = None,
-               horizon_points: list | None = None) -> SavedLocation:
+               horizon_min_deg: float | None | _Unchanged = UNCHANGED,
+               horizon_points: list | None | _Unchanged = UNCHANGED
+               ) -> SavedLocation:
+        """Overwrite a row. The two horizon fields default to :data:`UNCHANGED`
+        ("not part of this edit"), NOT to ``None`` ("clear it"): a caller that
+        omits them keeps what is stored, and a caller that means to clear one
+        says so by passing ``None`` (no floor) or ``[]`` (no obstructions)."""
         items = self._items_now()
         idx = next((i for i, it in enumerate(items) if it.id == loc_id), None)
         if idx is None:
@@ -265,11 +298,14 @@ class LocationStore:
         if collide is not None:
             raise LocationNameCollision(collide)
         existing = items[idx]
-        updated = existing.model_copy(update={
+        changes: dict = {
             "name": name.strip(), "latitude": latitude, "longitude": longitude,
-            "elevation_m": elevation_m, "horizon_min_deg": horizon_min_deg,
-            "horizon_points": normalize_horizon_points(horizon_points),
-            "updated_ts": time.time()})
+            "elevation_m": elevation_m, "updated_ts": time.time()}
+        if not isinstance(horizon_min_deg, _Unchanged):
+            changes["horizon_min_deg"] = horizon_min_deg
+        if not isinstance(horizon_points, _Unchanged):
+            changes["horizon_points"] = normalize_horizon_points(horizon_points)
+        updated = existing.model_copy(update=changes)
         # Re-validate ranges (model_copy skips validation).
         updated = SavedLocation(**updated.model_dump())
         items[idx] = updated

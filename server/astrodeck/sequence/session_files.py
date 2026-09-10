@@ -200,9 +200,12 @@ def active_session() -> Session | None:
 
     ``active`` is set by ``SequenceEngine.start`` and cleared by the run's
     ending; ``SessionStore.boot_sweep`` demotes any left over from a crash, so
-    a stale file cannot masquerade as a live run after a restart. Most recently
-    updated wins defensively -- there should only ever be one.
+    a stale file cannot masquerade as a live run after a restart.
+
+    The scan lives in ``SessionStore.active`` -- it reads each stored session's
+    status off the raw dict and validates only the one it returns, because this
+    used to fold ``load_all()`` and so paid for a full pydantic validation of
+    every archived session (0.982 s at the store's 200-session soft cap) to
+    answer a question about one flag.
     """
-    live = [s for s in session_store.load_all() if s.status == "active"]
-    live.sort(key=lambda s: s.updated_ts, reverse=True)
-    return live[0] if live else None
+    return session_store.active()

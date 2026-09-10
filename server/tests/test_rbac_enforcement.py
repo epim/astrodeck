@@ -1078,13 +1078,17 @@ def test_admin_weather_get_and_ignore_roundtrip(tmp_path, monkeypatch):
         r = c.get("/api/weather")
         assert r.status_code == 200
         body = r.json()
-        # A SUBSET, not an equality: this payload is additive by contract (the
-        # surface block landed in 2026-09 wave S2), so what this test is here
-        # to guard is that a view.weather holder gets the WHOLE payload with
-        # nothing stripped -- never that the payload stopped growing.
-        assert {"enabled", "fetched_ts", "stale", "ignore_tonight",
-                "threshold_pct", "sustain_minutes", "site_lat", "site_lon",
-                "forecast", "astrospheric", "alert"} <= set(body)
+        # EXACT, not a subset. Relaxing it to ``<=`` for the additive
+        # ``surface``/``now`` block left nothing able to see a key being
+        # REMOVED -- and this is the only assertion that ever could, because
+        # "the holder gets the whole payload" is a statement about the whole
+        # key set. Adding a key is a one-line edit here; silently dropping
+        # ``site_lat`` (the deliberate I2 exception) or ``alert`` would
+        # otherwise have shipped green.
+        assert set(body) == {"enabled", "fetched_ts", "stale", "ignore_tonight",
+                             "threshold_pct", "sustain_minutes", "site_lat",
+                             "site_lon", "forecast", "surface", "now",
+                             "astrospheric", "alert"}
         assert body["enabled"] is False and body["forecast"] is None
         # site_lat/site_lon ride this payload for a view.weather holder (I2)
         assert body["site_lat"] == _PRECISE_LAT and body["site_lon"] == _PRECISE_LON
@@ -1301,6 +1305,167 @@ def test_the_ws_push_strips_altaz_without_mutating_the_shared_event():
     assert ev["data"]["mount"]["alt"] == 46.2, "the shared event was mutated"
     admin = _redact_ws_event(ev, principal_for_role("admin"))
     assert admin["data"]["mount"]["alt"] == 46.2
+
+
+# ------------------------------------------- the meridian countdown (2026-09-10)
+#
+# The SAME defect, one node over, and it survived the alt/az fix because
+# ``meridian`` is a TOP-LEVEL sibling of ``mount`` rather than a key inside it.
+# ``hub._compute_meridian`` builds it from ``lst_hours(site["longitude"])``:
+#
+#   LST       = ra_hours - hours_to_flip        (ra_hours is not site data)
+#   longitude = (LST - GMST(t)) * 15
+#
+# rounded to 4 decimal hours = 0.36 s of hour angle = ~120 m. ``n_a_over_pole``
+# leaks latitude coarsely on top of that (it is a latitude-dependent predicate
+# a caller sweeps by pointing the mount), and ``counting``/``due`` is the sign
+# of the same hour angle -- so the STATUS collapses with the number.
+
+_MERIDIAN = {"status": "counting", "hours_to_flip": 1.8342,
+             "flip_enabled": True, "pier_side": "east"}
+
+
+def test_a_viewer_gets_no_meridian_timing(tmp_path, monkeypatch):
+    from astrodeck.api.redact import _redact_site_for
+    payload = {"site": {"latitude": 40.0, "longitude": -74.0, "is_default": False},
+               "mount": {"ra_hours": 20.9705, "dec_deg": 60.0},
+               "meridian": dict(_MERIDIAN)}
+    out = _redact_site_for(dict(payload), principal_for_role("viewer"))
+    assert out["meridian"]["hours_to_flip"] is None, (
+        "one authorized request and a clock is the whole attack: "
+        f"{out['meridian']}")
+    assert out["meridian"]["status"] == "unknown"
+    # The two facts that are about the MOUNT rather than about where it stands
+    # stay, so the tile can still say "flip disabled" or name the pier.
+    assert out["meridian"]["flip_enabled"] is True
+    assert out["meridian"]["pier_side"] == "east"
+
+
+@pytest.mark.parametrize("status", ["counting", "due", "n_a_over_pole"])
+def test_every_site_derived_flip_status_collapses_for_a_viewer(status):
+    """The word alone is a channel: `due` vs `counting` is the SIGN of the hour
+    angle, and `n_a_over_pole` is f(dec, latitude) with the caller choosing the
+    dec."""
+    from astrodeck.api.redact import _redact_site_for
+    out = _redact_site_for({"meridian": {**_MERIDIAN, "status": status}},
+                           principal_for_role("viewer"))
+    assert out["meridian"]["status"] == "unknown"
+
+
+@pytest.mark.parametrize("status", ["n_a_fork", "flip_disabled", "unknown"])
+def test_the_flip_statuses_that_are_not_site_derived_survive(status):
+    """`n_a_fork` comes from the pier report and `flip_disabled` from the loaded
+    plan. Collapsing those too would be a redaction that withholds nothing and
+    costs the viewer a true sentence."""
+    from astrodeck.api.redact import _redact_site_for
+    out = _redact_site_for(
+        {"meridian": {**_MERIDIAN, "status": status, "hours_to_flip": None}},
+        principal_for_role("viewer"))
+    assert out["meridian"]["status"] == status
+
+
+def test_an_operator_keeps_the_flip_countdown(tmp_path, monkeypatch):
+    """view.site_derived is exactly the cap for this: an operator runs the flip
+    and needs to know when it is due."""
+    from astrodeck.api.redact import _redact_site_for
+    out = _redact_site_for({"meridian": dict(_MERIDIAN)},
+                           principal_for_role("operator"))
+    assert out["meridian"]["hours_to_flip"] == 1.8342
+    assert out["meridian"]["status"] == "counting"
+
+
+def test_the_ws_push_strips_the_flip_countdown_without_mutating_the_event():
+    """Same shared-``Event.data`` rule as alt/az: strip in place and the ADMIN's
+    copy loses the countdown too."""
+    from astrodeck.api.redact import _redact_ws_event
+    ev = {"type": "status", "data": {"meridian": dict(_MERIDIAN)}}
+    viewer = _redact_ws_event(ev, principal_for_role("viewer"))
+    assert viewer["data"]["meridian"]["hours_to_flip"] is None
+    assert viewer["data"]["meridian"]["status"] == "unknown"
+    assert ev["data"]["meridian"]["hours_to_flip"] == 1.8342, \
+        "the shared event was mutated"
+    admin = _redact_ws_event(ev, principal_for_role("admin"))
+    assert admin["data"]["meridian"]["hours_to_flip"] == 1.8342
+
+
+def test_a_meridian_node_of_an_unexpected_shape_fails_closed():
+    from astrodeck.api.redact import _redact_site_for, _redact_ws_event
+    out = _redact_site_for({"meridian": [1.8342]}, principal_for_role("viewer"))
+    assert "meridian" not in out
+    ev = _redact_ws_event({"type": "status", "data": {"meridian": 1.8342}},
+                          principal_for_role("viewer"))
+    assert "meridian" not in ev["data"]
+
+
+def _fake_status(monkeypatch, payload):
+    """Serve one fabricated ``poll_status`` body (no devices needed)."""
+    async def _poll():
+        return {k: (dict(v) if isinstance(v, dict) else v)
+                for k, v in payload.items()}
+    monkeypatch.setattr(app_module.hub, "poll_status", _poll)
+    return _poll
+
+
+_STATUS_WITH_MERIDIAN = {
+    "site": {"name": "Ridge Road Pad", "latitude": 47.6104,
+             "longitude": -122.3312, "elevation_m": 40.0, "is_default": False},
+    "mount": {"ra_hours": 20.9705, "dec_deg": 60.0, "alt": 46.2, "az": 131.7},
+    "meridian": dict(_MERIDIAN),
+}
+
+
+def test_the_status_route_withholds_the_countdown_from_a_viewer(tmp_path,
+                                                                monkeypatch):
+    """End to end, because the unit above only proves the helper: GET
+    /api/status is CAP_VIEW_STATUS -- every role -- and it is where the value
+    was measured leaving the box."""
+    _store, app = _make_client(tmp_path, monkeypatch)
+    _fake_status(monkeypatch, _STATUS_WITH_MERIDIAN)
+    _install(principal_for_role("viewer"))
+    with TestClient(app) as c:
+        r = c.get("/api/status")
+    body = r.json()
+    assert body["meridian"]["hours_to_flip"] is None
+    assert body["meridian"]["status"] == "unknown"
+    assert "1.8342" not in r.text, r.text
+
+
+def test_the_status_route_still_gives_an_operator_the_countdown(tmp_path,
+                                                                monkeypatch):
+    _store, app = _make_client(tmp_path, monkeypatch)
+    _fake_status(monkeypatch, _STATUS_WITH_MERIDIAN)
+    _install(principal_for_role("operator"))
+    with TestClient(app) as c:
+        body = c.get("/api/status").json()
+    assert body["meridian"]["hours_to_flip"] == 1.8342
+    assert body["meridian"]["status"] == "counting"
+    # and still no coordinates: the two caps stay independent.
+    assert "latitude" not in body["site"]
+
+
+def test_the_monitor_snapshot_rides_the_same_seam(tmp_path, monkeypatch):
+    """The cold-load aggregator carries a WHOLE ``poll_status`` under
+    ``status``, one level deeper than the redactor looks -- so it served a
+    viewer the precise site block, the mount's alt/az and the flip countdown
+    that every other surface strips. Found while closing the meridian leak."""
+    _store, app = _make_client(tmp_path, monkeypatch)
+
+    async def _snap():
+        return {"sequence": {"state": "idle"},
+                "status": {k: dict(v) if isinstance(v, dict) else v
+                           for k, v in _STATUS_WITH_MERIDIAN.items()},
+                "preview_id": None, "guide_recent": [], "busy": []}
+
+    monkeypatch.setattr(app_module.hub, "monitor_snapshot", _snap)
+    _install(principal_for_role("viewer"))
+    with TestClient(app) as c:
+        r = c.get("/api/monitor/snapshot")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "latitude" not in body["status"]["site"], body["status"]["site"]
+    assert "Ridge Road Pad" not in r.text
+    assert "alt" not in body["status"]["mount"]
+    assert body["status"]["meridian"]["hours_to_flip"] is None
 
 
 def test_the_catalog_still_lists_targets_for_a_viewer_without_altaz(tmp_path,

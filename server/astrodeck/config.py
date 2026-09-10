@@ -1786,6 +1786,25 @@ class ConfigStore:
         cfg.site = site
         return self.bump_and_save()
 
+    def set_site_and_safety(self, site: Site, safety: SafetyConfig,
+                            expected_version: int | None = None) -> AppConfig:
+        """Move the site AND its safety floor in ONE save.
+
+        Applying a saved location changes two blocks that only make sense
+        together: the coordinates the engine plans from, and the drawn horizon
+        it gates slews with. Written as ``set_site`` then ``set_safety`` that is
+        two ``bump_and_save`` calls, and a failure between them leaves the new
+        coordinates live against the PREVIOUS site's horizon — a tree line from
+        somewhere else, applied to tonight, with a version number claiming the
+        config is whole. One mutation, one atomic file write, one version bump:
+        the partial state is not reachable."""
+        self._check_version(expected_version)
+        cfg = self.cfg()
+        # a user-applied site is, by definition, no longer the default.
+        cfg.site = site.model_copy(update={"is_default": False})
+        cfg.safety = safety
+        return self.bump_and_save()
+
     def set_optics(self, optics: Optics, expected_version: int | None = None) -> AppConfig:
         self._check_version(expected_version)
         cfg = self.cfg()

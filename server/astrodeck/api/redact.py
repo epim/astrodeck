@@ -61,6 +61,30 @@ _SITE_STRIP_KEYS = ("name", "latitude", "longitude", "elevation_m")
 # So the derived values are ABSENT for a non-holder, the same as the raw ones.
 _MOUNT_DERIVED_KEYS = ("alt", "az")
 
+# The SECOND site-derived node, and it sits at the top level as a sibling of
+# ``mount`` rather than inside it, which is exactly how it survived the audit
+# that closed alt/az. ``hub._compute_meridian`` builds the countdown from the
+# hour angle: ``lst = lst_hours(site["longitude"])``, ``ha = LST - RA``,
+# ``hours_to_flip = -ha``. So a caller who holds ``mount.ra_hours`` (which is
+# not site data) recovers ``LST = ra_hours - hours_to_flip`` and from it
+# ``longitude = (LST - GMST(t)) * 15``. The value is rounded to 4 decimal
+# hours = 0.36 s of hour angle = ~120 m of longitude, so the rounding is not a
+# defence.
+#
+# The STATUS word leaks too, coarsely, and had to be collapsed with it:
+# ``n_a_over_pole`` is ``flip_unnecessary_over_pole(dec, site["latitude"])``, a
+# latitude-dependent predicate a caller can sweep by pointing the mount, and
+# ``counting`` / ``due`` is the SIGN of that same hour angle. The three below
+# are the site-derived verdicts; ``n_a_fork`` (pier side), ``flip_disabled``
+# (the plan) and ``unknown`` are not, and stay.
+_MERIDIAN_DERIVED_KEYS = ("hours_to_flip",)
+_MERIDIAN_DERIVED_STATUSES = frozenset({"counting", "due", "n_a_over_pole"})
+#: What a collapsed status becomes. Both UI consumers already render this as
+#: "unknown"/"the mount does not report a flip" rather than crashing, and
+#: ``flip_enabled``/``pier_side`` still ride the block, so a non-holder keeps
+#: the two facts that are about the MOUNT rather than about where it stands.
+_MERIDIAN_UNKNOWN = "unknown"
+
 
 def _strip_mount_derived(mount: dict) -> None:
     """Remove the site-derived pointing values from a mount block IN PLACE.
@@ -72,15 +96,38 @@ def _strip_mount_derived(mount: dict) -> None:
         mount.pop(k, None)
 
 
+def _strip_meridian_derived(meridian: dict) -> None:
+    """Remove the site-derived flip timing from a meridian block IN PLACE.
+
+    ``hours_to_flip`` becomes NULL rather than absent (the field is typed
+    ``number | null`` on every client and already has a "no countdown" render),
+    and a site-derived ``status`` collapses to ``unknown``. ``flip_enabled``
+    and ``pier_side`` are properties of the mount and the loaded plan, not of
+    the observer's position, so they stay."""
+    for k in _MERIDIAN_DERIVED_KEYS:
+        if k in meridian:
+            meridian[k] = None
+    if meridian.get("status") in _MERIDIAN_DERIVED_STATUSES:
+        meridian["status"] = _MERIDIAN_UNKNOWN
+
+
+#: node key -> the in-place stripper for it. ONE table, so a third derived node
+#: is added in one place and both the REST seam and the WS seam get it.
+_DERIVED_NODES = (("mount", _strip_mount_derived),
+                  ("meridian", _strip_meridian_derived))
+
+
 def _scrub_derived_node(container: dict) -> None:
-    """Make ``container['mount']`` safe for a non-holder IN PLACE, fail-CLOSED
-    on an unexpected shape — same rule as :func:`_scrub_site_node`."""
-    if "mount" not in container:
-        return
-    if isinstance(container.get("mount"), dict):
-        _strip_mount_derived(container["mount"])
-    else:
-        container.pop("mount", None)
+    """Make every site-DERIVED node in ``container`` safe for a non-holder IN
+    PLACE, fail-CLOSED on an unexpected shape — same rule as
+    :func:`_scrub_site_node`."""
+    for key, strip in _DERIVED_NODES:
+        if key not in container:
+            continue
+        if isinstance(container.get(key), dict):
+            strip(container[key])
+        else:
+            container.pop(key, None)
 
 
 def _strip_site(site: dict) -> None:
@@ -148,7 +195,8 @@ def _redact_site_for(payload: dict, principal: Principal | None) -> dict:
             if isinstance(cfg, dict):
                 cfg.pop("site", None)
         if not has_derived:
-            payload.pop("mount", None)
+            for key, _strip in _DERIVED_NODES:
+                payload.pop(key, None)
     return payload
 
 
@@ -187,8 +235,10 @@ def _redact_ws_event(ev_json: dict, principal: Principal | None) -> dict | None:
     make, none of which contained the word "latitude".
 
     So: coordinates go at ``data.site``/``data.config.site``, DERIVED values are
-    stripped here too (``mount.alt``/``az``), and a surface that exists to answer
-    a site-relative question — visibility, framing, the sky panel — is gated on
+    stripped here too (``mount.alt``/``az``, and ``meridian``'s flip timing —
+    a top-level sibling of ``mount``, which is how it outlived the alt/az fix),
+    and a surface that exists to answer a site-relative question — visibility,
+    framing, the sky panel — is gated on
     ``view.site_precise`` rather than redacted, because there is nothing left of
     it once the answer is removed. Adding a derived value to a viewer-visible
     payload is a capability decision, not a formatting one."""
@@ -220,21 +270,24 @@ def _redact_ws_event(ev_json: dict, principal: Principal | None) -> dict | None:
                 # (a coordinate we cannot key-strip must never leak).
                 new_data = dict(data)
                 new_data.pop("site", None)
-        # Site-DERIVED pointing (mount.alt/az). Copied before popping for the
-        # same reason the site node is: Event.data is shared across every
-        # subscriber, so mutating it in place would strip the values from the
-        # holder's copy too.
-        if not has_derived and "mount" in data:
-            mount = data.get("mount")
-            if isinstance(mount, dict):
-                if any(k in mount for k in _MOUNT_DERIVED_KEYS):
+        # Site-DERIVED nodes (mount.alt/az; meridian's flip timing). Copied
+        # before stripping for the same reason the site node is: Event.data is
+        # shared across every subscriber, so mutating it in place would strip
+        # the values from the holder's copy too.
+        if not has_derived:
+            for key, strip in _DERIVED_NODES:
+                if key not in data:
+                    continue
+                node = data.get(key)
+                if isinstance(node, dict):
+                    new_node = dict(node)
+                    strip(new_node)
+                    if new_node != node:
+                        new_data = new_data if new_data is not None else dict(data)
+                        new_data[key] = new_node
+                else:
                     new_data = new_data if new_data is not None else dict(data)
-                    new_mount = dict(mount)
-                    _strip_mount_derived(new_mount)
-                    new_data["mount"] = new_mount
-            else:
-                new_data = new_data if new_data is not None else dict(data)
-                new_data.pop("mount", None)   # unexpected shape -> fail CLOSED
+                    new_data.pop(key, None)   # unexpected shape -> fail CLOSED
         cfg = data.get("config")
         if not has_precise and isinstance(cfg, dict) and "site" in cfg:
             base = new_data if new_data is not None else dict(data)
@@ -260,7 +313,8 @@ def _redact_ws_event(ev_json: dict, principal: Principal | None) -> dict | None:
         if not has_precise:
             safe.pop("site", None)
         if not has_derived:
-            safe.pop("mount", None)
+            for key, _strip in _DERIVED_NODES:
+                safe.pop(key, None)
         cfg = safe.get("config")
         if isinstance(cfg, dict):
             cfg = dict(cfg)
