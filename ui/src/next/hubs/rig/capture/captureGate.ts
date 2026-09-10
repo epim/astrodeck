@@ -73,14 +73,77 @@ export function sequenceNotice(seqState: SequenceState["state"] | null): string 
   return null;
 }
 
-/** F.1's ruling, verbatim. There is no video/SER capture in this backend:
- *  `/api/capture{,/loop,/stop,/livestack/*}` is the whole camera surface and
- *  `RigStatus` carries `looping` and `live_stack_active` and nothing
- *  video-shaped. The control is drawn because the design draws it, and it
- *  EXPLAINS instead of acting. */
-export const VIDEO_LOCK_REASON =
-  "Video capture is not available on this rig yet - the camera surface here is "
-  + "single frames, a loop and Live View stacking.";
+// -------------------------------------------------------------- VIDEO (D-RIG-1)
+//
+// F.1's ruling ("there is no video/SER capture in this backend") EXPIRED with
+// `imaging/video_routes.py`. `VIDEO_LOCK_REASON` is gone with it: the mode is
+// real, the chip switches, and the refusals below are the ones a recording can
+// actually meet.
+//
+// WHAT THIS FUNCTION MAY AND MAY NOT DECIDE. `video_routes.py:96-154` checks
+// its refusals in a fixed order and every one of them is the server's to make;
+// a client that pre-judged them would answer a different question the first
+// time a run paused. So each row here reads a fact the RIG published about
+// itself - the socket, the principal's caps, the connected roles, the busy
+// lanes, `status.looping`, the sequence state, `camera.video_path` - and none
+// of them is a guess. The one refusal that is genuinely unknowable before the
+// press on an older engine is `no_video_path`; there the mode renders live and
+// the server's own sentence (which names the brand AND the backend) is carried
+// back through `serverRefusal`.
+
+/** Everything `videoRefusal` needs beyond the shared gate input. */
+export interface VideoGateInput {
+  /** `camera.video_path` as the capability model resolved it: "none" is
+   *  knowable before the press, "unknown" is an engine older than S7c and must
+   *  NOT lock the control. */
+  path: "native" | "none" | "unknown";
+  /** The pre-press sentence for `path === "none"`, composed from the published
+   *  capability by `videoModel.noVideoPathReason`. */
+  pathReason: string;
+  /** The last 409 the server answered a press with, verbatim. Sticky until the
+   *  operator changes something, because a refusal that vanishes on the next
+   *  render is a refusal nobody read. */
+  serverRefusal: string | null;
+  /** `video` in `status.busy_lanes` - a recording holds the camera for
+   *  minutes, and STOP is the way out. */
+  recording: boolean;
+  /** `capture` in `status.busy_lanes` - a still exposure has the camera. */
+  capturing: boolean;
+}
+
+export const VIDEO_RECORDING_REASON =
+  "A recording is already running - press STOP before starting another.";
+export const VIDEO_LIVE_LOOP_REASON =
+  "The live loop owns the camera - press Stop first.";
+export const VIDEO_CAMERA_BUSY_REASON =
+  "The camera is busy with another exposure - wait for that frame to land.";
+
+/** The FIRST real reason RECORD cannot fire, or null.
+ *
+ *  Order: link down -> capability -> camera role (all three from
+ *  `accessReason`) -> polar -> sequence -> the live loop -> our own lane -> the
+ *  capture lane -> the camera cannot record -> whatever the rig last said. */
+export function videoRefusal(
+  inp: CaptureGateInput, v: VideoGateInput,
+): string | null {
+  const access = accessReason(inp);
+  if (access) return access;
+  if (inp.polarBusy) return POLAR_REASON;
+  if (inp.seqState === "running" || inp.seqState === "paused") return SEQUENCE_REASON;
+  if (inp.looping) return VIDEO_LIVE_LOOP_REASON;
+  if (v.recording) return VIDEO_RECORDING_REASON;
+  if (v.capturing) return VIDEO_CAMERA_BUSY_REASON;
+  if (v.path === "none") return v.pathReason;
+  return v.serverRefusal ?? null;
+}
+
+/** STOP's gate, and it is the access floor and nothing else - deliberately not
+ *  `videoRefusal`. Every condition above is a reason a recording cannot START;
+ *  each one of them is also a moment the operator most needs to END one, and a
+ *  lane that blocked its own escape hatch is how a camera stays claimed. */
+export function videoStopReason(inp: CaptureGateInput): string | null {
+  return accessReason(inp);
+}
 
 /** UX-28's bounds. A set-point outside these is a typo, not an intent. */
 export const COOLER_MIN_C = -60;

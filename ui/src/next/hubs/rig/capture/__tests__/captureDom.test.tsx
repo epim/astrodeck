@@ -20,13 +20,39 @@
 //  4. THE LOOP LATCH surviving a second tap. `/api/capture/loop` CANCELS the
 //     exposure in progress, so a second tap inside the status frame silently
 //     throws away a sub.
-//  5. HONEST-DISABLED, twice: VIDEO · PLANETS, which the backend cannot do, and
-//     the whole screen for a viewer. Both must SAY why and fire nothing.
+//  5. THE MODE SWITCH IS REAL and it is ROUTE STATE. `VIDEO · PLANETS` used to
+//     be honest-disabled because the backend had no video surface; D-RIG-1
+//     landed `imaging/video_routes.py`, so the chip now SWITCHES and the mode
+//     lives in `?mode=video` - which is what the Sky hub's RECORD hand-off
+//     depends on. The old assertion (the chip is aria-disabled and carries
+//     VIDEO_LOCK_REASON) was REPLACED, not deleted: it asserted a shortfall
+//     that no longer exists, and a test pinning a refusal to a feature that
+//     shipped is a test that would have blocked the feature.
+//     Honest-disabled is still asserted, once, where it is still true: the
+//     whole screen for a viewer.
 //
 // Convention: jsdom by hand, createRoot + act, native events, printed tally plus
 // the `{ passed, failed, total }` export (shell-and-tests.md section 4).
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
+
+// ------------------------------------------------------------------ css stub
+// VIDEO mode's area root imports `video.css` (the wave rule: `next.css` belongs
+// to one task, every other area carries its own stylesheet beside its
+// components). Node has no idea what a `.css` file is, so a synchronous load
+// hook answers with an empty module. It has to run BEFORE any import that
+// reaches one, which is why every import in this file is dynamic and below it.
+{
+  const { registerHooks } = await import("node:module");
+  registerHooks({
+    load(url: string, context: any, nextLoad: any) {
+      if (url.endsWith(".css")) {
+        return { format: "module", shortCircuit: true, source: "export default {};" };
+      }
+      return nextLoad(url, context);
+    },
+  } as any);
+}
 
 // ---------------------------------------------------------------- jsdom first
 const { JSDOM } = await import("jsdom");
@@ -92,8 +118,9 @@ const { createRoot } = await import("react-dom/client");
 const { useStore } = await import("../../../../../store");
 const { CaptureScreen } = await import("../CaptureScreen");
 const {
-  VIDEO_LOCK_REASON, NEEDS_CAPTURE_REASON, EXPOSURE_FIX_REASON, GAIN_FIX_REASON,
+  NEEDS_CAPTURE_REASON, EXPOSURE_FIX_REASON, GAIN_FIX_REASON,
 } = await import("../captureGate");
+const { modeFromRoute, modeHash } = await import("../CaptureScreen");
 
 // ------------------------------------------------------------------ harness
 let passed = 0;
@@ -201,26 +228,49 @@ test("the operator's CAPTURE button is live, not locked", () => {
     "precondition: an operator with a camera found CAPTURE locked");
 });
 
-// --------------------------------------------------------------- 2. the VIDEO
-await testAsync("VIDEO · PLANETS is aria-disabled, says why, and switches nothing", async () => {
+// --------------------------------------------------------------- 2. the MODE
+// REPLACES the old "VIDEO is honest-disabled and switches nothing" test. That
+// assertion pinned a shortfall (`VIDEO_LOCK_REASON`) that D-RIG-1 closed; left
+// in place it would have failed the moment the recorder shipped, which is the
+// wrong way round for a test to earn its keep.
+
+test("the mode is read off the route, so the Sky hand-off lands on the right half", () => {
+  eq(modeFromRoute({}), "still", "no parameter is the bench, not a blank screen");
+  eq(modeFromRoute({ mode: "video" }), "video", "?mode=video did not select VIDEO");
+  eq(modeFromRoute({ mode: "vidoe" }), "still",
+    "a typo in a shared link opened neither mode");
+  // The hand-off's payload survives the switch: a mode chip that dropped
+  // `target`/`ra`/`dec` would silently un-aim the screen.
+  const h = modeHash({ target: "Jupiter", ra: "3.1", dec: "17.2" }, "video");
+  assert(h.includes("mode=video"), "the VIDEO hash does not select VIDEO");
+  assert(h.includes("target=Jupiter"), "the mode switch dropped the target");
+  assert(h.includes("ra=3.1") && h.includes("dec=17.2"),
+    "the mode switch dropped the coordinates the hand-off carried");
+  assert(!modeHash({ target: "Jupiter" }, "still").includes("mode="),
+    "switching back to STILL left ?mode= behind");
+});
+
+await testAsync("VIDEO · PLANETS switches modes - it is not a locked chip any more", async () => {
   const before = asks.length;
   const video = q('[data-testid="capture-video"]');
   assert(video != null, "the VIDEO · PLANETS control is not drawn at all");
-  eq(video.getAttribute("aria-disabled"), "true",
-    "VIDEO looks live; a control that cannot act must be honest-disabled");
-  eq(video.getAttribute("title"), VIDEO_LOCK_REASON, "VIDEO carries no reason");
-  await act(async () => {
-    video.dispatchEvent(new win.MouseEvent("click", { bubbles: true }));
-  });
-  await settle();
-  eq(asks.length, before, "pressing VIDEO reached the server");
-  // The STILL half is still the selected one: nothing switched.
-  const still = container.querySelectorAll(".nx-chip")[0] as any;
-  eq(still.getAttribute("aria-pressed"), "true", "the STILL half stopped being selected");
-  // and the reason reached the toast channel, rather than being swallowed.
-  const toasts = (useStore.getState() as any).toasts as Array<{ title?: string }>;
-  assert(toasts.some((t) => t.title === VIDEO_LOCK_REASON),
-    "the video reason was not said anywhere - the press was swallowed");
+  eq(video.getAttribute("aria-disabled"), null,
+    "VIDEO is still honest-disabled - the recorder shipped and the chip must switch");
+  await press(video);
+
+  assert(win.location.hash.includes("mode=video"),
+    "pressing VIDEO did not put the mode in the route");
+  assert(q('[data-testid="rig-capture-video"]') != null,
+    "VIDEO mode did not render after the chip was pressed");
+  assert(q('[data-testid="capture-go"]') == null,
+    "the still bench is still mounted under VIDEO - both halves own the camera");
+  // The mode switch is navigation, not a command: nothing is sent to the rig.
+  assert(!asks.slice(before).some((a) => a.method !== "GET"),
+    "switching modes wrote to the rig");
+
+  await press(q('[data-testid="capture-still"]'));
+  assert(!win.location.hash.includes("mode=video"), "STILL did not clear the mode");
+  assert(q('[data-testid="capture-go"]') != null, "the bench did not come back");
 });
 
 // ------------------------------------------------- 3. the body, and the bar

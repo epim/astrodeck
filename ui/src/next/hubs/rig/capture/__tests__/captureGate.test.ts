@@ -54,7 +54,9 @@ const {
   isCoolerTargetInvalid, sequenceNotice, SESSION_OWNS_MOUNT_REASON,
   NEEDS_CAPTURE_REASON, POLAR_REASON, SEQUENCE_REASON, EXPOSURE_FIX_REASON,
   GAIN_FIX_REASON, PENDING_REASON, LOOP_RUNNING_REASON, NO_STACK_REASON,
-  COOLER_OFF_REASON, COOLER_RANGE_REASON, VIDEO_LOCK_REASON,
+  COOLER_OFF_REASON, COOLER_RANGE_REASON,
+  videoRefusal, videoStopReason,
+  VIDEO_RECORDING_REASON, VIDEO_LIVE_LOOP_REASON, VIDEO_CAMERA_BUSY_REASON,
 } = gate;
 type CaptureGateInput = import("../captureGate").CaptureGateInput;
 
@@ -267,19 +269,70 @@ test("SLEW needs the telescope connected, and says which device is missing", () 
     "SLEW named the wrong missing device");
 });
 
-test("the VIDEO ruling says what the rig HAS, not only what it lacks", () => {
-  eq(VIDEO_LOCK_REASON,
-    "Video capture is not available on this rig yet - the camera surface here is "
-    + "single frames, a loop and Live View stacking.",
-    "the video reason drifted");
-  assert(!/[—–]/.test(VIDEO_LOCK_REASON), "an em-dash or en-dash reached a UI string");
+// ------------------------------------------------------- VIDEO (D-RIG-1)
+// `VIDEO_LOCK_REASON` is GONE: the SER recorder landed, so the chip switches
+// modes and these are the refusals a recording can actually meet. The order is
+// the whole test - each row below is the FIRST reason at that state, so a
+// re-ordering that hid "the camera cannot record" behind "a sequence is
+// running" would go red.
+
+const VID = {
+  path: "native" as const, pathReason: "the camera cannot record",
+  serverRefusal: null, recording: false, capturing: false,
+};
+
+test("videoRefusal reports the access floor before anything of its own", () => {
+  eq(videoRefusal(inp({ principal: VIEWER }), VID), NEEDS_CAPTURE_REASON,
+    "a viewer was told about a lane instead of about their role");
+  eq(videoRefusal(inp({ wsPhase: "down" }), VID), "the rig is not reachable",
+    "a dead link was described as something else");
+});
+
+test("videoRefusal names the owner of the camera, one at a time", () => {
+  eq(videoRefusal(inp({ polarBusy: true }), VID), POLAR_REASON, "polar");
+  eq(videoRefusal(inp({ seqState: "paused" }), VID), SEQUENCE_REASON,
+    "a PAUSED sequence still holds the camera between frames");
+  eq(videoRefusal(inp({ looping: true }), VID), VIDEO_LIVE_LOOP_REASON, "the live loop");
+  eq(videoRefusal(inp({}), { ...VID, recording: true }), VIDEO_RECORDING_REASON,
+    "our own lane must name itself - it is the one the operator can end");
+  eq(videoRefusal(inp({}), { ...VID, capturing: true }), VIDEO_CAMERA_BUSY_REASON,
+    "another exposure");
+});
+
+test("a camera with no video path is refused BEFORE the press, and says so", () => {
+  eq(videoRefusal(inp({}), { ...VID, path: "none" }), "the camera cannot record",
+    "camera.video_path 'none' did not reach the button");
+  // "unknown" is an engine older than S7c. It must NOT lock the control: the
+  // whole degrade path is that the mode renders live and the server's own
+  // sentence arrives on the 409.
+  eq(videoRefusal(inp({}), { ...VID, path: "unknown" }), null,
+    "an engine that does not publish the capability locked a control that may work");
+  eq(videoRefusal(inp({}), { ...VID, path: "unknown", serverRefusal: "no video path here" }),
+    "no video path here",
+    "the server's own refusal did not survive to the button");
+});
+
+test("STOP is never armed by a lane - it is the way out of one", () => {
+  // Every condition that refuses RECORD is a moment STOP is most needed.
+  for (const over of [
+    { polarBusy: true }, { seqState: "running" as const }, { looping: true },
+    { pending: "single" as const },
+  ]) {
+    eq(videoStopReason(inp(over)), null,
+      `STOP was blocked by ${JSON.stringify(over)} - the camera stays claimed`);
+  }
+  // The access floor is the ONE thing that stops it: a viewer cannot stop a
+  // recording either, and a dead link cannot carry the request.
+  eq(videoStopReason(inp({ principal: VIEWER })), NEEDS_CAPTURE_REASON,
+    "a viewer's STOP looked live");
 });
 
 test("no reason on this screen carries an em-dash", () => {
   const strings = [
     NEEDS_CAPTURE_REASON, POLAR_REASON, SEQUENCE_REASON, EXPOSURE_FIX_REASON,
     GAIN_FIX_REASON, PENDING_REASON, LOOP_RUNNING_REASON, NO_STACK_REASON,
-    COOLER_OFF_REASON, COOLER_RANGE_REASON, VIDEO_LOCK_REASON, SESSION_OWNS_MOUNT_REASON,
+    COOLER_OFF_REASON, COOLER_RANGE_REASON, SESSION_OWNS_MOUNT_REASON,
+    VIDEO_RECORDING_REASON, VIDEO_LIVE_LOOP_REASON, VIDEO_CAMERA_BUSY_REASON,
     sequenceNotice("paused") ?? "", sequenceNotice("running") ?? "",
     gate.POLAR_NOTICE, gate.NO_LAST_LIGHT_REASON,
   ];
