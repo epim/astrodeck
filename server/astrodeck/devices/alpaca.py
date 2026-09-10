@@ -556,6 +556,34 @@ class AlpacaCamera(_AlpacaDevice, Camera):
 
 _PULSE_DIRS = {"north": 0, "south": 1, "east": 2, "west": 3}
 
+# --- single-axis rotation (TPPA clean arc, 2026-09-09) -----------------------
+# ``Telescope.rotate_axis`` on an ASCOM/Alpaca mount is MoveAxis for a measured
+# duration, so the numbers below are the ones that decide how far a stalled
+# event loop can carry the telescope. A polar-alignment leg is ~12 degrees.
+#
+#: How long ONE rotation should ideally take. Short enough that the sky has not
+#: moved much (the arc's altitude vetting prices a leg at ~45 s end to end) and
+#: long enough that the start/stop round trips and the mount's own acceleration
+#: ramp are a small fraction of it.
+AXIS_ROTATION_TARGET_S = 12.0
+#: Never drive an axis faster than this, whatever the driver offers. A goto may
+#: use the mount's full slew rate because the mount decides when to stop; here
+#: WE decide, off a clock, and the cost of one second of inattention is one
+#: second times this. At 1 deg/s a badly-blocked loop is embarrassing; at the
+#: 4 deg/s some drivers offer it is a cable wrap.
+AXIS_ROTATION_MAX_RATE_DEG_S = 1.0
+#: Below this, a 12 degree leg takes over four minutes, the field sets while it
+#: runs, and the tracking correction stops being a rounding error. A driver
+#: whose fastest MoveAxis rate is slower than this does not get the capability —
+#: the goto path is better for it, and saying so is the honest answer.
+AXIS_ROTATION_MIN_RATE_DEG_S = 0.05
+#: Refuse the rotation when the timed move ran this many times longer than
+#: intended. The stop always fires (it is in a ``finally``), so this is not a
+#: runaway guard — it is a "the arc you just made is not the arc anything
+#: downstream was told about" guard, and a refusal beats a measurement built on
+#: a leg nobody planned.
+AXIS_ROTATION_OVERRUN_FACTOR = 1.5
+
 #: name (TRACKING_RATES) <-> ASCOM DriveRates enum (Sidereal=0/Lunar=1/Solar=2;
 #: King=3 is out of scope -- YAGNI).
 _TRACKING_RATE_ENUM = {"sidereal": 0, "lunar": 1, "solar": 2}
@@ -606,6 +634,18 @@ class AlpacaTelescope(_AlpacaDevice, Telescope):
         # never shows a button that would 400.
         try:
             self.can_find_home = bool(await self._get("canfindhome"))
+        except Exception:
+            pass
+
+        # Probe CanMoveAxis + AxisRates for the PRIMARY (RA) axis ONCE at
+        # connect (TPPA clean arc, 2026-09-09) — same rationale again: the
+        # polar-alignment driver picks its rotation mechanism before the first
+        # leg, so a lazy probe would leave every mount on the goto path. Both
+        # halves are required: a driver that says CanMoveAxis and offers no
+        # usable rate cannot rotate an axis by a stated angle, and claiming it
+        # can would send an alignment down a path that stalls.
+        try:
+            await self._probe_axis_rotation()
         except Exception:
             pass
 
@@ -678,6 +718,143 @@ class AlpacaTelescope(_AlpacaDevice, Telescope):
 
     async def move_axis(self, axis: str, rate_deg_s: float) -> None:
         await self._put("moveaxis", Axis=0 if axis == "ra" else 1, Rate=rate_deg_s)
+
+    #: (min, max) MoveAxis rate this driver offers on the primary axis, in
+    #: deg/s, once probed. None until ``_probe_axis_rotation`` has succeeded.
+    _axis_rate_range: tuple[float, float] | None = None
+
+    async def _probe_axis_rotation(self) -> None:
+        """Decide, ONCE at connect, whether this mount can rotate one axis by a
+        stated angle — and at what rate.
+
+        Two ASCOM properties, and BOTH are needed. ``CanMoveAxis(0)`` says the
+        driver accepts the call at all. ``AxisRates(0)`` says which rates it
+        will actually honour: ASCOM's contract is that a rate inside one of the
+        offered ranges is performed as asked, and a rate outside them is an
+        error — so a driver that advertises MoveAxis but offers only, say,
+        guide-speed rates cannot turn 12 degrees in any reasonable time, and
+        claiming the capability for it would hand the polar driver a mechanism
+        that takes four minutes a leg (see AXIS_ROTATION_MIN_RATE_DEG_S).
+
+        Best-effort, like every other probe in this connect: any failure leaves
+        ``can_rotate_axis`` False and the mount correctly on the goto path."""
+        if not bool(await self._get("canmoveaxis", Axis=0)):
+            return
+        offered = await self._get("axisrates", Axis=0)
+        best: tuple[float, float] | None = None
+        for entry in offered or ():
+            # Alpaca serialises an ASCOM Rate as {"Minimum": x, "Maximum": y};
+            # be tolerant of a driver that lower-cases them.
+            try:
+                lo = float(entry.get("Minimum", entry.get("minimum")))
+                hi = float(entry.get("Maximum", entry.get("maximum")))
+            except (AttributeError, TypeError, ValueError):
+                continue
+            if hi <= 0.0:
+                continue
+            lo = max(lo, 0.0)
+            if best is None or hi > best[1]:
+                best = (lo, hi)
+        if best is None or best[1] < AXIS_ROTATION_MIN_RATE_DEG_S:
+            return
+        self._axis_rate_range = best
+        self.can_rotate_axis = True
+
+    def _axis_rate_for(self, degrees: float) -> float:
+        """The rate (deg/s, unsigned) to turn ``degrees`` at: aim for a move of
+        AXIS_ROTATION_TARGET_S, then clamp into what the driver offers and into
+        our own safety cap."""
+        lo, hi = self._axis_rate_range or (0.0, AXIS_ROTATION_MAX_RATE_DEG_S)
+        want = abs(degrees) / AXIS_ROTATION_TARGET_S
+        return max(lo, min(want, hi, AXIS_ROTATION_MAX_RATE_DEG_S))
+
+    async def rotate_axis(self, axis: str, degrees: float) -> float:
+        """ASCOM ``MoveAxis`` at a chosen rate for a measured time, then stop.
+
+        THE MECHANISM WAS CHOSEN OVER A GOTO, and the reason is in
+        ``Telescope.rotate_axis``: a goto moves both axes through the mount's
+        own model of the sky and lands with that model's error, which on
+        2026-09-09 bent three polar-alignment arcs off their cone and produced
+        359', 493' and 504' on a mount 33' out. MoveAxis is the only call in
+        ASCOM that names a MECHANICAL axis and no sky coordinate, so it is the
+        only one that cannot move the declination axis by accident.
+
+        TRACKING STAYS ON, and the returned number is why. ASCOM defines
+        MoveAxis as motion IN ADDITION to the tracking rate, so over an interval
+        the RA axis turns (tracking + rate x time) and the extra turn — the part
+        this returns — is exactly the quantity the equatorial-frame geometry
+        downstream expects. Stopping tracking would make the caller responsible
+        for the sky's own rotation between exposures, measured on a clock it
+        does not own. See ``polar/native.py``'s
+        ``_turn_the_guard_should_expect``.
+
+        THE ELAPSED TIME IS MEASURED, NOT ASSUMED. ``asyncio.sleep(d)`` sleeps
+        for AT LEAST d, and this event loop is regularly blocked for seconds by
+        a synchronous frame readout — the GN-02 pulse-guide incident (rig
+        2026-09-06) was +83, +128 and +35 arcsec of unwanted travel from exactly
+        that, at a 250th of this rate. So the axis is stopped in a ``finally``
+        whatever happens, the window is bracketed with the monotonic clock, and
+        what comes back is rate x the time the axis was really running. A caller
+        that grades an arc against an INTENTION would call a stalled leg a
+        mount fault; graded against this, it is just a longer leg.
+
+        The bracket is deliberately conservative: the clock starts after the
+        start PUT returns and stops before the stop PUT is issued, so it
+        understates by about one round trip at each end rather than overstating.
+
+        A STOP DURING THE MOVE still works through the paths it always did:
+        ``Telescope.stop`` zeroes both axes, the polar session's motion-epoch
+        fence abandons the run, and cancelling this coroutine runs the
+        ``finally``. The manual-slew deadman (``hub.note_move``) is NOT armed
+        here and does not need to be — it exists for a touch-and-hold whose
+        client vanished, and this move already carries its own stop."""
+        if not self.can_rotate_axis:
+            return await super().rotate_axis(axis, degrees)
+        if axis not in ("ra", "dec"):
+            raise DeviceError(f"{self.name}: unknown axis {axis!r}")
+        ax = 0 if axis == "ra" else 1
+        rate = self._axis_rate_for(degrees)
+        if rate <= 0.0:
+            raise DeviceError(
+                f"{self.name}: no usable MoveAxis rate for a {degrees:+.2f}° "
+                f"rotation")
+        intended_s = abs(degrees) / rate
+        sign = 1.0 if degrees >= 0.0 else -1.0
+        loop = asyncio.get_running_loop()
+        await self._put("moveaxis", Axis=ax, Rate=sign * rate)
+        started = loop.time()
+        stop_error: Exception | None = None
+        try:
+            await asyncio.sleep(intended_s)
+        finally:
+            elapsed = loop.time() - started
+            try:
+                await self._put("moveaxis", Axis=ax, Rate=0.0)
+            except Exception as e:  # noqa: BLE001 - handled below, never masked
+                stop_error = e
+                # AbortSlew stops MoveAxis too, and a moving axis is worth a
+                # second attempt down a different code path in the driver.
+                try:
+                    await self._put("abortslew")
+                    stop_error = None
+                except Exception:  # noqa: BLE001
+                    pass
+        if stop_error is not None:
+            raise DeviceError(
+                f"{self.name}: the {axis} axis was started for a "
+                f"{degrees:+.2f}° rotation and the STOP failed "
+                f"({stop_error}) — the axis may still be running. Stop the "
+                f"mount and check where it is pointing before doing anything "
+                f"else.") from stop_error
+        if elapsed > intended_s * AXIS_ROTATION_OVERRUN_FACTOR:
+            raise DeviceError(
+                f"{self.name}: a {degrees:+.2f}° rotation of the {axis} axis "
+                f"at {rate:.3f}°/s should have taken {intended_s:.1f}s and the "
+                f"axis ran for {elapsed:.1f}s, so it turned about "
+                f"{rate * elapsed:.2f}° instead. The axis has been stopped. "
+                f"Something held this process up mid-move; nothing that plans "
+                f"around the rotation can trust it.")
+        return sign * rate * elapsed
 
     async def pulse_guide(self, direction: str, ms: int) -> None:
         await self._put("pulseguide", Direction=_PULSE_DIRS[direction], Duration=ms)

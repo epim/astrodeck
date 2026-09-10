@@ -917,6 +917,59 @@ class ZwoAm5Telescope(Telescope):
         if reply == lx200.REFUSED:
             raise await self._refused_error("sync")
 
+    # --- rotate_axis: NOT offered on this mount, and here is why --------------
+    #
+    # ``Telescope.can_rotate_axis`` stays False, so a polar-alignment arc on
+    # this mount keeps using gotos and says so in the log. That is a deliberate
+    # refusal, not an omission, and it is the honest answer to the 2026-09-09
+    # failures rather than a fix for them: this mount is the one that produced
+    # them, and it is the one mount here that cannot be given the fix without a
+    # session at the scope.
+    #
+    # A single-axis rotation of a known angle over this wire would be ``:R<n>#``
+    # + ``:M<e|w>#``, a wait, then ``:Q<e|w>#`` — the driver times the move, so
+    # the timing IS the angle. Three things have to be known before that is a
+    # measurement rather than a hope, and none of them is:
+    #
+    #  1. THE RATE. ``_RATE_TABLE`` is preset indices with approximate
+    #     sidereal multiples (R7 ~ 60x). The one calibration on record is a
+    #     single 1 s sample at a requested 0.25 deg/s reading 0.250
+    #     (docs/hardware/zwo-am5-lx200-protocol.md), which cannot separate the
+    #     steady rate from the acceleration ramp inside it. A 12 degree leg at
+    #     R7 runs 48 s, where a 2% rate error is 0.24 degrees — a quarter of
+    #     ``polar/native.py``'s whole MAX_ROTATION_DISAGREEMENT_DEG budget, from
+    #     an unknown.
+    #
+    #  2. WHETHER IT SUPERIMPOSES ON TRACKING. The same capture records that it
+    #     does NOT, in words: "``:M<dir>#`` during tracking does NOT cleanly
+    #     superimpose (Me@R1 read +1.5x sid, Mw@R1 read +0.5x — both eastward)".
+    #     That is why the emulated pulse guide suspends tracking to go east
+    #     instead of using ``:Me#``. The behaviour at R7 has never been
+    #     measured, and the whole geometry downstream depends on knowing whether
+    #     the commanded turn is on top of tracking or instead of it.
+    #
+    #  3. WHETHER THE STOP DISTURBS TRACKING. Open runbook item, same document:
+    #     "Whether ``:Q#`` disturbs tracking on this firmware".
+    #
+    # And the hazard is not academic. ``move_axis`` below is fire-and-forget
+    # with no thread-side stop, unlike ``_Pulse``, which exists because a
+    # blocked event loop turned guide pulses into +83, +128 and +35 arcsec of
+    # unwanted travel on 2026-09-06. At R7 the same stall moves the telescope
+    # 250 times further per second. Shipping a 48 s timed move on that, written
+    # against a mount nobody can put a hand on tonight, is how the next incident
+    # gets written.
+    #
+    # TO FLIP THIS ON, one bench session with the guider idle and tracking on:
+    #   a. ``:R7#`` + ``:Mw#``, hold 30 s by the wall clock, ``:Qw#``; read
+    #      ``:GR#`` before and after AND plate solve before and after. Repeat
+    #      east. The solved separation over the measured dwell is the rate; the
+    #      east/west difference is the tracking superposition.
+    #   b. Repeat with tracking off, to separate the two.
+    #   c. Read ``:GAT#`` after each ``:Q<dir>#`` to settle item 3.
+    # With a rate good to 1% and a known tracking rule, ``rotate_axis`` here is
+    # a start, a thread-timed wait (the ``_Pulse`` shape, not ``asyncio.sleep``)
+    # and a stop, returning rate x measured dwell.
+
     async def move_axis(self, axis: str, rate_deg_s: float) -> None:
         if axis not in ("ra", "dec"):
             raise DeviceError(f"{self.name}: unknown axis {axis!r}")

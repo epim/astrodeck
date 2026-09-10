@@ -329,6 +329,65 @@ class Telescope(Device):
     @abstractmethod
     async def is_slewing(self) -> bool: ...
 
+    #: capability flag (TPPA clean arc, 2026-09-09) — set True only by backends
+    #: that can turn ONE mechanical axis, by a stated angle, WITHOUT touching
+    #: the other axis and WITHOUT consulting a pointing model. Gates
+    #: ``rotate_axis`` below; default False leaves every mount on the goto path
+    #: it has always used.
+    #:
+    #: The distinction is not academic, it is the difference between a
+    #: three-point polar alignment that measures something and one that does
+    #: not. See ``rotate_axis``.
+    can_rotate_axis: bool = False
+
+    async def rotate_axis(self, axis: str, degrees: float) -> float:
+        """Turn ``axis`` by ``degrees`` about the mount's OWN mechanics, leaving
+        the other axis exactly where it is. Returns the rotation actually
+        commanded, in degrees.
+
+        WHY THIS IS NOT ``slew`` (2026-09-09, three ruined runs on the sky). A
+        goto is a request in SKY coordinates: the mount inverts its own model of
+        itself to decide where to put both axes, and it lands with whatever that
+        model gets wrong — measured on the rig's AM5N that night at 10.2' and
+        4.9' on two consecutive centring attempts. Three-point polar alignment
+        needs the three measured points to be related by a PURE ROTATION OF THE
+        RA AXIS, and they are: a rigid body turned about a fixed axis traces an
+        exact cone whatever else is wrong with it — cone error, a non-orthogonal
+        declination axis, a mount that thinks it is somewhere else entirely.
+        None of that bends the arc. Only moving the OTHER axis does, and a goto
+        moves both. Two independent ~10' declination landings are exactly the
+        15.8-16.5' bend those three runs showed, and the exact-through-three-
+        points fit turned it into 359', 493' and 504' of "polar error" on a
+        mount about 33' out.
+
+        So this is the primitive that keeps the declination axis still.
+
+        CONTRACT:
+
+        * ``axis`` is ``"ra"`` or ``"dec"``, as in :meth:`move_axis`.
+        * The rotation is IN ADDITION to whatever the mount is already doing —
+          on a tracking mount, in addition to tracking (this is ASCOM
+          ``MoveAxis`` semantics, and every implementation here follows it).
+          That is deliberate and it is what makes the returned number usable:
+          see the sidereal reasoning in ``polar/native.py``'s
+          :func:`_turn_the_guard_should_expect`.
+        * The RETURN VALUE is what was actually commanded, which may not be
+          ``degrees``. A timed implementation multiplies rate by the elapsed
+          time it measured, and a blocked event loop makes that longer than
+          intended; reporting the honest number lets the caller grade the arc
+          against what really happened instead of against an intention. It is
+          never the mount's own opinion of how far it moved — that is the
+          weakest witness on the rig (docs/hardware/zwo-am5-lx200-protocol.md
+          records this mount's reported coordinates walking 12.9 arcmin per
+          minute while the tube held its field).
+        * Positive ``degrees`` on ``"ra"`` means the same direction
+          ``move_axis("ra", +rate)`` moves: increasing right ascension.
+
+        Default: refuse. A mount that cannot promise the other axis stays put
+        says so, and the caller falls back to a goto and says why."""
+        raise DeviceError(
+            f"{self.name} cannot rotate one axis on its own")
+
     async def pulse_guide(self, direction: str, ms: int) -> None:
         raise DeviceError(f"{self.name} cannot pulse guide")
 
