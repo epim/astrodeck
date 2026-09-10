@@ -95,14 +95,42 @@ export const stopSessionStack = (): Promise<SessionStackStatus> =>
 export const resetSessionStack = (): Promise<SessionStackStatus> =>
   api.post<SessionStackStatus>("/api/sequence/stack/reset");
 
-/** URL for the composite JPEG.
+/** URL for the composite JPEG, or for ONE CHANNEL of it (D-SES-1).
  *
  *  `seq` is in the query string ONLY as a cache key: the route itself answers
  *  `no-store`, but an <img> whose src never changes is never re-requested at
  *  all, so without this the panel would show the first frame of the run for the
- *  rest of the night. */
-export const sessionStackImageUrl = (seq: number, size = 1200): string =>
-  u(`/api/sequence/stack/preview.jpg?size=${Math.round(size)}&seq=${seq}`);
+ *  rest of the night.
+ *
+ *  `channel` asks the server for that channel's OWN accumulator instead of the
+ *  composite (`imaging/sessionstack.py:858-935 channel_preview`). It replaces
+ *  the client-side tint, which only ever coloured the composite and so showed
+ *  the same picture under three different labels.
+ *
+ *  THE PARAMETER IS APPENDED ONLY WHEN A CHANNEL IS GIVEN, so the composite URL
+ *  stays byte-identical to the one this app has always built. An empty
+ *  `?channel=` would mean the same thing to the server and a different thing to
+ *  every browser cache, and re-fetching every stack image on every client is a
+ *  real cost for a parameter that says nothing.
+ *
+ *  PASS THE STACKER'S OWN KEY (`status.channels[].channel`: R/G/B/L/Ha/Oiii/Sii),
+ *  not the wheel's filter name. The route does resolve an operator's name
+ *  through `channel_for` ("H-alpha" -> "Ha", and the resolved key rides back on
+ *  `X-Stack-Channel`), but a filter with no mapping folds onto L - so a chip
+ *  built from a wheel name can 404 or, worse, quietly show L's picture.
+ *
+ *  404 when nothing is stacked in that channel yet, with its own body text. An
+ *  `<img>` cannot read a status code, so a caller has to notice through
+ *  `onError` and must NOT silently fall back to the composite: the badge and the
+ *  picture would then disagree, which is the defect this parameter exists to
+ *  end. */
+export const sessionStackImageUrl = (
+  seq: number,
+  size = 1200,
+  channel?: string,
+): string =>
+  u(`/api/sequence/stack/preview.jpg?size=${Math.round(size)}&seq=${seq}`
+    + (channel ? `&channel=${encodeURIComponent(channel)}` : ""));
 
 /** "3h 12m" / "48m" / "40s": integration time, at the precision it is worth. */
 export function fmtIntegration(seconds: number): string {
