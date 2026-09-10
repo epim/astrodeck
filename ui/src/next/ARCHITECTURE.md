@@ -245,14 +245,28 @@ and desktop) fills the hub body.
 
 ## 5. Sheets, popovers, confirm, toasts
 
-`SheetHost` (shell) renders `route.sheets` through a registry composed from
-each hub's `sheets` export:
+`SheetHost` (shell) renders `route.sheets` through `SHEET_REGISTRIES`, composed
+in `hubs/index.ts` from each hub's `sheets` export. Sheets are code-split
+(D-FU-2, wave 2): a registry entry is the sheet's module identity plus the one
+line that lazily fetches it, not the component itself -
 
 ```ts
 export interface SheetProps { params: Record<string, string>; depth: 0 | 1; }
 export type SheetComponent = (p: SheetProps) => JSX.Element;
-// each hub: export const sheets: Record<string, SheetComponent>
+export interface SheetEntry {
+  id: string;                                    // module path, e.g. "sky/sheets/sites"
+  load: () => Promise<{ default: SheetComponent }>;
+}
+export type SheetRegistry = Record<string, SheetEntry>;
+// each hub: export const sheets: SheetRegistry
+export const SHEET_REGISTRIES: Record<string, SheetRegistry>;  // hubs/index.ts
 ```
+`id` (not the `load` function) is what the duplicate-registration check
+compares, because two `lazy()` wrappers around the same module are never
+`===` - same `id` under two hub names is the shared-component case (`sites`),
+different `id`s under one sheet name is the real fault. `HubBoundary` is the
+suspense fallback while a sheet's chunk loads.
+
 Names are global and unique (prefix by hub where ambiguous: `sites` is shared
 by sky and settings and is ONE component, registered once). On phone the host
 is a fixed layer (`.nx-sheet-layer`) with the top sheet visible and the one
@@ -411,13 +425,37 @@ Reason copy: link down: "the rig is not reachable"; cap: `needs ${accessPhrase(c
   state. Use existing hooks from `store.ts` (see `store-api.md` section 1.4).
 - Call the existing `api/*.ts` functions; where a view used a raw
   `api.post("/api/...")` (documented in the inventories), call the same path.
-  New endpoints (section 12) get typed wrappers in `ui/src/api/<domain>.ts`
-  (existing files, appended - the server wave owns those appends).
+  New endpoints (section 12) get typed wrappers in `ui/src/api/<domain>.ts` -
+  existing files appended, or a new `<domain>.ts` where the wave adds a whole
+  domain. Wave 2 (U7b) added six domain files this way:
+  `ui/src/api/{ephemeris,video,planning,power,capture,mount}.ts`.
+- `hubs/sky/sheets/quick.tsx` deep-imports helpers from
+  `session/flows/create/quickPayload` rather than that area's own barrel,
+  because the barrel also re-exports `create.css` - a plain barrel import
+  would drag Session's Flows stylesheet into every Sky bundle that mounts the
+  quick sheet. Accepted as of wave 2 (U7a-E); do not "fix" it to go through
+  the barrel.
 - Images: `u(path)` from `lib/base.ts` for every `<img src>`; the cookie
   carries auth.
 - Persist per-phone state (lens kinds, layers, mode, dlPref, night, connMode)
   under `localStorage` keys prefixed `astrodeck-next-`; wrap every access in
-  try/catch; render correctly with nothing stored.
+  try/catch; render correctly with nothing stored. **Rig data never lives in
+  the browser**: wave 2's local-storage audit (D-SET-1, executed as D-FU-1)
+  moved every key that was rig or planning data onto the server and deleted
+  the local copy - `astrodeck-next-optics-aux` (-> `Optics.aperture_mm`/
+  `.reducer` via `PUT /api/optics`), `astrodeck-next-sky-quick`,
+  `astrodeck-next-sky-site`, and `astrodeck-next-sky-pool` (-> `GET`/
+  `PUT /api/planning`, `next/lib/planning.ts`), each migrated exactly once,
+  server-wins-never-merged, through `next/lib/storageMigration.ts`'s
+  `migrateKey`. What is left under `astrodeck-next-` is genuinely per-device
+  (finder view state, stretch, throughput EMA, connection preference, and so
+  on - `DEVIATIONS.md`'s Decisions section has the full list). Four keys
+  shared with the classic UI - touch size (`astrodeck-touch-size`), auto-lock
+  (`astrodeck-autolock`), the coach/setup-seen map (`astrodeck-coach-seen`),
+  and night mode (`astrodeck-night`) - plus `astrodeck-monitor-thumb-
+  brightness`, keep their legacy (non-`astrodeck-next-`) names on purpose: a
+  phone already set up under the classic root keeps its settings when it
+  switches to the next one.
 - Never write `store.view` from the new UI except the classic handoff.
 
 ## 10. Incident model
@@ -496,7 +534,9 @@ README specifies the screen (device sheets, Settings groups, Files, Gallery).
 
 ## 12. Server additions (Wave S, Python, own tests, additive only)
 
-Status: landed. All five routes exist and are consumed by the UI named below.
+Status: landed. S1-S6 below shipped with wave 1 (the six hubs); S7 shipped as
+the server companion to wave 2 (U7b) and is listed after them in the same
+shape. All routes named exist and are consumed by the UI named below.
 
 S1. Per-site horizon polyline: `Location.horizon_points: list[[az, alt]] | null`
     on saved locations (`server/astrodeck/locations.py`), returned by
@@ -531,14 +571,80 @@ S5. `GET /api/sessions/{id}/files` and `GET /api/sessions/current/files`
     need it. Do not "fix" this back in.
 S6. Versions: `/healthz` already has the engine version; the UI version is
     injected at build time (`define: { __APP_VERSION__ }` from
-    `ui/package.json`), read by `SettingsHub.tsx` and the About sheet. Done as
-    a mechanism; `ui/package.json`'s `version` field itself is still `0.1.0`
-    and needs bumping as part of a release, not this contract (see
-    DEVIATIONS.md's Follow-ups).
+    `ui/package.json`), read by `SettingsHub.tsx` and the About sheet.
+    `ui/package.json`'s `version` field was bumped to the engine's own
+    version as part of wave 2 (D-FU-4) - re-check `__APP_VERSION__` against
+    `/healthz` before citing a number, since a release can move either one.
+
+S7. Server companion to UI wave 2 (U7b): landed via an `S7L` spine task that
+    collected every feature task's route patch, verified together by
+    `server/tests/test_s7_wire_contract.py`. Each lettered sub-task (S7a..S7L)
+    shipped with its own tests.
+    - Satellite and comet ephemerides, cached under `CONFIG_DIR/ephemeris`
+      (`catalog/ephemeris/{satellites,comets,elements}.py`): `GET
+      /api/ephemeris/status`, `POST /api/ephemeris/refresh`
+      (`catalog/ephemeris/routes.py:50,60`), `GET /api/satellites/passes`, and
+      `kind: "satellite" | "comet"` rows on `GET /api/catalog`. Consumed by
+      the Sky hub's target list and `PassesCard`
+      (`hubs/sky/sheets/targets.tsx`, `hubs/sky/cards/PassesCard.tsx`) and the
+      `EphemerisCard` inside the SKY DATA settings sheet
+      (`hubs/settings/sheets/{EphemerisCard,SkyPackSheet}.tsx`).
+    - Per-channel stack preview: `?channel=` on `GET
+      /api/sequence/stack/preview.jpg` (`app.py:5482`), answered from the
+      stacker's own per-filter accumulator (`imaging/sessionstack.py:858-935
+      channel_preview`), with the resolved key riding back on
+      `X-Stack-Channel`. Consumed by `hubs/session/now/ChannelStrip.tsx`.
+    - The last-frame promote route: `GET /api/capture/last` (is a frame
+      buffered) and `POST /api/capture/last/save` (write it, with a
+      `frame_id` interlock) (`app.py:5318,5329`, `hub.py:2942-2960,2988-3003`).
+      Consumed by `hubs/rig/capture/ResultCard.tsx` (SAVE TO GALLERY).
+    - SER video capture and a lucky-imaging stack: `POST /api/capture/video`,
+      `GET /api/capture/video`, `POST /api/capture/video/stop`
+      (`imaging/video_routes.py:96,157,164`), plus stack and library routes
+      (`imaging/video.py`), a `video` busy lane that owns the camera and a
+      separate `video_stack` lane that does not. Consumed by
+      `hubs/rig/capture/video/*.tsx`, `api/video.ts`.
+    - Focuser temperature compensation: `focus/tempcomp.py`'s config block
+      (signed steps-per-C coefficient, reference temp/position, max-step,
+      deadband) and its `status_node` (`hub.py:6758-6771`). Consumed by the
+      TEMPERATURE COMPENSATION card in `hubs/rig/sheets/focuser.tsx`.
+    - The dew loop: `config.py DewConfig` (margins, min/max power, manual
+      override, per-port `follow_dew`) and `dew.py`'s controller, scaling
+      heater power off the S2 dew margin. Consumed by the sensor-window
+      controls in `hubs/rig/sheets/camera.tsx`, the switch-port rows in
+      `hubs/rig/sheets/power.tsx`, and a status line on
+      `hubs/weather/conditions/ConditionsBand.tsx`.
+    - A relative-offset mount nudge and a driver-real slew ceiling:
+      `POST /api/mount/move`'s relative path, and a ceiling read off the
+      connected driver's own `max_rate_deg_s` (`app.py:6026-6039`,
+      `devices/base.py:296`) rather than the fixed 0.6 deg/s touch cap.
+      Consumed by `hubs/rig/sheets/mount.tsx`, `api/mount.ts`.
+    - The power guard moved server-side: `power_guard.py` holds the
+      mount/camera/USB name pattern as the DEFAULT rather than the rule, and
+      every switch port carries `protected_now` plus a tri-state
+      `protect_during_run`. Consumed by `hubs/rig/sheets/power.tsx`,
+      `hubs/rig/lib/portSettings.ts`.
+    - Optics fields: `aperture_mm` and `reducer` on `Optics`
+      (`types.ts:1102-1125`), written by `PUT /api/optics`, with `f_ratio`
+      derived server-side onto `OpticsComputed`. Consumed by
+      `hubs/settings/sheets/OpticsSheet.tsx`.
+    - A planning store: `GET`/`PUT /api/planning` (`planning.py:173,182`)
+      holding quick-session defaults, the target pool, and the active
+      location id (`AppConfig.active_location_id`, set by `apply_location`,
+      cleared on delete, beside `active_profile_id`). Consumed by
+      `next/lib/planning.ts`'s `usePlanning()`, wired into `SkyHub.tsx`,
+      `sky/sheets/{quick,coords}.tsx`, `settings/sheets/QuickDefaultsSheet.tsx`.
+    - Status-bus additions carried by `hub.py`'s `poll_status`:
+      `camera.is_color` / `camera.bayer_pattern` (the OSC colour identity),
+      `camera.roi_align` / `burst_supported` / `max_fps` / `video_path`
+      (video capability, so VIDEO mode can be honest-disabled before the
+      press), `mount.max_rate_deg_s`, `focuser.temp_comp`
+      (`TempCompStatus`), and `dew` (the loop's own status node).
 
 Each S-task shipped with pytest tests beside the module (`test_locations_horizon.py`,
 `test_remote_status.py`, `test_open_paths.py`, `test_session_files.py`,
-plus weather/RBAC coverage in the existing suites), run `-n0`.
+plus weather/RBAC coverage in the existing suites), run `-n0`; the S7 tasks
+similarly, plus the whole-tree `test_s7_wire_contract.py`.
 `test_rbac_enforcement.py::test_ws_valid_principal_survives_recheck` is a
 known pre-existing failure and is not ours.
 
@@ -565,9 +671,10 @@ known pre-existing failure and is not ours.
 
 The work plan (Wave 0 -> Wave S -> eight hub/chrome waves, each planned,
 implemented, reviewed and probed in order) ran as written in the superseded
-version of this section. What shipped, on `feat/ui-next`, 39 commits ahead of
-`main` (`fec53970` pure library modules through `a34338cf` the relay-fence and
-redaction fixes; `git log --oneline main..HEAD` for the full list):
+version of this section, for wave 1 (`fec53970` pure library modules through
+`a34338cf` the relay-fence and redaction fixes). Wave 2 (U7b) ran afterward,
+against wave 1's shipped shape, and is summarised separately below; `git log
+--oneline main..HEAD` for the full list on either wave. What wave 1 shipped:
 
 - Wave 0: primitives + `next.css` + icons; pure libs (`gate`, `incidents`,
   `allocation`, `reach`, `advection`, `cloudTiles`, `horizonModel`, `format`,
@@ -591,10 +698,25 @@ redaction fixes; `git log --oneline main..HEAD` for the full list):
   error boundary, detect-my-hardware, polar's running message, and the
   missing focus-scope shutter. `DEVIATIONS.md`'s "Legacy defects found and
   fixed on this branch" list has the commit hashes.
-- Deferred, by name, to a later wave: several P2/P3 findings and the items in
-  `DEVIATIONS.md`'s Follow-ups list (a UI version bump, code-splitting the
+- Deferred at the time to a later wave: a UI version bump, code-splitting the
   hub bundle, restyling the reused legacy panels mounted in the new chrome,
-  the dome overlay's missing yaw hook, and others named there).
+  the dome overlay's missing yaw hook, satellite/comet ephemerides, real
+  video capture, temperature compensation, the dew loop, the mount's real
+  slew ceiling, the power lock moving server-side, optics fields, and the
+  local-storage audit. All of it shipped in wave 2 (U7b) - see below and
+  `DEVIATIONS.md`'s Decisions section for the commit shas. What is still
+  deferred after wave 2 is `DEVIATIONS.md`'s current Follow-ups list (inline
+  styles not yet in `next.css`, the satellite reticle-marker position
+  source, and the smaller wire-fact rows named there).
+- Wave 2 (U7b, this document's `feat/ui-next` head as of this revision):
+  section 12's S7 server additions, landed via an `S7L` spine task; the
+  local-storage audit and code-splitting (D-FU-1/D-FU-2); every legacy panel
+  named above restyled in the design's own vocabulary (D-X-3), including the
+  Flows canvas cutover (D-SES-3); and the device-sheet features named in
+  `DEVIATIONS.md`'s Decisions section (D-SKY-1/2/4, D-SES-1/4, D-RIG-1..5,
+  D-WX-1, D-SET-1/2, D-FU-3/4). `ui/src/next/__tests__/u7bMarkers.test.ts`
+  collects every marker this wave added, grouped by route, for the probe's
+  route list.
 
 `npm test`, `npx tsc -b --pretty false` and the server pytest suites were
 green at hand-off (see the review document's "Command output" section for the
