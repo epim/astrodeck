@@ -202,6 +202,21 @@ async function tapPad(label: string, id: number): Promise<void> {
   await settle();
 }
 
+// ------------------------------------------------------------- the stylesheet
+// jsdom loads no stylesheet and computes no layout, so the rules are read from
+// disk instead: they are what the browser gets, so they are what is graded.
+// This is the shape `shellCss.test.ts` already uses for the header row.
+const { readFileSync } = await import("node:fs");
+const NEXT_CSS = readFileSync(new URL("../../../next.css", import.meta.url), "utf8");
+/** The declaration block of ONE rule, by its exact selector. Throws when the
+ *  selector is gone, which is the interesting half of the failure. */
+function cssRule(css: string, selector: string): string {
+  const at = css.indexOf(`${selector} {`);
+  if (at < 0) throw new Error(`next.css has no rule for \`${selector}\``);
+  const end = css.indexOf("}", at);
+  return css.slice(at, end);
+}
+
 const lastToast = (): string => {
   const t = (useStore.getState().toasts ?? []) as { title?: string; detail?: string }[];
   const top = t[t.length - 1];
@@ -249,6 +264,47 @@ test("the 64 px pad rule is published, and aimed at the pad this sheet mounts", 
     "the wrapper the rule keys on is not on the element that holds the pad");
   assert(pad.querySelector("button.tap-lg") != null,
     "the pad's arrows do not carry .tap-lg - the rule matches nothing");
+});
+
+// The probe found both of this sheet's rows running off the right edge of the
+// 420 px panel at 820 and 1440: POINTING read "NOT VERIFI" and SOLVE + SYNC
+// lost half its label, neither with an ellipsis and neither reachable anywhere
+// else. jsdom lays nothing out, so the CLIPPING cannot be measured here - but
+// the two halves of the fix can, and either one going missing brings the
+// clipping straight back: the element carries the class, and the stylesheet the
+// sheet imports carries the rule that class keys.
+test("the tile row and the action row are taught to wrap inside the panel", () => {
+  const tiles = q('[data-testid="mount-tiles"]');
+  assert((tiles.className || "").split(" ").includes("nx-readouts-wrap"),
+    "the tile row does not carry the class the wrap rule keys on");
+  const actions = q('[data-testid="mount-actions"]');
+  assert((actions.className || "").split(" ").includes("nx-btn-row"),
+    "the action row does not carry the class the wrap rule keys on");
+  assert((actions.getAttribute("style") || "") === "",
+    "the action row is laid out by an inline style again, where no stylesheet can reach it");
+
+  const tileRule = cssRule(NEXT_CSS, ".nx-readouts-wrap[data-cols]");
+  assert(/repeat\(auto-fit/.test(tileRule),
+    "the tile row is still a fixed four columns, which is 59 px of text a tile in the panel");
+  assert(/white-space:\s*normal/.test(cssRule(NEXT_CSS, ".nx-readouts-wrap .nx-readout-value")),
+    "a tile value is still nowrap: NOT VERIFIED goes back to being cut at the sheet's edge");
+  // The POINTING sub is the server's own reason and is printed nowhere else on
+  // this screen, so it wraps rather than ellipsising away.
+  assert(/white-space:\s*normal/.test(cssRule(NEXT_CSS, ".nx-readouts-wrap .nx-readout-sub")),
+    "the tile sub ellipsises again, and the solve reason is on no other line of this sheet");
+  const actionRule = cssRule(NEXT_CSS, ".nx-btn-row");
+  assert(/flex-wrap:\s*wrap/.test(actionRule),
+    "the three motion verbs are on one unwrappable line again");
+  assert(/min-width:\s*0/.test(cssRule(NEXT_CSS, ".nx-btn-row > *")),
+    "the buttons cannot shrink below their labels, so the row overflows instead of ellipsising");
+
+  // ...and the label that carries the state is still the whole word, not a
+  // shortened one. Fixing a clip by cutting the copy would pass every
+  // assertion above.
+  assert(/NOT VERIFIED/.test(q('[data-testid="tile-pointing"]').textContent || ""),
+    "the POINTING tile no longer says NOT VERIFIED");
+  assert(/SOLVE \+ SYNC/.test(q('[data-testid="mount-solve"]').textContent || ""),
+    "the solve button's label was shortened instead of the row being made to fit");
 });
 
 test("the header live line and the tiles carry the rig's own numbers", () => {

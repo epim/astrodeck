@@ -196,6 +196,27 @@ button.nx-pill { cursor: pointer; }
   animation: nx-spin 800ms linear infinite;
 }
 
+/* A row of buttons that WRAPS instead of running off the edge. A device sheet
+   is 328 px wide inside the 420 px panel at 820 px (the panel is capped at
+   44vw), and three 44 px buttons want 360: `min-width: auto` on a flex item
+   stops it shrinking below its label, so the row overflowed the sheet and
+   MOUNT's SOLVE + SYNC was cut mid-word with no ellipsis and nowhere to read
+   the rest. Wrapping keeps every label whole at every width it can, and the
+   `min-width: 0` under it is the last resort: a button alone on a line that
+   still cannot fit ellipsises (`.nx-btn-label`) rather than overflowing. */
+.nx-btn-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.nx-btn-row > * { display: flex; flex: 1 1 auto; min-width: 0; }
+
+/* The same row as a grid, for ladders where the columns must line up
+   (FOCUSER's IN/OUT steps). Four across the panel is 77 px a button, of which
+   the 14 px side padding leaves 49 px - "OUT 100" needs about 57 and rendered
+   as "OUT 1…", an ellipsis over the digit that says how far the drawtube
+   moves. The 4-column form buys the label back with tighter side padding, and
+   drops a column rather than clipping if it is ever narrower still. */
+.nx-btn-grid { display: grid; gap: 6px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.nx-btn-grid[data-cols="4"] { grid-template-columns: repeat(auto-fit, minmax(72px, 1fr)); }
+.nx-btn-grid[data-cols="4"] .nx-btn { padding-inline: 6px; }
+
 .nx-iconbtn {
   display: inline-flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 3px; min-width: 48px; height: 48px; padding: 0 6px;
@@ -295,6 +316,24 @@ button.nx-pill { cursor: pointer; }
 
 .nx-readouts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
 .nx-readouts[data-cols="3"] { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+
+/* THE PANEL VARIANT. Four tiles across a sheet in the 420 px panel is 77 px a
+   tile, 59 px of it text: MOUNT's POINTING read "NOT VERIFI" and OPTICS' FOCAL
+   LENGTH lost its H, both cut at the sheet's edge, neither with an ellipsis and
+   neither reachable anywhere else. Shortening either string is not available -
+   NOT VERIFIED is the state and FOCAL LENGTH is the field's name - so a row
+   that opts in wraps instead: two tiles across inside the panel, four in any
+   container past 578 px. The 60 px tile height becomes a floor rather than a
+   ceiling, and a label or value longer than its tile wraps inside it. */
+.nx-readouts-wrap[data-cols] { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+.nx-readouts-wrap .nx-readout { height: auto; min-height: 60px; padding-block: 6px; }
+.nx-readouts-wrap .nx-readout-label { white-space: normal; }
+.nx-readouts-wrap .nx-readout-value { white-space: normal; overflow-wrap: anywhere; }
+/* The sub too, in a row that has already agreed to grow: MOUNT's POINTING sub
+   is the SERVER's reason ("not plate solved since the last slew"), and it is
+   printed nowhere else on the screen - an ellipsis over it is the information
+   going missing, not being abbreviated. */
+.nx-readouts-wrap .nx-readout-sub { white-space: normal; overflow: visible; text-overflow: clip; }
 
 .nx-readout {
   position: relative; height: 60px; min-width: 0;

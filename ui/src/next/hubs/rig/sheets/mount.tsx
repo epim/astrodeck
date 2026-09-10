@@ -632,7 +632,10 @@ export function MountSheet(_props: SheetProps): JSX.Element {
           executing slews - narrates itself on the screen that launched it. */}
       <GotoStrip />
 
-      <ReadoutGrid data-testid="mount-tiles">
+      {/* `nx-readouts-wrap` (next.css) wraps the row inside the 420 px panel
+          instead of clipping NOT VERIFIED and the azimuth at the sheet's
+          edge. */}
+      <ReadoutGrid className="nx-readouts-wrap" data-testid="mount-tiles">
         <ReadoutTile
           label="TRACKING"
           value={stopValue}
@@ -754,9 +757,11 @@ export function MountSheet(_props: SheetProps): JSX.Element {
         )}
       </div>
 
-      <div style={{ display: "flex", gap: 8 }}>
+      {/* The three motion verbs. `nx-btn-row` (next.css) wraps them rather
+          than running them off the panel's right edge, which is how SOLVE +
+          SYNC used to lose half its label. */}
+      <div className="nx-btn-row" data-testid="mount-actions">
         <span
-          style={{ flex: 1, display: "flex" }}
           title={parking ? PARKING_TITLE : foreignMotion ? FOREIGN_MOTION_TITLE : undefined}
         >
           {m?.parked ? (
@@ -787,7 +792,7 @@ export function MountSheet(_props: SheetProps): JSX.Element {
           )}
         </span>
         {m?.can_find_home && (
-          <span style={{ flex: 1, display: "flex" }}>
+          <span>
             <ActionButton
               kind="secondary" full
               lockedReason={homeReason} onExplain={explain}
@@ -799,7 +804,7 @@ export function MountSheet(_props: SheetProps): JSX.Element {
             </ActionButton>
           </span>
         )}
-        <span style={{ flex: 1, display: "flex" }}>
+        <span>
           <ActionButton
             kind="secondary" full
             lockedReason={solveReason} onExplain={explain}

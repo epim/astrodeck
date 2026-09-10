@@ -71,6 +71,9 @@ import { buildRunnables, type Runnable } from "./runnableList";
 import {
   TONIGHT_PER_FLOW, TONIGHT_UNCHECKED, tonightVerdict, type TonightVerdict,
 } from "./tonightVerdict";
+// The Now screen's own stylesheet: a runnable row's two sub-lines have to say
+// how they end, and the primitive's ellipsis cannot reach inside them.
+import "./now.css";
 
 /** How many flows get a tonight verdict, ever.
  *
@@ -542,12 +545,22 @@ export function NowEmpty({ compact = false }: { compact?: boolean }): JSX.Elemen
               return (
                 <div key={`${r.kind}:${r.id}`} data-runnable={r.kind} data-runnable-id={r.id}>
                   <ListRow
+                    className="nx-runnable"
                     icon={<NxIcon name={r.kind === "flow" ? "flows" : "session"} size={16} />}
                     title={r.name}
+                    // Two sub-lines, and each one ends honestly (now.css): the
+                    // description ellipsises on one line, the tonight verdict
+                    // wraps in full. Before this both were cut mid-sentence
+                    // with no ellipsis, and the verdict is the sentence that
+                    // says what to go and fix.
                     sub={
-                      <span style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                        <span>{r.meta}</span>
-                        {verdict && <Mono size={10} tone={verdict.tone}>{verdict.line}</Mono>}
+                      <span className="nx-runnable-sub">
+                        <span className="nx-runnable-meta">{r.meta}</span>
+                        {verdict && (
+                          <Mono size={10} tone={verdict.tone} className="nx-runnable-verdict">
+                            {verdict.line}
+                          </Mono>
+                        )}
                       </span>
                     }
                     right={

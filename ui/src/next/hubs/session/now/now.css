@@ -1,0 +1,42 @@
+/* now.css - the Session - Now screen's own layout rules.
+ *
+ * `next.css` belongs to one task (wave R7's rule: every other area ships its
+ * own stylesheet), so what the Now screen needs beyond the primitives lives
+ * here. Imported by `NowEmpty.tsx`.
+ */
+
+/* ------------------------------------------------------- TONIGHT'S LIST */
+
+/* A runnable row's sub-line is TWO stacked sentences - the flow's own
+ * description, then the tonight verdict - so the primitive's single-line
+ * ellipsis (`.nx-row-sub`) landed on the wrapper and never on the text inside
+ * it. Both sentences were cut mid-word with no ellipsis at all at 390 and 820:
+ * "No observatory site is set, so there is no night to resolve - nothing
+ * below would be about" stopped there, and the row exists to deliver exactly
+ * that sentence. The wrapper stops clipping; each line then says for itself
+ * how it ends. */
+.nx-runnable .nx-row-sub {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+}
+.nx-runnable-sub {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+/* The description is the flow's own prose, shown in full in the Flows hub and
+ * in the plan editor. One line with a REAL ellipsis is honest here. */
+.nx-runnable-meta {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* The verdict is the server's refusal, printed verbatim because it is the one
+ * string that says what to go and fix ("No observatory site is set, ..."). It
+ * wraps to as many lines as it needs; nothing about it is truncated. */
+.nx-runnable-verdict {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}

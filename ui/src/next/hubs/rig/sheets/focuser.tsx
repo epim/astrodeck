@@ -1054,17 +1054,19 @@ export function FocuserSheet(_p: SheetProps): JSX.Element {
           [1, 10, 100, 1000]` row that this sheet had dropped to 10/100/1000:
           the EAF's backlash is tens of steps, so a single step is not how you
           travel - it is how you confirm the drawtube answers at all. */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0,1fr))", gap: 6 }}>
+      <div className="nx-btn-grid" data-cols="2">
         {jog(-1, "IN 1")}
         {jog(1, "OUT 1")}
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0,1fr))", gap: 6 }}>
+      {/* Four across the panel is 77 px a button; `nx-btn-grid`'s tighter side
+          padding (next.css) is what keeps OUT 100 off "OUT 1…". */}
+      <div className="nx-btn-grid" data-cols="4" data-testid="focus-jogs-100">
         {jog(-100, "IN 100")}
         {jog(-10, "IN 10")}
         {jog(10, "OUT 10")}
         {jog(100, "OUT 100")}
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0,1fr))", gap: 6 }}>
+      <div className="nx-btn-grid" data-cols="2">
         {jog(-1000, "IN 1000")}
         {jog(1000, "OUT 1000")}
       </div>
