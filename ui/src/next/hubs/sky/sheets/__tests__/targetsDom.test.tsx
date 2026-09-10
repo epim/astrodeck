@@ -58,6 +58,17 @@ win.localStorage.setItem("astrodeck-next-sky-lens", JSON.stringify({
 }));
 win.localStorage.setItem("astrodeck-next-sky-floor", "0");
 
+// M31's real ra/dec puts it near the 20-degree flat-horizon cutoff for this
+// fixture's site (lat 47.6): its altitude right now crosses 20 degrees twice
+// a day, which flips a row between the cloud reading and BEHIND HORIZON
+// depending on the wall clock the suite happens to run under. Pin the clock
+// to 09:07 PDT, where M31 sits at 24 degrees - clear of the cutoff - so the
+// hole-in-the-cloud-map case below tests what its comment says regardless of
+// when this file runs.
+const NOW = Date.UTC(2026, 8, 10, 16, 7, 0);
+const realNow = Date.now;
+Date.now = () => NOW;
+
 // ------------------------------------------------------------- fetch recorder
 const asks: string[] = [];
 
@@ -376,6 +387,8 @@ await testAsync("a viewer gets the search field and a sentence, not an empty lis
 });
 
 await act(async () => { root.unmount(); });
+
+Date.now = realNow;
 
 const total = passed + failed;
 console.log(`targetsDom.test: ${passed}/${total} passed`);
