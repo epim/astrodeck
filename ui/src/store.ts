@@ -43,6 +43,7 @@ import type {
   TouchSettings,
   TroubleshootTopic,
   UpdateStatus,
+  VideoEvent,
   ViewName,
   Viewport,
   WeatherState,
@@ -588,6 +589,19 @@ interface AppState extends FlowsActions {
   // (kept OFF the "guide" channel so the live guide graph is untouched). null
   // between runs; the GuideAssistantPanel drives its progress bar from this.
   guideAssistant: { phase: string; pct: number; message: string } | null;
+  // The `video` bus event (D-RIG-1), verbatim: the last tick the SER recorder
+  // published (imaging/video.py:231-240), or null when nothing has recorded
+  // this session.
+  //
+  // `VideoEvent`, not `VideoState`, on purpose. The event is a STRICT SUBSET of
+  // `GET /api/capture/video` - it has no `roi`, no `actual_fps`, no
+  // `clamp_reason` and no `camera` - and widening it here would mean writing
+  // nulls into five fields that DO have values on the rig, which is the
+  // "publishing 0 as a fallback" mistake the camera node's own comment above
+  // exists to name. The capture screen merges this with its own cold GET
+  // through `videoModel.mergeVideoState`, which keeps the fetched description
+  // and takes the live counters.
+  video: VideoEvent | null;
   // Auto-learn loop progress (tech-debt hardening c1/c2). Each is the latest
   // tick off its own small bus channel; null between runs. Deliberately thin —
   // the actual per-slot autofocus sweeps ride the existing "focus" channel the
@@ -981,6 +995,7 @@ export const useStore = create<AppState>((set, get) => ({
   lastAutofocusResult: null,
   guide: null,
   guideAssistant: null,
+  video: null,
   egainLearn: null,
   filterOffsetsLearn: null,
   guideRmsByKind: {},
@@ -1930,6 +1945,20 @@ export const useStore = create<AppState>((set, get) => ({
         }
         break;
       }
+      case "video": {
+        // SER RECORDING PROGRESS (D-RIG-1), about 2 Hz while a file is being
+        // written. Stored verbatim; nothing here derives, merges or invents a
+        // field, so a dropped tick costs one frame of the counter and never a
+        // wrong description of the file.
+        //
+        // The bar this drives is NOT the only source: the capture screen also
+        // GETs /api/capture/video on mount (the bus is silent when nothing is
+        // recording) and again on a 5 s watchdog while the `video` lane is
+        // busy. A relay that drops frames must not leave a progress bar frozen
+        // at a number that still looks live.
+        set({ video: ev.data as unknown as VideoEvent });
+        break;
+      }
       case "guide_assistant": {
         // Guiding Assistant progress (design D5). The final "done"/"error" tick
         // is left in place so the panel can show 100% (or the failure message)
@@ -2115,6 +2144,9 @@ export const useMasters = () => useStore((s) => s.masters);
 export const useSequence = () => useStore((s) => s.sequence);
 export const useGuide = () => useStore((s) => s.guide);
 export const useGuideAssistant = () => useStore((s) => s.guideAssistant);
+/** The last `video` bus tick (D-RIG-1). See AppState.video for why this is
+ *  the EVENT shape and not the status shape. */
+export const useVideo = () => useStore((s) => s.video);
 export const useEgainLearn = () => useStore((s) => s.egainLearn);
 export const useFilterOffsetsLearn = () => useStore((s) => s.filterOffsetsLearn);
 // Same-night per-provider RMS windows (P5-T1) — see AppState.guideRmsByKind.

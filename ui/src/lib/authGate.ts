@@ -262,6 +262,13 @@ export interface ClearedRigState {
   lastGuideAtMs: null;
   egainLearn: null;
   filterOffsetsLearn: null;
+  // The SER recorder's last bus tick (D-RIG-1). It names a file on this rig's
+  // disk, says the camera is claimed right now and counts the frames landing in
+  // it - the same class of fact as `focus` and `guide`, and one a stranger at
+  // the sign-in form has no business watching tick over. Cleared like the rest
+  // of the rig's night; the screen that reads it re-GETs
+  // `/api/capture/video` on mount, so nothing is lost when the gate lifts.
+  video: null;
   // Both describe what THIS rig is doing right now: the guide calibration
   // walk (star positions on the guide sensor) and the mount's in-flight
   // solve/centering narration. A stranger at the sign-in form gets neither.
@@ -360,6 +367,7 @@ export function clearedRigState(): ClearedRigState {
     lastGuideAtMs: null,
     egainLearn: null,
     filterOffsetsLearn: null,
+    video: null,
     guideCal: null,
     mountOp: null,
     sequence: EMPTY_SEQUENCE,

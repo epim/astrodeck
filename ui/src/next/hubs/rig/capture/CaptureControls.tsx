@@ -3,19 +3,26 @@
 //
 // LOOP is the GAP-ANALYSIS §3 addition: the design has CAPTURE and RECORD, the
 // rig has Single, Loop and Live View, and Loop is the main framing and focusing
-// tool. RECORD is not built - see `VIDEO_LOCK_REASON`.
+// tool. RECORD is not here at all: it belongs to the other half of this screen
+// (`capture/video/VideoControls.tsx`), because a recording claims the camera
+// for minutes and must not sit in a row with the controls it would refuse.
 //
 // Every label carries the numbers the press will use, so the primary reads
 // "CAPTURE 3 x 60 s · L" rather than "CAPTURE". A button that does not say what
 // it will do is a button somebody presses twice.
 //
 // LIVE VIEW's extras all survive: the satellite/aircraft trail rejection sent as
-// `clip_sigma` at START only, RESET STACK, and `LiveStackReadout` - which is
-// mounted as-is and stays SILENT on a clean match, so it is not a badge that
-// always says "aligned".
+// `clip_sigma` at START only, RESET STACK, and the live-stack readout - which
+// stays SILENT on a clean match, so it is not a badge that always says
+// "aligned".
+//
+// That readout is `hubs/rig/inspect/LiveStackLine` (wave R7's rebuild), not the
+// legacy `components/preview/LiveStackReadout` this file mounted until T-R7-19
+// landed its replacement. Same model (`lib/liveStack.ts`), same silence on a
+// clean match, the design's own type and pill instead of the classic panel's.
 
 import type { JSX } from "react";
-import { LiveStackReadout } from "../../../../components/preview/LiveStackReadout";
+import { LiveStackLine } from "../inspect";
 import { fmtExposure } from "../../../../components/ui/CameraPickers";
 import { ActionButton, Checkbox22, Label, Mono, Stepper2 } from "../../../ui";
 import type { PreviewInfo } from "../../../../types";
@@ -173,7 +180,7 @@ export function CaptureControls(props: CaptureControlsProps): JSX.Element {
         >
           RESET STACK
         </ActionButton>
-        <LiveStackReadout preview={props.preview} />
+        <LiveStackLine preview={props.preview} />
       </div>
 
       {props.notices.map((n) => (

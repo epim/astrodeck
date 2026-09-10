@@ -7,13 +7,14 @@
 //
 // WHAT THIS SCREEN REFUSES TO PRETEND:
 //
-//  * There is NO VIDEO/SER CAPTURE in this backend. `/api/capture`,
-//    `/api/capture/loop`, `/api/capture/stop` and `/api/capture/livestack/*` are
-//    the whole camera surface; `RigStatus` carries `looping` and
-//    `live_stack_active` and nothing video-shaped. The design's VIDEO · PLANETS
-//    toggle is drawn and EXPLAINS; its readouts, RECORD, QUICK STACK and
-//    DOWNLOAD SER are not built. A control that cannot act is worse than an
-//    absence that has been explained.
+//  * VIDEO · PLANETS IS REAL NOW (D-RIG-1, wave U7b). `imaging/video_routes.py`
+//    landed the SER recorder, so the chip switches modes instead of explaining
+//    a shortfall, and the mode is ROUTE STATE (`?mode=video`) rather than a
+//    local flag - which is what makes the Sky hand-off
+//    (`SkyHub.tsx:695-699`, already sending `?mode=video&target=&ra=&dec=`)
+//    arrive on the right half of this screen. The two halves never run at once:
+//    both own the camera, and drawing the still bench's dials under a running
+//    recording would offer settings that could not reach it.
 //  * There is NO ROUTE that promotes an unsaved preview into the library, so
 //    the result card's first verb is RE-SHOOT AND SAVE, not SAVE TO GALLERY.
 //  * The PLATE-SOLVE-INTO-THE-FILE toggle is `config.solve_saved_lights` and
@@ -40,17 +41,18 @@ import {
 } from "../../../../lib/calibration";
 import { suggestSubLength } from "../../../../lib/photometry";
 import { ActionButton, Card, Chip, Divider, Label, Mono, Segmented, Switch } from "../../../ui";
-import { nav, useRoute } from "../../../router";
+import { buildHash, nav, useRoute } from "../../../router";
 import { CaptureStage } from "./CaptureStage";
 import { CaptureReadouts } from "./CaptureReadouts";
 import { CaptureControls } from "./CaptureControls";
 import { CoolerRow } from "./CoolerRow";
 import { ResultCard, NO_TARGET_FLOW_REASON } from "./ResultCard";
 import { useArm } from "./useArm";
+import { VideoMode } from "./video";
 import {
   accessReason, coolerReason, draftNumber, exposeReason, isPolarBusy, liveViewReason,
   loopReason, resetStackReason, singleReason, slewReason, stopReason, warmReason,
-  POLAR_NOTICE, sequenceNotice, VIDEO_LOCK_REASON, NO_LAST_LIGHT_REASON,
+  POLAR_NOTICE, sequenceNotice, NO_LAST_LIGHT_REASON,
   type CaptureGateInput,
 } from "./captureGate";
 import type { PreviewInfo } from "../../../../types";
@@ -95,6 +97,28 @@ export function aimPlan(opts: {
     return { kind: "slew", label: `SLEW → ${name.toUpperCase()}` };
   }
   return { kind: "sky", label: "AIM IN SKY" };
+}
+
+/** STILL or VIDEO, off the route.
+ *
+ *  The mode is ROUTE STATE and not a `useState`, for one reason that costs a
+ *  night when it is wrong: the Sky hub's RECORD CTA for a planet or the Moon
+ *  navigates to `/rig/capture?mode=video&target=&ra=&dec=`
+ *  (`SkyHub.tsx:695-699`), and a screen holding its mode locally would land
+ *  that hand-off on the still bench with no sign anything had been asked for.
+ *  Anything other than `video` is STILL, so a typo in a shared link opens the
+ *  bench rather than a blank half of a screen. */
+export function modeFromRoute(params: Record<string, string>): "still" | "video" {
+  return params.mode === "video" ? "video" : "still";
+}
+
+/** The hash for the other mode, keeping every other parameter. `target`, `ra`
+ *  and `dec` are the hand-off's payload and dropping them on a mode switch
+ *  would silently un-aim the screen. */
+export function modeHash(params: Record<string, string>, mode: "still" | "video"): string {
+  const next: Record<string, string> = { ...params };
+  if (mode === "video") next.mode = "video"; else delete next.mode;
+  return buildHash({ hub: "rig", sub: "capture", sheets: [], params: next });
 }
 
 export function CaptureScreen(): JSX.Element {
@@ -393,6 +417,12 @@ export function CaptureScreen(): JSX.Element {
     showToast("success", `Suggested ${suggestion.suggestedS}s - ${suggestion.reason}`);
   };
 
+  // ---------------------------------------------------------------- the mode
+  // Route state, not local state - see `modeFromRoute`. Both modes own the
+  // camera, so only one is mounted at a time and the still bench's dials never
+  // render under a running recording.
+  const mode = modeFromRoute(route.params);
+
   // ------------------------------------------------------------- the aim row
   const paramTarget = route.params.target || null;
   const ra = route.params.ra != null ? Number(route.params.ra) : null;
@@ -455,16 +485,20 @@ export function CaptureScreen(): JSX.Element {
 
       <div role="group" aria-label="Capture mode" style={{ display: "flex", gap: 6 }}>
         <div style={{ flex: 1, display: "flex" }}>
-          <Chip active onClick={() => { /* already here */ }} className="nx-cap-mode">
+          <Chip
+            active={mode === "still"}
+            onClick={() => nav.replace(modeHash(route.params, "still"))}
+            className="nx-cap-mode"
+            data-testid="capture-still"
+          >
             STILL · FRAMES
           </Chip>
         </div>
         <div style={{ flex: 1, display: "flex" }}>
           <Chip
-            active={false}
-            onClick={() => { /* refused - see lockedReason */ }}
-            lockedReason={VIDEO_LOCK_REASON}
-            onExplain={onExplain}
+            active={mode === "video"}
+            onClick={() => nav.replace(modeHash(route.params, "video"))}
+            className="nx-cap-mode"
             data-testid="capture-video"
           >
             VIDEO · PLANETS
@@ -472,6 +506,17 @@ export function CaptureScreen(): JSX.Element {
         </div>
       </div>
 
+      {mode === "video" ? (
+        <VideoMode
+          gate={gateNow}
+          // The adopted target, or the name the Sky hand-off carried. VIDEO takes
+          // no target over the wire, so this is context and not a claim: unlike
+          // the still bench's USE, adopting it would change nothing on disk.
+          target={target || paramTarget || ""}
+          onExplain={onExplain}
+        />
+      ) : (
+      <>
       <CaptureStage
         exposureS={shotExposureS}
         gain={shotGain}
@@ -607,6 +652,10 @@ export function CaptureScreen(): JSX.Element {
           )}
           actionReason={resultActionReason}
           flowReason={flowReason}
+          // T-U7b-3's delivered line. SAVE AS <TARGET> is only offered when
+          // this screen's target differs from the one the buffered frame was
+          // shot under; without it the override is simply never offered.
+          captureTarget={target}
           onExplain={onExplain}
         />
       )}
@@ -636,6 +685,8 @@ export function CaptureScreen(): JSX.Element {
       <Mono size={10} tone="dim">
         {`Next frame: ${count} × ${fmtExposure(shotExposureS)} · ${face.face}`}
       </Mono>
+      </>
+      )}
     </div>
   );
 }
