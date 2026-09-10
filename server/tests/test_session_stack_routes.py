@@ -125,3 +125,54 @@ def test_the_requested_size_is_clamped_not_trusted(client):
     from PIL import Image
     import io
     assert Image.open(io.BytesIO(r.content)).width <= 4096
+
+
+# ---- the backfill option ------------------------------------------------
+# Turning the stack on can also fold in the subs the run has already accepted.
+# The route surface is small: a flag on /start, a separate /backfill for a stack
+# that is already on, and a progress block on every reply so the panel can show
+# a counter without a second call.
+
+def test_every_reply_carries_the_progress_block(client):
+    # One shape from all four calls, or the client needs to know which call its
+    # status came from -- and the panel's counter blinks out on whichever reply
+    # forgot it.
+    for r in (client.post("/api/sequence/stack/start"),
+              client.get("/api/sequence/stack"),
+              client.post("/api/sequence/stack/reset"),
+              client.post("/api/sequence/stack/stop")):
+        assert r.status_code == 200, r.text
+        block = r.json().get("backfill")
+        assert isinstance(block, dict), r.json()
+        for k in ("running", "total", "done", "added", "skipped", "failed",
+                  "available"):
+            assert k in block, (k, block)
+
+
+def test_starting_without_the_flag_backfills_nothing(client):
+    # The default, and it has to stay the default: the pass is minutes of disk
+    # on a full night.
+    body = client.post("/api/sequence/stack/start").json()
+    assert body["enabled"] is True
+    assert body["backfill"]["total"] == 0
+    assert body["backfill"]["running"] is False
+
+
+def test_starting_with_the_flag_is_accepted_and_reports_a_pass(client):
+    # No live run in this harness, so there is nothing in any ledger to fold in
+    # -- what is under test is that the flag is plumbed and the counter comes
+    # back finished rather than stuck at "running, 0 of 0".
+    body = client.post("/api/sequence/stack/start?backfill=true").json()
+    assert body["enabled"] is True
+    assert body["backfill"]["running"] is False
+    assert body["backfill"]["done"] == body["backfill"]["total"] == 0
+
+
+def test_the_backfill_route_exists_and_needs_the_stack_on(client):
+    r = client.post("/api/sequence/stack/backfill")
+    assert r.status_code == 200, r.text
+    assert r.json()["enabled"] is False
+    assert client.post("/api/sequence/stack/start").status_code == 200
+    r = client.post("/api/sequence/stack/backfill")
+    assert r.status_code == 200, r.text
+    assert r.json()["enabled"] is True

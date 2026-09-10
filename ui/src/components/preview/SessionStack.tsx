@@ -14,12 +14,24 @@
 // It polls, which the rest of the monitor page does not: there is no WS event
 // for the stack, and inventing one for a panel that changes once per exposure
 // would be a lot of plumbing for a number that moves every three minutes. The
-// poll is 10s while the switch is on and stops entirely while it is off.
+// poll is 10s while the switch is on and stops entirely while it is off -- and
+// drops to 1.5s while a backfill is reading, because a progress counter that
+// updates every ten seconds is a progress counter nobody believes.
+//
+// THE BACKFILL. Switching this on used to mean "from the next frame", so arming
+// it at 2am showed two of the night's ninety subs and the composite was noise.
+// The box next to the switch folds in the subs the run has already accepted, and
+// it is TICKED by default because that is what the switch is for -- but the
+// count of what it will read is on the label, because the pass reads and
+// registers every one of those frames off disk and on a full night that is
+// minutes of work. An informed press, not a surprise.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Panel, Stat, Toggle, EmptyState } from "../ui";
 import { accessPhrase, useCanControlCapture } from "../../lib/caps";
 import {
+  backfillLabel,
+  backfillSessionStack,
   channelSummary,
   fmtIntegration,
   getSessionStack,
@@ -31,6 +43,8 @@ import {
 } from "../../api/sessionStack";
 
 const POLL_MS = 10_000;
+/** While the backfill is reading, so the counter moves at a believable rate. */
+const BACKFILL_POLL_MS = 1_500;
 
 /** How the composite was built, in words. A viewer looking at a teal image
  *  should be able to find out why it is teal. */
@@ -47,6 +61,9 @@ export default function SessionStack() {
   const [status, setStatus] = useState<SessionStackStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Ticked by default: "stack this run" is what the switch means, and the
+  // label carries the number of subs so the cost is on screen before the press.
+  const [withEarlier, setWithEarlier] = useState(true);
   const alive = useRef(true);
 
   const refresh = useCallback(async () => {
@@ -72,11 +89,13 @@ export default function SessionStack() {
   }, [refresh]);
 
   const enabled = status?.enabled ?? false;
+  const backfilling = status?.backfill?.running ?? false;
   useEffect(() => {
     if (!enabled) return;
-    const t = setInterval(() => { void refresh(); }, POLL_MS);
+    const t = setInterval(() => { void refresh(); },
+                          backfilling ? BACKFILL_POLL_MS : POLL_MS);
     return () => clearInterval(t);
-  }, [enabled, refresh]);
+  }, [enabled, backfilling, refresh]);
 
   const act = useCallback(async (fn: () => Promise<SessionStackStatus>) => {
     setBusy(true);
@@ -91,11 +110,14 @@ export default function SessionStack() {
   }, []);
 
   const toggle = useCallback((on: boolean) => {
-    void act(on ? startSessionStack : stopSessionStack);
-  }, [act]);
+    void act(on ? () => startSessionStack(withEarlier) : stopSessionStack);
+  }, [act, withEarlier]);
 
   const frames = status?.frames ?? 0;
   const hasImage = Boolean(status?.has_image && frames > 0);
+  const bf = status?.backfill;
+  const available = bf?.available ?? 0;
+  const bfLabel = backfillLabel(bf);
 
   return (
     <Panel
@@ -121,11 +143,34 @@ export default function SessionStack() {
         )}
 
         {!enabled && (
-          <EmptyState
-            icon="gallery"
-            size="inline"
-            title="Off. The run's accepted subs are not being stacked."
-          />
+          <>
+            <EmptyState
+              icon="gallery"
+              size="inline"
+              title="Off. The run's accepted subs are not being stacked."
+            />
+            {/* The count is IN the label, not in a tooltip: this is the one
+                moment the user can decide whether minutes of disk reading are
+                worth it, and "some subs" is not a basis for that decision. */}
+            <label className="flex items-start gap-2 text-xs text-dim">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={withEarlier}
+                disabled={!canControl || busy}
+                aria-label="Also stack the subs already captured this run"
+                onChange={(e) => setWithEarlier(e.currentTarget.checked)}
+              />
+              <span>
+                {available > 0
+                  ? `Also stack the ${available} sub${available === 1 ? "" : "s"} `
+                    + "this run has already accepted. They are re-read and "
+                    + "registered off disk, which takes a few minutes on a long run."
+                  : "Also stack the subs this run has already accepted, when there "
+                    + "are any."}
+              </span>
+            </label>
+          </>
         )}
 
         {enabled && !hasImage && (
@@ -135,7 +180,10 @@ export default function SessionStack() {
             title={
               error
                 ? "Can't reach the stack right now"
-                : "On. Waiting for the first accepted sub."
+                : backfilling
+                  ? `Reading the run's earlier subs: ${bf?.done ?? 0} of ${
+                      bf?.total ?? 0}`
+                  : "On. Waiting for the first accepted sub."
             }
           />
         )}
@@ -160,6 +208,34 @@ export default function SessionStack() {
 
         {enabled && (
           <>
+            {/* The counter, and the way to start one on a stack that is
+                already on. Switching off and on again would reach the same
+                pass by throwing away everything stacked since, which is why
+                this is its own button. */}
+            {(bfLabel || available > 0) && (
+              <div className="flex flex-wrap items-center gap-2">
+                {bfLabel && (
+                  <span
+                    className="text-xs text-dim mono"
+                    role={backfilling ? "status" : undefined}
+                    aria-live={backfilling ? "polite" : undefined}
+                  >
+                    {bfLabel}
+                  </span>
+                )}
+                {available > 0 && !backfilling && (
+                  <button
+                    type="button"
+                    className="btn !py-1 min-h-[44px]"
+                    disabled={!canControl || busy}
+                    onClick={() => { void act(backfillSessionStack); }}
+                  >
+                    Stack {available} earlier sub{available === 1 ? "" : "s"}
+                  </button>
+                )}
+              </div>
+            )}
+
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
               <Stat label="Frames" value={frames} />
               <Stat label="Integrated" value={fmtIntegration(status?.integrated_s ?? 0)} />

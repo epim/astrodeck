@@ -4937,8 +4937,22 @@ def create_app(*, bind_host: str | None = None,
     @app.post("/api/sequence/stack/start",
               dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
     @declare(CAP_CONTROL_CAPTURE)
-    async def session_stack_start():
-        return hub.start_session_stack()
+    async def session_stack_start(backfill: bool = False):
+        # `backfill=true` also folds in the subs this run has ALREADY accepted,
+        # on a worker thread; the reply's `backfill` block is the progress
+        # counter for it. Default false: it is minutes of disk and CPU on a full
+        # night, so it is opt-in per press rather than per switch (Hub.
+        # start_session_stack says why at length).
+        return hub.start_session_stack(backfill=bool(backfill))
+
+    @app.post("/api/sequence/stack/backfill",
+              dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
+    async def session_stack_backfill():
+        # Separate from /start so an already-running stack can catch up without
+        # being switched off and on again -- which would throw away the frames
+        # it has stacked since, and is the obvious wrong way to reach this.
+        return hub.session_stack_backfill()
 
     @app.post("/api/sequence/stack/stop",
               dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])

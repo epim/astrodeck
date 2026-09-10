@@ -24,6 +24,36 @@ export interface SessionStackChannel {
   rejected: number;
 }
 
+/** How the "stack the subs I already shot" pass is getting on.
+ *
+ *  Switching the stack on used to mean "from the next frame", so arming it at
+ *  2am showed two of the night's ninety subs. The backfill walks the run's own
+ *  ledger and folds the earlier ACCEPTED ones in; it reads and registers every
+ *  one off disk, so on a full night it is minutes of work and needs a counter
+ *  rather than a spinner. */
+export interface SessionStackBackfill {
+  running: boolean;
+  /** Frames this pass set out to read. */
+  total: number;
+  /** Frames considered so far = added + skipped + failed. `done === total`
+   *  is completion whatever happened to each frame. */
+  done: number;
+  added: number;
+  /** Already in the stack — the live path or an earlier pass took them. */
+  skipped: number;
+  /** Unreadable, or refused by the stacker (no stars, drifted off field). */
+  failed: number;
+  /** The channel the frame in hand landed on, for a live caption. */
+  channel: string;
+  /** Set when the PASS died; one bad frame only bumps `failed`. */
+  error: string;
+  started_ts: number | null;
+  finished_ts: number | null;
+  /** Subs of this run that are not in the stack yet — what pressing it now
+   *  would read. Recomputed on every poll from the in-memory ledger. */
+  available: number;
+}
+
 export interface SessionStackStatus {
   enabled: boolean;
   /** What the frames are of. Empty before the first accepted frame. */
@@ -40,13 +70,24 @@ export interface SessionStackStatus {
   downsample: number;
   has_image: boolean;
   render_age_s: number | null;
+  backfill: SessionStackBackfill;
 }
 
 export const getSessionStack = (): Promise<SessionStackStatus> =>
   api.get<SessionStackStatus>("/api/sequence/stack");
 
-export const startSessionStack = (): Promise<SessionStackStatus> =>
-  api.post<SessionStackStatus>("/api/sequence/stack/start");
+/** Switch the stack on. `backfill` also folds in the subs this run has already
+ *  accepted — off by default on the server, because it is minutes of disk on a
+ *  full night and a switch must not do that unasked. */
+export const startSessionStack = (backfill = false): Promise<SessionStackStatus> =>
+  api.post<SessionStackStatus>(
+    `/api/sequence/stack/start${backfill ? "?backfill=true" : ""}`);
+
+/** Catch an ALREADY-RUNNING stack up with the run's earlier subs. Separate from
+ *  `start` so reaching it does not mean switching off and on again, which would
+ *  throw away everything stacked since. */
+export const backfillSessionStack = (): Promise<SessionStackStatus> =>
+  api.post<SessionStackStatus>("/api/sequence/stack/backfill");
 
 export const stopSessionStack = (): Promise<SessionStackStatus> =>
   api.post<SessionStackStatus>("/api/sequence/stack/stop");
@@ -75,4 +116,30 @@ export function fmtIntegration(seconds: number): string {
 /** What the composite is made of, for a caption: "R·G·B" / "Ha·Oiii". */
 export function channelSummary(channels: SessionStackChannel[]): string {
   return channels.map((c) => c.channel).join("·");
+}
+
+/** The backfill in one line, or null when there is nothing to say.
+ *
+ *  Three states worth distinguishing and one that is not: reading (a count, so
+ *  a stalled pass is visible as a number that stops moving), finished with a
+ *  tally, and stopped early. A pass that added everything it read says so
+ *  briefly and then has nothing more to contribute — the frame count and the
+ *  channel list above it are the real result. */
+export function backfillLabel(b: SessionStackBackfill | undefined): string | null {
+  if (!b) return null;
+  if (b.running) {
+    const of = b.total ? ` of ${b.total}` : "";
+    return `Stacking earlier subs: ${b.done}${of}`;
+  }
+  if (b.error) {
+    // "stopped" is the plain "you switched it off or reset it" case and the
+    // sentence already says so; anything else is a reason worth printing.
+    const why = b.error === "stopped" ? "" : ` (${b.error})`;
+    return `Earlier subs: stopped at ${b.done} of ${b.total}${why}`;
+  }
+  if (!b.total) return null;
+  const parts = [`${b.added} earlier sub${b.added === 1 ? "" : "s"} stacked`];
+  if (b.skipped) parts.push(`${b.skipped} already in`);
+  if (b.failed) parts.push(`${b.failed} unusable`);
+  return parts.join(" · ");
 }
