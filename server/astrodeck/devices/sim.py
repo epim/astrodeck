@@ -162,35 +162,99 @@ class PolarMisalignment:
     was asked for -- a mount that over- or under-rotates on every leg. That used
     to be the only behaviour, at 15° against a driver commanding 12°, and
     nothing noticed because nothing graded the rotation until
-    ``polar/native.py``'s MAX_ROTATION_DISAGREEMENT_DEG."""
+    ``polar/native.py``'s MAX_ROTATION_DISAGREEMENT_DEG.
+
+    ``goto_pointing_error_arcmin`` IS THE OTHER FAULT INJECTION, and it is the
+    one that ruined three real runs on 2026-09-09. Zero (the default) is a
+    mount whose gotos land exactly where they were sent, which no mount is. Give
+    it a number and every GOTO lands that far from its target, in a smooth,
+    deterministic, POSITION-DEPENDENT way — a pointing-model residual, which is
+    what a real mount's 10 arcmin of goto error is. The declination half of it
+    is the damaging half: it displaces the mount's declination AXIS, so the
+    three measurement points stop lying on one cone and the exact-through-three-
+    points fit reports the wreck as a confident number (504' on a mount 33'
+    out). The right-ascension half merely slides each point ALONG the arc, which
+    the driver's rotation-agreement guard measures and tolerates.
+
+    Deliberately applied by ``SimTelescope.slew`` and NOT by
+    ``SimTelescope.rotate_axis``: that difference IS the fix under test. Turning
+    one mechanical axis is a rigid-body rotation, so it traces an exact cone
+    however wrong the mount's model of itself is, and there is nothing for a
+    pointing error to get wrong."""
 
     def __init__(self, *, az_arcmin: float, alt_arcmin: float, lat_deg: float,
                  lon_deg: float, rho_deg: float = 40.0,
-                 phase_step_deg: float | None = None) -> None:
+                 phase_step_deg: float | None = None,
+                 goto_pointing_error_arcmin: float = 0.0) -> None:
         self.az_arcmin = az_arcmin
         self.alt_arcmin = alt_arcmin
         self.lat_deg = lat_deg
         self.lon_deg = lon_deg
         self.rho_deg = rho_deg
         self.phase_step_deg = phase_step_deg
+        self.goto_pointing_error_arcmin = goto_pointing_error_arcmin
 
     @property
     def expected_total_arcmin(self) -> float:
         return math.hypot(self.az_arcmin, self.alt_arcmin)
 
-    def true_radec(self, phase_deg: float, unix_t: float) -> tuple[float, float]:
+    def goto_landing_error(self, phase_deg: float) -> tuple[float, float]:
+        """(phase error, declination-axis error) in DEGREES that a goto aiming
+        the mount at RA-axis angle ``phase_deg`` lands with.
+
+        A FUNCTION OF THE MOUNT'S OWN AXIS ANGLE, and repeatable in it, because
+        that is what a pointing error is: a mount does not miss by a random
+        amount, it misses by whatever its model of itself gets wrong THERE, and
+        it misses by the same amount every time you send it back. Two different
+        harmonics so the two axes' errors are not each other — a common-mode
+        error would slide the whole arc along its cone and bend nothing, which
+        is the one shape this must not model.
+
+        THE SPATIAL FREQUENCY IS CHOSEN, NOT PHYSICAL, and that is worth saying
+        out loud. A slowly-varying residual — the sin(HA) of a non-orthogonal
+        declination axis, say — would land two points 12 degrees apart at almost
+        the same error, which is harmless: a common offset is just a slightly
+        different cone. What ruined the real runs was error that CHANGED across
+        the arc, and the rig's own numbers say it does: declination stepped
+        +9.7' then -6.8' across two equal 12 degree rotations on 2026-09-09,
+        which no low-order function of hour angle produces. So these harmonics
+        turn over in a few tens of degrees, which reproduces the measured
+        behaviour without pretending to know its mechanism.
+
+        Amplitudes are the full ``goto_pointing_error_arcmin`` on each axis;
+        the rig's own two centring attempts that night measured 10.2' and 4.9',
+        so ~10' is life-sized. Over the two 12 degree legs of a standard arc the
+        declination term lands at 0.951 and 0.588 of amplitude, a bend of 1.31
+        amplitudes — 13' at 10', against the 15.8-16.5' measured on the sky."""
+        amp = self.goto_pointing_error_arcmin / 60.0
+        if not amp:
+            return (0.0, 0.0)
+        return (amp * math.sin(math.radians(5.0 * phase_deg + 40.0)),
+                amp * math.sin(math.radians(6.0 * phase_deg)))
+
+    def true_radec(self, phase_deg: float, unix_t: float,
+                   dec_axis_offset_deg: float = 0.0) -> tuple[float, float]:
         """True (RA deg, Dec deg) of the optics at tilted-circle ``phase_deg`` and
         time ``unix_t``. The mount axis sits at (alt = lat + alt_err, az = az_err)
         in the topocentric frame; a reference point ``rho`` away from it, rotated
         about the axis by ``phase_deg``, is the pointing — inverse-transformed to
-        equatorial at ``unix_t`` so ``tppa_from_three`` reproduces it exactly."""
+        equatorial at ``unix_t`` so ``tppa_from_three`` reproduces it exactly.
+
+        ``dec_axis_offset_deg`` displaces the DECLINATION AXIS: it widens or
+        narrows the cone the optics trace, exactly as turning the declination
+        axis does on a real mount. Zero (the default) keeps every pre-2026-09-09
+        caller byte-identical. It is a separate parameter from ``rho_deg``
+        because ``rho`` is the geometry the arc was set up with and this is
+        motion that happened DURING the arc — the difference between a cone and
+        a wreck."""
         alt_m = self.lat_deg + self.alt_arcmin / 60.0
         az_m = self.az_arcmin / 60.0
         m = _neu_from_altaz(alt_m, az_m)
         # A stable axis to tilt the mount axis away from itself by rho: the
         # horizontal direction perpendicular to both the axis and the zenith.
         tilt_axis = _normalize(_cross(m, (0.0, 0.0, 1.0)))
-        ref = _rodrigues(m, tilt_axis, math.radians(self.rho_deg))
+        ref = _rodrigues(m, tilt_axis,
+                         math.radians(self.rho_deg + dec_axis_offset_deg))
         u = _rodrigues(ref, m, math.radians(phase_deg))
         alt, az = _altaz_from_neu(u)
         return _horiz_to_equ(alt, az, self.lat_deg, self.lon_deg,
@@ -247,6 +311,12 @@ class SimRig:
         # native TPPA engine can recover the injected error end to end.
         self.polar_misalignment: PolarMisalignment | None = None
         self._polar_phase_deg = 0.0
+        #: Where the DECLINATION AXIS has been driven to, in degrees off the
+        #: cone the arc started on. Stays 0.0 unless a goto's injected pointing
+        #: error moves it (``PolarMisalignment.goto_landing_error``), which is
+        #: the whole mechanism behind the 2026-09-09 failures; a single-axis
+        #: ``rotate_axis`` never touches it.
+        self._polar_dec_axis_deg = 0.0
         # --- guide-star model (P1-T9): the ground truth SimGuideCamera renders
         # and the closed loop SimTelescope.pulse_guide drives. ``_guide_base_px``
         # is filled in by SimGuideCamera.__init__ (the camera owns its sensor
@@ -318,7 +388,8 @@ class SimRig:
     def set_polar_misalignment(self, az_arcmin: float, alt_arcmin: float, *,
                                lat_deg: float, lon_deg: float,
                                rho_deg: float = 40.0,
-                               phase_step_deg: float | None = None) -> None:
+                               phase_step_deg: float | None = None,
+                               goto_pointing_error_arcmin: float = 0.0) -> None:
         """Inject a deterministic polar-axis misalignment for native-TPPA tests.
 
         The mount's RA axis is tilted from the true celestial pole by
@@ -330,14 +401,17 @@ class SimRig:
         very first capture is already on the tilted circle."""
         self.polar_misalignment = PolarMisalignment(
             az_arcmin=az_arcmin, alt_arcmin=alt_arcmin, lat_deg=lat_deg,
-            lon_deg=lon_deg, rho_deg=rho_deg, phase_step_deg=phase_step_deg)
+            lon_deg=lon_deg, rho_deg=rho_deg, phase_step_deg=phase_step_deg,
+            goto_pointing_error_arcmin=goto_pointing_error_arcmin)
         self._polar_phase_deg = 0.0
+        self._polar_dec_axis_deg = 0.0
         self._apply_polar_pointing()
 
     def clear_polar_misalignment(self) -> None:
         """Remove the injected misalignment (restore a perfectly-aligned mount)."""
         self.polar_misalignment = None
         self._polar_phase_deg = 0.0
+        self._polar_dec_axis_deg = 0.0
 
     def _apply_polar_pointing(self) -> None:
         """Recompute the true RA/Dec for the current tilted-circle phase at the
@@ -346,7 +420,8 @@ class SimRig:
         m = self.polar_misalignment
         if m is None:
             return
-        ra_deg, dec_deg = m.true_radec(self._polar_phase_deg, time.time())
+        ra_deg, dec_deg = m.true_radec(self._polar_phase_deg, time.time(),
+                                       self._polar_dec_axis_deg)
         self.ra_hours = (ra_deg / 15.0) % 24.0
         self.dec_deg = dec_deg
 
@@ -807,6 +882,12 @@ class SimTelescope(Telescope):
     #: control is exercisable without hardware.
     can_find_home = True
 
+    #: the sim mount can turn one axis on its own (TPPA clean arc, 2026-09-09),
+    #: so the mechanism that keeps a measuring arc on one cone is exercisable
+    #: without hardware — including against an injected goto pointing error,
+    #: which is the fault it exists to survive. See ``rotate_axis`` below.
+    can_rotate_axis = True
+
     #: GN-09: True here NOT because the sim mount trails -- it doesn't, it has
     #: no periodic error to trail with -- but so the flow doctor's
     #: needs-guiding rule (see ``ZwoAm5Telescope.needs_guiding``) is
@@ -885,6 +966,17 @@ class SimTelescope(Telescope):
                 else:
                     self.rig._polar_phase_deg += (
                         (1.0 if delta < 0.0 else -1.0) * pinned)
+                # A GOTO LANDS WITH THE MOUNT'S POINTING ERROR, on both axes.
+                # Off by default; see PolarMisalignment.goto_landing_error for
+                # why the declination half is the one that ruins the run. The
+                # declination term is ABSOLUTE, not cumulative: the mount misses
+                # by whatever its model gets wrong where it was AIMED, and would
+                # miss by the same amount if sent back there.
+                ph_err, dec_err = (
+                    self.rig.polar_misalignment.goto_landing_error(
+                        self.rig._polar_phase_deg))
+                self.rig._polar_phase_deg += ph_err
+                self.rig._polar_dec_axis_deg = dec_err
                 self.rig._apply_polar_pointing()
             finally:
                 self._slewing = False
@@ -1036,6 +1128,55 @@ class SimTelescope(Telescope):
         # leaves ``_guide_offset_px`` — and every frame rendered from it —
         # bit-identical.
         await asyncio.sleep(_sim_delay(ms / 1000.0))
+
+    async def rotate_axis(self, axis: str, degrees: float) -> float:
+        """Turn ONE mechanical axis by ``degrees``; the other does not move.
+
+        The simulator can honour this exactly, so it does: no rate, no duration,
+        no servo — the sim has no motors to model, and inventing a timed
+        approximation would only add a second thing that could be wrong. What it
+        DOES model faithfully is the property the caller is buying: the
+        declination axis is untouched, and none of the goto pointing error in
+        ``PolarMisalignment.goto_landing_error`` applies, because nothing here
+        consults a model of where the sky is.
+
+        Under an injected misalignment the RA axis IS the tilted axis, so the
+        rotation advances the traced small circle's phase — the same conversion
+        ``slew`` uses (+phase runs RA DOWN; see the comment there). Without one
+        the mount is perfectly polar-aligned by construction and the RA axis is
+        the celestial one, so the rotation is a right-ascension change.
+
+        Returns ``degrees`` unchanged: this implementation is exact, and the
+        return value exists for the timed implementations that are not."""
+        if axis not in ("ra", "dec"):
+            raise DeviceError(f"{self.name}: unknown axis {axis!r}")
+        if self.rig.parked:
+            raise DeviceError(f"{self.name}: mount is parked")
+        await asyncio.sleep(_sim_delay(0.05))
+        if axis == "dec":
+            if self.rig.polar_misalignment is not None:
+                self.rig._polar_dec_axis_deg += degrees
+                self.rig._apply_polar_pointing()
+            else:
+                self.rig.dec_deg = min(90.0, max(-90.0,
+                                                 self.rig.dec_deg + degrees))
+            return degrees
+        if self.rig.polar_misalignment is not None:
+            # ``phase_step_deg`` fault injection applies here too: a mount that
+            # turns further than it was told is a mount fault whichever call
+            # told it, and a simulator that only misbehaved on the goto path
+            # would leave the rotation-agreement guard ungraded the moment the
+            # driver started using the better mechanism.
+            pinned = self.rig.polar_misalignment.phase_step_deg
+            if pinned is None:
+                self.rig._polar_phase_deg += -degrees
+            else:
+                self.rig._polar_phase_deg += (
+                    (1.0 if degrees < 0.0 else -1.0) * pinned)
+            self.rig._apply_polar_pointing()
+        else:
+            self.rig.ra_hours = (self.rig.ra_hours + degrees / 15.0) % 24.0
+        return degrees
 
     async def move_axis(self, axis: str, rate_deg_s: float) -> None:
         # Defensive clamp to the touch cap (the real clamp is server-side in the

@@ -397,6 +397,13 @@ async def test_polar_alignment_takes_the_camera_before_it_rotates_the_mount(
         # ignored: this stub exists to observe when the rotation happens relative
         # to the camera handover, not to move anything.
         looping_at_each_rotate.append(hub.looping)
+        # RETURNS WHAT IT COMMANDED, because the real one does (2026-09-09: a
+        # timed single-axis rotation delivers rate x its own measured dwell, so
+        # the guards grade the arc against what the mount was really told). A
+        # stub that returned nothing would leave the arrival check with no
+        # commanded rotation to compare against and quietly switch it off,
+        # which is how this test found the contract change.
+        return step
 
     monkeypatch.setattr(nat, "_rotate_in_ra", watching_rotate)
 

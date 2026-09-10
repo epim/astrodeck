@@ -6,9 +6,14 @@ NINA's TPPA workflow without NINA:
 
   PHASE "measuring"  — capture a short exposure, plate solve it (NO sync — a sync
     would corrupt the very axis error we are measuring), record (RA, Dec, t),
-    then rotate the mount in RA by a configurable step; repeat three times. Every
-    slew is safety-gated: the sun-exclusion cone (:meth:`Hub._check_solar`) is
-    checked before each rotation so we never drive the optics through the Sun,
+    then rotate the mount in RA by a configurable step; repeat three times. The
+    ROTATION turns the RA axis alone on a mount that offers it
+    (``Telescope.rotate_axis``) and falls back to a goto on one that does not —
+    the difference decides whether the three points lie on one cone at all, and
+    :func:`_rotate_in_ra` holds the reasoning and the three real runs that
+    forced it. Every motion is safety-gated: the sun-exclusion cone
+    (:meth:`Hub._check_solar`) is checked before each rotation so we never
+    drive the optics through the Sun,
     and the motion-epoch fence + pause/stop are honored so a STOP or an abort
     aborts cleanly. The three solves feed
     :func:`astrodeck_native.tppa_from_three`, which fits the mount's RA axis and
@@ -93,6 +98,12 @@ _STALE_UPDATE_LIMIT = 30
 #: points at "now" makes the altitude check optimistic exactly where it matters.
 #: Measured on the rig 2026-08-06: consecutive point log lines 19 s apart on a
 #: clean run, 43 s on one that included a re-slew. Rounded up.
+#:
+#: Still 45 after the single-axis rotation landed (2026-09-09). A timed axis
+#: move is aimed at ``AXIS_ROTATION_TARGET_S`` — about 12 s where a goto of the
+#: same 12 degrees takes 4 or 5 — so a leg gains under 10 s and stays inside the
+#: spread this number was rounded up from. If the rate cap or the target dwell
+#: is ever changed, this is the constant that has to move with it.
 _ARC_LEG_SECONDS = 45.0
 
 #: Seconds between plate-solve retries. Long enough that a passing cloud or a
@@ -176,6 +187,11 @@ MAX_PLAUSIBLE_ERROR_DEG = 30.0
 #: that took a completely different path.
 MIN_ARC_FRACTION = 0.5
 MAX_ARC_FRACTION = 1.5
+
+#: The sky's own rotation, in degrees per second of wall clock. One turn per
+#: sidereal day. Read by :func:`_turn_the_guard_should_expect`, which is where
+#: the reasoning for needing it at all is written down.
+SIDEREAL_DEG_S = 360.0 / 86164.0905
 
 #: Seconds to wait after an RA rotation before exposing the next frame.
 #:
@@ -296,11 +312,34 @@ async def _drive(session: Any, hub: Any) -> None:
     # the server already asserts this before slewing; this one never did, and
     # park / find_home both LEAVE tracking off, which is exactly the state a
     # mount is in when someone reaches for Align.
-    await _ensure_tracking(tel)
+    tracking_on = await _ensure_tracking(tel)
 
     session._publish(state="running", source="native", phase="measuring",
                      progress=0.0, message="native TPPA: measuring point 1/3")
     bus.log("info", "native TPPA started (measuring)", "polar")
+    # SAY WHICH MECHANISM THIS RUN WILL USE, before it commits the mount to
+    # anything. On a mount that cannot turn one axis the arc is made of gotos,
+    # every goto lands with the mount's pointing error, and the fit can be
+    # wrecked by an error far too small to look like a fault — which is how
+    # 2026-09-09 cost three runs and a night. The rotation-agreement guard
+    # refuses those runs now, and an operator staring at that refusal deserves
+    # to have been told, one line earlier, that this mount cannot make a clean
+    # arc. See _rotate_in_ra.
+    if _can_rotate_one_axis(tel):
+        bus.log("info",
+                f"native TPPA: {getattr(tel, 'name', 'the mount')} can turn its "
+                f"RA axis on its own, so each leg moves that axis alone and the "
+                f"declination axis is never commanded", "polar")
+    else:
+        bus.log("warning",
+                f"native TPPA: {getattr(tel, 'name', 'this mount')} cannot turn "
+                f"its RA axis on its own, so each leg of the arc is a GOTO. A "
+                f"goto moves BOTH axes through the mount's model of the sky and "
+                f"lands with that model's error, and a declination error of a "
+                f"few arcminutes is enough to take the three points off one "
+                f"cone and make the fit report a number that is not your polar "
+                f"error. If this run is refused for not reproducing its own "
+                f"commanded rotation, that is the reason.", "polar")
 
     # ---- PHASE measuring: 3 × capture → solve → (rotate in RA) -------------
     solves: list[dict] = []
@@ -312,6 +351,12 @@ async def _drive(session: Any, hub: Any) -> None:
     #: The declination the WHOLE arc is commanded at, captured once beside
     #: ``step_hours`` — see the call to ``_rotate_in_ra`` below and its docstring.
     arc_dec: float | None = None
+    #: What each leg actually COMMANDED, in hours of RA, in leg order. Not the
+    #: same as ``step_hours`` repeated: a timed single-axis rotation delivers
+    #: rate × the elapsed time it measured, and the guards must grade the arc
+    #: against what the mount was really told rather than against the intention
+    #: (see ``_rotate_in_ra``'s return value).
+    commanded: list[float] = []
     for i in range(3):
         _check_alive(hub, epoch)
         await wait_if_paused(session)
@@ -341,8 +386,12 @@ async def _drive(session: Any, hub: Any) -> None:
             _refuse_low_arc(hub, result, step_hours)
         else:
             # The mount was told to rotate before this frame. Verify it did,
-            # against the sky rather than against the mount's own report.
-            _refuse_if_it_did_not_arrive(solves[-1], result, step_hours, i)
+            # against the sky rather than against the mount's own report, and
+            # against what the PREVIOUS LEG actually commanded rather than the
+            # nominal step.
+            _refuse_if_it_did_not_arrive(
+                solves[-1], result,
+                commanded[i - 1] if i - 1 < len(commanded) else step_hours, i)
             # ...and that it did it WITHOUT changing sides. The engine already
             # measures the position-angle spread, but only after all three
             # points are in and the fit is done — so a flip between points 1
@@ -371,7 +420,14 @@ async def _drive(session: Any, hub: Any) -> None:
             # did not ask for — the one irreversible thing this loop does. The
             # motion-epoch fence inside _rotate_in_ra still raises independently.
             await wait_if_paused(session)
-            await _rotate_in_ra(hub, tel, epoch, step_hours, arc_dec)
+            leg = await _rotate_in_ra(hub, tel, epoch, step_hours, arc_dec)
+            # "It did not say" must not mean "do not check". The arrival check
+            # and the rotation-agreement guard both go quiet on a falsy
+            # commanded rotation, so a rotation helper that returns nothing
+            # would disable two guards without a word — the silent-disable
+            # shape this file has been bitten by before. The nominal step is
+            # what was asked for and is the honest fallback.
+            commanded.append(step_hours if leg is None else leg)
 
     # ---- fit the axis + initial error -------------------------------------
     # Last gate before the fit: three points determine the axis EXACTLY, so a
@@ -396,7 +452,7 @@ async def _drive(session: Any, hub: Any) -> None:
     # it is three frames that were not one rotation, and 2026-09-09's 504' sat
     # well inside the plausibility cap. See MAX_ROTATION_DISAGREEMENT_DEG.
     agreement = _refuse_if_the_fit_does_not_reproduce_the_rotation(
-        solves, step_hours)
+        solves, commanded or step_hours, tracking_on=tracking_on)
     if agreement is not None:
         # A good run carries the evidence that it is good. Logged whether or
         # not the gates below let the number through, for the same reason the
@@ -951,12 +1007,79 @@ def _ra_step_hours(hub: Any, cur_ra_hours: float, pier_side: Any = None,
     return pier_step
 
 
+def _can_rotate_one_axis(tel: Any) -> bool:
+    """Will this mount turn its RA axis alone, on command?
+
+    A capability probe, in the shape the rest of the device layer already uses
+    for optional features (``can_find_home``, ``can_set_tracking_rate``,
+    ``can_pulse_guide``): the BACKEND decides, at connect, against the driver in
+    front of it, and this path only reads the answer. Hardcoding a list of mount
+    names here would be a second, worse copy of a question the backends already
+    have to answer, and it would be wrong for the case that matters — the same
+    mount reached through two different drivers.
+
+    Both halves are required. A backend that sets the flag without implementing
+    the method, or the reverse, is not offering the capability."""
+    return bool(getattr(tel, "can_rotate_axis", False)
+                and callable(getattr(tel, "rotate_axis", None)))
+
+
 async def _rotate_in_ra(hub: Any, tel: Any, epoch: int,
                         step: float | None = None,
-                        dec: float | None = None) -> None:
-    """Rotate the mount in RA by one step, safety-gated. Never slews through the
-    sun cone; never walks across the meridian (:func:`_ra_step_hours`); abandons
-    if the motion fence advanced (an abort/STOP landed).
+                        dec: float | None = None) -> float:
+    """Rotate the mount in RA by one step, safety-gated. Never rotates through
+    the sun cone; never walks across the meridian (:func:`_ra_step_hours`);
+    abandons if the motion fence advanced (an abort/STOP landed). Returns the
+    rotation actually COMMANDED, in hours of RA — see the end of this docstring.
+
+    TWO MECHANISMS, AND THE CHOICE IS THE WHOLE FIX (2026-09-09).
+
+    A three-point alignment fits the mount's RA axis to three plate-solved
+    points that are supposed to be related by a PURE ROTATION OF THAT AXIS. Turn
+    a rigid body about a fixed axis and it traces an exact cone, whatever else
+    is wrong with it: cone error, a non-orthogonal declination axis, a mount
+    whose idea of where it is pointing is hours out. None of that bends the arc.
+    Moving the OTHER axis does — and a goto moves both.
+
+    That is what happened. Three consecutive runs on the sky reported 504', 493'
+    and 359' on a mount about 33' out, with declination bending 16.5', 15.8' and
+    15.8' across arcs that should have bent about 1.4'. Every leg was a goto to
+    ``(new_ra, arc_dec)``, and a goto is a request in SKY coordinates: the mount
+    inverts its own model of itself to decide where to put both axes, and lands
+    with that model's error, measured on this rig the same night at 10.2' and
+    4.9' on two centring attempts. Point 1 is always clean because the centring
+    solve syncs the mount right there. Points 2 and 3 each inherit the error at
+    their own position, and two independent ~10' declination landings are
+    exactly the bend observed. The fit through three points is exact, so there
+    was no residual to notice it with; a settle delay added the same day on the
+    theory the tube was still moving changed nothing, which fits — the tube was
+    parked precisely where the model wrongly put it.
+
+    So, in order of preference:
+
+    1. ``tel.rotate_axis("ra", …)`` when the mount offers it
+       (:func:`_can_rotate_one_axis`). One mechanical axis turns; the
+       declination axis is not commanded at all, so no pointing model is
+       consulted and there is nothing for one to get wrong. The arc is a cone by
+       construction rather than by hoping the mount arrives.
+    2. Otherwise the goto below, unchanged — with a log line saying plainly that
+       this mount cannot make a clean arc, so an operator reading a refusal from
+       the rotation-agreement guard knows why.
+
+    A GOTO WHOSE DECLINATION IS THE MOUNT'S OWN CURRENT CLAIM was considered as
+    a middle option — the mount is then asked for no declination change at all —
+    and rejected. It is right if the mount's REPORT drifts while the tube holds
+    still (this mount's does: docs/hardware/zwo-am5-lx200-protocol.md measures
+    12.9 arcmin per minute), and wrong if the mount MISSES its commanded
+    declination and reports the miss, which is the model
+    ``test_every_leg_commands_the_declination_the_arc_started_at`` encodes from
+    the sky on 2026-08-06/07. Under that second model chasing the report turns
+    one miss per leg into a smooth accumulating RAMP — and a ramp is the one
+    shape that fools every guard here, because it bends nothing while making
+    the cone look far wider than it is. Nothing available without a rig
+    distinguishes the two, and one of the two answers fails silently, so the
+    pinned declination stays and the log below now names the gap the next run
+    needs to decide it.
 
     Steps from the MOUNT's own position (``tel.get_position``), which is why
     there is no solved-position parameter: one used to ride along unread, and a
@@ -970,42 +1093,82 @@ async def _rotate_in_ra(hub: Any, tel: Any, epoch: int,
     is re-read each time. Defaults to deciding from the mount's current position
     for callers that have no arc in progress.
 
-    ``dec`` GETS THE SAME DISCIPLINE, AND FOR A HARDER-WON REASON. A goto moves
-    BOTH axes. This used to re-read the mount's declination on every leg and
-    command a goto to whatever it said, so any gap between the mount's claimed
-    Dec and where it had actually arrived became a REAL declination move — and
-    the next leg read the new position and did it again, compounding. Measured
-    on the sky 2026-08-06/07: one run stepped Dec -361.6' and then +176.1' (a
-    538' bend across two rotations that were supposed to be pure RA), while the
-    very next run on the same sky held Dec flat to 2.5'. TPPA was moving the
-    declination axis itself, and then ``_refuse_if_the_axis_moved`` correctly
-    refused the arc — accusing the operator of the driver's own motion.
-
-    So the caller captures the declination ONCE when the arc begins and passes
-    that same value on every leg; the arc is then a pure RA rotation by
-    construction rather than by hoping the mount arrives. ``None`` falls back to
+    ``dec`` GETS THE SAME DISCIPLINE ON THE GOTO PATH, AND FOR A HARDER-WON
+    REASON. This used to re-read the mount's declination on every leg and
+    command a goto to whatever it said. Measured on the sky 2026-08-06/07: one
+    run stepped Dec -361.6' and then +176.1' (a 538' bend across two rotations
+    that were supposed to be pure RA), while the very next run on the same sky
+    held Dec flat to 2.5'. So the caller captures the declination ONCE when the
+    arc begins and passes that same value on every leg. ``None`` falls back to
     the mount's current declination, for callers with no arc in progress (and
-    for a mount too quiet to have given the caller a value to pin).
+    for a mount too quiet to have given the caller a value to pin). The axis
+    mechanism ignores ``dec`` entirely, which is the point of it.
 
-    Returns only after :data:`_SETTLE_AFTER_SLEW_S`, because the slew's own
-    return is not evidence that the mount has stopped — see that constant, which
+    THE RETURN VALUE IS WHAT WAS COMMANDED, not what was asked for. A timed axis
+    rotation delivers rate × the elapsed time it measured, and a blocked event
+    loop makes that longer; the guards downstream grade the arc against the
+    commanded rotation, so they have to be told the honest number or a stalled
+    leg reads as a mount fault. The goto path returns ``step`` unchanged, which
+    is what it commanded.
+
+    Returns only after :data:`_SETTLE_AFTER_SLEW_S`, because neither mechanism's
+    own return is evidence that the mount has stopped — see that constant, which
     also records that this is a mitigation for a cause nobody has proved."""
     _check_alive(hub, epoch)
     cur_ra, cur_dec = await tel.get_position()
     if step is None:
         step = _ra_step_hours(hub, cur_ra)
-    target_dec = cur_dec if dec is None else float(dec)
     target_ra = (cur_ra + step) % 24.0
+    heading = 'west' if step < 0 else 'east'
+
+    if _can_rotate_one_axis(tel):
+        # Sun-exclusion cone, checked against where this will LAND. The
+        # declination does not change — that is the entire point — so the
+        # mount's current one is the honest prediction, not the arc's pinned
+        # value (they are the same thing on a mount that is behaving, and when
+        # they are not, the sun guard should be told the truth). A mount that
+        # will not say where it is falls back to the arc's pinned declination
+        # rather than handing the guard a None to choke on.
+        hub._check_solar(target_ra, cur_dec if cur_dec is not None else dec)
+        bus.log("info",
+                f"native TPPA: turning the RA AXIS {abs(step) * 15.0:.2f}° "
+                f"{heading} (away from the meridian) — the declination axis is "
+                f"not commanded, so the arc stays on one cone whatever this "
+                f"mount's pointing model gets wrong", "polar")
+        commanded_deg = await tel.rotate_axis("ra", step * 15.0)
+        commanded = float(commanded_deg) / 15.0
+        if abs(commanded - step) > 1e-6:
+            bus.log("info",
+                    f"native TPPA: the mount turned {commanded * 15.0:+.3f}° "
+                    f"rather than the {step * 15.0:+.3f}° asked for; the arc "
+                    f"is graded against what it did", "polar")
+        await asyncio.sleep(_SETTLE_AFTER_SLEW_S)
+        return commanded
+
+    target_dec = cur_dec if dec is None else float(dec)
     # Sun-exclusion cone: refuse to rotate into a daytime pointing (defense in
     # depth — the same guard the hub's motion paths use). Raises DeviceError,
     # which run_native turns into a terminal error state. Checked against the
     # declination actually being COMMANDED, not the one being left behind.
     hub._check_solar(target_ra, target_dec)
-    bus.log("info",
-            f"native TPPA: rotating RA to {target_ra:.2f}h "
-            f"({'west' if step < 0 else 'east'}, away from the meridian) "
-            f"holding Dec {target_dec:+.3f}°",
-            "polar")
+    # THE EVIDENCE THE NEXT RUN NEEDS. This goto is about to drive the
+    # declination axis by (commanded − claimed), and that number is the one
+    # thing that separates the two models in the docstring above: a mount whose
+    # REPORT walks shows a growing gap here while its solved declination holds,
+    # and a mount that MISSES its gotos shows a gap that matches its solved
+    # excursion. Both were guesses on 2026-09-09 because nothing logged it.
+    if cur_dec is not None:
+        gap_arcmin = (target_dec - float(cur_dec)) * 60.0
+        bus.log("info",
+                f"native TPPA: rotating RA to {target_ra:.2f}h ({heading}, away "
+                f"from the meridian) with a GOTO holding Dec {target_dec:+.3f}° "
+                f"— the mount claims Dec {float(cur_dec):+.3f}°, so this goto "
+                f"moves the declination axis {gap_arcmin:+.1f}'", "polar")
+    else:
+        bus.log("info",
+                f"native TPPA: rotating RA to {target_ra:.2f}h ({heading}, away "
+                f"from the meridian) with a GOTO holding Dec "
+                f"{target_dec:+.3f}°", "polar")
     await tel.slew(target_ra, target_dec)
     # THE SLEW RETURNING IS NOT THE MOUNT HAVING STOPPED. See
     # _SETTLE_AFTER_SLEW_S. Deliberately inside this function rather than at the
@@ -1013,6 +1176,7 @@ async def _rotate_in_ra(hub: Any, tel: Any, epoch: int,
     # that assumes the tube is still, and a settle that lives beside one caller
     # is a settle the next caller forgets.
     await asyncio.sleep(_SETTLE_AFTER_SLEW_S)
+    return step
 
 
 def _check_alive(hub: Any, epoch: int) -> None:
@@ -1045,28 +1209,41 @@ def _options(hub: Any, geom: tuple) -> dict:
     return opts
 
 
-async def _ensure_tracking(tel: Any) -> None:
-    """Start sidereal tracking if it is not already running.
+async def _ensure_tracking(tel: Any) -> bool:
+    """Start sidereal tracking if it is not already running, and say whether it
+    is running now.
 
     Best-effort: a mount that cannot report or set tracking is not a reason to
     refuse an alignment, and several supported drivers are quiet about it. The
-    failure this prevents is silent, not loud — see the call site."""
+    failure this prevents is silent, not loud — see the call site.
+
+    THE RETURN VALUE IS READ, not decorative. Whether the mount is tracking
+    changes what rotation the three frames should show between exposures — with
+    tracking on it is the commanded turn and nothing else, with it off the sky's
+    own rotation is added on top — and :func:`_turn_the_guard_should_expect`
+    holds that derivation. A mount that will not answer the question is assumed
+    to be tracking: that is the state every other motion path in this server
+    asserts before slewing, it is what the mount will be in if ``set_tracking``
+    above worked, and assuming otherwise would slacken the guard on every quiet
+    mount to buy nothing."""
     try:
         if await tel.get_tracking():
-            return
+            return True
     except Exception:  # noqa: BLE001 — a mount that will not say is not a refusal
-        return
+        return True
     try:
         await tel.set_tracking(True)
         bus.log("info",
                 "native TPPA: sidereal tracking was off — started it, because "
                 "the live error would otherwise measure the sky turning rather "
                 "than the mount's axis", "polar")
+        return True
     except Exception as e:  # noqa: BLE001
         bus.log("warning",
                 f"native TPPA: could not start tracking ({e}); the live error "
                 "during adjustment will drift if the mount is not tracking",
                 "polar")
+        return False
 
 
 def _ra_wrap_hours(delta: float) -> float:
@@ -1221,6 +1398,72 @@ def _refuse_if_the_axis_moved(solves: list[dict]) -> None:
 MAX_ROTATION_DISAGREEMENT_DEG = 1.0
 
 
+def _turn_the_guard_should_expect(commanded_deg: float, leg_seconds: float,
+                                  tracking_on: bool) -> float:
+    """The rotation the three solved frames should show, in degrees, for a leg
+    that COMMANDED ``commanded_deg`` of extra RA-axis turn and took
+    ``leg_seconds`` from one exposure to the next.
+
+    THE THING THAT IS EASY TO GET WRONG. The mount tracks while the arc runs,
+    so between exposure N and exposure N+1 the RA axis turns TWICE: once
+    westward at the sidereal rate to hold the field, and once by however much
+    this driver asked for on top. Meanwhile the equatorial frame the plate solve
+    reports in is not fixed to the ground either. It is tempting to conclude
+    that a clock has to come into the comparison. With tracking on, it does not,
+    and that is worth deriving rather than asserting.
+
+    Write the mount's RA axis as ``A`` (bolted to the tripod, so fixed in the
+    GROUND frame) and let ``ω`` be the sidereal rate. Let ``ψ(t)`` be the total
+    angle the mount has turned its RA axis to, and ``θ(t)`` the extra rotation
+    this driver has commanded, so tracking makes ``ψ(t) = θ(t) − ω t``. A
+    ground-fixed direction sweeps ``+ω`` about the celestial pole in the
+    equatorial frame, so the pointing there is
+    ``P(t) = R_z(ω t) · Rot(A, ψ(t)) · P₀``. Cancelling ``P₀`` between two
+    exposures separated by ``Δt`` with ``Δθ`` commanded:
+
+        P(t+Δt) = R_z(ω Δt) · Rot(A, Δθ − ω Δt) · P(t)
+
+    — the mount's own turn about ``A``, and then the frame's turn about the
+    pole. Expanding to first order in the axis error ``δ = A − ẑ``, the
+    composition is a rotation whose vector is
+
+        Δθ · ẑ  +  (Δθ − ω Δt) · δ
+
+    so the ANGLE is ``Δθ`` — the commanded rotation, with no clock in it — about
+    an axis ``ẑ + (1 − ωΔt/Δθ) δ``. Two consequences, both worth stating:
+
+    * the guard compares against ``Δθ`` and nothing else, which is exactly what
+      it has always done and is now derived rather than assumed;
+    * the fitted axis UNDER-reads the true tilt by ``ωΔt/Δθ``. At the 12 degree
+      step and the ~45 s legs this routine takes that is 1.6%, which on a 33'
+      error is 0.5' and in the conservative direction. At ten-minute legs it is
+      21%, which is one more reason a stalled arc is a bad arc.
+
+    WITH TRACKING OFF it is different, and this is the only place that
+    difference is handled. The mount then holds its ground-fixed pointing
+    between commands, ``ψ(t) = θ(t)``, and the same algebra gives a turn of
+    ``Δθ + ω Δt``: the sky's own rotation is no longer being cancelled and shows
+    up in the frames as extra arc. ``_ensure_tracking`` tries to start tracking
+    before the first exposure and is best-effort — a mount that will not report
+    or set it is not a reason to refuse an alignment — so this case is reachable,
+    and grading such a run against ``Δθ`` alone would accuse a mount that did
+    exactly what it was told.
+
+    That asymmetry is also the argument against the tempting simplification of
+    stopping tracking for the duration of the arc. It would make the mount's
+    motion easier to describe and the measurement harder: the expected turn
+    would then depend on the wall-clock gap between two exposures, a number set
+    by how long the plate solve took, so a slow solve would look like a mount
+    fault. Add that the field drifts out of frame while the tube sits still, and
+    that a GEM told to stop and restart tracking mid-measurement is one more
+    state change during the one procedure that must not have any, and the
+    tracking stays on.
+    """
+    if tracking_on:
+        return commanded_deg
+    return commanded_deg + SIDEREAL_DEG_S * max(0.0, leg_seconds)
+
+
 def _sky_unit_vector(ra_hours: float, dec_deg: float) -> tuple[float, float, float]:
     """A solved position as a unit vector in the equatorial frame: +z at the
     north celestial pole, +x at RA 0h.
@@ -1303,7 +1546,8 @@ def _turn_about_axis(axis: tuple, start: tuple, end: tuple) -> float | None:
 
 
 def _refuse_if_the_fit_does_not_reproduce_the_rotation(
-        solves: list[dict], step_hours: float | None) -> float | None:
+        solves: list[dict], step_hours: Any,
+        *, tracking_on: bool = True) -> float | None:
     """Refuse a fit whose own axis does not turn by what the mount was told to
     turn, and otherwise report how well it did.
 
@@ -1343,10 +1587,25 @@ def _refuse_if_the_fit_does_not_reproduce_the_rotation(
     refusal that names a cause it cannot know sends the one person who could
     have diagnosed it looking somewhere else for two days.
 
+    ``step_hours`` MAY BE ONE NUMBER OR ONE PER LEG. A goto arc commands the
+    same step every leg, which is what every caller passed until 2026-09-09; a
+    timed single-axis rotation delivers rate x the elapsed time it measured, and
+    the two legs of one arc can differ. Passing the sequence keeps "commanded"
+    meaning what the mount was really told, which is the only reading of it that
+    grades anything.
+
+    ``tracking_on`` DECIDES WHETHER A CLOCK ENTERS THE COMPARISON, and it is the
+    easy thing to get wrong here. With the mount tracking — the normal case, and
+    what ``_ensure_tracking`` works to guarantee — the expected turn is the
+    commanded rotation alone, no clock; with tracking off the sky's own rotation
+    between the two exposures is added on top. The derivation is in
+    :func:`_turn_the_guard_should_expect`, which is where both cases live.
+
     Returns the worst disagreement in degrees when it could be measured, so the
     caller can log it on a run that PASSES: a good run should carry the evidence
     that it is good, not only a bad one the evidence that it is bad. ``None``
-    when nothing was commanded, or when the points do not define an axis."""
+    when nothing was commanded, when the points do not define an axis, or when
+    the per-leg commands and the legs do not line up."""
     if not step_hours or len(solves) < 2:
         return None
     points = [_sky_unit_vector(float(s["ra_hours"]), float(s["dec_deg"]))
@@ -1358,15 +1617,33 @@ def _refuse_if_the_fit_does_not_reproduce_the_rotation(
              for i in range(len(points) - 1)]
     if any(t is None for t in turns):
         return None
-    commanded_deg = float(step_hours) * 15.0
-    worst = max(abs(t - commanded_deg) for t in turns)
+    # One commanded rotation per LEG. A scalar is every leg the same, which is
+    # what a goto arc is and what every caller before 2026-09-09 passed; a
+    # sequence is what a timed single-axis rotation produces, where each leg
+    # delivers rate x its own measured elapsed time.
+    if isinstance(step_hours, (int, float)):
+        per_leg = [float(step_hours)] * len(turns)
+    else:
+        per_leg = [float(v) for v in step_hours]
+    if len(per_leg) != len(turns):
+        return None
+    expected = [
+        _turn_the_guard_should_expect(
+            hours * 15.0,
+            float(solves[i + 1].get("timestamp_unix_s") or 0.0)
+            - float(solves[i].get("timestamp_unix_s") or 0.0),
+            tracking_on)
+        for i, hours in enumerate(per_leg)]
+    misses = [abs(t - e) for t, e in zip(turns, expected)]
+    worst = max(misses)
     if worst <= MAX_ROTATION_DISAGREEMENT_DEG:
         return worst
     measured = " and then ".join(f"{t:+.2f}°" for t in turns)
+    asked = " and then ".join(f"{e:+.2f}°" for e in expected)
     raise DeviceError(
         f"the measurement points did not turn by what the mount was told to "
         f"turn: about the axis those frames fit, the sky rotated {measured} "
-        f"across rotations of {commanded_deg:+.2f}° each — out by as much as "
+        f"across commanded rotations of {asked} — out by as much as "
         f"{worst:.2f}°, where {MAX_ROTATION_DISAGREEMENT_DEG:.1f}° is the "
         f"limit. A body turning about a fixed axis turns by the angle it was "
         f"commanded to turn, so these frames were not one rotation about one "
