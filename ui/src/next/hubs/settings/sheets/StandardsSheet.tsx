@@ -1,12 +1,17 @@
 // StandardsSheet.tsx - Settings > MORE > Imaging standards (plan section
 // C.6, row IMAGING STANDARDS).
 //
-// One reused panel, mounted unchanged: what counts as a usable frame on this
-// rig, and when a night gives up. `StandardsPanel`'s own footer link calls
-// `useStore().setView("sequence")` (plan F.5) - `ui/src/next/legacyBridge.ts`
-// maps that to `/session/flows/planEditor` (`LEGACY_VIEW_ROUTE.sequence`),
-// confirmed landed, so the button already works under the new router with no
-// change needed here.
+// Wave 1 mounted `components/settings/StandardsPanel.tsx` whole; wave R7's
+// T-R7-13 rebuilds the body as
+// `hubs/settings/tuning/files/StandardsEditor.tsx`. The legacy panel is not
+// edited and still serves `#/classic`.
+//
+// THE FOOTER LINK CHANGED, DELIBERATELY. The legacy panel's "plan editor" link
+// calls `useStore().setView("sequence")`, which `next/legacyBridge.ts:54` maps
+// to `/session/flows/planEditor`; `ARCHITECTURE.md` section 9 forbids the new
+// UI from writing `store.view` at all, so the rebuilt link calls
+// `nav.sheet("planEditor")` directly. The bridge mapping STAYS - `#/classic`
+// and the legacy panel still need it.
 import type { JSX } from "react";
 import type { SheetProps } from "../../sheets";
 import { nav } from "../../../router";
@@ -14,7 +19,7 @@ import { NxIcon } from "../../../icons";
 import { Sheet } from "../../../ui";
 import { useConfig } from "../../../../store";
 import { standardsOrDefault } from "../../../../lib/standards";
-import StandardsPanel from "../../../../components/settings/StandardsPanel";
+import { StandardsEditor } from "../tuning/files";
 
 export function StandardsSheet(_p: SheetProps): JSX.Element {
   const config = useConfig();
@@ -32,7 +37,7 @@ export function StandardsSheet(_p: SheetProps): JSX.Element {
       icon={<NxIcon name="gauge" />}
       onBack={nav.back}
     >
-      <StandardsPanel />
+      <StandardsEditor />
     </Sheet>
   );
 }

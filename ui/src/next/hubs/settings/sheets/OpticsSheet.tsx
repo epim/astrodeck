@@ -69,7 +69,7 @@ import {
 } from "../../../../lib/effective";
 import { globalProvidersBody, providerWriteNote, providerWriteTarget } from "../../../../lib/providerWrite";
 import { LayerChip } from "../../../../components/OverrideNote";
-import WcsStampPanel from "../../../../components/settings/WcsStampPanel";
+import { WcsStampEditor } from "../tuning/files";
 import { packStatusLabel } from "../../../../components/settings/skyAtlasMeta";
 import type { DriverInfo, Optics, PackStatus } from "../../../../types";
 import {
@@ -130,6 +130,8 @@ const FMT: Record<OpticsKey, (v: unknown) => string> = {
   auto_from_camera: (v) => (v ? "on" : "off"),
   guide_focal_length_mm: (v) => `${v} mm`,
   telescope_name: (v) => `"${v}"`,
+  aperture_mm: (v) => `${v} mm`,
+  reducer: (v) => `${v}x`,
 };
 
 /** The label for a stored solve provider the rig no longer offers - a driver
@@ -759,7 +761,7 @@ export function OpticsSheet(): JSX.Element {
       {/* ------------------------------------------- plate-solve into the file */}
       <Card data-testid="optics-wcs">
         <Label>PLATE-SOLVE INTO THE FILE</Label>
-        <WcsStampPanel />
+        <WcsStampEditor />
       </Card>
 
       {/* ------------------------------------------------------ offline pack */}
