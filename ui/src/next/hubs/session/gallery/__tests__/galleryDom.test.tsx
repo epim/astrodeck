@@ -24,6 +24,24 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+// --------------------------------------------------------------- the css hook
+// The Archive sheet this screen links to now pulls in `gallery/frames/`, whose
+// barrel imports `frames.css`, and Node has no idea what to do with a
+// stylesheet. A stub for it is cheaper than routing around a real import in the
+// module under test - the same hook `next/__tests__/shellDom.test.tsx` and
+// `hubMeta.test.ts` install for the same reason.
+{
+  const { registerHooks } = await import("node:module");
+  registerHooks({
+    load(url: string, context: any, nextLoad: any) {
+      if (url.endsWith(".css")) {
+        return { format: "module", shortCircuit: true, source: "export default {};" };
+      }
+      return nextLoad(url, context);
+    },
+  } as any);
+}
+
 // ---------------------------------------------------------------- jsdom first
 const { JSDOM } = await import("jsdom");
 const dom = new JSDOM(

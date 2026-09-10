@@ -753,7 +753,18 @@ await testAsync("a viewer sees every control, dimmed, with the reason - and send
 
 test("the sheet is registered under the name the router will ask for", () => {
   eq(Object.keys(sheetsSafety).join(","), "safety", "the registry fragment does not export `safety`");
-  eq(sheetsSafety.safety, SafetySheet as never, "the registry points at something other than this sheet");
+  // Sheets are code-split (D-FU-2), so a registry entry is `{ id, load }`. The
+  // id is what `hubs/index.ts` compares across hubs; the loader is checked
+  // below to actually land on this component, which is what the identity
+  // comparison used to prove in one line.
+  eq(sheetsSafety.safety.id, "rig/sheets/safety",
+    "the registry names a different module for `safety`");
+});
+
+const loadedSafety = (await sheetsSafety.safety.load()).default;
+
+test("and that registration really loads THIS sheet", () => {
+  eq(loadedSafety, SafetySheet as never, "the registry points at something other than this sheet");
 });
 
 act(() => { rootRef?.unmount(); });

@@ -24,11 +24,20 @@
 //     on the first failure rather than burning the remaining five against the
 //     same dead link.
 //
-// The SHEETS stay static, deliberately. A sheet is opened by name from the
-// hash, and `SHEETS[name]` has to answer synchronously for `SheetHost` to know
-// whether the name exists at all - the alternative is a "not built yet" pane
-// that is really "not downloaded yet", which is the honest-message failure this
-// registry's duplicate check exists to prevent.
+// THE SHEETS ARE CODE-SPLIT TOO (D-FU-2), and the constraint that used to keep
+// them static is still met. `SHEETS[name]` has to answer SYNCHRONOUSLY, because
+// `SheetHost` uses the lookup to decide whether the name exists at all, and a
+// "not built yet" pane that really meant "not downloaded yet" would be exactly
+// the dishonest message the duplicate check below exists to prevent. A
+// `lazy()` component is a real object the moment the map is built, so the
+// lookup answers at module load and only the sheet's CODE waits - inside the
+// `Suspense` every `SheetHost` slot already has, showing `HubLoading` for the
+// sheet by name (`shell/SheetHost.tsx:56-71`, `shell/HubBoundary.tsx:158`).
+//
+// Sheets are NOT preloaded. The hub sweep below spends each hub's one and only
+// import() attempt deliberately; thirty-odd sheet chunks fired at an idle
+// moment would be thirty more single attempts to lose on the same link, for
+// screens the user may never open.
 
 import { lazy, type ComponentType } from "react";
 import type { NxIconName } from "../icons";
@@ -43,7 +52,9 @@ import { sheets as rigSheets } from "./rig/sheets";
 import { sheets as monitorSheets } from "./monitor/sheets";
 import { sheets as settingsSheets } from "./settings/sheets";
 
-export type { SheetComponent, SheetProps } from "./sheets";
+import type { SheetEntry, SheetProps, SheetRegistry } from "./sheets";
+
+export type { SheetComponent, SheetProps, SheetEntry, SheetRegistry } from "./sheets";
 
 /** What a hub's sub-nav is allowed to know. Deliberately a small explicit bag
  *  rather than the whole store: `subs()` stays a pure function of it, so the
@@ -71,6 +82,16 @@ export interface SubContext {
   /** WEATHER dot: warn while a cloud alert stands un-overridden, dim while the
    *  feed is stale - an absence of information, not good news. */
   weatherDot: Tone | null;
+  /** How many CARDS the Gallery shelf would draw - nights the rig still holds,
+   *  which is sessions plus the report-only nights that predate the session
+   *  ledger, de-duplicated the same way the grid does it
+   *  (`session/gallery/sessionsIndex.ts`). It is the card count and not the
+   *  session count on purpose: a chip that said 7 over a grid of 8 would make
+   *  the operator count tiles to find which reading was wrong.
+   *
+   *  `null` while nothing has read the shelf - which is a different claim from
+   *  an empty rig, and a viewer without `view.status` never reads it at all. */
+  galleryCount: number | null;
   /** Error lines the store counted while the log was CLOSED (`store.ts:2072`).
    *  It had no reader anywhere in this UI (review #12), so an error whose toast
    *  had been dismissed and which had scrolled past the 200-line ring was
@@ -119,7 +140,10 @@ export const HUB_META: Record<HubId, HubMeta> = {
         dot: ctx.incidentTone ?? undefined,
         count: ctx.incidentCount > 1 ? ctx.incidentCount : undefined,
       },
-      { id: "gallery", label: "GALLERY" },
+      // The shelf's own size. Without it the chip is a label for a destination
+      // already on the screen; with it, "GALLERY 8" answers "is last week's
+      // night still on the rig" without opening it (D-FU-4).
+      { id: "gallery", label: "GALLERY", count: ctx.galleryCount ?? undefined },
       { id: "flows", label: "FLOWS", count: ctx.flowCount ?? undefined },
     ],
   },
@@ -255,7 +279,7 @@ export function preloadHubs(first?: HubId): void {
  *  depends on which hub's module loaded last, so the same URL opens different
  *  things on different builds. That is checked at module load rather than at the
  *  tap that opens the wrong one, because by then it looks like a routing bug. */
-const REGISTRIES: Record<string, Record<string, unknown>> = {
+export const SHEET_REGISTRIES: Record<string, SheetRegistry> = {
   sky: skySheets, weather: weatherSheets, session: sessionSheets,
   rig: rigSheets, monitor: monitorSheets, settings: settingsSheets,
 };
@@ -270,16 +294,21 @@ function isDevBuild(): boolean {
   return !env || env.PROD !== true;
 }
 
-function composeSheets() {
+function composeSheets(): Record<string, SheetEntry> {
   const seen: Record<string, string> = {};
-  const out: Record<string, unknown> = {};
+  const out: Record<string, SheetEntry> = {};
   const dev = isDevBuild();
-  for (const [hub, reg] of Object.entries(REGISTRIES)) {
-    for (const name of Object.keys(reg)) {
-      if (seen[name] && out[name] !== reg[name]) {
+  for (const [hub, reg] of Object.entries(SHEET_REGISTRIES)) {
+    for (const [name, entry] of Object.entries(reg)) {
+      // COMPARED BY MODULE ID, NOT BY IDENTITY (D-FU-2). Two hubs registering
+      // the same sheet now write two entry OBJECTS - each with its own
+      // `import()` thunk - so an identity test would report the contract
+      // working (`sites`, `horizon`) as a collision on every build.
+      if (seen[name] && out[name].id !== entry.id) {
         const msg =
-          `next/hubs: "${name}" is registered by ${seen[name]} and ${hub} as two different ` +
-          "components. Sheet names are global: share the one component, or rename one of them.";
+          `next/hubs: "${name}" is registered by ${seen[name]} as "${out[name].id}" and by ` +
+          `${hub} as "${entry.id}" - two different modules under one name. Sheet names are ` +
+          "global: point both at the one module, or rename one of them.";
         // THE THROW IS A DEV TOOL, NOT A RUNTIME POLICY (review #50). Thrown at
         // module load in a production build it is a WHITE SCREEN with the
         // explanation only in a console nobody at a telescope is reading - a
@@ -290,10 +319,21 @@ function composeSheets() {
         if (dev) throw new Error(msg);
       }
       seen[name] = hub;
-      out[name] = reg[name];
+      out[name] = entry;
     }
   }
   return out;
 }
 
-export const SHEETS = composeSheets() as Record<string, import("./sheets").SheetComponent>;
+/** Every registered sheet, by name, as `{ id, load }`. Exported so a test can
+ *  walk the composed map without mounting anything, and so a caller that wants
+ *  to WARM one sheet (nothing does yet) has the loader rather than a second
+ *  copy of the specifier. */
+export const SHEET_ENTRIES: Record<string, SheetEntry> = composeSheets();
+
+/** The lookup `SheetHost` uses. Built ONCE, at module load: `lazy()` memoises
+ *  its own loader, but building the wrappers per render would hand React a new
+ *  component type on every pass and remount the open sheet. */
+export const SHEETS: Record<string, ComponentType<SheetProps>> = Object.fromEntries(
+  Object.entries(SHEET_ENTRIES).map(([name, entry]) => [name, lazy(entry.load)]),
+);

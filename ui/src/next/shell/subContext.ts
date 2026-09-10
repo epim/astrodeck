@@ -22,6 +22,7 @@ import { useStore } from "../../store";
 import type { SubContext } from "../hubs";
 import type { Tone } from "../ui";
 import { SUBS } from "../router";
+import { useGalleryCountFrom, useSessionsIndex } from "../hubs/session/gallery/sessionsIndex";
 import { useIncidents } from "./useIncidents";
 
 /** Which section the Weather hub was last left on. The hub itself WRITES this
@@ -114,6 +115,21 @@ function useWeatherDot(): Tone | null {
   return null;
 }
 
+/** How many cards the GALLERY shelf holds - nights the rig still has, which is
+ *  sessions PLUS the report-only nights that predate the session ledger, folded
+ *  the one way (`sessionsIndex.ts`). The grid reads the same snapshot, so the
+ *  chip cannot disagree with the tiles under it.
+ *
+ *  Gated on `view.status`, which is what `GET /api/sessions` and `GET /api/
+ *  reports` require: without it nothing is fetched and the chip carries no
+ *  count, rather than the app collecting 403s all night for two characters. */
+function useGalleryCount(): number | null {
+  const canView = useCapability("view.status");
+  const idx = useSessionsIndex(canView);
+  const count = useGalleryCountFrom(idx);
+  return canView ? count : null;
+}
+
 export function useSubContext(nowMs: number): SubContext {
   const flowCount = useStore((s) => (s.flows.libraryLoaded ? s.flows.cards.length : null));
   const incidents = useIncidents(nowMs);
@@ -124,6 +140,7 @@ export function useSubContext(nowMs: number): SubContext {
   // derivation and no request: `store.ts:2072` bumps it, `openLog()` clears it,
   // and until now nothing in this UI read it (review #12).
   const unseenError = useStore((s) => s.unseenError);
+  const galleryCount = useGalleryCount();
 
   return {
     flowCount,
@@ -133,6 +150,7 @@ export function useSubContext(nowMs: number): SubContext {
     rigDeviceCount: rig.count,
     rigLinkTone: rig.tone,
     weatherDot,
+    galleryCount,
     unseenError,
   };
 }

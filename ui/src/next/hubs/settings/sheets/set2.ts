@@ -6,13 +6,17 @@
 // across the app (ARCHITECTURE.md section 5), which is why they are spelled
 // here once rather than at each `nav.sheet(...)` call site.
 
-import type { SheetComponent } from "../../sheets";
-import { ConnectionSheet } from "./ConnectionSheet";
-import { OpticsSheet } from "./OpticsSheet";
+import type { SheetRegistry } from "../../sheets";
 
-export const sheets2: Record<string, SheetComponent> = {
-  connection: ConnectionSheet,
-  optics: OpticsSheet,
+export const sheets2: SheetRegistry = {
+  connection: {
+    id: "settings/sheets/ConnectionSheet",
+    load: () => import("./ConnectionSheet").then((m) => ({ default: m.ConnectionSheet })),
+  },
+  optics: {
+    id: "settings/sheets/OpticsSheet",
+    load: () => import("./OpticsSheet").then((m) => ({ default: m.OpticsSheet })),
+  },
 };
 
 export default sheets2;

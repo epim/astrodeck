@@ -7,11 +7,9 @@
 // same file, which is exactly the conflict the file-ownership partition exists
 // to prevent (parallel-agent rule: partition by FILE, not by feature).
 
-import type { SheetComponent } from "../../sheets";
-import { CameraSheet } from "./camera";
-import { PowerSheet } from "./power";
+import type { SheetRegistry } from "../../sheets";
 
-export const sheetsCameraPower: Record<string, SheetComponent> = {
-  camera: CameraSheet,
-  power: PowerSheet,
+export const sheetsCameraPower: SheetRegistry = {
+  camera: { id: "rig/sheets/camera", load: () => import("./camera").then((m) => ({ default: m.CameraSheet })) },
+  power: { id: "rig/sheets/power", load: () => import("./power").then((m) => ({ default: m.PowerSheet })) },
 };

@@ -178,7 +178,8 @@ await testAsync("VIEW LOG lands on the log screen, and clears the unseen-error b
 test("the LOG chip carries the unseen-error count, and no count at zero", () => {
   const ctx: SubContext = {
     flowCount: null, incidentTone: null, incidentCount: 0, alertsUndelivered: null,
-    rigDeviceCount: null, rigLinkTone: null, weatherDot: null, unseenError: 3,
+    rigDeviceCount: null, rigLinkTone: null, weatherDot: null, galleryCount: null,
+    unseenError: 3,
   };
   const log = HUB_META.monitor.subs(ctx).find((i) => i.id === "log");
   assert(log != null, "the monitor hub has no LOG chip");

@@ -5,7 +5,8 @@
 // of them may edit that one file, so each contributes its own `sheetsX` map and
 // the composer never has to be re-opened.
 
-import type { SheetComponent } from "../../sheets";
-import { SafetySheet } from "./safety";
+import type { SheetRegistry } from "../../sheets";
 
-export const sheetsSafety: Record<string, SheetComponent> = { safety: SafetySheet };
+export const sheetsSafety: SheetRegistry = {
+  safety: { id: "rig/sheets/safety", load: () => import("./safety").then((m) => ({ default: m.SafetySheet })) },
+};

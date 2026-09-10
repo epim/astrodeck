@@ -12,13 +12,10 @@
 // Sheet names are GLOBAL across the app (`hubs/index.ts` throws on a
 // collision), which is why they are plain words here rather than hub-prefixed.
 
-import type { SheetComponent } from "../../sheets";
-import { FilesSheet } from "./files";
-import { ReportSheet } from "./report";
-import { ArchiveSheet } from "./archive";
+import type { SheetRegistry } from "../../sheets";
 
-export const sheets2: Record<string, SheetComponent> = {
-  files: FilesSheet,
-  report: ReportSheet,
-  archive: ArchiveSheet,
+export const sheets2: SheetRegistry = {
+  files: { id: "session/sheets/files", load: () => import("./files").then((m) => ({ default: m.FilesSheet })) },
+  report: { id: "session/sheets/report", load: () => import("./report").then((m) => ({ default: m.ReportSheet })) },
+  archive: { id: "session/sheets/archive", load: () => import("./archive").then((m) => ({ default: m.ArchiveSheet })) },
 };

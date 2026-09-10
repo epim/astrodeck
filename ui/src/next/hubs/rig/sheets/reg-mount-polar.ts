@@ -13,13 +13,11 @@
 // directly by URL is legal - the host mounts `mount` under it, inert, so BACK
 // lands on the mount sheet.
 
-import type { SheetComponent } from "../../sheets";
-import { MountSheet } from "./mount";
-import { PolarSheet } from "./polar";
+import type { SheetRegistry } from "../../sheets";
 
-export const sheetsMountPolar: Record<string, SheetComponent> = {
-  mount: MountSheet,
-  polar: PolarSheet,
+export const sheetsMountPolar: SheetRegistry = {
+  mount: { id: "rig/sheets/mount", load: () => import("./mount").then((m) => ({ default: m.MountSheet })) },
+  polar: { id: "rig/sheets/polar", load: () => import("./polar").then((m) => ({ default: m.PolarSheet })) },
 };
 
 export default sheetsMountPolar;
