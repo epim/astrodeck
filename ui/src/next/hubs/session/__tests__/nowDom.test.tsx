@@ -107,12 +107,69 @@ const STACK = {
   backfill: { running: false, total: 0, done: 0, added: 0, skipped: 0, failed: 0, channel: "", error: "", started_ts: null, finished_ts: null, available: 0 },
 };
 
+// --- TONIGHT'S LIST fixtures (D-FU-3) ---------------------------------------
+// One saved flow, one saved plan, and the tonight payload for the flow. The
+// plan is a real `SequencePlan` because `POST /api/sequence/start` takes the
+// WHOLE PLAN in its body (app.py:6551-6563) and the assertion below reads it
+// back out of the request.
+const PLAN_ROW = {
+  id: "p1", name: "Veil east", frames: 24, integration_min: 72, targets: 1, mtime: 5,
+};
+const PLAN = {
+  name: "Veil east",
+  guide: false, dither_every: 0, dither_pixels: null, autofocus_every: 0,
+  cool_to: null, cool_timeout_s: 600, apply_filter_offsets: null,
+  refocus_on_temp_delta_c: null, meridian_flip: false, recover_guiding: null,
+  hfr_reject_factor: null, park_when_done: false, warm_cooler_when_done: false,
+  targets: [{
+    id: "pt1", name: "NGC 6960", ra_hours: 20.76, dec_deg: 30.72,
+    center: true, autofocus_first: false, calibration: false,
+    steps: [{
+      id: "ps1", filter: "L", exposure_s: 180, gain: 100, offset: 30,
+      binning: 1, count: 24, frame_type: "Light",
+    }],
+  }],
+};
+const FLOW_REC = {
+  id: "f1", name: "Veil east flow", folder: "", tagline: "", readonly: false,
+  updated_ts: 20, graph: { nodes: [], edges: [] },
+};
+function card(id: string, name: string, lastRun: number | null, updated: number): any {
+  return {
+    id, name, folder: "", tagline: "", readonly: false, stages: 3, wires: 2,
+    last_run: lastRun, last_result: "ok", updated_ts: updated,
+  };
+}
+/** A resolved night whose dark window opens in an hour and holds the target for
+ *  three of its six hours - so the fold has something real to say. */
+function tonightOk(): any {
+  const ds = Math.floor(Date.now() / 1000) + 3600;
+  return {
+    ok: true, reason: "",
+    night: {
+      dusk_unix: ds - 1800, dawn_unix: ds + 7 * 3600,
+      dark_start_unix: ds, dark_end_unix: ds + 6 * 3600,
+    },
+    targets: [{ label: "NGC 6960", window: { start_unix: ds, end_unix: ds + 3 * 3600 }, curve: [] }],
+    story: [], brief: "",
+  };
+}
+
 function answer(url: string): any {
   if (url.includes("/api/sessions/sess-1")) return SESSION;
   if (url.includes("/api/sessions")) return { sessions: [{ id: "sess-1", name: "M31 LRGB", status: "active", created_ts: 1, updated_ts: 2, nights: 2, accepted: 2, total: 18, auto_resume: true }] };
   if (url.includes("/api/sequence/stack")) return STACK;
   if (url.includes("/api/sequence/recoverable")) return { recoverable: false };
   if (url.includes("/api/reports")) return [];
+  // Ordered longest-path-first: the catch-alls at the bottom must not swallow
+  // the specific routes above them.
+  if (url.includes("/api/plans/p1")) return PLAN;
+  if (url.includes("/api/plans")) return [PLAN_ROW];
+  if (url.includes("/api/flows/f1/tonight")) return tonightOk();
+  if (url.includes("/api/flows/f2/tonight")) return { ok: false, reason: "No observatory site is set." };
+  if (url.includes("/api/flows/f1/run")) return { frames: 24, unmapped: [] };
+  if (url.includes("/api/flows/compile")) return { ok: true, unmapped: [], stages: [], warnings: [] };
+  if (url.includes("/api/flows/f1")) return FLOW_REC;
   if (url.includes("/api/flows")) return [];
   return { ok: true };
 }
@@ -130,15 +187,19 @@ g.fetch = async (url: any, init: any) => {
   };
 };
 const posts = (path: string) => asks.filter((a) => a.method === "POST" && a.url.includes(path));
+const gets = (path: string) => asks.filter((a) => a.method === "GET" && a.url.includes(path));
+const idxOfPost = (path: string) => asks.findIndex((a) => a.method === "POST" && a.url.includes(path));
 
 // ------------------------------------------ imports, AFTER the globals are set
-const { createElement, act } = await import("react");
+const { createElement, Fragment, act } = await import("react");
 const { createRoot } = await import("react-dom/client");
 const { useStore } = await import("../../../../store");
 const { NowScreen } = await import("../now/NowScreen");
 const { SessionColumn } = await import("../../../shell/SessionColumn");
 const { FLIP_SITE_REASON } = await import("../../monitor/live/FlipTile");
 const { RUN_CONTROL_REASON } = await import("../now/RunControls");
+const { ConfirmCard } = await import("../../../shell/ConfirmCard");
+const { TONIGHT_LOCK_NOTE, RUNNABLE_ROW_CAP, TONIGHT_RESOLVE_CAP } = await import("../now/NowEmpty");
 
 // ------------------------------------------------------------------ harness
 let passed = 0;
@@ -434,6 +495,245 @@ await testAsync("an operator's FLIP cell still counts down", async () => {
     "a holder is told they need access they already have");
   assert(/auto/.test(cell.textContent) && /pier east/.test(cell.textContent),
     `the countdown did not come back for a holder: "${cell.textContent}"`);
+});
+
+// ============================================================ 8. TONIGHT'S LIST
+//
+// D-FU-3's whole point: a phone with the plan editor honest-disabled had NO WAY
+// to start a saved plan. The card that replaced RECENT FLOWS carries both kinds
+// of runnable, one verdict per flow, and two guards that cost real nights:
+//
+//   * A LIST ROW NEVER STOPS A RUN. `useFlowRunControls().act()` is a RUN/STOP
+//     toggle. A second press while something is running would abort it, from a
+//     row that still read RUN. The press has to divert to the running session.
+//   * TONIGHT IS `view.site_derived`. Every number in the payload is
+//     f(latitude, longitude) (app.py:4655-4662). A viewer must fire NOTHING at
+//     that route - not fire it and hide the answer.
+//
+// The confirm card is mounted alongside the screen here because the plan RUN
+// path is a question: `pushConfirm` writes the store slice and `ConfirmCard`
+// (the shell's, the same one NextApp mounts) is what turns it into a press.
+
+await act(async () => {
+  root.render(createElement(Fragment, null,
+    createElement(NowScreen), createElement(ConfirmCard)));
+});
+await act(async () => {
+  const st = useStore.getState() as any;
+  useStore.setState({
+    principal: OPERATOR,
+    sequence: { state: "idle" },
+    resumeArm: null,
+    site: null,
+    masters: [],
+    // f2 carries the SAME NAME as the saved plan on purpose - see the test
+    // below. f1 is the more recent run, so it sorts first.
+    flows: {
+      ...st.flows,
+      cards: [card("f1", "Veil east flow", 100, 10), card("f2", "Veil east", 50, 20)],
+      libraryLoaded: true, libraryError: null,
+      record: null,
+      run: { ...st.flows.run, phase: "idle" },
+    },
+  } as never);
+});
+await settle();
+await settle();
+await settle();
+
+await testAsync("the list rendered, with both kinds of runnable on it", async () => {
+  assert(byId("now-empty") != null, "no now-empty: the fixture is wrong, not the component");
+  assert(byId("now-runnables") != null, "no now-runnables card");
+  const rows = container.querySelectorAll("[data-runnable]");
+  assert(rows.length > 0, "the list is empty - every assertion below would be vacuous");
+
+  assert(byId("run-flow-f1") != null, "the saved flow is missing from the list");
+  assert(byId("run-plan-p1") != null,
+    "the saved PLAN is missing - a phone still has no way to start one, "
+    + "which is the gap D-FU-3 closes");
+  eq(byId("run-plan-p1").textContent, "RUN",
+    "the plan's verb is not RUN (section 0 Q3: a plan row RUNS, it does not LOAD):");
+
+  // Flows first, most recent first; plans after. And the flow named exactly
+  // like the plan is STILL THERE - they are different documents on different
+  // routes and dropping either would hide something the operator saved.
+  const kinds = [...rows].map((r: any) => r.getAttribute("data-runnable"));
+  eq(kinds[0], "flow", "the list does not lead with flows:");
+  eq(kinds[kinds.length - 1], "plan", "plans are not last:");
+  eq(kinds.filter((k: string) => k === "flow").length, 2, "a flow went missing:");
+  assert(byId("run-flow-f2") != null,
+    "the flow sharing the plan's name was de-duplicated away");
+});
+
+await testAsync("RUN on a flow opens it and posts /api/flows/f1/run exactly once", async () => {
+  eq(posts("/api/flows/f1/run").length, 0, "precondition: nothing has run yet");
+  const abortsBefore = posts("/api/sequence/abort").length;
+  await click(byId("run-flow-f1"));
+  await settle();
+
+  eq(posts("/api/flows/f1/run").length, 1, "flow run posts:");
+  // The record has to be the OPEN one before `flowsRun` can post against it -
+  // it reads `flows.record?.id`, so a run without the GET first posts against
+  // whatever was open before, or nothing at all.
+  const recordGet = asks.findIndex((a) => a.method === "GET" && /\/api\/flows\/f1$/.test(a.url));
+  assert(recordGet >= 0,
+    "the flow record was never fetched - RUN posted against a flow it never opened");
+  assert(recordGet < idxOfPost("/api/flows/f1/run"),
+    "the run was posted BEFORE the flow was opened");
+  eq(posts("/api/sequence/abort").length, abortsBefore, "RUN reached the abort route");
+});
+
+await testAsync("a SECOND press while a run is live diverts to the session - it never aborts", async () => {
+  await act(async () => {
+    const st = useStore.getState() as any;
+    useStore.setState({
+      flows: { ...st.flows, run: { ...st.flows.run, phase: "running" } },
+    } as never);
+  });
+  await settle();
+  const abortsBefore = posts("/api/sequence/abort").length;
+  const runsBefore = posts("/api/flows/f1/run").length;
+  win.location.hash = "#/session/flows";
+
+  await click(byId("run-flow-f1"));
+  await settle();
+
+  eq(posts("/api/sequence/abort").length, abortsBefore,
+    "the second press ABORTED the live run, from a row that still read RUN");
+  eq(posts("/api/flows/f1/run").length, runsBefore,
+    "the second press started a second run over a live one");
+  eq(win.location.hash, "#/session/now",
+    "the second press did not take the operator to the run it refused to touch:");
+});
+
+await testAsync("a resolved night reaches the row as a duration and a clock", async () => {
+  const text = byId("now-runnables").textContent as string;
+  assert(/usable from \d\d:\d\d/.test(text),
+    `no tonight verdict on any row: "${text.slice(0, 200)}"`);
+  // ...and the server's REFUSAL for the other flow is printed as its own
+  // sentence, not folded into a generic error or into a zero.
+  assert(/No observatory site is set\./.test(text),
+    `the server's refusal was rewritten or swallowed: "${text.slice(0, 200)}"`);
+});
+
+await testAsync("a viewer gets the list and the verbs, locked, and fires NOTHING at /tonight", async () => {
+  await act(async () => {
+    const st = useStore.getState() as any;
+    useStore.setState({
+      principal: VIEWER,
+      // A third flow nobody has resolved yet: without it the tonight effect
+      // would not re-run at all and "no request fired" would be vacuous.
+      flows: {
+        ...st.flows,
+        cards: [...st.flows.cards, card("f9", "Never resolved", null, 1)],
+        run: { ...st.flows.run, phase: "idle" },
+      },
+    } as never);
+  });
+  await settle();
+  await settle();
+  const before = asks.length;
+
+  assert(byId("now-runnables") != null, "the viewer lost the list entirely");
+  const verb = byId("run-flow-f1");
+  assert(verb != null, "the verb was hidden from the viewer instead of locked");
+  eq(verb.getAttribute("aria-disabled"), "true", "the verb is not locked for a viewer");
+  eq(verb.getAttribute("title"), "Running a flow needs operator or admin access.",
+    "the verb does not say who may press it:");
+
+  await click(verb);
+  eq(asks.length, before, "a viewer's press reached the server");
+  eq(gets("/api/flows/f9/tonight").length, 0,
+    "a viewer's screen fired the site-derived tonight route - the whole point of the gate");
+  const text = byId("now-runnables").textContent as string;
+  assert(!/usable from/.test(text), "a viewer was shown a site-derived window");
+  // The note sits above the rows, so it is read off the whole card.
+  const cardText = byId("now-empty").textContent as string;
+  assert(cardText.includes(TONIGHT_LOCK_NOTE),
+    `the viewer is not told why the verdicts are missing: "${cardText.slice(0, 400)}"`);
+});
+
+await testAsync("RUN on a saved plan asks first, and KEEP posts nothing", async () => {
+  await act(async () => { useStore.setState({ principal: OPERATOR } as never); });
+  await settle();
+  eq(posts("/api/sequence/start").length, 0, "precondition: nothing has started yet");
+
+  await click(byId("run-plan-p1"));
+  await settle();
+
+  const scrim = byId("confirm-scrim");
+  assert(scrim != null, "pressing RUN on a plan started it with no question at all");
+  const q = scrim.textContent as string;
+  assert(/Veil east/.test(q), `the question does not name the plan: "${q}"`);
+  assert(/NGC 6960/.test(q), `the question does not name the first target: "${q}"`);
+  eq(posts("/api/sequence/start").length, 0, "the plan started before the question was answered");
+
+  await click(byId("confirm-keep"));
+  await settle();
+  eq(posts("/api/sequence/start").length, 0, "KEEP started the run anyway");
+  assert(byId("confirm-scrim") == null, "KEEP left the question on screen");
+});
+
+await testAsync("confirming LOADS the plan and posts /api/sequence/start exactly once", async () => {
+  await click(byId("run-plan-p1"));
+  await settle();
+  assert(byId("confirm-yes") != null,
+    "no affirmative on the card - the pre-flight refused a plan this fixture does not block");
+
+  await click(byId("confirm-yes"));
+  await settle();
+
+  eq(posts("/api/sequence/start").length, 1, "sequence starts:");
+  assert(gets("/api/plans/p1").length >= 1,
+    "the plan document was never read - RUN started a plan the engine was never handed");
+
+  // The body IS the plan (StartSequenceBody subclasses SequencePlan,
+  // app.py:6551-6563). A start that posted an id or an empty body would 422.
+  const body = posts("/api/sequence/start")[0].body;
+  eq(body?.name, "Veil east", "the posted body is not the plan:");
+  assert(Array.isArray(body?.targets) && body.targets.length === 1,
+    "the posted body carries no targets - the engine would refuse it as an empty plan");
+  eq(body?.force, false, "a phone press silently forced past the horizon pre-flight:");
+
+  // ...and the plan really was loaded into the editor's slot, so the run and
+  // the editor are looking at the same document.
+  const st = useStore.getState() as any;
+  eq(st.plan?.name, "Veil east", "the store's plan was not set:");
+  eq(st.loadedPlanId, "p1", "the loaded plan id was not set:");
+});
+
+await testAsync("the list caps at twelve rows and at five tonight requests", async () => {
+  // Fourteen flows, none of them ever resolved. Two caps are on trial:
+  //   * RUNNABLE_ROW_CAP - twelve rows and a door, not the Flows screen;
+  //   * TONIGHT_RESOLVE_CAP - `/api/flows/{id}/tonight` is one astropy pass per
+  //     resolved target, so a screen that fired one per row would spend a
+  //     minute of the rig's CPU every time the app was opened.
+  const many: any[] = [];
+  for (let i = 0; i < 14; i++) many.push(card(`m${i}`, `Flow ${i}`, 1000 - i, 1));
+  await act(async () => {
+    const st = useStore.getState() as any;
+    useStore.setState({
+      principal: OPERATOR,
+      flows: { ...st.flows, cards: many, run: { ...st.flows.run, phase: "idle" } },
+    } as never);
+  });
+  await settle();
+  await settle();
+  await settle();
+
+  const rows = container.querySelectorAll("[data-runnable]");
+  eq(rows.length, RUNNABLE_ROW_CAP, "rows on the list:");
+  assert(byId("now-runnables-more") != null,
+    "twelve of fifteen runnables are on screen and nothing says where the rest are");
+
+  const asked = asks.filter((a) => a.method === "GET" && /\/api\/flows\/m\d+\/tonight$/.test(a.url));
+  eq(asked.length, TONIGHT_RESOLVE_CAP,
+    "tonight requests fired for the new flows (the cap is what keeps a phone off the rig's CPU):");
+  // Newest first: m0 has the most recent `last_run`, m13 the oldest, and the
+  // five that were asked have to be the top five of the list.
+  eq(asked[0].url.includes("/m0/"), true, "the newest flow was not asked first:");
+  assert(!asked.some((a) => /\/m[5-9]|\/m1[0-3]/.test(a.url)),
+    "a row below the fold was resolved ahead of one above it");
 });
 
 act(() => { root.unmount(); });
