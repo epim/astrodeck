@@ -1,27 +1,33 @@
-// UsersSheet.tsx - Settings > USERS > "People" (plan section C.7.3).
+// UsersSheet.tsx - Settings > USERS > "People" (plan section C.7.3), rebuilt
+// for wave R7 (T-R7-11, cutover table section 7).
 //
-// UsersPanel is mounted WHOLE and UNEDITED - add/role/enable/reset/delete,
-// its two self-harm hold-confirms ("Remove your own admin access?", "Disable
-// your own account?"), the delete confirm and its inline (never
-// `window.prompt` - breaks night mode) password reset all come along for
-// free by not touching the panel.
+// It now mounts `tuning/people`'s `UsersEditor` instead of
+// `components/settings/UsersPanel.tsx`. The legacy panel is untouched and still
+// serves `#/classic`.
 //
-// GATED HERE, not inside the panel: UsersPanel's own mount effect calls
-// `listUsers()` (`GET /api/users`) unconditionally, assuming it is only ever
-// mounted for an admin. Deep-linking this sheet directly must not make that
-// assumption false, so a caller without admin.users never sees the panel
-// mount at all (plan C.7.4: "neither issues GET /api/users").
+// THE GATE MOVED, AND WITH IT WHAT A NON-ADMIN SEES. `UsersPanel`'s mount
+// effect calls `listUsers()` unconditionally - it assumes it is only ever
+// mounted for an admin - so this sheet used to protect it by rendering an
+// EmptyCard INSTEAD of the panel for anyone else, which hid the whole feature.
+// `UsersEditor` owns its own fetch and only issues it with `admin.users`, so
+// the sheet no longer has to choose between "leak a 403" and "hide the screen":
+// the editor renders for everyone, every control is honest-disabled with the
+// reason (ARCHITECTURE.md section 8), and the list region - the one part the
+// server genuinely will not hand over - says so and names the capability.
+// Nothing is requested from the rig without the capability, which is the
+// property the old arrangement was protecting.
 import type { JSX } from "react";
 import type { SheetProps } from "../../sheets";
 import { nav } from "../../../router";
-import { EmptyCard, Sheet } from "../../../ui";
-import { accessPhrase, useCanAdminUsers } from "../../../../lib/caps";
-import UsersPanel from "../../../../components/settings/UsersPanel";
+import { Sheet } from "../../../ui";
+import { UsersEditor } from "../tuning/people";
 
 /** The design's people glyph (plan section 2.5's `users` path, pre-authorised
  *  there only for T-SET-1's append to `icons.tsx`). Drawn locally, in the
  *  same 24x24/currentColor/round-cap idiom `NxIcon` uses, rather than waiting
- *  on that append or editing a file this task does not own. */
+ *  on that append or editing a file this task does not own.
+ *
+ *  Exported: `UsersScreen.tsx` uses it for the PEOPLE row's tile. */
 export function UsersGlyph({ size = 20 }: { size?: number }): JSX.Element {
   return (
     <svg
@@ -42,7 +48,6 @@ export function UsersGlyph({ size = 20 }: { size?: number }): JSX.Element {
 }
 
 export function UsersSheet(_p: SheetProps): JSX.Element {
-  const canAdmin = useCanAdminUsers();
   return (
     <Sheet
       data-testid="settings-users"
@@ -50,15 +55,7 @@ export function UsersSheet(_p: SheetProps): JSX.Element {
       icon={<UsersGlyph size={18} />}
       onBack={nav.back}
     >
-      {canAdmin ? (
-        <UsersPanel />
-      ) : (
-        <EmptyCard
-          title="PEOPLE LIST HIDDEN"
-          hint={`The people list needs ${accessPhrase("admin.users")}.`}
-          data-testid="empty-people-sheet"
-        />
-      )}
+      <UsersEditor />
     </Sheet>
   );
 }

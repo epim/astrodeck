@@ -1,17 +1,20 @@
 // AccountSheet.tsx - Settings > USERS > "Signed in" (plan section C.7.1), and
 // the tablet/desktop panel host for the SAME content the USERS screen renders
 // inline (route table: "account ... renders inline; the sheet form is the
-// tablet/desktop panel host").
+// tablet/desktop panel host"). Rebuilt for wave R7 (T-R7-11, cutover table
+// section 7).
 //
-// AccountPanel is mounted WHOLE and UNEDITED - it already renders the role
-// chip, the identity line, the role blurb, sign-in/out and the open-LAN
-// explainer. Its own copy still reads "Settings -> Auth", which is stale (the
-// route is now Settings -> Users -> Sign-in methods); rather than edit the
-// reused panel (out of scope, plan F.4), the section header above it reads
-// SIGNED IN and the next section reads SIGN-IN METHODS (UsersScreen.tsx), so
-// the pointer resolves visually without touching the panel's own string.
+// It now renders `tuning/people`'s `AccountIdentity` instead of
+// `components/settings/AccountPanel.tsx`. The legacy panel is untouched and
+// still serves `#/classic`.
 //
-// Two more sentences render under the panel (GAP-ANALYSIS #1, plan C.7.1):
+// One stale string went with it: `AccountPanel`'s open-LAN sentence pointed at
+// "Settings -> Auth", a route that no longer exists. Rather than edit a reused
+// legacy file, wave 1 worked around it by naming the sections SIGNED IN and
+// SIGN-IN METHODS above and below. The rebuild says SIGN-IN METHODS in the
+// sentence itself, so the pointer is right whichever surface it is read on.
+//
+// Two more sentences render under the identity (GAP-ANALYSIS #1, plan C.7.1):
 // the relay "signed in over the relay" note, and the loopback-trust note for
 // the rig's own screen. Both read `deriveBase`/`location.hostname` LIVE at
 // render time rather than the frozen `BASE` module singleton (`lib/base.ts`
@@ -25,7 +28,7 @@ import { NxIcon } from "../../../icons";
 import { Sheet } from "../../../ui";
 import { useConfig } from "../../../../store";
 import { deriveBase } from "../../../../lib/base";
-import AccountPanel from "../../../../components/settings/AccountPanel";
+import { AccountIdentity } from "../tuning/people";
 
 const LOOPBACK_HOSTS = ["localhost", "127.0.0.1", "[::1]"];
 
@@ -36,7 +39,7 @@ const NOTE_STYLE = {
   color: "var(--text-faint)",
 } as const;
 
-/** The identity panel plus the relay/loopback notes, shared verbatim between
+/** The identity block plus the relay/loopback notes, shared verbatim between
  *  the USERS screen (inline, `UsersScreen.tsx`) and this sheet (the
  *  tablet/desktop panel host, and anywhere else that deep-links
  *  `#/settings/users/account`). */
@@ -50,7 +53,7 @@ export function AccountBody(): JSX.Element {
 
   return (
     <div data-testid="account-body">
-      <AccountPanel />
+      <AccountIdentity />
       {isRelay && (
         <p style={NOTE_STYLE} data-testid="relay-note">
           You are signed in over the relay. This session belongs to this
