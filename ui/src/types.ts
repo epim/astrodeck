@@ -630,6 +630,17 @@ export interface SequenceState {
   // short (a target set aside by its altitude floor, a missed start, a skip
   // instruction). Its session stays dormant and armed. Renders as UNFINISHED.
   end_reason?: "complete" | "aborted" | "error" | "unsafe" | "dawn_cutoff" | "cooling_skip" | "quality" | "incomplete";
+  /** The engine's own sky verdict, published beside `state` on every
+   *  publish (sequence/engine.py `_sky_state`). `cloudy` is TRI-STATE:
+   *  null means UNKNOWN, never "clear". */
+  sky?: {
+    cloudy: boolean | null;
+    age_s: number | null;
+    score: number | null;
+    reason: string;
+    text: string;
+    holding: boolean;
+  };
 }
 
 export interface CoolerInfo {
