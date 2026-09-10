@@ -8,12 +8,26 @@
 
 import type { JSX } from "react";
 import type { MeridianInfo } from "../../../../types";
+import { accessPhrase } from "../../../../lib/caps";
 import { fmtDuration } from "../../../lib/format";
 import { ReadoutTile, type Tone } from "../../../ui";
 
 /** Window after the crossing in which a flip really can still be in flight.
  *  (`MonitorView.tsx:1239` FLIP_IN_FLIGHT_S) */
 export const FLIP_IN_FLIGHT_S = 300;
+
+/** THE ONE SENTENCE for a flip clock a principal is not allowed to see, shared
+ *  by all three surfaces that render one (this tile, `session/now/VitalsBand`'s
+ *  FLIP cell and the Safety sheet's meridian line).
+ *
+ *  `meridian.hours_to_flip` is computed from the site: `lst - ra_hours` inverts
+ *  to the rig's longitude to within ~120 m, which is the leak the 2.9 km audit
+ *  recovery exists to stop. So the server now nulls the countdown and collapses
+ *  `meridian.status` to "unknown" for a principal without `view.site_derived`.
+ *  Rendered raw, that reads as "the mount does not report a flip" - a statement
+ *  about the HARDWARE, which is false, and which sends someone to check a mount
+ *  that is working. The withholding is the truth, so say it. */
+export const FLIP_SITE_REASON = `flip clock needs ${accessPhrase("view.site_derived")}`;
 
 export interface TileFace {
   value: string;
@@ -30,7 +44,15 @@ function pier(side: MeridianInfo["pier_side"] | undefined): string {
 export function flipFace(
   meridian: MeridianInfo | null | undefined,
   runActive: boolean,
+  canSiteDerived: boolean,
 ): TileFace {
+  // FIRST, and before any reading of the payload: what a non-holder receives is
+  // a redacted block, not a mount that has nothing to say, and every branch
+  // below would describe the wrong thing. Same shape as `dawnFace` two tiles
+  // along, which withholds on the same capability for the same reason.
+  if (!canSiteDerived) {
+    return { value: "--", sub: FLIP_SITE_REASON, tone: "dim" };
+  }
   if (!meridian) {
     return { value: "flip n/a", sub: "the mount reports no flip data", tone: "dim" };
   }
@@ -104,11 +126,14 @@ export function flipFace(
   return { value: "flip n/a", sub: "the mount does not report a flip", tone: "dim" };
 }
 
-export function FlipTile({ meridian, runActive }: {
+export function FlipTile({ meridian, runActive, canSiteDerived }: {
   meridian: MeridianInfo | null | undefined;
   runActive: boolean;
+  /** `view.site_derived`. Passed in rather than read here, so the band that
+   *  already asks the question for TO DAWN asks it once. */
+  canSiteDerived: boolean;
 }): JSX.Element {
-  const face = flipFace(meridian, runActive);
+  const face = flipFace(meridian, runActive, canSiteDerived);
   return (
     <ReadoutTile
       label="MERIDIAN FLIP"

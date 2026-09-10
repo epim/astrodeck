@@ -35,7 +35,13 @@ export function Dial<T>({ label, hint, options, value, onChange, stopPx = 64, lo
   const at = Math.max(0, options.findIndex((o) => o.value === value));
   const drag = useRef<{ x: number; from: number; moved: boolean } | null>(null);
 
+  // THE LOCK IS CHECKED HERE, not only at the entry points (review #75). A drag
+  // begun while the dial was live keeps committing through `onPointerMove`, and
+  // the lock can arrive DURING it - the socket drops mid-scrub and
+  // `lockedReason` becomes "the rig is not reachable" - so the guard has to sit
+  // where the write is, not only where the gesture starts.
   const commit = (idx: number) => {
+    if (lockedReason) return;
     const i = Math.min(options.length - 1, Math.max(0, idx));
     const next = options[i];
     if (!next || next.value === value) return;
@@ -61,6 +67,10 @@ export function Dial<T>({ label, hint, options, value, onChange, stopPx = 64, lo
   const onPointerMove = (e: RPointerEvent<HTMLDivElement>) => {
     const d = drag.current;
     if (!d) return;
+    // The drag itself ends when the permission does, so the finger is not still
+    // scrubbing a control that has stopped answering. Silent on purpose: the
+    // reason is said once, on the next press, not on every pointer sample.
+    if (lockedReason) { drag.current = null; return; }
     const dx = e.clientX - d.x;
     if (Math.abs(dx) > 3) d.moved = true;
     commit(d.from - Math.round(dx / stopPx));

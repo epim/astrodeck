@@ -97,6 +97,14 @@ const click = (el: any) => {
 const keydown = (el: any, key: string) => {
   act(() => { el.dispatchEvent(new win.KeyboardEvent("keydown", { key, bubbles: true, cancelable: true })); });
 };
+/** A pointer step of a drag. jsdom has no PointerEvent constructor here, and
+ *  React listens by TYPE, so a MouseEvent named "pointermove" reaches
+ *  `onPointerMove` with a real `clientX` - which is all the Dial reads. */
+const pointer = (el: any, type: string, clientX: number) => {
+  act(() => {
+    el.dispatchEvent(new win.MouseEvent(type, { bubbles: true, cancelable: true, clientX }));
+  });
+};
 const wait = async (ms: number) => {
   await act(async () => { await new Promise((r) => setTimeout(r, ms)); });
 };
@@ -317,6 +325,41 @@ const DIAL_OPTS = [
     eq(changed, 0, "a locked dial moved the setting anyway");
     eq(explained.length, 2, "the blocked key and the blocked tap said nothing");
     eq(explained[0], REASON, "the wrong reason reached the user");
+  });
+}
+
+// A DRAG THAT OUTLIVES ITS PERMISSION (review #75). `onPointerDown` checks the
+// lock, `onPointerMove` did not - so a scrub begun while the dial was live kept
+// committing after the socket dropped and `lockedReason` became "the rig is not
+// reachable". This is the only path into `commit()` that is not preceded by a
+// press, which is exactly why it was missed.
+{
+  let changed = 0;
+  const opts = DIAL_OPTS;
+  const props = (locked: string | null) => ({
+    label: "SETPOINT", options: opts, value: "-15",
+    onChange: () => { changed++; },
+    lockedReason: locked, onExplain: () => {},
+    "data-testid": "drag-dial",
+  } as any);
+
+  render(createElement(Dial, props(null)));
+  const track = () => q(".nx-dial-track");
+
+  test("Dial: a drag that begins live still commits", () => {
+    pointer(track(), "pointerdown", 300);
+    pointer(track(), "pointermove", 236);   // one 64 px stop to the right
+    assert(changed > 0, "a live drag committed nothing - the assertion below would be vacuous");
+  });
+
+  test("Dial: a drag in flight stops committing the moment the lock arrives", () => {
+    // Same gesture, and the lock lands mid-scrub - the socket dropped.
+    render(createElement(Dial, props("the rig is not reachable")));
+    const before = changed;
+    pointer(track(), "pointermove", 172);
+    pointer(track(), "pointermove", 108);
+    eq(changed, before,
+      "a drag kept writing to the rig after the control was locked (review #75)");
   });
 }
 

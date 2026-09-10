@@ -448,7 +448,7 @@ export function CameraSheet(_p: SheetProps): JSX.Element {
               <>
                 <ActionButton kind="ghost" onPress={() => {
                   void post("/api/camera/cooler", { on: false, ramp: false });
-                  showToast("info", "Warm ramp stopped — cooler off");
+                  showToast("info", "Warm ramp stopped - cooler off");
                 }}
                   lockedReason={coolerLock.lockedReason}
                   onExplain={explain}
@@ -690,7 +690,7 @@ function Tuning({
   const suggestReason = canSuggest ? null
     : effectiveEgain <= 0 || photometry.readNoiseE <= 0
       ? "Add camera gain + read noise above to enable Suggest"
-      : "Take a light frame first — Suggest needs a linear preview";
+      : "Take a light frame first - Suggest needs a linear preview";
 
   return (
     <Card padding={12} data-testid="camera-tuning">
@@ -736,7 +736,7 @@ function Tuning({
               });
               if (!s.ok || s.suggestedS == null) { toast("warning", s.reason); return; }
               onApply(s.suggestedS);
-              toast("success", `Suggested ${s.suggestedS}s — ${s.reason}`);
+              toast("success", `Suggested ${s.suggestedS}s - ${s.reason}`);
             }}
             data-testid="suggest">
             SUGGEST SETTINGS

@@ -124,6 +124,7 @@ const { MonitorHub } = await import("../MonitorHub");
 const { LogScreen } = await import("../log/LogScreen");
 const { AlertsScreen } = await import("../alerts/AlertsScreen");
 const { VIEW_ONLY_NOTE } = await import("../live/RecoveryCards");
+const { FLIP_SITE_REASON } = await import("../live/FlipTile");
 const { accessPhrase } = await import("../../../../lib/caps");
 const { WEATHER_OFF_HINT, WEATHER_OFF_TITLE } = await import(
   "../../weather/conditions/verdict"
@@ -525,6 +526,53 @@ await testAsync("a viewer's run controls state the reason and fire nothing", asy
   const toasts = (useStore.getState() as any).toasts as Array<{ title?: string }>;
   assert(toasts.some((t) => t.title === VIEW_ONLY_NOTE),
     "the refusal was silent - the reason never reached the user");
+});
+
+// ------------------------------------------------- the flip clock is site data
+//
+// `meridian.hours_to_flip` is derived from the site (`lst - ra_hours`), and it
+// inverts to the rig's longitude to about 120 m - so the server nulls it and
+// collapses `meridian.status` to "unknown" for a principal without
+// `view.site_derived`. THE TILE MUST NOT READ THAT AS A BROKEN MOUNT. The
+// fixture below is exactly what a viewer receives, and the assertion is that the
+// tile blames the redaction rather than the hardware.
+await testAsync("a viewer is told the flip clock needs site access, not that the mount is mute", async () => {
+  await act(async () => {
+    useStore.setState({
+      principal: VIEWER,
+      status: {
+        ...(useStore.getState() as any).status,
+        // what `_redact_ws_event` leaves behind: the two non-derived fields,
+        // no countdown, no status.
+        meridian: { status: "unknown", hours_to_flip: null, flip_enabled: true, pier_side: "east" },
+      },
+    } as never);
+  });
+  await settle();
+  const tile = q('[data-testid="vital-flip"]');
+  assert(tile != null, "the flip tile disappeared - the assertion below would be vacuous");
+  assert(tile.textContent.includes(FLIP_SITE_REASON),
+    `the viewer is not told why the clock is blank: "${tile.textContent}"`);
+  assert(!/does not report a flip/.test(tile.textContent),
+    `a withheld countdown was reported as a mount fault: "${tile.textContent}"`);
+});
+
+await testAsync("an operator, with the same tile, still gets the countdown", async () => {
+  await act(async () => {
+    useStore.setState({
+      principal: OPERATOR,
+      status: {
+        ...(useStore.getState() as any).status,
+        meridian: { status: "counting", hours_to_flip: 1.63, flip_enabled: true, pier_side: "east" },
+      },
+    } as never);
+  });
+  await settle();
+  const tile = q('[data-testid="vital-flip"]');
+  assert(/1h 3[0-9]m/.test(tile.textContent),
+    `the countdown did not come back for a holder: "${tile.textContent}"`);
+  assert(!tile.textContent.includes(FLIP_SITE_REASON),
+    "a holder is told they need access they already have");
 });
 
 await act(async () => { root.unmount(); });

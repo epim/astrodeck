@@ -136,6 +136,8 @@ const { createElement, act } = await import("react");
 const { createRoot } = await import("react-dom/client");
 const { useStore } = await import("../../../../store");
 const { NowScreen } = await import("../now/NowScreen");
+const { SessionColumn } = await import("../../../shell/SessionColumn");
+const { FLIP_SITE_REASON } = await import("../../monitor/live/FlipTile");
 const { RUN_CONTROL_REASON } = await import("../now/RunControls");
 
 // ------------------------------------------------------------------ harness
@@ -341,6 +343,97 @@ await testAsync("with no run at all the empty state takes over, and RUN ARMED is
     "armed with no safety monitor and nothing warns about it");
   assert(/rig may start in bad weather/.test(byId("now-banners")?.textContent ?? ""),
     "the no-safety-monitor banner is missing");
+});
+
+// ---------------------------------- 6. a run with no progress frame yet (#56)
+//
+// BOTH SIDES OF ONE PREDICATE. `NowScreen` and `shell/SessionColumn` each decide
+// "is there a run to show", and both used to require `sequence.progress != null`
+// as well as the state. The engine publishes `state: "running"` when it accepts
+// a run and attaches `progress` only at the first frame boundary, so for the
+// slew / filter change / first sub in between, both surfaces said NO SESSION
+// RUNNING over a rig that was working - and the desktop column, which is the
+// thing being glanced at from another hub, said it in the corner of every
+// screen. Put the `progress != null` clause back into either file and the
+// matching half of this test goes red.
+await testAsync("a run accepted but not yet reporting progress shows on BOTH surfaces", async () => {
+  await act(async () => {
+    useStore.setState({
+      principal: OPERATOR,
+      sequence: { state: "running", target: "NGC 6946", plan_name: "NGC 6946 HaOiii" },
+      resumeArm: null,
+    } as never);
+  });
+  await settle();
+
+  assert(byId("now-empty") == null,
+    "NOW claims NO SESSION RUNNING over an accepted run that has not reached its first frame");
+  assert(byId("now-run-header") != null, "NOW dropped the run header before the first progress frame");
+  assert(byId("now-run-controls") != null,
+    "NOW dropped PAUSE/STOP before the first progress frame - the controls that stop the run");
+
+  await act(async () => { root.render(createElement(SessionColumn)); });
+  await settle();
+  assert(byId("session-column") != null,
+    "no session-column marker: the fixture is wrong, not the component");
+  assert(byId("now-empty") == null,
+    "the desktop column claims NO SESSION RUNNING over an accepted run");
+  assert(byId("now-run-header") != null,
+    "the desktop column dropped the run header before the first progress frame");
+
+  // and the resting state is still the empty card, which is what makes the
+  // clause safe to drop rather than merely shorter.
+  await act(async () => { useStore.setState({ sequence: { state: "idle" } } as never); });
+  await settle();
+  assert(byId("now-empty") != null, "an idle engine no longer gets the empty card in the column");
+
+  await act(async () => { root.render(createElement(NowScreen)); });
+  await settle();
+  assert(byId("now-empty") != null, "an idle engine no longer gets the empty card on NOW");
+});
+
+// ------------------------------------------- 7. the FLIP cell is site data
+//
+// The countdown is computed from the site and inverts to the rig's longitude,
+// so the server nulls `hours_to_flip` and collapses `meridian.status` to
+// "unknown" for a principal without `view.site_derived`. The cell used to
+// render that as "- / unknown", which reads as a mount that has stopped
+// answering. The fixture is exactly what a viewer receives.
+await testAsync("a viewer's FLIP cell names the missing capability, not a mute mount", async () => {
+  await act(async () => { root.render(createElement(NowScreen)); });
+  await act(async () => {
+    seed({
+      principal: VIEWER,
+      status: {
+        ...((useStore.getState() as any).status),
+        meridian: { status: "unknown", hours_to_flip: null, flip_enabled: true, pier_side: "east" },
+      },
+    });
+  });
+  await settle();
+  const cell = byId("vital-flip");
+  assert(cell != null, "no FLIP cell - the assertion below would be vacuous");
+  assert(cell.textContent.includes(FLIP_SITE_REASON),
+    `the viewer's FLIP cell does not say why it is blank: "${cell.textContent}"`);
+  assert(!/unknown/.test(cell.textContent),
+    `a withheld countdown still reads as an unknown mount: "${cell.textContent}"`);
+});
+
+await testAsync("an operator's FLIP cell still counts down", async () => {
+  await act(async () => {
+    seed({
+      status: {
+        ...((useStore.getState() as any).status),
+        meridian: { status: "counting", hours_to_flip: 1.63, flip_enabled: true, pier_side: "east" },
+      },
+    });
+  });
+  await settle();
+  const cell = byId("vital-flip");
+  assert(!cell.textContent.includes(FLIP_SITE_REASON),
+    "a holder is told they need access they already have");
+  assert(/auto/.test(cell.textContent) && /pier east/.test(cell.textContent),
+    `the countdown did not come back for a holder: "${cell.textContent}"`);
 });
 
 act(() => { root.unmount(); });

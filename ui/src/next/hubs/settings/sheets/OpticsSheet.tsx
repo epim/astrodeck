@@ -36,7 +36,6 @@ import {
   Mono,
   ReadoutGrid,
   ReadoutTile,
-  Segmented,
   Sheet,
   Switch,
   TextInput,
@@ -50,13 +49,16 @@ import { api, ApiError } from "../../../../api";
 import {
   clearProfileOverrides,
   getPackStatus,
+  listDrivers,
   setProfileProviders,
   setProvidersConfig,
 } from "../../../../api/backends";
-import { useConfig, usePreview, useStore } from "../../../../store";
+import { useConfig, usePreview, useProviders, useStore } from "../../../../store";
 import { accessPhrase, useCan } from "../../../../lib/caps";
+import { eligibleTaskDrivers } from "../../../../lib/equipment";
 import {
   entryOf,
+  isProfileOverride,
   opticsKey,
   opticsOverridden,
   opticsOverrideProfile,
@@ -69,7 +71,7 @@ import { globalProvidersBody, providerWriteNote, providerWriteTarget } from "../
 import { LayerChip } from "../../../../components/OverrideNote";
 import WcsStampPanel from "../../../../components/settings/WcsStampPanel";
 import { packStatusLabel } from "../../../../components/settings/skyAtlasMeta";
-import type { Optics, PackStatus } from "../../../../types";
+import type { DriverInfo, Optics, PackStatus } from "../../../../types";
 import {
   APERTURE_STOPS,
   FOCAL_STOPS,
@@ -130,21 +132,18 @@ const FMT: Record<OpticsKey, (v: unknown) => string> = {
   telescope_name: (v) => `"${v}"`,
 };
 
-/** The plate-solve provider vocabulary the server accepts for an override
- *  (`config.IMPLICIT_DRIVER_IDS` plus "auto" and "backend"). A stored value
- *  outside it - a configured driver id, or a legacy pin - is appended as a
- *  sticky row rather than silently dropped: a choice that vanishes from the
- *  control that owns it reads as "this rig cannot do that". */
-const SOLVER_OPTIONS: { value: string; label: string }[] = [
-  { value: "auto", label: "AUTO" },
-  { value: "astrodeck", label: "NATIVE" },
-  { value: "astap", label: "ASTAP" },
-  { value: "backend", label: "BACKEND" },
-];
+/** The label for a stored solve provider the rig no longer offers - a driver
+ *  that went unreachable, or the legacy "backend" alias. A choice that vanishes
+ *  from the control that owns it reads as "this rig cannot do that", so the
+ *  literal string the config is carrying stays listed. */
+function stickySolverLabel(value: string): string {
+  return value === "backend" ? "Backend (legacy)" : value;
+}
 
 export function OpticsSheet(): JSX.Element {
   const config = useConfig();
   const preview = usePreview();
+  const providers = useProviders();
   const optics = config?.optics;
   const computed = config?.optics_computed;
   const canEdit = useCan("config.site_optics");
@@ -159,6 +158,19 @@ export function OpticsSheet(): JSX.Element {
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [clearing, setClearing] = useState(false);
   const [pack, setPack] = useState<PackStatus | null>(null);
+  const [drivers, setDrivers] = useState<DriverInfo[]>([]);
+
+  // Fetched only for a principal who could WRITE the row: a viewer's read-only
+  // render must not put a request on the wire it can never act on, and the
+  // solver row degrades to the resolved label plus its own stored value.
+  useEffect(() => {
+    if (!canBackend) return;
+    let alive = true;
+    void listDrivers()
+      .then((r) => { if (alive) setDrivers(r.drivers ?? []); })
+      .catch(() => { /* the row degrades to auto + the resolved label */ });
+    return () => { alive = false; };
+  }, [canBackend]);
 
   // Seeded on the FIRST render, and re-seeded keyed on the SERIALISED optics
   // and nothing else. `optics` is a fresh object on every config reload, so a
@@ -281,13 +293,21 @@ export function OpticsSheet(): JSX.Element {
   };
 
   // ------------------------------------------------------------ solve provider
+  //
+  // DRIVER-DERIVED, not a hard-coded vocabulary (review #23). A configured NINA
+  // or ASIAIR whose probe offers `solve` is a real plate solver on this rig, and
+  // a fixed four-row list could not name it - so the rows come from the same
+  // `eligibleTaskDrivers` rule the autofocus and polar rows use ("enabled,
+  // reachable, and its probe actually offers that task"). The control is a
+  // select rather than a segmented group because the list is now unbounded:
+  // `.nx-seg` is `overflow: hidden`, so a fifth driver on a phone would be
+  // clipped out of reach rather than wrapped.
   const solveEntry = entryOf(config, providerKey("solve"));
   const solveValue = valueOf<string>(config, providerKey("solve"), config?.providers?.solve ?? "auto");
   const solveTarget = providerWriteTarget(solveEntry);
   const solveNote = providerWriteNote(solveTarget);
-  const solveOptions = SOLVER_OPTIONS.some((o) => o.value === solveValue)
-    ? SOLVER_OPTIONS
-    : [...SOLVER_OPTIONS, { value: solveValue, label: solveValue.toUpperCase() }];
+  const solveEligible = eligibleTaskDrivers("solve", drivers);
+  const solveSticky = solveValue !== "auto" && !solveEligible.some((d) => d.id === solveValue);
 
   const saveSolve = async (v: string) => {
     if (busy || !canBackend) return;
@@ -302,6 +322,25 @@ export function OpticsSheet(): JSX.Element {
       await useStore.getState().loadConfig();
     } catch (e) {
       setErr(e instanceof ApiError ? e.message : "Could not change the solver.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // A `solve` pin written into a profile could be EDITED but never REMOVED
+  // (review #24): the only unpin on this branch was polar's. Same call, same
+  // copy, and honest-disabled rather than hidden for a non-holder - a pinned row
+  // with no statement of who can unpin it reads as unremovable.
+  const dropSolvePin = async () => {
+    const id = solveEntry?.profile_id;
+    if (!id || busy) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await clearProfileOverrides(id, { providers: ["solve"] });
+      await useStore.getState().loadConfig();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "could not clear the profile pin");
     } finally {
       setBusy(false);
     }
@@ -658,21 +697,63 @@ export function OpticsSheet(): JSX.Element {
           <LayerChip entry={solveEntry} />
         </div>
         <div style={{ marginTop: 6 }}>
-          <Segmented<string>
-            options={solveOptions}
+          <select
+            className="nx-input"
+            style={{ maxWidth: 260, width: "100%" }}
             value={solveValue}
-            onChange={(v) => void saveSolve(v)}
-            label="Plate-solve provider"
-            lockedReason={backendLock.lockedReason}
-            onExplain={backendLock.onExplain}
-            data-testid="optics-solver-seg"
-          />
+            aria-label="Plate-solve provider"
+            aria-disabled={backendLock.lockedReason ? true : undefined}
+            data-locked={backendLock.lockedReason ? "true" : undefined}
+            title={backendLock.lockedReason ?? undefined}
+            data-testid="optics-solver-pick"
+            onChange={(e) => {
+              if (backendLock.lockedReason) {
+                backendLock.onExplain(backendLock.lockedReason);
+                return;
+              }
+              void saveSolve(e.target.value);
+            }}
+          >
+            <option value="auto">Auto (best available)</option>
+            {solveEligible.map((d) => (
+              <option key={d.id} value={d.id}>{d.label}</option>
+            ))}
+            {solveSticky && (
+              // Sticky: a stored value no longer offered stays listed rather
+              // than vanishing, because that is exactly when the user most
+              // needs to see the literal string the config is carrying.
+              <option value={solveValue}>{stickySolverLabel(solveValue)}</option>
+            )}
+          </select>
         </div>
         <p style={PARA}>
-          Which engine works out where a frame points. AUTO picks the best available; ASTAP is the
-          local solver a real rig needs installed; BACKEND hands the job to the imaging backend.
+          Which engine works out where a frame points. Auto picks the best available; the rest are
+          the drivers this rig has that offer plate solving.
         </p>
+        {providers?.solve && (
+          <p style={PARA} data-testid="optics-solver-resolved">
+            {providers.solve.label}
+            {providers.solve.reason ? ` - ${providers.solve.reason}` : ""}
+          </p>
+        )}
         {solveNote && <p style={PARA} data-testid="optics-solver-note">{solveNote}</p>}
+        {isProfileOverride(solveEntry) && solveEntry?.profile_id && (
+          <div style={{ marginTop: 6 }}>
+            <ActionButton
+              kind="ghost"
+              busy={busy}
+              lockedReason={canBackend ? null : backendLock.lockedReason}
+              onExplain={backendLock.onExplain}
+              onPress={() => void dropSolvePin()}
+              data-testid="optics-solver-unpin"
+            >
+              CLEAR THE PROFILE PIN
+            </ActionButton>
+            <Mono size={10.5} tone="dim">
+              Clearing it hands this row back to the global setting.
+            </Mono>
+          </div>
+        )}
       </Card>
 
       {/* ------------------------------------------- plate-solve into the file */}

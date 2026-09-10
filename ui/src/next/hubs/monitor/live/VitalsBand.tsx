@@ -180,7 +180,7 @@ export function VitalsBand({ runActive, nowMs }: { runActive: boolean; nowMs: nu
 
   return (
     <ReadoutGrid cols={3} data-testid="monitor-vitals">
-      <FlipTile meridian={meridian} runActive={runActive} />
+      <FlipTile meridian={meridian} runActive={runActive} canSiteDerived={canSiteDerived} />
       <Tile label="SENSOR" face={sensorFace(camera, seq.detail)} testId="vital-sensor" />
       <Tile label="DEW MARGIN" face={dewFace(weather, canWeather)} testId="vital-dew" />
       <Tile label="DISK" face={diskFace(status?.disk)} testId="vital-disk" />

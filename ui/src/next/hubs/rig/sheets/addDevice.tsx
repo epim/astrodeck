@@ -58,6 +58,7 @@ import type {
 } from "../../../../components/settings/backendMeta";
 import { compareRoleIdentity } from "../../../../views/EquipmentView";
 import { accessPhrase, useCanConfigBackend } from "../../../../lib/caps";
+import { effectiveProviders } from "../../../../lib/effective";
 import {
   deviceChoices, eligibleDrivers, guiderSlotNote, guiderSlotState,
   hardwareAssignments, liveRoleCount, loadAssignments, persistableAssignedCount,
@@ -524,6 +525,13 @@ export function AddDeviceSheet({ params }: SheetProps): JSX.Element {
     busy,
   });
 
+  // The routing this rig is ACTUALLY running, per capability. See the note on
+  // the `providers:` field below for why the global block is the wrong answer.
+  const effProviders = effectiveProviders(config);
+  const winningProviders = Object.keys(effProviders).length > 0
+    ? { ...(config?.providers ?? {}), ...effProviders }
+    : (config?.providers ? { ...config.providers } : null);
+
   const doSavePicks = () => void (async () => {
     if (saveProfileLock) { explain(saveProfileLock); return; }
     setBusyWhat("save");
@@ -557,7 +565,18 @@ export function AddDeviceSheet({ params }: SheetProps): JSX.Element {
         phd2_port: 0,
         optics: null,
         site_name: null,
-        providers: config?.providers ? { ...config.providers } : null,
+        // THE WINNING LAYER, NOT THE GLOBAL BLOCK. `config.providers` is the
+        // global routing, and an ACTIVE PROFILE beats it - so on a rig running
+        // a profile this used to snapshot values the rig is not using and bake
+        // them into a NEW profile, which then pins them for good. That is the
+        // twelve-day polar bug written forward instead of backward: the console
+        // said "AstroDeck native" while a profile-pinned "sim" fabricated every
+        // alignment. `effectiveProviders` reads `config.effective`, which is the
+        // one place the resolution is published; it returns `{}` when the block
+        // is absent (an old server, or the WS `hello` bootstrap), and only then
+        // does the raw global block stand in - degrading to the old behaviour
+        // rather than to an empty profile.
+        providers: winningProviders,
       };
       await saveProfile(profile);
       setProfileName("");
