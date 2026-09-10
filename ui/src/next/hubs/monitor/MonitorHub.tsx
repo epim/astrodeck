@@ -1,20 +1,30 @@
-// MonitorHub.tsx - PLACEHOLDER (T0.1 ships the shell, not the hubs).
+// MonitorHub.tsx - the MONITOR hub: LIVE, LOG, ALERTS.
 //
-// The MONITOR hub's screens land here in a later task. Until then this renders
-// a named empty state so a walk through the tab bar shows six distinguishable
-// screens - a placeholder that said nothing would let a routing bug read as a
-// working app.
+// The hub itself is a switch. The sub-nav chips are the shell's (it renders
+// `HUB_META.monitor.subs`); everything below the chips is one of the three
+// screens, and each screen owns its own reads - there is no hub-level state to
+// share, and a hub that fetched on behalf of its screens would fetch for the
+// two nobody is looking at.
+//
+// `data-testid="hub-monitor"` is kept from the placeholder: the shell's own
+// tests assert a walk through the six tabs finds six distinguishable screens,
+// and the marker is what makes "the router works" different from "the router
+// appears to work".
 
 import type { JSX } from "react";
-import { EmptyCard } from "../../ui";
+import { useRoute } from "../../router";
+import { LiveScreen } from "./live/LiveScreen";
+import { LogScreen } from "./log/LogScreen";
+import { AlertsScreen } from "./alerts/AlertsScreen";
 
 export function MonitorHub(): JSX.Element {
+  const route = useRoute();
+  const sub = route.hub === "monitor" ? route.sub : "live";
   return (
-    <div data-testid="hub-monitor">
-      <EmptyCard
-        title="MONITOR HUB NOT BUILT YET"
-        hint="The live readout, the event log and where alerts are sent."
-      />
+    <div data-testid="hub-monitor" data-sub={sub}>
+      {sub === "log" ? <LogScreen />
+        : sub === "alerts" ? <AlertsScreen />
+          : <LiveScreen />}
     </div>
   );
 }
