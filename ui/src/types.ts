@@ -2354,3 +2354,56 @@ export interface RemoteStatus {
   gen: number | null;
   via: "direct" | "relay";
 }
+
+
+// ------------------------------------------- session files index (S5)
+// GET /api/sessions/{id}/files and GET /api/sessions/current/files
+// (view.preview, so an operator sees frame grades). The server folds the
+// ledger against the plan; no on-disk path appears in this payload in any
+// form -- `bytes` is what the file contributes, and `thumb` is a URL onto
+// the existing per-frame thumb route, not a location.
+
+export interface SessionFileFrame {
+  /** The ledger frame id -- the argument to PATCH
+   *  /api/sessions/{id}/frames/{frame_id}, so a row here can be regraded. */
+  id: string;
+  ts: number;
+  /** Size on disk; 0 when the frame was never saved locally or is gone. */
+  bytes: number;
+  /** The EFFECTIVE verdict: `override` when set, else the auto grade. */
+  accepted: boolean;
+  override: "accept" | "reject" | null;
+  hfr: number | null;
+  stars: number | null;
+  guide_rms: number | null;
+  /** URL of the rendered thumbnail, or null when none exists on disk. */
+  thumb: string | null;
+}
+
+export interface SessionFilterFiles {
+  /** Filter name; "" when the step names no filter, "?" when the frames'
+   *  step is no longer in the plan (a dormant session's plan is editable). */
+  filter: string;
+  count: number;
+  accepted: number;
+  /** The step's exposure, or the median of the frames' when the step is gone. */
+  exposure_s: number;
+  bytes: number;
+  /** Seconds summed over ACCEPTED frames only. */
+  integration_s: number;
+  frames: SessionFileFrame[];
+}
+
+export interface SessionFilesTotals {
+  frames: number;
+  accepted: number;
+  bytes: number;
+  integration_s: number;
+}
+
+export interface SessionFilesIndex {
+  target: string;
+  totals: SessionFilesTotals;
+  /** In plan step order; any dangling-step bucket last. */
+  by_filter: SessionFilterFiles[];
+}
