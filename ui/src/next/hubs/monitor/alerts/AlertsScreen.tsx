@@ -4,27 +4,31 @@
 //
 //   RECENT      the design's list: what has needed attention tonight.
 //   SINKS       GAP-ANALYSIS §9's "dead-man's-switch and alert sinks (test
-//               round-trip)" - the reused `AlertsPanel`, whole, including the
-//               empty-sinks warning that states the CONSEQUENCE ("Nothing is
-//               watching this rig..."), per-sink health, TEST as a real
-//               round-trip, min level, which events notify, heartbeat, and the
-//               dead-man's-switch card.
+//               round-trip)" - `AlertsEditor`, rebuilt for wave R7 (T-R7-10) in
+//               the design's own vocabulary, carrying every control the legacy
+//               `components/settings/AlertsPanel.tsx` had: the empty-sinks
+//               warning that states the CONSEQUENCE ("Nothing is watching this
+//               rig..."), per-sink health, TEST as a real round-trip, min
+//               level, which events notify, heartbeat, and the
+//               dead-man's-switch card. The legacy panel is untouched and
+//               still serves `#/classic`.
 //   THIS PHONE  the browser's own notification permission.
 //
 // THE DELIVERY TOAST LIVES HERE AND NOWHERE ELSE. `store.alert` carries a
 // MONOTONIC `key` "so repeat identical {sink,ok} still re-fires a UI effect";
 // one owner means a hub switch cannot double-fire it.
 
-import { useEffect, useMemo, useRef, useState, type JSX } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from "react";
 import { getAlertHealth } from "../../../../api/alerts";
 import { useStore, useAlert, useConfig, useLogs, useSeq } from "../../../../store";
 import { humanizeLog } from "../../../../lib/humanize";
 import { fmtLogTime } from "../../../../lib/logFormat";
-import AlertsPanel from "../../../../components/settings/AlertsPanel";
 import type { AlertHealth, LogLine } from "../../../../types";
 import { Card, Label, Mono } from "../../../ui";
 import { monState } from "../monState";
+import { AlertsEditor } from "./AlertsEditor";
 import { NotifyRow } from "./NotifyRow";
+import "./alerts.css";
 
 /** What counts as "needed your attention": every warning and error, plus the
  *  sequence's own state-change lines (run start / run end / hold), which are
@@ -40,10 +44,17 @@ export function alertWorthy(rows: readonly LogLine[]): LogLine[] {
 
 /** `GET /api/alerts/health` - a pure read (it never does I/O server-side), so
  *  it re-polls on the config broadcast rather than on an interval of its own.
- *  Same rule `AlertsPanel` follows; no second subscription. */
-function useAlertHealth(): AlertHealth | null {
+ *
+ *  ONE POLLER FOR THE WHOLE SCREEN. The legacy pairing had two: this hook for
+ *  the header line and `AlertsPanel`'s own `refreshHealth` for the badges, both
+ *  hitting the same route on the same mount and on the same config bounce. The
+ *  rebuilt editor takes the snapshot as a prop and asks for a refresh through
+ *  `refresh()` after a test or a delete, which are the two writes that change
+ *  it. */
+function useAlertHealth(): { health: AlertHealth | null; refresh: () => void } {
   const config = useConfig();
   const [health, setHealth] = useState<AlertHealth | null>(null);
+  const [nonce, setNonce] = useState(0);
   const version = config?.version;
   useEffect(() => {
     let live = true;
@@ -51,8 +62,9 @@ function useAlertHealth(): AlertHealth | null {
       .then((h) => { if (live) setHealth(h); })
       .catch(() => { /* best-effort - the last snapshot stays on screen */ });
     return () => { live = false; };
-  }, [version]);
-  return health;
+  }, [version, nonce]);
+  const refresh = useCallback(() => setNonce((n) => n + 1), []);
+  return { health, refresh };
 }
 
 export function AlertsScreen(): JSX.Element {
@@ -60,7 +72,7 @@ export function AlertsScreen(): JSX.Element {
   const logs = useLogs();
   const alert = useAlert();
   const config = useConfig();
-  const health = useAlertHealth();
+  const { health, refresh: refreshHealth } = useAlertHealth();
 
   // One toast per delivery result, keyed on the store's monotonic `key` so two
   // identical failures in a row are two toasts, not one.
@@ -140,9 +152,7 @@ export function AlertsScreen(): JSX.Element {
       </Card>
 
       {/* ----------------------------------------------------------- SINKS */}
-      <div data-testid="alerts-sinks">
-        <AlertsPanel />
-      </div>
+      <AlertsEditor health={health} onRefreshHealth={refreshHealth} />
 
       {/* ------------------------------------------------------ THIS PHONE */}
       <Card padding={12} data-testid="alerts-phone">

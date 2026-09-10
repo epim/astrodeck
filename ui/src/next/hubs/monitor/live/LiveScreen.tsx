@@ -94,6 +94,21 @@ function isClipping(p: PreviewInfo | null): boolean {
   return p.data_is_linear && fw != null && p.stats.max >= fw;
 }
 
+/** How old the forecast behind the cloud plot is. `stale` is the store's own
+ *  fail-closed re-derivation (> 45 min), so it wins over the arithmetic: a
+ *  clock that disagrees with the flag the engine acts on would be worse than no
+ *  clock at all. Null `fetched_ts` is the cold-load case and says so rather
+ *  than printing "0m old" over a chart drawn from nothing. */
+export function weatherAgeLine(
+  fetchedTs: number | null,
+  stale: boolean,
+  nowMs: number,
+): string {
+  if (fetchedTs == null) return "no fetch yet";
+  const mins = Math.max(0, Math.round((nowMs / 1000 - fetchedTs) / 60));
+  return stale ? `${mins}m old - stale` : `${mins}m old`;
+}
+
 /** SUB QUALITY - is this exposure long enough for this sky?
  *
  *  Gated on `data_is_linear` AND a filled photometry profile, so a NINA frame
@@ -507,9 +522,36 @@ export function LiveScreen(): JSX.Element {
       </Card>
 
       {/* --------------------------------------------------------- weather */}
+      {/* Both widgets are KEEP-AS-IS (wave R7 section 2.3): a cloud-cover plot
+          and a tile map are data surfaces the design language has no vocabulary
+          for, and redrawing either would re-open maths this codebase has
+          already paid for. What R7 replaces is the CHROME around them - each
+          now sits in the design's `Card` under a `Label` eyebrow instead of
+          arriving as a bare legacy `Panel` in the middle of a rebuilt screen.
+          Both still render their own `<Panel>` internally (`SkyConditionsPanel
+          .tsx:215,228`, `RadarMap.tsx:336`), which draws a second title inside
+          this card; removing it means an additive `chrome?: "panel" | "bare"`
+          prop on the legacy files, the same one `SkyDomePanel` took in
+          1474867c, and those files belong to no R7 task. Named as a follow-up
+          in T-R7-10's report. */}
       {bp !== "phone" && canSeeWeather && (
         <div data-testid="monitor-weather" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          <SkyConditionsPanel />
+          <Card padding={12} data-testid="live-weather-card">
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <div style={{
+                display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8,
+              }}>
+                <Label>SKY CONDITIONS</Label>
+                {/* The one thing the plot cannot say about itself: how old the
+                    forecast behind it is. A 6 h old cloud curve looks exactly
+                    like a fresh one. */}
+                <Mono size={10} tone={weather?.stale ? "warn" : "dim"}>
+                  {weatherAgeLine(weather?.fetched_ts ?? null, weather?.stale ?? false, nowMs)}
+                </Mono>
+              </div>
+              <SkyConditionsPanel />
+            </div>
+          </Card>
           {radarOff ? (
             <Card tone="dashed" data-testid="monitor-radar-off">
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -530,7 +572,19 @@ export function LiveScreen(): JSX.Element {
               </div>
             </Card>
           ) : (
-            <RadarMap />
+            <Card padding={12} data-testid="live-radar-card">
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <div style={{
+                  display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8,
+                }}>
+                  <Label>RADAR</Label>
+                  {/* The map does not say that it keeps fetching, and this
+                      screen is the one that stays open all night. */}
+                  <Mono size={10} tone="dim">tiles refresh while this screen is open</Mono>
+                </div>
+                <RadarMap />
+              </div>
+            </Card>
           )}
         </div>
       )}
