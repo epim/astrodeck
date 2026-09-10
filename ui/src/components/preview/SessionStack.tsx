@@ -42,9 +42,12 @@ import {
   type SessionStackStatus,
 } from "../../api/sessionStack";
 
-const POLL_MS = 10_000;
+/** Exported so a second front-end polls on the SAME cadence rather than picking
+ *  its own number: two panels on one rig at 10 s and 3 s would double the status
+ *  load and disagree about how fresh "now" is. */
+export const POLL_MS = 10_000;
 /** While the backfill is reading, so the counter moves at a believable rate. */
-const BACKFILL_POLL_MS = 1_500;
+export const BACKFILL_POLL_MS = 1_500;
 
 /** How the composite was built, in words. A viewer looking at a teal image
  *  should be able to find out why it is teal. */

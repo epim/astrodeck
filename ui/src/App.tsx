@@ -458,11 +458,17 @@ export default function App() {
     if (!w || !a) return;
     void confirmDialog({
       title: "High cloud forecast tonight",
+      // What follows the forecast is NOT "auto-resume will hold". The engine's
+      // auto-resume veto is rain-only and fail-open (server/astrodeck/weather.py
+      // `veto_reason`: "RAIN VETOES. CLOUD DOES NOT."), after this same gate
+      // refused two consecutive clear nights on a 100% cloud forecast. A cloud
+      // hold is measured in-run, from the rig's own frames.
       body:
         `Forecast peak ${a.peak_pct}% total cloud (${a.dominant_layer} layer ` +
         `dominant) between ${fmtHm(a.start_iso)} and ${fmtHm(a.end_iso)} — ` +
-        `at/above your ${w.threshold_pct}% threshold. Auto-resume will hold ` +
-        `unless "ignore weather tonight" is set.`,
+        `at/above your ${w.threshold_pct}% threshold. The forecast does not ` +
+        `hold a run: a running session holds on what its own frames show, and ` +
+        `only forecast rain inside the hour blocks an auto-resume.`,
       tone: "warn",
       mode: "ok",
     });

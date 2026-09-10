@@ -2,7 +2,10 @@ import { useEffect, useRef, useState, type JSX, type ReactNode } from "react";
 import { lockedAttrs, lockedClass } from "./honest";
 
 export interface ActionButtonProps {
-  kind: "primary" | "secondary" | "ghost" | "danger" | "purple";
+  /** `warn` is the amber CTA the design uses for a hold the user can act on
+   *  (the CLOUDED card's own button) - it is not a refusal like `danger`, it is
+   *  an action taken while something is wrong. */
+  kind: "primary" | "secondary" | "ghost" | "danger" | "purple" | "warn";
   /** 44 / 52 / 56 px. `md` is the hit-target floor; `xl` is the lock card's
    *  IMAGE THIS. */
   size?: "md" | "lg" | "xl";
@@ -27,9 +30,9 @@ export interface ActionButtonProps {
 
 const ARM_MS = 3000;
 
-/** The design's button in five kinds. Primary carries the accent fill and the
+/** The design's button in six kinds. Primary carries the accent fill and the
  *  `0 0 18px` accent glow; danger is the STOP row; purple is the flows/campaign
- *  family. */
+ *  family; warn is the amber CLOUDED CTA. */
 export function ActionButton({
   kind, size = "md", glyph, children, onPress,
   lockedReason = null, onExplain, arm, busy = false, full = false,

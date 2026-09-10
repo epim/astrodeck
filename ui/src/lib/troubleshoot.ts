@@ -24,6 +24,16 @@ export interface Diagnosis {
 
 interface Rule { needles: string[]; diag: Diagnosis; }
 
+// COPY RULE for every `fix` and every `steps` entry below: name the ACTION or
+// the DEVICE, never a screen. This module is rendered by BOTH front-ends - the
+// classic Help view and the new Help sheet - and the new one has no Guide page,
+// no Mount page, no Capture page and no Equipment page; those are sheets under
+// a Rig hub now. A fix step that sends the user to a screen that does not exist
+// is worse than one that names no screen at all, and the step reads fine
+// without it: "re-run the guide calibration" is the instruction either way.
+
+
+
 // Ordered most-specific first; the first rule whose needles ALL match wins.
 const RULES: readonly Rule[] = [
   { needles: ["plate", "solve"], diag: {
@@ -39,22 +49,22 @@ const RULES: readonly Rule[] = [
   { needles: ["guid"], diag: {
       title: "Guiding failed",
       cause: "The guide star was lost — cloud, a cable snag, or a mount lurch pushed it off the guide sensor.",
-      fix: "Pick a brighter guide star on the Guide page and re-run calibration if the mount was slewed.",
+      fix: "Pick a brighter, more central guide star, then re-run the guide calibration if the mount has slewed since the last one.",
       topic: "guiding-lost" } },
   { needles: ["camera"], diag: {
       title: "Camera isn't responding",
       cause: "The imaging camera dropped its USB connection — often a marginal cable, a hub power dip, or the driver crashing.",
-      fix: "Re-seat the camera USB cable (a powered hub helps), then reconnect it on the Equipment page.",
+      fix: "Re-seat the camera USB cable (a powered hub helps), then reconnect the camera.",
       topic: "camera-offline" } },
   { needles: ["slew"], diag: {
       title: "Mount move failed",
       cause: "The slew didn't complete — the mount may be parked, past a limit, or lost communication mid-move.",
-      fix: "Unpark and confirm tracking on the Mount page, then retry the slew.",
+      fix: "Unpark the mount and confirm it is tracking, then retry the slew.",
       topic: "mount-move-failed" } },
   { needles: ["mount"], diag: {
       title: "Mount move failed",
       cause: "The mount refused or couldn't finish a move — it may be parked, past a limit, or not tracking.",
-      fix: "Unpark and confirm tracking on the Mount page, then retry.",
+      fix: "Unpark the mount and confirm it is tracking, then retry the move.",
       topic: "mount-move-failed" } },
   { needles: ["focus"], diag: {
       title: "Autofocus failed",
@@ -192,12 +202,12 @@ export const TROUBLESHOOTING: readonly TroubleshootEntry[] = [
       "Take the lens/dust cap off and open the flat panel or focuser cover.",
       "Turn on Auto-stretch in the preview — a faint sky often looks black un-stretched.",
       "Raise the exposure (try 2–5s for framing) and set gain to a mid value.",
-      "Confirm the camera is actually capturing on the Capture page, not just connected.",
+      "Confirm the camera is actually taking frames, not just connected - start a loop and watch one land.",
     ], seeAlso: ["gain", "exposure"] },
   { topic: "star-trails", symptom: "Stars are streaks or short lines",
     cause: "The sky moved during the exposure — the mount wasn't tracking, wasn't guiding, or was bumped.",
     steps: [
-      "Confirm the mount is tracking (not parked) on the Mount page.",
+      "Confirm the mount is tracking and not parked - unpark it if it is.",
       "Turn on guiding for exposures longer than ~20–30s.",
       "Check polar alignment — poor alignment trails stars slowly even while tracking.",
       "Shorten the sub-exposure and take more frames if guiding isn't available.",
@@ -223,7 +233,7 @@ export const TROUBLESHOOTING: readonly TroubleshootEntry[] = [
       "Re-seat both ends of the camera USB cable.",
       "Use a powered USB hub, or a shorter / better-shielded cable.",
       "Give a cooled camera its own 12V supply — don't share a marginal rail.",
-      "Reconnect the camera on the Equipment page.",
+      "Reconnect the camera, and re-run the connection once the cable is sound.",
     ] },
   { topic: "guiding-lost", symptom: "Guiding drops out or the star is lost",
     cause: "The guide star disappeared — cloud, a cable snag, or a mount lurch pushed it off the sensor.",
@@ -242,8 +252,8 @@ export const TROUBLESHOOTING: readonly TroubleshootEntry[] = [
   { topic: "mount-move-failed", symptom: "The mount won't slew or a move failed",
     cause: "The mount is parked, past a limit, or lost communication mid-slew.",
     steps: [
-      "Unpark the mount and confirm it's tracking on the Mount page.",
-      "Check the mount's USB/serial connection on the Equipment page.",
+      "Unpark the mount and confirm it's tracking.",
+      "Check the mount's USB/serial connection, then reconnect the mount.",
       "Clear any limit or safety stop before retrying the slew.",
     ] },
   { topic: "autofocus-failed", symptom: "Autofocus can't find focus",
@@ -258,7 +268,7 @@ export const TROUBLESHOOTING: readonly TroubleshootEntry[] = [
     steps: [
       "Open NINA on the imaging PC and read the error there.",
       "Reconnect the affected device in NINA, then resume.",
-      "If NINA is unreachable, check the bridge address on the Equipment page.",
+      "If NINA is unreachable, check the host and port configured for the NINA driver.",
     ] },
 ];
 

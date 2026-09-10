@@ -550,6 +550,16 @@ await testAsync("the escalation policy is a read-only list on a phone, in human 
     "the quality gate does not name the factor and what happens to the frame");
   assert(rows.some((r) => /no frame lands for 15 min/.test(r)),
     "the no-progress watchdog is not shown in minutes");
+  // require_safety_monitor is the one escalation field that decides what an
+  // ABSENT monitor means, and this rig's seed leaves it off. OFF is not silence:
+  // the engine still runs and logs the gap once per run (sequence/engine.py
+  // `_no_safety_source`), so the row has to say WHICH of the two this rig does -
+  // omitting it read as "a monitor is required", which is the opposite.
+  assert(rows.some((r) => /A run may start with no safety monitor/.test(r)),
+    `the absent-monitor policy has no row: ${JSON.stringify(rows)}`);
+  assert(escalationRows({ ...SEED_ESCALATION, require_safety_monitor: true } as never)
+    .some((r) => r === "A safety monitor is required before a run"),
+    "turning require_safety_monitor ON does not change what the row says");
   assert(q('[data-testid="safety-escalation-edit"]') != null,
     "a phone has no way through to the tablet editor");
 });

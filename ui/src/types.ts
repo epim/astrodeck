@@ -157,6 +157,14 @@ export interface RigStatus {
     // Tech-debt hardening (c1): MEASURED e-/ADU per gain setting from the
     // auto-learn loop. Advanced-UI only — the driver value above always wins.
     egain_learned?: Record<string, number>;
+    // Dew-heater LEVEL, 0..100 %, read back from the camera. ABSENT means "this
+    // camera cannot be asked", which is NOT the same as 0: the heater used to be
+    // write-only, so a fresh tab drew 0 from its own last write while the heater
+    // ran at 60% and dragging the slider up turned it DOWN. The server refuses to
+    // publish a 0 fallback for exactly that reason (hub.py: "Publishing 0 as a
+    // fallback would move that same lie server-side"), so a consumer must show
+    // the absence, never substitute a number for it.
+    dew_heater?: number;
   };
   guider?: GuideStats & { name: string };
   // --- guide-frame preview (SHARED lane; additive). Present only when the backend
@@ -1494,6 +1502,13 @@ export interface SafetyConfig {
   // On ⇒ instead of ending the run, close the roof, wait for safe-again, REOPEN and
   // resume. Off (default) ⇒ close_dome_on_unsafe still aborts (byte-identical).
   reopen_dome_when_safe: boolean;
+  // Cloud hold from the FRAMES, not the forecast (server config.py:142, default
+  // true). Inert unless safety is armed AND no monitor is assigned: a cloudy
+  // verdict measured on the rig's own exposures then HOLDS the run — stand down
+  // the guider, probe, resume on a clear streak — instead of parking it. Optional
+  // on the wire because an older server omits it; a consumer must degrade to "the
+  // hold is on" rather than blanking the control.
+  sky_fallback_hold?: boolean;
 }
 
 /** Cooler warm-down policy (server: config.CoolingConfig). Lives beside the
@@ -1533,6 +1548,11 @@ export interface EscalationConfig {
   no_progress_watchdog_s: number;                     // 0 = off
   reconnect_resume: boolean;                          // Alpaca-only; off by default
   reconnect_retries: number;
+  // An ABSENT safety monitor, treated as a disconnected one (server config.py:252,
+  // default false). Off, the run proceeds and the gap is SAID once per run at
+  // warning level; on, it drives `on_unsafe` exactly like a monitor that went
+  // unsafe. Optional on the wire — an older server omits it.
+  require_safety_monitor?: boolean;
 }
 
 // SiteConfig is the persisted lat/lon/elevation shape the automation config carries.

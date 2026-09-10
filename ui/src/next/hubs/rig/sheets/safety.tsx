@@ -75,12 +75,11 @@ import {
   safetyLive, streakLine, type SafetyBarRow,
 } from "../lib/safetyBars";
 
-// `sky_fallback_hold` is a real server field (config.py:142) that
-// `ui/src/types.ts`'s SafetyConfig does not declare. types.ts is outside this
-// task's directories, so the key is widened HERE and named in the report rather
-// than dropped: it rides through every wholesale echo untouched because the
-// block is spread, and the switch below is the only thing that sets it.
-type SafetyBlock = SafetyConfig & { sky_fallback_hold?: boolean };
+// `sky_fallback_hold` is a real server field (config.py:142) and `SafetyConfig`
+// in `ui/src/types.ts` now declares it, so this alias is the real type and no
+// longer a local widening. It stays as a NAME because every wholesale-replace
+// echo below is typed against it.
+type SafetyBlock = SafetyConfig;
 
 // ---------------------------------------------------------------- copy, verbatim
 
@@ -1209,6 +1208,13 @@ export function escalationRows(esc: EscalationConfig | null): string[] {
   rows.push(esc.reconnect_resume
     ? `Reconnect and resume after a dropout - ${esc.reconnect_retries} attempts`
     : "Do not auto-reconnect");
+  // An absent monitor is the one gap the engine can be told to treat as a trip
+  // (server sequence/engine.py `_no_safety_source`). OFF is not silence: the run
+  // proceeds and the gap is logged once at warning level, so say which of the two
+  // this rig does rather than only printing the row when it is on.
+  rows.push(esc.require_safety_monitor
+    ? "A safety monitor is required before a run"
+    : "A run may start with no safety monitor - the gap is logged, not enforced");
   return rows;
 }
 

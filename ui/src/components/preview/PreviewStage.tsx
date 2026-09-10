@@ -562,6 +562,7 @@ export function PreviewStage(props: Props) {
     return (
       <div
         ref={stageRef}
+        data-preview-stage=""
         className="preview-stage astro-surface relative w-full max-w-full overflow-hidden flex items-center justify-center"
         style={{ aspectRatio: compact ? "3 / 2" : undefined, minHeight: stageMinH }}
       >
@@ -619,6 +620,11 @@ export function PreviewStage(props: Props) {
   return (
     <div
       ref={stageRef}
+      // A stable hook for whoever embeds the stage - the class list is styling
+      // and can be re-shaped, so a host that needs to FIND the stage (to size it,
+      // or to assert it mounted) should not have to match on `.preview-stage`.
+      // Both roots carry it: an empty stage is still the stage.
+      data-preview-stage=""
       tabIndex={0}
       role="group"
       aria-label={`Live preview, frame ${preview.id}. Arrow keys pan; plus and minus zoom; 0 fits; 1 is 100%.`}
