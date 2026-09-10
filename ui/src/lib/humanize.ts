@@ -95,8 +95,17 @@ function parts(input: LogInput): { source: string; message: string } {
   return { source: input.source ?? "", message: input.message ?? "" };
 }
 
-/** Map a raw log line to a short human sentence; falls back to the raw message. */
-export function humanizeLog(input: LogInput): string {
+/** Map a raw log line to a short human sentence; falls back to the raw message.
+ *
+ *  `opts.verbatim` keeps that fall-back WHOLE. The truncation below exists for
+ *  the log stream, where a raw line can be a stack trace and the full text is
+ *  one tap away in the drawer. A server REFUSAL is the opposite case: it is a
+ *  complete sentence written to be read, its repair is usually the last clause
+ *  ("... stop the run first"), and there is no drawer behind a toast holding
+ *  the rest of it. Callers that know they are showing a refusal pass
+ *  `{ verbatim: true }`; every mapping above still applies, because a lane
+ *  conflict is better read as its sentence whoever asked. */
+export function humanizeLog(input: LogInput, opts?: { verbatim?: boolean }): string {
   const { source, message } = parts(input);
   // A lane refusal can arrive here too, not only as a 409 body: a route that
   // 409s inside a sequence step is logged verbatim and the store toasts every
@@ -118,8 +127,11 @@ export function humanizeLog(input: LogInput): string {
   if (m.includes("guid") && m.includes("lost")) {
     return "Guiding was lost - recovering.";
   }
-  // Unknown — keep the raw message (truncated). Raw text always lives in the log.
-  const trimmed = message.length > 140 ? `${message.slice(0, 137)}…` : message;
+  // Unknown - keep the raw message (truncated, unless the caller asked for it
+  // whole). Raw text always lives in the log.
+  const trimmed = !opts?.verbatim && message.length > 140
+    ? `${message.slice(0, 137)}…`
+    : message;
   return trimmed || "Something went wrong.";
 }
 

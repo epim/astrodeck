@@ -656,6 +656,50 @@ test("no drift: the two bodies are the same code", () => {
     "the copy and the legacy original have drifted apart");
 });
 
+// ============= 9. and nothing under next/ reaches back into the legacy panel
+await testAsync("no next-side module imports components/settings/ProfileList", async () => {
+  // The whole point of the copy above is that `ui/src/next/**` never pulls
+  // `ProfileList.tsx` in - it is a 929-line presentation module, and importing
+  // it for one control-flow helper drags `Panel`, `HoldButton`, `LockedChip`,
+  // `Icon` and the Tailwind tree behind them into the lazily split next bundle
+  // (wave R7 section 2.1, ruling 6). `devices/rigConnect.ts` was the last
+  // importer; T-R7-21a item 20 switched it. This is what stops the next one.
+  interface NodeFsLike {
+    readdirSync(p: string, o: { withFileTypes: true }): { name: string; isDirectory(): boolean }[];
+    readFileSync(p: string, enc: string): string;
+  }
+  const nodeImport = (m: string): Promise<unknown> =>
+    (Function("m", "return import(m)") as (m: string) => Promise<unknown>)(m);
+  const fs = (await nodeImport("node:fs")) as NodeFsLike;
+  const pathMod = (await nodeImport("node:path")) as { join(...p: string[]): string };
+  const urlMod = (await nodeImport("node:url")) as { fileURLToPath(u: URL): string };
+  const nextRoot = urlMod.fileURLToPath(new URL("../../../..", import.meta.url));
+
+  const offenders: string[] = [];
+  let scanned = 0;
+  const walk = (dir: string): void => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = pathMod.join(dir, e.name);
+      if (e.isDirectory()) { walk(full); continue; }
+      if (!/\.tsx?$/.test(e.name)) continue;
+      scanned += 1;
+      const src = fs.readFileSync(full, "utf8");
+      if (/from "[^"]*components\/settings\/ProfileList"/.test(src)) {
+        offenders.push(full.slice(nextRoot.length).replace(/\\/g, "/"));
+      }
+    }
+  };
+  walk(nextRoot);
+
+  assert(scanned > 200,
+    `only ${scanned} files scanned under next/ - the walk is broken, so an empty `
+    + "offender list would mean nothing");
+  eq(offenders.join(", "), "",
+    "these next-side modules import the legacy ProfileList panel, which puts its whole "
+    + "render tree back in the next bundle. Import next/hubs/rig/profiles/profileActive "
+    + "instead:");
+});
+
 act(() => { rootRef!.unmount(); });
 
 const total = passed + failed;

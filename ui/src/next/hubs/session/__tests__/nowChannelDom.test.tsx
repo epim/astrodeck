@@ -65,7 +65,7 @@ const asks: string[] = [];
 
 // The stack holds TWO channels. The session plan below adds a third filter the
 // stacker has no accumulator for, which is the case the chip list must refuse.
-const STACK = {
+let STACK: any = {
   enabled: true, target: "M31", seq: 7,
   channels: [
     { channel: "Ha", frames: 42, integrated_s: 12_600, rejected: 1 },
@@ -288,7 +288,54 @@ await testAsync("going back to the composite clears the sentence", async () => {
 
 await act(async () => { root.unmount(); });
 
-// ------------------------------------------------------- 4. the tint cannot return
+// ------------------- 4. the stack switched OFF still shows the night's counts
+//
+// The counts under the strip are the NIGHT'S accepted subs, read from the
+// session's own frames. The stack is a picture somebody chose to build out of
+// them. Switching the picture off used to remove the whole strip, so the only
+// per-filter tally on the screen went with it - a number the operator reads to
+// know whether Oiii is behind Ha tonight, deleted by a display toggle.
+STACK = {
+  enabled: false, target: "", seq: 0, channels: [],
+  frames: 0, integrated_s: 0, rejected: 0, mode: "combined", downsample: 2,
+  has_image: false, render_age_s: 0,
+  backfill: {
+    running: false, total: 0, done: 0, added: 0, skipped: 0, failed: 0,
+    channel: "", error: "", started_ts: null, finished_ts: null, available: 0,
+  },
+};
+resetStackViewForTests();
+resetSessionStackStateForTests();
+resetSessionDataForTests();
+const offRoot = createRoot(container);
+await act(async () => { offRoot.render(createElement(ChannelStrip)); });
+await settle();
+
+await testAsync("the stack is off and the fixture says so - the vacuity guard", async () => {
+  eq(byId("channel-Ha"), null,
+    "a channel chip is still on screen, so the OFF fixture never reached the strip and "
+    + "the assertions below would be about the ON case");
+  eq(byId("now-stretch"), null,
+    "the stretch control is still rendered for a stack that is switched off");
+});
+
+await testAsync("the night's per-filter counts survive the stack being switched off", async () => {
+  const note = byId("channel-ledger-note");
+  assert(note != null,
+    "the ledger line went away with the chips: turning the live stack off deleted the "
+    + "only per-filter tally of what this night has actually accepted");
+  const text = note.textContent as string;
+  assert(/H-alpha 1/.test(text) && /Oiii 1/.test(text) && /S2 0/.test(text),
+    `the line does not carry the night's own filter names and counts: "${text}"`);
+  assert(/Live stack off/.test(text),
+    `the counts are printed with no word about why the chips are gone: "${text}"`);
+  assert(!/Chips count/.test(text),
+    `the line still refers to chips that are not rendered: "${text}"`);
+});
+
+await act(async () => { offRoot.unmount(); });
+
+// ------------------------------------------------------- 5. the tint cannot return
 await testAsync("no greyscale and no blend layer anywhere in the three files", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   for (const name of ["stackView.ts", "ChannelStrip.tsx", "LiveStack.tsx"]) {

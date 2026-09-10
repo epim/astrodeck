@@ -528,12 +528,10 @@ export function LiveScreen(): JSX.Element {
           already paid for. What R7 replaces is the CHROME around them - each
           now sits in the design's `Card` under a `Label` eyebrow instead of
           arriving as a bare legacy `Panel` in the middle of a rebuilt screen.
-          Both still render their own `<Panel>` internally (`SkyConditionsPanel
-          .tsx:215,228`, `RadarMap.tsx:336`), which draws a second title inside
-          this card; removing it means an additive `chrome?: "panel" | "bare"`
-          prop on the legacy files, the same one `SkyDomePanel` took in
-          1474867c, and those files belong to no R7 task. Named as a follow-up
-          in T-R7-10's report. */}
+          Both take the additive `chrome?: "panel" | "bare"` prop `SkyDomePanel`
+          took in 1474867c, and both are mounted `bare` here, so the card's own
+          `Label` is the only title and its border the only border. `panel` is
+          still the default, so `#/classic`'s monitor grid is unchanged. */}
       {bp !== "phone" && canSeeWeather && (
         <div data-testid="monitor-weather" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           <Card padding={12} data-testid="live-weather-card">
@@ -549,7 +547,7 @@ export function LiveScreen(): JSX.Element {
                   {weatherAgeLine(weather?.fetched_ts ?? null, weather?.stale ?? false, nowMs)}
                 </Mono>
               </div>
-              <SkyConditionsPanel />
+              <SkyConditionsPanel chrome="bare" />
             </div>
           </Card>
           {radarOff ? (
@@ -582,7 +580,7 @@ export function LiveScreen(): JSX.Element {
                       screen is the one that stays open all night. */}
                   <Mono size={10} tone="dim">tiles refresh while this screen is open</Mono>
                 </div>
-                <RadarMap />
+                <RadarMap chrome="bare" />
               </div>
             </Card>
           )}

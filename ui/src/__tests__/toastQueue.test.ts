@@ -178,6 +178,61 @@ test("#33: the focal sequence toast is never evicted", () => {
   assert(toasts().some((t) => t.kind === "sequence"), "sequence toast survives");
 });
 
+// ====================================================================
+// showToast: a server refusal is not a log line (T-R7-21a item 12)
+// ====================================================================
+//
+// `showToast` routes its message through `humanizeLog`, whose fall-through
+// truncates at 137 characters plus an ellipsis. That rule is right for the LOG
+// stream, where a raw line can be a stack trace and the whole text is one tap
+// away in the drawer. It is wrong for a refusal: those are complete sentences,
+// their repair is usually the LAST clause ("... stop the run, or clear the
+// protection for this port in Power settings"), and there is no drawer behind
+// a toast holding the rest. `power.tsx` already bypassed the whole helper to
+// keep its 178-character refusal intact; `{ verbatim: true }` is that escape,
+// spelled once, without giving up the mapping every caller wants.
+
+/** 178 characters. If this ever shrinks under 141 the assertions below stop
+ *  proving anything, so its length is asserted rather than assumed. */
+const LONG_REFUSAL =
+  "Mount 12V is protected while a run is live: switching it now would cut power to "
+  + "something the sequence is using. Stop the run, or clear the protection for "
+  + "this port in Power settings.";
+
+test("the fixture is long enough to be truncated - the vacuity guard", () => {
+  assert(LONG_REFUSAL.length > 140,
+    `the refusal fixture is ${LONG_REFUSAL.length} chars, under humanizeLog's cut: `
+    + "every assertion below would pass on a helper that truncates");
+});
+
+test("showToast still truncates by default - #/classic's log toasts are unchanged", () => {
+  reset();
+  useStore.getState().showToast("error", LONG_REFUSAL);
+  const title = toasts()[0].title;
+  assert(title.length < LONG_REFUSAL.length,
+    "the default stopped truncating: every classic log toast just got longer");
+  assert(title.endsWith("…"), `the truncated title lost its ellipsis: "${title}"`);
+});
+
+test("verbatim keeps the refusal WHOLE, including the second way out", () => {
+  reset();
+  useStore.getState().showToast("error", LONG_REFUSAL, { verbatim: true });
+  eq(toasts()[0].title, LONG_REFUSAL,
+    "the refusal was cut, and the clause that goes first is the one naming the "
+    + "way out the user is standing in front of:");
+  assert(/Power settings\.$/.test(toasts()[0].title),
+    "the last clause - the repair - is missing from the toast");
+});
+
+test("verbatim does NOT turn off the mapping: a lane conflict is still a sentence", () => {
+  reset();
+  useStore.getState().showToast("error", "'goto' is already running", { verbatim: true });
+  const title = toasts()[0].title;
+  assert(!title.includes("'goto'"),
+    `a lane id reached the user under verbatim: "${title}"`);
+  assert(/already/i.test(title), `the lane sentence was lost: "${title}"`);
+});
+
 // ---------------------------------------------------------------- report
 const total = passed + failed;
 // eslint-disable-next-line no-console

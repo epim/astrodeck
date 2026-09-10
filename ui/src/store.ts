@@ -939,7 +939,10 @@ interface AppState extends FlowsActions {
 
   // --- actions: compat shims ---
   setWsConnected: (ok: boolean) => void;
-  showToast: (level: string, message: string) => void;
+  /** `opts.verbatim` keeps a long message WHOLE - see `humanizeLog`. Pass it
+   *  when the message is a server refusal, whose repair is usually its last
+   *  clause and which has no log drawer behind it holding the rest. */
+  showToast: (level: string, message: string, opts?: { verbatim?: boolean }) => void;
 
   // --- flows (the node-graph automation surface) ---
   flows: FlowsState;
@@ -1696,8 +1699,8 @@ export const useStore = create<AppState>((set, get) => ({
   // -------------------------------------------------------------- compat shims
   setWsConnected: (ok) => get().setWsPhase(ok ? "up" : "down"),
 
-  showToast: (level, message) =>
-    get().enqueueToast({ level: level as ToastLevel, title: humanizeLog(message) }),
+  showToast: (level, message, opts) =>
+    get().enqueueToast({ level: level as ToastLevel, title: humanizeLog(message, opts) }),
 
   // ------------------------------------------------------------------ events
   handleEvent: (ev) => {

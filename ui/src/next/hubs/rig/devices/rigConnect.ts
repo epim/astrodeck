@@ -20,7 +20,7 @@
 import { api, ApiError } from "../../../../api";
 import { confirmDialog } from "../../../../components/ConfirmDialog";
 import { activateProfile, connectRig, getProfile } from "../../../../api/backends";
-import { waitForProfileActive } from "../../../../components/settings/ProfileList";
+import { waitForProfileActive } from "../profiles/profileActive";
 import {
   buildRigSpec, hasRealMotion, profileActivateConfirm, profileConnectsNothing,
   profileResolvesRealMotion, saveAssignments, simAssignments,
@@ -48,8 +48,8 @@ export interface ConnectHooks {
   reloadDrivers?(): void | Promise<void>;
 }
 
-const toast = (level: string, message: string) =>
-  useStore.getState().showToast(level, message);
+const toast = (level: string, message: string, opts?: { verbatim?: boolean }) =>
+  useStore.getState().showToast(level, message, opts);
 
 /** Is a sequence holding the rig right now? Read at the moment of asking, not
  *  from a render-time prop, because the dialog it feeds is the last word before
@@ -107,7 +107,7 @@ export async function connectAssignments(
     const msg = e instanceof ApiError
       ? (e.status === 422 ? `Invalid rig: ${e.message}` : e.message)
       : e instanceof Error ? e.message : "connect failed";
-    toast("error", msg);
+    toast("error", msg, { verbatim: true });
     void hooks.reloadDrivers?.();
   } finally {
     hooks.setBusy(null);
@@ -200,7 +200,7 @@ export async function activateProfileRow(
       : e instanceof ApiError && e.status === 409
         ? "Another profile is still connecting - wait for it to finish before switching again."
         : e instanceof Error ? e.message : "activate failed";
-    toast("error", msg);
+    toast("error", msg, { verbatim: true });
   } finally {
     hooks.setBusy(null);
   }
@@ -241,7 +241,7 @@ export async function disconnectRig(
     }
     toast("success", "Disconnected");
   } catch (e) {
-    toast("error", e instanceof Error ? e.message : "disconnect failed");
+    toast("error", e instanceof Error ? e.message : "disconnect failed", { verbatim: true });
   } finally {
     hooks.setBusy(null);
   }

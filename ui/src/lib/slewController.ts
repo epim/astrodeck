@@ -343,7 +343,17 @@ export function rateById(id: SlewRateOption["id"]): SlewRateOption {
   return SLEW_RATES.find((r) => r.id === id) ?? SLEW_RATES[0];
 }
 
-/** Speed glyph (R21 — encode by shape, never color): pulse=▰ fine=▰▰ set=▰▰▰. */
+/** Speed glyph (R21 - encode by shape, never color): pulse=▰ fine=▰▰ set=▰▰▰
+ *  ceiling=▰▰▰▰.
+ *
+ *  The fourth bar is for a stop that exists only because the mount reported a
+ *  ceiling above the shipped ladder. Without it a 1.44 deg/s mount drew the
+ *  same three bars on 0.5 and on 1.44 - a shape encoding that says the two are
+ *  the same speed class when one of them is nearly three times the other, and
+ *  shape is the only channel a red-adapted eye has here. `#/classic` never
+ *  builds a `ceiling` stop, so its pad is unchanged. */
 export function rateGlyph(id: SlewRateOption["id"]): string {
-  return id === "pulse" ? "▰" : id === "fine" ? "▰▰" : "▰▰▰";
+  return id === "pulse" ? "▰"
+    : id === "fine" ? "▰▰"
+      : id === "ceiling" ? "▰▰▰▰" : "▰▰▰";
 }

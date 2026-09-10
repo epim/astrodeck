@@ -7,6 +7,7 @@
 // differentiated by dash pattern + stroke width + inline labels, NEVER hue
 // alone (night rule, monitor.tsx:266-267).
 import { useEffect, useMemo, useState } from "react";
+import type { ReactNode } from "react";
 import { useStore, useWeather } from "../../store";
 import { Panel, Toggle } from "../ui";
 import { Icon } from "../icons";
@@ -90,7 +91,19 @@ function nearestAstro(
   return typeof v === "number" ? v : null;
 }
 
-export default function SkyConditionsPanel() {
+export default function SkyConditionsPanel({ chrome = "panel" }: {
+  /** Who draws the frame around the forecast.
+   *
+   *  `panel` is the legacy `Panel` - a bordered section titled "Sky Conditions"
+   *  - and is the DEFAULT, so `#/classic`'s monitor grid renders byte for byte
+   *  what it always has. The next UI mounts this inside its own `Card`, which
+   *  already carries the title and the border, so `panel` there drew a second
+   *  title inside a second box. `bare` drops the wrapper and NOTHING else: the
+   *  chart, the threshold rule, the source line and the ignore-tonight toggle
+   *  all stay, including the empty state, which is the only thing that says
+   *  weather is switched off rather than merely quiet. */
+  chrome?: "panel" | "bare";
+}) {
   const weather = useWeather();
   const wsConnected = useStore((s) => s.wsConnected);
   const showToast = useStore((s) => s.showToast);
@@ -210,13 +223,17 @@ export default function SkyConditionsPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [win, weather, darkWindow]);
 
+  /** The caller's chrome or ours - see the `chrome` prop. */
+  const frame = (node: ReactNode) =>
+    chrome === "bare"
+      ? <div data-sky-conditions-bare="">{node}</div>
+      : <Panel className="col-span-full lg:col-span-6" title="Sky Conditions">{node}</Panel>;
+
   if (!weather || !weather.enabled) {
-    return (
-      <Panel className="col-span-full lg:col-span-6" title="Sky Conditions">
-        <p className="text-dim text-xs py-4 text-center">
-          Weather is off — enable it in Settings → Connect.
-        </p>
-      </Panel>
+    return frame(
+      <p className="text-dim text-xs py-4 text-center">
+        Weather is off - enable it in Settings → Connect.
+      </p>,
     );
   }
 
@@ -224,8 +241,7 @@ export default function SkyConditionsPanel() {
   const seeingNow = nearestAstro(weather, nowTs, "seeing");
   const transNow = nearestAstro(weather, nowTs, "transparency");
 
-  return (
-    <Panel className="col-span-full lg:col-span-6" title="Sky Conditions">
+  return frame(
       <div className="data-dim flex flex-col gap-2">
         {chart && win ? (
           <svg
@@ -395,7 +411,6 @@ export default function SkyConditionsPanel() {
             {accessPhrase("control.capture")} needed to override weather
           </span>
         )}
-      </div>
-    </Panel>
+      </div>,
   );
 }

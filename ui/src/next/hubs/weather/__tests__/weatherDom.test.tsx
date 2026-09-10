@@ -593,15 +593,25 @@ await testAsync("the radar map mounts when weather is on", async () => {
     "the pierce-ray explanation is missing");
 
   // R7 T-R7-15: the chrome this screen owns around the kept map is the design's
-  // `Card`, not a legacy `<Panel>`. `RadarMap`'s OWN inner Panel is a named
-  // follow-up (see RadarScreen.tsx's header) and is deliberately not asserted
-  // here - what is asserted is that the wrapper this file owns was rewrapped.
+  // `Card`, not a legacy `<Panel>`.
   const card = byId("wx-radar-card");
   assert(card != null, "no wx-radar-card - the map lost the chrome this screen owns");
   assert(String(card.className).includes("nx-card"),
     `the wrapper is not the design's Card: class "${String(card.className)}"`);
   assert(card.contains(all("button").find((b) => /IR satellite/.test(String(b.textContent)))),
     "the card does not actually contain the map it is supposed to wrap");
+
+  // T-R7-21a item 9: and no card inside the card. `RadarMap` is mounted with
+  // chrome="bare", so its own legacy `<Panel>` - a second border with a second
+  // "Radar" title the sheet header already states - is gone. The IEM
+  // attribution is the part of that panel that must SURVIVE the unwrapping:
+  // it is a compliance claim about the tile source, not decoration.
+  assert(card.querySelector("section.panel") == null,
+    "a legacy <Panel> is still nested inside the design Card - card inside a card");
+  assert(all("h2.panel-title").every((h) => h.textContent !== "Radar"),
+    "the legacy Radar title bar is still drawn inside the screen's own card");
+  assert(/Iowa Environmental Mesonet/.test(String(card.textContent)),
+    "unwrapping the panel dropped the IEM attribution the tiles legally need");
 });
 
 await testAsync("weather off does NOT mount the radar map", async () => {

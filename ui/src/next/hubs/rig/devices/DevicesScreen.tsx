@@ -80,8 +80,8 @@ export function DevicesScreen(): JSX.Element {
 
   useEffect(() => { void reloadDrivers(); reloadProfiles(); }, [reloadDrivers, reloadProfiles]);
 
-  const toast = (level: string, message: string) =>
-    useStore.getState().showToast(level, message);
+  const toast = (level: string, message: string, opts?: { verbatim?: boolean }) =>
+    useStore.getState().showToast(level, message, opts);
   const explain = (reason: string) => toast("warning", reason);
 
   const liveDevices = liveRoleCount(status);

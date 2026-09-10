@@ -975,6 +975,22 @@ await testAsync("weather ON: the map mounts, and the off-card is gone", async ()
     `the conditions card does not say how old the forecast is: "${wx.textContent}"`);
   assert(/tiles refresh while this screen is open/.test(radar.textContent as string),
     `the radar card does not say that it keeps fetching: "${radar.textContent}"`);
+
+  // T-R7-21a item 9: and no card inside the card. Both legacy widgets are
+  // mounted with chrome="bare", so neither draws its own `<Panel>` - a second
+  // border with a second title the eyebrow above it already states. What must
+  // SURVIVE the unwrapping is the part of each panel that is not decoration:
+  // the IEM attribution (a compliance claim about the tiles) and the
+  // ignore-weather-tonight control, which lives nowhere else on this screen.
+  eq(container.querySelectorAll("section.panel").length, 0,
+    "a legacy <Panel> is still nested inside a design Card - card inside a card");
+  assert(Array.from(container.querySelectorAll("h2.panel-title"))
+    .every((h: any) => !/^(Radar|Sky Conditions)$/.test(String(h.textContent))),
+    "a legacy title bar is still drawn inside the card that already carries the title");
+  assert(/Iowa Environmental Mesonet/.test(radar.textContent as string),
+    "unwrapping the radar panel dropped the IEM attribution the tiles legally need");
+  assert(/ignore weather tonight/.test(wx.textContent as string),
+    "unwrapping the conditions panel dropped the ignore-tonight control");
 });
 
 await act(async () => { wxRoot.unmount(); });

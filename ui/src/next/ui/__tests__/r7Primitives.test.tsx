@@ -250,6 +250,53 @@ const REASON = "needs operator or admin access";
   });
 }
 
+// ============================ 3b. NumberField resetKey: the refused write
+//
+// The draft re-syncs from `value`, so a write the rig REFUSED - where `value`
+// never moves at all - left the typed number in the box. Nothing on the screen
+// then said the heater was still on the old setting: 45 in a box next to a rig
+// running 30, which is the shape of every "I set that hours ago" bug report.
+// `resetKey` is how the caller says "that write did not land"; `writeDew` and
+// `writeTempComp` bump it in their refusal branches.
+
+{
+  const attempts: number[] = [];
+  /** A field whose owner REFUSES every commit: `value` is a constant, exactly
+   *  as a config field is when the POST came back 4xx. */
+  function RefusingHarness() {
+    const [key, setKey] = useState(0);
+    return createElement(NumberField, {
+      label: "MAX POWER", value: 30, min: 0, max: 100, integer: true,
+      onCommit: (n: number) => { attempts.push(n); setKey((k) => k + 1); },
+      ariaLabel: "Maximum dew heater power, percent",
+      resetKey: key,
+      "data-testid": "refnum",
+    } as any);
+  }
+  const rinp = () => q('[data-testid="refnum"]');
+
+  test("NumberField: a refused write puts the rig's own number back in the box", () => {
+    render(createElement(RefusingHarness, null));
+    eq(rinp().value, "30", "the harness did not start at the rig's number");
+
+    typeInto(rinp(), "45");
+    blur(rinp());
+    eq(attempts.length, 1, "the commit never fired, so nothing was refused and this is vacuous");
+    eq(attempts[0], 45, "the wrong number was sent");
+    eq(rinp().value, "30",
+      "the refused number is still in the box: the screen claims 45 and the rig is on 30, "
+      + "and nothing on the screen says which one is true");
+  });
+
+  test("NumberField: resetKey does not fight the user between keystrokes", () => {
+    // The reset is a one-shot on the BUMP, not a per-render clamp: a field that
+    // restored `value` on every render could never be typed into at all.
+    typeInto(rinp(), "7");
+    eq(rinp().value, "7", "the draft was wiped mid-typing - the field cannot be used");
+    eq(attempts.length, 1, "typing committed");
+  });
+}
+
 // ============================================================== 4. LockNote
 
 {

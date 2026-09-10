@@ -2386,7 +2386,13 @@ export interface PlanRow {
 }
 
 // ------------------------------------------------------------- touch ergonomics
-export type SlewRateId = "pulse" | "fine" | "set";
+/** The four speed CLASSES a stop can belong to, which is what the pad's shape
+ *  glyph encodes (never colour). `pulse`/`fine`/`set` are the three stops that
+ *  ship; `ceiling` is a stop that exists only because THIS mount reported a
+ *  faster ceiling than the shipped ladder assumed (`hubs/rig/lib/slewStops.ts`,
+ *  `Telescope.max_rate_deg_s`). `#/classic` offers the first three and nothing
+ *  else, so adding the fourth cannot change what it renders. */
+export type SlewRateId = "pulse" | "fine" | "set" | "ceiling";
 
 export interface SlewRateOption {
   id: SlewRateId;

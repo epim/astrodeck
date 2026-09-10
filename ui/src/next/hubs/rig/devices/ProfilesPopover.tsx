@@ -62,8 +62,8 @@ export function ProfilesPopover(p: ProfilesPopoverProps): JSX.Element {
   const [name, setName] = useState("");
   const [pending, setPending] = useState<string | null>(null);
 
-  const toast = (level: string, message: string) =>
-    useStore.getState().showToast(level, message);
+  const toast = (level: string, message: string, opts?: { verbatim?: boolean }) =>
+    useStore.getState().showToast(level, message, opts);
 
   const activateLock = !p.canConfig
     ? `Activating a profile needs ${accessPhrase("config.backend")}.`
@@ -110,7 +110,7 @@ export function ProfilesPopover(p: ProfilesPopoverProps): JSX.Element {
       toast("success", `Deleted "${fresh.name}"`);
       p.reload();
     } catch (e) {
-      toast("error", e instanceof Error ? e.message : "profile delete failed");
+      toast("error", e instanceof Error ? e.message : "profile delete failed", { verbatim: true });
     } finally {
       p.setBusy(null);
     }
@@ -129,7 +129,7 @@ export function ProfilesPopover(p: ProfilesPopoverProps): JSX.Element {
       const msg = e instanceof ApiError && e.status === 409
         ? "The rig disconnected before the snapshot - reconnect, then save."
         : e instanceof Error ? e.message : "profile save failed";
-      toast("error", msg);
+      toast("error", msg, { verbatim: true });
     } finally {
       p.setBusy(null);
     }

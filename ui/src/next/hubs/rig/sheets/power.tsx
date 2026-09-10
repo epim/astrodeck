@@ -234,7 +234,7 @@ export function PowerSheet(_p: SheetProps): JSX.Element {
       // carries everything, and the 5 s poll corrects the row's own lock.
       const refused = switchRefusal(e);
       if (refused) enqueueToast({ level: "error", title: refused });
-      else showToast("error", (e as Error).message);
+      else showToast("error", (e as Error).message, { verbatim: true });
     } finally {
       inFlightRef.current.delete(id);
       const queued = queuedRef.current.get(id);

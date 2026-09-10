@@ -18,6 +18,14 @@
 // appears only when the two disagree, which they do whenever the stack was
 // switched on mid-night (it counts from the press, the ledger counts from dusk)
 // or whenever two filters fold onto one channel.
+//
+// AND THE LEDGER OUTLIVES THE STACK (T-R7-21a item 10). The counts under the
+// strip are the NIGHT'S: `acceptedByFilter` reads the session's frames, which
+// are on disk whether or not anybody asked the stacker to build a picture out
+// of them. Switching the live stack off used to take the whole strip away and
+// the only per-filter tally on the screen with it. With the stack off and no
+// channels, the ledger line now renders alone and says the stack is off, so a
+// count is never left standing with no explanation for the missing chips.
 
 import type { JSX } from "react";
 
@@ -41,6 +49,10 @@ interface Row { name: string; count: number }
  *  stacker are compared as the same thing and an unmapped name still compares
  *  as itself rather than collapsing onto L. */
 const foldKey = (name: string): string => filterToken(name) ?? name.trim().toUpperCase();
+
+/** "H-alpha 12, Oiii 4" - the ledger's OWN names, which are the wheel's. */
+const ledgerWords = (rows: readonly Row[]): string =>
+  rows.map((r) => `${r.name} ${r.count}`).join(", ");
 
 /** Do the ledger's per-filter counts say something the chips do not? Same
  *  channels with the same totals is one fact printed twice; anything else is
@@ -72,7 +84,19 @@ export function ChannelStrip(): JSX.Element | null {
   const accepted = acceptedByFilter(session, tonightNightKey(session));
   const ledger: Row[] = planned.map((p) => ({ name: p.filter, count: accepted.get(p.filter) ?? 0 }));
 
-  if (rows.length === 0 && !status?.enabled) return null;
+  if (rows.length === 0 && !status?.enabled) {
+    // Nothing to say about the stack, and nothing shot yet either.
+    if (ledger.length === 0) return null;
+    return (
+      <div data-testid="now-channel-strip" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        <span data-testid="channel-ledger-note">
+          <Mono size={10} tone="dim">
+            {`Live stack off. This night's accepted subs: ${ledgerWords(ledger)}.`}
+          </Mono>
+        </span>
+      </div>
+    );
+  }
 
   // Nothing stacked yet: the plan says what the composite is GOING to be, and
   // when there is no plan either the chip says what it is rather than guessing
@@ -82,8 +106,7 @@ export function ChannelStrip(): JSX.Element | null {
     : planned.length > 0 ? paletteWord(planned.map((p) => p.filter)) : "COMBINED";
 
   const ledgerLine = ledgerDiffers(rows, ledger)
-    ? "Chips count what the stack holds. This night's accepted subs: "
-      + ledger.map((r) => `${r.name} ${r.count}`).join(", ") + "."
+    ? `Chips count what the stack holds. This night's accepted subs: ${ledgerWords(ledger)}.`
     : null;
 
   return (

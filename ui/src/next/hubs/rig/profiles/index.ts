@@ -2,11 +2,10 @@
 // T-R7-17).
 //
 // The mount file `hubs/rig/sheets/profiles.tsx` imports from here and nowhere
-// else, so `components/settings/ProfileList.tsx` is no longer reachable from
-// that sheet. One next-side importer of the legacy module remains and is a
-// named follow-up, not this task's file: `hubs/rig/devices/rigConnect.ts:23`
-// still pulls `waitForProfileActive` from it and should be switched to
-// `./profileActive` (identical behaviour, pinned by this area's drift test).
+// else, and since T-R7-21a (item 20) so does `hubs/rig/devices/rigConnect.ts`:
+// `components/settings/ProfileList.tsx` is not reachable from anywhere under
+// `ui/src/next/**` any more. The two copies of `waitForProfileActive` are
+// pinned to each other by this area's drift test.
 
 export { ProfilesEditor } from "./ProfilesEditor";
 export { ProfileCard } from "./ProfileCard";

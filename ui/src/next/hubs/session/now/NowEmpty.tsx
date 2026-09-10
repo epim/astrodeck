@@ -253,7 +253,16 @@ export function NowEmpty({ compact = false }: { compact?: boolean }): JSX.Elemen
   const hold = resumeArm?.hold ?? null;
   const last = state.kind === "ready" ? state.rows[0] ?? null : null;
 
+  // THE REFUSAL NAMES WHAT THE ROW IS (T-R7-21a item 11). The gate is one gate
+  // - `POST /api/sequence/start` and `POST /api/flows/{id}/run` both need
+  // CAP_CONTROL_MOUNT and then a camera - but `runBlockedReason`'s `noun`
+  // defaults to "flow", so a saved PLAN row refused with "Running a flow needs
+  // operator or admin access" and sent the reader looking for a flow that is
+  // not on the screen. Same two conditions, the row's own word.
   const runReason = runBlockedReason(canControl, camera.connected, false);
+  const runPlanReason = runBlockedReason(canControl, camera.connected, false, "plan");
+  const reasonFor = (kind: Runnable["kind"]): string | null =>
+    kind === "plan" ? runPlanReason : runReason;
 
   // The plan half of the card is off in the desktop column's density, so the
   // library is not fetched there either: that column is on screen all night on
@@ -325,9 +334,10 @@ export function NowEmpty({ compact = false }: { compact?: boolean }): JSX.Elemen
    *  through the same `resumeSession` wrapper `FlowsScreen.tsx:140-158` uses,
    *  with the same two answers - because "nothing to resume" is an ANSWER
    *  (`app.py` returns `resumed: false`), not a failure. */
-  const resumeArmed = (sessionId: string) => () => {
+  const resumeArmed = (sessionId: string, kind: Runnable["kind"]) => () => {
     if (divertedWhileRunning()) return;
-    if (runReason) { explainLock(runReason); return; }
+    const reason = reasonFor(kind);
+    if (reason) { explainLock(reason); return; }
     void resumeSession(sessionId).then(
       (r) => enqueueToast(r.resumed
         ? { level: "success", title: "Session resumed", detail: `${r.remaining} frames still owed` }
@@ -364,7 +374,7 @@ export function NowEmpty({ compact = false }: { compact?: boolean }): JSX.Elemen
    *  naming what to fix. */
   const runPlan = (row: Runnable) => () => {
     if (divertedWhileRunning()) return;
-    if (runReason) { explainLock(runReason); return; }
+    if (runPlanReason) { explainLock(runPlanReason); return; }
     void (async () => {
       let plan: SequencePlan;
       try {
@@ -547,10 +557,10 @@ export function NowEmpty({ compact = false }: { compact?: boolean }): JSX.Elemen
                           live
                             ? () => nav.hub("session", "now")
                             : r.verb === "RESUME" && armed
-                              ? resumeArmed(armed.id)
+                              ? resumeArmed(armed.id, r.kind)
                               : r.kind === "flow" ? runFlow(r.id) : runPlan(r)
                         }
-                        lockedReason={live ? null : runReason}
+                        lockedReason={live ? null : reasonFor(r.kind)}
                         onExplain={explainLock}
                         data-testid={`run-${r.kind}-${r.id}`}
                       >

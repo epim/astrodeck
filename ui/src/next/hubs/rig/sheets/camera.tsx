@@ -348,7 +348,7 @@ export function CameraSheet(_p: SheetProps): JSX.Element {
 
   const post = async (path: string, body: unknown): Promise<void> => {
     try { await api.post(path, body); }
-    catch (e) { showToast("error", (e as Error).message); }
+    catch (e) { showToast("error", (e as Error).message, { verbatim: true }); }
   };
 
   const cooling = config?.cooling ?? DEFAULT_COOLING;
@@ -359,7 +359,7 @@ export function CameraSheet(_p: SheetProps): JSX.Element {
       await setCoolingConfig({ ...cooling, ...patch });
       await useStore.getState().loadConfig();
     } catch (e) {
-      showToast("error", (e as Error).message);
+      showToast("error", (e as Error).message, { verbatim: true });
     }
   };
 
@@ -395,6 +395,13 @@ export function CameraSheet(_p: SheetProps): JSX.Element {
    *  default, and a FOLLOW DEW tap would silently reset both margins. The base
    *  is read out of the store at press time rather than closed over at render,
    *  so two taps in a row cannot write a stale ramp. */
+  /** Bumped on every REFUSED dew write. The boxes below re-sync their typed
+   *  draft from `value`, and a refusal is the one case where `value` never
+   *  moves: the config is unchanged, so 45 would sit in the box looking saved
+   *  next to a rig still running 30. See `NumberField`'s `resetKey`. */
+  const [dewResetKey, setDewResetKey] = useState(0);
+  const refuseDew = (): void => setDewResetKey((n) => n + 1);
+
   const writeDew = async (patch: Partial<DewConfig>): Promise<void> => {
     const base = useStore.getState().config?.dew ?? DEW_DEFAULTS;
     const next: DewConfig = { ...base, ...patch };
@@ -404,7 +411,8 @@ export function CameraSheet(_p: SheetProps): JSX.Element {
     const refusal = dewRefusal(next);
     if (refusal) {
       setDewRefused(refusal);
-      showToast("error", refusal);
+      showToast("error", refusal, { verbatim: true });
+      refuseDew();
       return;
     }
     setDewRefused(null);
@@ -412,7 +420,8 @@ export function CameraSheet(_p: SheetProps): JSX.Element {
       await setDewConfig(next);
       await useStore.getState().loadConfig();
     } catch (e) {
-      showToast("error", (e as Error).message);
+      showToast("error", (e as Error).message, { verbatim: true });
+      refuseDew();
     }
   };
 
@@ -753,6 +762,7 @@ export function CameraSheet(_p: SheetProps): JSX.Element {
                       ariaLabel="Dew margin at full heater power, degrees Celsius"
                       lockedReason={dewCfgLock.lockedReason}
                       onExplain={dewCfgLock.onExplain}
+                      resetKey={dewResetKey}
                       data-testid="dew-margin-full"
                     />
                     <NumberField
@@ -764,6 +774,7 @@ export function CameraSheet(_p: SheetProps): JSX.Element {
                       ariaLabel="Dew margin at minimum heater power, degrees Celsius"
                       lockedReason={dewCfgLock.lockedReason}
                       onExplain={dewCfgLock.onExplain}
+                      resetKey={dewResetKey}
                       data-testid="dew-margin-off"
                     />
                     <NumberField
@@ -776,6 +787,7 @@ export function CameraSheet(_p: SheetProps): JSX.Element {
                       ariaLabel="Minimum dew heater power, percent"
                       lockedReason={dewCfgLock.lockedReason}
                       onExplain={dewCfgLock.onExplain}
+                      resetKey={dewResetKey}
                       data-testid="dew-min-power"
                     />
                     <NumberField
@@ -787,6 +799,7 @@ export function CameraSheet(_p: SheetProps): JSX.Element {
                       ariaLabel="Maximum dew heater power, percent"
                       lockedReason={dewCfgLock.lockedReason}
                       onExplain={dewCfgLock.onExplain}
+                      resetKey={dewResetKey}
                       data-testid="dew-max-power"
                     />
                     <NumberField
@@ -802,6 +815,7 @@ export function CameraSheet(_p: SheetProps): JSX.Element {
                       ariaLabel="Hand-set override, minutes"
                       lockedReason={dewCfgLock.lockedReason}
                       onExplain={dewCfgLock.onExplain}
+                      resetKey={dewResetKey}
                       data-testid="dew-override"
                     />
                     {dewRefused != null && (

@@ -142,7 +142,7 @@ export function useArm(opts: {
     try {
       await api.post(path, payload);
     } catch (e) {
-      showToast("error", (e as Error).message);
+      showToast("error", (e as Error).message, { verbatim: true });
       setPending(null);
       batchRef.current = null;
       setBatch(null);

@@ -547,10 +547,10 @@ export default function SlewPad(props: SlewPadProps = {}) {
             >
               {rates.map((r, i) => (
                 <button
-                  // The ladder can carry two stops with the same `id` (SlewRateId
-                  // is a closed three-value union and a computed ceiling reuses
-                  // "set"), so the key is the position, which is unique by
-                  // construction.
+                  // The ladder can carry two stops with the same `id` (a mount
+                  // that reports a high ceiling contributes a half-ceiling and a
+                  // ceiling stop, both `"ceiling"`), so the key is the position,
+                  // which is unique by construction.
                   key={`${r.id}-${i}`}
                   role="radio"
                   aria-checked={i === rateIdx}

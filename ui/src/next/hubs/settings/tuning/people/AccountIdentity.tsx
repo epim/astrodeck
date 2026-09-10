@@ -60,7 +60,7 @@ export function AccountIdentity(): JSX.Element {
       // without a reload.
       await Promise.all([st.loadPrincipal(), st.loadAuthMethods(), st.loadConfig()]);
     } catch (e) {
-      showToast("error", (e as Error).message || SIGN_OUT_FAILED);
+      showToast("error", (e as Error).message || SIGN_OUT_FAILED, { verbatim: true });
     } finally {
       setBusy(false);
     }

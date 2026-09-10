@@ -19,7 +19,7 @@
 //
 // Pure module, printed tally + the counts export (shell-and-tests.md section 4).
 
-import { SLEW_RATES, TOUCH_MAX_RATE_DEG_S } from "../../../../lib/slewController";
+import { SLEW_RATES, TOUCH_MAX_RATE_DEG_S, rateGlyph } from "../../../../lib/slewController";
 import {
   MOVE_DEADMAN_MS, ceilingNote, deadmanNote, effectiveCeiling, nudgeStopLabel,
   nudgeStops, rateStopLabel, slewStops,
@@ -95,6 +95,31 @@ test("the AM5N's 1.44 deg/s ends the ladder, and nothing on it exceeds the ceili
   // The middle stop: half the ceiling, because 0.5 -> 1.44 in one jump is a
   // ladder with a hole in it.
   eq(got[3].rateDegS, 0.72, "no intermediate stop between the shipped top and the ceiling");
+});
+
+test("a ceiling-derived stop is its OWN speed class, in the one channel a red eye reads", () => {
+  // The pad encodes speed by SHAPE, never by colour. While both computed stops
+  // reused `id: "set"`, a 1.44 deg/s mount drew the same three bars on 0.5 and
+  // on 1.44 - one glyph for two speeds a factor of nearly three apart, on the
+  // control that moves the telescope.
+  const got = slewStops(1.44);
+  const shipped = got.slice(0, SLEW_RATES.length);
+  const computed = got.slice(SLEW_RATES.length);
+  assert(computed.length === 2,
+    `the AM5N ladder grew ${computed.length} computed stops, not the half and the ceiling - `
+    + "the glyph assertions below would be about the wrong rows");
+  for (const s of computed) {
+    eq(s.id, "ceiling", `a computed stop (${s.label}) is not tagged as ceiling-derived`);
+  }
+  const shippedTop = shipped[shipped.length - 1];
+  assert(rateGlyph(shippedTop.id) !== rateGlyph(computed[computed.length - 1].id),
+    `${shippedTop.label} and ${computed[computed.length - 1].label} draw the same glyph `
+    + `(${rateGlyph(shippedTop.id)}) - the shape says they are the same speed class`);
+  // The three shipped ids are untouched: `#/classic` reads the same table.
+  SLEW_RATES.forEach((want, i) => eq(shipped[i].id, want.id, "a shipped stop's id changed"));
+  eq(rateGlyph("pulse"), "▰", "the pulse glyph moved");
+  eq(rateGlyph("fine"), "▰▰", "the fine glyph moved");
+  eq(rateGlyph("set"), "▰▰▰", "the set glyph moved");
 });
 
 test("a mount slower than the shipped top is not offered the shipped top", () => {

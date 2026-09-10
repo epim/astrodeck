@@ -62,8 +62,8 @@ export function DriverSheet({ params }: SheetProps): JSX.Element {
   const [registered, setRegistered] = useState<string[] | null>(null);
   const [editing, setEditing] = useState<DriverInfo | null>(null);
 
-  const toast = (level: string, message: string) =>
-    useStore.getState().showToast(level, message);
+  const toast = (level: string, message: string, opts?: { verbatim?: boolean }) =>
+    useStore.getState().showToast(level, message, opts);
   const explain = (reason: string) => toast("warning", reason);
   const { lockedReason } = useLock({ cap: "config.backend" });
   const lock = lockedReason ?? (busy ? "The last change is still saving." : null);
@@ -122,7 +122,7 @@ export function DriverSheet({ params }: SheetProps): JSX.Element {
       toast("success", `${name} added - assign it to a role below.`);
       nav.back();
     } catch (e) {
-      toast("error", e instanceof Error ? e.message : "could not add that driver");
+      toast("error", e instanceof Error ? e.message : "could not add that driver", { verbatim: true });
     } finally {
       setBusy(false);
     }
@@ -136,7 +136,7 @@ export function DriverSheet({ params }: SheetProps): JSX.Element {
       toast("success", "Port updated - probe it to see what answers.");
       nav.back();
     } catch (e) {
-      toast("error", e instanceof Error ? e.message : "could not change that port");
+      toast("error", e instanceof Error ? e.message : "could not change that port", { verbatim: true });
     } finally {
       setBusy(false);
     }

@@ -28,9 +28,9 @@
 //      "every control carries aria-disabled" assertion fails; if the editor
 //      fetched without the capability, the `asked` assertion fails.
 //   6. ROLE HONESTY - the default-role picker's options are compared against
-//      the keys of `ROLE_CAPS` read out of `lib/caps.ts` ITSELF, not against a
-//      list this test also types out. A picker that hard-codes four roles goes
-//      red the moment the role table gains or loses one.
+//      the keys of `lib/caps.ts`'s exported `ROLE_CAPS` table itself, not
+//      against a list this test also types out. A picker that hard-codes four
+//      roles goes red the moment the role table gains or loses one.
 //   7. SECRET HYGIENE - the break-glass input is asserted EMPTY while the
 //      seeded config carries a token value, so a rebuild that echoed the
 //      server's block into the box fails even though the box would look right.
@@ -123,9 +123,10 @@ g.fetch = async (url: string, init?: { method?: string; body?: string }) => {
 const { createElement, act } = await import("react");
 const { createRoot } = await import("react-dom/client");
 const { useStore } = await import("../../../../store");
-const { accessPhrase } = await import("../../../../lib/caps");
+const { accessPhrase, ROLE_CAPS } = await import("../../../../lib/caps");
 
 const { UsersScreen, AboutScreen } = await import("../sheets/set3");
+const { USERS_LOCK_SENTENCE, METHODS_NOT_READ_SUB } = await import("../sheets/UsersScreen");
 const { UsersSheet } = await import("../sheets/UsersSheet");
 const { AuthMethodsSheet } = await import("../sheets/AuthMethodsSheet");
 const { AccountSheet } = await import("../sheets/AccountSheet");
@@ -140,7 +141,14 @@ function test(name: string, fn: () => void): void {
   try { fn(); passed++; }
   catch (e) { failed++; failures.push(`x ${name}: ${(e as Error).message}`); }
 }
+async function testAsync(name: string, fn: () => Promise<void>): Promise<void> {
+  try { await fn(); passed++; }
+  catch (e) { failed++; failures.push(`x ${name}: ${(e as Error).message}`); }
+}
 function assert(cond: boolean, msg: string): void { if (!cond) throw new Error(msg); }
+function eq<T>(got: T, want: T, msg = ""): void {
+  if (got !== want) throw new Error(`${msg} expected ${String(want)}, got ${String(got)}`);
+}
 
 const settle = async () => {
   await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
@@ -260,6 +268,67 @@ test("ROLE_DESCRIPTIONS are printed on the USERS screen", () => {
   assert(/Live status and preview frames only/.test(uHost.textContent),
     "the viewer ROLE_DESCRIPTIONS sentence is not on screen");
 });
+
+// ------------------------------- the two rows a non-admin used to lose entirely
+{
+  const asked0 = asked.length;
+  seed(VIEWER);
+  act(() => { uRoot.render(createElement(UsersScreen)); });
+
+  test("a viewer sees the SAME two rows an admin does, locked, not two empty cards", () => {
+    assert(q(uHost, '[data-testid="screen-users"]') != null,
+      "the screen did not render for a viewer - every assertion below would be vacuous");
+    const methods = byId(uHost, "row-auth-methods");
+    const people = byId(uHost, "row-people");
+    assert(methods != null,
+      "SIGN-IN METHODS is gone for a viewer: replacing a row with an empty card is the "
+      + "different-screen-per-role shape ARCHITECTURE section 8 forbids");
+    assert(people != null, "PEOPLE is gone for a viewer, for the same reason");
+    eq(byId(uHost, "empty-auth-methods"), null, "the hidden-card branch is still there");
+    eq(byId(uHost, "empty-people"), null, "the hidden-card branch is still there");
+
+    for (const row of [methods, people]) {
+      // Native `disabled` first: it strips the row from the accessibility tree,
+      // so it would also fail the honest check and report the wrong cause.
+      assert(row.hasAttribute("disabled") === false,
+        `${row.getAttribute("data-testid")} uses the native disabled attribute`);
+      eq(row.getAttribute("aria-disabled"), "true",
+        `${row.getAttribute("data-testid")} is live for a viewer:`);
+      eq(row.getAttribute("title"), USERS_LOCK_SENTENCE,
+        `${row.getAttribute("data-testid")} does not name the capability:`);
+    }
+  });
+
+  test("the locked SIGN-IN METHODS row does not GUESS how this rig signs people in", () => {
+    // The slice is empty because nothing was requested, not because the rig is
+    // open. `methodsSummary(undefined)` says "open - no method enabled", which
+    // on this screen would be a claim about the rig that nobody checked.
+    const sub = String(byId(uHost, "row-auth-methods").textContent);
+    assert(!/open - no method enabled/.test(sub),
+      `a viewer is told this rig accepts anyone, from a slice never fetched: "${sub}"`);
+    assert(sub.includes(METHODS_NOT_READ_SUB),
+      `the row does not say the configuration was not read: "${sub}"`);
+  });
+
+  await testAsync("pressing a locked row fires no request and states the reason", async () => {
+    const before = asked.length;
+    act(() => { useStore.setState({ toasts: [] } as never); });
+    click(byId(uHost, "row-people"));
+    await settle();
+    eq(asked.length, before, "a viewer's press on PEOPLE reached the server");
+    const titles = ((useStore.getState() as any).toasts as any[]).map((t) => t.title);
+    assert(titles.includes(USERS_LOCK_SENTENCE),
+      `the press said nothing (${JSON.stringify(titles)}) - a row that swallows a tap and `
+      + "explains nothing is the silent failure honest-disabled exists to end");
+  });
+
+  test("and nothing was fetched to draw any of it", () => {
+    for (const a of asked.slice(asked0)) {
+      assert(!/\/api\/(users|auth)/.test(a.url),
+        `the screen asked ${a.method} ${a.url} for a viewer with no admin.users`);
+    }
+  });
+}
 
 act(() => { uRoot.unmount(); });
 act(() => { aRoot.unmount(); });
@@ -445,22 +514,20 @@ act(() => { aRoot.unmount(); });
     assert(byId(host, "auth-breakglass") != null, "no Break-glass admin token disclosure");
   });
 
-  // ROLE HONESTY. The expected list is read out of `lib/caps.ts` ITSELF rather
-  // than typed here: a picker that hard-codes four roles and a test that
+  // ROLE HONESTY. The expected list is `lib/caps.ts`'s OWN table rather than a
+  // list typed here: a picker that hard-codes four roles and a test that
   // hard-codes the same four agree with each other and with nothing else.
-  // `ROLE_CAPS` is module-private, so the source is parsed - the same idiom
-  // `shellCss.test.ts` uses to assert against `next.css`.
-  const { readFileSync } = await import("node:fs");
-  const capsSrc = readFileSync(new URL("../../../../lib/caps.ts", import.meta.url), "utf8");
-  const block = /const ROLE_CAPS[^{]*\{([\s\S]*?)\n\};/.exec(capsSrc);
-  const roleCapsKeys = block
-    ? Array.from(block[1].matchAll(/^ {2}(\w+):/gm)).map((m) => m[1])
-    : [];
+  //
+  // `ROLE_CAPS` used to be module-private, so this read the FILE'S SOURCE with
+  // a regex - a check that goes red on a reformat and stays green through a
+  // rename, neither of which is the thing being graded. It is exported now
+  // (T-R7-21a item 19) and the keys come from the object itself.
+  const roleCapsKeys = Object.keys(ROLE_CAPS);
 
   test("ROLE HONESTY: the default-role picker lists exactly the roles in ROLE_CAPS", () => {
     assert(roleCapsKeys.length >= 4,
-      `could not read ROLE_CAPS out of lib/caps.ts (found ${roleCapsKeys.length} keys) - `
-      + "the parse is broken, so the comparison below would be vacuous");
+      `lib/caps.ts's ROLE_CAPS holds ${roleCapsKeys.length} roles - the table is empty `
+      + "or wrong, so the comparison below would be vacuous");
     const picker = byId(host, "auth-default-role");
     assert(picker != null, "no default-role picker on screen");
     const shown = qa(picker, "[data-value]").map((el: any) => el.getAttribute("data-value"));

@@ -5,21 +5,36 @@
 //      visible (`AccountBody`, shared verbatim with `AccountSheet.tsx` - the
 //      route table's "account ... renders inline; the sheet form is the
 //      tablet/desktop panel host" for the SAME sheet name).
-//   2. SIGN-IN METHODS - a summary row into the `authMethods` sheet for an
-//      admin; an EmptyCard carrying the exact reason (verbatim, plan C.7.4)
-//      for anyone else, with no request fired either way.
-//   3. PEOPLE - the same shape, into the `users` sheet; the non-admin path
-//      also keeps the design's own explainer paragraph as this section's
-//      footer (plan C.7.4, amended for the real four-role model).
+//   2. SIGN-IN METHODS - a summary row into the `authMethods` sheet.
+//   3. PEOPLE - the same shape, into the `users` sheet.
 // A ROLES reference block closes the screen: the four `ROLE_DESCRIPTIONS`
 // sentences (`lib/caps.ts`), visible to every role - nobody needs a
 // capability to be told what the roles mean.
+//
+// THE TWO ROWS RENDER FOR EVERY ROLE (T-R7-21a item 18). They used to be
+// replaced by `empty-auth-methods` / `empty-people` cards for a non-admin,
+// which is the "a viewer sees a different screen" shape ARCHITECTURE section 8
+// exists to forbid - and it disagreed with the two SHEETS behind these rows,
+// both of which already render in full and honest-lock their own controls (see
+// `UsersSheet.tsx`'s header for why that was the right call there). The rows
+// are now always drawn, dimmed with `aria-disabled`, and a press states the
+// reason rather than doing nothing.
+//
+// WHAT A LOCKED ROW MUST NOT DO IS GUESS. `methodsSummary` reads the
+// `authMethods` slice, and a reader without the capability never issued the
+// request that fills it - so an unfilled slice would print "open - no method
+// enabled" and tell a viewer this rig accepts anyone. The sub-line says the
+// configuration was not read instead.
+//
+// THE LOCK IS `canAdmin`, NOT `useLock`. `lockReason` ranks a dropped link
+// above a missing capability, and these two rows open a LOCAL sheet: an admin
+// on a flapping link must still be able to open PEOPLE.
 import type { JSX } from "react";
-import { Card, EmptyCard, Label, ListRow } from "../../../ui";
+import { Card, Label, ListRow } from "../../../ui";
 import { NxIcon } from "../../../icons";
 import { nav } from "../../../router";
 import { accessPhrase, ROLE_DESCRIPTIONS, useCanAdminUsers } from "../../../../lib/caps";
-import { useAuthMethods } from "../../../../store";
+import { useAuthMethods, useStore } from "../../../../store";
 import type { PrincipalRole } from "../../../../types";
 import { AccountBody } from "./AccountSheet";
 import { UsersGlyph } from "./UsersSheet";
@@ -41,9 +56,26 @@ function methodsSummary(methods: string[] | undefined): string {
 
 const ROLE_ORDER: readonly PrincipalRole[] = ["admin", "operator", "syncer", "viewer"];
 
+/** The one sentence both locked rows state. The same words the people editor
+ *  behind them uses (`tuning/people`'s `PEOPLE_LOCK_SENTENCE`), spelled here
+ *  rather than imported so this screen does not pull that editor's module
+ *  graph in for a string. */
+export const USERS_LOCK_SENTENCE =
+  `Managing people and sign-in needs ${accessPhrase("admin.users")}.`;
+
+/** What the SIGN-IN METHODS row says instead of a summary it cannot honestly
+ *  make: with no `admin.users` nothing was ever requested, so an empty slice
+ *  says nothing at all about how this rig signs people in. */
+export const METHODS_NOT_READ_SUB =
+  `not read from the rig - reading it needs ${accessPhrase("admin.users")}`;
+
 export function UsersScreen(): JSX.Element {
   const canAdmin = useCanAdminUsers();
   const authMethods = useAuthMethods();
+  const lockedReason = canAdmin ? null : USERS_LOCK_SENTENCE;
+  const onExplain = (reason: string): void => {
+    useStore.getState().enqueueToast({ level: "warning", title: reason });
+  };
 
   return (
     <div data-testid="screen-users">
@@ -51,50 +83,37 @@ export function UsersScreen(): JSX.Element {
       <AccountBody />
 
       <Label>SIGN-IN METHODS</Label>
-      {canAdmin ? (
-        <Card>
-          <ListRow
-            icon={<NxIcon name="safety" />}
-            title="SIGN-IN METHODS"
-            sub={methodsSummary(authMethods?.methods)}
-            chevron
-            onPress={() => nav.sheet("authMethods")}
-            data-testid="row-auth-methods"
-          />
-        </Card>
-      ) : (
-        <EmptyCard
-          title="SIGN-IN METHODS HIDDEN"
-          hint={`Sign-in methods need ${accessPhrase("admin.users")}.`}
-          data-testid="empty-auth-methods"
+      <Card>
+        <ListRow
+          icon={<NxIcon name="safety" />}
+          title="SIGN-IN METHODS"
+          sub={canAdmin ? methodsSummary(authMethods?.methods) : METHODS_NOT_READ_SUB}
+          chevron
+          onPress={() => nav.sheet("authMethods")}
+          lockedReason={lockedReason}
+          onExplain={onExplain}
+          data-testid="row-auth-methods"
         />
-      )}
+      </Card>
 
       <Label>PEOPLE</Label>
-      {canAdmin ? (
-        <Card>
-          <ListRow
-            icon={<UsersGlyph size={18} />}
-            title="PEOPLE"
-            sub="roles, access and sign-in for everyone on this rig"
-            chevron
-            onPress={() => nav.sheet("users")}
-            data-testid="row-people"
-          />
-        </Card>
-      ) : (
-        <>
-          <EmptyCard
-            title="PEOPLE LIST HIDDEN"
-            hint={`The people list needs ${accessPhrase("admin.users")}.`}
-            data-testid="empty-people"
-          />
-          <p style={NOTE_STYLE} data-testid="users-footer">
-            Owner configures the rig and sites. Operators can run and stop
-            flows. Viewers see Monitor and the Gallery only - handy for a club
-            night. A syncer only copies raw files to another machine.
-          </p>
-        </>
+      <Card>
+        <ListRow
+          icon={<UsersGlyph size={18} />}
+          title="PEOPLE"
+          sub="roles, access and sign-in for everyone on this rig"
+          chevron
+          onPress={() => nav.sheet("users")}
+          lockedReason={lockedReason}
+          onExplain={onExplain}
+          data-testid="row-people"
+        />
+      </Card>
+      {!canAdmin && (
+        <p style={NOTE_STYLE} data-testid="users-footer">
+          The ROLES list below says what each of those four words means on this
+          rig; yours is on the SIGNED IN line above.
+        </p>
       )}
 
       <Label>ROLES</Label>

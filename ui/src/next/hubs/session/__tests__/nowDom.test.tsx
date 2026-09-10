@@ -641,6 +641,15 @@ await testAsync("a viewer gets the list and the verbs, locked, and fires NOTHING
   eq(verb.getAttribute("title"), "Running a flow needs operator or admin access.",
     "the verb does not say who may press it:");
 
+  // T-R7-21a item 11: the same gate, the row's own noun. A saved PLAN refused
+  // with the word "flow" sends the reader looking for a flow that is not on
+  // the screen; `runBlockedReason` takes the noun, and this is the caller that
+  // has two kinds of row under one reason.
+  const planVerb = byId("run-plan-p1");
+  assert(planVerb != null, "the plan row is gone, so the noun below is not being graded");
+  eq(planVerb.getAttribute("title"), "Running a plan needs operator or admin access.",
+    "the plan row is refused with the wrong noun:");
+
   await click(verb);
   eq(asks.length, before, "a viewer's press reached the server");
   eq(gets("/api/flows/f9/tonight").length, 0,

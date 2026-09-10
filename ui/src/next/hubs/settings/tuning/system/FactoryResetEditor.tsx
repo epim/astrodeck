@@ -164,7 +164,7 @@ export function FactoryResetEditor(): JSX.Element {
     } catch (e) {
       runningRef.current = false;
       setBusy(false);
-      showToast("error", e instanceof Error ? e.message : "factory reset failed");
+      showToast("error", e instanceof Error ? e.message : "factory reset failed", { verbatim: true });
       void refresh();
     }
   };

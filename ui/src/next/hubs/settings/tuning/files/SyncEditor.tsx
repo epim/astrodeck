@@ -132,7 +132,7 @@ export function SyncEditor(): JSX.Element {
       const s = await pushSyncNow();
       setStatus(s);
       // The RESULT, not "started" - this is the whole point of the button.
-      if (s.last?.error) showToast("error", s.last.error);
+      if (s.last?.error) showToast("error", s.last.error, { verbatim: true });
       else if (s.last) showToast("success", s.last.summary);
     } catch (e) {
       setErr(e instanceof ApiError && e.status === 403

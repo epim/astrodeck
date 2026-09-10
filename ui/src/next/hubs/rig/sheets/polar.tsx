@@ -186,7 +186,7 @@ export function PolarSheet(_props: SheetProps): JSX.Element {
   // still swinging. A stop is idempotent server-side.
   const [busy, setBusy] = useState(false);
   const run = async (fn: () => Promise<unknown>) => {
-    try { await fn(); } catch (e) { showToast("error", (e as Error).message); }
+    try { await fn(); } catch (e) { showToast("error", (e as Error).message, { verbatim: true }); }
   };
   const act = async (fn: () => Promise<unknown>) => {
     if (busy) return;
