@@ -324,8 +324,14 @@ await testAsync("the search field asks the catalogue, and a hit aims the finder"
   const input = q('input[aria-label="Search the target catalog"]');
   assert(input != null, "the search field is missing - GAP-ANALYSIS 6 asks for it by name");
   // The placeholder is load-bearing: whatever the example shows, a beginner
-  // types, and the server was changed so that exact string finds M31.
-  eq(input.getAttribute("placeholder"), "Search catalog — e.g. M 31", "the documented example");
+  // types, and the server was changed so that the spaced designation "M 31"
+  // finds M31 (squash_designation drops separators - the dash below is not
+  // on the wire).
+  eq(input.getAttribute("placeholder"), "Search catalog - e.g. M 31", "the documented example");
+  assert(
+    !(input.getAttribute("placeholder") ?? "").includes("\u2014"),
+    "the placeholder must never carry an em-dash",
+  );
 
   const before = asks.length;
   await act(async () => {
