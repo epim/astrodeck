@@ -99,7 +99,7 @@ export const USERS_ADD_CANCEL = "CANCEL";
 export const USERS_LOADING = "Reading the account list from the rig";
 export const USERS_EMPTY_TITLE = "NO USERS YET";
 export const USERS_EMPTY_HINT =
-  "Add a local account so people can sign in to control the rig. Until one exists, sign-in cannot be turned on.";
+  "Add a local account so people can sign in and run the rig. Until one exists, sign-in cannot be turned on.";
 export const USERS_LOAD_FAILED = "Could not load the account list.";
 export const USERS_ROLE_FAILED = "Could not change that role.";
 export const USERS_STATUS_FAILED = "Could not change that account's status.";
