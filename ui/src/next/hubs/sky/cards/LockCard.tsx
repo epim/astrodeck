@@ -26,7 +26,7 @@ import type { JSX } from "react";
 import { Card, Mono, honestPress, lockedAttrs, lockedClass } from "../../../ui";
 import { NxIcon } from "../../../icons";
 import { SkyGlyph } from "./glyphs";
-import { windowLabel, type SkyTarget } from "../finder";
+import { KIND_ICON, windowLabel, type SkyTarget } from "../finder";
 import { lockCta, type LockCta } from "./lockCta";
 
 const MONO = "'IBM Plex Mono', ui-monospace, monospace";
@@ -74,6 +74,9 @@ export interface LockCardProps {
   primaryReason: string | null;
   singleReason: string | null;
   onExplain: (reason: string) => void;
+  /** Passes found for a locked SATELLITE, or null when nobody has answered
+   *  yet. Only `lockCta` reads it, and only for a satellite. */
+  passCount?: number | null;
 }
 
 export function LockCard({
@@ -92,8 +95,9 @@ export function LockCard({
   primaryReason,
   singleReason,
   onExplain,
+  passCount = null,
 }: LockCardProps): JSX.Element {
-  const cta = lockCta(lock, equipConnected);
+  const cta = lockCta({ ...lock, passCount }, equipConnected);
   const skin = ctaSkin(cta);
 
   // At two or more the secondary button stops being "add one more" and becomes
@@ -119,7 +123,11 @@ export function LockCard({
                 color: "var(--accent)", flexShrink: 0,
               }}
             >
-              <NxIcon name={lock.kind === "moon" ? "moon" : lock.kind === "planet" ? "planet" : lock.kind === "galaxy" ? "galaxy" : lock.kind === "cluster" ? "cluster" : "nebula"} size={18} />
+              {/* The finder's own table, not a ternary chain: a kind added to
+                  `SKY_KINDS` without a case here used to fall through to the
+                  nebula glyph, which is how a comet would have been drawn as a
+                  nebula on the one card that names what you are pointing at. */}
+              <NxIcon name={KIND_ICON[lock.kind]} size={18} />
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0 }}>
               <div data-testid="sky-lock-name" style={{ fontFamily: DISPLAY, fontWeight: 600, fontSize: 15, letterSpacing: ".1em" }}>
@@ -224,9 +232,14 @@ export function LockCard({
           <span style={{ fontFamily: DISPLAY, fontWeight: 600, fontSize: 12, letterSpacing: ".14em" }}>
             {cta.label}
           </span>
-          <span style={{ fontFamily: MONO, fontSize: 10, opacity: 0.8, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "100%" }}>
-            {planSummary}
-          </span>
+          {/* Rendered only when there IS one. A satellite has no plan to
+              summarise - it is not a night, it is a five-minute pass - and an
+              empty second line would leave the label floating off centre. */}
+          {planSummary !== "" && (
+            <span style={{ fontFamily: MONO, fontSize: 10, opacity: 0.8, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "100%" }}>
+              {planSummary}
+            </span>
+          )}
         </button>
 
         <div style={{ display: "flex", gap: 8 }}>

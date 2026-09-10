@@ -10,6 +10,8 @@
 export { SkyView, type SkyViewProps } from "./SkyView";
 export {
   useSkyModel,
+  useEphemerisRows,
+  useSatellitePasses,
   windowLabel,
   MAX_MARKERS,
   LAYERS_NOTE_DEFAULT,
@@ -18,6 +20,11 @@ export {
   WIND_NOTE_NONE,
   RANK_NEEDS_SITE,
   NO_COORDS_NOTE,
+  COMET_GEOCENTRIC_NOTE,
+  PASSES_FAILED,
+  PASS_WINDOW_HOURS,
+  type EphemerisRows,
+  type PassesState,
   type SkyModel,
   type ReticleModel,
   type PatchModel,
@@ -27,6 +34,7 @@ export {
   KIND_ICON,
   KIND_LABEL,
   SKY_KINDS,
+  SATELLITE_MARKERS,
   CLOUDED_PCT,
   LOCK_RADIUS_PX,
   pickLock,

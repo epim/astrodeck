@@ -6,27 +6,70 @@
 // rather than at every call site:
 //
 //   1. `/api/catalog` and `/api/catalog/region` rows carry a `kind` discriminator
-//      ("dso" | "star" | "solar_system" | "coordinates"); `/api/catalog/tonight`
-//      builds its picks inline and carries NONE, because every pick is deep-sky.
-//      So `kind` is read FIRST and `type` only refines it.
+//      ("dso" | "star" | "solar_system" | "satellite" | "comet" | "coordinates");
+//      `/api/catalog/tonight` builds its picks inline and carries NONE, because
+//      every pick is deep-sky. So `kind` is read FIRST and `type` only refines it.
 //   2. For a solar-system row the fields are the other way round from a DSO:
 //      `id` is the LABEL ("Jupiter") and `name` is the whole describe SENTENCE
 //      (solar_system.py row()). A marker pill or a lock-card title that renders
 //      `name` for a body prints a paragraph. `displayName`/`fullName` below are
 //      the only two functions allowed to decide which field is which.
+//      SATELLITES AND COMETS ARE THE SECOND AND THIRD ROW FAMILIES WITH THAT
+//      SHAPE (`ephemeris/satellites.py:421-441`, `ephemeris/comets.py:453-490`),
+//      which is why the branch below tests a SET of kinds and not one string.
 //
 // The Sun is dropped outright: it is offered only inside a solar session and has
-// no business on a deep-sky finder. Comets and satellites are dropped for the
-// reason the plan's H.1 gives - the engine carries no ephemeris for either, and
-// a kind with no data source is not a filter anybody can usefully turn on.
+// no business on a deep-sky finder. Satellites and comets are no longer dropped
+// (wave S7 gave the engine SGP4 and MPC elements - decision D-SKY-1); what a
+// satellite may NOT do is be drawn on the reticle, see SATELLITE_MARKERS below.
 
 import type { DifficultyTier } from "../../../../types";
 import type { NxIconName } from "../../../icons";
 
-/** The five kinds the lens can show. Not seven: see hub-sky plan H.1. */
-export type SkyKind = "galaxy" | "nebula" | "cluster" | "planet" | "moon";
+/** The seven kinds the lens can show - the README's own seven, complete since
+ *  wave S7 put satellite and comet ephemerides on the engine (D-SKY-1). */
+export type SkyKind =
+  | "galaxy"
+  | "nebula"
+  | "cluster"
+  | "planet"
+  | "moon"
+  | "satellite"
+  | "comet";
 
-export const SKY_KINDS: readonly SkyKind[] = ["galaxy", "nebula", "cluster", "planet", "moon"];
+export const SKY_KINDS: readonly SkyKind[] = [
+  "galaxy", "nebula", "cluster", "planet", "moon", "satellite", "comet",
+];
+
+/**
+ * MAY A SATELLITE BE DRAWN ON THE RETICLE? No, and this is the one line that
+ * decides it. Two reasons, and only the first of them has been fixed.
+ *
+ * 1. THE SERVER OVERWRITE - FIXED, VERIFIED 2026-09-10. `api/app.py` used to
+ *    recompute `alt`/`az` from `ra_hours`/`dec_deg` for every row it served a
+ *    `view.site_derived` caller. A satellite's RA/Dec is GEOCENTRIC
+ *    (`ephemeris/satellites.py:414-416`) while the alt/az the module computed
+ *    is TOPOCENTRIC (`:411`), so at 400 km the route replaced the right horizon
+ *    position with one tens of degrees away. S7L landed the guard
+ *    (`api/app.py:7473-7482`, `if r.get("kind") == "satellite": continue`), so
+ *    the alt/az on the wire are now correct AT THE MOMENT THEY WERE COMPUTED.
+ *
+ * 2. THE CADENCE - NOT FIXED, and it is why this stays false. `useEphemerisRows`
+ *    refreshes on `SOLAR_TTL_MS` (120 s), which is right for a comet and absurd
+ *    for a body in low Earth orbit: the ISS covers about four degrees of sky a
+ *    SECOND, so a two-minute-old position is not slightly stale, it is a
+ *    different part of the sky. Everything else the finder would do with the
+ *    row is sidereal too - `walkTrack` draws an hour-angle arc, `rankTargets`
+ *    scores minutes above the floor to dawn, `paletteFor` names filters - and
+ *    none of that describes a five-minute pass.
+ *
+ * So a satellite is a LIST target: it appears in the search sheet, and picking
+ * it opens the passes list, which is the answer the decision actually asked for
+ * (wave-u7b risk R1's recommended default). Flipping this to `true` needs a
+ * per-second position source, not a constant change - but every branch behind
+ * it is written, so the constant is where that work starts.
+ */
+export const SATELLITE_MARKERS = false;
 
 /** Lens-dial captions, in the design's own words. */
 export const KIND_LABEL: Record<SkyKind, string> = {
@@ -35,6 +78,8 @@ export const KIND_LABEL: Record<SkyKind, string> = {
   cluster: "CLUSTERS",
   planet: "PLANETS",
   moon: "MOON",
+  satellite: "SATELLITES",
+  comet: "COMETS",
 };
 
 /** Which `next/icons.tsx` glyph draws each kind - the same paths the prototype's
@@ -46,6 +91,8 @@ export const KIND_ICON: Record<SkyKind, NxIconName> = {
   cluster: "cluster",
   planet: "planet",
   moon: "moon",
+  satellite: "satellite",
+  comet: "comet",
 };
 
 /** A row from any of the three sources, in the loosest shape all three satisfy. */
@@ -101,6 +148,12 @@ const NARROWBAND_TYPES = new Set([
  */
 export function kindOf(row: CatalogRowLike): SkyKind | null {
   const type = (row.type ?? "").trim();
+  // BEFORE the type table, and deliberately: a satellite row's `type` is the
+  // word "Satellite" and a comet's is "Comet", neither of which the DSO tables
+  // below know, so both would fall through to the `nebula` default and a comet
+  // would be drawn with a nebula's glyph on the finder and in the ranked list.
+  if (row.kind === "satellite") return "satellite";
+  if (row.kind === "comet") return "comet";
   if (row.kind === "solar_system") {
     if (type === "Moon") return "moon";
     if (type === "Planet") return "planet";
@@ -113,9 +166,20 @@ export function kindOf(row: CatalogRowLike): SkyKind | null {
   return "nebula";
 }
 
-/** The short label: `id` for a body, the common name (or designation) otherwise. */
+/**
+ * Row families whose `id` is the LABEL and whose `name` is a composed SENTENCE.
+ *
+ * Three of them now, which is why this is a set and not a string comparison:
+ * `solar_system.py row()`, `ephemeris/satellites.py:421-441` and
+ * `ephemeris/comets.py:453-490` all build a row that way. A card that printed
+ * `name` for one of these would print a paragraph where a title belongs.
+ */
+const SENTENCE_NAMED = new Set(["solar_system", "satellite", "comet"]);
+
+/** The short label: `id` for a body, satellite or comet; the common name (or
+ *  designation) otherwise. */
 export function displayName(row: CatalogRowLike): string {
-  if (row.kind === "solar_system") return row.id;
+  if (row.kind != null && SENTENCE_NAMED.has(row.kind)) return row.id;
   const n = (row.label ?? row.name ?? "").trim();
   return n !== "" ? n : row.id;
 }
@@ -131,7 +195,7 @@ export function displayName(row: CatalogRowLike): string {
  * time instead.
  */
 export function fullName(row: CatalogRowLike): string {
-  if (row.kind === "solar_system") return (row.name ?? "").trim();
+  if (row.kind != null && SENTENCE_NAMED.has(row.kind)) return (row.name ?? "").trim();
   const d = (row.describe ?? "").trim();
   if (d !== "") return d;
   // `name` is a SECOND line only where the row also carries a short `label` (the

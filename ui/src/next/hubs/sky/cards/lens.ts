@@ -1,17 +1,23 @@
 // lens.ts - the lens dial's geometry and its hold-to-learn copy, kept pure so
 // both can be tested without mounting a 300 px stage (hub-sky plan A.6, H.1).
 //
-// FIVE kinds, not the README's seven. The engine carries ERFA ephemerides for
-// the Sun, the Moon and seven planets and NOTHING for satellites or comets, so
-// SATELLITES and COMETS have no row to filter, no marker to hide and no count to
-// print. They are not rendered greyed either: a kind with no data source behind
-// it is not a filter anybody can usefully turn on, and drawing one would promise
-// a list that can never arrive. See plan H.1.
+// SEVEN kinds, the README's own seven, complete since wave S7 gave the engine
+// SGP4 satellite elements and MPC comet elements (decision D-SKY-1). The dial
+// used to hold five and said so: there was no row to filter, no marker to hide
+// and no count to print for SATELLITES or COMETS, and a kind with no data
+// source is not a filter anybody can usefully turn on.
+//
+// THE TWO NEW SEATS DO NOT COUNT THE SAME THING THE OTHER FIVE DO, which is
+// what `LENS_COUNT_NOUN` exists to say out loud. Reach is a horizon question:
+// a satellite's horizon position does not survive `/api/catalog`
+// (`finder/targets.ts SATELLITE_MARKERS`) and a comet the server could not
+// place topocentrically has none at all, so their buttons count what the
+// ephemeris CARRIES and the aria label says "listed", not "in reach".
 //
 // The seat arithmetic is the prototype's own (proto/logic.js:493): the buttons
 // sit on a circle of radius 108 about the stage centre at 150,150, and the
 // captions sit 44 px further out. Keeping it here rather than inline in the
-// component is what lets a test assert that five kinds come back evenly spaced
+// component is what lets a test assert that the kinds come back evenly spaced
 // and that the first one is at the top - which is the only part a reader of the
 // screenshot can check.
 
@@ -70,6 +76,29 @@ export const LENS_LEARN: Record<SkyKind, string> = {
     "Video, not subs: thousands of millisecond frames, keep the sharpest. Best near transit when they are highest.",
   moon:
     "Video or very short frames. Bright enough to image through thin cloud - and to spoil faint targets near it.",
+  satellite:
+    "Minutes, not hours: a bright pass crosses the sky in about five, so the card gives rise, peak and set times rather than an altitude now.",
+  comet:
+    "Deep-sky shaped but moving against the stars, so short subs and a fresh solve beat one long stack - and a fresh element file beats both.",
+};
+
+/**
+ * What the number on a lens button counts, per kind.
+ *
+ * The five deep-sky kinds count objects IN REACH - up, unobstructed, and not
+ * under cloud. The two ephemeris kinds count what the rig's element files
+ * carry, because reach is a horizon question their rows cannot all answer (see
+ * the header). The noun rides into the button's accessible name so the number
+ * is never read as an answer to a question nobody asked.
+ */
+export const LENS_COUNT_NOUN: Record<SkyKind, string> = {
+  galaxy: "in reach",
+  nebula: "in reach",
+  cluster: "in reach",
+  planet: "in reach",
+  moon: "in reach",
+  satellite: "listed",
+  comet: "listed",
 };
 
 export const LENS_OVERLAY_NOTE =

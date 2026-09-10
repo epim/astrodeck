@@ -32,11 +32,19 @@ import {
   missingOpticsFields,
   type OpticsLike,
 } from "../../../../lib/framing";
+import { getSatellitePasses } from "../../../../api/ephemeris";
 import { useSkyRegion } from "../../../../lib/skyRegion";
 import { breachSpans } from "../../../../lib/weather";
 import { useCapability } from "../../../../lib/caps";
 import { useConfig, useSite, useStatus, useStore, useWeather } from "../../../../store";
-import type { TonightResponse, VisibilityNight } from "../../../../types";
+import type {
+  CometRow,
+  EphemerisCacheState,
+  SatellitePass,
+  SatelliteRow,
+  TonightResponse,
+  VisibilityNight,
+} from "../../../../types";
 import type { NxIconName } from "../../../icons";
 import { rankTargets, windowLabel } from "../../../lib/reach";
 import { horizonAltAt, type HorizonPoint } from "../../../lib/horizonModel";
@@ -65,6 +73,7 @@ import {
   walkTrack,
   type TrackContext,
   type TrackRender,
+  type TrackSample,
 } from "./track";
 import {
   cloudBlobLabels,
@@ -84,6 +93,7 @@ import {
   mergeRows,
   paletteFor,
   pickLock,
+  SATELLITE_MARKERS,
   SKY_KINDS,
   type CatalogRowLike,
   type Marker,
@@ -145,6 +155,23 @@ export const RANK_NEEDS_SITE = "Ranking tonight needs site access; search still 
  */
 export const NO_COORDS_NOTE =
   "Precise location is hidden for this role, so the finder can only place what the rig placed for it.";
+
+/** How far ahead the passes list looks. The route's own default is 24 h and its
+ *  ceiling is 72 (`ephemeris/routes.py:81-84`); a day is what "tonight" means
+ *  here and every hour past it costs another sweep of SGP4. */
+export const PASS_WINDOW_HOURS = 24;
+
+/** The fallback when the passes call fails with nothing to quote - a transport
+ *  failure, not a refusal, so it says which and offers the retry. */
+export const PASSES_FAILED =
+  "Could not work out the passes. The rig answered nothing - try again.";
+
+/** A comet computed from the centre of the Earth. `comets.py:453-490` sends
+ *  `topocentric: false` with NO alt/az when there is no site to place it
+ *  against, so it is listed and not drawn: an arc on the horizon dome would be
+ *  a claim about a horizon nobody computed. */
+export const COMET_GEOCENTRIC_NOTE =
+  "Listed but not drawn: this comet was computed from the centre of the Earth, so there is no horizon position for it.";
 
 export interface ReticleModel {
   haveOptics: boolean;
@@ -224,6 +251,16 @@ export interface SkyModel {
   windArrows: WindArrow[];
   wind: WindModel | null;
   track: TrackRender | null;
+  /**
+   * The SAME walk `track` is drawn from, before it was projected into the
+   * finder's flat sky box - alt/az samples, so a hemisphere can draw it too.
+   *
+   * `TrackRender` is SVG polylines in box pixels and cannot be put on a dome,
+   * which is why `SkyHub`'s skydome card re-walked the arc by hand. Exposing
+   * the samples here is what lets that duplicate walk go: two walks over the
+   * same inputs are two chances to disagree about where an object goes.
+   */
+  trackSamples: TrackSample[] | null;
   reticle: ReticleModel;
   patch: PatchModel | null;
   /** In-reach count per kind, IGNORING the lens - the number on each lens button
@@ -237,6 +274,22 @@ export interface SkyModel {
   weatherAllowed: boolean;
   /** True when this principal may see the ranked list at all. */
   rankingAllowed: boolean;
+  /**
+   * Satellites, as a LIST and never as markers (`targets.ts SATELLITE_MARKERS`).
+   * Empty for a principal the server withheld them from - and then the reason
+   * is in `ephemerisNotes`, in the server's own words.
+   */
+  satellites: SatelliteRow[];
+  /** Comets. The topocentric ones are also in `targets`/`markers`; the
+   *  geocentric ones are only here, and `COMET_GEOCENTRIC_NOTE` says why. */
+  comets: CometRow[];
+  /** The `/api/catalog` notes for those two searches, verbatim. */
+  ephemerisNotes: string[];
+  /** Just the satellite search's own notes. `[0]` is the refusal a principal
+   *  without `view.site_derived` gets instead of rows, in the server's words -
+   *  which is what a locked passes card shows, rather than a cap phrase we
+   *  wrote ourselves. */
+  satelliteNotes: string[];
   /** The server's own sentence for an empty cloud map, when it sent one. */
   cloudReason: string | null;
   /** Why the ranked list is empty, when it is. */
@@ -330,6 +383,158 @@ function useSolarSystem(enabled: boolean): CatalogRowLike[] {
     return () => { alive = false; };
   }, [enabled, beat]);
   return rows;
+}
+
+/** What `useEphemerisRows` hands back. `notes` is the SERVER's own sentences,
+ *  verbatim and in the order it sent them: the withheld one, the no-elements one
+ *  and the stale one all live there, and every one of them carries something the
+ *  rows cannot (why the list is short, how old the elements are, where to go). */
+export interface EphemerisRows {
+  satellites: SatelliteRow[];
+  comets: CometRow[];
+  /**
+   * The two searches' notes kept APART, not just merged.
+   *
+   * A surface that has to show "why is there no satellite list" must not have
+   * to guess which of a merged array said it - a text match on the server's
+   * wording is a test that passes until somebody improves a sentence. The
+   * satellite refusal is `satelliteNotes[0]` because that is the note the
+   * satellite search itself produced.
+   */
+  satelliteNotes: string[];
+  cometNotes: string[];
+  /** Both, de-duplicated, in the order the server sent them: for a surface that
+   *  just prints every sentence it was given. */
+  notes: string[];
+  loading: boolean;
+}
+
+const EPHEMERIS_ROWS_EMPTY: EphemerisRows = {
+  satellites: [], comets: [], satelliteNotes: [], cometNotes: [], notes: [], loading: false,
+};
+
+/**
+ * Satellites and comets, off the same `/api/catalog` search the Moon and the
+ * planets come from (`ephemeris/satellites.py:459-532`, `comets.py:511-546`
+ * answer a 3+ character prefix of their own kind name).
+ *
+ * NEITHER CALL IS GATED ON `view.site_derived` HERE, and that is deliberate.
+ * The satellite module withholds its own rows and answers with `WITHHELD_NOTE`
+ * (`satellites.py:77-82`) for a principal that may not have a site-derived
+ * answer; the comet module serves every caller and marks the row
+ * `topocentric: false` instead (`comets.py:453-490`). Gating the fetch here
+ * would replace the server's sentence with silence, and the sentence is the
+ * only thing that tells a viewer why the list is empty.
+ *
+ * Same `SOLAR_TTL_MS` cadence as `useSolarSystem`: a satellite moves degrees a
+ * second, but these rows are a LIST, not a marker, and the number that decays
+ * on this payload is the element age, in days.
+ */
+export function useEphemerisRows(enabled: boolean): EphemerisRows {
+  const [rows, setRows] = useState<EphemerisRows>(EPHEMERIS_ROWS_EMPTY);
+  const [beat, setBeat] = useState(0);
+  useEffect(() => {
+    if (!enabled) return;
+    const id = setInterval(() => setBeat((n) => n + 1), SOLAR_TTL_MS);
+    return () => clearInterval(id);
+  }, [enabled]);
+  useEffect(() => {
+    if (!enabled) { setRows(EPHEMERIS_ROWS_EMPTY); return; }
+    let alive = true;
+    setRows((r) => ({ ...r, loading: true }));
+    const one = (q: string): Promise<{ results: CatalogRowLike[]; notes: string[] }> =>
+      api
+        .get<{ results?: CatalogRowLike[]; notes?: string[] }>(`/api/catalog?q=${q}&explain=1`)
+        .then((r) => ({
+          results: Array.isArray(r?.results) ? r.results : [],
+          notes: Array.isArray(r?.notes) ? r.notes.filter((n) => typeof n === "string") : [],
+        }))
+        // An engine without the ephemeris routes answers the search normally
+        // and simply matches nothing, so a failure here is a transport failure
+        // and there is no sentence of the server's to show for it.
+        .catch(() => ({ results: [] as CatalogRowLike[], notes: [] as string[] }));
+    void Promise.all([one("satellites"), one("comets")]).then(([s, c]) => {
+      if (!alive) return;
+      const notes: string[] = [];
+      for (const n of [...s.notes, ...c.notes]) if (!notes.includes(n)) notes.push(n);
+      setRows({
+        satellites: s.results.filter((r) => r.kind === "satellite") as unknown as SatelliteRow[],
+        comets: c.results.filter((r) => r.kind === "comet") as unknown as CometRow[],
+        satelliteNotes: s.notes,
+        cometNotes: c.notes,
+        notes,
+        loading: false,
+      });
+    });
+    return () => { alive = false; };
+  }, [enabled, beat]);
+  return rows;
+}
+
+/** What `useSatellitePasses` hands back. `passes === null` means nobody has
+ *  answered yet; `[]` means the search ran and found nothing above the horizon,
+ *  which is a different statement and gets different copy. */
+export interface PassesState {
+  passes: SatellitePass[] | null;
+  elements: EphemerisCacheState | null;
+  notes: string[];
+  loading: boolean;
+  error: string | null;
+  /** A VISIBLE retry, never an automatic one - see the cost note below. */
+  refresh: () => void;
+}
+
+/**
+ * Tonight's passes for one satellite.
+ *
+ * ONE FETCH PER SATELLITE, NEVER A POLL. `GET /api/satellites/passes` is
+ * thousands of SGP4 evaluations plus the matching frame transforms, run off the
+ * event loop on a worker thread (`ephemeris/routes.py:100-108`) precisely so it
+ * cannot stall the 2 s status poll. A card that refreshed itself would spend a
+ * phone's battery and a rig's CPU on numbers that change by seconds a day.
+ *
+ * `enabled` is `view.site_derived`: the WHOLE route is behind it and a
+ * non-holder gets a 403, not an empty list. The right answer for them is the
+ * server's withheld sentence out of the catalog notes, so this hook fires
+ * nothing at all rather than collecting a 403 to translate.
+ */
+export function useSatellitePasses(noradId: number | null, enabled: boolean): PassesState {
+  const [state, setState] = useState<Omit<PassesState, "refresh">>({
+    passes: null, elements: null, notes: [], loading: false, error: null,
+  });
+  const [attempt, setAttempt] = useState(0);
+  const refresh = useCallback(() => setAttempt((a) => a + 1), []);
+  useEffect(() => {
+    if (noradId == null || !enabled) {
+      setState({ passes: null, elements: null, notes: [], loading: false, error: null });
+      return;
+    }
+    let alive = true;
+    setState((s) => ({ ...s, loading: true, error: null }));
+    void getSatellitePasses({ hours: PASS_WINDOW_HOURS, ids: [noradId] })
+      .then((res) => {
+        if (!alive) return;
+        setState({
+          passes: Array.isArray(res?.passes) ? res.passes : [],
+          elements: res?.elements ?? null,
+          notes: Array.isArray(res?.notes) ? res.notes : [],
+          loading: false,
+          error: null,
+        });
+      })
+      .catch((e: unknown) => {
+        if (!alive) return;
+        // The 409 for an unset site carries a bare-string detail, so the message
+        // IS the server's sentence and is shown as it stands.
+        const msg = (e as { message?: string } | null)?.message ?? "";
+        setState({
+          passes: null, elements: null, notes: [], loading: false,
+          error: msg !== "" ? msg : PASSES_FAILED,
+        });
+      });
+    return () => { alive = false; };
+  }, [noradId, enabled, attempt]);
+  return { ...state, refresh };
 }
 
 /** The cloud dome and the measured cloud motion, refreshed no faster than the
@@ -526,6 +731,7 @@ export function useSkyModel(boxPx: number): SkyModel {
 
   const tonight = useTonight(horizonMinDeg, rankingAllowed && haveSite, siteKey);
   const solarRows = useSolarSystem(rankingAllowed);
+  const ephemeris = useEphemerisRows(true);
   const { dome, motion } = useCloudDome(weatherAllowed);
   const appliedHorizon = useAppliedHorizon(siteKey);
 
@@ -646,11 +852,38 @@ export function useSkyModel(boxPx: number): SkyModel {
     [lat, hoursToDawn, horizonPoints, horizonMinDeg, layers.horizon, holdAt],
   );
 
+  /**
+   * The ephemeris rows that may be PLACED, which is not the same set as the
+   * ephemeris rows that may be LISTED.
+   *
+   *   A comet is placeable when the server placed it (`topocentric: true`). Its
+   *   RA/Dec is topocentric too, so the catalog route's recompute lands within
+   *   arcseconds of the module's own answer and a marker is honest. A
+   *   `topocentric: false` comet has no alt/az at all - see
+   *   COMET_GEOCENTRIC_NOTE.
+   *
+   *   A satellite is placeable only when SATELLITE_MARKERS says so, and it does
+   *   not: the server's overwrite is guarded now, but this hook refreshes every
+   *   two minutes and a low-orbit satellite crosses the sky in five. See the
+   *   constant for both halves of that.
+   */
+  const placeableEphemeris = useMemo(() => {
+    const out: CatalogRowLike[] = [];
+    for (const c of ephemeris.comets) {
+      if (c.topocentric === true) out.push(c as unknown as CatalogRowLike);
+    }
+    if (SATELLITE_MARKERS) {
+      for (const s of ephemeris.satellites) out.push(s as unknown as CatalogRowLike);
+    }
+    return out;
+  }, [ephemeris.comets, ephemeris.satellites]);
+
   const ranked: SkyTarget[] = useMemo(() => {
     const merged = mergeRows(
       tonight.rows,
       region.rows as unknown as CatalogRowLike[],
       solarRows,
+      placeableEphemeris,
     );
     const nowSec = nowMs / 1000;
     const lst = lstHours(lon, nowSec);
@@ -734,8 +967,8 @@ export function useSkyModel(boxPx: number): SkyModel {
       difficulty: r.difficulty,
     }));
   }, [
-    tonight.rows, region.rows, solarRows, nowMs, lat, lon, haveCoords, trackCtx,
-    tiles, hourlyCloud, wheel,
+    tonight.rows, region.rows, solarRows, placeableEphemeris, nowMs, lat, lon,
+    haveCoords, trackCtx, tiles, hourlyCloud, wheel,
   ]);
 
   // The lens and the floor chip HIDE, they do not re-rank: a hidden kind's count
@@ -753,8 +986,17 @@ export function useSkyModel(boxPx: number): SkyModel {
       if (floorOnly && t.altNow < FLOOR_DEG) continue;
       if (inReach(t)) out[t.kind] += 1;
     }
+    // SATELLITES AND COMETS ARE COUNTED DIFFERENTLY, and `LENS_COUNT_NOUN` says
+    // so on the button. Reach is a horizon question, and neither kind answers
+    // it for every row: a satellite's horizon position does not survive
+    // `/api/catalog` at all (SATELLITE_MARKERS), and a comet the server could
+    // not place topocentrically has none. So the number is what the ephemeris
+    // CARRIES. A count computed the other way would read 0 next to a list with
+    // things in it, which is a filter arguing for leaving itself off.
+    out.satellite = ephemeris.satellites.length;
+    out.comet = ephemeris.comets.length;
     return out;
-  }, [ranked, floorOnly]);
+  }, [ranked, floorOnly, ephemeris.satellites, ephemeris.comets]);
 
   const reachAll = useMemo(() => visible.filter(inReach), [visible]);
   const reachList = useMemo(() => reachAll.slice(0, 12), [reachAll]);
@@ -887,14 +1129,24 @@ export function useSkyModel(boxPx: number): SkyModel {
   );
 
   // ---- the track ----------------------------------------------------------
-  const track = useMemo(() => {
+  //
+  // The walk and the projection are SEPARATE memos on purpose: `TrackRender` is
+  // box pixels and cannot be drawn on a hemisphere, so the alt/az samples are
+  // published beside it (`SkyModel.trackSamples`) rather than being re-walked
+  // by whoever needs them in another projection.
+  const trackSamples = useMemo(() => {
     if (!trackId || !haveCoords) return null;
     const t = ranked.find((r) => r.id === trackId);
     if (!t || !(hoursToDawn > 0)) return null;
     const lst = lstHours(lon, nowMs / 1000);
     const samples = walkTrack(t.dec_deg * D2R, (lst - t.ra_hours) * 15 * D2R, trackCtx);
-    return buildTrack(samples, projector, nowMs, hoursToDawn);
-  }, [trackId, haveCoords, ranked, hoursToDawn, lon, nowMs, trackCtx, projector]);
+    return samples.length > 0 ? samples : null;
+  }, [trackId, haveCoords, ranked, hoursToDawn, lon, nowMs, trackCtx]);
+
+  const track = useMemo(() => {
+    if (!trackSamples || !(hoursToDawn > 0)) return null;
+    return buildTrack(trackSamples, projector, nowMs, hoursToDawn);
+  }, [trackSamples, hoursToDawn, nowMs, projector]);
 
   // ---- the reticle --------------------------------------------------------
   const reticle: ReticleModel = useMemo(() => {
@@ -1104,6 +1356,7 @@ export function useSkyModel(boxPx: number): SkyModel {
     windArrows: arrows,
     wind,
     track,
+    trackSamples,
     reticle,
     patch,
     kindCounts,
@@ -1112,6 +1365,10 @@ export function useSkyModel(boxPx: number): SkyModel {
     windNote,
     weatherAllowed,
     rankingAllowed,
+    satellites: ephemeris.satellites,
+    comets: ephemeris.comets,
+    ephemerisNotes: ephemeris.notes,
+    satelliteNotes: ephemeris.satelliteNotes,
     cloudReason,
     rankingError,
     placementNote: haveCoords ? null : NO_COORDS_NOTE,

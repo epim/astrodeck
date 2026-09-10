@@ -26,6 +26,7 @@ import { NxIcon, type NxIconName } from "../../../icons";
 import {
   LENS_FLOOR_CHIP,
   LENS_FOOTER,
+  LENS_COUNT_NOUN,
   LENS_HOLD_MS,
   LENS_LEARN,
   LENS_OVERLAY_NOTE,
@@ -149,7 +150,7 @@ export function LensDial({
               type="button"
               data-lens-kind={seat.kind}
               data-lens-on={on ? "true" : "false"}
-              aria-label={`${seat.label}, ${counts[seat.kind] ?? 0} in reach`}
+              aria-label={`${seat.label}, ${counts[seat.kind] ?? 0} ${LENS_COUNT_NOUN[seat.kind]}`}
               aria-pressed={on}
               onPointerDown={() => startHold(seat.kind)}
               onPointerUp={endHold}

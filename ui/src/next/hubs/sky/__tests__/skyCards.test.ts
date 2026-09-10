@@ -77,10 +77,16 @@ function near(got: number, want: number, tol: number, msg = ""): void {
 
 // ============================================================== the lens dial
 
-test("five kinds, not seven - satellites and comets have no ephemeris to filter", () => {
-  eq(lensSeats().length, 5, "seat count:");
+// Was "five kinds, not seven" until wave U7b (D-SKY-1): the engine now carries
+// SGP4 satellite elements and MPC comet elements, so both kinds have rows to
+// filter and the dial holds the README's seven. What is still true, and is what
+// this now asserts, is that the seats ARE the finder's kind list - a dial with
+// a seat the model does not know about is a filter that hides nothing.
+test("seven kinds, and the seats are the finder's own kind list", () => {
+  eq(lensSeats().length, 7, "seat count:");
   const kinds = lensSeats().map((s) => s.kind).join(",");
-  assert(!/sat|comet/.test(kinds), `a kind with no data source got a seat: ${kinds}`);
+  assert(/satellite/.test(kinds) && /comet/.test(kinds),
+    `the two ephemeris kinds are missing from the dial: ${kinds}`);
   eq(kinds, SKY_KINDS.join(","), "the seats must be the finder's own kind list:");
 });
 
@@ -93,7 +99,10 @@ test("the first seat is at the top of the ring and the rest are evenly spaced", 
   const angles = seats.map((s) => Math.atan2(s.y + 28 - 150, s.x + 28 - 150));
   for (let i = 1; i < angles.length; i++) {
     const step = ((angles[i] - angles[i - 1]) + 2 * Math.PI) % (2 * Math.PI);
-    near(step, (2 * Math.PI) / 5, 1e-9, `gap ${i}:`);
+    // Off the seat COUNT, not a literal: the ring grew from five to seven when
+    // the ephemeris kinds landed, and a hard-coded fifth-turn would have gone
+    // red for the right reason and been "fixed" by changing the 5 to a 7.
+    near(step, (2 * Math.PI) / seats.length, 1e-9, `gap ${i}:`);
   }
 });
 

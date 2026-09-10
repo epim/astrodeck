@@ -56,8 +56,11 @@ const ROWS: MoreRow[] = [
     sub: "whether a solved frame carries its WCS into the file" },
   { sheet: "sync", title: "FILE SYNC", icon: "share", cap: "config.site_optics",
     sub: "where finished frames are pushed, and what is waiting" },
-  { sheet: "skyPack", title: "SKY ATLAS OFFLINE PACK", icon: "sky", cap: "config.site_optics",
-    sub: "survey tiles kept on the rig, for a dark site with no internet" },
+  // Two downloads now, not one (D-SKY-1), so the row names the pair: the sheet
+  // holds the offline survey pack AND the satellite/comet element files, and
+  // the server's own stale-elements sentence tells people to come here.
+  { sheet: "skyPack", title: "SKY DATA", icon: "sky", cap: "config.site_optics",
+    sub: "offline atlas pack - satellite and comet elements" },
   { sheet: "weatherSettings", title: "WEATHER", icon: "weather", cap: "config.site_optics",
     sub: "the forecast, the cloud threshold that holds a run, the seeing feed" },
   { sheet: "cloudmap", title: "CLOUD MAP", icon: "satellite", cap: "config.site_optics",

@@ -11,9 +11,19 @@
 //  * It does not invent a status. A cloud reading that does not exist renders as
 //    "UP · cloud —", never as CLEAR - `decorate()` owns that and is shared with
 //    the finder, so the sheet and the marker under the reticle cannot disagree.
-//  * It does not show satellites or comets. The engine carries no ephemeris for
-//    either (plan H.1), and a kind with no data source is not a filter anybody
-//    can usefully turn on - so they are absent, not greyed.
+//  * IT NOW SHOWS SATELLITES AND COMETS (D-SKY-1), in their own section under
+//    the ranked list rather than inside it, and that split is the honest one:
+//    the ranked list is sorted by a REACH SCORE - minutes above the floor
+//    between here and dawn - and neither kind can be scored on it. A satellite
+//    is over the horizon for five minutes and is not a marker at all
+//    (`finder/targets.ts SATELLITE_MARKERS` gives both reasons); a comet the
+//    server could not place topocentrically has no horizon position to score.
+//    Sorting either into a score they cannot be scored on would be the finder
+//    ranking a guess.
+//  * It does not re-word a server note. The withheld sentence, the
+//    no-elements sentence and the stale sentence all reach the reader
+//    verbatim - each one carries a number or a place to go that a paraphrase
+//    would drop.
 //  * It does not render an empty list as "nothing is up". A role without
 //    `view.site_derived` cannot be ranked at all, and that is what the line
 //    under the search field says.
@@ -35,19 +45,47 @@ import { Card, EmptyCard, Label, Mono, Sheet } from "../../../ui";
 import { NxIcon } from "../../../icons";
 import { nav } from "../../../router";
 import { CatalogSearch } from "../../../../components/atlas/CatalogSearch";
+import { useCapability } from "../../../../lib/caps";
 import { difficultyGlyph, difficultyLabel } from "../../../../lib/difficulty";
 import { moonSepGlyph } from "../../../../lib/visibility";
-import type { CatalogEntry, DifficultyTier } from "../../../../types";
+import type { CatalogEntry, CometRow, DifficultyTier, SatelliteRow } from "../../../../types";
 import { windowLabel } from "../../../lib/reach";
-import { KIND_ICON, type SkyKind, type SkyTarget } from "../finder";
+import {
+  COMET_GEOCENTRIC_NOTE,
+  KIND_ICON,
+  useEphemerisRows,
+  useSatellitePasses,
+  type SkyKind,
+  type SkyTarget,
+} from "../finder";
 import { LensDial } from "../cards/LensDial";
 import { LENS_LEARN } from "../cards/lens";
+import { PassesCard } from "../cards/PassesCard";
 import { useStore } from "../../../../store";
 import { TARGETS_EMPTY, TARGETS_FOOTER } from "./quickCopy";
 import {
   RANK_DEFAULT_SITE, RANK_NEEDS_SITE, RANK_NOT_EMPTY, RANK_STILL_WORKING, SLOW_AFTER_S,
   useTargetsModel,
 } from "./targetsModel";
+
+/** The header over the ephemeris section. It says what the section is NOT
+ *  ranked by, because everything above it is. */
+const EPHEMERIS_TITLE = "SATELLITES AND COMETS";
+const EPHEMERIS_SUB = "not ranked - a pass is minutes, a comet moves";
+
+/** The link the server's own stale sentence sends people to. It is rendered
+ *  only when a note actually asks for a refresh, so it never appears as a
+ *  standing advertisement for a settings screen. */
+const SKY_SETTINGS_LABEL = "SKY SETTINGS >";
+
+/** Does this note ask the reader to go and refresh something? Both stale notes
+ *  end "Refresh them from Sky settings when the rig is online."
+ *  (`elements.py:132-143`) and the two no-elements notes ask for the same
+ *  thing, so the test is on the VERB the server used, not on a whole sentence
+ *  that a future edit would reword. */
+function asksForRefresh(note: string): boolean {
+  return /refresh/i.test(note);
+}
 
 /** The three tiers `lib/difficulty.ts` knows. The server also sends "unknown"
  *  for an object nobody published a magnitude for, and that is NOT a fourth
@@ -71,6 +109,17 @@ export function TargetsSheet(_p: SheetProps): JSX.Element {
   const enqueueToast = useStore((s) => s.enqueueToast);
   const [lensOpen, setLensOpen] = useState(false);
 
+  // The ephemeris rows are fetched HERE and not by `useTargetsModel`, which is
+  // another task's file: the two calls are the same two `/api/catalog` searches
+  // the finder makes, on the same 2-minute cadence, and nothing in them needs
+  // the ranking machinery the model exists for.
+  const eph = useEphemerisRows(true);
+  // The WHOLE passes route is `view.site_derived` (`ephemeris/routes.py:78`), so
+  // a principal without it fires nothing rather than collecting a 403.
+  const passesAllowed = useCapability("view.site_derived");
+  const [pickedSat, setPickedSat] = useState<SatelliteRow | null>(null);
+  const passes = useSatellitePasses(pickedSat?.norad_id ?? null, passesAllowed);
+
   /**
    * Aim the finder at a row and leave.
    *
@@ -93,6 +142,27 @@ export function TargetsSheet(_p: SheetProps): JSX.Element {
   ].filter((s): s is string => !!s).join(" · ");
 
   const hiddenKinds = (Object.keys(model.lens) as SkyKind[]).filter((k) => model.lens[k] === false);
+
+  // `useTargetsModel` ranks the deep-sky sources and knows nothing about the
+  // ephemeris, so its per-kind counts would read 0 next to a section with rows
+  // in it. The two ephemeris counts come from the rows this sheet actually
+  // drew, and `LENS_COUNT_NOUN` on the dial says they are "listed" rather than
+  // "in reach" - see `cards/lens.ts`.
+  const kindCounts = {
+    ...model.kindCounts,
+    satellite: eph.satellites.length,
+    comet: eph.comets.length,
+  };
+  const showSatellites = model.lens.satellite !== false;
+  const showComets = model.lens.comet !== false;
+  const ephemerisNotes = [
+    ...(showSatellites ? eph.satelliteNotes : []),
+    ...(showComets ? eph.cometNotes : []),
+  ];
+  const hasEphemeris =
+    (showSatellites && eph.satellites.length > 0) ||
+    (showComets && eph.comets.length > 0) ||
+    ephemerisNotes.length > 0;
 
   return (
     <Sheet
@@ -192,6 +262,73 @@ export function TargetsSheet(_p: SheetProps): JSX.Element {
           )
         )}
 
+        {/* ------------------------------------------- satellites and comets */}
+        {hasEphemeris && (
+          <Card tone="default" padding={0} data-testid="targets-ephemeris">
+            <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 14px 4px" }}>
+              <Label size={10}>{EPHEMERIS_TITLE}</Label>
+              <Mono size={10} tone="dim">{EPHEMERIS_SUB}</Mono>
+            </div>
+
+            {ephemerisNotes.map((n) => (
+              <p
+                key={n}
+                data-testid="ephemeris-note"
+                style={{
+                  margin: 0, padding: "6px 14px",
+                  fontSize: 11.5, lineHeight: 1.5, color: "var(--text-3, #7683a5)",
+                }}
+              >
+                {n}
+                {asksForRefresh(n) && (
+                  <>
+                    {" "}
+                    <button
+                      type="button"
+                      data-testid="ephemeris-settings-link"
+                      onClick={() => nav.sheet("skyPack")}
+                      style={{
+                        border: 0, background: "transparent", padding: 0,
+                        color: "var(--accent, #00d2ff)", fontFamily: "inherit",
+                        fontSize: 11.5, cursor: "pointer",
+                      }}
+                    >
+                      {SKY_SETTINGS_LABEL}
+                    </button>
+                  </>
+                )}
+              </p>
+            ))}
+
+            {showSatellites && eph.satellites.map((s) => (
+              <SatelliteRowView
+                key={s.id}
+                s={s}
+                picked={pickedSat?.id === s.id}
+                onPick={() => setPickedSat((cur) => (cur?.id === s.id ? null : s))}
+              />
+            ))}
+
+            {showComets && eph.comets.map((c) => (
+              <CometRowView key={c.id} c={c} onAim={() => aim(c.id)} />
+            ))}
+          </Card>
+        )}
+
+        {pickedSat && (
+          <PassesCard
+            name={pickedSat.id}
+            passes={passes.passes}
+            elements={passes.elements}
+            notes={passes.notes}
+            loading={passes.loading}
+            error={passes.error}
+            lockedReason={passesAllowed ? null : (eph.satelliteNotes[0] ?? null)}
+            onExplain={(reason) => enqueueToast({ level: "info", title: reason })}
+            onRefresh={passes.refresh}
+          />
+        )}
+
         <p style={{ fontSize: 11.5, lineHeight: 1.5, color: "var(--text-3, #7683a5)" }}>
           {TARGETS_FOOTER}
         </p>
@@ -201,7 +338,7 @@ export function TargetsSheet(_p: SheetProps): JSX.Element {
         <LensDial
           kinds={Object.keys(model.lens) as SkyKind[]}
           lens={model.lens}
-          counts={model.kindCounts}
+          counts={kindCounts}
           icons={KIND_ICON}
           reachCount={model.reachCount}
           floorOnly={model.floorOnly}
@@ -299,6 +436,107 @@ function TargetRow({ t, onAim }: { t: SkyTarget; onAim: () => void }): JSX.Eleme
       >
         i
       </button>
+    </div>
+  );
+}
+
+/**
+ * One satellite. It is a DISCLOSURE, not an aim: tapping it opens the passes
+ * card under the section rather than pointing the finder at it.
+ *
+ * A satellite's position is only true for the instant it was computed, and this
+ * sheet reads it on a two-minute cache. Aiming the finder at a two-minute-old
+ * ISS would point at a part of the sky it left several hundred kilometres ago,
+ * and it would look exactly like a correct answer. `finder/targets.ts
+ * SATELLITE_MARKERS` carries the full argument; when a per-second position
+ * source exists, this row becomes an aim like every other and the passes card
+ * moves to the lock card.
+ */
+function SatelliteRowView(
+  { s, picked, onPick }: { s: SatelliteRow; picked: boolean; onPick: () => void },
+): JSX.Element {
+  return (
+    <button
+      type="button"
+      data-testid="target-row-satellite"
+      data-norad={s.norad_id}
+      aria-expanded={picked}
+      onClick={onPick}
+      style={{
+        width: "100%", display: "grid",
+        gridTemplateColumns: "minmax(0,1fr) auto", gap: "4px 10px", alignItems: "center",
+        padding: "10px 14px", minHeight: 56, border: 0,
+        borderTop: "1px solid rgba(120,140,200,.1)",
+        background: picked ? "color-mix(in srgb, var(--accent, #00d2ff) 8%, transparent)" : "transparent",
+        color: "var(--text, #e8ecf7)", textAlign: "left", cursor: "pointer",
+      }}
+    >
+      <span style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+        <span style={{ color: "var(--accent, #00d2ff)", flexShrink: 0, display: "flex" }}>
+          <NxIcon name={KIND_ICON.satellite} size={14} />
+        </span>
+        <span className="nx-display" style={{ fontSize: 12, letterSpacing: ".1em", flexShrink: 0 }}>
+          {s.id}
+        </span>
+        <span style={{ fontSize: 11.5, color: "var(--text-2, #9aa6c2)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+          {s.name}
+        </span>
+      </span>
+      <Mono size={10} tone="dim">{picked ? "passes below" : "passes ›"}</Mono>
+    </button>
+  );
+}
+
+/**
+ * One comet. A comet IS a deep-sky-shaped target, so this row aims the finder
+ * exactly as a galaxy row does - unless the server could not place it, in which
+ * case there is no horizon position to aim at and the row says so instead of
+ * moving the view somewhere arbitrary.
+ */
+function CometRowView({ c, onAim }: { c: CometRow; onAim: () => void }): JSX.Element {
+  const placed = c.topocentric === true;
+  const mag = typeof c.mag === "number" ? `mag ${c.mag.toFixed(1)}` : "mag unknown";
+  return (
+    <div
+      data-testid="target-row-comet"
+      style={{ display: "flex", flexDirection: "column", borderTop: "1px solid rgba(120,140,200,.1)" }}
+    >
+      <button
+        type="button"
+        data-testid="comet-pick"
+        onClick={placed ? onAim : undefined}
+        aria-disabled={placed ? undefined : "true"}
+        style={{
+          width: "100%", display: "grid",
+          gridTemplateColumns: "minmax(0,1fr) auto", gap: "4px 10px", alignItems: "center",
+          padding: "10px 14px", minHeight: 56, border: 0, background: "transparent",
+          color: "var(--text, #e8ecf7)", textAlign: "left",
+          cursor: placed ? "pointer" : "default", opacity: placed ? 1 : 0.75,
+        }}
+      >
+        <span style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+          <span style={{ color: "var(--accent, #00d2ff)", flexShrink: 0, display: "flex" }}>
+            <NxIcon name={KIND_ICON.comet} size={14} />
+          </span>
+          <span className="nx-display" style={{ fontSize: 12, letterSpacing: ".1em", flexShrink: 0 }}>
+            {c.id}
+          </span>
+          <span style={{ fontSize: 11.5, color: "var(--text-2, #9aa6c2)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+            {c.name}
+          </span>
+        </span>
+        <Mono size={10} tone="dim">
+          {`${mag} · ${c.delta_au.toFixed(2)} au away`}
+        </Mono>
+      </button>
+      {!placed && (
+        <p
+          data-testid="comet-geocentric"
+          style={{ margin: 0, padding: "0 14px 10px", fontSize: 11, lineHeight: 1.5, color: "var(--text-3, #7683a5)" }}
+        >
+          {c.geocentric_reason ?? COMET_GEOCENTRIC_NOTE}
+        </p>
+      )}
     </div>
   );
 }
