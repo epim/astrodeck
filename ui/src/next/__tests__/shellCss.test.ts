@@ -40,6 +40,13 @@ const CSS_URL = new URL("../shell/shell.css", import.meta.url);
 const CSS_PATH = decodeURIComponent(CSS_URL.pathname).replace(/^\/([A-Za-z]:)/, "$1");
 const css = fs.readFileSync(CSS_PATH, "utf8");
 
+// next.css: the component classes, parsed separately from shell.css so the
+// two files' rules cannot be confused with each other by a selector that
+// happens to share a name.
+const NEXT_CSS_URL = new URL("../next.css", import.meta.url);
+const NEXT_CSS_PATH = decodeURIComponent(NEXT_CSS_URL.pathname).replace(/^\/([A-Za-z]:)/, "$1");
+const nextCss = fs.readFileSync(NEXT_CSS_PATH, "utf8");
+
 // ---------------------------------------------------------------- harness
 let passed = 0;
 let failed = 0;
@@ -62,9 +69,10 @@ function assert(cond: boolean, msg: string): void {
  *  rule whose selector list contains `.cls` as a standalone selector (not as
  *  a compound like `.other .cls` or `.cls-suffix`). Returns null if no such
  *  rule exists. Comments are stripped first so a note mentioning the class
- *  cannot be mistaken for a selector. */
-function ruleBodyFor(cls: string): string | null {
-  const stripped = css.replace(/\/\*[\s\S]*?\*\//g, "");
+ *  cannot be mistaken for a selector. Defaults to shell.css; pass `nextCss`
+ *  to look in next.css instead. */
+function ruleBodyFor(cls: string, source: string = css): string | null {
+  const stripped = source.replace(/\/\*[\s\S]*?\*\//g, "");
   const re = /([^{}]+)\{([^}]*)\}/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(stripped)) !== null) {
@@ -120,6 +128,23 @@ test("the panel's own slot cannot be widened by a wide sheet body", () => {
   assert(
     descendantRuleDeclares("nx-sheet-panel", "nx-sheet-slot", "min-width", "0"),
     ".nx-sheet-panel .nx-sheet-slot must declare `min-width: 0`",
+  );
+});
+
+test("the sheet itself cannot be stretched wider than its slot by its own content", () => {
+  // Measured escape: `.nx-sheet-slot` is `display: flex` and `.nx-sheet` is
+  // one of its flex items, which defaults to `min-width: auto` - so the sheet
+  // refuses to shrink below its content's min-content width (~888px for the
+  // safety sheet) even though `.nx-sheet-panel .nx-sheet-slot` is pinned to
+  // `min-width: 0`. The oversized sheet then gets clipped unreachably by
+  // `.nx-app { overflow: hidden }` instead of fitting its 420px panel and
+  // wrapping or scrolling its own content.
+  const sheetBody = ruleBodyFor("nx-sheet", nextCss);
+  assert(sheetBody != null, "no .nx-sheet rule in next.css");
+  assert(
+    /\bmin-width\s*:\s*0\b/.test(sheetBody as string),
+    ".nx-sheet must declare `min-width: 0` so it can shrink to fit " +
+      "`.nx-sheet-panel .nx-sheet-slot` instead of being clipped by `.nx-app { overflow: hidden }`",
   );
 });
 

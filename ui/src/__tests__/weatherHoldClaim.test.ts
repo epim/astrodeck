@@ -69,8 +69,16 @@ const SURFACES: [string, string][] = [
   ["SkyConditionsPanel chips row", "../components/weather/SkyConditionsPanel.tsx"],
 ];
 
+// How far back from the corrected claim to look for the word "cloud". Large
+// enough to reach across the surrounding sentence/JSX wrapper in both
+// surfaces (measured: 16 chars on SkyConditionsPanel, 144 on App.tsx's
+// `confirmDialog` body), small enough to stay inside that one message and
+// not reach whatever unrelated code happens to precede it in the file.
+const CLOUD_CONTEXT_WINDOW = 250;
+
 for (const [what, rel] of SURFACES) {
   const text = renderedText(rel);
+  const claimIndex = text.toLowerCase().indexOf(TRUE_CLAIM);
 
   test(`${what}: does not claim a cloud forecast holds an auto-resume`, () => {
     assert(!/auto-resume will hold/i.test(text),
@@ -81,14 +89,24 @@ for (const [what, rel] of SURFACES) {
   });
 
   test(`${what}: says what actually decides, in the shipped wording`, () => {
-    assert(text.toLowerCase().includes(TRUE_CLAIM),
+    assert(claimIndex >= 0,
       `the corrected sentence is not on this surface. Expected to find:\n  ${TRUE_CLAIM}`);
   });
 
-  test(`${what}: still names the forecast it is reporting`, () => {
-    // The correction must not have eaten the reason the surface exists - the
-    // user is being shown a high-cloud forecast and should still be told so.
-    assert(/cloud/i.test(text), "the surface no longer mentions cloud at all");
+  test(`${what}: still names the forecast, in the same message as the corrected claim`, () => {
+    // Graded around the claim's own position, not the whole file. `cloud` is
+    // also a property name and prefix elsewhere in these files (SkyConditions-
+    // Panel.tsx alone has 14 hits that are all identifiers - `f.cloud[i]`,
+    // `out.cloud.push`, `cloud_low` - none of them visible text), so a bare
+    // /cloud/i.test(text) over the whole source stays green even if the
+    // user-visible "high cloud" wording were deleted from this exact message.
+    // Require "cloud" in the text immediately BEFORE the corrected claim -
+    // the paragraph the user actually reads it in.
+    assert(claimIndex >= 0, "the corrected sentence is missing (see the previous assertion)");
+    const surroundingText = text.slice(Math.max(0, claimIndex - CLOUD_CONTEXT_WINDOW), claimIndex);
+    assert(/cloud/i.test(surroundingText),
+      "the message introducing the corrected claim no longer mentions cloud - checked the "
+      + `${CLOUD_CONTEXT_WINDOW} characters before it: ${JSON.stringify(surroundingText)}`);
   });
 }
 
