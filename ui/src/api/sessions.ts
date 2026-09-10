@@ -1,7 +1,7 @@
 // api/sessions.ts — typed wrappers for the multi-night session routes
 // (sessions spec §6). Cookie auth is automatic; ApiError on non-2xx.
 import { api } from "../api";
-import type { SequencePlan, Session, SessionFrame, SessionRow } from "../types";
+import type { SequencePlan, Session, SessionFilesIndex, SessionFrame, SessionRow } from "../types";
 
 export interface SessionPatch {
   auto_resume?: boolean;
@@ -71,3 +71,16 @@ export interface ResumeArmState {
 
 export const getResumeArm = (): Promise<ResumeArmState> =>
   api.get<ResumeArmState>("/api/sequence/resume-arm");
+
+/** Per-filter files index with per-frame grades (S5).
+ *
+ *  view.preview, not control.mount: the person who needs to know which subs
+ *  were kept is the one watching the run. Rows carry the ledger frame id, so
+ *  `patchFrame` above regrades straight off this list. */
+export const getSessionFiles = (id: string): Promise<SessionFilesIndex> =>
+  api.get<SessionFilesIndex>(`/api/sessions/${id}/files`);
+
+/** The same index for whichever session a run is writing to right now.
+ *  404s (ApiError) when no run is active -- that is the answer, not a fault. */
+export const getCurrentSessionFiles = (): Promise<SessionFilesIndex> =>
+  api.get<SessionFilesIndex>("/api/sessions/current/files");

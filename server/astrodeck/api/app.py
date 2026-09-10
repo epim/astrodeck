@@ -130,6 +130,7 @@ from ..sequence.bundle import (CalibrationLibraryAdapter, NullMasterLibrary,
 from ..sequence.resume_arm import ResumeArm
 from ..plans import migrate_plan_policy_fields
 from ..sequence.session import migrate_legacy_resume, session_store
+from ..sequence.session_files import active_session, files_index
 from ..weather import NoNightError, weather_service
 # Cloud-occlusion model (stage 6a). Imported HERE and nowhere near the sequence
 # engine, the safety gate or the auto-resume arm: the model informs, it does not
@@ -4992,6 +4993,42 @@ def create_app(*, bind_host: str | None = None,
         if not path.exists():
             raise HTTPException(404, "no thumbnail")
         return FileResponse(path, media_type="image/jpeg")
+
+    # ---- per-session files index with grades (Session hub S5) --------------
+    #
+    # CAP_VIEW_PREVIEW, not CAP_CONTROL_MOUNT and not CAP_CONFIG_BACKEND. The
+    # person who needs to know which subs were kept is the one watching the run,
+    # and an operator holds neither config.backend nor anything else that would
+    # let a stricter gate through -- so gating this like the ledger routes would
+    # have put frame grades behind a capability the grader does not have.
+    # view.preview is the right floor because that is exactly the disclosure:
+    # per-frame quality plus a thumbnail URL, no pixels of the raw science
+    # frame and NO PATH of any kind (see sequence/session_files.py).
+    #
+    # /current is declared FIRST and deliberately: FastAPI matches in
+    # declaration order, so with the parameterised route ahead of it "current"
+    # would bind as a session id and 404 as a missing session -- the failure
+    # would look like a data problem rather than a routing one.
+
+    @app.get("/api/sessions/current/files",
+             dependencies=[Depends(require(CAP_VIEW_PREVIEW))])
+    @declare(CAP_VIEW_PREVIEW)
+    async def current_session_files():
+        s = await asyncio.to_thread(active_session)
+        if s is None:
+            raise HTTPException(404, "no active session")
+        return await asyncio.to_thread(files_index, s)
+
+    @app.get("/api/sessions/{session_id}/files",
+             dependencies=[Depends(require(CAP_VIEW_PREVIEW))])
+    @declare(CAP_VIEW_PREVIEW)
+    async def session_files(session_id: str):
+        try:
+            s = await asyncio.to_thread(session_store.load, session_id)
+        except KeyError:
+            raise HTTPException(404, "session not found")
+        # One thread hop for the whole fold: it stats every frame on disk.
+        return await asyncio.to_thread(files_index, s)
 
     # -------------------------------------------------------------- capture
 
