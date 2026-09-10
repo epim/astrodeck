@@ -68,7 +68,8 @@ export interface DomeOverlayArgs {
   stale: boolean;
 }
 
-export function SkyDomePanel({ pointing, target, overlay, height = 280, onGeometry }: {
+export function SkyDomePanel({ pointing, target, overlay, height = 280, onGeometry,
+                              chrome = "panel" }: {
   pointing?: { alt: number; az: number } | null;
   target?: { alt: number; az: number; name?: string } | null;
   /** Drawn over the dome canvas, in its own projection. Absent = the panel is
@@ -76,6 +77,17 @@ export function SkyDomePanel({ pointing, target, overlay, height = 280, onGeomet
   overlay?: (o: DomeOverlayArgs) => ReactNode;
   height?: number;
   onGeometry?: (g: DomeGeometry) => void;
+  /** Who draws the frame around all this.
+   *
+   *  `panel` is the legacy `Panel` - a bordered section titled "Sky dome" -
+   *  and it is the DEFAULT so `#/classic`'s monitor grid renders byte for byte
+   *  what it always has. The next UI mounts this inside its own `Card`, which
+   *  already carries a SKYDOME label and a border, so `panel` there drew a
+   *  second title inside a second box. `bare` drops the wrapper and NOTHING
+   *  else: the freshness chip keeps its own line, because "9m old" is the one
+   *  thing in that header the caller's title cannot say and losing it would
+   *  leave an old granule looking like a current one. */
+  chrome?: "panel" | "bare";
 }) {
   const [status, setStatus] = useState<CloudmapStatus | null>(null);
   const [dome, setDome] = useState<CloudmapDome | null>(null);
@@ -222,16 +234,8 @@ export function SkyDomePanel({ pointing, target, overlay, height = 280, onGeomet
   const beamRatio = cellM && beamM && beamM > 0 ? cellM / beamM : null;
 
 
-  return (
-    <Panel
-      className="col-span-full sm:col-span-2 lg:col-span-6"
-      title="Sky dome"
-      right={
-        <span className="text-[10px] text-dim">
-          {st.chip}
-        </span>
-      }
-    >
+  const body = (
+    <>
       <SkyDome
         grid={gridUsable ? dome : null}
         pointing={pointing}
@@ -391,6 +395,33 @@ export function SkyDomePanel({ pointing, target, overlay, height = 280, onGeomet
           nothing in the sequencer reads it.
         </p>
       </div>
+    </>
+  );
+
+  if (chrome === "bare") {
+    return (
+      <div data-dome-bare="">
+        {/* The chip, and only the chip. See the `chrome` prop: the caller owns
+            the title and the border, but nobody except this component knows
+            whether the granule under the dome is fresh, stale, or a feed that
+            stopped answering three minutes ago. */}
+        <div className="mb-1 flex justify-end text-[10px] text-dim">{st.chip}</div>
+        {body}
+      </div>
+    );
+  }
+
+  return (
+    <Panel
+      className="col-span-full sm:col-span-2 lg:col-span-6"
+      title="Sky dome"
+      right={
+        <span className="text-[10px] text-dim">
+          {st.chip}
+        </span>
+      }
+    >
+      {body}
     </Panel>
   );
 }

@@ -259,7 +259,11 @@ test("precondition: the finder auto-aimed at the best target and locked it", () 
 test("the status row carries numbers, not captions", () => {
   assert(/clear \d+%/.test(text()), `no clear percentage in the status row: "${text().slice(0, 200)}"`);
   assert(/Back lawn/.test(byId("sky-site")?.textContent ?? ""), "the site pill does not name the site");
-  assert(byId("sky-dome") != null, "no SKYDOME link");
+  // D-SKY-2: the pill scrolls to the dome card on THIS screen rather than
+  // navigating to the Weather hub. Its own behaviour is pinned in
+  // skyDomeCardDom.test.tsx; here it only has to be in the row.
+  assert(byId("sky-dome") != null, "no SKYDOME pill");
+  assert(byId("sky-dome-card") != null, "the SKYDOME pill has nothing to scroll to");
 });
 
 test("the CTA says what it will queue, not just what it is", () => {

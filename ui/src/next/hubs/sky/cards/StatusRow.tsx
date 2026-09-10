@@ -7,11 +7,19 @@
 // pointing at, nor whether the sky is clear, nor which of the user's sites the
 // horizon under those markers belongs to.
 //
-// The SKYDOME pill is a deviation from README section 1 and a de-scope of the
-// prototype's inline 3D dome card (plan H.3): the Weather hub owns the dome, and
-// two hemisphere renderers in two hubs would be two truths about the same sky.
-// The pill carries the lock through as `?target=`, so the dome opens on whatever
-// the finder is pointing at rather than on nothing.
+// The SKYDOME pill used to LEAVE the hub, and the header here used to argue that
+// it had to: the prototype's inline dome card was de-scoped (plan H.3) on the
+// grounds that two hemisphere renderers in two hubs would be two truths about
+// the same sky. D-SKY-2 landed the card instead, and the argument does not
+// survive it - `cards/DomeCard.tsx` mounts the SAME renderer the Weather hub
+// mounts, so there is one implementation and one truth. The pill is now a
+// scroll-to: the dome is on this screen, below the reach strip, and a pill that
+// navigated away from a card six rows down would be the odd one out in a row
+// where every other item opens what it names.
+//
+// It is never locked, for the same reason: scrolling this screen needs no
+// capability. The dome card carries its own `view.weather` gate and says so in
+// its own words, which is where a refusal belongs - on the thing refused.
 
 import type { JSX } from "react";
 import { Mono, Pill } from "../../../ui";
@@ -22,20 +30,17 @@ export interface StatusRowProps {
   reachCount: number;
   clearPct: number | null;
   siteName: string;
-  lockId: string | null;
-  canViewWeather: boolean;
-  onExplain: (reason: string) => void;
+  /** Scrolls the skydome card into view. The hub owns the anchor and honours
+   *  `prefers-reduced-motion`; see `SkyHub`'s `onDome`. */
+  onDome: () => void;
 }
 
 export function StatusRow({
   reachCount,
   clearPct,
   siteName,
-  lockId,
-  canViewWeather,
-  onExplain,
+  onDome,
 }: StatusRowProps): JSX.Element {
-  const domeReason = canViewWeather ? null : "needs operator or admin access";
   return (
     <div
       data-testid="sky-status-row"
@@ -64,17 +69,15 @@ export function StatusRow({
         {clearPct == null ? "clear —" : `clear ${Math.round(clearPct)}%`}
       </Mono>
 
+      {/* No chevron. The chevron in this row means "this opens something
+          else"; this one moves the page. */}
       <Pill
         tone="dim"
         data-testid="sky-dome"
-        onClick={() => {
-          if (domeReason) { onExplain(domeReason); return; }
-          nav.go(`/weather/sky${lockId ? `?target=${encodeURIComponent(lockId)}` : ""}`);
-        }}
-        ariaLabel="open the skydome"
-        className={domeReason ? "nx-locked" : ""}
+        onClick={onDome}
+        ariaLabel="scroll to the skydome card"
       >
-        SKYDOME ›
+        SKYDOME
       </Pill>
 
       <span style={{ marginLeft: "auto" }}>

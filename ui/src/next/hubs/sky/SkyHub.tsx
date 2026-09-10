@@ -10,6 +10,7 @@
 //   framing card    FRAME mode only
 //   lock card       what is in the reticle, and the three things to do with it
 //   reach strip     everything else that is clear and up
+//   dome card       the cloud between here and there, on the hemisphere (D-SKY-2)
 //
 // ONE MODEL, MANY CARDS. Every number on this screen is a function of the same
 // six inputs (site, time, optics, weather, horizon, catalogue) and is derived
@@ -45,9 +46,12 @@ import {
   type SkyKind,
   type SkyTarget,
 } from "./finder";
-import { KIND_LABEL } from "./finder";
+import { KIND_LABEL, D2R, walkTrack, type TrackSample } from "./finder";
+import { windSummary } from "../weather/dome/domeOverlay";
+import { lstHours } from "../../../lib/altaz";
 import { BrowseBanner } from "./cards/BrowseBanner";
 import { StatusRow } from "./cards/StatusRow";
+import { DomeCard, DOME_CARD_ID } from "./cards/DomeCard";
 import { LensDial } from "./cards/LensDial";
 import { LayersPopover, type LayerKey } from "./cards/LayersPopover";
 import { LockCard } from "./cards/LockCard";
@@ -80,6 +84,7 @@ import {
   useSite,
   useStatus,
   useStore,
+  useWeather,
 } from "../../../store";
 import type { CatalogEntry, PackStatus } from "../../../types";
 
@@ -197,6 +202,7 @@ export function SkyHub(): JSX.Element {
   const config = useConfig();
   const night = useNight();
   const framing = useFraming();
+  const weather = useWeather();
   const canViewWeather = useCapability("view.weather");
   const enqueueToast = useStore((s) => s.enqueueToast);
   const openFraming = useStore((s) => s.openFraming);
@@ -298,6 +304,101 @@ export function SkyHub(): JSX.Element {
   const lock = model.lock;
   const capture = useLock({ cap: "control.capture", needsRole: "camera", busyLane: "capture" });
   const onExplain = capture.onExplain;
+
+  // ---- the skydome card (D-SKY-2) -----------------------------------------
+  //
+  // BY ID, NOT BY REF. The id is on the card's own root and it IS the anchor:
+  // the same string names the element for the probe, for `data-testid` and for
+  // anything that ever links to `#sky-dome-card`. A ref would have to hang off
+  // a wrapper this file added around the card, which puts the scroll target and
+  // the anchor on two different elements the first time either one moves.
+  const onDome = useCallback(() => {
+    const el = typeof document === "undefined"
+      ? null
+      : document.getElementById(DOME_CARD_ID);
+    if (!el) return;
+    // Reduced motion is a vestibular setting, not a taste in polish
+    // (ARCHITECTURE section 6). A smooth scroll past six cards is precisely the
+    // motion it asks us not to make.
+    const reduce = typeof window !== "undefined"
+      && typeof window.matchMedia === "function"
+      && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    el.scrollIntoView?.({ behavior: reduce ? "auto" : "smooth", block: "start" });
+  }, []);
+
+  /**
+   * The dome's canvas height, in CSS pixels.
+   *
+   * `SkyDome` sizes itself as `r = min((w - 24) / 2, (h - 28) / (1 + sin 32))`
+   * - 1 + sin 32 = 1.52992 is the dome's real vertical extent, which is taller
+   * than the zenith (see `domeExtent`). So for any column width there is a
+   * height beyond which the extra pixels are empty sky, and below which the
+   * dome is squeezed.
+   *
+   * ONE NUMBER HAS TO COVER THE WHOLE PHONE BAND. At 390 px the body leaves
+   * 358, the card's padding and border leave the canvas ~332, the
+   * width-limited radius is 154, and the height that first reaches it is
+   * 28 + 154 * 1.52992 = 264: 280 carries about 16 px of headroom there. At
+   * 430 px (the large phones) the canvas is ~372, the width-limited radius is
+   * 174, and saturating it would want 294 - so at 280 those phones are height
+   * limited and every one of the 280 pixels is dome. 280 is the height that is
+   * honest across the band rather than tuned to the narrowest member of it.
+   *
+   * Wider columns saturate much later: a 720 px box would not until 540, which
+   * would make the LAST card taller than the finder at the top of the screen.
+   * 0.78 of the measured box keeps it proportional to the finder, and the 360
+   * ceiling keeps it a card rather than a second screen.
+   */
+  const domeHeight = bp === "phone" ? 280 : Math.min(360, Math.round(boxPx * 0.78));
+
+  const domeWind = useMemo(() => windSummary(weather?.now ?? null), [weather?.now]);
+
+  const pointing = status?.mount && typeof status.mount.alt === "number"
+    && typeof status.mount.az === "number" && status.mount.alt >= 0
+    ? { alt: status.mount.alt, az: status.mount.az }
+    : null;
+
+  /**
+   * The lock's walk to dawn, in alt/az, for the dome to draw.
+   *
+   * `model.track` is the same walk ALREADY PROJECTED into the finder's flat sky
+   * box (`TrackRender` is SVG polylines in box pixels), so it cannot be put on
+   * a hemisphere; the alt/az samples behind it never leave `useSkyModel`'s
+   * memo. Re-walking here is 29 steps of trigonometry over the model's own
+   * inputs - the same `walkTrack`, the same horizon points - so the arc on the
+   * dome and the arc on the finder cannot disagree about where the object goes.
+   *
+   * Two differences from the finder's own context, and both are `DomeScreen`'s.
+   * The horizon mask is ALWAYS on, where the finder's follows the layers
+   * popover: the overlay draws the profile on this dome unconditionally, so a
+   * track coloured as if there were no mask would run red segments over open
+   * sky and blue ones behind a tree line. And nothing is ever coloured "cloud
+   * hold" - the cloud on this card is the dome itself, measured, and a forecast
+   * hold painted over a measurement is worse than no hold at all.
+   */
+  const trackLat = typeof site?.latitude === "number" ? site.latitude : null;
+  const trackLon = typeof site?.longitude === "number" ? site.longitude : null;
+  const darkEnd = model.visibility?.dark_end_unix ?? null;
+  const horizonPoints = model.horizonPoints;
+  const horizonMinDeg = site?.horizon_min_deg ?? 0;
+  const modelNowMs = model.nowMs;
+  const domeTrack = useMemo<TrackSample[] | null>(() => {
+    if (!lock || trackLat === null || trackLon === null) return null;
+    if (typeof darkEnd !== "number") return null;
+    const nowSec = modelNowMs / 1000;
+    const hoursToDawn = (darkEnd - nowSec) / 3600;
+    if (!(hoursToDawn > 0)) return null;
+    const lst = lstHours(trackLon, nowSec);
+    const samples = walkTrack(lock.dec_deg * D2R, (lst - lock.ra_hours) * 15 * D2R, {
+      latDeg: trackLat,
+      hoursToDawn,
+      horizon: horizonPoints,
+      horizonMinDeg,
+      maskOn: true,
+      holdAt: () => false,
+    });
+    return samples.length > 0 ? samples : null;
+  }, [lock, trackLat, trackLon, darkEnd, modelNowMs, horizonPoints, horizonMinDeg]);
 
   // ---- optics, shared by the reticle, the framing meta and the mosaic call --
   const mergedOptics: OpticsLike | null = useMemo(
@@ -713,9 +814,7 @@ export function SkyHub(): JSX.Element {
         reachCount={model.reachCount}
         clearPct={model.clearPct}
         siteName={model.siteName}
-        lockId={lock?.id ?? null}
-        canViewWeather={canViewWeather}
-        onExplain={onExplain}
+        onDome={onDome}
       />
 
       <div
@@ -945,6 +1044,24 @@ export function SkyHub(): JSX.Element {
       <ReachStrip
         reachList={model.reachList}
         onAim={(t) => model.setView({ az: t.azNow, alt: t.altNow, trackId: t.id })}
+      />
+
+      {/* LAST, and below the reach strip, which is where the design's stack
+          ends. It is the only card on this screen that answers a question about
+          somewhere OTHER than the reticle, and putting it above the lock card
+          would push the three things you came here to press below the fold on a
+          phone. */}
+      <DomeCard
+        canViewWeather={canViewWeather}
+        pointing={pointing}
+        target={lock ? { alt: lock.altNow, az: lock.azNow, name: lock.name } : null}
+        horizon={horizonPoints}
+        wind={domeWind}
+        track={domeTrack}
+        targetName={lock?.name ?? null}
+        height={domeHeight}
+        lockId={lock?.id ?? null}
+        onExplain={onExplain}
       />
 
       {lensOpen && (

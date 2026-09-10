@@ -215,6 +215,11 @@ export function DomeScreen(): JSX.Element {
           <SkyDomePanel
             pointing={pointing}
             target={targetAltAz}
+            // The Card above already says SKYDOME and draws the border. Without
+            // this the legacy `Panel` drew a second title ("Sky dome") inside a
+            // second box - two titles for one dome, and legacy chrome in a
+            // screen the design specifies.
+            chrome="bare"
             overlay={(a: DomeOverlayArgs) => (
               <DomeOverlay
                 args={a}
