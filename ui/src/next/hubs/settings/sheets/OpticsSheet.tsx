@@ -17,12 +17,15 @@
 //     dial has a visible consequence before it is saved.
 // On save the readout snaps back to the server's answer. See `opticsModel.ts`.
 //
-// APERTURE AND REDUCER ARE PHONE-LOCAL (plan F.1). `Optics` has no such fields
-// and the server wave does not add them; they label the f-ratio and preview a
-// reducer, and the copy says so. `USE THE REDUCED FOCAL LENGTH` is the one press
-// that turns a reducer into the number the rig reads. Multiplying focal length
-// by the reducer on save was rejected: it would change what the rig frames from
-// a control the user believes is a label.
+// APERTURE AND REDUCER ARE RIG FIELDS NOW (D-SET-1). `Optics.aperture_mm`/
+// `reducer` join the same draft the focal length lives in and save on the same
+// `PUT /api/optics` press. They used to be phone-local (`astrodeck-next-optics-
+// aux`); the mount effect below moves that key to the rig ONCE, through
+// `next/lib/storageMigration.ts`'s `migrateKey` - never merging, because the
+// rig's own value always wins a conflict. `USE THE REDUCED FOCAL LENGTH` is
+// still the one press that turns a reducer into the number the rig reads:
+// `reducer` itself is recorded and never multiplied into `focal_length_mm`,
+// on the rig exactly as it was on the phone.
 
 import { useEffect, useMemo, useState, type CSSProperties, type JSX } from "react";
 import {
@@ -33,6 +36,7 @@ import {
   Field,
   Label,
   ListRow,
+  LockNote,
   Mono,
   ReadoutGrid,
   ReadoutTile,
@@ -43,6 +47,7 @@ import {
 import { NxIcon } from "../../../icons";
 import { nav } from "../../../router";
 import { useLock } from "../../../lib/gateHook";
+import { migrateKey, migrationDone } from "../../../lib/storageMigration";
 import { fmtDuration } from "../../../lib/format";
 import { samplingArcsecPerPx } from "../../../lib/fov";
 import { api, ApiError } from "../../../../api";
@@ -53,7 +58,7 @@ import {
   setProfileProviders,
   setProvidersConfig,
 } from "../../../../api/backends";
-import { useConfig, usePreview, useProviders, useStore } from "../../../../store";
+import { useConfig, usePreview, usePrincipal, useProviders, useStore } from "../../../../store";
 import { accessPhrase, useCan } from "../../../../lib/caps";
 import { eligibleTaskDrivers } from "../../../../lib/equipment";
 import {
@@ -75,22 +80,23 @@ import type { DriverInfo, Optics, PackStatus } from "../../../../types";
 import {
   APERTURE_STOPS,
   FOCAL_STOPS,
+  OPTICS_AUX_KEY,
+  OPTICS_MIGRATION_TOAST,
   PIXEL_STOPS,
   REDUCER_STOPS,
   computedFov,
   dialStops,
   draftFov,
-  fRatioLabel,
+  fRatioFrom,
   focalInvalid,
   fovCaption,
   fovDisagrees,
   liveLine,
-  readOpticsAux,
+  parseLegacyOpticsAux,
   reducedFocalMm,
   resolveDraft,
   solveCalibration,
-  writeOpticsAux,
-  type OpticsAux,
+  type LegacyOpticsAux,
 } from "./opticsModel";
 
 const PARA: CSSProperties = {
@@ -109,9 +115,11 @@ const M31_H_DEG = 1.0;
 
 type TileId = "focal" | "aperture" | "reducer" | "pixel";
 
-/** The seven keys the banner enumerates, ordered as the form reads. Ordered and
+/** The nine keys the banner enumerates, ordered as the form reads. Ordered and
  *  complete because the whole point of a whole-block swap is that it reaches
- *  fields nobody thought they were changing. */
+ *  fields nobody thought they were changing - aperture and reducer included,
+ *  now that they are part of the same `Optics` block a profile overrides
+ *  whole (D-SET-1). */
 const BANNER_KEYS: [OpticsKey, string][] = [
   ["focal_length_mm", "Focal length"],
   ["telescope_name", "Telescope name"],
@@ -120,6 +128,8 @@ const BANNER_KEYS: [OpticsKey, string][] = [
   ["sensor_width_px", "Sensor width"],
   ["sensor_height_px", "Sensor height"],
   ["guide_focal_length_mm", "Guide scope focal length"],
+  ["aperture_mm", "Aperture"],
+  ["reducer", "Reducer"],
 ];
 
 const FMT: Record<OpticsKey, (v: unknown) => string> = {
@@ -152,8 +162,67 @@ export function OpticsSheet(): JSX.Element {
   const canBackend = useCan("config.backend");
   const editLock = useLock({ cap: "config.site_optics" });
   const backendLock = useLock({ cap: "config.backend" });
+  const principal = usePrincipal();
 
-  const [aux, setAux] = useState<OpticsAux>(() => readOpticsAux());
+  // D-SET-1: an engine old enough to answer with no `aperture_mm` at all (not
+  // even 0) does not carry the field yet. `typeof` rather than trusting the
+  // static type, because the type says "always a number" and an older rig on
+  // the wire can still disagree with it.
+  const apertureFieldSupported = typeof optics?.aperture_mm === "number";
+
+  // A role without `config.site_optics` cannot run the migration below, and
+  // must not lose the phone's own copy while it waits for someone who can -
+  // so it keeps reading `astrodeck-next-optics-aux` until this key's flag is
+  // set by a session that could write it. `useMemo` rather than a render-time
+  // call: the read only needs to happen again when the role itself changes.
+  const legacyAux: LegacyOpticsAux | null = useMemo(() => {
+    if (canEdit) return null;
+    try {
+      const raw = localStorage.getItem(OPTICS_AUX_KEY);
+      return raw ? parseLegacyOpticsAux(raw) : null;
+    } catch {
+      return null;
+    }
+  }, [canEdit]);
+
+  // The one-time migration (D-FU-1's contract, D-SET-1's last key). Runs once
+  // per phone: `migrationDone` short-circuits every render after the first
+  // that ever resolves it, and `migrateKey` itself is idempotent even if this
+  // effect somehow re-fired. `serverHasValue` is the rig's own answer - a
+  // non-zero aperture means someone already set one here - so a conflict never
+  // merges, it only ever discards the phone's copy in favour of the rig's.
+  useEffect(() => {
+    if (!optics || !apertureFieldSupported) return;
+    if (migrationDone(OPTICS_AUX_KEY)) return;
+    let alive = true;
+    void migrateKey<LegacyOpticsAux>({
+      key: OPTICS_AUX_KEY,
+      cap: "config.site_optics",
+      principal,
+      supported: true,
+      serverHasValue: optics.aperture_mm > 0,
+      read: parseLegacyOpticsAux,
+      put: async (legacy) => {
+        await api.put("/api/optics", {
+          optics: { ...optics, aperture_mm: legacy.apertureMm ?? 0, reducer: legacy.reducer },
+          version: config?.version ?? null,
+        });
+      },
+      conflictToast: OPTICS_MIGRATION_TOAST,
+      onToast: (m) => useStore.getState().enqueueToast({ level: "info", title: m }),
+    }).then((outcome) => {
+      if (alive && (outcome === "migrated" || outcome === "server-wins")) {
+        void useStore.getState().loadConfig();
+      }
+    });
+    return () => { alive = false; };
+    // `optics` itself is a fresh object every config reload (see the seed
+    // effect below); the aperture value and the principal are the only two
+    // inputs the decision actually depends on, and `migrationDone` above is
+    // the real guard against a second run.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [optics?.aperture_mm, apertureFieldSupported, principal]);
+
   const [tile, setTile] = useState<TileId>("focal");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -213,7 +282,15 @@ export function OpticsSheet(): JSX.Element {
     () => (draft ? resolveDraft(draft, computed) : { flMm: 0, pxUm: 0, wPx: 0, hPx: 0 }),
     [draft, computed],
   );
-  const localFov = useMemo(() => draftFov(view, aux.reducer), [view, aux.reducer]);
+
+  // The number shown and dragged: the phone's own legacy copy for a locked
+  // role that still has one, the draft (the rig's own field) otherwise. Only
+  // the DISPLAY follows the legacy copy - a locked role cannot press SAVE, so
+  // there is nothing here for it to write.
+  const effectiveApertureMm = legacyAux ? legacyAux.apertureMm : (draft?.aperture_mm ?? null);
+  const effectiveReducer = legacyAux ? legacyAux.reducer : (draft?.reducer ?? 1);
+
+  const localFov = useMemo(() => draftFov(view, effectiveReducer), [view, effectiveReducer]);
   const serverFov = computedFov(computed);
   const dirty = draft ? JSON.stringify(draft) !== seed : false;
 
@@ -244,13 +321,6 @@ export function OpticsSheet(): JSX.Element {
   }
 
   const patch = (p: Partial<Optics>) => setDraft((d) => (d ? { ...d, ...p } : d));
-  const setAuxAnd = (p: Partial<OpticsAux>) => {
-    setAux((a) => {
-      const next = { ...a, ...p };
-      writeOpticsAux(next);
-      return next;
-    });
-  };
 
   const invalid = focalInvalid(draft.focal_length_mm);
   const samp = view.pxUm > 0 && view.flMm > 0 ? samplingArcsecPerPx(view.pxUm, view.flMm) : 0;
@@ -349,7 +419,13 @@ export function OpticsSheet(): JSX.Element {
   };
 
   // ------------------------------------------------------------------- the dial
-  const dialLock = tile === "pixel" && draft.auto_from_camera
+  //
+  // An old engine with no `aperture_mm` field at all cannot take either dial's
+  // value, so neither tile is offered and a stale selection falls back to
+  // FOCAL rather than driving a dial with nothing behind it.
+  const effectiveTile: TileId =
+    (tile === "aperture" || tile === "reducer") && !apertureFieldSupported ? "focal" : tile;
+  const dialLock = effectiveTile === "pixel" && draft.auto_from_camera
     ? "sensor details come from the camera - turn that off below to pin the pixel size by hand"
     : editLock.lockedReason;
 
@@ -357,26 +433,26 @@ export function OpticsSheet(): JSX.Element {
   let dialOptions: { value: number; label: string }[] = [];
   let dialValue = 0;
   let onDial: (n: number) => void = () => {};
-  if (tile === "focal") {
+  if (effectiveTile === "focal") {
     dialValue = draft.focal_length_mm;
     dialOptions = dialStops(FOCAL_STOPS, dialValue, 0).map((v) => ({ value: v, label: `${v} mm` }));
     onDial = (v) => patch({ focal_length_mm: v });
-  } else if (tile === "aperture") {
+  } else if (effectiveTile === "aperture") {
     dialLabel = "APERTURE";
-    dialValue = aux.apertureMm ?? 0;
+    dialValue = effectiveApertureMm ?? 0;
     dialOptions = dialStops([0, ...APERTURE_STOPS], dialValue, 0).map((v) => ({
       value: v,
       label: v === 0 ? "not set" : `${v} mm`,
     }));
-    onDial = (v) => setAuxAnd({ apertureMm: v > 0 ? v : null });
-  } else if (tile === "reducer") {
+    onDial = (v) => patch({ aperture_mm: v });
+  } else if (effectiveTile === "reducer") {
     dialLabel = "REDUCER";
-    dialValue = aux.reducer;
+    dialValue = effectiveReducer;
     dialOptions = dialStops(REDUCER_STOPS, dialValue, 2).map((v) => ({
       value: v,
       label: `${v.toFixed(2)}x`,
     }));
-    onDial = (v) => setAuxAnd({ reducer: v });
+    onDial = (v) => patch({ reducer: v });
   } else {
     dialLabel = "PIXEL";
     dialValue = draft.pixel_size_um;
@@ -396,7 +472,7 @@ export function OpticsSheet(): JSX.Element {
       icon={<NxIcon name="optics" size={18} />}
       live={
         <span data-testid="optics-live">
-          {liveLine(view.flMm, aux.apertureMm, view.pxUm, shownFov)}
+          {liveLine(view.flMm, fRatioFrom(computed, view.flMm, effectiveApertureMm ?? 0), view.pxUm, shownFov)}
         </span>
       }
       right={overridden ? <LayerChip entry={entryOf(config, opticsKey("focal_length_mm"))} /> : undefined}
@@ -519,32 +595,36 @@ export function OpticsSheet(): JSX.Element {
         <ReadoutTile
           label="FOCAL LENGTH"
           value={view.flMm > 0 ? `${Math.round(draft.focal_length_mm)} mm` : "not set"}
-          sub={aux.reducer === 1 ? "native" : "with reducer"}
-          selected={tile === "focal"}
+          sub={effectiveReducer === 1 ? "native" : "with reducer"}
+          selected={effectiveTile === "focal"}
           onSelect={() => setTile("focal")}
           data-testid="optics-tile-focal"
         />
-        <ReadoutTile
-          label="APERTURE"
-          value={aux.apertureMm ? `${Math.round(aux.apertureMm)} mm` : "not set"}
-          sub={fRatioLabel(view.flMm, aux.apertureMm)}
-          selected={tile === "aperture"}
-          onSelect={() => setTile("aperture")}
-          data-testid="optics-tile-aperture"
-        />
-        <ReadoutTile
-          label="REDUCER"
-          value={`${aux.reducer.toFixed(2)}x`}
-          sub={aux.reducer === 1 ? "none" : "preview only"}
-          selected={tile === "reducer"}
-          onSelect={() => setTile("reducer")}
-          data-testid="optics-tile-reducer"
-        />
+        {apertureFieldSupported && (
+          <ReadoutTile
+            label="APERTURE"
+            value={effectiveApertureMm ? `${Math.round(effectiveApertureMm)} mm` : "not set"}
+            sub={fRatioFrom(computed, view.flMm, effectiveApertureMm ?? 0)}
+            selected={effectiveTile === "aperture"}
+            onSelect={() => setTile("aperture")}
+            data-testid="optics-tile-aperture"
+          />
+        )}
+        {apertureFieldSupported && (
+          <ReadoutTile
+            label="REDUCER"
+            value={`${effectiveReducer.toFixed(2)}x`}
+            sub={effectiveReducer === 1 ? "none" : "recorded, not multiplied"}
+            selected={effectiveTile === "reducer"}
+            onSelect={() => setTile("reducer")}
+            data-testid="optics-tile-reducer"
+          />
+        )}
         <ReadoutTile
           label="PIXEL"
           value={view.pxUm > 0 ? `${Number(view.pxUm.toFixed(2))} µm` : "not set"}
           sub={samp > 0 ? `${samp.toFixed(2)}″/px` : "needs a focal length"}
-          selected={tile === "pixel"}
+          selected={effectiveTile === "pixel"}
           onSelect={() => setTile("pixel")}
           data-testid="optics-tile-pixel"
         />
@@ -560,30 +640,49 @@ export function OpticsSheet(): JSX.Element {
         data-testid="optics-dial"
       />
 
-      <Card>
-        <p style={{ ...PARA, margin: 0 }}>
-          Aperture and reducer are remembered on this phone. The rig only ever uses the focal
-          length above - if you fit a reducer, set the focal length to the reduced value and the
-          whole app follows.
-        </p>
-        {aux.reducer !== 1 && (
-          <div style={{ marginTop: 8 }}>
-            <ActionButton
-              kind="secondary"
-              onPress={() => {
-                patch({ focal_length_mm: reducedFocalMm(draft.focal_length_mm, aux.reducer) });
-                setAuxAnd({ reducer: 1 });
-                setTile("focal");
-              }}
-              lockedReason={editLock.lockedReason}
-              onExplain={editLock.onExplain}
-              data-testid="optics-use-reduced"
-            >
-              USE THE REDUCED FOCAL LENGTH
-            </ActionButton>
-          </div>
-        )}
-      </Card>
+      {!apertureFieldSupported && (
+        <Card data-testid="optics-aperture-unsupported">
+          <Mono size={11} tone="dim">
+            This engine does not carry aperture and reducer yet. The rig frames from the focal
+            length above either way.
+          </Mono>
+        </Card>
+      )}
+
+      {apertureFieldSupported && (
+        <Card>
+          <p style={{ ...PARA, margin: 0 }}>
+            Aperture and reducer are saved with the rig&apos;s optics now. The rig still only ever
+            frames from the focal length above - the reducer is recorded, never multiplied into it;
+            USE THE REDUCED FOCAL LENGTH is the one press that turns it into that number.
+          </p>
+          {legacyAux && (
+            <LockNote
+              reason={`needs ${accessPhrase("config.site_optics")} to move this phone's aperture and reducer to the rig - showing this phone's own copy until then`}
+              data-testid="optics-legacy-note"
+            />
+          )}
+          {effectiveReducer !== 1 && (
+            <div style={{ marginTop: 8 }}>
+              <ActionButton
+                kind="secondary"
+                onPress={() => {
+                  patch({
+                    focal_length_mm: reducedFocalMm(draft.focal_length_mm, draft.reducer),
+                    reducer: 1,
+                  });
+                  setTile("focal");
+                }}
+                lockedReason={editLock.lockedReason}
+                onExplain={editLock.onExplain}
+                data-testid="optics-use-reduced"
+              >
+                USE THE REDUCED FOCAL LENGTH
+              </ActionButton>
+            </div>
+          )}
+        </Card>
+      )}
 
       {/* -------------------------------------------- measured by the solve */}
       <ListRow

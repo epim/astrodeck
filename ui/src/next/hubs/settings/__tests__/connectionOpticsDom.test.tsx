@@ -145,7 +145,8 @@ const { CONN_PREF_KEY } = await import("../sheets/connectionModel");
 // the address the card shows. Asserting "a path exists" would pass for a code
 // that encodes something else entirely, which is the one failure that matters.
 const { encodeQr, qrPath } = await import("../../../lib/qr");
-const { OPTICS_AUX_KEY } = await import("../sheets/opticsModel");
+const { OPTICS_AUX_KEY, OPTICS_MIGRATION_TOAST } = await import("../sheets/opticsModel");
+const { migrationFlagKey } = await import("../../../lib/storageMigration");
 
 // ------------------------------------------------------------------ harness
 let passed = 0;
@@ -207,6 +208,11 @@ const OPTICS = {
   auto_from_camera: true,
   guide_focal_length_mm: 200,
   telescope_name: "Askar FRA400",
+  // D-SET-1: rig fields now. 0 is the unset convention, which is why the
+  // primary fixture leaves aperture unset - "not invented until the user
+  // says" is exactly the case that must survive the move to the server.
+  aperture_mm: 0,
+  reducer: 1,
 };
 
 const CONFIG: any = {
@@ -218,6 +224,7 @@ const CONFIG: any = {
     focal_length_mm: 530, pixel_size_um: 3.76,
     sensor_width_px: 6248, sensor_height_px: 4176,
     image_scale_arcsec_px: 1.46, fov_w_deg: 2.54, fov_h_deg: 1.70, fov_diag_deg: 3.06,
+    aperture_mm: 0, reducer: 1, f_ratio: null,
   },
   active_profile_id: null,
   safety: {}, escalation: {}, alerts: [], deadman_url: "",
@@ -553,6 +560,104 @@ await testAsync("optics: SAVE is PUT /api/optics carrying {optics, version}", as
   eq(putOptics.version, 42, "the optimistic-concurrency version was not sent, so a 409 can never be honest");
   eq(putOptics.optics.focal_length_mm, 612, "the saved focal length is not the one on screen");
   eq(putOptics.optics.telescope_name, "Askar FRA400", "the PUT dropped a field it was not editing");
+  eq(
+    putOptics.optics.aperture_mm, 0,
+    "APERTURE is no longer part of the SAME optics draft SAVE OPTICS writes",
+  );
+  eq(
+    putOptics.optics.reducer, 1,
+    "REDUCER is no longer part of the SAME optics draft SAVE OPTICS writes",
+  );
+});
+
+// ------------------------------------------------- the server's own f-ratio
+await testAsync("optics: the f-ratio reads the server's optics_computed.f_ratio when present", async () => {
+  await clearTree();
+  try { localStorage.removeItem(migrationFlagKey(OPTICS_AUX_KEY)); } catch { /* nothing to clear */ }
+  seed("admin");
+  useStore.setState({
+    config: {
+      ...CONFIG,
+      optics: { ...OPTICS, aperture_mm: 200, reducer: 1 },
+      optics_computed: {
+        ...CONFIG.optics_computed,
+        aperture_mm: 200, reducer: 1,
+        // Deliberately NOT 530/200 (2.65): a figure this module's own
+        // arithmetic would never produce, so a component that silently fell
+        // back to `fRatioLabel` instead of reading this field is caught.
+        f_ratio: 2.5,
+      },
+    },
+  } as never);
+  await render(createElement(OpticsSheet));
+  assert(
+    /f\/2\.5\b/.test(byId("optics-tile-aperture").textContent),
+    `the aperture tile did not use the server's own f_ratio: "${byId("optics-tile-aperture").textContent}"`,
+  );
+  assert(
+    /f\/2\.5\b/.test(byId("optics-live").textContent),
+    `the live line did not use the server's own f_ratio: "${byId("optics-live").textContent}"`,
+  );
+});
+
+// ---------------------------------------------------------------- migration
+//
+// D-FU-1 / D-SET-1: `astrodeck-next-optics-aux` is the last phone-local rig
+// key, moved once through `storageMigration.ts`'s `migrateKey`. Both outcomes
+// get their own test because they behave oppositely on purpose: the rig had
+// nothing yet (the phone's values become the rig's, quietly) versus the rig
+// already had one (the phone's copy is discarded, never merged, and that is
+// the one outcome worth a toast - "replaced by the rig's" would be a false
+// claim on the quiet path, where nothing was replaced).
+await testAsync("optics: an unmigrated local key moves up once when the rig has none yet, quietly", async () => {
+  await clearTree();
+  try { localStorage.removeItem(migrationFlagKey(OPTICS_AUX_KEY)); } catch { /* nothing to clear */ }
+  localStorage.setItem(OPTICS_AUX_KEY, JSON.stringify({ apertureMm: 200, reducer: 0.8 }));
+  seed("admin");
+  useStore.setState({ toasts: [] } as never);
+  asked.length = 0;
+  putOptics = null;
+  await render(createElement(OpticsSheet));
+  const puts = asked.filter((a) => a === "PUT /api/optics");
+  eq(puts.length, 1, `the migration did not PUT exactly once (asked: ${asked.join(", ")})`);
+  assert(putOptics != null, "the migration PUT carried no body");
+  eq(putOptics.optics.aperture_mm, 200, "the phone's aperture did not reach the PUT body");
+  eq(putOptics.optics.reducer, 0.8, "the phone's reducer did not reach the PUT body");
+  assert(
+    localStorage.getItem(OPTICS_AUX_KEY) == null,
+    "the local key survived a migration the rig accepted",
+  );
+  const titles = useStore.getState().toasts.map((t: any) => t.title);
+  assert(
+    !titles.includes(OPTICS_MIGRATION_TOAST),
+    "a toast fired for the quiet path, where the phone's values became the rig's rather than being replaced",
+  );
+});
+
+await testAsync("optics: the same key with a non-zero server aperture is discarded, never merged", async () => {
+  await clearTree();
+  try { localStorage.removeItem(migrationFlagKey(OPTICS_AUX_KEY)); } catch { /* nothing to clear */ }
+  localStorage.setItem(OPTICS_AUX_KEY, JSON.stringify({ apertureMm: 200, reducer: 0.8 }));
+  seed("admin");
+  useStore.setState({
+    toasts: [],
+    config: { ...CONFIG, optics: { ...OPTICS, aperture_mm: 106, reducer: 1 } },
+  } as never);
+  asked.length = 0;
+  putOptics = null;
+  await render(createElement(OpticsSheet));
+  const puts = asked.filter((a) => a === "PUT /api/optics");
+  eq(puts.length, 0, `a conflict must not PUT anything (asked: ${asked.join(", ")})`);
+  assert(putOptics == null, "the conflict path sent a body, which means it merged rather than discarding");
+  assert(
+    localStorage.getItem(OPTICS_AUX_KEY) == null,
+    "the local copy survived a conflict the rig already won",
+  );
+  const titles = useStore.getState().toasts.map((t: any) => t.title);
+  assert(
+    titles.includes(OPTICS_MIGRATION_TOAST),
+    `the conflict toast did not fire verbatim (toasts: ${JSON.stringify(titles)})`,
+  );
 });
 
 // ------------------------------------------------------------------- viewer
@@ -575,8 +680,39 @@ await testAsync("optics: a viewer gets the sentence and issues nothing", async (
   eq(asked.length, 0, `a viewer issued a request: ${asked.join(", ")}`);
 });
 
+await testAsync("optics: a viewer never fires the migration PUT, and keeps reading local", async () => {
+  await clearTree();
+  try { localStorage.removeItem(migrationFlagKey(OPTICS_AUX_KEY)); } catch { /* nothing to clear */ }
+  localStorage.setItem(OPTICS_AUX_KEY, JSON.stringify({ apertureMm: 200, reducer: 0.8 }));
+  seed("viewer");
+  asked.length = 0;
+  putOptics = null;
+  await render(createElement(OpticsSheet));
+  eq(asked.length, 0, `a viewer's read-only render issued a request: ${asked.join(", ")}`);
+  assert(putOptics == null, "a viewer triggered the migration write");
+  assert(
+    localStorage.getItem(OPTICS_AUX_KEY) != null,
+    "the local copy was deleted for a role that cannot write it - it must keep reading local until it can",
+  );
+  assert(
+    /200 mm/.test(byId("optics-tile-aperture").textContent),
+    `the viewer did not fall back to the phone's own copy: "${byId("optics-tile-aperture").textContent}"`,
+  );
+  const note = byId("optics-legacy-note");
+  assert(note != null, "no LockNote explaining the read-only fallback");
+  assert(
+    /Read-only - needs admin access/.test(String(note.textContent)),
+    `the legacy note does not name the capability: "${note.textContent}"`,
+  );
+  // Cleanup: a viewer's read-only render deliberately leaves the key in place
+  // (asserted above), but a later test in this file that seeds an ADMIN
+  // principal must not inherit it - it would trigger a real migration this
+  // fixture never asked for.
+  try { localStorage.removeItem(OPTICS_AUX_KEY); } catch { /* nothing to clear */ }
+});
+
 // ---------------------------------------------------------------- override
-await testAsync("optics: a profile's optics block raises the banner and lists all seven keys", async () => {
+await testAsync("optics: a profile's optics block raises the banner and lists all nine keys", async () => {
   const entry = (value: unknown, cfg: unknown) => ({
     value, layer: "profile", profile: value, config: cfg, default: cfg,
     profile_id: "p1", profile_name: "Rig1", reason: "override: profile",
@@ -594,6 +730,10 @@ await testAsync("optics: a profile's optics block raises the banner and lists al
         "optics.auto_from_camera": entry(false, true),
         "optics.guide_focal_length_mm": entry(120, 200),
         "optics.telescope_name": entry("RedCat 51", "Askar FRA400"),
+        // D-SET-1: aperture and reducer join the same whole-block swap, so a
+        // profile pinning them is exactly the case the banner exists for.
+        "optics.aperture_mm": entry(80, 0),
+        "optics.reducer": entry(0.8, 1),
         "providers.solve": {
           value: "astap", layer: "config", profile: null, config: "astap",
           default: "auto", profile_id: null, profile_name: null, reason: null,
@@ -607,12 +747,16 @@ await testAsync("optics: a profile's optics block raises the banner and lists al
   assert(/Rig1/.test(banner.textContent), "the banner does not name the profile in charge");
   eq(
     qa('[data-testid="optics-override-key"]').length,
-    7,
-    "the banner must list all seven keys - a whole-block swap moves the ones nobody was looking at",
+    9,
+    "the banner must list all nine keys - a whole-block swap moves the ones nobody was looking at, aperture and reducer included",
   );
   assert(
     /Pixel size: 2\.4 µm - this sheet shows 3\.76 µm/.test(banner.textContent),
     "the banner does not print running-vs-panel for a key the user never touched",
+  );
+  assert(
+    /Aperture: 80 mm - this sheet shows not set/.test(banner.textContent),
+    "the banner does not list the aperture override now that it is part of the same optics block",
   );
   assert(
     /will keep overriding them/.test(String(byId("optics-save-warning")?.textContent)),
