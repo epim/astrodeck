@@ -21,6 +21,17 @@
 // The weather panels are mounted by the CALLER's cap gate (they do no cap check
 // of their own), and only at tablet/desktop: on a phone the WEATHER hub is one
 // tab away and the design gives Monitor no weather block (plan §F.10).
+//
+// The cap gate is not the only gate the radar needs. `RadarMap` takes no props
+// and reads the weather slice itself, but it does NOT check `weather.enabled`:
+// mounted with weather switched off it lays out a tile grid and fires a
+// `/api/weather/tile/...` request per cell, every one of which the server
+// answers `{"detail":"weather disabled"}`, and its own TTL timer keeps re-firing
+// them for as long as the component stays mounted - which on this screen is the
+// whole night. `WEATHER · RADAR` already refuses to mount it for exactly that
+// reason (`hubs/weather/radar/RadarScreen.tsx:44-68`); this screen asks the same
+// question, in the same words, so the two mounts of one component cannot
+// disagree about when it is allowed to fetch.
 
 import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from "react";
 import { u } from "../../../../lib/base";
@@ -48,6 +59,7 @@ import { fmtLogTime } from "../../../../lib/logFormat";
 import { getDomeState, type DomeState } from "../../../../api/backends";
 import SkyConditionsPanel from "../../../../components/weather/SkyConditionsPanel";
 import RadarMap from "../../../../components/weather/RadarMap";
+import { WEATHER_OFF_HINT, WEATHER_OFF_TITLE } from "../../weather/conditions/verdict";
 import type { MonitorSnapshot, PreviewInfo } from "../../../../types";
 import { ActionButton, Card, Label, Mono, Pill, Segmented } from "../../../ui";
 import { nav } from "../../../router";
@@ -307,6 +319,14 @@ export function LiveScreen(): JSX.Element {
   const siteIsDefault = useStore((s) => s.config?.site?.is_default);
   const weatherMonitored = !!weatherCfgEnabled && !siteIsDefault;
 
+  // The RADAR screen's gate, copied whole: `weather` absent is the cold-load
+  // case and `enabled: false` is the operator's own decision, and neither one
+  // may fetch a tile. `weatherMonitored` above is a DIFFERENT question (is
+  // anything watching?) and is not a licence to fetch - a default (0,0) site
+  // leaves it false while the tiles would still be requested.
+  const radarOff = !weather || !weather.enabled;
+  const weatherSettingsLock = useLock({ cap: "config.site_optics" });
+
   const [trace, setTrace] = useState<"trace" | "scatter">("trace");
   const guideLock = useLock({ needsRole: "guider" });
   const recentLog = useMemo(() => [...logs].reverse().slice(0, 6), [logs]);
@@ -481,7 +501,28 @@ export function LiveScreen(): JSX.Element {
       {bp !== "phone" && canSeeWeather && (
         <div data-testid="monitor-weather" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           <SkyConditionsPanel />
-          <RadarMap />
+          {radarOff ? (
+            <Card tone="dashed" data-testid="monitor-radar-off">
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <Label size={11}>WEATHER IS OFF</Label>
+                <Mono size={11} tone="dim">{`${WEATHER_OFF_TITLE} ${WEATHER_OFF_HINT}`}</Mono>
+                <Mono size={10} tone="dim">
+                  No radar or satellite tiles are fetched while it is off.
+                </Mono>
+                <ActionButton
+                  kind="secondary"
+                  onPress={() => nav.sheet("weatherSettings")}
+                  lockedReason={weatherSettingsLock.lockedReason}
+                  onExplain={weatherSettingsLock.onExplain}
+                  data-testid="monitor-radar-off-cta"
+                >
+                  WEATHER SETTINGS
+                </ActionButton>
+              </div>
+            </Card>
+          ) : (
+            <RadarMap />
+          )}
         </div>
       )}
     </div>

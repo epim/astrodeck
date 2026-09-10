@@ -34,8 +34,17 @@ const dom = new JSDOM(
 );
 const win = dom.window as any;
 
-win.matchMedia = () => ({
-  matches: false, addEventListener() {}, removeEventListener() {},
+// Query-AWARE, and mutable: `breakpoint.ts` asks two media queries, and the
+// weather block on LIVE only exists above phone. A stub that answers `false` to
+// everything can only ever render the phone layout, and every assertion about
+// the tablet-only block would then be an assertion about a screen that is not
+// on the page. `bpMatch` is read at call time, so flipping it and re-mounting
+// changes the layout under test.
+const PHONE = () => false;
+const TABLET = (q: string) => q.includes("768");
+let bpMatch: (q: string) => boolean = PHONE;
+win.matchMedia = (q: unknown) => ({
+  matches: bpMatch(String(q)), addEventListener() {}, removeEventListener() {},
   addListener() {}, removeListener() {},
 });
 win.WebSocket = class { close() {} addEventListener() {} send() {} };
@@ -116,6 +125,9 @@ const { LogScreen } = await import("../log/LogScreen");
 const { AlertsScreen } = await import("../alerts/AlertsScreen");
 const { VIEW_ONLY_NOTE } = await import("../live/RecoveryCards");
 const { accessPhrase } = await import("../../../../lib/caps");
+const { WEATHER_OFF_HINT, WEATHER_OFF_TITLE } = await import(
+  "../../weather/conditions/verdict"
+);
 
 // -------------------------------------------------------------------- harness
 let passed = 0;
@@ -163,6 +175,17 @@ const VIEWER = { role: "viewer", email: null, caps: ["view.status", "view.previe
 
 const NOW = Date.now();
 
+// Named, because the weather tests at the bottom need the SAME slice with one
+// field flipped: a second hand-written fixture could differ in some other field
+// and then "the radar did not mount" would have a second possible cause.
+const WEATHER_ON = {
+  enabled: true, stale: false, fetched_ts: NOW / 1000, ignore_tonight: false,
+  threshold_pct: 60, sustain_minutes: 45, site_lat: null, site_lon: null,
+  forecast: null, astrospheric: null, alert: null,
+  now: { ts: "", temp_c: 11.2, dewpoint_c: 7.0, humidity_pct: 74, wind_kmh: 5,
+    wind_dir_deg: 225, gust_kmh: 9, cloud_base_m: 1200 },
+};
+
 function seed(over: Record<string, unknown> = {}): void {
   useStore.setState({
     principal: OPERATOR,
@@ -198,13 +221,7 @@ function seed(over: Record<string, unknown> = {}): void {
     guide: { rms_total: 0.91, rms_ra: 0.6, rms_dec: 0.5, recent: [
       { t: 1, ra: 0.2, dec: -0.1 }, { t: 2, ra: -0.3, dec: 0.2 }, { t: 3, ra: 0.1, dec: 0.05 },
     ] },
-    weather: {
-      enabled: true, stale: false, fetched_ts: NOW / 1000, ignore_tonight: false,
-      threshold_pct: 60, sustain_minutes: 45, site_lat: null, site_lon: null,
-      forecast: null, astrospheric: null, alert: null,
-      now: { ts: "", temp_c: 11.2, dewpoint_c: 7.0, humidity_pct: 74, wind_kmh: 5,
-        wind_dir_deg: 225, gust_kmh: 9, cloud_base_m: 1200 },
-    },
+    weather: WEATHER_ON,
     // Frames are landing; pictures are landing. The stall tests move these.
     lastFrameAtMs: NOW - 4000,
     lastCaptureAtMs: NOW - 4000,
@@ -499,6 +516,77 @@ await testAsync("a viewer sees the sinks read-only, with the reason, and writes 
 });
 
 await act(async () => { alertRoot.unmount(); });
+
+// ================================================== LIVE · the weather block
+//
+// `RadarMap` fetches a GRID of `/api/weather/tile/...` images and re-fires them
+// on its own TTL timer for as long as it is mounted. With weather switched off
+// every one of those is a 404 (`{"detail":"weather disabled"}`), so the gate is
+// not cosmetic: it is the difference between a quiet screen and a request loop
+// that outlives the route. WEATHER · RADAR already refuses to mount it; this
+// asserts LIVE asks the same question.
+//
+// jsdom stubs ResizeObserver, so `RadarMap` measures width 0 and lays out no
+// <img> even when it IS mounted - "no tile element" alone would therefore pass
+// over a mounted map. The map's own `role="application"` box is the positive
+// control that says which of the two branches actually rendered.
+const RADAR_BOX = '[role="application"][aria-label^="Radar map"]';
+const tileAsks = () => asks.filter((a) => a.url.includes("/api/weather/tile"));
+const tileImgs = () =>
+  Array.from(container.querySelectorAll("img")).filter(
+    (n: any) => String(n.getAttribute("src") ?? "").includes("/api/weather/tile"),
+  );
+
+bpMatch = TABLET;
+const wxRoot = createRoot(container);
+seed({ weather: { ...(useStore.getState() as any).weather, enabled: false } });
+asks.length = 0;
+await act(async () => { wxRoot.render(createElement(MonitorHub)); });
+await settle();
+
+test("weather OFF: LIVE mounts no radar and asks for no tile", () => {
+  assert(q('[data-testid="monitor-live"]') != null,
+    "the LIVE screen is not on the page - every assertion below would be vacuous");
+  assert(q('[data-testid="monitor-weather"]') != null,
+    "the tablet weather block never rendered, so this is not the case under test");
+  assert(q(RADAR_BOX) == null,
+    "RadarMap is mounted with weather switched off - its tile grid and its refresh "
+    + "timer will keep asking a route that answers 'weather disabled'");
+  eq(tileAsks().length, 0,
+    `a tile was requested with weather off: ${JSON.stringify(tileAsks().map((a) => a.url))}`);
+  eq(tileImgs().length, 0, "a tile <img> was laid out with weather off");
+});
+
+test("weather OFF: the block says so, in WEATHER · RADAR's own words", () => {
+  const card = q('[data-testid="monitor-radar-off"]');
+  assert(card != null, "the radar was removed with nothing in its place - an empty gap "
+    + "is not an answer to 'why is there no radar'");
+  const t = card.textContent as string;
+  assert(/WEATHER IS OFF/.test(t), `the off-card lost its label: "${t}"`);
+  assert(t.includes(`${WEATHER_OFF_TITLE} ${WEATHER_OFF_HINT}`),
+    `the off-card paraphrases the shared reason copy: "${t}"`);
+  assert(/No radar or satellite tiles are fetched while it is off\./.test(t),
+    `the off-card does not say what is NOT happening: "${t}"`);
+  assert(q('[data-testid="monitor-radar-off-cta"]') != null,
+    "the off-card states the reason and offers no way to change it");
+});
+
+await testAsync("weather ON: the map mounts, and the off-card is gone", async () => {
+  await act(async () => {
+    useStore.setState({
+      weather: { ...(useStore.getState() as any).weather, enabled: true },
+    } as never);
+  });
+  await settle();
+  assert(q('[data-testid="monitor-weather"]') != null, "the weather block vanished");
+  assert(q(RADAR_BOX) != null,
+    "the gate is stuck shut: weather is on and the radar still did not mount");
+  assert(q('[data-testid="monitor-radar-off"]') == null,
+    "the off-card is still up over a live map");
+});
+
+await act(async () => { wxRoot.unmount(); });
+bpMatch = PHONE;
 
 const total = passed + failed;
 console.log(`monitorDom.test: ${passed}/${total} passed`);

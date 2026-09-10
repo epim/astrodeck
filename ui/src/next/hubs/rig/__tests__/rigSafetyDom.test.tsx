@@ -575,6 +575,40 @@ await testAsync("at tablet width the real EscalationPanel replaces the read-only
   wide = false;
 });
 
+// THE PANEL IS WIDER THAN THE SHEET IT IS IN.
+//
+// `EscalationPanel` is shared with the settings page, where it has the whole
+// window; its rows are Tailwind grids (`sm:grid-cols-[1fr_13rem]`,
+// `sm:grid-cols-2`) and `sm:` asks the VIEWPORT, not this container. Mounted in
+// `.nx-sheet-panel` - `min(420px, 44vw)`, so 360.8 px at an 820 px viewport -
+// its contents overflow their tracks, and with every ancestor at
+// `overflow: visible` that overflow reached the PAGE: the browser probe
+// measured 100 px of horizontal page scroll at 820 and none at 390, which is
+// the tell, because 390 is the narrower sheet and simply does not render this
+// branch.
+//
+// jsdom has no layout engine, so the pixels are the probe's job. This grades
+// the structure that decides them: the panel sits in its own scroll container,
+// so whatever it does inside stays inside.
+await testAsync("the tablet escalation panel is boxed in its own horizontal scroller", async () => {
+  wide = true;
+  seed();
+  await mount();
+  const box = q('[data-testid="safety-escalation-scroll"]');
+  assert(box != null,
+    "the settings-page panel is mounted straight into the sheet, so anything it "
+    + "lays out wider than 360 px scrolls the whole PAGE sideways");
+  eq(box.style.overflowX, "auto", "the wrapper does not scroll its own overflow");
+  // One axis at `auto` computes the other from `visible` to `auto`, which would
+  // hang a second scrollbar down a panel that fits vertically perfectly well.
+  eq(box.style.overflowY, "hidden", "the wrapper grew a vertical scrollbar it does not need");
+  eq(box.style.minWidth, "0px", "the wrapper cannot shrink, so it is not a boundary at all");
+  eq(box.style.maxWidth, "100%", "the wrapper may grow past the card that holds it");
+  assert(/When something fails/.test(box.textContent || ""),
+    "the wrapper is empty - it boxes in nothing");
+  wide = false;
+});
+
 await testAsync("the dead-man row reports the live health, and empty sinks are called out", async () => {
   seed();
   await mount();
