@@ -149,18 +149,30 @@ const CTX: RefineContext = {
   coolerTargetC: -2,
 };
 
+// `state` is "running" with `sky.holding` set rather than state "holding",
+// because the stall gate is `stallLevel`, which fires on "running" only - and
+// the cloud hold now reads the engine's own `sky.holding`, which is published
+// beside `state` on every publish precisely so a routine `running` publish
+// cannot hide a hold. One fixture, all nine kinds.
 const inputs: IncidentInputs = {
-  sequence: { state: "holding", detail: "", hold: { reason: "clouds" }, end_reason: undefined },
-  safety: { is_safe: false, reason: "rain", stale: false, ts: 1_700_000_000_000 },
+  sequence: {
+    state: "running", detail: "", hold: { reason: "clouds" }, end_reason: undefined,
+    sky: { holding: true, cloudy: true, text: "4 stars, score 0.18" },
+  },
+  safety: { is_safe: false, reason: "rain", source: "boltwood", stale: false, ts: 1_700_000_000_000 },
   wsPhase: "down",
   telemetryStale: false,
   wsLastEvent: 1_700_000_000_000,
   mountOp: { stuck: true, error_arcmin: 4.2, attempt: 3 },
   focus: { state: "failed" },
   lastAutofocusResult: { failed: true },
-  guide: { guiding: false, lost: true },
-  diskFreeBytes: 1.2e9,
-  cooler: { on: true, at_setpoint: false, gate_open: false, setpoint: -10, temperature: -3.4 },
+  guide: { guiding: false, phase: "lost" },
+  disk: { free_gb: 1.2, low: true, critical: false },
+  cooler: {
+    on: true, at_target: false, gate_open: false, target_c: -10, temperature: -3.4,
+    power: 99, can_report_power: true,
+  },
+  logs: [],
   lastCaptureAtMs: 1_700_000_000_000,
   expectedFrameS: 120,
 };
@@ -183,17 +195,26 @@ test("after refining, EVERY action on EVERY card has a verb behind it", () => {
   }
 });
 
-test("the omitted ids really were offered by the lib, and really were dropped", () => {
+test("the verbless ids reach no card - the lib no longer emits them, and the filter still drops them", () => {
+  const verbless = ["switch_target", "skip_target", "keep_last_good", "continue_unguided", "switch_relay"];
+  // The lib was corrected on 2026-09-10 and no longer emits these at all
+  // (INT-A). That is the first half.
   const offered = new Set(raw.flatMap((i) => i.actions.map((a) => a.id)));
-  // A positive control: if the lib ever stops emitting these, this test would
-  // otherwise pass while asserting nothing.
-  for (const id of ["switch_target", "skip_target", "keep_last_good", "continue_unguided", "switch_relay"]) {
-    assert(offered.has(id), `the lib no longer emits ${id} - this guard has gone vacuous`);
+  for (const id of verbless) {
+    assert(!offered.has(id), `next/lib/incidents.ts still emits ${id}, which fires nothing`);
   }
+  // The second half is the POSITIVE CONTROL that keeps the filter honest now
+  // that the lib is clean: inject each id deliberately and require it to be
+  // dropped. Without this the sweep above would pass over a filter that had
+  // been deleted.
   for (const inc of raw) {
-    const kept = actionsFor(inc, CTX).map((a) => a.id);
-    for (const id of ["switch_target", "skip_target", "keep_last_good", "continue_unguided", "switch_relay"]) {
-      assert(!kept.includes(id), `${inc.kind} kept ${id}`);
+    const poisoned = {
+      ...inc,
+      actions: [...inc.actions, ...verbless.map((id) => ({ id, label: id.toUpperCase() }))],
+    };
+    const kept = actionsFor(poisoned, CTX).map((a) => a.id);
+    for (const id of verbless) {
+      assert(!kept.includes(id), `${inc.kind} kept an injected ${id}`);
     }
   }
 });
@@ -254,9 +275,12 @@ test("the KEEP LAST GOOD fact survives as a sentence once the button is gone", (
   eq(r.engine, "only 3 stars in the field", "focus.message must win:");
 });
 
-test("a safety trip needs a person - `resolvesItself` is false, whatever the lib said", () => {
+test("a safety trip needs a person - `resolvesItself` is false on both sides", () => {
   const s = raw.find((i) => i.kind === "safety")!;
-  eq(s.resolvesItself, true, "precondition: the lib says a safety trip resolves itself");
+  // The lib used to say a safety trip resolves itself (and promised a
+  // 30-minute re-arm that does not exist); INT-A corrected it, so the two now
+  // agree rather than one overriding the other.
+  eq(s.resolvesItself, false, "the lib:");
   eq(refineIncident(s, CTX).resolvesItself, false, "after refining:");
 });
 
