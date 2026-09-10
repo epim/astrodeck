@@ -85,6 +85,22 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+// ------------------------------------------------------------------ css stub
+// The Safety tuning sheet mounts `EscalationEditor` (wave R7, T-R7-9), which
+// imports its area's `safety.css`, and Node cannot load a stylesheet. The same
+// synchronous hook `hubBoundary.test.tsx` installs answers with an empty module.
+{
+  const { registerHooks } = await import("node:module");
+  registerHooks({
+    load(url: string, context: any, nextLoad: any) {
+      if (url.endsWith(".css")) {
+        return { format: "module", shortCircuit: true, source: "export default {};" };
+      }
+      return nextLoad(url, context);
+    },
+  } as any);
+}
+
 // ---------------------------------------------------------------- jsdom first
 const { JSDOM } = await import("jsdom");
 const dom = new JSDOM(
@@ -559,16 +575,31 @@ act(() => { root2.unmount(); });
       "safetyTuning", "standards", "calibration", "naming", "wcs", "sync",
       "skyPack", "restricted", "logExport", "factoryReset",             // T-SET-4
     ]) {
-      assert(typeof sheets[name] === "function", `the registry has no "${name}" sheet`);
+      // An ENTRY, not a component: sheets are code-split (D-FU-2), so a
+      // registry holds `{ id, load }` and `hubs/index.ts` builds the lazy
+      // components from it.
+      assert(sheets[name] != null && typeof sheets[name].load === "function",
+        `the registry has no "${name}" sheet`);
     }
   });
 
-  test("sites and horizon are the SKY hub's own components, not a second copy", () => {
+  test("sites and horizon are the SKY hub's own modules, not a second copy", () => {
     // `hubs/index.ts` throws at module load when one name maps to two different
-    // components. Registering the identical function object is what keeps
-    // `nav.sheet("sites")` from Settings and from Sky one screen.
-    assert(sheets.sites === sky.SitesSheet, "settings registered a DIFFERENT sites sheet");
-    assert(sheets.horizon === hz.HorizonSheet, "settings registered a DIFFERENT horizon sheet");
+    // MODULE IDS. Since the sheets became dynamic imports, each hub writes its
+    // own entry object, so identity is no longer the thing to compare - the id
+    // is, and it is what keeps `nav.sheet("sites")` from Settings and from Sky
+    // one screen. The loaders are then checked to land on the same component.
+    eq(sheets.sites.id, "sky/sheets/sites", "settings registered a DIFFERENT sites sheet:");
+    eq(sheets.horizon.id, "sky/sheets/horizon", "settings registered a DIFFERENT horizon sheet:");
+  });
+
+  const loadedSites = (await sheets.sites.load()).default;
+  const loadedHorizon = (await sheets.horizon.load()).default;
+  test("and their loaders really resolve to the SKY hub's components", () => {
+    eq(loadedSites, sky.SitesSheet,
+      "the settings `sites` entry loads something other than the Sky sheet:");
+    eq(loadedHorizon, hz.HorizonSheet,
+      "the settings `horizon` entry loads something other than the Sky sheet:");
   });
 }
 
