@@ -20,7 +20,7 @@ export {
 } from "./NowEmpty";
 
 export { CampaignLedger } from "./CampaignLedger";
-export { ChannelStrip } from "./ChannelStrip";
+export { ChannelStrip, ledgerDiffers } from "./ChannelStrip";
 export { ArmedRules } from "./ArmedRules";
 export { PoolChips } from "./PoolChips";
 export { Interrupted } from "./Interrupted";
@@ -61,6 +61,5 @@ export { rmsWord, flipCell } from "./VitalsBand";
 export { filterColor, filterToken, plannedByFilter, acceptedByFilter, tonightNightKey } from "./filters";
 export { sendControl } from "./sendControl";
 export { RUN_CONTROL_REASON, MANUAL_STOP_NOTE } from "./RunControls";
-export { TINT_NOTE } from "./ChannelStrip";
 export { NO_SAFETY_WARNING, WEATHER_VETO, WEATHER_OVERRIDE } from "./NowBanners";
 export { RERUN_PHONE_REASON, RERUN_TITLE } from "./Interrupted";

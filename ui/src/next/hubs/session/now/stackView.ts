@@ -1,5 +1,5 @@
 // stackView.ts - the live stack's SERVER state (polled once) and the two
-// DISPLAY choices that ride on top of it (channel tint, stretch).
+// DISPLAY choices that ride on top of it (which channel, and the stretch).
 //
 // ONE POLLER. `components/preview/SessionStack.tsx` self-subscribes and polls;
 // the Now screen needs the same numbers in two places (the picture and the
@@ -16,10 +16,13 @@
 // JPEG, so it is kept per phone in localStorage, wrapped in try/catch, and the
 // screen renders correctly with nothing stored.
 //
-// THE CHANNEL CHIP IS A TINT, NOT A FETCH (deviation D4). The stack preview
-// route takes `size` and `seq` and nothing else - there is no per-channel image
-// on the server - so picking Ha greyscales the composite and tints it, and the
-// badge says exactly that. The honesty line under the strip is not optional.
+// THE CHANNEL IS A DIFFERENT IMAGE, NOT A FILTER OVER THIS ONE (D-SES-1). It
+// names the URL the picture is fetched from (`?channel=` on the preview route,
+// answered from the stacker's own per-channel accumulator), so it is held here
+// beside the stretch - but it is NOT part of `cssFilter` any more. There is
+// nothing left to greyscale: the bytes on screen are that channel alone, and a
+// greyscale over them would only be a second, invented, transfer function.
+// `cssFilter` is the stretch and nothing else.
 
 import { useEffect, useState } from "react";
 import {
@@ -56,10 +59,13 @@ function publishView(): void { for (const fn of viewListeners) fn(); }
 export interface StackView {
   stretch: StretchMode;
   setStretch: (m: StretchMode) => void;
-  /** The filter name being shown alone, or null for the combined composite. */
+  /** The channel being shown alone, or null for the combined composite. It is
+   *  the STACKER'S OWN KEY (`status.channels[].channel`: R/G/B/L/Ha/Oiii/Sii),
+   *  because it goes on the wire as `?channel=` - a wheel name with no mapping
+   *  folds onto L there and would show L's picture under another label. */
   channel: string | null;
-  setChannel: (f: string | null) => void;
-  /** The CSS `filter` for the composite image. */
+  setChannel: (c: string | null) => void;
+  /** The CSS `filter` for the image: the stretch, and only the stretch. */
   cssFilter: string;
 }
 
@@ -71,20 +77,16 @@ export function useStackView(): StackView {
     return () => { viewListeners.delete(fn); };
   }, []);
 
-  const parts: string[] = [];
-  if (channel) parts.push("grayscale(1)");
-  if (STRETCH_FILTER[stretch] !== "none") parts.push(STRETCH_FILTER[stretch]);
-
   return {
     stretch,
     channel,
-    cssFilter: parts.length ? parts.join(" ") : "none",
+    cssFilter: STRETCH_FILTER[stretch],
     setStretch: (m) => {
       stretch = m;
       try { localStorage.setItem(STRETCH_KEY, m); } catch { /* nothing to persist to */ }
       publishView();
     },
-    setChannel: (f) => { channel = f; publishView(); },
+    setChannel: (c) => { channel = c; publishView(); },
   };
 }
 

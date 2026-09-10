@@ -15,13 +15,22 @@
 // picture said "retrying link" while the header said CAPTURING, one of them
 // would be lying and the operator would have no way to tell which.
 //
+// A CHANNEL IS A DIFFERENT PICTURE, NOT A TINT (D-SES-1). Picking Ha in the
+// strip changes the URL this <img> asks for; the server renders that channel's
+// own accumulator. An <img> cannot read a status code, so the one refusal that
+// matters - 404, nothing stacked in that channel yet - arrives as `onError`,
+// and it is CAUGHT: the picture falls back to the composite, the badge stops
+// saying "Ha only", and a sentence says which of the two is on screen. A silent
+// fallback would leave the badge and the picture disagreeing, which is the
+// exact defect the per-channel route was added to end.
+//
 // THE EMPTY FACE CARRIES THE COST OF THE PRESS. Switching the stack on used to
 // mean "from the next frame", so arming it at 2am showed two of the night's
 // ninety subs. The backfill folds the earlier accepted subs in, and its count is
 // ON THE LABEL because that pass reads every one of those frames off disk: an
 // informed press, not a surprise.
 
-import type { CSSProperties, JSX } from "react";
+import { useState, type CSSProperties, type JSX } from "react";
 
 import { backfillLabel, fmtIntegration, sessionStackImageUrl } from "../../../../api/sessionStack";
 import { modeLabel } from "../../../../components/preview/SessionStack";
@@ -30,7 +39,6 @@ import { fmtClock } from "../../../../lib/eta";
 import { usePreview, useSeq, useStore, useTelemetryStale, useWsPhase } from "../../../../store";
 import { ActionButton, Bar, EmptyCard, Mono } from "../../../ui";
 import { explainLock } from "../../../shell/explain";
-import { filterColor } from "./filters";
 import { phaseOf, phaseWord } from "./phase";
 import { useStackView, useSessionStackStatus } from "./stackView";
 import { useSubFrame } from "./useSubFrame";
@@ -52,6 +60,11 @@ const CORNER: CSSProperties = {
 export function LiveStack({ height = 250 }: { height?: number }): JSX.Element {
   const { status, busy, error, start } = useSessionStackStatus();
   const { channel, cssFilter, stretch } = useStackView();
+  // Which (seq, channel) pair the server has already refused. Keyed by the pair
+  // rather than a bare boolean so a new frame (seq moves) or a different chip
+  // asks again by itself: the channel that was empty at 21:10 is the one the
+  // run is filling.
+  const [missingKey, setMissingKey] = useState<string | null>(null);
   const seq = useSeq();
   const preview = usePreview();
   const wsPhase = useWsPhase();
@@ -71,9 +84,14 @@ export function LiveStack({ height = 250 }: { height?: number }): JSX.Element {
   const available = status?.backfill?.available ?? 0;
   const bfLine = backfillLabel(status?.backfill);
 
+  const viewKey = `${status?.seq ?? 0}|${channel ?? ""}`;
+  const channelMissing = channel != null && missingKey === viewKey;
+  // What is actually on screen, which is what everything below must describe.
+  const shown = channelMissing ? null : channel;
+
   const stretchWord = stretch.toLowerCase();
-  const modeBadge = channel
-    ? `${channel} only · ${status ? channelFrames(status, channel) : 0} subs · ${stretchWord} stretch`
+  const modeBadge = shown
+    ? `${shown} only · ${status ? channelFrames(status, shown) : 0} subs · ${stretchWord} stretch`
     : status && Array.isArray(status.channels)
       ? `${modeLabel(status)} · ${stretchWord} stretch`
       : "nothing stacked yet";
@@ -109,8 +127,11 @@ export function LiveStack({ height = 250 }: { height?: number }): JSX.Element {
       >
         {hasImage && status ? (
           <img
-            src={sessionStackImageUrl(status.seq, 1200)}
-            alt={`Live stack of ${status.target || "tonight's target"}`}
+            src={sessionStackImageUrl(status.seq, 1200, shown ?? undefined)}
+            onError={() => { if (channel) setMissingKey(viewKey); }}
+            alt={shown
+              ? `Live stack of ${status.target || "tonight's target"}, ${shown} channel only`
+              : `Live stack of ${status.target || "tonight's target"}`}
             data-testid="live-stack-image"
             style={{
               position: "absolute", inset: 0, width: "100%", height: "100%",
@@ -144,19 +165,6 @@ export function LiveStack({ height = 250 }: { height?: number }): JSX.Element {
               data-testid="live-stack-empty"
             />
           </div>
-        )}
-
-        {/* The tint layer for a single-channel view. It is a PRESENTATION of the
-            colour composite, and the badge plus the line under the strip say so:
-            there is no per-channel image on the server to fetch. */}
-        {channel && hasImage && (
-          <div
-            aria-hidden="true"
-            style={{
-              position: "absolute", inset: 0, background: filterColor(channel),
-              mixBlendMode: "color", pointerEvents: "none",
-            }}
-          />
         )}
 
         {linkLost && (
@@ -201,6 +209,13 @@ export function LiveStack({ height = 250 }: { height?: number }): JSX.Element {
         </div>
       </div>
 
+      {channelMissing && (
+        <span data-testid="channel-missing-note">
+          <Mono size={10} tone="warn">
+            Nothing stacked in {channel} yet - showing the combined picture.
+          </Mono>
+        </span>
+      )}
       {bfLine && <Mono size={10} tone="dim">{bfLine}</Mono>}
       {error && !status && (
         <Mono size={10} tone="warn">Could not read the stack: {error}</Mono>
