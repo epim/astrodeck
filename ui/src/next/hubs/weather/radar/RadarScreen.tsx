@@ -18,6 +18,20 @@
 //     its own IEM attribution line; a second copy would be two claims about one
 //     source, and the compliance line is the one that must not be duplicated or
 //     paraphrased.
+//
+// THE CHROME AROUND THE MAP IS A `Card`, NOT A `<Panel>` (wave R7, T-R7-15;
+// plan section 2.3, which classifies `RadarMap` itself as a KEEP - a tile map
+// and its layer maths, with no design analogue - and rewraps only what this
+// file owns). What this file owns is now the design's card.
+//
+// FOLLOW-UP, NAMED RATHER THAN DONE: `components/weather/RadarMap.tsx:336` still
+// renders its own `<Panel className="col-span-full lg:col-span-6" title="Radar">`
+// INSIDE this card, so the radar currently sits in a card inside a card and
+// carries a legacy title bar the sheet header already states. Removing it means
+// editing a legacy file that `#/classic` mounts, which no R7 task may do; the
+// additive fix is a `chrome?: "panel" | "bare"` prop on `RadarMap` defaulting to
+// "panel", so the classic mount is untouched and this one passes "bare". Same
+// change serves the second mount site (`monitor/live/LiveScreen.tsx`, T-R7-10).
 
 import type { CSSProperties, JSX } from "react";
 import RadarMap from "../../../../components/weather/RadarMap";
@@ -70,7 +84,7 @@ export function RadarScreen(): JSX.Element {
 
   return (
     <div data-testid="wx-radar" style={COL}>
-      <Card>
+      <Card data-testid="wx-radar-card">
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <RadarMap />
           <Mono size={10} tone="dim">{PIERCE_NOTE}</Mono>
