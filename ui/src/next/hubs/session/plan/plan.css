@@ -1,0 +1,149 @@
+/* =====================================================================
+   plan.css - the plan editor's own classes (wave R7, T-R7-5).
+
+   Imported by `PlanEditor.tsx` ONLY, per the wave rule that `next.css` has one
+   owner and every rebuilt area carries its own sheet. Nothing here redefines a
+   `next.css` class: every selector below starts `.nx-plan-`.
+
+   Same house rules as `next.css`: one flat class per selector, variants on
+   `data-*`, every colour from an `index.css` token, hit targets >= 44 px, and
+   the design's sub-10 px micro type raised to a 10 px floor.
+
+   The editor renders inside a 420 px sheet at tablet and desktop, so every
+   row here is a ONE-COLUMN layout that wraps rather than a fixed grid. The
+   legacy view's 454 px of fixed step-editor tracks is exactly what pushed its
+   right-hand column off an 820 px tablet, and reproducing it in a 420 px panel
+   would put the count field out of reach again.
+   ===================================================================== */
+
+/* The sheet body is already a scroll area; this is the column inside it. */
+.nx-plan { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+
+/* A stack of related rows inside one card. */
+.nx-plan-stack { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+
+/* A wrapping row of controls. Never a fixed track list - see the file header. */
+.nx-plan-row {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0;
+}
+
+/* Numeric fields side by side, collapsing to one column when the sheet is
+   narrow. 96 px is the smallest box a four-digit exposure still reads in. */
+.nx-plan-fields {
+  display: grid; gap: 8px; min-width: 0;
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+}
+
+/* The head of a target card: name, coordinates, sparkline. */
+.nx-plan-head {
+  display: flex; align-items: flex-start; gap: 10px; min-width: 0;
+}
+.nx-plan-head-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.nx-plan-name {
+  font-family: "Chakra Petch", sans-serif; font-weight: 600; font-size: 14px;
+  letter-spacing: .04em; color: var(--accent); overflow-wrap: anywhere;
+}
+
+/* One capture step inside a target card. */
+.nx-plan-step {
+  display: flex; flex-direction: column; gap: 8px; min-width: 0;
+  border: 1px solid var(--line); border-radius: var(--nx-r-tile); padding: 10px;
+}
+.nx-plan-step[data-invalid="true"] { border-color: var(--bad); }
+
+/* A wrapping chip row (filters, starter templates, folder-ish pickers). */
+.nx-plan-chips { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+
+/* The mosaic-group wrapper: one visible boundary around the panels that move
+   together, because deleting one panel and deleting the mosaic are different
+   actions and the card has to say which it is offering. */
+.nx-plan-group {
+  display: flex; flex-direction: column; gap: 10px; min-width: 0;
+  border: 1px solid var(--accent-dim); border-radius: var(--nx-r-inner); padding: 10px;
+}
+
+/* Tonight's altitude sparkline. A bordered box at both of its sizes so the
+   loading, the "never rises" chip and the drawn curve occupy identical space -
+   a chip that changes size as data lands makes the row jump under the finger. */
+.nx-plan-spark {
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--line); border-radius: 4px;
+  background: color-mix(in srgb, var(--bg-raise) 60%, transparent);
+  flex-shrink: 0;
+}
+.nx-plan-spark[data-state="warn"] {
+  border-color: var(--warn); color: var(--warn);
+  font-family: "IBM Plex Mono", monospace; font-size: 10px; padding: 0 6px;
+  white-space: nowrap;
+}
+
+/* Pre-flight rows. Shape + word carry the state; the tint is tertiary, which
+   is what keeps them readable under `:root.night`. */
+.nx-plan-check {
+  display: flex; align-items: flex-start; gap: 8px; min-width: 0; padding: 3px 0;
+}
+.nx-plan-check-glyph {
+  flex-shrink: 0; width: 16px; text-align: center; line-height: 1.4;
+  font-family: "IBM Plex Mono", monospace; font-size: 13px; color: var(--nx-tone);
+}
+.nx-plan-check-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+
+/* A dim explanatory line. 11 px, the same rung as `.nx-locknote`. */
+.nx-plan-note {
+  margin: 0; font-family: "IBM Plex Sans", sans-serif; font-size: 11px;
+  line-height: 1.5; color: var(--text-faint); overflow-wrap: anywhere;
+}
+.nx-plan-note[data-tone="bad"] { color: var(--bad); }
+.nx-plan-note[data-tone="warn"] { color: var(--warn); }
+.nx-plan-note[data-tone="ink"] { color: var(--text-dim); }
+
+/* A bordered notice: the failure banner, the pausing warning, the atlas
+   hand-off. Tone rides on data-tone, which `next.css` already resolves to
+   `--nx-tone` for every element in the app. */
+.nx-plan-notice {
+  display: flex; flex-direction: column; gap: 6px; min-width: 0;
+  border: 1px solid var(--nx-tone); border-radius: var(--nx-r-tile);
+  padding: 8px 10px;
+  background: color-mix(in srgb, var(--nx-tone) 8%, transparent);
+}
+
+/* The saved-plan list. Capped and scrolled so a library of forty plans cannot
+   push Run off the bottom of a 420 px sheet. */
+.nx-plan-list {
+  display: flex; flex-direction: column; gap: 8px; min-width: 0;
+  max-height: 280px; overflow-y: auto;
+}
+.nx-plan-lib {
+  display: flex; flex-direction: column; gap: 6px; min-width: 0;
+  border: 1px solid var(--line); border-radius: var(--nx-r-tile); padding: 8px;
+}
+.nx-plan-lib[data-active="true"] { border-color: var(--accent); }
+/* The name gets a whole line of its own and wraps: the user's complaint that
+   started this panel's rewrite was names ellipsized to "Fli..." at a 300 px
+   column width, and this sheet is narrower still. */
+.nx-plan-lib-name {
+  font-size: 12px; line-height: 1.35; color: var(--text); overflow-wrap: anywhere;
+}
+
+/* The catalog search is the shared Atlas widget and brings its own Tailwind
+   chrome. This bounds it to the sheet's width; `.field` inside it is 100 %
+   wide from unlayered CSS, so the width has to be set on the wrapper. */
+.nx-plan-search { position: relative; width: 100%; min-width: 0; }
+.nx-plan-search[data-locked="true"] { opacity: .45; }
+
+/* The 5 s undo affordance for a reversible edit. Inside the sheet, not fixed to
+   the viewport: a `position: fixed` bar would sit over the tab bar on a phone
+   and over the hub on a tablet, neither of which is where the edit happened. */
+.nx-plan-undo {
+  display: flex; align-items: center; gap: 10px; min-width: 0;
+  border: 1px solid var(--accent); border-radius: var(--nx-r-tile);
+  padding: 6px 10px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+/* A hairline between blocks inside one card. */
+.nx-plan-sep { height: 1px; background: var(--line); border: 0; margin: 2px 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  .nx-plan-spark { transition: none; }
+}
