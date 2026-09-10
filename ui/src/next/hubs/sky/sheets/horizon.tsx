@@ -45,7 +45,23 @@ type Source = "location" | "active";
 export function HorizonSheet({ params }: SheetProps): JSX.Element {
   const loadConfig = useStore((s) => s.loadConfig);
   const enqueueToast = useStore((s) => s.enqueueToast);
-  const { lockedReason: writeLocked, onExplain: explainWrite } = useLock({ cap: "config.safety" });
+  // Branch-aware (this file's header comment): `persist()` below takes one of
+  // two routes depending on `source` - PUT /api/locations/{id}
+  // (config.site_optics, app.py:3488-3489) when editing a saved location's
+  // own polyline, or POST /api/config {safety} (config.safety; the field-cap
+  // table at app.py:3250 maps the "safety" block to CAP_CONFIG_SAFETY) when
+  // editing the active site's live obstruction line. A single
+  // `config.safety`-only lock (as shipped) let a config.safety holder
+  // without config.site_optics see a saved location's write as unlocked and
+  // then be refused server-side - the control claimed a permission it did
+  // not have. `POST /api/locations/{id}/apply` (app.py:3556-3560), which
+  // copies a saved location's line into the engine, carries the same
+  // config.site_optics declaration as the PUT, so this pairing lines up with
+  // that route too. `gate.ts`'s `GateInput` takes ONE `cap` (do not widen
+  // it), so this is two separate locks with the caller picking the one for
+  // the active branch.
+  const { lockedReason: safetyLocked, onExplain: explainSafety } = useLock({ cap: "config.safety" });
+  const { lockedReason: opticsLocked, onExplain: explainOptics } = useLock({ cap: "config.site_optics" });
 
   const [loading, setLoading] = useState(true);
   const [siteName, setSiteName] = useState("the active site");
@@ -56,6 +72,9 @@ export function HorizonSheet({ params }: SheetProps): JSX.Element {
   const [byHand, setByHand] = useState(true);
   const [saving, setSaving] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
+
+  const writeLocked = source === "location" ? opticsLocked : safetyLocked;
+  const explainWrite = source === "location" ? explainOptics : explainSafety;
 
   // ------------------------------------------------------------------- load
   useEffect(() => {

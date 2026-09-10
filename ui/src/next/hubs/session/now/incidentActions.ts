@@ -42,6 +42,7 @@ import { setIgnoreTonight } from "../../../../api/weather";
 import { fmtDuration } from "../../../../lib/eta";
 import { telemetryStaleNotice } from "../../../../lib/telemetry";
 import { useStore } from "../../../../store";
+import { lockReason, type GateStoreSlice } from "../../../lib/gate";
 import type {
   Capability, CoolerInfo, DiskInfo, FocusEvent, RigStatus, SafetyState, SequenceState,
 } from "../../../../types";
@@ -63,6 +64,11 @@ export interface IncidentActionSpec {
   /** The route, for `kind: "nav"`. */
   to?: string;
   cap?: Capability;
+  /** A second capability that must also be held (`gate.ts`'s `GateInput`
+   *  takes ONE `cap` - do not widen it). The caller checks `cap` then `cap2`
+   *  and takes the first reason, same pattern as `busyLane2` below;
+   *  `capLockReason` is the exported resolver that does it. */
+  cap2?: Capability;
   /** Refused while this rig lane is busy (`lib/gate.ts` reads the lane list). */
   busyLane?: string;
   /** A second lane that must also be clear. `gate.ts` takes one, so the caller
@@ -78,9 +84,14 @@ function spec(s: IncidentActionSpec): IncidentActionSpec { return s; }
 export const INCIDENT_ACTIONS: Record<string, IncidentActionSpec> = {
   // --- cloud -------------------------------------------------------------
   wait: spec({ id: "wait", label: "WAIT", kind: "local" }),
+  // Requires BOTH: control.capture (the principal) and view.weather (a
+  // dependency - the response echoes the full weather payload, which carries
+  // site_lat/site_lon - server/astrodeck/api/app.py:2476-2481, reasoned at
+  // :2462-2471). Declaring control.capture alone let a control.capture
+  // holder without view.weather see this action as unlocked.
   ignore_weather: spec({
     id: "ignore_weather", label: "IGNORE WEATHER TONIGHT", kind: "endpoint",
-    path: "/api/weather/ignore-tonight", cap: "control.capture",
+    path: "/api/weather/ignore-tonight", cap: "control.capture", cap2: "view.weather",
   }),
   // --- safety ------------------------------------------------------------
   acknowledge: spec({ id: "acknowledge", label: "ACKNOWLEDGE", kind: "local" }),
@@ -158,6 +169,36 @@ export function specFor(id: string): IncidentActionSpec | null {
   return Object.prototype.hasOwnProperty.call(INCIDENT_ACTIONS, id)
     ? INCIDENT_ACTIONS[id]
     : null;
+}
+
+// -------------------------------------------------------- the two-cap lock
+// `gate.ts`'s `GateInput` takes ONE `cap` (ARCHITECTURE.md #8); this is the
+// caller-side combinator for a spec that names two (`cap` then `cap2`, first
+// non-null reason wins) - the same shape `IncidentStack.tsx`'s own
+// `lockedFor` already applies to `busyLane`/`busyLane2`.
+//
+// It lives HERE, not in `IncidentStack.tsx`, on purpose: this task
+// (T-U7a-H) owns `incidentActions.ts` but not `IncidentStack.tsx`, and
+// `IncidentStack.tsx`'s `lockedFor` (the only place `INCIDENT_ACTIONS`'s
+// `cap` currently reaches a rendered lock) checks `s.cap` alone - it does
+// not call this yet. Exporting the correct resolver here means the fix for
+// `ignore_weather` is a one-line wire-up (`lockedFor` calling
+// `capLockReason(s, gate)` instead of `lockReason({cap: s.cap, ...}, gate)`)
+// whenever that file's owner makes it, rather than a second copy of this
+// logic. See the report for what that leaves open right now.
+export function capLockReason(
+  s: Pick<IncidentActionSpec, "cap" | "cap2">,
+  gate: GateStoreSlice,
+): string | null {
+  if (s.cap) {
+    const r = lockReason({ cap: s.cap }, gate);
+    if (r) return r;
+  }
+  if (s.cap2) {
+    const r = lockReason({ cap: s.cap2 }, gate);
+    if (r) return r;
+  }
+  return null;
 }
 
 // ------------------------------------------------------------------- firing

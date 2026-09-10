@@ -267,6 +267,87 @@ await test("a tap on the strip writes nothing while locked", async () => {
 
 await act(async () => { rootD.unmount(); });
 
+// ============================================ GROUP E: branch-aware two-cap
+// horizon SAVE is branch-aware: editing a SAVED LOCATION's own polyline
+// (`params.site` names one) writes PUT /api/locations/{id}, gated on
+// config.site_optics (app.py:3488-3489); editing the ACTIVE site's live line
+// (`params.site` absent or "current") writes POST /api/config {safety},
+// gated on config.safety (app.py:3250's field-cap table). The shipped
+// `config.safety`-only lock let a config.safety holder without
+// config.site_optics see a saved location's write as unlocked. No shipped
+// role is split like this (only admin holds either cap) - a SYNTHETIC
+// principal is the only way to see the branch matter at all.
+const SPLIT_SAFETY_ONLY = {
+  role: "operator",
+  email: "split@example.test",
+  caps: ["view.status", "control.capture", "control.mount", "control.guide", "config.safety"],
+};
+
+seed({ principal: SPLIT_SAFETY_ONLY });
+const containerE = win.document.getElementById("root") as any;
+const rootE = createRoot(containerE);
+await act(async () => {
+  rootE.render(createElement(HorizonSheet, { params: { site: "loc1" }, depth: 0 } as any));
+});
+await settle();
+const stripE = () => containerE.querySelector('[data-testid="horizon-strip"]') as any;
+const buttonE = (re: RegExp): any =>
+  Array.from(containerE.querySelectorAll("button")).find((b: any) => re.test(b.textContent || ""));
+
+await test("config.safety without config.site_optics: a SAVED LOCATION's write locks with "
+  + "'needs admin access', and writes nothing", async () => {
+  assert(stripE() != null, "the strip vanished instead of rendering read-only");
+  const clearBtn = buttonE(/CLEAR THE HORIZON/);
+  assert(clearBtn != null, "the CLEAR button vanished instead of locking");
+  eq(clearBtn.getAttribute("aria-disabled"), "true",
+    "a config.safety holder without config.site_optics must see a saved location's write locked:");
+  assert(/needs admin access/.test(clearBtn.getAttribute("title") || ""),
+    `the lock reason must name config.site_optics's holders, got "${clearBtn.getAttribute("title")}"`);
+
+  const before = putBodies.length;
+  const askedBefore = asked.length;
+  act(() => { stripE().dispatchEvent(ptr("pointerdown", HX(200), HY(30))); });
+  act(() => { stripE().dispatchEvent(ptr("pointerup", HX(200), HY(30))); });
+  await settle();
+  eq(putBodies.length, before, "a locked saved-location strip still wrote a point");
+  assert(!asked.slice(askedBefore).some((u) => /PUT \/api\/locations\//.test(u)),
+    `a config.safety-only principal PUT a saved location: ${asked.slice(askedBefore).join(", ")}`);
+});
+
+await act(async () => { rootE.unmount(); });
+
+// The SAME split principal, on the ACTIVE site (no `params.site`, or
+// "current"): now config.safety is the branch's cap, which this principal
+// DOES hold, so the write must be live.
+seed({ principal: SPLIT_SAFETY_ONLY });
+const containerF = win.document.getElementById("root") as any;
+const rootF = createRoot(containerF);
+await act(async () => {
+  rootF.render(createElement(HorizonSheet, { params: { site: "current" }, depth: 0 } as any));
+});
+await settle();
+const stripF = () => containerF.querySelector('[data-testid="horizon-strip"]') as any;
+const buttonF = (re: RegExp): any =>
+  Array.from(containerF.querySelectorAll("button")).find((b: any) => re.test(b.textContent || ""));
+
+await test("the SAME caps, on the ACTIVE site, unlock: config.safety is what this branch needs", async () => {
+  const clearBtn = buttonF(/CLEAR THE HORIZON/);
+  assert(clearBtn != null, "the CLEAR button did not render");
+  eq(clearBtn.getAttribute("aria-disabled"), null,
+    "a config.safety holder must see the ACTIVE site's write unlocked:");
+
+  const before = putBodies.length;
+  const askedBefore = asked.length;
+  act(() => { stripF().dispatchEvent(ptr("pointerdown", HX(200), HY(30))); });
+  act(() => { stripF().dispatchEvent(ptr("pointerup", HX(200), HY(30))); });
+  await settle();
+  eq(putBodies.length, before, "the active-site branch must not PUT a location");
+  const posts = asked.slice(askedBefore).filter((u) => /^POST .*\/api\/config$/.test(u));
+  eq(posts.length, 1, `the unlocked active-site tap did not POST /api/config exactly once: ${asked.slice(askedBefore).join(", ")}`);
+});
+
+await act(async () => { rootF.unmount(); });
+
 // ------------------------------------------------------------------- report
 const total = passed + failed;
 console.log(`horizonDom.test: ${passed}/${total} passed`);
