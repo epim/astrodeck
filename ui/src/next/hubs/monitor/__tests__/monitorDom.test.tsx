@@ -26,6 +26,23 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+// ------------------------------------------------------------------ css stub
+// `AlertsScreen` is an AREA ROOT and imports its own `alerts.css` (wave R7's
+// rule: `next.css` belongs to one task, every other area ships its own
+// stylesheet). Node has no idea what a `.css` file is, so a load hook answers
+// with an empty module - the same stub `rigRotatorDom.test.tsx` uses.
+{
+  const { registerHooks } = await import("node:module");
+  registerHooks({
+    load(url: string, context: any, nextLoad: any) {
+      if (url.endsWith(".css")) {
+        return { format: "module", shortCircuit: true, source: "export default {};" };
+      }
+      return nextLoad(url, context);
+    },
+  } as any);
+}
+
 // ---------------------------------------------------------------- jsdom first
 const { JSDOM } = await import("jsdom");
 const dom = new JSDOM(
@@ -69,13 +86,35 @@ g.IS_REACT_ACT_ENVIRONMENT = true;
 // ------------------------------------------------------------- fetch recorder
 interface Ask { url: string; method: string; body: any }
 const asks: Ask[] = [];
+// THE TWO SECRETS BELOW ARE DELIBERATE. The server blanks every stored token
+// outbound (`api/alerts.ts`: "the server always blanks it outbound"), so a
+// fixture that also blanked them would make the secret-hygiene assertions
+// vacuous - "the box is empty" would be a statement about the PAYLOAD, not
+// about the component. Seeding them proves the editor never echoes a secret it
+// was handed, and never sends one back it did not receive from the user.
+const TELEGRAM_SECRET = "TELEGRAM-BOT-TOKEN-MUST-NOT-RENDER";
+const SMTP_SECRET = "SMTP-PASSWORD-MUST-NOT-RENDER";
 const CONFIG: any = {
   version: 7,
-  alerts: [{
-    id: "sink-1", kind: "ntfy", enabled: true, url: "https://ntfy.sh/astrodeck",
-    events: ["run_start", "run_end", "safety"], min_level: "warning", heartbeat_min: 0,
-    token_configured: false, verified: false,
-  }],
+  alerts: [
+    {
+      id: "sink-1", kind: "ntfy", enabled: true, url: "https://ntfy.sh/astrodeck",
+      events: ["run_start", "run_end", "safety"], min_level: "warning", heartbeat_min: 0,
+      token_configured: false, verified: false,
+    },
+    {
+      id: "sink-2", kind: "telegram", enabled: true, url: "", chat_id: "123456789",
+      events: ["safety"], min_level: "error", heartbeat_min: 0,
+      token_configured: true, verified: true, token: TELEGRAM_SECRET,
+    },
+    {
+      id: "sink-3", kind: "email", enabled: false, url: "",
+      smtp_host: "smtp.example.com", smtp_port: 587, smtp_from: "rig@example.com",
+      smtp_to: "me@example.com", smtp_user: "rig@example.com", smtp_starttls: true,
+      events: ["run_end"], min_level: "warning", heartbeat_min: 0,
+      token_configured: true, verified: false, token: SMTP_SECRET,
+    },
+  ],
   deadman_configured: false,
   weather: { enabled: true },
   site: { is_default: false },
@@ -154,11 +193,25 @@ const settle = async () => {
 const container = win.document.getElementById("root") as any;
 const root = createRoot(container);
 const q = (sel: string) => container.querySelector(sel) as any;
+const all = (sel: string) => Array.from(container.querySelectorAll(sel)) as any[];
 const text = () => (container.textContent as string) ?? "";
 const click = async (el: any) => {
   await act(async () => { el.dispatchEvent(new win.MouseEvent("click", { bubbles: true })); });
   await settle();
 };
+/** Type into a controlled React input: React installs its own value tracker,
+ *  so assigning `el.value` alone leaves it thinking nothing changed. */
+const type = async (el: any, value: string) => {
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, "value")!.set!.call(el, value);
+    el.dispatchEvent(new win.Event("input", { bubbles: true }));
+  });
+  await settle();
+};
+/** Requests to exactly `/api/alerts` - the upsert route - and not to any of the
+ *  paths BELOW it (`/health`, `/{id}/test`, `/{id}`). */
+const upserts = () =>
+  asks.filter((a) => a.method === "POST" && a.url.replace(/\?.*$/, "").endsWith("/api/alerts"));
 
 const OPERATOR = {
   role: "operator", email: "op@rig",
@@ -643,44 +696,185 @@ asks.length = 0;
 await act(async () => { alertRoot.render(createElement(AlertsScreen)); });
 await settle();
 
-test("the ALERTS screen rendered all three sections", () => {
+test("the ALERTS screen rendered all four sections, one row per sink", () => {
   assert(q('[data-testid="monitor-alerts"]') != null,
     "no monitor-alerts marker: the fixture is wrong, not the component");
   assert(q('[data-testid="alerts-recent"]') != null, "no RECENT list");
   assert(q('[data-testid="alerts-sinks"]') != null, "no SINKS section");
+  assert(q('[data-testid="alerts-deadman"]') != null, "no dead-man's-switch card");
   assert(q('[data-testid="alerts-phone"]') != null, "no THIS PHONE section");
+  eq(all('[data-testid="alerts-sink-row"]').length, CONFIG.alerts.length,
+    "the sink list does not have one row per configured sink");
   assert(/Guiding was lost/.test(q('[data-testid="alerts-recent"]').textContent),
     "a warning line never reached RECENT");
+  // The rebuild renders the destination, so two ntfy topics can be told apart
+  // in the dark, and the health verdict as a WORD, not a colour.
+  const sinks = q('[data-testid="alerts-sinks"]').textContent as string;
+  assert(/https:\/\/ntfy\.sh\/astrodeck/.test(sinks), `the destination line is missing: "${sinks}"`);
+  assert(/Verified/.test(sinks), `the per-sink health verdict is missing: "${sinks}"`);
 });
 
-await testAsync("TEST on a sink posts /api/alerts/<id>/test - a real round trip", async () => {
-  const testBtn = Array.from(container.querySelectorAll("button"))
-    .find((b: any) => (b.textContent ?? "").trim() === "Test") as any;
-  assert(testBtn != null, "the sink has no Test button");
-  eq(testBtn.getAttribute("aria-disabled"), null, "precondition: an operator found Test locked");
+await testAsync("TEST on a sink posts /api/alerts/<id>/test, and saves nothing", async () => {
+  const testBtn = q('[data-testid="alerts-sink-test"]');
+  assert(testBtn != null, "the sink row has no TEST button");
+  eq(testBtn.getAttribute("aria-disabled"), null, "precondition: an admin found TEST locked");
   asks.length = 0;
   await click(testBtn);
   const posts = asks.filter((a) => a.url.includes("/api/alerts/sink-1/test"));
   eq(posts.length, 1, "TEST did not post exactly once to the sink's test route");
   eq(posts[0].method, "POST", "the test was not a POST");
+  // A test is a round trip, not a save. The legacy panel and this one both
+  // reload the config afterwards to refresh the `verified` badge - that is a
+  // GET; an upsert here would write whatever draft happened to be open.
+  eq(upserts().length, 0, "TEST wrote the sink as well as testing it");
+});
+
+await testAsync("adding a sink posts exactly once, with what was typed", async () => {
+  await click(q('[data-testid="alerts-sink-add"]'));
+  const form = q('[data-testid="alerts-sink-form"]');
+  assert(form != null, "ADD SINK opened no form - every assertion below would be vacuous");
+  const url = q('[data-testid="alerts-url"]');
+  assert(url != null, "a new sink defaults to ntfy, so its topic URL field must be on screen");
+  await type(url, "https://ntfy.sh/new-topic");
+
+  asks.length = 0;
+  await click(q('[data-testid="alerts-sink-save"]'));
+  eq(upserts().length, 1, "SAVE SINK did not post exactly once to /api/alerts");
+  const body = upserts()[0].body;
+  eq(body.kind, "ntfy", "the saved sink lost its channel kind");
+  eq(body.url, "https://ntfy.sh/new-topic", "the typed URL never reached the request body");
+  assert(Array.isArray(body.events) && body.events.length > 0,
+    "the sink was saved with no events, so it would never send anything");
+  assert(q('[data-testid="alerts-sink-form"]') == null,
+    "the form stayed open after a successful save, so the next tap re-posts it");
+});
+
+await testAsync("a blank URL is refused before it reaches the rig", async () => {
+  await click(q('[data-testid="alerts-sink-add"]'));
+  assert(q('[data-testid="alerts-sink-form"]') != null, "ADD SINK opened no form");
+  asks.length = 0;
+  await click(q('[data-testid="alerts-sink-save"]'));
+  eq(upserts().length, 0, "an ntfy sink with no URL was posted to the rig");
+  const toasts = (useStore.getState() as any).toasts as Array<{ title?: string }>;
+  assert(toasts.some((t) => t.title === "Enter an http(s) URL"),
+    "the refusal was silent - the validator's reason never reached the user");
+  await click(q('[data-testid="alerts-sink-cancel"]'));
+  assert(q('[data-testid="alerts-sink-form"]') == null, "CANCEL left the form open");
+});
+
+// ------------------------------------------------------------ SECRET HYGIENE
+//
+// The bot token and the SMTP password are WRITE-ONLY: the rig stores them and
+// never sends them back. Two ways to break that in a rebuild - seed the input
+// from the sink object, or re-send whatever was seeded - and this asserts both
+// are shut, for both kinds, against a payload that DOES carry the secret.
+await testAsync("SECRET HYGIENE: a stored bot token is neither rendered nor re-sent", async () => {
+  await click(all('[data-testid="alerts-sink-edit"]')[1]);   // the telegram sink
+  const form = q('[data-testid="alerts-sink-form"]');
+  assert(form != null, "EDIT opened no form");
+  // Positive control: the form really did load THIS sink, so an empty secret
+  // box below is hygiene and not a form that failed to populate.
+  eq(q('[data-testid="alerts-chatid"]').value, "123456789",
+    "the edit form did not load the sink - the secret assertion would be vacuous");
+
+  const secret = q('[data-testid="alerts-secret-token"]');
+  assert(secret != null, "the telegram form has no bot-token field");
+  eq(secret.value, "", "the stored bot token was echoed back into the input");
+  eq(secret.getAttribute("type"), "password", "the secret box is not masked");
+  assert(!text().includes(TELEGRAM_SECRET),
+    "the stored bot token is rendered somewhere on the ALERTS screen");
+  // An empty box over a stored secret is ambiguous unless it says which it is.
+  eq(secret.getAttribute("placeholder"), "(unchanged)",
+    "an already-configured secret does not say that leaving it blank keeps it");
+  assert(/Bot token - set/.test(form.textContent as string),
+    `the field does not say whether a secret is stored: "${form.textContent}"`);
+
+  asks.length = 0;
+  await click(q('[data-testid="alerts-sink-save"]'));
+  eq(upserts().length, 1, "saving an edited sink did not post exactly once");
+  eq(upserts()[0].body.token, "",
+    "the edit re-sent a token the user never typed - anything but '' overwrites the stored one");
+  assert(!JSON.stringify(asks).includes(TELEGRAM_SECRET),
+    "the stored bot token left the browser");
+});
+
+await testAsync("SECRET HYGIENE: the same holds for the SMTP password", async () => {
+  await click(all('[data-testid="alerts-sink-edit"]')[2]);   // the email sink
+  assert(q('[data-testid="alerts-sink-form"]') != null, "EDIT opened no form");
+  eq(q('[data-testid="alerts-smtp-host"]').value, "smtp.example.com",
+    "the edit form did not load the sink - the secret assertion would be vacuous");
+  eq(q('[data-testid="alerts-smtp-port"]').value, "587",
+    "the SMTP port did not load, so the numeric field is not bound to the sink");
+  const secret = q('[data-testid="alerts-secret-token"]');
+  eq(secret.value, "", "the stored SMTP password was echoed back into the input");
+  assert(!text().includes(SMTP_SECRET),
+    "the stored SMTP password is rendered somewhere on the ALERTS screen");
+  await click(q('[data-testid="alerts-sink-cancel"]'));
+});
+
+await testAsync("DELETE goes through the confirm, and posts nothing until it is accepted", async () => {
+  asks.length = 0;
+  await click(all('[data-testid="alerts-sink-delete"]')[0]);
+  const confirm = (useStore.getState() as any).confirm;
+  assert(confirm != null, "DELETE removed a channel with no confirm at all");
+  assert(/Delete the ntfy sink\?/.test(String(confirm.title)),
+    `the confirm does not name what would be deleted: "${String(confirm.title)}"`);
+  eq(asks.filter((a) => a.method === "DELETE").length, 0,
+    "the sink was deleted before the confirm was answered");
+  await act(async () => { (useStore.getState() as any).resolveConfirm(false); });
+  await settle();
+  eq(asks.filter((a) => a.method === "DELETE").length, 0,
+    "declining the confirm deleted the sink anyway");
 });
 
 await testAsync("a viewer sees the sinks read-only, with the reason, and writes nothing", async () => {
   await act(async () => { useStore.setState({ principal: VIEWER } as never); });
   await settle();
-  const reason = `Read-only — changing alerts needs ${accessPhrase("config.alerts")}.`;
+  const phrase = accessPhrase("config.alerts");
+  const reason = `Read-only - changing alerts needs ${phrase}.`;
+  const deadReason = `Read-only - changing the monitor URL needs ${phrase}.`;
   assert(text().includes(reason), `the read-only reason is missing: expected "${reason}"`);
+  assert(text().includes(deadReason),
+    `the dead-man's-switch has no read-only note of its own: expected "${deadReason}"`);
 
-  const testBtn = Array.from(container.querySelectorAll("button"))
-    .find((b: any) => (b.textContent ?? "").trim() === "Test") as any;
-  assert(testBtn != null, "the sinks were hidden from a viewer instead of rendered read-only");
-  eq(testBtn.getAttribute("aria-disabled"), "true", "Test looks live to a viewer");
+  // Every action, not just the first one. A panel that locks TEST and leaves
+  // DELETE live is worse than one that locks nothing.
+  const acts: Array<[string, string]> = [
+    ["alerts-sink-add", "Adding a sink"],
+    ["alerts-sink-test", "Testing"],
+    ["alerts-sink-edit", "Editing"],
+    ["alerts-sink-delete", "Deleting"],
+    ["alerts-deadman-save", "Changing this"],
+  ];
+  for (const [id, verb] of acts) {
+    const el = q(`[data-testid="${id}"]`);
+    assert(el != null, `${id} was hidden from a viewer instead of rendered read-only`);
+    eq(el.getAttribute("aria-disabled"), "true", `${id} looks live to a viewer`);
+    eq(el.getAttribute("title"), `${verb} needs ${phrase}`,
+      `${id} does not say what IT would have done`);
+  }
+  // The write-only boxes are read-only, not `disabled`: still focusable, still
+  // carrying the reason.
+  for (const id of ["alerts-deadman-input"]) {
+    const el = q(`[data-testid="${id}"]`);
+    assert(el != null, `${id} vanished for a viewer`);
+    eq(el.hasAttribute("disabled"), false, `${id} uses the native disabled attribute`);
+    eq(el.getAttribute("aria-disabled"), "true", `${id} looks editable to a viewer`);
+  }
 
+  // One press at a time, with the queue emptied first: the store caps the
+  // toast list at three (`store.ts` TOAST_MAX), so pressing all five and then
+  // looking for the second one's sentence would be reading an eviction rule,
+  // not a refusal.
   asks.length = 0;
-  await click(testBtn);
-  eq(asks.length, 0, "a viewer's Test press reached the server");
-  // And nothing this screen does on its own writes: every request a viewer's
-  // mount can make is a view.status read.
+  for (const [id, verb] of acts) {
+    await act(async () => { useStore.setState({ toasts: [] } as never); });
+    await click(q(`[data-testid="${id}"]`));
+    const toasts = (useStore.getState() as any).toasts as Array<{ title?: string }>;
+    assert(toasts.some((t) => t.title === `${verb} needs ${phrase}`),
+      `${id} refused in silence - the reason never reached the user`);
+  }
+  eq(asks.length, 0, "a viewer's press reached the rig");
   const writes = asks.filter((a) => a.method !== "GET");
   eq(writes.length, 0, "the alerts screen wrote something for a viewer");
 });
@@ -727,6 +921,13 @@ test("weather OFF: LIVE mounts no radar and asks for no tile", () => {
   eq(tileImgs().length, 0, "a tile <img> was laid out with weather off");
 });
 
+test("weather OFF: the conditions card is still framed by the design, the radar card is not", () => {
+  assert(q('[data-testid="live-weather-card"]') != null,
+    "the sky-conditions widget is mounted bare - wave R7 rewraps it in a Card");
+  assert(q('[data-testid="live-radar-card"]') == null,
+    "a radar card was drawn around a radar that never mounted");
+});
+
 test("weather OFF: the block says so, in WEATHER · RADAR's own words", () => {
   const card = q('[data-testid="monitor-radar-off"]');
   assert(card != null, "the radar was removed with nothing in its place - an empty gap "
@@ -742,9 +943,16 @@ test("weather OFF: the block says so, in WEATHER · RADAR's own words", () => {
 });
 
 await testAsync("weather ON: the map mounts, and the off-card is gone", async () => {
+  // The whole fixture, not a spread of whatever is in the store: mounting
+  // `SkyConditionsPanel` fires its own cold `GET /api/weather`, the recorder
+  // answers that route with `{ok:true}`, and `normalizeWeather` turns that into
+  // a slice with no forecast and no `fetched_ts`. Re-seeding here puts a REAL
+  // feed back under the card so the age line is derived from a fetch time
+  // rather than from the mock's fall-through.
   await act(async () => {
     useStore.setState({
-      weather: { ...(useStore.getState() as any).weather, enabled: true },
+      weather: { ...WEATHER_ON, enabled: true, stale: false,
+        fetched_ts: Date.now() / 1000 - 8 * 60 },
     } as never);
   });
   await settle();
@@ -753,6 +961,20 @@ await testAsync("weather ON: the map mounts, and the off-card is gone", async ()
     "the gate is stuck shut: weather is on and the radar still did not mount");
   assert(q('[data-testid="monitor-radar-off"]') == null,
     "the off-card is still up over a live map");
+
+  // Both widgets are keeps; their CHROME is the design's (wave R7 T-R7-10).
+  const wx = q('[data-testid="live-weather-card"]');
+  const radar = q('[data-testid="live-radar-card"]');
+  assert(wx != null, "the sky-conditions widget lost its Card");
+  assert(radar != null, "the radar widget lost its Card");
+  assert(radar.contains(q(RADAR_BOX)),
+    "the radar card is drawn somewhere other than around the radar");
+  // The eyebrow lines carry what the widgets cannot say about themselves: how
+  // old the forecast is, and that the map keeps fetching while this is open.
+  assert(/8m old/.test(wx.textContent as string),
+    `the conditions card does not say how old the forecast is: "${wx.textContent}"`);
+  assert(/tiles refresh while this screen is open/.test(radar.textContent as string),
+    `the radar card does not say that it keeps fetching: "${radar.textContent}"`);
 });
 
 await act(async () => { wxRoot.unmount(); });
