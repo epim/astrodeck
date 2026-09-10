@@ -134,9 +134,35 @@ export const OSC_FOOTER =
   "Every sub is the same channel, so the night is one exposure repeated until the window "
   + "ends. Stack them and the colour comes out of the sensor's own matrix.";
 
-/** The same footer for a rig that has not said it is colour. */
+/** The same footer for a rig that has not said it is colour. Also the mono
+ *  camera's own footer: `is_color: false` is an answer, not silence, but it
+ *  is still an answer that names no colour, so the sentence that claims none
+ *  is the true one for it too. */
 export const ONE_CHANNEL_FOOTER =
   "Every sub is the same channel, so the night is one exposure repeated until the window ends.";
+
+/**
+ * Which of the two footers above actually earns its place under the OSC
+ * card, chosen from the resolved colour claim (`quickModel.ts`'s
+ * `ResolvedColour`) rather than a bare bayer-pattern truthiness check.
+ *
+ * A resolved colour is always a non-null OBJECT, even when nobody has said
+ * anything - `{pattern: null, isColor: null, source: "none"}` is still a
+ * truthy value in JavaScript. So the choice must read `isColor` itself:
+ * `true` (named or not) earns `OSC_FOOTER`'s colour claim; `false` (a mono
+ * camera that has SAID so) and `null` (nobody has) both get
+ * `ONE_CHANNEL_FOOTER`, because neither may claim a colour that came out of
+ * a sensor's matrix.
+ *
+ * Not yet called from `quick.tsx` - its one call site still compares the raw
+ * preview string (`bayerPattern ? OSC_FOOTER : ONE_CHANNEL_FOOTER`), which
+ * happens to still read correctly today because that string, unlike a
+ * resolved colour object, is genuinely falsy when there is no frame. See the
+ * T-U7b-10 report for the file:line this is delivered against.
+ */
+export function oscFooter(colour: { isColor: boolean | null }): string {
+  return colour.isColor === true ? OSC_FOOTER : ONE_CHANNEL_FOOTER;
+}
 
 /**
  * The legend under the night arc, which is where the horizon NUMBER belongs.

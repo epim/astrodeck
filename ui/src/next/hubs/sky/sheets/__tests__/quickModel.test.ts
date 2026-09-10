@@ -11,8 +11,9 @@
 
 import {
   OSC_LABEL, channelLabel, filterColor, hourStops, hoursLabel, nextExposure, oscCount,
-  oscLabel, passesFor, planLine, quickRows, snapHours, wheelModel,
+  oscLabel, passesFor, planLine, quickRows, resolveColour, snapHours, wheelModel,
 } from "../quickModel";
+import { ONE_CHANNEL_FOOTER, OSC_FOOTER, oscFooter } from "../quickCopy";
 
 let passed = 0;
 let failed = 0;
@@ -104,25 +105,115 @@ test("one clear slot is one channel that keeps its own name", () => {
 
 // ------------------------------------------------------------- what it says
 
-test("the colour claim needs a bayer pattern; nothing else may make it", () => {
-  eq(oscLabel("RGGB").title, "ONE-SHOT COLOUR - NO WHEEL", "a frame said RGGB");
-  assert(oscLabel("RGGB").sub.includes("RGGB"), "and the sub names the matrix the rig reported");
-  eq(oscLabel(null).title, "ONE CHANNEL - NO WHEEL", "a mono camera with no wheel shoots luminance");
-  eq(oscLabel(undefined).title, "ONE CHANNEL - NO WHEEL", "no frame yet is not a colour signal");
-  eq(oscLabel("  ").title, "ONE CHANNEL - NO WHEEL", "nor is an empty string");
-  for (const p of [null, undefined, "RGGB"]) {
-    assert(!/\bRGB\b/.test(oscLabel(p).title), `"${String(p)}" must never print a bare RGB`);
+// THE FOUR-WAY PRECEDENCE (ruling Q7 / WAVE2-RULINGS line 19): camera.
+// bayer_pattern, then camera.is_color, then preview.bayer_pattern, then
+// neither. `resolveColour` is the one place this order lives - `oscLabel`
+// only ever reads the answer it hands back.
+
+test("status pattern beats everything, even a different frame pattern", () => {
+  // Sabotage: read the preview first and this goes red - the pattern would
+  // come back "GBRG" (the frame's) instead of "RGGB" (the status bus's).
+  const c = resolveColour({ bayer_pattern: "RGGB", is_color: false }, "GBRG");
+  eq(c.pattern, "RGGB", "the status pattern, not the frame's");
+  eq(c.isColor, true, "a named matrix is always colour");
+  eq(c.source, "status", "");
+});
+
+test("status is_color beats a frame pattern too, not just a bare bayer_pattern", () => {
+  const c = resolveColour({ is_color: true }, "RGGB");
+  eq(c.pattern, null, "is_color alone names no matrix");
+  eq(c.isColor, true, "still one-shot colour");
+  eq(c.source, "status", "the status bus answered before the frame was ever asked");
+});
+
+test("is_color: false is MONO, and beats a stale frame pattern - not re-derived from silence", () => {
+  // Sabotage: drop the is_color false branch (fall through to the frame
+  // check instead of returning here) and this goes red - the stale "RGGB"
+  // frame would win and a mono camera would be called one-shot colour.
+  const c = resolveColour({ bayer_pattern: null, is_color: false }, "RGGB");
+  eq(c.isColor, false, "the rig said mono, in so many words");
+  eq(c.pattern, null, "mono names no matrix");
+  eq(c.source, "status", "the false itself is the answer, not the frame underneath it");
+});
+
+test("a frame pattern answers only once the status bus has said nothing at all", () => {
+  const c = resolveColour({}, "RGGB");
+  eq(c.pattern, "RGGB", "the only signal available is the frame's");
+  eq(c.isColor, true, "");
+  eq(c.source, "frame", "weaker: a fact about a sub already banked");
+});
+
+test("an engine older than S7c (no camera colour fields at all) still reads the frame", () => {
+  const c = resolveColour(undefined, "RGGB");
+  eq(c.source, "frame", "no status bus fields at all, so the frame is all there is");
+});
+
+test("nobody has said anything is 'none', not 'mono' - the two must not share a sentence", () => {
+  const c = resolveColour({}, null);
+  eq(c.pattern, null, "");
+  eq(c.isColor, null, "null, not false: nobody answered, the rig did not say mono");
+  eq(c.source, "none", "");
+  eq(resolveColour(undefined, undefined).source, "none", "no camera and no frame is still 'none'");
+});
+
+test("blank strings do not count as an answer, from either source", () => {
+  eq(resolveColour({ bayer_pattern: "   " }, "RGGB").source, "frame",
+    "a whitespace-only status pattern is not a pattern");
+  eq(resolveColour({}, "  ").source, "none", "nor is a whitespace-only frame pattern");
+});
+
+test("the colour claim needs a real signal; nothing else may make it", () => {
+  const fromFrame = resolveColour({}, "RGGB");
+  eq(oscLabel(fromFrame).title, "ONE-SHOT COLOUR - NO WHEEL", "a frame said RGGB");
+  assert(oscLabel(fromFrame).sub.includes("RGGB"), "and the sub names the matrix the rig reported");
+  assert(oscLabel(fromFrame).sub.includes("the last frame carried"),
+    "a frame's claim is a weaker confidence than the status bus's, and says so");
+
+  const fromStatus = resolveColour({ bayer_pattern: "RGGB" }, null);
+  assert(oscLabel(fromStatus).sub.includes("the camera reports"),
+    "the live status claim reads differently from a frame's");
+
+  const none = resolveColour({}, null);
+  eq(oscLabel(none).title, "ONE CHANNEL - NO WHEEL", "nobody has said colour at all");
+  eq(oscLabel(resolveColour({}, undefined)).title, "ONE CHANNEL - NO WHEEL", "no frame yet is not a colour signal");
+  eq(oscLabel(resolveColour({ bayer_pattern: "  " }, "  ")).title, "ONE CHANNEL - NO WHEEL",
+    "blank strings from either source are not a signal");
+
+  for (const c of [fromFrame, fromStatus, none]) {
+    assert(!/\bRGB\b/.test(oscLabel(c).title), "must never print a bare RGB");
   }
+});
+
+test("is_color: true with no pattern is still one-shot colour, named to nobody", () => {
+  const c = resolveColour({ is_color: true }, null);
+  eq(oscLabel(c).title, "ONE-SHOT COLOUR - NO WHEEL", "a true is a colour claim on its own");
+  assert(!/[A-Z]{4}/.test(oscLabel(c).sub), "and the sub must not invent a matrix to name");
+});
+
+test("is_color: false is MONO - NO WHEEL, its own sentence, not the 'nobody answered' one", () => {
+  const c = resolveColour({ is_color: false }, "RGGB");
+  eq(oscLabel(c).title, "MONO - NO WHEEL", "the rig said mono, so the card says mono");
+  eq(oscLabel(c).sub, "the camera reports a mono sensor, so every sub is the same channel", "");
+  assert(oscLabel(c).title !== oscLabel(resolveColour({}, null)).title,
+    "mono and 'nobody answered' must not share a title");
 });
 
 test("a wheel that is there is never described as absent", () => {
   const one = wheelModel({ names: ["L", "Dark"], opaque: [false, true] }, {}, {}, true);
-  eq(channelLabel(one, "RGGB").title, "L - ONE SLOT", "the slot's real name, not the sensor's");
+  eq(channelLabel(one, resolveColour({}, "RGGB")).title, "L - ONE SLOT", "the slot's real name, not the sensor's");
   const unnamed = wheelModel({ names: ["Slot 1"] }, {}, {}, true);
-  eq(channelLabel(unnamed, null).title, "ONE CHANNEL - NO USABLE SLOT", "");
-  assert(!/NO WHEEL/.test(channelLabel(unnamed, null).title), "there IS a wheel");
+  eq(channelLabel(unnamed, resolveColour({}, null)).title, "ONE CHANNEL - NO USABLE SLOT", "");
+  assert(!/NO WHEEL/.test(channelLabel(unnamed, resolveColour({}, null)).title), "there IS a wheel");
   const none = wheelModel({ names: undefined }, {}, {}, true);
-  eq(channelLabel(none, "RGGB").title, "ONE-SHOT COLOUR - NO WHEEL", "");
+  eq(channelLabel(none, resolveColour({}, "RGGB")).title, "ONE-SHOT COLOUR - NO WHEEL", "");
+});
+
+test("the OSC footer never claims a colour the rig has not made - including mono", () => {
+  eq(oscFooter(resolveColour({ bayer_pattern: "RGGB" }, null)), OSC_FOOTER, "a named matrix");
+  eq(oscFooter(resolveColour({ is_color: true }, null)), OSC_FOOTER, "colour, even unnamed");
+  eq(oscFooter(resolveColour({ is_color: false }, "RGGB")), ONE_CHANNEL_FOOTER,
+    "mono must not inherit the frame's stale colour claim");
+  eq(oscFooter(resolveColour({}, null)), ONE_CHANNEL_FOOTER, "nobody has said colour at all");
 });
 
 test("the operator's own ticks and exposures beat the defaults", () => {

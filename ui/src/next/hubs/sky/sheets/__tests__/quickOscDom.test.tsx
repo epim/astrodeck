@@ -8,7 +8,7 @@
 // on a small refractor, a mono camera with the wheel unplugged, a wheel with a
 // single clear slot - went through a branch nothing exercised.
 //
-// THE FIVE THINGS THIS FILE IS FOR:
+// THE SIX THINGS THIS FILE IS FOR:
 //
 //  1. A PRECONDITION MARKER. The sheet is on screen AND it is showing the
 //     one-channel card, not an empty div. Without that every "no filter rows"
@@ -22,11 +22,46 @@
 //  4. THE EXACT POSTED BODY. `filters: []` (there is nothing to command, and an
 //     invented filter name is what would land in the FITS header), the OSC
 //     exposure, and the sub count the card is showing.
-//  5. NEVER "RGB". A mono camera with no wheel shoots luminance. The only
-//     colour signal the client has is a bayer pattern off a captured frame, so
-//     with no pattern the card says ONE CHANNEL and the word RGB is nowhere.
+//  5. NEVER "RGB". A mono camera with no wheel shoots luminance. With neither
+//     the status bus nor a captured frame naming a colour, the card says ONE
+//     CHANNEL and the word RGB is nowhere.
+//  6. THE STATUS BUS NOW ANSWERS TOO (ruling Q7 / T-U7b-10), and does so
+//     without ever needing a captured frame. `quick.tsx` (owned by T-U7b-11,
+//     not this task) has ONE call site that still reads only
+//     `preview?.bayer_pattern` and hands it to `channelLabel` as a bare
+//     string (or `null`); `channelLabel`/`oscLabel` now read a
+//     `ResolvedColour` object (`quickModel.ts`), and a legacy string or
+//     `null` is coerced at the top of `oscLabel` rather than trusted - a
+//     string is read as the FRAME rung (exactly what it always meant), `null`
+//     as no signal, so the mounted card below keeps behaving exactly as it
+//     did before this file existed and does NOT crash on a `null` preview.
+//     What that coercion genuinely cannot do is answer for a camera that has
+//     told the STATUS bus it is colour and has never yet returned a captured
+//     frame - that value never reaches the call site at all today. Section 0
+//     below proves that one case at the model + copy level, the same
+//     functions the mounted card calls, rather than by asserting a DOM
+//     result today's call site cannot produce; it goes green in the DOM too
+//     once T-U7b-11 applies the delivered line.
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
+
+// ------------------------------------------------------------------ css stub
+// `quick.tsx` reaches into `session/flows/create`, which imports `create.css`.
+// Node has no idea what a `.css` file is, so a synchronous load hook answers
+// with an empty module. It has to run BEFORE any import that reaches one,
+// which is why every import in this file is dynamic and below this block
+// (copied verbatim from `hubs/settings/__tests__/filesSheetsDom.test.tsx:44-61`).
+{
+  const { registerHooks } = await import("node:module");
+  registerHooks({
+    load(url: string, context: any, nextLoad: any) {
+      if (url.endsWith(".css")) {
+        return { format: "module", shortCircuit: true, source: "export default {};" };
+      }
+      return nextLoad(url, context);
+    },
+  } as any);
+}
 
 // ---------------------------------------------------------------- jsdom first
 const { JSDOM } = await import("jsdom");
@@ -107,6 +142,7 @@ const { createRoot } = await import("react-dom/client");
 const { useStore } = await import("../../../../../store");
 const { QuickSessionSheet } = await import("../quick");
 const { ASSUMED_WHEEL_NOTE, OSC_FOOTER, ONE_CHANNEL_FOOTER } = await import("../quickCopy");
+const { oscLabel, resolveColour } = await import("../quickModel");
 
 // ------------------------------------------------------------------- harness
 let passed = 0;
@@ -216,6 +252,25 @@ async function mount(opts: Parameters<typeof seed>[0] = {}): Promise<{ unmount()
   await settle();
   return { unmount: async () => { await act(async () => { root.unmount(); }); } };
 }
+
+// ============================================== 0. status alone, no frame ever
+//
+// GAP (see item 6 above): `quick.tsx` does not yet build a `ResolvedColour`
+// from `status.camera`, so a rig that has told the status bus it is
+// one-shot-colour but has never yet returned a captured frame cannot be
+// proven through the mounted sheet today. Proven instead against the exact
+// functions the card calls, `resolveColour` then `oscLabel` - the contract
+// the DOM will render the moment T-U7b-11 applies the delivered line.
+test("a camera that has said is_color, with no frame ever captured, is still one-shot colour", () => {
+  const colour = resolveColour({ is_color: true, bayer_pattern: null }, null);
+  eq(colour.source, "status", "the status bus answered - no frame involved at all");
+  eq(colour.pattern, null, "is_color alone names no matrix");
+  const label = oscLabel(colour);
+  eq(label.title, "ONE-SHOT COLOUR - NO WHEEL",
+    "today's mounted card, reading only the preview, would print ONE CHANNEL here - "
+    + "this is the gap T-U7b-11's delivered line closes");
+  assert(!/[A-Z]{4}/.test(label.sub), "no matrix is named when only is_color spoke");
+});
 
 // ============================================================ 1. one-shot colour
 let live = await mount({ preview: OSC_PREVIEW });
