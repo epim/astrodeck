@@ -1,0 +1,122 @@
+/* =====================================================================
+   help.css - the Help area's own classes (wave R7, T-R7-16).
+
+   Imported by `HelpArea.tsx` ONLY, per the wave rule that `next.css` has one
+   owner and every rebuilt area carries its own sheet. Nothing here redefines a
+   `next.css` class: every selector below starts `.nx-help-` (or is a bare
+   element type nested inside one).
+
+   Same house rules as `next.css`: one flat class per selector, variants on
+   `data-*`, every colour from an `index.css` token, and the design's sub-10 px
+   micro type raised to a 10 px floor.
+
+   This area renders inside a sheet, which is FULL WIDTH on phone and a 420 px
+   right-hand panel at tablet and desktop (`shell/shell.css .nx-sheet-panel`).
+   Every width decision below is taken against 420 px, not against the viewport.
+   ===================================================================== */
+
+/* The column inside the sheet body, which is already the scroll area. */
+.nx-help { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+
+/* Eyebrow label + card, the Settings group rhythm from proto/22-settings. */
+.nx-help-block { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+
+/* Body copy. 11.5 px is the proto's paragraph rung (the footer line under the
+   Settings groups); --text-dim holds ~8:1 on every solid surface in the app. */
+.nx-help-p {
+  margin: 0;
+  font-family: "IBM Plex Sans", sans-serif;
+  font-size: 11.5px; line-height: 1.55; color: var(--text-dim);
+}
+
+/* The promise under it: a tick, then one sentence, quieter and tighter. */
+.nx-help-promise {
+  display: flex; align-items: flex-start; gap: 6px; margin: 10px 0 0;
+  font-family: "IBM Plex Sans", sans-serif;
+  font-size: 11px; line-height: 1.5; color: var(--text-faint);
+}
+.nx-help-promise-glyph {
+  display: inline-flex; flex-shrink: 0; margin-top: 2px; color: var(--good);
+}
+
+.nx-help-cta { margin-top: 12px; }
+
+/* ------------------------------------------------------- common problems */
+
+/* One entry per row inside a zero-padding card with a hairline between, so
+   ten collapsed heads read as one list rather than ten cards. */
+.nx-help-problem {
+  padding: 0 14px; min-width: 0;
+  border-bottom: 1px solid var(--line);
+  scroll-margin-top: 16px;   /* the deep link scrolls this into view */
+}
+.nx-help-problem:last-child { border-bottom: 0; }
+
+/* The deep-linked entry. The tint is the SECOND signal, never the only one:
+   the head's own sub line says in words why this one is open and highlighted
+   (`problemSub`), so a user who cannot separate the hues loses nothing. */
+.nx-help-problem[data-active="true"] {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+/* One child of the disclosure body, so its 10 px flex gap applies once and the
+   spacing below the last step is this rule's business, not the primitive's. */
+.nx-help-body {
+  display: flex; flex-direction: column; gap: 8px;
+  padding-bottom: 14px; min-width: 0;
+}
+
+.nx-help-cause {
+  margin: 0;
+  font-family: "IBM Plex Sans", sans-serif;
+  font-size: 11.5px; line-height: 1.55; color: var(--text-dim);
+}
+
+/* Deliberately NOT a flex column: flex blockifies its children, which drops
+   the list markers, and "most-likely first" is the whole point of the order. */
+.nx-help-steps {
+  margin: 0; padding-left: 20px;
+  font-family: "IBM Plex Sans", sans-serif;
+  font-size: 11.5px; line-height: 1.55; color: var(--text);
+}
+.nx-help-steps li { margin-top: 4px; }
+.nx-help-steps li:first-child { margin-top: 0; }
+
+.nx-help-see {
+  margin: 0;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10px; line-height: 1.5; color: var(--text-faint);
+}
+
+/* --------------------------------------------------------------- glossary */
+
+.nx-help-gloss { display: grid; grid-template-columns: 1fr; min-width: 0; }
+
+@media (min-width: 768px) {
+  /* Two columns WHERE TWO FIT. The brief asks for a two-column grid at >= 768 px
+     viewport, but this sheet is a 420 px panel at that breakpoint: a hard
+     `1fr 1fr` would put a four-sentence definition into a ~180 px column. So
+     the breakpoint gates the grid and `auto-fit` decides against the container,
+     which yields one column in the panel and two the moment the sheet is
+     genuinely wide. Reported as a deviation. */
+  .nx-help-gloss { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+}
+
+.nx-help-gloss-cell { border-bottom: 1px solid var(--line); min-width: 0; }
+.nx-help-gloss-cell:last-child { border-bottom: 0; }
+
+/* Term and definition both live inside `ListRow`'s title slot, which is a flex
+   item and therefore already a block box; these two set their own type so
+   nothing is inherited from the row title's caps tracking. */
+.nx-help-term {
+  display: block;
+  font-family: "Chakra Petch", sans-serif; font-weight: 600;
+  font-size: 10.5px; letter-spacing: .14em; color: var(--text);
+}
+.nx-help-def {
+  display: block; margin-top: 3px;
+  font-family: "IBM Plex Sans", sans-serif; font-weight: 400;
+  font-size: 11.5px; letter-spacing: normal; line-height: 1.5;
+  color: var(--text-dim);
+}
