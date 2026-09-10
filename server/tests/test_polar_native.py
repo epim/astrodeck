@@ -18,6 +18,7 @@ from astrodeck import providers
 from astrodeck.config import ConfigStore, SafetyConfig, Site
 from astrodeck.events import bus
 from astrodeck.hub import Hub
+from astrodeck.polar import native as nat
 
 pytestmark = pytest.mark.skipif(
     not providers.NATIVE_AVAILABLE, reason="astrodeck_native wheel not installed")
@@ -41,6 +42,10 @@ async def sim_hub(tmp_path, monkeypatch):
     # driver-selection override; without this patch resolution leaks the real
     # dev-box config (and its polar_align selection) into the test.
     monkeypatch.setattr(providers, "config_store", store)
+    # The post-rotation settle is real time on a real rig and pure cost here:
+    # two rotations a run, eight runs in this module. Its own behaviour is
+    # graded directly in test_tppa_procedure.py against the shipped constant.
+    monkeypatch.setattr(nat, "_SETTLE_AFTER_SLEW_S", 0.0)
     store.set_site(Site(name="Test", latitude=_LAT, longitude=_LON,
                         is_default=False), expected_version=None)
     store.set_safety(SafetyConfig(solar_avoidance=False))
@@ -256,3 +261,76 @@ async def test_explicit_selection_routes_polar_to_nina(sim_hub):
     choice = providers.resolve("polar_align", h)
     assert choice.kind == "backend", choice
     assert choice.label == "NINA", choice
+# ------------- the fit has to reproduce the rotation, on a real sim rig
+
+async def test_a_thirty_three_arcminute_error_is_measured_and_reported(sim_hub):
+    """THE ERROR THE RIG ACTUALLY HAD on 2026-09-09, and what should have come
+    back that night.
+
+    The unguided drift measured the evening before was 16"/min, which on this
+    rig is about 33' of polar error, and the mount guided 180 s narrowband subs
+    all night. Native TPPA reported 504.4'. This is the same magnitude injected
+    into a sim that really does trace one rigid rotation: the rotation guard has
+    to stay silent and the number has to come back."""
+    h = sim_hub
+    inj_az, inj_alt = 20.0, 26.0            # 32.8' total
+    h.sim_rig.set_polar_misalignment(inj_az, inj_alt, lat_deg=_LAT, lon_deg=_LON)
+    expected = h.sim_rig.polar_misalignment.expected_total_arcmin
+
+    await h.polar.start()
+    assert await _wait(lambda: h.polar.state.get("phase") == "adjusting"), \
+        h.polar.state
+    st = h.polar.state
+    assert st["state"] != "error", st
+    assert abs(st["total_error"] - expected) < 0.5, st
+    assert abs(st["az_error"] - inj_az) < 0.5, st
+    assert abs(st["alt_error"] - inj_alt) < 0.5, st
+
+
+async def test_five_degrees_of_real_error_still_completes(sim_hub):
+    """The guard must not become a second plausibility cap.
+
+    Five degrees is 300 arcminutes: sixty times a usable alignment, and exactly
+    the kind of number an operator setting up in the dark needs to be TOLD
+    rather than protected from. ``_reject_implausible_fit`` refuses only above
+    30 degrees, so this one has to reach the panel — and it does, because a
+    rigid rotation about an axis 5 degrees off the pole still turns by the angle
+    it was commanded to turn."""
+    h = sim_hub
+    inj_az, inj_alt = 180.0, 240.0          # 300' total, 5 degrees
+    h.sim_rig.set_polar_misalignment(inj_az, inj_alt, lat_deg=_LAT, lon_deg=_LON)
+    expected = h.sim_rig.polar_misalignment.expected_total_arcmin
+
+    await h.polar.start()
+    assert await _wait(lambda: h.polar.state.get("phase") == "adjusting"), \
+        h.polar.state
+    st = h.polar.state
+    assert st["state"] != "error", (
+        f"a real 5 degree misalignment was refused instead of reported: {st}")
+    assert abs(st["total_error"] - expected) < 5.0, st
+
+
+async def test_a_mount_that_over_rotates_every_leg_is_refused(sim_hub,
+                                                              bus_lines):
+    """A mount that answers a 12 degree goto with 15 degrees, every leg, on an
+    otherwise perfect rigid rotation.
+
+    This was the SIMULATOR's own behaviour until 2026-09-09: ``slew`` advanced
+    the traced circle by a fixed ``phase_step_deg`` whatever it was asked for,
+    and nothing noticed, because nothing graded the rotation. It is kept as
+    opt-in fault injection precisely because it is the fault this guard exists
+    to catch — the driver has no other way to see a mount that accepts a goto
+    and honours a different one."""
+    h = sim_hub
+    h.sim_rig.set_polar_misalignment(20.0, 26.0, lat_deg=_LAT, lon_deg=_LON,
+                                     phase_step_deg=15.0)
+    await h.polar.start()
+    assert await _wait(lambda: h.polar.state["state"] == "error"), h.polar.state
+
+    msg = h.polar.state["message"]
+    assert "did not turn by what the mount was told to turn" in msg, msg
+    # Three degrees a leg, from a mount whose RA separations are all inside the
+    # arrival check's 0.5-1.5 band — which is why that check cannot see this.
+    assert "+12.00" in msg, msg
+    # And the run published no number to turn a bolt by.
+    assert h.polar.state["total_error"] == 0.0, h.polar.state

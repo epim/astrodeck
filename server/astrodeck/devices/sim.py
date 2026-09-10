@@ -152,13 +152,21 @@ class PolarMisalignment:
     ``az_arcmin``/``alt_arcmin`` are the injected polar error the engine should
     recover (the tilt of the RA axis from the true pole); ``rho_deg`` is the
     angular radius of the traced small circle (the mount's declination-from-axis,
-    arbitrary but well-conditioned at 40°); ``phase_step_deg`` is how far the
-    circle advances per RA rotation the provider commands. ``expected_total_arcmin``
-    lets a test assert recovery against the exact injected magnitude."""
+    arbitrary but well-conditioned at 40°). ``expected_total_arcmin`` lets a
+    test assert recovery against the exact injected magnitude.
+
+    ``phase_step_deg`` is FAULT INJECTION, and ``None`` (the default) turns it
+    off: the circle then advances by exactly the RA rotation the provider
+    commanded, which is what a mount that honours its gotos does. Give it a
+    number and every slew advances the circle by that many degrees whatever it
+    was asked for -- a mount that over- or under-rotates on every leg. That used
+    to be the only behaviour, at 15° against a driver commanding 12°, and
+    nothing noticed because nothing graded the rotation until
+    ``polar/native.py``'s MAX_ROTATION_DISAGREEMENT_DEG."""
 
     def __init__(self, *, az_arcmin: float, alt_arcmin: float, lat_deg: float,
                  lon_deg: float, rho_deg: float = 40.0,
-                 phase_step_deg: float = 15.0) -> None:
+                 phase_step_deg: float | None = None) -> None:
         self.az_arcmin = az_arcmin
         self.alt_arcmin = alt_arcmin
         self.lat_deg = lat_deg
@@ -310,7 +318,7 @@ class SimRig:
     def set_polar_misalignment(self, az_arcmin: float, alt_arcmin: float, *,
                                lat_deg: float, lon_deg: float,
                                rho_deg: float = 40.0,
-                               phase_step_deg: float = 15.0) -> None:
+                               phase_step_deg: float | None = None) -> None:
         """Inject a deterministic polar-axis misalignment for native-TPPA tests.
 
         The mount's RA axis is tilted from the true celestial pole by
@@ -832,22 +840,33 @@ class SimTelescope(Telescope):
             raise RuntimeError("mount is parked")
         # Native-TPPA sim path: when a polar misalignment is injected, a slew "in
         # RA" physically rotates the mount's (tilted) RA axis, so advance the
-        # traced small-circle phase by one step and report the resulting true
-        # pointing. The MAGNITUDE stays ``phase_step_deg`` rather than the exact
-        # commanded step, so the three measuring captures stay cleanly spaced
-        # whatever step the provider picks — the sim models the CONSEQUENCE (the
-        # optics landing on the next point of the tilted circle), not the servo.
-        #
-        # The DIRECTION, however, must follow the command. It used to be
-        # hard-coded to advance, on the reasoning that only the spacing mattered;
-        # that stopped being true once the driver started choosing which way to
-        # step (away from the meridian, so a run never pier-flips mid-measure).
-        # A sim that always went one way reported a westward rotation as an
-        # eastward one, which is a real mount fault — the driver's arrival check
-        # rightly refuses it — so the simulator was manufacturing a failure that
-        # the hardware would not produce. Recomputed at ``now`` so the reported
+        # traced small-circle phase and report the resulting true pointing — the
+        # sim models the CONSEQUENCE (the optics landing on the next point of the
+        # tilted circle), not the servo. Recomputed at ``now`` so the reported
         # RA/Dec is sidereal-time-consistent with the timestamp the provider
         # records.
+        #
+        # The DIRECTION must follow the command. It used to be hard-coded to
+        # advance, on the reasoning that only the spacing mattered; that stopped
+        # being true once the driver started choosing which way to step (away
+        # from the meridian, so a run never pier-flips mid-measure). A sim that
+        # always went one way reported a westward rotation as an eastward one,
+        # which is a real mount fault — the driver's arrival check rightly
+        # refuses it — so the simulator was manufacturing a failure the hardware
+        # would not produce.
+        #
+        # AND SO MUST THE MAGNITUDE, for the same reason one step later. It used
+        # to be a fixed ``phase_step_deg`` (15 deg) whatever the driver asked
+        # for, which meant every sim alignment rotated 15 deg in answer to a
+        # command for 12 — a mount overshooting its goto by 25% on every leg.
+        # Nothing graded the rotation, so nothing noticed. The driver now
+        # measures the turn its three frames actually made about the axis they
+        # fit and refuses a run that disagrees with the command by more than a
+        # degree (``polar/native.py``'s MAX_ROTATION_DISAGREEMENT_DEG), and a
+        # simulator that rotates 3 deg further than it was told is exactly the
+        # fault that guard exists to catch. ``phase_step_deg`` survives as the
+        # spacing a caller can still pin deliberately; the default path honours
+        # the command.
         if self.rig.polar_misalignment is not None:
             self._slewing = True
             try:
@@ -859,10 +878,13 @@ class SimTelescope(Telescope):
                 # moves the reported right ascension by -14.97 deg, because the
                 # right-hand rotation about the north-up axis in PolarMisalignment's
                 # north/east/up frame runs the opposite way to increasing RA. So
-                # the phase sign is the NEGATIVE of the commanded RA direction.
-                sign = 1.0 if delta < 0.0 else -1.0
-                self.rig._polar_phase_deg += (
-                    sign * self.rig.polar_misalignment.phase_step_deg)
+                # the phase is the NEGATIVE of the commanded RA change.
+                pinned = self.rig.polar_misalignment.phase_step_deg
+                if pinned is None:
+                    self.rig._polar_phase_deg += -delta * 15.0
+                else:
+                    self.rig._polar_phase_deg += (
+                        (1.0 if delta < 0.0 else -1.0) * pinned)
                 self.rig._apply_polar_pointing()
             finally:
                 self._slewing = False

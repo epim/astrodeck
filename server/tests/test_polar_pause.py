@@ -150,6 +150,10 @@ async def native_rig(monkeypatch):
     monkeypatch.setattr(nat, "_site_dict", lambda hub: {})
     # Shorter cadence so the adjust-phase tests don't pay 1 s a tick.
     monkeypatch.setattr(nat, "_ADJUST_INTERVAL_S", 0.5)
+    # The post-rotation settle is real time on a real rig and pure cost here;
+    # its own behaviour is graded directly (see the settle tests), so every
+    # run that only wants the LOOP pays nothing for it.
+    monkeypatch.setattr(nat, "_SETTLE_AFTER_SLEW_S", 0.0)
     import astrodeck.providers as _pv
     monkeypatch.setattr(_pv, "pick_solver", lambda hub: object())
 
