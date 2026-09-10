@@ -16,11 +16,17 @@
 //
 // What is NOT lifted: `preloadAllViews()`. The legacy views are not mounted
 // under this root, so warming their chunks would spend the one attempt a failed
-// dynamic import ever gets on code this root never renders.
+// dynamic import ever gets on code this root never renders. The HUBS are
+// code-split instead, and `preloadHubs()` below is the same schedule applied to
+// the code this root does render.
 
 import { useEffect, useRef, useState, type JSX } from "react";
 import "./next.css";
 import "./shell/shell.css";
+// Last of the three, and the only file that imports it: the review-fix rules
+// (the error pane's message, the night toggle's 44 px target, the tab badge)
+// live here so two authors are never editing one cascade at once.
+import "./shell/boundary.css";
 
 import {
   useStore, useBrightness, useAuthMethods, useAuthGate, useWeatherAlertKey,
@@ -40,7 +46,8 @@ import { Sheet, Wordmark } from "./ui";
 import { useRoute } from "./router";
 import { useBreakpoint } from "./breakpoint";
 import { useLegacyBridge } from "./legacyBridge";
-import { HUBS } from "./hubs";
+import { HUBS, HUB_META, preloadHubs } from "./hubs";
+import { HubBoundary } from "./shell/HubBoundary";
 import { Header } from "./shell/Header";
 import { Banners } from "./shell/Banners";
 import { CampaignStrip } from "./shell/CampaignStrip";
@@ -231,6 +238,21 @@ export default function NextApp(): JSX.Element {
 
   const phone = bp === "phone";
 
+  // ------------------------------------------------------------ hub preload
+  // The six hub bodies are code-split (`hubs/index.ts`). Warm the other five in
+  // the background, ONCE, and ONLY once the socket is up: a dynamic import()
+  // whose fetch fails is cached as a failure for the life of the document, so
+  // spending each hub's single attempt on a link that has not come up yet is
+  // how five screens get poisoned for a whole session. `preloadHubs` is
+  // idempotent and schedules itself at idle, so this effect can fire on every
+  // phase change without paying for it twice. The hub already on screen leads
+  // the order; the rest follow in tab order.
+  const linkUp = useStore((s) => s.wsPhase === "up");
+  const hubOnScreen = route.hub;
+  useEffect(() => {
+    if (linkUp) preloadHubs(hubOnScreen);
+  }, [linkUp, hubOnScreen]);
+
   // The gate screens keep the toast stack and the confirm card mounted, exactly
   // as App does: what stops the rig speaking over them is the store's own
   // guards, not this file declining to render the hosts.
@@ -272,6 +294,12 @@ export default function NextApp(): JSX.Element {
   }
 
   const Hub = HUBS[route.hub];
+  // What the failure pane calls this screen. The tab's own word plus the
+  // section, so "RIG - CAPTURE HIT AN ERROR" names the thing the user is
+  // looking at rather than a module path.
+  const screenName = route.sub
+    ? `${HUB_META[route.hub].label} - ${route.sub.toUpperCase()}`
+    : HUB_META[route.hub].label;
   // The desktop's Session column is the running night, always visible - except
   // on the Session hub itself, which IS that screen at full size.
   const showSessionColumn = bp === "desktop" && route.hub !== "session";
@@ -286,7 +314,24 @@ export default function NextApp(): JSX.Element {
         <CampaignStrip />
         <SubNavBar route={route} nowMs={nowMs} />
         <main className="nx-body" id="nx-main" data-testid="hub-body">
-          <Hub />
+          {/* THE HUB BODY IS GUARDED (review #2). Before this, one unguarded
+              null anywhere under `hubs/**` blanked the entire app - this
+              header, the tab bar, the toast stack and the brightness reset with
+              it - with no message and no way back but a manual reload, on a
+              phone, in the dark. It also carries the Suspense fallback for the
+              split hub chunks.
+
+              The reset is driven by `name`, which IS `route.hub + route.sub`,
+              rather than by a React `key` on the same string. Both clear a
+              failure when the destination changes; only the `key` would also
+              REMOUNT the hub body on every sub-nav tap, and the sub-nav is
+              documented as looking around one screen rather than travelling -
+              re-running each section's fetches on every glance is a cost paid
+              on a field link all night. A hub change remounts anyway, because
+              `Hub` is a different component. */}
+          <HubBoundary name={screenName}>
+            <Hub />
+          </HubBoundary>
         </main>
         {phone && <TabBar route={route} nowMs={nowMs} />}
       </div>

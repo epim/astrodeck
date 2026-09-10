@@ -45,7 +45,9 @@ g.fetch = async () => ({ ok: false, status: 404, statusText: "Not Found", json: 
 const { createElement, act } = await import("react");
 const { createRoot } = await import("react-dom/client");
 const { useStore } = await import("../../store");
-const { LEGACY_VIEW_ROUTE, useLegacyBridge } = await import("../legacyBridge");
+const {
+  LEGACY_VIEW_ROUTE, LOG_ROUTE, WIZARD_ROUTE, useLegacyBridge,
+} = await import("../legacyBridge");
 const { currentRoute } = await import("../router");
 
 // ------------------------------------------------------------------ harness
@@ -126,7 +128,61 @@ test("an unrelated store write does not navigate", () => {
   eq(win.location.hash, "#/sky?frame=1", "precondition: parked on the sky");
   act(() => { useStore.getState().setCaptureTarget("M31"); });
   eq(win.location.hash, "#/sky?frame=1",
-    "only view/helpTopic are navigation; nothing else in the store is:");
+    "only view/helpTopic/logOpen/wizardOpen are navigation; nothing else in the store is:");
+});
+
+// ------------------------------------------------------- openLog (review #6)
+//
+// `store.openLog()` is the sequence-fatal toast's VIEW LOG button and
+// `views/SequenceView.tsx:931`'s log link. `components/LogDrawer` is the only
+// thing that ever rendered off `logOpen` and it is not mounted under this root,
+// so both presses used to write a field nobody read.
+
+test("openLog routes to the log screen", () => {
+  act(() => { useStore.getState().setView("monitor"); });
+  eq(win.location.hash, "#/monitor/live", "precondition: on LIVE, not LOG");
+  act(() => { useStore.getState().openLog(); });
+  eq(win.location.hash, "#/monitor/log");
+  eq(currentRoute().sub, "log", "the router agrees:");
+});
+
+test("the log flag is SPENT, so a second press works too", () => {
+  eq(useStore.getState().logOpen, false,
+    "a flag left set can never fire again - it is already true, so the next press is not a change:");
+  act(() => { useStore.getState().setView("gallery"); });
+  eq(win.location.hash, "#/session/gallery", "precondition: somewhere else");
+  act(() => { useStore.getState().openLog(); });
+  eq(win.location.hash, "#/monitor/log", "the second VIEW LOG press:");
+});
+
+// ---------------------------------------------------- openWizard (review #13)
+//
+// `views/HelpView.tsx:88` SETUP GUIDE. `HelpSheet.tsx:5-11` says in writing that
+// this bridge was delegated here; it never landed, so the Help sheet shipped one
+// live SETUP GUIDE row and one dead one about 200 px apart.
+
+test("openWizard routes to the setup sheet over Settings - General", () => {
+  act(() => { useStore.getState().setView("monitor"); });
+  eq(win.location.hash, "#/monitor/live", "precondition: not already on the setup sheet");
+  act(() => { useStore.getState().openWizard(); });
+  eq(win.location.hash, "#/settings/general/setup");
+  eq(currentRoute().hub, "settings", "hub:");
+  eq(currentRoute().sub, "general", "sub:");
+  eq(currentRoute().sheets.join(","), "setup", "sheet stack:");
+});
+
+test("the wizard flag is spent as well", () => {
+  eq(useStore.getState().wizardOpen, false,
+    "a wizard flag left set means the SETUP GUIDE row is dead from the second press on:");
+  act(() => { useStore.getState().setView("power"); });
+  eq(win.location.hash, "#/rig/devices/power", "precondition: somewhere else");
+  act(() => { useStore.getState().openWizard(); });
+  eq(win.location.hash, "#/settings/general/setup", "the second SETUP GUIDE press:");
+});
+
+test("both destinations are named constants, not strings typed twice", () => {
+  eq(LOG_ROUTE, "/monitor/log");
+  eq(WIZARD_ROUTE, "/settings/general/setup");
 });
 
 act(() => { root.unmount(); });

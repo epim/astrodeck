@@ -120,6 +120,10 @@ export function useSubContext(nowMs: number): SubContext {
   const alertsUndelivered = useAlertsUndelivered();
   const rig = useRigChip();
   const weatherDot = useWeatherDot();
+  // Error lines counted while the log was closed. A plain store field, no
+  // derivation and no request: `store.ts:2072` bumps it, `openLog()` clears it,
+  // and until now nothing in this UI read it (review #12).
+  const unseenError = useStore((s) => s.unseenError);
 
   return {
     flowCount,
@@ -129,5 +133,6 @@ export function useSubContext(nowMs: number): SubContext {
     rigDeviceCount: rig.count,
     rigLinkTone: rig.tone,
     weatherDot,
+    unseenError,
   };
 }

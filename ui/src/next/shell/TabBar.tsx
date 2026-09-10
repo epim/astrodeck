@@ -19,18 +19,42 @@
 // time. A deep link still wins: `WeatherHub` only restores when the hash named
 // no section.
 
+// THE MONITOR TAB WEARS THE UNSEEN-ERROR COUNT. `store.unseenError` is bumped
+// for every error line the engine logs while the log screen is closed, and it
+// had no reader anywhere in this UI (review #12). Once a fatal's toast is
+// dismissed and the line has scrolled past the 200-line ring, this badge is the
+// only thing left that says something went wrong. It is a NUMBER, not a dot:
+// "3" is a fact the dot cannot carry.
+
 import type { JSX } from "react";
 import { NxIcon } from "../icons";
+import { useStore } from "../../store";
 import { nav, type HubId, type Route } from "../router";
 import { HUB_META, HUB_ORDER } from "../hubs";
 import { useSessionDot } from "../hubs/session/crossHub";
 import { rememberedWeatherSub } from "./subContext";
+
+/** The accessible name for a tab, with whatever the badge is saying folded in.
+ *  Shared with the rail so the two navigations cannot describe one tab two
+ *  ways. The hub NAME always leads: dropping it while an incident is live left
+ *  the Session tab announcing only the incident, so a screen reader could not
+ *  say which tab it was on (review #51). */
+export function tabLabel(
+  hubLabel: string, incident: string | null, unseenError: number,
+): string {
+  if (incident) return `${hubLabel}, ${incident}`;
+  if (unseenError > 0) {
+    return `${hubLabel}, ${unseenError} unseen error${unseenError === 1 ? "" : "s"}`;
+  }
+  return hubLabel;
+}
 
 export function TabBar({ route, nowMs }: { route: Route; nowMs: number }): JSX.Element {
   // ONE derivation for the dot, shared with the rail and the Session hub's own
   // card (`hubs/session/crossHub.ts`, plan E.2). It already returns null on the
   // Session hub itself: the tab you are looking at does not need to be told.
   const dot = useSessionDot(nowMs);
+  const unseenError = useStore((s) => s.unseenError);
 
   return (
     <nav className="nx-tabbar" aria-label="Hubs" data-testid="tabbar">
@@ -38,6 +62,7 @@ export function TabBar({ route, nowMs }: { route: Route; nowMs: number }): JSX.E
         const meta = HUB_META[id];
         const active = route.hub === id;
         const alert = id === "session" && dot != null;
+        const errors = id === "monitor" ? unseenError : 0;
         return (
           <button
             key={id}
@@ -46,7 +71,7 @@ export function TabBar({ route, nowMs }: { route: Route; nowMs: number }): JSX.E
             data-active={active ? "true" : "false"}
             data-testid={`tab-${id}`}
             aria-current={active ? "page" : undefined}
-            aria-label={alert ? dot!.label : meta.label}
+            aria-label={tabLabel(meta.label, alert ? dot!.label : null, errors)}
             onClick={() => nav.hub(id, id === "weather" ? rememberedWeatherSub() : undefined)}
           >
             <NxIcon name={meta.icon} size={20} />
@@ -58,6 +83,11 @@ export function TabBar({ route, nowMs }: { route: Route; nowMs: number }): JSX.E
                 aria-hidden="true"
                 data-testid="tab-session-dot"
               />
+            )}
+            {errors > 0 && (
+              <span className="nx-tab-badge" aria-hidden="true" data-testid="tab-monitor-errors">
+                {errors > 99 ? "99+" : errors}
+              </span>
             )}
           </button>
         );

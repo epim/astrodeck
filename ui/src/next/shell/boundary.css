@@ -1,0 +1,76 @@
+/* boundary.css - the handful of rules the review-fix wave needed, kept OUT of
+   `shell.css` so two authors are never editing one cascade at once.
+   Imported once, by `NextApp.tsx`, after `shell.css` - same contract as the
+   other two sheets: one import site, so the order cannot depend on module
+   resolution order.
+
+   Everything here is either a token-only rule or a hit-target fix. No layout
+   is redefined; nothing overrides a `shell.css` selector. */
+
+/* --------------------------------------------------------- error boundary */
+
+/* The thrown Error's own text, shown verbatim so a screenshot from the field
+   is a bug report rather than a mystery. Monospace and red for the same reason
+   the legacy pane uses them: it is machine text, not a sentence we wrote. */
+.nx-boundary-message {
+  display: block;
+  margin-top: 6px;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--bad);
+  overflow-wrap: anywhere;
+}
+
+/* ------------------------------------------------------------ night toggle */
+
+/* The header's chips are 26 px, which is right for a readout and wrong for the
+   one CONTROL in that row. The touch target is grown to the 44 px floor with a
+   pseudo-element rather than with height, because a taller chip would push the
+   whole header down on a phone - and the header's own note is that this row
+   costs 44 px and must not cost more.
+
+   The chip stays visually 26 px; the finger gets 44. */
+.nx-night-toggle {
+  position: relative;
+  cursor: pointer;
+}
+
+.nx-night-toggle::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 44px;
+  transform: translateY(-50%);
+  /* Wider than the pill on both sides, so a thumb that lands beside it still
+     lands on it. Never visible: it paints nothing. */
+  margin-inline: -6px;
+}
+
+/* -------------------------------------------------------- monitor tab dot */
+
+/* The unseen-error badge on the MONITOR tab and rail button (review #12). It
+   is a COUNT, not only a dot: "3" says three errors have scrolled past while
+   the log was closed, which a dot cannot. Positioned like `.nx-tab-dot` so the
+   two badges cannot drift apart, but square-ish and unanimated - an error that
+   has already happened is not an emergency in progress. */
+.nx-tab-badge {
+  position: absolute;
+  right: 4px;
+  top: 3px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 7px;
+  border: 1px solid var(--bad);
+  background: var(--bg);
+  color: var(--bad);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 12px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
