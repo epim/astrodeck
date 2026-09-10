@@ -11,6 +11,7 @@ allowed to ask the browser for.
 """
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 from test_auth import _make_client
@@ -92,3 +93,68 @@ def test_embedding_is_still_refused_outright(tmp_path, monkeypatch):
         headers = c.get("/api/status").headers
     assert "frame-ancestors 'none'" in headers["content-security-policy"]
     assert headers["x-frame-options"] == "DENY"
+
+
+# ------------------------------------------------ the whole header, pinned
+#
+# The directive-level tests above each grade ONE promise, which is what let the
+# Permissions-Policy ship denying this origin its own camera for months: no
+# assertion held the string as a whole, so an edit anywhere else in it was
+# invisible. ``test_open_paths.py`` pins ``_AUTH_OPEN_EXACT`` exactly for the
+# same reason -- a security surface stated as a literal is guarded by pinning
+# the literal.
+#
+# THE HEADER IS THE CONTRACT, so a deliberate change updates this string in the
+# same commit. Two traps worth knowing while you do: the CSP source keyword is
+# quoted (`'self'`) and the Permissions-Policy allowlist is NOT (`(self)`) --
+# writing CSP's `self` bare, or the policy's `'self'` quoted, fails silently in
+# the browser and looks correct in a diff.
+
+_EXPECTED_CSP = (
+    "default-src 'self'; base-uri 'self'; object-src 'none'; "
+    "frame-ancestors 'none'; form-action 'self'; "
+    "script-src 'self'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data: blob: https:; "
+    "font-src 'self' data:; connect-src 'self' ws: wss:"
+)
+
+_EXPECTED_HEADERS = {
+    "x-content-type-options": "nosniff",
+    "referrer-policy": "same-origin",
+    "x-frame-options": "DENY",
+    "permissions-policy": (
+        "camera=(self), geolocation=(self), microphone=(), payment=(), usb=()"),
+    "content-security-policy": _EXPECTED_CSP,
+}
+
+
+@pytest.mark.parametrize("name, value", sorted(_EXPECTED_HEADERS.items()))
+def test_every_security_header_is_pinned(tmp_path, monkeypatch, name, value):
+    app = _make_client(tmp_path, monkeypatch, token=None)
+    with TestClient(app) as c:
+        got = c.get("/api/status").headers.get(name)
+    assert got == value, f"{name} changed:\n  was: {value}\n  now: {got}"
+
+
+def test_the_same_headers_ride_the_ui_shell_not_just_the_api(tmp_path,
+                                                             monkeypatch):
+    """The middleware is global on purpose -- the CSP that matters is the one
+    on the document the browser parses, not the one on the JSON."""
+    app = _make_client(tmp_path, monkeypatch, token=None)
+    with TestClient(app) as c:
+        headers = c.get("/healthz").headers
+    for name, value in _EXPECTED_HEADERS.items():
+        assert headers.get(name) == value, name
+
+
+def test_hsts_only_on_https(tmp_path, monkeypatch):
+    """Sent over TLS and NOT over the LAN's plain HTTP: an HSTS header on
+    ``http://astrotown:8800`` would pin that host to a scheme the rig does not
+    serve, and the next boot would be unreachable in that browser."""
+    app = _make_client(tmp_path, monkeypatch, token=None)
+    with TestClient(app, base_url="https://rig.test") as c:
+        assert c.get("/healthz").headers["strict-transport-security"] \
+            == "max-age=31536000"
+    with TestClient(app, base_url="http://rig.test") as c:
+        assert "strict-transport-security" not in c.get("/healthz").headers

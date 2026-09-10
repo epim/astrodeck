@@ -108,6 +108,18 @@ def test_invalid_points_raise_valueerror(bad, why):
         normalize_horizon_points(bad)
 
 
+def test_the_cap_is_checked_before_the_body_is_walked():
+    """The refusal used to come from ``len(by_az)`` -- i.e. after a million
+    points had been floated, range-checked and hashed. The bound is a fact
+    about the INPUT, so read it off the input."""
+    huge = [[float(i % 360), 5.0] for i in range(200_000)]
+    with pytest.raises(ValueError, match="at most"):
+        normalize_horizon_points(huge)
+    # and the boundary itself still passes, so the check is not off by one
+    ok = [[float(i), 5.0] for i in range(MAX_HORIZON_POINTS)]
+    assert len(normalize_horizon_points(ok)) == MAX_HORIZON_POINTS
+
+
 def test_none_and_empty_are_different_things():
     """None = "this location has no drawn horizon" (apply leaves the configured
     profile alone); [] = "this site has no obstructions" (apply CLEARS it).
@@ -332,6 +344,215 @@ def test_active_site_write_through_needs_config_safety(tmp_path, monkeypatch):
         assert r.status_code == 403
     assert [list(p) for p in cfg_store.cfg().safety.horizon] == _SORTED
     assert locs.reload()[0].horizon_points == _SORTED
+
+
+# ================================== absent means unchanged (2026-09-10 review)
+#
+# ``LocationBody.horizon_points`` defaults to None and the store wrote it
+# unconditionally, so "the field was not part of this edit" and "erase the
+# polyline" were the SAME request -- and the legacy Site panel
+# (ui/src/components/settings/SitePanel.tsx:421-428) sends exactly the former
+# body every time it saves a location. Measured before the fix:
+#
+#   PUT -> 200   library horizon_points after the legacy PUT: None
+#                config.safety.horizon after it:  [[0.0, 22.0], [90.0, 8.0]]
+#
+# Data loss AND divergence: the write-through required ``horizon_points is not
+# None``, so the engine kept gating with a line the library had just lost.
+
+_LEGACY_PUT = {**_BODY, "horizon_min_deg": None}     # what SitePanel sends
+
+
+def test_a_put_that_omits_the_points_keeps_them(tmp_path, monkeypatch):
+    _cfg, locs, app = _make_client(tmp_path, monkeypatch)
+    _install(principal_for_role("admin"))
+    with TestClient(app) as c:
+        lid = c.post("/api/locations",
+                     json={**_BODY, "horizon_points": _POINTS}).json()["id"]
+        r = c.put(f"/api/locations/{lid}", json=_LEGACY_PUT)
+        assert r.status_code == 200, r.text
+        assert r.json()["horizon_points"] == _SORTED, (
+            "the legacy Site panel's body erased a drawn horizon")
+    assert locs.reload()[0].horizon_points == _SORTED
+
+
+def test_a_put_that_omits_the_floor_keeps_it(tmp_path, monkeypatch):
+    """Same shape, same cost: ``horizon_min_deg`` is a safety floor, and an
+    edit that never mentioned it must not reset it."""
+    _cfg, locs, app = _make_client(tmp_path, monkeypatch)
+    _install(principal_for_role("admin"))
+    with TestClient(app) as c:
+        lid = c.post("/api/locations",
+                     json={**_BODY, "horizon_min_deg": 25.0}).json()["id"]
+        r = c.put(f"/api/locations/{lid}", json={**_BODY, "name": "Renamed"})
+        assert r.status_code == 200, r.text
+        assert r.json()["horizon_min_deg"] == 25.0
+    assert locs.reload()[0].horizon_min_deg == 25.0
+
+
+@pytest.mark.parametrize("value, expected", [
+    pytest.param(None, None, id="explicit-null-clears-the-polyline"),
+    pytest.param([], [], id="empty-list-is-no-obstructions"),
+])
+def test_an_explicit_value_still_writes(tmp_path, monkeypatch, value, expected):
+    """Absent-means-unchanged must not become unwritable: a caller that SAYS
+    null (no drawn horizon) or ``[]`` (no obstructions) gets what it asked
+    for. That is the whole difference from the guard this replaces."""
+    _cfg, locs, app = _make_client(tmp_path, monkeypatch)
+    _install(principal_for_role("admin"))
+    with TestClient(app) as c:
+        lid = c.post("/api/locations",
+                     json={**_BODY, "horizon_points": _POINTS}).json()["id"]
+        r = c.put(f"/api/locations/{lid}",
+                  json={**_BODY, "horizon_points": value})
+        assert r.status_code == 200, r.text
+        assert r.json()["horizon_points"] == expected
+    assert locs.reload()[0].horizon_points == expected
+
+
+def test_the_store_leaves_an_omitted_field_alone(tmp_path):
+    """The sentinel, at the store's own boundary -- the API is not the only
+    caller, and ``None`` still means "clear it"."""
+    from astrodeck.locations import UNCHANGED
+    s = LocationStore(path=tmp_path / "locations.json")
+    loc = s.create("A", 1.0, 2.0, 0.0, 15.0, [[0.0, 20.0]])
+    kept = s.update(loc.id, "B", 1.0, 2.0, 0.0)
+    assert kept.name == "B"
+    assert kept.horizon_points == [[0.0, 20.0]] and kept.horizon_min_deg == 15.0
+    cleared = s.update(loc.id, "B", 1.0, 2.0, 0.0,
+                       horizon_min_deg=None, horizon_points=None)
+    assert cleared.horizon_points is None and cleared.horizon_min_deg is None
+    again = s.update(loc.id, "B", 1.0, 2.0, 0.0, UNCHANGED, UNCHANGED)
+    assert again.horizon_points is None
+
+
+def test_a_pure_rename_does_not_clobber_a_hand_edited_horizon(tmp_path,
+                                                              monkeypatch):
+    """The write-through keyed on "the body carried points AND this is the
+    active site", never on "the points CHANGED". So a rename -- or any
+    coordinate edit, since the sites sheet echoes the stored points back --
+    pushed the library's stale polyline over a horizon someone had edited
+    through POST /api/config. Measured: [[0,45],[180,40]] -> a rename ->
+    [[0,22],[90,8]], with no way back through the API."""
+    cfg_store, _locs, app = _make_client(tmp_path, monkeypatch)
+    _install(principal_for_role("admin"))
+    with TestClient(app) as c:
+        lid = c.post("/api/locations",
+                     json={**_BODY, "horizon_points": _POINTS}).json()["id"]
+        c.post(f"/api/locations/{lid}/apply")
+        cfg_store.set_safety(cfg_store.cfg().safety.model_copy(
+            update={"horizon": [(0.0, 45.0), (180.0, 40.0)]}))
+        r = c.put(f"/api/locations/{lid}",
+                  json={**_BODY, "name": "Backyard", "horizon_points": _POINTS})
+        assert r.status_code == 200, r.text
+    assert [list(p) for p in cfg_store.cfg().safety.horizon] == \
+        [[0.0, 45.0], [180.0, 40.0]]
+
+
+def test_a_rename_by_a_site_optics_principal_is_not_a_safety_write(tmp_path,
+                                                                   monkeypatch):
+    """The corollary of the above: with the write-through keyed on a real
+    change, renaming the active site no longer demands config.safety."""
+    cfg_store, _locs, app = _make_client(tmp_path, monkeypatch)
+    _install(principal_for_role("admin"))
+    with TestClient(app) as c:
+        lid = c.post("/api/locations",
+                     json={**_BODY, "horizon_points": _POINTS}).json()["id"]
+        c.post(f"/api/locations/{lid}/apply")
+    _install(_principal_with(CAP_CONFIG_SITE_OPTICS))       # no config.safety
+    with TestClient(app) as c:
+        r = c.put(f"/api/locations/{lid}", json={**_BODY, "name": "Backyard"})
+        assert r.status_code == 200, r.text
+        assert r.json()["horizon_points"] == _SORTED
+    assert [list(p) for p in cfg_store.cfg().safety.horizon] == _SORTED
+
+
+def test_a_real_edit_of_the_active_horizon_still_needs_config_safety(
+        tmp_path, monkeypatch):
+    """And the gate is still there for the write that actually moves the
+    floor -- narrowing the trigger must not narrow the cap."""
+    cfg_store, _locs, app = _make_client(tmp_path, monkeypatch)
+    _install(principal_for_role("admin"))
+    with TestClient(app) as c:
+        lid = c.post("/api/locations",
+                     json={**_BODY, "horizon_points": _POINTS}).json()["id"]
+        c.post(f"/api/locations/{lid}/apply")
+    _install(_principal_with(CAP_CONFIG_SITE_OPTICS))
+    with TestClient(app) as c:
+        assert c.put(f"/api/locations/{lid}",
+                     json={**_BODY, "horizon_points": [[45.0, 33.0]]}
+                     ).status_code == 403
+    assert [list(p) for p in cfg_store.cfg().safety.horizon] == _SORTED
+
+
+def test_clearing_the_active_sites_polyline_reaches_the_engine(tmp_path,
+                                                               monkeypatch):
+    """An explicit ``[]`` on the active site IS a change, so it writes through
+    -- otherwise erasing a tree line would leave the engine gating on it."""
+    cfg_store, _locs, app = _make_client(tmp_path, monkeypatch)
+    _install(principal_for_role("admin"))
+    with TestClient(app) as c:
+        lid = c.post("/api/locations",
+                     json={**_BODY, "horizon_points": _POINTS}).json()["id"]
+        c.post(f"/api/locations/{lid}/apply")
+        assert c.put(f"/api/locations/{lid}",
+                     json={**_BODY, "horizon_points": []}).status_code == 200
+    assert cfg_store.cfg().safety.horizon == []
+
+
+# ======================================== apply writes ONCE (2026-09-10 review)
+
+def test_apply_moves_site_and_horizon_in_one_save(tmp_path, monkeypatch):
+    """Two ``bump_and_save`` calls left a window whose partial state is the
+    worst one available: the NEW coordinates live against the PREVIOUS site's
+    horizon -- a tree line from somewhere else gating tonight -- with a version
+    number saying the config is whole. One mutation, one save: the version
+    moves by exactly one and both blocks move with it."""
+    cfg_store, _locs, app = _make_client(tmp_path, monkeypatch)
+    cfg_store.set_safety(cfg_store.cfg().safety.model_copy(
+        update={"horizon": [(0.0, 45.0)]}))
+    _install(principal_for_role("admin"))
+    with TestClient(app) as c:
+        lid = c.post("/api/locations",
+                     json={**_BODY, "horizon_points": _POINTS}).json()["id"]
+        before = cfg_store.cfg().version
+        assert c.post(f"/api/locations/{lid}/apply").status_code == 200
+    cfg = cfg_store.cfg()
+    assert cfg.version == before + 1, "the apply still saves twice"
+    assert cfg.site.name == "Backyard"
+    assert [list(p) for p in cfg.safety.horizon] == _SORTED
+
+
+def test_the_apply_cannot_persist_the_site_without_its_horizon(tmp_path,
+                                                               monkeypatch):
+    """The failure mode the single save exists for, made to happen: the SECOND
+    write to disk fails. Two writes put the new coordinates on disk with the
+    PREVIOUS site's horizon beside them; one write cannot, because there is no
+    second write to fail."""
+    cfg_store, _locs, app = _make_client(tmp_path, monkeypatch)
+    _install(principal_for_role("admin"))
+    real_save = type(cfg_store)._save
+    saves = {"n": 0}
+
+    def _second_save_fails(self):
+        saves["n"] += 1
+        if saves["n"] >= 2:
+            raise OSError("disk full between the two writes")
+        return real_save(self)
+
+    with TestClient(app) as c:
+        lid = c.post("/api/locations",
+                     json={**_BODY, "horizon_points": _POINTS}).json()["id"]
+        saves["n"] = 0
+        monkeypatch.setattr(type(cfg_store), "_save", _second_save_fails)
+        assert c.post(f"/api/locations/{lid}/apply").status_code == 200
+    monkeypatch.undo()
+    assert saves["n"] == 1, "the apply still writes the config twice"
+    on_disk = cfg_store.reload()
+    assert on_disk.site.name == "Backyard"
+    assert [list(p) for p in on_disk.safety.horizon] == _SORTED, (
+        "the site is on disk and its horizon is not — a floor traced somewhere "
+        "else, gating tonight")
 
 
 # ============================================================ GET /api/site

@@ -350,6 +350,16 @@ def test_direct_transport_token_does_not_block_remote_session_auth(
     ("POST", "/api/connect/nina"),
     ("POST", "/api/sync/push/now"),
     ("DELETE", "/api/survey/pack"),
+    # The saved-locations library is a SECOND DOOR into /api/config, which is
+    # fenced two rows up. ``PUT /api/locations/{id}`` writes
+    # ``config.safety.horizon`` through the active-site write-through and
+    # ``.../apply`` writes ``config.site`` alongside it, so a tunnelled cookie
+    # could set an 89-degree floor (every slew of the night denied) or erase
+    # the tree line, on a route none of the three deny lists named.
+    ("POST", "/api/locations"),
+    ("PUT", "/api/locations/abc"),
+    ("POST", "/api/locations/abc/apply"),
+    ("DELETE", "/api/locations/abc"),
     ("GET", "/api/discover"),
     ("POST", "/api/remote/config"),
     ("POST", "/api/system/factory-reset"),
@@ -382,6 +392,31 @@ def test_tunneled_admin_cannot_replay_cookie_into_privilege_root_routes(
     frames = asyncio.run(_drain_request(client, channel, stream_id=8))
     heads = [f for f in frames if f.type == FrameType.RESP_HEAD]
     assert heads and heads[0].header["status"] == 403
+
+
+def test_the_locations_fence_is_mutations_only(tmp_path, monkeypatch):
+    """A fence that also blinded the remote UI would be a different bug: the
+    mutation list is checked for UNSAFE METHODS only, so listing the saved
+    locations still answers over the tunnel. Reads of a site library the caller
+    is already authorized for disclose nothing the relay could replay."""
+    _store, app = _make_client(tmp_path, monkeypatch)
+
+    class _AdminProvider:
+        name = "fake"
+
+        async def resolve(self, request):
+            return principal_for_role("admin")
+
+    set_active_provider(_AdminProvider())
+    channel = FakeChannel()
+    client = _make_relay_client(app, channel)
+    channel.push_frame(FrameType.REQ_OPEN, 12, {
+        "method": "GET", "path": "/api/locations", "query": "",
+        "has_body": False,
+    })
+    frames = asyncio.run(_drain_request(client, channel, stream_id=12))
+    heads = [f for f in frames if f.type == FrameType.RESP_HEAD]
+    assert heads and heads[0].header["status"] == 200
 
 
 # ============================================================ response streaming
