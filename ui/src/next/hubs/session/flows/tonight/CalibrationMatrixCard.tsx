@@ -32,6 +32,16 @@ import {
 import { useStore } from "../../../../../store";
 import { Card, Label, Mono } from "../../../../ui";
 import { plainDashes } from "./tonightModel";
+// This card is mounted from OUTSIDE the tonight area as well as inside it -
+// the canvas's inspector column (`flows/FlowsCanvasHost.tsx`) and the node
+// sheet (`flows/inspector/sheets.tsx`) both render it - and neither of those
+// paths loads `TonightSheet.tsx`, which was the only importer of the area
+// stylesheet. So the card's seven `nx-tn-cal*` rules only existed if the
+// operator had opened the TONIGHT sheet first. The area css carries more than
+// one import site by design (WAVE2-RULINGS: "imported by at least one
+// always-loaded module of the area"); this is the second one. Guarded by
+// `__tests__/r7Css.test.ts`.
+import "./tonight.css";
 
 export function CalibrationMatrixCard({ className = "" }: {
   className?: string;

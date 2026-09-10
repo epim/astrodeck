@@ -1,20 +1,23 @@
 // paletteDrop.ts - where a stage lands when the palette drops one.
 //
-// WHERE THE TWO HELPERS COME FROM, AND WHY FROM THERE. `flowCanvasDropPoint`
-// (`components/flows/FlowCanvas.tsx`) and `PALETTE_FALLBACK_DROP`
-// (`components/flows/FlowPalette.tsx`) are the LEGACY SOURCE OF TRUTH for the
-// drop rule today, and wave R7's brief for this task says to import them from
-// there until the cutover. T-R7-1 re-exports both from
-// `session/flows/canvas/`; when T-R7-20 composes the canvas, this module's two
-// imports move to that re-export and nothing else here changes. Named in the
-// task report as the one cross-directory import this area still makes.
+// WHERE THE TWO HELPERS COME FROM, AND WHY FROM THERE. They come from the
+// REBUILT canvas (`../canvas/canvasMount`, `../canvas/canvasModel`), and they
+// have to: `flowCanvasDropPoint` answers from whichever canvas element is
+// currently registered, and the legacy `components/flows/FlowCanvas.tsx` copy
+// this module used until T-R7-21 is registered only by the legacy `FlowCanvas`
+// component, which the new UI never mounts. So the legacy copy returned `null`
+// on every call here and every stage dropped from the palette landed on the
+// (120,120) fallback instead of the canvas the operator was looking at. Deep
+// imports, not the `../canvas` barrel: both modules are component-free, and the
+// barrel would pull the surface, the wires and `canvas.css` into the palette's
+// chunk for the sake of one rect (see `canvasMount.ts`'s own note).
 //
 // Both are pure with respect to THIS module: `flowCanvasDropPoint` reads the
 // mounted canvas's rect and the live pan/zoom and answers `null` when no canvas
 // is mounted, which is precisely the case the palette has to answer for.
 
-import { flowCanvasDropPoint } from "../../../../../components/flows/FlowCanvas";
-import { PALETTE_FALLBACK_DROP } from "../../../../../components/flows/FlowPalette";
+import { flowCanvasDropPoint } from "../canvas/canvasMount";
+import { PALETTE_FALLBACK_DROP } from "../canvas/canvasModel";
 import type { FlowTier } from "../../../../../components/flows/geometry";
 
 export { PALETTE_FALLBACK_DROP };
