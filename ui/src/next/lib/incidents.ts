@@ -323,8 +323,34 @@ function safetyIncident(inp: IncidentInputs): Incident | null {
 
 // --------------------------------------------------------------------- link
 
-function linkIncident(inp: IncidentInputs): Incident | null {
+/** How long the FIRST connection is allowed to take before a socket that has
+ *  never opened counts as a lost link. Long enough for a cold start on a slow
+ *  field link or the relay; short enough that a rig which really is unreachable
+ *  is named while the user is still looking at the screen. */
+export const FIRST_LINK_GRACE_MS = 5000;
+
+function linkIncident(inp: IncidentInputs, nowMs: number): Incident | null {
   if (inp.wsPhase === "up" && !inp.telemetryStale) return null;
+
+  // NOT A LOST LINK: A LINK THAT HAS NOT HAPPENED YET (review #16).
+  //
+  // `store.ts:1023` initialises `wsPhase: "connecting"` and `wsLastEvent` to
+  // the moment the store was created, so the first paint of every cold start
+  // used to carry "LINK LOST - This phone cannot reach the rig computer", 0 s
+  // old, plus the Session tab's dot, until the socket opened. The first thing
+  // the app ever said was that it was broken.
+  //
+  // "connecting" is the phase that means NEVER UP: `ws.ts:48` picks
+  // `everConnected ? "reconnecting" : "connecting"`, and a socket that opened
+  // and dropped goes to "down". So the suppression here cannot hide a real
+  // drop - it can only cover the opening seconds of a document, and only until
+  // the grace lapses, after which a socket that still has not opened IS a link
+  // the user needs to be told about.
+  const opening = inp.wsPhase === "connecting"
+    && inp.wsLastEvent != null
+    && nowMs - inp.wsLastEvent < FIRST_LINK_GRACE_MS;
+  if (opening) return null;
+
   return {
     kind: "link",
     pill: PILL.link,

@@ -22,6 +22,16 @@
 //      both about a rig that will start ON ITS OWN while nobody is next to it.
 //      Those two still render on Session - Now from that component, so the copy
 //      here is suppressed on that one route rather than printed twice.
+//   5. FIRST-TIME SETUP (review #15). `SetupCard` renders only inside
+//      `#/settings/general`, so a rig out of the box opened on Sky at (0,0)
+//      with nothing on screen saying setup existed - a strict regression
+//      against the legacy root, which auto-presented `FirstRunWizard` at the
+//      App root (`App.tsx:934`). The count comes from `useSetupFacts()`, the
+//      SAME hook the Settings card and the setup sheet read, so the banner and
+//      the card can never disagree about how many steps are done. That costs
+//      one extra `GET /api/profiles` per app load (the one wizard signal that
+//      is not in the store); re-deriving it here to save the request is how
+//      two surfaces end up printing two different numbers for one question.
 //
 // Dismissals are per-session and keyed by the banner's IDENTITY, not its slot:
 // dismissing "report 2026-09-09 is ready" must not also dismiss the next one.
@@ -37,6 +47,7 @@ import { fmtHm } from "../../lib/weather";
 import { BannerCard } from "../ui";
 import { nav, type Route } from "../router";
 import { useSessionBanners } from "../hubs/session/crossHub";
+import { useSetupFacts } from "../hubs/settings/general/useSetup";
 
 const MAX_BANNERS = 2;
 
@@ -104,6 +115,7 @@ export function Banners({ route, nowMs }: { route: Route; nowMs: number }): JSX.
   const weatherIgnored = useStore((s) => s.weather?.ignore_tonight === true);
 
   const sessionBanners = useSessionBanners(nowMs);
+  const setup = useSetupFacts().view;
   const onSession = route.hub === "session";
   // `now/NowBanners.tsx` still renders the auto-resume pair on the Now screen
   // itself. Two announcements of one condition is how dismissing one of them
@@ -226,6 +238,28 @@ export function Banners({ route, nowMs }: { route: Route; nowMs: number }): JSX.
       tone: "info",
       text: weatherIgnored ? WEATHER_OVERRIDE_TEXT : WEATHER_ALERT_TEXT,
       cta: { label: "weather", onPress: () => nav.hub("weather") },
+    });
+  }
+
+  // 6b. First-time setup, while it is unfinished. Cyan: this is tonight's
+  //     information, not something wrong. Suppressed on the Settings hub, where
+  //     `SetupCard` is already on screen at full size with the same number -
+  //     the same rule the incident banner follows on Session.
+  //
+  //     The key carries the COUNT, so finishing a step re-announces once rather
+  //     than staying dismissed at a number that is no longer true. The
+  //     dismissal is per session and is deliberately NOT the coach key that
+  //     hides `SetupCard`: this is the only prompt outside Settings, and
+  //     retiring it for good from one tap on a card in Settings would put the
+  //     rig back where review #15 found it.
+  if (!setup.complete && route.hub !== "settings") {
+    const nextStep = setup.next ? ` - next: ${setup.next.title.toLowerCase()}` : "";
+    entries.push({
+      key: `setup:${setup.doneCount}`,
+      kind: "setup",
+      tone: "info",
+      text: `First-time setup: ${setup.doneCount} of ${setup.total} done${nextStep}`,
+      cta: { label: "settings", onPress: () => nav.go("/settings/general") },
     });
   }
 

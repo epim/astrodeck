@@ -81,6 +81,7 @@ function coldContext(): SubContext {
     rigDeviceCount: null,
     rigLinkTone: null,
     weatherDot: null,
+    unseenError: 0,
   };
 }
 

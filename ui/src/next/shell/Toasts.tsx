@@ -18,6 +18,7 @@ import { useEffect, type JSX } from "react";
 import { useStore } from "../../store";
 import type { Toast, ToastLevel } from "../../types";
 import type { Breakpoint } from "../breakpoint";
+import { nav } from "../router";
 import { ActionButton } from "../ui";
 import type { Tone } from "../ui";
 
@@ -51,7 +52,19 @@ function ToastCard({ t }: { t: Toast }): JSX.Element {
             <ActionButton
               kind="secondary"
               onPress={() => {
-                if (t.action?.kind === "openLog") openLog();
+                // VIEW LOG has to NAVIGATE, not only write a flag (review #6).
+                // `store.openLog()` sets `logOpen`, and `components/LogDrawer`
+                // - the only thing that ever read it - is not mounted under
+                // this root. So the sticky toast raised for every sequence
+                // fatal (`store.ts:2029`, ttl 0) carried a button that did
+                // nothing at all, on screen, after the worst thing that can
+                // happen to a run.
+                //
+                // The route first, then `openLog()`: the store action is what
+                // clears `unseenError`, so dropping it would leave the badge
+                // lit over a log the user is looking at. This is exactly what
+                // the sibling path already does (`incidentActions.ts:196`).
+                if (t.action?.kind === "openLog") { nav.go("/monitor/log"); openLog(); }
                 else if (t.action?.kind === "openHelp") openHelp(t.action.topic);
               }}
             >

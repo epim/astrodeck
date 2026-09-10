@@ -13,9 +13,18 @@
 // set the whole app's minimum width at 382 px and scrolled a 375 px phone
 // sideways, taking the link indicator off-screen - the one indicator you need
 // when the link is the problem. The chips give first, the wordmark last.
+//
+// NIGHT LIVES HERE, NOT IN SETTINGS (review #14). It was reachable only from
+// SETTINGS - GENERAL - scroll to PHONE, i.e. four navigations to go red at the
+// eyepiece, and the argument that already won this row a global brightness
+// hatch in `NextApp` applies to it exactly: a screen you cannot read is a
+// screen whose fix you cannot find. It is the LAST chip so the container's
+// `overflow: hidden` (which cuts from the left, the row being end-justified)
+// can never take it off screen, and it carries a 44 px touch target through
+// `boundary.css` without making the row any taller.
 
 import { useEffect, useRef, type JSX } from "react";
-import { useStore, useStatus, useWsPhase, useTelemetryStale } from "../../store";
+import { useStore, useStatus, useWsPhase, useTelemetryStale, useNight } from "../../store";
 import { usePrincipalRole } from "../../lib/caps";
 import { backendBadge, backendBadgeIsSim } from "../../lib/equipment";
 import { Pill, Wordmark, type Tone } from "../ui";
@@ -72,11 +81,17 @@ export function Header(): JSX.Element {
     void loadLibrary().catch(() => { /* offline: the pill keeps its dash */ });
   }, [loadLibrary]);
 
+  const night = useNight();
+  const toggleNight = useStore((s) => s.toggleNight);
+
   const camConnected = !!status?.connected?.camera?.connected;
   const mountConnected = !!status?.connected?.telescope?.connected;
   const temp = status?.camera?.temperature;
+  // The degree sign is not decoration: a bare "CAM -10.0" beside "MOUNT TRACK"
+  // reads as one more state word rather than a temperature (review #52, design
+  // screenshot 13 shows `CAM -10°`).
   const camText = camConnected
-    ? (typeof temp === "number" ? `CAM ${temp.toFixed(1)}` : "CAM ON")
+    ? (typeof temp === "number" ? `CAM ${temp.toFixed(1)}°` : "CAM ON")
     : "CAM OFF";
 
   const mount = mountChip(status?.mount, mountConnected);
@@ -152,6 +167,22 @@ export function Header(): JSX.Element {
             STALE
           </Pill>
         )}
+
+        {/* NIGHT. The chip TEXT is the state the screen is in, like every other
+            chip in this row; the accessible name says what pressing it does,
+            which is the half a screen reader would otherwise have to guess. */}
+        <Pill
+          tone={night ? "bad" : "dim"}
+          glyph={<NxIcon name={night ? "moon" : "sun"} size={12} />}
+          onClick={toggleNight}
+          ariaLabel={night
+            ? "Night mode is on. Switch to day mode"
+            : "Day mode is on. Switch to red night-vision mode"}
+          className="nx-night-toggle"
+          data-testid="header-night"
+        >
+          {night ? "NIGHT" : "DAY"}
+        </Pill>
       </div>
     </header>
   );

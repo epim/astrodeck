@@ -8,10 +8,30 @@
 // would do nothing at all - the worst failure shape there is, because the screen
 // looks fine.
 //
-// So: watch the two legacy fields and translate a CHANGE into a route. Only a
+// So: watch the four legacy fields and translate a CHANGE into a route. Only a
 // change after mount, never the value that is already there - `view` starts at
 // "connect" and treating the initial value as an instruction would slam every
 // cold start onto Rig - Devices no matter what the user deep-linked.
+//
+// FOUR FIELDS, NOT TWO. `view` and `helpTopic` were the first pair; `logOpen`
+// and `wizardOpen` are the same shape and were missed (review #6 and #13).
+// Both are booleans a reused component sets and this root never read:
+//
+//   * `store.openLog()` is the sticky sequence-fatal toast's VIEW LOG button
+//     and `views/SequenceView.tsx:931`'s log link. `components/LogDrawer` is
+//     the only thing that ever rendered off `logOpen`, and it is not mounted
+//     here, so both presses did nothing at all.
+//   * `store.openWizard()` is `views/HelpView.tsx:88`'s SETUP GUIDE button.
+//     `components/FirstRunWizard` is likewise not mounted, so the Help sheet
+//     shipped one live SETUP GUIDE row and one dead one about 200 px apart.
+//
+// Each is SPENT the way `helpTopic` is: navigate, then clear the flag through
+// the store's own closer. A flag left set can never fire again (it is already
+// true, so the next press is not a change), which is the same trap the topic
+// had. Note that `closeWizard()` also marks the first-run coach key seen -
+// deliberate, and identical to what finishing the legacy docked wizard did:
+// the user has been handed the guide. The setup BANNER in `shell/Banners.tsx`
+// is dismissed per session and not by that key, so the global nudge survives.
 //
 // The reverse direction does not exist. Nothing in the new UI writes `store.view`
 // (ARCHITECTURE.md section 9), except `main.tsx`'s one classic handoff.
@@ -43,15 +63,29 @@ export const LEGACY_VIEW_ROUTE: Record<ViewName, string> = {
   flows: "/session/flows",
 };
 
+/** Where `store.openLog()` lands. The Monitor hub's LOG screen is the new
+ *  home of what `components/LogDrawer` used to be. */
+export const LOG_ROUTE = "/monitor/log";
+
+/** Where `store.openWizard()` lands: the setup sheet over Settings - General,
+ *  which is the same guide the FIRST-TIME SETUP card opens. */
+export const WIZARD_ROUTE = "/settings/general/setup";
+
 /** Mount once, in `NextApp`. Returns nothing: it is an effect, not a value. */
 export function useLegacyBridge(): void {
   const view = useStore((s) => s.view);
   const helpTopic = useStore((s) => s.helpTopic);
   const clearHelpTopic = useStore((s) => s.clearHelpTopic);
+  const logOpen = useStore((s) => s.logOpen);
+  const closeLog = useStore((s) => s.closeLog);
+  const wizardOpen = useStore((s) => s.wizardOpen);
+  const closeWizard = useStore((s) => s.closeWizard);
 
   const mounted = useRef(false);
   const lastView = useRef<ViewName>(view);
   const lastTopic = useRef<string | null>(helpTopic);
+  const lastLog = useRef<boolean>(logOpen);
+  const lastWizard = useRef<boolean>(wizardOpen);
 
   useEffect(() => {
     if (!mounted.current) {
@@ -60,6 +94,8 @@ export function useLegacyBridge(): void {
       mounted.current = true;
       lastView.current = view;
       lastTopic.current = helpTopic;
+      lastLog.current = logOpen;
+      lastWizard.current = wizardOpen;
       return;
     }
 
@@ -77,10 +113,32 @@ export function useLegacyBridge(): void {
     }
     lastTopic.current = helpTopic;
 
+    // The wizard before the log before the view, for the same reason the topic
+    // comes first: each is MORE specific than a bare view change, and none of
+    // them writes `view` at all, so the ordering only decides which fires when
+    // two flags move in one set().
+    if (wizardOpen && !lastWizard.current) {
+      lastWizard.current = false;   // spent below by closeWizard()
+      lastView.current = view;
+      nav.go(WIZARD_ROUTE);
+      closeWizard();
+      return;
+    }
+    lastWizard.current = wizardOpen;
+
+    if (logOpen && !lastLog.current) {
+      lastLog.current = false;      // spent below by closeLog()
+      lastView.current = view;
+      nav.go(LOG_ROUTE);
+      closeLog();
+      return;
+    }
+    lastLog.current = logOpen;
+
     if (view !== lastView.current) {
       lastView.current = view;
       const path = LEGACY_VIEW_ROUTE[view];
       if (path) nav.go(path);
     }
-  }, [view, helpTopic, clearHelpTopic]);
+  }, [view, helpTopic, clearHelpTopic, logOpen, closeLog, wizardOpen, closeWizard]);
 }

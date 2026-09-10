@@ -172,6 +172,15 @@ const { useStore } = await import("../../store");
 const { confirmDialog } = await import("../../components/ConfirmDialog");
 const NextApp = (await import("../NextApp")).default;
 
+// The six hub bodies are code-split (`hubs/index.ts`, review #43), so
+// `HUBS[hub]` is a `React.lazy` whose module has to arrive before the body
+// renders. Warm all six HERE, once, rather than letting each tab tap race a
+// filesystem read inside `act()`: a lazy body that resolves on its own schedule
+// is a flaky test, not an assertion. Every navigation below still goes through
+// Suspense - it just resolves from the module registry.
+const { HUB_LOADERS } = await import("../hubs");
+await Promise.all(Object.values(HUB_LOADERS).map((load) => load()));
+
 // ------------------------------------------------------------------ harness
 let passed = 0;
 let failed = 0;
@@ -301,26 +310,31 @@ test("the rig chips carry NUMBERS, not just labels", () => {
 
 // ------------------------------------------------------------- navigation
 
-test("tapping WEATHER changes the hash AND the screen", () => {
+await testAsync("tapping WEATHER changes the hash AND the screen", async () => {
   eq(byId("hub-sky") != null, true, "precondition: the sky hub is on screen");
   click(byId("tab-weather"));
   eq(win.location.hash, "#/weather/conditions", "hash:");
+  await settle();
   assert(byId("hub-weather") != null, "the weather hub did not render");
   assert(byId("hub-sky") == null, "the sky hub is still mounted under the weather hub");
 });
 
-test("the sub-nav renders the hub's sections and switches them without a push", () => {
+await testAsync("the sub-nav renders the hub's sections and switches them without a push", async () => {
   const chips = all('[data-testid="subnav"] button');
   eq(chips.length, 3, "weather has three sections:");
   const radar = chips.find((c) => /RADAR/.test(c.textContent));
   assert(radar != null, "no RADAR chip");
   click(radar);
+  await settle();
   eq(win.location.hash, "#/weather/radar");
+  assert(byId("hub-weather") != null,
+    "a sub-nav tap must not remount the hub away - it is looking around one screen");
 });
 
-test("switching hubs clears the sub back to the new hub's default", () => {
+await testAsync("switching hubs clears the sub back to the new hub's default", async () => {
   click(byId("tab-monitor"));
   eq(win.location.hash, "#/monitor/live");
+  await settle();
   assert(byId("hub-monitor") != null, "the monitor hub did not render");
 });
 
@@ -406,9 +420,10 @@ await testAsync("confirmDialog renders the card and KEEP resolves FALSE", async 
 
 // ---------------------------------------------------------- the legacy door
 
-test("a setView after mount routes through the bridge inside the real shell", () => {
+await testAsync("a setView after mount routes through the bridge inside the real shell", async () => {
   act(() => { useStore.getState().setView("monitor"); });
   eq(win.location.hash, "#/monitor/live", "hash:");
+  await settle();
   assert(byId("hub-monitor") != null, "the monitor hub did not render");
 });
 

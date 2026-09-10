@@ -109,5 +109,11 @@ export function useIncidents(nowMs: number): Incident[] {
     lastAutofocusResult, guide, status, logs, lastCaptureAtMs,
   ]);
 
-  return deriveIncidents(inputs, nowMs);
+  // Memoised on `nowMs` as well as on the fold (review #57). Four pieces of
+  // chrome call this hook independently - the banner strip, the tab bar, the
+  // rail and the sub-nav - so an unmemoised call re-derived all nine incidents
+  // per consumer per render AND handed each one a fresh array, which defeats
+  // every downstream memo the consumers have. The shell clock only moves every
+  // 10 s (`NextApp.CLOCK_MS`), so this is a real cache, not a formality.
+  return useMemo(() => deriveIncidents(inputs, nowMs), [inputs, nowMs]);
 }

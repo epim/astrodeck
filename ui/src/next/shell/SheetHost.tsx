@@ -18,6 +18,7 @@ import { useEffect, useRef, type JSX } from "react";
 import { EmptyCard } from "../ui";
 import { nav, type Route } from "../router";
 import { SHEETS } from "../hubs";
+import { HubBoundary } from "./HubBoundary";
 
 /** A sheet name in the hash that no hub registers. This is REACHABLE by design,
  *  not a bug guard: the legacy bridge maps `setView("focus")` to
@@ -55,7 +56,19 @@ function Slot({ name, params, depth, under }: {
   const Comp = SHEETS[name];
   return (
     <div className="nx-sheet-slot" data-under={under ? "true" : "false"} ref={ref}>
-      {Comp ? <Comp params={params} depth={depth} /> : <MissingSheet name={name} />}
+      {/* EACH SLOT GETS ITS OWN BOUNDARY (review #2). A sheet is where the
+          catalogue rows, the driver payloads and the report folds are rendered
+          - the most likely places for an unguarded null - and an unguarded
+          throw here took the whole app down with it, sheet, hub, tab bar and
+          all. Keyed by the sheet name so a different sheet in a reused slot
+          starts clean. */}
+      {Comp ? (
+        <HubBoundary key={name} name={name.toUpperCase()}>
+          <Comp params={params} depth={depth} />
+        </HubBoundary>
+      ) : (
+        <MissingSheet name={name} />
+      )}
     </div>
   );
 }
