@@ -360,6 +360,85 @@ await testAsync("the provider row offers what actually runs, and says where a sa
     "a pinned row offers no way back to the global setting");
 });
 
+await testAsync("CLEAR THE PROFILE PIN is honest-disabled for a non-holder, not hidden (review #77)", async () => {
+  seed({
+    principal: OPERATOR,                       // no config.backend
+    config: {
+      providers: { autofocus: "auto", polar_align: "auto", solve: "auto", guide: "auto" },
+      effective: {
+        "providers.polar_align": {
+          value: "astap-1", layer: "profile", profile_id: "p1", profile_name: "Backyard",
+        },
+      },
+    },
+  });
+  mount();
+  await settle();
+  const unpin = q('[data-testid="polar-provider-unpin"]');
+  assert(unpin != null,
+    "the pin control is HIDDEN from a non-holder, so the row reads as unremovable "
+    + "with nothing on screen saying who can remove it (ARCHITECTURE section 8)");
+  eq(unpin.getAttribute("aria-disabled"), "true", "it looks live to an operator");
+  assert((unpin.getAttribute("title") ?? "").length > 0,
+    "it is dimmed with no reason attached");
+  const before = asked.length;
+  click(unpin);
+  await settle();
+  eq(asked.length, before, "a locked press reached the server");
+});
+
+// ================================ 7. the engine's running message (review #10)
+//
+// Both readers of `polar.message` sat behind `state === "error"`, while the
+// server publishes load-bearing sentences there WHILE IT RUNS: "plate solve
+// failed 3x - still retrying", "measured point 2/3", "adjust the mount", and
+// the two stale-update lines. Without them a solver on its third retry looks
+// exactly like a slow exposure, at the mount, in the dark.
+const RUNNING_MESSAGES = [
+  "native TPPA: measured point 2/3",
+  "native TPPA: plate solve failed 3x - still retrying",
+  "adjust the mount",
+];
+for (const msg of RUNNING_MESSAGES) {
+  await testAsync(`a running alignment renders the engine's own line: "${msg}"`, async () => {
+    seed({
+      polar: {
+        ...IDLE_POLAR, state: "running", progress: 0.4, activity: "solving",
+        message: msg,
+      },
+    });
+    mount();
+    await settle();
+    const card = q('[data-testid="polar-reticle-card"]');
+    assert(card != null, "the reticle card is not on the page - this assertion would be vacuous");
+    const line = q('[data-testid="polar-message"]');
+    assert(line != null,
+      `the engine's running message has no home outside the error state: "${msg}"`);
+    eq((line.textContent as string).trim(), msg,
+      "the message was paraphrased instead of shown");
+    assert(card.contains(line),
+      "the message renders somewhere other than under the reticle, where the eye is");
+  });
+}
+
+await testAsync("an EMPTY message prints nothing, and the error state still owns its own card", async () => {
+  seed({ polar: { ...IDLE_POLAR, state: "running", message: "" } });
+  mount();
+  await settle();
+  assert(q('[data-testid="polar-reticle-card"]') != null, "precondition: no reticle card");
+  assert(q('[data-testid="polar-message"]') == null,
+    "an empty message rendered an empty line");
+
+  seed({ polar: { ...IDLE_POLAR, state: "error", message: "solver never converged" } });
+  mount();
+  await settle();
+  const err = q('[data-testid="polar-error"]');
+  assert(err != null && /solver never converged/.test(err.textContent || ""),
+    "the error card lost the message");
+  assert(q('[data-testid="polar-message"]') == null,
+    "the same sentence is now printed twice - once in the error card and once under it");
+});
+
 test("the last-solve row reads the newest solver line, by identity", () => {
   const a = { type: "log", ts: 100, data: { level: "info", message: "solve failed", source: "solve" } };
   const b = { type: "log", ts: 200, data: { level: "info", message: "solved & synced", source: "solve" } };

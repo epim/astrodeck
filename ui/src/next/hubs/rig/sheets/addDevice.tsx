@@ -39,7 +39,7 @@ import {
   type CSSProperties, type JSX, type ReactNode,
 } from "react";
 import {
-  ActionButton, BannerCard, Card, Divider, EmptyCard, Label, ListRow, Mono, Sheet,
+  ActionButton, BannerCard, Card, Divider, EmptyCard, Label, ListRow, Mono, Sheet, TextInput,
 } from "../../../ui";
 import { NxIcon } from "../../../icons";
 import { nav } from "../../../router";
@@ -47,8 +47,8 @@ import { useLock } from "../../../lib/gateHook";
 import type { SheetProps } from "../../sheets";
 import {
   addDriverForHardware, deleteDriver, discoverBackend, discoverHardware,
-  hwAlreadyConfigured, listBackends, listDrivers, probeDriver, updateDriver,
-  type HwFound,
+  hwAlreadyConfigured, listBackends, listDrivers, probeDriver, saveProfile,
+  updateDriver, type HwFound,
 } from "../../../../api/backends";
 import { confirmDialog } from "../../../../components/ConfirmDialog";
 import { driverTypeChip, offersSummary } from "../../../../components/settings/driversMeta";
@@ -60,12 +60,13 @@ import { compareRoleIdentity } from "../../../../views/EquipmentView";
 import { accessPhrase, useCanConfigBackend } from "../../../../lib/caps";
 import {
   deviceChoices, eligibleDrivers, guiderSlotNote, guiderSlotState,
-  liveRoleCount, loadAssignments, saveAssignments, slotState,
+  hardwareAssignments, liveRoleCount, loadAssignments, persistableAssignedCount,
+  profileSaveLock, saveAssignments, slotState,
   type Assignment, type AssignmentMap,
 } from "../../../../lib/equipment";
 import { useConfig, useStatus, useStore } from "../../../../store";
 import type {
-  BackendInfo, DriverInfo, DriversResponse, RoleResult,
+  BackendInfo, DriverInfo, DriversResponse, Profile, ProfileDevice, RoleResult,
 } from "../../../../types";
 import {
   connectAssignments, disconnectRig, runSimulatorRig, type BusyWhat,
@@ -84,11 +85,11 @@ const SLOT_WORD: Record<string, string> = {
 
 /** The one-rule explainer, with its destination repointed at this sheet. */
 const ONE_RULE_NOTE =
-  "For each device slot, pick which configured driver runs it — only drivers "
+  "For each device slot, pick which configured driver runs it - only drivers "
   + "that actually offer that device are listed. Manage drivers above.";
 
 const NO_DRIVERS_NOTE =
-  "No drivers configured yet — add your NINA instance, Alpaca servers or PHD2 "
+  "No drivers configured yet - add your NINA instance, Alpaca servers or PHD2 "
   + "below, or scan for USB/serial hardware (ZWO, Player One, Wanderer…) plugged "
   + "into this machine. The built-ins (Simulator, native engine, ASTAP) are "
   + "always available.";
@@ -100,7 +101,7 @@ const BUILT_INS_NOTE =
   "Simulator, the AstroDeck native engine and ASTAP are built in: they need no "
   + "declaration and cannot be deleted, only used.";
 
-const READ_ONLY_NOTE = `Read-only — connecting equipment needs ${accessPhrase("config.backend")}.`;
+const READ_ONLY_NOTE = `Read-only - connecting equipment needs ${accessPhrase("config.backend")}.`;
 
 // ----------------------------------------------------------- the wide rows
 //
@@ -237,6 +238,7 @@ export function AddDeviceSheet({ params }: SheetProps): JSX.Element {
   const [busyWhat, setBusyWhat] = useState<BusyWhat>(null);
   const [hw, setHw] = useState<{ found: HwFound[]; scanned: number } | null>(null);
   const [net, setNet] = useState<NetFound[] | null>(null);
+  const [profileName, setProfileName] = useState("");
 
   const busy = busyWhat !== null;
   const drivers = useMemo(() => data?.drivers ?? [], [data]);
@@ -251,16 +253,22 @@ export function AddDeviceSheet({ params }: SheetProps): JSX.Element {
     useStore.getState().showToast(level, message);
   const explain = (reason: string) => toast("warning", reason);
 
-  const reload = useCallback(async () => {
+  // Returns the fresh list, or null when this load was superseded or failed.
+  // The auto-assign after a scan needs the drivers the reload just fetched -
+  // reading `drivers` from the closure would run the heuristic over the list
+  // from BEFORE the add, which is empty on a first night.
+  const reload = useCallback(async (): Promise<DriversResponse | null> => {
     const mine = ++gen.current;
     try {
       const fresh = await listDrivers();
-      if (mine !== gen.current) return;
+      if (mine !== gen.current) return null;
       setData(fresh);
       setLoadErr(null);
+      return fresh;
     } catch (e) {
-      if (mine !== gen.current) return;
+      if (mine !== gen.current) return null;
       setLoadErr(e instanceof Error ? e.message : "couldn't load drivers");
+      return null;
     }
   }, []);
 
@@ -351,12 +359,58 @@ export function AddDeviceSheet({ params }: SheetProps): JSX.Element {
     finally { setBusyWhat(null); }
   })();
 
+  /** Fill the assignment table from what the scan just added.
+   *
+   *  THE OTHER HALF OF "DETECT MY HARDWARE" (review #9). Legacy was one tap
+   *  (`EquipmentView.tsx:495-575`): scan, add drivers, auto-fill the
+   *  `AssignmentMap` with `hardwareAssignments`, review, Connect. The new path
+   *  stopped at "add drivers" and left eight dropdowns to hand-pick, on the
+   *  first-night CTA, with no heuristic anywhere in `ui/src/next`.
+   *
+   *  It also carries the legacy's TWO HONEST OUTCOMES, both of which are there
+   *  because an earlier version reported an empty result in the success tone:
+   *  devices that matched no role is NOT a success, and it says which of the
+   *  two happened. Existing picks win - re-running a scan must not silently
+   *  repoint a role the user chose by hand. */
+  const autoAssign = (fresh: DriversResponse, foundCount: number, addedCount: number) => {
+    const guess = hardwareAssignments(fresh.drivers, fresh.roles);
+    // Computed BEFORE the setState, not inside its updater: an updater runs on
+    // React's schedule, so a count read out of one is still 0 when the toast
+    // that reports it is built.
+    const next: AssignmentMap = { ...assignments };
+    let filled = 0;
+    for (const [role, a] of Object.entries(guess)) {
+      if (!a || next[role]) continue;
+      next[role] = a;
+      filled++;
+    }
+    if (filled > 0) {
+      setAssignments(next);
+      saveAssignments(next);
+    }
+    const addedPart = addedCount ? `, added ${addedCount} driver${addedCount === 1 ? "" : "s"}` : "";
+    if (filled === 0) {
+      toast("warning",
+        `Found ${foundCount} device${foundCount === 1 ? "" : "s"}${addedPart} - but none offered a `
+        + "device slot that was still empty, so no row was filled in. Pick a driver on the rows below.");
+      return;
+    }
+    toast("success",
+      `Detected ${foundCount} device${foundCount === 1 ? "" : "s"}${addedPart} - ${filled} `
+      + `role${filled === 1 ? "" : "s"} assigned, review and Connect Rig.`);
+  };
+
   const addOne = (f: HwFound) => void (async () => {
     setBusyWhat("scan");
     try {
       await addDriverForHardware(f);
-      await reload();
-      toast("success", `${f.name} added - assign it to a role below.`);
+      const fresh = await reload();
+      // Same auto-fill as ADD ALL: with one device detected the ADD ALL row is
+      // not even rendered (`unconfigured.length > 1`), so leaving the heuristic
+      // off this path would keep the empty table for exactly the first night
+      // the CTA is aimed at.
+      if (fresh) autoAssign(fresh, 1, 1);
+      else toast("success", `${f.name} added - assign it to a role below.`);
     } catch (e) {
       await reload();
       toast("error", e instanceof Error ? e.message : "could not add that driver");
@@ -374,8 +428,11 @@ export function AddDeviceSheet({ params }: SheetProps): JSX.Element {
         await addDriverForHardware(f);
         added++;
       }
-      await reload();
-      toast("success", `Added ${added} driver${added === 1 ? "" : "s"} - assign them below.`);
+      const fresh = await reload();
+      // The heuristic and the outcome sentence are the same object: one of the
+      // two toasts below always fires, and neither claims a filled table.
+      if (fresh) autoAssign(fresh, hw?.found.length ?? list.length, added);
+      else toast("success", `Added ${added} driver${added === 1 ? "" : "s"} - assign them below.`);
     } catch (e) {
       // A partial batch has still created drivers, and they must appear.
       await reload();
@@ -425,7 +482,9 @@ export function AddDeviceSheet({ params }: SheetProps): JSX.Element {
     setBusy: setBusyWhat,
     onResults: setResults,
     onLanded: (landed: AssignmentMap | null) => setConnectedMap(landed),
-    reloadDrivers: reload,
+    // `ConnectHooks` wants `void | Promise<void>`; `reload` now hands its fresh
+    // list back to the scan paths, which need it. Swallow the value here.
+    reloadDrivers: async () => { await reload(); },
   };
 
   const doConnect = () => void connectAssignments(assignments, drivers, hooks);
@@ -438,6 +497,99 @@ export function AddDeviceSheet({ params }: SheetProps): JSX.Element {
   const configLock = useLock({ cap: "config.backend" });
   const connectLock = useLock({ cap: "config.backend", busyLane: "connect" });
   const lock = (base: string | null) => base ?? (busy ? "A rig action is already running." : null);
+
+  // ------------------------------------------- save the picks as a profile
+  //
+  // TWO SURFACES PROMISED THIS AND NEITHER OFFERED IT (review #21): the note
+  // under the assignment table says "save them as a profile to keep them on
+  // every device", and `ProfilesPopover` rewrites its own lock reason to say
+  // the picks are made "on ADD A DEVICE" - while the popover's Save snapshots
+  // the CONNECTED rig (`captureProfile`) and is locked flat when nothing is
+  // connected. The browser-local half had no writer anywhere in `ui/src/next`.
+  //
+  // The judgement stays in `lib/equipment`: `persistableAssignedCount` (NOT the
+  // raw pick count - the save loop skips simulator rows, so counting every pick
+  // opened Save and then wrote a profile containing zero devices) and
+  // `profileSaveLock` for the sentence.
+  const savableAssigned = persistableAssignedCount(assignments);
+  const simOnlyPicks = assignedCount > 0 && savableAssigned === 0;
+  const saveProfileLock = profileSaveLock({
+    permission: canConfig ? null : `Saving a profile needs ${accessPhrase("config.backend")}.`,
+    name: profileName,
+    // Deliberately 0: this control saves the PICKS. The connected rig is saved
+    // from the profiles popover, which is where the snapshot of it lives.
+    live: 0,
+    assigned: savableAssigned,
+    simOnly: simOnlyPicks,
+    busy,
+  });
+
+  const doSavePicks = () => void (async () => {
+    if (saveProfileLock) { explain(saveProfileLock); return; }
+    setBusyWhat("save");
+    try {
+      const devices: ProfileDevice[] = [];
+      for (const [role, a] of Object.entries(assignments)) {
+        if (!a || a.driverId === "sim") continue;
+        devices.push({
+          role,
+          backend: "native",           // placeholder; the server resolves via driver_id
+          driver_id: a.driverId,
+          dev_type: a.devType ?? "",
+          dev_num: a.devNum ?? 0,
+          name: a.name ?? "",
+          host: "",
+          port: 0,
+          extra: {},
+        });
+      }
+      const profile: Profile = {
+        id: "",                        // no stored file matches, so the server mints one
+        name: profileName.trim(),
+        // "none" = explicit-only, and honest: these ARE the only roles this
+        // profile knows. Activate states out loud when a profile puts nothing
+        // back, so it is no longer the trap it was.
+        primary_backend: "none",
+        devices,
+        nina_host: null,
+        nina_port: 0,
+        phd2_host: null,
+        phd2_port: 0,
+        optics: null,
+        site_name: null,
+        providers: config?.providers ? { ...config.providers } : null,
+      };
+      await saveProfile(profile);
+      setProfileName("");
+      toast("success",
+        `Profile "${profile.name}" saved - ${devices.length} picked slot`
+        + `${devices.length === 1 ? "" : "s"}, not yet proven. Connect the rig, then save `
+        + "again from PROFILES to store what actually came up.");
+    } catch (e) {
+      toast("error", e instanceof Error ? e.message : "profile save failed");
+    } finally {
+      setBusyWhat(null);
+    }
+  })();
+
+  // ---------------------------------------------------------- CONNECT RIG
+  //
+  // THE NO-OP GUARD (review #22). `connectLock` covers the capability and the
+  // `connect` lane and nothing else, so both "RIG CONNECTED" and "CONNECT RIG
+  // (0)" stayed pressable - and a stray tap on "RIG CONNECTED" re-POSTs the
+  // identical RigSpec and re-attaches every device, mid-run. Legacy computed
+  // `nothingToDo` and carried two distinct titles (`EquipmentView.tsx:1024`);
+  // here they are REASONS, because a reason is what the honest-disabled
+  // primitives can say out loud.
+  const connectNoOp = connectedMap && dirtyRoles.length > 0
+    ? null                                   // there ARE edits to apply
+    : assignedCount === 0
+      ? (rigUp
+        ? "A rig is connected and nothing is picked here to apply to it."
+        : "Nothing is picked yet - choose a driver on a row above, or run the simulator.")
+      : connectedMap
+        ? "Every pick above is already what the rig is running - change one to re-enable."
+        : null;
 
   const connectLabel = !connectedMap
     ? `CONNECT RIG (${assignedCount})`
@@ -516,7 +668,7 @@ export function AddDeviceSheet({ params }: SheetProps): JSX.Element {
 
       {hw != null && hw.found.length === 0 && (
         <Mono size={11} tone="warn">
-          {`No hardware answered — ${hw.scanned} USB/serial backend${hw.scanned === 1 ? "" : "s"} `}
+          {`No hardware answered - ${hw.scanned} USB/serial backend${hw.scanned === 1 ? "" : "s"} `}
           scanned, none reported a device. Check power and cables, or add a driver by hand below.
         </Mono>
       )}
@@ -677,7 +829,7 @@ export function AddDeviceSheet({ params }: SheetProps): JSX.Element {
       {downDrivers.length > 0 && (
         <BannerCard
           tone="warn"
-          text={`${downDrivers.map((d) => d.label).join(", ")} — configured but unreachable — assignments stay put and re-light when it returns.`}
+          text={`${downDrivers.map((d) => d.label).join(", ")} - configured but unreachable - assignments stay put and re-light when it returns.`}
         />
       )}
 
@@ -690,8 +842,8 @@ export function AddDeviceSheet({ params }: SheetProps): JSX.Element {
         <BannerCard
           tone="info"
           text={config?.active_profile_id
-            ? `${liveUnassigned.length} role(s) are live but unassigned here — the active profile connected them. Pick a driver on those rows to keep them.`
-            : `${liveUnassigned.length} role(s) are live but unassigned here — this rig was started somewhere else (the one-tap simulator, or Profiles → Activate). Pick a driver on those rows to save them into a profile.`}
+            ? `${liveUnassigned.length} role(s) are live but unassigned here - the active profile connected them. Pick a driver on those rows to keep them.`
+            : `${liveUnassigned.length} role(s) are live but unassigned here - this rig was started somewhere else (the one-tap simulator, or Profiles > Activate). Pick a driver on those rows to save them into a profile.`}
         />
       )}
 
@@ -787,10 +939,33 @@ export function AddDeviceSheet({ params }: SheetProps): JSX.Element {
       {guiderNote && <Mono size={11} tone="dim">{guiderNote}</Mono>}
 
       {assignedCount > 0 && liveDevices === 0 && canConfig && (
-        <Mono size={11} tone="dim">
-          {`${assignedCount} slot(s) picked but not connected. Picks are remembered in this `}
-          browser only — save them as a profile to keep them on every device.
-        </Mono>
+        <>
+          <Mono size={11} tone="dim">
+            {`${assignedCount} slot(s) picked but not connected. Picks are remembered in this `}
+            browser only - save them as a profile to keep them on every device.
+          </Mono>
+          <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}
+            data-testid="save-picks">
+            <TextInput
+              value={profileName}
+              onChange={setProfileName}
+              placeholder="Backyard"
+              ariaLabel="New profile name"
+              data-testid="save-picks-name"
+            />
+            <ActionButton
+              kind="secondary"
+              data-testid="save-picks-go"
+              busy={busyWhat === "save"}
+              lockedReason={saveProfileLock}
+              onExplain={explain}
+              onPress={doSavePicks}
+            >
+              SAVE AS PROFILE
+            </ActionButton>
+          </div>
+          {saveProfileLock && <Mono size={10.5} tone="dim">{saveProfileLock}</Mono>}
+        </>
       )}
 
       <ActionButton
@@ -799,7 +974,7 @@ export function AddDeviceSheet({ params }: SheetProps): JSX.Element {
         full
         data-testid="connect-rig"
         busy={busyWhat === "connect"}
-        lockedReason={lock(connectLock.lockedReason)}
+        lockedReason={lock(connectLock.lockedReason) ?? connectNoOp}
         onExplain={explain}
         onPress={doConnect}
       >

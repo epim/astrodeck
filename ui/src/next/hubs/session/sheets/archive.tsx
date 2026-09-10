@@ -409,10 +409,20 @@ function FramesTab({ nights, canMedia, canDelete, gen, refresh }: {
             CLEAR FILTER
           </ActionButton>
           <ActionButton kind="ghost" onPress={refresh}>REFRESH</ActionButton>
+          {/* `POST /api/gallery/thumbs/backfill` is CAP_CONTROL_CAPTURE
+              (`app.py:7295`), and this was the one write on this screen that
+              declared no capability at all - so a viewer, who holds
+              `view.preview` and therefore renders this whole tab, got a live
+              undimmed button and a 403 toast for pressing it. `canDelete` is
+              already `useCanControlCapture()`; no new hook. */}
           <ActionButton
             kind="ghost"
             busy={warming}
-            lockedReason={warming ? "Already rebuilding previews." : null}
+            lockedReason={
+              !canDelete
+                ? `Rebuilding previews needs ${accessPhrase("control.capture")}.`
+                : warming ? "Already rebuilding previews." : null
+            }
             onExplain={explainLock}
             onPress={() => void rebuildPreviews()}
           >
@@ -513,7 +523,14 @@ function FramesTab({ nights, canMedia, canDelete, gen, refresh }: {
                 selected={allInFilter || picked.has(f.path)}
                 selectable={canDelete || canMedia}
                 canDownload={canMedia}
-                onOpen={canMedia ? () => setViewing(f) : undefined}
+                // Opening a tile is the JPEG viewer, not the FITS download:
+                // `FrameViewer` fetches `/api/gallery/view` and
+                // `/api/gallery/thumb`, both CAP_VIEW_PREVIEW (`app.py:7270,
+                // 7248`), and FramesTab only renders when `view.preview` is
+                // held. Gating it on `view.media` withheld a picture the server
+                // would have served - the half of the FITS deviation that says
+                // JPEG previews stay available (review #74).
+                onOpen={() => setViewing(f)}
                 onToggle={(shift) => {
                   if (allInFilter) {
                     // "all except this" is not expressible in the URL form, so

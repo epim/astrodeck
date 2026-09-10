@@ -69,6 +69,7 @@ import { monState } from "../monState";
 import { VitalsBand } from "./VitalsBand";
 import { StallStrip, FailureCard } from "./StallStrip";
 import { InterruptedRunCard, RunArmedCard, RunControls } from "./RecoveryCards";
+import { RunProgress } from "./RunProgress";
 import { LockControls } from "./LockControls";
 
 const THUMB_KEY = "astrodeck-monitor-thumb-brightness";
@@ -386,6 +387,9 @@ export function LiveScreen(): JSX.Element {
       <RunArmedCard />
       <InterruptedRunCard />
       <FailureCard runStartedAtS={runStartedAtRef.current} />
+      {/* How far along, which target, when it ends. It sits ABOVE the controls
+          because the answer to "should I press STOP" is on it. */}
+      <RunProgress />
       <RunControls />
       <StallStrip nowMs={nowMs} />
 

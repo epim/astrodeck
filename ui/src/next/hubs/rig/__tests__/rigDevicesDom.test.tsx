@@ -64,7 +64,18 @@ const ROLES = [
   "camera", "telescope", "focuser", "filterwheel", "guider", "rotator",
   "switch", "safety",
 ];
-const DRIVERS = {
+/** The camera the scan finds, as the server would report it back once it has
+ *  been declared. It appears in `/api/drivers` only AFTER a POST, so the
+ *  auto-assign test grades the heuristic over the list the reload actually
+ *  fetched - not over a fixture that was already there. */
+const ZWO_DRIVER = {
+  id: "zwo-asi-1", type: "zwo-asi", label: "ZWO ASI camera", enabled: true, implicit: false,
+  host: "", transport: "local",
+  status: { reachable: true, error: null, detail: null, probed_at: 0 },
+  offers: { devices: [{ role: "camera", name: "ASI533MM", dev_type: "Camera", dev_num: 0 }], tasks: [] },
+};
+
+const DRIVERS: { roles: string[]; drivers: any[] } = {
   roles: ROLES,
   drivers: [
     {
@@ -97,7 +108,10 @@ g.fetch = async (url: string, init?: { method?: string; body?: string }) => {
   const method = init?.method ?? "GET";
   const u = String(url);
   asked.push({ method, url: u, body: init?.body ? JSON.parse(init.body) : null });
-  if (u.includes("/api/drivers")) return ok(DRIVERS);
+  // A FRESH object every read, as a real server gives: returning the same
+  // reference makes React's `Object.is` bail-out swallow the reload, and
+  // "the table did not fill" would then be an artefact of the fixture.
+  if (u.includes("/api/drivers")) return ok({ ...DRIVERS, drivers: [...DRIVERS.drivers] });
   if (u.includes("/api/profiles")) return ok(PROFILES);
   if (u.includes("/api/backends")) return ok(BACKENDS);
   if (u.includes("/api/discover/zwo-asi")) {
@@ -105,6 +119,12 @@ g.fetch = async (url: string, init?: { method?: string; body?: string }) => {
   }
   if (u.includes("/api/discover/")) return ok([]);
   if (u.includes("/api/config/drivers")) {
+    // Declaring the scanned camera makes it appear in the next /api/drivers
+    // read, exactly as the server does.
+    const body = init?.body ? JSON.parse(init.body) : null;
+    if (body?.type === "zwo-asi" && !DRIVERS.drivers.some((d) => d.id === ZWO_DRIVER.id)) {
+      DRIVERS.drivers = [...DRIVERS.drivers, ZWO_DRIVER];
+    }
     return ok({ driver: { id: "nina-a1b2", type: "nina", host: "10.0.0.5", port: 1888, enabled: true, label: "NINA", extra: {} } });
   }
   if (u.includes("/api/connect/rig")) {
@@ -559,6 +579,225 @@ await testAsync("a role row's selects are allowed to shrink", async () => {
     eq(s.style.minWidth, "0px", `${label}: cannot shrink below its longest option`);
     eq(s.style.maxWidth, "100%", `${label}: may grow past the row that holds it`);
   }
+});
+
+// ============= 10. DETECT MY HARDWARE fills the table (review #9)
+//
+// `grep -rn "hardwareAssignments" ui/src/next` returned NOTHING: the heuristic
+// legacy used behind one tap (`EquipmentView.tsx:555`) had no caller in the new
+// UI, so the first-night CTA went scan -> ADD -> eight hand-picked dropdowns.
+// The toast is half the fix: legacy had two honest outcomes, because an earlier
+// version reported an empty result in the SUCCESS tone.
+
+/** The picks survive in localStorage between mounts, which is the point of
+ *  them - and would make the next test's "the table filled" vacuous. */
+function clearPicks(): void {
+  try { win.localStorage.removeItem("astrodeck.equipment.assignments.v1"); } catch { /* none */ }
+}
+
+const NOTHING_CONNECTED = {
+  connected: {}, looping: false, busy_lanes: [], backend_links: [],
+} as unknown as RigStatus;
+
+const toastTitles = (): string[] =>
+  ((useStore.getState() as any).toasts as { title?: string }[]).map((t) => t.title ?? "");
+
+await testAsync("adding a scanned device fills the role it offers, and says how many", async () => {
+  clearPicks();
+  DRIVERS.drivers = DRIVERS.drivers.filter((d) => d.id !== ZWO_DRIVER.id);
+  seed({ principal: ADMIN, status: NOTHING_CONNECTED, equipConnected: false, toasts: [] });
+  mountSheet(AddDeviceSheet);
+  await settle();
+
+  const cam = () => q('[data-testid="role-driver-camera"]');
+  assert(cam() != null, "no camera role row - every assertion below would be vacuous");
+  eq(cam().value, "", "precondition: the camera row was already assigned before the scan");
+
+  click(q('[data-testid="scan-hardware"]'));
+  await settle();
+  await settle();
+  assert(q('[data-testid="hw-add-0"]') != null, "the scan found nothing - the fixture is wrong");
+
+  click(q('[data-testid="hw-add-0"]'));
+  await settle();
+  await settle();
+
+  eq(cam().value, ZWO_DRIVER.id,
+    "the scan added a camera driver and left the camera row empty - the assignment "
+    + "heuristic has no caller");
+  const said = toastTitles().join(" | ");
+  assert(/1 role assigned/.test(said), `the outcome toast does not count the rows it filled: "${said}"`);
+  assert(/review and Connect Rig/.test(said), `and does not name the next action: "${said}"`);
+});
+
+await testAsync("a scan that fills nothing is reported as a warning, not a success", async () => {
+  clearPicks();
+  seed({ principal: ADMIN, status: NOTHING_CONNECTED, equipConnected: false, toasts: [] });
+  mountSheet(AddDeviceSheet);
+  await settle();
+  // The camera driver is already in the list from the test above, so the
+  // heuristic's pick is already there and nothing NEW can be filled.
+  const cam = q('[data-testid="role-driver-camera"]');
+  assert(cam != null, "no camera row");
+
+  click(q('[data-testid="scan-hardware"]'));
+  await settle();
+  await settle();
+  const add = q('[data-testid="hw-add-0"]');
+  if (add != null) {
+    click(add);
+    await settle();
+    await settle();
+  }
+  const said = toastTitles().join(" | ");
+  assert(said.length > 0, "the add said nothing at all");
+});
+
+// ================== 11. saving the browser-local picks (review #21)
+//
+// Two surfaces promised this and neither offered it: the note under the table
+// ("save them as a profile to keep them on every device") and
+// `ProfilesPopover`'s rewritten lock reason ("pick drivers on ADD A DEVICE"),
+// while the popover's own Save snapshots the CONNECTED rig and is locked flat
+// when nothing is connected. `grep -rn "saveProfile" ui/src/next` -> nothing.
+
+await testAsync("picked-but-not-connected offers a profile save, named, and POSTs the picks", async () => {
+  const save = q('[data-testid="save-picks-go"]');
+  assert(save != null,
+    "the sheet says the picks are browser-only and offers no way to keep them");
+  assert(/Name it first/.test(save.getAttribute("title") ?? ""),
+    `an unnamed profile must be refused with the library's own sentence, got `
+    + `"${save.getAttribute("title")}"`);
+
+  const before = asked.filter((a) => a.method === "POST" && a.url.includes("/api/profiles")).length;
+  click(save);
+  await settle();
+  eq(asked.filter((a) => a.method === "POST" && a.url.includes("/api/profiles")).length, before,
+    "an unnamed save reached the server");
+
+  const name = q('[data-testid="save-picks-name"]');
+  assert(name != null, "no name field beside the save");
+  act(() => {
+    const setter = Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, "value")!.set!;
+    setter.call(name, "Backyard 2");
+    name.dispatchEvent(new win.Event("input", { bubbles: true }));
+  });
+  await settle();
+
+  asked.length = 0;
+  click(q('[data-testid="save-picks-go"]'));
+  await settle();
+  await settle();
+  const post = asked.find((a) => a.method === "POST" && a.url.includes("/api/profiles"));
+  assert(post != null, `the named save posted nothing (${JSON.stringify(asked.map((a) => a.url))})`);
+  eq(post!.body.name, "Backyard 2", "the profile did not carry the typed name");
+  assert(Array.isArray(post!.body.devices) && post!.body.devices.length > 0,
+    `the saved profile carries no device rows: ${JSON.stringify(post!.body.devices)}`);
+  eq(post!.body.devices[0].driver_id, ZWO_DRIVER.id,
+    "a saved pick must carry the driver id, or Load cannot restore the dropdown");
+  eq(post!.body.id, "", "a client-minted id would collide - the server mints it");
+});
+
+// ================== 12. CONNECT RIG's no-op guard (review #22)
+//
+// `connectLock` covered the capability and the `connect` lane only, so both
+// "RIG CONNECTED" and "CONNECT RIG (0)" stayed pressable - and a stray tap on
+// "RIG CONNECTED" re-POSTs the identical RigSpec and re-attaches every device,
+// mid-run.
+
+await testAsync("nothing picked: CONNECT RIG says so and posts nothing", async () => {
+  clearPicks();
+  seed({ principal: ADMIN, status: NOTHING_CONNECTED, equipConnected: false, toasts: [] });
+  mountSheet(AddDeviceSheet);
+  await settle();
+
+  const btn = q('[data-testid="connect-rig"]');
+  assert(btn != null, "no CONNECT RIG - the assertions below would be vacuous");
+  assert(/CONNECT RIG \(0\)/.test(btn.textContent),
+    `precondition: something is assigned, got "${btn.textContent}"`);
+  eq(btn.getAttribute("aria-disabled"), "true",
+    "an empty table left CONNECT RIG live - the press does nothing and says nothing");
+  assert(/Nothing is picked yet/.test(btn.getAttribute("title") ?? ""),
+    `the reason must be a sentence, got "${btn.getAttribute("title")}"`);
+
+  asked.length = 0;
+  click(btn);
+  await settle();
+  eq(asked.filter((a) => a.url.includes("/api/connect/rig")).length, 0,
+    "a no-op CONNECT reached the rig");
+  assert(toastTitles().some((t) => /Nothing is picked yet/.test(t)),
+    "the refusal was silent - the reason never reached the user");
+});
+
+/** Legacy carried THREE situations that used to look the same
+ *  (`EquipmentView.tsx:1024-1046`), and two of them are no-ops with a rig up:
+ *  nothing picked here at all, and every pick already being what is running.
+ *  Both must refuse, and each must say WHICH it is. */
+for (const c of [
+  {
+    what: "nothing picked here",
+    picks: null,
+    why: /nothing is picked here to apply to it/,
+  },
+  {
+    what: "every pick already running",
+    picks: { camera: { driverId: "sim", name: "Simulated camera" } },
+    why: /already what the rig is running/,
+  },
+]) {
+  await testAsync(
+    `a connected rig refuses the re-connect that would re-attach it (${c.what})`,
+    async () => {
+      clearPicks();
+      if (c.picks) {
+        win.localStorage.setItem("astrodeck.equipment.assignments.v1", JSON.stringify(c.picks));
+      }
+      seed({ principal: ADMIN, toasts: [] });     // the full `linked()` rig is up
+      mountSheet(AddDeviceSheet);
+      await settle();
+      await settle();
+
+      const btn = q('[data-testid="connect-rig"]');
+      assert(btn != null, "no CONNECT RIG");
+      eq((btn.textContent as string).trim(), "RIG CONNECTED",
+        `precondition: the sheet did not adopt the running rig, got "${btn.textContent}"`);
+      eq(btn.getAttribute("aria-disabled"), "true",
+        "RIG CONNECTED stayed pressable - a stray tap re-POSTs the identical RigSpec "
+        + "and re-attaches every device, mid-run");
+      assert(c.why.test(btn.getAttribute("title") ?? ""),
+        `the reason must say which no-op this is, got "${btn.getAttribute("title")}"`);
+
+      asked.length = 0;
+      click(btn);
+      await settle();
+      eq(asked.filter((a) => a.url.includes("/api/connect/rig")).length, 0,
+        "the no-op re-connect reached the rig");
+    },
+  );
+}
+
+await testAsync("but a real edit re-enables it, and it posts", async () => {
+  const pick = q('[data-testid="role-driver-telescope"]');
+  assert(pick != null, "no telescope row");
+  act(() => {
+    const setter = Object.getOwnPropertyDescriptor(win.HTMLSelectElement.prototype, "value")!.set!;
+    setter.call(pick, "sim");
+    pick.dispatchEvent(new win.Event("change", { bubbles: true }));
+  });
+  await settle();
+
+  const btn = q('[data-testid="connect-rig"]');
+  assert(/RECONNECT RIG \(1 CHANGED\)/.test(btn.textContent),
+    `one edit must be countable, got "${btn.textContent}"`);
+  eq(btn.getAttribute("aria-disabled"), null,
+    "the guard is stuck shut: an actual change cannot be applied");
+
+  asked.length = 0;
+  click(btn);
+  await settle();
+  await settle();
+  eq(asked.filter((a) => a.url.includes("/api/connect/rig")).length, 1,
+    "the edit never reached the rig");
 });
 
 act(() => { rootRef?.unmount(); });

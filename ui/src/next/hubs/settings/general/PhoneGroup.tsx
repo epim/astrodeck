@@ -13,8 +13,13 @@
 //     `ui/src` wrote it. A persisted setting the app honours and no screen can
 //     change is the exact broken-promise shape this codebase has a taxonomy
 //     for; this row closes it (plan F.3).
-//   - DOWNLOADS. `astrodeck-next-dl-pref` is new (the Session hub's Files sheet
-//     reads it), so it is the one key here written locally.
+//   - DOWNLOADS. The one key here written locally, and it is written through
+//     `session/sheets/filesData.ts` - the module the Files sheet's DOWNLOAD
+//     button reads - rather than through a second copy. This row shipped with
+//     its own `DL_PREF_KEY`/`readDlPref` pair under a different key
+//     (`astrodeck-next-dl-pref`) and a different value spelling ("jpeg"), so
+//     picking JPEG here changed nothing anywhere: the Files sheet went on
+//     offering FITS. One key, one parser, one type (review #5).
 //
 // HAPTICS is ABSENT ENTIRELY when `haptics.supported` is false - iOS and iPad
 // Safari have no `navigator.vibrate`, and a toggle that cannot do anything on
@@ -31,24 +36,12 @@ import {
   useTouchSettings, useSetTouch, useMonitorAwake, useSetMonitorAwake,
 } from "../../../../lib/touchStore";
 import { haptics } from "../../../../lib/haptics";
+// The Files sheet's own module owns this preference: its DOWNLOAD button is the
+// only consumer, so the reader, the writer, the key and the value spelling all
+// come from there (plan section C.2.3, review #5).
+import { readDlPref, writeDlPref, type DlPref } from "../../session/sheets/filesData";
 import { BellGlyph } from "./glyphs";
 import { Group } from "./Group";
-
-/** New key (plan section C.2.3). Which file the Files sheet hands you when you
- *  press DOWNLOAD: the science frame or a picture to share. */
-export const DL_PREF_KEY = "astrodeck-next-dl-pref";
-export type DlPref = "fits" | "jpeg";
-
-export function readDlPref(): DlPref {
-  try {
-    return localStorage.getItem(DL_PREF_KEY) === "jpeg" ? "jpeg" : "fits";
-  } catch {
-    return "fits";
-  }
-}
-function writeDlPref(v: DlPref): void {
-  try { localStorage.setItem(DL_PREF_KEY, v); } catch { /* private mode */ }
-}
 
 /** `NavMoreSheet.tsx:74-78`, verbatim - the labels and the stored ids both. The
  *  ids are what `astrodeck-touch-size` holds, so renaming a label is free and
@@ -65,9 +58,12 @@ const AUTOLOCK = [
   { value: 300000, label: "5 min" },
 ];
 
+/** The stored ids are `filesData`'s, not the labels: the Files sheet's format
+ *  picker reads `"fits" | "jpg"`, so spelling the JPEG id "jpeg" here is the
+ *  bug this row shipped with. The LABEL stays JPEG. */
 const DOWNLOADS = [
   { value: "fits" as const, label: "FITS" },
-  { value: "jpeg" as const, label: "JPEG" },
+  { value: "jpg" as const, label: "JPEG" },
 ];
 
 const STACK_CONTROL = { padding: "0 14px 12px" } as const;

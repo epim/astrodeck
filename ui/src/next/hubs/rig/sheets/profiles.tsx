@@ -50,7 +50,7 @@ export function ProfilesSheet(): JSX.Element {
       <ProfileList />
       {!canConfig && (
         <Mono size={11} tone="dim">
-          {`Read-only — changing profiles needs ${accessPhrase("config.backend")}.`}
+          {`Read-only - changing profiles needs ${accessPhrase("config.backend")}.`}
         </Mono>
       )}
       <div style={{ height: 8 }} />

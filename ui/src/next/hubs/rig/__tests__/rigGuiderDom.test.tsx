@@ -84,6 +84,41 @@ const storedGuide: Record<string, unknown> = {
   recalibrate_after_pier_change: true,
 };
 
+/** What `GET /api/guide/assistant/report` answers. `null` for every test but
+ *  the measurements one, which is the only one that needs a finished run. */
+let assistantReport: any = null;
+
+const ASSISTANT_REPORT = {
+  measurements: {
+    n: 240, rms_ra_px: 0.42, rms_dec_px: 0.31, rms_total_px: 0.52,
+    rms_ra_arcsec: null, rms_dec_arcsec: null, rms_total_arcsec: null,
+    drift_per_min_px: 0.9, drift_per_min_arcsec: null,
+    pe_amplitude_px: 0.7, pe_period_s: 480, jitter_px: 0.18,
+    image_scale_arcsec: 1.6, image_scale_known: false,
+    backlash: { bl_px: 1.2, bl_ms: 640, sigma_ms: 90, result_code: "measured" },
+  },
+  recommendations: [
+    {
+      key: "ra_aggression", field: "ra_params.aggression", current: 0.7, recommended: 0.55,
+      unit: "", rationale: "The RA axis is over-correcting its own seeing.",
+      confidence: "high", advanced: false,
+    },
+    {
+      key: "blc_pulse_ms", field: "blc_pulse_ms", current: 0, recommended: 640,
+      unit: " ms", rationale: "Measured backlash on the Dec axis.",
+      confidence: "medium", advanced: true,
+    },
+  ],
+  current: {
+    ra_algorithm: "hysteresis", dec_algorithm: "resist_switch", dec_guide_mode: "auto",
+    blc_pulse_ms: 0,
+    ra_params: { min_move: 0.2, hysteresis: 0.1, aggression: 0.7 },
+    dec_params: { min_move: 0.2, aggression: 1.0 },
+  },
+  polar: { verdict: "polar alignment looks fine", tone: "good", drift_per_min_arcsec: null },
+  samples: Array.from({ length: 12 }, (_, i) => ({ t: i, ra: (i % 3) * 0.2 - 0.2, dec: (i % 2) * 0.1 })),
+};
+
 g.fetch = async (url: string, init?: { method?: string; body?: string }) => {
   const method = init?.method ?? "GET";
   const u = String(url);
@@ -99,7 +134,7 @@ g.fetch = async (url: string, init?: { method?: string; body?: string }) => {
       binning: 1, advisories: [], source: "native",
     } });
   }
-  if (u.includes("/api/guide/assistant/report")) return ok({ report: null });
+  if (u.includes("/api/guide/assistant/report")) return ok({ report: assistantReport });
   return ok({});
 };
 
@@ -420,13 +455,46 @@ await testAsync("the Dec algorithm picker does not offer PPEC", async () => {
   assert(q('[data-testid="guider-ppec"]') != null, "no PREDICTIVE PEC switch on the phone (GAP-5)");
 });
 
-await testAsync("the full tuning drawer is tablet-and-desktop only", async () => {
-  // GAP-5: "Defer the full editor to tablet; expose algorithm + PEC toggles on
-  // the phone." The phone must not grow a param editor it has no room for.
+// ============ the full tuning drawer is FOLDED on a phone, not absent (#26)
+//
+// GAP-5 deferred the full editor to tablet, and the implementation of that was
+// a `wide &&` gate - so a portrait phone lost the per-axis params, Dec guide
+// direction, the backlash pulse and SAVE TUNING entirely, with no "rotate"
+// anywhere, while `BOTH_AXES_NOTE` ("Per-axis values are in the tuning editor")
+// rendered right beside the editor whose per-axis half was not there.
+// `hysteresis` is only reachable through `AxisParams`, so the DEFAULT RA
+// algorithm's one tunable was unreachable on the field-dominant device.
+// The density argument survives as a DISCLOSURE; the absence does not.
+await testAsync("on a phone the tuning drawer is folded, and opening it is one tap", async () => {
   assert(q('[data-testid="guider-blc"]') == null,
-    "the backlash-pulse field is on the phone layout");
+    "the drawer is open by default on a phone - the density argument is real");
   assert(q('[data-testid="guider-tuning-save"]') == null,
-    "the tuning SAVE button is on the phone layout");
+    "SAVE TUNING is open by default on a phone");
+
+  const toggle = q('[data-testid="guider-params-toggle"]');
+  assert(toggle != null,
+    "a phone has no way at all into the per-axis editor, and nothing on screen says so - "
+    + "while the note beside it points the user AT that editor");
+
+  click(toggle);
+  await settle();
+  assert(q('[data-testid="guider-blc"]') != null, "opening the drawer did not reveal the backlash pulse");
+  assert(q('[data-testid="guider-dec-mode"]') != null, "no Dec guide direction inside the drawer");
+  assert(q('[data-testid="guider-tuning-save"]') != null, "no SAVE TUNING inside the drawer");
+  // The default RA algorithm's one tunable. It exists ONLY here.
+  const hyst = qa("input[aria-label]").find(
+    (n: any) => /RA hysteresis hysteresis/.test(n.getAttribute("aria-label") ?? ""),
+  );
+  assert(hyst != null,
+    `the RA hysteresis field is still unreachable on a phone: `
+    + `${JSON.stringify(qa("input[aria-label]").map((n: any) => n.getAttribute("aria-label")))}`);
+
+  click(q('[data-testid="guider-params-toggle"]'));
+  await settle();
+  assert(q('[data-testid="guider-blc"]') == null, "the drawer will not close again");
+});
+
+await testAsync("at tablet width the same drawer is open on arrival", async () => {
   tabletWidth = true;
   mount();
   await settle();
@@ -434,6 +502,40 @@ await testAsync("the full tuning drawer is tablet-and-desktop only", async () =>
   assert(q('[data-testid="guider-dec-mode"]') != null, "the tablet drawer has no Dec guide direction");
   assert(q('[data-testid="guider-tuning-save"]') != null, "the tablet drawer has no SAVE");
   tabletWidth = false;
+});
+
+// ================ the assistant's measurements are reachable on a phone (#26)
+await testAsync("a finished assistant run offers its measurements and per-setting apply on a phone", async () => {
+  assistantReport = ASSISTANT_REPORT;
+  seed({
+    guideAssistant: { phase: "done", pct: 100, message: "", n: 240 },
+  }, {
+    guider: { ...guideStats({ guiding: false, phase: "idle" }), name: "AstroDeck native" },
+  });
+  mount();
+  await settle();
+  await settle();
+
+  assert(q('[data-testid="guider-assistant-summary"]') != null,
+    "the report never reached the card - every assertion below would be vacuous");
+  assert(q('[data-testid="guider-assistant-apply"]') != null, "no APPLY RECOMMENDED SETTINGS");
+
+  const adv = q('[data-testid="guider-assistant-advanced"]');
+  assert(adv != null,
+    "a phone gets a verdict and one APPLY with no way to see the numbers behind either, "
+    + "or to take one recommendation and leave the rest");
+  assert(q('[data-testid="guider-assistant-apply-selected"]') == null,
+    "the measurements are open by default - the disclosure is what makes them affordable");
+
+  click(adv);
+  await settle();
+  const t = text();
+  assert(/RMS total 0\.52 px/.test(t), `the measurements table is missing: "${t.slice(0, 600)}"`);
+  assert(/backlash 640/.test(t), "the backlash measurement is missing");
+  assert(q('[data-testid="guider-assistant-apply-selected"]') != null, "no per-setting APPLY SELECTED");
+  assert(q('[data-testid="guider-open-in-tuning"]') != null, "no OPEN IN TUNING EDITOR");
+
+  assistantReport = null;
 });
 
 // ==================================================================== viewer

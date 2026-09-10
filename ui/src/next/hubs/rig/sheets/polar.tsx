@@ -382,6 +382,24 @@ export function PolarSheet(_props: SheetProps): JSX.Element {
                       : "Not started - press Start Alignment to measure."}
               </Mono>
             )}
+
+            {/* THE ENGINE'S OWN RUNNING MESSAGE, in every state - not only in
+                `error`, which is where both readers of it used to sit. The
+                server publishes load-bearing sentences here while it runs:
+                "{what}: plate solve failed 3x - still retrying"
+                (`polar/native.py:640`), "native TPPA: measured point 2/3"
+                (`:416`), "adjust the mount" (`:478`) and the two stale-update
+                lines (`:560,:570`). Without it a solver on its third retry
+                looks exactly like a slow exposure, at the mount, in the dark -
+                which is how the 2026-09-07 session had to be diagnosed from the
+                rig log afterwards. The error card above still owns the error
+                state, so this suppresses itself there rather than printing the
+                same sentence twice. */}
+            {polar.state !== "error" && polar.message && (
+              <Mono size={10.5} tone={live ? "accent" : "dim"} data-testid="polar-message">
+                {polar.message}
+              </Mono>
+            )}
           </div>
         </div>
       </Card>
@@ -603,11 +621,17 @@ export function PolarSheet(_props: SheetProps): JSX.Element {
             {providerNote}
           </p>
         )}
-        {isProfileOverride(providerEntry) && providerEntry?.profile_id && canConfig && (
+        {/* HONEST-DISABLED, not hidden (review #77). Hiding the control from a
+            non-holder leaves a pinned row that reads as unremovable with no
+            statement of who can remove it; ARCHITECTURE section 8 says nothing
+            is hidden, and the reason is what the primitive exists to say. */}
+        {isProfileOverride(providerEntry) && providerEntry?.profile_id && (
           <div style={{ marginTop: 6 }}>
             <ActionButton
               kind="ghost"
               busy={providerBusy}
+              lockedReason={canConfig ? null : providerReason}
+              onExplain={explain}
               onPress={() => void unpin()}
               data-testid="polar-provider-unpin"
             >

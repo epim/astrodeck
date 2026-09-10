@@ -371,6 +371,128 @@ await testAsync("RUN ARMED is its own state, with the sentence that says why to 
   assert(/58 frames owed/.test(card.textContent), "the card does not say what is still owed");
 });
 
+// ------------------------------------------------ the run-progress readout
+//
+// MONITOR > LIVE shipped with none of this (review #18): no frame counter, no
+// target, no finish clock, no sub-frame bar, no PAUSING badge. The semantics
+// had moved to `session/now/{useEta,useSubFrame}`, which `SessionColumn` mounts
+// at tablet and desktop only - so on a phone the glance screen could not say
+// how far along the run was or when it would end.
+await testAsync("LIVE says how far along the run is, which target, and when it ends", async () => {
+  const nowMs = Date.now();
+  await act(async () => {
+    useStore.setState({
+      principal: OPERATOR,
+      sequence: {
+        state: "running", target: "M31", target_index: 0,
+        progress: {
+          frames_done: 12, frames_total: 30, percent: 40, elapsed_s: 900, rejected: 2,
+          current_exposure_s: 60, eta_s: 3720, eta_confident: true,
+          server_now_ms: nowMs, frame_started_at_ms: nowMs - 20_000,
+        },
+      },
+      status: {
+        ...(useStore.getState() as any).status,
+        filterwheel: { position: 1, names: ["L", "Ha", "Oiii"] },
+      },
+    } as never);
+  });
+  await settle();
+
+  const panel = q('[data-testid="monitor-progress"]');
+  assert(panel != null,
+    "MONITOR > LIVE has no run-progress readout at all - every assertion below would be vacuous");
+  const t = panel.textContent as string;
+  assert(/12\/30 frames/.test(t), `the frame counter is missing: "${t}"`);
+  assert(/40%/.test(t), `the percentage is missing: "${t}"`);
+  assert(/M31/.test(t), `the target is missing: "${t}"`);
+  assert(/Ha/.test(t), `the filter in front of the sensor is missing: "${t}"`);
+  assert(/2 flagged/.test(t), `the flagged count is missing: "${t}"`);
+
+  // The ETA is anchored, not echoed: 3720 s is 1:02 on `fmtCountdown`, and the
+  // absolute clock beside it comes from the SAME instant, so the two can never
+  // disagree.
+  const eta = q('[data-testid="monitor-progress-eta"]');
+  assert(eta != null, "no finish clock");
+  assert(/^1:0[12]$/.test((eta.textContent as string).trim()),
+    `the countdown did not derive from eta_s: "${eta.textContent}"`);
+  assert(/done \d\d:\d\d/.test(t), `the absolute finish time is missing: "${t}"`);
+
+  // The exposure in flight, from `useSubFrame`'s client-clock anchor. This is
+  // the number that reads 0.0 for five minutes when the skew is re-derived
+  // every tick instead of anchored once per frame.
+  assert(/into this sub/.test(t), `the sub-frame elapsed figure is missing: "${t}"`);
+});
+
+await testAsync("a PAUSED run with a shutter still open says PAUSING, and prints no finish time", async () => {
+  const nowMs = Date.now();
+  await act(async () => {
+    useStore.setState({
+      sequence: {
+        state: "paused", target: "M31", target_index: 0,
+        progress: {
+          frames_done: 12, frames_total: 30, percent: 40, elapsed_s: 900, rejected: 0,
+          current_exposure_s: 300, eta_s: 3720, eta_confident: true,
+          server_now_ms: nowMs, frame_started_at_ms: nowMs - 30_000,
+        },
+      },
+    } as never);
+  });
+  await settle();
+  const panel = q('[data-testid="monitor-progress"]');
+  assert(panel != null, "the progress panel vanished - the assertions below would be vacuous");
+  assert(q('[data-testid="monitor-pausing"]') != null,
+    "a pause with 4:30 of shutter left read as PAUSED, so someone can walk out under an open shutter");
+  const t = panel.textContent as string;
+  // The finish slot carries the number that IS honest while pausing - how long
+  // until the shutter shuts - and never a completion time, which `progress`
+  // still carries an `eta_s` for.
+  assert(/shutter open - this frame first/.test(t),
+    `the finish slot does not say what it is counting: "${t}"`);
+  assert(!/done \d\d:\d\d/.test(t),
+    `a paused run has no honest finish, yet a completion clock was printed: "${t}"`);
+  assert(/PAUSING/.test(t), `the phase is not named: "${t}"`);
+});
+
+// ------------------------------------------------------- STOP's in-flight latch
+//
+// `ActionButton`'s `busy` deliberately does not block a press, so without a
+// latch of its own STOP could be re-tapped through the whole ~210 s wind-down
+// with no acknowledgement at all (review #19).
+await testAsync("STOP latches to STOPPING and refuses to re-post while the teardown runs", async () => {
+  await act(async () => {
+    useStore.setState({
+      sequence: {
+        state: "running", target: "M31", target_index: 0,
+        progress: { frames_done: 12, frames_total: 30, percent: 40, elapsed_s: 900, rejected: 0,
+          current_exposure_s: 60 },
+      },
+    } as never);
+  });
+  await settle();
+  const stop = q('[data-testid="run-abort"]');
+  assert(stop != null, "no STOP control");
+  eq(stop.getAttribute("aria-disabled"), null, "precondition: an operator found STOP locked");
+  eq((stop.textContent as string).trim(), "STOP", "precondition: STOP is not already latched");
+
+  asks.length = 0;
+  await click(stop);                       // arms
+  await click(stop);                       // fires
+  const posts = () => asks.filter((a) => a.url.includes("/api/sequence/abort"));
+  eq(posts().length, 1, "STOP did not post exactly once");
+
+  const after = q('[data-testid="run-abort"]');
+  eq((after.textContent as string).trim(), "STOPPING",
+    "the button still says STOP over a teardown that is already running");
+  eq(after.getAttribute("aria-busy"), "true", "and it does not announce itself as busy");
+
+  // Two more taps through the wind-down: the latch, not the label, is what has
+  // to hold.
+  await click(after);
+  await click(after);
+  eq(posts().length, 1, "a re-tap during the teardown re-posted the abort");
+});
+
 // -------------------------------------------------------------- viewer, live
 await testAsync("a viewer's run controls state the reason and fire nothing", async () => {
   await act(async () => {

@@ -184,6 +184,7 @@ const { createElement, act } = await import("react");
 const { createRoot } = await import("react-dom/client");
 const { useStore } = await import("../../../../../store");
 const { selectionQuery } = await import("../../../../../lib/gallery");
+const { parseHash, resetRouterCacheForTests } = await import("../../../../router");
 const { FilesSheet } = await import("../files");
 
 // ------------------------------------------------------------------ harness
@@ -329,7 +330,7 @@ await testAsync("regrade on an ACTIVE session states the reason and fires no PAT
   const mark = tid("files-mark-accepted");
   assert(mark != null, "the regrade control never rendered");
   eq(mark.getAttribute("title"),
-    "Session is running — regrades are read-only until it finishes",
+    "Session is running - regrades are read-only until it finishes",
     "the server's own refusal must be said before the tap");
   assert(/Session is running/.test(text()), "and printed where the user is looking");
 
@@ -375,6 +376,119 @@ await testAsync("a picked selection past the URL budget prints downloadPlan's re
   assert(/DOWNLOAD ALL 121 INSTEAD/.test(refusal.textContent), "and the one-tap way to take it");
   const dl = tid("files-download");
   eq(dl.tagName, "BUTTON", "the over-long link must NOT be offered as a live href");
+});
+
+// ================================== 6. the source picker SWITCHES (review #17)
+//
+// `nav.sheet("files", ...)` called from inside the files sheet pushed a SECOND
+// "files" onto the stack; params are shared across the stack, so the sheet
+// underneath rendered as the identical screen and BACK was a no-op to the eye.
+// The proof is the hash: one "files" segment, and the new src on it.
+
+await testAsync("switching the source replaces this sheet instead of stacking a second one", async () => {
+  fixture.sessionStatus = "dormant";
+  fixture.frames = [
+    libFrame("L", 1), libFrame("L", 2), libFrame("L", 3),
+    libFrame("Ha", 1, 20 * 1024 * 1024), libFrame("Ha", 2, 20 * 1024 * 1024),
+  ];
+  fixture.index = INDEX;
+  // The route the sheet is actually reached on: one sheet deep, with a src.
+  win.location.hash = "#/session/gallery/files?src=s1";
+  resetRouterCacheForTests();
+  seed("admin", CAPS_ADMIN, "idle");
+  await act(async () => { root.render(createElement("div")); });
+  await mount();
+
+  const picker = tid("files-source");
+  assert(picker != null, "no source picker - the assertion below would be vacuous");
+  const manual = picker.querySelector('[data-value="manual"]');
+  assert(manual != null, "the MANUAL option is missing from the source picker");
+
+  click(manual);
+  await settle();
+
+  const route = parseHash(win.location.hash);
+  eq(route.sheets.filter((s: string) => s === "files").length, 1,
+    `the sheet stacked a duplicate of itself: ${win.location.hash}`);
+  eq(route.sheets.length, 1, `the stack grew: ${win.location.hash}`);
+  eq(route.params.src, "manual", "the new source never reached the route params");
+});
+
+// ============================= 7. the JPEG half is delivered (review #74)
+//
+// Withholding FITS from a role without `view.media` is right. Leaving that role
+// with a picker stuck on JPEG, a locked button, a reason line about a
+// capability instead of about where their pictures ARE, and a transfer size for
+// a zip that will never be fetched, is not.
+
+await testAsync("an operator forced onto JPEG is told where the JPEGs are, not just what they lack", async () => {
+  win.location.hash = "";
+  resetRouterCacheForTests();
+  fixture.index = {
+    target: "M31",
+    totals: { frames: 2, accepted: 2, bytes: 0, integration_s: 120 },
+    by_filter: [{
+      filter: "L", count: 2, accepted: 2, exposure_s: 60, bytes: 0, integration_s: 120,
+      frames: [
+        { id: "f1", ts: 1, bytes: 0, accepted: true, override: null, hfr: 2.1, stars: 400, guide_rms: 0.5,
+          thumb: "/api/sessions/s1/frames/f1/thumb" },
+        { id: "f2", ts: 2, bytes: 0, accepted: true, override: null, hfr: 2.2, stars: 380, guide_rms: 0.6,
+          thumb: null },
+      ],
+    }],
+  };
+  seed("operator", CAPS_OPERATOR, "idle");
+  await act(async () => { root.render(createElement("div")); });
+  await mount();
+
+  const dl = tid("files-download");
+  assert(dl != null, "no download control - the assertions below would be vacuous");
+  const why = dl.getAttribute("title") ?? "";
+  assert(/JPEG previews instead/.test(why),
+    `the reason must say what this role DOES get, got "${why}"`);
+  assert(/SAVE JPG/.test(why), `and where to get it, got "${why}"`);
+  assert(/syncer or admin access/.test(why),
+    "and it still names the capability that withheld the originals");
+
+  // A locked button may not be priced: there is no zip to weigh.
+  assert(!/to transfer/.test(text()),
+    "a transfer size was printed beside a button that can never fetch one");
+  assert(/no zip to weigh/.test(text()),
+    `the note must say why there is no size, got "${text().slice(0, 400)}"`);
+});
+
+await testAsync("SAVE JPG is a real link at the view.preview route, per frame", async () => {
+  click(tid("files-row-L").querySelector("button[aria-expanded]"));
+  await settle();
+
+  const a = tid("files-save-jpg-f1");
+  assert(a != null, "the per-frame JPEG save never rendered - the JPEG option is still a dead end");
+  eq(a.tagName, "A", "an operator holds view.preview, so this must be a live link");
+  eq(a.getAttribute("href"), "/api/sessions/s1/frames/f1/thumb",
+    "the link must point at the route the server actually serves at view.preview");
+  assert((a.getAttribute("download") ?? "").endsWith(".jpg"),
+    `the save must name a .jpg, got "${a.getAttribute("download")}"`);
+
+  // The frame with no rendered preview says so rather than linking to a 404.
+  const none = tid("files-save-jpg-f2");
+  assert(none != null, "the un-rendered frame lost its control entirely");
+  eq(none.tagName, "BUTTON", "a frame with no preview must be honest-disabled, not a dead link");
+  assert(/rendered no preview/.test(none.getAttribute("title") ?? ""),
+    `and say which of the two reasons it is, got "${none.getAttribute("title")}"`);
+});
+
+await testAsync("with view.media held the FITS path is unchanged - JPEG did not take it over", async () => {
+  seed("admin", CAPS_ADMIN, "idle");
+  await settle();
+  const dl = tid("files-download");
+  eq(dl.tagName, "A", "an admin must still get the live zip link");
+  assert(/DOWNLOAD/.test(dl.textContent), "and its priced label");
+  // The frame list is still open, so "no SAVE JPG" is a statement about the
+  // format and not about a collapsed row.
+  assert(tid("files-frames-L") != null,
+    "the frame list closed - the absence below would be vacuous");
+  assert(tid("files-save-jpg-f1") == null,
+    "SAVE JPG is the JPEG format's control and must not ride the FITS selection");
 });
 
 act(() => { root.unmount(); });
