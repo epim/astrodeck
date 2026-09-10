@@ -299,6 +299,25 @@ test("no sheet name is registered by two hubs under two different module ids", (
   }
 });
 
+test("the RIG hub registers the sheets its own screens navigate to", () => {
+  // A sheet name that no registry carries renders "THIS SHEET IS NOT BUILT YET"
+  // over a control that looked live - and the ONLY thing standing between a
+  // `nav.sheet("x")` and that is a one-line spread in `rig/sheets/index.ts`
+  // that no sheet task is allowed to write for itself. `videoLibrary` is where
+  // ALL RECORDINGS goes (D-RIG-1); the rest are named so a dropped spread in
+  // any fragment is one failing assertion rather than a screen nobody opened.
+  const rig = SHEET_REGISTRIES.rig;
+  ok(rig != null, "the rig hub registers no sheets at all");
+  for (const name of [
+    "camera", "power", "mount", "polar", "focuser", "wheel", "guider",
+    "rotator", "safety", "videoLibrary", "inspect", "profiles",
+  ]) {
+    ok(rig[name] != null, `rig does not register "${name}" - its opener is a dead end`);
+  }
+  eq(rig.videoLibrary.id, "rig/sheets/videoLibrary",
+    "videoLibrary is registered under another module id:");
+});
+
 test("`sites` and `horizon` are shared by Sky and Settings under one id each", () => {
   const sky = SHEET_REGISTRIES.sky;
   const settings = SHEET_REGISTRIES.settings;

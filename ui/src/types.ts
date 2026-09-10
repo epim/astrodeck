@@ -221,14 +221,24 @@ export interface RigStatus {
     is_color?: boolean;
     // ---- video capability (D-RIG-1), so VIDEO is honest-disabled BEFORE the
     // press rather than refusing on the first one. WAVE2-RULINGS line 63 asked
-    // S7c for these four; they are NOT in hub.py's camera node in the working
-    // tree yet, so every one is optional and a consumer must degrade to
-    // "render live, carry the server's 409 sentence after the first refusal".
+    // S7c for these four and S7c LANDED them (`hub.py:6959-6968`). Every one
+    // stays optional anyway: the rig on the other end may be an older engine,
+    // and there a consumer must degrade to "render live, carry the server's 409
+    // sentence after the first refusal" rather than lock a control on a field
+    // nobody sent.
     // Source of truth: `devices/cameras/adapter.py:63-73 CameraCapabilities`.
     //
     // Can this camera record at all? Mirrors the `no_video_path` refusal in
     // `imaging/video_routes.py:118-127` (burst_supported, or a NativeCamera).
-    video_path?: boolean;                                            // S7c
+    //
+    // A STRING, not a boolean: `hub.py:6968` publishes `"native" | "none"`, and
+    // the union leaves room for a second recording path (an SDK video binding,
+    // stage 1b) without every consumer having to re-read a flag that suddenly
+    // means something narrower. ABSENT is a third answer and not a falsy one -
+    // an engine older than S7c does not know, and a consumer must render the
+    // control live and carry the server's own 409 sentence instead of locking
+    // it on a field nobody sent.
+    video_path?: "native" | "none";                                  // S7c
     // Can the adapter run a bounded burst - many short exposures at a fixed
     // ROI without re-configuring the sensor between them? False means N frames
     // costs N full start/ready/read cycles, which tops out near 20 fps.
@@ -242,7 +252,12 @@ export interface RigStatus {
     // The client rounds to it before asking; the server rounds again
     // (`imaging/video.py:133-160 align_roi`, to lcm(roi_align, bin)) and the
     // response's `roi` is authoritative. Absent -> use the (8, 2) default.
-    roi_align?: [number, number];                                    // S7c
+    //
+    // Typed as a LIST as well as a pair because that is what arrives:
+    // `hub.py:6963` publishes `list(caps.roi_align)`, and JSON has no tuples -
+    // a consumer that destructured a declared 2-tuple would be trusting a
+    // length the wire never promised.
+    roi_align?: readonly [number, number] | number[];                // S7c
   };
   guider?: GuideStats & { name: string };
   // --- guide-frame preview (SHARED lane; additive). Present only when the backend
@@ -2756,13 +2771,15 @@ export interface EphemerisStatus {
  *  it: `id` is the LABEL ("ISS (ZARYA)") and `name` is a composed SENTENCE. A
  *  card that printed `name` would print a paragraph.
  *
- *  ALT/AZ ARE CURRENTLY WRONG THROUGH `/api/catalog`, and that is a server
- *  defect, not a typing one: `api/app.py:7083-7088` recomputes both from the
- *  row's RA/Dec for a `view.site_derived` caller, but a satellite's RA/Dec is
- *  GEOCENTRIC (`satellites.py:414-416`) while its alt/az are TOPOCENTRIC
- *  (`:411`) - so at 400 km the recompute overwrites the right answer with one
- *  tens of degrees away. Until the `kind == "satellite"` guard lands (S7L,
- *  WAVE2-RULINGS line 64), do not draw a marker from these. */
+ *  ALT/AZ USED TO BE WRONG THROUGH `/api/catalog`: the route recomputed both
+ *  from the row's RA/Dec for a `view.site_derived` caller, but a satellite's
+ *  RA/Dec is GEOCENTRIC (`satellites.py:414-416`) while its alt/az are
+ *  TOPOCENTRIC (`:411`), so at 400 km the recompute overwrote the right answer
+ *  with one tens of degrees away. S7L landed the `kind == "satellite"` guard
+ *  (`api/app.py:7473-7482`) and these are correct again - AS OF THE INSTANT
+ *  `ephemeris_unix` names. They decay at about four degrees of sky a second, so
+ *  a marker drawn from a cached row is still wrong; see
+ *  `next/hubs/sky/finder/targets.ts SATELLITE_MARKERS`. */
 export interface SatelliteRow extends CatalogEntry {
   kind: "satellite";
   type: "Satellite";

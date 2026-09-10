@@ -251,17 +251,15 @@ test("videoStateFromEvent leaves absent fields absent rather than zeroing them",
 });
 
 // --------------------------------------------------------- the capability
-test("videoCapability reads the wire's string AND the client type's boolean", () => {
+test("videoCapability reads the wire's three answers and keeps them three", () => {
   const st = (camera: Record<string, unknown>): RigStatus =>
     ({ camera, connected: { camera: { name: "ASI662MC" } } } as unknown as RigStatus);
-  // hub.py:6968 publishes a STRING.
+  // hub.py:6968 publishes a STRING, and types.ts now declares that same union.
   eq(videoCapability(st({ video_path: "none" })).path, "none", "the wire's 'none' was not read");
   eq(videoCapability(st({ video_path: "native" })).path, "native", "the wire's 'native' was not read");
-  // types.ts declares a boolean today; both shapes must resolve the same way,
-  // because reading one as the other is how "cannot record" becomes "can".
-  eq(videoCapability(st({ video_path: false })).path, "none", "a boolean false was not read as none");
-  eq(videoCapability(st({ video_path: true })).path, "native", "a boolean true was not read as native");
-  // ABSENT is neither: an engine older than S7c must not lock the control.
+  // ABSENT is the third answer and NOT a falsy "none": an engine older than S7c
+  // has never been asked, and locking the control on it would refuse a camera
+  // that records perfectly well.
   eq(videoCapability(st({})).path, "unknown",
     "an engine that does not publish the field was treated as a verdict");
   eq(videoCapability(null).path, "unknown", "no status at all was treated as a verdict");
@@ -272,6 +270,10 @@ test("videoCapability falls back to the ZWO grid and never to a fake ceiling", (
     ({ camera } as unknown as RigStatus);
   eq(videoCapability(st({})).roiAlign[0], 8, "the default grid drifted");
   eq(videoCapability(st({ roi_align: [32, 8] })).roiAlign[1], 8, "a published grid was ignored");
+  // JSON has no tuples: `hub.py:6963` sends `list(caps.roi_align)`, so a length
+  // the wire never promised must not be destructured on faith.
+  eq(videoCapability(st({ roi_align: [16] })).roiAlign[0], 8,
+    "a one-element list was read as a grid, which would make one step NaN");
   eq(videoCapability(st({ roi_align: [0, 0] })).roiAlign[0], 8,
     "a zero grid would make every step 0 and every subframe empty");
   eq(videoCapability(st({ max_fps: null })).maxFps, null,

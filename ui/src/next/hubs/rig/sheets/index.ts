@@ -24,6 +24,7 @@ import { sheetsMountPolar } from "./reg-mount-polar";
 import { sheetsFocuserWheel } from "./reg-focuser-wheel";
 import { sheetsGuiderRotator } from "./reg-guider-rotator";
 import { sheetsSafety } from "./reg-safety";
+import { sheetsVideo } from "./reg-video";
 
 function DemoSheet({ params, depth }: SheetProps): JSX.Element {
   const entries = Object.entries(params);
@@ -55,6 +56,7 @@ export const sheets: SheetRegistry = {
   ...sheetsFocuserWheel,
   ...sheetsGuiderRotator,
   ...sheetsSafety,
+  ...sheetsVideo,
   inspect: { id: "rig/sheets/inspect", load: () => import("./inspect").then((m) => ({ default: m.InspectSheet })) },
   addDevice: { id: "rig/sheets/addDevice", load: () => import("./addDevice").then((m) => ({ default: m.AddDeviceSheet })) },
   driver: { id: "rig/sheets/driver", load: () => import("./driver").then((m) => ({ default: m.DriverSheet })) },
