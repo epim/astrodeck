@@ -27,6 +27,24 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+// ------------------------------------------------------------------ css stub
+// The sheets reach area roots that import their own stylesheet (e.g.
+// `session/report/report.css`, `session/flows/tonight/tonight.css`). Node has
+// no idea what a `.css` file is, so a synchronous load hook answers with an
+// empty module - the same stub `shellDom.test.tsx` and `hubBoundary.test.tsx`
+// install.
+{
+  const { registerHooks } = await import("node:module");
+  registerHooks({
+    load(url: string, context: any, nextLoad: any) {
+      if (url.endsWith(".css")) {
+        return { format: "module", shortCircuit: true, source: "export default {};" };
+      }
+      return nextLoad(url, context);
+    },
+  } as any);
+}
+
 // ---------------------------------------------------------------- jsdom first
 // The sheets mount `views/SequenceView`, `views/ReportView` and the gallery
 // panels, and the module graph under them reads `window.location` at import
