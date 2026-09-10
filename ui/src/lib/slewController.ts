@@ -11,13 +11,22 @@
 // lands ~3 stamps per window, so a single throttled/dropped/jittered tick is
 // survivable (~600ms jitter tolerance) without a false mid-slew STOP.
 // SCOPE OF THE ≤1.2s GUARANTEE: it covers NETWORK loss only — on a dropped
-// connection mid-hold the server halts the mount within ≤1.2s (at the 0.6°/s
-// touch cap, ≤0.72° of travel). It does NOT cover client timer starvation
-// (backgrounded tab / setInterval clamp); the widened margin is what keeps a
-// merely-jittered foreground tick from tripping the deadman early.
+// connection mid-hold the server halts the mount within ≤1.2s. The TRAVEL that
+// costs is the ceiling times 1.2s, so it is per-mount since D-RIG-4: ≤0.72° at
+// the 0.6°/s fallback, ≤1.73° on an AM5N reporting 1.44°/s. The mount sheet
+// states whichever applies (`rig/lib/slewStops.ts deadmanNote`). It does NOT
+// cover client timer starvation (backgrounded tab / setInterval clamp); the
+// widened margin is what keeps a merely-jittered foreground tick from tripping
+// the deadman early.
 //
 // Safety invariants this controller guarantees:
-//   - rate is clamped to +/-TOUCH_MAX_RATE_DEG_S (mirror of the server clamp).
+//   - rate is clamped to +/- THE DRIVER'S OWN CEILING when it reports one
+//     (`getMaxRate`, from status.mount.max_rate_deg_s), and to
+//     +/-TOUCH_MAX_RATE_DEG_S when it does not. Both halves mirror the server
+//     clamp, which since D-RIG-4 reads `getattr(tel, "max_rate_deg_s", None) or
+//     TOUCH_MAX_RATE_DEG_S` (hub.py:221-232): 0.6 is what a mount that cannot
+//     say gets, not what every mount gets. A caller that passes no getMaxRate -
+//     `#/classic` - is clamped at 0.6 exactly as before.
 //   - reverse-RA / reverse-Dec flip the commanded sign at post time.
 //   - an alt-guard checks status.mount.alt every keepalive tick; below
 //     MIN_SLEW_ALT_DEG it forceStops and emits a `belowHorizon` state.
@@ -68,6 +77,12 @@ export interface SlewControllerOpts {
   reverseRa: () => boolean;
   reverseDec: () => boolean;
   getAlt: () => number | null;                         // status.mount.alt for the guard
+  /** How fast THIS mount will actually slew, deg/s (D-RIG-4), from
+   *  `status.mount.max_rate_deg_s`. `null` means the driver did not say, which
+   *  is NOT "no limit": the clamp falls back to TOUCH_MAX_RATE_DEG_S, exactly
+   *  as the server's does. Optional, so a caller that never passes it (the
+   *  classic MountView) behaves byte-identically to before. */
+  getMaxRate?: () => number | null;
   isNina?: () => boolean;                              // mode === "nina" -> hold disabled
   postMove: (axis: Axis, rateDegS: number) => Promise<void>;
   postNudge: (axis: Axis, dir: Dir) => Promise<void>;  // pulse OR small relative GOTO
@@ -77,10 +92,6 @@ export interface SlewControllerOpts {
   now?: () => number;
   setTimer?: (fn: () => void, ms: number) => unknown;
   clearTimer?: (h: unknown) => void;
-}
-
-function clampRate(r: number): number {
-  return Math.max(-TOUCH_MAX_RATE_DEG_S, Math.min(TOUCH_MAX_RATE_DEG_S, r));
 }
 
 export class SlewController {
@@ -130,12 +141,30 @@ export class SlewController {
     this.o.onError?.(e);
   }
 
+  // The ceiling this clamp uses, in the server's own order of preference: the
+  // driver's measured number when it has one, 0.6 when it does not.
+  //
+  // `> 0` and `isFinite` are not belt-and-braces, they are the `or` in the
+  // server's `getattr(tel, "max_rate_deg_s", None) or TOUCH_MAX_RATE_DEG_S`
+  // (hub.py:227-231): a driver that answers 0.0 is a driver that did not say,
+  // and taking it literally would clamp every command to zero and leave a pad
+  // that lights up, posts, and never moves the mount.
+  private ceiling(): number {
+    const said = this.o.getMaxRate?.() ?? null;
+    return said != null && Number.isFinite(said) && said > 0 ? said : TOUCH_MAX_RATE_DEG_S;
+  }
+
+  private clampRate(r: number): number {
+    const cap = this.ceiling();
+    return Math.max(-cap, Math.min(cap, r));
+  }
+
   // The signed, clamped, reverse-applied rate for a held axis/dir.
   private signedRate(axis: Axis, dir: Dir): number {
     const base = this.o.getRate().rateDegS;
     const rev = axis === "ra" ? this.o.reverseRa() : this.o.reverseDec();
     const sign = (rev ? -1 : 1) * dir;
-    return clampRate(base * sign);
+    return this.clampRate(base * sign);
   }
 
   // --------------------------------------------------------------- press lifecycle
