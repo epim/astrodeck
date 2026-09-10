@@ -1,0 +1,387 @@
+/* =====================================================================
+   frames.css - the classes the SESSION / FRAME LIBRARY area owns.
+
+   Imported by `frames/index.ts`, this area's root module, and by nothing
+   else (wave R7 rule: `next.css` belongs to one task, so every other
+   area writes its own file and imports it from its own root).
+
+   Every class here is `nx-frames-*`. Nothing in this file redefines a
+   `next.css` class: the primitives keep their own paint, and this file
+   only lays out the four shapes the primitives have no vocabulary for -
+   a square picture tile, a full-viewport picture layer, a bin row's
+   scroll box, and the live stack's composite.
+
+   Colours are `index.css` tokens. State is never carried by hue alone:
+   a failed tile draws a glyph and a WORD, a missing one dashes its
+   border, and `:root.night` (which collapses warn and bad onto one
+   coral) still reads correctly.
+   ===================================================================== */
+
+.nx-frames {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+/* Visually hidden, still announced. Used for the tile tick box, whose
+   name is the frame it selects and whose pixels are a 22 px square. */
+.nx-frames-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* --------------------------------------------------------------- grid */
+
+/* `minmax(140px, 1fr)`: the width the thumbnail request is priced for
+   (`TILE_CSS_WIDTH_HINT`), so the server's path+mtime+width cache is hit
+   on every viewport instead of re-rendering a 26-megapixel frame. */
+.nx-frames-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  min-width: 0;
+}
+
+.nx-frames-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+/* --------------------------------------------------------------- tile */
+
+.nx-frames-tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--nx-r-inner);
+  background: var(--bg-panel);
+  overflow: hidden;
+}
+
+.nx-frames-tile[data-selected="true"] {
+  border-color: var(--accent);
+  box-shadow: var(--glow);
+}
+
+/* A frame whose file is gone: dashed, so the state survives night mode
+   and a monochrome screenshot. The WORD is in the picture area too. */
+.nx-frames-tile[data-tile-state="missing"] {
+  border-style: dashed;
+  border-color: var(--bad);
+}
+
+/* Reserves the tile's box before the observer reveals it, so the
+   scrollbar does not jump as the grid fills in behind the user's thumb. */
+.nx-frames-skel {
+  aspect-ratio: 1 / 1;
+  border: 1px solid var(--line);
+  border-radius: var(--nx-r-inner);
+  background: var(--bg-panel);
+}
+
+/* Square, so row heights are equal before a single image has arrived and
+   the page does not reflow as they land. */
+.nx-frames-pic {
+  position: relative;
+  aspect-ratio: 1 / 1;
+  overflow: hidden;
+  background: #000;
+}
+
+/* Visible through an <img> that has no bytes yet, and the whole picture
+   for a tile that never gets any. */
+.nx-frames-ph {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-faint);
+}
+
+.nx-frames-img {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity 200ms ease-out;
+}
+
+.nx-frames-img[data-ready="true"] {
+  opacity: 1;
+}
+
+.nx-frames-fail {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 0 8px;
+  text-align: center;
+}
+
+.nx-frames-fail-word {
+  font-family: "Chakra Petch", sans-serif;
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: .14em;
+  color: var(--warn);
+}
+
+.nx-frames-fail[data-gone="true"] .nx-frames-fail-word {
+  color: var(--bad);
+}
+
+.nx-frames-fail-hint {
+  font-size: 10px;
+  line-height: 1.35;
+  color: var(--text-dim);
+}
+
+/* OPEN covers the CENTRE of the picture only: the 44 px corners already
+   belong to the tick box and the download, and a full-tile hit area
+   would make every select-by-tapping open the viewer instead. */
+.nx-frames-open {
+  position: absolute;
+  inset: 44px;
+  z-index: 0;
+  border: 0;
+  background: transparent;
+  cursor: zoom-in;
+}
+
+.nx-frames-open:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* The two corners. 44 px hit areas over a 22 px box and a 16 px glyph.
+   The WRAPPER carries the position and reads the shift key on the way
+   down (capture phase); the checkbox itself just fills it. */
+.nx-frames-tickwrap {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 1;
+  width: 44px;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.nx-frames-tick {
+  width: 44px;
+  height: 44px;
+  justify-content: center;
+}
+
+.nx-frames-dl {
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 1;
+  width: 44px;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-dim);
+}
+
+.nx-frames-dl:hover,
+.nx-frames-dl:focus-visible {
+  color: var(--accent);
+}
+
+/* The filename is the identity the user recognises, so it gets the
+   width; everything derived sits under it at the 10 px floor. */
+.nx-frames-cap {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 4px 6px;
+  min-width: 0;
+}
+
+.nx-frames-capname {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nx-frames-capline {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.nx-frames-captext {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nx-frames-capsize {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------------- viewer */
+
+/* Full viewport, not the 420 px sheet panel: the whole point of opening a
+   frame is the size of the screen showing it. */
+.nx-frames-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  background: var(--bg);
+}
+
+.nx-frames-viewbox {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px;
+  background: #000;
+}
+
+/* Two images, deliberately: the grid tile is already in the browser
+   cache, so it appears instantly (upscaled and soft) and the full render
+   fades in over it. An empty box for the second a 26 MP stretch takes is
+   the grid-of-grey-placeholders complaint one frame at a time. */
+.nx-frames-viewimg {
+  position: absolute;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  transition: opacity 300ms ease-out;
+}
+
+.nx-frames-viewimg[data-role="sharp"] {
+  position: relative;
+  opacity: 0;
+}
+
+.nx-frames-viewimg[data-ready="true"] {
+  opacity: 1;
+}
+
+.nx-frames-viewimg[data-role="cache"][data-ready="true"] {
+  opacity: 0;
+}
+
+.nx-frames-viewfail {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 0 16px;
+  text-align: center;
+}
+
+/* -------------------------------------------------------------- trash */
+
+/* Scrolls in its own box: a 500-item bin must not push the library grid
+   off the bottom of the sheet. */
+.nx-frames-trashlist {
+  max-height: 52vh;
+  overflow-y: auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.nx-frames-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.nx-frames-spacer {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.nx-frames-note {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-faint);
+}
+
+.nx-frames-note[data-tone="warn"] {
+  color: var(--warn);
+}
+
+.nx-frames-note[data-tone="bad"] {
+  color: var(--bad);
+}
+
+/* -------------------------------------------------------- live stack */
+
+/* The composite is accumulated at reduced resolution on the server, so
+   it is displayed at whatever width the column gives it; `auto` height
+   keeps the aspect the stacker chose. */
+.nx-frames-stackimg {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: var(--nx-r-inner);
+  background: #000;
+}
+
+.nx-frames-chan {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  min-height: 24px;
+  padding: 2px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.nx-frames-chan:last-child {
+  border-bottom: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nx-frames-img,
+  .nx-frames-viewimg {
+    transition: none;
+  }
+}

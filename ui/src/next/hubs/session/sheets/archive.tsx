@@ -19,6 +19,14 @@
 // unchanged, and so is the legacy `SessionStack`, which is the only place the
 // per-channel list, the labelled backfill checkbox and Reset live.
 //
+// R7 NOTE. The three gallery widgets and the live stack are no longer mounted
+// from `ui/src/components/**`: they were rebuilt in the design's own vocabulary
+// under `session/gallery/frames/` (wave R7, area H plus `SessionStack`'s
+// chrome). `#/classic` still renders the legacy files, untouched. This sheet
+// gained nothing and lost nothing by the swap except its em-dashes, which now
+// cross a single boundary (`frames/frameCopy.ts`) on the way in from the shared
+// `lib/gallery.ts` copy.
+//
 // THE SELECTION SEMANTICS ARE CARRIED, NOT REINVENTED. A filter change clears
 // the selection (a set that no longer means what it meant is how "delete what I
 // ticked" deletes something invisible); un-ticking one tile out of "everything
@@ -36,15 +44,15 @@ import {
 import { u } from "../../../../lib/base";
 import { accessPhrase, useCan, useCanControlCapture } from "../../../../lib/caps";
 import { confirmDialog } from "../../../../components/ConfirmDialog";
-import FrameTile from "../../../../components/gallery/FrameTile";
-import FrameViewer from "../../../../components/gallery/FrameViewer";
-import TrashPanel from "../../../../components/gallery/TrashPanel";
-import SessionStack from "../../../../components/preview/SessionStack";
 import {
-  TRASH_BATCH_CAP, downloadPlan, fmtBytes, fmtCount, fmtFrameCost,
-  nightOptionLabel, nightRangeLabel, partialFailureNote, pickedTotals, scanNote,
-  selectRange, togglePath, tonightHasFrames, trashBatchReason, trashConfirmCopy,
-  truncatedNote, type GallerySelection,
+  FITS_LOCK, FITS_NOTE, FrameGrid, FrameTile, FrameViewer, SessionStackPanel,
+  TRASH_LOCK, TrashPanel, bytesLabel, costLabel, countLabel, hy, lineOrNull,
+} from "../gallery/frames";
+import {
+  TRASH_BATCH_CAP, downloadPlan, nightOptionLabel, nightRangeLabel,
+  partialFailureNote, pickedTotals, scanNote, selectRange, togglePath,
+  tonightHasFrames, trashBatchReason, trashConfirmCopy, truncatedNote,
+  type GallerySelection,
 } from "../../../../lib/gallery";
 import { useStatus, useStore } from "../../../../store";
 import type {
@@ -104,13 +112,18 @@ export function ArchiveSheet({ params }: SheetProps): JSX.Element {
 
   const bytes = (nights?.nights ?? []).reduce((a, n) => a + n.bytes, 0);
   const frames = (nights?.nights ?? []).reduce((a, n) => a + n.frames, 0);
-  const diskLine = `${fmtBytes(bytes)} in ${fmtCount(frames)} frames`
+  const diskLine = `${bytesLabel(bytes)} in ${countLabel(frames)} frames`
     + (nights?.truncated ? " (partial)" : "")
     + (status?.disk?.free_gb != null ? ` · ${status.disk.free_gb.toFixed(1)} GB free` : "");
 
+  // The TRASH chip renders for every role, including one that cannot read the
+  // bin: ARCHITECTURE section 8 hides nothing, and a tab that vanishes is a
+  // feature a viewer cannot even ask about. The whole trash surface is
+  // `control.capture` on the server (GET and POST `/api/gallery/trash`), so the
+  // locked tab states that and fires no request at all.
   const items = [
     { id: "frames", label: "FRAMES" },
-    ...(canDelete ? [{ id: "trash", label: "TRASH", count: trashCount ?? undefined }] : []),
+    { id: "trash", label: "TRASH", count: trashCount ?? undefined },
     { id: "stack", label: "STACK" },
   ];
 
@@ -144,8 +157,16 @@ export function ArchiveSheet({ params }: SheetProps): JSX.Element {
               refresh={refresh}
             />
           )}
-          {tab === "trash" && canDelete && <TrashPanel onChanged={refresh} />}
-          {tab === "stack" && <SessionStack />}
+          {tab === "trash" && (canDelete ? (
+            <TrashPanel onChanged={refresh} />
+          ) : (
+            <EmptyCard
+              data-testid="gallery-trash-locked"
+              title="THE BIN IS NOT OPEN TO THIS ACCOUNT"
+              hint={TRASH_LOCK}
+            />
+          ))}
+          {tab === "stack" && <SessionStackPanel />}
         </div>
       )}
     </Sheet>
@@ -217,7 +238,7 @@ function FramesTab({ nights, canMedia, canDelete, gen, refresh }: {
   const nightList = nights?.nights ?? [];
   const tonight = nights?.current ?? "";
   const tonightLive = tonightHasFrames(tonight, nightList);
-  const cold = page ? scanNote(page.scan_ms, page.total) : null;
+  const cold = page ? lineOrNull(scanNote(page.scan_ms, page.total)) : null;
 
   const selection: GallerySelection = useMemo(
     () => (allInFilter
@@ -230,13 +251,13 @@ function FramesTab({ nights, canMedia, canDelete, gen, refresh }: {
   const plan = downloadPlan(selection, selCount);
 
   const downloadReason = !canMedia
-    ? `Downloading raw FITS needs ${accessPhrase("view.media")} - the files embed the observatory's coordinates.`
-    : plan.ok ? null : plan.reason;
+    ? FITS_LOCK
+    : plan.ok ? null : hy(plan.reason);
   const deleteReason = !canDelete
     ? `Deleting needs ${accessPhrase("control.capture")}.`
     : busy ? "Another gallery action is still running."
       : selCount <= 0 ? "Nothing is selected."
-        : trashBatchReason(selCount);
+        : lineOrNull(trashBatchReason(selCount));
 
   const rebuildPreviews = useCallback(async () => {
     if (warming) return;
@@ -289,16 +310,16 @@ function FramesTab({ nights, canMedia, canDelete, gen, refresh }: {
       if (!paths.length) return;
       const copy = trashConfirmCopy(paths.length, selBytes, trashTtl);
       const go = await confirmDialog({
-        title: copy.title, body: copy.body, tone: "warn",
+        title: hy(copy.title), body: hy(copy.body), tone: "warn",
         mode: "confirm", confirmLabel: "Move to trash",
       });
       if (!go) return;
       const r = await trashFrames(paths);
       enqueueToast({
         level: r.failed.length ? "warning" : "success",
-        title: `Moved ${fmtCount(r.trashed.length)} ${r.trashed.length === 1 ? "frame" : "frames"} to the trash`,
-        detail: partialFailureNote(r.trashed.length, r.failed)
-          ?? `${fmtBytes(r.bytes)} recoverable for ${trashTtl} days - the space is not freed until it purges.`,
+        title: `Moved ${countLabel(r.trashed.length)} ${r.trashed.length === 1 ? "frame" : "frames"} to the trash`,
+        detail: lineOrNull(partialFailureNote(r.trashed.length, r.failed))
+          ?? `${bytesLabel(r.bytes)} recoverable for ${trashTtl} days - the space is not freed until it purges.`,
       });
       refresh();
     } catch (e) {
@@ -356,7 +377,7 @@ function FramesTab({ nights, canMedia, canDelete, gen, refresh }: {
             >
               <option value="">Any night</option>
               {nightList.map((n) => (
-                <option key={n.night} value={n.night}>{nightOptionLabel(n)}</option>
+                <option key={n.night} value={n.night}>{hy(nightOptionLabel(n))}</option>
               ))}
             </select>
           </label>
@@ -370,7 +391,7 @@ function FramesTab({ nights, canMedia, canDelete, gen, refresh }: {
             >
               <option value="">Any night</option>
               {nightList.map((n) => (
-                <option key={n.night} value={n.night}>{nightOptionLabel(n)}</option>
+                <option key={n.night} value={n.night}>{hy(nightOptionLabel(n))}</option>
               ))}
             </select>
           </label>
@@ -431,14 +452,14 @@ function FramesTab({ nights, canMedia, canDelete, gen, refresh }: {
         </div>
 
         <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginTop: 8 }}>
-          <Mono size={10.5}>{nightRangeLabel(nightFrom, nightTo)}</Mono>
+          <Mono size={10.5}>{hy(nightRangeLabel(nightFrom, nightTo))}</Mono>
           <Mono size={10.5} tone="dim">
-            {loading ? "reading…" : page ? fmtFrameCost(page.total, page.bytes) : "-"}
-            {page && rows.length < page.total && !loading ? ` · showing ${fmtCount(rows.length)}` : ""}
+            {loading ? "reading the library" : page ? costLabel(page.total, page.bytes) : "-"}
+            {page && rows.length < page.total && !loading ? ` · showing ${countLabel(rows.length)}` : ""}
           </Mono>
           {nights?.truncated && <Mono size={10.5} tone="warn">night index is partial</Mono>}
         </div>
-        {page?.truncated && <Mono size={10} tone="warn">{truncatedNote(page.total)}</Mono>}
+        {page?.truncated && <Mono size={10} tone="warn">{hy(truncatedNote(page.total))}</Mono>}
         {cold && <Mono size={10} tone="dim">{cold}</Mono>}
         {err && <Mono size={10} tone="bad">{err}</Mono>}
       </Card>
@@ -452,7 +473,7 @@ function FramesTab({ nights, canMedia, canDelete, gen, refresh }: {
             onExplain={explainLock}
             onPress={() => { setAllInFilter(true); setPicked(new Set()); }}
           >
-            {page ? `SELECT ALL ${fmtCount(page.total)} IN FILTER` : "SELECT ALL IN FILTER"}
+            {page ? `SELECT ALL ${countLabel(page.total)} IN FILTER` : "SELECT ALL IN FILTER"}
           </ActionButton>
           <ActionButton
             kind="ghost"
@@ -476,7 +497,7 @@ function FramesTab({ nights, canMedia, canDelete, gen, refresh }: {
           ) : (
             <a className="nx-btn" data-kind="primary" data-testid="archive-download"
               href={u(plan.ok ? plan.href : "")} download>
-              <span className="nx-btn-label">{`DOWNLOAD ${fmtFrameCost(selCount, selBytes)}`}</span>
+              <span className="nx-btn-label">{`DOWNLOAD ${costLabel(selCount, selBytes)}`}</span>
             </a>
           )}
           <ActionButton
@@ -491,21 +512,19 @@ function FramesTab({ nights, canMedia, canDelete, gen, refresh }: {
         </div>
         <Mono size={10} tone="dim">
           {allInFilter
-            ? `Everything the filter matches is selected - ${fmtFrameCost(selCount, selBytes)}, including the ${fmtCount(Math.max(0, (page?.total ?? 0) - rows.length))} not yet shown below.`
+            ? `Everything the filter matches is selected - ${costLabel(selCount, selBytes)}, including the ${countLabel(Math.max(0, (page?.total ?? 0) - rows.length))} not yet shown below.`
             : picked.size > 0
-              ? `${fmtFrameCost(picked.size, selBytes)} ticked.`
+              ? `${costLabel(picked.size, selBytes)} ticked.`
               : "Tick frames to act on some, or use Select all to take the whole filter."}
         </Mono>
         {!canMedia && (
-          <Mono size={10} tone="warn">
-            {`Raw FITS downloads need ${accessPhrase("view.media")} - every frame embeds the observatory's coordinates. Thumbnails are not restricted.`}
-          </Mono>
+          <Mono size={10} tone="warn" data-testid="archive-fits-note">{FITS_NOTE}</Mono>
         )}
       </Card>
 
       {/* --------------------------------------------------------------- grid */}
       {loading && rows.length === 0 ? (
-        <Card><Mono size={10.5} tone="dim">Reading the capture library…</Mono></Card>
+        <Card><Mono size={10.5} tone="dim">Reading the capture library</Mono></Card>
       ) : rows.length === 0 ? (
         <EmptyCard
           title={q || nightFrom || nightTo ? "NOTHING MATCHES THIS FILTER" : "NO FRAMES ON DISK YET"}
@@ -515,7 +534,7 @@ function FramesTab({ nights, canMedia, canDelete, gen, refresh }: {
         />
       ) : (
         <Card padding={12}>
-          <div style={{ display: "grid", gap: 8, gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))" }}>
+          <FrameGrid>
             {rows.map((f) => (
               <FrameTile
                 key={f.path}
@@ -549,9 +568,9 @@ function FramesTab({ nights, canMedia, canDelete, gen, refresh }: {
                 }}
               />
             ))}
-          </div>
+          </FrameGrid>
           {page && rows.length < page.total && (
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 12, marginTop: 12 }}>
+            <div className="nx-frames-more">
               <ActionButton
                 kind="ghost"
                 lockedReason={loadingMore || loading ? "Still reading the last page." : null}
@@ -560,15 +579,23 @@ function FramesTab({ nights, canMedia, canDelete, gen, refresh }: {
               >
                 {loadingMore || loading
                   ? "LOADING"
-                  : `LOAD ${fmtCount(Math.min(PAGE, page.total - rows.length))} MORE`}
+                  : `LOAD ${countLabel(Math.min(PAGE, page.total - rows.length))} MORE`}
               </ActionButton>
-              <Mono size={10} tone="dim">{`${fmtCount(rows.length)} of ${fmtCount(page.total)} shown`}</Mono>
+              <Mono size={10} tone="dim">{`${countLabel(rows.length)} of ${countLabel(page.total)} shown`}</Mono>
             </div>
           )}
         </Card>
       )}
 
-      {viewing && <FrameViewer frame={viewing} onClose={() => setViewing(null)} />}
+      {viewing && (
+        <FrameViewer
+          frame={viewing}
+          canDownload={canMedia}
+          trashTtlDays={trashTtl}
+          onClose={() => setViewing(null)}
+          onTrashed={refresh}
+        />
+      )}
     </>
   );
 }
