@@ -15,6 +15,7 @@ import { NxIcon } from "../../../icons";
 import { Sheet } from "../../../ui";
 import { useConfig } from "../../../../store";
 import { SkyPackEditor } from "../tuning/calibration";
+import { EphemerisCard } from "./EphemerisCard";
 
 export function SkyPackSheet(_p: SheetProps): JSX.Element {
   const config = useConfig();
@@ -23,12 +24,17 @@ export function SkyPackSheet(_p: SheetProps): JSX.Element {
   return (
     <Sheet
       data-testid="settings-skyPack"
-      title="SKY ATLAS OFFLINE PACK"
-      sub={`online CDS fetch ${onlineFetch ? "on" : "off"}`}
+      // SKY DATA, not SKY ATLAS OFFLINE PACK: the sheet now holds two
+      // downloads, and the server's own stale-elements sentence sends people
+      // here by name ("Refresh them from Sky settings"). A title naming only
+      // the survey tiles would leave the second thing unfindable.
+      title="SKY DATA"
+      sub={`survey tiles and orbital elements · online CDS fetch ${onlineFetch ? "on" : "off"}`}
       icon={<NxIcon name="sky" />}
       onBack={nav.back}
     >
       <SkyPackEditor />
+      <EphemerisCard />
     </Sheet>
   );
 }

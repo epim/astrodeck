@@ -11,10 +11,25 @@
 // (plan H.2): `POST /api/flows/quick` builds a deep-sky night, and a two-hour
 // LRGB cycle on Jupiter is not a thing anybody wants. They go to Rig - Capture
 // in video mode, which is what the prototype does too.
+//
+// A SATELLITE DOES NOT ROUTE THERE EITHER, and for exactly the same reason
+// (D-SKY-1). A pass is minutes long and crosses the whole sky; a quick session
+// would queue a deep-sky night on an object that has left the frame before the
+// first sub finishes. Its CTA opens the passes list, which is the only answer
+// the rig can actually give about a satellite: when to look, and where.
+//
+// A COMET keeps the ordinary IMAGE cta. It IS a deep-sky-shaped target - it
+// takes subs through the same filters, and the only thing that makes it
+// different is that it moves, which is a plate-solve problem and not a CTA one.
 
 import type { SkyTarget } from "../finder";
 
-export type LockCtaKind = "connect" | "obstructed" | "video" | "clouded" | "image";
+export type LockCtaKind =
+  | "connect" | "obstructed" | "video" | "passes" | "clouded" | "image";
+
+/** No pass clears the horizon inside the search window. Honest-disabled with
+ *  this as the reason: the button would open a list with nothing in it. */
+export const NO_PASSES_REASON = "No pass above the horizon in the next 24 hours.";
 
 export interface LockCta {
   kind: LockCtaKind;
@@ -31,6 +46,13 @@ export interface LockCtaInput {
   kind: SkyTarget["kind"];
   obstructed: boolean;
   clouded: boolean;
+  /**
+   * How many passes the rig found in the search window, or `null` when nobody
+   * has answered yet. Read ONLY for a satellite. `0` and `null` are different
+   * answers - "there are none" against "we have not looked" - and only the
+   * first is a reason to lock the button.
+   */
+  passCount?: number | null;
 }
 
 /** True for the bodies that want video rather than a stack of subs. */
@@ -39,6 +61,19 @@ export function isVideoTarget(kind: SkyTarget["kind"]): boolean {
 }
 
 export function lockCta(lock: LockCtaInput, equipConnected: boolean): LockCta {
+  // BEFORE the connect check, and that is the point: a satellite pass is
+  // something you look at, and the answer to "when does the ISS come over" does
+  // not depend on whether a camera is plugged in. Every other CTA on this card
+  // commands the rig; this one does not.
+  if (lock.kind === "satellite") {
+    return {
+      kind: "passes",
+      label: lock.passCount === 0
+        ? "NO PASSES IN 24 H"
+        : `NEXT PASS - ${lock.name.toUpperCase()}`,
+      button: "secondary",
+    };
+  }
   if (!equipConnected) {
     return { kind: "connect", label: "CONNECT THE RIG FIRST", button: "secondary" };
   }
