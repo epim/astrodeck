@@ -145,6 +145,13 @@ const MOON = {
   separation_deg: 61.4, rise_unix: null, set_unix: NOW + 4 * 3600,
 };
 
+/** One low altitude band, all 36 azimuth samples read. LOW on purpose: at 15
+ *  degrees the ray's ground track is 8 km long, so a 30 min drift at 12 km/h
+ *  moves the ghosts without collapsing every one of them onto the same bearing,
+ *  and the southern half of the band stays on the near side of the dome where
+ *  it is drawn rather than culled. */
+const CLOUD_ROWS: (number | null)[][] = [new Array(36).fill(0.7)];
+
 function ok(json: any) {
   return {
     ok: true, status: 200, statusText: "OK",
@@ -190,7 +197,7 @@ g.fetch = async (url: any, init: any) => {
     return ok({
       enabled: true, platform: "G18", observed_at: null, age_s: 90, stale: false,
       last_error: null, motion: null, credit: { source: "NOAA GOES", url: "x" },
-      rows: [], alt_start: 0, alt_step: 6, az_step: 10,
+      rows: CLOUD_ROWS, alt_start: 15, alt_step: 6, az_step: 10,
     });
   }
   return notFound();
@@ -412,8 +419,53 @@ await testAsync("the dome screen draws the wind arrow along the DRIFT bearing", 
   const body = String(byId("wx-sky").textContent);
   assert(/wind 12 km\/h SW to NE/.test(body), `the legend must name both ends, got "${body}"`);
   assert(/2\.2 km base/.test(body), "the cloud-base height is missing from the legend");
-  assert(/Not drawn on the dome/.test(body),
-    "the dome does not say what it is not drawing, which reads as 'nothing is in the way'");
+});
+
+await testAsync("the overlay is ON the canvas, in the canvas's own projection", async () => {
+  // The whole point of D-WX-1. `SkyDome` returns before painting in jsdom -
+  // getContext is null - so this can only be here because the geometry is
+  // published ABOVE that guard and the overlay is registered on the panel.
+  const svg = byId("wx-dome-overlay");
+  assert(svg != null, "no overlay over the dome canvas");
+  const wrap = q("[data-dome-wrap]");
+  assert(wrap != null, "the overlay is not inside the canvas's own wrapper");
+  assert(Number(svg.getAttribute("width")) > 0,
+    `the overlay has no width, so it never saw a geometry: "${svg.getAttribute("width")}"`);
+
+  // The site's ACTIVE polyline is seeded (`/api/site` -> horizon_points), so
+  // the profile has to be drawn on the sphere rather than only written out.
+  const hz = byId("wx-dome-horizon");
+  assert(hz != null, "the horizon profile is not drawn on the dome");
+  assert(hz.querySelectorAll("polygon").length > 0,
+    "the horizon group is empty, which reads as 'nothing is in the way'");
+  assert(/horizon profile/.test(text("wx-sky")),
+    "the legend does not name the horizon profile it just drew");
+});
+
+await testAsync("no measured wind SPEED means NO ghost tiles, and the legend drops them", async () => {
+  // Positive control first: with a speed in the feed the ghosts ARE drawn, so
+  // the absence below can only be the missing speed.
+  assert(byId("wx-dome-ghost") != null,
+    "precondition: the +30 min ghosts are drawn when the wind is measured");
+  assert(byId("wx-dome-ghost").querySelectorAll("polygon").length > 0,
+    "the ghost group is empty - the positive control drew nothing to compare against");
+  assert(/cloud in 30 min/.test(text("wx-sky")), "the legend does not name the ghosts it drew");
+
+  // A direction but no speed. The arrow stays (the bearing IS measured); the
+  // ghosts must go, because advecting at the prototype's 12 km/h would be a
+  // drawing of a wind nobody measured.
+  act(() => {
+    useStore.setState({
+      weather: weatherFixture({ now: { ...NOW_BLOCK, wind_kmh: null } }),
+    } as never);
+  });
+  await settle();
+  assert(byId("wx-wind-arrow") != null,
+    "precondition: a measured bearing still draws the rose");
+  assert(byId("wx-dome-ghost") == null,
+    "ghosts were advected at a wind speed the feed does not carry");
+  assert(!/cloud in 30 min/.test(text("wx-sky")),
+    "the legend still names a mark the picture no longer has");
 });
 
 await testAsync("with no wind in the feed there is NO arrow and the legend says so", async () => {

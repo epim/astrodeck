@@ -10,12 +10,13 @@
 // that). The frames decide whether tonight is worth exposing; this says WHERE
 // in the sky the cloud is, which no scalar forecast can express.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 
 import { getCloudmap, getCloudmapAt, getCloudmapDome,
          type CloudmapAt, type CloudmapDome, type CloudmapStatus } from "../../api/cloudmap";
 import { ageWords, domeGapFraction, domeStatus, occlusionWord } from "../../lib/domeProjection";
 import { Panel } from "../ui";
-import { SkyDome } from "./SkyDome";
+import { SkyDome, type DomeGeometry } from "./SkyDome";
 import { altAzOf } from "../../lib/altaz";
 import { getResumeArm, getSession } from "../../api/sessions";
 import { useSequence, useSite } from "../../store";
@@ -55,9 +56,26 @@ const AGE_TICK_MS = 15_000;
  *  fresher. */
 const ASSUMED_STALE_AFTER_S = 3 * 10 * 60;
 
-export function SkyDomePanel({ pointing, target }: {
+/** What an overlay is handed. The geometry is the canvas's own -- including the
+ *  yaw, which stays PRIVATE state here (see `yawDeg` below) and reaches a
+ *  second renderer only through the geometry the canvas actually painted with.
+ *  `grid` is null unless there are rows worth drawing, and `stale` is the same
+ *  flag that makes the cloud recede, so an overlay can decline to extrapolate a
+ *  granule the panel has already stopped believing. */
+export interface DomeOverlayArgs {
+  geom: DomeGeometry;
+  grid: CloudmapDome | null;
+  stale: boolean;
+}
+
+export function SkyDomePanel({ pointing, target, overlay, height = 280, onGeometry }: {
   pointing?: { alt: number; az: number } | null;
   target?: { alt: number; az: number; name?: string } | null;
+  /** Drawn over the dome canvas, in its own projection. Absent = the panel is
+   *  exactly what it was before this prop existed. */
+  overlay?: (o: DomeOverlayArgs) => ReactNode;
+  height?: number;
+  onGeometry?: (g: DomeGeometry) => void;
 }) {
   const [status, setStatus] = useState<CloudmapStatus | null>(null);
   const [dome, setDome] = useState<CloudmapDome | null>(null);
@@ -225,7 +243,11 @@ export function SkyDomePanel({ pointing, target }: {
                        : serverReason ?? "waiting for a granule"}
         stale={st.stale}
         staleNote={st.kind === "dead" ? "feed down" : ageWords(ageS) ?? undefined}
-        height={280}
+        height={height}
+        onGeometry={onGeometry}
+        overlay={overlay
+          ? (g) => overlay({ geom: g, grid: gridUsable ? dome : null, stale: st.stale })
+          : undefined}
       />
 
       {/* THE PAN IS INVISIBLE WITHOUT THIS. A canvas that happens to respond to

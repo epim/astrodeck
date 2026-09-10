@@ -9,8 +9,9 @@
 //
 // Canvas rather than SVG: a 15x36 grid is 540 quads and the panel repaints on a
 // poll, so this is a thousand fills a minute in the DOM against one bitmap.
-import { memo, useEffect, useRef } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import type React from "react";
+import type { ReactNode } from "react";
 
 import {
   NO_DATA_HATCH,
@@ -22,6 +23,30 @@ import {
   projectAltAz,
   type DomeGrid,
 } from "../../lib/domeProjection";
+
+/** Everything a second renderer needs to put a mark on the SAME sphere this
+ *  canvas painted: the box it painted into, the horizon centre and radius it
+ *  chose, and the two angles the projection was run with. Published rather than
+ *  re-derived, because the radius comes from padding constants private to this
+ *  file and the yaw is owned by whoever passes `onYaw` -- a copy of either
+ *  drifts silently the first time one of them is retuned, and a mark a few
+ *  degrees off is worse than no mark. */
+export interface DomeGeometry {
+  cssW: number;
+  cssH: number;
+  cx: number;
+  cy: number;
+  r: number;
+  tiltDeg: number;
+  yawDeg: number;
+}
+
+function sameGeometry(a: DomeGeometry | null, b: DomeGeometry): boolean {
+  return a !== null
+    && a.cssW === b.cssW && a.cssH === b.cssH
+    && a.cx === b.cx && a.cy === b.cy && a.r === b.r
+    && a.tiltDeg === b.tiltDeg && a.yawDeg === b.yawDeg;
+}
 
 export interface SkyDomeProps {
   grid: DomeGrid | null;
@@ -49,6 +74,12 @@ export interface SkyDomeProps {
   /** What to write across a stale dome, e.g. "157m old". */
   staleNote?: string;
   height?: number;
+  /** Fired after every paint whose geometry differs from the last one. */
+  onGeometry?: (g: DomeGeometry) => void;
+  /** Drawn OVER the canvas, in canvas CSS pixels, inside a wrapper that only
+   *  exists when this prop does -- with it absent the rendered DOM is byte for
+   *  byte what it was before this prop existed. */
+  overlay?: (g: DomeGeometry) => ReactNode;
 }
 
 const CARDINALS: [string, number][] = [["N", 0], ["E", 90], ["S", 180], ["W", 270]];
@@ -108,9 +139,17 @@ function ringPath(ctx: CanvasRenderingContext2D, altDeg: number,
 
 export const SkyDome = memo(function SkyDome({
   grid, pointing, target, targets, emptyNote, stale = false, staleNote,
-  height = 300, yawDeg = 0, onYaw,
+  height = 300, yawDeg = 0, onYaw, onGeometry, overlay,
 }: SkyDomeProps) {
   const ref = useRef<HTMLCanvasElement | null>(null);
+  /** The geometry the last paint used, for anything drawn over the canvas. */
+  const [geom, setGeom] = useState<DomeGeometry | null>(null);
+  /** The same value, readable inside the effect without being a dependency of
+   *  it: `geom` in the dependency array is a render loop, and a stale closure
+   *  over it would publish the same geometry twice. */
+  const geomRef = useRef<DomeGeometry | null>(null);
+  const onGeometryRef = useRef(onGeometry);
+  useEffect(() => { onGeometryRef.current = onGeometry; });
 
   useEffect(() => {
     const cv = ref.current;
@@ -124,17 +163,30 @@ export const SkyDome = memo(function SkyDome({
     cv.height = Math.round(cssH * dpr);
     cv.style.width = `${cssW}px`;
     cv.style.height = `${cssH}px`;
-    const ctx = cv.getContext("2d");
-    if (!ctx) return;                       // headless/jsdom: nothing to draw
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, cssW, cssH);
 
     // Size against the dome's REAL extent. The highest point on screen is
     // altitude (90 - tilt) due north, not the zenith -- see domeExtent.
+    //
+    // ABOVE THE getContext GUARD ON PURPOSE. getContext returns null in jsdom,
+    // so with the guard first the geometry can never be observed by a test, and
+    // an overlay that cannot be tested against the projection is the exact
+    // failure the old header refused to ship. Nothing here touches the context.
     const ext = domeExtent();
     const r = Math.min((cssW - 24) / 2, (cssH - 28) / (ext.top + ext.bottom));
     const cx = cssW / 2;
     const cy = 14 + r * ext.top;
+
+    const g: DomeGeometry = { cssW, cssH, cx, cy, r, tiltDeg: DOME_TILT_DEG, yawDeg };
+    if (!sameGeometry(geomRef.current, g)) {
+      geomRef.current = g;
+      setGeom(g);
+      onGeometryRef.current?.(g);
+    }
+
+    const ctx = cv.getContext("2d");
+    if (!ctx) return;                       // headless/jsdom: nothing to draw
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, cssW, cssH);
 
     // ---- the far half of the horizon, so the dome reads as a solid volume
     ctx.strokeStyle = "rgba(150,170,200,0.18)";
@@ -317,7 +369,7 @@ export const SkyDome = memo(function SkyDome({
     if (drag.current && drag.current.id === e.pointerId) drag.current = null;
   };
 
-  return (
+  const canvas = (
     <canvas
       ref={ref}
       role="img"
@@ -336,5 +388,31 @@ export const SkyDome = memo(function SkyDome({
       onPointerUp={onYaw ? up : undefined}
       onPointerCancel={onYaw ? up : undefined}
     />
+  );
+
+  // NO WRAPPER UNLESS ASKED. Every existing caller passes no `overlay`, and
+  // for them this returns the same bare canvas it always did -- a wrapper that
+  // appeared unconditionally would change the layout of screens that never
+  // asked for this feature.
+  if (!overlay) return canvas;
+
+  return (
+    <div
+      style={{ position: "relative", width: geom?.cssW, margin: "0 auto" }}
+      data-dome-wrap=""
+    >
+      {canvas}
+      {geom && (
+        // pointerEvents: "none" is load-bearing: the drag handlers are on the
+        // canvas, and a layer over it that swallowed the pointer would leave
+        // the dome un-turnable while looking exactly the same.
+        <div
+          style={{ position: "absolute", inset: 0, pointerEvents: "none" }}
+          data-dome-overlay=""
+        >
+          {overlay(geom)}
+        </div>
+      )}
+    </div>
   );
 });
