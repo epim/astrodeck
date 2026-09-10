@@ -62,10 +62,18 @@ from ..catalog.tiles import router as tiles_router
 from ..catalog.framing import router as framing_router
 from ..catalog.visibility import router as visibility_router
 from ..catalog.region import router as region_router
+from ..catalog.ephemeris.routes import router as ephemeris_router
+# The SER video lane (#D-RIG-1) is its own router for the reason the atlas
+# routers are: one owner per file. The recorder singleton is imported beside
+# it because the three single-camera routes below have to be able to ask
+# whether a recording already owns the camera before they spawn a lane.
+from ..imaging.video_routes import recorder as video_recorder
+from ..imaging.video_routes import router as video_router
 from ..config import (FRAME_SCOPES, REDACTED_SINK_FIELDS, AlertSink, AuthConfig,
                       CalibrationConfig, CloudmapConfig,
-                      ConfigVersionConflict, CoolingConfig,
-                      EscalationConfig, GuideConfig, NamingConfig, Optics,
+                      ConfigVersionConflict, CoolingConfig, DewConfig,
+                      EscalationConfig, FocusConfig, GuideConfig,
+                      NamingConfig, Optics,
                       ProvidersConfig, RotatorConfig, SafetyConfig, Site,
                       StandardsConfig, SurveyConfig, SyncPushConfig,
                       UpdateConfig, WcsStampConfig,
@@ -74,11 +82,20 @@ from ..config import (FRAME_SCOPES, REDACTED_SINK_FIELDS, AlertSink, AuthConfig,
                       set_frame_settings)
 from ..locations import (UNCHANGED, LocationLibraryFull, LocationNameCollision,
                          location_store, normalize_horizon_points)
+# Rig-level planning preferences (#D-FU-1). Its own router because the
+# models live in config.py (to avoid an import cycle) and the merge helpers
+# live beside them, not here.
+from ..planning import router as planning_router
 from .. import __version__
 from ..update.state import update_state
 from ..update.service import UpdateError, get_service as get_update_service
 from ..dawn_park import DawnPark
 from ..sun_watch import SunWatch
+# A MODULE SINGLETON rather than a constructor: the orbital-element cache is
+# one set of files on this box, so a second store would be a second writer
+# to them.
+from ..catalog.ephemeris.elements import ephemeris_store
+from ..dew import DewController
 from ..devices import alpaca as alpaca_backend
 from ..devices.base import DeviceError, TRACKING_RATES
 from ..devices.nina import discover_nina
@@ -94,12 +111,14 @@ from .. import factory_reset as factory_reset_module
 from .. import gallery as gallery_module
 from ..sync import manifest as sync_manifest_mod
 from ..sync.runner import runner as sync_push_runner
-from ..hub import CAPTURE_DIR, TOUCH_MAX_RATE_DEG_S, hub
+from ..hub import CAPTURE_DIR, TOUCH_MAX_RATE_DEG_S, PromoteRefused, hub
 from ..calibration import CalibrationLibrary, MatchTolerance
 from ..calibration.matcher import LightNeed
 from ..imaging import build_caption, compose_share_jpeg, fmt_share_date, to_png
+from ..mount_offset import nudge_target, parse_nudge
 from ..naming import sanitize_component
 from ..plans import PLAN_SCHEMA, plan_library
+from .. import power_guard
 from ..profiles import Profile, profiles, redact_profile
 from ..provenance import effective_config
 # The flows package is imported by SUBMODULE. flows/__init__ re-exports only
@@ -189,6 +208,13 @@ dawn_park = DawnPark(hub, engine)
 # stationary tube is noticed rather than discovered in the morning. Takes the
 # engine for the same reason dawn park does — a live run owns its own aborts.
 sun_watch = SunWatch(hub, engine)
+
+# Dew heaters (#D-RIG-3). Module level beside the other two loops, and the hub
+# is all it takes: it reads the weather surface the hub already publishes and
+# drives whichever camera and switch ports say they follow the dew margin. The
+# controller attaches ITSELF to ``hub.dew_controller`` in its constructor, so
+# the status node finds it without hub.py importing a service it does not own.
+dew_controller = DewController(hub)
 
 def _resolve_ui_dist() -> Path:
     """Where the built SPA lives, across every way AstroDeck is shipped.
@@ -404,12 +430,24 @@ async def _lifespan(app: "FastAPI"):
     # re-reads the site and the Sun, so it costs one trig evaluation on a rig
     # that never needs it and is armed the moment one does.
     dawn_park.start()
+    # Orbital elements (#D-SKY-1) - its own asyncio loop that keeps the
+    # satellite and comet element files fresh. Started UNCONDITIONALLY for
+    # the same reason as the parks above: a tick with nothing stale is one
+    # `stat` per file and opens no socket at all, and the alternative -
+    # starting it the first time somebody searches - means the first search
+    # of the night is the one that waits on CelesTrak.
+    ephemeris_store.start()
     # Sun watch — its own 60 s asyncio loop, the net under a tube the Sun is
     # coming TO rather than one being slewed at it. Started UNCONDITIONALLY for
     # the same reason: a tick with the mount disconnected or the sky elsewhere
     # costs one device read and a handful of trig, and it is armed the moment a
     # mount is connected and left somewhere.
     sun_watch.start()
+    # Dew heaters (#D-RIG-3) - its own asyncio loop. Started UNCONDITIONALLY
+    # too: a tick with the policy disabled reads one config field and
+    # returns, and the loop being armed already is what lets the operator
+    # turn dew control on mid-night without restarting the server.
+    dew_controller.start()
     # File-sync push (Phase 2) — its own 5 s asyncio loop. Started
     # UNCONDITIONALLY for the same reason as the two above: a tick with no
     # destination configured is one attribute read, and it is armed the moment
@@ -471,7 +509,9 @@ async def _lifespan(app: "FastAPI"):
         await resume_arm.stop()
         await trash_keeper.stop()
         await dawn_park.stop()
+        await ephemeris_store.stop()
         await sun_watch.stop()
+        await dew_controller.stop()
         await sync_push_runner.stop()
         await dispatcher.stop()
         task.cancel()
@@ -918,6 +958,24 @@ class CaptureBody(BaseModel):
     frame_type: str = "Light"
 
 
+class PromoteBody(BaseModel):
+    """Body for ``POST /api/capture/last/save`` (D-SES-4).
+
+    ``target`` is the ONE value the operator may change after the fact. Every
+    other header value was a MEASUREMENT, frozen when the shutter closed; the
+    target is what they meant to call the field, and naming it correctly is
+    often the reason they are saving at all. Empty or absent keeps whatever
+    they typed at capture time.
+
+    ``frame_id`` is the id from ``GET /api/capture/last``. Optional, and it is
+    a SAFETY interlock rather than a selector: the buffer holds exactly one
+    frame, so a client that names the one it is looking at gets a refusal
+    instead of silently saving a newer exposure it never saw. Absent = save
+    whatever is held."""
+    target: str = ""
+    frame_id: int | None = None
+
+
 class LiveStackBody(CaptureBody):
     # NOV-1 Live View: drift-reject threshold as a fraction of the frame's short
     # edge (default 8%). An Advanced knob — the default suits any tracked rig.
@@ -952,6 +1010,14 @@ class MoveAxisBody(BaseModel):
     # arming the deadman against a name the watchdog can't zero.
     axis: Literal["ra", "dec"]
     rate_deg_s: float
+
+
+class NudgeBody(BaseModel):
+    """A RELATIVE offset for ``POST /api/mount/nudge`` (#D-RIG-4)."""
+    axis: Literal["ra", "dec"]
+    #: signed; + is east / north. allow_inf_nan=False for the same reason
+    #: GotoBody.rotation_deg has it: a NaN must never reach the geometry.
+    arcmin: float = Field(..., allow_inf_nan=False)
 
 
 class FocuserMoveBody(BaseModel):
@@ -1128,6 +1194,17 @@ class EgainLearnBody(BaseModel):
 class SwitchBody(BaseModel):
     port_id: int
     value: float
+
+
+class SwitchPortSettingsBody(BaseModel):
+    """One port's protection/dew settings (#D-RIG-5). Partial: absent means
+    UNCHANGED, read off ``model_fields_set``, never value-vs-default. That
+    distinction is load-bearing for ``protect_during_run``, which is TRI-state:
+    ``null`` is one of its three real values ("follow the name"), so a caller
+    editing only ``follow_dew`` cannot signal "leave it alone" with null.
+    MODULE SCOPE, like ``GuideCameraSettingsBody`` above and for the same reason."""
+    protect_during_run: bool | None = None
+    follow_dew: bool = False
 
 
 class PolarSolveSettingsBody(BaseModel):
@@ -1498,6 +1575,19 @@ class ConfigPatchBody(BaseModel):
     # kept and when the night gives up, which is the same family of
     # hardware-and-run protection SafetyLimitsPanel already owns.
     standards: StandardsConfig | None = None
+    # How the focuser is DRIVEN (#D-RIG-2): the approach overshoot and the
+    # temperature-compensation model. Gated on config.safety with the
+    # standards block above, and for the same kind of reason:
+    # ``temp_comp.steps_per_c`` with the sign backwards does not fail to
+    # correct the drift, it doubles it.
+    focus: FocusConfig | None = None
+    # The dew-heater policy (#D-RIG-3). Same cap: it decides how much power
+    # reaches a resistor strapped to the optics all night.
+    dew: DewConfig | None = None
+    # ``planning`` is DELIBERATELY ABSENT. It has its own route
+    # (PUT /api/planning, control.capture) because deciding what tonight
+    # shoots is not a config.* decision - the shipped operator holds no
+    # config capability at all and must still be able to set it.
 
 
 class SafetySimulateBody(BaseModel):
@@ -1671,6 +1761,14 @@ _REMOTE_LOCAL_ONLY_MUTATION_PREFIXES = (
     "/api/profiles",
     "/api/connect",
     "/api/survey/pack",
+    # ``/api/ephemeris`` because ``POST /api/ephemeris/refresh`` makes THIS
+    # BOX DIAL OUT to CelesTrak/the MPC. That is an outbound fetch a
+    # tunnelled cookie must not be able to trigger: it is the SSRF shape the
+    # rest of this list exists for, and the refresh is a maintenance action
+    # somebody standing at the rig performs, never a remote one. The GET
+    # status and the passes read stay open (this list catches unsafe methods
+    # only), so a remote client can still see how old the elements are.
+    "/api/ephemeris",
     # ``/api/locations`` is here because it is a SECOND DOOR into ``/api/config``
     # and nothing else. ``PUT /api/locations/{id}`` writes ``config.safety.horizon``
     # through the active-site write-through, and ``POST /api/locations/{id}/apply``
@@ -1681,6 +1779,29 @@ _REMOTE_LOCAL_ONLY_MUTATION_PREFIXES = (
     # open: this list only catches unsafe methods, so GET /api/locations (the
     # library the remote UI lists) still answers over the relay.
     "/api/locations",
+    # ``/api/switch/ports`` for the same reason as ``/api/locations``: it
+    # decides which ports the ENGINE refuses during a run, which is
+    # protection policy rather than power control. ``startswith`` catches
+    # ``PUT /api/switch/ports/{id}`` and does NOT catch
+    # ``POST /api/switch/set`` - operating a power box from the relay IS the
+    # product. A prefix of ``/api/switch`` would read as the same intent and
+    # would silently kill remote power control.
+    "/api/switch/ports",
+    # NOT ON THIS LIST, and each is a decision rather than an omission:
+    #
+    # * ``/api/capture*`` (including ``/api/capture/last/save`` and
+    #   ``/api/capture/video``) - taking and keeping frames is the science.
+    #   The fence exists for policy that decides what the rig does while
+    #   nobody is beside it; a frame already in this box's memory going to
+    #   this box's own disk is not that. Fencing it would mean "keep that
+    #   one" answers yes at the scope and no from the sofa.
+    # * ``/api/mount`` (including the new ``/api/mount/nudge``) - pointing
+    #   the telescope remotely is the whole point of a relay, and the nudge
+    #   is bounded (1..600 arcmin) and passes the same horizon and
+    #   sun-exclusion gates as every other slew.
+    # * ``/api/planning`` - it writes exposure times and catalogue ids, and
+    #   deliberately does not live under ``/api/config``. Deciding what
+    #   tonight shoots is exactly what a remote operator is doing.
 )
 _UPDATE_MUTATION_PATHS = frozenset({
     "/api/update/check", "/api/update/apply", "/api/update/config",
@@ -2096,6 +2217,12 @@ def create_app(*, bind_host: str | None = None,
     # Before create_app returns, NOT after: the trailing SPA catch-all
     # GET /{path:path} shadows anything registered later (measured: 404).
     app.include_router(region_router)
+    # The three wave-S7 routers, registered HERE for that same measured
+    # reason: a router included after the catch-all answers 404 on every one
+    # of its paths, and nothing else in the app would say so.
+    app.include_router(ephemeris_router)
+    app.include_router(video_router)
+    app.include_router(planning_router)
 
     # ---------------------------------------------------- health + version
     # /healthz is OPEN (no token, no session): the supervisor health-checks it on
@@ -3191,6 +3318,10 @@ def create_app(*, bind_host: str | None = None,
             config_store.set_cooling(body.cooling)
         if body.standards is not None:
             config_store.set_standards(body.standards)
+        if body.focus is not None:
+            config_store.set_focus(body.focus)
+        if body.dew is not None:
+            config_store.set_dew(body.dew)
         if body.alerts is not None:
             config_store.set_alerts(_merge_alert_verified(body.alerts))
         if body.clear_deadman_url:
@@ -3232,6 +3363,8 @@ def create_app(*, bind_host: str | None = None,
           safety               -> config.safety
           cooling              -> config.safety   (warm-down ramp = hardware protection)
           standards            -> config.safety   (frame-quality + give-up thresholds)
+          focus                -> config.safety   (how the focuser is DRIVEN)
+          dew                  -> config.safety   (heater policy on the optics)
           escalation           -> config.alerts   (notification/recovery policy)
           alerts               -> config.alerts
           deadman_url          -> config.alerts
@@ -3250,6 +3383,12 @@ def create_app(*, bind_host: str | None = None,
             "safety": CAP_CONFIG_SAFETY,
             "cooling": CAP_CONFIG_SAFETY,
             "standards": CAP_CONFIG_SAFETY,
+            # Both wave-2 blocks ride config.safety rather than site_optics:
+            # a temp-comp coefficient with the wrong sign drives the focuser
+            # away from focus all night, and a dew policy decides how much
+            # power sits on the glass. Neither is a description of the site.
+            "focus": CAP_CONFIG_SAFETY,
+            "dew": CAP_CONFIG_SAFETY,
             "escalation": CAP_CONFIG_ALERTS,
             "alerts": CAP_CONFIG_ALERTS,
             "deadman_url": CAP_CONFIG_ALERTS,
@@ -3618,6 +3757,13 @@ def create_app(*, bind_host: str | None = None,
                 safety = safety.model_copy(update={
                     "horizon": [(float(a), float(h))
                                 for a, h in loc.horizon_points]})
+            # WHICH saved location is live (#D-FU-1). Set INSIDE the same
+            # mutation as the site and the horizon, not beside it: the
+            # pointer and the coordinates it points at have to land in one
+            # save, or a crash between two writes leaves the config naming a
+            # location whose values it is not using. Server-owned - no route
+            # writes it directly, which is why it is not on ConfigPatchBody.
+            cur.active_location_id = loc.id
             return config_store.set_site_and_safety(site, safety)
 
         cfg = await asyncio.to_thread(_apply)
@@ -3639,6 +3785,18 @@ def create_app(*, bind_host: str | None = None,
             await asyncio.to_thread(location_store.delete, loc_id)
         except KeyError:
             raise HTTPException(404, detail={"code": "not_found"})
+        # A pointer to a location that no longer exists is worse than no
+        # pointer: the Sky hub would show a site name with nothing behind it
+        # and no way to clear it. The COORDINATES stay - deleting the saved
+        # entry is not a request to forget where the rig is standing, and
+        # blanking config.site here would take the horizon with it.
+        if config_store.cfg().active_location_id == loc_id:
+            def _clear():
+                cur = config_store.cfg()
+                cur.active_location_id = None
+                return config_store.bump_and_save()
+            cfg = await asyncio.to_thread(_clear)
+            bus.publish("config", version=cfg.version)
         return {"ok": True}
 
     @app.put("/api/optics")
@@ -5143,6 +5301,12 @@ def create_app(*, bind_host: str | None = None,
             # task but no exposure in flight, and taking a frame is what an
             # operator pauses in order to do. See SequenceEngine.owns_camera.
             raise HTTPException(409, "a sequence is running")
+        if video_recorder.active:
+            # A recording HOLDS the exposure guard for the whole file, so
+            # without this the refusal still happens - inside the spawned
+            # task, after the route has already answered 200. The operator
+            # sees a capture start and no frame arrive.
+            raise HTTPException(409, "a video recording owns the camera")
         try:
             hub.require("camera")
         except DeviceError as e:
@@ -5150,6 +5314,45 @@ def create_app(*, bind_host: str | None = None,
         return _spawn("capture", hub.capture(
             body.exposure_s, body.gain, body.offset, body.binning,
             save=body.save, target=body.target, frame_type=body.frame_type))
+
+    @app.get("/api/capture/last",
+             dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
+    async def capture_last():
+        """The unsaved frame the hub is holding, or an explicit "nothing held"
+        (D-SES-4).
+
+        ``view.status``, not ``view.preview``: this returns the frame's
+        IDENTITY and its settings, never its pixels."""
+        return hub.promotable_summary()
+
+    @app.post("/api/capture/last/save",
+              dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
+    async def capture_last_save(body: PromoteBody | None = None):
+        """Write the held unsaved frame to disk (D-SES-4).
+
+        NOT RELAY-FENCED, and that is a decision rather than an omission. The
+        fence exists for policy that decides what the rig does while nobody is
+        standing next to it - the site, port protection, credentials. This
+        writes one frame already in memory on this box to this box's own disk:
+        it is science, exactly like ``POST /api/capture``, which is not fenced
+        either. Fencing it would mean the answer to "keep that one" is yes at
+        the scope and no from the sofa.
+
+        Awaited rather than ``_spawn``-ed: the caller needs the path back, and
+        the work is one already-decoded frame going to disk on a worker
+        thread, not a lane that can run for minutes."""
+        try:
+            return await hub.promote_last_frame(
+                target=(body.target if body is not None else ""),
+                frame_id=(body.frame_id if body is not None else None))
+        except PromoteRefused as e:
+            # 404 nothing_to_promote / 409 already_saved / 409
+            # frame_id_mismatch - the hub decides which, because only it can
+            # tell "there was never a frame" from "you already saved it".
+            raise HTTPException(e.status,
+                                detail={"detail": e.detail, "code": e.code})
 
     @app.post("/api/capture/loop", dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
     @declare(CAP_CONTROL_CAPTURE)
@@ -5161,6 +5364,12 @@ def create_app(*, bind_host: str | None = None,
             # task but no exposure in flight, and taking a frame is what an
             # operator pauses in order to do. See SequenceEngine.owns_camera.
             raise HTTPException(409, "a sequence is running")
+        if video_recorder.active:
+            # A recording HOLDS the exposure guard for the whole file, so
+            # without this the refusal still happens - inside the spawned
+            # task, after the route has already answered 200. The operator
+            # sees a capture start and no frame arrive.
+            raise HTTPException(409, "a video recording owns the camera")
         try:
             hub.require("camera")
         except DeviceError as e:
@@ -5198,6 +5407,12 @@ def create_app(*, bind_host: str | None = None,
             # task but no exposure in flight, and taking a frame is what an
             # operator pauses in order to do. See SequenceEngine.owns_camera.
             raise HTTPException(409, "a sequence is running")
+        if video_recorder.active:
+            # A recording HOLDS the exposure guard for the whole file, so
+            # without this the refusal still happens - inside the spawned
+            # task, after the route has already answered 200. The operator
+            # sees a capture start and no frame arrive.
+            raise HTTPException(409, "a video recording owns the camera")
         try:
             hub.require("camera")
         except DeviceError as e:
@@ -5267,19 +5482,52 @@ def create_app(*, bind_host: str | None = None,
     @app.get("/api/sequence/stack/preview.jpg",
              dependencies=[Depends(require(CAP_VIEW_PREVIEW))])
     @declare(CAP_VIEW_PREVIEW)
-    async def session_stack_preview(size: int = 1600):
-        got = await asyncio.to_thread(hub.session_stack_preview,
-                                      max(256, min(4096, int(size))))
-        if got is None:
-            raise HTTPException(404, "nothing stacked yet")
+    async def session_stack_preview(size: int = 1600, channel: str = ""):
+        """The session stack as a JPEG: the composite, or ONE channel.
+
+        ``?channel=Ha`` renders that channel's own running mean instead of
+        the colour composite (#D-SES-1), so "show me just Ha" stops being a
+        colour filter over the composite and becomes the Ha stack. The name
+        may be the channel (``Ha``) or the operator's own filter name
+        (``H-alpha``): it is resolved through the same fold the stacker used
+        to decide which accumulator the frame went into, so the two cannot
+        disagree, and the channel actually rendered comes back in
+        ``X-Stack-Channel``.
+
+        TWO DIFFERENT 404s, and the difference is the whole point. An empty
+        stack is "nothing stacked yet"; a channel with no frames is "nothing
+        stacked in that channel yet". One sentence for both would tell an
+        operator whose night is going fine that their run had produced
+        nothing."""
+        capped = max(256, min(4096, int(size)))
+        name = (channel or "").strip()
+        if name:
+            # ``hub.session_stack`` is public and the stacker owns the
+            # resolution, so there is no hub wrapper to add here.
+            got = await asyncio.to_thread(
+                hub.session_stack.channel_preview, name, capped)
+            if got is None:
+                raise HTTPException(404, "nothing stacked in that channel yet")
+        else:
+            got = await asyncio.to_thread(hub.session_stack_preview, capped)
+            if got is None:
+                raise HTTPException(404, "nothing stacked yet")
         jpeg, meta = got
         # NOT cacheable: the same URL returns a different picture every time a
         # frame lands. `seq` is the client's change signal (from the status
         # route), and it is echoed here so a stale render is recognisable.
+        #
+        # ``X-Stack-Frames`` is THIS channel's own count on a channel
+        # request (the stacker substitutes it), because a caption under one
+        # filter's pixels reporting the night's total is the caption lying
+        # about the picture it sits under. ``X-Stack-Channel`` is empty for
+        # the composite, which is how a client tells the two renders apart
+        # without re-reading its own request.
         return Response(jpeg, media_type="image/jpeg", headers={
             "Cache-Control": "no-store",
             "X-Stack-Seq": str(meta.get("seq", 0)),
             "X-Stack-Frames": str(meta.get("frames", 0)),
+            "X-Stack-Channel": str(meta.get("channel", "") or ""),
         })
 
     # ---- live-preview routes (live-preview spec §4.4) ---------------------
@@ -5565,6 +5813,9 @@ def create_app(*, bind_host: str | None = None,
         try:
             cam = hub.require("camera")
             await cam.set_dew_heater(body.power)
+            # A human just moved this heater: the dew loop backs off for the
+            # override window rather than overwriting it on the next tick.
+            dew_controller.note_manual("camera")
             return {"ok": True}
         except DeviceError as e:
             raise _err(e)
@@ -5620,6 +5871,43 @@ def create_app(*, bind_host: str | None = None,
 
     # ---------------------------------------------------------------- mount
 
+    async def _plain_goto(ra_hours: float, dec_deg: float) -> None:
+        """Slew to an absolute J2000 target with NO centring pass.
+
+        HOISTED out of the goto handler so a second route can spawn the same
+        lane. It was a closure over ``body``; a nudge computes its own
+        destination and has no body to close over, and copying the motion fence
+        into a second handler is how two paths that must agree stop agreeing.
+        """
+        tel = hub.require("telescope")
+        # Motion fence (W3.7): serialize the device-touching commit under the
+        # hub motion lock and re-check the epoch immediately before dispatch,
+        # so a STOP/abort that lands while this is awaiting (e.g. a stale
+        # REMOTE goto racing a LOCAL abort) is fenced out at the mount.
+        epoch = hub._motion_epoch
+        async with hub._motion_lock:
+            if not hub._motion_committed_clean(epoch):
+                bus.log("warning", "goto abandoned: aborted before motion", "mount")
+                return
+            if await tel.is_parked():
+                await tel.unpark()
+            await tel.set_tracking(True)
+            if not hub._motion_committed_clean(epoch):
+                bus.log("warning", "goto abandoned: aborted before slew", "mount")
+                return
+            # Drop the field identification BEFORE the tube moves. The
+            # pointing-delta catch-all in hub._current_field_solve would
+            # normally notice, but it compares the mount's REPORTED
+            # position -- and a mount that loses steps keeps reporting the
+            # old one, which is this rig's actual AM5 failure mode. So the
+            # explicit call is the primary and the delta is the backstop.
+            hub.invalidate_field_solve("the mount is slewing to a new target")
+            # A commanded move is what retires a plate-solved centre
+            # (GN-07); the mount's own drifting report is not.
+            hub.note_pointing_moved()
+            await tel.slew(ra_hours, dec_deg)
+        bus.publish("mount", action="slew_complete")
+
     @app.post("/api/mount/goto", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
     @declare(CAP_CONTROL_MOUNT, reaches={"Telescope.slew"})
     async def goto(body: GotoBody):
@@ -5644,36 +5932,55 @@ def create_app(*, bind_host: str | None = None,
             return _spawn("goto", hub.goto_and_center(body.ra_hours, body.dec_deg,
                                                        rotation_deg=body.rotation_deg))
 
-        async def plain_goto():
+        return _spawn("goto", _plain_goto(body.ra_hours, body.dec_deg))
+
+    @app.post("/api/mount/nudge",
+              dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
+    @declare(CAP_CONTROL_MOUNT, reaches={"Telescope.slew"})
+    async def nudge(body: NudgeBody):
+        """Move the tube by a RELATIVE offset on one axis (#D-RIG-4).
+
+        A goto needs a destination; nudging needs an amount. "A bit further
+        east" was only expressible as a jog - hold a direction for as long as
+        you think - which is a stopwatch and a guess, and the deadman makes it
+        a short one. This is the same intent as a number.
+
+        NOT ``center=True``: a nudge is a small deliberate offset, and
+        re-centring on a plate solve would undo the very thing that was asked
+        for."""
+        try:
             tel = hub.require("telescope")
-            # Motion fence (W3.7): serialize the device-touching commit under the
-            # hub motion lock and re-check the epoch immediately before dispatch,
-            # so a STOP/abort that lands while this is awaiting (e.g. a stale
-            # REMOTE goto racing a LOCAL abort) is fenced out at the mount.
-            epoch = hub._motion_epoch
-            async with hub._motion_lock:
-                if not hub._motion_committed_clean(epoch):
-                    bus.log("warning", "goto abandoned: aborted before motion", "mount")
-                    return
-                if await tel.is_parked():
-                    await tel.unpark()
-                await tel.set_tracking(True)
-                if not hub._motion_committed_clean(epoch):
-                    bus.log("warning", "goto abandoned: aborted before slew", "mount")
-                    return
-                # Drop the field identification BEFORE the tube moves. The
-                # pointing-delta catch-all in hub._current_field_solve would
-                # normally notice, but it compares the mount's REPORTED
-                # position -- and a mount that loses steps keeps reporting the
-                # old one, which is this rig's actual AM5 failure mode. So the
-                # explicit call is the primary and the delta is the backstop.
-                hub.invalidate_field_solve("the mount is slewing to a new target")
-                # A commanded move is what retires a plate-solved centre
-                # (GN-07); the mount's own drifting report is not.
-                hub.note_pointing_moved()
-                await tel.slew(body.ra_hours, body.dec_deg)
-            bus.publish("mount", action="slew_complete")
-        return _spawn("goto", plain_goto())
+        except DeviceError as e:
+            raise _err(e)
+        try:
+            arcmin = parse_nudge(body.axis, body.arcmin)
+        except ValueError as e:
+            raise HTTPException(422, detail={"detail": str(e),
+                                             "code": "out_of_range"})
+        try:
+            cur_ra, cur_dec = await tel.get_position()
+        except DeviceError as e:
+            raise _err(e)
+        # The mount reports its OWN frame; a real Alpaca mount reports JNOW.
+        # Convert FIRST and slew J2000 - the frame every other target on this
+        # server is in. Nudging in the mount's frame and slewing the answer as
+        # J2000 would add a precession-sized error to EVERY tap.
+        from_ra, from_dec = await hub.from_mount_frame(tel, cur_ra, cur_dec)
+        to_ra, to_dec = nudge_target(from_ra, from_dec, body.axis, arcmin)
+        # The DESTINATION passes the same two gates a goto does. A nudge is
+        # small, but "small" is exactly how a tube walks below a tree line or
+        # into the solar cone one tap at a time.
+        blocked = _horizon_block(to_ra, to_dec)
+        if blocked is not None:
+            raise HTTPException(409, detail=blocked)
+        solar = _solar_block(to_ra, to_dec)
+        if solar is not None:
+            raise HTTPException(409, detail=solar)
+        started = _spawn("goto", _plain_goto(to_ra, to_dec))
+        return {**started,
+                "from": {"ra_hours": from_ra, "dec_deg": from_dec},
+                "to": {"ra_hours": to_ra, "dec_deg": to_dec},
+                "arcmin": arcmin}
 
     @app.get("/api/align/guide-offset",
              dependencies=[Depends(require(CAP_VIEW_STATUS))])
@@ -5721,11 +6028,16 @@ def create_app(*, bind_host: str | None = None,
     async def move_axis(body: MoveAxisBody):
         try:
             tel = hub.require("telescope")
-            # Touch-safety rate clamp: manual slew is capped at ±TOUCH_MAX_RATE
-            # (worst-case ≤0.72° uncommanded travel at the 1.2s deadman). Gross
-            # repositioning is GOTO's job; no 2-4°/s manual band exists.
-            rate = max(-TOUCH_MAX_RATE_DEG_S,
-                       min(TOUCH_MAX_RATE_DEG_S, body.rate_deg_s))
+            # Touch-safety rate clamp, now the DRIVER'S ceiling rather than a
+            # constant. TOUCH_MAX_RATE_DEG_S (0.6) is what a mount that cannot
+            # say gets; a driver that reports ``max_rate_deg_s`` gets its own
+            # measured figure. On the AM5 that is 1.44 deg/s, which raises the
+            # worst-case uncommanded travel at the 1.2 s deadman from 0.72 to
+            # 1.73 degrees - a deliberate trade the owner made, and the number
+            # the slew-pad copy states out loud. Gross repositioning is still
+            # GOTO's job.
+            ceiling = getattr(tel, "max_rate_deg_s", None) or TOUCH_MAX_RATE_DEG_S
+            rate = max(-ceiling, min(ceiling, body.rate_deg_s))
             # Sun-exclusion cone (W1.10) for manual jog: a non-zero move while the
             # mount is ALREADY pointed inside the cone would dwell/drive at the
             # Sun. Gate on the CURRENT pointing (best-effort: if we can't read the
@@ -6302,24 +6614,100 @@ def create_app(*, bind_host: str | None = None,
 
     # --------------------------------------------------------------- switch
 
+    def _switch_profile_id() -> str | None:
+        """Which profile's port settings apply. Ports are named per rig."""
+        return config_store.cfg().active_profile_id
+
     @app.get("/api/switch/ports", dependencies=[Depends(require(CAP_VIEW_STATUS))])
     @declare(CAP_VIEW_STATUS)
     async def switch_ports():
+        """The power box's ports, annotated with the protection policy (#D-RIG-5).
+
+        ``protect_during_run`` is the STORED tri-state (null = nobody has
+        decided, follow the name); ``protected_now`` is the effective answer
+        already ANDed with a live run. The annotation is on COPIES - the driver
+        reports a port's value, not who may change it."""
         try:
             sw = hub.require("switch")
-            return [p.__dict__ for p in await sw.get_ports()]
+            return [p.__dict__ for p in power_guard.annotate(
+                await sw.get_ports(),
+                run_active=bool(getattr(hub.engine, "running", False)),
+                profile_id=_switch_profile_id())]
         except DeviceError as e:
             raise _err(e)
 
     @app.post("/api/switch/set", dependencies=[Depends(require(CAP_CONTROL_POWER))])
     @declare(CAP_CONTROL_POWER)
     async def switch_set(body: SwitchBody):
+        """Set one port, unless a live run protects it (#D-RIG-5).
+
+        THE REFUSAL COMES BEFORE THE WRITE. The lock used to be a regex in a
+        React sheet, which meant curl could cut power to the mount mid-sequence
+        and the server would do it without comment. A guard that refuses after
+        the write has already cut the power is not a guard - and from the
+        status code alone the two are indistinguishable."""
         try:
             sw = hub.require("switch")
+            profile_id = _switch_profile_id()
+            run_active = bool(getattr(hub.engine, "running", False))
+            ports = await sw.get_ports()
+            target = next((p for p in ports if p.id == body.port_id), None)
+            if target is not None:
+                why = power_guard.refusal(target, run_active=run_active,
+                                          profile_id=profile_id)
+                if why is not None:
+                    raise HTTPException(409, detail={
+                        "detail": why, "code": "port_protected",
+                        "port_id": target.id, "port_name": target.name})
             await sw.set_port(body.port_id, body.value)
-            return [p.__dict__ for p in await sw.get_ports()]
+            # The dew loop has to know a human just touched a heater, so it
+            # backs off for the override window instead of overwriting the
+            # change on its next tick. Called UNCONDITIONALLY: the controller
+            # filters out ports that do not follow the dew margin, and a second
+            # copy of that decision here is a second copy to drift.
+            dew_controller.note_manual("switch", body.port_id)
+            return [p.__dict__ for p in power_guard.annotate(
+                await sw.get_ports(), run_active=run_active,
+                profile_id=profile_id)]
         except (DeviceError, RuntimeError) as e:
+            # HTTPException is NOT caught here on purpose: the 409 above must
+            # reach the client with its structured body, not be re-wrapped.
             raise _err(e)
+
+    @app.put("/api/switch/ports/{port_id}",
+             dependencies=[Depends(require(CAP_CONFIG_SAFETY))])
+    @declare(CAP_CONFIG_SAFETY)
+    async def switch_port_settings(port_id: int, body: SwitchPortSettingsBody):
+        """Write one port's protection/dew settings (#D-RIG-5).
+
+        ``config.safety``, not ``control.power``: this does not operate a port,
+        it decides which ports the ENGINE refuses to let anyone operate during
+        a run. The shipped operator holds neither, and that is the point - they
+        can switch the ports, they cannot re-point what is protected.
+
+        ABSENT MEANS UNCHANGED, read off ``model_fields_set``. The switch is
+        required FIRST so a disconnected power box fails before anything
+        persists."""
+        try:
+            sw = hub.require("switch")
+            ports = await sw.get_ports()
+        except DeviceError as e:
+            raise _err(e)
+        present = body.model_fields_set
+        try:
+            power_guard.set_port_settings(
+                port_id,
+                protect_during_run=(body.protect_during_run
+                                    if "protect_during_run" in present
+                                    else UNCHANGED),
+                follow_dew=(body.follow_dew if "follow_dew" in present
+                            else UNCHANGED),
+                profile_id=_switch_profile_id())
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+        return [p.__dict__ for p in power_guard.annotate(
+            ports, run_active=bool(getattr(hub.engine, "running", False)),
+            profile_id=_switch_profile_id())]
 
     # ---------------------------------------------------------------- guide
 
@@ -7082,6 +7470,16 @@ def create_app(*, bind_host: str | None = None,
         rows = found.rows
         if principal.has(CAP_VIEW_SITE_DERIVED):
             for r in rows:
+                # A SATELLITE ARRIVES WITH ITS OWN alt/az and must keep it.
+                # Its ra_hours/dec_deg are GEOCENTRIC - the direction from
+                # the centre of the Earth - while its alt/az came from the
+                # TOPOCENTRIC vector at this site. For a body 400 km up those
+                # are not the same direction, so recomputing here would
+                # overwrite the right answer with one tens of degrees out,
+                # and the row would still look perfectly well-formed. Every
+                # other kind is far enough away that the two coincide.
+                if r.get("kind") == "satellite":
+                    continue
                 alt, az = altaz(r["ra_hours"], r["dec_deg"],
                                 hub.site["latitude"], hub.site["longitude"])
                 r["alt"] = round(alt, 1)

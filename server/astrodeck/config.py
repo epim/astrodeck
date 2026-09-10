@@ -999,15 +999,19 @@ class FocusConfig(BaseModel):
     0 disables it: a focuser with no measurable backlash pays two moves per
     outward step for nothing.
 
-    WHERE IT IS SET, honestly: in ``astrodeck.json``, with the server stopped
-    (the store loads the file once and rewrites it on every save, so an edit
-    made while it is running is lost at the next write). It is READ back on
-    every ``/api/config``, so what the rig is doing is always visible. There is
-    deliberately no write route: an endpoint no screen calls is a feature no
-    user can reach, and ``test_routes_have_callers`` says so out loud. The
-    shipped 200 is right for this rig's EAF, so the knob is a mechanical
-    correction for a DIFFERENT focuser rather than a nightly setting — when one
-    turns up that needs it often, it earns a control and a route together.
+    WHERE IT IS SET. Through ``POST /api/config {"focus": ...}``, gated on
+    ``config.safety`` beside the other blocks that protect the hardware and
+    the run, and READ back on every ``/api/config`` so what the rig is doing
+    is always visible. It can still be edited in ``astrodeck.json`` with the
+    server stopped (the store loads the file once and rewrites it on every
+    save, so an edit made while it is running is lost at the next write).
+
+    THIS BLOCK USED TO SAY there was deliberately no write route, on the
+    reasoning that an endpoint no screen calls is a feature no user can
+    reach. That reasoning was right and the conclusion was backwards: the
+    answer to a knob with no screen is a screen, and ``temp_comp`` below
+    arrived needing one nightly (#D-RIG-2). The route is a fix, not a
+    widening.
     """
     #: How far past an OUT target to travel before returning to it, in focuser
     #: steps. Comfortably larger than the tens of steps measured on the EAF,

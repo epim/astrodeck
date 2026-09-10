@@ -583,9 +583,20 @@ def test_ws_valid_principal_survives_recheck(tmp_path, monkeypatch):
             got = None
             for _ in range(50):
                 ev = ws.receive_json()
-                if ev.get("type") == "log":
-                    got = ev
-                    break
+                if ev.get("type") != "log":
+                    continue
+                # CONTINUE past a log that is not ours, do not latch it. This
+                # used to break on the FIRST log event and then assert its
+                # message, which made the test order-dependent: any earlier
+                # test that left a coalesced hub log in flight (a device
+                # warning, a config publish) put a different message at the
+                # head of the queue and this failed with "still-alive" nowhere
+                # in sight. The socket surviving is what is under test, and the
+                # arrival of OUR event is what proves it.
+                if ev.get("data", {}).get("message") != "still-alive":
+                    continue
+                got = ev
+                break
             assert got is not None and got["data"]["message"] == "still-alive"
 
 
@@ -1687,3 +1698,156 @@ def test_an_admin_still_gets_to_scan(tmp_path, monkeypatch):
         for path in _DISCOVERY_ROUTES:
             r = c.get(path)
             assert r.status_code != 403, f"{path} refused an ADMIN: {r.text[:200]}"
+
+
+# ======================================================== wave-S7 role matrix
+# One row per route wave S7 added or re-capped, graded for all four shipped
+# roles. The point is the DECISION (403 or not), because that is the half a
+# copy-paste of the wrong ``require(...)`` gets wrong silently: a route that
+# 403s nobody looks identical to a working one until the wrong person uses it.
+#
+# The second half of each row is the set of codes an ALLOWED caller may see in
+# this harness, which has no devices connected and an empty capture tree. It is
+# there so "allowed" cannot quietly degrade into "404, route missing" - the
+# shape that made the atlas routers unreachable behind the SPA catch-all.
+
+_DENY = "403"
+
+#: (method, path, body, {role: expected}), where expected is ``_DENY`` or a set
+#: of acceptable status codes.
+_S7_MATRIX = (
+    # -- ephemerides (D-SKY-1) ------------------------------------------------
+    ("GET", "/api/ephemeris/status", None,
+     {"viewer": {200}, "syncer": {200}, "operator": {200}, "admin": {200}}),
+    # config.site_optics, not a view cap and not control.*: this makes the
+    # SERVER dial out to CelesTrak. An operator running tonight's session does
+    # not get to trigger an outbound fetch.
+    ("POST", "/api/ephemeris/refresh", {"which": "satellites"},
+     {"viewer": _DENY, "syncer": _DENY, "operator": _DENY, "admin": {202}}),
+    # A pass is when a named object crosses THIS sky: it is f(site, target),
+    # so it rides view.site_derived exactly as the Moon's row does. 409 is the
+    # route's OWN refusal on a rig whose site is still the default - a low-orbit
+    # satellite is tens of degrees apart from two towns, so it will not place
+    # one from a guess - and this harness has no site configured.
+    ("GET", "/api/satellites/passes", None,
+     {"viewer": _DENY, "syncer": _DENY, "operator": {200, 409},
+      "admin": {200, 409}}),
+
+    # -- promote the last frame (D-SES-4) ------------------------------------
+    ("GET", "/api/capture/last", None,
+     {"viewer": {200}, "syncer": {200}, "operator": {200}, "admin": {200}}),
+    # 404 here is "nothing is held", which is the honest answer on a box that
+    # has taken no frame - not a missing route.
+    ("POST", "/api/capture/last/save", {},
+     {"viewer": _DENY, "syncer": _DENY, "operator": {200, 404},
+      "admin": {200, 404}}),
+
+    # -- SER video (D-RIG-1) --------------------------------------------------
+    ("POST", "/api/capture/video",
+     {"fps": 10.0, "exposure_ms": 5.0, "gain": 100},
+     {"viewer": _DENY, "syncer": _DENY, "operator": {202, 409},
+      "admin": {202, 409}}),
+    ("GET", "/api/capture/video", None,
+     {"viewer": {200}, "syncer": {200}, "operator": {200}, "admin": {200}}),
+    ("POST", "/api/capture/video/stop", None,
+     {"viewer": _DENY, "syncer": _DENY, "operator": {200}, "admin": {200}}),
+    ("GET", "/api/captures/video", None,
+     {"viewer": {200}, "syncer": {200}, "operator": {200}, "admin": {200}}),
+    # THE SPLIT THAT MATTERS. The .ser IS raw science data, so it rides
+    # view.media - which the SYNCER holds and the OPERATOR does not. The stack
+    # PNG is a rendered picture, so it rides view.preview - which the operator
+    # and the viewer hold and the syncer does not. The two roles are orthogonal
+    # and this pair of rows is where that stops being a claim.
+    ("GET", "/api/captures/video/nope-01.ser", None,
+     {"viewer": _DENY, "syncer": {200, 404}, "operator": _DENY,
+      "admin": {200, 404}}),
+    ("GET", "/api/captures/video/nope-01/stack.png", None,
+     {"viewer": {200, 404}, "syncer": _DENY, "operator": {200, 404},
+      "admin": {200, 404}}),
+    ("DELETE", "/api/captures/video/nope-01", None,
+     {"viewer": _DENY, "syncer": _DENY, "operator": {200, 404},
+      "admin": {200, 404}}),
+    ("POST", "/api/captures/video/nope-01/stack", {"keep_pct": 25.0},
+     {"viewer": _DENY, "syncer": _DENY, "operator": {202, 404},
+      "admin": {202, 404}}),
+
+    # -- the nudge (D-RIG-4) --------------------------------------------------
+    # control.mount, like every other thing that moves the tube. 409 here is
+    # "no telescope connected".
+    ("POST", "/api/mount/nudge", {"axis": "ra", "arcmin": 5.0},
+     {"viewer": _DENY, "syncer": _DENY, "operator": {200, 409},
+      "admin": {200, 409}}),
+
+    # -- protected ports (D-RIG-5) --------------------------------------------
+    # config.safety and NOT control.power, which is the whole point: the
+    # shipped operator holds control.power nowhere and still must not be able
+    # to re-point which ports the engine protects. 409 for the admin here is
+    # "no switch connected" - the route requires the device before it persists
+    # anything, so a disconnected box cannot half-apply a policy.
+    ("PUT", "/api/switch/ports/1", {"follow_dew": True},
+     {"viewer": _DENY, "syncer": _DENY, "operator": _DENY,
+      "admin": {200, 409}}),
+
+    # -- planning prefs (D-FU-1) ----------------------------------------------
+    # The pool discloses nothing site-related, so a viewer reads the same list.
+    ("GET", "/api/planning", None,
+     {"viewer": {200}, "syncer": {200}, "operator": {200}, "admin": {200}}),
+    # control.capture, NOT a config cap: these settings decide what tonight
+    # shoots, and the shipped operator - who holds no config.* at all - is
+    # exactly who decides that.
+    ("PUT", "/api/planning", {"pool": ["M31"]},
+     {"viewer": _DENY, "syncer": _DENY, "operator": {200}, "admin": {200}}),
+)
+
+
+@pytest.fixture
+def _s7_offline(monkeypatch):
+    """No outbound fetch and no devices, for every row of the matrix.
+
+    ``POST /api/ephemeris/refresh`` really does dial CelesTrak, and an RBAC
+    test that reaches the internet is a test that fails on a train. The stub
+    keeps the ROUTE (and therefore the 202 an admin must get) while removing
+    the socket."""
+    from astrodeck.catalog.ephemeris import elements as _elements
+
+    monkeypatch.setattr(_elements.ephemeris_store, "start_refresh",
+                        lambda which: None)
+    saved = dict(app_module.hub.devices)
+    app_module.hub.devices.clear()
+    try:
+        yield
+    finally:
+        app_module.hub.devices.clear()
+        app_module.hub.devices.update(saved)
+
+
+@pytest.mark.parametrize("role", ["viewer", "syncer", "operator", "admin"])
+def test_the_wave_s7_routes_grade_every_shipped_role(tmp_path, monkeypatch,
+                                                     role, _s7_offline):
+    import astrodeck.planning as planning_mod
+
+    _store, app = _make_client(tmp_path, monkeypatch)
+    # planning.py binds ``config_store`` by name at import, so the isolated
+    # store has to be pointed at there too or the PUT writes the developer's
+    # real config (tests/conftest.py catches that, loudly, at session teardown).
+    monkeypatch.setattr(planning_mod, "config_store", _store)
+    _install(principal_for_role(role))
+    with TestClient(app) as c:
+        for method, path, body, expected in _S7_MATRIX:
+            want = expected[role]
+            r = c.request(method, path, json=body)
+            if want is _DENY:
+                assert r.status_code == 403, (
+                    f"{method} {path} answered {r.status_code} for a {role}; "
+                    f"the matrix says 403. A wrong code here is a wrong "
+                    f"REASON: 401 sends the UI to a login it does not need, "
+                    f"404 says the feature does not exist: {r.text[:200]}")
+            else:
+                assert r.status_code != 403, (
+                    f"{method} {path} 403'd a {role} that the matrix allows: "
+                    f"{r.text[:200]}")
+                assert r.status_code in want, (
+                    f"{method} {path} answered {r.status_code} for a {role}; "
+                    f"expected one of {sorted(want)}. A 404 here would mean "
+                    f"the router never made it in front of the SPA catch-all: "
+                    f"{r.text[:200]}")

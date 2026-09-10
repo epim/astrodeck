@@ -176,3 +176,64 @@ def test_the_backfill_route_exists_and_needs_the_stack_on(client):
     r = client.post("/api/sequence/stack/backfill")
     assert r.status_code == 200, r.text
     assert r.json()["enabled"] is True
+
+
+# ---- ?channel= : one filter's own stack (D-SES-1) -----------------------
+# The composite is a colour render of every channel. "Show me just Ha" used to
+# be a colour filter over that picture; these four pin that it is now the Ha
+# stack, rendered on its own reference frame, with the answer echoed back in a
+# header so the caller is told what it got rather than assuming.
+
+def test_no_channel_is_still_the_composite(client):
+    assert client.post("/api/sequence/stack/start").status_code == 200
+    _stack_two_filters()
+    composite = client.get("/api/sequence/stack/preview.jpg")
+    empty = client.get("/api/sequence/stack/preview.jpg?channel=")
+    assert empty.status_code == 200, empty.text
+    assert empty.content == composite.content, (
+        "an empty channel is not the L channel, it is no channel asked for")
+    assert composite.headers.get("x-stack-channel") == "", (
+        "the composite must say it is the composite, not name a channel")
+
+
+def test_a_filter_name_resolves_to_its_channel(client):
+    """The caller asks in the OPERATOR's vocabulary (their wheel says
+    ``H-alpha``) and is answered in the stacker's (``Ha``) - through the same
+    fold ``add`` used to pick the accumulator, so the two cannot disagree."""
+    assert client.post("/api/sequence/stack/start").status_code == 200
+    st = app_module.hub.session_stack
+    st.add(_field(seed=4), "H-alpha", 120.0, target="M42")
+    r = client.get("/api/sequence/stack/preview.jpg?channel=H-alpha")
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"] == "image/jpeg"
+    assert r.content[:2] == bytes((0xFF, 0xD8)), "a JPEG SOI marker"
+    assert r.headers["x-stack-channel"] == "Ha"
+    assert r.headers["x-stack-frames"] == "1", (
+        "a caption under ONE filter's pixels must count that filter's frames, "
+        "not the night's total")
+
+
+def test_a_channel_with_no_frames_has_its_own_404(client):
+    """Distinct from the empty-stack 404 on purpose. One sentence for both
+    would tell an operator whose R and G are stacking fine that their run has
+    produced nothing."""
+    assert client.post("/api/sequence/stack/start").status_code == 200
+    _stack_two_filters()
+    r = client.get("/api/sequence/stack/preview.jpg?channel=Sii")
+    assert r.status_code == 404, r.text
+    assert "in that channel" in r.text
+    empty = client.post("/api/sequence/stack/reset")
+    assert empty.status_code == 200
+    whole = client.get("/api/sequence/stack/preview.jpg")
+    assert whole.status_code == 404
+    assert "in that channel" not in whole.text
+
+
+def test_a_channel_render_is_no_more_cacheable_than_the_composite(client):
+    assert client.post("/api/sequence/stack/start").status_code == 200
+    _stack_two_filters()
+    r = client.get("/api/sequence/stack/preview.jpg?channel=R")
+    assert r.status_code == 200, r.text
+    assert r.headers.get("cache-control") == "no-store"
+    assert r.headers["x-stack-channel"] == "R"
+    assert "x-stack-seq" in r.headers

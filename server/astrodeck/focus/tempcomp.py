@@ -84,8 +84,12 @@ class TempCompConfig(BaseModel):
     A refractor's focus walks with temperature at a rate that is a property of
     the OTA and the focuser together, and it is measurable: focus at 12 C,
     focus again at 4 C, divide the step difference by the degrees. That number
-    is `steps_per_c`, and it is signed - a tube that shrinks as it cools needs
-    the drawtube to come IN, which on this rig is negative.
+    is `steps_per_c`, and it is signed: under this module's formula
+    (`position = reference_position + steps_per_c * (temperature -
+    reference_temp)`) a POSITIVE coefficient brings the drawtube IN as the
+    night cools, which is what a tube that shrinks as it cools wants. See THE
+    SIGN CONVENTION in the module docstring; measure it with the sign
+    attached rather than inferring it.
 
     THIS IS NOT `standards.refocus_on_temp_delta_c`, and the two must not be
     confused. That one is a TRIGGER: when the temperature has moved this far,

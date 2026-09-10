@@ -138,6 +138,40 @@ def test_an_operator_searching_for_iss_gets_the_satellite(client, as_role):
     assert rows[0]["mag"] is None
 
 
+def test_the_route_does_not_recompute_a_satellites_alt_az(client, as_role):
+    """``GET /api/catalog`` fills in alt/az for a ``view.site_derived`` caller by
+    running ``altaz`` over each row's RA/Dec. A satellite must be SKIPPED, and
+    the reason is that its two coordinate pairs are in different frames:
+    ``ra_hours``/``dec_deg`` are GEOCENTRIC (the direction from the centre of
+    the Earth) while ``alt``/``az`` came from the TOPOCENTRIC vector at this
+    site (satellites.py). For a body 400 km up those are not the same
+    direction, so the recompute replaced a right answer with one tens of
+    degrees out - and the row still looked perfectly well-formed, which is why
+    nothing downstream could have caught it.
+
+    Graded against what the ephemeris itself produced, not against a constant:
+    a hard-coded pair would go stale the day the fixture's epoch moves.
+
+    Sabotage: drop the ``kind == "satellite"`` guard in the route."""
+    from astrodeck.catalog import altaz, round_az_deg
+    import astrodeck.api.app as _app
+
+    as_role("operator")
+    r = client.get("/api/catalog", params={"q": "iss"})
+    assert r.status_code == 200
+    row = next(x for x in r.json() if x.get("kind") == "satellite")
+
+    recomputed_alt, recomputed_az = altaz(row["ra_hours"], row["dec_deg"],
+                                          _app.hub.site["latitude"],
+                                          _app.hub.site["longitude"])
+    assert row["alt"] is not None and row["az"] is not None
+    # The two frames must actually DISAGREE here, or this test would pass with
+    # the guard removed and prove nothing.
+    assert abs(row["alt"] - round(recomputed_alt, 1)) > 1.0         or abs(row["az"] - round_az_deg(recomputed_az)) > 1.0, (
+        "the geocentric recompute happens to match: pick a fixture epoch where "
+        "the ISS is not near the horizon-crossing where the two frames agree")
+
+
 def test_a_viewer_searching_for_iss_gets_no_rows_and_the_reason(client,
                                                                 as_role):
     """An empty result set is not an answer. "There are no satellites" and
@@ -280,7 +314,19 @@ _DEW = {"enabled": True, "following": True, "override_until_ts": None,
         "margin_c": 2.4, "temp_c": 11.8, "dewpoint_c": 9.4, "power_pct": 38,
         "reason": "following the dew point",
         "ports": [{"id": "p1", "name": "Dew band", "follow_dew": True,
-                   "value": 38}]}
+                   "value": 38},
+                  {"id": "p2", "name": "Bench light", "follow_dew": False,
+                   "value": 1}]}
+
+
+def _dew() -> dict:
+    """A DEEP copy of the fixture.
+
+    ``_dew()`` is shallow, so the ports list and its rows are the module
+    fixture's own. A stripper that edits a row in place would then be graded
+    against a fixture it had already rewritten -- the assertion passes because
+    both sides moved, and the next test in the file inherits the damage."""
+    return {**_DEW, "ports": [dict(row) for row in _DEW["ports"]]}
 
 
 def test_the_dew_readings_are_stripped_for_a_non_weather_principal():
@@ -290,7 +336,7 @@ def test_the_dew_readings_are_stripped_for_a_non_weather_principal():
     rather than about the air."""
     from astrodeck.api.redact import _redact_site_for
 
-    out = _redact_site_for({"dew": dict(_DEW)}, principal_for_role("viewer"))
+    out = _redact_site_for({"dew": _dew()}, principal_for_role("viewer"))
     dew = out["dew"]
     for key in ("margin_c", "temp_c", "dewpoint_c"):
         assert key not in dew, f"{key} reached a caller without view.weather"
@@ -299,7 +345,20 @@ def test_the_dew_readings_are_stripped_for_a_non_weather_principal():
         "publishing it publishes the margin")
     assert dew["enabled"] is True and dew["following"] is True
     assert dew["reason"] == "following the dew point"
-    assert dew["ports"] == _DEW["ports"]
+    # THE ROW SURVIVES, ITS LEVEL DOES NOT. A following port's value IS the
+    # duty cycle this loop just wrote to it, so it is power_pct wearing a port
+    # id -- the same continuous function of the margin, at whatever resolution
+    # the caller cares to sample. The id, the name and the fact that it follows
+    # are equipment, and they stay.
+    following, other = dew["ports"]
+    assert following["id"] == "p1" and following["name"] == "Dew band"
+    assert following["follow_dew"] is True
+    assert following["value"] is None, (
+        "a dew-following port's level is the margin re-encoded")
+    # A port that does NOT follow keeps its value: nobody derived it from the
+    # air, and blanking it would hide a bench light for no reason.
+    assert other["value"] == 1
+    assert _DEW["ports"][0]["value"] == 38, "the fixture was mutated in place"
 
 
 def test_an_operator_keeps_the_dew_readings():
@@ -307,7 +366,7 @@ def test_an_operator_keeps_the_dew_readings():
     it off ``view.site_precise``), so this must not be keyed on the wrong cap."""
     from astrodeck.api.redact import _redact_site_for
 
-    out = _redact_site_for({"dew": dict(_DEW)}, principal_for_role("operator"))
+    out = _redact_site_for({"dew": _dew()}, principal_for_role("operator"))
     assert out["dew"]["margin_c"] == 2.4
     assert out["dew"]["power_pct"] == 38
 
@@ -318,7 +377,7 @@ def test_a_syncer_loses_the_dew_readings_too():
     exactly the principal this rule is for."""
     from astrodeck.api.redact import _redact_site_for
 
-    out = _redact_site_for({"dew": dict(_DEW)}, principal_for_role("syncer"))
+    out = _redact_site_for({"dew": _dew()}, principal_for_role("syncer"))
     assert "margin_c" not in out["dew"] and out["dew"]["power_pct"] is None
 
 
@@ -328,13 +387,20 @@ def test_the_ws_push_strips_dew_without_mutating_the_shared_event():
     site node and the mount node are copied before they are scrubbed."""
     from astrodeck.api.redact import _redact_ws_event
 
-    ev = {"type": "status", "data": {"dew": dict(_DEW)}}
+    ev = {"type": "status", "data": {"dew": _dew()}}
     viewer = _redact_ws_event(ev, principal_for_role("viewer"))
     assert "margin_c" not in viewer["data"]["dew"]
     assert viewer["data"]["dew"]["power_pct"] is None
     assert ev["data"]["dew"]["margin_c"] == 2.4, "the shared event was mutated"
+    # The ports list is one level DEEPER than the copy the seam makes (it copies
+    # the dew dict, not its rows), so a stripper that wrote through a row would
+    # take the level out of the admin's copy as well and nothing above would
+    # notice. This is the assertion that says it did not.
+    assert ev["data"]["dew"]["ports"][0]["value"] == 38, (
+        "the shared event's port rows were mutated")
     admin = _redact_ws_event(ev, principal_for_role("admin"))
     assert admin["data"]["dew"]["margin_c"] == 2.4
+    assert admin["data"]["dew"]["ports"][0]["value"] == 38
 
 
 def test_a_dew_node_of_an_unexpected_shape_fails_closed():
@@ -360,7 +426,7 @@ def test_a_principal_holding_site_caps_but_not_weather_still_loses_dew():
 
     p = Principal(role="custom", caps=frozenset({
         CAP_VIEW_STATUS, CAP_VIEW_SITE_PRECISE, CAP_VIEW_SITE_DERIVED}))
-    out = _redact_site_for({"dew": dict(_DEW)}, p)
+    out = _redact_site_for({"dew": _dew()}, p)
     assert "margin_c" not in out["dew"] and out["dew"]["power_pct"] is None
-    ev = _redact_ws_event({"type": "status", "data": {"dew": dict(_DEW)}}, p)
+    ev = _redact_ws_event({"type": "status", "data": {"dew": _dew()}}, p)
     assert "margin_c" not in ev["data"]["dew"]
