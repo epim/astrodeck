@@ -1024,7 +1024,7 @@ export default function SequenceView() {
                   : undefined}
                 className="m-0 p-0 border-0 min-w-0 disabled:opacity-40
                   [&_.panel]:!absolute md:[&_.panel]:!left-auto md:[&_.panel]:!right-0">
-                <CatalogSearch onPick={addTarget} placeholder="+ add target — e.g. M 31" />
+                <CatalogSearch onPick={addTarget} placeholder="+ add target - e.g. M 31" />
               </fieldset>
             </div>
           }>

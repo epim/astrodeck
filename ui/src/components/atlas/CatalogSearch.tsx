@@ -75,7 +75,7 @@ export function dropdownShiftPx(
 
 export function CatalogSearch({
   onPick,
-  placeholder = "Search catalog — e.g. M 31",
+  placeholder = "Search catalog - e.g. M 31",
   className = "w-56",
 }: {
   onPick: (e: CatalogEntry) => void;

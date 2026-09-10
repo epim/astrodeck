@@ -19,10 +19,15 @@
 //    under the search field says.
 //
 // THE SEARCH FIELD is `components/atlas/CatalogSearch` mounted as it is. Its
-// placeholder ("Search catalog — e.g. M 31") is load-bearing: whatever the
-// example shows, a beginner types, and the server was changed so that exact
-// string finds M31. Re-typing the widget here would lose that, its zero-result
-// copy, its outside-tap dismissal and its stale-response guard.
+// placeholder ("Search catalog - e.g. M 31") is load-bearing, but the dash in
+// it is not: what a beginner copies out of the example is the spaced
+// designation "M 31", and that is the token the server actually matches -
+// squash_designation (server/astrodeck/catalog/objects.py:185-197) lowercases
+// and drops every separator before comparing, and
+// server/tests/test_catalog.py:24 pins "M 31" finding M31. The placeholder's
+// punctuation never reaches the wire. Re-typing the widget here would lose
+// the search behaviour itself, though: its zero-result copy, its outside-tap
+// dismissal and its stale-response guard.
 
 import { useState, type JSX } from "react";
 import type { SheetProps } from "../../sheets";
