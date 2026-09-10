@@ -1,32 +1,40 @@
-// profiles.tsx - the PROFILES sheet (plan A.3 / deviation E29).
+// profiles.tsx - the PROFILES sheet (plan hub-rig.md A.3 / deviation E29).
 //
 // The popover on the devices screen is the quick switch. This is the library:
-// rename, update-from-rig, import, export, delete, and save-current - all of it
-// already implemented, correctly, in `components/settings/ProfileList`, which
-// takes no props and reads the store itself. So this file is chrome around it.
+// activate, rename, update-from-rig, import, export, delete, and save-current.
 //
-// Re-skinning ProfileList into the new language is a NAMED follow-up, not this
-// wave: its four irreversible actions (delete, update-from-rig, import, and the
-// activate that tears the running rig down first) carry friction and copy that
-// took several rounds to get right, and re-drawing them is a change worth its
-// own review rather than a side effect of moving the screen.
+// STAGE 2, CLOSING THE STAGE-1 DECISION THIS FILE USED TO DOCUMENT. Wave 1
+// mounted `components/settings/ProfileList` whole - two `Panel`s, five native
+// `disabled` attributes, a `LockedChip` on Delete and no stated reason at all
+// on the other four controls - and named the re-skin as a follow-up, on the
+// grounds that its irreversible actions carry friction and copy that took
+// several rounds to get right. Wave R7's T-R7-17 is that follow-up, and it
+// keeps every one of those judgements by SHARING them rather than re-typing
+// them: `profileActivateConfirm` (what an activate DROPS, not what it
+// attaches), `profileDeleteConfirm` (what is and is not lost, and the
+// hold-confirm on the active profile), `profileOverrideSummary` (#129) and
+// `waitForProfileActive` all still decide. Only the presentation is new. The
+// legacy panel is not edited and still serves `#/classic`.
+//
+// THE LIVE LINE IS FED BY THE EDITOR. It used to run its own `listProfiles()`
+// once on mount and never again, so after an activate or a delete the header
+// went on naming the profile that had just been replaced. The editor hands up
+// the same rows it is rendering, so the two cannot disagree.
+//
+// THE READ-ONLY SENTENCE IS NOT REPEATED HERE. The editor renders one
+// `LockNote` from the same gate every control reads; a second sentence under
+// the list was the shape ARCHITECTURE.md section 8 asks the `LockNote`
+// primitive to remove.
 
-import { useEffect, useState, type JSX } from "react";
+import { useState, type JSX } from "react";
 import { Mono, Sheet } from "../../../ui";
 import { NxIcon } from "../../../icons";
 import { nav } from "../../../router";
-import { listProfiles } from "../../../../api/backends";
-import ProfileList from "../../../../components/settings/ProfileList";
-import { accessPhrase, useCanConfigBackend } from "../../../../lib/caps";
+import { ProfilesEditor } from "../profiles";
 import type { ProfileRow } from "../../../../types";
 
 export function ProfilesSheet(): JSX.Element {
   const [rows, setRows] = useState<ProfileRow[] | null>(null);
-  const canConfig = useCanConfigBackend();
-
-  useEffect(() => {
-    listProfiles().then(setRows).catch(() => setRows(null));
-  }, []);
 
   const active = (rows ?? []).find((r) => r.active) ?? null;
   const live = rows == null
@@ -47,12 +55,7 @@ export function ProfilesSheet(): JSX.Element {
         drops the rig running now before it connects anything - it is a swap, not
         an addition.
       </Mono>
-      <ProfileList />
-      {!canConfig && (
-        <Mono size={11} tone="dim">
-          {`Read-only - changing profiles needs ${accessPhrase("config.backend")}.`}
-        </Mono>
-      )}
+      <ProfilesEditor onRows={setRows} />
       <div style={{ height: 8 }} />
     </Sheet>
   );

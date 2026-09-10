@@ -1,0 +1,204 @@
+/* profiles.css - the RIG > PROFILES area's own classes (wave R7, T-R7-17).
+ *
+ * `next.css` is one shared file that twenty concurrent tasks cannot own, so
+ * every class this area needs lives here and is imported by the area root
+ * (`ProfilesEditor.tsx`), never added to `NextApp.tsx`.
+ *
+ * Rules this file keeps: single-class selectors only, variants on `data-*`, no
+ * class defined in `next.css` appears in any selector here (not even as an
+ * ancestor - a `.nx-prof-actions .nx-btn` rule would still be redefining a
+ * shared primitive from an area file), only tokens already declared by
+ * `index.css` are read, and every animation is dropped under
+ * `prefers-reduced-motion`.
+ */
+
+.nx-prof {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+/* Eyebrow left, IMPORT + REFRESH right. Wraps rather than squeezing either
+   button below the 44 px hit floor on a 360 px phone. */
+.nx-prof-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.nx-prof-headact {
+  display: inline-flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.nx-prof-note {
+  margin: 6px 0 10px;
+  font-family: "IBM Plex Sans", sans-serif;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text-faint);
+}
+
+.nx-prof-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* ------------------------------------------------------------------- card */
+
+.nx-prof-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.nx-prof-cardhead {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+
+/* The active marker. It is a SHAPE plus the ACTIVE pill beside it, never hue
+   alone: under the night palette every accent collapses toward one red, and a
+   dot that only changed colour would say nothing at 2am. */
+.nx-prof-led {
+  flex: 0 0 auto;
+  width: 10px;
+  height: 10px;
+  margin-top: 4px;
+  border-radius: 999px;
+  border: 1px solid var(--line-bright);
+  background: transparent;
+}
+
+.nx-prof-led[data-on="true"] {
+  border-color: var(--accent);
+  background: var(--accent);
+  box-shadow: 0 0 10px rgba(0, 210, 255, 0.45);
+}
+
+.nx-prof-ident {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.nx-prof-nameline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.nx-prof-name {
+  font-family: "IBM Plex Sans", sans-serif;
+  font-size: 13.5px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.nx-prof-sub {
+  display: block;
+  margin-top: 3px;
+}
+
+/* --------------------------------------------------------------- overrides */
+
+/* Spelled out, not badged. The values are the point: "overrides" with nothing
+   after it is exactly the label a tired user skips. */
+.nx-prof-overrides {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 0;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-left-width: 3px;
+  border-left-color: var(--line-bright);
+  border-radius: var(--nx-r-tile);
+}
+
+/* An override on the ACTIVE profile is a fact about the rig running now, so it
+   is raised; on any other profile it is a warning about the next activate. */
+.nx-prof-overrides[data-active="true"] {
+  border-left-color: var(--warn);
+}
+
+.nx-prof-overtext {
+  font-family: "IBM Plex Sans", sans-serif;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text-dim);
+  min-width: 0;
+}
+
+/* ---------------------------------------------------------------- actions */
+
+.nx-prof-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+/* DELETE is pushed to the far right of whichever line it wraps onto and given
+   a rule of its own, so it is the furthest control from the safe set rather
+   than embedded in it. Measured on the legacy card at x=96 on a 390 px phone -
+   directly under a right thumb, 6 px from EXPORT. */
+.nx-prof-danger {
+  display: inline-flex;
+  margin-left: auto;
+  padding-left: 8px;
+  border-left: 1px solid var(--line);
+}
+
+/* Quiet chrome at rest. The danger tone belongs in the confirm dialog, where
+   it means something; on the row a red glow only pulls a thumb toward the one
+   action that cannot be undone. Still well past AA on the card ground. */
+.nx-prof-delete {
+  color: var(--text-dim);
+}
+
+/* ----------------------------------------------------------------- rename */
+
+.nx-prof-rename {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+/* ------------------------------------------------------------------- save */
+
+.nx-prof-save {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.nx-prof-saverow {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.nx-prof-savefield {
+  flex: 1 1 200px;
+  min-width: 0;
+}
