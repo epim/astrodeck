@@ -427,7 +427,10 @@ await testAsync("the flowNode sheet opens on flows.editNode and BACK clears it",
   resetRouterCacheForTests();
   await act(async () => { useStore.getState().flowsSetEditNode("n-cap"); });
 
-  const Sheet = flowInspectorSheets.flowNode;
+  // The registry is `{ id, load }` since the cutover (D-FU-2 code-splitting),
+  // so the sheet is FETCHED rather than named - which is also the assertion that
+  // the loader really resolves to this area's component.
+  const Sheet = (await flowInspectorSheets.flowNode.load()).default;
   await mount(createElement(Sheet as any, { params: {}, depth: 0 }));
 
   assert(tid("session-flow-node") != null, "no session-flow-node marker");
@@ -444,13 +447,13 @@ await testAsync("the flowNode sheet opens on flows.editNode and BACK clears it",
 
 await testAsync("with nothing being edited the sheet says so instead of rendering blank", async () => {
   await act(async () => { useStore.getState().flowsSetEditNode(null); });
-  const Sheet = flowInspectorSheets.flowNode;
+  const Sheet = (await flowInspectorSheets.flowNode.load()).default;
   await mount(createElement(Sheet as any, { params: {}, depth: 0 }));
   assert(tid("flow-node-empty") != null, "an empty stage sheet rendered nothing at all");
 });
 
 await testAsync("the flowPalette sheet renders the palette", async () => {
-  const Sheet = flowInspectorSheets.flowPalette;
+  const Sheet = (await flowInspectorSheets.flowPalette.load()).default;
   await mount(createElement(Sheet as any, { params: {}, depth: 0 }));
   assert(tid("session-flow-palette") != null, "no session-flow-palette marker");
   assert(tid("palette-type-capture") != null, "the palette sheet offered no stages");

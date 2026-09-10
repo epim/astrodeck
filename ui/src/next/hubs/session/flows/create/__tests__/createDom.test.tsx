@@ -671,8 +671,16 @@ await testAsync("an operator without control.mount can SAVE but not RUN", async 
 test("the area registers exactly the two sheet names the cutover expects", () => {
   eq(Object.keys(area.flowCreateSheets).sort().join(","), "flowNew,flowQuick",
     "T-R7-20 imports this map; a renamed key is a sheet that silently is not in it");
-  eq(area.flowCreateSheets.flowNew, FlowNewSheet, "flowNew is the wizard");
-  eq(area.flowCreateSheets.flowQuick, FlowQuickSheet, "flowQuick is the quick sheet");
+});
+
+await testAsync("each registry entry fetches THIS area's sheet, not a name that resolves to nothing", async () => {
+  // `{ id, load }`, not the component, since the cutover made the flows sheets
+  // code-split (D-FU-2). Identity is still what is asserted - it is just on the
+  // far side of the loader, which is the half that could silently point at the
+  // wrong module.
+  eq((await area.flowCreateSheets.flowNew.load()).default, FlowNewSheet, "flowNew is the wizard");
+  eq((await area.flowCreateSheets.flowQuick.load()).default, FlowQuickSheet,
+    "flowQuick is the quick sheet");
 });
 
 test("the six helpers sky/sheets/quick.tsx needs are exported from create/index.ts", () => {

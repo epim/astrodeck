@@ -22,8 +22,8 @@
 // exist now" reflex, a scaffold - with no compile error and no runtime error to
 // find it by.
 //
-// The other half is the four names. A registry that resolves to an object is
-// not evidence it holds the right screens.
+// The other half is the names. A registry that resolves to an object is not
+// evidence it holds the right screens.
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -132,11 +132,16 @@ test("session/sheets.ts does not exist - it would shadow session/sheets/", () =>
     "precondition: the registry this test is about is where it says it is");
 });
 
-// ========================================================= 2. the four names
+// ========================================================= 2. the ten names
 
-test("the registry holds exactly the SESSION hub's four sheets", () => {
+test("the registry holds exactly the SESSION hub's ten sheets", () => {
   const names = Object.keys(sheets).sort();
-  eq(names.join(","), "archive,files,planEditor,report",
+  // Six of the ten arrived with wave R7's Flows cutover (T-R7-20), each from its
+  // own area's `flow*Sheets` export rather than from an edit to the registry
+  // file - which is why a lost half is a compile error here and not a name that
+  // is quietly absent from the map.
+  eq(names.join(","),
+    "archive,files,flowNew,flowNode,flowPalette,flowQuick,flowStages,flowTonight,planEditor,report",
     "one name missing here is one screen the router cannot reach");
 });
 

@@ -13,6 +13,15 @@
 // Back button pops it. `flows.editNode` still says WHICH stage, because that is
 // the store field every canvas control already writes; BACK clears it, so the
 // route and the store cannot disagree about whether a stage is being edited.
+//
+// THE CALIBRATION MATRIX ARRIVES HERE AT THE CUTOVER (T-R7-20). `tonight/`
+// exports `CalibrationMatrixCard` beside its own sheet precisely because LIBRARY
+// HEALTH has two homes - the TONIGHT sheet's PLAN tab, and a CALIBRATION QUEUE
+// stage's editor - and the inspector area was not allowed to import a sibling
+// area while the four were built in parallel. The cutover is what wires the
+// second mount, and it wires it in BOTH places the editor renders: the desktop
+// column (`FlowsCanvasHost`) and this sheet, which is the tablet and phone door
+// to the same stage. One of the two would have been a breakpoint-shaped hole.
 
 import type { JSX } from "react";
 
@@ -22,7 +31,8 @@ import { PALETTE_TYPES } from "../../../../../components/flows/palette";
 import { nav } from "../../../../router";
 import { NxIcon } from "../../../../icons";
 import { EmptyCard, Sheet } from "../../../../ui";
-import type { SheetComponent, SheetProps } from "../../../sheets";
+import type { SheetProps, SheetRegistry } from "../../../sheets";
+import { CalibrationMatrixCard } from "../tonight/CalibrationMatrixCard";
 import { FlowInspectorColumn } from "./FlowInspectorColumn";
 import { ADD_STAGE_TITLE, FlowPaletteRail } from "./FlowPaletteRail";
 import "./inspector.css";
@@ -65,7 +75,11 @@ export function FlowNodeSheet({ params }: SheetProps): JSX.Element {
       onBack={close}
     >
       {def && node ? (
-        <FlowInspectorColumn variant="sheet" nodeId={node.id} />
+        <FlowInspectorColumn
+          variant="sheet"
+          nodeId={node.id}
+          calibSlot={<CalibrationMatrixCard />}
+        />
       ) : (
         <div className="nx-flownode-empty">
           <EmptyCard
@@ -96,8 +110,22 @@ export function FlowPaletteSheet(_props: SheetProps): JSX.Element {
 }
 
 /** Registered by the cutover task into the SESSION hub's sheet registry. Names
- *  are GLOBAL across the app (`hubs/index.ts` throws on a collision). */
-export const flowInspectorSheets: Record<string, SheetComponent> = {
-  flowNode: FlowNodeSheet,
-  flowPalette: FlowPaletteSheet,
+ *  are GLOBAL across the app (`hubs/index.ts` throws on a collision).
+ *
+ *  `{ id, load }`, not the components: sheets are code-split (D-FU-2), so a
+ *  registry hands `hubs/index.ts` a module identity and one line that fetches
+ *  it. `id` is what the duplicate check compares - two hubs registering one
+ *  name each build their own `lazy()` wrapper, and comparing those by identity
+ *  would report the contract working as a collision. Both sheets live in THIS
+ *  module, so both ids name it and the export disambiguates them, the same way
+ *  `rig/sheets/index.ts` spells its in-file `demo` sheet. */
+export const flowInspectorSheets: SheetRegistry = {
+  flowNode: {
+    id: "session/flows/inspector/sheets:FlowNodeSheet",
+    load: () => import("./sheets").then((m) => ({ default: m.FlowNodeSheet })),
+  },
+  flowPalette: {
+    id: "session/flows/inspector/sheets:FlowPaletteSheet",
+    load: () => import("./sheets").then((m) => ({ default: m.FlowPaletteSheet })),
+  },
 };

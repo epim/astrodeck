@@ -9,13 +9,22 @@
 // QUEUE node. The inspector task cannot import this directory, so the cutover
 // wires that second mount.
 
-import type { SheetComponent } from "../../../sheets";
-import { FlowTonightSheet } from "./TonightSheet";
+import type { SheetRegistry } from "../../../sheets";
 
 /** Sheet names are GLOBAL across the app (`hubs/index.ts` throws on a
- *  collision), which is why this one is `flowTonight` rather than `tonight`. */
-export const flowTonightSheets: Record<string, SheetComponent> = {
-  flowTonight: FlowTonightSheet,
+ *  collision), which is why this one is `flowTonight` rather than `tonight`.
+ *
+ *  `{ id, load }`, not the component: sheets are code-split (D-FU-2), so the
+ *  registry carries a module identity and the one line that fetches it. The
+ *  `import()` is deliberately NOT the static import this file used to make -
+ *  `hubs/index.ts` is in the entry chunk and pulls every hub's registry
+ *  synchronously, so a registry that named its component eagerly would put the
+ *  whole TONIGHT area in front of first paint. */
+export const flowTonightSheets: SheetRegistry = {
+  flowTonight: {
+    id: "session/flows/tonight/TonightSheet",
+    load: () => import("./TonightSheet").then((m) => ({ default: m.FlowTonightSheet })),
+  },
 };
 
 export { FlowTonightSheet, TONIGHT_NO_FLOW } from "./TonightSheet";

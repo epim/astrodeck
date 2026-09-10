@@ -21,10 +21,21 @@
 import type { JSX } from "react";
 
 import type { FlowCard } from "../../../../lib/flowsApi";
-import { ActionButton } from "../../../ui";
+import { ActionButton, Pill } from "../../../ui";
 import { lockedAttrs, lockedClass } from "../../../ui/honest";
 
 export type FlowVerb = "run" | "resume" | "live";
+
+/** Where the row body goes. The canvas is the tablet and desktop workspace; the
+ *  stage list is the phone's whole way inside a flow (wave R7 section 4). The
+ *  row needs to know which, because "Open M31 on the flows canvas" read out by a
+ *  screen reader on a phone would name a screen that phone will never show. */
+export type FlowOpenTarget = "canvas" | "stages";
+
+/** The word the library puts on a flow that was saved a moment ago. A word and
+ *  not only the highlight ring: a ring is a colour, and a colour is not a
+ *  readable claim (README, and `FlowLibrary`'s own `highlightId` rule). */
+export const JUST_SAVED = "JUST SAVED";
 
 /** The word AND the glyph, so the state is never carried by colour. */
 const VERB_LABEL: Record<FlowVerb, string> = {
@@ -42,10 +53,19 @@ export interface FlowRowProps {
   dotColor: string;
   verb: FlowVerb;
   busy?: boolean;
+  /** True for the flow the library was just told about (`flows.ui.highlightId`),
+   *  which is how a wizard or quick-flow save says which row is the new one. */
+  highlight?: boolean;
+  /** What the row body opens. Drives the accessible name, so the promise the
+   *  row makes is the screen the press actually produces. */
+  openTarget?: FlowOpenTarget;
   /** Why RUN / RESUME cannot act, or null. From `runBlockedReason`, never
    *  hand-written. LIVE is a navigation and is never locked. */
   runReason: string | null;
-  /** Why OPEN cannot act - the canvas reason on a phone - or null. */
+  /** Why OPEN cannot act, or null. Null at every breakpoint since the cutover:
+   *  the phone opens the stage list instead of being told the canvas is
+   *  elsewhere. Kept as a prop because a flow whose id the router cannot reach
+   *  still needs a sentence rather than a dead press. */
   openReason: string | null;
   onRun: () => void;
   onResume: () => void;
@@ -55,7 +75,8 @@ export interface FlowRowProps {
 }
 
 export function FlowRow({
-  card, meta, dotColor, verb, busy = false, runReason, openReason,
+  card, meta, dotColor, verb, busy = false, highlight = false,
+  openTarget = "canvas", runReason, openReason,
   onRun, onResume, onLive, onOpen, onExplain,
 }: FlowRowProps): JSX.Element {
   const live = verb === "live";
@@ -87,7 +108,9 @@ export function FlowRow({
         type="button"
         data-testid={`flow-open-${card.id}`}
         className={lockedClass(openReason)}
-        aria-label={`Open ${card.name} on the flows canvas`}
+        aria-label={openTarget === "stages"
+          ? `Open ${card.name}'s stage list`
+          : `Open ${card.name} on the flows canvas`}
         onClick={() => { if (openReason) { onExplain(openReason); return; } onOpen(); }}
         style={{
           flex: 1, minWidth: 0, display: "flex", flexDirection: "column",
@@ -99,14 +122,28 @@ export function FlowRow({
         {...lockedAttrs(openReason)}
       >
         <span
-          className="nx-display"
           style={{
-            fontSize: 11.5, letterSpacing: ".1em",
-            whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
-            maxWidth: "100%",
+            display: "flex", alignItems: "center", gap: 8,
+            minWidth: 0, maxWidth: "100%",
           }}
         >
-          {card.name}
+          <span
+            className="nx-display"
+            style={{
+              fontSize: 11.5, letterSpacing: ".1em",
+              whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+              minWidth: 0,
+            }}
+          >
+            {card.name}
+          </span>
+          {/* A `Pill` with no `onClick` renders a span, so this is legal inside
+              the row-body button and is not a second tab stop. */}
+          {highlight && (
+            <span data-testid={`flow-new-${card.id}`} style={{ flex: "none" }}>
+              <Pill tone="good">{JUST_SAVED}</Pill>
+            </span>
+          )}
         </span>
         <span
           className="nx-mono"
