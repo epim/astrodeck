@@ -28,6 +28,25 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+// ------------------------------------------------------------------ css stub
+// `NextApp` imports `next.css` and `shell/shell.css` - it is the single import
+// site for both, by contract, so that the cascade order cannot depend on module
+// resolution order. Node has no idea what a `.css` file is, so a synchronous
+// load hook answers with an empty module. This is the ONLY way to keep both
+// facts true at once: the app has one style entry point, and that entry point
+// is still mountable in a test.
+{
+  const { registerHooks } = await import("node:module");
+  registerHooks({
+    load(url: string, context: any, nextLoad: any) {
+      if (url.endsWith(".css")) {
+        return { format: "module", shortCircuit: true, source: "export default {};" };
+      }
+      return nextLoad(url, context);
+    },
+  } as any);
+}
+
 // ---------------------------------------------------------------- jsdom first
 const { JSDOM } = await import("jsdom");
 const dom = new JSDOM(
