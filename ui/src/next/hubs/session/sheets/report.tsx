@@ -1,28 +1,24 @@
-// report.tsx - the end-of-night report, whole and unmodified.
+// report.tsx - the NIGHT REPORT sheet.
 //
-// `views/ReportView` self-subscribes and takes no props (`export default
-// function ReportView()`), so mounting it inside the new `Sheet` chrome is the
-// whole of this file. That is deliberate and is what the plan asks for: the
-// report carries the picker's three states, the end-reason chip, the by-filter
-// and by-target tables, the safety-events timeline, three trend lines, the
-// stacking-bundle panel and frames.csv - and every one of those survives
-// BECAUSE nothing here re-implements it.
+// WHAT CHANGED IN R7. This file used to mount `views/ReportView` whole, and
+// said so: the report survived because nothing here re-implemented it. Wave R7
+// closes that (decision D-SES-3): `hubs/session/report/**` is the report in the
+// new UI's own vocabulary, sharing the LOGIC (`lib/reportChart.ts`,
+// `lib/bundleView.ts`, `lib/eta.ts`, `api/reports.ts`) and re-implementing only
+// presentation. `views/ReportView.tsx` is untouched and still renders at
+// `#/classic/report`.
 //
-// The report PICKER at its top is redundant inside a sheet opened for one id.
-// It stays: removing it would mean editing `ReportView`, which is not this
-// task's file, and a second way to reach another night costs nothing.
-//
-// `params.id` is accepted and NOT forced onto the view. `ReportView` selects
-// `lastReportId` or the newest report on its own and takes no id prop; passing
-// one would mean forking it. The id is used only to say which night the sheet
-// was opened for, so a deep link that lands on a different report is visible
-// rather than silent.
+// `params.id` is now HONOURED rather than announced. The old file passed no id
+// to `ReportView` (which selects `lastReportId` or the newest report on its
+// own) and printed a line asking the user to pick the right night out of the
+// picker. `ReportScreen` takes the id, so a deep link opens the report it
+// names; the picker is still there for reading another night.
 
 import type { JSX } from "react";
-import ReportView from "../../../../views/ReportView";
+import { ReportScreen } from "../report";
 import { nav } from "../../../router";
 import { NxIcon } from "../../../icons";
-import { Mono, Sheet } from "../../../ui";
+import { Sheet } from "../../../ui";
 import type { SheetProps } from "../../sheets";
 
 export function ReportSheet({ params }: SheetProps): JSX.Element {
@@ -35,13 +31,7 @@ export function ReportSheet({ params }: SheetProps): JSX.Element {
       icon={<NxIcon name="monitor" size={18} />}
       onBack={() => nav.back()}
     >
-      {id && (
-        <Mono size={10} tone="dim">
-          The picker below starts on the newest report; pick {id} if this sheet
-          was opened from an older session.
-        </Mono>
-      )}
-      <ReportView />
+      <ReportScreen reportId={id || undefined} />
     </Sheet>
   );
 }
