@@ -20,6 +20,15 @@ import { fmtExposure } from "../../../../components/ui/CameraPickers";
 import { ActionButton, Checkbox22, Label, Mono, Stepper2 } from "../../../ui";
 import type { PreviewInfo } from "../../../../types";
 
+/** What the sigma actually does, and the one setting of it that is not a
+ *  mistake. Verbatim from `views/CaptureView.tsx:1437-1443`, with the em-dash
+ *  rule applied. Dropping it left a stepper whose 0 looked like "off by
+ *  accident" rather than the deliberate answer for a moving subject. */
+export const CLIP_SIGMA_NOTE =
+  "A pixel this far above the running average is treated as a satellite or "
+  + "aircraft trail and kept out of the stack. Lower rejects more; 0 turns it "
+  + "off, which is what you want if the thing you are imaging is itself moving.";
+
 export interface CaptureControlsProps {
   count: number;
   exposureS: number;
@@ -147,6 +156,9 @@ export function CaptureControls(props: CaptureControlsProps): JSX.Element {
             label="Trail rejection sigma"
             data-testid="live-sigma"
           />
+        )}
+        {props.clipEnabled && (
+          <Mono size={10} tone="dim">{CLIP_SIGMA_NOTE}</Mono>
         )}
         <Mono size={10} tone="dim">
           Sent when the stack STARTS. Changing it mid-stack does not reach the one

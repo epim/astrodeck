@@ -42,8 +42,11 @@ import { useBreakpoint } from "../../../breakpoint";
 import { useLock } from "../../../lib/gateHook";
 import {
   useConfig, useEgainLearn, useEquipConnected, useFrameSettings, usePhotometry,
-  usePreview, useSequence, useStatus, useStore,
+  usePolar, usePreview, useSequence, useStatus, useStore,
 } from "../../../../store";
+// The polar sentence and its two-channel test, shared with Rig - Capture rather
+// than re-spelled here: one alignment, one string (r4 #25).
+import { POLAR_REASON, isPolarBusy } from "../capture/captureGate";
 import { resolveRoleConnected } from "../../../../lib/caps";
 import { warmReadout } from "../../../../lib/cooling";
 import { suggestSubLength } from "../../../../lib/photometry";
@@ -251,6 +254,12 @@ export function CameraSheet(_p: SheetProps): JSX.Element {
   const role = resolveRoleConnected("camera", status?.backend_links, status?.connected, equipConnected);
 
   // ---- who owns the camera right now
+  const polar = usePolar();
+  // r4 #25: an alignment holds the camera for its whole run and spawns its own
+  // lane (server/astrodeck/hub.py:297). This sheet named the sequence and never
+  // named polar, so MEASURE GAIN - which exposes repeatedly at two gains - was
+  // live through an alignment and came back as a raw 409.
+  const polarOwns = isPolarBusy(polar.state, status?.busy_lanes) ? POLAR_REASON : null;
   const seqState = sequence?.state ?? null;
   const flowOwns = seqState === "running" || seqState === "paused";
   const ownExtra = !flowOwns ? null
@@ -270,7 +279,7 @@ export function CameraSheet(_p: SheetProps): JSX.Element {
   const frameReason = frameCapture.lockedReason ?? frameLooping.lockedReason;
   const measuring = egainLearn?.state === "running";
   const egainReason = egainLane.lockedReason ?? frameLooping.lockedReason
-    ?? (measuring ? EGAIN_RUNNING_REASON : null);
+    ?? polarOwns ?? (measuring ? EGAIN_RUNNING_REASON : null);
   const explain = coolerLock.onExplain;
 
   // ---- the cooling curve: what THIS browser has been told the sensor is at.

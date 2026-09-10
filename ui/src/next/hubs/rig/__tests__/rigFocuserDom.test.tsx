@@ -74,7 +74,11 @@ g.fetch = async (url: string, init?: { method?: string; body?: string }) => {
 const { createElement, act } = await import("react");
 const { createRoot } = await import("react-dom/client");
 const { useStore } = await import("../../../../store");
-const { FocuserSheet, FOCUSER_FOOTER, groupSteps } = await import("../sheets/focuser");
+const {
+  FocuserSheet, FOCUSER_FOOTER, FOCUS_FRAME_NOTE, LOOP_RUNNING_REASON, groupSteps,
+  shutterWait,
+} = await import("../sheets/focuser");
+const { POLAR_REASON } = await import("../capture/captureGate");
 type RigStatus = import("../../../../types").RigStatus;
 
 // ------------------------------------------------------------------ harness
@@ -218,6 +222,9 @@ const text = () => (container.textContent || "") as string;
 const button = (label: string) =>
   qa("button").find((b: any) => (b.textContent || "").trim() === label);
 const moves = () => asked.filter((a) => a.url.includes("/api/focuser/move"));
+const captures = () => asked.filter((a) => /\/api\/capture(\?|$)/.test(a.url));
+const loops = () => asked.filter((a) => a.url.includes("/api/capture/loop"));
+const testid = (id: string) => q(`[data-testid="${id}"]`);
 const byAria = (label: string) =>
   qa("[aria-label]").find((n: any) => n.getAttribute("aria-label") === label);
 
@@ -396,6 +403,160 @@ await testAsync("the filter-offset rule writes the WHOLE standards block", async
     + "every standard the user did not touch");
   assert("min_stars" in body.standards,
     "the standards block was not sent whole");
+});
+
+// ================================= 6. the shutter at the `focus` frame scope
+// r4 #11. Before this row `focusCaptureBody` appeared exactly once on the whole
+// sheet, inside `applyPreset` behind `if (!looping) return`, so the focus
+// exposure, gain and binning could only reach a live frame by RESTARTING a loop
+// somebody else had started from Rig - Capture at the `capture` scope - while
+// AF_SETTINGS_NOTE and `sweepReadiness`'s refusal both told the user to press a
+// Single that did not exist.
+await testAsync("SINGLE posts /api/capture with the FOCUS scope's own body", async () => {
+  seed();
+  mount();
+  await settle();
+  asked.length = 0;
+  const single = testid("focus-single");
+  assert(single != null, "there is no SINGLE on the focuser sheet at all");
+  eq(single.getAttribute("aria-disabled"), null,
+    "precondition: an operator with a camera found SINGLE locked");
+  click(single);
+  await settle();
+
+  const posts = captures();
+  eq(posts.length, 1, `SINGLE did not POST /api/capture (asked ${JSON.stringify(asked)})`);
+  eq(posts[0].method, "POST", "the capture was not a POST");
+  const body = posts[0].body as Record<string, unknown>;
+  eq(JSON.stringify(Object.keys(body).sort()),
+    JSON.stringify(["binning", "exposure_s", "gain", "offset", "save"]),
+    "the focus capture body's field set is not focusCaptureBody's");
+  // FRAMES.focus, not FRAMES.capture: the whole point of the row is that the
+  // numbers in AUTOFOCUS SETTINGS are the numbers that get shot.
+  eq(body.exposure_s, 3, "SINGLE shot the capture scope's exposure, not the focus scope's");
+  eq(body.gain, 200, "SINGLE shot the capture scope's gain, not the focus scope's");
+  eq(body.binning, 1, "binning");
+  eq(body.save, false,
+    "a focus frame was written to the library - focusCaptureBody sends save:false and "
+    + "`hub.start_loop` has no save parameter at all");
+
+  // The one surface that says where the frame just went. Without it a Single
+  // that saves nothing and draws nothing on THIS sheet is indistinguishable
+  // from a Single that did nothing at all.
+  assert(text().includes(FOCUS_FRAME_NOTE),
+    "nothing on the sheet says the frames land on the live stage on Rig - Capture");
+});
+
+await testAsync("LOOP posts /api/capture/loop with that same body", async () => {
+  seed();
+  mount();
+  await settle();
+  asked.length = 0;
+  click(testid("focus-loop"));
+  await settle();
+  eq(loops().length, 1, `LOOP did not POST /api/capture/loop (asked ${JSON.stringify(asked)})`);
+  const body = loops()[0].body as Record<string, unknown>;
+  eq(body.exposure_s, 3, "the loop was started at the wrong exposure");
+  eq(body.gain, 200, "the loop was started at the wrong gain");
+});
+
+await testAsync("STOP is never lane-locked, and SINGLE and LOOP are", async () => {
+  // Every lane that owns the camera at once. STOP is the only way out of any of
+  // them, and gating it on the lane it exists to end is the bug the seam
+  // inventory records three separate times.
+  seed({ status: focStatus({ busy_lanes: ["capture", "looping"], looping: true }) });
+  mount();
+  await settle();
+
+  const single = testid("focus-single");
+  eq(single.getAttribute("aria-disabled"), "true",
+    "SINGLE stayed live over a running loop - /api/capture would 409 at the capture lock");
+  eq(single.getAttribute("title"), LOOP_RUNNING_REASON,
+    "SINGLE is locked but does not say a loop is why");
+
+  const stop = testid("focus-stop");
+  assert(stop != null, "precondition: STOP must be on screen");
+  eq(stop.getAttribute("aria-disabled"), null,
+    "STOP was locked by the very lane it exists to end - the escape hatch is gone");
+  asked.length = 0;
+  click(stop);
+  await settle();
+  eq(asked.filter((a) => a.url.includes("/api/capture/stop")).length, 1,
+    "pressing STOP during a loop did not reach /api/capture/stop");
+});
+
+await testAsync("a viewer sees the shutter, told why, and pressing it asks nothing",
+  async () => {
+    seed({ principal: VIEWER });
+    mount();
+    await settle();
+    asked.length = 0;
+    for (const id of ["focus-single", "focus-loop", "focus-stop"]) {
+      const el = testid(id);
+      assert(el != null, `${id} was hidden from the viewer instead of locked`);
+      eq(el.getAttribute("aria-disabled"), "true", `${id} is live for a viewer`);
+      assert((el.getAttribute("title") || "").length > 0, `${id} carries no reason`);
+      assert(el.hasAttribute("disabled") === false,
+        `${id} used the native disabled attribute, which takes the reason out of the a11y tree`);
+      click(el);
+    }
+    await settle();
+    eq(asked.length, 0, `a viewer's presses reached the rig: ${JSON.stringify(asked)}`);
+  });
+
+test("the wait narration says both numbers when the frame never arrives", () => {
+  const t0 = 1_000_000;
+  eq(shutterWait({ startedAt: null, exposureS: 4, now: t0 }), null,
+    "something was narrated before any frame was accepted");
+  eq(shutterWait({ startedAt: t0, exposureS: 4, now: t0 + 1000 })?.text,
+    "exposing · 3 s left", "the countdown is wrong");
+  eq(shutterWait({ startedAt: t0, exposureS: 4, now: t0 + 5000 })?.text,
+    "reading out…", "a finished exposure does not say it is reading out");
+  const late = shutterWait({ startedAt: t0, exposureS: 4, now: t0 + 74_000 })!;
+  eq(late.tone, "warn", "a dropped frame is not marked as a problem");
+  assert(/74 s/.test(late.text) && /4 s exposure/.test(late.text),
+    `the dropped-frame sentence must carry BOTH numbers, got ${JSON.stringify(late.text)}`);
+  for (const n of [
+    shutterWait({ startedAt: t0, exposureS: 4, now: t0 + 1000 })!.text,
+    shutterWait({ startedAt: t0, exposureS: 4, now: t0 + 5000 })!.text,
+    late.text,
+  ]) {
+    assert(!/[\u2014\u2013]/.test(n), `an em-dash or en-dash reached a UI string: ${n}`);
+  }
+});
+
+// ============================== 7. polar alignment owns the camera (r4 #25)
+await testAsync("with the polar lane busy every camera control says so", async () => {
+  seed({ status: focStatus({ busy_lanes: ["polar"] }) });
+  mount();
+  await settle();
+
+  for (const [what, el] of [
+    ["AUTOFOCUS NOW", button("AUTOFOCUS NOW")],
+    ["FIND FOCUS ROUGHLY FIRST", button("FIND FOCUS ROUGHLY FIRST")],
+    ["BAHTINOV START", button("START")],
+    ["SINGLE", testid("focus-single")],
+    ["LOOP", testid("focus-loop")],
+  ] as [string, any][]) {
+    assert(el != null, `precondition: ${what} is not on the sheet`);
+    eq(el.getAttribute("aria-disabled"), "true",
+      `${what} pressed through a polar alignment - the rig answers that with a raw 409`);
+    eq(el.getAttribute("title"), POLAR_REASON,
+      `${what} is locked but does not name the alignment`);
+  }
+
+  // The escape hatches stay live: an alignment does not own the drawtube, and
+  // STOP is the only way to end a capture it may have left running.
+  eq(button("HALT").getAttribute("aria-disabled"), null,
+    "HALT was locked by an alignment that does not own the focuser");
+  eq(testid("focus-stop").getAttribute("aria-disabled"), null,
+    "STOP was locked by an alignment - the escape hatch is gone");
+
+  asked.length = 0;
+  click(button("AUTOFOCUS NOW"));
+  click(testid("focus-single"));
+  await settle();
+  eq(asked.length, 0, `a press during an alignment reached the rig: ${JSON.stringify(asked)}`);
 });
 
 test("the position is grouped the way the design writes it", () => {

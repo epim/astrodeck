@@ -396,6 +396,44 @@ await testAsync("a 13-slot wheel drops the ring and keeps every slot reachable",
       "the thirteenth slot is unreachable in the list fallback");
   });
 
+// ============== polar alignment owns the camera on this sheet too (r4 #25)
+// LEARN OFFSETS steps the focuser through every filter, exposing at each stop.
+// Polar alignment holds the camera for its whole run and spawns its own lane
+// (server/astrodeck/hub.py:297), which this sheet never named - so the run
+// started, collided, and came back as a raw 409.
+await testAsync("LEARN OFFSETS is honest-disabled while an alignment owns the camera",
+  async () => {
+    const { POLAR_REASON } = await import("../capture/captureGate");
+    const learnButton = () =>
+      qa("button").find((b: any) => (b.textContent || "").trim() === "LEARN OFFSETS");
+
+    seed();
+    mount();
+    await settle();
+    const before = learnButton();
+    assert(before != null, "precondition: LEARN OFFSETS is not on the sheet");
+    eq(before.getAttribute("aria-disabled"), null,
+      "precondition: LEARN OFFSETS was already locked with no alignment running");
+
+    seed({ status: wheelStatus({ busy_lanes: ["polar"] }) });
+    mount();
+    await settle();
+    const btn = learnButton();
+    assert(btn != null, "LEARN OFFSETS was hidden during an alignment instead of locked");
+    eq(btn.getAttribute("aria-disabled"), "true",
+      "LEARN OFFSETS pressed through a polar alignment - the rig answers that with a raw 409");
+    eq(btn.getAttribute("title"), POLAR_REASON,
+      "LEARN OFFSETS is locked but does not name the alignment");
+    assert(btn.hasAttribute("disabled") === false,
+      "LEARN OFFSETS used the native disabled attribute, which takes the reason out of the "
+      + "accessibility tree");
+
+    asked.length = 0;
+    click(btn);
+    await settle();
+    eq(asked.length, 0, `the press reached the rig anyway: ${JSON.stringify(asked)}`);
+  });
+
 act(() => { if (rootRef) rootRef.unmount(); });
 
 const total = passed + failed;

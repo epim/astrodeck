@@ -62,8 +62,12 @@ import {
 import { deriveAutofocusParams, narrowbandSweepSettings } from "../../../../lib/autofocus";
 import { standardsOrDefault } from "../../../../lib/standards";
 import {
-  useConfig, useFilterOffsetsLearn, useLivePreview, useSequence, useStatus, useStore,
+  useConfig, useFilterOffsetsLearn, useLivePreview, usePolar, useSequence,
+  useStatus, useStore,
 } from "../../../../store";
+// The polar sentence and its two-channel test, shared with Rig - Capture rather
+// than re-spelled here: one alignment, one string (r4 #25).
+import { POLAR_REASON, isPolarBusy } from "../capture/captureGate";
 import {
   MARKER_POINT, RING_C, RING_PX, SLOT_HIT_PX, filterColor, slotType, wheelRing,
 } from "../lib/wheelRing";
@@ -174,6 +178,12 @@ export function WheelSheet(_p: SheetProps): JSX.Element {
 
   const seqOwnsCamera = sequence.state === "running" || sequence.state === "paused";
   const flowOwns = seqOwnsCamera ? FLOW_OWNS_WHEEL : null;
+  // r4 #25: LEARN OFFSETS steps the focuser through every filter, exposing at
+  // each stop. Polar alignment owns the camera for its whole run and spawns its
+  // own lane (server/astrodeck/hub.py:297), which this sheet never named - so
+  // the run started, collided, and came back as a raw 409.
+  const polar = usePolar();
+  const polarOwns = isPolarBusy(polar.state, status?.busy_lanes) ? POLAR_REASON : null;
 
   // ------------------------------------------------------------- the gate
   const link = useLock({});
@@ -330,7 +340,7 @@ export function WheelSheet(_p: SheetProps): JSX.Element {
       ? "no focuser is connected"
       : null;
   const learnReason = first(
-    capRole.lockedReason, learnDisabledReason, laneOffsets.lockedReason,
+    capRole.lockedReason, learnDisabledReason, polarOwns, laneOffsets.lockedReason,
     laneAutofocus.lockedReason, laneCapture.lockedReason, laneLooping.lockedReason,
     flowOwns,
   );
