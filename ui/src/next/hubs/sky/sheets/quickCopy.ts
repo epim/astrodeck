@@ -41,6 +41,13 @@ export const INFO: Record<string, InfoTopic> = {
       + "If clouds end the night early you still have a balanced set. Untick a filter to "
       + "skip it; tap the exposure to change it.",
   },
+  osc: {
+    t: "ONE CHANNEL",
+    b: "With one channel there is nothing to cycle: the flow shoots the same exposure over "
+      + "and over until the window ends, so every minute of the night lands in one stack. A "
+      + "one-shot-colour sensor carries its colour filters on the chip, which is why it needs "
+      + "no wheel to make a colour image. Tap the time to change the sub length.",
+  },
   af: {
     t: "AUTOFOCUS",
     b: "Steps the focuser through a V-curve and picks the sharpest point before the first "
@@ -112,6 +119,26 @@ export const FILTER_FOOTER =
   + "so a clouded-out half night still stacks in every channel. Focus offsets apply per filter.";
 
 /**
+ * The footer under the ONE-CHANNEL card, which `FILTER_FOOTER` cannot be.
+ *
+ * "one sub per checked filter and passes repeat" describes a cycle, and a rig
+ * with no wheel has none - there is nothing checked and nothing repeats round a
+ * carousel. The same sentence under a single EXPOSURE row promises a balanced
+ * set the night will never contain.
+ *
+ * The colour clause is keyed to a bayer pattern the rig actually reported (see
+ * `oscLabel`), never to the absence of a wheel: a mono camera with no wheel
+ * shoots luminance and its stack has no colour in it at all.
+ */
+export const OSC_FOOTER =
+  "Every sub is the same channel, so the night is one exposure repeated until the window "
+  + "ends. Stack them and the colour comes out of the sensor's own matrix.";
+
+/** The same footer for a rig that has not said it is colour. */
+export const ONE_CHANNEL_FOOTER =
+  "Every sub is the same channel, so the night is one exposure repeated until the window ends.";
+
+/**
  * The legend under the night arc, which is where the horizon NUMBER belongs.
  *
  * It used to be baked into the `arc` brief as "the 25° floor" while the chart
@@ -133,8 +160,20 @@ export function floorLegend(horizonMinDeg: number): string {
 export const NO_FILTER_REASON =
   "Tick at least one filter - the night has nothing to shoot otherwise.";
 
-/** What the FILTER CYCLE header says when the wheel is not this rig's. */
-export const ASSUMED_WHEEL_NOTE = "no wheel connected - showing the assumed seven";
+/**
+ * What the FILTER CYCLE header says over the assumed seven.
+ *
+ * It was unreachable: it rendered only in the `!oneChannel` branch, and
+ * `fromRig === false` used to force `oneChannel === true`, so the one branch
+ * that could show it was the one branch that never ran. The seven now render
+ * for `source: "assumed"` - no rig to ask - and this line is what makes them
+ * honest rather than a wheel the app invented.
+ *
+ * "no rig to ask" and not "no wheel connected": a rig WITH a camera and no
+ * wheel is a real one-channel rig and gets the one-channel card, not seven
+ * names it will never shoot.
+ */
+export const ASSUMED_WHEEL_NOTE = "no rig to ask - showing the assumed seven";
 
 /** The flow card's closing sentence. `issues` is the compiler's own count and
  *  is never a hardcoded number - the prototype's "the doctor passed all 13
