@@ -1,61 +1,74 @@
 {
-  "_comment": "PLACEHOLDER route list for the NEW UI's hash routes (feat/ui-next hubs). These routes do NOT exist yet -- the hub views land one at a time and each one should flip its entry's '_pending' off (or just delete the flag) once #/<hub> actually renders and the marker text is real. The controller extends this file; do not treat a red run here as a probe bug until a hub has actually shipped.",
+  "_comment": "Route list for the NEW UI's hash routes (feat/ui-next, ui/src/next). Built 2026-09-10 against router.ts (SUBS table), hubs/index.ts (HUB_ORDER/HUB_META/SHEETS registry) and every hub's sheets/index.ts + reg-*.ts fragments, cross-checked against `data-testid` attributes actually present in ui/src/next/hubs/** and ui/src/next/shell/**. No entry here is `_pending` -- every hub listed in ui/src/next/hubs/index.ts is wired to a real route by this point in the branch. One entry per hub root (using the sub the router resolves as default when the hash names none, mirroring how the shell itself links to it) and one entry per sheet actually present in a hub's `sheets` registry object, MINUS `driver` (rig) and `demo` (rig): both are reachable by URL like any other registered sheet, but neither is a screen a real nav path lands on without already being mid-flow through `addDevice` (driver) or a test fixture (demo), so they are left out of this end-to-end walk the same way the controller's own worked example left them out.",
+  "_testid_vs_marker": "Every route asserts a `data-testid` (added to probe.py this run -- see README). A few also carry a text `marker` as a second, independent check where the visible label is unambiguous and cheap to also assert (mirrors routes_classic.json's belt-and-braces style); most do not, because testid alone is the harness's real gate here and doubling every route up with a text marker just re-derives the same testid map from prose.",
+  "_param_correction": "`#/session/files` reads `params.src`, NOT `params.source` (ui/src/next/hubs/session/sheets/files.tsx:177) -- and the value the UI itself uses for 'tonight' is `src=current` (files.tsx:511, the TONIGHT chip), not `src=tonight`. Used the real names, per the brief's own instruction to use what the code carries.",
+  "_classic_marker": "The classic header's STATUS strip (`ui/src/App.tsx:599`) is `hidden md:flex` -- invisible at 390px, so it would false-FAIL the probe's visible-only text match on a phone width for no reason related to whether classic actually mounted. 'Equipment' (the default view's own nav label, App.tsx NAV / BottomNav) is visible at every width and is safe here specifically because the #/classic route never clicks anywhere -- it only has to prove the legacy root mounted with its default view, not that a click landed on the right screen, so the nav-label collision risk routes_classic.json's own notes warn about does not apply.",
   "routes": [
-    {
-      "url": "#/sky",
-      "name": "sky",
-      "click": [],
-      "marker": "SKY",
-      "shot": "sky",
-      "_pending": true
-    },
-    {
-      "url": "#/weather",
-      "name": "weather",
-      "click": [],
-      "marker": "WEATHER",
-      "shot": "weather",
-      "_pending": true
-    },
-    {
-      "url": "#/session",
-      "name": "session",
-      "click": [],
-      "marker": "SESSION",
-      "shot": "session",
-      "_pending": true
-    },
-    {
-      "url": "#/rig/devices",
-      "name": "rig-devices",
-      "click": [],
-      "marker": "DEVICES",
-      "shot": "rig-devices",
-      "_pending": true
-    },
-    {
-      "url": "#/rig/capture",
-      "name": "rig-capture",
-      "click": [],
-      "marker": "MANUAL CAPTURE",
-      "shot": "rig-capture",
-      "_pending": true
-    },
-    {
-      "url": "#/monitor",
-      "name": "monitor",
-      "click": [],
-      "marker": "MONITOR",
-      "shot": "monitor",
-      "_pending": true
-    },
-    {
-      "url": "#/settings",
-      "name": "settings",
-      "click": [],
-      "marker": "SETTINGS",
-      "shot": "settings",
-      "_pending": true
-    }
+    { "url": "#/sky", "name": "sky", "click": [], "testid": "hub-sky", "shot": "sky" },
+    { "url": "#/weather", "name": "weather", "click": [], "testid": "wx-conditions", "shot": "weather" },
+    { "url": "#/weather/sky", "name": "weather-sky", "click": [], "testid": "wx-sky", "shot": "weather-sky" },
+    { "url": "#/weather/radar", "name": "weather-radar", "click": [], "testid": "wx-radar", "shot": "weather-radar" },
+    { "url": "#/session/now", "name": "session-now", "click": [], "testid": "session-now", "shot": "session-now" },
+    { "url": "#/session/gallery", "name": "session-gallery", "click": [], "testid": "session-gallery", "shot": "session-gallery" },
+    { "url": "#/session/flows", "name": "session-flows", "click": [], "testid": "session-flows", "shot": "session-flows" },
+    { "url": "#/rig/devices", "name": "rig-devices", "click": [], "testid": "rig-devices", "shot": "rig-devices" },
+    { "url": "#/rig/capture", "name": "rig-capture", "click": [], "testid": "rig-capture", "shot": "rig-capture" },
+    { "url": "#/monitor/live", "name": "monitor-live", "click": [], "testid": "monitor-live", "shot": "monitor-live" },
+    { "url": "#/monitor/log", "name": "monitor-log", "click": [], "testid": "monitor-log", "shot": "monitor-log" },
+    { "url": "#/monitor/alerts", "name": "monitor-alerts", "click": [], "testid": "monitor-alerts", "shot": "monitor-alerts" },
+    { "url": "#/settings", "name": "settings", "click": [], "testid": "screen-settings-general", "shot": "settings" },
+    { "url": "#/settings/users", "name": "settings-users-screen", "click": [], "testid": "screen-users", "shot": "settings-users-screen" },
+    { "url": "#/settings/about", "name": "settings-about", "click": [], "testid": "screen-about", "shot": "settings-about" },
+
+    { "url": "#/sky/targets", "name": "sky-targets", "click": [], "testid": "sky-targets", "shot": "sky-targets" },
+    { "url": "#/sky/sites", "name": "sky-sites", "click": [], "testid": "sites-sheet", "shot": "sky-sites" },
+    { "url": "#/sky/horizon?site=current", "name": "sky-horizon", "click": [], "testid": "horizon-sheet", "shot": "sky-horizon" },
+    { "url": "#/sky/coords", "name": "sky-coords", "click": [], "testid": "coords-sheet", "shot": "sky-coords" },
+    { "url": "#/sky/quick?target=m31", "name": "sky-quick", "click": [], "testid": "sky-quick", "shot": "sky-quick" },
+    { "url": "#/sky/brief?id=m31", "name": "sky-brief", "click": [], "testid": "sky-brief", "shot": "sky-brief" },
+
+    { "url": "#/session/files?src=current", "name": "session-files", "click": [], "testid": "session-files", "shot": "session-files" },
+    { "url": "#/session/gallery/report", "name": "session-gallery-report", "click": [], "testid": "session-report", "shot": "session-gallery-report" },
+    { "url": "#/session/gallery/archive", "name": "session-gallery-archive", "click": [], "testid": "session-archive", "shot": "session-gallery-archive" },
+    { "url": "#/session/flows/planEditor", "name": "session-flows-planeditor", "click": [], "testid": "session-plan-editor", "shot": "session-flows-planeditor" },
+
+    { "url": "#/rig/devices/camera", "name": "rig-devices-camera", "click": [], "testid": "rig-camera", "shot": "rig-devices-camera" },
+    { "url": "#/rig/devices/mount", "name": "rig-devices-mount", "click": [], "testid": "rig-mount", "shot": "rig-devices-mount" },
+    { "url": "#/rig/devices/mount/polar", "name": "rig-devices-mount-polar", "click": [], "testid": "rig-polar", "shot": "rig-devices-mount-polar" },
+    { "url": "#/rig/devices/focuser", "name": "rig-devices-focuser", "click": [], "testid": "rig-focuser", "shot": "rig-devices-focuser" },
+    { "url": "#/rig/devices/wheel", "name": "rig-devices-wheel", "click": [], "testid": "rig-wheel", "shot": "rig-devices-wheel" },
+    { "url": "#/rig/devices/guider", "name": "rig-devices-guider", "click": [], "testid": "rig-guider", "shot": "rig-devices-guider" },
+    { "url": "#/rig/devices/rotator", "name": "rig-devices-rotator", "click": [], "testid": "rig-rotator", "shot": "rig-devices-rotator" },
+    { "url": "#/rig/devices/safety", "name": "rig-devices-safety", "click": [], "testid": "rig-safety", "shot": "rig-devices-safety" },
+    { "url": "#/rig/devices/power", "name": "rig-devices-power", "click": [], "testid": "rig-power", "shot": "rig-devices-power" },
+    { "url": "#/rig/devices/addDevice", "name": "rig-devices-adddevice", "click": [], "testid": "sheet-add-device", "shot": "rig-devices-adddevice" },
+    { "url": "#/rig/devices/profiles", "name": "rig-devices-profiles", "click": [], "testid": "sheet-profiles", "shot": "rig-devices-profiles" },
+    { "url": "#/rig/capture/inspect", "name": "rig-capture-inspect", "click": [], "testid": "rig-inspect", "shot": "rig-capture-inspect" },
+
+    { "url": "#/settings/general/connection", "name": "settings-connection", "click": [], "testid": "sheet-connection", "shot": "settings-connection" },
+    { "url": "#/settings/general/optics", "name": "settings-optics", "click": [], "testid": "sheet-optics", "shot": "settings-optics" },
+    { "url": "#/settings/general/setup", "name": "settings-setup", "click": [], "testid": "settings-setup", "shot": "settings-setup" },
+    { "url": "#/settings/general/quickDefaults", "name": "settings-quickdefaults", "click": [], "testid": "settings-quick-defaults", "shot": "settings-quickdefaults" },
+    { "url": "#/settings/general/account", "name": "settings-account", "click": [], "testid": "settings-account", "shot": "settings-account" },
+    { "url": "#/settings/general/authMethods", "name": "settings-authmethods", "click": [], "testid": "settings-authMethods", "shot": "settings-authmethods" },
+    { "url": "#/settings/general/users", "name": "settings-users-sheet", "click": [], "testid": "settings-users", "shot": "settings-users-sheet" },
+    { "url": "#/settings/general/update", "name": "settings-update", "click": [], "testid": "settings-update", "shot": "settings-update" },
+    { "url": "#/settings/general/credits", "name": "settings-credits", "click": [], "testid": "settings-credits", "shot": "settings-credits" },
+    { "url": "#/settings/general/help", "name": "settings-help", "click": [], "testid": "settings-help", "shot": "settings-help" },
+    { "url": "#/settings/general/safetyTuning", "name": "settings-safetytuning", "click": [], "testid": "settings-safetyTuning", "shot": "settings-safetytuning" },
+    { "url": "#/settings/general/standards", "name": "settings-standards", "click": [], "testid": "settings-standards", "shot": "settings-standards" },
+    { "url": "#/settings/general/calibration", "name": "settings-calibration", "click": [], "testid": "settings-calibration", "shot": "settings-calibration" },
+    { "url": "#/settings/general/naming", "name": "settings-naming", "click": [], "testid": "settings-naming", "shot": "settings-naming" },
+    { "url": "#/settings/general/wcs", "name": "settings-wcs", "click": [], "testid": "settings-wcs", "shot": "settings-wcs" },
+    { "url": "#/settings/general/sync", "name": "settings-sync", "click": [], "testid": "settings-sync", "shot": "settings-sync" },
+    { "url": "#/settings/general/skyPack", "name": "settings-skypack", "click": [], "testid": "settings-skyPack", "shot": "settings-skypack" },
+    { "url": "#/settings/general/restricted", "name": "settings-restricted", "click": [], "testid": "settings-restricted", "shot": "settings-restricted" },
+    { "url": "#/settings/general/logExport", "name": "settings-logexport", "click": [], "testid": "settings-logExport", "shot": "settings-logexport" },
+    { "url": "#/settings/general/factoryReset", "name": "settings-factoryreset", "click": [], "testid": "settings-factoryReset", "shot": "settings-factoryreset" },
+
+    { "url": "#/weather/conditions/weatherSettings", "name": "weather-settings-sheet", "click": [], "testid": "sheet-weather-settings", "shot": "weather-settings-sheet" },
+    { "url": "#/weather/conditions/cloudmap", "name": "weather-cloudmap", "click": [], "testid": "sheet-cloudmap", "shot": "weather-cloudmap" },
+
+    { "url": "#/classic", "name": "classic", "click": [], "marker": "Equipment", "shot": "classic" }
   ]
 }
