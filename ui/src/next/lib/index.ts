@@ -13,4 +13,8 @@ export * from "./cloudTiles";
 export * from "./horizonModel";
 export * from "./fov";
 export * from "./format";
+// `qr.ts` is pure arithmetic over arrays and strings - no React, no DOM, no
+// store - so it belongs here; the component that draws its output lives in
+// `hubs/settings/sheets/QrCode.tsx`.
+export * from "./qr";
 export * from "./versions";
