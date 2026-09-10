@@ -184,8 +184,20 @@ export function filterColor(name: string): string {
  *  `next/lib/format.ts`'s `fmtDuration`: the design's own capture reads
  *  "GENERATE FLOW · 4 filters · 6h 00m", and `fmtDuration` renders that as
  *  "6h 0m". A zero-padded minute is what the screenshot pins. */
+/**
+ * Is this window the DAWN stop rather than a number of hours?
+ *
+ * One predicate, read by the label and by the persisted `QuickPrefs.dawn` flag,
+ * so "until dawn" on screen and "until dawn" in the stored default cannot mean
+ * two different things. The 0.05 h slack is the drag handle's: a snap lands on
+ * the stop to within a rounding error, not on it exactly.
+ */
+export function isDawnStop(hours: number, dawnHours: number | null): boolean {
+  return dawnHours != null && dawnHours > 0 && hours >= dawnHours - 0.05;
+}
+
 export function hoursLabel(hours: number, dawnHours: number | null): string {
-  if (dawnHours != null && dawnHours > 0 && hours >= dawnHours - 0.05) return "until dawn";
+  if (isDawnStop(hours, dawnHours)) return "until dawn";
   const min = Math.max(0, Math.round(hours * 60));
   const h = Math.floor(min / 60);
   const m = min % 60;

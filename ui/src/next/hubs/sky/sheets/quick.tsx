@@ -30,7 +30,7 @@ import { NxIcon } from "../../../icons";
 import { nav } from "../../../router";
 import { useLock } from "../../../lib/gateHook";
 import { windowLabel } from "../../../lib/reach";
-import { useFrameSettings, useSite, useStore, useWeather } from "../../../../store";
+import { useFrameSettings, useFraming, useSite, useStore, useWeather } from "../../../../store";
 import { apiErrorPayload } from "../../../../lib/apiError";
 import { flowsApi } from "../../../../lib/flowsApi";
 import {
@@ -40,16 +40,19 @@ import {
 import type { FlowGraphRec, FlowRecordRec } from "../../../../components/flows/flowsTypes";
 import { skyPrefs, type QuickPrefs } from "../finder";
 import {
-  ASSUMED_WHEEL_NOTE, FILTER_FOOTER, INFO, NO_FILTER_REASON,
+  ASSUMED_WHEEL_NOTE, FILTER_FOOTER, INFO, NO_FILTER_REASON, floorLegend, mosaicPlanNote,
 } from "./quickCopy";
 import {
-  OSC_LABEL, filterColor, finishLabel, hourStops, hoursLabel, nextExposure,
+  OSC_LABEL, filterColor, finishLabel, hourStops, hoursLabel, isDawnStop, nextExposure,
   oscCount, passesFor, planLine, quickRows, snapHours, wheelModel,
 } from "./quickModel";
 import {
   NightArc, curveFromNight, hoursToDawn, type ArcCurve, type ArcHold,
 } from "./quickNightArc";
-import { withDarksAfter, withDuskFlats, withTargetPool } from "./flowGraphExtras";
+import { withDarksAfter, withDuskFlats, withRotation, withTargetPool } from "./flowGraphExtras";
+import {
+  commandedPa, framingMatches, mosaicBaseName, mosaicGroupId, panelsToTargets,
+} from "../frame/mosaic";
 import { useCatalogTarget, useCatalogTargets, type SearchRow } from "./targetsCatalog";
 import { useVisibilityNight } from "./quickVisibility";
 
@@ -131,6 +134,23 @@ export function QuickSessionSheet({ params }: SheetProps): JSX.Element {
     [params, anchor],
   );
 
+  /**
+   * ONE HORIZON, EVERYWHERE ON THIS CHART.
+   *
+   * This number is the visibility fetch's `alt_limit`, the `below` colouring on
+   * the arc, the dashed floor line and (through `SkyHub`) the mosaic-night
+   * card's limit. It used to be three different things: the fetch used the
+   * site's `horizon_min_deg`, the chart drew a hardcoded 25 and the copy called
+   * it "the 25° floor" (review #34). On a site with a 30° limit the dashed line
+   * sat five degrees under the ranking's own obstruction rule and under the
+   * engine's - and the red part of the curve, drawn from the site's number,
+   * disagreed with the line drawn beside it.
+   *
+   * The inventory is explicit that there is deliberately no client-side horizon
+   * constant, and the finder does not have one either: `FLOOR_DEG` there is the
+   * SEEING floor, an advisory quality chip the user switches on, not the limit
+   * the mount refuses below.
+   */
   const horizonMin = site?.horizon_min_deg ?? 0;
   const raForVis = Number.isFinite(Number(params.ra)) ? Number(params.ra) : anchor?.ra_hours ?? null;
   const decForVis = Number.isFinite(Number(params.dec)) ? Number(params.dec) : anchor?.dec_deg ?? null;
@@ -157,6 +177,18 @@ export function QuickSessionSheet({ params }: SheetProps): JSX.Element {
     skyPrefs.setQuick(next);
   };
 
+  /**
+   * Choosing a window, and remembering WHICH choice it was.
+   *
+   * The dawn stop is a different length every night, so persisting tonight's
+   * 5.2 h and replaying it in December would silently turn "all night" into
+   * "5h 12m" - with the screen saying 5h 12m. `dawn` records the choice; this
+   * sheet resolves it against tonight's dawn every time it opens. The settings
+   * sheet reads and writes the same flag through the same parser.
+   */
+  const chooseHours = (h: number): void =>
+    persist({ ...prefs, hours: h, dawn: isDawnStop(h, dawnH) });
+
   const wheel = useMemo(
     () => wheelModel(
       { names: wheelNames, opaque: wheelOpaque, narrowband: wheelNarrow, exposures: wheelExposures },
@@ -166,7 +198,7 @@ export function QuickSessionSheet({ params }: SheetProps): JSX.Element {
     [wheelNames, wheelOpaque, wheelNarrow, wheelExposures, prefs.on, prefs.exp],
   );
 
-  const hours = Math.min(prefs.hours, span);
+  const hours = Math.min(prefs.dawn && dawnH != null ? dawnH : prefs.hours, span);
   const rows = useMemo(() => quickRows(hours, wheel.slots), [hours, wheel.slots]);
   const checked = rows.filter((r) => r.checked);
   const passes = passesFor(hours, wheel.slots);
@@ -225,6 +257,24 @@ export function QuickSessionSheet({ params }: SheetProps): JSX.Element {
       : null)
     ?? (busy ? "Already creating the flow. One moment." : null);
 
+  /**
+   * THE FRAMING THIS SHEET IS ALLOWED TO USE.
+   *
+   * `store.framing` is ONE global session, shared with the Atlas, so a framing
+   * kept for M31 was being drawn over a flow generated for M42 and (once the
+   * panels were wired in) would have queued M31's panels under M42's name. It
+   * counts only when its own target is the target this sheet was opened for -
+   * by catalogue id for an object, by the free-roam group id for a patch.
+   */
+  const framing = useFraming();
+  const framingId = isPool ? null : (params.target ?? params.name ?? null);
+  const mine = framingMatches(framing, framingId);
+  const panels = mine ? (framing?.panels ?? []) : [];
+  const mosaicCols = mine ? (framing?.mosaic.cols ?? 1) : 1;
+  const mosaicRows = mine ? (framing?.mosaic.rows ?? 1) : 1;
+  const isMosaic = panels.length > 1;
+  const addTargetsToPlan = useStore((s) => s.addTargetsToPlan);
+
   const label = planLine({
     oneChannel: wheel.oneChannel,
     checkedCount: checked.length,
@@ -232,7 +282,7 @@ export function QuickSessionSheet({ params }: SheetProps): JSX.Element {
     oscCount: oscSubs,
     hoursLabel: hoursLabel(hours, dawnH),
     poolCount: poolIds.length,
-    panels: 0,
+    panels: panels.length,
   });
 
   // ------------------------------------------------------------ generate
@@ -264,13 +314,48 @@ export function QuickSessionSheet({ params }: SheetProps): JSX.Element {
       const before = graph;
       if (prefs.extras.flats) graph = withDuskFlats(graph);
       if (prefs.extras.darks) graph = withDarksAfter(graph);
+      // THE CAMERA ANGLE, which nothing sent before. `wizard.quick` leaves the
+      // node vocabulary's shipped `rotation: 23.4` on the TARGET node and only
+      // replaces name/ra/dec, and `to_plan` reads that as a real position angle
+      // - so every quick flow was quietly asking a connected rotator for PA
+      // 23.4 while the framing card promised something else. -1 is `to_plan`'s
+      // own "no angle constraint" sentinel (0 is a REAL position angle there).
+      graph = withRotation(graph, commandedPa(mine ? (framing?.rotation_deg ?? 0) : 0));
       if (isPool) {
         graph = withTargetPool(graph, poolRows.rows.map((r) => (r.kind === "solar_system" ? r.id : r.name || r.id)));
       }
       if (graph !== before) await flowsApi.save(id, { ...record, graph });
 
+      /**
+       * THE MOSAIC PANELS REACH THE NIGHT (review #3, plan H.6).
+       *
+       * FRAME mode drew them, kept them on `framing.panels` and toasted that
+       * they went into the flow - and nothing read them. `panelsToTargets` was
+       * called by one test and nothing else.
+       *
+       * They cannot ride in the quick PAYLOAD: `FlowQuickBody.target` is ONE
+       * `{name, ra, dec}` and `wizard.quick` builds a one-target night, so
+       * there is no field to put N pointings in. The engine's mosaic mechanism
+       * is not a stage either - `nodeDefs` has 21 node types and none is
+       * `mosaic`. It is N plan targets sharing a `mosaic_group`, which is
+       * exactly what `AtlasView.sendToPlan` produced and what
+       * `store.addTargetsToPlan` replaces-by-group so a re-frame updates its
+       * panels instead of doubling them. So the plan path is the one taken, and
+       * the flow card says so on the synthetic MOSAIC row.
+       */
+      if (isMosaic && framing) {
+        addTargetsToPlan(
+          panelsToTargets(panels, mosaicBaseName(framing), mosaicGroupId(framing), framing.rotation_deg),
+          mosaicGroupId(framing),
+        );
+      }
+
       await flowsOpen(id);
-      nav.sheet("flow", { id });
+      // The mosaic travels in the HASH, not read back off the global framing
+      // slice: the card must describe what this generate actually queued, so a
+      // framing changed afterwards (or one belonging to another target) cannot
+      // put a MOSAIC row on a flow that has none.
+      nav.sheet("flow", isMosaic ? { id, mosaic: `${mosaicCols}x${mosaicRows}` } : { id });
     } catch (e) {
       // THE SAVE AND THE RUN ARE TWO OUTCOMES OF ONE REQUEST, and the answer is
       // read off the decoded BODY, never off the message string - FastAPI nests
@@ -365,7 +450,7 @@ export function QuickSessionSheet({ params }: SheetProps): JSX.Element {
             holds={holds}
             hours={hours}
             span={span}
-            floorDeg={25}
+            floorDeg={horizonMin}
             nowLabel={`NOW ${finishLabel(nowMs, 0)}`}
             dawnLabel={dawnH == null ? "NO ASTRO-DARK" : `DAWN ${finishLabel(nowMs, dawnH)}`}
             emptyNote={
@@ -373,15 +458,26 @@ export function QuickSessionSheet({ params }: SheetProps): JSX.Element {
                 ? "No altitude curve yet - the ephemeris for this target has not come back."
                 : null
             }
-            onHours={(h) => persist({ ...prefs, hours: snapHours(h, dawnH) })}
+            onHours={(h) => chooseHours(snapHours(h, dawnH))}
           />
+          <button
+            type="button"
+            data-testid="quick-arc-floor"
+            onClick={() => openBrief("floor")}
+            style={{
+              background: "none", border: 0, padding: 0, textAlign: "left", cursor: "help",
+              fontSize: 11, lineHeight: 1.45, color: "var(--text-3, #7683a5)",
+            }}
+          >
+            {floorLegend(horizonMin)}
+          </button>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
             {hourStops(dawnH).map((h) => (
               <Chip
                 key={h}
                 data-testid="quick-hour-stop"
                 active={Math.abs(h - hours) < 0.05}
-                onClick={() => persist({ ...prefs, hours: h })}
+                onClick={() => chooseHours(h)}
               >
                 {hoursLabel(h, dawnH)}
               </Chip>
@@ -530,6 +626,16 @@ export function QuickSessionSheet({ params }: SheetProps): JSX.Element {
             ))}
           </div>
         </section>
+
+        {/* ------------------------------------------------------ the mosaic */}
+        {isMosaic && (
+          <p
+            data-testid="quick-mosaic-note"
+            style={{ fontSize: 11.5, lineHeight: 1.5, color: "var(--text-3, #7683a5)" }}
+          >
+            {mosaicPlanNote(panels.length, mosaicCols, mosaicRows)}
+          </p>
+        )}
 
         {/* -------------------------------------------------- what it cannot */}
         {single.error != null && !isPool && (

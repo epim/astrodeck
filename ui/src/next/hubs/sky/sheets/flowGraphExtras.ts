@@ -166,6 +166,41 @@ export function withDarksAfter(g: FlowGraphRec): FlowGraphRec {
 }
 
 /**
+ * The commanded camera angle, onto the TARGET node the wizard just built.
+ *
+ * WHY THIS EXISTS. `framing.rotation_deg` is the angle the framing card
+ * promises the rotator will be sent to, and until this landed NOTHING in the
+ * new UI sent it: the quick payload has no rotation field, and the mosaic's own
+ * `rotation_deg` only rides on the PLAN targets. So the card promised a PA and
+ * the flow it generated commanded a different one.
+ *
+ * A DIFFERENT one, not none. `wizard.quick` leaves the TARGET node's SHIPPED
+ * default in place (`nodes.py:117` `"rotation": 23.4`) and only replaces `name`,
+ * `ra` and `dec`; `compile.py:185` then reads that 23.4 as a real angle and
+ * `to_plan.py:815-820` passes it through as `rotation_deg`, which is the ONE
+ * trigger for `hub.goto_and_center`'s `rotate_to_pa`. Every quick flow was
+ * therefore asking a connected rotator for PA 23.4 - a fixture value, on the
+ * sky, with nothing on any screen saying so.
+ *
+ * `deg === null` writes -1, which `to_plan` reads as "no angle constraint"
+ * (its own comment says so, and it is explicit that 0 is a REAL position angle
+ * and cannot be the sentinel). So a session with no framing now commands
+ * nothing, and one with a framing commands what the card printed.
+ */
+export function withRotation(g: FlowGraphRec, deg: number | null): FlowGraphRec {
+  const target = nodeOfType(g, "target");
+  if (!target) return g;
+  const rotation = deg == null ? -1 : deg;
+  if (target.params.rotation === rotation) return g;
+  return {
+    nodes: g.nodes.map((n) =>
+      n.id === target.id ? { ...n, params: { ...n.params, rotation } } : n,
+    ),
+    edges: g.edges,
+  };
+}
+
+/**
  * A TARGET POOL in front of the single target the flow was generated against.
  *
  * `POST /api/flows/quick` builds a one-target night, so the pool is added here:

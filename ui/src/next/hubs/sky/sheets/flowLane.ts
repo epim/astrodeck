@@ -76,6 +76,25 @@ export function laneCards(graph: FlowGraphRec): LaneCard[] {
 }
 
 /**
+ * `"2x1"` -> `{cols: 2, rows: 1}`, or null.
+ *
+ * The grid travels in the sheet's own params rather than being read back off
+ * `store.framing`, because the card has to describe the night that was QUEUED:
+ * the framing slice is global and mutable, so reading it puts one target's
+ * mosaic on another target's flow and rewrites a saved night's card when the
+ * dial moves (review #3). Anything that is not two positive integers is not a
+ * grid and gets no card - a malformed hash must not invent panels.
+ */
+export function parseMosaicParam(raw: string): { cols: number; rows: number } | null {
+  const m = /^(\d+)x(\d+)$/.exec(raw.trim());
+  if (!m) return null;
+  const cols = Number(m[1]);
+  const rows = Number(m[2]);
+  if (!(cols > 0) || !(rows > 0) || cols * rows <= 1) return null;
+  return { cols, rows };
+}
+
+/**
  * The synthetic MOSAIC card, inserted after TARGET.
  *
  * H.6: `nodeDefs` has 21 node types and none of them is `mosaic`. The engine's

@@ -12,6 +12,14 @@
 //                      its range of motion (it will image at the mapped angle)
 //   without one        the angle is MANUAL - set the camera before the run
 //
+// AND IT NAMES THE SLEW THAT DOES NOT SEND IT. The note used to open "Go to this
+// target - and every slew in a run - sends PA 30°", which was two claims: one the
+// generated flow now keeps (`flowGraphExtras.withRotation` writes the angle onto
+// the TARGET node, which `to_plan` passes through as `rotation_deg`) and one
+// nothing in the new UI keeps - neither `POST /api/mount/goto` call in Rig sends
+// a rotation. Promising the second cost nothing to write and would cost a night
+// to discover, so the sentence says which slew is which (review #3).
+//
 // The 0.5 degree dead-band is lifted verbatim from `AtlasView.tsx:794`, and it
 // is load-bearing: rotation starts at 0 for every framing session, so treating 0
 // as a commanded angle would bolt a rotate-to-PA loop onto every "just show me
@@ -21,7 +29,7 @@ import type { JSX } from "react";
 import { Card, Dial } from "../../../ui";
 import { adjustedPa } from "../../../../lib/rotation";
 import type { RotatorStatus } from "../../../../types";
-import { MOSAIC_CHOICES, ROTS, framingMeta } from "./mosaic";
+import { MOSAIC_CHOICES, ROTS, commandedPa, framingMeta } from "./mosaic";
 
 const MONO = "'IBM Plex Mono', ui-monospace, monospace";
 const DISPLAY = "'Chakra Petch', system-ui, sans-serif";
@@ -62,7 +70,7 @@ export function FramingCard({
   onMosaic,
   onRotate,
 }: FramingCardProps): JSX.Element {
-  const commandedPaDeg = rotationDeg > 0.5 ? rotationDeg : null;
+  const commandedPaDeg = commandedPa(rotationDeg);
   const hand = commandedPaDeg != null && rotator ? adjustedPa(commandedPaDeg, rotator, rotatorRange) : null;
 
   return (
@@ -122,8 +130,9 @@ export function FramingCard({
           <p data-testid="sky-rot-note" style={{ fontSize: 11.5, color: "var(--text-faint)", lineHeight: 1.5, margin: 0 }}>
             {rotator ? (
               <>
-                Go to this target - and every slew in a run - sends PA{" "}
-                {Math.round(commandedPaDeg)}° to {rotator.name}, which rotates before it centres.
+                Every slew the generated flow makes sends PA {Math.round(commandedPaDeg)}° to{" "}
+                {rotator.name}, which rotates before it centres. A Go to from Rig - Mount does
+                not: that one leaves the camera where it is.
                 {hand?.adjusted && (
                   <span style={{ color: "var(--warn)" }}>
                     {" "}Outside the range of motion - it will image as {Math.round(hand.target)}°.

@@ -78,6 +78,7 @@ import {
 import { windArrows, windFrom, windLine, type WindArrow, type WindModel } from "./wind";
 import {
   decorate,
+  inReach,
   KIND_ICON,
   LOCK_RADIUS_PX,
   mergeRows,
@@ -750,12 +751,12 @@ export function useSkyModel(boxPx: number): SkyModel {
     for (const k of SKY_KINDS) out[k] = 0;
     for (const t of ranked) {
       if (floorOnly && t.altNow < FLOOR_DEG) continue;
-      if (!t.obstructed && !t.clouded) out[t.kind] += 1;
+      if (inReach(t)) out[t.kind] += 1;
     }
     return out;
   }, [ranked, floorOnly]);
 
-  const reachAll = useMemo(() => visible.filter((t) => !t.obstructed && !t.clouded), [visible]);
+  const reachAll = useMemo(() => visible.filter(inReach), [visible]);
   const reachList = useMemo(() => reachAll.slice(0, 12), [reachAll]);
 
   // ---- aim at the best thing up, once the ranking has settled --------------

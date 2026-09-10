@@ -27,7 +27,10 @@
 // the catalog search aim the finder from outside it - see the block above the
 // effect that consumes it.
 
-import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from "react";
+import {
+  useCallback, useEffect, useMemo, useRef, useState,
+  type JSX, type PointerEvent as ReactPointerEvent,
+} from "react";
 import { Card, IconButton48 } from "../../ui";
 import { buildHash, nav, useRoute } from "../../router";
 import { useBreakpoint } from "../../breakpoint";
@@ -55,29 +58,58 @@ import { obstructedReason, ctaToast, type LockCta } from "./cards/lockCta";
 import { FrameHost } from "./frame/FrameHost";
 import { FramingCard } from "./frame/FramingCard";
 import { FramedOverlay } from "./frame/FramedOverlay";
+import { FrameTools, NO_OBJECT_REASON, NO_OPTICS_REASON } from "./frame/FrameTools";
+import { SurveyPopover } from "./frame/SurveyPopover";
+import { MosaicNightCard } from "./frame/MosaicNightCard";
+import { PACK_POLL_MS, shouldPollPack, surveyDegradedText } from "./frame/degraded";
+import {
+  clampZoom, fitObjectZoom, frameFovDeg, matchCameraZoom, pinchZoom, pointerDist,
+} from "./frame/zoom";
 import { OVERLAP, fetchPanels, framedStrip, frameText } from "./frame/mosaic";
 import { effectiveOptics } from "../../../lib/effective";
 import { fovFromOptics, type OpticsLike } from "../../../lib/framing";
 import { useSkyRegion, type SkyRow } from "../../../lib/skyRegion";
 import { useCapability } from "../../../lib/caps";
 import { resolveWheel } from "../../../components/flows/cyclePlanRows";
+import { getPackStatus } from "../../../api/backends";
 import {
   useConfig,
   useEquipConnected,
   useFraming,
   useNight,
+  useSite,
   useStatus,
   useStore,
 } from "../../../store";
-import type { CatalogEntry } from "../../../types";
+import type { CatalogEntry, PackStatus } from "../../../types";
 
 // ------------------------------------------------------------------- copy
 
 export const SECURE_REASON =
   "AR camera and gyro need a secure connection - set up in Connection";
 export const NO_GYRO_REASON = "No orientation sensor here - drag the sky to pan.";
-export const FRAME_NEEDS_LOCK =
-  "Aim at a target first - FRAME needs something in the reticle.";
+
+/**
+ * When FRAME has nothing at all to work with.
+ *
+ * It used to fire whenever there was no LOCK, which meant survey imagery of an
+ * uncatalogued patch was unreachable from the new UI (review #29) - the Atlas's
+ * free-roam session, which `store.openFraming()` has always supported with no
+ * argument, had no door. Now the reticle's own patch is enough, and the only
+ * remaining refusal is a reticle aimed at ground: below the horizon there is no
+ * RA and Dec to frame, so there is nothing to fetch imagery for.
+ */
+export const FRAME_NEEDS_AIM =
+  "Aim above the horizon first - FRAME needs a target or a patch of sky to look at.";
+
+/** Kept as the name the plan and the tests use; the sentence is the one above. */
+export const FRAME_NEEDS_LOCK = FRAME_NEEDS_AIM;
+
+/** What a `?frame=1` deep link says when there is no framing session to resume
+ *  and nothing aimed at either. `mount.tsx`'s FRAME button always opens one
+ *  first, so this is the hand-typed-URL case. */
+export const FRAME_PARAM_NOTHING =
+  "Nothing is framed yet - aim at a target and press FRAME.";
 
 /** What a `#/sky?lock=<id>` deep link says when the ranking settles without the
  *  object it names. It prints the id the link asked for, because that is the
@@ -120,6 +152,20 @@ export function entryOf(t: SkyTarget): CatalogEntry {
   };
 }
 
+/**
+ * A free-roam framing's identity: the patch it was framed at, spelled exactly
+ * as the quick sheet is opened with it (`pressPatch`'s `name`).
+ *
+ * ONE STRING, TWO JOBS, and they have to be the same string. It is the plan's
+ * `mosaic_group` (so re-framing the same patch replaces its panels instead of
+ * appending a second set) and it is what `framingMatches` compares against on
+ * the quick sheet (so a patch's own mosaic is the one that reaches the plan and
+ * another patch's is not).
+ */
+export function patchId(patch: PatchModel): string {
+  return `${patch.raStr} ${patch.decStr}`;
+}
+
 export function SkyHub(): JSX.Element {
   const bp = useBreakpoint();
   const wrapRef = useRef<HTMLDivElement | null>(null);
@@ -156,14 +202,32 @@ export function SkyHub(): JSX.Element {
   const openFraming = useStore((s) => s.openFraming);
   const setFraming = useStore((s) => s.setFraming);
 
+  const site = useSite();
   const [lensOpen, setLensOpen] = useState(false);
   const [layersOpen, setLayersOpen] = useState(false);
+  const [surveyOpen, setSurveyOpen] = useState(false);
+  const surveyAnchor = useRef<HTMLElement | null>(null);
   const [frame, setFrame] = useState<FrameState>({ on: false, set: false, id: null });
   const [pool, setPool] = useState<string[]>(() => skyPrefs.getPool());
-  const [frameMode] = useState<"survey" | "schematic">(() => skyPrefs.getFrameMode());
-  const [surveyBright] = useState<number>(() => skyPrefs.getSurveyBright());
+  // Both of these are PERSISTED CHOICES with a control that writes them again
+  // (`SurveyPopover`). They were read-only `useState` seeds with no setter, so
+  // `prefs.setFrameMode` and `prefs.setSurveyBright` were exported and never
+  // called and the "explicit choice" FrameHost's header describes was whatever
+  // an older build had left in localStorage (review #31).
+  const [frameMode, setFrameModeState] = useState<"survey" | "schematic">(() => skyPrefs.getFrameMode());
+  const [surveyBright, setSurveyBrightState] = useState<number>(() => skyPrefs.getSurveyBright());
   const [surveyDegraded, setSurveyDegraded] = useState(false);
+  const [pack, setPack] = useState<PackStatus | null>(null);
   const quick = useMemo(() => skyPrefs.getQuick(), []);
+
+  const setFrameMode = useCallback((m: "survey" | "schematic") => {
+    setFrameModeState(m);
+    skyPrefs.setFrameMode(m);
+  }, []);
+  const setSurveyBright = useCallback((v: number) => {
+    setSurveyBrightState(v);
+    skyPrefs.setSurveyBright(v);
+  }, []);
 
   // ---- `#/sky?lock=<id>`, the way every other screen aims this one ---------
   //
@@ -246,6 +310,7 @@ export function SkyHub(): JSX.Element {
     [config, status],
   );
   const fov = useMemo(() => fovFromOptics(mergedOptics), [mergedOptics]);
+  const onlineFetch = config?.survey?.online_fetch ?? false;
 
   // ---- FRAME mode ---------------------------------------------------------
   const frameTarget = frame.id;
@@ -254,6 +319,25 @@ export function SkyHub(): JSX.Element {
     framing?.fovZoomDeg ?? 0,
     frame.on && framing != null,
   );
+
+  // The single-frame field of view, which is what FIT OBJECT falls back to and
+  // what MATCH CAMERA zooms to. Zero means the rig's optics are unknown, and
+  // both controls then say so instead of zooming to a guess.
+  const oneFrameDeg = frameFovDeg(fov.fov_x_deg, fov.fov_y_deg);
+
+  // The offline pack's state, polled ONLY while the survey is degraded with no
+  // online source - the one state whose banner copy depends on it
+  // (`AtlasView.tsx:234-244` does exactly this, and for the same reason).
+  useEffect(() => {
+    if (!frame.on || !shouldPollPack(surveyDegraded, onlineFetch)) return;
+    let live = true;
+    const tick = (): void => {
+      getPackStatus().then((p) => { if (live) setPack(p); }).catch(() => { /* the copy falls back */ });
+    };
+    tick();
+    const id = setInterval(tick, PACK_POLL_MS);
+    return () => { live = false; clearInterval(id); };
+  }, [frame.on, surveyDegraded, onlineFetch]);
 
   const enterFrame = useCallback(
     (t: SkyTarget, keep: boolean) => {
@@ -270,6 +354,49 @@ export function SkyHub(): JSX.Element {
     },
     [openFraming, setFraming, model],
   );
+
+  /**
+   * FREE-ROAM: survey imagery of a patch the catalogue is silent about
+   * (review #29).
+   *
+   * `store.openFraming()` with no entry is the Atlas's own free-roam door and
+   * has been all along - it seeds a session with no `target` and a stable
+   * `freeroamId` so a multi-panel mosaic still groups in the plan. The new UI
+   * simply never opened it. The centre is then moved to the RETICLE's patch
+   * rather than left on the mount, because the reticle is what the user is
+   * looking at and the mount may be parked.
+   */
+  const enterFreeRoam = useCallback(
+    (patch: PatchModel) => {
+      openFraming();
+      setFraming({
+        center: { ra_hours: patch.ra_hours, dec_deg: patch.dec_deg },
+        // THE GROUP ID IS THE PATCH, not the mount. `openFraming` derives its
+        // `freeroamId` from wherever the mount happens to be pointing, which is
+        // two things wrong at once: the id names coordinates the session is not
+        // at, and two free-roam sessions started from one parked position share
+        // it - so framing a second patch would REPLACE the first one's panels in
+        // the plan. This is also the string the quick sheet is opened with
+        // (`pressPatch`'s `name`), which is what lets `framingMatches` recognise
+        // a patch's own framing there.
+        freeroamId: patchId(patch),
+        mosaic: { rows: 1, cols: 1, overlap: OVERLAP },
+        rotation_deg: 0,
+        panels: [],
+      });
+      setFrame({ on: true, set: false, id: null });
+    },
+    [openFraming, setFraming],
+  );
+
+  /** Resume FRAME on the session the store already holds - what `?frame=1`
+   *  means, and what `mount.tsx`'s FRAME button set up before navigating. */
+  const resumeFrame = useCallback(() => {
+    const f = useStore.getState().framing;
+    if (!f) return false;
+    setFrame({ on: true, set: f.panels.length > 0, id: f.target?.id ?? null });
+    return true;
+  }, []);
 
   const finishFrame = useCallback(async () => {
     const f = useStore.getState().framing;
@@ -293,9 +420,18 @@ export function SkyHub(): JSX.Element {
     // yet: the user has framed a target, not chosen a night.
     setFraming({ panels });
     setFrame((s) => ({ ...s, on: false, set: true }));
+    // WHAT THE TOAST MAY CLAIM. It used to say the framing "goes into the flow",
+    // and nothing read `framing.panels` at all (review #3). It does now - the
+    // quick sheet turns them into plan targets on GENERATE FLOW (plan H.6: the
+    // engine's mosaic mechanism IS N targets sharing a `mosaic_group`, not a
+    // flow stage) - so the sentence names the button that does it and the shape
+    // it will take, rather than a stage that does not exist.
     enqueueToast({
       level: "success",
-      title: `Framing kept - ${frameText(cols, rows, f.rotation_deg)} goes into the flow.`,
+      title: `Framing kept - ${frameText(cols, rows, f.rotation_deg)}.`,
+      detail: panels.length > 1
+        ? `GENERATE FLOW queues all ${panels.length} panels as plan targets, one pass each.`
+        : "GENERATE FLOW centres the night here instead of on the catalogue position.",
     });
   }, [fov.fov_x_deg, fov.fov_y_deg, setFraming, enqueueToast]);
 
@@ -305,14 +441,141 @@ export function SkyHub(): JSX.Element {
     enqueueToast({ level: "info", title: "Framing removed - the flow centres on the catalogue position." });
   }, [setFraming, enqueueToast]);
 
+  // ---- the framing tools the Atlas had and the phone had lost -------------
+  //
+  // `SkyCanvas` writes `fovZoomDeg` from a WHEEL and the `+`/`-` KEYS. A phone
+  // has neither, so before these the survey field of view was fixed for the
+  // whole session on the only device this hub is designed for (review #27).
+  const setZoom = useCallback((f: number) => setFraming({ fovZoomDeg: clampZoom(f) }), [setFraming]);
+
+  const fitObject = useCallback(() => {
+    const f = useStore.getState().framing;
+    if (!f) return;
+    setZoom(fitObjectZoom(f.target, oneFrameDeg));
+  }, [setZoom, oneFrameDeg]);
+
+  const matchCamera = useCallback(() => {
+    if (!(oneFrameDeg > 0)) return;
+    setZoom(matchCameraZoom(oneFrameDeg));
+  }, [setZoom, oneFrameDeg]);
+
+  /**
+   * RECENTRE (review #35). After dragging the survey off the object there was
+   * no way back but leaving FRAME and re-entering, which also threw away the
+   * mosaic and the angle.
+   *
+   * A catalogued session goes back to the OBJECT; a free-roam one goes back to
+   * where the mount is pointing, which is the only other centre it can name -
+   * and the button's own sub-label says which, so it never promises the wrong
+   * one (`SurveyControls.tsx:139` made the same distinction).
+   */
+  const recentre = useCallback(() => {
+    const st = useStore.getState();
+    const f = st.framing;
+    if (!f) return;
+    if (f.target) {
+      setFraming({ center: { ra_hours: f.target.ra_hours, dec_deg: f.target.dec_deg } });
+      return;
+    }
+    const m = st.status?.mount;
+    if (m && typeof m.ra_hours === "number" && typeof m.dec_deg === "number") {
+      setFraming({ center: { ra_hours: m.ra_hours, dec_deg: m.dec_deg } });
+      return;
+    }
+    enqueueToast({
+      level: "warning",
+      title: "Nothing to recentre on - this framing has no object and the mount has not reported a position.",
+    });
+  }, [setFraming, enqueueToast]);
+
+  /**
+   * PINCH, on the wrapper rather than inside `SkyCanvas` (a file this task does
+   * not own). Two pointers down means a zoom gesture: the ratio of the starting
+   * span to the current one IS the field-of-view ratio, so fingers apart show
+   * less sky - the same direction the wheel and `+` already take.
+   *
+   * Single-pointer events are left entirely alone, so SkyCanvas's own drag-to-
+   * pan is untouched; this only ever reads the second pointer.
+   */
+  const pinchRef = useRef<{ pts: Map<number, { x: number; y: number }>; startDist: number; startFov: number } | null>(null);
+
+  const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>): void => {
+    if (!frame.on) return;
+    const st = pinchRef.current ?? { pts: new Map(), startDist: 0, startFov: 0 };
+    st.pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (st.pts.size === 2) {
+      const [a, b] = [...st.pts.values()];
+      st.startDist = pointerDist(a, b);
+      st.startFov = useStore.getState().framing?.fovZoomDeg ?? 1;
+    }
+    pinchRef.current = st;
+  };
+
+  const onPointerMove = (e: ReactPointerEvent<HTMLDivElement>): void => {
+    const st = pinchRef.current;
+    if (!st || !st.pts.has(e.pointerId)) return;
+    st.pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (st.pts.size !== 2 || !(st.startDist > 0)) return;
+    const [a, b] = [...st.pts.values()];
+    setZoom(pinchZoom(st.startFov, st.startDist, pointerDist(a, b)));
+  };
+
+  const onPointerUp = (e: ReactPointerEvent<HTMLDivElement>): void => {
+    const st = pinchRef.current;
+    if (!st) return;
+    st.pts.delete(e.pointerId);
+    // The gesture is over the moment it stops being a pinch: leaving the start
+    // distance behind would make the NEXT second finger continue this zoom from
+    // a span measured a minute ago.
+    if (st.pts.size < 2) { st.startDist = 0; st.startFov = 0; }
+    if (st.pts.size === 0) pinchRef.current = null;
+  };
+
   const frameLabel = frame.on ? "DONE" : frame.set ? "ADJUST" : "FRAME";
-  const frameReason = frame.on || lock ? null : FRAME_NEEDS_LOCK;
+  // A patch of sky is enough now: free-roam is what the third branch below is.
+  const frameReason = frame.on || lock || model.patch ? null : FRAME_NEEDS_AIM;
   const onFramePress = () => {
     if (frame.on) { void finishFrame(); return; }
     const t = lock ?? model.reachList[0];
-    if (!t) return;
-    enterFrame(t, frame.set && frame.id === t.id);
+    if (t) { enterFrame(t, frame.set && frame.id === t.id); return; }
+    // ADJUST on a kept free-roam framing RESUMES it. Re-entering through
+    // `enterFreeRoam` would call `openFraming` again and throw away the mosaic
+    // and the angle the button is offering to adjust.
+    if (frame.set && frame.id === null && resumeFrame()) return;
+    if (model.patch) { enterFreeRoam(model.patch); return; }
   };
+
+  // ---- `#/sky?frame=1`, the way Rig > Mount's catalogue hands a row over ----
+  //
+  // `legacyBridge.ts:38` maps the classic `atlas` view onto this URL and
+  // `mount.tsx:746 openFraming(r)` writes a framing session before navigating
+  // here. Nothing read the param, so the FRAME button in the mount catalogue
+  // landed the user on the schematic finder with FRAME off, no visible change,
+  // and a framing session sitting unused in the store (review #28).
+  //
+  // Consumed with `nav.replace`, exactly as `?lock=` is, and for the same two
+  // reasons: a later re-render would otherwise re-enter FRAME after the user
+  // pressed DONE, and Back from the next screen would land on a URL that does
+  // it all again.
+  const frameParam = route.params.frame ?? null;
+  const handledFrameRef = useRef<string | null>(null);
+  const clearFrameParam = useCallback(() => {
+    const r = routeRef.current;
+    const params = { ...r.params };
+    delete params.frame;
+    nav.replace(buildHash({ hub: r.hub, sub: r.sub, sheets: r.sheets, params }));
+  }, []);
+
+  useEffect(() => {
+    if (frameParam !== "1") { handledFrameRef.current = null; return; }
+    if (handledFrameRef.current === frameParam) return;
+    handledFrameRef.current = frameParam;
+    clearFrameParam();
+    if (resumeFrame()) return;
+    // No session to resume: a hand-typed URL, or a bridge that fired before
+    // anything was framed. Say so rather than opening an empty FRAME mode.
+    toastRef.current({ level: "info", title: FRAME_PARAM_NOTHING });
+  }, [frameParam, clearFrameParam, resumeFrame]);
 
   // ---- the plan summary the primary CTA prints ----------------------------
   const wheel = resolveWheel(status?.filterwheel?.names, status?.filterwheel?.opaque);
@@ -378,6 +641,21 @@ export function SkyHub(): JSX.Element {
       name: `${patch.raStr} ${patch.decStr}`,
     });
 
+  /**
+   * COORDINATES, with the reticle's aim in the hash (review #36).
+   *
+   * The sheet's USE FINDER reads `params.az`/`params.alt` - the same convention
+   * the horizon editor uses (A.15) - and the ONE call site that opens it was
+   * passing neither, so the button was honest-locked on every phone, forever,
+   * with a comment in the sheet saying the wiring was somebody else's task.
+   *
+   * The route is the only channel available: a sheet is route state, not a child
+   * of the screen underneath it, and the reticle's az/alt lives inside the
+   * finder's own model and is deliberately not persisted (plan F).
+   */
+  const openCoords = () =>
+    nav.sheet("coords", { az: model.az.toFixed(3), alt: model.alt.toFixed(3) });
+
   const setLens = (kind: SkyKind, on: boolean) => model.setLens(kind, on);
   const learnKind = (kind: SkyKind, text: string) =>
     enqueueToast({ level: "info", title: KIND_LABEL[kind], detail: text });
@@ -413,6 +691,16 @@ export function SkyHub(): JSX.Element {
     ? framedStrip(framing.mosaic.cols, framing.mosaic.rows, framing.rotation_deg)
     : null;
 
+  // The same strip for a free-roam framing, on the card that owns that patch.
+  // Without it, FRAME HERE > DONE changes nothing visible and reads as a control
+  // that did nothing - and the framing is still there, silently, feeding the
+  // next quick session.
+  const framedForPatch = frame.set && !frame.on && lock == null && frame.id === null
+    && framing != null && model.patch != null
+    && framing.freeroamId === patchId(model.patch)
+    ? framedStrip(framing.mosaic.cols, framing.mosaic.rows, framing.rotation_deg)
+    : null;
+
   const framedTargetMarker = frame.set && !frame.on && framing != null
     ? model.markers.find((m) => m.id === frame.id) ?? null
     : null;
@@ -430,7 +718,14 @@ export function SkyHub(): JSX.Element {
         onExplain={onExplain}
       />
 
-      <div ref={wrapRef} style={{ position: "relative", minWidth: 0 }}>
+      <div
+        ref={wrapRef}
+        style={{ position: "relative", minWidth: 0 }}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+      >
         {frame.on && framing ? (
           <FrameHost
             framing={framing}
@@ -439,11 +734,13 @@ export function SkyHub(): JSX.Element {
             mode={frameMode}
             imageBrightness={surveyBright}
             surveyDegraded={surveyDegraded}
-            onlineFetch={config?.survey?.online_fetch ?? false}
+            degradedText={surveyDegradedText(onlineFetch, pack)}
+            onlineFetch={onlineFetch}
             mount={status?.mount ?? null}
             rotator={status?.rotator ?? null}
             pointingWhere={status?.mount ? `${status.mount.ra_str} ${status.mount.dec_str}` : null}
             skyRows={region.rows}
+            region={{ degraded: region.degraded, truncated: region.truncated, error: region.error }}
             selectedObjectId={frameTarget}
             catalogTarget={framing.target}
             onPickObject={(row: SkyRow | null) => {
@@ -562,22 +859,53 @@ export function SkyHub(): JSX.Element {
       )}
 
       {frame.on && framing && (
-        <FramingCard
-          targetName={framing.target?.name ?? frame.id ?? "this patch"}
-          cols={framing.mosaic.cols}
-          rows={framing.mosaic.rows}
-          rotationDeg={framing.rotation_deg}
-          fovXDeg={fov.fov_x_deg}
-          fovYDeg={fov.fov_y_deg}
-          overlap={framing.mosaic.overlap}
-          rotator={status?.rotator ?? null}
-          rotatorRange={{
-            range_type: config?.rotator?.range_type ?? "full",
-            range_start_deg: config?.rotator?.range_start_deg ?? 0,
-          }}
-          onMosaic={(cols, rows) => setFraming({ mosaic: { rows, cols, overlap: framing.mosaic.overlap } })}
-          onRotate={(deg) => setFraming({ rotation_deg: deg })}
-        />
+        <>
+          <FrameTools
+            fovZoomDeg={framing.fovZoomDeg}
+            fitReason={framing.target ? null : NO_OBJECT_REASON}
+            opticsReason={oneFrameDeg > 0 ? null : NO_OPTICS_REASON}
+            hasTarget={framing.target != null}
+            surveyAnchorRef={surveyAnchor}
+            onZoom={setZoom}
+            onFit={fitObject}
+            onMatchCamera={matchCamera}
+            onRecentre={recentre}
+            onSurvey={() => setSurveyOpen(true)}
+            onExplain={onExplain}
+          />
+
+          <FramingCard
+            targetName={framing.target?.name ?? frame.id ?? "this patch"}
+            cols={framing.mosaic.cols}
+            rows={framing.mosaic.rows}
+            rotationDeg={framing.rotation_deg}
+            fovXDeg={fov.fov_x_deg}
+            fovYDeg={fov.fov_y_deg}
+            overlap={framing.mosaic.overlap}
+            rotator={status?.rotator ?? null}
+            rotatorRange={{
+              range_type: config?.rotator?.range_type ?? "full",
+              range_start_deg: config?.rotator?.range_start_deg ?? 0,
+            }}
+            onMosaic={(cols, rows) => setFraming({ mosaic: { rows, cols, overlap: framing.mosaic.overlap } })}
+            onRotate={(deg) => setFraming({ rotation_deg: deg })}
+          />
+
+          {/* What tonight looks like across the WHOLE mosaic, not just its
+              centre - the panel row that never clears the horizon is invisible
+              on a chart drawn for one point (review #33). */}
+          <MosaicNightCard
+            raHours={framing.center.ra_hours}
+            decDeg={framing.center.dec_deg}
+            rows={framing.mosaic.rows}
+            cols={framing.mosaic.cols}
+            overlap={framing.mosaic.overlap}
+            rotationDeg={framing.rotation_deg}
+            fovXDeg={fov.fov_x_deg}
+            fovYDeg={fov.fov_y_deg}
+            altLimitDeg={site?.horizon_min_deg ?? 0}
+          />
+        </>
       )}
 
       {lock ? (
@@ -604,7 +932,11 @@ export function SkyHub(): JSX.Element {
           reachCount={model.reachCount}
           targetCount={model.targets.length}
           onImagePatch={pressPatch}
-          onCoords={() => nav.sheet("coords")}
+          onFramePatch={enterFreeRoam}
+          framed={framedForPatch}
+          onAdjustFrame={() => { if (!resumeFrame() && model.patch) enterFreeRoam(model.patch); }}
+          onClearFrame={clearFrame}
+          onCoords={openCoords}
           imageReason={capture.lockedReason}
           onExplain={onExplain}
         />
@@ -630,6 +962,27 @@ export function SkyHub(): JSX.Element {
           onClose={() => setLensOpen(false)}
         />
       )}
+
+      <SurveyPopover
+        open={surveyOpen}
+        anchorRef={surveyAnchor}
+        onClose={() => setSurveyOpen(false)}
+        survey={framing?.survey ?? ""}
+        mode={frameMode}
+        brightness={surveyBright}
+        onlineFetch={onlineFetch}
+        onSurvey={(id) => {
+          // A survey change is a fresh chance for the tiles: clearing the flag
+          // here is `AtlasView.tsx:370`'s own rule, and without it a switch away
+          // from an unreachable survey keeps showing the unreachable one's
+          // banner over imagery that has just loaded.
+          setSurveyDegraded(false);
+          setFraming({ survey: id });
+        }}
+        onMode={setFrameMode}
+        onBrightness={setSurveyBright}
+        onExplain={onExplain}
+      />
 
       <LayersPopover
         open={layersOpen}

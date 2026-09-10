@@ -32,7 +32,8 @@ export const INFO: Record<string, InfoTopic> = {
     t: "NIGHT ARC",
     b: "Your target's height in the sky from now to dawn. Drag the handle to choose how "
       + "long to image. Amber = forecast cloud (the flow pauses and resumes), red = behind "
-      + "your horizon, dashed line = the 25° floor where seeing gets poor.",
+      + "your horizon, dashed line = your site's horizon limit. The number is under the "
+      + "chart, because it is your site's and not a constant.",
   },
   wheel: {
     t: "FILTER CYCLE",
@@ -85,9 +86,11 @@ export const INFO: Record<string, InfoTopic> = {
       + "is the only way the library matches them later.",
   },
   floor: {
-    t: "25° FLOOR",
-    b: "Below 25° the light crosses far more air: worse seeing, more extinction, more light "
-      + "pollution. Flows treat it as a suspend boundary.",
+    t: "HORIZON LIMIT",
+    b: "The altitude your site refuses to shoot below - trees, a roofline, or simply the "
+      + "air. Low down the light crosses far more atmosphere: worse seeing, more "
+      + "extinction, more light pollution. Flows treat it as a suspend boundary, the "
+      + "ranking treats it as out of reach, and it is set per site in SITES > HORIZON.",
   },
 };
 
@@ -107,6 +110,24 @@ export const INFO: Record<string, InfoTopic> = {
 export const FILTER_FOOTER =
   "Each pass shoots one sub per checked filter and passes repeat until the window ends, "
   + "so a clouded-out half night still stacks in every channel. Focus offsets apply per filter.";
+
+/**
+ * The legend under the night arc, which is where the horizon NUMBER belongs.
+ *
+ * It used to be baked into the `arc` brief as "the 25° floor" while the chart
+ * drew 25 and the fetch used the site's own limit (review #34). A site with a
+ * 30 degree limit therefore read a sentence, a dashed line and a red curve that
+ * disagreed with each other and with the engine. The sentence is now generic
+ * and the number is rendered from the same value the fetch used.
+ *
+ * Zero is not a limit, it is the absence of one, and it says so rather than
+ * drawing a "0° limit" on the horizon line.
+ */
+export function floorLegend(horizonMinDeg: number): string {
+  return horizonMinDeg > 0
+    ? `Dashed line - your ${Math.round(horizonMinDeg)}° horizon limit. Red is below it.`
+    : "No horizon limit set for this site, so nothing is out of reach - set one in SITES.";
+}
 
 /** The lock on GENERATE FLOW when nothing is ticked. */
 export const NO_FILTER_REASON =
@@ -139,6 +160,24 @@ export const UNMAPPED_CANCEL = "CANCEL";
  *  plan targets sharing a group. The lane card is honest about being drawn, not
  *  compiled. */
 export const MOSAIC_FOOTNOTE = "the panels are plan targets, not a flow stage";
+
+/**
+ * What GENERATE FLOW will do with a framing that has more than one panel, said
+ * before it is pressed rather than in a toast afterwards.
+ *
+ * It names the SPLIT because the split is surprising: the flow is saved for the
+ * framing centre, and the panels are queued as plan targets sharing a mosaic
+ * group. That is the engine's own mosaic mechanism (there is no mosaic node),
+ * and it is the difference between "my mosaic is in the flow" and finding six
+ * targets in the plan.
+ */
+export function mosaicPlanNote(panels: number, cols: number, rows: number): string {
+  return `Framed as a ${cols}×${rows} mosaic. GENERATE FLOW saves the flow for the framing `
+    + `centre and queues all ${panels} panels as plan targets in one mosaic group, each `
+    + "carrying the camera angle above. The engine shoots a pass at each panel in turn, so "
+    + "a clouded-out night still leaves every panel with data. Re-framing replaces them "
+    + "rather than adding a second set.";
+}
 
 /** A.10's footer, verbatim from the design prototype. */
 export const TARGETS_FOOTER =

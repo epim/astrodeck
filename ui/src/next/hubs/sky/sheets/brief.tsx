@@ -40,6 +40,7 @@ import type { SkyRow } from "../../../../lib/skyRegion";
 import type { DifficultyTier } from "../../../../types";
 import { fmtClock } from "../../../lib/format";
 import { displayName, fullName } from "../finder";
+import { framingMatches } from "../frame/mosaic";
 import { DSO_HONESTY, INFO } from "./quickCopy";
 import { regionRowFor, useCatalogTarget } from "./targetsCatalog";
 import { useVisibilityNight } from "./quickVisibility";
@@ -138,7 +139,12 @@ function ObjectBrief({ id }: { id: string }): JSX.Element {
   const config = useStore((s) => s.config);
   const status = useStore((s) => s.status);
   const rotator = useStore((s) => s.status?.rotator ?? null);
-  const rotationDeg = useStore((s) => s.framing?.rotation_deg ?? 0);
+  // THE FRAMING SLICE IS GLOBAL - one session, shared with the Atlas - so the
+  // angle is only this object's when the session is this object's. Reading it
+  // unconditionally printed "sends PA 30°" on the brief for every OTHER target
+  // in tonight's list while a framing for one of them was kept (review #3).
+  const framing = useStore((s) => s.framing);
+  const rotationDeg = framingMatches(framing, id) ? (framing?.rotation_deg ?? 0) : 0;
   const canSeeSiteDerived = useCapability("view.site_derived");
 
   const search = useCatalogTarget(id || null);
@@ -319,8 +325,9 @@ function ObjectBrief({ id }: { id: string }): JSX.Element {
             {rotationDeg > 0.5 && (
               <p data-testid="brief-pa" style={{ fontSize: 11.5, lineHeight: 1.5, color: "var(--text-3, #7683a5)" }}>
                 {rotator
-                  ? `Go to this target - and every slew in a run - sends PA ${Math.round(rotationDeg)}° to `
-                    + `${rotator.name ?? "the rotator"}, which rotates before it centres.`
+                  ? `Every slew the generated flow makes sends PA ${Math.round(rotationDeg)}° to `
+                    + `${rotator.name ?? "the rotator"}, which rotates before it centres. `
+                    + "A Go to from Rig - Mount does not: that one leaves the camera where it is."
                   : `Camera angle is manual - set your camera to PA ${Math.round(rotationDeg)}° before the run; `
                     + "there is no rotator in the rig."}
               </p>

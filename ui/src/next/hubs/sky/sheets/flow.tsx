@@ -33,7 +33,7 @@ import { ActionButton, Card, EmptyCard, Label, Mono, Sheet } from "../../../ui";
 import { NxIcon } from "../../../icons";
 import { nav } from "../../../router";
 import { useBreakpoint } from "../../../breakpoint";
-import { useFraming, useStore } from "../../../../store";
+import { useStore } from "../../../../store";
 import { accessPhrase, useCanControlMount, useRoleConnected } from "../../../../lib/caps";
 import { isRunPhaseLive, runBlockedReason } from "../../../../components/flows/flowRunControls";
 import type { FlowUnmapped } from "../../../../lib/flowsApi";
@@ -41,7 +41,9 @@ import {
   FLOWS_NEEDS_WIDTH, UNMAPPED_CANCEL, UNMAPPED_CONFIRM, UNMAPPED_TITLE,
   flowFooterLine,
 } from "./quickCopy";
-import { doctorChip, issuesLine, laneCards, ruleRows, withMosaicCard } from "./flowLane";
+import {
+  doctorChip, issuesLine, laneCards, parseMosaicParam, ruleRows, withMosaicCard,
+} from "./flowLane";
 
 export function FlowCardSheet({ params }: SheetProps): JSX.Element {
   const id = params.id ?? "";
@@ -54,7 +56,6 @@ export function FlowCardSheet({ params }: SheetProps): JSX.Element {
   const flowsRun = useStore((s) => s.flowsRun);
   const pushConfirm = useStore((s) => s.pushConfirm);
   const enqueueToast = useStore((s) => s.enqueueToast);
-  const framing = useFraming();
   const breakpoint = useBreakpoint();
 
   const canControlMount = useCanControlMount();
@@ -71,7 +72,19 @@ export function FlowCardSheet({ params }: SheetProps): JSX.Element {
     void flowsOpen(id);
   }, [id, record?.id, flowsOpen]);
 
-  const mosaic = framing?.mosaic;
+  /**
+   * The synthetic MOSAIC row describes what THIS generate queued.
+   *
+   * It used to be drawn off the GLOBAL `store.framing` slice, which is one
+   * shared session: a framing kept for M31 put a "MOSAIC 2×2 · 4 panels" card
+   * on a flow generated for M42, and a framing changed after the fact rewrote
+   * the card under a night that had already been saved (review #3). The quick
+   * sheet now names the grid it actually sent in the hash, and a deep link that
+   * carries no `mosaic` gets no card - which is the honest answer, because a
+   * link is not evidence that anything was queued.
+   */
+  const mosaicParam = params.mosaic ?? "";
+  const mosaic = useMemo(() => parseMosaicParam(mosaicParam), [mosaicParam]);
   const cards = useMemo(() => {
     const lane = laneCards(graph);
     return mosaic ? withMosaicCard(lane, mosaic.cols, mosaic.rows) : lane;
