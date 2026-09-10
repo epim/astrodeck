@@ -19,7 +19,6 @@ import { useEffect, useRef, useState, type JSX } from "react";
 
 import { ApiError } from "../../../../api";
 import { lockReason } from "../../../lib/gate";
-import type { Capability } from "../../../../types";
 import {
   useEquipConnected, useFrameSettings, usePrincipal, useStatus, useStore, useWsPhase,
 } from "../../../../store";
@@ -27,7 +26,7 @@ import { IncidentCard, Pill } from "../../../ui";
 import { NxIcon, type NxIconName } from "../../../icons";
 import { explainLock } from "../../../shell/explain";
 import {
-  ARMED_ACTION_IDS, INCIDENT_ARM_LABEL, INCIDENT_ARM_MS, runIncidentAction, specFor,
+  ARMED_ACTION_IDS, INCIDENT_ARM_LABEL, INCIDENT_ARM_MS, capLockReason, runIncidentAction, specFor,
 } from "./incidentActions";
 import { useNowIncidents } from "./useNowIncidents";
 
@@ -72,12 +71,10 @@ export function IncidentStack({ compact = false }: { compact?: boolean }): JSX.E
       // `wsPhase: "up"` deliberately: opening the Safety sheet or the trash is
       // still possible with the rig unreachable, and telling the operator it is
       // not would be the wrong sentence at exactly the wrong moment.
-      return s.cap
-        ? lockReason({ cap: s.cap as Capability }, { ...gate, wsPhase: "up" as const })
-        : null;
+      return capLockReason(s, { ...gate, wsPhase: "up" as const });
     }
-    const first = lockReason(
-      { cap: s.cap as Capability | undefined, needsRole: s.needsRole, busyLane: s.busyLane }, gate);
+    const first = capLockReason(s, gate)
+      ?? lockReason({ needsRole: s.needsRole, busyLane: s.busyLane }, gate);
     if (first) return first;
     return s.busyLane2 ? lockReason({ busyLane: s.busyLane2 }, gate) : null;
   };
