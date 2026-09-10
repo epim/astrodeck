@@ -1,0 +1,347 @@
+/* inspect.css - the INSPECT sheet's own classes (wave R7, T-R7-19).
+ *
+ * `next.css` is a single shared file that twenty concurrent tasks cannot own, so
+ * every class this area needs lives here and is imported once, by the area root
+ * (`index.ts`), never added to `NextApp.tsx`.
+ *
+ * Rules this file keeps: single-class selectors only, variants on `data-*`, no
+ * class defined in `next.css` appears in any selector here (not even as an
+ * ancestor - a `.nx-insp-x .nx-readout` rule would still be redefining a shared
+ * primitive from an area file), tokens from `index.css` only, and every
+ * animation is dropped under `prefers-reduced-motion`.
+ */
+
+/* ------------------------------------------------------------------ toolbar */
+
+/* One wrapping row of 48 px controls. It WRAPS rather than scrolling: a toolbar
+ * that scrolls sideways hides its own controls, and the zoom primaries are the
+ * ones that must never be reached for twice. */
+.nx-insp-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+}
+
+/* A cluster is one unbreakable group only in spirit: it wraps internally too, so
+ * a 320 px phone never forces a horizontal scroll on an ancestor. */
+.nx-insp-cluster {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* The zoom readout. Fixed width so the row does not reflow as the number grows
+ * from 12% to 1600%; tabular figures so the digits do not dance while pinching. */
+.nx-insp-zoom {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 52px;
+  height: 48px;
+  font-variant-numeric: tabular-nums;
+}
+
+.nx-insp-dl {
+  position: relative;
+  margin-left: auto;
+}
+
+/* The one help control's anchor. */
+.nx-insp-help {
+  position: relative;
+  display: inline-flex;
+}
+
+.nx-insp-help-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 240px;
+  max-width: 320px;
+}
+
+.nx-insp-help-row {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-3, var(--text-dim));
+}
+
+.nx-insp-help-name {
+  display: inline-block;
+  margin-right: 6px;
+  font-family: "Chakra Petch", sans-serif;
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: var(--text);
+}
+
+.nx-insp-help-lock {
+  display: block;
+  color: var(--warn);
+}
+
+/* The download rows, inside the shared popover. */
+.nx-insp-dl-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 232px;
+  max-width: 300px;
+}
+
+.nx-insp-dl-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: flex-start;
+  text-align: left;
+  min-height: 48px;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--nx-r-sm, 10px);
+  background: transparent;
+  color: var(--text);
+  text-decoration: none;
+  cursor: pointer;
+  width: 100%;
+}
+
+.nx-insp-dl-row:hover {
+  border-color: var(--line);
+  background: var(--bg-raise);
+}
+
+.nx-insp-dl-row[data-primary="true"] {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.nx-insp-dl-label {
+  font-family: "Chakra Petch", sans-serif;
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+}
+
+.nx-insp-dl-hint {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--text-3, var(--text-dim));
+  white-space: normal;
+}
+
+/* ---------------------------------------------------------------- histogram */
+
+.nx-insp-stretch {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.nx-insp-stretch-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* The plot. `width:100%` with a fixed height and a viewBox: the bars scale with
+ * the panel and the 256 bins keep their proportions. */
+.nx-insp-plot {
+  display: block;
+  width: 100%;
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+/* The level rail. IN FLOW, and its own containing block, so the absolutely
+ * positioned handles cannot propagate overflow up the ancestor chain the way
+ * the legacy over-the-plot handles did. */
+.nx-insp-rail {
+  position: relative;
+  height: 44px;
+  margin: 6px 0 22px;
+  border-top: 1px solid var(--line);
+  touch-action: none;
+  user-select: none;
+  overflow-x: clip;
+  overflow-y: visible;
+}
+
+.nx-insp-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 32px;
+  outline: none;
+  cursor: ew-resize;
+}
+
+.nx-insp-handle[data-locked="true"] {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.nx-insp-handle-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 1.5px;
+  background: var(--text-dim);
+  box-shadow: 0 0 0 1px var(--bg-panel);
+}
+
+.nx-insp-handle-grip {
+  position: absolute;
+  top: -5px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 10px;
+  height: 10px;
+  border: 1px solid var(--bg-panel);
+  background: var(--text-dim);
+}
+
+.nx-insp-handle-read {
+  position: absolute;
+  bottom: -20px;
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10px;
+  color: var(--text-3, var(--text-dim));
+}
+
+.nx-insp-handle-tag {
+  position: absolute;
+  top: -18px;
+  right: 16px;
+  white-space: nowrap;
+  font-family: "Chakra Petch", sans-serif;
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: var(--warn);
+  border: 1px dashed var(--warn);
+  padding: 0 4px;
+}
+
+/* The three level colours, and the enlarged grip while one is being dragged.
+ * Shape as well as hue: the active handle grows, which survives night mode. */
+.nx-insp-handle[data-which="mid"] .nx-insp-handle-line,
+.nx-insp-handle[data-which="mid"] .nx-insp-handle-grip { background: var(--accent); }
+
+.nx-insp-handle[data-which="white"] .nx-insp-handle-line,
+.nx-insp-handle[data-which="white"] .nx-insp-handle-grip { background: var(--text); }
+
+.nx-insp-handle[data-active="true"] .nx-insp-handle-line { width: 3px; }
+
+.nx-insp-handle[data-active="true"] .nx-insp-handle-grip {
+  width: 15px;
+  height: 15px;
+  top: -7px;
+}
+
+.nx-insp-handle:focus-visible .nx-insp-handle-grip {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.nx-insp-slider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+}
+
+/* `min-width:0` is the load-bearing half: a flex item's default `min-width:auto`
+ * refuses to shrink past its content, and a range input's intrinsic width is
+ * about 129 px - exactly the kind of un-shrinkable floor that makes a panel push
+ * its column instead of fitting in it. */
+.nx-insp-slider input {
+  flex: 1 1 auto;
+  min-width: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+/* ----------------------------------------------------------------- filmstrip */
+
+.nx-insp-strip {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+  scrollbar-width: thin;
+}
+
+.nx-insp-tile {
+  flex: 0 0 auto;
+  width: 84px;
+}
+
+.nx-insp-thumb {
+  display: block;
+  width: 100%;
+  height: 44px;
+  background: rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+
+.nx-insp-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.nx-insp-strip-end {
+  display: inline-flex;
+  align-items: flex-end;
+  padding: 0 2px 6px;
+  flex: 0 0 auto;
+}
+
+/* ------------------------------------------------------- verdicts and notes */
+
+.nx-insp-livestack,
+.nx-insp-verdict {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.nx-insp-livestack-row,
+.nx-insp-verdict-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+/* The sentence a warning always carries. Sans, not mono: it is prose. */
+.nx-insp-note {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-3, var(--text-dim));
+}
+
+.nx-insp-note[data-tone="warn"] { color: var(--warn); }
+
+@media (prefers-reduced-motion: reduce) {
+  .nx-insp-handle-grip,
+  .nx-insp-handle-line { transition: none; }
+}

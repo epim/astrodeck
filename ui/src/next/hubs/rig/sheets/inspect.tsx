@@ -1,9 +1,10 @@
 // inspect.tsx - the full-screen INSPECT sheet (plan hub-session-capture.md F.9,
 // GAP-ANALYSIS section 3 "Missing - preview tooling").
 //
-// WHAT THIS FILE IS. It is chrome, and almost nothing else. Every instrument on
-// this screen already exists in `components/preview/*` and is mounted here with
-// the props the existing orchestrator (`LivePreview.tsx`) passes it:
+// WHAT THIS FILE IS. It is chrome, and almost nothing else. It resolves WHICH
+// frame is on screen, hands each instrument its props, and adds the two things
+// the sheet itself owns: the capability note under the toolbar and the outlier
+// line. The instruments are:
 //
 //   PreviewStage      the picture, and with it the pinch/drag/wheel gestures,
 //                     the linear-path LUT canvas, the double-buffered NINA path,
@@ -11,23 +12,32 @@
 //                     StarOverlay, TiltOverlay, FieldOverlay, BahtinovOverlay,
 //                     Reticle, ScaleBar, SnrChip, LoupePanel (the 1:1
 //                     magnifier), the pinned banner and the stale-link ribbon.
-//   PreviewToolbar    zoom cluster, magnifier toggle, the annotations picker,
-//                     and the whole Download disclosure (full-res PNG, share
-//                     JPEG, stretched PNG, lossless PNG, FITS).
-//   StretchHistogram  the log histogram, B/M/W, brightness/contrast, CLIPPED.
-//   FrameStats        min / median / mean / max / sigma + HFR + stars.
-//   FocusVerdict      the live focus judgement, in its documented precedence.
-//   FrameFilmstrip    the horizontal strip of recent frames.
-//   LiveStackReadout  the alignment badge and the bright-outlier pixel count.
+//                     STILL `components/preview/PreviewStage.tsx`: it is a KEEP
+//                     (wave R7 plan section 2.3) because the pixel pipeline has
+//                     no design analogue. Only its chrome moved out.
+//   InspectToolbar    zoom cluster, overlay toggles, magnifier, and the whole
+//                     Download disclosure (full-res PNG, share JPEG, stretched
+//                     PNG, lossless PNG, FITS).
+//   StretchPanel      the log histogram plot, the Auto switch, Brightness, and
+//                     the Advanced disclosure over black/mid/white.
+//   FrameMetaRow      size / exposure / gain / bin, as a readout row.
+//   FrameStatsGrid    min / median / mean / max / sigma + HFR + stars.
+//   FocusLine         the live focus judgement, in its documented precedence.
+//   Filmstrip         the horizontal strip of recent frames.
+//   LiveStackLine     the alignment badge and the bright-outlier pixel count.
 //
-// Re-implementing any of them here would fork behaviour that took several
-// regressions to get right (the star-overlay tap floor, the pin that survives
-// being trimmed out of the ring, the download rows that refuse to offer a byte
-// the rig has already freed). So this file resolves WHICH frame is on screen,
-// hands each component its props, and adds the two things the sheet itself owns:
-// the capability note under the toolbar, and the outlier line.
+// STAGE 2 (wave R7, T-R7-19). Wave 1 mounted seven legacy `components/preview/*`
+// widgets here whole - `Panel` chrome, `.btn` toolbars, a `PickerButton` summary
+// that could not say WHICH overlays were on - and named the rebuild as a
+// follow-up. `hubs/rig/inspect/` is that follow-up: the presentation is
+// re-implemented in the design's vocabulary and every judgement that took
+// regressions to get right is SHARED, not re-derived (the download rows that
+// refuse to offer a byte the rig has already freed, the pin that survives being
+// trimmed out of the ring, the focus precedence where saturation outranks
+// few-stars because it causes it). The legacy files are not edited, not deleted
+// and not imported from here; they still serve `#/classic`.
 //
-// THE `view.media` NOTE (deviation D15). `PreviewToolbar` gates its FITS row on
+// THE `view.media` NOTE (deviation D15). The toolbar gates its FITS row on
 // `preview.saved_local` only, because the server enforces `view.media` with a
 // 403 and the toolbar has no capability prop. Adding one would fork the download
 // gating that is kept in lockstep with the rig's own retention constants
@@ -40,6 +50,7 @@ import type { SheetProps } from "../../sheets";
 import { Sheet, Card, EmptyCard, Label, ListRow, Mono } from "../../../ui";
 import { NxIcon } from "../../../icons";
 import { nav, useRoute } from "../../../router";
+import { explainLock } from "../../../shell/explain";
 import {
   useConfig,
   useHfrThresholds,
@@ -59,13 +70,10 @@ import { accessPhrase, capAllowed } from "../../../../lib/caps";
 import { u } from "../../../../lib/base";
 import { shareQuery } from "../../../../lib/share";
 import { PreviewStage, type StageControls } from "../../../../components/preview/PreviewStage";
-import { PreviewToolbar } from "../../../../components/preview/PreviewToolbar";
-import { PreviewMeta } from "../../../../components/preview/PreviewMeta";
-import { StretchHistogram } from "../../../../components/preview/StretchHistogram";
-import { FrameStats } from "../../../../components/preview/FrameStats";
-import { FrameFilmstrip } from "../../../../components/preview/FrameFilmstrip";
-import { FocusVerdict } from "../../../../components/preview/FocusVerdict";
-import { LiveStackReadout } from "../../../../components/preview/LiveStackReadout";
+import {
+  Filmstrip, FocusLine, FrameMetaRow, FrameStatsGrid, InspectToolbar, LiveStackLine,
+  StretchPanel, sourceLine,
+} from "../inspect";
 import { StackInspect } from "./inspectStack";
 
 /** The FITS row is `view.media` on the server. Composed from the role table, so
@@ -174,9 +182,6 @@ function PreviewInspect({ params }: { params: Record<string, string> }): JSX.Ele
   const scalePct = Math.round((viewport.scale || 1) * 100);
   const starsAvailable = !!shown?.star_list && shown.star_list.length > 0;
   const clipAvailable = !!shown && shown.data_is_linear && shown.full_well != null;
-  // Nothing on the stage means the zoom cluster moves nothing, and a percentage
-  // that steps over a picture that does not is the toolbar asserting a lie.
-  const zoomReason = shown ? null : "Nothing on the stage to zoom yet";
 
   const canMedia = capAllowed(principal, "view.media");
   const shareTarget = captureTarget || sequence.target || "";
@@ -215,7 +220,9 @@ function PreviewInspect({ params }: { params: Record<string, string> }): JSX.Ele
           : "live frame"
       }
       icon={<NxIcon name="eye" size={18} />}
-      live={<PreviewMeta preview={shown} />}
+      // Where the frame came from and what state its pixels are in. Neither is
+      // in the readout row below, so the header repeats nothing.
+      live={shown ? sourceLine(shown) : "no frame yet"}
       onBack={() => nav.back()}
       footer={footer}
       data-testid="rig-inspect"
@@ -255,12 +262,11 @@ function PreviewInspect({ params }: { params: Record<string, string> }): JSX.Ele
             }}
           />
 
-          <PreviewToolbar
+          <InspectToolbar
             preview={shown}
             overlays={overlays}
             setOverlays={setOverlays}
             scalePct={scalePct}
-            zoomReason={zoomReason}
             onZoomIn={() => controls.current?.zoomIn()}
             onZoomOut={() => controls.current?.zoomOut()}
             onFit={() => controls.current?.fit()}
@@ -268,11 +274,13 @@ function PreviewInspect({ params }: { params: Record<string, string> }): JSX.Ele
             starsAvailable={starsAvailable}
             clipAvailable={clipAvailable}
             linkDown={linkDown}
+            liveId={liveId}
             shareMeta={{ target: shareTarget, subs: shareSubs }}
             stretch={stretch}
             loupeOn={loupe.on}
             loupeAvailable={loupe.available}
             onLoupe={(v) => controls.current?.setLoupeOn(v)}
+            onExplain={explainLock}
           />
 
           {!canMedia && (
@@ -282,25 +290,28 @@ function PreviewInspect({ params }: { params: Record<string, string> }): JSX.Ele
           )}
 
           <div>
-            <Label>STRETCH</Label>
-            <StretchHistogram
-              preview={shown}
-              stretch={stretch}
-              onStretch={setStretch}
-              onDragChange={setStretchDragging}
-            />
+            <Label>FRAME</Label>
+            <FrameMetaRow preview={shown} />
           </div>
+
+          <StretchPanel
+            preview={shown}
+            stretch={stretch}
+            onStretch={setStretch}
+            onDragChange={setStretchDragging}
+            onExplain={explainLock}
+          />
 
           <div>
-            <Label>FRAME</Label>
-            <FrameStats preview={shown} hfrGood={hfrGood} hfrWarn={hfrWarn} />
+            <Label>STATISTICS</Label>
+            <FrameStatsGrid preview={shown} hfrGood={hfrGood} hfrWarn={hfrWarn} />
           </div>
 
-          <FocusVerdict preview={shown} prev={prev} hfrGood={hfrGood} hfrWarn={hfrWarn} />
+          <FocusLine preview={shown} prev={prev} hfrGood={hfrGood} hfrWarn={hfrWarn} />
 
           {shown.livestack && (
             <Card tone="default" data-testid="inspect-livestack">
-              <LiveStackReadout preview={shown} />
+              <LiveStackLine preview={shown} />
               {(shown.livestack.clipped ?? 0) > 0 && (
                 <p className="nx-empty-hint" style={{ margin: "6px 0 0" }}>{OUTLIER_NOTE}</p>
               )}
@@ -309,7 +320,7 @@ function PreviewInspect({ params }: { params: Record<string, string> }): JSX.Ele
 
           <div>
             <Label>RECENT FRAMES</Label>
-            <FrameFilmstrip
+            <Filmstrip
               previews={previews}
               shownId={selectedId}
               liveId={liveId}
