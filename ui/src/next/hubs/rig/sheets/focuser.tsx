@@ -25,6 +25,24 @@
 //   deriveAutofocusParams  `:731-747` - ONE object builds the summary line and
 //                      the request, so what is printed before the tap cannot
 //                      differ from what is sent by it.
+//   the shutter        `views/FocusView.tsx:498-519, 556-559, 1291-1355` - SINGLE
+//                      / LOOP / STOP at the `focus` frame scope, verbatim:
+//                        `POST /api/capture`      focusCaptureBody({exposureS, gain, binning})
+//                        `POST /api/capture/loop` the same body
+//                        `POST /api/capture/stop` no body
+//                      with `singleReason = captureReason ?? (looping ? "A
+//                      capture loop is running - press Stop first" : null)` and a
+//                      STOP that is gated on the ACCESS FLOOR ONLY, never on a
+//                      lane - it is the only way to end a loop, and gating it on
+//                      the lane it exists to end is the bug the inventory records
+//                      three times. Without this row the focus exposure, gain and
+//                      binning could only reach a live frame by accident (r4 #11):
+//                      `focusCaptureBody` appeared once, inside `applyPreset`,
+//                      behind `if (!looping) return`, so it could only RESTART a
+//                      loop somebody else had started from Rig - Capture at the
+//                      `capture` scope, while AF_SETTINGS_NOTE and the
+//                      `captureBlocked` chain both pointed at a Single that was
+//                      not there.
 //
 // THREE DELIBERATE DEVIATIONS FROM THE DESIGN (plan E3-E6), all of the same
 // shape - the design draws a control for a verb the engine does not have:
@@ -65,8 +83,12 @@ import {
   deriveAutofocusParams, focusButtonState, readFocusFailure,
 } from "../../../../lib/autofocus";
 import {
-  FOCUS_EXPOSURE_PRESETS, focusCaptureBody, sweepPreviewNote, sweepReadiness,
+  FOCUS_EXPOSURE_PRESETS, FRAME_READOUT_GRACE_MS, focusCaptureBody,
+  sweepPreviewNote, sweepReadiness,
 } from "../../../../lib/focusCapture";
+// The polar sentence and its two-channel test, shared with Rig - Capture rather
+// than re-spelled here: one alignment, one string (r4 #25).
+import { POLAR_REASON, isPolarBusy } from "../capture/captureGate";
 import {
   MOVE_IN_FLIGHT_REASON, MOVE_SENDING_REASON, anchorBlocker, moveProgress,
   retireAfterMs, type FocuserCommand,
@@ -82,8 +104,8 @@ import { AutofocusVerdict } from "../../../../components/preview/FocusVerdict";
 import { bahtinovAid } from "../../../../lib/bahtinov";
 import {
   useConfig, useFocus, useFrameSettings, useHfrThresholds,
-  useLastAutofocusResult, useLivePreview, usePlan, usePreviews, useProviders,
-  useSequence, useStatus, useStore,
+  useLastAutofocusResult, useLivePreview, usePlan, usePolar, usePreviews,
+  useProviders, useSequence, useStatus, useStore,
 } from "../../../../store";
 import type { DriverInfo } from "../../../../types";
 
@@ -121,10 +143,59 @@ export const FILTER_OFFSET_NOTE =
   "Shift the focuser by the filter's stored offset when the wheel moves, so a "
   + "filter change does not cost a refocus.";
 
+/** The three numbers this sheet shoots at, and where the frames go. Focus
+ *  frames are diagnostics: `focusCaptureBody` sends `save: false` and it is not
+ *  a toggle, because `hub.start_loop` has no save parameter at all. */
+export const FOCUS_FRAME_NOTE =
+  "Single and Loop shoot at the exposure, gain and binning in AUTOFOCUS "
+  + "SETTINGS below - the same three numbers the sweep copies. Focus frames are "
+  + "not saved to the library; they land on the live stage on Rig - Capture, "
+  + "where a tap opens the frame for a closer look.";
+
+export const LOOP_RUNNING_REASON = "A capture loop is running - press STOP first";
+export const LOOP_ALREADY_REASON = "The loop is already running - press STOP to end it";
+export const SHUTTER_STARTING_REASON =
+  "Waiting for the camera to accept this exposure - no frame has started yet";
+
+/** What to say between the tap and the frame arriving.
+ *
+ *  `POST /api/capture` returns the moment the task is spawned - before the
+ *  shutter opens - so without this, pressing SINGLE looks exactly like not
+ *  pressing it for the length of the exposure. That is the failure the Go button
+ *  one card up was filed for, on the control beside it.
+ *
+ *  Transcribed from `lib/focusCapture.ts:152-175` `frameWaitNote` rather than
+ *  imported, for one reason: all three of its sentences carry em-dashes, and
+ *  ARCHITECTURE non-negotiable 5 is "hyphens, never em-dashes, in UI strings".
+ *  Same three states, the same `FRAME_READOUT_GRACE_MS`, and the same refusal
+ *  that prints BOTH numbers - "no frame" is not actionable, "no frame in 74 s
+ *  for a 4 s exposure" points at the camera link. */
+export function shutterWait(p: {
+  /** ms epoch when the server ACCEPTED the exposure, or null. */
+  startedAt: number | null;
+  exposureS: number;
+  now: number;
+}): { text: string; tone: "dim" | "warn" } | null {
+  if (p.startedAt == null) return null;
+  const elapsedMs = Math.max(0, p.now - p.startedAt);
+  const exposureMs = Math.max(0, p.exposureS * 1000);
+  if (elapsedMs < exposureMs) {
+    return { text: `exposing · ${Math.ceil((exposureMs - elapsedMs) / 1000)} s left`, tone: "dim" };
+  }
+  if (elapsedMs < exposureMs + FRAME_READOUT_GRACE_MS) {
+    return { text: "reading out…", tone: "dim" };
+  }
+  return {
+    text: `no frame in ${Math.round(elapsedMs / 1000)} s for a ${p.exposureS} s exposure `
+      + "- the camera may have dropped it",
+    tone: "warn",
+  };
+}
+
 export const AF_SETTINGS_NOTE =
   "Focus frames are not saved. Autofocus sweeps at this gain and binning, and at "
-  + "this exposure too once a frame shows stars - so shoot something that works "
-  + "before you sweep.";
+  + "this exposure too once a frame shows stars - so press SINGLE above and check "
+  + "the frame before you sweep.";
 
 export const ANCHOR_NOTE =
   "Tells the focuser it is at this number. Nothing moves. Use it when the count "
@@ -203,6 +274,13 @@ export function FocuserSheet(_p: SheetProps): JSX.Element {
   const canFocus = useCanControlCapture();
   const canConfigBackend = useCanConfigBackend();
 
+  const polar = usePolar();
+  // r4 #25: polar alignment SPAWNS ITS OWN LANE (server/astrodeck/hub.py:297) and
+  // holds the camera for the whole alignment. Nothing on this sheet named it, so
+  // AUTOFOCUS NOW, FIND FOCUS ROUGHLY FIRST and BAHTINOV START all pressed
+  // through an alignment and came back as a raw 409.
+  const polarOwns = isPolarBusy(polar.state, status?.busy_lanes) ? POLAR_REASON : null;
+
   const sweeping = useBusy("autofocus");
   const looping = !!status?.looping;
   const seqOwnsCamera = sequence.state === "running" || sequence.state === "paused";
@@ -252,12 +330,16 @@ export function FocuserSheet(_p: SheetProps): JSX.Element {
   const progress = moveProgress(cmd, pos, foc?.moving, now, progressAt);
   const waiting = !!cmd && !(progress?.settled ?? false);
 
+  // The shutter's own clock, declared here so the one second hand below covers
+  // both things this sheet can be waiting for: a move, and a frame.
+  const [shotAt, setShotAt] = useState<number | null>(null);
+
   // One second hand for the whole sheet, stopped as soon as nothing is waiting.
   useEffect(() => {
-    if (!waiting) return;
+    if (!waiting && shotAt == null) return;
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
-  }, [waiting]);
+  }, [waiting, shotAt]);
 
   // Command retirement (lib/focusMove.ts:132-166): a settled confirmation
   // lingers, a refusal outstays it, and a sweep taking the focuser retires the
@@ -362,14 +444,84 @@ export function FocuserSheet(_p: SheetProps): JSX.Element {
       binning: afDerived.binning, steps_each_side: afDerived.steps_each_side,
     };
 
-  // The one blocker that decides whether "tap a preset, then Single" is even
-  // possible: this sheet has no shutter of its own, so it names Rig - Capture's.
+  // The one blocker that decides whether "press SINGLE" is even possible - and
+  // it now describes THIS sheet's own shutter, two cards down, rather than
+  // Rig - Capture's (r4 #11). Order is by how big a fact it is about the rig:
+  // permission, then hardware, then who else owns the camera
+  // (`lib/focusCapture.ts:94-121`, re-spelled with hyphens for the copy rule).
   const captureBlocked = first(
     canFocus ? null : `Read-only session - ${accessPhrase("control.capture")} required`,
     !cam ? "No camera is connected - assign one on ADD A DEVICE" : null,
+    polarOwns,
     seqOwnsCamera ? "A sequence owns the camera - stop it first" : null,
+    // The sweep exposes continuously for minutes; a manual frame would queue
+    // behind the exposure guard and land whenever the sweep let go of it.
     sweeping ? "Autofocus owns the camera until the sweep finishes" : null,
   );
+
+  // -------------------------------------------------- the shutter (r4 #11)
+  // SINGLE / LOOP / STOP at the `focus` frame scope: the row
+  // `views/FocusView.tsx:1291-1355` has always had, on the same three endpoints
+  // and the same body (`focusCaptureBody`, which sends `save: false` and does
+  // not offer a toggle - `hub.start_loop` has no save parameter at all).
+  const [shutterPending, setShutterPending] = useState<null | "single" | "loop">(null);
+  const singleShutterReason = first(
+    link.lockedReason, captureBlocked, capRoleCamera.lockedReason,
+    // Single's one extra row, which Loop does not have: `/api/capture` would
+    // queue behind a running loop's own frames and 409 at the capture lock.
+    looping ? LOOP_RUNNING_REASON : null,
+  );
+  const loopShutterReason = first(
+    link.lockedReason, captureBlocked, capRoleCamera.lockedReason,
+  );
+  // STOP is the ACCESS FLOOR ONLY - no lane, ever. It has to stay pressable
+  // while the very conditions the other two refuse on (a loop, a capture in
+  // flight, a sweep) are true, because it is the only thing that ends them.
+  const stopShutterReason = capRoleCamera.lockedReason;
+
+  const shoot = (kind: "single" | "loop") => {
+    const blocked = kind === "single" ? singleShutterReason : loopShutterReason;
+    // Belt and braces: both buttons are honest-disabled, but a number nothing
+    // measured must never reach the wire, where JSON.stringify turns NaN into
+    // `null` and the camera gets a body it cannot read.
+    if (blocked) { onExplain(blocked); return; }
+    setShutterPending(kind);
+    void (async () => {
+      try {
+        await api.post(
+          kind === "single" ? "/api/capture" : "/api/capture/loop",
+          focusCaptureBody({
+            exposureS: focusFrame.exposure_s,
+            gain: focusFrame.gain,
+            binning: focusFrame.binning,
+          }),
+        );
+        // Narrated only on ACCEPTANCE: POST /api/capture returns the moment the
+        // task is spawned, before the shutter opens, so a claim made before the
+        // answer is a claim about a frame that may never have started.
+        if (kind === "single") { setShotAt(Date.now()); setNow(Date.now()); }
+      } catch (e) {
+        showToast("error", (e as Error).message);
+      } finally {
+        setShutterPending(null);
+      }
+    })();
+  };
+  const stopCapture = () => {
+    setShotAt(null);   // nothing is in flight to narrate after a deliberate stop
+    void act(() => api.post("/api/capture/stop"));
+  };
+  // A frame arrived, so the wait is over - whoever the frame belonged to.
+  const liveFrameId = live?.id ?? null;
+  const seenFrameId = useRef(liveFrameId);
+  useEffect(() => {
+    if (liveFrameId === seenFrameId.current) return;
+    seenFrameId.current = liveFrameId;
+    setShotAt(null);
+  }, [liveFrameId]);
+  const frameWait = shutterWait({
+    startedAt: shotAt, exposureS: focusFrame.exposure_s, now,
+  });
   const afReady = sweepReadiness({
     manual: afOpen,
     hasLiveFrame: !!live,
@@ -389,11 +541,11 @@ export function FocuserSheet(_p: SheetProps): JSX.Element {
   // hardware/permission facts are bigger than any lane.
   const afReason = first(
     link.lockedReason, afButton.reason, capRoleCamera.lockedReason,
-    laneCapture.lockedReason, laneLooping.lockedReason, flowOwns,
+    polarOwns, laneCapture.lockedReason, laneLooping.lockedReason, flowOwns,
   );
   const coarseReason = first(
-    focuserReason, capRoleCamera.lockedReason, laneCapture.lockedReason,
-    looping ? "A capture loop is running - press Stop first" : null,
+    focuserReason, capRoleCamera.lockedReason, polarOwns, laneCapture.lockedReason,
+    looping ? LOOP_RUNNING_REASON : null,
   );
 
   const runAutofocus = () => void act(() => api.post("/api/focuser/autofocus", {
@@ -406,7 +558,8 @@ export function FocuserSheet(_p: SheetProps): JSX.Element {
   // highlight would leave the loop shooting the old length forever.
   const presetReason = first(
     capRoleCamera.lockedReason,
-    looping ? first(seqOwnsCamera ? "A sequence owns the camera - stop it first" : null,
+    looping ? first(polarOwns,
+      seqOwnsCamera ? "A sequence owns the camera - stop it first" : null,
       sweeping ? "Autofocus owns the camera until the sweep finishes" : null) : null,
   );
   const applyPreset = (s: number) => {
@@ -432,7 +585,7 @@ export function FocuserSheet(_p: SheetProps): JSX.Element {
     return () => clearTimeout(t);
   }, [bahtWanted, bahtOn]);
   const bahtReason = first(
-    capRole.lockedReason, capRoleCamera.lockedReason,
+    capRole.lockedReason, capRoleCamera.lockedReason, polarOwns,
     laneCapture.lockedReason, laneLooping.lockedReason, flowOwns,
   );
   const toggleBahtinov = (want: boolean) => {
@@ -699,7 +852,68 @@ export function FocuserSheet(_p: SheetProps): JSX.Element {
         {previewNote && <Note tone="warn">{previewNote}</Note>}
       </Card>
 
-      {/* 3. The jogs. */}
+      {/* 2b. The shutter, at the `focus` frame scope (r4 #11). Above the jogs
+          and above the sweep because focusing is a loop - shoot, look, nudge,
+          repeat - and because `sweepReadiness`'s refusal says "press SINGLE
+          above", which has to be true of where it actually is. */}
+      <Card>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+          <Label>FOCUS FRAME</Label>
+          <Mono tone="dim" data-testid="focus-frame-summary">
+            {`${focusFrame.exposure_s} s · gain ${focusFrame.gain} · bin ${focusFrame.binning}`}
+          </Mono>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0,1fr))", gap: 6 }}>
+          <ActionButton
+            kind="primary"
+            full
+            busy={shutterPending === "single"}
+            onPress={() => shoot("single")}
+            lockedReason={shutterPending === "single"
+              ? SHUTTER_STARTING_REASON : singleShutterReason}
+            onExplain={onExplain}
+            data-testid="focus-single"
+          >
+            {shutterPending === "single" ? "STARTING…" : "SINGLE"}
+          </ActionButton>
+          <ActionButton
+            kind="secondary"
+            full
+            busy={shutterPending === "loop"}
+            onPress={() => shoot("loop")}
+            lockedReason={shutterPending === "loop"
+              ? SHUTTER_STARTING_REASON
+              : looping ? LOOP_ALREADY_REASON : loopShutterReason}
+            onExplain={onExplain}
+            data-testid="focus-loop"
+          >
+            {shutterPending === "loop" ? "STARTING…" : looping ? "LOOPING" : "LOOP"}
+          </ActionButton>
+          <ActionButton
+            kind="danger"
+            full
+            onPress={stopCapture}
+            lockedReason={stopShutterReason}
+            onExplain={onExplain}
+            data-testid="focus-stop"
+          >
+            STOP
+          </ActionButton>
+        </div>
+        {frameWait && (
+          <Note tone={frameWait.tone} data-testid="focus-frame-wait">{frameWait.text}</Note>
+        )}
+        <Note>{FOCUS_FRAME_NOTE}</Note>
+      </Card>
+
+      {/* 3. The jogs, finest first. The 1-step pair is the legacy `STEP_VALUES =
+          [1, 10, 100, 1000]` row that this sheet had dropped to 10/100/1000:
+          the EAF's backlash is tens of steps, so a single step is not how you
+          travel - it is how you confirm the drawtube answers at all. */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0,1fr))", gap: 6 }}>
+        {jog(-1, "IN 1")}
+        {jog(1, "OUT 1")}
+      </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0,1fr))", gap: 6 }}>
         {jog(-100, "IN 100")}
         {jog(-10, "IN 10")}

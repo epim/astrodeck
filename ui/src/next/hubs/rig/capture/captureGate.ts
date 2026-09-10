@@ -103,6 +103,31 @@ export function isGainInvalid(raw: string, maxGain: number | null | undefined): 
     || (!!maxGain && maxGain > 0 && n > maxGain);
 }
 
+/** The number a draft text box will actually shoot: its own text where that
+ *  parses, the committed store number where it does not.
+ *
+ *  It is NOT a repair. A draft that does not parse is refused by
+ *  `exposeReason`/`isGainInvalid` before any press reaches a POST, so this
+ *  fallback only ever feeds a LABEL - it exists so a half-typed box renders the
+ *  last agreed number instead of `NaN`, not so a blank box can be shot. */
+export function draftNumber(raw: string, committed: number): number {
+  const n = Number(raw);
+  return raw.trim() !== "" && Number.isFinite(n) ? n : committed;
+}
+
+/** Polar alignment owns the camera. TWO signals, because they arrive on two
+ *  different channels and either one alone has a hole: `polar.state` is this
+ *  browser's own alignment session (it goes `running` the moment WE start one,
+ *  before any status frame), and the `polar` busy lane is the rig's own answer
+ *  (`server/astrodeck/hub.py:297` spawns it), which is the only thing that says
+ *  an alignment started on ANOTHER device is holding the camera. */
+export function isPolarBusy(
+  polarState: string | null | undefined, busyLanes: string[] | null | undefined,
+): boolean {
+  if (polarState === "running" || polarState === "paused") return true;
+  return Array.isArray(busyLanes) && busyLanes.includes("polar");
+}
+
 /** A cooler set-point the panel may send: finite, in range, not blank. */
 export function isCoolerTargetInvalid(raw: string): boolean {
   const n = Number(raw);

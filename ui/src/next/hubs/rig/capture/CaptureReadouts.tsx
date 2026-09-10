@@ -13,6 +13,14 @@
 // misleading "few stars" that CAP-02 was filed for. The commit happens on blur,
 // on Enter, and once more before the shutter fires.
 //
+// AND THE HANDLES ARE PROPS, NOT `useFrameDraft` CALLS OF THIS FILE'S OWN.
+// `useFrameDraft` returns per-CALLER state: a second call for the same field is
+// a SECOND draft with its own text and its own commit, so a copy owned here
+// could not be the copy the shutter reads. That is exactly what r4 #1 was - the
+// gate was fed the committed store number instead, both fix-reasons became
+// unreachable, and a typed-but-unblurred 180 shot the old 30 s. CaptureScreen
+// owns the four handles now and passes them down; this file only renders them.
+//
 // The design shows four tiles (FILTER, EXPOSURE, GAIN, COUNT). OFFSET and
 // BINNING are the two the rig has and the design has no room for, so they sit in
 // the same scrollable grid rather than being dropped: nothing is lost.
@@ -31,13 +39,13 @@ import {
 import { captureFilterDialCategory } from "../../../../components/capture/captureFilterDial";
 import { CAPTURE_PRESETS } from "../../../../lib/capturePresets";
 import { subLengthVerdict } from "../../../../lib/photometry";
-import { useFrameDraft, useFrameSettings, useStore } from "../../../../store";
+import { useFrameSettings, useStore } from "../../../../store";
 import {
   ActionButton, Chip, Dial, Field, Label, Mono, ReadoutGrid, ReadoutTile, TextInput,
   type DialOption,
 } from "../../../ui";
 import {
-  EXPOSURE_INVALID_MESSAGE, gainInvalidMessage, isGainInvalid,
+  EXPOSURE_INVALID_MESSAGE, draftNumber, gainInvalidMessage, isGainInvalid,
 } from "./captureGate";
 import { isExposureInvalid } from "../../../../lib/exposure";
 import type { RigStatus } from "../../../../types";
@@ -48,6 +56,15 @@ import type { RigStatus } from "../../../../types";
 export const COUNT_PRESETS = [1, 2, 3, 5, 10, 20, 50, 100];
 
 export type TileId = "filter" | "exposure" | "gain" | "count" | "offset" | "binning";
+
+/** One `useFrameDraft` handle, passed down rather than created here (see the
+ *  header). Structural, so the store's own return type satisfies it and this
+ *  file needs no import from the store to name it. */
+export interface FrameDraftHandle {
+  text: string;
+  setText: (raw: string) => void;
+  commit: () => void;
+}
 
 /** A labelled text box that COMMITS on blur and on Enter.
  *
@@ -118,6 +135,12 @@ export interface CaptureReadoutsProps {
   status: RigStatus | null;
   count: number;
   setCount: (n: number) => void;
+  /** The four `capture`-scope drafts, owned by CaptureScreen because the
+   *  shutter's guard and the POST body are both built from these strings. */
+  expDraft: FrameDraftHandle;
+  gainDraft: FrameDraftHandle;
+  offsetDraft: FrameDraftHandle;
+  binDraft: FrameDraftHandle;
   /** Moves the wheel now, and pins that slot's saved settings (F.5). */
   moveFilterTo: (slot: number) => void;
   /** `filterMotion(...)`'s sentence while the carousel turns, or null. */
@@ -142,10 +165,7 @@ export function CaptureReadouts(props: CaptureReadoutsProps): JSX.Element {
   const setCapture = (patch: Parameters<typeof setFrameSettings>[1]) =>
     setFrameSettings("capture", patch);
 
-  const expDraft = useFrameDraft("capture", "exposure_s");
-  const gainDraft = useFrameDraft("capture", "gain");
-  const offsetDraft = useFrameDraft("capture", "offset");
-  const binDraft = useFrameDraft("capture", "binning");
+  const { expDraft, gainDraft, offsetDraft, binDraft } = props;
   const [countText, setCountText] = useState(String(props.count));
 
   const cam = props.status?.camera;
@@ -157,6 +177,15 @@ export function CaptureReadouts(props: CaptureReadoutsProps): JSX.Element {
 
   const exposureBad = isExposureInvalid(expDraft.text);
   const gainBad = isGainInvalid(gainDraft.text, maxGain);
+
+  /** The tiles read the DRAFTS, the same numbers the shutter will send. A tile
+   *  showing the committed value beside a box holding a different one is the
+   *  r4 #1 disagreement in miniature: "the field reads 180, the rig shoots 30,
+   *  and nothing is said". */
+  const shownExposureS = draftNumber(expDraft.text, settings.exposure_s);
+  const shownGain = draftNumber(gainDraft.text, settings.gain);
+  const shownOffset = draftNumber(offsetDraft.text, settings.offset);
+  const shownBinning = Math.max(1, draftNumber(binDraft.text, settings.binning));
 
   const wheelName = typeof wheel?.position === "number"
     ? (wheel.names?.[wheel.position] ?? null) : null;
@@ -179,8 +208,8 @@ export function CaptureReadouts(props: CaptureReadoutsProps): JSX.Element {
   const binOptions = BIN_PRESETS.filter((b) => b <= maxBin);
   const scaleAt1 = props.status?.optics?.image_scale_arcsec_px ?? null;
 
-  const sizeMb = frameSizeMb(cam?.width, cam?.height, settings.binning);
-  const verdict = subLengthVerdict(settings.exposure_s, props.skyLimitedS);
+  const sizeMb = frameSizeMb(cam?.width, cam?.height, shownBinning);
+  const verdict = subLengthVerdict(shownExposureS, props.skyLimitedS);
   const exposureSub = verdict === "unknown"
     ? "sky limit unknown"
     : verdict === "too_short" ? `under sky-limited ${Math.round(props.skyLimitedS ?? 0)}s`
@@ -329,7 +358,7 @@ export function CaptureReadouts(props: CaptureReadoutsProps): JSX.Element {
           />
           <ReadoutTile
             label="EXPOSURE"
-            value={fmtExposure(settings.exposure_s)}
+            value={fmtExposure(shownExposureS)}
             sub={exposureSub}
             tone={exposureBad ? "bad" : undefined}
             selected={tile === "exposure"}
@@ -338,7 +367,7 @@ export function CaptureReadouts(props: CaptureReadoutsProps): JSX.Element {
           />
           <ReadoutTile
             label="GAIN"
-            value={String(settings.gain)}
+            value={String(shownGain)}
             sub={maxGain ? `100 = unity · max ${maxGain}` : "100 = unity"}
             tone={gainBad ? "bad" : undefined}
             selected={tile === "gain"}
@@ -355,7 +384,7 @@ export function CaptureReadouts(props: CaptureReadoutsProps): JSX.Element {
           />
           <ReadoutTile
             label="OFFSET"
-            value={String(settings.offset)}
+            value={String(shownOffset)}
             sub="sets the black floor"
             selected={tile === "offset"}
             onSelect={() => setTile("offset")}
@@ -363,9 +392,9 @@ export function CaptureReadouts(props: CaptureReadoutsProps): JSX.Element {
           />
           <ReadoutTile
             label="BINNING"
-            value={`${settings.binning}x${settings.binning}`}
+            value={`${shownBinning}x${shownBinning}`}
             sub={scaleAt1 != null
-              ? `${(scaleAt1 * settings.binning).toFixed(2)}" per pixel`
+              ? `${(scaleAt1 * shownBinning).toFixed(2)}" per pixel`
               : "scale needs optics"}
             selected={tile === "binning"}
             onSelect={() => setTile("binning")}
@@ -423,10 +452,10 @@ export function CaptureReadouts(props: CaptureReadoutsProps): JSX.Element {
       <Mono size={10.5} tone="dim">
         {captureSummary({
           count: props.count,
-          exposureS: settings.exposure_s,
+          exposureS: shownExposureS,
           filter: face.face,
-          gain: settings.gain,
-          binning: settings.binning,
+          gain: shownGain,
+          binning: shownBinning,
           coolerTargetC: cam?.cooler?.target_c ?? null,
           coolerOn: !!cam?.cooler?.on,
           sizeMb,

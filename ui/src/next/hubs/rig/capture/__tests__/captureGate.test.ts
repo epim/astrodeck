@@ -288,6 +288,32 @@ test("no reason on this screen carries an em-dash", () => {
   }
 });
 
+test("draftNumber shoots the typed text and falls back only for a label", () => {
+  eq(gate.draftNumber("180", 30), 180, "a parsing draft is not the number it will shoot");
+  eq(gate.draftNumber("0.5", 30), 0.5, "a fractional exposure was rounded away");
+  // The two the gate refuses. The fallback is a LABEL, never a shot: an empty
+  // or unbounded box is blocked by `exposeReason` before any press posts.
+  eq(gate.draftNumber("", 30), 30, "a blank box rendered NaN instead of the last agreed number");
+  eq(gate.draftNumber("  ", 30), 30, "a whitespace-only box is not blank");
+  eq(gate.draftNumber("abc", 30), 30, "a non-numeric box rendered NaN");
+  // "1e9" PARSES, so it comes back as itself - the bound is `isExposureInvalid`'s
+  // job, not this one's, and splitting them here is what lets the box stay on
+  // screen holding the bad value while the shutter refuses it.
+  eq(gate.draftNumber("1e9", 30), 1e9, "an unbounded draft was silently repaired");
+});
+
+test("polar owns the camera from EITHER channel - our own session or the rig's lane", () => {
+  assert(gate.isPolarBusy("running", []), "our own running alignment did not count");
+  assert(gate.isPolarBusy("paused", []), "a paused alignment still holds the camera");
+  assert(gate.isPolarBusy("idle", ["polar"]),
+    "an alignment started on ANOTHER device did not count - the rig's own lane is the "
+    + "only signal for it");
+  assert(!gate.isPolarBusy("idle", ["capture"]), "an unrelated lane read as polar");
+  assert(!gate.isPolarBusy("idle", undefined),
+    "a server too old to publish busy_lanes blocked the camera forever");
+  assert(!gate.isPolarBusy(null, null), "a null state read as busy");
+});
+
 const total = passed + failed;
 console.log(`captureGate.test: ${passed}/${total} passed`);
 for (const f of failures) console.log("  " + f);

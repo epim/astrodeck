@@ -423,6 +423,41 @@ await testAsync("with no camera the sheet still renders every control, honest-di
     "the live line helper invents a state for a camera that is not there");
 });
 
+// ============== polar alignment owns the camera on this sheet too (r4 #25)
+// MEASURE GAIN exposes repeatedly at two gains. Polar alignment holds the
+// camera for its whole run and spawns its own lane
+// (server/astrodeck/hub.py:297); this sheet named the sequence and never named
+// polar, so the button was live through an alignment and came back as a raw 409.
+await testAsync("MEASURE GAIN is honest-disabled while an alignment owns the camera",
+  async () => {
+    const { POLAR_REASON } = await import("../capture/captureGate");
+    seed();
+    mount();
+    await settle();
+    const before = q('[data-testid="measure-gain"]');
+    assert(before != null, "precondition: MEASURE GAIN is not on the sheet");
+    eq(before.getAttribute("aria-disabled"), null,
+      "precondition: MEASURE GAIN was already locked with no alignment running");
+
+    seed({ status: camStatus({ busy_lanes: ["polar"] }) });
+    mount();
+    await settle();
+    const btn = q('[data-testid="measure-gain"]');
+    assert(btn != null, "MEASURE GAIN was hidden during an alignment instead of locked");
+    eq(btn.getAttribute("aria-disabled"), "true",
+      "MEASURE GAIN pressed through a polar alignment - the rig answers that with a raw 409");
+    eq(btn.getAttribute("title"), POLAR_REASON,
+      "MEASURE GAIN is locked but does not name the alignment");
+    assert(btn.hasAttribute("disabled") === false,
+      "MEASURE GAIN used the native disabled attribute, which takes the reason out of the "
+      + "accessibility tree");
+
+    asked.length = 0;
+    click(btn);
+    await settle();
+    eq(asked.length, 0, `the press reached the rig anyway: ${JSON.stringify(asked)}`);
+  });
+
 act(() => { rootRef?.unmount(); });
 
 const total = passed + failed;

@@ -27,6 +27,7 @@ import { api } from "../../../../api";
 import {
   useStore, useStatus, usePolar, useSequence, useConfig, usePhotometry, usePreview,
   useLastLight, usePreviews, useLivePreview, usePrincipal, useEquipConnected, useWsPhase,
+  useFrameDraft,
 } from "../../../../store";
 import { confirmDialog } from "../../../../components/ConfirmDialog";
 import { TargetField } from "../../../../components/capture/TargetField";
@@ -47,9 +48,10 @@ import { CoolerRow } from "./CoolerRow";
 import { ResultCard, NO_TARGET_FLOW_REASON } from "./ResultCard";
 import { useArm } from "./useArm";
 import {
-  accessReason, coolerReason, exposeReason, liveViewReason, loopReason, resetStackReason,
-  singleReason, slewReason, stopReason, warmReason, POLAR_NOTICE, sequenceNotice,
-  VIDEO_LOCK_REASON, NO_LAST_LIGHT_REASON, type CaptureGateInput,
+  accessReason, coolerReason, draftNumber, exposeReason, isPolarBusy, liveViewReason,
+  loopReason, resetStackReason, singleReason, slewReason, stopReason, warmReason,
+  POLAR_NOTICE, sequenceNotice, VIDEO_LOCK_REASON, NO_LAST_LIGHT_REASON,
+  type CaptureGateInput,
 } from "./captureGate";
 import type { PreviewInfo } from "../../../../types";
 
@@ -64,6 +66,16 @@ export const CAPTURE_NOTE =
 
 export const SAVE_OFF_NOTE =
   "This frame is a preview only - nothing is written to the library.";
+
+/** The ON half, which the switch used to leave unsaid. Both states carry a
+ *  sentence for the same reason UX #5 flipped the default: a beginner pressed
+ *  LOOP, watched pictures appear all night and found nothing on disk in the
+ *  morning, and a switch that only explains ITSELF when it is off is a switch
+ *  whose consequences you learn the next day. Verbatim from
+ *  `views/CaptureView.tsx:1200`. */
+export const SAVE_ON_NOTE =
+  "Every frame you shoot here is written to the library on disk. Turn this off "
+  + "for framing and test shots you don't want to keep.";
 
 /** The hand-off the Sky finder makes. A NAME alone cannot be slewed to -
  *  `POST /api/mount/goto` takes `ra_hours` and `dec_deg` - so a hand-off that
@@ -117,6 +129,44 @@ export function CaptureScreen(): JSX.Element {
     [setFrameSettings],
   );
 
+  // ------------------------------------------------------------ the drafts
+  // THE FOUR TEXT DRAFTS LIVE HERE, not in CaptureReadouts, because the SHUTTER
+  // needs them and the shutter is on this screen. r4 #1: with the drafts owned
+  // one level down, `CaptureGateInput` was fed `String(settings.exposure_s)` -
+  // the committed store number, which `useFrameDraft.commit()` REFUSES to
+  // overwrite with an invalid draft - so EXPOSURE_FIX_REASON and
+  // GAIN_FIX_REASON could never be reached and a `180` typed into EXPOSURE and
+  // never blurred shot the old 30 s with nothing on screen to say so. (On iOS,
+  // tapping a <button> does not reliably blur an input, and `DraftBox` is
+  // reconciled in place when a sibling tile re-renders, so no `focusout` fires
+  // either - the press really is the first commit opportunity there is.)
+  //
+  // So the raw strings feed the gate, `commitDrafts` runs INSIDE `useArm` before
+  // the POST, and the body is built from the same strings the guard read.
+  const expDraft = useFrameDraft("capture", "exposure_s");
+  const gainDraft = useFrameDraft("capture", "gain");
+  const offsetDraft = useFrameDraft("capture", "offset");
+  const binDraft = useFrameDraft("capture", "binning");
+  const expCommit = expDraft.commit;
+  const gainCommit = gainDraft.commit;
+  const offsetCommit = offsetDraft.commit;
+  const binCommit = binDraft.commit;
+  /** Push every pending draft into the `capture` scope, so what the shutter uses
+   *  and what every other surface can see are the same numbers even when the
+   *  operator never left the field they typed in (CaptureView.tsx:186-192). */
+  const commitDrafts = useCallback(() => {
+    expCommit(); gainCommit(); offsetCommit(); binCommit();
+  }, [expCommit, gainCommit, offsetCommit, binCommit]);
+
+  /** What THIS press will shoot: the draft's own text where it parses, the
+   *  committed number where it does not. A draft that does not parse cannot
+   *  reach a POST anyway - `exposeReason` refuses the press first - so the
+   *  fallback only ever feeds the labels. */
+  const shotExposureS = draftNumber(expDraft.text, settings.exposure_s);
+  const shotGain = draftNumber(gainDraft.text, settings.gain);
+  const shotOffset = draftNumber(offsetDraft.text, settings.offset);
+  const shotBinning = Math.max(1, draftNumber(binDraft.text, settings.binning));
+
   // ------------------------------------------------------------ local state
   // COUNT has no home in `FrameSettings` and should not have one: it is a
   // per-invocation argument, not a camera setting.
@@ -156,10 +206,13 @@ export function CaptureScreen(): JSX.Element {
     status,
     equipConnected,
     wsPhase,
-    polarBusy: polar.state === "running" || polar.state === "paused",
+    polarBusy: isPolarBusy(polar.state, status?.busy_lanes),
     seqState: sequence.state,
-    exposureRaw: String(settings.exposure_s),
-    gainRaw: String(settings.gain),
+    // The RAW draft text, never the committed number: the number is the one the
+    // draft was refused permission to overwrite, so feeding it here would make
+    // both fix-reasons unreachable (r4 #1).
+    exposureRaw: expDraft.text,
+    gainRaw: gainDraft.text,
     maxGain: cam?.max_gain ?? null,
     looping,
     pending: null,
@@ -171,24 +224,24 @@ export function CaptureScreen(): JSX.Element {
   frameTypeRef.current = frameType;
 
   const arm = useArm({
-    commitDrafts: () => { /* the drafts commit themselves on blur and Enter */ },
+    commitDrafts,
     onFrameLanded: () => {
       // A Light frame landed via OUR Single/Loop - bank it. Dark/Flat/Bias never
       // feed the "last lights" snapshot the darks nudge and the prefill read.
       if (frameTypeRef.current === "Light") {
         noteLightFrame({
-          exposureS: settings.exposure_s,
-          gain: settings.gain,
-          offset: settings.offset,
-          binning: settings.binning,
+          exposureS: shotExposureS,
+          gain: shotGain,
+          offset: shotOffset,
+          binning: shotBinning,
           tempC: cam?.temperature ?? null,
         });
       }
       setLastShot({
         count: bodyRef.current.count,
-        exposureS: settings.exposure_s,
+        exposureS: shotExposureS,
         filter: face.face,
-        gain: settings.gain,
+        gain: shotGain,
         saved: bodyRef.current.save,
       });
     },
@@ -196,14 +249,16 @@ export function CaptureScreen(): JSX.Element {
 
   const gateNow: CaptureGateInput = { ...gate, pending: arm.pending };
 
-  /** The POST body, verbatim (CaptureView.tsx:442-450). The guards above have
-   *  already refused an exposure <= 0 or unbounded and an out-of-range gain, so
-   *  nothing invalid can reach this object. */
+  /** The POST body, verbatim (CaptureView.tsx:442-450). Built from the DRAFTS,
+   *  which is what makes the field on screen and the frame on disk the same
+   *  numbers: the guards above have already refused an exposure <= 0 or
+   *  unbounded and an out-of-range gain over these exact strings, so nothing
+   *  invalid can reach this object either. */
   const buildBody = (overrideSave?: boolean) => ({
-    exposure_s: settings.exposure_s,
-    gain: settings.gain,
-    offset: settings.offset,
-    binning: settings.binning,
+    exposure_s: shotExposureS,
+    gain: shotGain,
+    offset: shotOffset,
+    binning: shotBinning,
     save: overrideSave ?? save,
     target,
     frame_type: frameType,
@@ -216,7 +271,7 @@ export function CaptureScreen(): JSX.Element {
   const fire = (overrideSave?: boolean) => {
     bodyRef.current = { save: overrideSave ?? save, count };
     setLastShot(null);
-    void arm.arm("single", "/api/capture", buildBody(overrideSave), settings.exposure_s, count);
+    void arm.arm("single", "/api/capture", buildBody(overrideSave), shotExposureS, count);
   };
 
   const onLoop = () => {
@@ -224,7 +279,7 @@ export function CaptureScreen(): JSX.Element {
     // guard so Stop can offer again for THIS batch.
     if (frameType === "Light") offeredRef.current = false;
     bodyRef.current = { save, count: 1 };
-    void arm.arm("loop", "/api/capture/loop", buildBody(), settings.exposure_s);
+    void arm.arm("loop", "/api/capture/loop", buildBody(), shotExposureS);
   };
 
   const onLiveView = () => {
@@ -240,7 +295,7 @@ export function CaptureScreen(): JSX.Element {
     void arm.arm("live", "/api/capture/livestack/start", {
       ...buildBody(), frame_type: "Light",
       ...(clipEnabled ? { clip_sigma: clipSigma } : {}),
-    }, settings.exposure_s);
+    }, shotExposureS);
   };
 
   const onStop = () => {
@@ -418,9 +473,9 @@ export function CaptureScreen(): JSX.Element {
       </div>
 
       <CaptureStage
-        exposureS={settings.exposure_s}
-        gain={settings.gain}
-        binning={settings.binning}
+        exposureS={shotExposureS}
+        gain={shotGain}
+        binning={shotBinning}
         filterFace={face.face}
         target={target}
         looping={looping}
@@ -436,6 +491,10 @@ export function CaptureScreen(): JSX.Element {
         status={status}
         count={count}
         setCount={setCount}
+        expDraft={expDraft}
+        gainDraft={gainDraft}
+        offsetDraft={offsetDraft}
+        binDraft={binDraft}
         moveFilterTo={moveFilterTo}
         filterNote={fwMotion.problem ?? (fwMotion.pulsing ? fwMotion.summary : null)}
         lockedReason={readOnly}
@@ -484,7 +543,7 @@ export function CaptureScreen(): JSX.Element {
         checked={save}
         onChange={setSave}
         label="SAVE FITS TO LIBRARY"
-        note={save ? undefined : SAVE_OFF_NOTE}
+        note={save ? SAVE_ON_NOTE : SAVE_OFF_NOTE}
         lockedReason={readOnly}
         onExplain={onExplain}
         data-testid="capture-save"
@@ -503,7 +562,7 @@ export function CaptureScreen(): JSX.Element {
 
       <CaptureControls
         count={count}
-        exposureS={settings.exposure_s}
+        exposureS={shotExposureS}
         filter={face.face}
         looping={looping}
         liveStackOn={liveStackOn}
@@ -575,7 +634,7 @@ export function CaptureScreen(): JSX.Element {
         <Mono size={11} tone="dim">{CAPTURE_NOTE}</Mono>
       </Card>
       <Mono size={10} tone="dim">
-        {`Next frame: ${count} × ${fmtExposure(settings.exposure_s)} · ${face.face}`}
+        {`Next frame: ${count} × ${fmtExposure(shotExposureS)} · ${face.face}`}
       </Mono>
     </div>
   );

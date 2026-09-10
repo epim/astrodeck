@@ -91,7 +91,9 @@ const { createElement, act } = await import("react");
 const { createRoot } = await import("react-dom/client");
 const { useStore } = await import("../../../../../store");
 const { CaptureScreen } = await import("../CaptureScreen");
-const { VIDEO_LOCK_REASON, NEEDS_CAPTURE_REASON } = await import("../captureGate");
+const {
+  VIDEO_LOCK_REASON, NEEDS_CAPTURE_REASON, EXPOSURE_FIX_REASON, GAIN_FIX_REASON,
+} = await import("../captureGate");
 
 // ------------------------------------------------------------------ harness
 let passed = 0;
@@ -117,6 +119,26 @@ const settle = async () => {
 const container = win.document.getElementById("root") as any;
 const root = createRoot(container);
 const q = (sel: string) => container.querySelector(sel) as any;
+const press = async (el: any) => {
+  await act(async () => { el.dispatchEvent(new win.MouseEvent("click", { bubbles: true })); });
+  await settle();
+};
+/** Type into a React-controlled input the way a finger does: set the value
+ *  through the native setter React's own tracker watches, then dispatch `input`.
+ *  Deliberately NO blur and NO Enter - those are the two events this whole
+ *  section exists because iOS does not reliably deliver (r4 #1). */
+const typeInto = async (el: any, value: string) => {
+  const setter = Object.getOwnPropertyDescriptor(
+    win.HTMLInputElement.prototype, "value",
+  )!.set as (v: string) => void;
+  await act(async () => {
+    setter.call(el, value);
+    el.dispatchEvent(new win.Event("input", { bubbles: true }));
+  });
+  await settle();
+};
+const captureExposure = () =>
+  (useStore.getState() as any).frameSettings.capture.exposure_s as number;
 
 const OPERATOR = {
   role: "operator", email: "op@rig",
@@ -307,6 +329,91 @@ await testAsync("COUNT 3 is three POSTs, one per landed frame, and then it stops
       .dispatchEvent(new win.MouseEvent("click", { bubbles: true }));
   });
   await settle();
+});
+
+// ------------------------------- 4c. the draft the shutter reads (r4 #1, P0)
+// The whole point: `useFrameDraft.commit()` REFUSES an invalid draft, so the
+// committed store number can never be invalid - feed THAT to the gate and
+// EXPOSURE_FIX_REASON / GAIN_FIX_REASON are unreachable in the product while a
+// typed-but-unblurred value is shot at the OLD number with nothing on screen to
+// say so. These four assertions are the ones that go red if the gate is ever
+// fed `String(settings.exposure_s)` again.
+await testAsync("a typed exposure that was never blurred is the one that gets shot", async () => {
+  asks.length = 0;
+  // 4b left the COUNT tile selected; the EXPOSURE draft box is the one under it.
+  await press(q('[data-testid="tile-exposure"]'));
+  const box = q('[data-testid="capture-entry-exposure"]');
+  assert(box != null, "precondition: the EXPOSURE draft box is not on screen");
+  await typeInto(box, "180");
+  eq(captureExposure(), 2,
+    "precondition: the draft committed itself without a blur, so this test proves nothing");
+
+  const go = q('[data-testid="capture-go"]');
+  eq(go.getAttribute("aria-disabled"), null, "precondition: CAPTURE is locked for a valid draft");
+  // `fmtExposure` renders 180 s as "3m", so that string IS the 180 on screen.
+  assert(/3m/.test(go.textContent || ""),
+    "the primary still advertises the OLD exposure - the button says one number and shoots another");
+  assert(/3m/.test(q('[data-testid="tile-exposure"]').textContent || ""),
+    "the EXPOSURE tile still reads the committed number while the box beside it reads 180");
+  await press(go);
+
+  const posts = captureAsks();
+  eq(posts.length, 1, "CAPTURE did not post exactly once");
+  eq(posts[0].body.exposure_s, 180,
+    "the rig was sent the committed number, not the 180 on screen");
+  eq(captureExposure(), 180,
+    "the press never committed the draft - every other surface still reads the old exposure");
+
+  await press(q('[data-testid="capture-stop"]'));
+});
+
+await testAsync("an unbounded exposure honest-disables CAPTURE and reaches no rig", async () => {
+  asks.length = 0;
+  const box = q('[data-testid="capture-entry-exposure"]');
+  await typeInto(box, "1e9");
+  const go = q('[data-testid="capture-go"]');
+  eq(go.getAttribute("aria-disabled"), "true",
+    "CAPTURE stayed live over an exposure of 1e9 seconds");
+  eq(go.getAttribute("title"), EXPOSURE_FIX_REASON,
+    "CAPTURE is locked but does not say the exposure is why");
+  assert(go.hasAttribute("disabled") === false,
+    "CAPTURE used the native disabled attribute, which takes the reason out of the a11y tree");
+  await press(go);
+  eq(captureAsks().length, 0, "a refused exposure reached the rig anyway");
+  eq(captureExposure(), 180, "the refused draft was committed into the store");
+});
+
+await testAsync("a BLANK exposure is refused the same way - not shot as 0 s", async () => {
+  asks.length = 0;
+  await typeInto(q('[data-testid="capture-entry-exposure"]'), "");
+  const go = q('[data-testid="capture-go"]');
+  eq(go.getAttribute("aria-disabled"), "true",
+    "CAPTURE stayed live over an empty exposure box - CAP-02's blank frame, again");
+  eq(go.getAttribute("title"), EXPOSURE_FIX_REASON, "the blank box does not say why");
+  await press(go);
+  eq(captureAsks().length, 0, "an empty exposure box reached the rig");
+});
+
+await testAsync("a gain past the sensor's ceiling is refused, with its own sentence", async () => {
+  asks.length = 0;
+  // Put a shootable exposure back first: the exposure guard outranks the gain
+  // one, so a leftover blank box would make this assertion vacuous.
+  await typeInto(q('[data-testid="capture-entry-exposure"]'), "30");
+  await press(q('[data-testid="tile-gain"]'));
+  const gainBox = q('[data-testid="capture-entry-gain"]');
+  assert(gainBox != null, "precondition: the GAIN draft box is not on screen");
+  await typeInto(gainBox, "9999");   // the fixture camera's max_gain is 500
+  const go = q('[data-testid="capture-go"]');
+  eq(go.getAttribute("aria-disabled"), "true", "CAPTURE stayed live over a gain of 9999");
+  eq(go.getAttribute("title"), GAIN_FIX_REASON, "the over-range gain does not say why");
+  await press(go);
+  eq(captureAsks().length, 0, "an out-of-range gain reached the rig");
+
+  // Back to a shootable bench for the sections below.
+  await typeInto(gainBox, "120");
+  await press(q('[data-testid="tile-exposure"]'));
+  eq(q('[data-testid="capture-go"]').getAttribute("aria-disabled"), null,
+    "the bench did not recover - the tests below would assert over a locked screen");
 });
 
 // --------------------------------------------------------- 5. the LOOP latch
