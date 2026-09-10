@@ -23,47 +23,74 @@
 //     sees every port, its live value and the reason - not a grey rectangle
 //     that cannot be focused to ask why.
 //
-// THE SESSION LOCK IS A HEURISTIC, AND SAYS SO (deviation E13). The design locks
-// "mount, camera and USB" while a session runs. `SwitchPort` is
-// `{id, name, value, min, max, unit, is_boolean, can_write}` - there is no lock
-// flag on the wire, and the prototype hard-codes which ports lock
-// (seams/proto/logic.js:112). So the match is by NAME, and the footer note says
-// so, because a user whose dew port is called "USB DEW" needs to know why it
-// locked and that renaming it on the box is the fix.
+//  5. THE SESSION LOCK IS THE ENGINE'S ANSWER NOW, NOT THIS FILE'S GUESS
+//     (D-RIG-5, closing deviation E13). The design locks "mount, camera and
+//     USB" while a session runs, and this sheet used to decide that alone, with
+//     a regex over the port's label. That made the lock advice rather than
+//     enforcement - anything that was not this sheet could cut power to the
+//     mount mid-sequence - and it made two copies of one rule. `power_guard.py`
+//     now holds the pattern byte-identical as the DEFAULT, every port row
+//     arrives carrying `protected_now`, and each port carries a THREE-STATE
+//     decision (BY NAME / PROTECTED / NOT PROTECTED) that beats the name in
+//     both directions. The model, the sentences and the legacy fallback are in
+//     `../lib/portSettings.ts`; read its header before changing any of this.
+//  6. FOLLOW DEW IS A PER-PORT POLICY (D-RIG-3, closing deviation E24). The dew
+//     loop drives any writable port whose `follow_dew` is set, scaled into that
+//     port's OWN range - so the note beside the switch names that range and
+//     never a percentage.
+//
+// An engine that predates S7h/S7L sends no annotation at all. Those rows keep
+// the shipped name heuristic, the shipped sentence and the shipped footer, and
+// grow no settings group: a control bound to a field that does not exist is
+// worse than no control.
 
 import { useCallback, useEffect, useRef, useState, type JSX } from "react";
 import type { SheetProps } from "../../sheets";
 import {
-  ActionButton, BannerCard, Card, EmptyCard, Mono, Sheet,
+  ActionButton, BannerCard, Card, Disclosure, EmptyCard, Label, LockNote, Mono,
+  Segmented, Sheet, Switch,
 } from "../../../ui";
 import { NxIcon } from "../../../icons";
 import { nav } from "../../../router";
 import { useLock } from "../../../lib/gateHook";
 import { useEquipConnected, useSequence, useStatus, useStore } from "../../../../store";
 import { resolveRoleConnected } from "../../../../lib/caps";
-import { api } from "../../../../api";
+import {
+  getSwitchPorts, putSwitchPortSettings, setSwitchPort,
+  type SwitchPortSettings,
+} from "../../../../api/power";
+import {
+  BY_NAME_NOTE, followDewNote, followDewSub, isAnnotated, mergeSettings, portLockReason,
+  protectLine, protectPatch, protectStop, PROTECT_STOPS, protectedSub,
+  SESSION_CRITICAL, settingsRefusal, settingsSummary, switchRefusal,
+} from "../lib/portSettings";
 import type { SwitchPort } from "../../../../types";
+
+export { SESSION_CRITICAL, legacyLockReason } from "../lib/portSettings";
 
 /** How often the ports are re-read while the role is connected
  *  (views/PowerView.tsx:59-65). Torn down the moment it drops. */
 const POLL_MS = 5000;
 
-/** E13. A port whose name matches this is session-critical: cutting it mid-run
- *  ends the run and possibly the mount's alignment with it. */
-export const SESSION_CRITICAL = /mount|camera|usb/i;
+/** The footer for an engine that answers with annotated ports: it names the two
+ *  per-port controls one tap below, and what each does when it is left alone. */
+export const FOOTER_NOTE =
+  "Ports marked PROTECTED are refused while a run is live; BY NAME follows the "
+  + "port's label. Dew ports set to FOLLOW DEW are driven from the dew margin; "
+  + "the rest hold their level until you change them.";
 
-export function sessionLockReason(name: string): string {
-  return `${name} is locked while a run is going. Stop the run on Session - Now first.`;
-}
-
-/** The design's sentence plus the one it needs to be actionable. */
+/** The footer for an engine with no `power_guard` (pre-S7h/S7L). Kept WORD FOR
+ *  WORD because on that engine it is still exactly true: the lock is a name
+ *  match this file makes, there is no per-port store to point at, and there is
+ *  no dew loop. Shown only when the ports themselves prove it - see
+ *  `legacyEngine` below, which needs real rows and no annotation on any of
+ *  them, never a guess. */
 export const FOOTER_LOCK_NOTE =
   "Mount, camera and USB are locked while a session runs; stop the session to "
   + "unlock them. Ports are matched by name; rename a port on the power box if "
   + "the wrong one locks.";
 
-/** E24: the fragment claims dew heaters "on auto follow the dew margin from
- *  Weather". Nothing in this engine drives a switch port from the dew margin. */
+/** E24's honest replacement, for that same engine. */
 export const FOOTER_DEW_NOTE =
   "Dew heater ports set here hold their power until you change them.";
 
@@ -94,6 +121,12 @@ export function PowerSheet(_p: SheetProps): JSX.Element {
   const equipConnected = useEquipConnected();
   const sequence = useSequence();
   const showToast = useStore((s) => s.showToast);
+  // The engine's refusals are shown VERBATIM, which `showToast` cannot do: it
+  // runs every message through `humanizeLog`, which truncates at 137 characters,
+  // and `power_guard`'s refusal is longer than that - the clause that gets cut
+  // is the second way out ("clear the protection for this port in Power
+  // settings"), which is the one the user is standing in front of.
+  const enqueueToast = useStore((s) => s.enqueueToast);
 
   const role = resolveRoleConnected("switch", status?.backend_links, status?.connected, equipConnected);
   const connected = role.connected;
@@ -104,6 +137,17 @@ export function PowerSheet(_p: SheetProps): JSX.Element {
     cap: "control.power", needsRole: "switch",
   });
   const canControl = capReason == null;
+
+  // The two POLICIES are a different capability from operating the box: they
+  // decide what the ENGINE refuses during a run and how the dew loop drives a
+  // port, so the route is `config.safety`, while the on/off controls stay
+  // `control.power`. Both resolve to "needs admin access" on today's role table
+  // (`lib/caps.ts` gives an operator neither), so the phrase is the same - but
+  // the CAPABILITY is what the server checks, and folding these into one lock
+  // would be a hand-written claim about the route rather than a reading of it.
+  const { lockedReason: settingsReason, onExplain: explainSettings } = useLock({
+    cap: "config.safety", needsRole: "switch",
+  });
 
   const [ports, setPorts] = useState<SwitchPort[] | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
@@ -120,9 +164,20 @@ export function PowerSheet(_p: SheetProps): JSX.Element {
 
   const publishPending = useCallback(() => setPendingPorts(new Set(inFlightRef.current)), []);
 
+  // ---- the settings writes, with the SAME never-two-walks-at-once guard the
+  // port writes have. `PUT /api/switch/ports/{id}` answers with the annotated
+  // list, which costs the box a walk, and a fast second tap on the segmented
+  // control would otherwise stack one - and land whichever response arrived
+  // last, not whichever the user chose last.
+  const settingsFlightRef = useRef<Set<number>>(new Set());
+  const [settingsPending, setSettingsPending] = useState<ReadonlySet<number>>(new Set());
+  const settingsQueueRef = useRef<Map<number, SwitchPortSettings>>(new Map());
+  const publishSettingsPending =
+    useCallback(() => setSettingsPending(new Set(settingsFlightRef.current)), []);
+
   const refresh = useCallback(async () => {
     try {
-      setPorts(await api.get<SwitchPort[]>("/api/switch/ports"));
+      setPorts(await getSwitchPorts());
       setLoadErr(null);
     } catch (e) {
       // A failed GET must read as an ERROR, not as "no switches": keep whatever
@@ -169,9 +224,17 @@ export function PowerSheet(_p: SheetProps): JSX.Element {
     inFlightRef.current.add(id);
     publishPending();
     try {
-      setPorts(await api.post<SwitchPort[]>("/api/switch/set", { port_id: id, value }));
+      setPorts(await setSwitchPort(id, value));
     } catch (e) {
-      showToast("error", (e as Error).message);
+      // A protection refusal is not an error message, it is THE answer, and it
+      // arrives complete: the port's name, what the switch would have done, and
+      // both ways out. Shown verbatim, and matched by `code` rather than by any
+      // part of the sentence, so re-wording it server-side cannot silently turn
+      // it back into a generic red toast. No re-read first - the 409 already
+      // carries everything, and the 5 s poll corrects the row's own lock.
+      const refused = switchRefusal(e);
+      if (refused) enqueueToast({ level: "error", title: refused });
+      else showToast("error", (e as Error).message);
     } finally {
       inFlightRef.current.delete(id);
       const queued = queuedRef.current.get(id);
@@ -185,7 +248,41 @@ export function PowerSheet(_p: SheetProps): JSX.Element {
       }
       publishPending();
     }
-  }, [canControl, publishPending, showToast]);
+  }, [canControl, publishPending, showToast, enqueueToast]);
+
+  /** PUT one port's policies. Sends ONLY the keys in `patch`: absent means
+   *  unchanged on the server, and `protect_during_run: null` is one of its
+   *  three real values, so there is no value that could mean "leave it alone"
+   *  (`api/power.ts`'s `putSwitchPortSettings` enforces that). */
+  const writeSettings = useCallback(async (
+    id: number, patch: SwitchPortSettings,
+  ): Promise<void> => {
+    if (settingsReason) return; // read-only: the controls are inert anyway
+    if (settingsFlightRef.current.has(id)) {
+      // MERGED, not replaced: the two keys are independent and each patch says
+      // nothing about the key it omits, so the newer press wins on its own key
+      // and an earlier press on the other key is still sent.
+      settingsQueueRef.current.set(
+        id, mergeSettings(settingsQueueRef.current.get(id) ?? {}, patch),
+      );
+      return;
+    }
+    settingsFlightRef.current.add(id);
+    publishSettingsPending();
+    try {
+      setPorts(await putSwitchPortSettings(id, patch));
+    } catch (e) {
+      enqueueToast({ level: "error", title: settingsRefusal(e) });
+    } finally {
+      settingsFlightRef.current.delete(id);
+      const queued = settingsQueueRef.current.get(id);
+      if (queued !== undefined) {
+        settingsQueueRef.current.delete(id);
+        void writeSettings(id, queued);
+      }
+      publishSettingsPending();
+    }
+  }, [settingsReason, publishSettingsPending, enqueueToast]);
 
   const commitDimmer = (id: number, value: number) => {
     if (draggingRef.current !== id) return; // nothing was edited on this port
@@ -215,10 +312,74 @@ export function PowerSheet(_p: SheetProps): JSX.Element {
   const dimmers = ports?.filter((p) => p.can_write && !p.is_boolean) ?? [];
   const sensors = ports?.filter((p) => !p.can_write) ?? [];
 
-  const reasonFor = (p: SwitchPort): string | null => {
-    if (capReason) return capReason;
-    if (runOwns && SESSION_CRITICAL.test(p.name)) return sessionLockReason(p.name);
-    return null;
+  // `gate.ts`'s priority order is link -> cap -> role -> lane -> extra, and the
+  // protection is the EXTRA: last. Composing it as `capReason ?? ...` keeps that
+  // order exactly, so a viewer is told they cannot switch anything before being
+  // told this particular port is busy being used by a run.
+  const reasonFor = (p: SwitchPort): string | null =>
+    capReason ?? portLockReason(p, runOwns);
+
+  /** Proof, not a guess, that this engine has no `power_guard`: real rows, and
+   *  not one of them annotated. Absent ports (not connected, still loading) say
+   *  nothing either way and get this build's normal copy. */
+  const legacyEngine = ports != null && ports.length > 0 && !ports.some(isAnnotated);
+
+  /** The two per-port policies, one tap below the row. Rendered only for a port
+   *  the engine actually annotated: on an older engine the PUT route does not
+   *  exist, and a control whose write has nowhere to land is the defect this
+   *  wave is closing, not a nicety. */
+  const settingsFor = (p: SwitchPort): JSX.Element | null => {
+    if (!isAnnotated(p)) return null;
+    const saving = settingsPending.has(p.id);
+    return (
+      <div style={{ padding: "0 14px 12px" }}>
+        <Disclosure
+          summary="PORT SETTINGS"
+          // The summary STAYS while a write is out, with the state beside it:
+          // it is still what the port is set to until the answer lands, and
+          // replacing it with the word "saving" would take away the one thing
+          // the row is for in order to say something the caret already implies.
+          sub={saving ? `${settingsSummary(p)} · saving` : settingsSummary(p)}
+          data-testid={`port-settings-${p.id}`}
+        >
+          <Label size={10}>PROTECT DURING RUN</Label>
+          <Segmented
+            label={`protect ${p.name} during a run`}
+            options={PROTECT_STOPS}
+            value={protectStop(p)}
+            onChange={(next) => void writeSettings(p.id, protectPatch(next))}
+            lockedReason={settingsReason}
+            onExplain={explainSettings}
+            data-testid={`port-protect-${p.id}`}
+          />
+          <Mono size={10.5} tone="dim">{protectLine(p)}</Mono>
+          <Mono size={10.5} tone="dim">{BY_NAME_NOTE}</Mono>
+          <Switch
+            checked={p.follow_dew === true}
+            onChange={(next) => void writeSettings(p.id, { follow_dew: next })}
+            label="FOLLOW DEW"
+            note={followDewNote(p)}
+            lockedReason={settingsReason}
+            onExplain={explainSettings}
+            data-testid={`port-follow-dew-${p.id}`}
+          />
+          <LockNote reason={settingsReason} />
+        </Disclosure>
+      </div>
+    );
+  };
+
+  /** The sub-line under a port's name. Three different sentences on purpose -
+   *  "why is this locked" and "who is driving this level" are different
+   *  questions and the name heuristic used to leave both unanswerable. */
+  const rowSub = (p: SwitchPort): string | null => {
+    if (isAnnotated(p)) {
+      if (p.protected_now) return protectedSub(p);
+      return p.follow_dew ? followDewSub() : null;
+    }
+    return runOwns && SESSION_CRITICAL.test(p.name)
+      ? "session-critical · matched by name"
+      : null;
   };
 
   return (
@@ -267,9 +428,10 @@ export function PowerSheet(_p: SheetProps): JSX.Element {
             const on = p.value > 0;
             const pending = pendingPorts.has(p.id);
             const reason = reasonFor(p);
+            const sub = rowSub(p);
             return (
+              <div key={p.id}>
               <button
-                key={p.id}
                 type="button"
                 role="switch"
                 aria-checked={on}
@@ -296,9 +458,7 @@ export function PowerSheet(_p: SheetProps): JSX.Element {
                 </span>
                 <span className="nx-row-text">
                   <span className="nx-row-title">{p.name}</span>
-                  {runOwns && SESSION_CRITICAL.test(p.name) && (
-                    <span className="nx-row-sub">session-critical · matched by name</span>
-                  )}
+                  {sub != null && <span className="nx-row-sub">{sub}</span>}
                 </span>
                 <span
                   className="nx-row-right"
@@ -317,6 +477,8 @@ export function PowerSheet(_p: SheetProps): JSX.Element {
                   </Mono>
                 </span>
               </button>
+              {settingsFor(p)}
+              </div>
             );
           })}
 
@@ -326,8 +488,10 @@ export function PowerSheet(_p: SheetProps): JSX.Element {
             const shown = drafts[p.id] ?? p.value;
             const pending = pendingPorts.has(p.id);
             const reason = reasonFor(p);
+            const sub = rowSub(p);
             return (
-              <div key={p.id} className="nx-row" data-testid={`port-${p.id}`}
+              <div key={p.id}>
+              <div className="nx-row" data-testid={`port-${p.id}`}
                 style={{ flexDirection: "column", alignItems: "stretch", gap: 6 }}>
                 <span style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
                   <span className="nx-row-title">{p.name}</span>
@@ -335,6 +499,7 @@ export function PowerSheet(_p: SheetProps): JSX.Element {
                     {pending ? "-> " : ""}{shown.toFixed(0)}{p.unit}
                   </Mono>
                 </span>
+                {sub != null && <span className="nx-row-sub">{sub}</span>}
                 <input
                   type="range"
                   min={p.min}
@@ -367,6 +532,8 @@ export function PowerSheet(_p: SheetProps): JSX.Element {
                   onLostPointerCapture={() => abandonDimmer(p.id)}
                   data-testid={`dimmer-${p.id}`}
                 />
+              </div>
+              {settingsFor(p)}
               </div>
             );
           })}
@@ -401,7 +568,9 @@ export function PowerSheet(_p: SheetProps): JSX.Element {
       )}
 
       <div data-testid="power-footer">
-        <Mono size={10.5} tone="dim">{`${FOOTER_LOCK_NOTE} ${FOOTER_DEW_NOTE}`}</Mono>
+        <Mono size={10.5} tone="dim">
+          {legacyEngine ? `${FOOTER_LOCK_NOTE} ${FOOTER_DEW_NOTE}` : FOOTER_NOTE}
+        </Mono>
       </div>
       <div style={{ height: 8 }} />
     </Sheet>
