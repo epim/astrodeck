@@ -1,0 +1,634 @@
+/* =====================================================================
+   next.css - the component classes for the new AstroDeck front end.
+
+   NOT IMPORTED YET, ON PURPOSE. NextApp.tsx (task T0.1, the shell) is the
+   single place that imports this file; nothing under next/ui/ imports it and
+   neither does index.css. A second import would double every rule and make the
+   cascade order depend on module resolution order.
+
+   Rules of the file (ARCHITECTURE.md section 7):
+   - class prefix nx-, one flat class per selector;
+   - variants ride on data-* attributes, never on a second class;
+   - unlayered, like index.css, so Tailwind utilities do not outrank it;
+   - every colour comes from an index.css token. The only new tokens here are
+     the eight filter colours, which have nowhere else to live.
+
+   Micro type: the design's 9.5 / 9 / 8.5 px labels are all raised to a 10 px
+   floor (README "raise to a 10 px floor in production"). Hit targets are >= 44
+   px; the toolbar button is 48 and the primary CTA 52-56.
+   ===================================================================== */
+
+:root {
+  /* Filter colours (README "Design tokens"). Values, not roles: they name a
+     physical piece of glass in the wheel, so they do not swap with the ground
+     the way the palette tokens do. */
+  --nx-filter-L: #e8ecf7;
+  --nx-filter-R: #ff5470;
+  --nx-filter-G: #3ddc97;
+  --nx-filter-B: #4d7cff;
+  --nx-filter-Ha: #ff8a9a;
+  --nx-filter-OIII: #5fe0d0;
+  --nx-filter-SII: #ffb454;
+  --nx-filter-OSC: #00D2FF;
+
+  /* Radii and motion, from the README token section. */
+  --nx-r-card: 16px;
+  --nx-r-inner: 14px;
+  --nx-r-btn: 12px;
+  --nx-r-tile: 10px;
+  --nx-r-pill: 999px;
+  --nx-snap: 160ms;
+  --nx-pulse: 1400ms;
+  --nx-fill: 500ms;
+
+  --nx-tone: var(--accent);
+}
+
+/* Tone resolution. One rule per tone for the WHOLE file: any element carrying
+   data-tone publishes --nx-tone to itself and its children, and every
+   component below paints with var(--nx-tone). */
+[data-tone="accent"]  { --nx-tone: var(--accent); }
+[data-tone="accent2"] { --nx-tone: var(--accent-dim); }
+[data-tone="purple"]  { --nx-tone: var(--accent-dim); }
+[data-tone="good"]    { --nx-tone: var(--good); }
+[data-tone="warn"]    { --nx-tone: var(--warn); }
+[data-tone="bad"]     { --nx-tone: var(--bad); }
+[data-tone="info"]    { --nx-tone: var(--sky); }
+[data-tone="dim"]     { --nx-tone: var(--text-faint); }
+
+/* ---------------------------------------------------------------- fonts */
+
+.nx-display { font-family: "Chakra Petch", sans-serif; font-weight: 600; }
+.nx-sans { font-family: "IBM Plex Sans", sans-serif; }
+.nx-icon { display: block; flex-shrink: 0; }
+
+/* ------------------------------------------------------------ text bits */
+
+.nx-wordmark {
+  font-family: "Chakra Petch", sans-serif; font-weight: 600;
+  font-size: 11px; letter-spacing: .22em; color: var(--text);
+}
+.nx-wordmark-deck { color: var(--accent); }
+
+.nx-divider { height: 1px; background: var(--line); border: 0; }
+
+.nx-label {
+  font-family: "Chakra Petch", sans-serif; font-weight: 600;
+  font-size: 10px; letter-spacing: .16em; text-transform: uppercase;
+  color: var(--text-faint);
+}
+.nx-label[data-size="11"] { font-size: 11px; }
+
+.nx-mono {
+  font-family: "IBM Plex Mono", monospace;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+}
+.nx-mono[data-tone] { color: var(--nx-tone); }
+
+/* -------------------------------------------------------------- surfaces */
+
+.nx-card {
+  border: 1px solid var(--line); border-radius: var(--nx-r-card);
+  background: var(--bg-panel); padding: 12px 14px; color: var(--text);
+}
+.nx-card[data-tone="accent"] {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  box-shadow: 0 0 18px color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.nx-card[data-tone="purple"] { border-color: color-mix(in srgb, var(--accent-dim) 45%, transparent); }
+.nx-card[data-tone="dashed"] { border-style: dashed; background: transparent; }
+
+.nx-empty {
+  border: 1px dashed var(--line-bright); border-radius: var(--nx-r-card);
+  background: transparent; padding: 16px 14px;
+  display: flex; flex-direction: column; gap: 8px; align-items: flex-start;
+}
+.nx-empty-title {
+  font-family: "Chakra Petch", sans-serif; font-weight: 600;
+  font-size: 11px; letter-spacing: .16em; color: var(--text);
+}
+.nx-empty-hint { font-size: 12px; line-height: 1.5; color: var(--text-faint); }
+.nx-empty-action { display: flex; gap: 8px; flex-wrap: wrap; width: 100%; }
+
+/* ----------------------------------------------------------- pill / chip */
+
+.nx-pill {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 26px; padding: 0 8px; border-radius: var(--nx-r-pill);
+  border: 1px solid var(--line); background: transparent;
+  font-family: "IBM Plex Mono", monospace; font-size: 10px;
+  color: var(--text-dim); white-space: nowrap; cursor: default;
+}
+.nx-pill[data-dashed="true"] { border-style: dashed; border-color: var(--line-bright); }
+.nx-pill-glyph { display: inline-flex; color: var(--nx-tone); }
+.nx-pill-text { overflow: hidden; text-overflow: ellipsis; }
+button.nx-pill { cursor: pointer; }
+
+.nx-chip {
+  display: inline-flex; align-items: center; gap: 7px;
+  height: 40px; padding: 0 13px; border-radius: var(--nx-r-pill);
+  border: 1px solid var(--line); background: var(--bg-raise);
+  font-family: "Chakra Petch", sans-serif; font-weight: 600;
+  font-size: 10px; letter-spacing: .14em; color: var(--text-dim);
+  cursor: pointer; white-space: nowrap;
+}
+.nx-chip[data-active="true"] {
+  border-color: var(--nx-tone); color: var(--text);
+  background: color-mix(in srgb, var(--nx-tone) 12%, transparent);
+}
+.nx-chip[data-dashed="true"] { border-style: dashed; }
+.nx-chip-count {
+  font-family: "IBM Plex Mono", monospace; font-weight: 400;
+  font-size: 10px; letter-spacing: 0; color: var(--text-faint);
+}
+
+.nx-subnav { display: flex; gap: 6px; overflow-x: auto; padding: 0 16px 10px; }
+.nx-subnav-dot {
+  width: 8px; height: 8px; border-radius: 50%; background: var(--nx-tone);
+  display: inline-block; margin-right: 2px;
+}
+
+/* -------------------------------------------------------------- buttons */
+
+.nx-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  height: 44px; padding: 0 14px; border-radius: var(--nx-r-btn);
+  border: 1px solid var(--line-bright); background: var(--bg-raise);
+  color: var(--text);
+  font-family: "Chakra Petch", sans-serif; font-weight: 600;
+  font-size: 11px; letter-spacing: .14em; cursor: pointer;
+}
+.nx-btn[data-size="lg"] { height: 52px; font-size: 12px; }
+.nx-btn[data-size="xl"] { height: 56px; font-size: 12.5px; }
+.nx-btn[data-full="true"] { width: 100%; }
+.nx-btn[data-kind="primary"] {
+  border-color: var(--accent); background: var(--accent); color: var(--accent-ink);
+  box-shadow: 0 0 18px var(--glow);
+}
+.nx-btn[data-kind="secondary"] { border-color: var(--line-bright); background: var(--bg-raise); }
+.nx-btn[data-kind="ghost"] { border-color: transparent; background: transparent; color: var(--text-dim); }
+.nx-btn[data-kind="danger"] { border-color: var(--bad); background: transparent; color: var(--bad); }
+.nx-btn[data-kind="purple"] {
+  border-color: color-mix(in srgb, var(--accent-dim) 55%, transparent);
+  background: color-mix(in srgb, var(--accent-dim) 12%, transparent);
+}
+/* Armed is a SHAPE change, not only a hue change: the label swaps to the arm
+   sentence and the outline goes dashed, so it still reads under :root.night
+   where danger and accent are the same red. */
+.nx-btn[data-armed="true"] {
+  border-style: dashed; border-color: var(--warn); color: var(--warn);
+  background: transparent; box-shadow: none;
+}
+.nx-btn-glyph { display: inline-flex; }
+.nx-btn-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nx-btn-spin {
+  width: 14px; height: 14px; border-radius: 50%; flex-shrink: 0;
+  border: 2px solid color-mix(in srgb, currentColor 30%, transparent);
+  border-top-color: currentColor;
+  animation: nx-spin 800ms linear infinite;
+}
+
+.nx-iconbtn {
+  display: inline-flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 3px; min-width: 48px; height: 48px; padding: 0 6px;
+  border-radius: var(--nx-r-btn); border: 1px solid var(--line);
+  background: var(--bg-raise); color: var(--text-dim); cursor: pointer;
+}
+.nx-iconbtn[data-active="true"] {
+  border-color: var(--accent); color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.nx-iconbtn-label {
+  font-family: "Chakra Petch", sans-serif; font-weight: 600;
+  font-size: 10px; letter-spacing: .1em; white-space: nowrap;
+}
+
+/* --------------------------------------------------------------- switch */
+
+.nx-switch {
+  position: relative; flex-shrink: 0;
+  width: 40px; height: 24px; border-radius: var(--nx-r-pill);
+  border: 1px solid var(--line-bright); background: var(--bg); padding: 0;
+  cursor: pointer;
+}
+.nx-switch[data-checked="true"] { background: var(--accent); border-color: var(--accent); }
+.nx-switch-knob {
+  position: absolute; top: 2px; left: 2px; width: 18px; height: 18px;
+  border-radius: 50%; background: var(--text);
+  transition: left 200ms ease-out;
+}
+.nx-switch[data-checked="true"] .nx-switch-knob { left: 18px; }
+/* Night mode collapses the whole palette onto one red: a knob that is further
+   right still reads, a track that is only a different colour does not. The
+   word is always in the DOM and shown where hue stops working. */
+.nx-switch-state {
+  display: none; position: absolute; left: 50%; top: 26px;
+  transform: translateX(-50%);
+  font-family: "IBM Plex Mono", monospace; font-size: 10px;
+  color: var(--text-faint); letter-spacing: .08em;
+}
+:root.night .nx-switch-state { display: block; }
+
+.nx-switch-row { display: flex; align-items: center; gap: 12px; min-height: 54px; padding: 6px 0; }
+.nx-switch-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.nx-switch-title {
+  font-family: "Chakra Petch", sans-serif; font-weight: 600;
+  font-size: 10.5px; letter-spacing: .14em; color: var(--text);
+}
+.nx-switch-note {
+  font-family: "IBM Plex Mono", monospace; font-size: 10px;
+  color: var(--text-faint); line-height: 1.45;
+}
+
+/* ------------------------------------------------------------- segmented */
+
+.nx-seg {
+  display: inline-flex; border: 1px solid var(--line-bright);
+  border-radius: var(--nx-r-tile); overflow: hidden;
+}
+.nx-seg-opt {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  min-height: 44px; padding: 0 12px; border: 0; background: transparent;
+  color: var(--text-dim); font-family: "IBM Plex Mono", monospace;
+  font-size: 11px; cursor: pointer;
+}
+.nx-seg-opt[data-selected="true"] {
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  color: var(--accent);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+.nx-seg-sub { font-size: 10px; color: var(--text-faint); }
+
+/* -------------------------------------------------------------- checkbox */
+
+.nx-check {
+  display: inline-flex; align-items: center; gap: 10px;
+  min-height: 44px; padding: 0; border: 0; background: transparent;
+  color: var(--text); cursor: pointer; text-align: left;
+}
+.nx-check-box {
+  width: 22px; height: 22px; flex-shrink: 0; border-radius: 6px;
+  border: 1px solid var(--line-bright); background: var(--bg);
+  display: inline-flex; align-items: center; justify-content: center;
+  color: transparent;
+}
+.nx-check[data-checked="true"] .nx-check-box {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
+}
+.nx-check-label { font-family: "IBM Plex Sans", sans-serif; font-size: 12px; }
+
+/* -------------------------------------------------------------- readouts */
+
+.nx-readouts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+.nx-readouts[data-cols="3"] { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+
+.nx-readout {
+  position: relative; height: 60px; min-width: 0;
+  display: flex; flex-direction: column; align-items: flex-start; justify-content: center;
+  gap: 2px; padding: 0 9px; text-align: left;
+  border: 1px solid var(--line); border-radius: var(--nx-r-btn);
+  background: var(--bg); color: var(--text); cursor: pointer;
+}
+.nx-readout[data-selected="true"] {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+/* The selection marker. A border colour alone is a hue-only signal and dies
+   under night mode; this is the shape half of the same state. */
+.nx-readout-mark {
+  position: absolute; left: 9px; top: 0; width: 18px; height: 2px;
+  border-radius: 0 0 2px 2px; background: var(--accent);
+}
+.nx-readout-label {
+  font-family: "Chakra Petch", sans-serif; font-weight: 600;
+  font-size: 10px; letter-spacing: .16em; color: var(--text-faint);
+  white-space: nowrap;
+}
+.nx-readout[data-selected="true"] .nx-readout-label { color: var(--accent); }
+.nx-readout-value {
+  font-family: "IBM Plex Mono", monospace; font-size: 15px;
+  font-variant-numeric: tabular-nums; line-height: 1.1; white-space: nowrap;
+}
+.nx-readout-sub {
+  font-family: "IBM Plex Mono", monospace; font-size: 10px;
+  color: var(--text-faint); white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; width: 100%;
+}
+
+/* ------------------------------------------------------------------ dial */
+
+.nx-dial {
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  border-radius: var(--nx-r-inner); background: var(--bg); overflow: hidden;
+}
+.nx-dial-head {
+  display: flex; justify-content: space-between; padding: 8px 12px 0;
+  font-family: "IBM Plex Mono", monospace; font-size: 10px; color: var(--text-faint);
+}
+.nx-dial-name { color: var(--accent); }
+.nx-dial-track {
+  position: relative; height: 56px; touch-action: pan-y; cursor: ew-resize;
+  user-select: none; overflow: hidden;
+}
+.nx-dial-track:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.nx-dial-marker {
+  position: absolute; left: 50%; top: 6px; bottom: 6px; width: 2px;
+  background: var(--accent); transform: translateX(-50%);
+  pointer-events: none; z-index: 2; border-radius: 1px;
+}
+.nx-dial-strip {
+  position: absolute; left: 50%; top: 0; bottom: 0; display: flex;
+  transition: transform var(--nx-snap) ease-out;
+}
+.nx-dial-stop {
+  flex-shrink: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 5px;
+  color: var(--text-faint); cursor: pointer;
+}
+.nx-dial-stop[data-selected="true"] { color: var(--accent); }
+.nx-dial-tick { width: 1px; height: 8px; background: var(--line-bright); }
+.nx-dial-stop-label {
+  font-family: "IBM Plex Mono", monospace; font-size: 11px;
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.nx-dial-stop[data-selected="true"] .nx-dial-stop-label { font-size: 13px; font-weight: 500; }
+.nx-dial-fade { position: absolute; top: 0; bottom: 0; width: 56px; pointer-events: none; }
+.nx-dial-fade[data-side="left"] { left: 0; background: linear-gradient(90deg, var(--bg), transparent); }
+.nx-dial-fade[data-side="right"] { right: 0; background: linear-gradient(270deg, var(--bg), transparent); }
+
+/* ------------------------------------------------------------ ring gauge */
+
+.nx-ring { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.nx-ring[data-tone="accent"] { --nx-tone: var(--accent); }
+.nx-ring[data-tone="warn"] { --nx-tone: var(--warn); }
+.nx-ring[data-tone="dim"] { --nx-tone: var(--text-faint); }
+.nx-ring-dial { position: relative; flex-shrink: 0; }
+.nx-ring-dial svg { display: block; transform: rotate(-90deg); }
+.nx-ring-back { stroke: var(--line); }
+.nx-ring-fill { stroke: var(--nx-tone); transition: stroke-dasharray 600ms ease-out; }
+.nx-ring-inner {
+  position: absolute; inset: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 1px;
+}
+.nx-ring-value {
+  font-family: "IBM Plex Mono", monospace; font-size: 17px;
+  font-variant-numeric: tabular-nums; color: var(--text);
+}
+.nx-ring-label {
+  font-family: "Chakra Petch", sans-serif; font-weight: 600;
+  font-size: 10px; letter-spacing: .16em; color: var(--text-faint);
+}
+.nx-ring-sub { font-family: "IBM Plex Mono", monospace; font-size: 10px; color: var(--text-faint); }
+
+/* ------------------------------------------------------------------- bar */
+
+.nx-bar { width: 100%; border-radius: 999px; background: var(--line); overflow: hidden; }
+.nx-bar-fill { height: 100%; background: var(--nx-tone); transition: width var(--nx-fill) ease-out; }
+.nx-bar-wrap { display: flex; flex-direction: column; gap: 8px; }
+.nx-bar-segs { display: flex; gap: 3px; width: 100%; }
+.nx-bar-seg { border-radius: 4px; background: var(--line); overflow: hidden; min-width: 2px; }
+.nx-bar-seg-fill { height: 100%; transition: width var(--nx-fill) ease-out; }
+.nx-bar-legend { display: flex; gap: 10px; flex-wrap: wrap; }
+.nx-bar-legend-item {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-family: "IBM Plex Mono", monospace; font-size: 10px; color: var(--text-dim);
+}
+.nx-bar-swatch { width: 8px; height: 8px; border-radius: 2px; }
+
+/* --------------------------------------------------------------- stepper */
+
+.nx-stepper { display: inline-flex; align-items: center; gap: 4px; }
+.nx-stepper-btn {
+  width: 44px; height: 44px; border-radius: var(--nx-r-tile);
+  border: 1px solid var(--line-bright); background: var(--bg-raise);
+  color: var(--text); font-family: "IBM Plex Mono", monospace; font-size: 16px;
+  cursor: pointer;
+}
+.nx-stepper-value {
+  min-width: 54px; text-align: center;
+  font-family: "IBM Plex Mono", monospace; font-size: 12px;
+  font-variant-numeric: tabular-nums; color: var(--text);
+}
+
+/* ----------------------------------------------------------- field/input */
+
+.nx-field { display: flex; flex-direction: column; gap: 6px; }
+.nx-field-label {
+  font-family: "Chakra Petch", sans-serif; font-weight: 600;
+  font-size: 10px; letter-spacing: .16em; text-transform: uppercase;
+  color: var(--text-faint);
+}
+.nx-field-hint { font-size: 11.5px; line-height: 1.5; color: var(--text-faint); }
+.nx-input {
+  height: 44px; padding: 0 12px; width: 100%;
+  border: 1px solid var(--line-bright); border-radius: var(--nx-r-tile);
+  background: var(--bg); color: var(--text);
+  font-family: "IBM Plex Sans", sans-serif; font-size: 13px;
+}
+.nx-input[data-mono="true"] { font-family: "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums; }
+.nx-input:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* ----------------------------------------------------------- status pill */
+
+.nx-status-pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 9px; border-radius: var(--nx-r-pill);
+  border: 1px solid var(--nx-tone); color: var(--nx-tone);
+  font-family: "IBM Plex Mono", monospace; font-size: 10px; letter-spacing: .1em;
+  white-space: nowrap;
+}
+.nx-status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--nx-tone); flex-shrink: 0; }
+.nx-status-dot[data-pulse="true"] { animation: nx-pulse var(--nx-pulse) ease-in-out infinite; }
+
+/* -------------------------------------------------------------- incident */
+
+.nx-incident {
+  border: 1px solid var(--warn); border-radius: var(--nx-r-card);
+  background: var(--bg-panel); padding: 12px 14px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.nx-incident-head { display: flex; align-items: center; gap: 12px; }
+.nx-incident-tile {
+  width: 36px; height: 36px; flex-shrink: 0; border-radius: var(--nx-r-tile);
+  border: 1px solid currentColor; display: inline-flex;
+  align-items: center; justify-content: center;
+}
+.nx-incident-titles { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.nx-incident-title {
+  font-family: "Chakra Petch", sans-serif; font-weight: 600;
+  font-size: 11.5px; letter-spacing: .14em;
+}
+.nx-incident-since {
+  font-family: "IBM Plex Mono", monospace; font-size: 10px; color: var(--text-dim);
+}
+.nx-incident-rows { display: flex; flex-direction: column; gap: 6px; }
+.nx-incident-row {
+  display: flex; gap: 8px;
+  font-family: "IBM Plex Mono", monospace; font-size: 10.5px; line-height: 1.5;
+}
+.nx-incident-key { color: var(--text-faint); flex-shrink: 0; width: 52px; }
+.nx-incident-val { color: var(--text); }
+.nx-incident-val[data-dim="true"] { color: var(--text-dim); }
+.nx-incident-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.nx-incident-action {
+  min-height: 44px; padding: 0 12px; border-radius: var(--nx-r-tile);
+  border: 1px solid var(--line-bright); background: var(--bg);
+  color: var(--text); font-family: "Chakra Petch", sans-serif; font-weight: 600;
+  font-size: 10px; letter-spacing: .12em; cursor: pointer;
+}
+
+/* ---------------------------------------------------------------- banner */
+
+.nx-banner {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 8px 8px 12px; min-height: 44px;
+  border: 1px solid color-mix(in srgb, var(--nx-tone) 45%, transparent);
+  border-radius: var(--nx-r-btn);
+  background: color-mix(in srgb, var(--nx-tone) 8%, transparent);
+}
+.nx-banner-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--nx-tone); flex-shrink: 0; }
+.nx-banner-text {
+  flex: 1; min-width: 0; border: 0; background: transparent; padding: 0;
+  text-align: left; cursor: pointer; color: var(--text);
+  font-family: "IBM Plex Mono", monospace; font-size: 10.5px; line-height: 1.4;
+}
+.nx-banner-text[data-static="true"] { cursor: default; }
+.nx-banner-cta { color: var(--accent); white-space: nowrap; }
+.nx-banner-x {
+  width: 44px; height: 44px; flex-shrink: 0; border: 0; background: transparent;
+  color: var(--text-faint); font-family: "IBM Plex Mono", monospace;
+  font-size: 16px; cursor: pointer;
+}
+
+/* ------------------------------------------------------------- list rows */
+
+.nx-row {
+  display: flex; align-items: center; gap: 12px; width: 100%;
+  min-height: 56px; padding: 10px 14px; text-align: left;
+  border: 0; background: transparent; color: var(--text); cursor: pointer;
+}
+.nx-row-tile {
+  width: 34px; height: 34px; flex-shrink: 0; border-radius: var(--nx-r-tile);
+  border: 1px solid var(--line-bright); background: var(--bg);
+  color: var(--text-dim); display: inline-flex;
+  align-items: center; justify-content: center;
+}
+.nx-row-text { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.nx-row-title {
+  font-family: "Chakra Petch", sans-serif; font-weight: 600;
+  font-size: 10.5px; letter-spacing: .14em;
+}
+.nx-row-sub {
+  font-family: "IBM Plex Mono", monospace; font-size: 10px; color: var(--text-dim);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.nx-row-right {
+  flex-shrink: 0; display: inline-flex; align-items: center; gap: 8px;
+  font-family: "IBM Plex Mono", monospace; font-size: 10px; color: var(--accent);
+}
+.nx-row-chevron { flex-shrink: 0; color: var(--text-faint); font-size: 14px; }
+
+.nx-glyphtile {
+  position: relative; width: 34px; height: 34px; flex-shrink: 0;
+  border-radius: var(--nx-r-tile); border: 1px solid var(--line-bright);
+  background: var(--bg); color: var(--text-dim);
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.nx-glyphtile[data-accent="true"] {
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  color: var(--accent);
+}
+.nx-glyphtile-led {
+  position: absolute; right: -3px; bottom: -3px;
+  width: 9px; height: 9px; border-radius: 50%;
+  border: 2px solid var(--bg-raise); box-sizing: content-box;
+  background: var(--text-faint);
+}
+.nx-glyphtile-led[data-led="on"] { background: var(--good); }
+.nx-glyphtile-led[data-led="warn"] { background: var(--warn); }
+.nx-glyphtile-led[data-led="bad"] { background: var(--bad); }
+/* Not connected is a BAR, not a dimmer dot - a different shape, so the state
+   survives night mode and a colour-blind reader. */
+.nx-glyphtile-led[data-led="off"] {
+  width: 10px; height: 2px; border-radius: 0; background: var(--text-faint);
+}
+
+/* ----------------------------------------------------------------- sheet */
+
+.nx-sheet {
+  display: flex; flex-direction: column; min-height: 0; height: 100%;
+  background: var(--bg-raise); color: var(--text);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, .6);
+}
+.nx-sheet-head {
+  display: flex; align-items: center; gap: 10px; flex-shrink: 0;
+  padding: calc(10px + env(safe-area-inset-top)) 16px 10px;
+  border-bottom: 1px solid var(--line);
+}
+.nx-sheet-back {
+  height: 44px; padding: 0 12px; flex-shrink: 0; border-radius: var(--nx-r-tile);
+  border: 1px solid var(--line-bright); background: var(--bg); color: var(--text);
+  font-family: "Chakra Petch", sans-serif; font-weight: 600;
+  font-size: 10px; letter-spacing: .12em; cursor: pointer; white-space: nowrap;
+}
+.nx-sheet-tile {
+  width: 34px; height: 34px; flex-shrink: 0; border-radius: var(--nx-r-tile);
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  color: var(--accent); display: inline-flex; align-items: center; justify-content: center;
+}
+.nx-sheet-titles { flex: 1; display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.nx-sheet-title {
+  margin: 0; font-family: "Chakra Petch", sans-serif; font-weight: 600;
+  font-size: 13px; letter-spacing: .12em; color: var(--text);
+}
+.nx-sheet-sub,
+.nx-sheet-live {
+  font-family: "IBM Plex Mono", monospace; font-size: 10.5px; color: var(--text-dim);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.nx-sheet-right { flex-shrink: 0; display: inline-flex; align-items: center; gap: 6px; }
+.nx-sheet-body {
+  flex: 1; min-height: 0; overflow: auto; padding: 10px 16px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.nx-sheet-foot {
+  flex-shrink: 0; display: flex; gap: 8px;
+  padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--line); background: var(--bg-raise);
+}
+
+/* --------------------------------------------------------------- popover */
+
+.nx-popover {
+  position: fixed; z-index: 60; min-width: 180px; max-width: min(92vw, 340px);
+  border: 1px solid var(--line-bright); border-radius: var(--nx-r-inner);
+  background: var(--bg-raise); color: var(--text);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, .6); padding: 6px;
+}
+
+/* ---------------------------------------------------------------- locked */
+
+/* Honest-disabled (section 8). Dim and unmistakably inert, but still in the
+   tab order and still able to receive the press that states the reason - which
+   is why pointer-events stays on. */
+.nx-locked { opacity: .5; cursor: default; }
+
+/* ------------------------------------------------------------- keyframes */
+
+@keyframes nx-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+@keyframes nx-spin { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .nx-dial-strip,
+  .nx-switch-knob,
+  .nx-bar-fill,
+  .nx-bar-seg-fill,
+  .nx-ring-fill { transition: none; }
+  .nx-status-dot[data-pulse="true"],
+  .nx-btn-spin { animation: none; }
+}
