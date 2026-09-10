@@ -125,6 +125,10 @@ const { useStore } = await import("../../../../store");
 const { ConnectionSheet } = await import("../sheets/ConnectionSheet");
 const { OpticsSheet } = await import("../sheets/OpticsSheet");
 const { CONN_PREF_KEY } = await import("../sheets/connectionModel");
+// Imported so the QR assertion can compare the DRAWN path with the encoding of
+// the address the card shows. Asserting "a path exists" would pass for a code
+// that encodes something else entirely, which is the one failure that matters.
+const { encodeQr, qrPath } = await import("../../../lib/qr");
 const { OPTICS_AUX_KEY } = await import("../sheets/opticsModel");
 
 // ------------------------------------------------------------------ harness
@@ -268,6 +272,76 @@ test("connection: no fact the wire does not carry", () => {
   assert(!/owner key paired/.test(t), "a pairing date appeared that nothing on the wire carries");
 });
 
+// ------------------------------------------------------------------- the QR
+//
+// THE ONLY THING ON THIS SHEET NOBODY CAN PROOFREAD. A QR that encodes a
+// different host looks exactly like one that encodes the right one, so the
+// assertion is not "a path was drawn" but "the path IS the encoding of the
+// address printed beside it". `next/lib/__tests__/qr.test.ts` is what proves
+// the encoder itself; this proves the code on screen belongs to this URL.
+test("connection: the pairing QR encodes the same address the link block shows", () => {
+  assert(byId("conn-pair") != null, "no pairing card - the fixture is wrong, not the component");
+  const shown = String(byId("conn-pair-url").textContent);
+  eq(shown, "https://relay.astrodeck.app/h/abc123/", "precondition: the seeded pairing address");
+
+  const qr = byId("conn-pair-qr");
+  assert(qr != null, "the pairing card drew no QR code");
+  eq(qr.getAttribute("role"), "img", "the QR is not exposed as an image");
+  eq(
+    qr.getAttribute("aria-label"),
+    `QR code for ${shown}`,
+    "the QR's accessible name does not name the address it carries",
+  );
+  const version = Number(qr.getAttribute("data-qr-version"));
+  assert(
+    Number.isInteger(version) && version >= 1 && version <= 10,
+    `data-qr-version is not a version this encoder builds: "${qr.getAttribute("data-qr-version")}"`,
+  );
+
+  const path = qr.querySelector("path");
+  assert(path != null, "the QR has no path");
+  const d = String(path.getAttribute("d"));
+  assert(d.length > 0, "the QR path is empty");
+  eq(
+    d,
+    qrPath(encodeQr(shown)),
+    "the drawn code is not the encoding of the address printed beside it",
+  );
+  eq(version, encodeQr(shown).version, "the declared version is not the drawn symbol's");
+});
+
+test("connection: the QR is black on white and stays that way under any theme", () => {
+  const qr = byId("conn-pair-qr");
+  const rect = qr.querySelector("rect");
+  assert(rect != null, "the QR has no background rect, so a dark sheet shows through it");
+  eq(rect.getAttribute("fill"), "#ffffff", "the QR ground is not literal white");
+  eq(
+    qr.querySelector("path").getAttribute("fill"),
+    "#000000",
+    "the QR modules are not literal black - a themed code does not scan",
+  );
+  // The quiet zone is inside the viewBox: a decoder needs four light modules of
+  // margin and the card behind it cannot be trusted to supply them.
+  const box = String(qr.getAttribute("viewBox")).split(" ").map(Number);
+  const version = Number(qr.getAttribute("data-qr-version"));
+  eq(box[2], 4 * version + 17 + 8, "the viewBox does not include a 4-module quiet zone");
+  eq(box[3], box[2], "the QR viewBox is not square");
+  const t = String(byId("conn-pair").textContent);
+  assert(
+    /Scan it with the other phone's camera - it opens the same address as the link\./.test(t),
+    `the line under the code is missing or reworded: "${t}"`,
+  );
+  assert(!/\u2014/.test(t), "an em-dash reached the pairing card");
+});
+
+test("connection: COPY LINK still copies with the QR beside it", () => {
+  const copy = byId("conn-copy");
+  eq(copy.getAttribute("aria-disabled"), null, "precondition: an admin with a relay found COPY LINK locked");
+  eq(copy.textContent, "COPY LINK", "precondition: the button has already been pressed");
+  click(copy);
+  eq(copy.textContent, "COPIED", "pressing COPY LINK did not confirm the copy");
+});
+
 await testAsync("connection: TEST asks /healthz then /api/me and prints a latency", async () => {
   asked.length = 0;
   click(byId("conn-test"));
@@ -350,6 +424,41 @@ await testAsync("connection: a viewer sees the same screen, pairing locked, no w
     reads.every((a) => /\/healthz|\/api\/remote\/status/.test(a)),
     `a viewer issued something beyond the two view.status reads: ${reads.join(", ")}`,
   );
+});
+
+// --------------------------------------------------------- no relay paired
+await testAsync("connection: with no relay paired there is no QR and no orphan caption", async () => {
+  await clearTree();
+  dom.reconfigure({ url: "http://local/#/settings/general/connection" });
+  remotePayload = null; // `GET /api/remote/status` 404s: no relay on this rig
+  try { localStorage.removeItem(CONN_PREF_KEY); } catch { /* nothing stored is the default */ }
+  seed("admin");
+  await render(createElement(ConnectionSheet));
+
+  assert(byId("conn-pair") != null, "no pairing card - the fixture is wrong, not the component");
+  eq(
+    String(byId("conn-pair-url").textContent),
+    "no relay address is paired with this rig",
+    "the no-relay sentence was replaced or dropped",
+  );
+  assert(
+    byId("conn-pair-qr") == null,
+    "a QR was drawn with no relay address to encode, so it points somewhere nobody chose",
+  );
+  assert(
+    !/Scan it with the other phone/.test(String(byId("conn-pair").textContent)),
+    "the scan instruction outlived the code it describes",
+  );
+  const copy = byId("conn-copy");
+  eq(copy.getAttribute("aria-disabled"), "true", "COPY LINK is live with nothing to copy");
+  assert(
+    /there is no relay address to copy/.test(String(copy.getAttribute("title"))),
+    `the locked COPY LINK carries no reason: "${copy.getAttribute("title")}"`,
+  );
+  remotePayload = {
+    enabled: true, home_id: "abc123", relay_host: "relay.astrodeck.app",
+    connected: true, last_error: null, since_unix: 1_757_000_000, gen: 3, via: "direct",
+  };
 });
 
 // =====================================================================

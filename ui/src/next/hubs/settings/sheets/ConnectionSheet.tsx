@@ -32,6 +32,8 @@ import {
   Switch,
 } from "../../../ui";
 import { NxIcon } from "../../../icons";
+import { QR_MAX_BYTES, qrByteLength } from "../../../lib/qr";
+import { QrCode } from "./QrCode";
 import { nav } from "../../../router";
 import { useLock } from "../../../lib/gateHook";
 import { useConfig, usePrincipal, useStatus, useWsPhase } from "../../../../store";
@@ -51,6 +53,10 @@ import {
 /** How often the down-clock re-renders while the link is away. Five seconds is
  *  enough resolution for a 30 s threshold and cheap enough to leave running. */
 const TICK_MS = 5000;
+
+/** The drawn size of the pairing code. 200 px puts a version 3 symbol's modules
+ *  at about 5 px each, which a phone camera resolves from arm's length. */
+const QR_PX = 200;
 
 const PARA: CSSProperties = {
   margin: "6px 0 0",
@@ -235,6 +241,11 @@ export function ConnectionSheet(): JSX.Element {
   }, [testing]);
 
   const pairUrl = model.pairing.url;
+  // The code is drawn only when there is an address AND the encoder can hold
+  // it. Asking here rather than letting `QrCode` decide keeps the caption from
+  // standing alone under nothing: a relay URL is 30-60 bytes and the ceiling is
+  // 213, so this is a guard against a future relay scheme, not a live case.
+  const qrUrl = pairUrl && qrByteLength(pairUrl) <= QR_MAX_BYTES ? pairUrl : null;
   const copyLink = useCallback(() => {
     if (!pairUrl) return;
     try {
@@ -361,50 +372,67 @@ export function ConnectionSheet(): JSX.Element {
           Open this address on the other device to reach this rig from anywhere. It carries the
           relay host and the home id only - never the device token that registered this home.
         </p>
-        <div
-          id="nx-conn-pair-url"
-          data-testid="conn-pair-url"
-          style={{
-            userSelect: "all",
-            wordBreak: "break-all",
-            border: "1px solid var(--line)",
-            borderRadius: 10,
-            padding: "8px 10px",
-            marginTop: 6,
-            background: "var(--bg)",
-          }}
-        >
-          <Mono size={11}>{pairUrl ?? "no relay address is paired with this rig"}</Mono>
+        {/* Two columns on a tablet, stacked on a phone. The left basis plus the
+            code plus the gap is 384 px, so the code drops under the link at
+            about 380 px of card width - which is every phone. */}
+        <div style={{ display: "flex", gap: 14, marginTop: 6, flexWrap: "wrap", alignItems: "flex-start" }}>
+          <div style={{ flex: "1 1 170px", minWidth: 0 }}>
+            <div
+              id="nx-conn-pair-url"
+              data-testid="conn-pair-url"
+              style={{
+                userSelect: "all",
+                wordBreak: "break-all",
+                border: "1px solid var(--line)",
+                borderRadius: 10,
+                padding: "8px 10px",
+                background: "var(--bg)",
+              }}
+            >
+              <Mono size={11}>{pairUrl ?? "no relay address is paired with this rig"}</Mono>
+            </div>
+            <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+              <ActionButton
+                kind="secondary"
+                glyph={<NxIcon name="share" size={15} />}
+                onPress={copyLink}
+                lockedReason={pairUrl ? null : "there is no relay address to copy"}
+                onExplain={onExplain}
+                data-testid="conn-copy"
+              >
+                {copied ? "COPIED" : "COPY LINK"}
+              </ActionButton>
+              <ActionButton
+                kind="ghost"
+                glyph={<NxIcon name="plus" size={15} />}
+                onPress={() => nav.sheet("authMethods")}
+                lockedReason={pairReasons[0] ?? null}
+                onExplain={onExplain}
+                data-testid="conn-pair-new"
+              >
+                PAIR A NEW RIG
+              </ActionButton>
+            </div>
+            {pairReasons.length > 0 && (
+              <ul style={{ margin: "8px 0 0", paddingLeft: 16, fontSize: 11, color: "var(--text-faint)" }}>
+                {pairReasons.map((r) => (
+                  <li key={r} data-testid="conn-pair-reason">{r}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+          {qrUrl && (
+            <div style={{ flex: "0 0 auto", maxWidth: QR_PX }}>
+              <Label>PAIR ANOTHER RIG · QR</Label>
+              <div style={{ marginTop: 6 }}>
+                <QrCode text={qrUrl} px={QR_PX} label={`QR code for ${qrUrl}`} />
+              </div>
+              <p style={{ ...PARA, maxWidth: QR_PX }}>
+                Scan it with the other phone&apos;s camera - it opens the same address as the link.
+              </p>
+            </div>
+          )}
         </div>
-        <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
-          <ActionButton
-            kind="secondary"
-            glyph={<NxIcon name="share" size={15} />}
-            onPress={copyLink}
-            lockedReason={pairUrl ? null : "there is no relay address to copy"}
-            onExplain={onExplain}
-            data-testid="conn-copy"
-          >
-            {copied ? "COPIED" : "COPY LINK"}
-          </ActionButton>
-          <ActionButton
-            kind="ghost"
-            glyph={<NxIcon name="plus" size={15} />}
-            onPress={() => nav.sheet("authMethods")}
-            lockedReason={pairReasons[0] ?? null}
-            onExplain={onExplain}
-            data-testid="conn-pair-new"
-          >
-            PAIR A NEW RIG
-          </ActionButton>
-        </div>
-        {pairReasons.length > 0 && (
-          <ul style={{ margin: "8px 0 0", paddingLeft: 16, fontSize: 11, color: "var(--text-faint)" }}>
-            {pairReasons.map((r) => (
-              <li key={r} data-testid="conn-pair-reason">{r}</li>
-            ))}
-          </ul>
-        )}
       </Card>
 
       {/* -------------------------------------------------------------- test */}
