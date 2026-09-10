@@ -1,0 +1,485 @@
+// connectionOpticsDom.test.tsx - the Connection and Optics sheets, MOUNTED.
+//
+//   Run directly:  npx tsx src/next/hubs/settings/__tests__/connectionOpticsDom.test.tsx
+//   Also run by `npm test` (run-tests.mjs) and type-checked by `tsc -b`.
+//
+// WHAT THESE TESTS ARE ABOUT. Both sheets make claims a user acts on and cannot
+// check: "you are here", "the rig is using a profile's optics, not these
+// values", "reachable in 12 ms, signed in as you". Six contracts get an
+// assertion:
+//
+//   1. PRECONDITION MARKERS. Every later assertion is worthless if the sheet
+//      never rendered, so each block opens by finding a marker and failing with
+//      "the fixture is wrong, not the component".
+//   2. THE WRITE PATH AND ITS BODY. SAVE must be `PUT /api/optics` carrying
+//      `{optics, version}` - the optimistic-concurrency token is the whole
+//      reason a 409 can be reported instead of clobbering someone.
+//   3. THE READ-ONLY RENDERING. A viewer sees the same screen, with the
+//      `config.site_optics` sentence, and ISSUES NOTHING.
+//   4. THE ORIGIN DERIVATION. `/` and `/h/<home>/` must produce opposite cards.
+//      jsdom's `reconfigure` moves the window between them inside one file.
+//   5. NO INVENTED FACTS. The Connection sheet must contain no uptime and no
+//      MB/s figure - the two the design draws and nothing on the wire carries.
+//   6. THE OVERRIDE BANNER lists all seven optics keys, because a profile's
+//      optics block is swapped WHOLE and the fields nobody was looking at are
+//      exactly the ones that moved.
+//
+// Convention: jsdom by hand, createRoot + act, native events, a hand-written
+// fetch recording into `asked`, printed tally plus the `{passed, failed, total}`
+// export (shell-and-tests.md section 4).
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
+// ---------------------------------------------------------------- jsdom first
+const { JSDOM } = await import("jsdom");
+const dom = new JSDOM(
+  `<!doctype html><html><body><div id="root"></div></body></html>`,
+  { url: "http://local/#/settings/general/connection", pretendToBeVisual: true },
+);
+const win = dom.window as any;
+
+win.matchMedia = () => ({
+  matches: false, addEventListener() {}, removeEventListener() {},
+  addListener() {}, removeListener() {},
+});
+win.WebSocket = class { close() {} addEventListener() {} send() {} };
+// The Dial calls both behind a guard; jsdom implements neither.
+win.Element.prototype.setPointerCapture = function () { /* jsdom has none */ };
+win.Element.prototype.releasePointerCapture = function () { /* jsdom has none */ };
+// Patched BEFORE the copy loop, like settingsGatesDom does: the modules below
+// close over these at import time.
+win.isSecureContext = true;
+
+const g = globalThis as any;
+for (const k of [
+  "window", "document", "navigator", "HTMLElement", "HTMLInputElement",
+  "Element", "Node", "Event", "CustomEvent", "MouseEvent", "KeyboardEvent",
+  "localStorage", "sessionStorage", "getComputedStyle", "matchMedia", "WebSocket",
+  "requestAnimationFrame", "cancelAnimationFrame", "DOMException",
+]) {
+  const v = k === "window" ? win : win[k];
+  Object.defineProperty(g, k, { value: v, writable: true, configurable: true });
+}
+g.IS_REACT_ACT_ENVIRONMENT = true;
+
+// ------------------------------------------------------------- fetch recorder
+const asked: string[] = [];
+let meAuthorised = true;
+let putOptics: any = null;
+let remotePayload: any = {
+  enabled: true, home_id: "abc123", relay_host: "relay.astrodeck.app",
+  connected: true, last_error: null, since_unix: 1_757_000_000, gen: 3, via: "direct",
+};
+
+const ok = (data: unknown) => ({
+  ok: true, status: 200, statusText: "OK", json: async () => data,
+});
+const fail = (status: number) => ({
+  ok: false, status, statusText: "no", json: async () => ({ detail: "no" }),
+});
+
+g.fetch = async (url: any, init: any) => {
+  const u = String(url);
+  const method = String(init?.method ?? "GET").toUpperCase();
+  asked.push(`${method} ${u}`);
+  if (u.includes("/healthz")) return ok({ ok: true, version: "0.3.28" });
+  if (u.includes("/api/me")) {
+    return meAuthorised ? ok({ role: "admin", email: "bear@example.com", caps: [] }) : fail(401);
+  }
+  if (u.includes("/api/remote/status")) {
+    return remotePayload ? ok(remotePayload) : fail(404);
+  }
+  if (u.includes("/api/optics") && method === "PUT") {
+    putOptics = JSON.parse(String(init?.body ?? "null"));
+    return ok({});
+  }
+  if (u.includes("/api/survey/pack")) {
+    return ok({ present: true, bytes: 262_144_000, order: 4, fetched_at: 1_756_000_000, fetching: null });
+  }
+  if (u.includes("/api/config")) return ok(CONFIG);
+  return ok({});
+};
+
+const { createElement, act } = await import("react");
+const { createRoot } = await import("react-dom/client");
+const { useStore } = await import("../../../../store");
+const { ConnectionSheet } = await import("../sheets/ConnectionSheet");
+const { OpticsSheet } = await import("../sheets/OpticsSheet");
+const { CONN_PREF_KEY } = await import("../sheets/connectionModel");
+const { OPTICS_AUX_KEY } = await import("../sheets/opticsModel");
+
+// ------------------------------------------------------------------ harness
+let passed = 0;
+let failed = 0;
+const failures: string[] = [];
+function test(name: string, fn: () => void): void {
+  try { fn(); passed++; }
+  catch (e) { failed++; failures.push(`x ${name}: ${(e as Error).message}`); }
+}
+async function testAsync(name: string, fn: () => Promise<void>): Promise<void> {
+  try { await fn(); passed++; }
+  catch (e) { failed++; failures.push(`x ${name}: ${(e as Error).message}`); }
+}
+function assert(cond: boolean, msg: string): void { if (!cond) throw new Error(msg); }
+function eq<T>(got: T, want: T, msg: string): void {
+  if (got !== want) throw new Error(`${msg} (expected ${String(want)}, got ${String(got)})`);
+}
+const settle = async () => {
+  await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+  await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+};
+
+const container = win.document.getElementById("root") as any;
+// ONE root for the whole file: `createRoot` twice on one container warns, and a
+// second root would leave the first tree subscribed to the store, so a later
+// `setState` would land in a component nothing is asserting against.
+const root = createRoot(container);
+const render = async (el: any): Promise<void> => {
+  await act(async () => { root.render(el); });
+  await settle();
+};
+/** Unmount whatever is up. Store seeding has to happen with NOTHING mounted, or
+ *  the update reaches a live subscriber outside `act` and React says so. */
+const clearTree = async (): Promise<void> => {
+  await act(async () => { root.render(null); });
+  await settle();
+};
+const q = (sel: string) => container.querySelector(sel) as any;
+const qa = (sel: string) => Array.from(container.querySelectorAll(sel)) as any[];
+const byId = (id: string) => q(`[data-testid="${id}"]`);
+const text = () => String(container.textContent ?? "");
+const click = (el: any) => {
+  act(() => { el.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true })); });
+};
+
+// ------------------------------------------------------------------ fixtures
+const ALL_CAPS = [
+  "view.status", "view.preview", "view.media", "view.weather", "view.site_precise",
+  "view.site_derived", "control.capture", "control.guide", "control.mount",
+  "control.power", "config.backend", "config.safety", "config.solar_override",
+  "config.site_optics", "config.alerts", "admin.users", "system.update",
+];
+
+const OPTICS = {
+  focal_length_mm: 530,
+  pixel_size_um: 3.76,
+  sensor_width_px: 6248,
+  sensor_height_px: 4176,
+  auto_from_camera: true,
+  guide_focal_length_mm: 200,
+  telescope_name: "Askar FRA400",
+};
+
+const CONFIG: any = {
+  version: 42,
+  site: { is_default: false, horizon_min_deg: 25 },
+  optics: OPTICS,
+  optics_computed: {
+    have_optics: true, source: "config",
+    focal_length_mm: 530, pixel_size_um: 3.76,
+    sensor_width_px: 6248, sensor_height_px: 4176,
+    image_scale_arcsec_px: 1.46, fov_w_deg: 2.54, fov_h_deg: 1.70, fov_diag_deg: 3.06,
+  },
+  active_profile_id: null,
+  safety: {}, escalation: {}, alerts: [], deadman_url: "",
+  providers: { autofocus: "auto", polar_align: "auto", solve: "auto", guide: "auto" },
+  auth: { methods: ["local"], provider: "none", google_configured: false,
+          admin_token_configured: false, session_signing_configured: true,
+          role_allowlist: {}, default_role: "viewer", trust_loopback: true },
+  solve_saved_lights: false,
+};
+
+function seed(role: "admin" | "viewer"): void {
+  useStore.setState({
+    config: CONFIG,
+    status: { disk: { free_gb: 412.4, low: false, critical: false } },
+    principal: {
+      role,
+      email: role === "admin" ? "bear@example.com" : "watcher@example.com",
+      caps: role === "admin" ? ALL_CAPS : ["view.status", "view.preview"],
+    },
+    wsPhase: "up",
+    equipConnected: true,
+    preview: null,
+    toasts: [],
+  } as never);
+}
+
+// =====================================================================
+// CONNECTION
+// =====================================================================
+seed("admin");
+try { localStorage.removeItem(CONN_PREF_KEY); } catch { /* nothing stored is the default */ }
+
+await render(createElement(ConnectionSheet));
+
+test("connection: the sheet rendered its rig card and both reach cards", () => {
+  assert(byId("sheet-connection") != null, "no sheet found - the fixture is wrong, not the component");
+  assert(byId("conn-rig-card") != null, "no rig-computer card found - the fixture is wrong, not the component");
+  assert(byId("conn-card-direct") != null, "no DIRECT card");
+  assert(byId("conn-card-relay") != null, "no RELAY card");
+  assert(byId("conn-pair-url") != null, "no pairing link block");
+  assert(byId("conn-secure") != null, "no secure-context note");
+});
+
+test("connection: the LAN origin is the one you are on, and the relay is a link", () => {
+  eq(byId("conn-status-direct").textContent, "you are here", "the DIRECT card does not claim this origin");
+  assert(byId("conn-open-direct") == null, "the card you are already on offered to open itself");
+  eq(byId("conn-status-relay").textContent, "connected", "the live tunnel did not reach the RELAY card");
+  const open = byId("conn-open-relay");
+  assert(open != null, "the RELAY card has no OPEN VIA RELAY link");
+  assert(/OPEN VIA RELAY/.test(open.textContent), "the relay button is not labelled as a link");
+  assert(
+    /relay\.astrodeck\.app\/h\/abc123\//.test(byId("conn-pair-url").textContent),
+    "the pairing block does not carry the relay url",
+  );
+});
+
+test("connection: the engine version came from /healthz and the disk from status", () => {
+  assert(/engine 0\.3\.28/.test(byId("conn-rig-card").textContent), "the engine version never arrived");
+  assert(/412 GB free/.test(byId("conn-rig-card").textContent), "the free-space clause never arrived");
+  assert(/signed in as bear@example\.com/.test(text()), "the signed-in-as line is missing");
+});
+
+test("connection: no fact the wire does not carry", () => {
+  const t = text();
+  assert(!/MB\/s/.test(t), "a throughput figure appeared before anything measured one");
+  assert(!/\bup \d+ d\b/.test(t), "an uptime appeared that nothing on the wire carries");
+  assert(!/Orange Pi/.test(t), "a hardware model appeared that nothing on the wire carries");
+  assert(!/owner key paired/.test(t), "a pairing date appeared that nothing on the wire carries");
+});
+
+await testAsync("connection: TEST asks /healthz then /api/me and prints a latency", async () => {
+  asked.length = 0;
+  click(byId("conn-test"));
+  await settle();
+  const health = asked.findIndex((a) => a === "GET /healthz");
+  const me = asked.findIndex((a) => a === "GET /api/me");
+  assert(health >= 0, `TEST did not ask /healthz (asked: ${asked.join(", ")})`);
+  assert(me > health, `TEST did not ask /api/me after /healthz (asked: ${asked.join(", ")})`);
+  const line = byId("conn-test-result");
+  assert(line != null, "TEST produced no result line");
+  assert(/reachable in \d+ ms/.test(line.textContent), `no latency in "${line.textContent}"`);
+  assert(/signed in as bear@example\.com \(admin\)/.test(line.textContent), "the result does not name the session");
+});
+
+await testAsync("connection: a rig that answers with no session says exactly that", async () => {
+  meAuthorised = false;
+  asked.length = 0;
+  click(byId("conn-test"));
+  await settle();
+  const line = byId("conn-test-result");
+  assert(
+    /not signed in on this address/.test(line.textContent),
+    `the reachable-but-signed-out case is the diagnosable one and it is missing: "${line.textContent}"`,
+  );
+  meAuthorised = true;
+});
+
+// ---------------------------------------------------- origin: /h/<home_id>/
+await testAsync("connection: on the relay mount the two cards swap roles", async () => {
+  await clearTree();
+  dom.reconfigure({ url: "http://relay.astrodeck.app/h/abc123/#/settings/general/connection" });
+  remotePayload = { ...remotePayload, via: "relay" };
+  // Forget the LAN address this device learned above, so the branch under test
+  // is the one a phone that has only ever used the relay actually meets.
+  try { localStorage.removeItem(CONN_PREF_KEY); } catch { /* default is no host */ }
+  await render(createElement(ConnectionSheet));
+  eq(byId("conn-status-relay").textContent, "you are here", "the RELAY card does not claim the relay origin");
+  eq(byId("conn-status-direct").textContent, "no address yet", "an unknown LAN address must say so");
+  assert(byId("conn-open-relay") == null, "the relay card offered to open the page it is on");
+  const openDirect = byId("conn-open-direct");
+  assert(openDirect != null, "the DIRECT card lost its OPEN DIRECT link");
+  assert(/OPEN DIRECT/.test(openDirect.textContent), "the direct button is not labelled as a link");
+  assert(
+    openDirect.getAttribute("aria-disabled") === "true",
+    "with no remembered LAN address the DIRECT button must be honest-disabled, not live",
+  );
+  assert(
+    /has not reached the rig directly yet/.test(String(openDirect.getAttribute("title"))),
+    "the locked DIRECT button carries no reason",
+  );
+  assert(
+    /pairing has to be done on the rig's own network/.test(text()),
+    "the LAN-only pairing rule is not stated on the relay origin",
+  );
+});
+
+// ------------------------------------------------------------------- viewer
+await testAsync("connection: a viewer sees the same screen, pairing locked, no writes", async () => {
+  await clearTree();
+  dom.reconfigure({ url: "http://local/#/settings/general/connection" });
+  remotePayload = { ...remotePayload, via: "direct" };
+  seed("viewer");
+  asked.length = 0;
+  await render(createElement(ConnectionSheet));
+  assert(byId("conn-rig-card") != null, "the viewer lost the rig card - read-only means the same screen");
+  const pair = byId("conn-pair-new");
+  eq(pair.getAttribute("aria-disabled"), "true", "PAIR A NEW RIG is live for a viewer");
+  assert(
+    /needs admin access/.test(String(pair.getAttribute("title"))),
+    `the pairing lock names no capability: "${pair.getAttribute("title")}"`,
+  );
+  assert(
+    qa('[data-testid="conn-pair-reason"]').some((li) => /needs admin access/.test(li.textContent)),
+    "the reason is only in a tooltip, which never fires on touch",
+  );
+  const writes = asked.filter((a) => !a.startsWith("GET "));
+  eq(writes.length, 0, `a viewer issued a write: ${writes.join(", ")}`);
+  const reads = asked.filter((a) => a.startsWith("GET "));
+  assert(
+    reads.every((a) => /\/healthz|\/api\/remote\/status/.test(a)),
+    `a viewer issued something beyond the two view.status reads: ${reads.join(", ")}`,
+  );
+});
+
+// =====================================================================
+// OPTICS
+// =====================================================================
+await clearTree();
+try { localStorage.removeItem(OPTICS_AUX_KEY); } catch { /* the default aux is the fixture */ }
+seed("admin");
+useStore.setState({
+  preview: {
+    field: {
+      source: "solve", solved_at: Math.floor(Date.now() / 1000) - 600,
+      id: null, objects: [], fov_w_deg: 2.2, data_width: 6248,
+    },
+  },
+} as never);
+
+await render(createElement(OpticsSheet));
+
+test("optics: four readout tiles, the preview and the live field line", () => {
+  assert(byId("sheet-optics") != null, "no optics sheet - the fixture is wrong, not the component");
+  assert(byId("optics-fov") != null, "no FoV preview card");
+  assert(byId("optics-fov-box") != null, "no sensor rectangle in the preview");
+  for (const t of ["focal", "aperture", "reducer", "pixel"]) {
+    assert(byId(`optics-tile-${t}`) != null, `no ${t} readout tile`);
+  }
+  assert(byId("optics-dial") != null, "no dial under the tiles");
+  const live = byId("optics-live");
+  assert(live != null, "no live field line in the sheet header");
+  assert(/530 mm/.test(live.textContent), `the live line does not carry the focal length: "${live.textContent}"`);
+  assert(/2\.54° × 1\.70°/.test(live.textContent), `the live line is not the server's field: "${live.textContent}"`);
+  assert(/M31 for scale/.test(byId("optics-fov").textContent), "the M31 scale reference is missing");
+  assert(
+    /1\.46″ per pixel · well sampled/.test(byId("optics-caption").textContent),
+    `the caption lost the sampling verdict: "${byId("optics-caption").textContent}"`,
+  );
+});
+
+test("optics: the aperture is absent, not invented, until the user says", () => {
+  assert(
+    /not set/.test(byId("optics-tile-aperture").textContent),
+    "an aperture appeared that nobody entered",
+  );
+  assert(
+    /aperture not set/.test(byId("optics-tile-aperture").textContent),
+    "the f-ratio sub-line invented a number from the focal length alone",
+  );
+});
+
+test("optics: the plate-solve row offers the measured focal length", () => {
+  const row = byId("optics-solve-row");
+  assert(row != null, "no calibrate-from-the-last-solve row");
+  // 2.2 deg over 6248 px = 1.2676"/px; 206.265 * 3.76 / 1.2676 = 611.7 mm.
+  assert(/1\.27″\/px/.test(row.textContent), `the solved scale is wrong: "${row.textContent}"`);
+  assert(/USE 612 MM/.test(row.textContent), `the derived focal length is wrong: "${row.textContent}"`);
+});
+
+test("optics: USE THIS puts the solved focal length into the draft", () => {
+  click(byId("optics-solve-use"));
+  assert(
+    /612 mm/.test(byId("optics-tile-focal").textContent),
+    `the draft did not take the solved value: "${byId("optics-tile-focal").textContent}"`,
+  );
+});
+
+await testAsync("optics: SAVE is PUT /api/optics carrying {optics, version}", async () => {
+  asked.length = 0;
+  putOptics = null;
+  click(byId("optics-save"));
+  await settle();
+  assert(
+    asked.some((a) => a === "PUT /api/optics"),
+    `SAVE did not write to /api/optics (asked: ${asked.join(", ")})`,
+  );
+  assert(putOptics != null, "the PUT carried no body");
+  eq(putOptics.version, 42, "the optimistic-concurrency version was not sent, so a 409 can never be honest");
+  eq(putOptics.optics.focal_length_mm, 612, "the saved focal length is not the one on screen");
+  eq(putOptics.optics.telescope_name, "Askar FRA400", "the PUT dropped a field it was not editing");
+});
+
+// ------------------------------------------------------------------- viewer
+await testAsync("optics: a viewer gets the sentence and issues nothing", async () => {
+  await clearTree();
+  seed("viewer");
+  asked.length = 0;
+  await render(createElement(OpticsSheet));
+  assert(byId("optics-tile-focal") != null, "the viewer lost the readouts - read-only means the same screen");
+  const save = byId("optics-save");
+  eq(save.getAttribute("aria-disabled"), "true", "SAVE OPTICS is live for a viewer");
+  assert(
+    /needs admin access/.test(String(save.getAttribute("title"))),
+    `the SAVE lock names no capability: "${save.getAttribute("title")}"`,
+  );
+  assert(
+    /Changing optics needs admin access\. The current values are shown for reference\./.test(text()),
+    "the read-only sentence is missing from the body",
+  );
+  eq(asked.length, 0, `a viewer issued a request: ${asked.join(", ")}`);
+});
+
+// ---------------------------------------------------------------- override
+await testAsync("optics: a profile's optics block raises the banner and lists all seven keys", async () => {
+  const entry = (value: unknown, cfg: unknown) => ({
+    value, layer: "profile", profile: value, config: cfg, default: cfg,
+    profile_id: "p1", profile_name: "Rig1", reason: "override: profile",
+  });
+  await clearTree();
+  seed("admin");
+  useStore.setState({
+    config: {
+      ...CONFIG,
+      effective: {
+        "optics.focal_length_mm": entry(250, 530),
+        "optics.pixel_size_um": entry(2.4, 3.76),
+        "optics.sensor_width_px": entry(4144, 6248),
+        "optics.sensor_height_px": entry(2822, 4176),
+        "optics.auto_from_camera": entry(false, true),
+        "optics.guide_focal_length_mm": entry(120, 200),
+        "optics.telescope_name": entry("RedCat 51", "Askar FRA400"),
+        "providers.solve": {
+          value: "astap", layer: "config", profile: null, config: "astap",
+          default: "auto", profile_id: null, profile_name: null, reason: null,
+        },
+      },
+    },
+  } as never);
+  await render(createElement(OpticsSheet));
+  const banner = byId("optics-override");
+  assert(banner != null, "a profile pinning optics raised no banner");
+  assert(/Rig1/.test(banner.textContent), "the banner does not name the profile in charge");
+  eq(
+    qa('[data-testid="optics-override-key"]').length,
+    7,
+    "the banner must list all seven keys - a whole-block swap moves the ones nobody was looking at",
+  );
+  assert(
+    /Pixel size: 2\.4 µm - this sheet shows 3\.76 µm/.test(banner.textContent),
+    "the banner does not print running-vs-panel for a key the user never touched",
+  );
+  assert(
+    /will keep overriding them/.test(String(byId("optics-save-warning")?.textContent)),
+    "the save-time warning is missing, and the save button is where the false belief forms",
+  );
+});
+
+await act(async () => { root.unmount(); });
+
+const total = passed + failed;
+console.log(`connectionOpticsDom.test: ${passed}/${total} passed`);
+for (const f of failures) console.log("  " + f);
+export default { passed, failed, total };
+export { passed, failed, total };

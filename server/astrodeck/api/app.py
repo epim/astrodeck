@@ -1632,8 +1632,13 @@ _AUTH_OPEN_PREFIXES = ("/assets", "/auth/login", "/auth/google/callback")
 # 401s and the PWA never installs. It is inert static JS with no rig state, and
 # it is an EXACT path: ``/api/sw.js`` is still gated, because the openness is
 # about that one file at the root, never about a suffix.
+# ``/icon-192.png`` + ``/icon-512.png`` join them for the same reason: the
+# install prompt and the browser tab read the manifest's icon URLs (and the SW
+# precaches them) before any session exists, so a gated icon just 401s and the
+# install prompt/tab icon silently fail. Inert static images, no rig state,
+# exact paths only — ``/api/icon-192.png`` stays gated.
 _AUTH_OPEN_EXACT = {"/", "/index.html", "/favicon.ico", "/manifest.json",
-                    "/healthz", "/sw.js"}
+                    "/healthz", "/sw.js", "/icon-192.png", "/icon-512.png"}
 
 # These endpoints define identities/trust roots or perform whole-system
 # lifecycle operations. A relay-terminated session cookie is a replayable bearer
