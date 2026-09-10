@@ -37,6 +37,27 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+// ------------------------------------------------------------------ css stub
+// The Weather tuning area's root (`hubs/weather/tuning/index.ts`) imports its
+// own `tuning.css`, which is the wave's rule: one shared `next.css` that twenty
+// tasks cannot own, and an area stylesheet beside every area that needs
+// classes. Node has no idea what a `.css` file is, so a synchronous load hook
+// answers with an empty module. It has to run BEFORE the first dynamic import
+// below, which is why this block sits above the jsdom construction rather than
+// beside the component imports. (Same block as
+// `ui/src/next/__tests__/shellDom.test.tsx`.)
+{
+  const { registerHooks } = await import("node:module");
+  registerHooks({
+    load(url: string, context: any, nextLoad: any) {
+      if (url.endsWith(".css")) {
+        return { format: "module", shortCircuit: true, source: "export default {};" };
+      }
+      return nextLoad(url, context);
+    },
+  } as any);
+}
+
 // ---------------------------------------------------------------- jsdom first
 const { JSDOM } = await import("jsdom");
 const dom = new JSDOM(
@@ -134,6 +155,31 @@ let served: any = weatherFixture();
 /** What the ignore-tonight POST answers with. */
 let ignoreReply: any = null;
 
+/** The rig's STORED CONFIG, and the writes the tuning panels make land in it.
+ *  Both rebuilt panels reload the config after every save, so seeding a real
+ *  store here is what makes "the screen shows what it sent" an assertion about
+ *  the round trip rather than about local component state.
+ *
+ *  Note what `weather` never carries back: the Astrospheric key. `redact.py`
+ *  blanks it outbound and `astrospheric_configured` is the only fact about it
+ *  that reaches a client - which is exactly the contract the secret-hygiene
+ *  test below grades. */
+function freshConfig(): any {
+  return {
+    version: 3,
+    site: { is_default: false, horizon_min_deg: 20, latitude: 37.4, longitude: -122.1 },
+    weather: {
+      enabled: true,
+      cloud_threshold_pct: 50,
+      sustain_minutes: 30,
+      astrospheric_api_key: null,
+      astrospheric_configured: false,
+    },
+    cloudmap: { enabled: true, platform: "auto", poll_minutes: 10, half_px: 120 },
+  };
+}
+let cfg: any = freshConfig();
+
 // ------------------------------------------------------------- fetch recorder
 interface Ask { url: string; method: string; body: any }
 const asked: Ask[] = [];
@@ -179,6 +225,36 @@ g.fetch = async (url: any, init: any) => {
   if (method === "POST" && u.includes("/api/weather/ignore-tonight")) {
     return ok(ignoreReply ?? weatherFixture({ ignore_tonight: true }));
   }
+
+  // --- the config routes the two tuning panels write through -----------------
+  // `/api/config/weather` is checked FIRST: it also contains "/api/config", and
+  // the generic POST below would swallow it. It does NOT contain "/api/weather"
+  // (the segment order differs), so the weather-state branch further down is
+  // safe wherever it sits.
+  if (method === "POST" && u.includes("/api/config/weather")) {
+    const w = body?.weather ?? {};
+    const hadKey = !!cfg.weather?.astrospheric_configured;
+    const sentKey = typeof w.astrospheric_api_key === "string" && w.astrospheric_api_key !== "";
+    cfg = {
+      ...cfg,
+      version: cfg.version + 1,
+      weather: {
+        enabled: !!w.enabled,
+        cloud_threshold_pct: w.cloud_threshold_pct,
+        sustain_minutes: w.sustain_minutes,
+        // Never echoed. This is the server's behaviour, not a convenience.
+        astrospheric_api_key: null,
+        astrospheric_configured: body?.clear_astrospheric_key ? false : (sentKey || hadKey),
+      },
+    };
+    return ok(cfg);
+  }
+  if (method === "POST" && u.includes("/api/config")) {
+    if (body?.cloudmap) cfg = { ...cfg, version: cfg.version + 1, cloudmap: body.cloudmap };
+    return ok(cfg);
+  }
+  if (u.includes("/api/config")) return ok(cfg);
+
   if (u.includes("/api/weather")) return ok(served);
   if (u.includes("/api/site/sky")) return ok({ dark_window: DARK, sun_alt_deg: -30 });
   if (u.includes("/api/visibility")) {
@@ -197,6 +273,10 @@ g.fetch = async (url: any, init: any) => {
     return ok({
       enabled: true, platform: "G18", observed_at: null, age_s: 90, stale: false,
       last_error: null, motion: null, credit: { source: "NOAA GOES", url: "x" },
+      // What the GEOMETRY would pick for this site, independent of the pin.
+      // The cloudmap panel reads it to tell an operator their pinned bird is
+      // the wrong one; with the default "auto" pin there is nothing to say.
+      suggested_platform: "G18",
       rows: CLOUD_ROWS, alt_start: 15, alt_step: 6, az_step: 10,
     });
   }
@@ -211,6 +291,12 @@ const { nav } = await import("../../../router");
 const { WeatherHub } = await import("../WeatherHub");
 const { WeatherSettingsSheet } = await import("../sheets/WeatherSettingsSheet");
 const { CloudmapSheet } = await import("../sheets/CloudmapSheet");
+// The tuning area's pure copy and bounds, so the assertions below grade the
+// sentences and limits the SCREEN uses rather than ones this file typed.
+const {
+  ASTRO_EMPTY_REASON, HALF_MAX, HALF_MIN, mispinLine, PLATFORM_LABEL, policyLine,
+  POLL_MAX, POLL_MIN, SUSTAIN_MAX, SUSTAIN_MIN, THRESHOLD_MAX, THRESHOLD_MIN,
+} = await import("../tuning");
 
 // ------------------------------------------------------------------ harness
 let passed = 0;
@@ -243,6 +329,25 @@ const click = (el: any) => {
   assert(el != null, "click: the element is not there - the fixture is wrong, not the component");
   act(() => { el.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true })); });
 };
+/** Type into a React-controlled input: the native value setter (React's own
+ *  value tracker swallows a plain assignment), then the `input` event React
+ *  delegates `onChange` from. */
+const type = (el: any, value: string) => {
+  assert(el != null, "type: the input is not there - the fixture is wrong, not the component");
+  act(() => {
+    Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, "value")!.set!.call(el, value);
+    el.dispatchEvent(new win.Event("input", { bubbles: true }));
+  });
+};
+/** Leave the field. React 18 delegates `onBlur` from the bubbling `focusout`,
+ *  and jsdom raises none of its own for an element that was never focused, so
+ *  the test raises it. This is the commit path the panel promises - a value
+ *  committed only on Enter would be lost by every user who taps elsewhere. */
+const blur = (el: any) => {
+  assert(el != null, "blur: the input is not there - the fixture is wrong, not the component");
+  act(() => { el.dispatchEvent(new win.Event("focusout", { bubbles: true })); });
+};
+const posts = (from: number) => asked.slice(from).filter((a) => a.method === "POST");
 
 const OPERATOR = {
   role: "operator", email: "op@rig",
@@ -261,10 +366,7 @@ function seed(over: Record<string, unknown> = {}): void {
     toasts: [],
     confirm: null,
     weather: weatherFixture(),
-    config: {
-      version: 3,
-      cloudmap: { enabled: true, platform: "auto", poll_minutes: 10, half_px: 120 },
-    },
+    config: cfg,
     site: { is_default: false, horizon_min_deg: 20, latitude: 37.4, longitude: -122.1 },
     sequence: null,
     status: {
@@ -489,6 +591,17 @@ await testAsync("the radar map mounts when weather is on", async () => {
   eq(layers.length, 1, "RadarMap's layer buttons (the positive control):");
   assert(/dashed ray is your line of sight/.test(String(byId("wx-radar").textContent)),
     "the pierce-ray explanation is missing");
+
+  // R7 T-R7-15: the chrome this screen owns around the kept map is the design's
+  // `Card`, not a legacy `<Panel>`. `RadarMap`'s OWN inner Panel is a named
+  // follow-up (see RadarScreen.tsx's header) and is deliberately not asserted
+  // here - what is asserted is that the wrapper this file owns was rewrapped.
+  const card = byId("wx-radar-card");
+  assert(card != null, "no wx-radar-card - the map lost the chrome this screen owns");
+  assert(String(card.className).includes("nx-card"),
+    `the wrapper is not the design's Card: class "${String(card.className)}"`);
+  assert(card.contains(all("button").find((b) => /IR satellite/.test(String(b.textContent)))),
+    "the card does not actually contain the map it is supposed to wrap");
 });
 
 await testAsync("weather off does NOT mount the radar map", async () => {
@@ -593,6 +706,318 @@ await testAsync("the cloudmap sheet mounts the panel and keeps its advisory cave
   assert(/Poll every \(min\)/.test(t), "the poll interval is missing");
   assert(/advisory/i.test(t),
     "the model gates nothing and the panel must keep saying so");
+});
+
+// ============================================ 8. the rebuilt tuning panels (R7)
+//
+// Wave R7 T-R7-15 replaced `components/settings/WeatherPanel` and
+// `CloudmapPanel` with `hubs/weather/tuning/*`. The two sheet tests above still
+// grade the strings the sheets owe; this section grades the behaviour the
+// rebuild is responsible for and the legacy panels got wrong:
+//
+//   * every setting writes when the control is LEFT, not when a Save button is
+//     found - a draft behind one press is a screen that disagrees with the rig;
+//   * a number is clamped to the SERVER's bound before it is sent, so the 422
+//     the legacy validator existed to pre-empt cannot be reached, and the box
+//     shows the number that was actually committed;
+//   * no native `disabled` anywhere, so a viewer gets a reason instead of grey;
+//   * the write-only Astrospheric key is never seeded from the config payload
+//     and never echoed back on an unrelated write.
+
+const ADMIN = {
+  role: "admin", email: "a@rig",
+  caps: [...OPERATOR.caps, "config.site_optics"],
+};
+
+await testAsync("the rebuilt weather panel carries every 3.F18 control, none native-disabled", async () => {
+  cfg = freshConfig();
+  act(() => { useStore.setState({ config: cfg, principal: ADMIN, toasts: [] } as never); });
+  await act(async () => { root.render(createElement(WeatherSettingsSheet)); });
+  await settle();
+
+  assert(byId("sheet-weather-settings") != null, "the sheet frame did not render");
+  assert(byId("wx-tuning") != null, "the rebuilt panel did not render - the sheet is still empty");
+  for (const id of [
+    "wx-weather-enabled", "wx-cloud-threshold", "wx-sustain", "wx-astro-key", "wx-astro-key-save",
+  ]) {
+    assert(byId(id) != null, `3.F18 lost a control: no ${id}`);
+  }
+  // The pair is a POLICY, and two numbers in two boxes do not say what the rig
+  // will do with them.
+  eq(text("wx-policy-line"), policyLine(50, 30), "the consequence line:");
+  eq(all("[disabled]").length, 0,
+    "a native disabled attribute survived the rebuild - the reason goes with it");
+});
+
+await testAsync("Weather enabled writes on the tap - there is no Save button to forget", async () => {
+  const before = asked.length;
+  click(byId("wx-weather-enabled"));
+  await settle();
+  const p = posts(before).filter((a) => a.url.includes("/api/config/weather"));
+  eq(p.length, 1, "exactly one weather write on the toggle:");
+  eq(p[0].body?.weather?.enabled, false, "the toggle sent:");
+  eq(useStore.getState().config?.weather?.enabled, false, "the reload did not bring the rig's answer back:");
+  // Put it back the way the rest of the section expects it.
+  click(byId("wx-weather-enabled"));
+  await settle();
+  eq(useStore.getState().config?.weather?.enabled, true, "restoring the toggle:");
+});
+
+await testAsync("the cloud threshold commits on BLUR and clamps to the server's 0-100", async () => {
+  const el = byId("wx-cloud-threshold");
+  const before = asked.length;
+  type(el, "999");
+  eq(String(el.value), "999", "precondition: the draft holds the raw text, unparsed");
+  eq(posts(before).length, 0, "a keystroke wrote to the rig before the field was left:");
+
+  blur(el);
+  await settle();
+  const p = posts(before).filter((a) => a.url.includes("/api/config/weather"));
+  eq(p.length, 1, "exactly one weather write on blur:");
+  eq(p[0].body?.weather?.cloud_threshold_pct, THRESHOLD_MAX,
+    `999 must clamp to the server's ceiling before it is sent (config.py le=${THRESHOLD_MAX}):`);
+  eq(String(byId("wx-cloud-threshold").value), String(THRESHOLD_MAX),
+    "the box must show the number that was committed, not the one that was typed:");
+  eq(useStore.getState().config?.weather?.cloud_threshold_pct, THRESHOLD_MAX,
+    "the panel did not reload the config after the write:");
+
+  const before2 = asked.length;
+  type(byId("wx-cloud-threshold"), "-40");
+  blur(byId("wx-cloud-threshold"));
+  await settle();
+  const p2 = posts(before2).filter((a) => a.url.includes("/api/config/weather"));
+  eq(p2.length, 1, "exactly one weather write for the floor case:");
+  eq(p2[0].body?.weather?.cloud_threshold_pct, THRESHOLD_MIN,
+    `-40 must clamp to the server's floor (config.py ge=${THRESHOLD_MIN}):`);
+});
+
+await testAsync("the sustain field clamps to 15-240, and a blank is rejected not read as 0", async () => {
+  const before = asked.length;
+  type(byId("wx-sustain"), "5");
+  blur(byId("wx-sustain"));
+  await settle();
+  let p = posts(before).filter((a) => a.url.includes("/api/config/weather"));
+  eq(p.length, 1, "exactly one weather write:");
+  eq(p[0].body?.weather?.sustain_minutes, SUSTAIN_MIN,
+    `5 min is below the quarter-hourly forecast's own step and must clamp to ${SUSTAIN_MIN}:`);
+
+  const before2 = asked.length;
+  type(byId("wx-sustain"), "9999");
+  blur(byId("wx-sustain"));
+  await settle();
+  p = posts(before2).filter((a) => a.url.includes("/api/config/weather"));
+  eq(p.length, 1, "exactly one weather write for the ceiling case:");
+  eq(p[0].body?.weather?.sustain_minutes, SUSTAIN_MAX, `9999 must clamp to ${SUSTAIN_MAX}:`);
+
+  // `Number("")` is 0 - finite, plausible and WRONG. A blank must restore the
+  // last committed number and write nothing at all.
+  const before3 = asked.length;
+  type(byId("wx-sustain"), "");
+  blur(byId("wx-sustain"));
+  await settle();
+  eq(posts(before3).length, 0, "an empty box was read as a real zero and sent to the rig:");
+  eq(String(byId("wx-sustain").value), String(SUSTAIN_MAX),
+    "a rejected value must restore the last committed one:");
+});
+
+await testAsync("SECRET HYGIENE: a key in the payload never reaches the box, and no write echoes it", async () => {
+  // The server blanks the key outbound, but the ONLY thing standing between a
+  // future server that does not and this form is that the box is seeded from
+  // the draft. So seed the config with a value and assert the box stays empty.
+  cfg = {
+    ...cfg,
+    version: cfg.version + 1,
+    weather: {
+      ...cfg.weather,
+      astrospheric_api_key: "SUPER-SECRET-ASTRO-KEY",
+      astrospheric_configured: true,
+    },
+  };
+  act(() => { useStore.setState({ config: cfg } as never); });
+  await settle();
+
+  const key = container.querySelector('input[type="password"]') as any;
+  assert(key != null, "the Astrospheric key must be a password field");
+  eq(String(key.value), "", "the panel echoed a stored secret back into the form:");
+  assert(!/SUPER-SECRET-ASTRO-KEY/.test(String(container.innerHTML)),
+    "the stored key reached the DOM somewhere - an attribute, a title or a placeholder");
+  // An empty box that means "saved, not shown" must not read as "nothing saved".
+  assert(/Astrospheric API key - set/.test(String(container.textContent)),
+    "the set/not-set marker is missing, so an empty box reads as no key at all");
+
+  const before = asked.length;
+  type(byId("wx-sustain"), "60");
+  blur(byId("wx-sustain"));
+  await settle();
+  const p = posts(before).filter((a) => a.url.includes("/api/config/weather"));
+  eq(p.length, 1, "exactly one weather write:");
+  eq(p[0].body?.weather?.astrospheric_api_key, null,
+    "an unrelated save echoed the stored key back to the server:");
+  eq(p[0].body?.clear_astrospheric_key, false, "an unrelated save asked the rig to clear the key:");
+});
+
+await testAsync("SAVE KEY refuses an empty box with a reason, and sends the typed key once", async () => {
+  act(() => { useStore.setState({ toasts: [] } as never); });
+  const save = byId("wx-astro-key-save");
+  eq(save.getAttribute("aria-disabled"), "true",
+    "an empty box already means 'keep the stored key', so SAVE must refuse:");
+  const before = asked.length;
+  click(save);
+  await settle();
+  eq(posts(before).length, 0, "SAVE KEY wrote with nothing typed:");
+  const said = useStore.getState().toasts;
+  eq(said.length, 1, "a refused press must say why:");
+  eq(String(said[0].title), ASTRO_EMPTY_REASON, "the refusal sentence:");
+
+  const before2 = asked.length;
+  type(byId("wx-astro-key"), "  new-key-value  ");
+  click(byId("wx-astro-key-save"));
+  await settle();
+  const p = posts(before2).filter((a) => a.url.includes("/api/config/weather"));
+  eq(p.length, 1, "exactly one weather write for the key:");
+  eq(p[0].body?.weather?.astrospheric_api_key, "new-key-value",
+    "the key must be sent trimmed - a pasted key drags whitespace:");
+  eq(String((container.querySelector('input[type="password"]') as any).value), "",
+    "the box kept the key after sending it, so it is on screen and in memory:");
+});
+
+await testAsync("a viewer sees the reason and every weather control refuses to write", async () => {
+  act(() => { useStore.setState({ principal: VIEWER, toasts: [] } as never); });
+  await settle();
+
+  const note = byId("wx-tuning-lock");
+  assert(note != null, "no read-only note for a role that cannot edit");
+  assert(/^Read-only - /.test(text("wx-tuning-lock")),
+    `the note's shape: "${text("wx-tuning-lock")}"`);
+  assert(/needs admin access/.test(text("wx-tuning-lock")),
+    `the note must name the access, got "${text("wx-tuning-lock")}"`);
+  assert(/config\.site_optics/.test(text("wx-tuning-lock")),
+    "the note must name the capability the server enforces");
+
+  for (const id of ["wx-weather-enabled", "wx-cloud-threshold", "wx-sustain", "wx-astro-key"]) {
+    eq(byId(id).getAttribute("aria-disabled"), "true", `${id} must be honest-disabled:`);
+  }
+  eq(all("[disabled]").length, 0,
+    "a native disabled attribute reached a locked control, and the reason went with it:");
+
+  const before = asked.length;
+  click(byId("wx-weather-enabled"));
+  type(byId("wx-cloud-threshold"), "7");
+  blur(byId("wx-cloud-threshold"));
+  await settle();
+  eq(posts(before).length, 0,
+    `a viewer wrote to the rig: ${posts(before).map((a) => a.url).join(", ")}`);
+  assert(useStore.getState().toasts.length > 0, "a locked press said nothing at all");
+});
+
+// ------------------------------------------------------- the cloud map panel
+
+await testAsync("the rebuilt cloud map panel carries every 3.F19 control", async () => {
+  cfg = freshConfig();
+  act(() => { useStore.setState({ config: cfg, principal: ADMIN, toasts: [] } as never); });
+  await act(async () => { root.render(createElement(CloudmapSheet)); });
+  await settle();
+
+  assert(byId("sheet-cloudmap") != null, "the sheet frame did not render");
+  assert(byId("cloudmap-tuning") != null, "the rebuilt panel did not render");
+  for (const id of ["cloudmap-enabled", "cloudmap-satellite", "cloudmap-poll", "cloudmap-half"]) {
+    assert(byId(id) != null, `3.F19 lost a control: no ${id}`);
+  }
+  // All three birds visible at once, not behind a system select sheet.
+  for (const p of ["auto", "G18", "G19"] as const) {
+    const opt = all(`[data-value="${p}"]`);
+    eq(opt.length, 1, `the ${p} option:`);
+    assert(String(opt[0].textContent).includes(PLATFORM_LABEL[p]),
+      `the ${p} option's label: got "${String(opt[0].textContent)}"`);
+  }
+  assert(/MB an hour/.test(text("cloudmap-cost")),
+    `the bandwidth estimate is missing: "${text("cloudmap-cost")}"`);
+  eq(all("[disabled]").length, 0, "a native disabled attribute survived the rebuild:");
+});
+
+await testAsync("picking a satellite writes the WHOLE block, not just the field that changed", async () => {
+  const before = asked.length;
+  click(q('[data-value="G19"]'));
+  await settle();
+  const p = posts(before).filter(
+    (a) => a.url.includes("/api/config") && !a.url.includes("/api/config/weather"));
+  eq(p.length, 1, "exactly one cloudmap write:");
+  eq(p[0].body?.cloudmap?.platform, "G19", "the pin sent:");
+  // `setCloudmapConfig` REPLACES the block; a partial body silently resets the
+  // two numbers to whatever the server's defaults are.
+  eq(p[0].body?.cloudmap?.poll_minutes, 10, "the wholesale replace dropped the poll interval:");
+  eq(p[0].body?.cloudmap?.half_px, 120, "the wholesale replace dropped the window half-width:");
+  eq(p[0].body?.cloudmap?.enabled, true, "the wholesale replace dropped the enable flag:");
+});
+
+await testAsync("a pin the geometry disagrees with is named, and one press undoes it", async () => {
+  // The fixture's `suggested_platform` is G18 and the pin is now G19, which is
+  // the case the legacy panel existed to surface: a Pydantic default written
+  // out is byte-identical to a deliberate choice, so it can only be said out
+  // loud, never silently corrected.
+  const line = byId("cloudmap-mispin");
+  assert(line != null, "a pin against the geometry's own answer went unmentioned");
+  eq(String(line.textContent), mispinLine("G19", "G18"), "the mispin sentence:");
+
+  const before = asked.length;
+  click(byId("cloudmap-to-auto"));
+  await settle();
+  const p = posts(before).filter(
+    (a) => a.url.includes("/api/config") && !a.url.includes("/api/config/weather"));
+  eq(p.length, 1, "exactly one cloudmap write:");
+  eq(p[0].body?.cloudmap?.platform, "auto", "the one-press fix sent:");
+  assert(byId("cloudmap-mispin") == null, "the warning outlived the pin it was about");
+});
+
+await testAsync("the poll interval and the window clamp to the server's own bounds", async () => {
+  const before = asked.length;
+  type(byId("cloudmap-poll"), "1");
+  blur(byId("cloudmap-poll"));
+  await settle();
+  let p = posts(before).filter(
+    (a) => a.url.includes("/api/config") && !a.url.includes("/api/config/weather"));
+  eq(p.length, 1, "exactly one cloudmap write:");
+  eq(p[0].body?.cloudmap?.poll_minutes, POLL_MIN,
+    `nothing below ${POLL_MIN} can be fresher than the satellite publishes:`);
+
+  const before2 = asked.length;
+  type(byId("cloudmap-half"), "9999");
+  blur(byId("cloudmap-half"));
+  await settle();
+  p = posts(before2).filter(
+    (a) => a.url.includes("/api/config") && !a.url.includes("/api/config/weather"));
+  eq(p.length, 1, "exactly one cloudmap write:");
+  eq(p[0].body?.cloudmap?.half_px, HALF_MAX, `the window must clamp to ${HALF_MAX} cells:`);
+  eq(String(byId("cloudmap-half").value), String(HALF_MAX),
+    "the box must show the number that was committed:");
+  // The cost line is derived from the committed numbers, so it moves with them.
+  assert(/MB an hour/.test(text("cloudmap-cost")), "the bandwidth estimate stopped rendering");
+  assert(!/NaN/.test(text("cloudmap-cost")), "a NaN reached the bandwidth estimate");
+  // The bounds this UI clamps to ARE the server's. If config.py widens them,
+  // this is the line that says the UI has not followed.
+  eq(`${POLL_MIN}-${POLL_MAX}/${HALF_MIN}-${HALF_MAX}`, "5-60/16-400",
+    "the UI's bounds drifted from config.py CloudmapConfig (poll 5-60, half_px 16-400):");
+});
+
+await testAsync("a viewer sees the reason and every cloud map control refuses to write", async () => {
+  act(() => { useStore.setState({ principal: VIEWER, toasts: [] } as never); });
+  await settle();
+
+  assert(byId("cloudmap-tuning-lock") != null, "no read-only note for a role that cannot edit");
+  assert(/config\.site_optics/.test(text("cloudmap-tuning-lock")),
+    `the note must name the capability, got "${text("cloudmap-tuning-lock")}"`);
+  for (const id of ["cloudmap-enabled", "cloudmap-satellite", "cloudmap-poll", "cloudmap-half"]) {
+    eq(byId(id).getAttribute("aria-disabled"), "true", `${id} must be honest-disabled:`);
+  }
+  eq(all("[disabled]").length, 0, "a native disabled attribute reached a locked control:");
+
+  const before = asked.length;
+  click(q('[data-value="G18"]'));
+  type(byId("cloudmap-poll"), "42");
+  blur(byId("cloudmap-poll"));
+  await settle();
+  eq(posts(before).length, 0,
+    `a viewer wrote to the rig: ${posts(before).map((a) => a.url).join(", ")}`);
 });
 
 act(() => { root.unmount(); });
