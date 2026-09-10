@@ -20,10 +20,12 @@
 // THE FLOWS IMPORTS GO TO THE REGISTRY MODULE, NOT THE AREA BARREL. This file is
 // reached synchronously from `hubs/index.ts`, which is in the entry chunk, so
 // every static import it makes is paid for before first paint (D-FU-2). Each
-// `flow*Sheets` entry is `{ id, load }` with a dynamic `import()`, and
-// `../flows/canvas/sheets` is the deep path deliberately: `../flows/canvas`
-// re-exports the whole canvas surface, and importing the barrel for one registry
-// object would drag the pan/zoom/wire tree in with it.
+// `flow*Sheets` entry is `{ id, load }` with a dynamic `import()`, and every one
+// of the four paths below is deep and component-free on purpose: an area barrel
+// re-exports that area's whole component tree, so importing it for one registry
+// object drags the tree in with it. Three of the four used to do exactly that
+// (T-R7-20 measured +42.94 kB raw / +13.46 kB gzip on this entry chunk for the
+// area CSS alone); `reg.ts` beside each area is the entries and nothing else.
 //
 // Names are GLOBAL across the app (`hubs/index.ts` throws on a collision), which
 // is why they are plain words here rather than hub-prefixed.
@@ -31,9 +33,9 @@
 import type { SheetRegistry } from "../../sheets";
 import { sheets2 } from "./set2";
 import { flowCanvasSheets } from "../flows/canvas/sheets";
-import { flowInspectorSheets } from "../flows/inspector/sheets";
-import { flowTonightSheets } from "../flows/tonight";
-import { flowCreateSheets } from "../flows/create";
+import { flowInspectorSheets } from "../flows/inspector/reg";
+import { flowTonightSheets } from "../flows/tonight/reg";
+import { flowCreateSheets } from "../flows/create/reg";
 
 export const sheets: SheetRegistry = {
   ...sheets2,

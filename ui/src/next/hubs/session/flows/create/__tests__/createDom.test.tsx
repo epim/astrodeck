@@ -318,11 +318,36 @@ test("the generated flow is OPENED, not merely saved", () => {
   assert(posts("/api/flows/compile").length > 0, "and re-compiles it, which is what the canvas draws");
 });
 
-test("closing pops the sheet and disarms the legacy overlay flag", () => {
+await testAsync("closing pops the sheet, and writes no legacy overlay flag on the way out", async () => {
   assert(!win.location.hash.includes("flowNew"),
     "a successful generate closes the sheet");
-  eq(useStore.getState().flows.ui.wizardOpen, false,
-    "and clears flows.ui.wizardOpen, or the legacy FlowWizard is left armed behind it");
+
+  // T-R7-21a item 15. These sheets used to clear `flows.ui.wizardOpen` /
+  // `quickOpen` on close, because the legacy `FlowWizard` and `QuickFlow`
+  // overlays were still mounted above the canvas and would have been left
+  // armed behind the sheet. T-R7-20 cut `FlowsCanvasHost` over to the rebuilt
+  // canvas: nothing in the next UI mounts either overlay or reads either flag,
+  // so the write went nowhere - and a write with no reader is a line the next
+  // person has to trace all the way to the legacy slice to learn it does
+  // nothing. The route is the open state; there is no second copy of it.
+  //
+  // A SOURCE scan, because the absence of a store write is not observable from
+  // the DOM: the fixture seeds both flags true and nothing here would ever
+  // have flipped them back.
+  interface NodeFsLike { readFileSync(p: string, enc: string): string }
+  const nodeImport = (m: string): Promise<unknown> =>
+    (Function("m", "return import(m)") as (m: string) => Promise<unknown>)(m);
+  const fs = (await nodeImport("node:fs")) as NodeFsLike;
+  const read = (rel: string): string => {
+    const u = new URL(rel, import.meta.url);
+    return fs.readFileSync(decodeURIComponent(u.pathname).replace(/^\/([A-Za-z]:)/, "$1"), "utf8");
+  };
+  for (const name of ["wizard.tsx", "quick.tsx"]) {
+    const code = read(`../${name}`).split("\n")
+      .filter((l) => !l.trim().startsWith("//")).join("\n");
+    assert(!/(wizardOpen|quickOpen)\s*:/.test(code),
+      `${name} still writes a legacy overlay flag that nothing in the next UI reads`);
+  }
 });
 
 // ================================================== 3. START BLANK is real

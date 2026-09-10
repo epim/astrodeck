@@ -12,9 +12,10 @@
 // Changed: it is a SHEET, not an `Overlay`. Its open state is the ROUTE
 // (ARCHITECTURE.md section 5), so it survives a reload and the browser Back
 // button closes it - which is why `flows.ui.wizardOpen` is no longer the thing
-// that opens it. The flag is still CLEARED on close, because until T-R7-20
-// swaps `FlowsCanvasHost`'s mount the legacy `FlowWizard` is still listening to
-// it and would otherwise be left armed behind this sheet.
+// that opens it. Nothing in the next UI reads that flag any more either: T-R7-20
+// cut `FlowsCanvasHost` over to the rebuilt canvas, so the legacy `FlowWizard`
+// that listened to it is not mounted here at all and the clear-on-close it
+// existed for was writing to a listener with nobody on the other end.
 //
 // Changed: the hand-rolled radiogroup is `Segmented` (one tab stop, arrow keys,
 // roving tabindex - the same model every other exclusive choice in the app
@@ -41,9 +42,9 @@ import {
   GENERATE_FAILED, KIND_SUB, KINDS, TARGET_PLACEHOLDER, WIZARD_NOTE, blankNodes,
   type WizardKind,
 } from "./wizardModel";
+import "./create.css";
 
 export function FlowNewSheet(): JSX.Element {
-  const setUi = useStore((s) => s.flowsSetUi);
   const flowsOpen = useStore((s) => s.flowsOpen);
   const enqueueToast = useStore((s) => s.enqueueToast);
   const canCreate = useCanControlCapture();
@@ -56,13 +57,7 @@ export function FlowNewSheet(): JSX.Element {
   const [creating, setCreating] = useState(false);
   const [generating, setGenerating] = useState(false);
 
-  const close = (): void => {
-    // Idempotent, and not decoration: `FlowsScreen` still sets this flag to
-    // open the legacy overlay, and `FlowsCanvasHost` still mounts the thing
-    // that reads it, until T-R7-20 cuts both over.
-    setUi({ wizardOpen: false });
-    nav.back();
-  };
+  const close = (): void => { nav.back(); };
 
   const busy = creating || generating;
   const blankReason = !canCreate

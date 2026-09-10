@@ -88,7 +88,7 @@ g.fetch = async () => ({
 });
 
 // ------------------------------------------------------------------ imports
-const { existsSync } = await import("node:fs");
+const { existsSync, readFileSync } = await import("node:fs");
 const { fileURLToPath } = await import("node:url");
 const { dirname, join } = await import("node:path");
 
@@ -153,6 +153,34 @@ test("every entry names a module and a way to fetch it", () => {
     assert(entry != null && typeof entry === "object", `${name} must be a registry entry`);
     assert(typeof entry.id === "string" && entry.id.length > 0, `${name} has no module id`);
     eq(typeof entry.load, "function", `${name} must carry a loader`);
+  }
+});
+
+// ============================ 2b. what the registry drags into the entry chunk
+
+test("the registry imports component-free modules, not the flows area barrels", () => {
+  // `hubs/index.ts` is in the entry chunk and imports this registry
+  // SYNCHRONOUSLY, so every static import it makes is paid for before first
+  // paint (D-FU-2). Three of the four flows imports used to point at an area
+  // BARREL - `../flows/inspector/sheets`, `../flows/tonight`,
+  // `../flows/create` - each of which re-exports that area's whole component
+  // tree and imports that area's stylesheet. T-R7-20 measured the cost at
+  // +42.94 kB raw / +13.46 kB gzip for the CSS alone; splitting the `{ id,
+  // load }` entries into a component-free `reg.ts` took this build's entry
+  // chunk from 655.59 kB / 215.42 kB gzip to 623.82 kB / 205.68 kB.
+  //
+  // A SOURCE scan, because a bundle size is not observable from a DOM test and
+  // an eager import shows no symptom at all until someone measures first paint.
+  const src = readFileSync(join(hubDir, "sheets", "index.ts"), "utf8");
+  const specs = Array.from(src.matchAll(/^import\s[^;]*?from\s+"([^"]+)";/gm))
+    .map((m) => m[1])
+    .filter((spec) => spec.includes("/flows/"));
+  eq(specs.length, 4, "the four flows areas each publish one registry export; found");
+  for (const spec of specs) {
+    assert(/\/(reg|sheets)$/.test(spec),
+      `the registry statically imports "${spec}", an area barrel: that pulls the whole `
+      + "area - components, models and its stylesheet - into the entry chunk to register "
+      + "a name. Import the area's component-free reg module instead.");
   }
 });
 

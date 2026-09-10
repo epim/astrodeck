@@ -9,23 +9,12 @@
 // QUEUE node. The inspector task cannot import this directory, so the cutover
 // wires that second mount.
 
-import type { SheetRegistry } from "../../../sheets";
-
-/** Sheet names are GLOBAL across the app (`hubs/index.ts` throws on a
- *  collision), which is why this one is `flowTonight` rather than `tonight`.
- *
- *  `{ id, load }`, not the component: sheets are code-split (D-FU-2), so the
- *  registry carries a module identity and the one line that fetches it. The
- *  `import()` is deliberately NOT the static import this file used to make -
- *  `hubs/index.ts` is in the entry chunk and pulls every hub's registry
- *  synchronously, so a registry that named its component eagerly would put the
- *  whole TONIGHT area in front of first paint. */
-export const flowTonightSheets: SheetRegistry = {
-  flowTonight: {
-    id: "session/flows/tonight/TonightSheet",
-    load: () => import("./TonightSheet").then((m) => ({ default: m.FlowTonightSheet })),
-  },
-};
+/** The registry entry itself lives in `reg.ts`, which imports no component at
+ *  all. `session/sheets/index.ts` is in the entry chunk and imports THAT, not
+ *  this barrel: the static re-exports below are the area's whole component
+ *  tree, and pulling them in to register one name is what put the TONIGHT area
+ *  in front of first paint (T-R7-21a item 16). */
+export { flowTonightSheets } from "./reg";
 
 export { FlowTonightSheet, TONIGHT_NO_FLOW } from "./TonightSheet";
 export { CalibrationMatrixCard } from "./CalibrationMatrixCard";
