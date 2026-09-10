@@ -13,6 +13,27 @@
 // Deliberately NOT persisted: `az`, `alt`, `trackId`, `gyro`, `frame.*`. A finder
 // that reopens pointing where it was last night is worse than one that reopens
 // at the best target tonight.
+//
+// THREE KEYS LEFT THIS FILE FOR THE RIG (D-FU-1). The quick-plan defaults, the
+// target pool and the last-chosen site id were never per-phone preferences:
+// they decide what tonight shoots, so the same operator on a tablet got a blank
+// shortlist and the rig itself could not tell a second client what it had
+// learned. They live on the server now (`config.planning`, and
+// `AppConfig.active_location_id` for the site) and are read and written through
+// `next/lib/planning.ts`.
+//
+// What survives here of those three is `LEGACY_RIG_KEYS` and the four
+// `readLegacy*`/`writeLegacy*` functions below. They exist for exactly two jobs
+// and are deleted in the wave after this one: the migration reads them once to
+// hand the phone's copy to the rig, and a rig too old to carry the block (a 404
+// from `GET /api/planning`) keeps working off them, unchanged, rather than
+// losing a night's settings to an upgrade it never asked for.
+//
+// The six keys that REMAIN here are genuine per-phone preferences - lens,
+// layers, mode, floor, frame mode, survey brightness. Each is a property of
+// this screen on this device (which kinds this user wants drawn, how bright the
+// survey is on this panel), none of them reaches the engine, and none of them
+// would mean anything to a second client.
 
 import type { SkyKind } from "./targets";
 import { SKY_KINDS } from "./targets";
@@ -22,11 +43,23 @@ const K = {
   layers: "astrodeck-next-sky-layers",
   mode: "astrodeck-next-sky-mode",
   floor: "astrodeck-next-sky-floor",
-  site: "astrodeck-next-sky-site",
-  pool: "astrodeck-next-sky-pool",
-  quick: "astrodeck-next-sky-quick",
   frameMode: "astrodeck-next-sky-frame-mode",
   surveyBright: "astrodeck-next-sky-survey-bright",
+} as const;
+
+/** The three keys D-FU-1 moved to the rig, named here because the migration
+ *  still has to find them (and, for `site`, delete them) on a phone that has
+ *  been running this app for months. `next/lib/planning.ts` is the only caller:
+ *  it reads them once for the migration, and writes them ONLY while the rig has
+ *  no home for the block. No screen touches them. */
+export const LEGACY_RIG_KEYS = {
+  quick: "astrodeck-next-sky-quick",
+  pool: "astrodeck-next-sky-pool",
+  /** The saved-location id the Sites sheet last applied. It never had a reader
+   *  anywhere in the app - the server has held the pointer as
+   *  `AppConfig.active_location_id` since `POST /api/locations/{id}/apply`
+   *  landed - so the migration deletes it and writes nothing. */
+  site: "astrodeck-next-sky-site",
 } as const;
 
 function readRaw(key: string): string | null {
@@ -133,42 +166,35 @@ export function setFloorOnly(v: boolean): void {
   writeRaw(K.floor, v ? "1" : "0");
 }
 
-// -------------------------------------------------------------- site pick
-/** The saved-location id the user last chose in the Sites sheet ("" = none). */
-export function getSiteId(): string {
-  return readRaw(K.site) ?? "";
-}
-
-export function setSiteId(v: string): void {
-  writeRaw(K.site, v);
-}
-
-// ------------------------------------------------------------ target pool
-export function getPool(): string[] {
-  const v = readJson<unknown>(K.pool, []);
+// ------------------------------------------------------ target pool (LEGACY)
+//
+// The pool is `config.planning.pool` now. These two are the migration's readers
+// and the older-rig fallback; they are deleted with the rest of the legacy block
+// next wave. See the header.
+export function readLegacyPool(): string[] {
+  const v = readJson<unknown>(LEGACY_RIG_KEYS.pool, []);
   return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
 }
 
-export function setPool(v: string[]): void {
-  writeJson(K.pool, v);
+export function writeLegacyPool(v: string[]): void {
+  writeJson(LEGACY_RIG_KEYS.pool, v);
 }
 
-// --------------------------------------------------- quick-session defaults
+// ---------------------------------------------- quick-session defaults (SHAPE)
 //
-// ONE KEY AND ONE PARSER, and this is it.
+// ONE SHAPE AND ONE PARSER, and this is it - now for two sources rather than
+// one. `QuickPrefs` is the browser's spelling of the server's `QuickDefaults`
+// (`config.py:1094-1152`); the two differ in exactly one field name, and
+// `next/lib/planning.ts` owns that single rename. `coerceQuickPrefs` is the
+// parser BOTH sources go through, so a value off the wire and a value off an
+// old phone cannot disagree about what "absent means checked" means.
 //
-// There were two: the Sky hub's quick sheet wrote `astrodeck-next-sky-quick`
-// through this module on GENERATE FLOW, and Settings > SKY > QUICK SESSION
-// DEFAULTS read and wrote its OWN `astrodeck-next-quick` with its own shape.
-// Neither ever saw the other, so the settings sheet said "nothing learned yet"
-// forever and every edit made there was ignored by the sheet that generates the
-// night. Both directions were broken (review #4).
-//
-// The surviving key is this one, because it is the one that already holds real
-// data: a phone that has generated quick sessions has learned defaults HERE,
-// and nothing but the settings sheet's own edits was ever at the other key.
-// `QuickDefaultsSheet` now imports `getQuick`/`setQuick`/`hasQuick`/`clearQuick`
-// from this module and owns no parser of its own.
+// There were once two keys: the Sky hub's quick sheet wrote
+// `astrodeck-next-sky-quick` through this module on GENERATE FLOW, and Settings
+// > SKY > QUICK SESSION DEFAULTS read and wrote its OWN `astrodeck-next-quick`
+// with its own shape. Neither ever saw the other, so the settings sheet said
+// "nothing learned yet" forever and every edit made there was ignored by the
+// sheet that generates the night (review #4). Both sheets now read the rig.
 export interface QuickPrefs {
   /** Hours of night to claim. Ignored while `dawn` is true. */
   hours: number;
@@ -220,38 +246,57 @@ function coerceNumMap(v: unknown): Record<string, number> {
   return out;
 }
 
-export function getQuick(): QuickPrefs {
-  const s = readJson<Partial<QuickPrefs>>(K.quick, {});
+/** The one parser, for a value off the wire as much as one off this phone.
+ *
+ *  Every field is defended separately because both sources can be wrong in
+ *  different ways: an old phone can hold a shape three releases out of date, and
+ *  a rig can be running an engine that does not carry every field yet. Neither
+ *  is a reason to blank a night's plan. */
+export function coerceQuickPrefs(s: Partial<QuickPrefs> | null | undefined): QuickPrefs {
+  const v = s ?? {};
   return {
-    hours: typeof s.hours === "number" && s.hours > 0 ? s.hours : DEFAULT_QUICK.hours,
-    dawn: s.dawn === true,
-    on: coerceBoolMap(s.on),
-    exp: coerceNumMap(s.exp),
-    extras: { ...DEFAULT_QUICK.extras, ...coerceBoolMap(s.extras) },
-    ditherN: typeof s.ditherN === "number" && s.ditherN > 0
-      ? Math.round(s.ditherN)
+    hours: typeof v.hours === "number" && v.hours > 0 ? v.hours : DEFAULT_QUICK.hours,
+    dawn: v.dawn === true,
+    on: coerceBoolMap(v.on),
+    exp: coerceNumMap(v.exp),
+    extras: { ...DEFAULT_QUICK.extras, ...coerceBoolMap(v.extras) },
+    ditherN: typeof v.ditherN === "number" && v.ditherN > 0
+      ? Math.round(v.ditherN)
       : DEFAULT_QUICK.ditherN,
   };
 }
 
-export function setQuick(v: QuickPrefs): void {
-  writeJson(K.quick, v);
+// ------------------------------------------- quick-session defaults (LEGACY)
+//
+// The three below are the migration's readers and the older-rig fallback, and
+// they go with the rest of the legacy block next wave. See the header.
+
+export function readLegacyQuick(): QuickPrefs {
+  return coerceQuickPrefs(readJson<Partial<QuickPrefs>>(LEGACY_RIG_KEYS.quick, {}));
+}
+
+export function writeLegacyQuick(v: QuickPrefs): void {
+  writeJson(LEGACY_RIG_KEYS.quick, v);
 }
 
 /**
- * Has anything been learned at all?
+ * Has anything been learned on THIS PHONE at all?
  *
  * NOT the same claim as "the defaults happen to be empty", and the settings
- * sheet renders the two differently: with nothing stored it says so and offers
+ * sheet renders the two differently: with nothing learned it says so and offers
  * no controls, rather than presenting `DEFAULT_QUICK` as a choice somebody made.
+ * On a rig that carries the block, `planning.quick.learned` is this answer -
+ * which is what `config.py:1124-1128` says that flag is for.
  */
-export function hasQuick(): boolean {
-  return readRaw(K.quick) != null;
+export function hasLegacyQuick(): boolean {
+  return readRaw(LEGACY_RIG_KEYS.quick) != null;
 }
 
-export function clearQuick(): void {
+export function forgetLegacyQuick(): void {
   try {
-    if (typeof localStorage !== "undefined") localStorage.removeItem(K.quick);
+    if (typeof localStorage !== "undefined") {
+      localStorage.removeItem(LEGACY_RIG_KEYS.quick);
+    }
   } catch {
     /* private mode, a WebView that throws - forgetting is best-effort */
   }
