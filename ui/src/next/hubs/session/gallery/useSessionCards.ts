@@ -7,11 +7,9 @@
 // forgotten work it still holds. So report-only nights get a card too - with
 // the verbs that need a session id absent rather than faked.
 //
-// DE-DUPLICATION IS BY PLAN NAME AND NIGHT, because that is all the two
-// payloads share: `SessionReportSummary` carries no session id, and
-// `SessionRow` carries no report id. The window is deliberately generous at the
-// end (a report is written when the run stops, which can be hours after the
-// session row last moved) and tight at the start.
+// THE FOLD ITSELF NOW LIVES IN `sessionsIndex.ts`, with the read, because the
+// GALLERY chip counts the same cards this grid draws and the two must not be
+// two derivations of one number.
 //
 // THUMBNAILS ARE RESOLVED LAZILY AND SEQUENTIALLY. Each non-live card needs its
 // newest accepted frame, which means one ledger read; firing seven of those the
@@ -19,103 +17,25 @@
 // the image side. One at a time, newest session first, capped - the cards
 // render immediately with the dashed face and fill in.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
-import { listReports } from "../../../../api/reports";
-import { getSession, listSessions } from "../../../../api/sessions";
-import type { Session, SessionReportSummary, SessionRow } from "../../../../types";
+import { getSession } from "../../../../api/sessions";
+import type { Session } from "../../../../types";
+import { buildCards, useSessionsIndex } from "./sessionsIndex";
+import type { SessionCardData } from "./sessionsIndex";
+
+// The pure half of this module - what a card IS, and how the two payloads
+// fold into one shelf - lives in `sessionsIndex.ts`, because the GALLERY
+// chip needs the same fold without mounting a grid. Re-exported here so
+// every existing importer (`SessionCard.tsx`, `cardActions.ts`, the barrel)
+// keeps its one import path.
+export { buildCards, nightKeyOf, reportMatchesSession } from "./sessionsIndex";
+export type { SessionCardData } from "./sessionsIndex";
 
 /** How many cards get a ledger read for their thumbnail. Beyond this the card
  *  still renders, with the dashed face - a picture is not worth an unbounded
  *  number of requests on a field link. */
 export const THUMB_RESOLVE_CAP = 12;
-
-export interface SessionCardData {
-  /** Stable React key. A report-only card has no session id, so it is keyed by
-   *  the report. */
-  key: string;
-  /** null for a report-only night: every verb that needs one is absent. */
-  id: string | null;
-  name: string;
-  status: SessionRow["status"] | "report";
-  createdTs: number;
-  updatedTs: number;
-  accepted: number;
-  total: number;
-  nights: number;
-  autoResume: boolean;
-  /** null when nothing knows it. NOT zero - "0 min" and "nobody measured" are
-   *  different claims. */
-  integrationS: number | null;
-  reportId: string | null;
-}
-
-/** A night key by the same noon rollover the server uses, so a report that
- *  started at 01:00 dedupes against the night it belongs to. */
-export function nightKeyOf(unixSeconds: number): string {
-  const d = new Date((unixSeconds - 12 * 3600) * 1000);
-  const m = `${d.getMonth() + 1}`.padStart(2, "0");
-  const day = `${d.getDate()}`.padStart(2, "0");
-  return `${d.getFullYear()}-${m}-${day}`;
-}
-
-/** Does this report belong to that session? Name plus a window: the report is
- *  written at the END of a run, so it can land long after `updated_ts`. */
-export function reportMatchesSession(row: SessionRow, r: SessionReportSummary): boolean {
-  if (r.plan_name !== row.name) return false;
-  return r.started_at >= row.created_ts - 3600 && r.started_at <= row.updated_ts + 12 * 3600;
-}
-
-export function buildCards(
-  rows: readonly SessionRow[],
-  reports: readonly SessionReportSummary[],
-): SessionCardData[] {
-  const used = new Set<string>();
-  const cards: SessionCardData[] = [...rows]
-    .sort((a, b) => b.updated_ts - a.updated_ts)
-    .map((row) => {
-      const hit = reports.find((r) => reportMatchesSession(row, r));
-      if (hit) used.add(hit.id);
-      return {
-        key: row.id,
-        id: row.id,
-        name: row.name,
-        status: row.status,
-        createdTs: row.created_ts,
-        updatedTs: row.updated_ts,
-        accepted: row.accepted,
-        total: row.total,
-        nights: row.nights,
-        autoResume: row.auto_resume,
-        integrationS: hit ? hit.integration_s : null,
-        reportId: hit?.id ?? null,
-      };
-    });
-
-  const seen = new Set(cards.map((c) => `${c.name}|${nightKeyOf(c.updatedTs)}`));
-  for (const r of reports) {
-    if (used.has(r.id)) continue;
-    const key = `${r.plan_name}|${nightKeyOf(r.started_at)}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    cards.push({
-      key: `report:${r.id}`,
-      id: null,
-      name: r.plan_name,
-      status: "report",
-      createdTs: r.started_at,
-      updatedTs: r.ended_at ?? r.started_at,
-      accepted: Math.max(0, r.frames_captured - r.frames_rejected),
-      total: r.frames_captured,
-      nights: 1,
-      autoResume: false,
-      integrationS: r.integration_s,
-      reportId: r.id,
-    });
-  }
-
-  return cards.sort((a, b) => b.updatedTs - a.updatedTs);
-}
 
 /** The newest ACCEPTED frame that actually has a thumbnail, or null. Accepted,
  *  because the card is the night's advertisement and a rejected frame is the
@@ -138,30 +58,12 @@ export interface SessionCards {
 }
 
 export function useSessionCards(): SessionCards {
-  const [rows, setRows] = useState<SessionRow[] | null>(null);
-  const [reports, setReports] = useState<SessionReportSummary[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // ONE read, shared with the GALLERY chip (`sessionsIndex.ts`). The two used
+  // to fetch independently, which is how a chip and the grid under it end up
+  // showing different numbers for the same shelf.
+  const idx = useSessionsIndex(true);
+  const { rows, reports, error, refresh } = idx;
   const [thumbs, setThumbs] = useState<Record<string, string | null>>({});
-  const [gen, setGen] = useState(0);
-  const refresh = useCallback(() => setGen((g) => g + 1), []);
-
-  useEffect(() => {
-    let alive = true;
-    setError(null);
-    listSessions()
-      .then((r) => { if (alive) setRows(r); })
-      .catch((e) => {
-        if (!alive) return;
-        setRows([]);
-        setError(e instanceof Error ? e.message : "could not read the session list");
-      });
-    // A missing report index is not an error for this screen: the sessions are
-    // the shelf, the reports only add older nights and the integration line.
-    listReports()
-      .then((r) => { if (alive) setReports(r); })
-      .catch(() => { if (alive) setReports([]); });
-    return () => { alive = false; };
-  }, [gen]);
 
   const cards = useMemo(
     () => (rows && reports ? buildCards(rows, reports) : []),

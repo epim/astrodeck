@@ -12,11 +12,19 @@
 // the same name would both answer `import "./weather/sheets"`, and which one
 // won would depend on the resolver.
 
-import type { SheetComponent } from "../../sheets";
-import { WeatherSettingsSheet } from "./WeatherSettingsSheet";
-import { CloudmapSheet } from "./CloudmapSheet";
+import type { SheetRegistry } from "../../sheets";
 
-export const sheets: Record<string, SheetComponent> = {
-  weatherSettings: WeatherSettingsSheet,
-  cloudmap: CloudmapSheet,
+// Both entries are dynamic imports (D-FU-2): the two settings sheets are a
+// gear-tap away, not part of first paint, and neither is on the path a user
+// takes to see whether it is clear tonight.
+
+export const sheets: SheetRegistry = {
+  weatherSettings: {
+    id: "weather/sheets/WeatherSettingsSheet",
+    load: () => import("./WeatherSettingsSheet").then((m) => ({ default: m.WeatherSettingsSheet })),
+  },
+  cloudmap: {
+    id: "weather/sheets/CloudmapSheet",
+    load: () => import("./CloudmapSheet").then((m) => ({ default: m.CloudmapSheet })),
+  },
 };

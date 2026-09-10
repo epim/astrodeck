@@ -6,11 +6,9 @@
 // two imports and two keys, which is what keeps the two tasks off the same
 // lines of the same file.
 
-import type { SheetComponent } from "../../sheets";
-import { GuiderSheet } from "./guider";
-import { RotatorSheet } from "./rotator";
+import type { SheetRegistry } from "../../sheets";
 
-export const sheetsGuiderRotator: Record<string, SheetComponent> = {
-  guider: GuiderSheet,
-  rotator: RotatorSheet,
+export const sheetsGuiderRotator: SheetRegistry = {
+  guider: { id: "rig/sheets/guider", load: () => import("./guider").then((m) => ({ default: m.GuiderSheet })) },
+  rotator: { id: "rig/sheets/rotator", load: () => import("./rotator").then((m) => ({ default: m.RotatorSheet })) },
 };

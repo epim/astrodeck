@@ -140,9 +140,25 @@ test("the registry holds exactly the SESSION hub's four sheets", () => {
     "one name missing here is one screen the router cannot reach");
 });
 
-test("every entry is a component, not a module namespace", () => {
-  for (const [name, comp] of Object.entries(sheets)) {
-    eq(typeof comp, "function", `${name} must be a component`);
+test("every entry names a module and a way to fetch it", () => {
+  // Sheets are code-split (D-FU-2): a registry entry is `{ id, load }`, not the
+  // component. The id is what `hubs/index.ts` compares when two hubs register
+  // one name, so an entry without one would silently opt out of that check.
+  for (const [name, entry] of Object.entries(sheets)) {
+    assert(entry != null && typeof entry === "object", `${name} must be a registry entry`);
+    assert(typeof entry.id === "string" && entry.id.length > 0, `${name} has no module id`);
+    eq(typeof entry.load, "function", `${name} must carry a loader`);
+  }
+});
+
+const loadedSheets: Record<string, any> = {};
+for (const [name, entry] of Object.entries(sheets)) {
+  loadedSheets[name] = (await entry.load()).default;
+}
+
+await testAsync("every loader really resolves to a component", async () => {
+  for (const [name, comp] of Object.entries(loadedSheets)) {
+    eq(typeof comp, "function", `${name} loaded something that is not a component`);
   }
 });
 
@@ -165,7 +181,7 @@ await testAsync("planEditor renders the phone reason instead of the editor below
       wsPhase: "up",
     } as never);
   });
-  const Comp = sheets.planEditor as any;
+  const Comp = loadedSheets.planEditor as any;
   await act(async () => { root.render(createElement(Comp, { params: {}, depth: 0 })); });
   await settle();
 
@@ -191,7 +207,7 @@ await testAsync("at 768 px and up it renders the rebuilt plan editor", async () 
   // be the only cause of.
   viewportW = 1024;
   const root2 = createRoot(container);
-  const Comp = sheets.planEditor as any;
+  const Comp = loadedSheets.planEditor as any;
   await act(async () => { root2.render(createElement(Comp, { params: {}, depth: 0 })); });
   await settle();
 

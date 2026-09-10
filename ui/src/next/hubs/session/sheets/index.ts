@@ -19,11 +19,16 @@
 // Names are GLOBAL across the app (`hubs/index.ts` throws on a collision), which
 // is why they are plain words here rather than hub-prefixed.
 
-import type { SheetComponent } from "../../sheets";
+import type { SheetRegistry } from "../../sheets";
 import { sheets2 } from "./set2";
-import { PlanEditorSheet } from "./planEditor";
 
-export const sheets: Record<string, SheetComponent> = {
+export const sheets: SheetRegistry = {
   ...sheets2,
-  planEditor: PlanEditorSheet,
+  // The plan editor drags `views/SequenceView` in with it - the single largest
+  // sheet in the app - which is exactly why it is a dynamic import (D-FU-2)
+  // rather than a line in front of first paint.
+  planEditor: {
+    id: "session/sheets/planEditor",
+    load: () => import("./planEditor").then((m) => ({ default: m.PlanEditorSheet })),
+  },
 };
