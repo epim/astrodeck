@@ -61,7 +61,16 @@
 //     reset - seeding itself from the wheel and calling the seed "learned from
 //     your last session" is the defect the empty-state assertion guards. With a
 //     value stored, the filter rows come from the wheel and a BLACKOUT slot is
-//     not among them; ticking one writes straight back to the key.
+//     not among them.
+//
+//     THE EDIT ASSERTION NAMES THE CONSUMER, NOT THE KEY THIS SHEET OWNS. It
+//     used to assert that the sheet wrote `astrodeck-next-quick`, which was
+//     true and useless: the sheet owned that key, nothing else read it, and the
+//     assertion was green for the entire time Settings and the Sky hub were
+//     two disconnected halves (review #4, #46). What it asserts now is that
+//     `skyPrefs.getQuick()` - the parser the SKY hub's quick sheet reads on
+//     GENERATE FLOW - sees the edit. Point this sheet back at a private key and
+//     it goes red, which is the whole point of it.
 // 13. the composed registry. Every name from all four settings tasks must be
 //     present, and `sites`/`horizon` must be the SKY hub's own component
 //     objects - `hubs/index.ts` throws at load on two DIFFERENT components
@@ -303,11 +312,33 @@ test("AUTO-LOCK writes the EXISTING astrodeck-autolock key in milliseconds", () 
   eq(useStore.getState().touch.autoLockMs, 180000, "store.touch.autoLockMs:");
 });
 
-test("DOWNLOADS remembers the format under its own next- key", () => {
-  const jpeg = q('[data-testid="seg-downloads"] [data-value="jpeg"]');
-  assert(jpeg != null, "no JPEG option in the downloads radiogroup");
+// DOWNLOADS is asserted at the CONSUMER end, deliberately (review #5/#46).
+//
+// The test this replaces read the key the sheet itself owns
+// (`astrodeck-next-dl-pref` = "jpeg"), which was true and told nobody that
+// NOTHING ELSE READ IT: the Files sheet's DOWNLOAD button decides the format
+// from `filesData.readDlPref`, a different key under a different value
+// spelling, so tapping JPEG here changed nothing and the Files sheet went on
+// offering FITS. A guard that asserts a sheet against its own key can never see
+// that. This one goes round the loop: tap here, read back through the module
+// the consumer imports.
+const { readDlPref, DLPREF_KEY } = await import("../../session/sheets/filesData");
+
+test("DOWNLOADS is read back by the Files sheet's own reader, not just written", () => {
+  const jpeg = q('[data-testid="seg-downloads"] [data-value="jpg"]');
+  assert(jpeg != null,
+    "no JPEG option in the downloads radiogroup, or its stored id is not the one "
+    + "`filesData` reads (\"jpg\")");
   click(jpeg);
-  eq(win.localStorage.getItem("astrodeck-next-dl-pref"), "jpeg", "astrodeck-next-dl-pref:");
+  eq(readDlPref(), "jpg",
+    "the Files sheet's reader does not see this row's pick - two keys again");
+  eq(win.localStorage.getItem(DLPREF_KEY), "jpg",
+    "and it is not under the key that module owns");
+
+  const fits = q('[data-testid="seg-downloads"] [data-value="fits"]');
+  assert(fits != null, "no FITS option");
+  click(fits);
+  eq(readDlPref(), "fits", "the round trip only works in one direction");
 });
 
 // -------------------------------------------- 5. a dismissed guide hides the card
@@ -417,6 +448,9 @@ act(() => { root2.unmount(); });
 // ================================================= 8. the quick-defaults sheet
 {
   const { QuickDefaultsSheet, QUICK_KEY } = await import("../sheets/QuickDefaultsSheet");
+  // The SKY hub's own reader, imported here on purpose: this block grades the
+  // settings sheet against the module that consumes what it writes.
+  const { skyPrefs } = await import("../../sky/finder");
 
   win.localStorage.removeItem(QUICK_KEY);
   const empty = createRoot(host);
@@ -431,12 +465,21 @@ act(() => { root2.unmount(); });
   });
   act(() => { empty.unmount(); });
 
-  win.localStorage.setItem(QUICK_KEY, JSON.stringify({
+  test("the one key is the Sky hub's own, not a second one this sheet invented", () => {
+    eq(QUICK_KEY, "astrodeck-next-sky-quick",
+      "the quick-session defaults key the settings sheet reads and writes:");
+  });
+
+  // Written the way the SKY hub writes it, through the shared parser - so the
+  // fixture cannot quietly be a shape only this sheet understands.
+  skyPrefs.setQuick({
+    ...skyPrefs.getQuick(),
     hours: 2,
-    filters: { L: true, Ha: false },
+    dawn: false,
+    on: { L: true, Ha: false },
     exp: { L: 60, Ha: 180 },
-    extras: { af: true, guide: true, dither: true, ditherN: 3, cloud: true, hfr: true, liveStack: true },
-  }));
+    ditherN: 3,
+  });
 
   const loaded = createRoot(host);
   seed(ADMIN, {
@@ -454,12 +497,43 @@ act(() => { root2.unmount(); });
       "a blackout slot was offered as a filter to image with");
   });
 
-  test("editing a stored default writes it straight back under astrodeck-next-quick", () => {
+  test("the sheet reads what the SKY hub wrote, including a filter left OFF", () => {
+    const ha = q('[data-testid="quick-filter-Ha"]');
+    assert(ha != null, "no Ha row to read - the fixture is wrong, not the component");
+    eq(ha.getAttribute("aria-checked"), "false",
+      "Ha was stored OFF by the Sky hub and the settings sheet shows:");
+    const l = q('[data-testid="quick-filter-L"]');
+    eq(l?.getAttribute("aria-checked"), "true", "L was stored ON and shows:");
+  });
+
+  test("an edit here is what the SKY hub's own parser reads back", () => {
     click(q('[data-testid="quick-filter-Ha"]'));
-    const raw = JSON.parse(win.localStorage.getItem(QUICK_KEY) ?? "{}") as
-      { filters?: Record<string, boolean> };
-    eq(raw.filters?.Ha, true, "Ha after ticking it:");
-    eq(raw.filters?.L, true, "L is untouched by the edit:");
+    // The CONSUMER, not the key: `skyPrefs.getQuick` is what `sheets/quick.tsx`
+    // calls on mount and hands to `wheelModel`. Asserting the raw key would be
+    // green even if nothing else in the app could read the shape written under
+    // it, which is exactly how the split shipped.
+    const seen = skyPrefs.getQuick();
+    eq(seen.on.Ha, true, "Ha after ticking it, as the Sky quick sheet reads it:");
+    eq(seen.on.L, true, "L is untouched by the edit:");
+  });
+
+  test("TO DAWN survives as a CHOICE, not as tonight's number of hours", () => {
+    click(q('[data-testid="quick-hours"] [data-value="dawn"]'));
+    const seen = skyPrefs.getQuick();
+    eq(seen.dawn, true, "the dawn flag the Sky sheet resolves against tonight:");
+    click(q('[data-testid="quick-hours"] [data-value="3"]'));
+    const back = skyPrefs.getQuick();
+    eq(back.dawn, false, "picking a fixed length clears the dawn choice:");
+    eq(back.hours, 3, "and stores the hours:");
+  });
+
+  test("the automation rows key on the names the Sky hub's chips write", () => {
+    // `liveStack` vs `stack` was one label over two settings: the row here and
+    // the chip on the quick sheet wrote different keys, so turning live
+    // stacking off in Settings left it on in the night that ran.
+    click(q('[data-testid="quick-extra-stack"]'));
+    eq(skyPrefs.getQuick().extras.stack, false,
+      "live stacking after switching it off here, as the Sky quick sheet reads it:");
   });
 
   act(() => { loaded.unmount(); });

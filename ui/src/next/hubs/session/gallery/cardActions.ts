@@ -35,7 +35,7 @@ export const CONFIRM_DELETE =
   "deleted. This cannot be undone.";
 
 export const CONFIRM_AUTO_RESUME_NO_MONITOR =
-  "No safety monitor is connected — the rig may start unattended in bad " +
+  "No safety monitor is connected - the rig may start unattended in bad " +
   "weather. A persistent warning stays on this card while armed.";
 
 export const ARMED_WITHOUT_MONITOR_CHIP =

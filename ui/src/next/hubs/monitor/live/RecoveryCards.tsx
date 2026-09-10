@@ -21,11 +21,12 @@
 
 import { useEffect, useRef, useState, type JSX } from "react";
 import { api } from "../../../../api";
-import { u } from "../../../../lib/base";
 import { useStore, useResumeArm, useArmedBannerDismissed, useSeq } from "../../../../store";
 import { accessPhrase, useCanControlMount } from "../../../../lib/caps";
 import { ActionButton, IncidentCard, type Incident } from "../../../ui";
 import { nav } from "../../../router";
+import { sendControl } from "../../session/now/sendControl";
+import { MANUAL_STOP_NOTE } from "../../session/now/RunControls";
 
 /** Verbatim, `inventory-session-monitor.md` §4.4, em-dash rewritten as the
  *  house hyphen (ARCHITECTURE.md §0.5). */
@@ -35,32 +36,15 @@ export const VIEW_ONLY_NOTE =
 /** Control writes must give feedback even when the WS is DOWN - the exact case
  *  Abort exists for. The store's log-to-toast path rides the WS, so a failed or
  *  timed-out POST there is invisible. Plain fetch, 4 s timeout, a client-side
- *  toast on BOTH outcomes. (`MonitorView.tsx:461-482`, transcribed.) */
-export function sendControl(
-  label: string,
-  path: string,
-  ok?: { title: string; detail?: string },
-): void {
-  const toast = useStore.getState().enqueueToast;
-  void (async () => {
-    try {
-      const res = await fetch(u(path), {
-        method: "POST",
-        signal:
-          typeof AbortSignal !== "undefined" && "timeout" in AbortSignal
-            ? (AbortSignal as unknown as { timeout(ms: number): AbortSignal }).timeout(4000)
-            : undefined,
-      });
-      if (!res.ok) {
-        toast({ level: "error", title: `${label} failed (${res.status})` });
-        return;
-      }
-      toast({ level: "success", title: ok?.title ?? `${label} sent`, detail: ok?.detail });
-    } catch {
-      toast({ level: "error", title: `${label} failed - the link may be down` });
-    }
-  })();
-}
+ *  toast on BOTH outcomes. (`MonitorView.tsx:461-482`, transcribed.)
+ *
+ *  This IS `now/sendControl` - re-exported, not re-implemented. It was a second
+ *  copy that dropped the one distinction that matters: a TIMED-OUT abort is not
+ *  a failed abort (`/api/sequence/abort` awaits the whole ~210 s wind-down
+ *  against a 4 s budget), and this copy toasted it as a failure, telling the
+ *  operator the rig was still running while it was stopping exactly as asked.
+ *  It also returned `void`, so no caller here could latch on the outcome. */
+export { sendControl };
 
 interface Recoverable { name: string; frames_done: number; frames_total: number }
 
@@ -164,7 +148,7 @@ export function InterruptedRunCard(): JSX.Element | null {
         if (inFlight.current) return;
         inFlight.current = true;
         setBusy(true);
-        sendControl("Resume", "/api/sequence/recover", {
+        void sendControl("Resume", "/api/sequence/recover", {
           title: "Resuming the interrupted run",
           detail: `It picks up at frame ${rec.frames_done + 1} of ${rec.frames_total}.`,
         });
@@ -176,17 +160,51 @@ export function InterruptedRunCard(): JSX.Element | null {
 
 /** PAUSE / RESUME and ABORT. Both write over the plain-fetch path above, so a
  *  dead WebSocket cannot swallow the acknowledgement of the one control the
- *  operator reaches for when things are going wrong. */
+ *  operator reaches for when things are going wrong.
+ *
+ *  THE ABORT GUARD IS TWO LATCHES, exactly as `now/RunControls.tsx`. A local
+ *  60 s timer covers the gap before the engine's first "aborting" frame (and an
+ *  old server that never sends one); the server's own `aborting` state covers a
+ *  teardown that outlives the timer and a client that arrived mid-teardown.
+ *  Without them this button sat there saying STOP through the whole ~210 s
+ *  wind-down - `ActionButton`'s `busy` deliberately does not block a press, so
+ *  it could be re-tapped indefinitely with no acknowledgement at all. */
 export function RunControls(): JSX.Element | null {
   const seq = useSeq();
   const canRun = useCanControlMount();
   const state = seq.state;
   const live = state === "running" || state === "holding" || state === "paused" || state === "aborting";
+
+  const [aborting, setAborting] = useState(false);
+  const serverAborting = state === "aborting";
+  const abortInFlight = aborting || serverAborting;
+
+  // The local latch expires so a dropped socket cannot leave the button dead;
+  // re-posting is safe, because aborting a finished task just republishes.
+  useEffect(() => {
+    if (!aborting) return;
+    if (!live) { setAborting(false); return; }
+    const t = window.setTimeout(() => setAborting(false), 60_000);
+    return () => window.clearTimeout(t);
+  }, [aborting, live]);
+
   if (!live) return null;
 
   const paused = state === "paused";
   const locked = canRun ? null : VIEW_ONLY_NOTE;
   const explain = (r: string) => useStore.getState().enqueueToast({ level: "warning", title: r });
+
+  const doAbort = () => {
+    if (abortInFlight) return;
+    setAborting(true);
+    void sendControl("Stop", "/api/sequence/abort", {
+      title: "Stopping", detail: MANUAL_STOP_NOTE,
+    }).then((r) => {
+      // A refusal that is NOT a timeout means nothing is winding down, so the
+      // latch has to come back off or STOP is dead for a run still going.
+      if (!r.ok && !r.timedOut) setAborting(false);
+    });
+  };
 
   return (
     <div data-testid="run-controls" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -198,11 +216,11 @@ export function RunControls(): JSX.Element | null {
           onExplain={explain}
           data-testid="run-pause"
           onPress={() => {
-            if (paused) sendControl("Resume", "/api/sequence/resume");
+            if (paused) void sendControl("Resume", "/api/sequence/resume");
             // "Pause sent" was true about the REQUEST and false about the rig:
             // the route returns the instant the flag is set, while the exposure
             // it interrupts keeps running.
-            else sendControl("Pause", "/api/sequence/pause", {
+            else void sendControl("Pause", "/api/sequence/pause", {
               title: "Pausing",
               detail: "Any exposure already in flight finishes first - the run stops at the next frame boundary.",
             });
@@ -216,10 +234,14 @@ export function RunControls(): JSX.Element | null {
           arm={{ label: "PRESS AGAIN TO STOP" }}
           lockedReason={locked}
           onExplain={explain}
+          busy={abortInFlight}
+          ariaLabel={abortInFlight
+            ? "Stopping the sequence - ending the exposure and stopping the guider"
+            : undefined}
           data-testid="run-abort"
-          onPress={() => sendControl("Abort", "/api/sequence/abort")}
+          onPress={doAbort}
         >
-          STOP
+          {abortInFlight ? "STOPPING" : "STOP"}
         </ActionButton>
       </div>
       {locked && <div className="nx-empty-hint" data-testid="run-locked-note">{locked}</div>}

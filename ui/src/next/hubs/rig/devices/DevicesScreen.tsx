@@ -49,7 +49,7 @@ const FOOTER_NOTE =
   + "ports. The profile remembers all of it.";
 
 /** Quoted from `views/EquipmentView.tsx:1107-1112`, em-dash and all. */
-const READ_ONLY_NOTE = `Read-only — connecting equipment needs ${accessPhrase("config.backend")}.`;
+const READ_ONLY_NOTE = `Read-only - connecting equipment needs ${accessPhrase("config.backend")}.`;
 
 const ADD_SUB = "scan this computer for USB, Alpaca and ASCOM drivers";
 

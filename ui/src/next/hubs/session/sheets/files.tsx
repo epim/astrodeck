@@ -55,7 +55,7 @@ import type {
   BundlePreview, GalleryFrame, RemoteStatus, SequenceState, Session, SessionFrame,
   SessionReportSummary, SessionRow,
 } from "../../../../types";
-import { nav } from "../../../router";
+import { buildHash, currentRoute, nav } from "../../../router";
 import { useBreakpoint } from "../../../breakpoint";
 import { NxIcon } from "../../../icons";
 import { explainLock } from "../../../shell/explain";
@@ -86,13 +86,13 @@ const FORMAT_BLURB =
 /** The bundle blurb, verbatim (inventory-session-monitor.md section 5.3). */
 const BUNDLE_BLURB =
   "One .zip with tonight's photos already sorted into folders your stacking " +
-  "software understands — PixInsight, Siril or APP — together with the " +
+  "software understands - PixInsight, Siril or APP - together with the " +
   "matching calibration frames and a quality score for each photo.";
 
 /** The materialize danger note, verbatim (ReportView.tsx). */
 const MATERIALIZE_DANGER =
   "The photos in the exports folder are the SAME files as your originals, not " +
-  "copies — deleting or editing one there deletes or edits your original " +
+  "copies - deleting or editing one there deletes or edits your original " +
   "capture. Stack from this folder; don't tidy up inside it.";
 
 const EMPTY_NOTE =
@@ -165,12 +165,29 @@ function toast(level: "info" | "success" | "warning" | "error", title: string, d
   useStore.getState().enqueueToast({ level, title, detail });
 }
 
+/** SWITCH the source, never stack a second copy of this sheet on top of itself.
+ *
+ *  `nav.sheet("files", ...)` called from INSIDE the files sheet pushes a second
+ *  "files" onto `route.sheets`, and `SheetHost` shares one `params` object
+ *  across the whole stack - so the sheet underneath re-renders as the identical
+ *  screen and BACK reads as a control that did nothing. Changing the source is
+ *  a sub-nav change, which `nav.replace` is for. */
+function goSource(src: string): void {
+  const r = currentRoute();
+  nav.replace(buildHash({ ...r, params: { ...r.params, src } }));
+}
+
 // ================================================================== the sheet
 
 export function FilesSheet({ params }: SheetProps): JSX.Element {
   const seq = useSeq();
   const bp = useBreakpoint();
   const canMedia = useCan("view.media");
+  // The JPEG half of the format choice. `/api/sessions/{id}/frames/{fid}/thumb`
+  // is `CAP_VIEW_PREVIEW` on the server (`app.py:5000`), so the per-frame save
+  // is offered to every role the route would actually serve - which is the
+  // point of having a JPEG option at all.
+  const canPreview = useCan("view.preview");
   const canRegrade = useCan("control.mount");
   const canCapture = useCan("control.capture");
 
@@ -382,8 +399,8 @@ export function FilesSheet({ params }: SheetProps): JSX.Element {
     manual ? "manual" : src === "current" ? "current" : "session";
 
   const pickSource = (v: "current" | "session" | "manual") => {
-    if (v === "current") { nav.sheet("files", { src: "current" }); return; }
-    if (v === "manual") { nav.sheet("files", { src: "manual" }); return; }
+    if (v === "current") { goSource("current"); return; }
+    if (v === "manual") { goSource("manual"); return; }
     setPickerOpen(true);
   };
 
@@ -412,20 +429,37 @@ export function FilesSheet({ params }: SheetProps): JSX.Element {
     return `DOWNLOAD ${fmtCount(cost.count)} SUBS · ${fmtBytes(cost.bytes)}`;
   })();
 
-  const jpegReason = pref === "jpg"
-    ? "The rig serves JPEG previews one frame at a time - open a filter and save the ones you want, or save the stack above."
-    : null;
-  const dlReason = !canMedia
-    ? `Downloading raw frames needs ${accessPhrase("view.media")}.`
-    : jpegReason
-      ?? (totals.subs === 0 ? "Nothing has been banked for this source yet."
-        : cost.count === 0 ? "Tick at least one filter."
-          : emptyPick
-            ? "The library index has no files for these filters, so a partial pick cannot be sent. Tick every filter to send the whole night instead."
-            : plan.ok ? null : plan.reason);
+  // THE JPEG SENTENCE COMES FIRST, and it has to, because `pref` is FORCED to
+  // "jpg" for anyone without `view.media`. Testing the capability ahead of the
+  // format printed "Downloading raw frames needs ..." to exactly the roles that
+  // can never choose FITS, and buried the one sentence that says where their
+  // pictures actually are. The capability is still named - once, in its own
+  // paragraph under the picker (`files-fits-locked`) and again here when it is
+  // the REASON the format was chosen for them.
+  const jpegReason = pref !== "jpg" ? null
+    : canMedia
+      ? "The rig serves JPEG previews one frame at a time - open a filter and use SAVE JPG on the frames you want, or save the stack above."
+      : `Raw frames need ${accessPhrase("view.media")}, so this hands you JPEG previews instead`
+        + " - open a filter and use SAVE JPG on the frames you want, or save the stack above.";
+  const dlReason = jpegReason
+    ?? (totals.subs === 0 ? "Nothing has been banked for this source yet."
+      : cost.count === 0 ? "Tick at least one filter."
+        : emptyPick
+          ? "The library index has no files for these filters, so a partial pick cannot be sent. Tick every filter to send the whole night instead."
+          : plan.ok ? null : plan.reason);
 
   const note = useMemo(() => {
     if (totals.subs === 0) return { line: EMPTY_NOTE, extra: null };
+    // No zip is going to be fetched on the JPEG path, so pricing one - "12.4 GB
+    // to transfer, lands in Files > AstroDeck > ..." - is a claim about
+    // something that cannot happen, printed under a locked button.
+    if (pref === "jpg") {
+      return {
+        line: "JPEG previews are served one frame at a time, so there is no zip to weigh.",
+        extra: "Each one is the rig's own rendered preview (about 512 px on the long edge), "
+          + "not the 16-bit original.",
+      };
+    }
     if (cost.count === 0) {
       return { line: "Uncheck what you already have; the rig keeps everything until you clear it.", extra: null };
     }
@@ -436,7 +470,7 @@ export function FilesSheet({ params }: SheetProps): JSX.Element {
       target,
       date: scope.nightTo || scope.nightFrom || nightKey,
     });
-  }, [totals.subs, cost.count, cost.bytes, remote?.via, mbps, target, scope.nightTo, scope.nightFrom, nightKey]);
+  }, [totals.subs, pref, cost.count, cost.bytes, remote?.via, mbps, target, scope.nightTo, scope.nightFrom, nightKey]);
 
   const href = plan.ok ? u(plan.href) : u(`/api/gallery/download.zip${selectionQuery(selection)}`);
 
@@ -451,7 +485,7 @@ export function FilesSheet({ params }: SheetProps): JSX.Element {
       // The server refuses this outright ("regrade is explicitly a
       // between-nights operation"), so say why before the tap rather than
       // discovering it in a 409.
-      ? "Session is running — regrades are read-only until it finishes"
+      ? "Session is running - regrades are read-only until it finishes"
       : regrading
         ? "Applying the last regrade…"
         : sel.length === 0
@@ -472,7 +506,7 @@ export function FilesSheet({ params }: SheetProps): JSX.Element {
     } catch (e) {
       const running = e instanceof ApiError && e.status === 409;
       toast("error", running
-        ? "Session is running — regrades are read-only until it finishes"
+        ? "Session is running - regrades are read-only until it finishes"
         : `Regrade failed: ${e instanceof Error ? e.message : "unknown error"}`);
       if (applied) setIndex((cur) => applyOverride(cur, sel.slice(0, applied), override));
     } finally {
@@ -531,7 +565,7 @@ export function FilesSheet({ params }: SheetProps): JSX.Element {
                   key={s.id}
                   type="button"
                   className="nx-row"
-                  onClick={() => { setPickerOpen(false); nav.sheet("files", { src: s.id }); }}
+                  onClick={() => { setPickerOpen(false); goSource(s.id); }}
                 >
                   <span className="nx-row-text">
                     <span className="nx-row-title">{s.name}</span>
@@ -676,6 +710,9 @@ export function FilesSheet({ params }: SheetProps): JSX.Element {
                     onBulk={bulk}
                     canMedia={canMedia}
                     galleryPaths={r.paths}
+                    jpeg={pref === "jpg"}
+                    canPreview={canPreview}
+                    target={target}
                   />
                 </FilterRow>
               ))
@@ -841,7 +878,10 @@ function FilterRow({ row, checked, expanded, onToggleCheck, onExpand, children }
 
 // =============================================================== frame list
 
-function FrameList({ row, verdict, setVerdict, sel, setSel, regradeReason, onBulk, canMedia, galleryPaths }: {
+function FrameList({
+  row, verdict, setVerdict, sel, setSel, regradeReason, onBulk, canMedia, galleryPaths,
+  jpeg, canPreview, target,
+}: {
   row: FilesRow;
   verdict: VerdictPick;
   setVerdict: (v: VerdictPick) => void;
@@ -851,6 +891,11 @@ function FrameList({ row, verdict, setVerdict, sel, setSel, regradeReason, onBul
   onBulk: (o: "accept" | "reject") => void;
   canMedia: boolean;
   galleryPaths: readonly string[];
+  /** JPEG is the chosen (or the only available) format, so each row carries its
+   *  own save link - the "one frame at a time" the reason line promises. */
+  jpeg: boolean;
+  canPreview: boolean;
+  target: string;
 }): JSX.Element {
   const adapted = useMemo(() => row.frames.map(asSessionFrame), [row.frames]);
   const visible = useMemo(() => {
@@ -909,7 +954,8 @@ function FrameList({ row, verdict, setVerdict, sel, setSel, regradeReason, onBul
               <Mono size={10} tone="dim">
                 {`HFR ${f.hfr != null ? f.hfr.toFixed(2) : "-"} · ${f.stars != null ? `${f.stars}*` : "- stars"} · RMS ${f.guide_rms != null ? f.guide_rms.toFixed(2) : "-"}`}
               </Mono>
-              <span style={{ marginLeft: "auto" }}>
+              <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+                {jpeg && <SaveJpg frame={f} canPreview={canPreview} target={target} filter={row.filter} />}
                 <Pill tone={v === "rejected" ? "bad" : v === "overridden" ? "warn" : "good"}>
                   {v === "accepted" ? "KEPT" : v === "rejected" ? "REJECTED" : "CHANGED"}
                 </Pill>
@@ -942,12 +988,60 @@ function FrameList({ row, verdict, setVerdict, sel, setSel, regradeReason, onBul
       {regradeReason && (
         <Mono size={10} tone="warn">{regradeReason}</Mono>
       )}
-      {canMedia && galleryPaths.length > 0 && (
+      {!jpeg && canMedia && galleryPaths.length > 0 && (
         <Mono size={10} tone="dim">
           {`${galleryPaths.length} of these are in the library index and ride in the zip above.`}
         </Mono>
       )}
     </div>
+  );
+}
+
+/** One frame's JPEG, as a plain `<a download>` - never a fetch into a Blob, for
+ *  the same reason the zip is not one.
+ *
+ *  This is the OTHER half of the FITS deviation. Withholding raw frames from a
+ *  role without `view.media` is right; leaving that role with a format picker
+ *  stuck on JPEG and nothing anywhere that serves a JPEG is not. The route
+ *  behind `frame.thumb` is `CAP_VIEW_PREVIEW`, so this works for exactly the
+ *  roles the picker forces onto it, and it says so when a frame has no rendered
+ *  preview rather than offering a link to a 404. */
+function SaveJpg({ frame, canPreview, target, filter }: {
+  frame: SessionFilesFrame;
+  canPreview: boolean;
+  target: string;
+  filter: string;
+}): JSX.Element {
+  const reason = !canPreview
+    ? `Saving a preview needs ${accessPhrase("view.preview")}.`
+    : !frame.thumb
+      ? "The rig rendered no preview for this frame, so there is no JPEG to save."
+      : null;
+  if (reason) {
+    return (
+      <ActionButton
+        kind="ghost"
+        data-testid={`files-save-jpg-${frame.id}`}
+        lockedReason={reason}
+        onExplain={explainLock}
+        onPress={() => { /* unreachable while locked */ }}
+      >
+        SAVE JPG
+      </ActionButton>
+    );
+  }
+  const stem = `${target || "frame"}${filter ? `-${filter}` : ""}-${frame.id}`
+    .replace(/\s+/g, "-");
+  return (
+    <a
+      className="nx-btn"
+      data-kind="ghost"
+      data-testid={`files-save-jpg-${frame.id}`}
+      href={u(frame.thumb as string)}
+      download={`${stem}.jpg`}
+    >
+      <span className="nx-btn-label">SAVE JPG</span>
+    </a>
   );
 }
 

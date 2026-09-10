@@ -36,7 +36,7 @@ const FOREIGN_MOTION_TITLE =
 
 /** The shipped stop-ramp confirmation (views/CaptureView.tsx). Quoted, so its
  *  em-dash stays. */
-const RAMP_STOPPED = "Warm ramp stopped — cooler off";
+const RAMP_STOPPED = "Warm ramp stopped - cooler off";
 
 export function QuickActions(): JSX.Element {
   const status = useStatus();

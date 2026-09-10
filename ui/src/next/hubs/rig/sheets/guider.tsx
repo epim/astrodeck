@@ -719,7 +719,6 @@ export function GuiderSheet(): JSX.Element {
 
       {/* ------------------------------------------------- 8. guiding assistant */}
       <GuidingAssistant
-        wide={wide}
         connected={connected}
         onOpenInTuning={setTuningSeed}
         onCalibrationChanged={(cleared) => {
@@ -851,6 +850,10 @@ function TuningEditor({ wide, draft, setDraft, commit, lockedReason, onExplain, 
    *  screen are then a RECOMMENDATION and not what the rig is running. */
   seeded: boolean;
 }): JSX.Element {
+  // Open by default where there is room, folded on a phone. `wide` is read once
+  // as the initial state rather than gating the render, so rotating a phone
+  // into landscape does not slam a drawer the user just opened.
+  const [paramsOpen, setParamsOpen] = useState(wide);
   const chooseRa = (kind: GuideAlgorithmKind) =>
     void commit({ ...draft, ra: { algorithm: kind, params: { ...GUIDE_ALGORITHM_DEFAULTS[kind] } } });
   const chooseDec = (kind: GuideAlgorithmKind) =>
@@ -907,11 +910,28 @@ function TuningEditor({ wide, draft, setDraft, commit, lockedReason, onExplain, 
           data-testid="guider-ppec"
         />
 
-        {/* The full drawer is tablet and desktop only (GAP-5: "Defer the full
-            editor to tablet; expose algorithm + PEC toggles on the phone"). */}
-        {wide && (
+        {/* A DISCLOSURE, NOT A BREAKPOINT (review #26).
+            GAP-5 deferred the full editor to tablet, and on a portrait phone
+            that took the per-axis `AlgoParams`, Dec guide direction, the Dec
+            backlash pulse and SAVE TUNING off the screen entirely - with no
+            "rotate" anywhere, and with `BOTH_AXES_NOTE` ("Per-axis values are
+            in the tuning editor") rendering right beside an editor whose
+            per-axis half was not there. `hysteresis` is only reachable through
+            `AxisParams`, so the DEFAULT RA algorithm's one tunable was
+            unreachable on the field-dominant device.
+            The density argument still holds, so the block stays folded on a
+            phone and open at tablet width - collapsed, not absent. */}
+        <Divider />
+        <ActionButton
+          kind="ghost"
+          onPress={() => setParamsOpen((o) => !o)}
+          ariaLabel="Per-axis parameters, Dec guide direction and backlash pulse"
+          data-testid="guider-params-toggle"
+        >
+          {paramsOpen ? "HIDE PER-AXIS PARAMETERS" : "PER-AXIS PARAMETERS"}
+        </ActionButton>
+        {paramsOpen && (
           <>
-            <Divider />
             <Label>PER-AXIS PARAMETERS</Label>
             <AxisParams
               axis="RA" kind={draft.ra.algorithm} params={draft.ra.params}
@@ -1000,8 +1020,7 @@ function AxisParams({ axis, kind, params, onChange, lockedReason }: {
 
 // ========================================================== guiding assistant
 
-function GuidingAssistant({ wide, connected, onOpenInTuning, onCalibrationChanged }: {
-  wide: boolean;
+function GuidingAssistant({ connected, onOpenInTuning, onCalibrationChanged }: {
   connected: boolean;
   onOpenInTuning: (body: GuideSettingsPutBody) => void;
   onCalibrationChanged: (clearedSaved: boolean) => void;
@@ -1196,61 +1215,62 @@ function GuidingAssistant({ wide, connected, onOpenInTuning, onCalibrationChange
                 onExplain={base.onExplain}
               >START OVER</ActionButton>
             </Row>
-            {wide && (
-              <>
-                <ActionButton kind="ghost" onPress={() => setAdvanced((a) => !a)}
-                  ariaLabel="Advanced measurements and per-setting apply"
-                  data-testid="guider-assistant-advanced">
-                  {advanced ? "HIDE MEASUREMENTS" : "MEASUREMENTS AND PER-SETTING APPLY"}
-                </ActionButton>
-                {advanced && (
-                  <Stack gap={8}>
-                    <div style={{ display: "flex", justifyContent: "center" }}>
-                      <GuideScatter samples={report.samples} />
-                    </div>
-                    <GuideGraph samples={report.samples} />
-                    <Note>
-                      {`RMS RA ${report.measurements.rms_ra_px.toFixed(2)} px · `}
-                      {`RMS Dec ${report.measurements.rms_dec_px.toFixed(2)} px · `}
-                      {`RMS total ${report.measurements.rms_total_px.toFixed(2)} px · `}
-                      {`drift ${report.measurements.drift_per_min_px.toFixed(2)} px/min · `}
-                      {`PE p-p ${(report.measurements.pe_amplitude_px * 2).toFixed(2)} px · `}
-                      {`jitter ${report.measurements.jitter_px.toFixed(2)} px`}
-                    </Note>
-                    <Note>
-                      {`backlash ${report.measurements.backlash.bl_ms} ± ${report.measurements.backlash.sigma_ms.toFixed(0)} ms - `}
-                      {backlashResultSentence(report.measurements.backlash.result_code)}
-                    </Note>
-                    {rows.map((r) => (
-                      <Switch
-                        key={r.key}
-                        label={`${r.label}: ${String(r.current)} to ${String(r.recommended)}${r.unit}`}
-                        note={r.conflicts.length > 0
-                          ? `${r.rationale} Either/or with the other suggestion for this setting - ticking this one unticks it.`
-                          : r.rationale}
-                        checked={selected.has(r.key)}
-                        onChange={() => setSelected((prev) => toggleRecommendationKey(report, prev, r.key))}
-                      />
-                    ))}
-                    <ActionButton
-                      kind="secondary"
-                      onPress={() => void apply([...selected])}
-                      lockedReason={applySelectedReason}
-                      onExplain={base.onExplain}
-                      data-testid="guider-assistant-apply-selected"
-                    >APPLY SELECTED</ActionButton>
-                    {/* Hands the (possibly selective) body to the tuning editor
-                        below for hand-tuning. It writes nothing by itself. */}
-                    <ActionButton
-                      kind="ghost"
-                      onPress={() => onOpenInTuning(
-                        buildApplyBody(report, selected.size ? [...selected] : undefined))}
-                      data-testid="guider-open-in-tuning"
-                    >OPEN IN TUNING EDITOR</ActionButton>
-                    {selected.size === 0 && <Note>{EMPTY_SELECTION_REASON}</Note>}
-                  </Stack>
-                )}
-              </>
+            {/* The measurements were `wide`-only, so a phone got a verdict and
+                a single APPLY with no way to see the numbers behind either, or
+                to take one recommendation and leave the rest (review #26). The
+                disclosure IS the density answer - it is already closed by
+                default at every width. */}
+            <ActionButton kind="ghost" onPress={() => setAdvanced((a) => !a)}
+              ariaLabel="Advanced measurements and per-setting apply"
+              data-testid="guider-assistant-advanced">
+              {advanced ? "HIDE MEASUREMENTS" : "MEASUREMENTS AND PER-SETTING APPLY"}
+            </ActionButton>
+            {advanced && (
+            <Stack gap={8}>
+              <div style={{ display: "flex", justifyContent: "center" }}>
+                <GuideScatter samples={report.samples} />
+              </div>
+              <GuideGraph samples={report.samples} />
+              <Note>
+                {`RMS RA ${report.measurements.rms_ra_px.toFixed(2)} px · `}
+                {`RMS Dec ${report.measurements.rms_dec_px.toFixed(2)} px · `}
+                {`RMS total ${report.measurements.rms_total_px.toFixed(2)} px · `}
+                {`drift ${report.measurements.drift_per_min_px.toFixed(2)} px/min · `}
+                {`PE p-p ${(report.measurements.pe_amplitude_px * 2).toFixed(2)} px · `}
+                {`jitter ${report.measurements.jitter_px.toFixed(2)} px`}
+              </Note>
+              <Note>
+                {`backlash ${report.measurements.backlash.bl_ms} ± ${report.measurements.backlash.sigma_ms.toFixed(0)} ms - `}
+                {backlashResultSentence(report.measurements.backlash.result_code)}
+              </Note>
+              {rows.map((r) => (
+                <Switch
+                  key={r.key}
+                  label={`${r.label}: ${String(r.current)} to ${String(r.recommended)}${r.unit}`}
+                  note={r.conflicts.length > 0
+                    ? `${r.rationale} Either/or with the other suggestion for this setting - ticking this one unticks it.`
+                    : r.rationale}
+                  checked={selected.has(r.key)}
+                  onChange={() => setSelected((prev) => toggleRecommendationKey(report, prev, r.key))}
+                />
+              ))}
+              <ActionButton
+                kind="secondary"
+                onPress={() => void apply([...selected])}
+                lockedReason={applySelectedReason}
+                onExplain={base.onExplain}
+                data-testid="guider-assistant-apply-selected"
+              >APPLY SELECTED</ActionButton>
+              {/* Hands the (possibly selective) body to the tuning editor
+                  below for hand-tuning. It writes nothing by itself. */}
+              <ActionButton
+                kind="ghost"
+                onPress={() => onOpenInTuning(
+                  buildApplyBody(report, selected.size ? [...selected] : undefined))}
+                data-testid="guider-open-in-tuning"
+              >OPEN IN TUNING EDITOR</ActionButton>
+              {selected.size === 0 && <Note>{EMPTY_SELECTION_REASON}</Note>}
+            </Stack>
             )}
           </>
         )}
