@@ -441,6 +441,49 @@ button.nx-pill { cursor: pointer; }
 }
 .nx-input[data-mono="true"] { font-family: "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums; }
 .nx-input:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+/* Room for NumberField's unit suffix, which floats over the right end of the
+   box: without this the digits run under "arcsec". */
+.nx-input[data-unit="true"] { padding-right: 52px; }
+
+/* ---------------------------------------------------------- number field */
+
+.nx-numfield { position: relative; display: flex; align-items: center; width: 100%; min-width: 0; }
+.nx-numfield-unit {
+  position: absolute; right: 12px; pointer-events: none;
+  font-family: "IBM Plex Mono", monospace; font-size: 11px; color: var(--text-faint);
+}
+
+/* ------------------------------------------------------------ disclosure */
+
+/* Not <details>: Safari's marker and its own [open] animation are unreachable
+   from these tokens. A button + a region, styled here in full. */
+.nx-disclosure { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.nx-disclosure-head {
+  display: flex; align-items: center; gap: 10px; width: 100%; min-height: 44px;
+  padding: 0; border: 0; background: transparent; color: var(--text);
+  text-align: left; cursor: pointer;
+}
+.nx-disclosure-head:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.nx-disclosure-chev {
+  margin-left: auto; display: inline-flex; flex-shrink: 0; color: var(--text-faint);
+  transition: transform var(--nx-snap) ease-out;
+}
+.nx-disclosure-chev[data-open="true"] { transform: rotate(90deg); }
+.nx-disclosure-body { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+/* `display: flex` above outranks the UA sheet's `[hidden] { display: none }`,
+   so a closed group would keep its own box (and its gaps) without this rule. */
+.nx-disclosure-body[hidden] { display: none; }
+
+/* -------------------------------------------------------------- lock note */
+
+/* The design's `--text-3` rung is this palette's `--text-faint` (>= 4.87:1 on
+   every solid surface in the app - see index.css's R4-19 note). */
+.nx-locknote {
+  display: flex; align-items: flex-start; gap: 6px; margin: 0;
+  font-family: "IBM Plex Sans", sans-serif; font-size: 11px; line-height: 1.5;
+  color: var(--text-faint);
+}
+.nx-locknote-glyph { display: inline-flex; flex-shrink: 0; margin-top: 2px; }
 
 /* ----------------------------------------------------------- status pill */
 
@@ -640,6 +683,7 @@ button.nx-pill { cursor: pointer; }
   .nx-switch-knob,
   .nx-bar-fill,
   .nx-bar-seg-fill,
+  .nx-disclosure-chev,
   .nx-ring-fill { transition: none; }
   .nx-status-dot[data-pulse="true"],
   .nx-btn-spin { animation: none; }

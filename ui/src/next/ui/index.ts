@@ -27,6 +27,9 @@ export { Bar, type BarSegment } from "./Bar";
 export { Stepper2 } from "./Stepper2";
 export { Field } from "./Field";
 export { TextInput } from "./TextInput";
+export { NumberField } from "./NumberField";
+export { Disclosure } from "./Disclosure";
+export { LockNote } from "./LockNote";
 
 export { StatusPill } from "./StatusPill";
 export { IncidentCard, sinceLine } from "./IncidentCard";
