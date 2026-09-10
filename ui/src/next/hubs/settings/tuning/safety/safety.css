@@ -1,0 +1,77 @@
+/* safety.css - the Safety tuning area's own classes (wave R7, T-R7-9).
+ *
+ * `next.css` is a single shared file that twenty concurrent tasks cannot own,
+ * so every class this area needs lives here. It is imported by exactly one
+ * component - `EscalationEditor.tsx` - and deliberately not by the nominal area
+ * root: the editor is the component BOTH mount points render (the Settings
+ * tuning sheet and `hubs/rig/sheets/safety.tsx`), and the hub bundles split per
+ * hub, so hanging the import off the Settings-side root would leave the Rig
+ * hub's copy unstyled for anyone who never opened Settings.
+ *
+ * Rules this file keeps: single-class selectors only, variants on `data-*`, no
+ * class defined in `next.css` appears in any selector here (not even as an
+ * ancestor - a `.nx-esc-group .nx-field` rule would still be redefining a
+ * shared primitive from an area file), tokens from `index.css` only, and no
+ * animation at all, so there is nothing for `prefers-reduced-motion` to undo.
+ *
+ * ONE LAYOUT RULE MATTERS MORE THAN THE REST. Everything here is a single
+ * column with no fixed track and no `min-width`, because the surface this
+ * replaces was a viewport-keyed Tailwind grid that overflowed a 360 px sheet
+ * and scrolled the whole PAGE sideways. Nothing below may reintroduce a width
+ * the container cannot shrink to.
+ */
+
+/* The sheet body: cards and link rows down one column. */
+.nx-safetune-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+/* A card's contents. `.nx-card` sets padding and the border and nothing else,
+ * so the stacking belongs to whoever fills it. */
+.nx-safetune-col {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+/* Title row of the escalation card: the heading and the "Run recovery" tag it
+ * is filed under, which is the word the server uses for this block. */
+.nx-esc-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.nx-esc-intro {
+  margin: 0;
+  font-family: "IBM Plex Sans", sans-serif;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--text-faint);
+}
+
+/* One policy: its heading, what the failure costs, the control, and the
+ * consequence of whichever option is selected. */
+.nx-esc-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.nx-esc-blurb {
+  margin: 0;
+  font-family: "IBM Plex Sans", sans-serif;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-faint);
+  /* No `max-width` in ch or rem: this sits in a panel that is `min(420px,
+   * 44vw)` wide, and a fixed measure here is exactly the shape of the bug this
+   * rebuild removed. */
+}

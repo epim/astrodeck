@@ -28,6 +28,22 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+// ------------------------------------------------------------------ css stub
+// This sheet now mounts `EscalationEditor` (wave R7, T-R7-9), which imports its
+// area's `safety.css`, and Node cannot load a stylesheet. The same synchronous
+// hook `hubBoundary.test.tsx` installs answers with an empty module.
+{
+  const { registerHooks } = await import("node:module");
+  registerHooks({
+    load(url: string, context: any, nextLoad: any) {
+      if (url.endsWith(".css")) {
+        return { format: "module", shortCircuit: true, source: "export default {};" };
+      }
+      return nextLoad(url, context);
+    },
+  } as any);
+}
+
 // ---------------------------------------------------------------- jsdom first
 const { JSDOM } = await import("jsdom");
 const dom = new JSDOM(
@@ -576,37 +592,41 @@ await testAsync("at tablet width the real EscalationPanel replaces the read-only
   wide = false;
 });
 
-// THE PANEL IS WIDER THAN THE SHEET IT IS IN.
+// THE PANEL THAT WAS WIDER THAN THE SHEET IT WAS IN - AND THE BOX THAT HELD IT.
 //
-// `EscalationPanel` is shared with the settings page, where it has the whole
-// window; its rows are Tailwind grids (`sm:grid-cols-[1fr_13rem]`,
-// `sm:grid-cols-2`) and `sm:` asks the VIEWPORT, not this container. Mounted in
-// `.nx-sheet-panel` - `min(420px, 44vw)`, so 360.8 px at an 820 px viewport -
-// its contents overflow their tracks, and with every ancestor at
-// `overflow: visible` that overflow reached the PAGE: the browser probe
-// measured 100 px of horizontal page scroll at 820 and none at 390, which is
-// the tell, because 390 is the narrower sheet and simply does not render this
-// branch.
+// Until wave R7 this branch mounted `components/settings/EscalationPanel`,
+// which is shared with the settings page, where it has the whole window. Its
+// rows were Tailwind grids (`sm:grid-cols-[1fr_13rem]`, `sm:grid-cols-2`) and
+// `sm:` asks the VIEWPORT, not the container. Mounted in `.nx-sheet-panel` -
+// `min(420px, 44vw)`, so 360.8 px at an 820 px viewport - its contents
+// overflowed their tracks, and with every ancestor at `overflow: visible` that
+// overflow reached the PAGE: the browser probe measured 100 px of horizontal
+// page scroll at 820 and none at 390, which was the tell, because 390 is the
+// narrower sheet and simply does not render this branch. A
+// `safety-escalation-scroll` wrapper contained it.
 //
-// jsdom has no layout engine, so the pixels are the probe's job. This grades
-// the structure that decides them: the panel sits in its own scroll container,
-// so whatever it does inside stays inside.
-await testAsync("the tablet escalation panel is boxed in its own horizontal scroller", async () => {
+// T-R7-9 replaced the panel with `EscalationEditor`, a single column with no
+// fixed track, and deleted the wrapper with it (plan section 6.1 defect 6).
+// jsdom has no layout engine, so the pixels stay the probe's job; this grades
+// the structure that decides them - the workaround is gone AND the thing it
+// worked around is gone, which is what stops the box being quietly reinstated
+// around a re-mounted legacy panel.
+await testAsync("the tablet escalation editor needs no scroll workaround", async () => {
   wide = true;
   seed();
   await mount();
-  const box = q('[data-testid="safety-escalation-scroll"]');
-  assert(box != null,
-    "the settings-page panel is mounted straight into the sheet, so anything it "
-    + "lays out wider than 360 px scrolls the whole PAGE sideways");
-  eq(box.style.overflowX, "auto", "the wrapper does not scroll its own overflow");
-  // One axis at `auto` computes the other from `visible` to `auto`, which would
-  // hang a second scrollbar down a panel that fits vertically perfectly well.
-  eq(box.style.overflowY, "hidden", "the wrapper grew a vertical scrollbar it does not need");
-  eq(box.style.minWidth, "0px", "the wrapper cannot shrink, so it is not a boundary at all");
-  eq(box.style.maxWidth, "100%", "the wrapper may grow past the card that holds it");
-  assert(/When something fails/.test(box.textContent || ""),
-    "the wrapper is empty - it boxes in nothing");
+  eq(q('[data-testid="safety-escalation-scroll"]'), null,
+    "the horizontal-scroll workaround is back, so something in this card is again "
+    + "laying out wider than the sheet");
+  const card = q('[data-testid="safety-escalation"]');
+  const editor = q('[data-testid="escalation-editor"]');
+  assert(editor != null, "the rebuilt escalation editor is not mounted at tablet width");
+  assert(card.contains(editor), "the editor is not inside the escalation card");
+  // The cause, not the symptom: a viewport-keyed Tailwind grid anywhere under
+  // this card is what blew the sheet out in the first place.
+  const grids = [...card.querySelectorAll("[class]")]
+    .filter((n: any) => /\bsm:grid/.test(String(n.className)));
+  eq(grids.length, 0, "a viewport-keyed sm: grid is back inside a 360 px sheet");
   wide = false;
 });
 
