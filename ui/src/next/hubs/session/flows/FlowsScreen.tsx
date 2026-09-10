@@ -1,10 +1,14 @@
 // FlowsScreen.tsx - SESSION / FLOWS: MY FLOWS, and the door to the canvas
 // (plan section D; proto `29-my-flows.html`, screenshot 29).
 //
-// The phone's whole relationship with Flows is this list. Building a graph is a
-// tablet job - the canvas needs pan, zoom, wires and an inspector - but RUNNING
-// one is the thing an operator does from bed, and that is what this screen is
-// for: which flows exist, which one is going, and start it.
+// THE ONE LIBRARY, AT EVERY BREAKPOINT (wave R7, section 3.A2's collapse and
+// section 6.1 defect 7). Until the cutover this screen was the phone's list and
+// `components/flows/FlowLibrary` was a SECOND one, rendered by the canvas at
+// tablet and desktop: same title, same rows, different chrome, and a filter box
+// and folder chips that existed only on the one an operator on a phone could not
+// reach. This screen absorbed those controls - the filter, the three folder
+// chips with their visible-card counts, and the two creation cells - and the
+// canvas now opens on a FLOW and never on a library.
 //
 // RUN IS NOT RE-IMPLEMENTED. `useFlowRunControls()` owns three facts that cost
 // real nights to learn (`inventory-session-monitor.md` section 3.4): STOP is
@@ -19,11 +23,19 @@
 // `flowsCompile()`, which is exactly what "RUN re-compiles against tonight's
 // ephemeris" means; the server re-compiles again at `/run`, and the UI only
 // says so.
+//
+// WHAT THE PHONE GAINED. A row tap used to be honest-disabled with "the flows
+// canvas opens on a tablet or desktop" and there was no way to look inside a
+// flow at all. It now opens the `flowStages` sheet - the stage list, the run
+// monitor, tap-to-wire and the stage editor (section 4). The LIST-level OPEN THE
+// FLOWS CANVAS keeps the reason, because that control really does mean the
+// pannable surface, and a phone really cannot draw it.
 
 import { useCallback, useEffect, useMemo, useState, type JSX } from "react";
 
 import { cardMeta, cardStatus } from "../../../../components/flows/FlowLibraryCard";
 import { runBlockedReason, useFlowRunControls } from "../../../../components/flows/flowRunControls";
+import type { FlowCard } from "../../../../lib/flowsApi";
 import { fmtClock } from "../../../../lib/eta";
 import { runIsLive } from "../../../../lib/lastSessionFrame";
 import {
@@ -35,11 +47,13 @@ import { nav, useRoute } from "../../../router";
 import { useBreakpoint } from "../../../breakpoint";
 import { NxIcon } from "../../../icons";
 import { explainLock } from "../../../shell/explain";
-import { ActionButton, Chip, EmptyCard, ListRow, Mono } from "../../../ui";
+import {
+  ActionButton, Chip, EmptyCard, ListRow, Mono, TextInput,
+} from "../../../ui";
 import { useSessionCampaign } from "../crossHub";
 import { PLAN_EDITOR_PHONE_REASON } from "../sheets/planEditor";
 import { FlowRow, type FlowVerb } from "./FlowRow";
-import { CANVAS_LIBRARY, FlowsCanvasHost } from "./FlowsCanvasHost";
+import { FlowsCanvasHost } from "./FlowsCanvasHost";
 
 /** The proto's footer, verbatim. It is the one place the screen says what RUN
  *  actually does and why some flows are a tablet job. */
@@ -49,13 +63,43 @@ export const FLOWS_FOOTER =
   + "(tablet or desktop) and are monitored here.";
 
 /** Plan section D.3. Says what still works here, so the sentence is a
- *  redirection rather than a refusal. */
+ *  redirection rather than a refusal. Since the cutover it belongs to the
+ *  LIST-level control alone: a row tap opens the stage list instead. */
 export const CANVAS_PHONE_REASON =
-  "The flows canvas opens on a tablet or desktop. RUN works here.";
+  "The flows canvas opens on a tablet or desktop. Tap a flow to open its stages, "
+  + "and RUN works here.";
 
-/** Creating a flow needs the canvas; on a phone the quick session is created
- *  from a target in the SKY hub, which is already shipped. */
-export const CREATE_PHONE_HINT = "Quick sessions are created from a target in SKY";
+/** Why OPEN THE FLOWS CANVAS cannot act with a library that has nothing in it.
+ *  The canvas edits one flow; there is no "blank canvas" to open, because a
+ *  graph with no record behind it could not be saved. */
+export const NO_CANVAS_TARGET =
+  "The canvas opens one flow at a time, and there is no flow here to open.";
+
+/** The SKY path, which is a different thing from the QUICK FLOW sheet beside it:
+ *  SKY starts from a target with tonight's altitude window already worked out. */
+export const CREATE_PHONE_HINT = "Quick sessions can also be created from a target in SKY";
+
+/** Placeholder and label for the filter, from `FlowLibrary.tsx:183` (its ellipsis
+ *  character becomes three dots - the house rule is plain ASCII punctuation). */
+export const FILTER_PLACEHOLDER = "Filter flows...";
+
+/** `FlowLibrary.tsx:260`, em-dash replaced by a hyphen. */
+export const NO_MATCH_HINT = "Try a target name, filter, or technique - or clear the search.";
+
+/** The three folder chips (`FlowLibrary.tsx:28-32`).
+ *
+ *  The middle one reads MINE rather than MY FLOWS on purpose: the screen's own
+ *  heading is MY FLOWS, and two elements with that exact text on one screen is
+ *  the shape of the defect this collapse exists to remove - a reader scanning
+ *  for the list would find a filter chip. The group is labelled, so MINE reads
+ *  against ALL and EXAMPLES without ambiguity. */
+const CHIPS = [
+  { key: "all", label: "ALL" },
+  { key: "mine", label: "MINE" },
+  { key: "examples", label: "EXAMPLES" },
+] as const;
+
+type ChipKey = (typeof CHIPS)[number]["key"];
 
 const DOT_LIVE = "#00D2FF";
 const DOT_CAMPAIGN = "#9B51E0";
@@ -79,8 +123,13 @@ export function FlowsScreen(): JSX.Element {
   const phone = bp === "phone";
 
   const cards = useStore((s) => s.flows.cards);
+  const folders = useStore((s) => s.flows.folders);
   const libraryLoaded = useStore((s) => s.flows.libraryLoaded);
   const libraryError = useStore((s) => s.flows.libraryError);
+  const query = useStore((s) => s.flows.ui.query);
+  const folderChip = useStore((s) => s.flows.ui.folderChip);
+  const screen = useStore((s) => s.flows.ui.screen);
+  const highlightId = useStore((s) => s.flows.ui.highlightId);
   const loadLibrary = useStore((s) => s.flowsLoadLibrary);
   const flowsOpen = useStore((s) => s.flowsOpen);
   const flowsSetUi = useStore((s) => s.flowsSetUi);
@@ -98,7 +147,6 @@ export function FlowsScreen(): JSX.Element {
 
   useEffect(() => { void loadLibrary(); }, [loadLibrary]);
 
-  const openReason = phone ? CANVAS_PHONE_REASON : null;
   const createReason = canCreate ? null : `Creating a flow needs ${accessPhrase("control.capture")}.`;
 
   // The hook's own `reason` narrows on whether a run is LIVE, because its button
@@ -116,8 +164,60 @@ export function FlowsScreen(): JSX.Element {
   const startedFlowId = runControls.running ? openRecordId : null;
   const seqLive = runIsLive(seq);
 
+  // --------------------------------------------------------------- filtering
+  //
+  // WHICH FOLDER A CARD IS IN comes from `flows.folders` when the server answered
+  // that call, and from the card's own `readonly` flag when it did not. The
+  // legacy library filtered folders FIRST and listed the cards inside each, so a
+  // failed `GET /api/flows/folders` rendered a library with no flows in it at
+  // all - a load error shown as data loss. Reading the card is the fallback that
+  // cannot lose a row.
+  const exampleFolder = useMemo(() => {
+    const m = new Map<string, boolean>();
+    for (const f of folders) m.set(f.name, f.readonly);
+    return m;
+  }, [folders]);
+  const isExample = useCallback(
+    (c: FlowCard) => exampleFolder.get(c.folder) ?? c.readonly,
+    [exampleFolder],
+  );
+
+  // Verbatim from the prototype (`FlowLibrary.tsx:127-128`): substring over
+  // name + tagline, case-insensitive, trimmed.
+  const q = query.trim().toLowerCase();
+  const matched = useMemo(
+    () => cards.filter((c) => !q || `${c.name} ${c.tagline}`.toLowerCase().includes(q)),
+    [cards, q],
+  );
+
+  // Counts of what is VISIBLE, not the server's folder totals: with a filter
+  // active a server count would disagree with the rows the operator can see
+  // (`FlowLibrary.tsx:273-276`).
+  const chipCount: Record<ChipKey, number> = useMemo(() => ({
+    all: matched.length,
+    mine: matched.filter((c) => !isExample(c)).length,
+    examples: matched.filter((c) => isExample(c)).length,
+  }), [matched, isExample]);
+
+  const visible = useMemo(() => (
+    folderChip === "all" ? matched
+      : folderChip === "examples" ? matched.filter((c) => isExample(c))
+        : matched.filter((c) => !isExample(c))
+  ), [matched, folderChip, isExample]);
+
+  // Under ALL the rows come from more than one folder, and the legacy screen
+  // said which by grouping them under folder headings. One flat list is the
+  // point of the collapse, so the folder rides in the row's own meta line
+  // instead - the same fact, one row shorter.
+  const showFolder = folderChip === "all"
+    && new Set(cards.map((c) => c.folder)).size > 1;
+
   const openCanvas = useCallback((id: string) => {
     nav.go(`/session/flows?open=${encodeURIComponent(id)}`);
+  }, []);
+
+  const openStages = useCallback((id: string) => {
+    nav.sheet("flowStages", { open: id });
   }, []);
 
   const start = useCallback(async (id: string) => {
@@ -156,7 +256,7 @@ export function FlowsScreen(): JSX.Element {
     }
   }, [enqueueToast, runControls, runReason]);
 
-  const rows = useMemo(() => cards.map((card) => {
+  const rows = useMemo(() => visible.map((card) => {
     const isCampaign = camp != null && camp.flowId === card.id;
     const isLive = startedFlowId === card.id
       || (seqLive && (isCampaign ? camp.live : seq.plan_name === card.name));
@@ -181,6 +281,7 @@ export function FlowsScreen(): JSX.Element {
         ? `${cardMeta(card)} · ${status.text.toLowerCase()}`
         : cardMeta(card);
     }
+    if (showFolder) meta = `${card.folder} · ${meta}`;
 
     return {
       card,
@@ -189,16 +290,37 @@ export function FlowsScreen(): JSX.Element {
       dotColor: dotFor(card.last_result, isLive, isCampaign),
       sessionId: isCampaign ? camp.sessionId : null,
     };
-  }), [cards, camp, seqLive, startedFlowId, seq.plan_name]);
+  }), [visible, camp, seqLive, startedFlowId, seq.plan_name, showFolder]);
 
   // The canvas takes the whole hub body when the route asks for it. Reachable
-  // only at 768 px and up: every door to it is honest-disabled below that, and
-  // a hand-typed hash lands on the same reason rather than on a canvas nobody
-  // can pan.
+  // only at 768 px and up: OPEN THE FLOWS CANVAS is honest-disabled below that,
+  // and a hand-typed hash lands on the same reason rather than on a canvas
+  // nobody can pan.
+  //
+  // `?open=` is the primary answer, because the canvas has to survive a reload
+  // and a share (section 4). It is not the ONLY answer: `nav.sheet` rebuilds the
+  // hash from the params it is handed, so the stage editor - opened from a node
+  // card with `{ node }` - clears `?open=` on the way in. `flows.ui.screen` is
+  // the store's own record of which face Flows is showing (`flowsOpen` writes
+  // "editor", the canvas's BACK writes "library"), and it is what stops the
+  // canvas vanishing under its own sheet. Both are needed: the param alone
+  // loses the canvas to a sheet, the flag alone loses it to a reload.
   const open = route.params.open ?? "";
-  if (open && !phone) return <FlowsCanvasHost open={open} />;
+  const canvasId = open || (screen === "editor" && openRecordId ? openRecordId : "");
+  if (canvasId && !phone) return <FlowsCanvasHost open={canvasId} />;
 
   const count = libraryLoaded ? cards.length : null;
+  const filtered = count != null && visible.length !== count;
+
+  // Which flow the list-level control opens. The one already loaded when it is
+  // still in the visible list, else the first row: never `library`, which used
+  // to open a second copy of this screen.
+  const canvasTarget = visible.find((c) => c.id === openRecordId)?.id
+    ?? visible[0]?.id
+    ?? null;
+  const canvasReason = phone
+    ? CANVAS_PHONE_REASON
+    : canvasTarget == null ? NO_CANVAS_TARGET : null;
 
   return (
     <div data-testid="session-flows" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -206,19 +328,105 @@ export function FlowsScreen(): JSX.Element {
         <span className="nx-display" style={{ fontSize: 15, letterSpacing: ".1em" }}>MY FLOWS</span>
         <span data-testid="flows-summary">
           <Mono size={10} tone="dim">
-            {count == null ? "reading the library" : `${count} saved`} · quick sessions land here
+            {count == null
+              ? "reading the library"
+              : filtered ? `${visible.length} of ${count} shown` : `${count} saved`}
+            {" · quick sessions land here"}
           </Mono>
         </span>
       </div>
 
+      {/* The filter and the two things that MAKE a flow, then the folder chips.
+          The split is `FlowLibrary.tsx:160-164`'s and it is measured: all five
+          in one wrapping row cost three rows at 412 px and put the first card
+          below the fold. */}
+      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
+        <span style={{ flex: "1 1 140px", minWidth: 0, display: "flex" }}>
+          <TextInput
+            data-testid="flows-filter"
+            value={query}
+            onChange={(next) => flowsSetUi({ query: next })}
+            placeholder={FILTER_PLACEHOLDER}
+            ariaLabel="Filter flows by name or tagline"
+          />
+        </span>
+        <Chip
+          data-testid="flows-new"
+          lockedReason={createReason}
+          onExplain={explainLock}
+          onClick={() => nav.sheet("flowNew")}
+        >
+          + NEW FLOW
+        </Chip>
+        <Chip
+          data-testid="flows-quick"
+          lockedReason={createReason}
+          onExplain={explainLock}
+          onClick={() => nav.sheet("flowQuick")}
+        >
+          QUICK FLOW
+        </Chip>
+      </div>
+
+      <div
+        role="group"
+        aria-label="Filter by folder"
+        style={{ display: "flex", flexWrap: "wrap", gap: 7 }}
+      >
+        {CHIPS.map((c) => (
+          <Chip
+            key={c.key}
+            data-testid={`flows-folder-${c.key}`}
+            active={folderChip === c.key}
+            count={chipCount[c.key]}
+            onClick={() => flowsSetUi({ folderChip: c.key })}
+          >
+            {c.label}
+          </Chip>
+        ))}
+      </div>
+
+      {/* A library the client could not reach must never render as an empty one
+          - that reads as data loss. Word and glyph, never a colour alone, and a
+          RETRY beside it, because the slice deliberately leaves `libraryLoaded`
+          false on a failure so nothing retries on its own. */}
       {libraryError && (
-        <span data-testid="flows-error"><Mono size={10.5} tone="bad">{libraryError}</Mono></span>
+        <div
+          role="status"
+          style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}
+        >
+          <span data-testid="flows-error">
+            <Mono size={10.5} tone="bad">Could not read the flow library: {libraryError}</Mono>
+          </span>
+          <ActionButton
+            kind="secondary"
+            data-testid="flows-retry"
+            onPress={() => { void loadLibrary(); }}
+          >
+            RETRY
+          </ActionButton>
+        </div>
       )}
 
       {libraryLoaded && cards.length === 0 ? (
         <EmptyCard
+          data-testid="flows-empty"
           title="NO SAVED FLOWS"
           hint="A quick session saves itself here the moment you start one from a target in SKY."
+        />
+      ) : visible.length === 0 && q ? (
+        <EmptyCard
+          data-testid="flows-no-match"
+          title={`NO FLOWS MATCH "${query.trim()}"`}
+          hint={NO_MATCH_HINT}
+        />
+      ) : visible.length === 0 && libraryLoaded ? (
+        <EmptyCard
+          data-testid="flows-folder-empty"
+          title="NOTHING IN THIS FOLDER"
+          hint={folderChip === "examples"
+            ? "The rig ships example flows; this one has none installed."
+            : "Flows you make land here. The examples are under EXAMPLES."}
         />
       ) : (
         <div
@@ -235,62 +443,51 @@ export function FlowsScreen(): JSX.Element {
               meta={r.meta}
               dotColor={r.dotColor}
               verb={r.verb}
-              busy={busyId === r.card.id || busyId === r.sessionId}
+              // `busyId != null` FIRST. `r.sessionId` is null on every row that
+              // is not the campaign, so `busyId === r.sessionId` was true for
+              // all of them while nothing at all was busy - every RUN in the
+              // list wore a spinner and claimed `aria-busy` from first paint
+              // (found in the probe shot at 820, not in a test).
+              busy={busyId != null && (busyId === r.card.id || busyId === r.sessionId)}
+              highlight={r.card.id === highlightId}
+              openTarget={phone ? "stages" : "canvas"}
               runReason={runReason}
-              openReason={openReason}
+              openReason={null}
               onRun={() => { void start(r.card.id); }}
               onResume={() => { if (r.sessionId) void resume(r.sessionId); }}
               onLive={() => nav.go("/session/now")}
-              onOpen={() => openCanvas(r.card.id)}
+              onOpen={() => (phone ? openStages(r.card.id) : openCanvas(r.card.id))}
               onExplain={explainLock}
             />
           ))}
         </div>
       )}
 
-      {/* The list-level OPEN. Same control, same reason - the design puts it at
-          the bottom because on a tablet it is the way INTO the workspace, not a
-          per-row alternative. */}
+      {/* The list-level OPEN. The design puts it at the bottom because on a
+          tablet it is the way INTO the workspace, not a per-row alternative -
+          and unlike a row it means the pannable canvas specifically, which is
+          why it keeps the phone reason a row no longer needs. */}
       <ActionButton
         kind="secondary"
         size="lg"
         full
         data-testid="flows-open-canvas"
-        lockedReason={openReason}
+        lockedReason={canvasReason}
         onExplain={explainLock}
-        onPress={() => openCanvas(CANVAS_LIBRARY)}
+        onPress={() => { if (canvasTarget) openCanvas(canvasTarget); }}
       >
         OPEN THE FLOWS CANVAS
       </ActionButton>
 
-      {phone ? (
+      {phone && (
         <ListRow
           data-testid="flows-create-phone"
           icon={<NxIcon name="sky" size={16} />}
           title={CREATE_PHONE_HINT}
-          sub="A flow saved there appears in this list."
+          sub="SKY starts from a target and its altitude window; the flow lands in this list."
           chevron
           onPress={() => nav.hub("sky")}
         />
-      ) : (
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <Chip
-            data-testid="flows-new"
-            lockedReason={createReason}
-            onExplain={explainLock}
-            onClick={() => { flowsSetUi({ screen: "library", wizardOpen: true }); openCanvas(CANVAS_LIBRARY); }}
-          >
-            + NEW FLOW
-          </Chip>
-          <Chip
-            data-testid="flows-quick"
-            lockedReason={createReason}
-            onExplain={explainLock}
-            onClick={() => { flowsSetUi({ screen: "library", quickOpen: true }); openCanvas(CANVAS_LIBRARY); }}
-          >
-            QUICK FLOW
-          </Chip>
-        </div>
       )}
 
       {/* The doorway to everything a flow cannot express - plan identity,
@@ -312,9 +509,9 @@ export function FlowsScreen(): JSX.Element {
           <Mono size={10.5} tone="warn">{runReason}</Mono>
         </span>
       )}
-      {openReason && (
+      {canvasReason && (
         <span data-testid="flows-canvas-reason">
-          <Mono size={10.5} tone="dim">{openReason}</Mono>
+          <Mono size={10.5} tone="dim">{canvasReason}</Mono>
         </span>
       )}
 

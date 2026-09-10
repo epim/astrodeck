@@ -13,15 +13,24 @@
 
 import "./create.css";
 
-import type { SheetComponent } from "../../../sheets";
-import { FlowNewSheet } from "./wizard";
-import { FlowQuickSheet } from "./quick";
+import type { SheetRegistry } from "../../../sheets";
 
 /** The two sheet names this area registers. Global across the app
- *  (`hubs/index.ts` throws on a collision), hence the `flow` prefix. */
-export const flowCreateSheets: Record<string, SheetComponent> = {
-  flowNew: FlowNewSheet,
-  flowQuick: FlowQuickSheet,
+ *  (`hubs/index.ts` throws on a collision), hence the `flow` prefix.
+ *
+ *  `{ id, load }`, not the components: sheets are code-split (D-FU-2). The
+ *  loaders are dynamic on purpose - `hubs/index.ts` sits in the entry chunk and
+ *  imports every hub's registry synchronously, so naming the components here
+ *  would ship both sheets before first paint. */
+export const flowCreateSheets: SheetRegistry = {
+  flowNew: {
+    id: "session/flows/create/wizard",
+    load: () => import("./wizard").then((m) => ({ default: m.FlowNewSheet })),
+  },
+  flowQuick: {
+    id: "session/flows/create/quick",
+    load: () => import("./quick").then((m) => ({ default: m.FlowQuickSheet })),
+  },
 };
 
 export { FlowNewSheet } from "./wizard";

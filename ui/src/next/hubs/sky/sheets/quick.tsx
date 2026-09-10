@@ -19,9 +19,11 @@
 // BOTH COORDINATES ALWAYS TRAVEL. `to_plan` reads ra/dec and never the name, so
 // a flow carrying a name and no coordinates slews to the TARGET node's shipped
 // M31 and files the frames under the wrong object. `targetFromEntry`/`raHms`/
-// `decDms` are imported from `QuickFlow` rather than rewritten for that reason.
+// `decDms` are imported from `session/flows/create/quickPayload` - next's own
+// copy of those legacy helpers - rather than rewritten for that reason.
 
 import { useEffect, useMemo, useRef, useState, type JSX, type ReactNode } from "react";
+import { useShallow } from "zustand/react/shallow";
 import type { SheetProps } from "../../sheets";
 import {
   ActionButton, Card, Checkbox22, Chip, Label, Mono, Sheet,
@@ -34,19 +36,30 @@ import { useFrameSettings, useFraming, useSite, useStore, useWeather } from "../
 import { apiErrorPayload } from "../../../../lib/apiError";
 import { resolveRoleConnected } from "../../../../lib/caps";
 import { flowsApi } from "../../../../lib/flowsApi";
+// The six pure helpers come from the REBUILT create area, not from
+// `components/flows/QuickFlow.tsx`: they are declared inside a 497-line legacy
+// component, and importing them from there dragged `Overlay`, `CatalogSearch`,
+// `HonestButton` and their Tailwind tree into this lazily-split sheet for the
+// sake of four functions and two strings (wave R7 section 2.1's finding).
+// `create/__tests__/createDom.test.tsx` pins the copy to the legacy original.
+//
+// The DEEP module, not the area barrel: `create/index.ts` is the area's seam and
+// pulls both creation sheets and `create.css` in with it, which would trade one
+// oversized import for another. `quickPayload.ts` is where these six actually
+// live and it imports nothing but types.
 import {
   QUICK_RUN_FAILED, QUICK_SAVE_FAILED, decDms, quickPayload, raHms, targetFromEntry,
   type QuickTarget,
-} from "../../../../components/flows/QuickFlow";
+} from "../../session/flows/create/quickPayload";
 import type { FlowGraphRec, FlowRecordRec } from "../../../../components/flows/flowsTypes";
 import { skyPrefs, type QuickPrefs } from "../finder";
 import {
-  ASSUMED_WHEEL_NOTE, FILTER_FOOTER, INFO, NO_FILTER_REASON, ONE_CHANNEL_FOOTER, OSC_FOOTER,
-  floorLegend, mosaicPlanNote,
+  ASSUMED_WHEEL_NOTE, FILTER_FOOTER, INFO, NO_FILTER_REASON,
+  floorLegend, mosaicPlanNote, oscFooter,
 } from "./quickCopy";
 import {
   OSC_LABEL, channelLabel, filterColor, finishLabel, hourStops, hoursLabel, isDawnStop,
-  nextExposure, oscCount, passesFor, planLine, quickRows, snapHours, wheelModel,
+  nextExposure, oscCount, passesFor, planLine, quickRows, resolveColour, snapHours, wheelModel,
 } from "./quickModel";
 import {
   NightArc, curveFromNight, hoursToDawn, type ArcCurve, type ArcHold,
@@ -188,14 +201,28 @@ export function QuickSessionSheet({ params }: SheetProps): JSX.Element {
   ).connected);
 
   /**
-   * THE ONLY COLOUR SIGNAL THE CLIENT HAS.
+   * WHETHER THIS CAMERA IS COLOUR, AND HOW WE KNOW.
    *
-   * `RigStatus.camera` has no colour or bayer field; `bayer_pattern` reaches
-   * the client on a captured FRAME (`PreviewInfo.bayer_pattern`). Read as one
-   * narrow string rather than through `usePreview()` so a preview arriving
-   * every few seconds during a capture does not re-render this whole sheet.
+   * The driver answers first: `status.camera.bayer_pattern` and
+   * `status.camera.is_color` are on the wire (T-U7b-10), so a mono camera is
+   * known to be mono before a single frame has been taken. A captured FRAME's
+   * `PreviewInfo.bayer_pattern` is the fallback for a rig whose driver reports
+   * neither. `resolveColour` returns which of the three answered, and `isColor`
+   * is `null` when none did - an absence, not a "no".
+   *
+   * Read through one narrow selector rather than `usePreview()` so a preview
+   * arriving every few seconds during a capture does not re-render this sheet.
+   *
+   * `useShallow` IS LOAD-BEARING, not tidiness. `resolveColour` builds a fresh
+   * object on every call, and zustand compares a selector's RESULT by identity
+   * through `useSyncExternalStore` - so a bare selector re-renders on every
+   * store read, re-runs the selector, gets another new object, and the sheet
+   * dies with "Maximum update depth exceeded" before it paints. The three
+   * fields are flat, so a shallow compare is exact.
    */
-  const bayerPattern = useStore((s) => s.preview?.bayer_pattern ?? null);
+  const bayerPattern = useStore(useShallow(
+    (s) => resolveColour(s.status?.camera, s.preview?.bayer_pattern ?? null),
+  ));
 
   const [prefs, setPrefs] = useState(() => skyPrefs.getQuick());
   const persist = (next: QuickPrefs): void => {
@@ -586,7 +613,7 @@ export function QuickSessionSheet({ params }: SheetProps): JSX.Element {
               </div>
             </Card>
             <p style={{ fontSize: 11.5, lineHeight: 1.5, color: "var(--text-3, #7683a5)" }}>
-              {bayerPattern ? OSC_FOOTER : ONE_CHANNEL_FOOTER}
+              {oscFooter(bayerPattern)}
             </p>
           </section>
         ) : (

@@ -1,7 +1,7 @@
-// flowsDom.test.tsx - SESSION / FLOWS, MOUNTED.
+// flowsDom.test.tsx - SESSION / FLOWS, MOUNTED, AFTER THE CUTOVER.
 //
 //   Run directly:  npx tsx src/next/hubs/session/flows/__tests__/flowsDom.test.tsx
-//   Also run by `npm test` (run-tests.mjs) and type-checked by `tsc -b`.
+//   Also run by `npm test` (run-tests.mjs) and type-checked by `tsc --noEmit`.
 //
 // WHAT IS WORTH GUARDING HERE
 //
@@ -18,11 +18,26 @@
 //      went red for as long as the guard was dead on the rig (2026-08-18: press
 //      RUN, get a 409, no dialog, no way forward), so it is asserted end to end:
 //      the title, the server's own detail lines, and the second request's BODY.
-//   4. THE PHONE IS TOLD, NOT BLOCKED. OPEN is `aria-disabled` carrying the
-//      canvas reason and reaches the network not at all - and RUN, on the same
-//      row, still works, which is what the reason claims.
+//   4. THE PHONE GETS INSIDE THE FLOW. Wave R7 replaced "OPEN is honest-disabled
+//      because the canvas is a tablet job" with a row tap that opens the
+//      `flowStages` sheet. The LIST-level OPEN THE FLOWS CANVAS keeps the reason,
+//      because it really does mean the pannable surface.
 //   5. A VIEWER SEES THE SAME SCREEN, LOCKED, with the capability named and no
 //      request fired.
+//   6. THE CANVAS IS THE REBUILT ONE. `components/flows/FlowsView` is not
+//      imported, not mounted, and its own marker is absent - asserted against the
+//      SOURCE TEXT as well as the DOM, because a legacy import that renders
+//      nothing looks exactly like no import at all.
+//   7. ONE LIBRARY. The whole point of the cutover (wave R7 section 6.1 defect
+//      7): at tablet the canvas used to stack a second MY FLOWS on top of this
+//      one. Counted, not eyeballed.
+//   8. THE SIX SHEETS ARE REGISTERED. Four areas publish `flow*Sheets`; if one
+//      is not spread into the SESSION hub's registry the route resolves to
+//      `MissingSheet` with no compile error anywhere.
+//   9. THE CANVAS SURVIVES ITS OWN SHEET. `nav.sheet` rebuilds the hash from the
+//      params it is handed, so the stage editor clears `?open=`. Without the
+//      store's `ui.screen` fallback the canvas would vanish the moment a stage
+//      was opened for editing.
 //
 // Convention: shell-and-tests.md section 4.
 
@@ -31,10 +46,11 @@
 // ------------------------------------------------------------------ css stub
 // `NextApp` imports `next.css` and `shell/shell.css` - it is the single import
 // site for both, by contract, so that the cascade order cannot depend on module
-// resolution order. Node has no idea what a `.css` file is, so a synchronous
-// load hook answers with an empty module. This is the ONLY way to keep both
-// facts true at once: the app has one style entry point, and that entry point
-// is still mountable in a test.
+// resolution order. The rebuilt Flows areas import their own `<area>.css` the
+// same way. Node has no idea what a `.css` file is, so a synchronous load hook
+// answers with an empty module. This is the ONLY way to keep both facts true at
+// once: the app has one style entry point per area, and those entry points are
+// still mountable in a test.
 {
   const { registerHooks } = await import("node:module");
   registerHooks({
@@ -75,6 +91,7 @@ const g = globalThis as any;
 for (const k of [
   "window", "document", "navigator", "HTMLElement", "HTMLInputElement",
   "Element", "Node", "Event", "CustomEvent", "MouseEvent", "KeyboardEvent",
+  "PointerEvent", "FocusEvent",
   "localStorage", "getComputedStyle", "matchMedia", "WebSocket",
   "requestAnimationFrame", "cancelAnimationFrame", "location", "history",
 ]) {
@@ -124,6 +141,8 @@ const UNMAPPED_409 = {
 const asked: { url: string; method: string; body: any }[] = [];
 /** Flipped by the test that has already seen the 409, so the retry succeeds. */
 let acceptedOnce = false;
+/** Flipped to make `GET /api/flows` fail, for the RETRY assertion. */
+let libraryFails = false;
 
 g.fetch = async (url: string, init?: { method?: string; body?: string }) => {
   const method = init?.method ?? "GET";
@@ -135,8 +154,19 @@ g.fetch = async (url: string, init?: { method?: string; body?: string }) => {
     json: async () => data,
   });
 
-  if (url === "/api/flows") return ok(CARDS);
-  if (url === "/api/flows/folders") return ok([{ name: "My flows", count: 1, readonly: false }]);
+  if (url === "/api/flows") {
+    if (libraryFails) {
+      return {
+        ok: false, status: 503, statusText: "Service Unavailable",
+        headers: { get: () => "application/json" },
+        json: async () => ({ detail: "the flow store is not mounted" }),
+      };
+    }
+    return ok(CARDS);
+  }
+  if (url === "/api/flows/folders") {
+    return ok([{ name: "My flows", count: 1, readonly: false }]);
+  }
   if (url === "/api/flows/compile") {
     return ok({ plan: {}, structural: [], issues: [], unmapped: [] });
   }
@@ -159,10 +189,25 @@ g.fetch = async (url: string, init?: { method?: string; body?: string }) => {
 };
 
 // ------------------------------------------------------------------ imports
+const { readFileSync } = await import("node:fs");
+const { fileURLToPath } = await import("node:url");
+const { dirname, join } = await import("node:path");
+
 const { createElement, act } = await import("react");
 const { createRoot } = await import("react-dom/client");
 const { useStore } = await import("../../../../../store");
-const { FlowsScreen, CANVAS_PHONE_REASON, FLOWS_FOOTER } = await import("../FlowsScreen");
+const { runBlockedReason } = await import("../../../../../components/flows/flowRunControls");
+const { resetRouterCacheForTests } = await import("../../../../router");
+const {
+  FlowsScreen, CANVAS_PHONE_REASON, FLOWS_FOOTER, NO_MATCH_HINT, FILTER_PLACEHOLDER,
+} = await import("../FlowsScreen");
+const { JUST_SAVED } = await import("../FlowRow");
+const { FLOW_STAGES_SHEET } = await import("../canvas/FlowStagesPhoneSheet");
+const { flowCanvasSheets } = await import("../canvas/sheets");
+const { flowInspectorSheets } = await import("../inspector/sheets");
+const { flowTonightSheets } = await import("../tonight");
+const { flowCreateSheets } = await import("../create");
+const { SHEET_ENTRIES } = await import("../../../index");
 
 // ------------------------------------------------------------------ harness
 let passed = 0;
@@ -182,7 +227,7 @@ function eq<T>(got: T, want: T, msg: string): void {
 }
 
 const container = win.document.getElementById("root") as any;
-const root = createRoot(container);
+let root = createRoot(container);
 const settle = async () => {
   for (let i = 0; i < 6; i++) {
     await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
@@ -192,10 +237,18 @@ const tid = (t: string): any => container.querySelector(`[data-testid="${t}"]`);
 const click = (el: any) => {
   act(() => { el.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true })); });
 };
+const typeInto = (el: any, value: string): void => {
+  act(() => {
+    const setter = Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, "value")!.set!;
+    setter.call(el, value);
+    el.dispatchEvent(new win.Event("input", { bubbles: true }));
+  });
+};
 const runs = () => asked.filter((a) => a.method === "POST" && /\/run$/.test(a.url));
 
 function seed(role: string, caps: string[]): void {
   act(() => {
+    const f = useStore.getState().flows;
     useStore.setState({
       principal: { role, email: null, caps } as never,
       authGate: "open",
@@ -206,10 +259,18 @@ function seed(role: string, caps: string[]): void {
       equipConnected: true,
       wsPhase: "up",
       resumeArm: null as never,
-      // `flowsRun` writes this optimistically and nothing on the server ever
-      // clears it, so a test that ran one flow would find every later row
-      // showing LIVE. Reset with the rest of the fixture.
-      flows: { ...useStore.getState().flows, record: null, run: { ...useStore.getState().flows.run, phase: "idle" } } as never,
+      // `flowsRun` writes `run.phase` optimistically and nothing on the server
+      // ever clears it, so a test that ran one flow would find every later row
+      // showing LIVE. `ui.screen` is the same shape of leak: `flowsOpen` sets it
+      // to "editor" and `FlowsScreen` reads it to keep the canvas up under a
+      // sheet, so a stale one would open the canvas over the list. Reset both
+      // with the rest of the fixture.
+      flows: {
+        ...f,
+        record: null,
+        run: { ...f.run, phase: "idle" },
+        ui: { ...f.ui, screen: "library", query: "", folderChip: "all", highlightId: null },
+      } as never,
     } as never);
   });
 }
@@ -220,9 +281,22 @@ async function mount(): Promise<void> {
   await settle();
 }
 
+/** Remount from a named hash. `useRoute` caches its parse, so a test that
+ *  assigns `location.hash` without this reads the previous route. */
+async function mountAt(hash: string): Promise<void> {
+  win.location.hash = hash;
+  resetRouterCacheForTests();
+  await act(async () => { root.unmount(); });
+  root = createRoot(container);
+  await act(async () => { root.render(createElement(FlowsScreen as any)); });
+  await settle();
+}
+
+const ADMIN = ["view.status", "view.preview", "control.mount", "control.capture", "view.site_derived"];
+
 // ========================================================== 1. it rendered
 
-seed("admin", ["view.status", "view.preview", "control.mount", "control.capture", "view.site_derived"]);
+seed("admin", ADMIN);
 await mount();
 
 test("precondition: the list rendered with rows from the stubbed library", () => {
@@ -246,6 +320,27 @@ test("the meta line carries the server's own status word, not invented copy", ()
   assert(/completed clean/.test(meta), `the "ok" word, got "${meta}"`);
   assert(/never run/.test(tid("flow-meta-example-m16").textContent),
     "a flow that never ran must say so, not read as a clean one");
+});
+
+test("with the folders mixed the row says which folder it came from", () => {
+  // The legacy library grouped the cards under folder headings; one flat list is
+  // the point of the collapse, so the folder rides in the meta line. Without it
+  // ALL is a list an operator cannot tell apart.
+  assert(/^My flows · /.test(tid("flow-meta-quick-m31").textContent),
+    "a row under ALL does not say which folder it is in");
+  assert(/^Examples · /.test(tid("flow-meta-example-m16").textContent),
+    "the example flow is not marked as one");
+});
+
+test("no row claims to be busy while nothing is running", () => {
+  // `busyId` and a non-campaign row's `sessionId` are BOTH null, so
+  // `busyId === r.sessionId` was true for every ordinary row: every RUN in the
+  // list wore a spinner and reported `aria-busy` from first paint. Found by
+  // looking at the probe screenshot at 820, which is the only place it showed.
+  for (const id of ["quick-m31", "example-m16"]) {
+    eq(tid(`flow-verb-${id}`).getAttribute("aria-busy"), null,
+      `${id} claims aria-busy with no run in flight`);
+  }
 });
 
 test("the footer states what RUN does and why the canvas is elsewhere", () => {
@@ -303,7 +398,7 @@ await testAsync("a 409 unmapped opens the compile confirm and RUN ANYWAY re-fire
 
 await testAsync("CANCEL on that confirm sends nothing", async () => {
   acceptedOnce = false;
-  seed("admin", ["view.status", "view.preview", "control.mount", "control.capture", "view.site_derived"]);
+  seed("admin", ADMIN);
   await settle();
   click(tid("flow-verb-quick-m31"));
   await settle();
@@ -315,36 +410,50 @@ await testAsync("CANCEL on that confirm sends nothing", async () => {
   acceptedOnce = true;
 });
 
-// ================================================ 4. the phone is told, not blocked
+// ================================================ 4. the phone gets inside the flow
 
-test("OPEN is honest-disabled on a phone, carrying the canvas reason", () => {
+await testAsync("a phone row tap opens the flowStages sheet on THAT flow", async () => {
+  seed("admin", ADMIN);
+  await mountAt("#/session/flows");
+
   const open = tid("flow-open-quick-m31");
   assert(open != null, "the OPEN control must still be rendered on a phone");
-  eq(open.getAttribute("aria-disabled"), "true", "it must be honest-disabled, never `disabled`");
-  eq(open.getAttribute("title"), CANVAS_PHONE_REASON, "and name the reason");
+  eq(open.getAttribute("aria-disabled"), null,
+    "the phone is no longer refused: the row opens the stage list");
+  assert(/stage list/.test(open.getAttribute("aria-label") ?? ""),
+    "the accessible name still promises the CANVAS, which this phone will never draw - "
+    + "the promise a row makes has to be the screen the press produces");
+
+  click(open);
+  await settle();
+  eq(win.location.hash, "#/session/flows/flowStages?open=quick-m31",
+    "the stage list is route state, so it survives a reload and names its flow");
+});
+
+await testAsync("OPEN THE FLOWS CANVAS keeps its reason on a phone and reaches nothing", async () => {
+  await mountAt("#/session/flows");
+  const canvas = tid("flows-open-canvas");
+  assert(canvas != null, "OPEN THE FLOWS CANVAS must still be rendered");
+  eq(canvas.getAttribute("aria-disabled"), "true", "it must be honest-disabled, never `disabled`");
+  eq(canvas.getAttribute("title"), CANVAS_PHONE_REASON, "and name the reason");
   assert(container.textContent.includes(CANVAS_PHONE_REASON),
     "the reason has to be readable without a hover a touch screen cannot perform");
 
-  const canvas = tid("flows-open-canvas");
-  assert(canvas != null, "OPEN THE FLOWS CANVAS must still be rendered");
-  eq(canvas.getAttribute("aria-disabled"), "true", "the list-level control is locked the same way");
-});
-
-await testAsync("a locked OPEN reaches neither the network nor the router", async () => {
   const before = asked.length;
   const hash = win.location.hash;
-  click(tid("flow-open-quick-m31"));
-  click(tid("flows-open-canvas"));
+  click(canvas);
   await settle();
-  eq(asked.length, before, "a locked OPEN must not fetch");
+  eq(asked.length, before, "a locked control must not fetch");
   eq(win.location.hash, hash, "and must not navigate to a canvas the phone cannot draw");
 });
 
-test("the phone still has a way to make a flow, and it says where", () => {
+test("the phone still has the SKY route to a new flow, and it says what SKY adds", () => {
   const row = tid("flows-create-phone");
-  assert(row != null, "the phone must not simply lose flow creation");
+  assert(row != null, "the phone must not simply lose the SKY creation path");
   assert(/created from a target in SKY/.test(row.textContent),
     "and the row has to say where it happens");
+  assert(tid("flows-quick") != null,
+    "QUICK FLOW is a sheet now, so it works on a phone too and must be offered");
 });
 
 // ============================================== 5. the viewer sees it locked
@@ -369,17 +478,117 @@ await testAsync("a viewer sees the same rows, locked, and fires nothing", async 
   await settle();
   eq(asked.length, before, "a locked RUN must not reach the network");
   eq(useStore.getState().confirm, confirmBefore, "and must not raise a dialog");
+
+  eq(tid("flows-new").getAttribute("aria-disabled"), "true",
+    "creating a flow needs control.capture, which a viewer does not hold");
+  eq(tid("flows-quick").getAttribute("aria-disabled"), "true",
+    "and so does the quick flow");
 });
 
-// ======================================= 6. the tablet gets the actual canvas
+// ================================== 6. the library controls the canvas gave up
+
+await testAsync("the filter narrows the list and writes flows.ui.query", async () => {
+  seed("admin", ADMIN);
+  await mountAt("#/session/flows");
+
+  const box = tid("flows-filter");
+  assert(box != null, "the filter box did not come across from FlowLibrary");
+  eq(box.getAttribute("placeholder"), FILTER_PLACEHOLDER, "the proto's placeholder");
+
+  typeInto(box, "dusk");
+  await settle();
+  eq(useStore.getState().flows.ui.query, "dusk", "the filter must write the shared slice field");
+  assert(tid("flow-row-example-m16") != null, "the matching flow is gone");
+  assert(tid("flow-row-quick-m31") == null, "a non-matching flow is still listed");
+  assert(/1 of 2 shown/.test(tid("flows-summary").textContent),
+    "the summary still claims the library total while a filter is on");
+  // The folder counts are of what is VISIBLE, which is the whole reason the
+  // legacy library counted its own cards instead of the server's folder totals:
+  // a chip reading 7 over a list of 1 makes the operator count rows to find out
+  // which number is lying.
+  eq(tid("flows-folder-all").textContent, "ALL1",
+    "the folder chips count the library, not the filtered list");
+  eq(tid("flows-folder-mine").textContent, "MINE0",
+    "and MINE still claims a card the filter removed");
+});
+
+await testAsync("a filter that matches nothing says so, with the query in it", async () => {
+  typeInto(tid("flows-filter"), "zzzz");
+  await settle();
+  const empty = tid("flows-no-match");
+  assert(empty != null, "no empty state - a filter with no hits rendered a blank list");
+  assert(/zzzz/.test(empty.textContent), "the empty state must quote what was searched for");
+  assert(empty.textContent.includes(NO_MATCH_HINT), "and say what to do about it");
+  assert(!/—/.test(empty.textContent), "em-dash in UI copy");
+
+  typeInto(tid("flows-filter"), "");
+  await settle();
+});
+
+await testAsync("the folder chips count VISIBLE cards and switch the folder", async () => {
+  const all = tid("flows-folder-all");
+  const mine = tid("flows-folder-mine");
+  const examples = tid("flows-folder-examples");
+  assert(all != null && mine != null && examples != null, "the three folder chips are missing");
+  eq(all.textContent, "ALL2", "ALL counts every card that matches the filter");
+  eq(mine.textContent, "MINE1", "MINE counts the cards in writable folders");
+  eq(examples.textContent, "EXAMPLES1", "EXAMPLES counts the read-only ones");
+
+  click(examples);
+  await settle();
+  eq(useStore.getState().flows.ui.folderChip, "examples", "the chip must write the shared slice field");
+  assert(tid("flow-row-quick-m31") == null, "a chip that filters nothing is decoration");
+  assert(tid("flow-row-example-m16") != null, "and it filtered out the wrong side");
+
+  click(tid("flows-folder-all"));
+  await settle();
+});
+
+await testAsync("the two creation cells open their sheets", async () => {
+  click(tid("flows-new"));
+  await settle();
+  eq(win.location.hash, "#/session/flows/flowNew", "+ NEW FLOW must open the wizard sheet");
+
+  await mountAt("#/session/flows");
+  click(tid("flows-quick"));
+  await settle();
+  eq(win.location.hash, "#/session/flows/flowQuick", "QUICK FLOW must open the quick sheet");
+});
+
+await testAsync("a library that could not be read says so and offers a RETRY that refetches", async () => {
+  libraryFails = true;
+  seed("admin", ADMIN);
+  await mountAt("#/session/flows");
+
+  const err = tid("flows-error");
+  assert(err != null, "a failed library load rendered no error line");
+  assert(/the flow store is not mounted/.test(err.textContent),
+    "the server's own message, not a generic one");
+
+  libraryFails = false;
+  const before = asked.filter((a) => a.url === "/api/flows").length;
+  click(tid("flows-retry"));
+  await settle();
+  eq(asked.filter((a) => a.url === "/api/flows").length, before + 1,
+    "RETRY must actually re-ask - the slice leaves libraryLoaded false so nothing retries on its own");
+  assert(tid("flow-row-quick-m31") != null, "and the rows must come back");
+});
+
+await testAsync("a just-saved flow is named in words, not by a ring", async () => {
+  await act(async () => { useStore.getState().flowsSetUi({ highlightId: "quick-m31" }); });
+  await settle();
+  const mark = tid("flow-new-quick-m31");
+  assert(mark != null, "flows.ui.highlightId is written by the wizard and read by nothing");
+  eq(mark.textContent, JUST_SAVED, "the highlight has to carry a word, never a colour alone");
+  await act(async () => { useStore.getState().flowsSetUi({ highlightId: null }); });
+});
+
+// ======================================= 7. the tablet gets the REBUILT canvas
 
 await testAsync("at 768 px and up OPEN unlocks and routes to the canvas", async () => {
-  seed("admin", ["view.status", "view.preview", "control.mount", "control.capture", "view.site_derived"]);
+  seed("admin", ADMIN);
   viewportW = 1024;
-  await act(async () => { root.unmount(); });
-  const root2 = createRoot(container);
-  await act(async () => { root2.render(createElement(FlowsScreen as any)); });
-  await settle();
+  await mountAt("#/session/flows");
 
   const open = tid("flow-open-quick-m31");
   assert(open != null, "precondition: the row is on screen at tablet width");
@@ -390,16 +599,182 @@ await testAsync("at 768 px and up OPEN unlocks and routes to the canvas", async 
   eq(win.location.hash, "#/session/flows?open=quick-m31",
     "OPEN puts the flow in the route, so the canvas survives a reload and a share");
 
-  // ...and the route param mounts the real thing: `FlowsView`'s own outermost
-  // marker, which is what `scripts/flows_visual_check.py` waits for. Asserting
-  // our own wrapper alone would pass over an empty box.
   assert(tid("session-flows-canvas") != null, "the hub body never switched to the canvas");
-  assert(container.querySelector('[data-view="flows"]') != null,
-    "components/flows/FlowsView is not mounted - the canvas is a re-implementation, not the real one");
+  assert(tid("flow-toolbar") != null, "the rebuilt canvas toolbar is not mounted");
+  assert(tid("flows-canvas") != null, "the rebuilt canvas surface is not mounted");
   assert(asked.some((a) => a.url === "/api/flows/quick-m31" && a.method === "GET"),
     "opening the canvas on a flow loads that flow");
+});
 
-  await act(async () => { root2.unmount(); });
+test("the LEGACY canvas is not mounted anywhere on that screen", () => {
+  // `FlowsView`'s own outermost marker. Asserting only our own wrapper would
+  // pass over either implementation; this is the half that says WHICH one.
+  assert(container.querySelector('[data-view="flows"]') == null,
+    "components/flows/FlowsView is still mounted - the cutover did not happen");
+  assert(container.querySelector('[data-flows-tab="library"]') == null,
+    "the legacy FlowLibrary is still rendering, which is the second MY FLOWS this wave removed");
+});
+
+const myFlowsTitles = (): number => Array.from(container.querySelectorAll("*"))
+  .filter((el: any) => (el.textContent ?? "").trim() === "MY FLOWS").length;
+
+await testAsync("exactly one MY FLOWS renders at tablet width", async () => {
+  // Wave R7 section 6.1 defect 7, counted rather than eyeballed. Exact trimmed
+  // text, so an ancestor whose textContent merely CONTAINS the words does not
+  // count, the canvas's `< MY FLOWS` back button does not count (it carries the
+  // chevron), and the folder chip deliberately reads MINE so it cannot collide.
+  //
+  // A clean fixture first, because `flowsOpen` leaves `ui.screen` on "editor"
+  // and the screen honours that (see `FlowsScreen`'s canvas branch): the test
+  // before this one opened a flow. Order matters - seeding while the canvas
+  // route is still live re-renders the host, whose effect re-opens the flow it
+  // was told to show.
+  await mountAt("#/session/flows");
+  seed("admin", ADMIN);
+  await settle();
+  eq(myFlowsTitles(), 1,
+    `two screens with one title is the defect this cutover closes; found ${myFlowsTitles()}`);
+
+  // And the route that USED to produce the second one. `?open=library` opened
+  // the legacy canvas on its own MY FLOWS grid, stacked on this screen's list.
+  await mountAt("#/session/flows?open=library");
+  eq(myFlowsTitles(), 0, "the canvas is drawing a library again");
+  assert(tid("flows-list") == null, "a second list of flows rendered on the canvas route");
+  assert(tid("flows-canvas-no-flow") != null,
+    "the canvas opened on nothing and said nothing - it has to name what it wants");
+});
+
+await testAsync("desktop docks the palette rail and the inspector column", async () => {
+  viewportW = 1440;
+  await mountAt("#/session/flows?open=quick-m31");
+  assert(tid("flows-canvas") != null, "precondition: the canvas is on screen at desktop width");
+  assert(tid("flow-palette") != null, "the palette rail is not docked at desktop");
+  assert(tid("flow-inspector") != null, "the inspector column is not docked at desktop");
+});
+
+// ======================= 8. the canvas does not vanish under its own sheet
+
+await testAsync("opening a stage sheet does not close the canvas", async () => {
+  // `nav.sheet` rebuilds the hash from the params it is HANDED, so the pencil on
+  // a node card - which passes `{ node }` - clears `?open=`. The canvas has to
+  // survive that, and the URL has to be put back, or the address bar claims the
+  // list is showing.
+  await mountAt("#/session/flows?open=quick-m31");
+  assert(tid("session-flows-canvas") != null, "precondition: the canvas is up");
+  eq(useStore.getState().flows.ui.screen, "editor", "precondition: the slice says the editor is showing");
+
+  const { nav } = await import("../../../../router");
+  await act(async () => { nav.sheet("flowNode", { node: "n-1" }); });
+  await settle();
+
+  assert(tid("session-flows-canvas") != null,
+    "the canvas closed when a stage was opened for editing - the sheet would sit over MY FLOWS");
+  assert(/open=quick-m31/.test(win.location.hash),
+    `?open= was not restored, so the URL claims the list is showing: ${win.location.hash}`);
+});
+
+await testAsync("BACK from the canvas really lands on the list", async () => {
+  await mountAt("#/session/flows?open=quick-m31");
+  click(tid("flows-canvas-back"));
+  await settle();
+  eq(useStore.getState().flows.ui.screen, "library",
+    "BACK left ui.screen on `editor`, so the list re-opens the canvas and is unreachable");
+  assert(tid("session-flows") != null, "BACK did not reach MY FLOWS");
+  assert(tid("session-flows-canvas") == null, "the canvas is still up after BACK");
+});
+
+// ================================ 9. the six sheets are actually registered
+
+test("every sheet the four Flows areas register resolves in the composed registry", () => {
+  const mine: Record<string, string> = {};
+  for (const reg of [flowCanvasSheets, flowInspectorSheets, flowTonightSheets, flowCreateSheets]) {
+    for (const [name, entry] of Object.entries(reg)) mine[name] = entry.id;
+  }
+  eq(Object.keys(mine).sort().join(","),
+    "flowNew,flowNode,flowPalette,flowQuick,flowStages,flowTonight",
+    "the four areas do not publish the six names the cutover composes");
+
+  for (const [name, id] of Object.entries(mine)) {
+    const entry = SHEET_ENTRIES[name];
+    assert(entry != null,
+      `"${name}" is not in SHEET_ENTRIES - the hash would render SheetHost's "not built yet" pane`);
+    eq(entry.id, id, `"${name}" composed under a different module than the area registered:`);
+    eq(typeof entry.load, "function", `"${name}" has no loader`);
+  }
+});
+
+test("no two registered sheets share a name under two module ids", () => {
+  // `hubs/index.ts` throws on this at module load in dev and under the test
+  // runner, so reaching this line at all is half the assertion. The other half
+  // is that the six new names did not quietly overwrite six existing screens.
+  const ids = Object.values(SHEET_ENTRIES).map((e) => e.id);
+  const names = Object.keys(SHEET_ENTRIES);
+  assert(names.length >= 30, `only ${names.length} sheets composed - the registry is not loading`);
+  eq(new Set(names).size, names.length, "a name is registered twice in the composed map");
+  // Two names may share a module (the inspector's two sheets live in one file),
+  // so ids are not required to be unique - but a module registered under six
+  // names would mean five screens collapsed onto one.
+  assert(new Set(ids).size >= names.length - 2,
+    "too many sheet names point at one module - screens have collapsed onto each other");
+});
+
+test("the registry key and the sheet module's own constant are the same word", () => {
+  // The registry may not IMPORT the sheet module (that would put the phone stage
+  // list in the entry chunk), so the name is spelled twice. A silent
+  // disagreement is a route that opens nothing.
+  eq(FLOW_STAGES_SHEET, "flowStages", "FlowStagesPhoneSheet renamed itself");
+  assert(flowCanvasSheets[FLOW_STAGES_SHEET] != null,
+    "canvas/sheets.ts registers a name the sheet module does not answer to");
+});
+
+// ==================================== 10. the source text, not just the DOM
+
+/** Every module specifier a file imports from. Comments are not scanned - this
+ *  file's own header names `components/flows/FlowsView` in prose, and a test
+ *  that could not tell prose from an import would be unwritable. */
+function specifiers(src: string): string[] {
+  return Array.from(src.matchAll(/from\s+"([^"]+)"/g)).map((m) => m[1]);
+}
+
+test("FlowsCanvasHost does not import the legacy FlowsView", () => {
+  // The `shellCss.test.ts` idiom: some facts are properties of the FILE, and a
+  // legacy import that happens to render nothing on the fixture looks exactly
+  // like no legacy import at all.
+  const here = dirname(fileURLToPath(import.meta.url));
+  const host = specifiers(readFileSync(join(here, "..", "FlowsCanvasHost.tsx"), "utf8"));
+  const legacy = host.filter((sp) => sp.includes("components/flows/"));
+  eq(legacy.join(","), "",
+    "FlowsCanvasHost.tsx still imports a legacy flows component - the cutover did not happen");
+  assert(host.includes("./canvas") && host.includes("./inspector"),
+    "FlowsCanvasHost.tsx composes neither rebuilt area - it cannot be the new canvas");
+
+  // The screen may still import the LOGIC modules (`cardMeta`, `cardStatus`,
+  // `runBlockedReason` - wave R7 section 2.1), and must not import either
+  // legacy PRESENTATION component it replaced.
+  const screen = specifiers(readFileSync(join(here, "..", "FlowsScreen.tsx"), "utf8"));
+  for (const banned of ["components/flows/FlowLibrary", "components/flows/FlowsView"]) {
+    assert(!screen.includes(`../../../../${banned}`),
+      `FlowsScreen.tsx imports ${banned}, which is the screen it replaced`);
+  }
+});
+
+// ============================= 11. the one additive edit to a legacy module
+
+test("runBlockedReason's classic three-argument call is unchanged", () => {
+  // T-U7a-G's finding: the sentence hard-coded "flow", so a saved PLAN offered
+  // through the same gate refused by naming something not on the row. The noun
+  // is now a parameter - and its DEFAULT is what every existing caller relies
+  // on, in `#/classic` as much as here.
+  eq(runBlockedReason(false, true, false), "Running a flow needs operator or admin access.",
+    "the default noun changed, so every classic caller's sentence changed with it");
+  eq(runBlockedReason(true, false, false),
+    "No camera is connected, so there is nothing to run this flow on.",
+    "the camera sentence's default noun changed");
+  eq(runBlockedReason(false, true, true), "Stopping a run needs operator or admin access.",
+    "STOP never named the thing, and must not start");
+  eq(runBlockedReason(true, true, false), null, "an operator with a camera can still run");
+  eq(runBlockedReason(false, true, false, "plan"), "Running a plan needs operator or admin access.",
+    "the whole point of the parameter");
 });
 
 // ------------------------------------------------------------------- tally

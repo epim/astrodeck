@@ -34,17 +34,25 @@ import { accessPhrase, useCanControlMount, useRoleConnected } from "../../lib/ca
  *
  *  `running` narrows it: STOP goes to `/api/sequence/abort`, which needs the
  *  same capability but no camera — refusing to stop a live run because no
- *  camera is attached would be a worse answer than the one the rig would give. */
+ *  camera is attached would be a worse answer than the one the rig would give.
+ *
+ *  `noun` is what the thing being started is CALLED on the surface asking. It
+ *  defaults to "flow", so every existing caller keeps the sentence it has,
+ *  byte for byte. It exists because the new UI's Session · Now list offers RUN
+ *  on saved PLANS beside saved flows through this same gate (both end in
+ *  `engine.start(plan)`), and a plan row that refused with "Running a flow
+ *  needs operator or admin access." would name something that is not on the
+ *  row - the reader then looks for the flow they did not press. */
 export function runBlockedReason(
-  canControlMount: boolean, cameraConnected: boolean, running: boolean,
+  canControlMount: boolean, cameraConnected: boolean, running: boolean, noun = "flow",
 ): string | null {
   if (!canControlMount) {
     return running
       ? `Stopping a run needs ${accessPhrase("control.mount")}.`
-      : `Running a flow needs ${accessPhrase("control.mount")}.`;
+      : `Running a ${noun} needs ${accessPhrase("control.mount")}.`;
   }
   if (!running && !cameraConnected) {
-    return "No camera is connected, so there is nothing to run this flow on.";
+    return `No camera is connected, so there is nothing to run this ${noun} on.`;
   }
   return null;
 }
