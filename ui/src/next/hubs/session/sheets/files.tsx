@@ -60,9 +60,15 @@ import { useBreakpoint } from "../../../breakpoint";
 import { NxIcon } from "../../../icons";
 import { explainLock } from "../../../shell/explain";
 import {
-  ActionButton, Bar, Card, Checkbox22, Chip, EmptyCard, Label, Mono, Pill,
-  Segmented, Sheet, Switch, TextInput,
+  ActionButton, Bar, Card, Checkbox22, Chip, Disclosure, EmptyCard, Label, Mono,
+  Pill, Segmented, Sheet, Switch, TextInput,
 } from "../../../ui";
+// A cross-area import of a PURE module (wave R7): `hyphenate` is the one
+// boundary where the shared `lib/bundleView.ts` copy - which `#/classic`
+// renders too, and which still carries em-dashes in `keptSummary` and
+// `materializeDisabledReason` - is normalised for the new UI. Writing a second
+// copy of a punctuation rule is how two screens drift.
+import { hyphenateOrNull } from "../report/reportModel";
 import type { SheetProps } from "../../sheets";
 import {
   buildSelection, fetchSessionFiles, filterLabel, foldRows, indexFromSession,
@@ -1189,9 +1195,9 @@ function BundlePanel({ session, row, reports, canCapture, desktop }: {
     ? `Writing to the capture box needs ${accessPhrase("control.capture")}.`
     : previewErr
       ? `Couldn't read this session's bundle preview: ${previewErr}`
-      : materializeDisabledReason(preview ? sumLights(preview) : 0, preview);
+      : hyphenateOrNull(materializeDisabledReason(preview ? sumLights(preview) : 0, preview));
 
-  const kept = keptSummary(preview);
+  const kept = hyphenateOrNull(keptSummary(preview));
 
   const onMaterialize = async () => {
     if (!reportId || matReason) return;
@@ -1208,21 +1214,18 @@ function BundlePanel({ session, row, reports, canCapture, desktop }: {
 
   return (
     <Card data-testid="files-bundle">
-      <button
-        type="button"
-        aria-expanded={open}
-        onClick={() => setOpen((o) => !o)}
-        style={{
-          display: "flex", alignItems: "center", gap: 8, width: "100%", minHeight: 44,
-          background: "transparent", border: 0, color: "inherit", cursor: "pointer", padding: 0,
-        }}
+      {/* The house disclosure, not a hand-rolled chevron: one 44 px summary
+          row, one `aria-expanded`, one region with an id, and the same
+          honest-disabled contract every other collapsible group in the new UI
+          has. The sub says what is inside without opening it. */}
+      <Disclosure
+        data-testid="files-bundle-disclosure"
+        summary="STACKING BUNDLE"
+        sub={gateReason ? "not available yet" : preview ? `${preview.groups.length} groups` : "one .zip"}
+        open={open}
+        onToggle={setOpen}
       >
-        <NxIcon name={open ? "chevron-down" : "chevron-right"} size={14} />
-        <Label>STACKING BUNDLE</Label>
-      </button>
-
-      {open && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 8 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <p style={{ fontSize: 11.5, color: "var(--text-faint)", lineHeight: 1.5, margin: 0 }}>
             {BUNDLE_BLURB}
           </p>
@@ -1342,7 +1345,7 @@ function BundlePanel({ session, row, reports, canCapture, desktop }: {
             </>
           )}
         </div>
-      )}
+      </Disclosure>
     </Card>
   );
 }
