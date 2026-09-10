@@ -44,24 +44,31 @@
 //                      `captureBlocked` chain both pointed at a Single that was
 //                      not there.
 //
-// THREE DELIBERATE DEVIATIONS FROM THE DESIGN (plan E3-E6), all of the same
-// shape - the design draws a control for a verb the engine does not have:
+// DEVIATIONS FROM THE DESIGN (plan E4-E6), all of the same shape - the design
+// draws a control for a verb the engine does not have:
 //
-//   E3  TEMPERATURE COMPENSATION is OMITTED. There is no temperature-
-//       compensation field, coefficient or loop anywhere in the server; the
-//       only temperature-driven focus behaviour is
-//       `standards.refocus_on_temp_delta_c`, a refocus TRIGGER, not a per-degree
-//       step. The design's "-14 steps per °C" describes a feature that does not
-//       exist, and a switch for it would be a promise nothing keeps. What is
-//       real - the tube reading and the drift threshold - is the TUBE tile and
-//       the REFOCUS AFTER stepper. `rigFocuserDom.test.tsx` asserts the string
-//       is absent, so re-adding a dead toggle turns the suite red.
 //   E4  "on filter change" is not a refocus rule: the engine SHIFTS the focuser
 //       by the filter's stored offset instead, so the control is that switch.
 //   E5/E6  "every 60 min" is a per-PLAN frame count and "HFR +15%" is a frame-
 //       QUALITY gate on the Safety sheet. Both render as read-only rows that
 //       tap through to where they are actually edited, because a chip that
 //       cannot be toggled here would be a lie about what this screen owns.
+//
+// E3 IS CLOSED, AND WHAT REPLACED IT (D-RIG-2, task T-U7b-5). This sheet used
+// to OMIT the design's TEMPERATURE COMPENSATION toggle, and its test asserted
+// the string's absence, because no such field, coefficient or loop existed
+// anywhere in the server: the only temperature-driven behaviour was
+// `standards.refocus_on_temp_delta_c`, a refocus TRIGGER. The engine now has
+// the offset loop too (`server/astrodeck/focus/tempcomp.py`, on the bus at
+// `focuser.temp_comp`, written through `POST /api/config {focus}`), so the
+// block is here - and the two live one card apart on purpose, with
+// `TEMP_COMP_PRECEDENCE` quoted between them, because they sound like the same
+// setting and are not: one nudges between frames for the cost of a move, the
+// other stops and spends minutes re-measuring, and BOTH run.
+//
+// The sign is the part of this block that costs a night if it is wrong, so the
+// rule is written out beside the number instead of being inferred from a minus
+// sign - see `lib/tempComp.ts`, which owns every sentence in the block.
 
 import {
   useCallback, useEffect, useMemo, useRef, useState, type JSX, type ReactNode,
@@ -70,12 +77,15 @@ import type { SheetProps } from "../../sheets";
 import { nav } from "../../../router";
 import { NxIcon } from "../../../icons";
 import {
-  ActionButton, BannerCard, Card, Chip, EmptyCard, Field, Label, ListRow, Mono,
-  ReadoutGrid, ReadoutTile, Sheet, Stepper2, Switch, TextInput,
+  ActionButton, BannerCard, Card, Chip, Disclosure, EmptyCard, Field, Label,
+  ListRow, Mono, NumberField, ReadoutGrid, ReadoutTile, Sheet, Stepper2, Switch,
+  TextInput,
 } from "../../../ui";
 import { useLock } from "../../../lib/gateHook";
 import { api } from "../../../../api";
-import { clearProfileOverrides, listDrivers, setStandardsConfig } from "../../../../api/backends";
+import {
+  clearProfileOverrides, listDrivers, setFocusConfig, setStandardsConfig,
+} from "../../../../api/backends";
 import { accessPhrase, useCanConfigBackend, useCanControlCapture }
   from "../../../../lib/caps";
 import { useBusy } from "../../../../lib/useBusy";
@@ -100,14 +110,22 @@ import { writeProviderOverride } from "../../../../lib/providerSave";
 import { providerWriteNote, providerWriteTarget } from "../../../../lib/providerWrite";
 import { eligibleTaskDrivers } from "../../../../lib/equipment";
 import { VCurve, type FocusFit } from "../../../../components/graphs";
-import { AutofocusVerdict } from "../../../../components/preview/FocusVerdict";
+// The rebuilt sweep verdict (T-R7-19). The legacy `components/preview/
+// FocusVerdict` is untouched and still serves `#/classic`; importing the area
+// ROOT rather than the file is what carries `inspect.css` with it.
+import { AutofocusLine } from "../inspect";
+import {
+  DOUBLES_IT_NOTE, NO_FOCUS_BLOCK_REASON, NO_THERMOMETER_REASON,
+  TEMP_COMP_PRECEDENCE, effectSentence, nextMoveTile, referenceLine,
+  signSentence,
+} from "../lib/tempComp";
 import { bahtinovAid } from "../../../../lib/bahtinov";
 import {
   useConfig, useFocus, useFrameSettings, useHfrThresholds,
   useLastAutofocusResult, useLivePreview, usePlan, usePolar, usePreviews,
   useProviders, useSequence, useStatus, useStore,
 } from "../../../../store";
-import type { DriverInfo } from "../../../../types";
+import type { DriverInfo, TempCompConfig } from "../../../../types";
 
 /** The aid arms server-side immediately but `status.bahtinov_active` only
  *  arrives on the next 2 s status frame, so the button renders an inert face
@@ -703,6 +721,63 @@ export function FocuserSheet(_p: SheetProps): JSX.Element {
     }, 400);
   };
 
+  // ------------------------------------------- temperature compensation (D-RIG-2)
+  //
+  // TWO SOURCES, ON PURPOSE. What the loop IS DOING comes off the status bus
+  // (`focuser.temp_comp`, republished every 2 s): the switch, the coefficient,
+  // the reference the engine re-anchored after its last sweep, and the move the
+  // next frame boundary would make. What only the CONFIG knows - the per-move
+  // backstop and the deadband - comes off `config.focus`. Reading the reference
+  // from the bus rather than from `config` matters: the engine re-anchors it
+  // itself (`SequenceEngine._capture_focus_temp`), so a screen showing the
+  // config's copy would be showing a reference the rig moved on from.
+  const tc = foc?.temp_comp ?? null;
+  const cfgFocus = config?.focus ?? null;
+  const cfgTc = cfgFocus?.temp_comp ?? null;
+
+  // Same problem, same shape as `bumpTempDelta` above: `config` only moves when
+  // `loadConfig` lands, so two edits inside the debounce window would each start
+  // from the same stale block and the second would undo the first. Hold the
+  // patch locally, merge into it, write once, and let the server's answer - or
+  // its refusal - take the local copy away again.
+  const [tcDraft, setTcDraft] = useState<Partial<TempCompConfig>>({});
+  const tcPending = useRef<Partial<TempCompConfig>>({});
+  const tcTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const writeTempComp = (patch: Partial<TempCompConfig>) => {
+    tcPending.current = { ...tcPending.current, ...patch };
+    setTcDraft(tcPending.current);
+    if (tcTimer.current) clearTimeout(tcTimer.current);
+    tcTimer.current = setTimeout(() => {
+      tcTimer.current = null;
+      const sending = tcPending.current;
+      tcPending.current = {};
+      void act(async () => {
+        try {
+          // A FRESH READ FIRST, then the whole block. `POST /api/config {focus}`
+          // REPLACES `focus` (`config_store.set_focus`), so a body built from a
+          // block we had not just read would blank `approach_overshoot_steps` -
+          // the EAF backlash correction, which nothing on any screen sets - and
+          // would push back a reference the engine had re-anchored since.
+          await loadConfig();
+          const block = useStore.getState().config?.focus ?? null;
+          if (!block) { showToast("error", NO_FOCUS_BLOCK_REASON); return; }
+          await setFocusConfig({
+            ...block,
+            temp_comp: { ...block.temp_comp, ...sending },
+          });
+          await loadConfig();
+        } finally {
+          setTcDraft({});
+        }
+      });
+    }, 400);
+  };
+
+  const tcEnabled = tcDraft.enabled ?? tc?.enabled ?? false;
+  const tcCoefficient = tcDraft.steps_per_c ?? tc?.steps_per_c ?? 0;
+  const tcMaxStep = tcDraft.max_step_per_move ?? cfgTc?.max_step_per_move ?? null;
+  const tcDeadband = tcDraft.deadband_steps ?? cfgTc?.deadband_steps ?? null;
+
   // ------------------------------------------------------------- readouts
   const shownFocus = focusState(live as {
     hfr?: number | null; stars?: number | null; defocus_r80?: number | null;
@@ -735,6 +810,32 @@ export function FocuserSheet(_p: SheetProps): JSX.Element {
   const focuserName = status?.connected?.focuser?.name ?? null;
   const wheelName = !wheel?.moving && wheel?.current ? wheel.current : null;
   const tube = foc?.temperature ?? null;
+
+  // The compensation block's own gates. Order is the sheet's house order
+  // (`captureBlocked` above): permission, then hardware, then who else is about
+  // to touch the thing. The autofocus lane is on every write, not only the two
+  // the plan named, because a sweep RE-ANCHORS the reference when it finishes -
+  // so a write landing across one would carry a block that the engine has
+  // already moved on from.
+  const tcWriteReason = first(
+    configLock.lockedReason,
+    cfgFocus ? null : NO_FOCUS_BLOCK_REASON,
+    laneAutofocus.lockedReason,
+  );
+  // Arming the loop and re-anchoring both need a reading to work from; editing
+  // the numbers does not, so a rig whose focuser has no thermometer can still be
+  // set up for the one that will.
+  const tcArmReason = first(
+    configLock.lockedReason,
+    tube == null ? NO_THERMOMETER_REASON : null,
+    cfgFocus ? null : NO_FOCUS_BLOCK_REASON,
+    laneAutofocus.lockedReason,
+  );
+  const tcReanchorReason = first(
+    tcArmReason,
+    pos == null ? "The focuser has not reported a position yet" : null,
+  );
+  const tcNext = nextMoveTile(tc, pos, tcMaxStep);
 
   // ------------------------------------------------------------- V-curve
   // The live slice while a sweep runs, the persisted last completed run
@@ -849,6 +950,16 @@ export function FocuserSheet(_p: SheetProps): JSX.Element {
             : "no temperature rule"}
         />
       </ReadoutGrid>
+      {/* The one place an older engine has to be told apart from a switched-off
+          loop: `focuser.temp_comp` is ABSENT before S7c, and rendering a switch
+          with nothing to bind it to would invent a state the rig does not have.
+          It sits beside the TUBE tile because that reading is what compensation
+          would have followed. */}
+      {foc && !tc && (
+        <Note data-testid="tempcomp-absent">
+          This engine does not drive the focuser from temperature yet.
+        </Note>
+      )}
 
       {/* 2. The V-curve, and what the sweep's own frames are doing. */}
       <Card>
@@ -1232,6 +1343,153 @@ export function FocuserSheet(_p: SheetProps): JSX.Element {
         )}
       </Card>
 
+      {/* 8b. TEMPERATURE COMPENSATION (D-RIG-2). Directly above AUTOFOCUS RUNS
+          WHEN, and ending with the precedence sentence, because the card below
+          holds the refocus TRIGGER and those two settings are the pair the
+          sentence exists to tell apart. */}
+      {tc && (
+        <Card data-testid="focuser-tempcomp">
+          <Switch
+            label="TEMPERATURE COMPENSATION"
+            note="Nudges the focuser between frames as the tube cools, for the cost of one short move and no frames."
+            checked={tcEnabled}
+            onChange={(v) => writeTempComp({ enabled: v })}
+            lockedReason={tcArmReason}
+            onExplain={onExplain}
+            data-testid="tempcomp-switch"
+          />
+          <NumberField
+            label="STEPS PER DEGREE"
+            value={tcCoefficient}
+            onCommit={(v) => writeTempComp({ steps_per_c: v })}
+            unit="steps/°C"
+            min={-500}
+            max={500}
+            step={1}
+            zeroMeans="off even when the switch is on"
+            ariaLabel="Temperature compensation coefficient, focuser steps per degree Celsius"
+            lockedReason={tcWriteReason}
+            onExplain={onExplain}
+            data-testid="tempcomp-coefficient"
+          />
+          {/* The sign, in words, twice over: the rule that never changes, then
+              what THIS number does tonight. A reader who never works out which
+              way "positive" points still cannot set it backwards. */}
+          <Note data-testid="tempcomp-sign">{signSentence(tcCoefficient)}</Note>
+          <Note data-testid="tempcomp-effect">{effectSentence(tcCoefficient)}</Note>
+          <ReadoutGrid cols={3}>
+            <ReadoutTile
+              label="REFERENCE"
+              value={tc.reference_temp_c != null ? `${tc.reference_temp_c.toFixed(1)}°C` : "none"}
+              sub={tc.reference_position != null
+                ? `at ${groupSteps(tc.reference_position)} steps`
+                : "set by the next autofocus"}
+              ariaLabel={referenceLine(tc)}
+            />
+            <ReadoutTile
+              label="NOW"
+              value={tube != null ? `${tube.toFixed(1)}°C` : "no sensor"}
+              sub={pos != null ? `at ${groupSteps(pos)} steps` : "no position"}
+            />
+            {/* Straight off the wire. `predicted_position` is the server running
+                its own rule table against the live reading; re-deriving it here
+                would mean a second copy of the deadband, the clamp and the
+                travel limits, and the first time they disagreed this tile would
+                be describing a move the engine is not going to make. */}
+            <ReadoutTile
+              label="NEXT MOVE"
+              value={tcNext.value}
+              sub={tcNext.sub || undefined}
+              data-testid="tempcomp-next"
+            />
+          </ReadoutGrid>
+          {/* The engine's own words for what the last boundary decided - nine
+              rules end in "nothing happened", and a no-op with no explanation is
+              indistinguishable from a feature that is not wired up. */}
+          {tc.last_reason && (
+            <Mono size={10.5} tone="dim">
+              <span data-testid="tempcomp-reason">{tc.last_reason}</span>
+            </Mono>
+          )}
+          {tc.last_move_steps != null && tc.last_move_steps !== 0 && (
+            <Mono size={10.5} tone="dim">
+              {`last move ${tc.last_move_steps > 0 ? "+" : ""}${tc.last_move_steps} steps`}
+            </Mono>
+          )}
+          <ActionButton
+            kind="secondary"
+            full
+            onPress={() => {
+              if (tube == null || pos == null) return;
+              writeTempComp({ reference_temp_c: tube, reference_position: Math.round(pos) });
+            }}
+            lockedReason={tcReanchorReason}
+            onExplain={onExplain}
+            data-testid="tempcomp-reanchor"
+          >
+            ANCHOR THE REFERENCE HERE
+          </ActionButton>
+          <Note>
+            {tube != null && pos != null
+              ? `Sets the reference to ${tube.toFixed(1)} C at ${groupSteps(pos)} steps, the `
+                + "reading above. Nothing moves, and the next autofocus re-anchors it again."
+              : referenceLine(tc)}
+          </Note>
+          <Note tone="warn">{DOUBLES_IT_NOTE}</Note>
+          <Disclosure
+            summary="ADVANCED"
+            sub={tcMaxStep != null && tcDeadband != null
+              ? `limit ${tcMaxStep} · deadband ${tcDeadband}`
+              : "waiting for the rig"}
+            data-testid="tempcomp-advanced"
+          >
+            {/* These two are the only settings in the block the STATUS BUS does
+                not carry, so with no `config.focus` in hand there is no number
+                to show. Printing the shipped defaults instead would be showing
+                the operator a limit that is not this rig's. */}
+            {!cfgTc && <Note tone="warn">{NO_FOCUS_BLOCK_REASON}</Note>}
+            {cfgTc && (
+            <NumberField
+              label="MOST STEPS PER MOVE"
+              value={tcMaxStep ?? 200}
+              onCommit={(v) => writeTempComp({ max_step_per_move: v })}
+              unit="steps"
+              min={1}
+              max={5000}
+              step={10}
+              integer
+              hint="the backstop under a wrong coefficient or a glitching thermometer: a longer move is shortened to this, and the drift it did not cover is left for the refocus trigger"
+              ariaLabel="Largest compensation move, focuser steps"
+              lockedReason={tcWriteReason}
+              onExplain={onExplain}
+              data-testid="tempcomp-maxstep"
+            />
+            )}
+            {cfgTc && (
+            <NumberField
+              label="DEADBAND"
+              value={tcDeadband ?? 5}
+              onCommit={(v) => writeTempComp({ deadband_steps: v })}
+              unit="steps"
+              min={0}
+              max={500}
+              step={1}
+              integer
+              zeroMeans="every move is made, however short"
+              hint="shorter moves are skipped: under the EAF's backlash they turn the motor and not the tube"
+              ariaLabel="Compensation deadband, focuser steps"
+              lockedReason={tcWriteReason}
+              onExplain={onExplain}
+              data-testid="tempcomp-deadband"
+            />
+            )}
+          </Disclosure>
+          {/* Verbatim from `TEMP_COMP_PRECEDENCE`, the string the server keeps so
+              that the engine, the docs and this screen cannot drift apart. */}
+          <Note data-testid="tempcomp-precedence">{TEMP_COMP_PRECEDENCE}</Note>
+        </Card>
+      )}
+
       {/* 9. AUTOFOCUS RUNS WHEN. Two switches this sheet owns, two rows it does
           not - see the header (E4-E6). */}
       <Card>
@@ -1311,7 +1569,7 @@ export function FocuserSheet(_p: SheetProps): JSX.Element {
         <Label>RESULT</Label>
         {lastAf ? (
           <>
-            <AutofocusVerdict
+            <AutofocusLine
               state={lastAf.state}
               hfr={lastAf.best?.hfr ?? null}
               r2={lastAf.fit?.r2 ?? null}
