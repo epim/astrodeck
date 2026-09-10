@@ -483,6 +483,84 @@ await testAsync("the driver sheet validates before it posts, and posts what it v
   eq(post!.body.host, "10.0.0.5", "host:");
 });
 
+// ========================== 9. the sheet has to FIT the sheet (horizontal overflow)
+//
+// The browser probe measured `documentElement.scrollWidth` at 2454 px on this
+// sheet at EVERY viewport - 390, 820 and 1440 - which is the signature of a
+// min-content floor rather than a layout that merely wants more room. The floor
+// came from `.nx-row-right`, which is `flex-shrink: 0` (next.css:539): a flex
+// item that cannot shrink contributes its full width to its row's min-content
+// width, and `.nx-sheet` is itself a flex item with `min-width: auto`, so the
+// widest row set a floor under the whole sheet - header included. The two lists
+// that carry real controls (four buttons on a driver row; two `<select>`s on a
+// role row, each taking `.nx-input`'s `width: 100%` and sizing to its longest
+// driver label) were the widest rows on the sheet.
+//
+// jsdom has no layout engine, so none of that is measurable here. These grade
+// the STRUCTURE that produces it; the browser probe is what checks the pixels.
+await testAsync("the two wide lists do not use the un-shrinkable right slot", async () => {
+  seed({ principal: ADMIN });
+  mountSheet(AddDeviceSheet);
+  await settle();
+
+  const driverList = q('[data-testid="driver-list"]');
+  const roleTable = q('[data-testid="role-table"]');
+  assert(driverList != null && roleTable != null,
+    "neither list rendered - every assertion below would be vacuous");
+  assert(driverList.querySelector(".nx-row") != null, "the driver list has no rows");
+  assert(roleTable.querySelector(".nx-row") != null, "the role table has no rows");
+
+  assert(driverList.querySelector(".nx-row-right") == null,
+    "a driver row still puts its buttons in `.nx-row-right`, which is flex-shrink: 0 "
+    + "and therefore sets a min-content floor under the whole sheet");
+  assert(roleTable.querySelector(".nx-row-right") == null,
+    "a role row still puts its selects in `.nx-row-right`, which is flex-shrink: 0 "
+    + "and therefore sets a min-content floor under the whole sheet");
+});
+
+await testAsync("every wide row wraps its controls and lets its text shrink", async () => {
+  const rows = [
+    ...Array.from(q('[data-testid="driver-list"]').querySelectorAll(".nx-row")),
+    ...Array.from(q('[data-testid="role-table"]').querySelectorAll(".nx-row")),
+  ] as any[];
+  // One driver in the fixture plus one row per server role.
+  eq(rows.length, 1 + ROLES.length, `expected one driver row and ${ROLES.length} role rows`);
+
+  for (const row of rows) {
+    const id = row.getAttribute("data-testid") ?? "(unnamed row)";
+    const strip = row.querySelector('[data-strip="controls"]') as any;
+    assert(strip != null, `${id}: no control strip - the controls are somewhere unbounded`);
+    eq(strip.style.flexWrap, "wrap", `${id}: the control strip cannot wrap`);
+    eq(strip.style.minWidth, "0px", `${id}: the control strip refuses to shrink`);
+
+    const textCol = row.querySelector(".nx-row-text") as any;
+    assert(textCol != null && strip.closest(".nx-row-text") === textCol,
+      `${id}: the controls sit outside .nx-row-text, which is the only child of the `
+      + "row that is allowed to shrink");
+
+    const sub = row.querySelector(".nx-row-sub") as any;
+    if (sub) {
+      eq(sub.style.whiteSpace, "normal",
+        `${id}: the sub line is still nowrap, so a long reason is one un-breakable run`);
+    }
+  }
+});
+
+await testAsync("a role row's selects are allowed to shrink", async () => {
+  const selects = Array.from(
+    q('[data-testid="role-table"]').querySelectorAll("select"),
+  ) as any[];
+  assert(selects.length > 0, "no selects on the role table - this assertion would be vacuous");
+  for (const s of selects) {
+    const label = s.getAttribute("aria-label") ?? "(unnamed select)";
+    // `.nx-input` is `width: 100%`, which inside a non-shrinking slot resolves
+    // to the widest <option> - the longest driver label on the rig.
+    eq(s.style.width, "auto", `${label}: still takes .nx-input's width: 100%`);
+    eq(s.style.minWidth, "0px", `${label}: cannot shrink below its longest option`);
+    eq(s.style.maxWidth, "100%", `${label}: may grow past the row that holds it`);
+  }
+});
+
 act(() => { rootRef?.unmount(); });
 
 const total = passed + failed;

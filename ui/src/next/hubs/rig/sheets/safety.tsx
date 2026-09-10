@@ -984,7 +984,33 @@ export function SafetySheet(_p: SheetProps): JSX.Element {
             />
           </>
         ) : (
-          <EscalationPanel />
+          // ESCALATION IS A SETTINGS-PAGE PANEL IN A 360 px SHEET.
+          //
+          // `EscalationPanel` is shared with `SettingsView`, where it has the
+          // whole window. Its rows are Tailwind grids - `sm:grid-cols-[1fr_13rem]`
+          // for the action rows, `sm:grid-cols-2` for the number fields - and
+          // `sm:` asks the VIEWPORT, not this container. So from 640 px up it
+          // lays out a fixed 13 rem action column and two side-by-side number
+          // inputs inside `.nx-sheet-panel`, which is `min(420px, 44vw)`: 360.8
+          // px at an 820 px viewport. Its contents then overflow their tracks,
+          // every ancestor up to the sheet is `overflow: visible`, and the
+          // overflow propagates all the way to the page. The browser probe
+          // measured 100 px of horizontal PAGE scroll at 820 and none at 390 -
+          // and 390 is the narrower sheet, which is the tell: at 390 this branch
+          // does not render at all.
+          //
+          // The panel is shared, so its grids are not this sheet's to change. A
+          // scroll container is: it keeps the overflow to itself, contributes
+          // nothing to the sheet's min-content width, and the page stops
+          // scrolling sideways. `overflowY: hidden` because setting one axis to
+          // `auto` computes the other from `visible` to `auto`, which would put
+          // a second scrollbar down the side of a panel that fits vertically.
+          <div
+            data-testid="safety-escalation-scroll"
+            style={{ overflowX: "auto", overflowY: "hidden", minWidth: 0, maxWidth: "100%" }}
+          >
+            <EscalationPanel />
+          </div>
         )}
       </Card>
 

@@ -2023,9 +2023,20 @@ def create_app(*, bind_host: str | None = None,
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("Referrer-Policy", "same-origin")
         response.headers.setdefault("X-Frame-Options", "DENY")
+        # `()` is not "off for third parties", it is OFF FOR EVERYONE INCLUDING
+        # US: an empty allowlist denies the feature to this origin's own
+        # documents. That silently broke three shipped features against this
+        # server - the finder's AR camera overlay, the photosphere capture, and
+        # the Sites sheet's "fill from the phone" - each of which asks a
+        # permission the browser had already been told to refuse.
+        #
+        # `(self)` re-admits exactly this origin and nobody else, and the CSP
+        # below already refuses embedding outright (`frame-ancestors 'none'`),
+        # so there is no frame to inherit either one. Microphone, payment and
+        # usb stay fully denied: nothing here asks for them.
         response.headers.setdefault(
             "Permissions-Policy",
-            "camera=(), microphone=(), geolocation=(), payment=(), usb=()")
+            "camera=(self), geolocation=(self), microphone=(), payment=(), usb=()")
         response.headers.setdefault(
             "Content-Security-Policy",
             "default-src 'self'; base-uri 'self'; object-src 'none'; "

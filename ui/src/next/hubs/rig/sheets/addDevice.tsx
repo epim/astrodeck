@@ -34,7 +34,10 @@
 //   * NAMED BUSY. `busyWhat`, not a boolean, so the in-progress label lands on
 //     the button that was pressed instead of always on CONNECT.
 
-import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from "react";
+import {
+  useCallback, useEffect, useMemo, useRef, useState,
+  type CSSProperties, type JSX, type ReactNode,
+} from "react";
 import {
   ActionButton, BannerCard, Card, Divider, EmptyCard, Label, ListRow, Mono, Sheet,
 } from "../../../ui";
@@ -98,6 +101,78 @@ const BUILT_INS_NOTE =
   + "declaration and cannot be deleted, only used.";
 
 const READ_ONLY_NOTE = `Read-only — connecting equipment needs ${accessPhrase("config.backend")}.`;
+
+// ----------------------------------------------------------- the wide rows
+//
+// WHY THESE TWO LISTS ARE NOT `ListRow`s.
+//
+// `ListRow` puts its `right` slot in `.nx-row-right`, which is `flex-shrink: 0`
+// (next.css:539-542). A flex item that cannot shrink contributes its FULL
+// width - not its min-content width - to the row's min-content width, and every
+// box between that row and the sheet passes it up: `.nx-sheet` is itself a flex
+// item with `min-width: auto`, so its min-content width becomes a FLOOR under
+// the whole sheet, header included, at every viewport. The two lists below are
+// the widest things on this sheet - four ghost buttons on a driver row, and two
+// `<select>`s on a role row, each of which takes `.nx-input`'s `width: 100%`
+// and sizes itself to its longest driver label.
+//
+// The browser probe measured `documentElement.scrollWidth` at 2454 px on this
+// route at 390, at 820 and at 1440: the SAME number at every viewport, which is
+// the signature of a floor rather than of a layout that merely wants more room.
+// Everything past the glass went with it - the "N reachable" count in the
+// header, the UNASSIGNED word on each role row.
+//
+// So the controls move OUT of `.nx-row-right` and UNDER the text, inside
+// `.nx-row-text` - which is `flex: 1; min-width: 0`, contributes nothing to that
+// floor, and gives the strip a definite width to wrap inside. Same chrome, same
+// copy, same testids; the row simply gets taller instead of wider.
+//
+// jsdom cannot measure any of this. `rigDevicesDom.test.tsx` asserts the
+// STRUCTURE that makes it true - no `.nx-row-right` in either list, a wrapping
+// control strip, and selects that are allowed to shrink - and the browser probe
+// is what checks the pixels at 390/820/1440.
+
+/** The wrapping strip the controls live in. `minWidth: 0` so a long child
+ *  (a `<select>` full of driver labels) shrinks rather than pushing out. */
+const CONTROL_STRIP: CSSProperties = {
+  display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6,
+  marginTop: 6, minWidth: 0, width: "100%",
+};
+
+/** `.nx-row-sub` is `white-space: nowrap` + ellipsis, which is right for a
+ *  one-line status and wrong for a driver's error sentence. */
+const WRAPPING_SUB: CSSProperties = {
+  whiteSpace: "normal", overflow: "visible", overflowWrap: "anywhere",
+};
+
+/** A `<select>` that may shrink. `.nx-input` is `width: 100%`, which inside a
+ *  non-shrinking slot resolves to the widest `<option>`; these override it and
+ *  let the strip wrap them instead. */
+const SHRINKABLE_SELECT: CSSProperties = {
+  width: "auto", minWidth: 0, maxWidth: "100%", flex: "1 1 150px",
+  textOverflow: "ellipsis",
+};
+
+function WideRow({ icon, title, sub, controls, testid }: {
+  icon?: ReactNode;
+  title: ReactNode;
+  sub?: ReactNode;
+  controls: ReactNode;
+  testid: string;
+}): JSX.Element {
+  return (
+    <div className="nx-row" data-testid={testid} style={{ alignItems: "flex-start" }}>
+      {icon != null && <span className="nx-row-tile" aria-hidden="true">{icon}</span>}
+      <span className="nx-row-text">
+        <span className="nx-row-title" style={{ overflowWrap: "anywhere" }}>{title}</span>
+        {sub != null && <span className="nx-row-sub" style={WRAPPING_SUB}>{sub}</span>}
+        {/* `data-strip` is the DOM test's hook: jsdom cannot measure the pixels,
+            so it grades the structure that produces them. */}
+        <span data-strip="controls" style={CONTROL_STRIP}>{controls}</span>
+      </span>
+    </div>
+  );
+}
 
 // -------------------------------------------------------------- network scan
 
@@ -533,9 +608,9 @@ export function AddDeviceSheet({ params }: SheetProps): JSX.Element {
           const chip = driverTypeChip(d.label, d.type);
           const serialNative = d.host === "" && d.transport === "serial";
           return (
-            <ListRow
+            <WideRow
               key={d.id}
-              data-testid={`driver-${d.id}`}
+              testid={`driver-${d.id}`}
               icon={
                 <span
                   aria-hidden="true"
@@ -549,8 +624,8 @@ export function AddDeviceSheet({ params }: SheetProps): JSX.Element {
               }
               title={chip ? `${d.label} · ${chip}` : d.label}
               sub={d.status.reachable ? offersSummary(d) : (d.status.error ?? "not reachable")}
-              right={
-                <span style={{ display: "flex", gap: 4, alignItems: "center" }}>
+              controls={
+                <>
                   <ActionButton
                     kind="ghost"
                     data-testid={`driver-toggle-${d.id}`}
@@ -591,7 +666,7 @@ export function AddDeviceSheet({ params }: SheetProps): JSX.Element {
                       EDIT PORT
                     </ActionButton>
                   )}
-                </span>
+                </>
               }
             />
           );
@@ -630,9 +705,9 @@ export function AddDeviceSheet({ params }: SheetProps): JSX.Element {
           const rowLock = lock(configLock.lockedReason);
           const result = results[role];
           return (
-            <ListRow
+            <WideRow
               key={role}
-              data-testid={`role-${role}`}
+              testid={`role-${role}`}
               title={ROLE_LABEL[role] ?? role}
               sub={
                 <>
@@ -644,10 +719,11 @@ export function AddDeviceSheet({ params }: SheetProps): JSX.Element {
                   )}
                 </>
               }
-              right={
-                <span style={{ display: "flex", gap: 4, alignItems: "center" }}>
+              controls={
+                <>
                   <select
                     className={rowLock ? "nx-input nx-locked" : "nx-input"}
+                    style={SHRINKABLE_SELECT}
                     aria-label={`Driver for ${ROLE_LABEL[role] ?? role}`}
                     aria-disabled={rowLock ? true : undefined}
                     data-locked={rowLock ? "true" : undefined}
@@ -676,6 +752,7 @@ export function AddDeviceSheet({ params }: SheetProps): JSX.Element {
                   {choices.length > 1 && (
                     <select
                       className={rowLock ? "nx-input nx-locked" : "nx-input"}
+                      style={SHRINKABLE_SELECT}
                       aria-label={`Device for ${ROLE_LABEL[role] ?? role}`}
                       aria-disabled={rowLock ? true : undefined}
                       title={rowLock ?? undefined}
@@ -700,7 +777,7 @@ export function AddDeviceSheet({ params }: SheetProps): JSX.Element {
                       ))}
                     </select>
                   )}
-                </span>
+                </>
               }
             />
           );
