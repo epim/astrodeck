@@ -303,26 +303,20 @@ export interface VideoCapability {
   name: string | null;
 }
 
-/** Read the four S7c capability fields off the status, tolerating both the
- *  string the engine publishes and the boolean `ui/src/types.ts` currently
- *  declares.
+/** Read the four S7c capability fields off the status (`hub.py:6959-6968`).
  *
- *  THE TYPE AND THE WIRE DISAGREE TODAY. `hub.py:6968` publishes
- *  `"native" | "none"`; `types.ts:231` declares `video_path?: boolean`. That
- *  file belongs to another task in this wave, so the mismatch is read through
- *  `unknown` here and reported rather than patched from inside a hub. Both
- *  shapes are handled so neither an older client type nor a newer engine can
- *  turn "cannot record" into "can". */
+ *  THREE ANSWERS, NOT TWO. `video_path` absent is not `video_path: "none"`: the
+ *  first is an engine older than S7c that has never been asked the question,
+ *  and locking a control on it would refuse a camera that records perfectly
+ *  well. Only the engine's own "none" is a verdict; absence renders the mode
+ *  live and lets the server's 409 carry the sentence. Everything else here
+ *  fails the same way - an unpublished ceiling is `null` and never a number,
+ *  an unpublished grid is the ZWO default and never `(0, 0)`. */
 export function videoCapability(status: RigStatus | null | undefined): VideoCapability {
-  const cam = status?.camera as ({
-    video_path?: unknown; roi_align?: unknown; max_fps?: unknown;
-    burst_supported?: unknown; width?: unknown; height?: unknown;
-  } | undefined);
+  const cam = status?.camera;
   const raw = cam?.video_path;
   const path: VideoCapability["path"] =
-    raw === "native" || raw === true ? "native"
-      : raw === "none" || raw === false ? "none"
-        : "unknown";
+    raw === "native" ? "native" : raw === "none" ? "none" : "unknown";
   const alignRaw = cam?.roi_align;
   const align: readonly [number, number] = Array.isArray(alignRaw)
     && Number(alignRaw[0]) > 0 && Number(alignRaw[1]) > 0
