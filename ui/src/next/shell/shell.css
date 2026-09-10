@@ -274,8 +274,17 @@
 .nx-sheet-slot { position: absolute; inset: 0; display: flex; }
 .nx-sheet-slot[data-under="true"] { visibility: hidden; }
 
-/* Tablet and desktop: a 420 px panel beside the hub, not over it. */
+/* Tablet and desktop: a 420 px panel beside the hub, not over it.
+   `position: relative` makes this element the containing block for the
+   `.nx-sheet-slot` it holds. `.nx-sheet-slot` is `position: absolute; inset: 0`
+   for the PHONE layer (`.nx-sheet-layer` is `position: fixed`), and without a
+   positioned ancestor here that `inset: 0` resolves against the initial
+   containing block instead - the slot (and the sheet inside it) span the full
+   viewport from x=0, covering the rail and the hub column beside this panel.
+   `min-width: 0` on the slot stops a wide sheet body from stretching this
+   420 px panel out past its own width. */
 .nx-sheet-panel {
+  position: relative;
   flex-shrink: 0;
   width: 420px;
   max-width: 44vw;
@@ -283,6 +292,8 @@
   border-left: 1px solid var(--line);
   background: var(--bg);
 }
+
+.nx-sheet-panel .nx-sheet-slot { min-width: 0; }
 
 /* --------------------------------------------------------- session column */
 
