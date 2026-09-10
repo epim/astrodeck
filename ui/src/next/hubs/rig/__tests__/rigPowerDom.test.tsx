@@ -19,10 +19,35 @@
 //      back, and nothing says the adjustment went nowhere.
 //   4. A viewer sees every port and its live value, inert, with the reason - and
 //      a press reaches nothing.
-//   5. THE SESSION LOCK IS A NAME MATCH, AND SAYS SO. `SwitchPort` has no lock
-//      flag (E13), so the mount port is matched by name; the footer has to
-//      disclose that or a user whose dew port is called "USB DEW" has no way to
-//      find out why it locked.
+//   5. THE SESSION LOCK IS A NAME MATCH ON AN OLD ENGINE, AND SAYS SO. Before
+//      S7h the wire had no lock flag (E13), so the mount port was matched by
+//      name; the footer had to disclose that or a user whose dew port is called
+//      "USB DEW" had no way to find out why it locked. That path is now the
+//      FALLBACK and is still tested, because a rig that has not been updated
+//      must not silently lose the lock.
+//
+// AND SIX MORE, added with D-RIG-5 and the port half of D-RIG-3 (T-U7b-7). The
+// decision moved into `power_guard.py` and every port row now carries the
+// engine's own answer, so the things worth an assertion are the ones where the
+// client could still disagree with it:
+//
+//   6. `protected_now` LOCKS THE ROW WITH THE SERVER'S OWN SENTENCE, before any
+//      press - a tap must never have to be refused to learn it would be.
+//   7. THE TRI-STATE DOES NOT COLLAPSE. A port whose NAME matches the heuristic
+//      but whose stored decision is `false` is NOT locked. That is the whole
+//      point of a third state, and it is invisible on screen when it breaks:
+//      the row just goes back to being locked and looks correct.
+//   8. BY NAME SENDS `null`, NOT AN OMISSION and not `false`. Absent means
+//      unchanged on the server and `null` is one of three real values, so a
+//      spread over defaults would forge a decision.
+//   9. FOLLOW DEW SENDS ONLY `follow_dew`, for the same reason from the other
+//      side: a second key in that body un-pins a protection nobody touched.
+//  10. A 409 `port_protected` shows the WIRE's sentence, verbatim and whole -
+//      matched by `code`, and not through `showToast`, which would truncate it.
+//  11. A 403 `local_only` on the settings PUT says where the setting can be
+//      changed, and does NOT take the port's on/off control away with it: the
+//      relay fence covers the policy route on purpose and misses
+//      `POST /api/switch/set` on purpose.
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -58,6 +83,9 @@ g.IS_REACT_ACT_ENVIRONMENT = true;
 interface Port {
   id: number; name: string; can_write: boolean; is_boolean: boolean;
   value: number; min: number; max: number; unit: string;
+  protect_during_run?: boolean | null;
+  protected_now?: boolean;
+  follow_dew?: boolean;
 }
 // Shaped like the simulator's own box (server devices/sim.py:1346-1353): the
 // booleans carry 0/1 with NO unit, and the current lives on its own read-only
@@ -71,6 +99,44 @@ const PORTS: Port[] = [
   { id: 5, name: "Total Current", can_write: false, is_boolean: false, value: 2.4, min: 0, max: 10, unit: "A" },
 ];
 
+// The SAME box on an engine that carries `power_guard` (S7h + S7L), answering
+// `GET /api/switch/ports` through `power_guard.annotate`. A run is live, so
+// `protected_now` is the effective answer with the run already ANDed in.
+//
+// Port 1 is the fixture the tri-state exists for: its name MATCHES the
+// heuristic, and somebody has stored `false` against it. The stored decision
+// wins, and it has to keep winning - a client that reads the two states as one
+// boolean re-locks that port and looks entirely correct doing it.
+//
+// Port 3 is a Pegasus UPB dew channel: an 8-bit register, 0..255, not a
+// percentage. It is what stops the FOLLOW DEW copy from inventing a second unit.
+const ANNOTATED: Port[] = [
+  { id: 0, name: "Mount 12V", can_write: true, is_boolean: true, value: 1, min: 0, max: 1, unit: "",
+    protect_during_run: null, protected_now: true, follow_dew: false },
+  { id: 1, name: "Camera 12V", can_write: true, is_boolean: true, value: 1, min: 0, max: 1, unit: "",
+    protect_during_run: false, protected_now: false, follow_dew: false },
+  { id: 2, name: "Bench light", can_write: true, is_boolean: true, value: 0, min: 0, max: 1, unit: "",
+    protect_during_run: null, protected_now: false, follow_dew: false },
+  { id: 3, name: "Dew Heater A", can_write: true, is_boolean: false, value: 88, min: 0, max: 255, unit: "",
+    protect_during_run: null, protected_now: false, follow_dew: true },
+  { id: 4, name: "Input Voltage", can_write: false, is_boolean: false, value: 13.7, min: 0, max: 15, unit: "V",
+    protect_during_run: null, protected_now: false, follow_dew: false },
+  { id: 5, name: "Total Current", can_write: false, is_boolean: false, value: 2.4, min: 0, max: 10, unit: "A",
+    protect_during_run: null, protected_now: false, follow_dew: false },
+];
+
+/** `power_guard._REFUSAL` with the port name filled in, spelled out HERE rather
+ *  than imported from the module under test - a test that quotes the code it is
+ *  checking cannot notice the code changing. Every clause matters: the name, the
+ *  consequence, and BOTH ways out. It is 178 characters, which is also what
+ *  makes it a truncation detector: `showToast` runs its argument through
+ *  `humanizeLog`, which cuts at 137 and would take the second way out with it. */
+const refusalFor = (name: string): string =>
+  `${name} is protected while a run is live: switching it now would cut power to `
+  + "something the sequence is using. Stop the run, or clear the protection for "
+  + "this port in Power settings.";
+const REFUSAL_MOUNT = refusalFor("Mount 12V");
+
 // ------------------------------------------------------------- fetch recorder
 interface Asked { method: string; url: string; body: unknown }
 const asked: Asked[] = [];
@@ -78,17 +144,39 @@ const asked: Asked[] = [];
  *  walk genuinely IN FLIGHT while a second gesture arrives. */
 let releaseSet: ((ports: Port[]) => void) | null = null;
 let holdSet = false;
+/** Which engine the box is answering as: `PORTS` (pre-S7h, no annotation at
+ *  all) or `ANNOTATED`. Swapped by the section that needs it, never both. */
+let served: Port[] = PORTS;
+/** When set, the next `POST /api/switch/set` / `PUT /api/switch/ports/{id}`
+ *  fails with this status and body instead of writing. */
+let setFail: { status: number; body: unknown } | null = null;
+let putFail: { status: number; body: unknown } | null = null;
 
 g.fetch = async (url: string, init?: { method?: string; body?: string }) => {
   const method = init?.method ?? "GET";
   const body = init?.body ? JSON.parse(init.body) : null;
-  asked.push({ method, url: String(url), body });
+  const path = String(url);
+  asked.push({ method, url: path, body });
   const ok = (json: unknown) => ({ ok: true, status: 200, statusText: "OK", json: async () => json });
+  const fail = (f: { status: number; body: unknown }) => ({
+    ok: false, status: f.status, statusText: "Conflict", json: async () => f.body,
+  });
 
-  if (String(url).includes("/api/switch/ports")) return ok(PORTS);
-  if (String(url).includes("/api/switch/set")) {
+  // BEFORE the GET branch: `/api/switch/ports/3` starts with `/api/switch/ports`.
+  if (method === "PUT" && /\/api\/switch\/ports\/\d+$/.test(path)) {
+    if (putFail) return fail(putFail);
+    const id = Number(path.slice(path.lastIndexOf("/") + 1));
+    // The server merges only the keys that were SENT, which is the contract the
+    // one-key tests below are about; the stub has to merge the same way or a
+    // forged key would be invisible here too.
+    served = served.map((p) => (p.id === id ? { ...p, ...(body as object) } : p));
+    return ok(served);
+  }
+  if (path.includes("/api/switch/ports")) return ok(served);
+  if (path.includes("/api/switch/set")) {
+    if (setFail) return fail(setFail);
     const { port_id, value } = body as { port_id: number; value: number };
-    const next = PORTS.map((p) => (p.id === port_id ? { ...p, value } : p));
+    const next = served.map((p) => (p.id === port_id ? { ...p, value } : p));
     if (holdSet) {
       return await new Promise<any>((resolve) => {
         releaseSet = (ports: Port[]) => resolve(ok(ports));
@@ -102,8 +190,12 @@ g.fetch = async (url: string, init?: { method?: string; body?: string }) => {
 const { createElement, act } = await import("react");
 const { createRoot } = await import("react-dom/client");
 const { useStore } = await import("../../../../store");
-const { PowerSheet, powerLiveLine, sessionLockReason, SESSION_CRITICAL } =
+const { PowerSheet, powerLiveLine, legacyLockReason, SESSION_CRITICAL } =
   await import("../sheets/power");
+const {
+  followDewNote, isAnnotated, mergeSettings, portLockReason, protectLine,
+  protectPatch, protectStop, RELAY_SETTINGS_NOTE, settingsSummary,
+} = await import("../lib/portSettings");
 type RigStatus = import("../../../../types").RigStatus;
 
 // ------------------------------------------------------------------ harness
@@ -172,6 +264,13 @@ function click(node: any): void {
 const q = (sel: string) => container.querySelector(sel) as any;
 const qa = (sel: string) => Array.from(container.querySelectorAll(sel)) as any[];
 const text = () => (container.textContent || "") as string;
+/** The PORT ROWS, and only those. `[data-testid^="port-"]` used to be enough;
+ *  the settings group added `port-settings-<id>`, `port-protect-<id>` and
+ *  `port-follow-dew-<id>` under the same prefix, which would have quietly turned
+ *  "one row per port" into "one row per port plus however many controls exist
+ *  today" - an assertion that still passes and no longer means anything. */
+const portRows = () => qa('[data-testid^="port-"]')
+  .filter((n) => /^port-\d+$/.test(n.getAttribute("data-testid") || ""));
 
 // ====================================================== 1. the precondition
 seed();
@@ -180,7 +279,7 @@ await mount();
 test("the sheet mounted with one row per port, of all three kinds", () => {
   assert(q('[data-testid="rig-power"]') != null,
     "no sheet marker - the sheet did not render at all");
-  eq(qa('[data-testid^="port-"]').length, PORTS.length,
+  eq(portRows().length, PORTS.length,
     "the sheet lost a port - a row that is not drawn is a port nobody can switch");
   // The three kinds are DIFFERENT rows, not one shape rendered six times.
   eq(qa('[role="switch"]').length, 3, "the writable boolean ports are not switches");
@@ -339,7 +438,7 @@ await testAsync("an operator without control.power sees every port, inert, with 
   await mount();
   asked.length = 0;
 
-  eq(qa('[data-testid^="port-"]').length, PORTS.length,
+  eq(portRows().length, PORTS.length,
     "ports were HIDDEN from a caller who cannot switch them - they must be shown, inert");
   const row = q('[data-testid="port-2"]');
   eq(row.getAttribute("aria-disabled"), "true", "the port is not marked aria-disabled");
@@ -369,7 +468,7 @@ await testAsync("while a run is going, the session-critical ports lock and say w
   const mount0 = q('[data-testid="port-0"]');   // Mount 12V
   const bench = q('[data-testid="port-2"]');    // Bench light
   eq(mount0.getAttribute("aria-disabled"), "true", "the mount port is live during a run");
-  eq(mount0.getAttribute("title"), sessionLockReason("Mount 12V"),
+  eq(mount0.getAttribute("title"), legacyLockReason("Mount 12V"),
     `the mount port's reason is wrong (${mount0.getAttribute("title")})`);
   assert(/Stop the run on Session - Now/.test(mount0.getAttribute("title") || ""),
     "the reason does not say where the run can be stopped");
@@ -416,6 +515,255 @@ await testAsync("with no power box the sheet says so and asks the rig for nothin
   eq(q(".nx-sheet-live").textContent, "NOT CONNECTED", "the live line claims a state");
   eq(asked.filter((a) => a.url.includes("/api/switch")).length, 0,
     "the 5 s poll kept running against a box that is not there");
+});
+
+// ======================== 7-11. the annotated engine (D-RIG-5 + D-RIG-3 ports)
+// From here on the box answers as an engine that HAS `power_guard`. Everything
+// above still describes the fallback and stays exactly as it was.
+const opened = new Set<string>();
+/** Open a port's settings group once. The Disclosure mounts its children only
+ *  while open (that is its contract), so nothing inside can be asserted on -
+ *  or pressed - until this has run. */
+function openSettings(id: number): void {
+  const key = `${id}`;
+  const head = q(`[data-testid="port-settings-${id}"] button[aria-expanded]`);
+  assert(head != null, `port ${id} has no settings group`);
+  if (head.getAttribute("aria-expanded") === "true") { opened.add(key); return; }
+  click(head);
+  opened.add(key);
+}
+const segOption = (id: number, value: string) =>
+  q(`[data-testid="port-protect-${id}"] [data-value="${value}"]`);
+const puts = () => asked.filter((a) => a.method === "PUT");
+const sets = () => asked.filter((a) => a.url === "/api/switch/set");
+const toastTitles = () =>
+  ((useStore.getState() as any).toasts as { title: string }[]).map((t) => t.title);
+
+served = ANNOTATED.map((p) => ({ ...p }));
+seed({ principal: ADMIN, sequence: { state: "running", target: "NGC 6946" } });
+await mount();
+
+test("the annotated sheet mounted, with a settings group under every writable port", () => {
+  assert(q('[data-testid="rig-power"]') != null, "the sheet did not render at all");
+  eq(portRows().length, ANNOTATED.length, "the sheet lost a port");
+  // Four writable ports, and the two read-only telemetry rows have no policy to
+  // set - offering them one would be a control bound to nothing.
+  eq(qa('[data-testid^="port-settings-"]').length, 4,
+    "the settings group is not on every writable port (or leaked onto a sensor)");
+  assert(q('[data-testid="port-settings-4"]') == null,
+    "a read-only telemetry port was given protection and dew settings");
+});
+
+await testAsync("a protected port is locked with the ENGINE'S sentence and fires nothing", async () => {
+  asked.length = 0;
+  act(() => { useStore.setState({ toasts: [] } as never); });
+  const mount0 = q('[data-testid="port-0"]');
+  eq(mount0.getAttribute("aria-disabled"), "true",
+    "a port the engine will refuse is live - the first the user hears of it is a 409");
+  eq(mount0.getAttribute("title"), REFUSAL_MOUNT,
+    `the row's reason is not the server's own sentence (${mount0.getAttribute("title")})`);
+  assert(!mount0.hasAttribute("disabled"),
+    "the native disabled attribute took the reason out of the tree with it");
+  assert(/protected during the run - matched by name/.test(mount0.textContent),
+    "the row does not say WHICH of the two decisions locked it");
+
+  click(mount0);
+  await settle();
+  eq(sets().length, 0,
+    "a port the engine has already said it will refuse still reached the box - the "
+    + "round trip exists only to be told what the row was already holding");
+  assert(toastTitles().includes(REFUSAL_MOUNT),
+    `the press was swallowed with no explanation (${JSON.stringify(toastTitles())})`);
+});
+
+await testAsync("the operator's decision beats the name, in both directions", async () => {
+  asked.length = 0;
+  // "Camera 12V" MATCHES /mount|camera|usb/i and is stored as `false`. If the
+  // client folds null and false into one boolean, this port locks and the
+  // screen looks perfectly correct - which is why it is asserted rather than
+  // looked at.
+  const cam = q('[data-testid="port-1"]');
+  eq(cam.getAttribute("aria-disabled"), null,
+    "a port stored as NOT PROTECTED locked anyway - the tri-state collapsed and "
+    + "the operator's decision was overridden by the port's label");
+  click(cam);
+  await settle();
+  eq(sets().length, 1, "a port the engine allows could not be switched");
+  openSettings(1);
+  eq(segOption(1, "off").getAttribute("aria-checked"), "true",
+    "NOT PROTECTED is not the shown stop - `false` was rendered as BY NAME, so "
+    + "the control cannot show what it is about to change");
+});
+
+await testAsync("selecting BY NAME sends protect_during_run: null, not false and not nothing", async () => {
+  asked.length = 0;
+  openSettings(1);
+  click(segOption(1, "name"));
+  await settle();
+  eq(puts().length, 1, `expected exactly one settings write (${JSON.stringify(asked)})`);
+  eq(puts()[0].url, "/api/switch/ports/1", "the settings write went to the wrong port");
+  const body = puts()[0].body as Record<string, unknown>;
+  eq(JSON.stringify(Object.keys(body)), JSON.stringify(["protect_during_run"]),
+    `the body carries a key the user did not set (${JSON.stringify(body)}) - absent `
+    + "means UNCHANGED on the server, so a forged key silently rewrites the other policy");
+  assert(Object.is(body.protect_during_run, null),
+    `BY NAME did not send null (${JSON.stringify(body.protect_during_run)}) - `
+    + "false is a different decision and does not follow a rename");
+});
+
+await testAsync("FOLLOW DEW sends only follow_dew, and says what it will do to THIS port", async () => {
+  asked.length = 0;
+  openSettings(3);
+  const note = q('[data-testid="port-settings-3"]').textContent as string;
+  assert(note.includes(followDewNote(ANNOTATED[3])),
+    "the FOLLOW DEW note does not name this port's own range");
+  assert(/between 0 and 255/.test(note),
+    "the note does not name the port's 0..255 register - a UPB dew channel is not a percentage");
+  assert(!note.includes("%"),
+    "the note prints a percentage beside a control that writes a register value");
+  assert(/by name - not protected · follows dew/.test(
+    q('[data-testid="port-settings-3"]').textContent as string),
+  "the collapsed summary does not state both policies");
+
+  click(q('[data-testid="port-follow-dew-3"]'));
+  await settle();
+  eq(puts().length, 1, `expected exactly one settings write (${JSON.stringify(asked)})`);
+  const body = puts()[0].body as Record<string, unknown>;
+  eq(JSON.stringify(body), JSON.stringify({ follow_dew: false }),
+    `the dew write carries a second key (${JSON.stringify(body)}) - it would un-pin `
+    + "a protection nobody touched");
+});
+
+await testAsync("a 409 port_protected shows the wire's sentence, whole and verbatim", async () => {
+  asked.length = 0;
+  act(() => { useStore.setState({ toasts: [] } as never); });
+  const sentence = refusalFor("Bench light");
+  // The nested FastAPI shape the server actually sends (`s7l-patches.md` From
+  // S7h patch 4), so `code` is where the client must read it from.
+  setFail = {
+    status: 409,
+    body: { detail: { detail: sentence, code: "port_protected", port_id: 2, port_name: "Bench light" } },
+  };
+  click(q('[data-testid="port-2"]'));   // a run started since the last poll
+  await settle();
+  setFail = null;
+
+  eq(sets().length, 1, "the tap did not reach the box at all");
+  const titles = toastTitles();
+  assert(titles.includes(sentence),
+    `the refusal was not shown verbatim (${JSON.stringify(titles)}) - the second way `
+    + "out is the clause that gets lost, and it is the one the user is standing in front of");
+  assert(sentence.length > 137,
+    "the fixture sentence is short enough to survive humanizeLog, so this test "
+    + "no longer proves the toast is not truncated");
+  eq(puts().length, 0, "the refusal triggered a settings write");
+});
+
+await testAsync("a 403 local_only names the way to change it, and leaves the port switchable", async () => {
+  asked.length = 0;
+  act(() => { useStore.setState({ toasts: [] } as never); });
+  putFail = {
+    status: 403,
+    body: { detail: "this security-sensitive operation is LAN-only", code: "local_only" },
+  };
+  openSettings(2);
+  click(segOption(2, "on"));
+  await settle();
+  putFail = null;
+
+  eq(puts().length, 1, "the settings write did not go out");
+  assert(toastTitles().includes(RELAY_SETTINGS_NOTE),
+    `the relay refusal is the raw server phrase (${JSON.stringify(toastTitles())}), which `
+    + "names neither the port nor where the setting can be changed");
+
+  // The fence covers the POLICY route and deliberately misses the port itself:
+  // operating a power box over the relay is the product.
+  click(q('[data-testid="port-2"]'));
+  await settle();
+  eq(sets().length, 1, "the relay-only settings refusal took the port's own switch with it");
+});
+
+test("the footer describes the controls this engine actually has", () => {
+  const foot = q('[data-testid="power-footer"]').textContent as string;
+  assert(/Ports marked PROTECTED are refused while a run is live/.test(foot),
+    "the footer does not say what PROTECTED does");
+  assert(/BY NAME follows the port's label/.test(foot),
+    "the footer does not say what the third state does");
+  assert(/driven from the dew margin/.test(foot),
+    "the footer still denies that anything drives a dew port (E24)");
+  assert(!/Ports are matched by name; rename a port on the power box/.test(foot),
+    "the footer still describes the client-side name heuristic as the rule");
+});
+
+await testAsync("an operator sees both policies, inert, with the reason, and writes nothing", async () => {
+  seed({ principal: OPERATOR, sequence: { state: "running" } });
+  await mount();
+  asked.length = 0;
+
+  openSettings(2);
+  const seg = q('[data-testid="port-protect-2"]');
+  const dew = q('[data-testid="port-follow-dew-2"]');
+  eq(seg.getAttribute("aria-disabled"), "true", "the protection control is live for an operator");
+  eq(seg.getAttribute("title"), "needs admin access",
+    `the protection control does not say who may change it (${seg.getAttribute("title")})`);
+  eq(dew.getAttribute("aria-disabled"), "true", "FOLLOW DEW is live for an operator");
+  assert(!seg.hasAttribute("disabled") && !dew.hasAttribute("disabled"),
+    "the native disabled attribute was used, taking the reason out of the tree");
+  assert(/Read-only - needs admin access/.test(
+    q('[data-testid="port-settings-2"]').textContent as string),
+  "the settings group does not state, while idle, the same reason its controls give when pressed");
+
+  click(segOption(2, "on"));
+  click(dew);
+  await settle();
+  eq(puts().length, 0, "a caller without config.safety rewrote the engine's refusal policy");
+  assert(toastTitles().some((t) => /admin access/.test(t)),
+    "the press was swallowed with no explanation");
+});
+
+// ------------------------------------------------- the model, without a DOM
+test("the tri-state model keeps null, true and false apart", () => {
+  const named = { ...ANNOTATED[0] };          // Camera/Mount name, unset
+  const pinnedOff = { ...ANNOTATED[1] };      // name matches, stored false
+  eq(protectStop(named), "name", "an unset port is not on BY NAME");
+  eq(protectStop(pinnedOff), "off", "a stored false was folded into BY NAME");
+  eq(protectStop({ ...named, protect_during_run: true } as any), "on",
+    "a stored true was folded into BY NAME");
+
+  assert(Object.is(protectPatch("name").protect_during_run, null),
+    "BY NAME does not patch null");
+  eq(protectPatch("off").protect_during_run, false, "NOT PROTECTED does not patch false");
+  eq(protectPatch("on").protect_during_run, true, "PROTECTED does not patch true");
+  for (const stop of ["name", "on", "off"] as const) {
+    eq(Object.keys(protectPatch(stop)).length, 1,
+      `${stop} patches more than the one key it decides`);
+  }
+
+  // The three lines have to READ differently or the control is a two-state
+  // switch with a decorative third stop.
+  eq(protectLine(named), "matched by name - protected", "BY NAME does not state its consequence");
+  eq(protectLine(pinnedOff), "not protected whatever this port is called",
+    "NOT PROTECTED does not say that it survives a rename");
+  eq(settingsSummary(ANNOTATED[3]), "by name - not protected · follows dew",
+    "the collapsed summary drops one of the two policies");
+
+  eq(JSON.stringify(mergeSettings({ protect_during_run: null }, { follow_dew: true })),
+    JSON.stringify({ protect_during_run: null, follow_dew: true }),
+    "a queued patch loses the key the newer press did not touch");
+});
+
+test("the engine's answer is used when there is one, and the name only when there is not", () => {
+  const oldMount = PORTS[0];                  // no annotation at all
+  assert(!isAnnotated(oldMount), "an unannotated row was read as annotated");
+  assert(isAnnotated(ANNOTATED[0]), "an annotated row was read as unannotated");
+  eq(portLockReason(oldMount as any, true), legacyLockReason("Mount 12V"),
+    "an engine with no power_guard lost the lock that shipped");
+  eq(portLockReason(oldMount as any, false), null, "an idle rig locked the mount port");
+  eq(portLockReason(ANNOTATED[0] as any, false), REFUSAL_MOUNT,
+    "the client re-ANDed protected_now with its own idea of whether a run is live - "
+    + "the engine counts a PAUSE as live and the client would not");
+  eq(portLockReason(ANNOTATED[1] as any, true), null,
+    "the name beat the stored decision");
 });
 
 act(() => { rootRef?.unmount(); });
