@@ -33,6 +33,11 @@ async def test_the_mount_publishes_the_rate_it_can_actually_slew(sim_hub):
     hub = sim_hub
     tel = hub.devices["telescope"]
 
+    # THE MUTE BACKEND IS BUILT, not assumed. The sim mount DECLARES 1.44 since
+    # S7L wired the ceiling through, so reading "null" off the untouched sim was
+    # grading the simulator's silence rather than the hub's rule. The real mute
+    # backends are Alpaca and NINA, and neither is instantiable here.
+    tel.max_rate_deg_s = None
     status = await hub.poll_status()
     assert "max_rate_deg_s" in status["mount"], "the key must be PRESENT"
     assert status["mount"]["max_rate_deg_s"] is None, "a mute backend says null"

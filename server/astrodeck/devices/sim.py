@@ -448,6 +448,20 @@ class SimCamera(Camera):
     #: overlay is exercised on the dev-default backend (live-preview finding #1/#3).
     full_well: int | None = 65535
 
+    #: NO BURST PATH, declared rather than assumed (#D-RIG-1). The sim takes
+    #: one frame per start/wait/read cycle exactly as a real driver does, so
+    #: a recording here would be N full cycles rather than a configured
+    #: sensor streaming, and ``max_fps`` is where that tops out.
+    #:
+    #: DEVICE attributes, deliberately NOT a ``_caps`` object. The status bus
+    #: reads ``imaging.video.camera_capabilities(cam)``, which is
+    #: ``cam._caps`` and exists only on a natively driven camera; a sim rig
+    #: must keep answering ``video_path: "none"`` there, because it genuinely
+    #: has no video path and the honest-disabled control is what should be
+    #: exercisable out of the box.
+    burst_supported: bool = False
+    max_fps: float | None = 20.0
+
     def __init__(self, rig: SimRig, name: str = "Sim Camera 533MM"):
         super().__init__(name)
         self.rig = rig
@@ -689,6 +703,26 @@ class SimCamera(Camera):
         field[y0:y1, x0:x1] += flux * psf / (2 * math.pi * sigma**2)
 
 
+class SimColorCamera(SimCamera):
+    """The same sim camera DECLARING a Bayer pattern (a one-shot-colour rig).
+
+    Not in ``build_sim_rig`` - it is the alternative device class, the way
+    ``SimRotatingDome`` is beside ``SimDome`` - because the dev-default rig is
+    the mono 533MM and every existing frame test is written against it.
+    Construct one directly to exercise the colour path: ``camera.is_color`` on
+    the status bus, the debayer selection, the OSC arithmetic that decides
+    whether a filter wheel is expected.
+
+    THE PIXELS ARE STILL THE MONO RENDER. The pattern is a DECLARATION, not a
+    scene: debayering this camera's frames yields a green cast, which is the
+    honest answer for a simulator that has no colour sky to render. What is
+    under test on this class is the plumbing that reads the pattern."""
+
+    def __init__(self, rig: SimRig, name: str = "Sim Camera 533MC"):
+        super().__init__(rig, name)
+        self.bayer_pattern = "RGGB"
+
+
 class SimGuideCamera(Camera):
     """Renders a single synthetic guide star at ``rig.guide_star_px`` — the
     P1-T9 closed loop: ``SimTelescope.pulse_guide`` moves ``rig._guide_offset_px``
@@ -873,6 +907,13 @@ class SimTelescope(Telescope):
     #: the sim mount always accepts PulseGuide (native guider needs no
     #: capability gating in the sim rig).
     can_pulse_guide = True
+
+    #: The fastest rate a manual jog may command (#D-RIG-4), matching the
+    #: AM5N's measured maximum. Declared here rather than left at ``None`` so
+    #: the driver-reported ceiling - not the 0.6 deg/s fallback a mount that
+    #: cannot say gets - is what the sim rig exercises, including the 1.73
+    #: degrees of worst-case travel it implies at the 1.2 s deadman.
+    max_rate_deg_s = 1.44
 
     #: the sim mount always accepts a lunar/solar drive rate (multi-rate mount
     #: tracking, 2026-07-21) -- no capability gating needed in the sim rig.
@@ -1200,6 +1241,11 @@ class SimTelescope(Telescope):
 class SimFocuser(Focuser):
     MOVE_RATE = 4000  # steps/s
 
+    #: What the probe reports when nothing has driven it. 4.2 C is the
+    #: constant this returned for its whole life, kept as the default so
+    #: every existing focus test reads the same number.
+    AMBIENT_C = 4.2
+
     def __init__(self, rig: SimRig, name: str = "Sim Focuser EAF"):
         super().__init__(name)
         self.rig = rig
@@ -1207,6 +1253,15 @@ class SimFocuser(Focuser):
         self.step_size_um = 1.2
         self._halt = asyncio.Event()
         self._moving = False
+        # A RAMP, not a constant (#D-RIG-2). Temperature compensation and the
+        # refocus trigger are both driven by how the temperature MOVES, and a
+        # probe that reports 4.2 forever cannot exercise either: the drift is
+        # always zero, so every rule fires never and every test of them
+        # passes by doing nothing. Rate 0.0 is the default, which is the old
+        # constant exactly.
+        self._temp_c = float(self.AMBIENT_C)
+        self._temp_rate_c_per_h = 0.0
+        self._temp_ts = time.monotonic()
 
     async def connect(self) -> None:
         await asyncio.sleep(_sim_delay(0.05))
@@ -1218,8 +1273,20 @@ class SimFocuser(Focuser):
     async def get_position(self) -> int:
         return self.rig.focuser_pos
 
+    def set_temperature(self, temp_c: float, *,
+                        rate_c_per_h: float = 0.0) -> None:
+        """Put the probe at ``temp_c`` now, drifting at ``rate_c_per_h``.
+
+        MONOTONIC time, not wall clock: a test that freezes ``time.time``
+        still gets a moving probe, and a test that wants a frozen probe
+        leaves the rate at 0. Call it again to re-seed the ramp."""
+        self._temp_c = float(temp_c)
+        self._temp_rate_c_per_h = float(rate_c_per_h)
+        self._temp_ts = time.monotonic()
+
     async def get_temperature(self) -> float | None:
-        return 4.2
+        elapsed_h = (time.monotonic() - self._temp_ts) / 3600.0
+        return round(self._temp_c + self._temp_rate_c_per_h * elapsed_h, 3)
 
     async def halt(self) -> None:
         self._halt.set()
@@ -1343,10 +1410,19 @@ class SimSwitch(Switch):
     def __init__(self, name: str = "Sim PowerBox UPBv2"):
         super().__init__(name)
         self._ports = [
-            SwitchPort(0, "Mount 12V", True, True, 1),
+            # ``Mount`` exactly, because ``power_guard._PROTECTED_NAME`` is the
+            # DEFAULT protection heuristic (/mount|camera|usb/i) and the sim
+            # rig is where that default has to be exercisable (#D-RIG-5).
+            SwitchPort(0, "Mount", True, True, 1),
             SwitchPort(1, "Camera 12V", True, True, 1),
             SwitchPort(2, "Focuser 12V", True, True, 0),
-            SwitchPort(3, "Accessory 12V", True, True, 0),
+            # An ANALOG dew port on a 0..255 scale, which is what a real
+            # Pegasus/Wanderer box reports - the two heaters below are on a
+            # 0..100 percentage. ``dew.scale_to_port`` converts a percentage
+            # to whatever scale the port declares, and with every sim port on
+            # 0..100 that conversion was the identity, so a scale bug could
+            # not show up on the dev-default rig at all.
+            SwitchPort(3, "Dew Strap C", True, False, 0, 0, 255, ""),
             SwitchPort(4, "Dew Heater A", True, False, 35, 0, 100, "%"),
             SwitchPort(5, "Dew Heater B", True, False, 0, 0, 100, "%"),
             SwitchPort(6, "Input Voltage", False, False, 13.7, 0, 15, "V"),

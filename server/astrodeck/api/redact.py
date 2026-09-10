@@ -160,11 +160,31 @@ def _strip_dew(dew: dict) -> None:
     ``mount.alt``.
 
     ``enabled``/``following``/``override_until_ts``/``reason``/``ports`` stay:
-    they are settings and identities, not measurements of the air."""
+    they are settings and identities, not measurements of the air -- but a
+    FOLLOWING port's ``value`` is the same leak as ``power_pct`` wearing a
+    port id, because it IS the duty cycle this loop just wrote to that port.
+    So the row survives (the id, the name and the fact that it follows are
+    equipment) and its level is nulled. A port that does NOT follow keeps its
+    value: nobody derived it from the air."""
     for k in _WEATHER_DERIVED_KEYS:
         dew.pop(k, None)
     if "power_pct" in dew:
         dew["power_pct"] = None
+    rows = dew.get("ports")
+    if isinstance(rows, list):
+        # A NEW LIST OF NEW ROWS, never an in-place edit of the caller's. The
+        # WS seam hands us a SHALLOW copy of the dew node (_redact_ws_event),
+        # so the list and its dicts are still the shared bus event's -- writing
+        # through them would take the level out of the admin's copy too, which
+        # is the same bug the copy above exists to prevent.
+        #
+        # `follow_dew` MISSING is treated as following: fail-closed on a row
+        # whose shape we do not recognise.
+        dew["ports"] = [
+            {**row, "value": None}
+            if isinstance(row, dict) and row.get("follow_dew", True)
+            and "value" in row else row
+            for row in rows]
 
 
 #: node key -> stripper, for nodes gated on ``view.weather`` rather than
