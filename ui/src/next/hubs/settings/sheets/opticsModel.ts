@@ -1,16 +1,19 @@
-// opticsModel.ts - the arithmetic and the phone-local storage behind the Optics
-// sheet. Pure: no React, no store, no fetch.
+// opticsModel.ts - the arithmetic behind the Optics sheet. Pure: no React, no
+// store, no fetch.
 //
 // THREE THINGS THIS FILE EXISTS TO KEEP STRAIGHT.
 //
-// 1. APERTURE AND REDUCER ARE NOT SERVER FIELDS. `ui/src/types.ts` `Optics` has
-//    seven keys and neither of these is among them, and the server wave does not
-//    add them. They are stored on THIS PHONE and used only to label the f-ratio
-//    and to preview what a reducer would do. The rejected alternative was to
-//    multiply `focal_length_mm` by the reducer on save, which would change what
-//    the rig frames from a control the user believes is a label. `USE THE
-//    REDUCED FOCAL LENGTH` is how a reducer becomes real, and it is one press
-//    the user makes, not a silent write.
+// 1. APERTURE AND REDUCER ARE RIG FIELDS NOW (D-SET-1). `ui/src/types.ts`
+//    `Optics.aperture_mm`/`reducer` join the same draft `focal_length_mm`
+//    already lives in, and the same `PUT /api/optics` press saves all three -
+//    the last piece of rig data that used to live only on this phone
+//    (`astrodeck-next-optics-aux`, migrated once by `OpticsSheet.tsx`'s mount
+//    effect through `next/lib/storageMigration.ts`). `reducer` is still
+//    RECORDED, NEVER MULTIPLIED: `focal_length_mm` stays the explicit number
+//    the framing maths, the solve hint and the FITS header all use, so nothing
+//    multiplies it behind the operator's back. `USE THE REDUCED FOCAL LENGTH`
+//    is still how a reducer becomes real, and it is one press the user makes,
+//    not a silent write - that did not change when the fields moved to the rig.
 //
 // 2. THE NUMBER THE RIG USES COMES FROM THE SERVER. `config.optics_computed` is
 //    what plate-solve hints, the framing overlay and the FITS cards are drawn
@@ -35,41 +38,50 @@ import {
 } from "../../../lib/fov";
 import type { Optics, OpticsComputed, PreviewField } from "../../../../types";
 
-// --------------------------------------------------- phone-local aux settings
+// ------------------------------------------------- the legacy local aux (gone)
+//
+// `astrodeck-next-optics-aux` used to be this file's home for aperture and
+// reducer, before `config.py:98,111` gave them a server field. The key, its
+// shape and a parser survive HERE ONLY for two remaining readers, both in
+// `OpticsSheet.tsx`: the one-time migration's `read` (through
+// `next/lib/storageMigration.ts`'s `migrateKey`), and the read-only fallback a
+// role without `config.site_optics` gets while nobody able to write has run
+// the migration yet. Nothing writes this key any more - there is no
+// `writeOpticsAux` to pair with it.
 
 export const OPTICS_AUX_KEY = "astrodeck-next-optics-aux";
 
-export interface OpticsAux {
-  /** Clear aperture in mm, or null when the user has not said. Never guessed
-   *  from the focal length - an f-ratio invented from one number is not a
-   *  measurement of the other. */
+export interface LegacyOpticsAux {
+  /** Clear aperture in mm, or null when the phone never had one. */
   apertureMm: number | null;
   /** Focal reducer / extender multiplier; 1 = none. */
   reducer: number;
 }
 
-export const DEFAULT_OPTICS_AUX: OpticsAux = { apertureMm: null, reducer: 1 };
-
-export function readOpticsAux(): OpticsAux {
+/** Parse the raw stored string, or null for anything unusable. An unreadable
+ *  shape is treated the same as "nothing to move" by the migration - see
+ *  `storageMigration.ts`'s own rule that a value this build cannot read may
+ *  still be one another build wrote, and is left in place rather than lost. */
+export function parseLegacyOpticsAux(raw: string): LegacyOpticsAux | null {
   try {
-    const raw = localStorage.getItem(OPTICS_AUX_KEY);
-    if (!raw) return { ...DEFAULT_OPTICS_AUX };
-    const p = JSON.parse(raw) as Partial<OpticsAux>;
-    const ap = typeof p.apertureMm === "number" && p.apertureMm > 0 ? p.apertureMm : null;
-    const red = typeof p.reducer === "number" && p.reducer > 0 ? p.reducer : 1;
-    return { apertureMm: ap, reducer: red };
+    const p = JSON.parse(raw) as Partial<LegacyOpticsAux>;
+    const apertureMm = typeof p.apertureMm === "number" && p.apertureMm > 0 ? p.apertureMm : null;
+    const reducer = typeof p.reducer === "number" && p.reducer > 0 ? p.reducer : 1;
+    return { apertureMm, reducer };
   } catch {
-    return { ...DEFAULT_OPTICS_AUX };
+    return null;
   }
 }
 
-export function writeOpticsAux(a: OpticsAux): void {
-  try {
-    localStorage.setItem(OPTICS_AUX_KEY, JSON.stringify(a));
-  } catch {
-    /* private mode: the label degrades, nothing the rig reads is lost */
-  }
-}
+/** The one info toast the migration ever raises - only on the CONFLICT path
+ *  (`serverHasValue: true`, the rig already had a non-zero aperture), because
+ *  its wording describes a replacement: the phone's copy is discarded, not
+ *  merged, in favour of the rig's own value. The silent path - the rig had
+ *  none yet, so the phone's values become the rig's - raises nothing, on the
+ *  same "moving a value nobody knew was local is not news" rule the planning
+ *  keys use. */
+export const OPTICS_MIGRATION_TOAST =
+  "Optics moved to the rig - the phone's copy of aperture and reducer was replaced by the rig's.";
 
 // ------------------------------------------------------------------ dial stops
 
@@ -108,6 +120,34 @@ export function dialStops(base: number[], current: number, digits = 2): number[]
 export function fRatioLabel(flMm: number, apertureMm: number | null): string {
   if (!(apertureMm && apertureMm > 0) || !(flMm > 0)) return "aperture not set";
   return `f/${(flMm / apertureMm).toFixed(1)}`;
+}
+
+/** The f-ratio text for the tile and the live line.
+ *
+ *  The SERVER's own number (`config.optics_computed.f_ratio`) is used only
+ *  when the draft is exactly what the server last computed from - so the
+ *  figure on screen is one the rig actually derived, never a guess made while
+ *  a drag is in flight. Every other case falls back to the local arithmetic
+ *  (`fRatioLabel`), SILENTLY: an engine old enough that `f_ratio` never
+ *  arrived gets the identical formula and no note about it, because there is
+ *  nothing to explain. 0 is `config.py`'s own unset convention for the
+ *  aperture, so an aperture of 0 always reads as "aperture not set" - never
+ *  `f/Infinity` or `f/0`, from either source. */
+export function fRatioFrom(
+  computed: OpticsComputed | null | undefined,
+  draftFl: number,
+  draftAperture: number,
+): string {
+  if (!(draftAperture > 0)) return "aperture not set";
+  if (
+    computed
+    && computed.focal_length_mm === draftFl
+    && computed.aperture_mm === draftAperture
+    && typeof computed.f_ratio === "number"
+  ) {
+    return `f/${computed.f_ratio.toFixed(1)}`;
+  }
+  return fRatioLabel(draftFl, draftAperture);
 }
 
 /** What `USE THE REDUCED FOCAL LENGTH` writes into the draft. */
@@ -154,16 +194,19 @@ export function draftFov(v: DraftView, reducer: number): FovDeg {
   return fovDeg({ sensorWmm: wMm, sensorHmm: hMm, flMm: v.flMm, reducer });
 }
 
-/** The sheet's live line: `530 mm · f/5.0 · 3.76 um · 2.54 x 1.70 deg`. */
+/** The sheet's live line: `530 mm · f/5.0 · 3.76 um · 2.54 x 1.70 deg`. Takes
+ *  the f-ratio text already resolved by `fRatioFrom` rather than an aperture
+ *  number, so this function stays agnostic about which source (the server's
+ *  own computation or the local fallback) produced it. */
 export function liveLine(
   flMm: number,
-  apertureMm: number | null,
+  fRatioText: string,
   pxUm: number,
   fov: FovDeg,
 ): string {
   const parts = [
     flMm > 0 ? `${Math.round(flMm)} mm` : "focal length not set",
-    fRatioLabel(flMm, apertureMm),
+    fRatioText,
     pxUm > 0 ? `${Number(pxUm.toFixed(2))} µm` : "pixel size not known",
     fov.wDeg > 0 ? `${fov.wDeg.toFixed(2)}° × ${fov.hDeg.toFixed(2)}°` : "field not computable",
   ];

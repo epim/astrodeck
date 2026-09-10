@@ -9,9 +9,9 @@
 // carry are NOT on the wire and are therefore left off rather than invented:
 //   - the connection row's latency and MB/s, which nothing measures;
 //   - the gallery row's byte total (`SessionRow` has no size field);
-//   - the f-ratio when no aperture has been entered, because aperture is
-//     phone-local to the Optics sheet (plan F.1) and this row reads the same
-//     key rather than guessing one.
+//   - the f-ratio when no aperture has been set, because 0 is `config.py`'s
+//     own unset convention (D-SET-1: `aperture_mm` is a rig field now,
+//     `opticsModel.ts`'s `fRatioFrom` never invents one).
 // A clause that has no fact behind it is dropped; the row never prints a dash
 // where a number was promised.
 //
@@ -39,7 +39,7 @@ import { getRemoteStatus } from "../../../../api/backends";
 import { listLocations } from "../../../../api/site";
 import { listSessions } from "../../../../api/sessions";
 import type { RemoteStatus, SessionRow } from "../../../../types";
-import { readOpticsAux, fRatioLabel } from "../sheets/opticsModel";
+import { fRatioFrom } from "../sheets/opticsModel";
 import { ConnectionGlyph, GalleryGlyph } from "./glyphs";
 import { Group } from "./Group";
 import { MoreGroup } from "./MoreGroup";
@@ -138,8 +138,7 @@ export function GeneralScreen(): JSX.Element {
     : joinClauses(["not connected", facts.activeProfile ? `${profileWord} profile ready` : null]);
 
   const oc = config?.optics_computed ?? null;
-  const aux = readOpticsAux();
-  const fr = oc ? fRatioLabel(oc.focal_length_mm, aux.apertureMm) : "";
+  const fr = oc ? fRatioFrom(oc, oc.focal_length_mm, oc.aperture_mm) : "";
   const opticsSub = oc?.have_optics
     ? joinClauses([
         `${Math.round(oc.focal_length_mm)} mm`,
