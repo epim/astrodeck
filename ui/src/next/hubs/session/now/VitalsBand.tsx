@@ -29,6 +29,8 @@ import { warmReadout } from "../../../../lib/cooling";
 import {
   useCamera, useGuideRms, useLiveness, useMeridian, useSeq, useStore,
 } from "../../../../store";
+import { useCan } from "../../../../lib/caps";
+import { FLIP_SITE_REASON } from "../../monitor/live/FlipTile";
 import { Mono, ReadoutTile } from "../../../ui";
 import { useActiveSession } from "./sessionData";
 import { useCampaign } from "./useCampaign";
@@ -56,11 +58,18 @@ export function rmsWord(rms: number | null | undefined, stale: boolean): {
 
 /** The FLIP cell, from `MeridianInfo`. Exported for the test: every
  *  `MeridianStatus` has to produce a sentence, and three of the six have no
- *  number at all. */
+ *  number at all.
+ *
+ *  `canSiteDerived` comes FIRST. The countdown is computed from the site and
+ *  the server withholds it from a principal without `view.site_derived` - so
+ *  what such a caller receives is `status: "unknown"` with a null countdown,
+ *  and the old cell rendered that as "- / unknown", which reads as a broken
+ *  mount. One sentence, shared with the Monitor tile and the Safety sheet. */
 export function flipCell(m: {
   status: string; hours_to_flip: number | null; flip_enabled: boolean; pier_side: string;
-} | null): Cell {
+} | null, canSiteDerived: boolean): Cell {
   const pier = m && m.pier_side !== "unknown" ? ` · pier ${m.pier_side}` : "";
+  if (!canSiteDerived) return { id: "flip", label: "FLIP", value: "-", sub: FLIP_SITE_REASON };
   if (!m || m.status === "unknown") return { id: "flip", label: "FLIP", value: "-", sub: "unknown" };
   if (m.status === "n_a_fork" || m.status === "n_a_over_pole") {
     return { id: "flip", label: "FLIP", value: "-", sub: `no flip needed${pier}` };
@@ -85,6 +94,7 @@ export function VitalsBand({ cells = 4 }: { cells?: 4 | 7 }): JSX.Element {
   const camera = useCamera();
   const guide = useGuideRms();
   const meridian = useMeridian();
+  const canSiteDerived = useCan("view.site_derived");
   const liveness = useLiveness();
   const disk = useStore((s) => s.status?.disk ?? null);
   const eta = useEta();
@@ -149,7 +159,7 @@ export function VitalsBand({ cells = 4 }: { cells?: 4 | 7 }): JSX.Element {
   });
 
   // ---- FLIP --------------------------------------------------------------
-  out.push(flipCell(meridian));
+  out.push(flipCell(meridian, canSiteDerived));
 
   // ---- TO DAWN -----------------------------------------------------------
   // Absent, not guessed: this number exists only when the tonight payload has

@@ -86,12 +86,17 @@ export function RunControls({ size = "lg" }: { size?: "lg" | "md" }): JSX.Elemen
     return () => window.clearTimeout(t);
   }, [aborting, running]);
 
-  // One buzz per entry into the state, not per tick.
+  // One buzz per entry into the state, not per tick. ABORTED buzzes too
+  // (review #55): a run that stopped short is the same news to someone who is
+  // not looking at the phone as a run that failed, and `MonitorView.tsx:342-351`
+  // has always buzzed on both. The pattern is the legacy triple rather than one
+  // long pulse, because a single 120 ms buzz is what an incoming notification
+  // feels like and this is not one.
   useEffect(() => {
-    const bad = seq.state === "error";
+    const bad = seq.state === "error" || seq.state === "aborted";
     if (bad && !vibratedError.current) {
       vibratedError.current = true;
-      try { navigator.vibrate?.(120); } catch { /* unsupported */ }
+      try { navigator.vibrate?.([60, 40, 60]); } catch { /* unsupported */ }
     }
     if (!bad) vibratedError.current = false;
   }, [seq.state]);
@@ -178,7 +183,11 @@ export function RunControls({ size = "lg" }: { size?: "lg" | "md" }): JSX.Elemen
             served as one file and iOS takes one file at a time, in the
             foreground. */}
         <a
-          href={stackHref ?? undefined}
+          // NO URL WITHOUT THE CAPABILITY (review #58). `onClick` refuses the
+          // press, but a long-press "Save link as" never reaches onClick and
+          // issues the request anyway - the server 403s it, so the user's only
+          // feedback is a failed download with no sentence attached.
+          href={stackHref && canPreview ? stackHref : undefined}
           download={stackName}
           onClick={(e) => {
             if (!stackHref || !canPreview) {

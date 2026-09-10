@@ -329,7 +329,7 @@ await testAsync("a blackout slot offers no offset, and says why", async () => {
   seed({ status: wheelStatus({ filterwheel: { opaque, names: NAMES, position: 0 } }) });
   mount();
   await settle();
-  const standin = byAria("Slot 4 focuser offset — not applicable, blackout slot");
+  const standin = byAria("Slot 4 focuser offset - not applicable, blackout slot");
   assert(standin != null,
     "slot 4 is a blackout and its offset cell is not the em-dash stand-in with "
     + "the reason - an offset through a slot with no light path is not a measurement");

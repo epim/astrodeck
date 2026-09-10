@@ -698,6 +698,59 @@ await testAsync("picked-but-not-connected offers a profile save, named, and POST
   eq(post!.body.id, "", "a client-minted id would collide - the server mints it");
 });
 
+// THE SAVED ROUTING IS THE LAYER THE RIG IS RUNNING, not the global block.
+// `config.providers` is global and an ACTIVE PROFILE beats it, so snapshotting
+// it into a NEW profile bakes in values the rig is not using - the twelve-day
+// polar bug (console said "AstroDeck native", a profile-pinned "sim" fabricated
+// every alignment) written forward instead of backward. The fixture below is
+// exactly that rig: global says `sim`, the winner says `native`.
+await testAsync("the saved profile carries the WINNING provider, not the global one", async () => {
+  seed({
+    principal: ADMIN,
+    status: NOTHING_CONNECTED,
+    equipConnected: false,
+    toasts: [],
+    config: {
+      active_profile_id: "p1",
+      cooling: { warm_ramp: true, warm_rate_c_per_min: 2, warm_ambient_c: null },
+      providers: { autofocus: "auto", polar_align: "sim", solve: "auto", guide: "auto" },
+      effective: {
+        "providers.polar_align": {
+          value: "native", layer: "profile", profile: "native", config: "sim",
+          default: "auto", profile_id: "p1", profile_name: "Rig1", reason: "override: profile",
+        },
+      },
+    },
+  });
+  mountSheet(AddDeviceSheet);
+  await settle();
+
+  const name = q('[data-testid="save-picks-name"]');
+  assert(name != null, "no name field - the assertion below would be vacuous");
+  act(() => {
+    const setter = Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, "value")!.set!;
+    setter.call(name, "Layer test");
+    name.dispatchEvent(new win.Event("input", { bubbles: true }));
+  });
+  await settle();
+
+  asked.length = 0;
+  const go = q('[data-testid="save-picks-go"]');
+  eq(go.getAttribute("aria-disabled"), null,
+    `precondition: the save is locked, so nothing would be posted: "${go.getAttribute("title")}"`);
+  click(go);
+  await settle();
+  await settle();
+
+  const post = asked.find((a) => a.method === "POST" && a.url.includes("/api/profiles"));
+  assert(post != null, `the save posted nothing (${JSON.stringify(asked.map((a) => a.url))})`);
+  eq(post!.body.providers?.polar_align, "native",
+    "the saved profile pinned the GLOBAL polar provider over the one the rig is "
+    + "actually running - the twelve-day polar bug, written into a new profile:");
+  eq(post!.body.providers?.solve, "auto",
+    "a capability with no profile override lost its global value instead of carrying it:");
+});
+
 // ================== 12. CONNECT RIG's no-op guard (review #22)
 //
 // `connectLock` covered the capability and the `connect` lane only, so both

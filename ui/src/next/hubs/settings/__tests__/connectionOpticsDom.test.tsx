@@ -71,6 +71,20 @@ let remotePayload: any = {
   connected: true, last_error: null, since_unix: 1_757_000_000, gen: 3, via: "direct",
 };
 
+// The rig's driver list, as `GET /api/drivers` answers it. The SOLVER row is
+// derived from this (review #23), so the fixture is what proves the derivation:
+// `nina-1` offers `solve` and must be offerable BY NAME; `phd2-1` is reachable
+// but offers only `guide`; `astap-off` offers `solve` and is disabled. All three
+// exist so the test can tell "listed everything" from "applied the rule".
+let DRIVERS: any[] = [];
+const driver = (over: Record<string, unknown>) => ({
+  id: "x", type: "nina", label: "X", enabled: true, implicit: false,
+  status: { reachable: true, error: null, detail: null, probed_at: 1 },
+  offers: { devices: [], tasks: [] },
+  ...over,
+});
+let clearedOverrides: any = null;
+
 const ok = (data: unknown) => ({
   ok: true, status: 200, statusText: "OK", json: async () => data,
 });
@@ -91,6 +105,11 @@ g.fetch = async (url: any, init: any) => {
   }
   if (u.includes("/api/optics") && method === "PUT") {
     putOptics = JSON.parse(String(init?.body ?? "null"));
+    return ok({});
+  }
+  if (u.includes("/api/drivers")) return ok({ roles: [], drivers: DRIVERS });
+  if (u.includes("/clear-overrides")) {
+    clearedOverrides = JSON.parse(String(init?.body ?? "null"));
     return ok({});
   }
   if (u.includes("/api/survey/pack")) {
@@ -474,6 +493,123 @@ await testAsync("optics: a profile's optics block raises the banner and lists al
     /will keep overriding them/.test(String(byId("optics-save-warning")?.textContent)),
     "the save-time warning is missing, and the save button is where the false belief forms",
   );
+});
+
+// ------------------------------------------------------- the solver row (#23)
+//
+// THE OPTIONS FOLLOW THE DRIVER LIST. They used to be a hard-coded four
+// (auto / astrodeck / astap / backend), so a configured NINA or ASIAIR whose
+// probe offers `solve` could not be chosen BY NAME on this screen at all - the
+// one thing the row exists to do. Re-hard-code the list and the first assertion
+// prints the vocabulary it found.
+await testAsync("optics: the SOLVER options are the drivers that offer solve, by name", async () => {
+  await clearTree();
+  DRIVERS = [
+    driver({ id: "astap", type: "astap", label: "ASTAP", implicit: true, offers: { devices: [], tasks: ["solve"] } }),
+    driver({ id: "nina-1", label: "NINA - astrotown", offers: { devices: [], tasks: ["solve", "autofocus"] } }),
+    driver({ id: "phd2-1", type: "phd2", label: "PHD2", offers: { devices: [], tasks: ["guide"] } }),
+    driver({ id: "astap-off", type: "astap", label: "ASTAP (spare)", enabled: false, offers: { devices: [], tasks: ["solve"] } }),
+    driver({
+      id: "nina-down", label: "NINA - shed", offers: { devices: [], tasks: ["solve"] },
+      status: { reachable: false, error: "refused", detail: null, probed_at: 1 },
+    }),
+  ];
+  seed("admin");
+  useStore.setState({
+    status: {
+      disk: { free_gb: 412.4, low: false, critical: false },
+      providers: { solve: { kind: "astap", label: "ASTAP", reason: "no plate solver configured; falling back" } },
+    },
+  } as never);
+  await render(createElement(OpticsSheet));
+
+  const pick = byId("optics-solver-pick");
+  assert(pick != null, "no solver control - the fixture is wrong, not the component");
+  const values = qa('[data-testid="optics-solver-pick"] option').map((o: any) => o.value);
+  eq(values.join(","), "auto,astap,nina-1",
+    "the solver options did not follow the seeded driver list");
+  const labels = qa('[data-testid="optics-solver-pick"] option').map((o: any) => o.textContent);
+  assert(labels.includes("NINA - astrotown"),
+    `a configured solver cannot be picked by name: ${labels.join(" | ")}`);
+
+  // ...and the per-provider resolver reason, which the hard-coded list had no
+  // room for: what the rig ACTUALLY resolved, and why.
+  const resolved = byId("optics-solver-resolved");
+  assert(resolved != null, "the resolver line is missing, so the row cannot say what the rig actually uses");
+  assert(/no plate solver configured/.test(resolved.textContent),
+    `the resolver line dropped the reason: "${resolved.textContent}"`);
+});
+
+await testAsync("optics: choosing a driver writes THAT id, not a vocabulary word", async () => {
+  asked.length = 0;
+  const pick = byId("optics-solver-pick");
+  pick.value = "nina-1";
+  await act(async () => {
+    pick.dispatchEvent(new win.Event("change", { bubbles: true }));
+  });
+  await settle();
+  assert(asked.some((a) => a === "POST /api/config/providers"),
+    `the pick never reached the providers route: ${asked.join(", ")}`);
+});
+
+// -------------------------------------------- clearing a solve pin (#24)
+//
+// A `solve` pin written into a profile could be EDITED but never REMOVED: the
+// only unpin on this branch was polar's. Delete the button and the first
+// assertion fails; hide it from a viewer instead of locking it and the second
+// does.
+await testAsync("optics: a profile-pinned solver can be unpinned, and the call names the cap", async () => {
+  await clearTree();
+  seed("admin");
+  clearedOverrides = null;
+  useStore.setState({
+    config: {
+      ...CONFIG,
+      effective: {
+        "providers.solve": {
+          value: "nina-1", layer: "profile", profile: "nina-1", config: "auto",
+          default: "auto", profile_id: "p1", profile_name: "Rig1", reason: "override: profile",
+        },
+      },
+    },
+  } as never);
+  await render(createElement(OpticsSheet));
+
+  const unpin = byId("optics-solver-unpin");
+  assert(unpin != null, "a profile-pinned solver offers no way to clear the pin");
+  eq(unpin.getAttribute("aria-disabled"), null, "precondition: an admin found the unpin locked");
+  click(unpin);
+  await settle();
+  assert(asked.some((a) => a.includes("/api/profiles/p1/clear-overrides")),
+    `the unpin never reached the clear-overrides route: ${asked.join(", ")}`);
+  eq(JSON.stringify(clearedOverrides?.providers), '["solve"]',
+    "the unpin cleared the wrong capability (it must name solve and nothing else):");
+  eq(clearedOverrides?.optics, false,
+    "the unpin also cleared the profile's OPTICS block, which nobody asked it to:");
+});
+
+await testAsync("optics: a viewer sees the unpin locked with its reason, not hidden", async () => {
+  await clearTree();
+  seed("viewer");
+  useStore.setState({
+    config: {
+      ...CONFIG,
+      effective: {
+        "providers.solve": {
+          value: "nina-1", layer: "profile", profile: "nina-1", config: "auto",
+          default: "auto", profile_id: "p1", profile_name: "Rig1", reason: "override: profile",
+        },
+      },
+    },
+  } as never);
+  await render(createElement(OpticsSheet));
+  const unpin = byId("optics-solver-unpin");
+  assert(unpin != null, "the unpin was HIDDEN from a viewer - ARCHITECTURE section 8 says nothing is hidden");
+  eq(unpin.getAttribute("aria-disabled"), "true", "the unpin looks live to a viewer");
+  assert(unpin.hasAttribute("disabled") === false,
+    "the unpin uses the native disabled attribute, which takes the reason out of the accessibility tree");
+  assert(/access/.test(unpin.getAttribute("title") ?? ""),
+    `the locked unpin does not say who may press it: "${unpin.getAttribute("title")}"`);
 });
 
 await act(async () => { root.unmount(); });

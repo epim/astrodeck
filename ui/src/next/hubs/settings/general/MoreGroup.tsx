@@ -43,7 +43,12 @@ const ROWS: MoreRow[] = [
     sub: "sun avoidance, limits, what happens when a limit trips" },
   { sheet: "standards", title: "IMAGING STANDARDS", icon: "gauge", cap: "config.safety",
     sub: "the grades a frame has to meet before it counts" },
-  { sheet: "calibration", title: "CALIBRATION", icon: "layers", cap: "config.site_optics",
+  // `control.capture`, not `config.site_optics` (review #78): the panel's only
+  // write gate is `CalibrationLibraryPanel.tsx:26 useCanControlCapture()`, so
+  // the row used to tell an operator they needed admin access and then hand
+  // them a live REBUILD button. A lock reason that is a guess teaches the user
+  // to stop reading them.
+  { sheet: "calibration", title: "CALIBRATION", icon: "layers", cap: "control.capture",
     sub: "the master library and how closely a master has to match" },
   { sheet: "naming", title: "FILE NAMING", icon: "naming", cap: "config.site_optics",
     sub: "the folder and filename every frame is written under" },

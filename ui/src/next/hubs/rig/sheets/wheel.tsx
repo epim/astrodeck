@@ -617,7 +617,7 @@ export function WheelSheet(_p: SheetProps): JSX.Element {
                       <span
                         className="nx-mono"
                         style={{ color: "var(--text-faint)", opacity: .6 }}
-                        aria-label={`Slot ${i + 1} default sub — not applicable, blackout slot`}
+                        aria-label={`Slot ${i + 1} default sub - not applicable, blackout slot`}
                       >
                         {EM_DASH}
                       </span>
@@ -651,7 +651,7 @@ export function WheelSheet(_p: SheetProps): JSX.Element {
                       <span
                         className="nx-mono"
                         style={{ color: "var(--text-faint)", opacity: .6 }}
-                        aria-label={`Slot ${i + 1} focuser offset — not applicable, blackout slot`}
+                        aria-label={`Slot ${i + 1} focuser offset - not applicable, blackout slot`}
                       >
                         {EM_DASH}
                       </span>
@@ -872,7 +872,7 @@ export function WheelSheet(_p: SheetProps): JSX.Element {
                     <span
                       className="nx-mono"
                       style={{ color: "var(--text-faint)", opacity: .6 }}
-                      aria-label={`Slot ${i + 1} narrowband — not applicable, blackout slot`}
+                      aria-label={`Slot ${i + 1} narrowband - not applicable, blackout slot`}
                     >
                       {EM_DASH}
                     </span>

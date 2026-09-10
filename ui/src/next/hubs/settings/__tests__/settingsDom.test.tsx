@@ -138,7 +138,16 @@ g.fetch = async (url: string, init?: { method?: string }) => {
 const { createElement, act } = await import("react");
 const { createRoot } = await import("react-dom/client");
 const { useStore } = await import("../../../../store");
-const { resetRouterCacheForTests } = await import("../../../router");
+const { nav } = await import("../../../router");
+
+// THE ROUTE IS SET THROUGH `nav`, NOT BY ASSIGNING `location.hash` (review #59).
+// The old form wrote the hash by hand and then called the router's
+// `resetRouterCacheForTests` hatch to drop its cached parse - a step no browser
+// and no production caller ever performs, so every assertion below ran over a
+// route that had been arrived at differently from the way the app arrives at
+// one. `nav.go` is the path the screens themselves take: it canonicalises,
+// pushes, and emits synchronously, so the test needs no hatch and grades the
+// real navigation.
 const { SettingsHub } = await import("../SettingsHub");
 
 // ------------------------------------------------------------------ harness
@@ -229,8 +238,7 @@ const seed = (principal: unknown, over: Record<string, unknown> = {}) => {
 };
 
 // ======================================================== 1. GENERAL, as admin
-win.location.hash = "#/settings/general";
-resetRouterCacheForTests();
+nav.go("/settings/general");
 seed(ADMIN);
 
 const root = createRoot(host);
@@ -280,8 +288,7 @@ test("tapping CONNECTION opens the connection sheet as route state", () => {
     "the row did not push the sheet onto the route (the Back button must close it):");
 });
 
-win.location.hash = "#/settings/general";
-resetRouterCacheForTests();
+act(() => { nav.go("/settings/general"); });
 await settle();
 
 // ------------------------------------------------------------ 4. PHONE prefs
@@ -399,8 +406,7 @@ act(() => { root2.unmount(); });
   const { SetupSheet } = await import("../sheets/SetupSheet");
   const root3 = createRoot(host);
   seed(ADMIN);
-  win.location.hash = "#/settings/general/setup";
-  resetRouterCacheForTests();
+  nav.go("/settings/general/setup");
   act(() => { root3.render(createElement(SetupSheet, { params: {}, depth: 0 })); });
   await settle();
 
@@ -426,8 +432,7 @@ act(() => { root2.unmount(); });
     eq(win.location.hash, "#/rig/devices", "step 2's GO:");
   });
 
-  win.location.hash = "#/settings/general/setup";
-  resetRouterCacheForTests();
+  act(() => { nav.go("/settings/general/setup"); });
   await settle();
 
   test("DONE marks the legacy first-run-wizard key rather than a second flag", () => {

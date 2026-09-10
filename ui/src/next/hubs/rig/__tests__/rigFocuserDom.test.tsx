@@ -564,6 +564,61 @@ test("the position is grouped the way the design writes it", () => {
   eq(groupSteps(360), "360", "a three-digit position is not grouped");
 });
 
+// ============================ 9. clearing an autofocus profile pin (#24)
+//
+// An `autofocus` pin written into a profile could be EDITED but never REMOVED:
+// the only unpin on this branch was polar's, so a profile that pinned the sweep
+// to the backend left this row permanently editable and permanently pinned.
+// Delete the button and the first assertion fails; hide it from a non-holder
+// instead of locking it and the viewer half does.
+const PIN = {
+  "providers.autofocus": {
+    value: "backend", layer: "profile", profile: "backend", config: "auto",
+    default: "auto", profile_id: "p1", profile_name: "Rig1", reason: "override: profile",
+  },
+};
+
+await testAsync("an autofocus pin from a profile can be cleared, and the call names the cap", async () => {
+  seed({ principal: ADMIN, config: { ...CONFIG, effective: PIN } });
+  mount();
+  await settle();
+
+  const unpin = testid("focuser-provider-unpin");
+  assert(unpin != null, "a profile-pinned autofocus provider offers no way to clear the pin");
+  eq(unpin.getAttribute("aria-disabled"), null, "precondition: an admin found the unpin locked");
+
+  asked.length = 0;
+  click(unpin);
+  await settle();
+  const posts = asked.filter((a) => a.url.includes("/api/profiles/p1/clear-overrides"));
+  eq(posts.length, 1, `the unpin did not reach clear-overrides (asked ${JSON.stringify(asked)})`);
+  eq(JSON.stringify((posts[0].body as any)?.providers), '["autofocus"]',
+    "the unpin cleared the wrong capability (it must name autofocus and nothing else):");
+  eq((posts[0].body as any)?.optics, false,
+    "the unpin also cleared the profile's OPTICS block, which nobody asked it to:");
+});
+
+await testAsync("a viewer sees the unpin locked with its reason, not hidden", async () => {
+  seed({ principal: VIEWER, config: { ...CONFIG, effective: PIN } });
+  mount();
+  await settle();
+
+  const unpin = testid("focuser-provider-unpin");
+  assert(unpin != null,
+    "the unpin was HIDDEN from a viewer - ARCHITECTURE section 8 says nothing is hidden");
+  eq(unpin.getAttribute("aria-disabled"), "true", "the unpin looks live to a viewer");
+  assert(unpin.hasAttribute("disabled") === false,
+    "the unpin uses the native disabled attribute, which takes the reason out of the "
+    + "accessibility tree");
+  assert(/access/.test(unpin.getAttribute("title") ?? ""),
+    `the locked unpin does not say who may press it: "${unpin.getAttribute("title")}"`);
+
+  asked.length = 0;
+  click(unpin);
+  await settle();
+  eq(asked.length, 0, `a viewer's unpin press reached the rig: ${JSON.stringify(asked)}`);
+});
+
 act(() => { if (rootRef) rootRef.unmount(); });
 
 const total = passed + failed;

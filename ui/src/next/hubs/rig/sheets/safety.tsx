@@ -54,7 +54,8 @@ import { useLock } from "../../../lib/gateHook";
 import {
   useConfig, useSafety, useStatus, useStore,
 } from "../../../../store";
-import { accessPhrase } from "../../../../lib/caps";
+import { accessPhrase, useCan } from "../../../../lib/caps";
+import { FLIP_SITE_REASON } from "../../monitor/live/FlipTile";
 import { api, ApiError } from "../../../../api";
 import {
   closeDome, getDomeState, setSafetyConfig, type DomeState,
@@ -347,6 +348,7 @@ export function SafetySheet(_p: SheetProps): JSX.Element {
   const sinks = config?.alerts ?? [];
   const safety = useSafety();
   const status = useStatus();
+  const canSiteDerived = useCan("view.site_derived");
   const bp = useBreakpoint();
 
   // Two locks, because the sun cone is two capabilities (server-routes.md 4.15).
@@ -1190,6 +1192,12 @@ export function SafetySheet(_p: SheetProps): JSX.Element {
 
   function meridianLine(): string {
     const m = status?.meridian;
+    // The cap comes first: the server nulls `hours_to_flip` and collapses
+    // `status` to "unknown" for a principal without `view.site_derived`,
+    // because the countdown inverts to the rig's longitude. Printing the
+    // no-mount-data sentence over that blames the hardware for a redaction.
+    // One sentence, shared with the Monitor flip tile and the NOW band.
+    if (!canSiteDerived) return FLIP_SITE_REASON;
     if (!m || m.status === "unknown") return "no mount data - the flip clock is not running";
     const side = m.pier_side === "unknown" ? "pier side unknown" : `pier ${m.pier_side}`;
     if (m.status === "counting" && m.hours_to_flip != null) {

@@ -75,7 +75,7 @@ import {
 } from "../../../ui";
 import { useLock } from "../../../lib/gateHook";
 import { api } from "../../../../api";
-import { listDrivers, setStandardsConfig } from "../../../../api/backends";
+import { clearProfileOverrides, listDrivers, setStandardsConfig } from "../../../../api/backends";
 import { accessPhrase, useCanConfigBackend, useCanControlCapture }
   from "../../../../lib/caps";
 import { useBusy } from "../../../../lib/useBusy";
@@ -95,7 +95,7 @@ import {
 } from "../../../../lib/focusMove";
 import { defocusMessage, focusState } from "../../../../lib/focusVerdict";
 import { standardsOrDefault } from "../../../../lib/standards";
-import { entryOf, providerKey, valueOf } from "../../../../lib/effective";
+import { entryOf, isProfileOverride, providerKey, valueOf } from "../../../../lib/effective";
 import { writeProviderOverride } from "../../../../lib/providerSave";
 import { providerWriteNote, providerWriteTarget } from "../../../../lib/providerWrite";
 import { eligibleTaskDrivers } from "../../../../lib/equipment";
@@ -651,6 +651,25 @@ export function FocuserSheet(_p: SheetProps): JSX.Element {
     });
   };
 
+  // An `autofocus` pin written into a profile could be EDITED but never REMOVED
+  // (review #24): the only unpin on this branch was polar's. Same call, same
+  // copy, and honest-disabled rather than hidden for a non-holder - a pinned row
+  // with no statement of who can unpin it reads as unremovable.
+  const [afUnpinning, setAfUnpinning] = useState(false);
+  const dropAfPin = () => {
+    const id = afEntry?.profile_id;
+    if (!id || afUnpinning) return;
+    setAfUnpinning(true);
+    void act(async () => {
+      try {
+        await clearProfileOverrides(id, { providers: ["autofocus"] });
+        await loadConfig();
+      } finally {
+        setAfUnpinning(false);
+      }
+    });
+  };
+
   // ------------------------------------------------------ standards writes
   const writeStandards = (patch: Partial<typeof standards>) => {
     void act(async () => {
@@ -1191,6 +1210,26 @@ export function FocuserSheet(_p: SheetProps): JSX.Element {
           ))}
         </div>
         {afWriteNote && <Note tone="warn">{afWriteNote}</Note>}
+        {/* HONEST-DISABLED, not hidden: ARCHITECTURE section 8 says nothing is
+            hidden, and a pinned row a non-holder cannot unpin still has to say
+            who can. */}
+        {isProfileOverride(afEntry) && afEntry?.profile_id && (
+          <div style={{ marginTop: 6 }}>
+            <ActionButton
+              kind="ghost"
+              busy={afUnpinning}
+              lockedReason={canConfigBackend ? null : providerLock.lockedReason}
+              onExplain={onExplain}
+              onPress={dropAfPin}
+              data-testid="focuser-provider-unpin"
+            >
+              CLEAR THE PROFILE PIN
+            </ActionButton>
+            <Mono size={10.5} tone="dim">
+              Clearing it hands this row back to the global setting.
+            </Mono>
+          </div>
+        )}
       </Card>
 
       {/* 9. AUTOFOCUS RUNS WHEN. Two switches this sheet owns, two rows it does

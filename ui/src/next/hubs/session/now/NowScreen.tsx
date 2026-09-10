@@ -36,9 +36,20 @@ const SHOWS_A_RUN = new Set([
   "complete", "aborted", "error",
 ]);
 
+// THE STATE IS THE WHOLE PREDICATE (review #56). It used to also require
+// `progress != null`, which is a different question: the engine publishes
+// `state: "running"` the moment a run is accepted and attaches `progress` only
+// on the first frame boundary, so for the seconds between them - a slew, a
+// filter change, a first 300 s sub - the screen said NO SESSION RUNNING over a
+// working rig, and said it hardest at exactly the moment someone is watching to
+// see whether their press took. `state` alone cannot make that mistake: the
+// store's own resting value is "idle", which is not in this set, so a rig that
+// has genuinely never been asked to do anything still gets `NowEmpty`. Every
+// block below reads `progress` through `?.` and renders its absent case, which
+// is what makes dropping the clause safe rather than merely shorter.
 export function NowScreen(): JSX.Element {
   const seq = useSeq();
-  const hasRun = SHOWS_A_RUN.has(seq.state) && seq.progress != null;
+  const hasRun = SHOWS_A_RUN.has(seq.state);
 
   return (
     <div

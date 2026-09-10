@@ -158,6 +158,7 @@ const { useStore } = await import("../../../../store");
 const { SafetySheet, escalationRows, SUN_DOUBLE_GATE_NOTE, EMPTY_SINKS_WARNING } =
   await import("../sheets/safety");
 const { NO_ROOF_REASON, NO_SINK_REASON } = await import("../lib/safetyChain");
+const { FLIP_SITE_REASON } = await import("../../monitor/live/FlipTile");
 const { sheetsSafety } = await import("../sheets/reg-safety");
 
 // ------------------------------------------------------------------ harness
@@ -670,6 +671,33 @@ await testAsync("the meridian row reports the pier side and the countdown", asyn
   eq(line, "pier east · flip in 1h 38m", "the flip line is not built from status.meridian");
   assert(/only sets how much warning you get/.test(text()),
     "the flip lead time does not say that the flip itself is scheduled by the plan");
+});
+
+// The countdown is site data: `hours_to_flip` is `lst - ra_hours`, which
+// inverts to the rig's longitude. The server nulls it and collapses
+// `meridian.status` to "unknown" for a principal without `view.site_derived`,
+// and this line used to print "no mount data - the flip clock is not running"
+// over that - a claim about the HARDWARE, made about a working mount.
+await testAsync("a viewer's meridian row blames the redaction, not the mount", async () => {
+  seed({
+    principal: VIEWER,
+    status: {
+      connected: {}, looping: false, mode: "sim", busy_lanes: [],
+      // exactly what `_redact_ws_event` leaves a non-holder: the two
+      // non-derived fields, no countdown, no status.
+      meridian: { status: "unknown", hours_to_flip: null, flip_enabled: true, pier_side: "east" },
+    },
+  });
+  await mount();
+  const line = (q('[data-testid="safety-flip-state"]').textContent || "").trim();
+  eq(line, FLIP_SITE_REASON, "the viewer's flip line does not name the missing capability:");
+});
+
+await testAsync("a site-derived holder's meridian row still counts down", async () => {
+  seed();
+  await mount();
+  const line = (q('[data-testid="safety-flip-state"]').textContent || "").trim();
+  eq(line, "pier east · flip in 1h 38m", "the countdown did not come back for a holder:");
 });
 
 // ================================================================ 7. a viewer
