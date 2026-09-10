@@ -465,6 +465,10 @@ async def _drive_run(monkeypatch, tmp_path, *, start_ha: float,
     # A/B test below first "passed" its broken half twice).
     monkeypatch.setattr(native_mod, "_ra_step_hours",
                         _pre_fix_ra_step if pre_fix_step else _SHIPPED_RA_STEP)
+    # The post-rotation settle is real time on a real rig and pure cost here;
+    # its own behaviour is graded directly (see the settle tests), so every
+    # run that only wants the LOOP pays nothing for it.
+    monkeypatch.setattr(native_mod, "_SETTLE_AFTER_SLEW_S", 0.0)
 
     session = PolarAlignSession(hub)
     task = asyncio.create_task(run_native(session, hub))

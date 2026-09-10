@@ -1,5 +1,6 @@
-"""TPPA must not walk its measurement arc across the meridian, and must not
-report a fit that no mount on a tripod could produce.
+"""TPPA must not walk its measurement arc across the meridian, must not report
+a fit that no mount on a tripod could produce, and must not report a fit whose
+own axis did not turn by what the mount was told to turn.
 
 Observed on the rig 2026-08-06 at LST 19.43h. The run started at hour angle
 +0.69h (west of the meridian) and stepped RA UP twice, to HA -0.12h and -0.92h,
@@ -15,6 +16,10 @@ Two separate defects, tested separately here:
   on one side of the meridian was luck; and
 * nothing checked the fit against physical reality before publishing it, so a
   collapsed fit reached the operator as an instruction to turn a bolt.
+
+A third defect, found 2026-09-09 and covered in the last section of this file:
+nothing checked the fit against the ROTATION -- the one piece of ground truth
+the driver owns and the fit throws away.
 """
 from __future__ import annotations
 
@@ -23,8 +28,11 @@ import math
 import pytest
 
 from astrodeck.devices.base import DeviceError
-from astrodeck.polar.native import (MAX_PLAUSIBLE_ERROR_DEG, _RA_STEP_HOURS,
-                                    _ra_step_hours, _reject_implausible_fit)
+from astrodeck.polar.native import (
+    MAX_PLAUSIBLE_ERROR_DEG, MAX_ROTATION_DISAGREEMENT_DEG, _RA_STEP_HOURS,
+    _cross, _dot, _ra_step_hours,
+    _refuse_if_the_fit_does_not_reproduce_the_rotation,
+    _reject_implausible_fit, _sky_unit_vector)
 from astrodeck.sequence.schedule import hour_angle_h
 
 _LON = -121.5          # a western-hemisphere site; the sign of HA is what matters
@@ -310,3 +318,234 @@ async def test_the_southern_hemisphere_axis_is_inverted_correctly():
         _reject_implausible_fit(_err(25.0 * 60.0, 25.0 * 60.0), shallow)
     assert "below the horizon" in str(e.value).lower()
     assert "5.0°" in str(e.value), f"the depth should be named: {e.value}"
+# ------------------------------- the fit must reproduce the commanded rotation
+
+#: The three solved points the rig logged on 2026-09-09 20:49-20:50, verbatim.
+#:
+#: A mount aligned days earlier, guiding 180 s narrowband subs all night and
+#: drifting 16"/min unguided (about 33' of real polar error). The fit reported
+#: 504.4' -- az -226.9', alt -450.5', 8.4 degrees -- and every guard in this
+#: file let it through: position angle flat at 82.0/82.1/81.9 so nothing
+#: flipped, RA separations 93% and 100% of the commanded step so the mount
+#: arrived, a declination bend of 16.5' against a 45' threshold, 8.4 degrees
+#: inside MAX_PLAUSIBLE_ERROR_DEG, and a three-point fit is exact so there is no
+#: residual to inspect. Refitting these points by hand, point 2's declination
+#: sits 8.3' above the line joining points 1 and 3, and that alone produces the
+#: whole number: put it on the line and the same three points report 7.2'.
+_20260909_POINTS = [(19.7443, 50.539), (20.4846, 50.701), (21.2837, 50.587)]
+
+#: What the driver COMMANDED between them. The log line reads "rotating RA to
+#: 20.55h" from a mount reporting 19.7461h, which is _RA_STEP_HOURS exactly.
+_20260909_STEP_H = _RA_STEP_HOURS
+
+
+def _solves(points) -> list[dict]:
+    """The three-point list in the shape the guard reads."""
+    return [{"ra_hours": ra, "dec_deg": dec} for ra, dec in points]
+
+
+def _to_radec(v) -> tuple[float, float]:
+    """A unit vector back to (RA hours, Dec degrees) -- the inverse of the
+    driver's ``_sky_unit_vector``."""
+    dec = math.degrees(math.asin(max(-1.0, min(1.0, v[2]))))
+    return (math.degrees(math.atan2(v[1], v[0])) / 15.0) % 24.0, dec
+
+
+def _rotated(v, axis, angle_deg: float):
+    """Rodrigues: ``v`` turned about ``axis`` by ``angle_deg``, right-handed.
+
+    Written out here rather than reused from the driver on purpose. This is the
+    FORWARD model -- "these three frames really are one rigid rotation" -- and
+    it must not share code with the fit being graded, or a sign error would
+    cancel itself and the arcs below would prove nothing.
+    """
+    a = math.radians(angle_deg)
+    c, s = math.cos(a), math.sin(a)
+    kv = _cross(axis, v)
+    kd = _dot(axis, v)
+    return tuple(v[i] * c + kv[i] * s + axis[i] * kd * (1.0 - c) for i in range(3))
+
+
+def _rigid_arc(pole_distance_arcmin: float, *, step_hours: float = _RA_STEP_HOURS,
+               start=(19.7443, 50.539), axis_ra_hours: float = 2.5):
+    """Three solved positions that ARE one rigid rotation about an axis
+    ``pole_distance_arcmin`` from the celestial pole.
+
+    ``axis_ra_hours`` only chooses WHICH WAY the axis is tilted; the guard's
+    answer must not depend on it, and the arcs below span 5 arcminutes to 5
+    degrees of tilt on the same one.
+    """
+    axis = _sky_unit_vector(axis_ra_hours, 90.0 - pole_distance_arcmin / 60.0)
+    first = _sky_unit_vector(*start)
+    return [_to_radec(_rotated(first, axis, step_hours * 15.0 * k))
+            for k in range(3)]
+
+
+async def test_the_2026_09_09_run_is_refused():
+    """The three points that made this necessary, exactly as logged."""
+    with pytest.raises(DeviceError) as e:
+        _refuse_if_the_fit_does_not_reproduce_the_rotation(
+            _solves(_20260909_POINTS), _20260909_STEP_H)
+    msg = str(e.value)
+    # THE OBSERVATION: what each step actually turned, and what was asked for.
+    # That is the whole evidence, and a refusal that keeps its own inputs is
+    # what stops the next occurrence costing a second night.
+    assert "+9.59" in msg and "+10.34" in msg, (
+        f"the refusal must quote the turn it measured per step: {msg!r}")
+    assert "+12.00" in msg, f"...and the turn that was commanded: {msg!r}"
+    assert "2.41" in msg, f"...and how far out it was: {msg!r}"
+    # NOT SOMETHING TO ACT ON, and nothing published.
+    assert "not something to turn a bolt by" in msg, msg
+    assert "Nothing has been reported" in msg, msg
+    assert "again" in msg, msg
+    # NO DIAGNOSIS. Three turn angles cannot tell a mount that was still moving
+    # from a tripod leg settling from a frame that solved to the wrong place,
+    # and _refuse_if_the_axis_moved already cost someone two days by naming one.
+    for accusation in ("you ", "your ", "bolts alone", "flipped", "settling"):
+        assert accusation not in msg, (
+            f"the refusal names a cause it cannot know: {msg!r}")
+
+
+@pytest.mark.parametrize("pole_distance_arcmin", [5.0, 33.0, 120.0, 300.0])
+async def test_a_rigid_rotation_is_never_refused_however_far_off_the_axis_is(
+        pole_distance_arcmin):
+    """THE TRAP EVERY OTHER PLAUSIBILITY CHECK HERE HAS HAD TO BE RESCUED FROM.
+
+    If the three frames really are one rotation about one axis, the exact
+    three-point fit recovers that axis exactly and the turns come out at the
+    commanded angle no matter how far from the pole the axis sits. A guard that
+    fired on a large-but-real error would refuse the operator exactly the
+    measurement they most need -- which is how the pole guard and the
+    plausibility gate both came to be written twice."""
+    worst = _refuse_if_the_fit_does_not_reproduce_the_rotation(
+        _solves(_rigid_arc(pole_distance_arcmin)), _RA_STEP_HOURS)
+    assert worst is not None and worst < 1e-6, (
+        f"a clean rotation about an axis {pole_distance_arcmin}' from the pole "
+        f"disagreed with its own command by {worst}")
+
+
+async def test_five_degrees_of_real_error_passes_the_rotation_check():
+    """Stated separately from the sweep above because it is the case this guard
+    is most likely to be blamed for. Five degrees is 300 arcminutes -- sixty
+    times a usable alignment, ten times the error this rig actually had -- and
+    it still has to reach the operator as a number: ``_reject_implausible_fit``
+    refuses only above MAX_PLAUSIBLE_ERROR_DEG, so a 5 degree run completes."""
+    arc = _rigid_arc(5.0 * 60.0)
+    assert _refuse_if_the_fit_does_not_reproduce_the_rotation(
+        _solves(arc), _RA_STEP_HOURS) < 1e-6
+    _reject_implausible_fit(_err(5.0 * 60.0, 4.0 * 60.0), _Hub())   # must not raise
+
+
+async def test_a_westward_arc_is_graded_on_the_sign_it_was_commanded_with():
+    """The step is SIGNED -- ``_ra_step_hours`` walks away from the meridian, so
+    half of all runs step RA down. Measuring the turn without its sign would
+    read every westward arc as 24 degrees out and refuse it."""
+    arc = _rigid_arc(33.0, step_hours=-_RA_STEP_HOURS)
+    assert _refuse_if_the_fit_does_not_reproduce_the_rotation(
+        _solves(arc), -_RA_STEP_HOURS) < 1e-6
+    # ...and the sign is really being read: grading that same arc against the
+    # OPPOSITE command must refuse.
+    with pytest.raises(DeviceError):
+        _refuse_if_the_fit_does_not_reproduce_the_rotation(
+            _solves(arc), _RA_STEP_HOURS)
+
+
+@pytest.mark.parametrize("planted_arcmin", [8.3, -8.3])
+async def test_the_middle_point_pushed_off_the_line_is_refused(planted_arcmin):
+    """The 2026-09-09 signature reproduced on a clean arc: 8.3' of declination
+    on the MIDDLE point and nothing else. That is the whole difference between
+    7.2' and 504', and it is invisible to a fit that is exact through three
+    points."""
+    arc = _rigid_arc(33.0)
+    arc[1] = (arc[1][0], arc[1][1] + planted_arcmin / 60.0)
+    with pytest.raises(DeviceError) as e:
+        _refuse_if_the_fit_does_not_reproduce_the_rotation(_solves(arc),
+                                                           _RA_STEP_HOURS)
+    assert "did not turn by what the mount was told to turn" in str(e.value)
+
+
+async def test_plate_solve_noise_at_the_documented_floor_never_refuses():
+    """The guard's cost, measured rather than argued.
+
+    0.42' is the documented plate-solve floor for this rig. Every arc below IS
+    one rigid rotation -- only the three solved positions are jittered -- so
+    every refusal here would be a night thrown away for nothing. Seeded, so a
+    failure is reproducible rather than "it went red once".
+
+    Measured over 20,000 trials while the threshold was being chosen: 99.9th
+    percentile 0.35 degrees, worst 0.48, against a limit of 1.0. At 1.00' of
+    noise -- a bad night -- the worst was 1.15, which is the honest edge of this
+    guard."""
+    import random
+
+    rng = random.Random(20260909)
+    trials, refused = 250, 0
+    worst_seen = 0.0
+    for _ in range(trials):
+        arc = _rigid_arc(33.0)
+        jittered = []
+        for ra_hours, dec_deg in arc:
+            dec = dec_deg + rng.gauss(0.0, 0.42) / 60.0
+            ra = ra_hours + (rng.gauss(0.0, 0.42) / 60.0 / 15.0
+                             / math.cos(math.radians(dec_deg)))
+            jittered.append((ra, dec))
+        try:
+            worst_seen = max(worst_seen,
+                             _refuse_if_the_fit_does_not_reproduce_the_rotation(
+                                 _solves(jittered), _RA_STEP_HOURS))
+        except DeviceError:
+            refused += 1
+    assert refused == 0, (
+        f"{refused} of {trials} clean arcs at the 0.42' solve floor were "
+        f"refused; the worst disagreement seen was {worst_seen:.3f} deg against "
+        f"a {MAX_ROTATION_DISAGREEMENT_DEG} deg limit")
+    assert worst_seen < MAX_ROTATION_DISAGREEMENT_DEG / 2.0, (
+        f"solve noise alone reached {worst_seen:.3f} deg, more than half the "
+        f"budget -- the threshold no longer has the margin it was chosen with")
+
+
+async def test_the_rotation_threshold_is_the_documented_constant():
+    """Pinned like MAX_PLAUSIBLE_ERROR_DEG above: it came from measured
+    distributions (99.9th percentile 0.35 at the 0.42' solve floor) and from a
+    measured failure (2.412 on 2026-09-09), not from a guess."""
+    assert MAX_ROTATION_DISAGREEMENT_DEG == 1.0
+
+
+async def test_nothing_commanded_means_nothing_to_grade():
+    """``step_hours`` is None until the first point is solved, and a caller with
+    no commanded rotation has no evidence -- which is not a refusal."""
+    assert _refuse_if_the_fit_does_not_reproduce_the_rotation(
+        _solves(_20260909_POINTS), None) is None
+    assert _refuse_if_the_fit_does_not_reproduce_the_rotation(
+        _solves(_20260909_POINTS), 0.0) is None
+
+
+async def test_three_identical_points_are_left_to_the_engine():
+    """A collapsed arc defines no plane, so there is no axis and no turn. The
+    engine refuses that input itself ("mount did not move between points") and
+    ``_refuse_if_it_did_not_arrive`` catches it a frame earlier; inventing a
+    refusal out of a degenerate cross product here would only mislabel it."""
+    same = [(19.7443, 50.539)] * 3
+    assert _refuse_if_the_fit_does_not_reproduce_the_rotation(
+        _solves(same), _RA_STEP_HOURS) is None
+
+
+async def test_a_southern_arc_is_graded_the_same_way():
+    """The axis is signed toward the NORTH pole in both hemispheres, because it
+    is compared against a commanded RA step and RA increases in the same
+    right-handed sense from either. Signing it by the VISIBLE pole -- which is
+    what the engine does, for its own different purpose -- would make every
+    southern turn come out negative against a positive command and refuse every
+    southern run."""
+    # The axis LINE, named by its north end -- which is also 33' from the
+    # south celestial pole, 40 degrees from the tube, and rotating the sky
+    # eastward in RA. Naming it by its south end instead turns +12 degrees
+    # into a westward arc, which is a fault in the forward model and not in
+    # the guard (the first draft of this test did exactly that).
+    axis = _sky_unit_vector(2.5, 90.0 - 33.0 / 60.0)
+    first = _sky_unit_vector(19.7443, -50.539)
+    arc = [_to_radec(_rotated(first, axis, _RA_STEP_HOURS * 15.0 * k))
+           for k in range(3)]
+    worst = _refuse_if_the_fit_does_not_reproduce_the_rotation(_solves(arc),
+                                                               _RA_STEP_HOURS)
+    assert worst is not None and worst < 1e-6, worst

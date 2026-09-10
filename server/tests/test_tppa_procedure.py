@@ -29,6 +29,7 @@ telescope can MISBEHAVE the way the AM5 has been observed to: refuse a goto with
 """
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import math
 import time
@@ -61,6 +62,9 @@ _DEC = 40.0
 _DEC_LOW = 20.0
 
 _REAL_ENGINE = nat._native
+#: The shipped post-rotation settle, read at import so the settle tests can
+#: put the real number back after ``make_rig`` zeroes it for everyone else.
+_SHIPPED_SETTLE_S = nat._SETTLE_AFTER_SLEW_S
 requires_engine = pytest.mark.skipif(
     not nat.NATIVE_AVAILABLE, reason="astrodeck_native wheel not installed")
 
@@ -244,6 +248,15 @@ class _Rig:
         #: per-point override, 1-based like ``rotation_by_point`` — what the sky
         #: says at ONE point, for the mid-measure axis-moved cases.
         self.solved_dec_by_point: dict[int, float] = {}
+        #: hours ADDED to the mount's right ascension for the SOLVE only,
+        #: again 1-based. The declination hook above is absolute because a
+        #: bent arc is described by where the declination ended up; an RA
+        #: hook has to be a delta, because the absolute right ascension of
+        #: every point depends on what sidereal time the suite happens to
+        #: run at. Lets a real arc be replayed frame for frame — see the
+        #: 2026-09-09 replay at the end of this file, where the sky fell
+        #: 0.06h short of the goto twice.
+        self.solved_ra_by_offset: dict[int, float] = {}
         self.bump_epoch_after: int | None = None
         self.engine: _FakeEngine | None = None
         self._t0 = time.time()
@@ -260,8 +273,9 @@ class _Rig:
         rot = self.rotation_by_point.get(n, self.rotation)
         solved_dec = self.solved_dec if self.solved_dec is not None else dec
         solved_dec = self.solved_dec_by_point.get(n, solved_dec)
-        return (_Frame(self._t0 + 10.0 * n), _Solve(ra, solved_dec, rot),
-                (1.55, 1024.0, 768.0))
+        solved_ra = ra + self.solved_ra_by_offset.get(n, 0.0)
+        return (_Frame(self._t0 + 10.0 * n),
+                _Solve(solved_ra, solved_dec, rot), (1.55, 1024.0, 768.0))
 
     async def run(self):
         await nat.run_native(self.session, self.hub)
@@ -291,6 +305,10 @@ def make_rig(monkeypatch):
     does not depend on the fit's arithmetic runnable on a wheel-less runner."""
     monkeypatch.setattr(nat, "NATIVE_AVAILABLE", True)
     monkeypatch.setattr(nat, "_ADJUST_INTERVAL_S", 0.01)
+    # The post-rotation settle is real time on a real rig and pure cost here;
+    # its own behaviour is graded directly (see the settle tests), so every
+    # run that only wants the LOOP pays nothing for it.
+    monkeypatch.setattr(nat, "_SETTLE_AFTER_SLEW_S", 0.0)
     import astrodeck.providers as _pv
     monkeypatch.setattr(_pv, "pick_solver", lambda hub: object())
 
@@ -1289,3 +1307,201 @@ async def test_a_smooth_dec_drift_is_the_signal_not_a_wreck(make_rig):
     assert rig.engine.from_three_calls, "a legitimate smooth arc was refused"
     decs = [s["dec_deg"] for s in rig.engine.from_three_calls[0][0]]
     assert decs == [_DEC, _DEC + 0.30, _DEC + 0.55], decs
+
+
+# ------------------------------- the fit must reproduce the commanded rotation
+#
+# 2026-09-09 20:49-20:50, on a mount aligned days earlier: 504.4' of reported
+# polar error (az -226.9', alt -450.5') on a rig that had guided 180 s
+# narrowband subs all night and drifted 16"/min unguided, which is about 33'.
+# Every guard already in this file passed the arc: the camera angle was flat at
+# 82.0/82.1/81.9, both rotations landed inside MIN_ARC_FRACTION, the declination
+# bend was 16.5' against a 45' threshold, and 8.4 degrees is inside
+# MAX_PLAUSIBLE_ERROR_DEG. A fit through three points is exact, so there was no
+# residual either.
+#
+# The geometry of the refusal is graded as a pure helper in
+# test_polar_meridian_guard.py. What these add is that the LOOP calls it, on the
+# arc it really measured and with the step it really commanded, and that the
+# refusal keeps its evidence.
+
+#: The three solved declinations as the rig logged them.
+_20260909_DEC = [50.539, 50.701, 50.587]
+
+#: ...and what the SKY did in right ascension relative to the mount's own gotos.
+#: Point 1 needed no slew and matched the mount to 0.0018h; points 2 and 3 each
+#: followed a rotation and fell 0.06h and 0.05h short of it.
+_20260909_RA_SHORTFALL = {
+    2: (20.4846 - 19.7443) - nat._RA_STEP_HOURS,
+    3: (21.2837 - 19.7443) - 2.0 * nat._RA_STEP_HOURS,
+}
+
+
+def _replay_20260909(make_rig, engine: str = "fake"):
+    """One rig wound to that arc: HA -0.762h, Dec +50.539, stepping east."""
+    rig = make_rig(start_ha=-0.762, dec=_20260909_DEC[0], engine=engine)
+    rig.solved_dec_by_point = dict(enumerate(_20260909_DEC, start=1))
+    rig.solved_ra_by_offset = dict(_20260909_RA_SHORTFALL)
+    return rig
+
+
+async def test_the_2026_09_09_arc_is_refused_by_the_loop(make_rig):
+    """The whole run, end to end, over the arc that produced 504'."""
+    rig = _replay_20260909(make_rig)
+    await rig.run()
+
+    assert len(rig.solved) == 3, "precondition: all three points were measured"
+    st = rig.session.state
+    assert "did not turn by what the mount was told to turn" in st["message"], \
+        st["message"]
+    assert st["state"] == "error", st
+    assert st["total_error"] == 0.0, "a refused fit must publish no number"
+    # The per-step disagreement, in the message, because it is the evidence:
+    # 9.59 and 10.34 degrees of sky against two commanded 12 degree rotations.
+    assert "+9.59" in st["message"] and "+10.34" in st["message"], st["message"]
+    assert "+12.00" in st["message"], st["message"]
+
+
+async def test_the_older_guards_really_do_pass_that_arc():
+    """The precondition for the test above, asserted rather than assumed.
+
+    If MIN_ARC_FRACTION or the declination bend ever starts firing on this arc,
+    the refusal above would keep passing while grading nothing new, and the
+    rotation check would quietly become dead code."""
+    points = [(19.7443, _20260909_DEC[0]), (20.4846, _20260909_DEC[1]),
+              (21.2837, _20260909_DEC[2])]
+    solves = [{"ra_hours": ra, "dec_deg": dec} for ra, dec in points]
+
+    # the declination progression does not bend far enough to object to
+    nat._refuse_if_the_axis_moved(solves)
+    # both rotations arrived, as far as the RA separation can tell
+    for index, (before, after) in enumerate(zip(points, points[1:]), start=1):
+        nat._refuse_if_it_did_not_arrive(
+            {"ra_hours": before[0]}, types.SimpleNamespace(ra_hours=after[0]),
+            nat._RA_STEP_HOURS, index)
+    # the camera angle never moved: 82.0 -> 82.1 -> 81.9
+    for prev_pa, pa, index in ((82.0, 82.1, 1), (82.1, 81.9, 2)):
+        nat._refuse_if_it_flipped(prev_pa, index - 1,
+                                  types.SimpleNamespace(rotation_deg=pa), index)
+    # ...and 504.4' (az -226.9', alt -450.5') is a physically possible mount:
+    # 8.4 degrees is inside MAX_PLAUSIBLE_ERROR_DEG and the axis it implies is
+    # still well above the horizon.
+    nat._reject_implausible_fit(
+        {"total_arcmin": 504.4, "az_arcmin": -226.9, "alt_arcmin": -450.5},
+        _Hub(0.0, _20260909_DEC[0]))
+
+
+async def test_the_refused_arc_still_leaves_its_fit_in_the_log(make_rig,
+                                                               bus_lines):
+    """A refusal that throws away its own inputs is what made 2026-08-06 take a
+    second night to diagnose, so the raw fit is logged BEFORE the gates. This
+    guard sits after the fit for exactly that reason — it could have gone
+    before it and saved a Rust call — and the ordering has to stay."""
+    rig = _replay_20260909(make_rig)
+    await rig.run()
+
+    assert rig.engine.from_three_calls, "the fit never ran, so it logged nothing"
+    solved = [m for lvl, m, _s in bus_lines if m.startswith("native TPPA solved")]
+    assert len(solved) == 1, [m for _l, m, _s in bus_lines]
+    # ...and the three positions it was computed from.
+    points = [m for lvl, m, _s in bus_lines if m.startswith("native TPPA point")]
+    assert len(points) == 3, points
+    # The agreement line must NOT appear on a run that was refused.
+    assert not [m for lvl, m, _s in bus_lines if "reproduces the commanded" in m]
+
+
+@requires_engine
+async def test_the_engine_really_does_report_a_wild_number_for_that_arc(
+        make_rig, bus_lines):
+    """The control. Without this guard the operator is handed a bolt-turning
+    instruction, and "the engine would have reported something absurd" is the
+    entire justification for refusing — which a fake engine cannot say. So this
+    one drives the REAL Rust fit.
+
+    The magnitude is site-dependent (this harness sits at 45N/122W and the rig
+    does not), so what is asserted is the shape: a mount that guided all night,
+    fitted to hundreds of arcminutes."""
+    rig = _replay_20260909(make_rig, engine="real")
+    await rig.run()
+
+    solved = [m for lvl, m, _s in bus_lines if m.startswith("native TPPA solved")]
+    assert len(solved) == 1, [m for _l, m, _s in bus_lines]
+    total = float(solved[0].split("total ")[1].split("'")[0])
+    assert total > 100.0, (
+        f"precondition: the fit is supposed to be wildly wrong on these three "
+        f"points and it reported {total:.1f}'. If that ever drops, the refusal "
+        f"below has stopped buying anything: {solved[0]}")
+    assert "did not turn by what the mount was told to turn" in \
+        rig.session.state["message"], rig.session.state
+
+
+async def test_a_clean_run_says_how_closely_the_axis_reproduced_the_rotation(
+        make_rig, bus_lines):
+    """A good run should carry the evidence that it is good, not only a bad one
+    the evidence that it is bad. Without this line the only way to tell the
+    check ran is that it did not fire, which is the same observation as it not
+    existing."""
+    rig = make_rig(start_ha=-2.0)
+    await rig.run()
+
+    said = [m for lvl, m, _s in bus_lines if "reproduces the commanded" in m]
+    assert len(said) == 1, [m for _l, m, _s in bus_lines]
+    assert "0.00" in said[0], said[0]
+    assert rig.session.state["state"] != "error", rig.session.state
+
+
+# --------------------------------------------- the mount is given time to stop
+
+async def _run_watching_sleeps(rig, monkeypatch) -> list[float]:
+    """Run the loop with the SHIPPED settle restored and every sleep recorded.
+
+    ``make_rig`` zeroes the settle for every other test in this file (two
+    rotations a run, forty-odd runs), so it is put back explicitly here —
+    otherwise these would assert that the loop waited 0.0 seconds, which it
+    would do just as happily with the settle deleted."""
+    monkeypatch.setattr(nat, "_SETTLE_AFTER_SLEW_S", _SHIPPED_SETTLE_S)
+    slept: list[float] = []
+    real_sleep = asyncio.sleep
+
+    async def spy(delay, *args, **kwargs):
+        slept.append(delay)
+        if delay == _SHIPPED_SETTLE_S:
+            rig.hub.events.append("settle")
+        return await real_sleep(0)
+
+    monkeypatch.setattr(nat.asyncio, "sleep", spy)
+    await rig.run()
+    return slept
+
+
+async def test_the_mount_is_given_time_to_settle_before_the_next_exposure(
+        make_rig, monkeypatch):
+    """THERE WAS NO SETTLE AT ALL: the slew returned and the shutter opened.
+
+    A MITIGATION for an unproven cause — see ``_SETTLE_AFTER_SLEW_S``, which
+    records the 2026-09-09 evidence and does not claim to explain it. What is
+    testable is that the wait happens where it has to: after the rotation, and
+    before the frame that assumes the tube is standing still."""
+    rig = make_rig(start_ha=-2.0)
+    slept = await _run_watching_sleeps(rig, monkeypatch)
+
+    order = [e for e in rig.hub.events if e in ("capture", "slew", "settle")]
+    assert order[:7] == ["capture", "slew", "settle",
+                         "capture", "slew", "settle", "capture"], order
+    assert slept.count(_SHIPPED_SETTLE_S) == 2, (
+        f"one settle per rotation, and the arc makes two: {slept}")
+    assert _SHIPPED_SETTLE_S == 5.0, (
+        "the settle is a documented, measured cost (10 s a run), so changing it "
+        "means changing what _SETTLE_AFTER_SLEW_S records")
+
+
+async def test_the_first_point_is_not_delayed_by_a_settle(make_rig, monkeypatch):
+    """Point 1 involves no slew — on 2026-09-09 it was the only point that
+    agreed with the mount, to 0.0018h. Charging it five seconds anyway would be
+    five seconds of the operator's night for a rotation that never happened."""
+    rig = make_rig(start_ha=-2.0)
+    await _run_watching_sleeps(rig, monkeypatch)
+
+    order = [e for e in rig.hub.events if e in ("capture", "settle")]
+    assert order[0] == "capture", (
+        f"the run waited out a settle before it had rotated anything: {order}")

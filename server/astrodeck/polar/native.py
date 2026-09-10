@@ -30,6 +30,7 @@ The Rust wheel is imported GUARDED: without it the provider degrades to a clear
 from __future__ import annotations
 
 import asyncio
+import math
 from typing import Any
 
 from ..devices.base import DeviceError
@@ -175,6 +176,31 @@ MAX_PLAUSIBLE_ERROR_DEG = 30.0
 #: that took a completely different path.
 MIN_ARC_FRACTION = 0.5
 MAX_ARC_FRACTION = 1.5
+
+#: Seconds to wait after an RA rotation before exposing the next frame.
+#:
+#: A MITIGATION FOR AN UNPROVEN CAUSE, and worth saying so before anything else.
+#: There was no settle here at all: the slew returned and the shutter opened.
+#:
+#: The evidence it was written against is 2026-09-09 20:49. Point 1 needed no
+#: slew and solved to within 0.0018h of the mount's own claim; points 2 and 3
+#: each followed a rotation and disagreed with the mount by 0.06h and 0.05h, and
+#: point 2's declination sat 8.3' off the line joining the other two — which on
+#: its own turned a 7' answer into 504'. Exposing into a mount that had not
+#: finished moving would look exactly like that. So would several other things.
+#:
+#: What makes it plausible enough to pay for is that the slew's own return is
+#: known not to mean "stopped": see :data:`MIN_ARC_FRACTION`, where this mount's
+#: settle loop compares each position sample to the PREVIOUS one and never to
+#: the commanded target, so a mount that never moves satisfies "stopped moving"
+#: in about 1.5 s.
+#:
+#: Costs 10 s on a three-point run, against points that already take ~45 s each
+#: (:data:`_ARC_LEG_SECONDS`). If a night shows the bend has another cause this
+#: is a number to lower, not a mechanism to unpick — and it is not the thing
+#: that catches the bend either way, which is
+#: :data:`MAX_ROTATION_DISAGREEMENT_DEG`.
+_SETTLE_AFTER_SLEW_S = 5.0
 
 #: Refuse to MEASURE below this altitude.
 #:
@@ -364,6 +390,19 @@ async def _drive(session: Any, hub: Any) -> None:
             f"native TPPA solved: total {err['total_arcmin']:.1f}' "
             f"(az {err['az_arcmin']:.1f}', alt {err['alt_arcmin']:.1f}')", "polar")
     _log_pa_spread(err)
+    # The fit graded against the one thing it threw away: the rotation the mount
+    # was COMMANDED to make. Before _reject_implausible_fit, because a fit that
+    # does not reproduce the commanded rotation is not a large error at all —
+    # it is three frames that were not one rotation, and 2026-09-09's 504' sat
+    # well inside the plausibility cap. See MAX_ROTATION_DISAGREEMENT_DEG.
+    agreement = _refuse_if_the_fit_does_not_reproduce_the_rotation(
+        solves, step_hours)
+    if agreement is not None:
+        # A good run carries the evidence that it is good. Logged whether or
+        # not the gates below let the number through, for the same reason the
+        # raw fit above is.
+        bus.log("info", f"native TPPA: the fitted axis reproduces the "
+                        f"commanded rotation to {agreement:.2f}°", "polar")
     _reject_implausible_fit(err, hub)  # raises rather than publish a wrong number
     # A fit ALREADY inside the aligned threshold is DONE, not the start of an
     # adjustment. It used to publish "polar aligned" and then enter the adjust
@@ -946,7 +985,11 @@ async def _rotate_in_ra(hub: Any, tel: Any, epoch: int,
     that same value on every leg; the arc is then a pure RA rotation by
     construction rather than by hoping the mount arrives. ``None`` falls back to
     the mount's current declination, for callers with no arc in progress (and
-    for a mount too quiet to have given the caller a value to pin)."""
+    for a mount too quiet to have given the caller a value to pin).
+
+    Returns only after :data:`_SETTLE_AFTER_SLEW_S`, because the slew's own
+    return is not evidence that the mount has stopped — see that constant, which
+    also records that this is a mitigation for a cause nobody has proved."""
     _check_alive(hub, epoch)
     cur_ra, cur_dec = await tel.get_position()
     if step is None:
@@ -964,6 +1007,12 @@ async def _rotate_in_ra(hub: Any, tel: Any, epoch: int,
             f"holding Dec {target_dec:+.3f}°",
             "polar")
     await tel.slew(target_ra, target_dec)
+    # THE SLEW RETURNING IS NOT THE MOUNT HAVING STOPPED. See
+    # _SETTLE_AFTER_SLEW_S. Deliberately inside this function rather than at the
+    # call site: every rotation this driver commands is followed by an exposure
+    # that assumes the tube is still, and a settle that lives beside one caller
+    # is a settle the next caller forgets.
+    await asyncio.sleep(_SETTLE_AFTER_SLEW_S)
 
 
 def _check_alive(hub: Any, epoch: int) -> None:
@@ -1115,6 +1164,216 @@ def _refuse_if_the_axis_moved(solves: list[dict]) -> None:
         f"leg settling, or from an alt/az adjustment made during the measuring "
         f"arc. Run the alignment again — if it repeats, the mount is not "
         f"holding declination across gotos.")
+
+
+#: How far the rotation MEASURED about the fitted axis, between two consecutive
+#: frames, may differ from the rotation that was COMMANDED — in degrees — before
+#: the arc is a failed measurement rather than a result.
+#:
+#: A rigid body turning about a fixed axis turns by the angle it was told to
+#: turn. The fit throws that away and nothing downstream can recover it: three
+#: points determine a plane exactly, so there is no residual to inspect. Every
+#: other guard in this file grades ONE coordinate — the RA separation
+#: (:data:`MIN_ARC_FRACTION`), the declination bend
+#: (:data:`_AXIS_MOVED_DEC_BEND_DEG`), the camera angle (:data:`_PA_FLIP_DEG`) —
+#: and the run below slipped through all three. This is the only check that uses
+#: all three points at once and grades the FIT against what the mount was asked
+#: to do.
+#:
+#: Measured, over arcs of two 12 degree steps:
+#:
+#:   clean synthetic run, true error 5' to 20 deg      0.000 deg
+#:   plate-solve noise 0.20', 20k seeded trials        99.9th pct 0.16
+#:   plate-solve noise 0.42' (the documented floor)    99.9th pct 0.35, max 0.48
+#:   plate-solve noise 1.00' (a bad night)             99.9th pct 0.83, max 1.15
+#:   2026-09-09 20:49 on the rig, as logged            2.412
+#:   a clean run with 8.3' planted on point 2          1.66
+#:
+#: So 1.0 sits about 3x above the 99.9th percentile at the documented solve
+#: floor and 2.4x below the run that made this necessary. That run reported 504'
+#: (8.4 degrees) on a mount that had guided 180 s narrowband subs all night and
+#: drifted 16"/min unguided — about 33' of real error.
+#:
+#: IT DOES NOT FIRE ON A GENUINELY LARGE POLAR ERROR, which is the trap every
+#: other plausibility check here has had to be rescued from. If the three frames
+#: really are one rigid rotation, the exact three-point fit recovers that axis
+#: exactly and the turns come out at the commanded angle however far from the
+#: pole the axis sits: 0.000 deg at 5 degrees of true error with instantaneous
+#: frames, 0.02 deg at 5 degrees with the 45 s legs this routine actually takes.
+#: The one place the model runs out is an axis error near
+#: :data:`MAX_PLAUSIBLE_ERROR_DEG` measured with ten-minute legs — 30 degrees at
+#: 600 s per leg reaches 1.02 — because the sky's own rotation between frames
+#: then stops being negligible. At 45 s legs that same 30 degree error measures
+#: 0.11.
+#:
+#: :data:`_AXIS_MOVED_DEC_BEND_DEG` IS DELIBERATELY LEFT ALONE. This subsumes
+#: it: on 2026-09-09 the declination bend was 16.5', comfortably inside that
+#: guard's 45' threshold, while the same three points miss this one by 2.4x. And
+#: that threshold has a false-positive history — on 2026-08-06/07 it refused run
+#: after run on a rig nobody had touched, because the DRIVER was commanding the
+#: declination motion — so tightening it to reach tonight would have re-armed
+#: exactly that.
+#:
+#: IF THIS EVER REFUSES A GOOD NIGHT, the refusal quotes the turn it
+#: measured against the turn it commanded, and a passing run logs the same
+#: number — so the evidence for whether the threshold or the mount is wrong
+#: is in the log either way, which is the whole reason both of those exist.
+MAX_ROTATION_DISAGREEMENT_DEG = 1.0
+
+
+def _sky_unit_vector(ra_hours: float, dec_deg: float) -> tuple[float, float, float]:
+    """A solved position as a unit vector in the equatorial frame: +z at the
+    north celestial pole, +x at RA 0h.
+
+    THE FRAME IS THE WHOLE TRICK. In this one an RA rotation is a right-handed
+    turn about +z, and a tracking mount holds RA while the ground turns
+    underneath it — so the rotation between two frames is the step that was
+    commanded and nothing else, with no clock in the comparison. The engine fits
+    its axis in the TOPOCENTRIC frame instead (``astro-tppa``'s
+    ``error_det.rs``), where it is the mount's axis that stands still and the
+    expected turn would be the commanded step MINUS however much sidereal time
+    passed between exposures. Both frames are correct; only one of them needs to
+    know how long the solve took."""
+    ra = math.radians(ra_hours * 15.0)
+    dec = math.radians(dec_deg)
+    return (math.cos(dec) * math.cos(ra), math.cos(dec) * math.sin(ra),
+            math.sin(dec))
+
+
+def _cross(a: tuple, b: tuple) -> tuple[float, float, float]:
+    return (a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0])
+
+
+def _dot(a: tuple, b: tuple) -> float:
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+
+def _normalised(v: tuple, eps: float = 1e-12) -> tuple[float, float, float] | None:
+    """``v`` scaled to unit length, or None when it is too short to have a
+    direction at all."""
+    length = math.sqrt(_dot(v, v))
+    if length < eps:
+        return None
+    return (v[0] / length, v[1] / length, v[2] / length)
+
+
+def _fitted_rotation_axis(points: list[tuple[float, float, float]]):
+    """The rotation axis three solved positions determine, NORTH end first.
+
+    The same construction the engine uses — the normal of the plane through the
+    three points, which is the axis of the small circle they lie on
+    (``fit_mount_axis`` in ``native/crates/astro-tppa/src/error_det.rs``) —
+    recomputed here because the ``model`` the PyO3 layer hands back does not
+    carry an axis. It carries the initial pointing, the site, the refraction
+    inputs, the image geometry, the position-angle spread and the initial alt/az
+    error, and nothing that names a direction (``model_to_dict`` in
+    ``native/crates/astrodeck-native/src/lib.rs``).
+
+    Signed toward the NORTH celestial pole in both hemispheres, unlike the
+    engine's ``hemisphere_correct``, which points the axis at the pole the site
+    can actually see. This axis is never shown to anyone; it exists only to be
+    compared against a commanded RA step, and RA increases in the same
+    right-handed sense about +z from either hemisphere. Signing it by hemisphere
+    would make every southern turn come out negative against a positive command.
+
+    ``None`` when the points are too nearly coincident or collinear to define a
+    plane. That is an input the engine refuses on its own, and there is no
+    evidence in it for this check to refuse anything with."""
+    if len(points) < 3:
+        return None
+    axis = _normalised(_cross(
+        tuple(b - a for a, b in zip(points[0], points[1])),
+        tuple(c - b for b, c in zip(points[1], points[2]))))
+    if axis is None:
+        return None
+    return axis if axis[2] >= 0.0 else (-axis[0], -axis[1], -axis[2])
+
+
+def _turn_about_axis(axis: tuple, start: tuple, end: tuple) -> float | None:
+    """The signed rotation in degrees carrying ``start`` to ``end`` about
+    ``axis``, positive in the right-handed sense. ``None`` when either point
+    lies on the axis, where no turn is defined."""
+    u = _normalised(tuple(p - _dot(start, axis) * a for p, a in zip(start, axis)))
+    v = _normalised(tuple(p - _dot(end, axis) * a for p, a in zip(end, axis)))
+    if u is None or v is None:
+        return None
+    return math.degrees(math.atan2(_dot(axis, _cross(u, v)), _dot(u, v)))
+
+
+def _refuse_if_the_fit_does_not_reproduce_the_rotation(
+        solves: list[dict], step_hours: float | None) -> float | None:
+    """Refuse a fit whose own axis does not turn by what the mount was told to
+    turn, and otherwise report how well it did.
+
+    THE 2026-09-09 20:49 RUN. Three points on a mount aligned days earlier and
+    guiding 180 s narrowband subs all night; the fit reported 504.4' of polar
+    error (az -226.9', alt -450.5'). Nothing could see it. The position angle was
+    flat at 82.0/82.1/81.9 so :func:`_refuse_if_it_flipped` had nothing; the RA
+    separations were 93% and 100% of the commanded step so
+    :func:`_refuse_if_it_did_not_arrive` had nothing; the declination bend was
+    16.5' against a 45' threshold so :func:`_refuse_if_the_axis_moved` had
+    nothing; 8.4 degrees is inside :data:`MAX_PLAUSIBLE_ERROR_DEG`; and the fit
+    through three points is exact, so there was no residual. Refitting those
+    three points by hand, point 2's declination sat 8.3' above the line joining
+    points 1 and 3 and that alone produced the whole number — put it on the line
+    and the same three points report 7.2'.
+
+    What survives all of that is the commanded rotation. About the axis these
+    three frames fit, the sky turned 9.59 degrees and then 10.34 degrees across
+    two rotations of 12 degrees each. See :data:`MAX_ROTATION_DISAGREEMENT_DEG`
+    for the threshold and for why this does not fire on a large-but-real error.
+
+    ``step_hours`` IS WHAT WAS COMMANDED, not what the mount says it achieved.
+    This mount's reported coordinates wander — measured walking 12.9 arcmin per
+    minute through an autofocus on 2026-09-08 while the tube held its field — so
+    its claim is the weakest witness on the rig, and a fit graded against it
+    would pass whenever the mount lied consistently. The commanded step is a
+    number this driver chose and can be sure of. Grading against the SOLVED RA
+    separation would be worse than either: for an axis genuinely far from the
+    pole the RA separation is NOT the rotation angle (at 5 degrees of error a 12
+    degree turn moves the field 11.06 degrees in RA), so that comparison would
+    refuse exactly the large-but-real errors this routine exists to measure.
+
+    THE MESSAGE STATES THE OBSERVATION, NEVER A DIAGNOSIS — the same discipline
+    :func:`_refuse_if_the_axis_moved` had to learn the hard way. Three turn
+    angles and a commanded step cannot tell a mount that was still moving from a
+    tripod leg settling from a frame that solved to the wrong place, and a
+    refusal that names a cause it cannot know sends the one person who could
+    have diagnosed it looking somewhere else for two days.
+
+    Returns the worst disagreement in degrees when it could be measured, so the
+    caller can log it on a run that PASSES: a good run should carry the evidence
+    that it is good, not only a bad one the evidence that it is bad. ``None``
+    when nothing was commanded, or when the points do not define an axis."""
+    if not step_hours or len(solves) < 2:
+        return None
+    points = [_sky_unit_vector(float(s["ra_hours"]), float(s["dec_deg"]))
+              for s in solves]
+    axis = _fitted_rotation_axis(points)
+    if axis is None:
+        return None
+    turns = [_turn_about_axis(axis, points[i], points[i + 1])
+             for i in range(len(points) - 1)]
+    if any(t is None for t in turns):
+        return None
+    commanded_deg = float(step_hours) * 15.0
+    worst = max(abs(t - commanded_deg) for t in turns)
+    if worst <= MAX_ROTATION_DISAGREEMENT_DEG:
+        return worst
+    measured = " and then ".join(f"{t:+.2f}°" for t in turns)
+    raise DeviceError(
+        f"the measurement points did not turn by what the mount was told to "
+        f"turn: about the axis those frames fit, the sky rotated {measured} "
+        f"across rotations of {commanded_deg:+.2f}° each — out by as much as "
+        f"{worst:.2f}°, where {MAX_ROTATION_DISAGREEMENT_DEG:.1f}° is the "
+        f"limit. A body turning about a fixed axis turns by the angle it was "
+        f"commanded to turn, so these frames were not one rotation about one "
+        f"axis, and the number the fit produced is not something to turn a bolt "
+        f"by. Nothing has been reported. The 'native TPPA point' lines in the "
+        f"log are the positions this was measured from. Run the alignment "
+        f"again.")
 
 
 def _refuse_low_arc(hub: Any, result: Any, step_hours: float) -> None:
