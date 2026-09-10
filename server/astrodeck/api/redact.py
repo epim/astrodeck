@@ -116,12 +116,72 @@ def _strip_meridian_derived(meridian: dict) -> None:
 _DERIVED_NODES = (("mount", _strip_mount_derived),
                   ("meridian", _strip_meridian_derived))
 
+# WHY SATELLITES ARE NOT IN THAT TABLE, and are gated whole instead (D-SKY-1).
+# Every entry above works by DEGRADING a node: mount.alt/az come off and RA/Dec
+# stay; meridian's countdown goes null and the pier side stays. The planets take
+# the same shape one level down -- ``solar_system._observer(site_derived)``
+# hands a non-holder the GEOCENTRIC observer, so the row is computed from the
+# centre of the Earth and no field of it can carry the site, at a cost of at
+# most 12.8 arcsec of position. That trick works because a planet is far away.
+# It does not transfer to a satellite: at 400 km, topocentric parallax is TENS
+# OF DEGREES, so the geocentric answer is not a coarser version of the
+# topocentric one, it is a different part of the sky. There is nothing to
+# degrade to. So ``GET /api/satellites/passes`` is gated WHOLE on
+# ``view.site_derived`` (like ``GET /api/catalog/tonight``), and the satellite
+# rows inside ``GET /api/catalog`` are withheld inside ``objects.search()``
+# BEFORE the propagator runs -- the Moon's rule, for a much larger number. A
+# stripper here would have been the wrong tool twice over: it would have had to
+# remove every field of the row, and it would have run after the answer already
+# existed.
 
-def _scrub_derived_node(container: dict) -> None:
-    """Make every site-DERIVED node in ``container`` safe for a non-holder IN
+# ------------------------------------------- values DERIVED from the WEATHER
+# The dew-heater node, carried here for the dew-control lane (which does not own
+# this file). Gated on ``view.weather``, the cap that already decides whether a
+# principal sees the forecast at all -- and it has to be gated, because a heater
+# power driven from the dew margin IS THE DEW MARGIN RE-ENCODED. The same shape
+# as ``mount.alt`` being latitude: the number does not carry the word.
+#
+# What stays is the SETTINGS (is the heater on, is it following the dew point,
+# is there a manual override running, which ports exist); what goes is the
+# READINGS (the margin, the air temperature, the dew point, and the duty cycle
+# computed from them).
+_WEATHER_DERIVED_KEYS = ("margin_c", "temp_c", "dewpoint_c")
+
+
+def _strip_dew(dew: dict) -> None:
+    """Remove the dew-point READINGS from a dew block IN PLACE.
+
+    ``margin_c``/``temp_c``/``dewpoint_c`` are made ABSENT and ``power_pct``
+    becomes NULL (the field is typed ``number | null`` on the client and already
+    renders a "not reporting" state). ``power_pct`` is collapsed rather than
+    kept because a heater following the dew point is a continuous function of
+    the margin: publishing the duty cycle publishes the margin at whatever
+    resolution the caller cares to sample, which is the same finding that closed
+    ``mount.alt``.
+
+    ``enabled``/``following``/``override_until_ts``/``reason``/``ports`` stay:
+    they are settings and identities, not measurements of the air."""
+    for k in _WEATHER_DERIVED_KEYS:
+        dew.pop(k, None)
+    if "power_pct" in dew:
+        dew["power_pct"] = None
+
+
+#: node key -> stripper, for nodes gated on ``view.weather`` rather than
+#: ``view.site_derived``. A separate table because it is a separate cap: an
+#: operator holds weather and not site_precise, a syncer holds neither.
+_WEATHER_DERIVED_NODES = (("dew", _strip_dew),)
+
+
+def _scrub_derived_node(container: dict, table=_DERIVED_NODES) -> None:
+    """Make every DERIVED node in ``container`` safe for a non-holder IN
     PLACE, fail-CLOSED on an unexpected shape — same rule as
-    :func:`_scrub_site_node`."""
-    for key, strip in _DERIVED_NODES:
+    :func:`_scrub_site_node`.
+
+    ``table`` is which family of derived nodes to strip: ``_DERIVED_NODES``
+    (site) or ``_WEATHER_DERIVED_NODES``. One implementation, two caps, so a
+    node added to either table gets the fail-closed behaviour for free."""
+    for key, strip in table:
         if key not in container:
             continue
         if isinstance(container.get(key), dict):
@@ -176,8 +236,14 @@ def _redact_site_for(payload: dict, principal: Principal | None) -> dict:
     # operator's alt/az, keyed on derived it hands a viewer the coordinates.
     has_precise = principal is not None and principal.has(CAP_VIEW_SITE_PRECISE)
     has_derived = principal is not None and principal.has(CAP_VIEW_SITE_DERIVED)
-    if has_precise and has_derived:
-        return payload  # holder of both: untouched
+    # THREE caps now, and the early return has to name all three. Every role
+    # that holds precise+derived today also holds weather, so leaving `weather`
+    # out of this test would be inert -- and that is exactly the kind of
+    # inertness that stops being inert the day somebody adds a role. Fail
+    # closed: only a holder of everything skips the work.
+    has_weather = principal is not None and principal.has(CAP_VIEW_WEATHER)
+    if has_precise and has_derived and has_weather:
+        return payload  # holder of all three: untouched
     if not isinstance(payload, dict):
         return payload
     try:
@@ -188,6 +254,8 @@ def _redact_site_for(payload: dict, principal: Principal | None) -> dict:
                 _scrub_site_node(cfg)
         if not has_derived:
             _scrub_derived_node(payload)
+        if not has_weather:
+            _scrub_derived_node(payload, _WEATHER_DERIVED_NODES)
     except Exception:  # noqa: BLE001 - never 500 a surface: fail CLOSED
         if not has_precise:
             payload.pop("site", None)
@@ -196,6 +264,9 @@ def _redact_site_for(payload: dict, principal: Principal | None) -> dict:
                 cfg.pop("site", None)
         if not has_derived:
             for key, _strip in _DERIVED_NODES:
+                payload.pop(key, None)
+        if not has_weather:
+            for key, _strip in _WEATHER_DERIVED_NODES:
                 payload.pop(key, None)
     return payload
 
@@ -246,11 +317,12 @@ def _redact_ws_event(ev_json: dict, principal: Principal | None) -> dict | None:
         if principal is not None and principal.has(CAP_VIEW_WEATHER):
             return ev_json  # holder (operator or admin): verbatim, unstripped
         return None          # non-holder (viewer): dropped entirely
-    # Two caps, independent — see _redact_site_for. An operator holds derived
-    # and not precise, so neither one alone decides this event.
+    # Three caps, independent — see _redact_site_for. An operator holds derived
+    # and weather but not precise, so no one of them alone decides this event.
     has_precise = principal is not None and principal.has(CAP_VIEW_SITE_PRECISE)
     has_derived = principal is not None and principal.has(CAP_VIEW_SITE_DERIVED)
-    if has_precise and has_derived:
+    has_weather = principal is not None and principal.has(CAP_VIEW_WEATHER)
+    if has_precise and has_derived and has_weather:
         return ev_json
     data = ev_json.get("data")
     if not isinstance(data, dict):
@@ -274,8 +346,16 @@ def _redact_ws_event(ev_json: dict, principal: Principal | None) -> dict | None:
         # before stripping for the same reason the site node is: Event.data is
         # shared across every subscriber, so mutating it in place would strip
         # the values from the holder's copy too.
-        if not has_derived:
-            for key, strip in _DERIVED_NODES:
+        # The dew node rides ``view.weather`` rather than ``view.site_derived``
+        # (a heater duty cycle following the dew point IS the dew margin), so
+        # the two tables are walked under their own caps but through the same
+        # copy-before-strip loop -- the shared ``Event.data`` must not be
+        # mutated for anybody else's subscriber.
+        for gated, table in ((has_derived, _DERIVED_NODES),
+                             (has_weather, _WEATHER_DERIVED_NODES)):
+            if gated:
+                continue
+            for key, strip in table:
                 if key not in data:
                     continue
                 node = data.get(key)
@@ -314,6 +394,9 @@ def _redact_ws_event(ev_json: dict, principal: Principal | None) -> dict | None:
             safe.pop("site", None)
         if not has_derived:
             for key, _strip in _DERIVED_NODES:
+                safe.pop(key, None)
+        if not has_weather:
+            for key, _strip in _WEATHER_DERIVED_NODES:
                 safe.pop(key, None)
         cfg = safe.get("config")
         if isinstance(cfg, dict):
@@ -510,6 +593,8 @@ __all__ = [
     "_redact_report_for",
     "report_csv_columns",
     "_strip_site",
+    "_strip_dew",
     "_scrub_site_node",
     "_SITE_STRIP_KEYS",
+    "_WEATHER_DERIVED_NODES",
 ]

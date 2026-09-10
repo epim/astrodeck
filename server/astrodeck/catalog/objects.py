@@ -376,9 +376,9 @@ def _names_body(qs: str, keys: Iterable[str]) -> bool:
 #: an empty catalogue is the same failure ``SearchResult.notes`` exists to end.
 _MOON_WITHHELD_NOTE = (
     "The Moon is not offered here: where it appears in the sky depends on "
-    "where you are standing — up to about 1°, a hundred times its own disc — "
-    "so its position would give away this rig's location. Sign in with a role "
-    "that can see site-derived data to search for it.")
+    "where you are standing - up to about 1 degree, a hundred times its own "
+    "disc - so its position would give away this rig's location. Sign in with "
+    "a role that can see site-derived data to search for it.")
 
 
 def _solar_system_hits(q: str, qs: str, when: float | None,
@@ -431,8 +431,8 @@ def _solar_system_hits(q: str, qs: str, when: float | None,
             log.warning("dropping %s from search: %s", body.label, e)
             notes.append(
                 f"{body.label} could not be placed just now ({e}). It is left "
-                f"out rather than shown at a guessed position — the search does "
-                f"work for it; try again in a moment.")
+                f"out rather than shown at a guessed position - the search "
+                f"does work for it; try again in a moment.")
 
     # The Sun is withheld by the safety gate, not by the ephemeris, and it is
     # withheld whether or not the query found anything else. That distinction is
@@ -449,6 +449,50 @@ def _solar_system_hits(q: str, qs: str, when: float | None,
     if carried:
         notes.append(carried)
     return hits, notes
+
+
+def _satellite_hits(q: str, qs: str, when: float | None,
+                    site_derived: bool = True,
+                    ) -> tuple[list[tuple[int, dict]], list[str]]:
+    """Satellite rows for this query, and the reasons for the ones withheld.
+
+    THE SAME WITHHOLD-BEFORE-COMPUTE RULE THE MOON RIDES, and for a much
+    stronger reason. The Moon's geocentric stand-in is 0.92 degrees wrong, which
+    is visibly bad; a satellite's is TENS of degrees wrong, which is a different
+    part of the sky. So there is no degraded satellite row to hand a caller
+    without ``view.site_derived`` -- there is a note, and the note is produced
+    without any element set being propagated. See
+    ``catalog/ephemeris/satellites.py``.
+
+    A failure here is contained: this feature depends on a network fetch that a
+    dark-site rig may never have made, and a search box that 500s because a
+    cache file is missing is worse than one that quietly finds no satellites."""
+    try:
+        from .ephemeris import satellites as _satellites
+
+        return _satellites.search_hits(q, qs, when, site_derived)
+    except Exception as e:               # noqa: BLE001 - never break the search
+        log.warning("satellite search unavailable: %s", e)
+        return [], []
+
+
+def _comet_hits(q: str, qs: str, when: float | None,
+                site_derived: bool = True,
+                ) -> tuple[list[tuple[int, dict]], list[str]]:
+    """Comet rows for this query, and the reasons for the ones not returned.
+
+    NOT the satellites' rule -- the PLANETS'. A comet is far enough away that
+    the shift between two sites is sub-arcsecond, so nothing about the row is a
+    location oracle: it is served to every caller, computed through
+    ``solar_system._observer(site_derived)``, and carries the same
+    ``geocentric_reason`` a planet row does."""
+    try:
+        from .ephemeris import comets as _comets
+
+        return _comets.search_hits(q, qs, when, site_derived)
+    except Exception as e:               # noqa: BLE001 - never break the search
+        log.warning("comet search unavailable: %s", e)
+        return [], []
 
 
 @dataclass(frozen=True)
@@ -573,8 +617,22 @@ def search(query: str, limit: int = 25, when: float | None = None,
     notes: list[str] = []
     if q:
         body_hits, notes = _solar_system_hits(q, qs, when, site_derived)
-        for rank, r in _star_hits(q, qs) + body_hits:
-            scored.append((rank, r["mag"], r["id"], r))
+        sat_hits, sat_notes = _satellite_hits(q, qs, when, site_derived)
+        comet_hits, comet_notes = _comet_hits(q, qs, when, site_derived)
+        notes = notes + sat_notes + comet_notes
+        for rank, r in (_star_hits(q, qs) + body_hits + sat_hits
+                        + comet_hits):
+            # A SATELLITE HAS NO MAGNITUDE and a comet may have none, so the
+            # sort key cannot be `r["mag"]` any more: None does not compare
+            # with a float, and the whole search would have raised TypeError on
+            # the first satellite hit. MAG_UNKNOWN is the sentinel this module
+            # already uses for "nobody has published a brightness", and it only
+            # ever breaks ties WITHIN a rank -- an exact-name match still sorts
+            # first (see catalog/ephemeris/satellites.py on why no satellite row
+            # will ever carry a number here).
+            mag = r.get("mag")
+            scored.append((rank, MAG_UNKNOWN if mag is None else mag,
+                           r["id"], r))
     # id breaks the remaining ties so the order is stable run to run.
     scored.sort(key=lambda t: (t[0], t[1], t[2]))
     rows = [_dso_row(x) if isinstance(x, DSO) else x
@@ -600,10 +658,10 @@ def search(query: str, limit: int = 25, when: float | None = None,
     # contradiction of itself.
     if not rows and q and not notes:
         notes = notes + [
-            f"Nothing in the catalogue matches “{query.strip()}”. It carries "
+            f'Nothing in the catalogue matches "{query.strip()}". It carries '
             f"{len(CATALOG)} deep-sky objects (Messier, NGC and IC) plus named "
-            f"stars and the planets — try a designation like NGC 6543, or type "
-            f"a position: “17 58 33 +66 38”."]
+            f"stars and the planets - try a designation like NGC 6543, or type "
+            f'a position: "17 58 33 +66 38".']
     return SearchResult(rows=rows, notes=notes)
 
 

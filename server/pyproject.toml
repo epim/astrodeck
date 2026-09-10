@@ -20,6 +20,14 @@ dependencies = [
     "cryptography>=50.0.0",
     "packaging>=23.0",
     "pyserial>=3.5",
+    # SGP4/SDP4 orbital propagation for the satellite ephemeris
+    # (catalog/ephemeris/satellites.py). MIT, pure-Python-capable (the C
+    # accelerator is optional; sgp4.api falls back to sgp4.model), and it ships
+    # NO data files - which is the whole reason it is here rather than
+    # skyfield, whose satellite path is equally correct but whose other half
+    # wants a downloaded JPL kernel. This app is offline-first (see
+    # catalog/solar_system.py's refusal to carry Pluto for that same reason).
+    "sgp4>=2.23",
 ]
 
 [project.optional-dependencies]
