@@ -15,11 +15,14 @@ frames were trailing.
 Two separate defects are involved, and only one of them is fully diagnosable
 from the telemetry that exists:
 
-- **Defect A, PROVEN and quantified.** A 3.0 px dither is not executable on
-  this mount. It needs 1294 ms in RA and 2549 ms in Dec against a hard 1000 ms
-  per-move cap, so every dither is clamped short and every settle blows its
-  deadline. This ran all night, before and after the flip, and accounts for
-  every capped-pulse and dither-failure line in the log.
+- **Defect A, PROVEN but DEMOTED (corrected 2026-09-10 14:2x).** A 3.0 px
+  dither cannot be delivered in one move on this mount: it needs 1294 ms in RA
+  and 2549 ms in Dec against a hard 1000 ms per-move cap, and every clamped
+  pulse in the night log is a dither pulse. **The first version of this
+  document then claimed the cap made every settle fail. That was wrong** - see
+  section 3.1a. The cap costs 2 to 3 guide cycles instead of 1, about 5 s in
+  Dec against a 90 s settle window, and 31 of 45 dithers settled fine with the
+  cap in force. It is an inefficiency, not the thing that broke the night.
 - **Defect B, PARTIALLY diagnosable.** The walk itself: a continuous
   one-directional RA drag at 117 arcsec/min, 15.3 percent duty cycle at the
   calibrated guide rate. Its magnitude, rate, direction and start time are
@@ -189,25 +192,53 @@ The predicted dither pulse and the observed mean clamped pulse agree on both
 axes. **Every clamped pulse in the log is a dither pulse**, and the spread
 around the prediction is the guide error the dither was added to.
 
-Consequences:
+What follows from it, and what does not:
 
-- Every dither is short by 0.68 px in RA or 1.82 px in Dec, so the settle
-  criterion is never met and the 90 s settle window expires. Thirteen dither
-  failures post-flip; the sequence catches the exception, logs a warning and
-  exposes anyway (`engine.py:2642`).
-- The Dec case is the severe one at 2.55x the cap. A dither that lands 1.82 px
-  from where it was commanded, every dither, all night, on a mount already
-  flagged for large Dec backlash.
-- This is independent of the flip and of Defect B. It was happening from 22:29.
+- A dither takes **more than one guide cycle**: 1.3 cycles in RA, 2.5 in Dec.
+  The lock position moves by the full 3.0 px immediately (`engine.rs:1571`),
+  and the loop then walks the mount onto it over successive frames, so nothing
+  is permanently undelivered.
+- The **Dec axis needs twice the cycles RA does**, because the Dec guide rate
+  is 0.43x sidereal against RA's 1.03x. A circular dither request is therefore
+  delivered as an ellipse in *time*, not in distance - Dec dithers simply
+  settle slower. On a mount already flagged for large Dec backlash that is
+  worth knowing.
+- This is independent of the flip and of Defect B, and was happening from
+  22:29.
 
-This is a straightforward bug with three candidate fixes, in preference order:
-split a dither across successive guide cycles until the commanded offset is
-reached; or clamp `dither_pixels` at calibration time to what one capped move
-can deliver on the *slower* axis (1.18 px here); or make the settle criterion
-aware of what was actually deliverable. The first is correct, the second is
-one line, the third is a workaround. **Whatever is chosen, the feasibility
-check itself must be logged at calibration time** so an impossible dither is
-never again silently attempted forty times a night.
+Worth fixing for cleanliness (log the feasibility check once at calibration
+time, with the numbers, so nobody has to re-derive this) but it is **not** a
+night-breaker, and the original version of this document was wrong to present
+it as one.
+
+### 3.1a Correction: the cap does NOT cause the settle failures
+
+The first version of this analysis reasoned from the arithmetic match in 3.1
+straight to "so every settle blows its deadline". The timing budget refutes
+that, and so does the log.
+
+**The timing budget.** 2.5 guide cycles at a 2.0 s guide exposure is about 5
+seconds. `_SETTLE_TIMEOUT_S` is **90 seconds**. There is an order of magnitude
+of headroom; the cap cannot exhaust it.
+
+**The log, which separates perfectly.** Every dither all night requested a
+pulse over the cap, so if the cap caused failure, all of them would fail:
+
+| window | dithers | settled | failed |
+|---|---|---|---|
+| 22:30 - 00:08 (pre-flip) | 11 | **11** | 0 |
+| 00:40:50 (just after the flip) | 1 | 1 | 0 |
+| **00:36:40 - 01:39:49 (the walk)** | **14** | **0** | **14** |
+| 01:54 - 04:46 (after recovery) | 20 | **20** | 0 |
+
+Thirty-one dithers settled with the cap in force, including one at 01:54:00
+whose pulse was clamped from 1292 ms. All fourteen failures fall inside the
+walk window and nowhere else.
+
+**So the settle failures are a symptom of Defect B, not a consequence of
+Defect A** - the field was moving under the guider, so the error never
+converged to the settle criterion. Which makes them something more useful than
+a nuisance: see Detector E.
 
 ### 3.2 Defect B: the walk (mechanism NOT established)
 
@@ -268,6 +299,72 @@ What remains, and cannot be separated with the telemetry that exists:
 That is the honest position: Defect A is solved, Defect B is characterised but
 not mechanised, and section 5 is written so that the *next* occurrence is
 diagnosable in one pass.
+
+### 3.2a Defect C: the dither is an UNBOUNDED random walk
+
+Found while answering the question "is our dithering algorithm a randomised
+walk". It is, and nothing bounds it.
+
+`native.py:1777-1779` picks a uniformly random direction at a fixed step
+length:
+
+```python
+ang = random.uniform(0.0, 2 * math.pi)
+dx = pixels * math.cos(ang)
+dy = pixels * math.sin(ang)
+```
+
+and `engine.rs:1571` adds that to the lock position rather than replacing it:
+
+```rust
+self.lock = Some((lock.0 + camera_delta.0, lock.1 + camera_delta.1));
+```
+
+So it is a 2D Pearson walk: fixed 3.0 px step, uniform direction, cumulative.
+RMS displacement after n dithers is `step * sqrt(n)`:
+
+| dithers | RMS guide px | RMS arcsec | arcmin | imaging px (0.968"/px) |
+|---|---|---|---|---|
+| 10 | 9.5 | 52 | 0.87 | 54 |
+| 47 (last night) | 20.6 | 113 | 1.89 | 116 |
+| 100 | 30.0 | 165 | 2.75 | 170 |
+| 400 (a 4-night session) | 60.0 | 330 | 5.50 | 341 |
+| 1000 | 94.9 | 522 | 8.70 | 539 |
+
+**The frame-bounds guard that upstream uses for exactly this was delegated to
+the host, and the host does not implement it.** `engine.rs:1549-1568` documents
+PHD2's 4-sign validity search, which tries the four sign combinations of the
+requested delta and keeps whichever leaves the lock at least `search_region+1`
+inside the camera frame. Our engine cannot do it because the frozen
+`dither(dx, dy)` signature never receives the frame size, and the comment
+correctly assigns the duty upstairs: *"A host that must avoid pushing the star
+off-frame sizes its dither amount conservatively before calling this (a
+host-side, not engine-side, concern)."* The host is the eight lines above -
+no bounds check, no frame size, no cumulative-offset tracking. (The `margin`
+at `native.py:1661` is the Guiding Assistant's Dec-backlash walk, an unrelated
+path.)
+
+How much this actually matters, honestly:
+
+- **Not a cause of anything last night.** 47 dithers gives an expected 1.9
+  arcmin against an observed 191. Ruled out by two orders of magnitude.
+- **Leaving the guide frame is not the practical risk.** Half a guide frame is
+  several hundred px; that would take tens of thousands of dithers.
+- **The practical cost is framing.** The walk is unbounded in the imaging
+  field, and every plate-solve re-centre (flip, hold, some autofocus paths)
+  zeroes it - so in practice it is bounded by how often the run happens to
+  re-centre, which is not a design.
+- Long multi-night sessions are where it bites: a few hundred arcsec of
+  accumulated framing drift shrinks the common overlap the stack can use, and
+  it does so silently.
+
+There is no benefit to the unboundedness. Dithering exists to decorrelate the
+sensor's fixed pattern from the sky between subs, and a dither bounded to a
+disc around the run's original lock achieves that identically. Recommended fix:
+track the cumulative offset host-side and reflect the step back toward the
+origin when the next move would leave a configured radius (a few times the
+dither size). That also restores, in the only place that can see it, the
+frame-bounds intent the engine comment asks the host for.
 
 ### 3.3 Why every existing guard missed it
 
@@ -414,6 +511,33 @@ pulse duration each axis needs for the configured `dither_pixels` and compare
 against the driver's per-move cap. If it does not fit, say so once, with the
 numbers, and take the configured remedy (split across cycles, or clamp the
 dither). See section 3.1.
+
+### 4.5a Detector E: consecutive dither settle failures (the best signal available)
+
+This falls straight out of the 3.1a correction and it is the strongest
+detector in this document, which is embarrassing given the first version of
+the analysis treated these failures as noise caused by the cap.
+
+A dither settle failure means *the guide error did not converge to the settle
+criterion within 90 seconds*. On a stationary field it converges in about 5.
+So a settle failure is close to a direct measurement of "the field is moving
+and the loop is not winning".
+
+The separation in the table in 3.1a is total: **0 failures in 31 healthy
+dithers, 14 consecutive failures spanning exactly the walk.** No threshold
+tuning, no calibration against other nights, and it needs no new telemetry -
+the failures are already raised as exceptions and already logged
+(`engine.py:2642`), where they are currently swallowed as a warning and the
+frame is exposed anyway.
+
+Proposed rule: **two consecutive dither settle failures is a hold** (response
+level 2). At last night's numbers that fires at **00:47:45**, when the walk was
+under 8 arcmin - three minutes before Detector B, and 55 minutes before the
+operator noticed. One failure alone stays a warning: a single cloud crossing
+can cost one settle.
+
+This should be built first. It is the cheapest, the earliest, and the only one
+with a clean separation already demonstrated on real data.
 
 ### 4.6 Where this lives
 
@@ -573,17 +697,19 @@ this document.
 
 Each item is independently shippable and independently testable.
 
-1. **Detector B** (re-lock displacement gate). Smallest change, reuses a
+1. **Detector E** (two consecutive dither settle failures is a hold). Earliest
+   signal, cleanest separation on real data (0 of 31 healthy, 14 of 14 during
+   the walk), needs no new telemetry, and the failures are already raised and
+   already logged. Fires at 00:47:45. Test: two consecutive settle failures
+   trigger the hold; one does not.
+2. **Detector B** (re-lock displacement gate). Smallest change, reuses a
    metric already on the wire, would have fired at 00:50:20. Test: synthesise
    a re-lock event stream and assert the hold fires on magnitude with a count
    below the limit.
-2. **The cap-saturation log line** and **Detector D** (dither feasibility).
-   Pure diagnosis, no behaviour change, exposes Defect A permanently. Test:
-   assert the warning fires for a 3.0 px dither at the measured rates against
-   a 1000 ms cap.
-3. **Defect A's actual fix** (split the dither across cycles). Test: a dither
-   larger than one capped move completes over successive cycles and the settle
-   criterion is met.
+3. **Bound the dither** (Defect C) and log the feasibility check once at
+   calibration time (Detector D). Test: the cumulative offset never exceeds
+   the configured radius over a long synthetic run; and the feasibility warning
+   fires for a 3.0 px dither at the measured rates against a 1000 ms cap.
 4. **Telemetry 6.1, 6.2, 6.3** (calibration history, pulse aggregate, error
    series). No behaviour change; this is what makes the next occurrence
    diagnosable in one pass instead of a night of forensics.
