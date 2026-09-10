@@ -300,6 +300,11 @@ export function LiveScreen(): JSX.Element {
       // reports `flip_disabled` simply because there is no plan to enable it
       // on, and the strip then shouted "Meridian flip disabled" at an idle rig
       // forever. Feed it only while a run is in flight.
+      // This gate got LOUDER to remove, so it is now load-bearing rather than
+      // merely tidy: a principal without view.site_derived reads
+      // `hours_to_flip: null` (redact.py), which lib/health.ts now raises as a
+      // tier-2 sticky red banner instead of an amber chip. Drop the gate and
+      // every viewer of an idle rig gets that banner, permanently.
       meridian: runActive ? status?.meridian : null,
       ninaLink: status?.nina_link,
       backendLinks,

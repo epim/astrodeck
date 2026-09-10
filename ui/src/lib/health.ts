@@ -138,11 +138,42 @@ export function deriveHealthIssues(input: {
     issues.push({ tier: 2, icon: "alert", text: `${droppedRole.role} disconnected` });
   }
   // meridian: "due" is only ever emitted once flip_enabled is true (a GEM with
-  // flip disabled reports the DISTINCT `flip_disabled` status instead — see
+  // flip disabled reports the DISTINCT `flip_disabled` status instead - see
   // MeridianStatus); the pier-risk case that's actually at risk RIGHT NOW is a
   // disabled flip with the clock already at/under zero.
-  if (meridian?.status === "flip_disabled" && (meridian.hours_to_flip ?? 1) <= 0) {
-    issues.push({ tier: 2, icon: "alert", text: "Meridian flip due but disabled — pier risk" });
+  //
+  // THREE STATES, because `hours_to_flip` has three values and only two were
+  // handled. It is NULL - not absent, not zero - for a principal without
+  // view.site_derived (server/astrodeck/api/redact.py:98-108), while
+  // `flip_disabled` itself survives redaction because it is a property of the
+  // mount and the loaded plan. `?? 1` read that null as "an hour away", which
+  // put the tier-2 rung out of a viewer's reach entirely and printed "near
+  // meridian" about a distance nobody had told them.
+  //
+  // Why the unknown is tier 2 and not tier 1: tier 2 is the "act" rung (sticky,
+  // never auto-dismissed - see the ladder above), and a remote watcher who
+  // cannot see the countdown on a GEM with the flip disabled cannot escalate by
+  // looking harder. It stays quiet on an idle rig because both roots feed
+  // `meridian` only while a run is in flight (next/hubs/monitor/live/
+  // LiveScreen.tsx and views/MonitorView.tsx both pass `runActive ? ... : null`).
+  //
+  // All three branches live in the tier-2 section so the three-way decision
+  // reads as one; the ladder's ordering invariant (every tier-2 pushed before
+  // every tier-1) still holds, because this is the last block before the tier-1
+  // section begins.
+  if (meridian?.status === "flip_disabled") {
+    const h = meridian.hours_to_flip;
+    if (h == null) {
+      issues.push({
+        tier: 2,
+        icon: "alert",
+        text: "Meridian flip disabled and the countdown is hidden for your role - it could be due now",
+      });
+    } else if (h <= 0) {
+      issues.push({ tier: 2, icon: "alert", text: "Meridian flip due but disabled - pier risk" });
+    } else {
+      issues.push({ tier: 1, icon: "alert", text: "Meridian flip disabled - pier risk near meridian" });
+    }
   }
 
   // ------------------------------------------------------- tier 1 (notice)
@@ -162,9 +193,8 @@ export function deriveHealthIssues(input: {
   if (ninaLink?.active && !ninaLink.healthy && !ninaLink.warming_up) {
     issues.push({ tier: 1, icon: "alert", text: "NINA link unhealthy" });
   }
-  if (meridian?.status === "flip_disabled" && (meridian.hours_to_flip ?? 1) > 0) {
-    issues.push({ tier: 1, icon: "alert", text: "Meridian flip disabled — pier risk near meridian" });
-  }
+  // (the meridian notice is pushed by the three-way block in the tier-2 section
+  // above, so all three flip_disabled outcomes are decided in one place)
   if (bootConnectFailed) {
     issues.push({ tier: 1, icon: "info", text: "Rig partially connected on boot — check status below" });
   }
