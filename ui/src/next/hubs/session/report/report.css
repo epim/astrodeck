@@ -1,0 +1,238 @@
+/* =====================================================================
+   report.css - the classes the SESSION / NIGHT REPORT area owns.
+
+   Imported by `ReportScreen.tsx`, this area's root, and by nothing else
+   (wave R7 rule: `next.css` belongs to one task, so every other area
+   writes its own file and imports it from its own root component).
+
+   Every class here is `nx-report-*`. Nothing in this file redefines a
+   `next.css` class - the primitives keep their own paint, and this file
+   only lays out the rows `next.css` has no shape for: a per-filter
+   ledger line, a safety-event line, a bundle group line, and the three
+   trend plots.
+
+   Colours are index.css tokens plus the eight `--nx-filter-*` values
+   from next.css. The filter swatch is never the only carrier of the
+   filter's identity - the NAME is always beside it (README colour rule,
+   and :root.night collapses the palette onto one hue).
+   ===================================================================== */
+
+.nx-report {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+/* A card's own stack: eyebrow, rows, note. */
+.nx-report-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.nx-report-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* ------------------------------------------------------- per-filter row */
+
+/* The campaign-ledger grid (proto 10): swatch + name, the share bar, and a
+   right-aligned mono figure. It collapses to two lines under 360 px rather
+   than scrolling sideways - a report is read, not driven. */
+.nx-report-row {
+  display: grid;
+  grid-template-columns: minmax(52px, auto) 1fr minmax(0, auto);
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--line);
+  min-width: 0;
+}
+
+.nx-report-row:last-child {
+  border-bottom: 0;
+}
+
+.nx-report-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-family: "Chakra Petch", sans-serif;
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: .1em;
+  color: var(--text);
+}
+
+.nx-report-swatch {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--nx-r-pill);
+  flex-shrink: 0;
+  border: 1px solid rgba(0, 0, 0, .35);
+}
+
+.nx-report-figures {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  text-align: right;
+}
+
+@media (max-width: 360px) {
+  .nx-report-row {
+    grid-template-columns: 1fr;
+  }
+  .nx-report-figures {
+    justify-content: flex-start;
+    text-align: left;
+  }
+}
+
+/* -------------------------------------------------------- per-target block */
+
+.nx-report-target {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-left: 10px;
+  border-left: 1px solid var(--line);
+  min-width: 0;
+}
+
+/* --------------------------------------------------------- safety events */
+
+.nx-report-event {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 3px 0;
+  border-bottom: 1px solid var(--line);
+  min-width: 0;
+}
+
+.nx-report-event:last-child {
+  border-bottom: 0;
+}
+
+.nx-report-event-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---------------------------------------------------------------- trends */
+
+.nx-report-trends {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+@media (min-width: 640px) {
+  .nx-report-trends {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.nx-report-trend {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.nx-report-plot {
+  width: 100%;
+  height: 56px;
+  display: block;
+}
+
+.nx-report-axis {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* ----------------------------------------------------------- bundle rows */
+
+.nx-report-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--line);
+  min-width: 0;
+}
+
+.nx-report-group:last-child {
+  border-bottom: 0;
+}
+
+.nx-report-masters {
+  margin-left: auto;
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.nx-report-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+}
+
+/* A note the row cannot say in a number: the danger sentence over the
+   materialize button, the "nothing is deleted" sentence under the cutoff. */
+.nx-report-note {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-faint);
+}
+
+.nx-report-note[data-tone="warn"] {
+  color: var(--warn);
+}
+
+.nx-report-note[data-tone="good"] {
+  color: var(--good);
+}
+
+.nx-report-break {
+  word-break: break-all;
+}
+
+/* Rows still showing the answer to the PREVIOUS bundle options while a new
+   preview is in flight. Dimming is paired with a word in the DOM ("recounting
+   for the new cutoff"), never left as the only signal. */
+.nx-report-stale[data-stale="true"] {
+  opacity: .5;
+}
+
+.nx-report-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 8px;
+  min-width: 0;
+}
