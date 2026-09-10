@@ -30,6 +30,22 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+// other area its own stylesheet. Node cannot load a stylesheet, so this
+// synchronous hook answers with an empty module, exactly as
+// `__tests__/shellDom.test.tsx` does for `NextApp`. It must be registered
+// before the first `await import` that reaches one.
+{
+  const { registerHooks } = await import("node:module");
+  registerHooks({
+    load(url: string, context: any, nextLoad: any) {
+      if (url.endsWith(".css")) {
+        return { format: "module", shortCircuit: true, source: "export default {};" };
+      }
+      return nextLoad(url, context);
+    },
+  } as any);
+}
+
 // ---------------------------------------------------------------- jsdom first
 const { JSDOM } = await import("jsdom");
 const dom = new JSDOM(
