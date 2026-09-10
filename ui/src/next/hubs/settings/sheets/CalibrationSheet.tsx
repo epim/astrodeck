@@ -1,17 +1,19 @@
 // CalibrationSheet.tsx - Settings > MORE > Calibration (plan section C.6, row
-// CALIBRATION).
+// CALIBRATION; wave R7, T-R7-14 cutover).
 //
-// Two reused panels, mounted unchanged: the master library (rebuild/delete,
-// reads the shared `masters` store slice so this refreshes the live
-// pre-flight coverage row too) and the matching/stacking tolerances.
+// Two rebuilt editors, in the design's own vocabulary: the master library
+// (rebuild/delete, reads the shared `masters` store slice so this refreshes the
+// live pre-flight coverage row too) and the matching/stacking tolerances. Both
+// live in `hubs/settings/tuning/calibration/`; `components/settings/
+// CalibrationLibraryPanel.tsx` and `CalibrationTolerancesPanel.tsx` are no
+// longer mounted here and are untouched for `#/classic`.
 import type { JSX } from "react";
 import type { SheetProps } from "../../sheets";
 import { nav } from "../../../router";
 import { NxIcon } from "../../../icons";
 import { Sheet } from "../../../ui";
 import { useMasters } from "../../../../store";
-import CalibrationLibraryPanel from "../../../../components/settings/CalibrationLibraryPanel";
-import CalibrationTolerancesPanel from "../../../../components/settings/CalibrationTolerancesPanel";
+import { CalibrationLibraryEditor, CalibrationTolerancesEditor } from "../tuning/calibration";
 
 export function CalibrationSheet(_p: SheetProps): JSX.Element {
   const masters = useMasters();
@@ -26,8 +28,8 @@ export function CalibrationSheet(_p: SheetProps): JSX.Element {
       icon={<NxIcon name="layers" />}
       onBack={nav.back}
     >
-      <CalibrationLibraryPanel />
-      <CalibrationTolerancesPanel />
+      <CalibrationLibraryEditor />
+      <CalibrationTolerancesEditor />
     </Sheet>
   );
 }

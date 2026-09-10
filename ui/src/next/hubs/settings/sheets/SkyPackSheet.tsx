@@ -1,17 +1,20 @@
 // SkyPackSheet.tsx - Settings > MORE > Sky atlas offline pack (plan section
-// C.6, row SKY ATLAS OFFLINE PACK; GAP-ANALYSIS section 6).
+// C.6, row SKY ATLAS OFFLINE PACK; GAP-ANALYSIS section 6; wave R7, T-R7-14
+// cutover).
 //
-// One reused panel, mounted unchanged: the offline HiPS pack (download,
-// update, delete) plus the online-fetch (CDS) toggle. The panel's own
-// attribution line ("DSS2 imagery (c) AAO/STScI, served from CDS/ESA HiPS
-// mirrors.") is always shown by the panel itself - not duplicated here.
+// One rebuilt editor, in the design's own vocabulary: the offline HiPS pack
+// (download, update, delete, live progress) plus the online-fetch (CDS) toggle.
+// The DSS2 attribution line is rendered by the editor itself, always, because
+// it is a licence condition - not duplicated here.
+// `components/settings/SkyAtlasPanel.tsx` is no longer mounted here and is
+// untouched for `#/classic`.
 import type { JSX } from "react";
 import type { SheetProps } from "../../sheets";
 import { nav } from "../../../router";
 import { NxIcon } from "../../../icons";
 import { Sheet } from "../../../ui";
 import { useConfig } from "../../../../store";
-import SkyAtlasPanel from "../../../../components/settings/SkyAtlasPanel";
+import { SkyPackEditor } from "../tuning/calibration";
 
 export function SkyPackSheet(_p: SheetProps): JSX.Element {
   const config = useConfig();
@@ -25,7 +28,7 @@ export function SkyPackSheet(_p: SheetProps): JSX.Element {
       icon={<NxIcon name="sky" />}
       onBack={nav.back}
     >
-      <SkyAtlasPanel />
+      <SkyPackEditor />
     </Sheet>
   );
 }
