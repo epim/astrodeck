@@ -73,6 +73,67 @@ test("every lane the UI can provoke gets a sentence, not an identifier", () => {
   }
 });
 
+// ------------------------------------------------ the sentence names an ACTION
+test("no lane sentence sends the user to a PAGE — two shells read these strings", () => {
+  // Two front-ends import this file: the classic one (Mount / Focus / Capture /
+  // Guide pages) and the new one (a Rig hub of device sheets plus a Capture
+  // sub-screen — none of those pages exist there). "stop it on the Focus page"
+  // was therefore an instruction half the readers cannot follow, and it goes
+  // stale again the next time a screen is renamed. The fix that holds is to name
+  // what is running and what ends it, so the sentence is true in any shell.
+  //
+  // The word itself is the check: no entry in this table needs it, and a
+  // reworded sentence that reintroduces one ("open the Guide page") is exactly
+  // the regression this guards.
+  for (const lane of MAPPED_BUSY_LANES) {
+    const { message } = parseApiError(409, { detail: `'${lane}' is already running` }, "Conflict");
+    assert(!/\bpage\b/i.test(message),
+      `${lane}: ${JSON.stringify(message)} points at a page — the new shell has none, ` +
+      "so name the action that unblocks the lane instead");
+    // House copy rule (ARCHITECTURE.md non-negotiable 5): hyphens, never em-dashes.
+    assert(!message.includes("—"),
+      `${lane}: ${JSON.stringify(message)} uses an em-dash`);
+  }
+});
+
+test("the four reworded lanes still say what ends them", () => {
+  // The half of the sentence that makes the refusal actionable. Graded literally,
+  // against the text the code emits: a rewording that drops the way out (or
+  // reintroduces a page name in place of it) fails here rather than shipping a
+  // dead end. Kept to the four lanes whose old copy named a page.
+  const ends: [string, RegExp][] = [
+    ["goto", /stop the mount first/],
+    ["autofocus", /stop the autofocus first/],
+    ["capture", /abort the capture first/],
+    ["guide_assistant", /stop the assistant first/],
+  ];
+  for (const [lane, ending] of ends) {
+    const { message } = parseApiError(409, { detail: `'${lane}' is already running` }, "Conflict");
+    assert(ending.test(message),
+      `${lane}: ${JSON.stringify(message)} no longer names the action that unblocks it ` +
+      `(expected to match ${ending})`);
+    // ...and it must still say what is BUSY, not only what to press.
+    assert(/already/.test(message),
+      `${lane}: ${JSON.stringify(message)} stopped saying what is running`);
+  }
+});
+
+test("the sequence-error sentences name an action too, not a screen", () => {
+  // Same file, same two shells: these three fall through to the non-lane
+  // branches of humanizeSeqError, which used to read "check the Mount page".
+  const cases: [string, RegExp][] = [
+    ["mount slew failed: no response", /check the mount is connected, unparked and tracking/],
+    ["autofocus curve rejected", /re-run autofocus, or set focus by hand/],
+    ["guiding star lost for 60 s", /re-run the calibration, or pick a brighter guide star/],
+  ];
+  for (const [detail, expected] of cases) {
+    const s = humanizeSeqError(detail);
+    assert(expected.test(s), `${JSON.stringify(detail)} -> ${JSON.stringify(s)}, expected ${expected}`);
+    assert(!/\b(Mount|Focus|Capture|Guide)\s+page\b/i.test(s),
+      `${JSON.stringify(s)} still sends the user to a page the new shell does not have`);
+  }
+});
+
 test("an unknown lane is still a sentence — a leak must not be the default", () => {
   const { message } = parseApiError(409, { detail: "'brand_new_lane' is already running" }, "Conflict");
   assert(!message.includes("brand_new_lane"),

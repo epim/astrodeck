@@ -504,6 +504,24 @@ export default function GuideView() {
 // read-only for reference (see lib/guideSettings.ts).
 type ToastFn = (level: "success" | "info" | "warning" | "error", msg: string) => void;
 
+/** The persisted `GuideConfig` block as the server sends it, whole.
+ *
+ *  The six fields this drawer edits are named because it reads them; the index
+ *  signature is the POINT of the type — every other field of the block (dither
+ *  distance, recovery, the guide camera's exposure/gain/binning/offset, the
+ *  pier-flip recalibration flag, the re-lock gate) has to be carried back
+ *  UNREAD, because the route replaces the block rather than patching it. Adding
+ *  a field server-side must not require a change here. */
+type RawGuideBlock = {
+  ra_algorithm: string;
+  dec_algorithm: string;
+  dec_guide_mode?: string;
+  blc_pulse_ms?: number;
+  ra_params?: Record<string, number | null> | null;
+  dec_params?: Record<string, number | null> | null;
+  [key: string]: unknown;
+};
+
 // ------------------------------------------------------------ provider switch
 // Per-profile guide-provider override (P5-T1, spec §6 P5) + a same-night
 // head-to-head RMS comparison.
@@ -591,6 +609,18 @@ function GuideSettingsDrawer({ canGuide, connected, onToast, seed, onCalibration
 }) {
   const [open, setOpen] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  // THE WHOLE BLOCK THE SERVER LAST SENT, kept verbatim. `PUT /api/guide/settings`
+  // takes a pydantic `GuideConfig` (server/astrodeck/api/app.py:6348) and
+  // `ConfigStore.set_guide` assigns it wholesale (config.py:2069, `cfg.guide =
+  // guide`), so the PUT is a whole-block REPLACE, not a patch: a body carrying
+  // only the six fields this drawer edits resets every other field of the block
+  // to its model default — `dither_pixels` back to 3.0, `recover_guiding` to
+  // true, the guide camera's `exposure_s`/`gain`/`binning`/`offset` to 2.0/100/
+  // 1/30, `recalibrate_after_pier_change` to true, the re-lock gate to 3/10.
+  // Nothing on this screen shows those fields, so the loss was silent: a rig
+  // dithering 7 px went back to 3 because somebody changed a guide algorithm.
+  // Save spreads this and patches the six, so an unrelated field survives.
+  const [block, setBlock] = useState<RawGuideBlock | null>(null);
   // Why the GET's failure is kept, not just toasted: `loaded` now gates Save
   // (see `saveReason`), so the difference between "still reading" and "could
   // not read" is the difference between waiting and doing something about it.
@@ -637,12 +667,9 @@ function GuideSettingsDrawer({ canGuide, connected, onToast, seed, onCalibration
 
   const load = async () => {
     try {
-      const s = await api.get<{
-        ra_algorithm: string; dec_algorithm: string;
-        dec_guide_mode?: string; blc_pulse_ms?: number;
-        ra_params?: Record<string, number | null> | null;
-        dec_params?: Record<string, number | null> | null;
-      }>("/api/guide/settings");
+      const s = await api.get<RawGuideBlock>("/api/guide/settings");
+      // Keep the block BEFORE anything can fail below: it is what Save spreads.
+      setBlock(s);
       // The PERSISTED per-axis params were never read here, and `chooseRa` /
       // `chooseDec` reset the editors to the dossier §15 factory defaults — so
       // the drawer opened on defaults whatever was on the rig, and Save (which
@@ -741,14 +768,31 @@ function GuideSettingsDrawer({ canGuide, connected, onToast, seed, onCalibration
         decGuideMode: decMode,
         blcPulseMs: Number(blcMs), // NaN/blank -> clampBlcPulse floors to 0
       });
-      await api.put("/api/guide/settings", {
+      // WHOLE-BLOCK REPLACE (see `block` above). The six edited fields go on TOP
+      // of the block the rig last sent; everything else is carried back
+      // unchanged instead of snapping to a model default.
+      //
+      // The seed path ("Open in tuning editor", below) sets `loaded` without a
+      // GET, so Save is reachable with no block in hand. Fetch it here rather
+      // than writing a partial one: if that read fails, the throw lands in the
+      // catch and NOTHING is written — losing the save is recoverable, silently
+      // resetting the rest of the block is not.
+      const current = block ?? await api.get<RawGuideBlock>("/api/guide/settings");
+      if (!block) setBlock(current);
+      const body: RawGuideBlock = {
+        ...current,
         ra_algorithm: v.ra.algorithm,
         dec_algorithm: v.dec.algorithm,
         ra_params: toSnake(v.ra.params),
         dec_params: toSnake(v.dec.params),
         dec_guide_mode: v.decGuideMode,
         blc_pulse_ms: v.blcPulseMs,
-      });
+      };
+      const saved = await api.put<RawGuideBlock>("/api/guide/settings", body);
+      // The route answers with the persisted block; keep it, so a second Save in
+      // the same session spreads what the rig now holds (server-side clamps
+      // included) rather than the pre-save copy.
+      setBlock(saved && typeof saved === "object" ? saved : body);
       // reflect any clamp validateGuideSettings applied back into the inputs
       setRaParams(v.ra.params);
       setDecParams(v.dec.params);
@@ -1141,7 +1185,15 @@ function GuideAssistantPanel({ canGuide, connected, onToast, onOpenInTuning,
           tone: "warn",
         });
       }
-      await api.put("/api/guide/settings", body);
+      // The same whole-block replace the drawer's Save obeys (see `RawGuideBlock`
+      // and the `block` state above): `buildApplyBody` returns only the six
+      // tuning fields, and the route persists the body as the entire `guide`
+      // block — so applying a recommendation from here reset the dither
+      // distance, the recovery flag and the guide camera's own dials. Read the
+      // block, patch it, write it back; a failed read throws into the catch
+      // below and nothing is written.
+      const current = await api.get<RawGuideBlock>("/api/guide/settings");
+      await api.put("/api/guide/settings", { ...current, ...body });
       if (clearCal) {
         // The route answers whether a file was actually removed, and an
         // undeletable one still comes back 200 — so "cleared" was a claim, not
