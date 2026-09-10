@@ -7,7 +7,9 @@
 // length so the panel never renders NaN. breachSpans is the DISPLAY-ONLY twin
 // of the server's consecutive-sample sustained-breach rule (spec §4).
 
-import type { WeatherAstrospheric, WeatherForecast, WeatherState } from "../types";
+import type {
+  WeatherAstrospheric, WeatherForecast, WeatherNow, WeatherState, WeatherSurface,
+} from "../types";
 
 export const OPEN_METEO_STALE_S = 45 * 60;
 
@@ -74,6 +76,8 @@ export function normalizeWeather(
     forecast,
     astrospheric: astro,
     alert: raw.alert ?? null,
+    surface: normalizeSurface(raw.surface),
+    now: normalizeNow(raw.now),
   };
 }
 
@@ -158,4 +162,63 @@ export function groupEndLabels(
     label: c.map((e) => e.name).join("+"),
     y: c.reduce((sum, e) => sum + e.y, 0) / c.length,
   }));
+}
+
+// --- surface conditions (server wave S2) -------------------------------------
+// Additive: a payload without them normalizes exactly as it did before, with
+// both fields null. NOT run through clampPct/normalizeSeries -- those exist for
+// percentages, and putting a -3 C dew point through a 0-100 clamp would report
+// a freezing night as 0 C. The server owns the ranges; this only guards types.
+
+/** A finite number, or null for anything else (missing, null, string, NaN). */
+function numOrNull(v: unknown): number | null {
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+
+/** One hourly series, padded to `n` with nulls so every index means the same
+ *  hour in every series and the caller never reads past the end. */
+function numSeries(a: unknown, n: number): (number | null)[] {
+  const src = Array.isArray(a) ? (a as unknown[]) : [];
+  const out: (number | null)[] = [];
+  for (let i = 0; i < n; i++) out.push(numOrNull(src[i]));
+  return out;
+}
+
+/** The hourly surface block, or null when the payload carries none (an older
+ *  engine, weather disabled, or an upstream that dropped the hourly block). */
+export function normalizeSurface(
+  s: WeatherSurface | null | undefined,
+): WeatherSurface | null {
+  if (!s || !Array.isArray(s.times) || s.times.length === 0) return null;
+  const times = s.times.map(String);
+  const n = times.length;
+  return {
+    times,
+    temp_c: numSeries(s.temp_c, n),
+    dewpoint_c: numSeries(s.dewpoint_c, n),
+    humidity_pct: numSeries(s.humidity_pct, n),
+    wind_kmh: numSeries(s.wind_kmh, n),
+    wind_dir_deg: numSeries(s.wind_dir_deg, n),
+    gust_kmh: numSeries(s.gust_kmh, n),
+    cloud_base_m: numSeries(s.cloud_base_m, n),
+  };
+}
+
+/** The single "right now" reading, or null when the payload carries none.
+ *  Each value is independently nullable: a station reporting wind but no dew
+ *  point is a real thing, and it must not take the whole reading down. */
+export function normalizeNow(
+  w: WeatherNow | null | undefined,
+): WeatherNow | null {
+  if (!w || typeof w.ts !== "string") return null;
+  return {
+    ts: w.ts,
+    temp_c: numOrNull(w.temp_c),
+    dewpoint_c: numOrNull(w.dewpoint_c),
+    humidity_pct: numOrNull(w.humidity_pct),
+    wind_kmh: numOrNull(w.wind_kmh),
+    wind_dir_deg: numOrNull(w.wind_dir_deg),
+    gust_kmh: numOrNull(w.gust_kmh),
+    cloud_base_m: numOrNull(w.cloud_base_m),
+  };
 }

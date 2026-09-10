@@ -10,6 +10,7 @@ nothing coordinate-bearing.
 """
 from __future__ import annotations
 
+import math
 import time
 from pathlib import Path
 from uuid import uuid4
@@ -22,6 +23,64 @@ from .persist import ensure_dir, read_json, write_json_atomic
 
 LOCATIONS_FILE = CONFIG_DIR / "locations.json"
 MAX_LOCATIONS = 50
+#: Cap on a drawn horizon polyline. A control point every two degrees of azimuth
+#: is already finer than any tree line a user can trace on a phone; the cap
+#: exists so a persisted location can never grow unbounded from one request.
+MAX_HORIZON_POINTS = 180
+#: Altitude bounds for a horizon control point. Negative is legal (a site on a
+#: ridge looks DOWN at its far horizon); 90 would be a floor at the zenith.
+HORIZON_ALT_MIN_DEG = -10.0
+HORIZON_ALT_MAX_DEG = 90.0
+
+
+def normalize_horizon_points(points) -> list[list[float]] | None:
+    """Validate + canonicalize a per-site horizon polyline, or raise ValueError.
+
+    Input is a list of ``[az_deg, alt_deg]`` pairs. Azimuth is 0..360 and is
+    reduced modulo 360 (so a point drawn at 360 IS the point at 0 — the engine's
+    ``interp_wrap`` reads the same seam), altitude is
+    ``HORIZON_ALT_MIN_DEG..HORIZON_ALT_MAX_DEG``. The result is sorted by
+    azimuth with one point per azimuth (a later point at the same azimuth wins),
+    which is the shape ``sequence.schedule.interp_wrap`` expects.
+
+    THREE-WAY, and the third case is the one that matters: ``None`` means "this
+    location has no drawn horizon" (leave whatever is configured alone), ``[]``
+    means "this site has no obstructions" (an explicit clear). Collapsing the
+    empty list to ``None`` would leave a user who erased their polyline with no
+    way to say so, and the stale line would keep gating slews at a site whose
+    trees are somewhere else.
+
+    Raises ``ValueError`` (never a bare exception) so the API boundary model and
+    the persisted model can share ONE rule and a bad body 422s instead of 500ing
+    inside the store's post-``model_copy`` re-validate."""
+    if points is None:
+        return None
+    if isinstance(points, (str, bytes)) or not isinstance(points, (list, tuple)):
+        raise ValueError("horizon_points must be a list of [az_deg, alt_deg] pairs")
+    by_az: dict[float, float] = {}
+    for raw in points:
+        if isinstance(raw, (str, bytes)) or not isinstance(raw, (list, tuple)):
+            raise ValueError("each horizon point must be an [az_deg, alt_deg] pair")
+        pair = list(raw)
+        if len(pair) != 2:
+            raise ValueError("each horizon point must be an [az_deg, alt_deg] pair")
+        try:
+            az = float(pair[0])
+            alt = float(pair[1])
+        except (TypeError, ValueError):
+            raise ValueError("horizon point values must be numbers")
+        if not (math.isfinite(az) and math.isfinite(alt)):
+            raise ValueError("horizon point values must be finite")
+        if not (0.0 <= az <= 360.0):
+            raise ValueError("horizon point azimuth must be 0..360 degrees")
+        if not (HORIZON_ALT_MIN_DEG <= alt <= HORIZON_ALT_MAX_DEG):
+            raise ValueError(
+                f"horizon point altitude must be {HORIZON_ALT_MIN_DEG:g}.."
+                f"{HORIZON_ALT_MAX_DEG:g} degrees")
+        by_az[az % 360.0] = alt
+    if len(by_az) > MAX_HORIZON_POINTS:
+        raise ValueError(f"at most {MAX_HORIZON_POINTS} horizon points")
+    return [[az, by_az[az]] for az in sorted(by_az)]
 
 
 class SavedLocation(BaseModel):
@@ -33,8 +92,21 @@ class SavedLocation(BaseModel):
     # A horizon profile is a property of the SITE (trees/ridgelines), not the
     # rig; optional so a location may omit it.
     horizon_min_deg: float | None = None
+    #: The drawn horizon PROFILE for this site: sorted ``[[az_deg, alt_deg]]``
+    #: control points (the same shape ``SafetyConfig.horizon`` holds, which is
+    #: what the engine's obstruction rule reads). Additive and optional, so a
+    #: locations.json written before this field loads unchanged with None.
+    horizon_points: list[list[float]] | None = None
     created_ts: float = 0.0
     updated_ts: float = 0.0
+
+    @field_validator("horizon_points", mode="before")
+    @classmethod
+    def _horizon_points_normalized(cls, v):
+        """Validate + sort + dedupe through the shared rule. ``mode="before"``
+        so it sees the raw JSON/kwarg value (a tuple, a list of tuples, a
+        malformed row) rather than something pydantic already coerced."""
+        return normalize_horizon_points(v)
 
     @field_validator("name")
     @classmethod
@@ -163,7 +235,8 @@ class LocationStore:
 
     def create(self, name: str, latitude: float, longitude: float,
                elevation_m: float,
-               horizon_min_deg: float | None = None) -> SavedLocation:
+               horizon_min_deg: float | None = None,
+               horizon_points: list | None = None) -> SavedLocation:
         items = self._items_now()
         collide = self._collision(name, None)
         if collide is not None:
@@ -174,6 +247,7 @@ class LocationStore:
         loc = SavedLocation(name=name.strip(), latitude=latitude,
                             longitude=longitude, elevation_m=elevation_m,
                             horizon_min_deg=horizon_min_deg,
+                            horizon_points=horizon_points,
                             created_ts=now, updated_ts=now)
         items.append(loc)
         self._save()
@@ -181,7 +255,8 @@ class LocationStore:
 
     def update(self, loc_id: str, name: str, latitude: float, longitude: float,
                elevation_m: float,
-               horizon_min_deg: float | None = None) -> SavedLocation:
+               horizon_min_deg: float | None = None,
+               horizon_points: list | None = None) -> SavedLocation:
         items = self._items_now()
         idx = next((i for i, it in enumerate(items) if it.id == loc_id), None)
         if idx is None:
@@ -193,6 +268,7 @@ class LocationStore:
         updated = existing.model_copy(update={
             "name": name.strip(), "latitude": latitude, "longitude": longitude,
             "elevation_m": elevation_m, "horizon_min_deg": horizon_min_deg,
+            "horizon_points": normalize_horizon_points(horizon_points),
             "updated_ts": time.time()})
         # Re-validate ranges (model_copy skips validation).
         updated = SavedLocation(**updated.model_dump())

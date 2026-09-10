@@ -611,3 +611,16 @@ export const deletePack = (): Promise<{ deleted: boolean }> =>
  *  version: no identity, no rig state. */
 export const getHealth = (): Promise<{ ok: boolean; version: string }> =>
   api.get<{ ok: boolean; version: string }>("/healthz");
+
+// ------------------------------------------------------------- remote / relay
+// Imported here rather than in the header block above so this addition is a pure
+// append (the file already does the same for DomeShutter).
+import type { RemoteStatus } from "../types";
+
+/** GET /api/remote/status → is the relay tunnel up, and did THIS request come
+ *  through it? view.status. The read half of the W3 seam: /api/remote/config
+ *  writes the knobs and nothing could read back whether the dial-out was
+ *  connected, so a "relay: connected" badge had nothing to poll. Never carries
+ *  the device token; `relay_host` is a hostname, not the url. */
+export const getRemoteStatus = (): Promise<RemoteStatus> =>
+  api.get<RemoteStatus>("/api/remote/status");

@@ -1756,6 +1756,11 @@ export interface SiteInfo {
   elevation_m?: number;
   is_default: boolean;
   horizon_min_deg: number;
+  // S1: the ACTIVE horizon polyline (config.safety.horizon) as [az, alt] pairs.
+  // Only GET /api/site fills it; the status/summary site block does not carry
+  // it. Retained for every role, exactly like horizon_min_deg -- the four
+  // precise keys above are the ones view.site_precise strips.
+  horizon_points?: [number, number][] | null;
 }
 
 // Saved observing location (server astrodeck/locations.py SavedLocation). Served
@@ -1767,6 +1772,11 @@ export interface SavedLocation {
   longitude: number;  // +E (East-positive)
   elevation_m: number;
   horizon_min_deg: number | null;
+  // S1: the drawn horizon PROFILE for this site, sorted by azimuth with one
+  // point per azimuth. `null`/absent = no line drawn (applying the location
+  // leaves the configured profile alone); `[]` = no obstructions, an explicit
+  // clear. Copied into config.safety.horizon when the location is applied.
+  horizon_points?: [number, number][] | null;
   created_ts: number;
   updated_ts: number;
 }
@@ -2152,6 +2162,45 @@ export interface WeatherState {
   forecast: WeatherForecast | null;
   astrospheric: WeatherAstrospheric | null;
   alert: WeatherAlert | null;
+  // --- surface conditions (server wave S2, 2026-09-10) -----------------------
+  // Optional because they are additive: a payload from an older engine, or one
+  // whose upstream dropped the hourly block, carries neither and every existing
+  // reader keeps working. HOURLY, unlike `forecast`'s 15-minute grid, which is
+  // why they have their own `times` instead of sharing that index space.
+  surface?: WeatherSurface | null;
+  now?: WeatherNow | null;
+}
+
+/** Hourly surface observations at the site. Every series is parallel to
+ *  `times` and to each other, `null` where the upstream had no value. */
+export interface WeatherSurface {
+  times: string[];                  // ISO-8601 Z, hourly
+  temp_c: (number | null)[];        // 2 m air temperature, Celsius
+  dewpoint_c: (number | null)[];    // 2 m dew point, Celsius
+  humidity_pct: (number | null)[];  // 2 m relative humidity, %
+  wind_kmh: (number | null)[];      // 10 m wind speed, km/h
+  /** 10 m wind direction, degrees, METEOROLOGICAL convention: where the wind
+   *  comes FROM. Turn it around before drawing an arrow that points downwind. */
+  wind_dir_deg: (number | null)[];
+  gust_kmh: (number | null)[];      // 10 m gusts, km/h
+  /** Estimated cloud base above the site, metres. DERIVED, not observed: the
+   *  lifting-condensation approximation 125 m per degree of temperature/dew-
+   *  point spread. Says nothing about a layer advected in from elsewhere. */
+  cloud_base_m: (number | null)[];
+}
+
+/** The surface reading nearest this moment; null when the hourly series does
+ *  not cover now (more than an hour away). `ts` is the ISO-Z stamp of the hour
+ *  it actually came from -- "nearest" is up to half an hour off. */
+export interface WeatherNow {
+  ts: string;
+  temp_c: number | null;
+  dewpoint_c: number | null;
+  humidity_pct: number | null;
+  wind_kmh: number | null;
+  wind_dir_deg: number | null;
+  gust_kmh: number | null;
+  cloud_base_m: number | null;
 }
 
 // ============================================================================
@@ -2286,4 +2335,22 @@ export interface GalleryPurgeResult {
   purged: number;
   bytes: number;
   failed: GalleryFailure[];
+}
+
+
+// ------------------------------------------------------------- remote / relay
+// S3: GET /api/remote/status (view.status). `connected` is the TUNNEL's state;
+// `via` is how THIS request arrived, which is a different question -- a LAN
+// browser reads "direct" while the tunnel is up. Carries no secret: `relay_host`
+// is the hostname parsed out of relay_url, never the url and never the device
+// token.
+export interface RemoteStatus {
+  enabled: boolean;
+  home_id: string | null;
+  relay_host: string | null;
+  connected: boolean;
+  last_error: string | null;
+  since_unix: number | null;
+  gen: number | null;
+  via: "direct" | "relay";
 }
