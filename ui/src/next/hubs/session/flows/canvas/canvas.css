@@ -1,0 +1,456 @@
+/* =====================================================================
+   canvas.css - the Flows canvas area's own classes (wave R7, T-R7-1).
+
+   IMPORTED BY THIS AREA'S ROOTS ONLY (`FlowCanvasSurface.tsx` and
+   `FlowStagesPhoneSheet.tsx`), never by `NextApp.tsx`. `next.css` is a single
+   shared file that one task owns; every other area writes its own classes here
+   so twenty concurrent tasks are not editing one cascade.
+
+   Rules, the same as next.css's: prefix `nx-`, one flat class per selector,
+   variants on `data-*`, unlayered so Tailwind utilities do not outrank it, and
+   every colour from an `index.css` token. NOTHING here redefines a class that
+   `next.css` already declares - the two files are disjoint by name.
+
+   WHY THE STAGE CARD IS NOT `.nx-card`. `geometry.portPos()` places every wire
+   anchor from a fixed stack (1 px border + 32 px header + 5 px port-list
+   padding + 20 px rows) and `.nx-card`'s own `12px 14px` padding cannot be
+   reconciled with it. The card wears the design's card vocabulary - 14 px
+   radius, `--bg-panel`, `--line`, an accent border when selected - and keeps
+   the shared arithmetic.
+   ===================================================================== */
+
+/* ------------------------------------------------------------- surface */
+
+.nx-flow-canvas {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background-image:
+    linear-gradient(rgba(6, 7, 11, .86), rgba(6, 7, 11, .93)),
+    url("/bg_nebula.png");
+  background-size: cover;
+  background-position: center;
+}
+
+/* The grid is a SIBLING of the world layer, so it does not pan and does not
+   zoom: a fixed 36 px screen-space texture. It also owns the background press
+   and the click-to-deselect, which is why it sits under the world. */
+.nx-flow-grid {
+  position: absolute;
+  inset: 0;
+  cursor: grab;
+  background-image:
+    repeating-linear-gradient(0deg, rgba(120, 140, 200, .06) 0 1px, transparent 1px 36px),
+    repeating-linear-gradient(90deg, rgba(120, 140, 200, .06) 0 1px, transparent 1px 36px);
+}
+.nx-flow-canvas[data-tier="phone"] .nx-flow-grid { touch-action: none; }
+
+/* `transform-origin: 0 0` is what makes the pan/zoom maths a plain affine pair;
+   centring the origin would put a factor of the canvas size in every one. */
+.nx-flow-world {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+}
+
+/* ---------------------------------------------------------- stage card */
+
+.nx-flow-node {
+  position: absolute;
+  left: 0;
+  top: 0;
+  box-sizing: border-box;
+  border: 1px solid var(--line);
+  border-radius: var(--nx-r-inner);
+  background: var(--bg-panel);
+  color: var(--text);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .45);
+  backdrop-filter: blur(8px);
+}
+/* Selection outranks status; a loss sits below both and above idle. Selection is
+   what the operator is doing right now, busy is what the rig is doing right now,
+   and a loss is a standing fact about the graph, true whether anyone is looking
+   or not. */
+.nx-flow-node[data-loss="warn"] {
+  border-color: color-mix(in srgb, var(--warn) 70%, transparent);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--warn) 22%, transparent), 0 4px 14px rgba(0, 0, 0, .45);
+}
+.nx-flow-node[data-loss="danger"] {
+  border-color: color-mix(in srgb, var(--bad) 70%, transparent);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--bad) 22%, transparent), 0 4px 14px rgba(0, 0, 0, .45);
+}
+.nx-flow-node[data-status="busy"] {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  box-shadow: 0 0 14px color-mix(in srgb, var(--accent) 25%, transparent);
+}
+.nx-flow-node[data-selected="true"] {
+  border-color: var(--accent);
+  box-shadow: 0 0 16px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+/* 32 px, and it must stay 32: `geometry.NODE_HEADER_H` is the sum of this, the
+   1 px border and the port list's 5 px top padding, and every wire anchor on
+   the canvas is computed from it. */
+.nx-flow-node-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  padding: 0 9px;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
+}
+.nx-flow-node-head[data-draggable="true"] { cursor: grab; }
+
+.nx-flow-node-swatch {
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+  flex: none;
+}
+
+.nx-flow-node-kind {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: "Chakra Petch", sans-serif;
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: .14em;
+  color: var(--text);
+}
+
+/* A glyph AND a name, never a colour: the night palette collapses warn and bad
+   toward coral, so an amber mark alone is indistinguishable from a red one. The
+   word lives in the footer pill; this is the at-a-glance half. */
+.nx-flow-node-loss {
+  flex: none;
+  font-family: "Chakra Petch", sans-serif;
+  font-weight: 600;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--warn);
+}
+.nx-flow-node-loss[data-level="danger"] { color: var(--bad); }
+
+.nx-flow-node-led {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 1.5px solid var(--text-faint);
+  background: transparent;
+}
+.nx-flow-node-led[data-status="busy"] { border-color: var(--accent); background: var(--accent); }
+.nx-flow-node-led[data-status="ok"] { border-color: var(--good); background: var(--good); }
+.nx-flow-node-led[data-status="warn"] { border-color: var(--warn); background: var(--warn); }
+.nx-flow-node-led[data-status="bad"] { border-color: var(--bad); background: var(--bad); }
+.nx-flow-node-led[data-pulse="true"] { animation: nx-flow-blink var(--nx-pulse) ease-in-out infinite; }
+
+/* 28 px, and the 44 px door to the same sheet is the EDIT STAGE button the card
+   reveals when it is selected. A 44 px hit area here would have to overhang the
+   header, which is the drag handle, and would swallow the drag it sits on. */
+.nx-flow-node-edit {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+.nx-flow-node-edit:hover {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+/* 5 px, and it must stay 5: see `.nx-flow-node-head`. */
+.nx-flow-node-ports { padding: 5px 0 2px; }
+
+.nx-flow-node-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 3px 10px 8px;
+  min-width: 0;
+}
+.nx-flow-node-marks { display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* ---------------------------------------------------------------- ports */
+
+.nx-flow-port {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+.nx-flow-port[data-dir="out"] { flex-direction: row-reverse; }
+
+/* Half the hit box hangs outside the card, so the target straddles the border
+   the wire anchors to. The box is 22 px WIDE and one row TALL: a 22 px tall box
+   would overlap its neighbour by 2 px and steal the drops that land there, and
+   the row pitch is `geometry.PORT_ROW_H`, which every anchor is computed from.
+   The centre is `-width/2 + width/2` either way, so widening it moves no dot. */
+.nx-flow-port-hit {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 20px;
+  cursor: crosshair;
+}
+.nx-flow-port[data-dir="in"] > .nx-flow-port-hit { margin-left: -11px; }
+.nx-flow-port[data-dir="out"] > .nx-flow-port-hit { margin-right: -11px; }
+/* The phone stage list wires by tap, so the whole row is the button and the dot
+   only has to be seen. */
+.nx-flow-port-hit[data-big="true"] { width: 26px; height: 26px; cursor: pointer; }
+
+.nx-flow-port-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 1.5px solid var(--accent);
+  background: var(--bg);
+}
+.nx-flow-port-dot[data-kind="event"] { border-color: var(--warn); }
+/* Filled when wired or armed. A SHAPE change, not a colour swap, so it survives
+   the night palette collapsing the two lanes together. */
+.nx-flow-port-dot[data-live="true"] { background: var(--accent); }
+.nx-flow-port-dot[data-kind="event"][data-live="true"] { background: var(--warn); }
+.nx-flow-port-dot[data-armed="true"] {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent), 0 0 10px var(--accent);
+}
+
+.nx-flow-port-label {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nx-flow-port-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--nx-r-tile);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.nx-flow-port-btn[data-dir="out"] { flex-direction: row; }
+.nx-flow-port-btn[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.nx-flow-port-btn > .nx-flow-port-hit { margin: 0; }
+
+/* ---------------------------------------------------------------- wires */
+
+.nx-flow-wires {
+  position: absolute;
+  left: 0;
+  top: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+/* The fat transparent band is the ONLY thing a click can land on: a 1.8 px
+   stroke is a ~0.6 px target at the 46% zoom the reference captures use. */
+.nx-flow-wire-hit { pointer-events: stroke; cursor: pointer; }
+.nx-flow-wire { pointer-events: none; }
+.nx-flow-wire-march { animation: nx-flow-dash .6s linear infinite; }
+
+.nx-flow-wire-cut {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--bad);
+  border-radius: 50%;
+  background: var(--bg-raise);
+  color: var(--bad);
+  cursor: pointer;
+  line-height: 1;
+}
+
+@keyframes nx-flow-dash { to { stroke-dashoffset: -24; } }
+@keyframes nx-flow-blink { 50% { opacity: .35; } }
+
+/* Everything meaningful survives with the motion removed: a live wire is still
+   `7 6`, 2.5 px and full-strength, and a busy stage still carries the word. */
+@media (prefers-reduced-motion: reduce) {
+  .nx-flow-wire-march { animation: none; }
+  .nx-flow-node-led[data-pulse="true"] { animation: none; }
+}
+
+/* -------------------------------------------------------- zoom cluster */
+
+.nx-flow-zoom {
+  position: absolute;
+  left: 12px;
+  bottom: 56px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.nx-flow-zoom-pct {
+  display: flex;
+  align-items: center;
+  height: 34px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--nx-r-tile);
+  background: var(--bg-panel);
+}
+
+.nx-flow-add {
+  position: absolute;
+  right: 12px;
+  bottom: 56px;
+  z-index: 5;
+}
+
+/* ------------------------------------------------------------------ log */
+
+.nx-flow-log {
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+}
+.nx-flow-log-body {
+  max-height: 170px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--line);
+  background: color-mix(in srgb, var(--bg) 92%, transparent);
+}
+.nx-flow-log-line { display: flex; gap: 8px; min-width: 0; }
+.nx-flow-log-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  padding: 0 12px;
+  text-align: left;
+  border: 0;
+  border-top: 1px solid var(--line);
+  background: color-mix(in srgb, var(--bg) 85%, transparent);
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.nx-flow-log-last {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nx-flow-log-chev {
+  flex: none;
+  width: 0;
+  height: 0;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-bottom: 6px solid var(--text-faint);
+}
+.nx-flow-log-chev[data-open="true"] {
+  border-bottom: 0;
+  border-top: 6px solid var(--text-faint);
+}
+
+/* ------------------------------------------------------------ tap-wire */
+
+.nx-flow-tapwire {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--accent-dim);
+  border-radius: var(--nx-r-tile);
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg));
+}
+.nx-flow-tapwire-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* -------------------------------------------------------- toolbar (48) */
+
+.nx-flow-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--bg-raise) 70%, transparent);
+  flex-wrap: wrap;
+}
+.nx-flow-toolbar-name {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1 1 120px;
+}
+.nx-flow-toolbar-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nx-flow-toolbar-checks { display: inline-flex; }
+.nx-flow-toolbar-spacer { flex: 1 1 0; min-width: 0; }
+.nx-flow-toolbar-eta { display: flex; flex-direction: column; gap: 1px; }
+
+.nx-flow-issues { margin: 0; padding-left: 16px; display: flex; flex-direction: column; gap: 6px; }
+.nx-flow-issue {
+  margin: 0;
+  font-family: "IBM Plex Sans", sans-serif;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-dim);
+  max-width: 260px;
+}
+
+/* ---------------------------------------------------- phone stage list */
+
+.nx-flow-stages { display: flex; flex-direction: column; gap: 8px; }
+.nx-flow-stage { overflow: hidden; }
+.nx-flow-stage-loss {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0 12px 8px;
+}
+.nx-flow-stage-ports {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 12px 12px;
+}
+.nx-flow-stages-foot { display: flex; flex-direction: column; gap: 8px; }
