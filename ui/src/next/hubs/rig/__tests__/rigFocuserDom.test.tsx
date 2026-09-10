@@ -304,6 +304,21 @@ const testid = (id: string) => q(`[data-testid="${id}"]`);
 const byAria = (label: string) =>
   qa("[aria-label]").find((n: any) => n.getAttribute("aria-label") === label);
 
+// ------------------------------------------------------------- the stylesheet
+// jsdom loads no stylesheet and computes no layout, so the rule is read from
+// disk instead: it is what the browser gets, so it is what is graded. Same
+// shape as `shellCss.test.ts`'s guard on the header row.
+const { readFileSync } = await import("node:fs");
+const NEXT_CSS = readFileSync(new URL("../../../next.css", import.meta.url), "utf8");
+/** The declaration block of ONE rule, by its exact selector. Throws when the
+ *  selector is gone, which is the interesting half of the failure. */
+function cssRule(css: string, selector: string): string {
+  const at = css.indexOf(`${selector} {`);
+  if (at < 0) throw new Error(`next.css has no rule for \`${selector}\``);
+  const end = css.indexOf("}", at);
+  return css.slice(at, end);
+}
+
 // ====================================================== 1. the precondition
 seed();
 mount();
@@ -329,6 +344,27 @@ test("the sheet mounted, with its three readouts, the V-curve and every jog", ()
   assert(text().includes(FOCUSER_FOOTER), "the footer note is missing");
   eq(asked.length, 0,
     "the sheet asked the rig for something on mount - a device sheet renders from the status frame");
+});
+
+// The probe caught OUT 100 rendering as "OUT 1…" at 820: four buttons across
+// the 420 px panel leave 49 px of text at the primitive's 14 px side padding,
+// and an ellipsis over the digit that says how far the drawtube moves is the
+// one character that mattered. jsdom measures nothing, so what is graded is the
+// pair that stops it - the row carries the class, the stylesheet carries the
+// rule - plus the label itself, since shortening the copy would "fix" the clip
+// while losing the same information.
+test("the step ladder is laid out for the panel, and OUT 100 keeps its digits", () => {
+  const row = q('[data-testid="focus-jogs-100"]');
+  assert(row != null, "the 100/10 jog row lost its marker");
+  assert((row.className || "").split(" ").includes("nx-btn-grid"),
+    "the jog row does not carry the class its layout rule keys on");
+  eq(row.getAttribute("data-cols"), "4", "the four-across jog row no longer declares four:");
+  assert((row.getAttribute("style") || "") === "",
+    "the jog row is laid out by an inline style again, where no stylesheet can reach it");
+  assert(/padding-inline/.test(cssRule(NEXT_CSS, '.nx-btn-grid[data-cols="4"] .nx-btn')),
+    "the jog buttons are back on the primitive's 14 px side padding, which is 49 px of label");
+  eq((button("OUT 100").textContent || "").trim(), "OUT 100",
+    "the jog's label was shortened instead of the row being made to fit:");
 });
 
 // =================================================== 2. a jog reaches the rig

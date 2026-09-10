@@ -24,6 +24,23 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+// ------------------------------------------------------------------ css stub
+// The Now screen is an area root now: `NowEmpty` imports `now.css`, where a
+// runnable row's two sub-lines are taught to say how they end. Node has no idea
+// what a `.css` file is, so a load hook answers with an empty module - the same
+// stub `sessionSheets.test.tsx` uses.
+{
+  const { registerHooks } = await import("node:module");
+  registerHooks({
+    load(url: string, context: any, nextLoad: any) {
+      if (url.endsWith(".css")) {
+        return { format: "module", shortCircuit: true, source: "export default {};" };
+      }
+      return nextLoad(url, context);
+    },
+  } as any);
+}
+
 // ---------------------------------------------------------------- jsdom first
 const { JSDOM } = await import("jsdom");
 const dom = new JSDOM(
@@ -221,6 +238,21 @@ const settle = async () => {
   await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
   await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
 };
+
+// ------------------------------------------------------------- the stylesheet
+// The load hook above hands the module system an empty object, so the screen's
+// own rules are read from disk: they are what the browser gets, so they are
+// what is graded.
+const { readFileSync } = await import("node:fs");
+const NOW_CSS = readFileSync(new URL("../now/now.css", import.meta.url), "utf8");
+/** The declaration block of ONE rule, by its exact selector. Throws when the
+ *  selector is gone, which is the interesting half of the failure. */
+function cssRule(css: string, selector: string): string {
+  const at = css.indexOf(`${selector} {`);
+  if (at < 0) throw new Error(`now.css has no rule for \`${selector}\``);
+  const end = css.indexOf("}", at);
+  return css.slice(at, end);
+}
 
 const container = win.document.getElementById("root") as any;
 const root = createRoot(container);
@@ -614,6 +646,41 @@ await testAsync("a resolved night reaches the row as a duration and a clock", as
   // sentence, not folded into a generic error or into a zero.
   assert(/No observatory site is set\./.test(text),
     `the server's refusal was rewritten or swallowed: "${text.slice(0, 200)}"`);
+});
+
+// The probe found both sub-lines cut mid-sentence at 390 and 820, with no
+// ellipsis and nothing to press: the row's sub is ONE `.nx-row-sub`, which
+// ellipsises its own text, and the two stacked lines inside it simply
+// overflowed it. The verdict is the sentence the row exists to deliver ("No
+// observatory site is set, ..." is what to go and fix), so it wraps in full and
+// the description above it ellipsises on one line. jsdom lays nothing out; what
+// is graded is the class on each line and the rule in the stylesheet.
+await testAsync("both sub-lines say how they end - the verdict whole, the description with an ellipsis", async () => {
+  const rows = [...container.querySelectorAll("[data-runnable]")] as any[];
+  assert(rows.length > 0, "the list is empty - this would pass over a blank page");
+  const row = rows.find((r: any) => r.querySelector(".nx-runnable-verdict") != null);
+  assert(row != null, "no row carries a tonight verdict - the fixture is wrong, not the component");
+
+  assert(row.querySelector(".nx-runnable") != null,
+    "the row does not carry the class that stops the wrapper clipping its lines");
+  const meta = row.querySelector(".nx-runnable-meta");
+  assert(meta != null, "the description line does not carry its own class");
+  assert((meta.getAttribute("style") || "") === "",
+    "the sub-lines are laid out by an inline style again, where no stylesheet can reach them");
+
+  assert(/overflow:\s*visible/.test(cssRule(NOW_CSS, ".nx-runnable .nx-row-sub")),
+    "the wrapper still clips its children, which is the cut with no ellipsis");
+  assert(/text-overflow:\s*ellipsis/.test(cssRule(NOW_CSS, ".nx-runnable-meta")),
+    "the description can be cut without an ellipsis again");
+  assert(/white-space:\s*normal/.test(cssRule(NOW_CSS, ".nx-runnable-verdict")),
+    "the verdict is back on one nowrap line, so the sentence that says what to fix is cut");
+
+  // ...and the sentence itself is whole in the DOM: a fix that shortened the
+  // server's refusal to make it fit would pass every assertion above.
+  const verdict = (row.querySelector(".nx-runnable-verdict").textContent || "") as string;
+  assert(verdict.trim().length > 0, "the verdict line is empty");
+  assert(!verdict.includes("…") && !verdict.includes("..."),
+    `the verdict was truncated in the copy instead of wrapped in the layout: "${verdict}"`);
 });
 
 await testAsync("a viewer gets the list and the verbs, locked, and fires NOTHING at /tonight", async () => {

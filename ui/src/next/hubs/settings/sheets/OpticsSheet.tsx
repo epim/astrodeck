@@ -591,7 +591,9 @@ export function OpticsSheet(): JSX.Element {
       </Card>
 
       {/* ------------------------------------------------- readouts + dial */}
-      <ReadoutGrid cols={4} data-testid="optics-tiles">
+      {/* `nx-readouts-wrap` (next.css) wraps the row inside the 420 px panel
+          instead of clipping FOCAL LENGTH a character short. */}
+      <ReadoutGrid cols={4} className="nx-readouts-wrap" data-testid="optics-tiles">
         <ReadoutTile
           label="FOCAL LENGTH"
           value={view.flMm > 0 ? `${Math.round(draft.focal_length_mm)} mm` : "not set"}

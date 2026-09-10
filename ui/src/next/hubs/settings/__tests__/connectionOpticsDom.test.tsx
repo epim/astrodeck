@@ -188,6 +188,21 @@ const q = (sel: string) => container.querySelector(sel) as any;
 const qa = (sel: string) => Array.from(container.querySelectorAll(sel)) as any[];
 const byId = (id: string) => q(`[data-testid="${id}"]`);
 const text = () => String(container.textContent ?? "");
+
+// ------------------------------------------------------------- the stylesheet
+// jsdom loads no stylesheet and computes no layout, so the rules are read from
+// disk instead: they are what the browser gets, so they are what is graded.
+// Same shape as `shellCss.test.ts`'s guard on the header row.
+const { readFileSync } = await import("node:fs");
+const NEXT_CSS = readFileSync(new URL("../../../next.css", import.meta.url), "utf8");
+/** The declaration block of ONE rule, by its exact selector. Throws when the
+ *  selector is gone, which is the interesting half of the failure. */
+function cssRule(css: string, selector: string): string {
+  const at = css.indexOf(`${selector} {`);
+  if (at < 0) throw new Error(`next.css has no rule for \`${selector}\``);
+  const end = css.indexOf("}", at);
+  return css.slice(at, end);
+}
 const click = (el: any) => {
   act(() => { el.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true })); });
 };
@@ -518,6 +533,29 @@ test("optics: four readout tiles, the preview and the live field line", () => {
     /1\.46″ per pixel · well sampled/.test(byId("optics-caption").textContent),
     `the caption lost the sampling verdict: "${byId("optics-caption").textContent}"`,
   );
+});
+
+// The probe caught FOCAL LENGTH one character short at 820: four tiles across
+// the 420 px panel leave 59 px of label, `.nx-readout-label` is nowrap with
+// nowhere to put the rest, and the tile beside it painted over the H. The name
+// of the field cannot be shortened - this sheet's whole subject is telling it
+// apart from the GUIDE SCOPE focal length below - so the row wraps instead.
+// jsdom lays nothing out; what is graded is the class on the row, the rule in
+// the stylesheet, and the label still being the whole phrase.
+test("optics: the tile row is taught to wrap inside the panel", () => {
+  const tiles = byId("optics-tiles");
+  assert(tiles != null, "the tile row lost its marker");
+  assert((tiles.className || "").split(" ").includes("nx-readouts-wrap"),
+    "the tile row does not carry the class the wrap rule keys on");
+  assert(/repeat\(auto-fit/.test(cssRule(NEXT_CSS, ".nx-readouts-wrap[data-cols]")),
+    "the tile row is still a fixed four columns, which is 59 px of label a tile in the panel");
+  assert(/white-space:\s*normal/.test(cssRule(NEXT_CSS, ".nx-readouts-wrap .nx-readout-label")),
+    "a tile label is still nowrap: FOCAL LENGTH goes back to being painted over");
+  const label = qa(".nx-readout-label")
+    .map((n: any) => (n.textContent || "").trim())
+    .find((t: string) => t.startsWith("FOCAL"));
+  eq(label, "FOCAL LENGTH",
+    "the label was shortened instead of the row being made to fit:");
 });
 
 test("optics: the aperture is absent, not invented, until the user says", () => {
