@@ -10,8 +10,8 @@
 // a piece of metal), and an unchecked slot still contributing its exposure.
 
 import {
-  OSC_LABEL, filterColor, hourStops, hoursLabel, nextExposure, oscCount, passesFor,
-  planLine, quickRows, snapHours, wheelModel,
+  OSC_LABEL, channelLabel, filterColor, hourStops, hoursLabel, nextExposure, oscCount,
+  oscLabel, passesFor, planLine, quickRows, snapHours, wheelModel,
 } from "../quickModel";
 
 let passed = 0;
@@ -56,14 +56,73 @@ test("exposures come from the rig's pinned defaults, matched by NAME not index",
 });
 
 test("no wheel at all is one channel, and its names are flagged as assumed", () => {
-  const w = wheelModel({ names: [] }, {}, {});
+  const w = wheelModel({ names: [] }, {}, {}, true);
   eq(w.fromRig, false, "nothing came off the rig");
   eq(w.oneChannel, true, "the sheet shows a single EXPOSURE row");
+  eq(w.source, "no-wheel", "a camera and no wheel IS a one-channel rig");
+  eq(w.slots.length, 0, "the seven assumed names are not offered - none of them can be shot");
 });
 
 test("a wheel reporting only unnamed slots is not this rig's wheel", () => {
-  const w = wheelModel({ names: ["Slot 1", "Slot 2", ""] }, {}, {});
+  const w = wheelModel({ names: ["Slot 1", "Slot 2", ""] }, {}, {}, true);
   eq(w.fromRig, false, "unnamed slots cannot name a filter");
+  // AND it must not say "no wheel": there is one, bolted to the telescope.
+  eq(w.source, "unnamed-wheel", "a wheel that names nothing is still a wheel");
+  eq(w.oneChannel, true, "nothing in it can be cycled");
+});
+
+test("a wheel whose every slot is opaque names nothing shootable either", () => {
+  const w = wheelModel({ names: ["Dark", "Dark2"], opaque: [true, true] }, {}, {}, true);
+  eq(w.source, "unnamed-wheel", "two blackout slots are not two filters");
+  eq(w.slots.length, 0, "and neither may be offered");
+});
+
+// THE SPLIT THAT MAKES `ASSUMED_WHEEL_NOTE` REACHABLE. "This rig has no filter
+// wheel" and "there is no rig here to ask" were one boolean, so the branch that
+// renders the assumed seven could never run and the branch that did run printed
+// a colour claim ("RGB") about a camera nobody had asked.
+test("with no camera connected there is no rig to describe, so the seven are assumed", () => {
+  const w = wheelModel({ names: undefined }, {}, {}, false);
+  eq(w.source, "assumed", "a laptop planner, not a one-channel rig");
+  eq(w.oneChannel, false, "so it gets the checklist, with the note over it");
+  eq(w.slots.length, 7, "the assumed seven");
+});
+
+test("the rig's own wheel wins even with the camera unplugged", () => {
+  const w = wheelModel(WHEEL, {}, {}, false);
+  eq(w.source, "wheel", "these names came off the wheel, whatever the camera is doing");
+  eq(w.slots.length, 5, "and they are still the rig's own");
+});
+
+test("one clear slot is one channel that keeps its own name", () => {
+  const w = wheelModel({ names: ["L", "Dark"], opaque: [false, true] }, {}, {}, true);
+  eq(w.source, "one-slot", "one usable slot");
+  eq(w.oneChannel, true, "nothing to cycle");
+  eq(w.slots.length, 1, "");
+  eq(w.slots[0].name, "L", "the wheel's own name, never the OSC label");
+});
+
+// ------------------------------------------------------------- what it says
+
+test("the colour claim needs a bayer pattern; nothing else may make it", () => {
+  eq(oscLabel("RGGB").title, "ONE-SHOT COLOUR - NO WHEEL", "a frame said RGGB");
+  assert(oscLabel("RGGB").sub.includes("RGGB"), "and the sub names the matrix the rig reported");
+  eq(oscLabel(null).title, "ONE CHANNEL - NO WHEEL", "a mono camera with no wheel shoots luminance");
+  eq(oscLabel(undefined).title, "ONE CHANNEL - NO WHEEL", "no frame yet is not a colour signal");
+  eq(oscLabel("  ").title, "ONE CHANNEL - NO WHEEL", "nor is an empty string");
+  for (const p of [null, undefined, "RGGB"]) {
+    assert(!/\bRGB\b/.test(oscLabel(p).title), `"${String(p)}" must never print a bare RGB`);
+  }
+});
+
+test("a wheel that is there is never described as absent", () => {
+  const one = wheelModel({ names: ["L", "Dark"], opaque: [false, true] }, {}, {}, true);
+  eq(channelLabel(one, "RGGB").title, "L - ONE SLOT", "the slot's real name, not the sensor's");
+  const unnamed = wheelModel({ names: ["Slot 1"] }, {}, {}, true);
+  eq(channelLabel(unnamed, null).title, "ONE CHANNEL - NO USABLE SLOT", "");
+  assert(!/NO WHEEL/.test(channelLabel(unnamed, null).title), "there IS a wheel");
+  const none = wheelModel({ names: undefined }, {}, {}, true);
+  eq(channelLabel(none, "RGGB").title, "ONE-SHOT COLOUR - NO WHEEL", "");
 });
 
 test("the operator's own ticks and exposures beat the defaults", () => {
@@ -114,6 +173,21 @@ test("the one-channel branch and passesFor agree exactly", () => {
   const one = [{ name: OSC_LABEL, exposure: 120, narrowband: false, checked: true }];
   eq(oscCount(6, 120), passesFor(6, one), "a single filter IS one sub per pass");
   eq(oscCount(6, 120), 180, "21600 / 120");
+});
+
+// The same equality over the model the SHEET builds, not a hand-written slot.
+// A one-slot rig wheel takes the one-channel card (which counts with `oscCount`)
+// while its payload is a real filter list (which the cycle would count with
+// `passesFor`). If those two ever disagreed the card would promise one night
+// and the flow would shoot another.
+test("a one-slot rig wheel counts the same either way it is counted", () => {
+  const w = wheelModel({ names: ["L", "Dark"], opaque: [false, true] }, {}, {}, true);
+  const exp = w.slots[0].exposure;
+  eq(exp, 60, "L's broadband default");
+  for (const h of [1, 2.5, 6]) {
+    eq(oscCount(h, exp), passesFor(h, w.slots), `${h} h of one slot is one count, not two`);
+  }
+  eq(oscCount(6, exp), 360, "21600 / 60");
 });
 
 // ------------------------------------------------------------- the window

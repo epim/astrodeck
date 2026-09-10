@@ -32,6 +32,7 @@ import { useLock } from "../../../lib/gateHook";
 import { windowLabel } from "../../../lib/reach";
 import { useFrameSettings, useFraming, useSite, useStore, useWeather } from "../../../../store";
 import { apiErrorPayload } from "../../../../lib/apiError";
+import { resolveRoleConnected } from "../../../../lib/caps";
 import { flowsApi } from "../../../../lib/flowsApi";
 import {
   QUICK_RUN_FAILED, QUICK_SAVE_FAILED, decDms, quickPayload, raHms, targetFromEntry,
@@ -40,11 +41,12 @@ import {
 import type { FlowGraphRec, FlowRecordRec } from "../../../../components/flows/flowsTypes";
 import { skyPrefs, type QuickPrefs } from "../finder";
 import {
-  ASSUMED_WHEEL_NOTE, FILTER_FOOTER, INFO, NO_FILTER_REASON, floorLegend, mosaicPlanNote,
+  ASSUMED_WHEEL_NOTE, FILTER_FOOTER, INFO, NO_FILTER_REASON, ONE_CHANNEL_FOOTER, OSC_FOOTER,
+  floorLegend, mosaicPlanNote,
 } from "./quickCopy";
 import {
-  OSC_LABEL, filterColor, finishLabel, hourStops, hoursLabel, isDawnStop, nextExposure,
-  oscCount, passesFor, planLine, quickRows, snapHours, wheelModel,
+  OSC_LABEL, channelLabel, filterColor, finishLabel, hourStops, hoursLabel, isDawnStop,
+  nextExposure, oscCount, passesFor, planLine, quickRows, snapHours, wheelModel,
 } from "./quickModel";
 import {
   NightArc, curveFromNight, hoursToDawn, type ArcCurve, type ArcHold,
@@ -171,6 +173,30 @@ export function QuickSessionSheet({ params }: SheetProps): JSX.Element {
   const wheelNarrow = useStore((s) => s.status?.filterwheel?.narrowband);
   const wheelExposures = useStore((s) => s.status?.filterwheel?.exposures);
 
+  /**
+   * IS THERE A RIG HERE AT ALL, which is not the same as "is there a wheel".
+   *
+   * The one-channel card claims something about a real sensor ("no filter
+   * wheel is connected, so every sub is the same channel"). With nothing
+   * connected there is no sensor to claim it about, and this sheet is a planner
+   * on a laptop - which is the case `ASSUMED_WHEEL_NOTE` exists for. The house
+   * helper is used rather than a raw `status.connected.camera` read because a
+   * bridged rig reports its roles on `backend_links` instead.
+   */
+  const cameraConnected = useStore((s) => resolveRoleConnected(
+    "camera", s.status?.backend_links, s.status?.connected, s.equipConnected,
+  ).connected);
+
+  /**
+   * THE ONLY COLOUR SIGNAL THE CLIENT HAS.
+   *
+   * `RigStatus.camera` has no colour or bayer field; `bayer_pattern` reaches
+   * the client on a captured FRAME (`PreviewInfo.bayer_pattern`). Read as one
+   * narrow string rather than through `usePreview()` so a preview arriving
+   * every few seconds during a capture does not re-render this whole sheet.
+   */
+  const bayerPattern = useStore((s) => s.preview?.bayer_pattern ?? null);
+
   const [prefs, setPrefs] = useState(() => skyPrefs.getQuick());
   const persist = (next: QuickPrefs): void => {
     setPrefs(next);
@@ -194,17 +220,45 @@ export function QuickSessionSheet({ params }: SheetProps): JSX.Element {
       { names: wheelNames, opaque: wheelOpaque, narrowband: wheelNarrow, exposures: wheelExposures },
       prefs.on,
       prefs.exp,
+      cameraConnected,
     ),
-    [wheelNames, wheelOpaque, wheelNarrow, wheelExposures, prefs.on, prefs.exp],
+    [wheelNames, wheelOpaque, wheelNarrow, wheelExposures, prefs.on, prefs.exp, cameraConnected],
   );
 
   const hours = Math.min(prefs.dawn && dawnH != null ? dawnH : prefs.hours, span);
-  const rows = useMemo(() => quickRows(hours, wheel.slots), [hours, wheel.slots]);
-  const checked = rows.filter((r) => r.checked);
-  const passes = passesFor(hours, wheel.slots);
 
-  const oscExposure = prefs.exp[OSC_LABEL] ?? 120;
+  /**
+   * THE CYCLE ARITHMETIC IS NOT COMPUTED FOR A RIG THAT HAS NO CYCLE.
+   *
+   * It used to be. With no wheel, `wheel.slots` was the seven ASSUMED names, so
+   * `rows` had seven rows and `checked.length` was seven - none of which could
+   * ever reach the payload (`filters: []`) - and that seven was then handed to
+   * `planLine` as `checkedCount`, where only the one-channel head's ignoring it
+   * kept "7 filters" off the button. Numbers that describe nothing are how a
+   * screen and a night come apart.
+   */
+  const rows = useMemo(
+    () => (wheel.oneChannel ? [] : quickRows(hours, wheel.slots)),
+    [wheel.oneChannel, hours, wheel.slots],
+  );
+  const checked = rows.filter((r) => r.checked);
+  const passes = wheel.oneChannel ? 0 : passesFor(hours, wheel.slots);
+
+  /**
+   * THE ONE CHANNEL, and what it is called in the FITS header.
+   *
+   * A rig whose wheel has exactly one clear slot posts that slot's REAL name,
+   * not the `OSC` label: the payload's `filters` is what makes the engine
+   * command the carousel, and a wheel left parked on its blackout slot would
+   * otherwise shoot the whole night through a piece of metal. Only a rig with
+   * no wheel at all posts an empty `filters` and the `OSC` label, because there
+   * is nothing to command and an invented name would land in the header.
+   */
+  const oneSlot = wheel.source === "one-slot" ? (wheel.slots[0] ?? null) : null;
+  const channelName = oneSlot?.name ?? OSC_LABEL;
+  const oscExposure = oneSlot?.exposure ?? prefs.exp[OSC_LABEL] ?? 120;
   const oscSubs = oscCount(hours, oscExposure);
+  const channel = channelLabel(wheel, bayerPattern);
 
   // ------------------------------------------------------------- the arc
   const curves: ArcCurve[] = useMemo(() => {
@@ -252,8 +306,12 @@ export function QuickSessionSheet({ params }: SheetProps): JSX.Element {
     ?? mount.lockedReason
     ?? (target == null ? "Waiting for the catalogue to answer for this target." : null)
     ?? (noFilters ? NO_FILTER_REASON : null)
+    // A one-channel rig has no pass and no filters, so the cycle's sentence
+    // would name two things that are not on its screen.
     ?? (noPasses
-      ? "One pass of these filters is longer than the window - shorten a sub or lengthen the night."
+      ? (wheel.oneChannel
+        ? "One sub is longer than the window - shorten the exposure or lengthen the night."
+        : "One pass of these filters is longer than the window - shorten a sub or lengthen the night.")
       : null)
     ?? (busy ? "Already creating the flow. One moment." : null);
 
@@ -290,9 +348,11 @@ export function QuickSessionSheet({ params }: SheetProps): JSX.Element {
     if (ctaReason || !target) return;
     setBusy(true);
     try {
-      const filters = wheel.oneChannel ? [] : checked.map((r) => r.name);
+      const filters = wheel.oneChannel
+        ? (oneSlot ? [oneSlot.name] : [])
+        : checked.map((r) => r.name);
       const exposures: Record<string, number> = wheel.oneChannel
-        ? { [OSC_LABEL]: oscExposure }
+        ? { [channelName]: oscExposure }
         : Object.fromEntries(rows.map((r) => [r.name, r.exposure]));
       const subs = wheel.oneChannel ? oscSubs : passes;
       const answers = quickPayload({
@@ -488,13 +548,21 @@ export function QuickSessionSheet({ params }: SheetProps): JSX.Element {
         {/* --------------------------------------------------- filter cycle */}
         {wheel.oneChannel ? (
           <section style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            <HeaderRow label="EXPOSURE · ONE-SHOT COLOUR" onHold={() => openBrief("wheel")} right={null} />
+            {/* The header used to read "EXPOSURE · ONE-SHOT COLOUR" whatever the
+                camera was. The identity moved into the card, where it is read
+                off a bayer pattern the rig reported rather than asserted. */}
+            <HeaderRow label="EXPOSURE" onHold={() => openBrief("osc")} right={null} />
             <Card tone="default">
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-                <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                  <span className="nx-display" style={{ fontSize: 12, letterSpacing: ".1em" }}>
-                    {wheel.fromRig ? `${wheel.slots[0]?.name ?? OSC_LABEL} · one slot` : "RGB · no wheel"}
+                <div style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0 }}>
+                  <span
+                    data-testid="quick-osc-title"
+                    className="nx-display"
+                    style={{ fontSize: 12, letterSpacing: ".1em" }}
+                  >
+                    {channel.title}
                   </span>
+                  <Mono size={10} tone="dim" data-testid="quick-osc-sub">{channel.sub}</Mono>
                   <Mono size={10} tone="dim">
                     {`gain ${frame.gain} · bin ${frame.binning} · reject HFR 3.5″`}
                   </Mono>
@@ -506,17 +574,19 @@ export function QuickSessionSheet({ params }: SheetProps): JSX.Element {
                     data-testid="quick-osc-exposure"
                     onClick={() => persist({
                       ...prefs,
-                      exp: { ...prefs.exp, [OSC_LABEL]: nextExposure(oscExposure) },
+                      exp: { ...prefs.exp, [channelName]: nextExposure(oscExposure) },
                     })}
                   >
                     {`${oscExposure} s`}
                   </button>
-                  <Mono size={11}>{`×${oscSubs}`}</Mono>
+                  <span data-osc-count={oscSubs}>
+                    <Mono size={11} data-testid="quick-osc-count">{`×${oscSubs}`}</Mono>
+                  </span>
                 </div>
               </div>
             </Card>
             <p style={{ fontSize: 11.5, lineHeight: 1.5, color: "var(--text-3, #7683a5)" }}>
-              {FILTER_FOOTER}
+              {bayerPattern ? OSC_FOOTER : ONE_CHANNEL_FOOTER}
             </p>
           </section>
         ) : (
@@ -525,9 +595,9 @@ export function QuickSessionSheet({ params }: SheetProps): JSX.Element {
               label="FILTER CYCLE"
               onHold={() => openBrief("wheel")}
               right={
-                wheel.fromRig
-                  ? `${checked.length} of ${wheel.slots.length} from the wheel · tap a time to change it`
-                  : ASSUMED_WHEEL_NOTE
+                wheel.source === "assumed"
+                  ? ASSUMED_WHEEL_NOTE
+                  : `${checked.length} of ${wheel.slots.length} from the wheel · tap a time to change it`
               }
             />
             <div style={{ display: "flex", height: 6, borderRadius: 999, overflow: "hidden", gap: 2, background: "rgba(120,140,200,.1)" }}>

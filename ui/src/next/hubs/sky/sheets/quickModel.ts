@@ -62,12 +62,42 @@ export interface WheelStatusLike {
   exposures?: (number | null)[];
 }
 
+/**
+ * WHY THERE IS ONE CHANNEL, which is not the same question as whether there is.
+ *
+ * `oneChannel` used to carry both. It was `!fromRig || slots.length <= 1`, so
+ * "this rig has no filter wheel" and "there is no rig here to ask" printed the
+ * same sentence - and the sentence it printed was "RGB", a colour claim no rig
+ * had made. The arithmetic reads `oneChannel`; the copy reads `source`.
+ *
+ *  - `"wheel"`         this rig's own wheel, more than one clear slot.
+ *  - `"one-slot"`      this rig's own wheel with exactly one clear slot. Its
+ *                      real name is printed and its real name is posted, so a
+ *                      carousel parked on the blackout slot still gets a move
+ *                      command.
+ *  - `"unnamed-wheel"` a wheel is attached and names nothing shootable (every
+ *                      slot opaque, or all still called `Slot 3`). There IS a
+ *                      wheel, so this must not say "no wheel".
+ *  - `"no-wheel"`      a camera is connected and no wheel is. The only case
+ *                      that may speak about the sensor's own colour matrix.
+ *  - `"assumed"`       no rig to ask. The seven assumed names are a PLANNING
+ *                      aid and the header says so (`ASSUMED_WHEEL_NOTE`).
+ */
+export type WheelSource = "wheel" | "one-slot" | "unnamed-wheel" | "no-wheel" | "assumed";
+
 export interface WheelModel {
+  /** The slots the sheet may offer. EMPTY for `no-wheel`/`unnamed-wheel`: the
+   *  seven fallback names are not this rig's and would never be shot, and a row
+   *  that cannot reach the payload is a row that lies about the night. */
   slots: WheelSlot[];
-  /** False when these names are the assumed seven rather than this rig's. */
+  /** False when these names are the assumed seven rather than this rig's.
+   *  Equivalent to `source === "wheel" || source === "one-slot"`; kept because
+   *  it is the question `resolveWheel` answers. */
   fromRig: boolean;
-  /** One usable slot, or no wheel at all: the sheet shows one EXPOSURE row. */
+  /** The sheet shows one EXPOSURE row instead of a filter checklist. */
   oneChannel: boolean;
+  /** Why. Read by the copy, never by the arithmetic. */
+  source: WheelSource;
 }
 
 /**
@@ -81,11 +111,20 @@ export interface WheelModel {
  * A slot the operator has never touched is CHECKED and takes the wheel's own
  * pinned exposure, then `defaultExposureFor` - 180 s for narrowband, 60 s
  * otherwise - so a fresh sheet describes the rig rather than a guess.
+ *
+ * `cameraConnected` is the ONLY thing that separates "this rig shoots one
+ * channel" from "there is no rig here to describe". The one-channel card makes
+ * a claim about a real sensor, so it may only be shown when there is one; with
+ * nothing connected the sheet is a planner and says the seven names are
+ * assumed. It is the caller's `resolveRoleConnected("camera", ...)` answer,
+ * passed in rather than read here because this module is pure. It defaults to
+ * true so a call site that only cares about the wheel keeps today's meaning.
  */
 export function wheelModel(
   wheel: WheelStatusLike | null | undefined,
   on: Record<string, boolean>,
   exp: Record<string, number>,
+  cameraConnected = true,
 ): WheelModel {
   const { filters, fromRig } = resolveWheel(wheel?.names, wheel?.opaque);
   // Index back into the rig's own arrays by NAME, not by position: `filters`
@@ -108,7 +147,77 @@ export function wheelModel(
       checked: typeof on[name] === "boolean" ? on[name] : true,
     };
   });
-  return { slots, fromRig, oneChannel: !fromRig || slots.length <= 1 };
+  // A wheel is ATTACHED when the rig published a slot list at all. `names` is
+  // `undefined` exactly when `status.filterwheel` is absent, which is what
+  // `hub.poll_status` publishes with no wheel connected - so this distinguishes
+  // "no wheel" from "a wheel that names nothing shootable", and those two must
+  // not print the same sentence.
+  const published = wheel?.names;
+  const attached = Array.isArray(published) && published.length > 0;
+
+  if (fromRig) {
+    return slots.length === 1
+      ? { slots, fromRig, oneChannel: true, source: "one-slot" }
+      : { slots, fromRig, oneChannel: false, source: "wheel" };
+  }
+  if (attached) return { slots: [], fromRig, oneChannel: true, source: "unnamed-wheel" };
+  if (cameraConnected) return { slots: [], fromRig, oneChannel: true, source: "no-wheel" };
+  return { slots, fromRig, oneChannel: false, source: "assumed" };
+}
+
+/**
+ * What the one-channel card calls a rig with a camera and no filter wheel.
+ *
+ * THE ONLY COLOUR SIGNAL THE CLIENT HAS is `PreviewInfo.bayer_pattern`, which
+ * reaches it on a captured FRAME and nowhere else: `RigStatus.camera` carries
+ * no colour or bayer flag at all. So this says "one-shot colour" only when a
+ * frame has said so, and "one channel" otherwise. The card used to read "RGB -
+ * no wheel" unconditionally, which is a colour claim about a mono camera that
+ * shoots luminance, made by the UI and not by the rig.
+ *
+ * (When the status bus later carries `camera.is_color`/`camera.bayer_pattern`,
+ * that becomes a second caller of this same helper - not a second sentence.)
+ */
+export function oscLabel(
+  bayerPattern: string | null | undefined,
+): { title: string; sub: string } {
+  const pattern = (bayerPattern ?? "").trim();
+  return pattern !== ""
+    ? {
+      title: "ONE-SHOT COLOUR - NO WHEEL",
+      sub: `the camera's own ${pattern} matrix - one channel, no filter changes`,
+    }
+    : {
+      title: "ONE CHANNEL - NO WHEEL",
+      sub: "no filter wheel is connected, so every sub is the same channel",
+    };
+}
+
+/**
+ * The one-channel card's identity for every `source` that reaches it.
+ *
+ * `oscLabel` owns the no-wheel case (and the colour claim); the other two
+ * one-channel sources are about a wheel that IS there, so neither may borrow
+ * its sentence.
+ */
+export function channelLabel(
+  wheel: WheelModel,
+  bayerPattern: string | null | undefined,
+): { title: string; sub: string } {
+  if (wheel.source === "one-slot") {
+    const name = wheel.slots[0]?.name ?? OSC_LABEL;
+    return {
+      title: `${name} - ONE SLOT`,
+      sub: `${name} is the wheel's only clear slot, so every sub is the same channel`,
+    };
+  }
+  if (wheel.source === "unnamed-wheel") {
+    return {
+      title: "ONE CHANNEL - NO USABLE SLOT",
+      sub: "the wheel reports no named, clear slot, so every sub is the same channel",
+    };
+  }
+  return oscLabel(bayerPattern);
 }
 
 /**
