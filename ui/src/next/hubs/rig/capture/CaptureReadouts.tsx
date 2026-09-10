@@ -169,12 +169,11 @@ export function CaptureReadouts(props: CaptureReadoutsProps): JSX.Element {
   /** The slot list, keyed by SLOT INDEX. Two slots may carry the same name and
    *  the wheel only knows positions - the 2026-08-02 offset bug shifted every
    *  frame's FILTER header by one slot, and a name-keyed control cannot even
-   *  express which slot it meant. The em-dash the shared builder puts in a
-   *  blackout label is rewritten to a hyphen here, per the copy rule. */
+   *  express which slot it meant. */
   const filterOptions: DialOption<number>[] = (filterCategory?.kind === "entry"
     ? []
     : filterCategory?.options ?? []
-  ).map((o) => ({ value: Number(o.id), label: o.label.replace(/\s*—\s*/g, " - ") }));
+  ).map((o) => ({ value: Number(o.id), label: o.label }));
 
   const gainOptions = GAIN_PRESETS.filter((g) => !maxGain || g <= maxGain);
   const binOptions = BIN_PRESETS.filter((b) => b <= maxBin);

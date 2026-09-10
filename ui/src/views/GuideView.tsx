@@ -187,7 +187,7 @@ export default function GuideView() {
     : `Read-only session — ${accessPhrase("control.guide")} required`;
   const noGuiderReason = connected
     ? null
-    : "No guider is connected — set one up on the Equipment page";
+    : "No guider is connected - connect a guide camera first";
   // What the "guide" lane is doing right now, in the user's words. Used by
   // three of the four reasons below, so the screen never offers two different
   // accounts of the same operation.
@@ -333,7 +333,7 @@ export default function GuideView() {
         <Panel title="Control" right={!canGuide && <ReadOnlyBadge />}>
           {!connected && (
             <p className="text-xs text-warn mb-3">
-              no guider — connect the simulator rig, an Alpaca guide camera, or PHD2 on the Rig page
+              no guider - connect the simulator rig, an Alpaca guide camera, or PHD2 first
             </p>
           )}
           {guideReadOnlyReason && <LockedNote reason={guideReadOnlyReason} className="mb-3" />}

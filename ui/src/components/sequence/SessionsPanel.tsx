@@ -226,13 +226,13 @@ export default function SessionsPanel() {
               {r.auto_resume && weather?.alert && !weather.ignore_tonight && (
                 <span className="text-[11px] text-warn inline-flex items-center gap-1">
                   <Icon name="alert" size={12} />
-                  high cloud tonight — auto-resume will hold unless overridden
+                  high cloud forecast tonight - it does not hold auto-resume; only forecast rain within the hour does
                 </span>
               )}
               {r.auto_resume && weather?.ignore_tonight && (
                 <span className="text-[11px] text-warn inline-flex items-center gap-1">
                   <Icon name="alert" size={12} />
-                  weather override active — resume will ignore clouds tonight
+                  weather override active - forecast rain will not hold auto-resume until the next dusk (cloud forecasts never do)
                 </span>
               )}
               {r.auto_resume && weather?.alert && (

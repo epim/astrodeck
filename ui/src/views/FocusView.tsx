@@ -649,7 +649,7 @@ export default function FocusView() {
   // Shared by every control that commands the focuser.
   const focuserReason =
     readOnlyReason
-    ?? (!foc ? "No focuser is connected — connect one on the Equipment page"
+    ?? (!foc ? "No focuser is connected - connect a focuser first"
       : sweeping ? "Autofocus is running — let the sweep finish first"
         // One move at a time, because the server allows exactly one: a second
         // POST is a 409 off the `focuser` lane, and the tap that earns it costs
@@ -910,8 +910,8 @@ export default function FocusView() {
             </p>
             <p className="text-dim text-xs mt-0.5">
               Focusing needs the camera to itself, so these controls stay locked
-              until the run stops. Stop or abort it on the Plan screen, then come
-              back — nothing here will interrupt it for you.
+              until the run stops. Stop or abort the running sequence first, then
+              come back - nothing here will interrupt it for you.
             </p>
           </div>
         </div>

@@ -21,17 +21,10 @@ import {
   sessionStackImageUrl,
   type SessionStackStatus,
 } from "../../../../api/sessionStack";
-import { modeLabel } from "../../../../components/preview/SessionStack";
+import { BACKFILL_POLL_MS, modeLabel, POLL_MS } from "../../../../components/preview/SessionStack";
 import { usePreviewGestures } from "../../../../components/preview/usePreviewGestures";
 import type { Viewport } from "../../../../types";
 import { ActionButton, Card, EmptyCard, Label, Mono, Pill } from "../../../ui";
-
-// Transcribed from `components/preview/SessionStack.tsx:45-47`, not invented.
-// The status route is cheap and `seq` only moves when a frame has landed, so a
-// 10 s poll is the picture's own refresh rate; a running backfill needs a
-// counter that moves at a believable rate instead.
-const POLL_MS = 10_000;
-const BACKFILL_POLL_MS = 1_500;
 
 /** The one thing the composite cannot answer, and where the answer is. */
 export const NO_PER_FRAME_LINE =
