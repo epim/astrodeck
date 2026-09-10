@@ -108,6 +108,24 @@ const CLOUD_REFRESH_MS = 60_000;
 const TICK_MS = 30_000;
 const VISIBILITY_DEBOUNCE_MS = 300;
 
+/**
+ * How long the opening aim waits for BOTH catalogue sources before it settles
+ * for whichever one has answered.
+ *
+ * The ranked picks carry no alt/az, so their positions are computed here; the
+ * region rows carry the SERVER's alt/az and win the merge. Aiming at the first
+ * non-empty ranking therefore aimed at the client's arithmetic, and when the
+ * region answered a second later the marker moved while the view stayed put -
+ * the finder opening a few degrees off its own top target, in SWEEP, with
+ * nothing on screen to say why.
+ */
+export const AIM_SETTLE_MS = 1500;
+
+/** How far the top target has to move for the opening aim to follow it. One
+ *  degree is a sixth of the box's width in sky, and well outside the 46 px lock
+ *  radius - under that, following would be a twitch nobody asked for. */
+export const AIM_FOLLOW_DEG = 1;
+
 export const LAYERS_NOTE_DEFAULT =
   "Overlays redraw from the rig's own weather and this site's horizon.";
 export const LAYERS_NOTE_NO_WEATHER =
@@ -185,6 +203,15 @@ export interface SkyModel {
   // ---- additions the plan's A.4/A.6/A.8/A.9 name as `model.*` ---------------
   /** The id whose to-dawn arc is drawn, if any. */
   trackId: string | null;
+  /**
+   * True once the merged ranking has settled: both catalogue sources have
+   * answered, or the settle timer has run out.
+   *
+   * The opening aim waits on it, and so does the hub's `?lock=` deep link -
+   * both aim at a POSITION, and until the region rows are in, the position on
+   * offer is this file's arithmetic rather than the server's own alt/az.
+   */
+  aimReady: boolean;
   projector: Projector;
   boxW: number;
   boxH: number;
@@ -226,19 +253,24 @@ export interface SkyModel {
 
 // --------------------------------------------------------------- sub-hooks
 
-/** The ranked list, or the reason there is none. */
+/** The ranked list, or the reason there is none. `answered` is the settle
+ *  signal the opening aim waits on - true once the route has replied EITHER
+ *  way, and true immediately when there is nothing to ask. */
 function useTonight(altLimit: number, enabled: boolean, siteKey: string) {
   const [rows, setRows] = useState<CatalogRowLike[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [answered, setAnswered] = useState(false);
   useEffect(() => {
-    if (!enabled) { setRows([]); setError(null); return; }
+    if (!enabled) { setRows([]); setError(null); setAnswered(true); return; }
     let alive = true;
+    setAnswered(false);
     void api
       .get<TonightResponse>(`/api/catalog/tonight?alt_limit=${encodeURIComponent(altLimit)}`)
       .then((res) => {
         if (!alive) return;
         setRows(Array.isArray(res?.picks) ? (res.picks as unknown as CatalogRowLike[]) : []);
         setError(null);
+        setAnswered(true);
       })
       .catch((e: unknown) => {
         if (!alive) return;
@@ -250,16 +282,26 @@ function useTonight(altLimit: number, enabled: boolean, siteKey: string) {
             ? "No answer in 15s, so tonight wasn't ranked."
             : `Couldn't rank tonight — ${msg}.`,
         );
+        setAnswered(true);
       });
     return () => { alive = false; };
     // siteKey is a dependency on purpose: moving site changes every altitude in
     // the answer, and this is the one fetch nobody would think to repeat by hand.
   }, [altLimit, enabled, siteKey]);
-  return { rows, error };
+  return { rows, error, answered };
 }
 
-/** The Moon and the planets. Two calls, both filtered by `type`, because
- *  `q=planet` also matches every Planetary Nebula in the DSO catalogue. */
+/**
+ * The Moon and the planets. Two calls, both filtered by `type`, because
+ * `q=planet` also matches every Planetary Nebula in the DSO catalogue.
+ *
+ * THE ANSWER IS `results`, NOT `rows`. `GET /api/catalog?q=…&explain=1` returns
+ * `{"results": [...], "notes": [...]}` (app.py's catalog handler); the bare list
+ * shape is what it answers WITHOUT `explain`. Reading `rows` here parsed every
+ * response as empty, so no planet and no Moon ever reached the finder - and
+ * nothing looked broken, because a sky with no planets in it is an ordinary
+ * sight. `sheets/targetsModel.ts` already reads `results`; this is the same fix.
+ */
 function useSolarSystem(enabled: boolean): CatalogRowLike[] {
   const [rows, setRows] = useState<CatalogRowLike[]>([]);
   const [beat, setBeat] = useState(0);
@@ -273,8 +315,8 @@ function useSolarSystem(enabled: boolean): CatalogRowLike[] {
     let alive = true;
     const one = (q: string): Promise<CatalogRowLike[]> =>
       api
-        .get<{ rows?: CatalogRowLike[] }>(`/api/catalog?q=${q}&explain=1`)
-        .then((r) => (Array.isArray(r?.rows) ? r.rows : []))
+        .get<{ results?: CatalogRowLike[] }>(`/api/catalog?q=${q}&explain=1`)
+        .then((r) => (Array.isArray(r?.results) ? r.results : []))
         .catch(() => [] as CatalogRowLike[]);
     void Promise.all([one("planet"), one("moon")]).then(([p, m]) => {
       if (!alive) return;
@@ -393,6 +435,19 @@ function nearestForecastCloud(
   // More than an hour from the nearest sample is not "now".
   if (best < 0 || bestGap > 3600_000) return null;
   return cloud[best];
+}
+
+/** Angular gap between two screen aims, degrees. The azimuth difference is
+ *  folded the short way round and narrowed by the cosine of the altitude, so
+ *  ten degrees of azimuth at 80 deg up is the two degrees of sky it really is
+ *  and not a re-aim. */
+function aimGapDeg(
+  a: { az: number; alt: number },
+  b: { az: number; alt: number },
+): number {
+  const dAlt = b.alt - a.alt;
+  const dAz = (((b.az - a.az) % 360) + 540) % 360 - 180;
+  return Math.hypot(dAlt, dAz * Math.cos(((a.alt + b.alt) / 2) * D2R));
 }
 
 function defaultMode(): SkyMode {
@@ -640,6 +695,11 @@ export function useSkyModel(boxPx: number): SkyModel {
         transitLabel,
         windowMinutes: winMin,
         difficulty: m.difficulty,
+        // The catalogued extent, carried rather than dropped: FRAME's
+        // catalogue-extent ellipse is drawn from it, and every one of the three
+        // sources sends `size_arcmin`. `undefined` where none did - never 0,
+        // which is the size of a star, not the absence of a measurement.
+        sizeArcmin: m.sizeArcmin ?? undefined,
         // --- ReachInput, for rankTargets -----------------------------------
         minutesAboveFloorToDawn: winMin,
         // An absent reading does not score against a target: penalising an
@@ -665,6 +725,7 @@ export function useSkyModel(boxPx: number): SkyModel {
       color: r.color,
       statusTxt: r.statusTxt,
       palette: r.palette,
+      sizeArcmin: r.sizeArcmin,
       transitLabel: r.transitLabel,
       windowMinutes: r.windowMinutes,
       score: r.score,
@@ -697,17 +758,51 @@ export function useSkyModel(boxPx: number): SkyModel {
   const reachAll = useMemo(() => visible.filter((t) => !t.obstructed && !t.clouded), [visible]);
   const reachList = useMemo(() => reachAll.slice(0, 12), [reachAll]);
 
-  // ---- aim once, at the best thing up -------------------------------------
+  // ---- aim at the best thing up, once the ranking has settled --------------
+  //
   // The finder deliberately does NOT reopen where it was left: pointing at last
   // night's target is worse than pointing at tonight's best one.
-  const aimedRef = useRef(false);
+  //
+  // WHY THIS IS NOT "AIM AT THE FIRST NON-EMPTY RANKING". Two sources feed the
+  // merged list and they answer at different times. The ranked picks arrive
+  // first and carry no alt/az, so their positions are this file's arithmetic;
+  // the region rows arrive after and carry the SERVER's alt/az, which win the
+  // merge. Aiming on the first answer therefore aimed at the provisional
+  // position and left the view there while the marker moved under it - the
+  // finder opening a couple of degrees off its own top target, reading SWEEP
+  // with the thing it chose sitting just outside the reticle.
+  //
+  // So: wait for both sources (or AIM_SETTLE_MS, because a source that answers
+  // nothing is still an answer nobody can detect), then aim - and keep
+  // following the top target while it MOVES by more than AIM_FOLLOW_DEG, until
+  // the user touches the sky. The first pan, drag or marker tap goes through
+  // `setView`, which sets `interactedRef` and ends every auto-aim for the life
+  // of the screen; the aim below never sets it, because the finder aiming
+  // itself is not the user choosing.
+  const interactedRef = useRef(false);
+  const autoAimRef = useRef<{ id: string; az: number; alt: number } | null>(null);
+  const [settleElapsed, setSettleElapsed] = useState(false);
   useEffect(() => {
-    if (aimedRef.current || reachAll.length === 0) return;
-    aimedRef.current = true;
+    const id = setTimeout(() => setSettleElapsed(true), AIM_SETTLE_MS);
+    return () => clearTimeout(id);
+  }, []);
+
+  const regionAnswered =
+    !(rankingAllowed && haveCoords) || region.rows.length > 0 || region.error != null;
+  const aimReady = (tonight.answered && regionAnswered) || settleElapsed;
+
+  useEffect(() => {
+    if (interactedRef.current) return;
+    if (!aimReady) return;
     const best = reachAll[0];
-    setViewState({ az: best.azNow, alt: best.altNow });
+    if (!best) return;
+    const prev = autoAimRef.current;
+    const to = { az: best.azNow, alt: best.altNow };
+    if (prev && prev.id === best.id && aimGapDeg(prev, to) <= AIM_FOLLOW_DEG) return;
+    autoAimRef.current = { id: best.id, ...to };
+    setViewState(to);
     setTrackId(best.id);
-  }, [reachAll]);
+  }, [aimReady, reachAll]);
 
   // ---- projection ---------------------------------------------------------
   const projector = useMemo(
@@ -912,9 +1007,10 @@ export function useSkyModel(boxPx: number): SkyModel {
       }));
     }
     if (p.trackId !== undefined) setTrackId(p.trackId);
-    // A deliberate aim also stops the one-shot auto-aim from stealing the view
-    // back the next time the ranked list refreshes.
-    aimedRef.current = true;
+    // A deliberate aim - a pan, a marker tap, a reach chip, a `?lock=` deep
+    // link - ends the auto-aim for good, so the ranked list refreshing (or the
+    // region answering a beat later) can never steal the view back.
+    interactedRef.current = true;
   }, []);
 
   const setLens = useCallback((kind: SkyKind, on: boolean) => {
@@ -995,6 +1091,7 @@ export function useSkyModel(boxPx: number): SkyModel {
     setFloorOnly,
 
     trackId,
+    aimReady,
     projector,
     boxW: projector.W,
     boxH: projector.H,

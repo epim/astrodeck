@@ -233,6 +233,15 @@ export interface MergedRow {
   moonSepDeg: number | null;
   transitUnix: number | null;
   difficulty?: DifficultyTier;
+  /**
+   * The catalogued MAJOR axis in arcminutes, or null where the row carried no
+   * extent at all. All three sources send `size_arcmin` (objects.py, region.py,
+   * solar_system.py) and none of them sends a minor axis or a position angle -
+   * `ngc_extras.minax` exists on the server but is never put on a row - so this
+   * is one number, not an ellipse. `0` is a real answer (a star IS a point
+   * source at any focal length this rig has); `null` is "nobody said".
+   */
+  sizeArcmin: number | null;
   /** Server-supplied alt/az where the route sent one (solar-system rows). */
   altHint: number | null;
   azHint: number | null;
@@ -253,6 +262,10 @@ function toMerged(row: CatalogRowLike): MergedRow | null {
     moonSepDeg: typeof row.moon_sep_deg === "number" ? row.moon_sep_deg : null,
     transitUnix: typeof row.transit_unix === "number" ? row.transit_unix : null,
     difficulty: row.difficulty,
+    sizeArcmin:
+      typeof row.size_arcmin === "number" && Number.isFinite(row.size_arcmin)
+        ? row.size_arcmin
+        : null,
     altHint: typeof row.alt === "number" ? row.alt : null,
     azHint: typeof row.az === "number" ? row.az : null,
   };
@@ -280,6 +293,7 @@ export function mergeRows(...sources: CatalogRowLike[][]): MergedRow[] {
         moonSepDeg: prev.moonSepDeg ?? row.moonSepDeg,
         transitUnix: prev.transitUnix ?? row.transitUnix,
         difficulty: prev.difficulty ?? row.difficulty,
+        sizeArcmin: prev.sizeArcmin ?? row.sizeArcmin,
         altHint: prev.altHint ?? row.altHint,
         azHint: prev.azHint ?? row.azHint,
       });
@@ -305,6 +319,13 @@ export interface SkyTarget {
   color: string;
   statusTxt: string;
   palette: string;
+  /**
+   * The catalogued major axis, arcminutes. Absent where the row carried no
+   * extent - and absent is NOT zero: FRAME draws the catalogue-extent ellipse
+   * from this, and a 0 handed over as if it were a measurement would draw M31
+   * as a point.
+   */
+  sizeArcmin?: number;
   /** "23:52" / "passed" / "—" - the bare value; callers prefix "transit ". */
   transitLabel: string;
   windowMinutes: number;

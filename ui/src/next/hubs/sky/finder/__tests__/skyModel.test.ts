@@ -473,6 +473,26 @@ test("merging fills gaps without overwriting anything with a blank", () => {
   assert(merged[0].full.startsWith("Spiral galaxy"), "the region row's sentence was not adopted");
 });
 
+test("the catalogued extent survives the merge, so FRAME can draw the ellipse", () => {
+  // Every source sends `size_arcmin` - objects.py for a ranked pick, region.py
+  // for a region row, solar_system.py for a body - and dropping it here is what
+  // made SkyCanvas draw M33 (178' across) as a point.
+  const tonight: CatalogRowLike[] = [
+    { id: "m33", name: "M33", type: "Galaxy", ra_hours: 1.5641, dec_deg: 30.66, size_arcmin: 178 },
+  ];
+  const region: CatalogRowLike[] = [
+    { id: "m33", label: "M33", kind: "dso", type: "Galaxy", ra_hours: 1.5641, dec_deg: 30.66,
+      size_arcmin: 178, describe: "Spiral galaxy in Triangulum, magnitude 5.7." },
+  ];
+  eq(mergeRows(tonight)[0].sizeArcmin, 178, "the ranked pick's own extent was dropped");
+  eq(mergeRows(tonight, region)[0].sizeArcmin, 178, "the merge lost the extent");
+  eq(
+    mergeRows([{ id: "x", name: "X", type: "Galaxy", ra_hours: 0, dec_deg: 0 }])[0].sizeArcmin,
+    null,
+    "a row that carried no extent must read as absent, not as a zero-sized object",
+  );
+});
+
 test("the status chip never claims CLEAR without a reading", () => {
   eq(decorate(4, false).statusTxt, "CLEAR · 4%", "a clear reading");
   eq(decorate(55, false).statusTxt, "CLOUD 55%", "a clouded reading");
