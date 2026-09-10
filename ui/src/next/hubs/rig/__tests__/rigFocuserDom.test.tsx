@@ -24,12 +24,39 @@
 //   4. A VIEWER SEES THE SAME SCREEN, INERT. AUTOFOCUS NOW carries
 //      `focusButtonState`'s own sentence and `aria-disabled`, stays in the tree,
 //      and pressing it fires NO request.
-//   5. TEMPERATURE COMPENSATION IS NOT HERE. Deviation E3: the engine has no
-//      such field, coefficient or loop, so the design's toggle would be a switch
-//      for a feature that does not exist. Asserting the STRING's absence is what
-//      makes re-adding the dead toggle turn the suite red.
+//   5. TEMPERATURE COMPENSATION IS HERE, AND THE SIGN IS IN WORDS (D-RIG-2,
+//      task T-U7b-5). THIS ROW WAS INVERTED. It used to assert the string's
+//      ABSENCE, because deviation E3 omitted the design's toggle: the engine had
+//      no such field, coefficient or loop, and a switch for it would have been a
+//      promise nothing keeps. The engine now has the offset loop
+//      (`focus/tempcomp.py`, on the bus at `focuser.temp_comp`, written through
+//      `POST /api/config {focus}`), so the assertion is turned round - and the
+//      block is graded on the two things that can cost a night: the sign stated
+//      in WORDS rather than inferred from a minus sign, and a write that carries
+//      the WHOLE `focus` block (a partial one blanks
+//      `approach_overshoot_steps`, the EAF backlash correction no screen sets).
+//      An engine with no `temp_comp` on the bus renders no block at all.
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
+
+// ------------------------------------------------------------------ css stub
+// `hubs/rig/inspect/index.ts` is the area root and imports `inspect.css`, so
+// pulling `AutofocusLine` in reaches a `.css` file that Node cannot parse. A
+// synchronous load hook answers with an empty module; it has to run BEFORE any
+// import that reaches one, which is why every import in this file is dynamic
+// and below this block (copied from `hubs/settings/__tests__/
+// filesSheetsDom.test.tsx:44-61`).
+{
+  const { registerHooks } = await import("node:module");
+  registerHooks({
+    load(url: string, context: any, nextLoad: any) {
+      if (url.endsWith(".css")) {
+        return { format: "module", shortCircuit: true, source: "export default {};" };
+      }
+      return nextLoad(url, context);
+    },
+  } as any);
+}
 
 // ---------------------------------------------------------------- jsdom first
 const { JSDOM } = await import("jsdom");
@@ -63,12 +90,22 @@ for (const k of [
 g.IS_REACT_ACT_ENVIRONMENT = true;
 
 // ------------------------------------------------------------- fetch recorder
+//
+// `GET /api/config` answers with a real block, not `{}`. The compensation write
+// re-reads the config before it sends (the whole `focus` block is replaced by
+// the write, so it has to be built from a block that was actually read), and a
+// stub that answered with nothing would make the "the write carries
+// `approach_overshoot_steps`" assertion pass by accident on an empty object.
+// `serverConfig` is a `let` so one test can take the block away again.
 interface Asked { method: string; url: string; body: unknown }
 const asked: Asked[] = [];
+let serverConfig: Record<string, unknown> = {};
 g.fetch = async (url: string, init?: { method?: string; body?: string }) => {
   const method = init?.method ?? "GET";
-  asked.push({ method, url: String(url), body: init?.body ? JSON.parse(init.body) : null });
-  return { ok: true, status: 200, statusText: "OK", json: async () => ({}) };
+  const path = String(url);
+  asked.push({ method, url: path, body: init?.body ? JSON.parse(init.body) : null });
+  const answer = /\/api\/config$/.test(path) ? serverConfig : {};
+  return { ok: true, status: 200, statusText: "OK", json: async () => answer };
 };
 
 const { createElement, act } = await import("react");
@@ -79,6 +116,10 @@ const {
   shutterWait,
 } = await import("../sheets/focuser");
 const { POLAR_REASON } = await import("../capture/captureGate");
+const {
+  DOUBLES_IT_NOTE, NO_THERMOMETER_REASON, SIGN_RULE, TEMP_COMP_PRECEDENCE,
+} = await import("../lib/tempComp");
+const { accessPhrase } = await import("../../../../lib/caps");
 type RigStatus = import("../../../../types").RigStatus;
 
 // ------------------------------------------------------------------ harness
@@ -100,6 +141,13 @@ function eq<T>(got: T, want: T, msg: string): void {
 const settle = async () => {
   await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
   await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+};
+/** Past a debounce. The config writes on this sheet hold the edit for 400 ms so
+ *  that three quick presses are one write, so a test that only `settle()`d would
+ *  be asserting on the gap before the request rather than on the request. */
+const past = async (ms: number) => {
+  await act(async () => { await new Promise((r) => setTimeout(r, ms)); });
+  await settle();
 };
 
 // ------------------------------------------------------------------ fixtures
@@ -139,6 +187,18 @@ function focStatus(over: Record<string, unknown> = {}): RigStatus {
       moving: false,
       can_set_position: true,
       sweep: { step: 350, steps_each_side: 4, basis: "measured slope", measured: true },
+      // `focuser.temp_comp` as `focus/tempcomp.py:216-238 status_node` publishes
+      // it: reference 11.2 C at 19 900 steps, the tube now at 11.2, and the
+      // engine's own sentence for what the last boundary decided.
+      temp_comp: {
+        enabled: false,
+        steps_per_c: 14,
+        reference_temp_c: 11.2,
+        reference_position: 19900,
+        predicted_position: null,
+        last_move_steps: null,
+        last_reason: "temperature compensation is off",
+      },
     },
     camera: {
       temperature: -10, can_cool: true, width: 6248, height: 4176,
@@ -178,7 +238,23 @@ const CONFIG = {
   },
   escalation: { hfr_reject_factor: 1.15, hfr_reject_action: "discard" },
   providers: { autofocus: "auto", polar_align: "auto", solve: "auto", guide: "auto" },
+  // `config.focus` (server `config.py:958-1024`). `approach_overshoot_steps` is
+  // the EAF backlash correction and NO screen sets it, which is exactly why a
+  // partial write of this block would be a silent regression on a rig that had
+  // it tuned - the round-trip test below asserts it survives.
+  focus: {
+    approach_overshoot_steps: 200,
+    temp_comp: {
+      enabled: false,
+      steps_per_c: 14,
+      reference_temp_c: 11.2,
+      reference_position: 19900,
+      max_step_per_move: 200,
+      deadband_steps: 5,
+    },
+  },
 };
+serverConfig = CONFIG as unknown as Record<string, unknown>;
 
 function seed(over: Record<string, unknown> = {}): void {
   act(() => {
@@ -346,24 +422,245 @@ await testAsync("a viewer sees AUTOFOCUS NOW, told why, and pressing it asks not
       "a locked press was silent - the reason must be stated, not merely withheld");
   });
 
-// ================================================= 5. the omitted toggle (E3)
-await testAsync("TEMPERATURE COMPENSATION is nowhere on this sheet", async () => {
+// ============================== 5. temperature compensation (D-RIG-2, INVERTED)
+await testAsync("TEMPERATURE COMPENSATION is on this sheet, with the sign in words", async () => {
+  // THE INVERSION. This assertion used to read `!/TEMPERATURE COMPENSATION/i`,
+  // and it was right to: deviation E3 omitted a toggle for a loop the engine did
+  // not have. The engine has it now, so the block is here - and the sign is what
+  // is graded, because a coefficient entered backwards does not fail to correct
+  // the drift, it doubles it, all night, while the log says it is compensating.
   seed();
   mount();
   await settle();
-  assert(!/TEMPERATURE COMPENSATION/i.test(text()),
-    "the design's temperature-compensation toggle is on screen, and the engine has "
-    + "no such field - it would be a switch for a feature that does not exist");
-  // What replaced it must be here, or the deviation is a deletion.
+  assert(testid("focuser-tempcomp") != null,
+    "the compensation block did not render at all, and `focuser.temp_comp` is on the bus");
+  assert(/TEMPERATURE COMPENSATION/.test(text()),
+    "the block has no title the operator can find it by");
+  assert(text().includes(SIGN_RULE),
+    "the sign rule is not stated in words - the operator is left to infer which way a "
+    + "positive coefficient moves the drawtube, and getting it backwards doubles the drift");
+  assert(/RISES/.test(text()),
+    "the rule no longer says the temperature RISES: the coefficient is per degree of "
+    + "TEMPERATURE, not per degree of cooling");
+  const effect = testid("tempcomp-effect");
+  assert(effect != null, "nothing states what THIS rig's coefficient does");
+  assert(/14 steps in\b/.test(effect.textContent || ""),
+    `the effect line disagrees with the rule for +14 on a cooling tube: `
+    + `"${effect.textContent}"`);
+  assert(text().includes(TEMP_COMP_PRECEDENCE),
+    "the precedence sentence is missing, so nothing tells compensation and the refocus "
+    + "trigger apart - and they sound like the same setting");
+  assert(text().includes(DOUBLES_IT_NOTE),
+    "the sheet does not say what a backwards sign costs");
+  // The engine's own words for the last decision, verbatim - nine rules end in
+  // "nothing happened", and an unexplained no-op reads as an unwired feature.
+  const reason = testid("tempcomp-reason");
+  assert(reason != null && (reason.textContent || "").trim() === "temperature compensation is off",
+    `the server's own reason is not printed verbatim (got ${JSON.stringify(reason?.textContent)})`);
+  assert(testid("tempcomp-advanced") != null, "the ADVANCED group is missing");
+
+  // What E3 shipped INSTEAD must still be here, or closing the deviation
+  // deleted a capability rather than re-shaping one.
   assert(/REFOCUS AFTER 1\.5°C OF DRIFT/.test(text()),
-    "the temperature rule the engine DOES have is missing, so E3 dropped a "
-    + "capability instead of re-shaping one");
+    "the refocus TRIGGER is missing - it is the other half of the pair the "
+    + "precedence sentence exists to tell apart, and both of them run");
   assert(/SHIFT BY FILTER OFFSET ON A CHANGE/.test(text()),
     "the filter-offset rule (E4) is missing");
   assert(/REFOCUS EVERY 30 FRAMES/.test(text()),
     "the per-plan refocus cadence (E5) is not shown");
   assert(/HFR GATE x1\.15/.test(text()),
     "the HFR quality gate (E6) is not shown");
+});
+
+// ============== 5b. the compensation writes, and every reason they are refused
+await testAsync("the compensation switch writes the WHOLE focus block, once, after the debounce",
+  async () => {
+    seed({ principal: ADMIN });
+    mount();
+    await settle();
+    asked.length = 0;
+
+    const sw = testid("tempcomp-switch");
+    assert(sw != null, "no compensation switch on the sheet");
+    eq(sw.getAttribute("aria-disabled"), null, "precondition: an admin found the switch locked");
+    click(sw);
+    await settle();
+    eq(asked.filter((a) => a.method === "POST").length, 0,
+      "the switch wrote immediately - the debounce is what makes two quick presses one write "
+      + "instead of two, each built from the same stale block");
+
+    await past(500);
+    const posts = asked.filter((a) => a.url.includes("/api/config") && a.method === "POST");
+    eq(posts.length, 1, `the switch did not POST /api/config once (asked ${JSON.stringify(asked)})`);
+    const focus = (posts[0].body as any).focus;
+    assert(focus != null, "the write did not carry a `focus` block at all");
+    eq(focus.temp_comp.enabled, true, "the switch did not send the field it toggled");
+    // THE SABOTAGE THIS ROW CATCHES: sending only the changed key. The route
+    // REPLACES the block (`config_store.set_focus`), so a partial body blanks
+    // the EAF backlash correction that no screen sets, and pushes back a
+    // reference the engine may have re-anchored since.
+    eq(focus.approach_overshoot_steps, 200,
+      "the write dropped `approach_overshoot_steps` - the write replaces the whole `focus` "
+      + "block, so the EAF backlash correction would have been reset to the shipped default");
+    eq(focus.temp_comp.max_step_per_move, 200,
+      "the write dropped the per-move backstop, which is the only thing standing between a "
+      + "backwards coefficient and a drawtube at the end of its travel");
+    eq(focus.temp_comp.reference_position, 19900,
+      "the write dropped the reference the engine anchored at its last sweep");
+
+    const getAt = asked.findIndex((a) => a.method === "GET" && /\/api\/config$/.test(a.url));
+    const postAt = asked.findIndex((a) => a.method === "POST" && a.url.includes("/api/config"));
+    assert(getAt >= 0 && getAt < postAt,
+      "the write did not re-read the block first: the body has to be built from a block that "
+      + "was actually read, not from whatever the sheet last rendered");
+  });
+
+await testAsync("ANCHOR THE REFERENCE HERE sends the LIVE reading, not the stored one",
+  async () => {
+    seed({ principal: ADMIN });
+    mount();
+    await settle();
+    asked.length = 0;
+    const anchor = testid("tempcomp-reanchor");
+    assert(anchor != null, "there is no way to re-anchor the reference");
+    click(anchor);
+    await past(500);
+    const posts = asked.filter((a) => a.url.includes("/api/config") && a.method === "POST");
+    eq(posts.length, 1, `the re-anchor did not POST /api/config (asked ${JSON.stringify(asked)})`);
+    const tcSent = (posts[0].body as any).focus.temp_comp;
+    eq(tcSent.reference_temp_c, 11.2, "the re-anchor did not send the tube's live temperature");
+    eq(tcSent.reference_position, 19950,
+      "the re-anchor sent the STORED reference (19900) rather than where the drawtube is now "
+      + "(19950) - anchoring to the old number is not anchoring");
+  });
+
+await testAsync("ADVANCED shows THIS rig's backstops, from the config and not from a default",
+  async () => {
+    // `max_step_per_move` and `deadband_steps` are the only two settings in the
+    // block the STATUS BUS does not carry, so they can only come from
+    // `config.focus`. Printing the shipped defaults when the config has not
+    // arrived would show a limit that is not this rig's.
+    seed({
+      principal: ADMIN,
+      config: {
+        ...CONFIG,
+        focus: {
+          approach_overshoot_steps: 400,
+          temp_comp: { ...(CONFIG as any).focus.temp_comp, max_step_per_move: 90, deadband_steps: 12 },
+        },
+      },
+    });
+    mount();
+    await settle();
+    const head = testid("tempcomp-advanced").querySelector("button[aria-expanded]") as any;
+    assert(head != null, "the ADVANCED group has no summary row to press");
+    click(head);
+    await settle();
+    eq(testid("tempcomp-maxstep").value, "90",
+      "the per-move backstop is not the one this rig has stored");
+    eq(testid("tempcomp-deadband").value, "12",
+      "the deadband is not the one this rig has stored");
+  });
+
+await testAsync("a null thermometer locks the toggle, and pressing it writes nothing", async () => {
+  // `focus/tempcomp.py:147-152`: with no reading the engine NEVER GUESSES an
+  // ambient - it declines to move, every boundary, all night. A switch that
+  // could be armed here would arm a loop that can only ever refuse.
+  const base = focStatus() as any;
+  seed({
+    principal: ADMIN,
+    status: focStatus({ focuser: { ...base.focuser, temperature: null } }),
+  });
+  mount();
+  await settle();
+  asked.length = 0;
+
+  const sw = testid("tempcomp-switch");
+  assert(sw != null, "the switch was hidden rather than locked");
+  eq(sw.getAttribute("aria-disabled"), "true",
+    "the compensation switch is live on a focuser with no thermometer");
+  eq(sw.getAttribute("title"), NO_THERMOMETER_REASON,
+    "the locked switch does not say the reading is what is missing");
+  assert(sw.hasAttribute("disabled") === false,
+    "the switch used the native disabled attribute, which takes the reason out of the "
+    + "accessibility tree");
+  const anchor = testid("tempcomp-reanchor");
+  eq(anchor.getAttribute("aria-disabled"), "true",
+    "the re-anchor is live with no temperature to anchor to");
+
+  click(sw);
+  click(anchor);
+  await past(500);
+  eq(asked.filter((a) => a.method === "POST").length, 0,
+    `a press with no thermometer reached the rig: ${JSON.stringify(asked)}`);
+});
+
+await testAsync("a sweep locks the switch and the coefficient with the lane's own sentence",
+  async () => {
+    // The sweep RE-ANCHORS the reference when it finishes, so a write landing
+    // across one would carry a block the engine has already moved on from.
+    seed({ principal: ADMIN, status: focStatus({ busy_lanes: ["autofocus"] }) });
+    mount();
+    await settle();
+    for (const id of ["tempcomp-switch", "tempcomp-coefficient"]) {
+      const el = testid(id);
+      assert(el != null, `precondition: ${id} must be on screen`);
+      eq(el.getAttribute("aria-disabled"), "true",
+        `${id} stayed live across a sweep, which is about to move the reference`);
+      assert(/autofocus run is already going/.test(el.getAttribute("title") || ""),
+        `${id} is locked but does not name the sweep `
+        + `(got ${JSON.stringify(el.getAttribute("title"))})`);
+    }
+  });
+
+await testAsync("an operator sees the block, told why, and writes nothing", async () => {
+  // `config.safety` is admin-only in the shipped role map, and the split is the
+  // point: an operator may jog the focuser and may not rewrite how the rig
+  // drives it.
+  seed({ principal: OPERATOR });
+  mount();
+  await settle();
+  asked.length = 0;
+
+  const sw = testid("tempcomp-switch");
+  assert(sw != null, "the block was hidden from an operator instead of locked");
+  eq(sw.getAttribute("aria-disabled"), "true", "an operator can arm compensation");
+  eq(sw.getAttribute("title"), `needs ${accessPhrase("config.safety")}`,
+    "the locked switch does not name the role that may press it");
+  eq(button("IN 10").getAttribute("aria-disabled"), null,
+    "precondition: the same operator's jogs must stay live - this is a split gate, not a "
+    + "read-only screen");
+
+  click(sw);
+  click(testid("tempcomp-reanchor"));
+  await past(500);
+  eq(asked.filter((a) => a.method === "POST").length, 0,
+    `an operator's presses reached the rig: ${JSON.stringify(asked)}`);
+});
+
+await testAsync("an engine with no temp_comp renders no block, and says so", async () => {
+  // ABSENT is not "switched off": a switch bound to nothing would invent a
+  // state the rig does not have. This is the branch that lets the UI ship
+  // against an older engine.
+  const base = focStatus() as any;
+  const older = { ...base.focuser };
+  delete older.temp_comp;
+  seed({ principal: ADMIN, status: focStatus({ focuser: older }) });
+  mount();
+  await settle();
+
+  eq(testid("focuser-tempcomp"), null,
+    "the compensation block rendered against an engine that publishes no `temp_comp`");
+  eq(testid("tempcomp-switch"), null, "a switch rendered with no state to bind it to");
+  const note = testid("tempcomp-absent");
+  assert(note != null,
+    "the block vanished with nothing said - an absent feature and a switched-off one look "
+    + "identical, which is the whole reason this note exists");
+  eq((note.textContent || "").trim(),
+    "This engine does not drive the focuser from temperature yet.",
+    "the degraded note does not say what is missing");
+  assert(/11\.2°C/.test(text()),
+    "the TUBE tile went with it - the reading is still real on an older engine");
 });
 
 await testAsync("the filter-offset rule writes the WHOLE standards block", async () => {
