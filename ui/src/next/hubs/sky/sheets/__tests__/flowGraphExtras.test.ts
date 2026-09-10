@@ -17,7 +17,7 @@
 //   * an edge built with FastAPI's Python attribute name `from_` instead of the
 //     alias `from`, which round-trips and vanishes with no error anywhere
 
-import { withDarksAfter, withDuskFlats, withTargetPool } from "../flowGraphExtras";
+import { withDarksAfter, withDuskFlats, withRotation, withTargetPool } from "../flowGraphExtras";
 import type { FlowGraphRec, FlowNodeType } from "../../../../../components/flows/flowsTypes";
 
 let passed = 0;
@@ -206,6 +206,40 @@ test("all three edits compose without colliding on ids", () => {
   // which after the flats edit is the FLATS node. The lane is still one chain.
   const fromDusk = g.edges.filter((e) => e.from === "n1" && e.fromPort === "window");
   eq(fromDusk.length, 1, "the window drives exactly one wire after three edits");
+});
+
+// ------------------------------------------------------------ the PA edit
+
+test("withRotation writes the commanded angle onto the TARGET node", () => {
+  // `wizard.quick` leaves the node vocabulary's shipped `rotation: 23.4` in
+  // place and only replaces name/ra/dec, and `to_plan.py:815` reads that as a
+  // REAL position angle - so every quick flow was asking a connected rotator
+  // for a fixture value while the framing card promised something else.
+  const seeded = fixture();
+  seeded.nodes = seeded.nodes.map((n) =>
+    n.type === "target" ? { ...n, params: { ...n.params, rotation: 23.4 } } : n);
+
+  const g = withRotation(seeded, 30);
+  const t = g.nodes.find((n) => n.type === "target");
+  eq(t?.params.rotation, 30, "the framed angle:");
+  eq(seeded.nodes.find((n) => n.type === "target")?.params.rotation, 23.4,
+    "the input graph must not be mutated");
+  eq(g.edges, seeded.edges, "a params edit must not touch the wiring");
+});
+
+test("no framing means NO angle constraint, which is -1 and not 0", () => {
+  // `to_plan.py`'s own comment: 0 is north-up, a perfectly ordinary answer, so
+  // it cannot be the sentinel. Writing 0 here would command PA 0 on every flow
+  // whose target was never framed.
+  const g = withRotation(fixture(), null);
+  eq(g.nodes.find((n) => n.type === "target")?.params.rotation, -1, "the sentinel:");
+});
+
+test("withRotation is a no-op on a graph with no TARGET node, and when nothing changes", () => {
+  const pooled: FlowGraphRec = { nodes: [{ id: "p1", type: "pool", x: 0, y: 0, params: {} }], edges: [] };
+  eq(withRotation(pooled, 30), pooled, "a pool-only graph comes back untouched:");
+  const once = withRotation(fixture(), 45);
+  eq(withRotation(once, 45), once, "re-applying the same angle allocates nothing:");
 });
 
 const total = passed + failed;

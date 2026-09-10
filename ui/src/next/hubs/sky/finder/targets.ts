@@ -175,6 +175,23 @@ export function decorate(cloudPct: number | null, obstructed: boolean): Decorati
   return { clouded, color, statusTxt };
 }
 
+/**
+ * "In reach" - the one predicate behind the status row's count, the reach
+ * strip, the per-kind counts on the lens dial and the auto-aim's first pick.
+ *
+ * It is exported rather than inlined at each of those four sites because the
+ * count on the status row and the list underneath it MUST be the same rule: a
+ * strip showing four chips over a row saying "3 in reach" is the finder
+ * disagreeing with itself, and both halves would look entirely plausible.
+ *
+ * Deliberately NOT part of it: the 25 degree seeing floor. That is an advisory
+ * quality line the user switches on (`floorOnly`), not a reason a target is out
+ * of reach - the horizon is what decides reach, and the horizon is the site's.
+ */
+export function inReach(t: { obstructed: boolean; clouded: boolean }): boolean {
+  return !t.obstructed && !t.clouded;
+}
+
 export interface WheelLike {
   names?: string[];
   narrowband?: boolean[];

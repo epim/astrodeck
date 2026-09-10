@@ -35,6 +35,24 @@ export const ROTS: readonly number[] = [0, 15, 30, 45, 60, 75, 90, 105, 120, 135
 /** The overlap the copy promises and the engine is asked for. */
 export const OVERLAP = 0.15;
 
+/** `AtlasView.tsx:794`, verbatim and load-bearing: `rotation_deg` starts at 0
+ *  for every framing session, so treating 0 as a commanded angle bolts a
+ *  rotate-to-PA loop onto every "just show me this" tap. */
+export const PA_DEADBAND_DEG = 0.5;
+
+/**
+ * The angle this framing actually COMMANDS, or null for "leave the camera
+ * alone".
+ *
+ * One expression, read by the framing card's promise AND by the graph edit that
+ * writes the TARGET node's `rotation` - so the sentence on screen and the number
+ * on the wire cannot drift apart. They had: the card promised a PA and the flow
+ * carried the node vocabulary's shipped 23.4.
+ */
+export function commandedPa(rotationDeg: number): number | null {
+  return rotationDeg > PA_DEADBAND_DEG ? rotationDeg : null;
+}
+
 export interface MosaicSpec {
   ra_hours: number;
   dec_deg: number;
@@ -80,6 +98,11 @@ export function panelsToTargets(
   groupId: string | undefined,
   rotationDeg: number,
 ): Target[] {
+  // `rotation_deg` on every panel is the whole rotator hand-off: the sequence
+  // engine calls `goto_and_center(..., rotation_deg=target.rotation_deg)` on
+  // each slew (`sequence/engine.py:5185, 5880`), and it is the ONLY trigger for
+  // rotation. A panel list without it is a mosaic that images at whatever angle
+  // the camera happened to be left at, under a card promising an angle.
   const many = panels.length > 1;
   return panels.map((p) => ({
     id: uid(),
@@ -93,6 +116,52 @@ export function panelsToTargets(
     mosaic_group: many ? groupId : undefined,
     steps: [{ ...DEFAULT_STEP, id: uid() }],
   })) as Target[];
+}
+
+/**
+ * The plan's dedupe key for this framing session.
+ *
+ * `store.addTargetsToPlan` REPLACES every existing target carrying the group
+ * before appending, so re-framing the same object updates its panels instead of
+ * silently doubling them. A catalogued object groups by its id; a free-roam
+ * session groups by the stable `freeroamId` the store seeded - which is the
+ * whole reason that field exists (`store.ts:1272-1275`).
+ */
+export function mosaicGroupId(f: {
+  target?: { id: string } | undefined;
+  freeroamId?: string;
+}): string | undefined {
+  return f.target?.id ?? f.freeroamId;
+}
+
+/** What every panel target is named after. `AtlasView.tsx:727` prefers the
+ *  catalogue ID over the display name, because "M31 1-2" is what an operator
+ *  finds in the plan and in the frame filenames; "Sky" is the free-roam case. */
+export function mosaicBaseName(f: {
+  target?: { id?: string; name?: string } | undefined;
+}): string {
+  return f.target?.id ?? f.target?.name ?? "Sky";
+}
+
+/**
+ * Does this framing session describe the target the sheet is about?
+ *
+ * The framing slice is GLOBAL - one session, shared with the Atlas - so a
+ * framing kept for M31 was being drawn over a flow generated for M42 and fed
+ * into its payload (review #3). Every consumer of `framing.panels` has to ask
+ * this first, and it is one function so no consumer can ask it a different way.
+ *
+ * A free-roam session matches only the typed/patch target it was framed at,
+ * which the quick sheet identifies by the same `freeroamId` string.
+ */
+export function framingMatches(
+  f: { target?: { id?: string; name?: string } | undefined; freeroamId?: string } | null,
+  targetId: string | null,
+): boolean {
+  if (!f || !targetId) return false;
+  return f.target?.id === targetId
+    || f.target?.name === targetId
+    || f.freeroamId === targetId;
 }
 
 // ------------------------------------------------------------------- copy

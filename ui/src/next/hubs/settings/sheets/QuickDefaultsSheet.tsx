@@ -1,18 +1,33 @@
 // QuickDefaultsSheet.tsx - QUICK SESSION DEFAULTS (plan section C.3).
 //
-// THERE IS NO SERVER STORE FOR THIS. It is this phone's memory of the last
-// quick session it generated, under `astrodeck-next-quick`, and the Sky hub's
-// quick-session sheet is what writes it on GENERATE FLOW. This sheet owns the
-// READ and the EDIT, which is why the reader and the writer both live in this
-// file and are exported: one shape, one parser, one place for it to be wrong.
+// THERE IS NO SERVER STORE FOR THIS. It is this phone's memory of the last quick
+// session it generated, and the Sky hub's quick-session sheet is what writes it
+// on GENERATE FLOW.
 //
-// NOTHING IS INVENTED. With no stored value the sheet says so and stops - it
-// does NOT seed itself from the wheel and then present the seed as "learned
-// from your last session", because a default nobody chose, labelled as a
-// choice, is the shape of every "the app changed my settings" bug report.
+// THE KEY AND THE PARSER ARE THE SKY HUB'S, NOT THIS FILE'S. They used to be
+// this file's: `astrodeck-next-quick` with its own shape, its own coercions and
+// its own `readQuickDefaults`, while the sheet that actually generates the night
+// read and wrote `astrodeck-next-sky-quick` through `sky/finder/prefs.ts`. The
+// two never met (review #4): this sheet said "nothing learned yet" forever no
+// matter how many sessions had been generated, and every edit made here was
+// ignored by the sheet it claimed to be the defaults for. Both directions were
+// broken, and both were green in their own tests, because each test asserted the
+// sheet against the key the sheet itself owned.
 //
-// FILTER NAMES COME FROM THE WHEEL (README "Ground rules": never ask the user
-// to type one). The rows are the union of the wheel's current slot names and
+// So the reader, the writer, the shape and the coercions now come from
+// `skyPrefs`, and this file owns exactly one thing: the screen. The surviving
+// key is the SKY one because it is the one holding real data - a phone that has
+// generated quick sessions has learned defaults there, and nothing but this
+// sheet's own edits ever reached the other.
+//
+// NOTHING IS INVENTED. With nothing stored the sheet says so and stops - it does
+// NOT seed itself from the wheel and then present the seed as "learned from your
+// last session", because a default nobody chose, labelled as a choice, is the
+// shape of every "the app changed my settings" bug report. `skyPrefs.hasQuick()`
+// is what distinguishes that from "the defaults happen to be empty".
+//
+// FILTER NAMES COME FROM THE WHEEL (README "Ground rules": never ask the user to
+// type one). The rows are the union of the wheel's current slot names and
 // whatever the stored value already knows, so a night's defaults do not vanish
 // from the screen because the wheel is unplugged right now.
 
@@ -26,108 +41,48 @@ import { nav } from "../../../router";
 import { useStore } from "../../../../store";
 import { confirmDialog } from "../../../../components/ConfirmDialog";
 import type { SheetProps } from "../../sheets";
+import { skyPrefs, type QuickPrefs } from "../../sky/finder";
 
-export const QUICK_KEY = "astrodeck-next-quick";
+/** Re-exported so a caller (and the test) names ONE key. It is
+ *  `astrodeck-next-sky-quick`; this file no longer declares one of its own. */
+export const QUICK_KEY = skyPrefs.SKY_PREF_KEYS.quick;
 
 export type QuickHours = 1 | 2 | 3 | 4 | "dawn";
 
-export interface QuickExtras {
-  af: boolean;
-  guide: boolean;
-  dither: boolean;
-  ditherN: number;
-  cloud: boolean;
-  hfr: boolean;
-  liveStack: boolean;
-}
-
-export interface QuickDefaults {
-  hours: QuickHours;
-  /** Keyed by the WHEEL's filter names, never by an index: a slot that moves
-   *  must not silently take another filter's exposure with it. */
-  filters: Record<string, boolean>;
-  exp: Record<string, number>;
-  extras: QuickExtras;
-}
-
-function coerceHours(v: unknown): QuickHours {
-  if (v === "dawn") return "dawn";
-  const n = Number(v);
-  return n === 1 || n === 2 || n === 3 || n === 4 ? (n as QuickHours) : 2;
-}
-
-function coerceBoolMap(v: unknown): Record<string, boolean> {
-  const out: Record<string, boolean> = {};
-  if (v && typeof v === "object" && !Array.isArray(v)) {
-    for (const [k, val] of Object.entries(v as Record<string, unknown>)) out[k] = !!val;
-  }
-  return out;
-}
-
-function coerceNumMap(v: unknown): Record<string, number> {
-  const out: Record<string, number> = {};
-  if (v && typeof v === "object" && !Array.isArray(v)) {
-    for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
-      const n = Number(val);
-      if (Number.isFinite(n) && n > 0) out[k] = n;
-    }
-  }
-  return out;
-}
-
-/** null means NOTHING HAS BEEN LEARNED - which is not the same claim as "the
- *  defaults happen to be empty", and the sheet renders the two differently. */
-export function readQuickDefaults(): QuickDefaults | null {
-  try {
-    const raw = localStorage.getItem(QUICK_KEY);
-    if (!raw) return null;
-    const p = JSON.parse(raw) as Record<string, unknown>;
-    const ex = (p.extras ?? {}) as Record<string, unknown>;
-    const ditherN = Number(ex.ditherN);
-    return {
-      hours: coerceHours(p.hours),
-      filters: coerceBoolMap(p.filters),
-      exp: coerceNumMap(p.exp),
-      extras: {
-        af: ex.af !== false,
-        guide: ex.guide !== false,
-        dither: ex.dither !== false,
-        ditherN: Number.isFinite(ditherN) && ditherN > 0 ? Math.round(ditherN) : 3,
-        cloud: ex.cloud !== false,
-        hfr: ex.hfr !== false,
-        liveStack: ex.liveStack !== false,
-      },
-    };
-  } catch {
-    // Private mode, cleared site data, or a value written by a build that
-    // shaped it differently: forget it rather than half-apply it.
-    return null;
-  }
-}
-
-export function writeQuickDefaults(q: QuickDefaults): void {
-  try { localStorage.setItem(QUICK_KEY, JSON.stringify(q)); } catch { /* quota */ }
-}
-
-export function clearQuickDefaults(): void {
-  try { localStorage.removeItem(QUICK_KEY); } catch { /* quota */ }
-}
-
-const HOURS = [
-  { value: 1 as QuickHours, label: "1 h" },
-  { value: 2 as QuickHours, label: "2 h" },
-  { value: 3 as QuickHours, label: "3 h" },
-  { value: 4 as QuickHours, label: "4 h" },
-  { value: "dawn" as QuickHours, label: "To dawn" },
+/** The five stops, as the segmented control offers them. "dawn" is a CHOICE,
+ *  not a number of hours: dawn is a different length every night, so storing
+ *  tonight's 5.2 h and replaying it in December would turn "all night" into
+ *  "5h 12m" with the screen saying 5h 12m. `QuickPrefs.dawn` carries the
+ *  choice; the Sky sheet resolves it against tonight's dawn. */
+const HOURS: { value: QuickHours; label: string }[] = [
+  { value: 1, label: "1 h" },
+  { value: 2, label: "2 h" },
+  { value: 3, label: "3 h" },
+  { value: 4, label: "4 h" },
+  { value: "dawn", label: "To dawn" },
 ];
 
-const EXTRA_ROWS: { key: keyof QuickExtras; label: string; note: string }[] = [
+export function hoursValue(q: QuickPrefs): QuickHours {
+  if (q.dawn) return "dawn";
+  const n = Math.round(q.hours);
+  return n === 1 || n === 3 || n === 4 ? (n as QuickHours) : 2;
+}
+
+export function withHours(q: QuickPrefs, v: QuickHours): QuickPrefs {
+  return v === "dawn" ? { ...q, dawn: true } : { ...q, hours: v, dawn: false };
+}
+
+/** The automation rows, keyed EXACTLY as `QuickPrefs.extras` and the Sky
+ *  sheet's own chips key them. The old copy of this list called live stacking
+ *  `liveStack`; the chip that writes it calls it `stack`, so the row and the
+ *  chip were two different settings with one label. */
+const EXTRA_ROWS: { key: string; label: string; note: string }[] = [
   { key: "af", label: "Autofocus", note: "sweeps on a filter change and when the temperature drifts" },
   { key: "guide", label: "Guiding", note: "calibrates once, then holds the star all night" },
   { key: "dither", label: "Dither", note: "nudges between subs so the stack cancels sensor pattern" },
   { key: "cloud", label: "Cloud hold", note: "pauses at a frame boundary while the forecast is over the threshold" },
   { key: "hfr", label: "HFR watchdog", note: "refocuses when stars swell past the run's own baseline" },
-  { key: "liveStack", label: "Live stack", note: "builds the running picture you watch on Session - Now" },
+  { key: "stack", label: "Live stack", note: "builds the running picture you watch on Session - Now" },
 ];
 
 const NOTE = {
@@ -140,7 +95,8 @@ const FILTER_ROW = {
 } as const;
 
 export function QuickDefaultsSheet(_p: SheetProps): JSX.Element {
-  const [q, setQ] = useState<QuickDefaults | null>(readQuickDefaults);
+  const [q, setQ] = useState<QuickPrefs | null>(() =>
+    (skyPrefs.hasQuick() ? skyPrefs.getQuick() : null));
   const enqueueToast = useStore((s) => s.enqueueToast);
   const wheelNames = useStore((s) => s.status?.filterwheel?.names ?? null);
   const wheelOpaque = useStore((s) => s.status?.filterwheel?.opaque ?? null);
@@ -156,11 +112,11 @@ export function QuickDefaultsSheet(_p: SheetProps): JSX.Element {
       if (wheelOpaque && wheelOpaque[i]) return;
       if (!out.includes(name)) out.push(name);
     });
-    for (const k of Object.keys(q?.filters ?? {})) if (!out.includes(k)) out.push(k);
+    for (const k of Object.keys(q?.on ?? {})) if (!out.includes(k)) out.push(k);
     return out;
   }, [wheelNames, wheelOpaque, q]);
 
-  const save = (next: QuickDefaults) => { setQ(next); writeQuickDefaults(next); };
+  const save = (next: QuickPrefs) => { setQ(next); skyPrefs.setQuick(next); };
 
   const reset = () => {
     void confirmDialog({
@@ -173,7 +129,7 @@ export function QuickDefaultsSheet(_p: SheetProps): JSX.Element {
       confirmLabel: "FORGET",
     }).then((ok) => {
       if (!ok) return;
-      clearQuickDefaults();
+      skyPrefs.clearQuick();
       setQ(null);
       enqueueToast({ level: "info", title: "Quick session defaults forgotten." });
     });
@@ -209,16 +165,16 @@ export function QuickDefaultsSheet(_p: SheetProps): JSX.Element {
         <>
           <Label>NIGHT LENGTH</Label>
           <Card>
-            <Segmented
+            <Segmented<QuickHours>
               options={HOURS}
-              value={q.hours}
-              onChange={(v) => save({ ...q, hours: v })}
+              value={hoursValue(q)}
+              onChange={(v) => save(withHours(q, v))}
               label="How long the quick session runs"
               data-testid="quick-hours"
             />
             <p style={NOTE}>
               How much of the night a generated flow claims. To dawn ends the run
-              at the end of astronomical night.
+              at the end of astronomical night, whatever length that is tonight.
             </p>
           </Card>
 
@@ -231,14 +187,18 @@ export function QuickDefaultsSheet(_p: SheetProps): JSX.Element {
               </Mono>
             ) : (
               names.map((f) => {
-                const on = q.filters[f] === true;
+                // ABSENT MEANS CHECKED, which is `wheelModel`'s own rule for a
+                // slot the operator has never touched. Reading `=== true` here
+                // showed every fresh slot as unticked on this screen while the
+                // Sky sheet shot it.
+                const on = q.on[f] !== false;
                 const exp = q.exp[f] ?? 60;
                 return (
                   <div key={f} style={FILTER_ROW}>
                     <Checkbox22
                       checked={on}
                       onChange={(next) =>
-                        save({ ...q, filters: { ...q.filters, [f]: next } })}
+                        save({ ...q, on: { ...q.on, [f]: next } })}
                       label={f}
                       data-testid={`quick-filter-${f}`}
                     />
@@ -264,7 +224,7 @@ export function QuickDefaultsSheet(_p: SheetProps): JSX.Element {
             {EXTRA_ROWS.map((r) => (
               <Switch
                 key={r.key}
-                checked={q.extras[r.key] === true}
+                checked={q.extras[r.key] !== false}
                 onChange={(v) => save({ ...q, extras: { ...q.extras, [r.key]: v } })}
                 label={r.label}
                 note={r.note}
@@ -276,8 +236,8 @@ export function QuickDefaultsSheet(_p: SheetProps): JSX.Element {
                 <Mono size={11}>Dither every</Mono>
               </span>
               <Stepper2
-                value={q.extras.ditherN}
-                onChange={(v) => save({ ...q, extras: { ...q.extras, ditherN: v } })}
+                value={q.ditherN}
+                onChange={(v) => save({ ...q, ditherN: v })}
                 step={1}
                 min={1}
                 max={10}

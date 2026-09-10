@@ -16,17 +16,29 @@
 //      Atlas shows, because there is only one.
 //
 // The schematic fallback stays the user's explicit choice (persisted under
-// `astrodeck-next-sky-frame-mode`); it is not a silent downgrade when a tile
-// fetch fails, which is what `surveyDegraded` plus `degradedText` are for.
+// `astrodeck-next-sky-frame-mode`, and now with a control that writes it - see
+// `SurveyPopover`); it is not a silent downgrade when a tile fetch fails, which
+// is what `surveyDegraded` plus `degradedText` are for.
+//
+// THE DEGRADED BANNER NAMES THE REAL CAUSE. It used to say "No survey source -
+// download the offline sky pack" for every failure, including a transient
+// upstream hiccup on a rig with online fetch ON (review #30). `degraded.ts` now
+// answers per state, and the caller polls the pack while - and only while - the
+// copy depends on it.
+//
+// THE CATALOGUE'S OWN ABSENCE IS A SEPARATE SENTENCE. `region.degraded` means
+// the server answered from the 64 curated objects because the bulk deep-sky file
+// did not load, and a sky with no labels looks exactly like a sky whose labels
+// failed to load (review #32).
 
 import type { JSX } from "react";
 import { SkyCanvas } from "../../../../components/atlas/SkyCanvas";
 import type { SkyRow } from "../../../../lib/skyRegion";
 import type { OpticsLike } from "../../../../lib/framing";
 import type { CatalogEntry, FramingSession, MountStatus, RotatorStatus } from "../../../../types";
+import { regionNotes, type RegionNoteInput } from "./degraded";
 
-export const DEGRADED_NO_SOURCE =
-  "No survey source - download the offline sky pack in Settings, or enable online fetch.";
+export { DEGRADED_NO_SOURCE } from "./degraded";
 
 export interface FrameHostProps {
   framing: FramingSession;
@@ -35,11 +47,16 @@ export interface FrameHostProps {
   mode: "survey" | "schematic";
   imageBrightness: number;
   surveyDegraded: boolean;
+  /** The sentence for the state the rig is actually in - never undefined, so
+   *  SkyCanvas's own offline-pack default cannot come back on the online case. */
+  degradedText: string;
   onlineFetch: boolean;
   mount: MountStatus | null;
   rotator: RotatorStatus | null;
   pointingWhere: string | null;
   skyRows: SkyRow[];
+  /** What the catalogue could and could not answer for this patch. */
+  region: RegionNoteInput;
   selectedObjectId: string | null;
   catalogTarget?: CatalogEntry;
   onPickObject: (row: SkyRow | null) => void;
@@ -51,6 +68,7 @@ export interface FrameHostProps {
 }
 
 export function FrameHost(p: FrameHostProps): JSX.Element {
+  const notes = regionNotes(p.region);
   return (
     <div data-testid="sky-frame-host">
       <SkyCanvas
@@ -66,7 +84,7 @@ export function FrameHost(p: FrameHostProps): JSX.Element {
         mode={p.mode}
         imageBrightness={p.imageBrightness}
         surveyDegraded={p.surveyDegraded}
-        degradedText={DEGRADED_NO_SOURCE}
+        degradedText={p.degradedText}
         onlineFetch={p.onlineFetch}
         pointing={p.mount}
         rotator={p.rotator}
@@ -80,6 +98,18 @@ export function FrameHost(p: FrameHostProps): JSX.Element {
         onSurveyError={p.onSurveyError}
         onSurveyLoad={p.onSurveyLoad}
       />
+      {notes.length > 0 && (
+        <div
+          data-testid="sky-region-note"
+          style={{ display: "flex", flexDirection: "column", gap: 4, padding: "6px 2px 0" }}
+        >
+          {notes.map((n) => (
+            <span key={n} style={{ fontSize: 11, lineHeight: 1.45, color: "var(--text-faint)" }}>
+              {n}
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

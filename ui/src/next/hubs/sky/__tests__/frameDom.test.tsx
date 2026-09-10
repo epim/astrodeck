@@ -282,13 +282,19 @@ await testAsync("DONE asks the ENGINE for the panels, at the overlap the card pr
   await settle();
   assert(/2 panels/.test(byId("sky-framing-meta")?.textContent ?? ""), "the meta line did not follow the picker");
 
-  const before = asked.filter((a) => a.url.includes("/api/framing/mosaic")).length;
+  // The MOSAIC NIGHT card asks the SAME route while the picker is open, with
+  // `transit_alt: true`, so "how many panel requests did DONE make" has to
+  // exclude it - otherwise this counts a readout as a commitment.
+  const panelPosts = () => asked.filter(
+    (a) => a.url.includes("/api/framing/mosaic") && a.body?.transit_alt !== true,
+  );
+  const before = panelPosts().length;
   eq(before, 0, "precondition: nothing has been asked of the mosaic engine yet");
 
   click(byId("sky-frame"));   // DONE
   await settle();
 
-  const posts = asked.filter((a) => a.url.includes("/api/framing/mosaic"));
+  const posts = panelPosts();
   eq(posts.length, 1, "exactly one mosaic request per DONE:");
   eq(posts[0].method, "POST", "the mosaic engine is a POST:");
   eq(posts[0].body.rows, 1, "rows:");

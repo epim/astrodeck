@@ -33,6 +33,7 @@ export {
   decorate,
   displayName,
   fullName,
+  inReach,
   kindOf,
   mergeRows,
   narrowbandSlots,

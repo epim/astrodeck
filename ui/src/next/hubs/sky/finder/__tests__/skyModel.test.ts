@@ -56,6 +56,7 @@ import {
 import { compassPoint, windArrows, windFrom, cloudBaseKm } from "../wind";
 import {
   decorate,
+  inReach,
   kindOf,
   mergeRows,
   narrowbandSlots,
@@ -541,13 +542,28 @@ test("rankTargets drops hidden kinds and orders by score", () => {
 });
 
 test("the reach count is the clear, unobstructed subset", () => {
+  // THIS CALLS THE MODULE. It used to write the predicate INSIDE the test, over
+  // fixtures written inside the test, and assert that the two agreed - which
+  // they always would, because no module function was reached at all. Deleting
+  // every reach rule in the finder left it green (review #45). `inReach` is now
+  // the one predicate behind the status row's count, the reach strip, the lens
+  // dial's per-kind counts and the auto-aim, so breaking it breaks this.
   const ts: SkyTarget[] = [
     { ...fakeTarget("a") },
     { ...fakeTarget("b"), clouded: true, cloudPct: 55 },
     { ...fakeTarget("c"), obstructed: true },
+    { ...fakeTarget("d"), clouded: true, obstructed: true },
   ];
-  eq(ts.filter((t) => !t.obstructed && !t.clouded).length, 1,
-    "only the clear, unobstructed target is in reach");
+  eq(ts.filter(inReach).length, 1, "only the clear, unobstructed target is in reach");
+  eq(inReach(ts[0]), true, "clear and unobstructed:");
+  eq(inReach(ts[1]), false, "clouded:");
+  eq(inReach(ts[2]), false, "behind the horizon:");
+  eq(inReach(ts[3]), false, "both at once:");
+  // The seeing floor is NOT part of it: a low target is in reach and merely
+  // low, and folding the floor in here would silently empty the strip at a site
+  // whose objects all transit under 25 degrees.
+  const low: SkyTarget = { ...fakeTarget("low"), altNow: 4 };
+  eq(inReach(low), true, "a low but clear target is still in reach");
 });
 
 test("windowLabel renders the design's own window string", () => {
@@ -556,10 +572,38 @@ test("windowLabel renders the design's own window string", () => {
   eq(windowLabel(0), "0m", "nothing left");
 });
 
-test("the local sidereal time is the shared port, not a second one", () => {
-  // A spot check against ui/src/lib/altaz.ts, which is itself pinned to the
-  // server's coords.py: this file must never grow its own LST.
-  near(lstHours(-122.33, 1_756_000_000) % 24, lstHours(-122.33, 1_756_000_000), 1e-12, "lst is stable");
+test("the local sidereal time is pinned to the server's own arithmetic", () => {
+  // AN ABSOLUTE VALUE, not a round trip. This assertion used to read
+  // `near(lstHours(lon,t) % 24, lstHours(lon,t), 1e-12)` - a number compared to
+  // itself, green for any implementation whatsoever. Proven: replacing
+  // `lib/altaz.ts`'s `lstHours` with `return 3` left this file 40/40 (#45), and
+  // every other coordinate test above it is an INVERSE test, which survives a
+  // wrong LST because both directions use the same wrong one.
+  //
+  // The expected values are `server/astrodeck/catalog/coords.py:120 lst_hours`
+  // evaluated at these instants:
+  //
+  //     lst_hours(-122.33, 1_756_000_000) -> 15.795756820235324
+  //     lst_hours(   0.0 , 1_756_000_000) -> 23.951090153568657
+  //     lst_hours(-122.33, 1_700_000_000) -> 17.650500248152454
+  //
+  // 1e-9 hours is 3.6 microseconds of sidereal time - far tighter than the
+  // "good to about a second" this port claims, and loose enough that the last
+  // ulp of the positive-modulo differs harmlessly between the two languages.
+  near(lstHours(-122.33, 1_756_000_000), 15.795756820235324, 1e-9,
+    "LST at the rig's own longitude");
+  near(lstHours(0, 1_756_000_000), 23.951090153568657, 1e-9,
+    "GMST at Greenwich, the term the longitude is added to");
+  near(lstHours(-122.33, 1_700_000_000), 17.650500248152454, 1e-9,
+    "a second epoch, so a constant offset cannot pass");
+  // The range contract every caller depends on: hour angle is `lst - ra`, and a
+  // 24.0 or a negative would put a target half a day out with no visual tell.
+  for (const t of [0, 1_700_000_000, 1_756_000_000, 2_000_000_000]) {
+    for (const lon of [-179.9, -122.33, 0, 122.33, 179.9]) {
+      const v = lstHours(lon, t);
+      assert(v >= 0 && v < 24, `lstHours(${lon}, ${t}) left [0,24): ${v}`);
+    }
+  }
 });
 
 // ------------------------------------------------------------------- tally

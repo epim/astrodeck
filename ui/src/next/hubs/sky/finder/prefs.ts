@@ -154,8 +154,36 @@ export function setPool(v: string[]): void {
 }
 
 // --------------------------------------------------- quick-session defaults
+//
+// ONE KEY AND ONE PARSER, and this is it.
+//
+// There were two: the Sky hub's quick sheet wrote `astrodeck-next-sky-quick`
+// through this module on GENERATE FLOW, and Settings > SKY > QUICK SESSION
+// DEFAULTS read and wrote its OWN `astrodeck-next-quick` with its own shape.
+// Neither ever saw the other, so the settings sheet said "nothing learned yet"
+// forever and every edit made there was ignored by the sheet that generates the
+// night. Both directions were broken (review #4).
+//
+// The surviving key is this one, because it is the one that already holds real
+// data: a phone that has generated quick sessions has learned defaults HERE,
+// and nothing but the settings sheet's own edits was ever at the other key.
+// `QuickDefaultsSheet` now imports `getQuick`/`setQuick`/`hasQuick`/`clearQuick`
+// from this module and owns no parser of its own.
 export interface QuickPrefs {
+  /** Hours of night to claim. Ignored while `dawn` is true. */
   hours: number;
+  /**
+   * True when the choice was "until dawn" rather than a number of hours.
+   *
+   * This cannot be folded into `hours`. Dawn is a different length every night,
+   * so storing tonight's 5.2 h and replaying it in December would silently turn
+   * "all night" into "5h 12m" - and the screen would say 5h 12m with a straight
+   * face. The flag says what was CHOSEN; the sheet resolves it against tonight.
+   */
+  dawn: boolean;
+  /** Keyed by the WHEEL's slot names, never by index: a slot that moves must
+   *  not take another filter's exposure with it. Absent means CHECKED - the
+   *  same rule `wheelModel` applies, so both sheets agree about a fresh slot. */
   on: Record<string, boolean>;
   exp: Record<string, number>;
   extras: Record<string, boolean>;
@@ -164,27 +192,69 @@ export interface QuickPrefs {
 
 export const DEFAULT_QUICK: QuickPrefs = {
   hours: 2,
+  dawn: false,
   on: {},
   exp: {},
   extras: { af: true, guide: true, dither: true, cloud: true, hfr: true, stack: true },
   ditherN: 3,
 };
 
+function coerceBoolMap(v: unknown): Record<string, boolean> {
+  const out: Record<string, boolean> = {};
+  if (v && typeof v === "object" && !Array.isArray(v)) {
+    for (const [k, val] of Object.entries(v as Record<string, unknown>)) out[k] = !!val;
+  }
+  return out;
+}
+
+/** Only finite, positive seconds survive: a stored `0` or `"abc"` would
+ *  otherwise reach `wheelModel` and silently become an exposure. */
+function coerceNumMap(v: unknown): Record<string, number> {
+  const out: Record<string, number> = {};
+  if (v && typeof v === "object" && !Array.isArray(v)) {
+    for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+      const n = Number(val);
+      if (Number.isFinite(n) && n > 0) out[k] = n;
+    }
+  }
+  return out;
+}
+
 export function getQuick(): QuickPrefs {
   const s = readJson<Partial<QuickPrefs>>(K.quick, {});
   return {
     hours: typeof s.hours === "number" && s.hours > 0 ? s.hours : DEFAULT_QUICK.hours,
-    on: s.on && typeof s.on === "object" ? s.on : { ...DEFAULT_QUICK.on },
-    exp: s.exp && typeof s.exp === "object" ? s.exp : { ...DEFAULT_QUICK.exp },
-    extras: s.extras && typeof s.extras === "object"
-      ? { ...DEFAULT_QUICK.extras, ...s.extras }
-      : { ...DEFAULT_QUICK.extras },
-    ditherN: typeof s.ditherN === "number" && s.ditherN > 0 ? s.ditherN : DEFAULT_QUICK.ditherN,
+    dawn: s.dawn === true,
+    on: coerceBoolMap(s.on),
+    exp: coerceNumMap(s.exp),
+    extras: { ...DEFAULT_QUICK.extras, ...coerceBoolMap(s.extras) },
+    ditherN: typeof s.ditherN === "number" && s.ditherN > 0
+      ? Math.round(s.ditherN)
+      : DEFAULT_QUICK.ditherN,
   };
 }
 
 export function setQuick(v: QuickPrefs): void {
   writeJson(K.quick, v);
+}
+
+/**
+ * Has anything been learned at all?
+ *
+ * NOT the same claim as "the defaults happen to be empty", and the settings
+ * sheet renders the two differently: with nothing stored it says so and offers
+ * no controls, rather than presenting `DEFAULT_QUICK` as a choice somebody made.
+ */
+export function hasQuick(): boolean {
+  return readRaw(K.quick) != null;
+}
+
+export function clearQuick(): void {
+  try {
+    if (typeof localStorage !== "undefined") localStorage.removeItem(K.quick);
+  } catch {
+    /* private mode, a WebView that throws - forgetting is best-effort */
+  }
 }
 
 // -------------------------------------------------------------- FRAME mode
