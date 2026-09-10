@@ -334,7 +334,7 @@ function useTonight(altLimit: number, enabled: boolean, siteKey: string) {
         setError(
           timedOut
             ? "No answer in 15s, so tonight wasn't ranked."
-            : `Couldn't rank tonight — ${msg}.`,
+            : `Couldn't rank tonight - ${msg}.`,
         );
         setAnswered(true);
       });
@@ -906,7 +906,7 @@ export function useSkyModel(boxPx: number): SkyModel {
       );
       const transitLabel =
         m.transitUnix == null
-          ? "—"
+          ? "-"
           : m.transitUnix * 1000 < nowMs
             ? "passed"
             : fmtClock(m.transitUnix * 1000, m.transitUnix * 1000);
@@ -1167,7 +1167,7 @@ export function useSkyModel(boxPx: number): SkyModel {
       glow: lock ? `color-mix(in srgb, ${color} 35%, transparent)` : "rgba(0,0,0,0)",
       missingNote: haveOptics
         ? null
-        : `Framing needs your optics — missing ${missingOpticsFields(mergedOptics).join(", ")}. ` +
+        : `Framing needs your optics - missing ${missingOpticsFields(mergedOptics).join(", ")}. ` +
           "Set them here, or connect your camera to fill pixel/sensor automatically.",
     };
   }, [mergedOptics, pp, rotationDeg, lock]);

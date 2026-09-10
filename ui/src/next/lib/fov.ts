@@ -1,4 +1,4 @@
-// fov.ts — field-of-view, sampling and mosaic math for the Settings "Optics"
+// fov.ts - field-of-view, sampling and mosaic math for the Settings "Optics"
 // sheet and the Sky hub's framing card (README "11. Settings" -> Optics sheet;
 // "Formulas to lift" -> FoV + Mosaic):
 //

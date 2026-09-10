@@ -1,6 +1,6 @@
-// gate.ts — the ONE lock-reason helper for every control that issues a
+// gate.ts - the ONE lock-reason helper for every control that issues a
 // command (ARCHITECTURE.md #8 "RBAC and gating"). Pure: no React, no store, no
-// fetch — `s` is the four narrow fields the caller already has (from the real
+// fetch - `s` is the four narrow fields the caller already has (from the real
 // store via `gateHook.ts`'s `useLock`, or from a test).
 //
 // Priority: link down -> cap -> role not connected -> busy lane -> extra.
@@ -13,13 +13,13 @@
 //
 // `busyLane` is DECLARATIVE, not observational: the caller passes
 // `busyLane: "capture"` to mean "block me while that lane is busy", not "the
-// lane IS busy right now" — `lockReason` itself decides that by reading
+// lane IS busy right now" - `lockReason` itself decides that by reading
 // `s.status?.busy_lanes` (RigStatus.busy_lanes: string[], the per-lane list)
 // and, as a fallback, the collapsed `s.status?.busy` word (RigStatus.busy:
-// "slewing"|"solving"|"focusing"|"capturing"|null — built for the stale-
+// "slewing"|"solving"|"focusing"|"capturing"|null - built for the stale-
 // telemetry banner, so it only distinguishes 4 words, mapped back to ONE lane
 // each here: slewing->goto, solving->solve, focusing->autofocus,
-// capturing->capture). A lane absent from both reads as NOT busy — presence
+// capturing->capture). A lane absent from both reads as NOT busy - presence
 // of `inp.busyLane` is no longer itself the signal.
 
 import { accessPhrase, capAllowed, resolveRoleConnected } from "../../lib/caps";
@@ -30,14 +30,14 @@ export interface GateInput {
   /** control.capture, control.mount, control.guide, control.power,
    *  config.backend, config.safety, config.solar_override, config.site_optics,
    *  config.alerts, admin.users, system.update, view.media, view.weather,
-   *  view.site_precise, view.site_derived — any `Capability` from types.ts. */
+   *  view.site_precise, view.site_derived - any `Capability` from types.ts. */
   cap?: Capability;
   /** Device role that must be connected: camera | telescope | guider | switch
    *  | focuser | filterwheel | rotator. */
   needsRole?: string;
   /** Block while THIS server lane is busy (a `BusyLane` name from
    *  lib/useBusy.ts, or any lane string). Declarative: naming a lane here does
-   *  not mean it IS busy — `lockReason` reads `s.status.busy_lanes`/`busy` to
+   *  not mean it IS busy - `lockReason` reads `s.status.busy_lanes`/`busy` to
    *  decide that itself. */
   busyLane?: string;
   /** Caller-specific reason (e.g. "a flow owns the mount"). */
@@ -51,7 +51,7 @@ export interface GateStoreSlice {
   wsPhase: WsPhase;
 }
 
-/** Human name for a device role in a lock note — role ids from
+/** Human name for a device role in a lock note - role ids from
  *  ARCHITECTURE.md #8's `needsRole` list; telescope/switch/filterwheel/safety
  *  get the UI's own vocabulary (mount / power box / filter wheel / safety
  *  monitor), the rest pass through unchanged.
@@ -88,7 +88,7 @@ const BUSY_WORD_FOR_LANE: Record<string, string> = {
   capture: "capturing",
 };
 
-/** True while `lane` is actually busy, per the rig's own status — either
+/** True while `lane` is actually busy, per the rig's own status - either
  *  listed in `busy_lanes`, or (fallback) the collapsed `busy` word for it. */
 function isLaneBusy(status: RigStatus | null | undefined, lane: string): boolean {
   const lanes = status?.busy_lanes;

@@ -22,16 +22,6 @@
 import { accessPhrase } from "../../../../lib/caps";
 import type { AlertSink } from "../../../../types";
 
-/** `lib/alertSinks.ts` writes three of its sentences with a long dash:
- *  `deriveSinkHealth`'s "Delivery is failing - retrying", `deadmanVerdict`'s
- *  "Monitor URL is not being reached - check it" and `validateDraft`'s "SMTP
- *  port must be 1-65535". The house rule is hyphens, and that module is shared
- *  with `#/classic`, so it is not edited from here: the dashes are normalised
- *  at the ONE boundary that renders them, and the lib fix is named in this
- *  task's report as a follow-up. Written as escapes so this file does not
- *  itself contain the characters a reviewer greps for. */
-export const hyphens = (s: string): string => s.replace(/[\u2013\u2014]/g, "-");
-
 /** Where this sink actually sends, in one line. The list row's whole job is to
  *  let someone tell two ntfy topics apart at 03:00, so the destination is
  *  visible text and not a tooltip. `AlertsPanel.tsx:582-585`. */

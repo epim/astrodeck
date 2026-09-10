@@ -316,7 +316,7 @@ export function useTargetsModel(): TargetsModel {
         walkTrack(m.dec_deg * D2R, (lst - m.ra_hours) * 15 * D2R, trackCtx),
       );
       const transitLabel = m.transitUnix == null
-        ? "—"
+        ? "-"
         : m.transitUnix * 1000 < nowMs
           ? "passed"
           : fmtClock(m.transitUnix * 1000, m.transitUnix * 1000);

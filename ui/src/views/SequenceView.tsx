@@ -506,7 +506,7 @@ export default function SequenceView() {
   // aria-disabled, still focusable and still pressable, and a press STATES the
   // reason) and the LockedNote under it, for anyone who never presses. Each
   // branch names the missing thing rather than the fact that something is
-  // missing — "add targets and steps first" was true of an empty plan AND of a
+  // missing - "add targets and steps first" was true of an empty plan AND of a
   // plan whose every step had been zeroed, which are different repairs.
   const blockedChecks = preflightItems.filter((i) => i.status === "blocked");
   // One blocker gets its DETAIL ("M31 (Ha): 5000s", "no telescope connected") —
@@ -1058,7 +1058,7 @@ export default function SequenceView() {
           )}
           {plan.targets.length === 0 && !running && (
             <p className="text-dim text-xs py-6 text-center tracking-widest uppercase">
-              empty plan — search the catalog above to add targets
+              empty plan - search the catalog above to add targets
             </p>
           )}
           <div className="flex flex-col gap-4">

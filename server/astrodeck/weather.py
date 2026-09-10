@@ -891,7 +891,7 @@ class WeatherService:
         end_hhmm = time.strftime("%H:%M", time.localtime(end_ts))
         bus.log("warning",
                 f"high cloud forecast tonight: peak {peak}% ({dominant} layer) "
-                f"{start_hhmm}–{end_hhmm}", "weather")
+                f"{start_hhmm}-{end_hhmm}", "weather")
 
     # -- payload (spec §7) -----------------------------------------------------
 

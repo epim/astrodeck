@@ -500,7 +500,7 @@ test("the status chip never claims CLEAR without a reading", () => {
   eq(decorate(55, false).clouded, true, "40 percent and over is clouded");
   eq(decorate(39, false).clouded, false, "under 40 is not");
   eq(decorate(4, true).statusTxt, "BEHIND HORIZON", "obstruction outranks cloud");
-  eq(decorate(null, false).statusTxt, "UP · cloud —", "no reading must not read as CLEAR");
+  eq(decorate(null, false).statusTxt, "UP · cloud -", "no reading must not read as CLEAR");
   eq(decorate(null, false).clouded, false, "an absent reading is not a cloud");
 });
 

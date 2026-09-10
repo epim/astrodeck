@@ -331,10 +331,15 @@ await testAsync("a blackout slot offers no offset, and says why", async () => {
   await settle();
   const standin = byAria("Slot 4 focuser offset - not applicable, blackout slot");
   assert(standin != null,
-    "slot 4 is a blackout and its offset cell is not the em-dash stand-in with "
+    "slot 4 is a blackout and its offset cell is not the not-applicable stand-in with "
     + "the reason - an offset through a slot with no light path is not a measurement");
-  eq((standin.textContent || "").trim(), "—",
-    "the blackout stand-in is not an em dash");
+  // A HYPHEN (T-R7-21a group A). It was an em dash, which is the one character
+  // the house copy rule forbids anywhere in the new UI, and the two normalisers
+  // that already fold a lone em dash to "-" settle which glyph a placeholder is.
+  eq((standin.textContent || "").trim(), "-",
+    "the blackout stand-in is not the house placeholder");
+  assert(!/[\u2013\u2014]/.test(standin.textContent || ""),
+    "a long dash is back in a rendered cell");
   assert(byAria("Slot 4 focus offset in steps") == null,
     "a blackout slot still has an offset stepper");
   const row = q('[data-testid="wheel-row-3"]');

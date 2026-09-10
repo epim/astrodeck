@@ -1,4 +1,4 @@
-// cloudTiles.ts — IR cloud tiles: bin raw samples into 6-degree alt/az tiles
+// cloudTiles.ts - IR cloud tiles: bin raw samples into 6-degree alt/az tiles
 // (README "1. Sky (home)": "IR cloud tiles (6 deg alt/az bins)"; "Formulas to
 // lift" -> IR tiles: "the cloud layer is the binned IR satellite image (6 deg
 // alt/az bins), not blobs. Draw as tiles."), the tile fill opacity, and the
@@ -52,7 +52,7 @@ export function tileOpacity(pct: number): number {
 }
 
 /** The same tiles, advected `minutes` forward by `wind` and re-binned onto the
- *  same `stepDeg` grid — the "+30 min ghost" overlay. A tile advected below
+ *  same `stepDeg` grid - the "+30 min ghost" overlay. A tile advected below
  *  the horizon (or off the bottom of the sky) is dropped. */
 export function ghostTiles(
   tiles: CloudTile[],

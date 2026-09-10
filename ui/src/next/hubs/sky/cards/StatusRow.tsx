@@ -63,10 +63,10 @@ export function StatusRow({
         Show <span style={{ color: "var(--accent)" }}>{reachCount}</span> suggested targets ›
       </Pill>
 
-      {/* No reading is not zero cloud. `clear —` is the honest form and the
+      {/* No reading is not zero cloud. `clear -` is the honest form and the
           layers popover carries the server's own reason for it. */}
       <Mono size={10} tone={clearPct == null ? "dim" : "good"}>
-        {clearPct == null ? "clear —" : `clear ${Math.round(clearPct)}%`}
+        {clearPct == null ? "clear -" : `clear ${Math.round(clearPct)}%`}
       </Mono>
 
       {/* No chevron. The chevron in this row means "this opens something

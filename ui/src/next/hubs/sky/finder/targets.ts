@@ -232,7 +232,7 @@ export function decorate(cloudPct: number | null, obstructed: boolean): Decorati
   const statusTxt = obstructed
     ? "BEHIND HORIZON"
     : cloudPct == null
-      ? "UP · cloud —"
+      ? "UP · cloud -"
       : clouded
         ? `CLOUD ${Math.round(cloudPct)}%`
         : `CLEAR · ${Math.round(cloudPct)}%`;
@@ -407,7 +407,7 @@ export interface SkyTarget {
    * as a point.
    */
   sizeArcmin?: number;
-  /** "23:52" / "passed" / "—" - the bare value; callers prefix "transit ". */
+  /** "23:52" / "passed" / "-" - the bare value; callers prefix "transit ". */
   transitLabel: string;
   windowMinutes: number;
   score: number;

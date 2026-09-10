@@ -1,4 +1,4 @@
-// allocation.ts — quick-session filter allocation (README "3. Quick session
+// allocation.ts - quick-session filter allocation (README "3. Quick session
 // setup" + "Formulas to lift" -> Filter allocation):
 //
 //   per = hours*3600 / checked
@@ -7,7 +7,7 @@
 //
 // Mono rigs split the window evenly across the checked wheel filters; OSC rigs
 // (no wheel) get a single EXPOSURE row instead (README: "OSC rigs get a single
-// EXPOSURE row instead"), covered here by `allocateOsc`. Pure display math —
+// EXPOSURE row instead"), covered here by `allocateOsc`. Pure display math - 
 // the engine (not the phone) decides the real plan (ARCHITECTURE.md #10).
 
 export interface AllocationFilter {

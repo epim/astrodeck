@@ -373,7 +373,7 @@ export function SkyDomePanel({ pointing, target, overlay, height = 280, onGeomet
           // patch of cloud and the answer above is averaged over 2.9 km of it.
           <p className="text-dim">
             one cell is {beamRatio.toFixed(0)}x the beam ({(cellM / 1000).toFixed(1)} km
-            vs {beamM.toFixed(0)} m) &mdash; a gap narrower than that cannot show
+            vs {beamM.toFixed(0)} m) - a gap narrower than that cannot show
             up above
           </p>
         )}
@@ -391,7 +391,7 @@ export function SkyDomePanel({ pointing, target, overlay, height = 280, onGeomet
         )}
 
         <p className="text-dim text-[10px]">
-          Modelled from {status?.credit?.source ?? "NOAA GOES"}. Advisory only &mdash;
+          Modelled from {status?.credit?.source ?? "NOAA GOES"}. Advisory only -
           nothing in the sequencer reads it.
         </p>
       </div>

@@ -1,4 +1,4 @@
-// advection.ts — wind advection of a sky point's cloud shadow, for the sky-view
+// advection.ts - wind advection of a sky point's cloud shadow, for the sky-view
 // wind arrows and the +30 min "ghost tile" overlay.
 //
 // Lifts the formula verbatim from the design prototype's reference logic
@@ -13,7 +13,7 @@
 //     alt = atan(h / r')
 //     az  = atan2(gx', gy')
 //
-// h (baseKm) and v (windKmh) are prototype defaults (2.2 km, 12 km/h) — the
+// h (baseKm) and v (windKmh) are prototype defaults (2.2 km, 12 km/h) - the
 // real values come from the weather feed (README: "take both from the weather
 // feed"), so callers pass them in rather than this module hard-coding them.
 

@@ -1,4 +1,4 @@
-// reach.ts — "reach score" ranking for the Sky hub's Suggested targets / reach
+// reach.ts - "reach score" ranking for the Sky hub's Suggested targets / reach
 // strip (README "1. Sky (home)" + "Formulas to lift" -> Reach score:
 // "altitude now, minutes above the floor to dawn, cloud % at the target, moon
 // separation; hidden kinds excluded").
@@ -51,7 +51,7 @@ export function rankTargets<T extends ReachInput>(list: T[]): (T & { score: numb
     .sort((a, b) => b.score - a.score);
 }
 
-/** "2h 40m" / "45m" — the reach-strip / lock-card window label. */
+/** "2h 40m" / "45m" - the reach-strip / lock-card window label. */
 export function windowLabel(minutes: number): string {
   if (!Number.isFinite(minutes) || minutes <= 0) return "0m";
   const m = Math.round(minutes);

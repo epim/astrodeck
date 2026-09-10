@@ -12,7 +12,7 @@
 // would paint a clear patch of sky that nobody measured, which is the exact
 // defect class this repo names "a claim nothing keeps". Nulls are dropped from
 // the sample list; a target whose bin has no sample gets `null` back, and the
-// chip says `cloud —`.
+// chip says `cloud -`.
 
 import { binTiles, tileOpacity, type CloudSample, type CloudTile } from "../../../lib/cloudTiles";
 import type { CloudmapDome } from "../../../../api/cloudmap";

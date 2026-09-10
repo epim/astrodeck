@@ -640,11 +640,14 @@ async def test_night_warning_latch_once_per_night_and_reset(svc, monkeypatch):
     # B log rule: times + percentages ONLY — never coordinates
     assert "34.2" not in warn_logs[0] and "118.1" not in warn_logs[0]
     # #228: the window is quoted in LOCAL time. It used to be formatted in UTC
-    # and labelled "tonight", so on 2026-08-11 an operator read "09:15–12:15"
-    # — mid-morning, hours after dawn — for the window the modal correctly
-    # showed as 02:15–05:15. Same window, seven hours apart, printed beside a
+    # and labelled "tonight", so on 2026-08-11 an operator read "09:15-12:15"
+    # - mid-morning, hours after dawn - for the window the modal correctly
+    # showed as 02:15-05:15. Same window, seven hours apart, printed beside a
     # log stamp that events.py renders in local time.
-    expect = (f"{time.strftime('%H:%M', time.localtime(BASE + 16 * 900))}–"
+    #
+    # T-R7-21a item 22: the separator is a HYPHEN now. It was an EN DASH, the
+    # one character the house copy rule forbids, and this assertion pinned it.
+    expect = (f"{time.strftime('%H:%M', time.localtime(BASE + 16 * 900))}-"
               f"{time.strftime('%H:%M', time.localtime(BASE + 19 * 900))}")
     assert expect in warn_logs[0], (
         f"banner says {warn_logs[0]!r}; local window is {expect}")
