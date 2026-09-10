@@ -69,13 +69,109 @@
   align-items: center;
   justify-content: flex-end;
   gap: 6px;
-  overflow: hidden;
+  /* `clip` rather than `hidden`, and only on the inline axis. `hidden` clipped
+     the night control's 44 px touch pseudo-element down to this row's 26 px -
+     the hit target `boundary.css` says it has never actually had one. `clip`
+     is the one overflow value that does NOT force the other axis to `auto`, so
+     the block axis can stay `visible` and let that target reach into the
+     header's own padding, while the inline axis still clips an over-wide row
+     from the left instead of widening the app. */
+  overflow-x: clip;
+  overflow-y: visible;
 }
 
-/* The chips give before the wordmark does. NOTHING here may be shrink-0: the
-   header used to set the whole app's minimum width at 382 px, which scrolled a
-   320 px phone sideways and put the link indicator off-screen. */
-.nx-header-chips > * { min-width: 0; flex-shrink: 1; }
+/* WIDTH POLICY: a chip is WHOLE OR ABSENT, and the ROW is what sheds.
+   Measured at 390x844 before this rule (probe screenshot, admin AND viewer):
+   `flex-shrink: 1` on the chips plus `.nx-pill-text { text-overflow: ellipsis }`
+   in next.css gave every chip a haircut at the same time - "CAM ...",
+   "MOUNT...", "S...", "D" for an admin, "C...", "MO...", "S.", "V..." for a
+   viewer - so the row cost its full 390 px and carried none of its payload. An
+   ellipsised readout is strictly worse than a dropped one: it still takes the
+   width, and the three characters it leaves are not a temperature, a mount
+   state, a backend or a role.
+
+   This does NOT bring back the 382 px app-wide floor. `.nx-header-chips` keeps
+   `min-width: 0` and clips its inline axis above, so an over-wide row is cut by
+   the container (from the LEFT, the row being end-justified, which is why the
+   night control is last) instead of widening the app. The floor is the
+   wordmark, and only the wordmark. */
+.nx-header-chips > * { flex-shrink: 0; white-space: nowrap; }
+
+/* ...and the text inside a chip that never shrinks has nothing to ellipsise,
+   so say so rather than leaving a dormant `text-overflow` to fire the moment
+   some future rule reintroduces shrinking. */
+.nx-header-chips .nx-pill-text { overflow: visible; text-overflow: clip; }
+
+/* The wordmark is the ONE item in this row allowed to be clipped rather than
+   dropped, so it is the one item that gets `min-width: 0` - a flex item's
+   `auto` minimum would otherwise let nine letters set the header's floor. */
+.nx-header-wordmark { min-width: 0; overflow: hidden; }
+
+/* --- what the row sheds, in order, as the glass narrows ------------------- */
+
+/* 1. The mount's state word. The design's own phone screenshots (01/07/13)
+      show `MOUNT`, not `MOUNT TRACK`; the LED beside it already carries the
+      tone, and the chip's tablet+ form still spells it out. */
+.nx-app[data-bp="phone"] .nx-mount-state { display: none; }
+
+/* 2. The wordmark's tracking, exactly as the classic header already does it
+      (App.tsx: `tracking-[0.14em] sm:tracking-[0.3em]`). Nine letters at .22em
+      spend 8 px on air. */
+.nx-app[data-bp="phone"] .nx-header-wordmark { letter-spacing: .14em; }
+
+/* 3. The flows pill's COUNT, when this session is also carrying a role chip.
+      `data-dense` is set by `Header.tsx` and is the only thing about this row
+      that varies per USER rather than per WIDTH - a viewer at 390 px has one
+      more chip than an admin at 390 px, so no media query can see it. The
+      glyph stays: the shortcut is still tappable, it just stops reporting a
+      number that the Flows screen repeats one tap later. */
+.nx-app[data-bp="phone"] .nx-header-chips[data-dense="true"] .nx-flows-pill .nx-pill-text {
+  display: none;
+}
+
+/* 4. The flows pill itself. It is the only element in this row that is a
+      SHORTCUT rather than a READOUT - Flows is two taps away in the tab bar,
+      whereas nothing else on the screen you are on tells you the sensor is at
+      -10 degrees - so it goes before any readout is touched. Thresholds are
+      measured, not guessed: a dense (role-chip) row runs out of width below
+      400 px, so it loses the pill at 390; a plain admin row not until 360. */
+@media (max-width: 399px) {
+  .nx-app[data-bp="phone"] .nx-header-chips[data-dense="true"] .nx-flows-pill { display: none; }
+}
+@media (max-width: 359px) {
+  .nx-app[data-bp="phone"] .nx-flows-pill { display: none; }
+}
+
+/* 5. And the row's own air, last, because it costs every chip a little rather
+      than costing one chip everything. A phone header is a dense strip: 5 px
+      between chips and 6 px inside them instead of 6 and 8. Measured: that is
+      24 px on a viewer's five-chip row at 390 px, which is the difference
+      between `CAM -10°` reading whole and losing its left edge to the clip. */
+.nx-app[data-bp="phone"] .nx-header-chips { gap: 5px; }
+.nx-app[data-bp="phone"] .nx-header-chips .nx-pill { padding-inline: 6px; }
+
+/* ...and one notch tighter again below 360 px, where even the four readouts
+   alone do not fit: measured at 320 px, the row was 3.9 px over and the camera
+   chip lost its left border to the clip. 4 px of gap and 5 px of pill padding
+   give it back with room to spare, and take the worst case - a six-character
+   backend badge (`ALPACA` / `NATIVE`) instead of `SIM` - from a 22 px bite out
+   of the camera chip to an 11 px one. */
+@media (max-width: 359px) {
+  .nx-app[data-bp="phone"] .nx-header-chips { gap: 4px; }
+  .nx-app[data-bp="phone"] .nx-header-chips .nx-pill { padding-inline: 5px; }
+
+  /* 6. And below 360 px a row that also carries a role chip is 49 px short
+        even after all of the above, so one whole chip has to go rather than be
+        sliced. It is the role chip, and the reason is that the alternative is
+        WORSE THAN MISSING: measured at 320 px as a viewer before this rule,
+        the clip cut the camera chip 49 px in and left it reading "10°" - a
+        temperature with its minus sign shaved off, which is not a degraded
+        readout, it is a wrong one. The role is still stated everywhere it
+        changes what happens: every locked control carries its own read-only
+        badge, and Settings names the signed-in principal. What it stops being
+        is the thing that costs the sensor temperature its sign. */
+  .nx-app[data-bp="phone"] .nx-header-chips[data-dense="true"] .nx-role-chip { display: none; }
+}
 
 .nx-chip-led {
   width: 7px;

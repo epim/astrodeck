@@ -32,8 +32,14 @@
 //   * revert the LOG chip to `{ id: "log", label: "LOG" }` -> "the LOG chip
 //     carries the unseen-error count".
 //   * remove the monitor badge from TabBar -> "the MONITOR tab wears the count".
-//   * remove the night Pill from the header -> "the header carries a night
+//   * remove the night button from the header -> "the header carries a night
 //     toggle" and "pressing it flips store.night".
+//   * give the night toggle a text child again (`DAY` / `NIGHT`) -> "the night
+//     toggle is icon-only".
+//   * spell the role out as `VIEW ONLY` / `OPERATOR` again -> "the role chip is
+//     four characters and says the rest in its name".
+//   * put the mount's state word back in the chip's own text -> "the mount
+//     chip's state word is separable".
 //   * gate the setup banner on `complete` the wrong way, or drop it -> the
 //     three banner assertions.
 
@@ -221,6 +227,9 @@ await testAsync("the header carries a night toggle, and pressing it flips store.
   const btn = byId("header-night");
   assert(btn != null, "no night control in the header - it is four navigations away again");
   eq(btn.tagName, "BUTTON", "a night TOGGLE has to be pressable:");
+  eq(String(btn.textContent), "",
+    "the toggle is icon-only: the word was the first thing the 390 px row " +
+      "truncated, and a chip reading `D` is not a state -");
   assert(/Switch to red night-vision mode/.test(String(btn.getAttribute("aria-label"))),
     `the accessible name must say what the press does, got "${btn.getAttribute("aria-label")}"`);
 
@@ -233,11 +242,125 @@ await testAsync("the header carries a night toggle, and pressing it flips store.
   eq(useStore.getState().night, false, "the toggle only works one way:");
 });
 
-test("the CAM chip carries its unit", () => {
+test("the CAM chip carries its unit, and nothing but its unit", () => {
   const cam = byId("header-cam");
   assert(cam != null, "no camera chip");
-  assert(/-10\.0°/.test(String(cam.textContent)),
+  assert(/-10°/.test(String(cam.textContent)),
     `a temperature without a unit reads as one more state word, got "${cam.textContent}"`);
+  // ...and the tenth of a degree is gone with the unit WORD (measured
+  // 2026-09-10): `CAM -10.0°` is 12 px wider than `CAM -10°` on a 390 px row
+  // that had 0 px to spare, and the digit it spends them on changes on every
+  // poll and is not a number anyone acts on. A set point is whole degrees.
+  assert(!/-10\.0/.test(String(cam.textContent)),
+    `the header prints whole degrees, got "${cam.textContent}"`);
+  assert(!/\bC\b|degC|deg /i.test(String(cam.textContent).replace("CAM", "")),
+    `the degree sign is the whole unit, got "${cam.textContent}"`);
+});
+
+// ============================================== the header's width, at 390 px
+//
+// MEASURED (probe, 390x844, `#/session/now`): every chip in this row ellipsised
+// at once - `CAM ...`, `MOUNT...`, `S...`, `D` as an admin, `C...`, `MO...`,
+// `S.`, `V...` as a viewer. jsdom computes no widths, so the width policy
+// itself is guarded by `shellCss.test.ts` reading the stylesheet. What THIS
+// file can hold is the DOM shape the policy needs: a night toggle with no text
+// to truncate, a role chip short enough to survive, and a mount state word in
+// its own element so CSS can drop it without dropping the chip.
+
+test("the night toggle is icon-only, and says what it is in its name", () => {
+  const btn = byId("header-night");
+  assert(btn != null, "no night control in the header");
+  eq(String(btn.textContent), "", "the night toggle must render no text:");
+  const glyph = btn.querySelector(".nx-pill-glyph svg");
+  assert(glyph != null, "an icon-only control with no icon is a blank button");
+  // The two halves a screen reader would otherwise have to guess: what the
+  // screen is in now, and what pressing it does. Both, in both places.
+  const label = String(btn.getAttribute("aria-label"));
+  eq(btn.getAttribute("title"), label, "aria-label and title must say the same thing:");
+  assert(/Day mode is on/.test(label), `the state must be in the name, got "${label}"`);
+  assert(/Switch to/.test(label), `what the press does must be in the name, got "${label}"`);
+});
+
+/** A connected sim rig at -10 with a tracking mount, signed in as `role`. The
+ *  width tests need a FULL row: five chips is what a viewer sees, and five
+ *  chips is what would not fit. */
+async function seedRow(role: "admin" | "viewer" | "operator"): Promise<void> {
+  act(() => {
+    useStore.setState({
+      night: false, wsPhase: "up", telemetryStale: false,
+      principal: { role, email: "a@b.c", caps: ["view.status"] } as any,
+      status: {
+        connected: {
+          camera: { connected: true, name: "sim" },
+          telescope: { connected: true, name: "sim" },
+        },
+        camera: { temperature: -10 },
+        mount: { tracking: true, parked: false, slewing: false },
+        mode: "sim",
+      } as any,
+    } as never);
+  });
+  await act(async () => { root.render(createElement(Header as any, null)); });
+  await settle();
+}
+
+await testAsync("the mount chip's state word is separable from the chip", async () => {
+  await seedRow("admin");
+  const mount = byId("header-mount");
+  assert(mount != null, "no mount chip");
+  // The word is still in the DOM at every width - `shell.css` hides it at
+  // `data-bp="phone"` only, so tablet and desktop still read `MOUNT TRACK`.
+  assert(/TRACK/.test(String(mount.textContent)),
+    `a tracking mount must say so, got "${mount.textContent}"`);
+  const state = mount.querySelector(".nx-mount-state");
+  assert(state != null,
+    "the state word must live in `.nx-mount-state`, or the phone rule can only " +
+      "drop the whole chip - `MOUNT TRACK` is 96 px in a row that has 271");
+  eq(String(state.textContent).trim(), "TRACK", "the separable part is the state word alone:");
+  eq(String(mount.textContent).replace(String(state.textContent), ""), "MOUNT",
+    "what is left when the state word goes must be the label alone:");
+});
+
+await testAsync("an admin's row carries no role chip and is not dense", async () => {
+  await seedRow("admin");
+  eq(byId("header-role"), null, "admin is the default posture and states nothing:");
+  const row = q(".nx-header-chips");
+  assert(row != null, "no chips row");
+  eq(row.getAttribute("data-dense"), null,
+    "an admin row has one chip fewer, so it keeps the flows count:");
+});
+
+await testAsync("a viewer's role chip is four characters, with the rest in its name", async () => {
+  await seedRow("viewer");
+  const chip = byId("header-role");
+  assert(chip != null, "a viewer whose controls are all locked must be told so");
+  const text = String(chip.textContent);
+  eq(text, "VIEW", "the visible role is the short form:");
+  assert(text.length <= 4,
+    `a role chip longer than four characters does not fit a 390 px row, got "${text}"`);
+  // The sentence the short form stands in for. `role="img"` is what makes the
+  // label the chip's accessible NAME - a bare <span> has none of its own, so
+  // aria-label on one is not read.
+  eq(chip.getAttribute("role"), "img", "the chip needs a role to carry a name:");
+  const full = String(chip.getAttribute("aria-label"));
+  eq(chip.getAttribute("title"), full, "aria-label and title must say the same thing:");
+  assert(/viewer/i.test(full), `the full role must be in the name, got "${full}"`);
+  assert(/no rig control|view only/i.test(full),
+    `the name must say what the role cannot do, got "${full}"`);
+  // ...and the row says it is carrying the extra chip, which is the input the
+  // stylesheet drops the flows count on. No media query can see this: it
+  // varies per USER, not per width.
+  eq(q(".nx-header-chips").getAttribute("data-dense"), "true",
+    "the row must declare itself dense when it carries a role chip:");
+});
+
+await testAsync("an operator's role chip is shorter still", async () => {
+  await seedRow("operator");
+  const chip = byId("header-role");
+  assert(chip != null, "no role chip for an operator");
+  eq(String(chip.textContent), "OP", "the operator's short form:");
+  assert(/operator/i.test(String(chip.getAttribute("title"))),
+    `the full role must be in the tooltip, got "${chip.getAttribute("title")}"`);
 });
 
 // ============================================================ #15 the banner

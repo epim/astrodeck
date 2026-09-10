@@ -30,23 +30,44 @@
    whole header down on a phone - and the header's own note is that this row
    costs 44 px and must not cost more.
 
-   The chip stays visually 26 px; the finger gets 44. */
+   The chip stays visually 26 px; the finger gets a full 44 x 44.
+
+   ICON-ONLY (measured 2026-09-10). The toggle used to print DAY / NIGHT beside
+   the glyph. At 390 px that word was the first casualty of the header's
+   ellipsis - the probe screenshot shows a chip reading "D" - and a truncated
+   state word is not a state. The glyph is the state now, so the button carries
+   no text child at all and its `aria-label` / `title` say both halves (what the
+   screen is in, and what pressing it does). The empty `.nx-pill-text` span
+   `Pill` would have rendered is gone with it; this rule zeroes the pill's gap
+   anyway so a future text child cannot creep back in unnoticed. */
 .nx-night-toggle {
   position: relative;
   cursor: pointer;
+  /* No text child, so no gap to leave between a glyph and nothing. Stated
+     rather than left to the empty case, so a text child cannot creep back in
+     later and quietly inherit 5 px of air. */
+  gap: 0;
 }
 
 .nx-night-toggle::after {
   content: "";
   position: absolute;
-  left: 0;
+  /* A real 44 x 44 target on BOTH axes (the chip itself is 28 x 26). Anchored
+     to the button's RIGHT edge rather than centred on it, because this is the
+     last chip in an end-justified row whose container clips the inline axis: a
+     centred 44 px box would have its outer 8 px clipped away and the target
+     would be 36 px wide again. Growing leftwards keeps all 44 px inside the
+     clip; the 16 px it reaches over the backend badge costs nothing, that chip
+     being a readout with no click of its own.
+
+     The block axis is only free because `.nx-header-chips` is `overflow-y:
+     visible` (shell.css) - under the `overflow: hidden` it used to have, this
+     44 px was clipped to the row's 26 px and the target was never real. */
   right: 0;
   top: 50%;
+  width: 44px;
   height: 44px;
   transform: translateY(-50%);
-  /* Wider than the pill on both sides, so a thumb that lands beside it still
-     lands on it. Never visible: it paints nothing. */
-  margin-inline: -6px;
 }
 
 /* -------------------------------------------------------- monitor tab dot */
