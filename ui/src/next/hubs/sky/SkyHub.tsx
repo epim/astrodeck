@@ -22,10 +22,14 @@
 // is FRAME on - plus the box measurement and the FRAME lifecycle. None of the
 // three is persisted (plan F): a finder that reopens pointing where it was last
 // night, mid-framing, is worse than one that reopens at tonight's best target.
+//
+// It also owns the `?lock=<id>` deep link, which is how the targets sheet and
+// the catalog search aim the finder from outside it - see the block above the
+// effect that consumes it.
 
 import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from "react";
 import { Card, IconButton48 } from "../../ui";
-import { nav } from "../../router";
+import { buildHash, nav, useRoute } from "../../router";
 import { useBreakpoint } from "../../breakpoint";
 import { useLock } from "../../lib/gateHook";
 import { finishesAt } from "../../lib/allocation";
@@ -75,6 +79,21 @@ export const NO_GYRO_REASON = "No orientation sensor here - drag the sky to pan.
 export const FRAME_NEEDS_LOCK =
   "Aim at a target first - FRAME needs something in the reticle.";
 
+/** What a `#/sky?lock=<id>` deep link says when the ranking settles without the
+ *  object it names. It prints the id the link asked for, because that is the
+ *  only thing the user (or the support call reading the URL out) can act on. */
+export const lockNotListed = (id: string): string => `${id} is not in tonight's list`;
+
+/**
+ * How long a `?lock=` deep link waits for the id to appear in the ranked list.
+ *
+ * The targets sheet and the catalog search both aim by navigating here, and the
+ * hub can be MOUNTED before either catalogue source has answered - so the id is
+ * absent for a beat on every single deep link. Toasting on the first render
+ * would mean every working link also called itself broken.
+ */
+export const LOCK_WAIT_MS = 2500;
+
 const DESIGN_BOX_PX = 370;
 const MAX_BOX_PX = 720;
 
@@ -84,11 +103,12 @@ interface FrameState {
   id: string | null;
 }
 
-/** A `SkyTarget` in the shape `store.openFraming` wants. `size_arcmin` is 0
- *  because the finder's merged rows do not carry an extent - SkyCanvas then
- *  draws no catalogue-extent ellipse, which is the honest outcome of not
- *  knowing the size rather than a guessed one. */
-function entryOf(t: SkyTarget): CatalogEntry {
+/** A `SkyTarget` in the shape `store.openFraming` wants. The catalogued extent
+ *  travels with it, so SkyCanvas draws the real ellipse: all three catalogue
+ *  sources send `size_arcmin` and the finder now carries it through the merge.
+ *  A row that carried none still hands over 0, and 0 draws no ellipse - which
+ *  is the honest outcome of not knowing the size rather than a guessed one. */
+export function entryOf(t: SkyTarget): CatalogEntry {
   return {
     id: t.id,
     name: t.name,
@@ -96,7 +116,7 @@ function entryOf(t: SkyTarget): CatalogEntry {
     ra_hours: t.ra_hours,
     dec_deg: t.dec_deg,
     mag: null,
-    size_arcmin: 0,
+    size_arcmin: t.sizeArcmin ?? 0,
   };
 }
 
@@ -144,6 +164,72 @@ export function SkyHub(): JSX.Element {
   const [surveyBright] = useState<number>(() => skyPrefs.getSurveyBright());
   const [surveyDegraded, setSurveyDegraded] = useState(false);
   const quick = useMemo(() => skyPrefs.getQuick(), []);
+
+  // ---- `#/sky?lock=<id>`, the way every other screen aims this one ---------
+  //
+  // The targets sheet's rows and the catalog search's picks both aim by
+  // navigating to `#/sky?lock=<id>` (sheets/targets.tsx `aim()`): a sheet is
+  // route state, not a child of the screen underneath it, so the id cannot be
+  // handed over as a prop and travels in the hash instead - which also makes
+  // the choice a deep link support can read out over the phone.
+  //
+  // THE PARAM IS CONSUMED, NOT LEFT LYING. It is cleared with `nav.replace` the
+  // moment it has been acted on, for two reasons: a later re-render (the 30 s
+  // clock, a lens toggle) would otherwise re-aim and drag the view back off
+  // whatever the user had panned to, and Back from the next screen would land
+  // on a URL that aims all over again.
+  const route = useRoute();
+  const lockParam = route.params.lock ?? null;
+  const handledLockRef = useRef<string | null>(null);
+  const routeRef = useRef(route);
+  routeRef.current = route;
+  const setViewRef = useRef(model.setView);
+  setViewRef.current = model.setView;
+  const toastRef = useRef(enqueueToast);
+  toastRef.current = enqueueToast;
+
+  const clearLockParam = useCallback(() => {
+    const r = routeRef.current;
+    const params = { ...r.params };
+    delete params.lock;
+    nav.replace(buildHash({ hub: r.hub, sub: r.sub, sheets: r.sheets, params }));
+  }, []);
+
+  const targets = model.targets;
+  const aimReady = model.aimReady;
+  useEffect(() => {
+    if (lockParam == null || lockParam === "") {
+      handledLockRef.current = null;
+      return;
+    }
+    if (handledLockRef.current === lockParam) return;
+    const t = targets.find((x) => x.id === lockParam);
+    if (t) {
+      // The finder's own aim call, so the deep link ends in exactly the state a
+      // tap on the marker would: centred, tracked, and with the auto-aim off.
+      setViewRef.current({ az: t.azNow, alt: t.altNow, trackId: t.id });
+      // The param is HELD until the merged ranking has settled. The ranked
+      // picks carry no alt/az and the region rows carry the server's, so a link
+      // consumed on the first answer aims at a provisional position and then
+      // stops following - the same couple of degrees the finder's own opening
+      // aim used to be out by. While it is held, every new ranking re-aims.
+      if (!aimReady) return;
+      handledLockRef.current = lockParam;
+      clearLockParam();
+      return;
+    }
+    // Not there YET is the normal case for the first beat after a mount, so the
+    // refusal is on a timer. When it fires, the ranking has settled without it:
+    // say so once, and clear the param rather than leaving a link that will try
+    // again on every render.
+    const timer = setTimeout(() => {
+      if (handledLockRef.current === lockParam) return;
+      handledLockRef.current = lockParam;
+      toastRef.current({ level: "warning", title: lockNotListed(lockParam) });
+      clearLockParam();
+    }, LOCK_WAIT_MS);
+    return () => clearTimeout(timer);
+  }, [lockParam, targets, aimReady, clearLockParam]);
 
   const lock = model.lock;
   const capture = useLock({ cap: "control.capture", needsRole: "camera", busyLane: "capture" });

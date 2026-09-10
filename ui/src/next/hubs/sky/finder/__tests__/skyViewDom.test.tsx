@@ -115,8 +115,12 @@ g.fetch = async (url: any) => {
   if (u.includes("/api/cloudmap")) return ok({ enabled: true, platform: "G18", observed_at: null, age_s: null, stale: false, last_error: null, motion: null, credit: { source: "", url: "" } });
   if (u.includes("/api/catalog/tonight")) return ok({ date: "2026-09-10", site_is_default: false, picks: tonightPicks });
   if (u.includes("/api/catalog/region")) return ok({ rows: [], truncated: false, catalog_degraded: false, notes: [] });
-  if (u.includes("/api/catalog?q=planet")) return ok({ rows: solarRows });
-  if (u.includes("/api/catalog?q=moon")) return ok({ rows: [] });
+  // `{results}`, not `{rows}`: `/api/catalog?q=…&explain=1` answers
+  // `{"results": […], "notes": […]}` (app.py's catalog handler). This fixture
+  // used to send the shape the finder was WRONGLY reading, which is how a model
+  // that never saw a planet went on passing a test about planets.
+  if (u.includes("/api/catalog?q=planet")) return ok({ results: solarRows, notes: [] });
+  if (u.includes("/api/catalog?q=moon")) return ok({ results: [], notes: [] });
   if (u.includes("/api/visibility")) return ok(visibilityNight);
   if (u.includes("/api/site")) {
     return ok({
@@ -152,7 +156,8 @@ const { createRoot } = await import("react-dom/client");
 const { useStore } = await import("../../../../../store");
 const { useSkyModel } = await import("../model");
 const { SkyView } = await import("../SkyView");
-const { LAYERS_NOTE_DEFAULT, LAYERS_NOTE_NO_WEATHER, NO_COORDS_NOTE } = await import("../model");
+const { AIM_SETTLE_MS, LAYERS_NOTE_DEFAULT, LAYERS_NOTE_NO_WEATHER, NO_COORDS_NOTE } =
+  await import("../model");
 
 // ------------------------------------------------------------------ harness
 let passed = 0;
@@ -171,6 +176,17 @@ function eq<T>(got: T, want: T, msg: string): void {
 const settle = async () => {
   await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
   await act(async () => { await new Promise((r) => setTimeout(r, 320)); });
+  // ...AND past the model's settle timer, because the opening aim waits for it.
+  //
+  // The finder aims once the merged ranking has settled - both catalogue
+  // sources answered, or AIM_SETTLE_MS gone by. The region fixture above
+  // answers with NO rows, and an empty answer is indistinguishable through
+  // `useSkyRegion`'s public state from one that has not landed yet, so this
+  // mount takes the timer's route every time. Aiming earlier is the bug the
+  // timer exists for: the ranked picks carry no alt/az and the region rows
+  // carry the server's, so a finder that aimed on the first answer aimed at
+  // arithmetic and then sat still while the marker moved under it.
+  await act(async () => { await new Promise((r) => setTimeout(r, AIM_SETTLE_MS + 200)); });
   await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
 };
 
@@ -379,7 +395,14 @@ test("a principal without view.weather asks for no cloud and is told why", () =>
 
 test("the finder is still usable read-only: the sky, the markers and the bearing stay", () => {
   assert(/az \d{3}° · alt/.test(text()), "the readout vanished for a viewer");
-  assert(q("[data-sky-marker='Jupiter']") != null, "the markers vanished for a viewer");
+  // SATURN, where the operator's screen aims at Jupiter, and the difference is
+  // the point: without `view.weather` there is no dome, so the 30% cloud that
+  // sinks Saturn on the operator's screen is not there to sink it - and
+  // Saturn's 255-minute window then outranks Jupiter's 120. A viewer's ranking
+  // is a function of what that viewer is allowed to see, and the finder opens
+  // on the top of it either way.
+  eq(readout(), "az 200° · alt 30°", "the viewer's finder did not aim at its own top target");
+  assert(q("[data-sky-marker='Saturn']") != null, "the markers vanished for a viewer");
 });
 
 await act(async () => { root2.unmount(); });
