@@ -7,8 +7,10 @@
 //     campaign is armed to start at dusk anyway. This one does NOT auto-dismiss
 //     and has no X: it is a standing condition, not news, and it stops being
 //     true when a monitor is connected or the arm is cleared.
-//   * THE WEATHER VETO. A forecast alert holds the resume - unless someone has
-//     already overridden it, which is the other sentence.
+//   * THE WEATHER NOTE. A high-cloud forecast alert never holds the resume by
+//     itself - only forecast rain within the hour does (server: weather.py
+//     WeatherService.veto_reason: "RAIN VETOES. CLOUD DOES NOT."). This states
+//     that, or that the rain block is currently overridden until the next dusk.
 //
 // They live on this screen rather than in `shell/Banners.tsx` because the shell
 // is another task's file; the shell's own strip already carries the link, the
@@ -25,9 +27,9 @@ import { useActiveSession } from "./sessionData";
 export const NO_SAFETY_WARNING =
   "auto-resume armed without a safety monitor - rig may start in bad weather";
 export const WEATHER_VETO =
-  "high cloud tonight - auto-resume will hold unless overridden";
+  "high cloud forecast tonight - it does not hold auto-resume; only forecast rain within the hour does";
 export const WEATHER_OVERRIDE =
-  "weather override active - resume will ignore clouds tonight";
+  "weather override active - forecast rain will not hold auto-resume until the next dusk (cloud forecasts never do)";
 
 export function NowBanners(): JSX.Element | null {
   const resumeArm = useResumeArm();

@@ -131,7 +131,9 @@ test("the refusal defers to the reason the frame cannot be taken, and stops nami
   // while Single, two inches above, read "No camera is connected". A blocked
   // control resolving to a reason that is not merely incomplete but WRONG, and
   // pointing at another blocked control.
-  const noCam = "No camera is connected — connect one on the Equipment page";
+  // Sourced from the real function rather than a hardcoded copy, so a future
+  // reword of the sentence cannot leave this test asserting stale text.
+  const noCam = blocker({ hasCamera: false })!;
   const r = ready({ hasLiveFrame: false, liveStars: null, source: "no-frame",
                     captureBlocked: noCam });
   ok(r.block != null, "still refuses");
