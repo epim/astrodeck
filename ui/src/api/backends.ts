@@ -14,6 +14,8 @@ import type {
   BackendInfo,
   ConnectRigResult,
   CoolingConfig,
+  DewConfig,
+  FocusConfig,
   DriverEntry,
   DriverInfo,
   DriversResponse,
@@ -325,6 +327,36 @@ export const setCoolingConfig = (cooling: CoolingConfig): Promise<AppConfig> => 
  *  (the server files recovery/notification policy under the alerts cap). */
 export const setEscalationConfig = (escalation: EscalationConfig):
   Promise<AppConfig> => api.post<AppConfig>("/api/config", { escalation });
+
+/** POST /api/config {focus} → persist the WHOLE focus block: the approach
+ *  overshoot and the temperature-compensation settings (D-RIG-2). Same
+ *  wholesale-replace contract as setSafetyConfig - the server's `set_focus`
+ *  REPLACES FocusConfig, so the caller MUST echo the current block with its
+ *  edits applied, never send the one field it changed.
+ *
+ *  Requires `config.safety`, and that is the right shelf rather than a spare
+ *  one: `temp_comp.steps_per_c` with the sign backwards does not fail to correct
+ *  the focus drift, it DOUBLES it, all night, while the log says compensation is
+ *  running. Gate the control with `useLock({cap: "config.safety"})`.
+ *
+ *  FocusConfig used to have no write route at all, which is why the sheet could
+ *  show the setting and not change it; this is a fix, not a new surface. */
+export const setFocusConfig = (focus: FocusConfig): Promise<AppConfig> =>
+  api.post<AppConfig>("/api/config", { focus });
+
+/** POST /api/config {dew} → persist the WHOLE dew-heater policy (D-RIG-3). Same
+ *  wholesale-replace contract and the same `config.safety` capability as
+ *  setFocusConfig above: what the heaters do decides whether the objective fogs
+ *  over at 3am, which is a safety-shaped answer and not a preference.
+ *
+ *  TWO RELATIONAL RULES pydantic cannot express per field, both 422s
+ *  (`config.py:1066-1078`): `margin_off_c` must be ABOVE `margin_full_c`, and
+ *  `max_power` at least `min_power`. Both have the same failure mode if left
+ *  unchecked - the ramp inverts silently and the heater does the opposite of
+ *  what the panel says, with nothing to look at - so a form should refuse them
+ *  before the press rather than surface the 422 after it. */
+export const setDewConfig = (dew: DewConfig): Promise<AppConfig> =>
+  api.post<AppConfig>("/api/config", { dew });
 
 // ------------------------------------------------------ dome / roof (PRO-4)
 import type { DomeShutter } from "../lib/dome";
