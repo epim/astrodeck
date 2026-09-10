@@ -414,7 +414,18 @@ export function FlowCanvasSurface({ tier, showAddStage, onAddStage }: FlowCanvas
   const showAdd = showAddStage ?? t === "tablet";
 
   return (
-    <div ref={boxRef} data-testid="flows-canvas" data-flows-canvas className="nx-flow-canvas" data-tier={t}>
+    // `nx-flow-fill` is the surface's own height floor, and it is on the
+    // element rather than in `.nx-flow-canvas` so that a mount which really
+    // does hand this box a height can leave it off. Read `canvas.css`'s host
+    // section before removing it: without a height of its own this element is
+    // an `overflow: hidden` box of zero height with the whole graph inside it.
+    <div
+      ref={boxRef}
+      data-testid="flows-canvas"
+      data-flows-canvas
+      className="nx-flow-canvas nx-flow-fill"
+      data-tier={t}
+    >
       {/* GRID - a SIBLING of the world layer, so it does NOT pan and does NOT
           zoom: a fixed screen-space texture. It also owns the background press
           and the click-to-deselect, which is why it sits under the world rather

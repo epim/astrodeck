@@ -32,7 +32,7 @@
 // THE WAY OUT IS STILL EXPLICIT. BACK to MY FLOWS is a button, not only the
 // sub-nav chip, because a chip does not look like a back button.
 
-import { useEffect, type CSSProperties, type JSX } from "react";
+import { useEffect, type JSX } from "react";
 
 import { useStore } from "../../../../store";
 import { buildHash, nav, useRoute } from "../../../router";
@@ -41,6 +41,7 @@ import { EmptyCard } from "../../../ui";
 import { FlowCanvasSurface, FlowCanvasToolbar } from "./canvas";
 import { FlowInspectorColumn, FlowPaletteRail, useOpenFlowPalette } from "./inspector";
 import { CalibrationMatrixCard } from "./tonight";
+import "./canvas/canvas.css";
 
 /** The legacy `?open=` value that meant "open the canvas on its library
  *  screen". The canvas has no library any more - `FlowsScreen` is it - so this
@@ -55,17 +56,18 @@ export const CANVAS_LIBRARY = "library";
 export const CANVAS_NO_FLOW_HINT =
   "The canvas edits one flow at a time. Pick a flow in MY FLOWS to open it here.";
 
-/** The two boxes this file needs. Inline rather than in a stylesheet on
- *  purpose: `next.css` belongs to T-R7-0 and `canvas.css` to T-R7-1, and a
- *  cutover that added a third owner to either would be exactly the shared-file
- *  merge hazard the area stylesheets exist to prevent. Everything with a look
- *  is a primitive or an area class already. */
-const HOST: CSSProperties = {
-  display: "flex", flexDirection: "column", minHeight: 0, flex: 1, gap: 8,
-};
-const ROW: CSSProperties = {
-  display: "flex", flex: 1, minHeight: 0, minWidth: 0,
-};
+/* THE TWO BOXES THIS FILE NEEDS LIVE IN `canvas/canvas.css` NOW.
+ *
+ * They were inline styles, on the argument that a cutover should not add a
+ * third owner to a shared stylesheet. That argument was right about `next.css`
+ * and wrong about `canvas.css`, which this area owns - and it cost the P1 this
+ * change closes: an inline `flex: 1` cannot say "and here is the height to fall
+ * back on when the ancestor chain hands me none", so at tablet, where the row
+ * holds only the surface (whose children are all absolutely positioned), the
+ * row measured 716 x 0 and the canvas was a blank pane with sixteen stage cards
+ * inside it. The rules, and the whole diagnosis, are in `canvas.css`'s host
+ * section; this file just names them.
+ */
 
 export interface FlowsCanvasHostProps {
   /** The `?open=` route param: a flow id, or `library` for none. */
@@ -121,7 +123,7 @@ export function FlowsCanvasHost({ open }: FlowsCanvasHostProps): JSX.Element {
   };
 
   return (
-    <div data-testid="session-flows-canvas" style={HOST}>
+    <div data-testid="session-flows-canvas" className="nx-flow-host">
       <button
         type="button"
         data-testid="flows-canvas-back"
@@ -136,7 +138,7 @@ export function FlowsCanvasHost({ open }: FlowsCanvasHostProps): JSX.Element {
       <FlowCanvasToolbar />
 
       {named ? (
-        <div style={ROW}>
+        <div className="nx-flow-row">
           {/* The rail is docked only where 192 px of it does not eat the graph.
               At tablet the same list is one tap away as the `flowPalette`
               sheet, which is what the surface's + ADD STAGE opens. */}
@@ -159,7 +161,7 @@ export function FlowsCanvasHost({ open }: FlowsCanvasHostProps): JSX.Element {
           )}
         </div>
       ) : (
-        <div style={{ ...ROW, padding: 14 }}>
+        <div className="nx-flow-row" data-empty="true">
           <EmptyCard
             data-testid="flows-canvas-no-flow"
             title="NO FLOW OPEN"

@@ -777,6 +777,100 @@ test("runBlockedReason's classic three-argument call is unchanged", () => {
     "the whole point of the parameter");
 });
 
+// ================== 12. the canvas has a height of its own (the P1 this closes)
+
+/** The area stylesheet, comments stripped. jsdom loads no CSS and computes no
+ *  layout, so a DOM test cannot see a zero-height pane - which is exactly why
+ *  the blank tablet canvas shipped past a green suite. What a jsdom test CAN
+ *  do is grade the contract: the surface carries the class, and the class has a
+ *  rule that does not read a sibling. Both halves are needed. The class alone
+ *  is a promise with nothing behind it; the rule alone is a rule on nothing. */
+const canvasCss = (): string =>
+  readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "canvas", "canvas.css"), "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, "");
+
+/** One rule's declaration block, by exact selector. */
+function ruleBody(css: string, selector: string): string | null {
+  const at = css.indexOf(selector + " {");
+  if (at < 0) return null;
+  const open = css.indexOf("{", at);
+  const close = css.indexOf("}", open);
+  return close < 0 ? null : css.slice(open + 1, close);
+}
+
+await testAsync("the canvas surface carries the fill class at tablet width", async () => {
+  // THE DEFECT, IN ONE ASSERTION. Before this, the surface's only class was
+  // `.nx-flow-canvas`, whose rule set `flex: 1` and `min-height: 0` - a height
+  // borrowed entirely from an ancestor chain that does not supply one, so the
+  // measured box at 820 was 716 x 0 with all sixteen stage cards inside it.
+  viewportW = 820;
+  await mountAt("#/session/flows?open=quick-m31");
+  const surface = tid("flows-canvas");
+  assert(surface != null, "precondition: the canvas surface is not mounted at tablet width");
+  const classes = String(surface.className).split(/\s+/);
+  assert(classes.includes("nx-flow-fill"),
+    `the surface has no height class, so its height is whatever an ancestor happens to give it: ${surface.className}`);
+});
+
+test("the fill class really sets a height, and reads no sibling to do it", () => {
+  const css = canvasCss();
+  const body = ruleBody(css, ".nx-flow-fill");
+  assert(body != null, ".nx-flow-fill is emitted by the surface and no rule defines it");
+  const minH = /min-height:\s*([^;]+);/.exec(body as string);
+  assert(minH != null, ".nx-flow-fill sets no min-height, so it is not a height floor");
+  const value = (minH as RegExpExecArray)[1].trim();
+  assert(!/^(0|auto|0px)$/.test(value),
+    `.nx-flow-fill's min-height is "${value}", which is the same as having none`);
+  assert(/dvh|vh|px|%/.test(value),
+    `.nx-flow-fill's min-height is "${value}" - a height floor has to be a length`);
+  // A percentage would put the ancestor chain back in the answer, which is the
+  // whole bug: a `%` height resolves against a parent whose own height is auto,
+  // so it computes to auto and the pane is blank again.
+  assert(!value.includes("%"),
+    `.nx-flow-fill's min-height is "${value}" - a percentage resolves against the ancestor that has no height`);
+
+  // And it is the LAST word on the surface's min-height: two single-class rules
+  // setting the same property would make the answer depend on file order.
+  const canvas = ruleBody(css, ".nx-flow-canvas");
+  assert(canvas != null, "precondition: .nx-flow-canvas has no rule");
+  assert(!/min-height:/.test(canvas as string),
+    ".nx-flow-canvas sets min-height again, so which one wins depends on where it sits in the file");
+});
+
+test("the canvas row shrinks to the host rather than growing to the palette rail", () => {
+  // The desktop half of the same defect: the row is a flex ROW whose tallest
+  // child is the 192 px palette rail, and the rail's content is long. Without
+  // `min-height: 0` the row grows to the rail (measured: 2648 px inside a
+  // 1016 px hub body) instead of bounding it, and the rail's own
+  // `overflow-y: auto` never engages.
+  const css = canvasCss();
+  const row = ruleBody(css, ".nx-flow-row");
+  assert(row != null, ".nx-flow-row is emitted by FlowsCanvasHost and no rule defines it");
+  assert(/min-height:\s*0/.test(row as string),
+    ".nx-flow-row has no `min-height: 0`, so it grows to its tallest child and overflows the hub body");
+  assert(/flex:\s*1/.test(row as string), ".nx-flow-row does not fill the host column");
+
+  // The host is the column the row fills, and it is only a column if something
+  // above it is one. That rule names whatever CONTAINS the host, not another
+  // area's element, which is what keeps this fix area-local.
+  const host = ruleBody(css, ".nx-flow-host");
+  assert(host != null, ".nx-flow-host is emitted by FlowsCanvasHost and no rule defines it");
+  assert(/flex-direction:\s*column/.test(host as string), ".nx-flow-host is not a column");
+  assert(css.includes(":has(> .nx-flow-host)"),
+    "nothing makes the host's own container a flex column, so the row below it has no height to fill");
+});
+
+test("FlowsCanvasHost styles its boxes from the area stylesheet", () => {
+  // The inline `HOST`/`ROW` objects this replaced could not express a fallback
+  // height, and an inline style cannot be graded by `r7Css.test.ts` either.
+  const here = dirname(fileURLToPath(import.meta.url));
+  const src = readFileSync(join(here, "..", "FlowsCanvasHost.tsx"), "utf8");
+  assert(src.includes('className="nx-flow-host"'), "the host root lost its area class");
+  assert(src.includes('className="nx-flow-row"'), "the canvas row lost its area class");
+  assert(specifiers(src).includes("./canvas/canvas.css") || src.includes('import "./canvas/canvas.css"'),
+    "FlowsCanvasHost.tsx emits canvas.css classes without importing the sheet");
+});
+
 // ------------------------------------------------------------------- tally
 const total = passed + failed;
 console.log(`flowsDom.test: ${passed}/${total} passed`);
