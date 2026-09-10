@@ -1,0 +1,120 @@
+/* rotator.css - the ROTATOR sheet's own classes (wave R7, T-R7-8).
+ *
+ * `next.css` is a single shared file that twenty concurrent tasks cannot own,
+ * so every class this area needs lives here and is imported by the area root
+ * (`RotatorPanel.tsx`), never added to `NextApp.tsx`.
+ *
+ * Rules this file keeps: single-class selectors only, variants on `data-*`, no
+ * class defined in `next.css` appears in any selector here (not even as an
+ * ancestor - a `.nx-rot-x .nx-field` rule would still be redefining a shared
+ * primitive from an area file), tokens from `index.css` only, and every
+ * animation is dropped under `prefers-reduced-motion`.
+ */
+
+/* The stack every card in this sheet uses. */
+.nx-rot-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* Arc + its legend. Wraps to one column under about 300 px of card width. */
+.nx-rot-arcrow {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.nx-rot-arc {
+  flex: 0 0 auto;
+  width: 120px;
+  height: 120px;
+}
+
+/* The current-position marker. It PULSES while the rotator is turning, which
+ * is the one piece of state the arc carries that the numbers beside it do not
+ * update fast enough to show. Shape, not hue: the marker is already accent, so
+ * the pulse is opacity. */
+.nx-rot-arc-cur {
+  transform-origin: center;
+}
+
+.nx-rot-arc[data-moving="true"] .nx-rot-arc-cur {
+  animation: nx-rot-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes nx-rot-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nx-rot-arc[data-moving="true"] .nx-rot-arc-cur { animation: none; }
+}
+
+.nx-rot-legend {
+  flex: 1 1 180px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* A row of buttons: 8 px apart, wrapping rather than shrinking below the 44 px
+ * hit target the primitives already set. */
+.nx-rot-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+/* A field with a button on its right (MOVE TO + GO, START + SET TO CURRENT).
+ * `align-items: flex-end` puts the button on the input's baseline rather than
+ * on the label's. */
+.nx-rot-pair {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+/* Hung on the `Field` / `NumberField` inside a pair so the input takes the
+ * slack. `min-width: 0` because a flex item's default `auto` minimum is its
+ * content width, which is what lets an input push a row wider than the sheet. */
+.nx-rot-grow {
+  flex: 1 1 140px;
+  min-width: 0;
+}
+
+/* The bare text input inside `.nx-rot-grow`. */
+.nx-rot-pa {
+  width: 100%;
+}
+
+/* The out-of-range warning and the two explanatory notes. 11.5 px is the
+ * sheet-footnote size from hub-rig.md 0.2. */
+.nx-rot-warn {
+  margin: 0;
+  padding: 0 2px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--warn);
+}
+
+.nx-rot-note {
+  margin: 0;
+  padding: 0 2px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-faint);
+}
+
+.nx-rot-err {
+  margin: 0;
+  padding: 0 2px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--bad);
+}

@@ -2,49 +2,48 @@
 // section 2 "Missing - rotator"; deviation E28).
 //
 // THERE IS NO DESIGN FRAGMENT FOR THIS SHEET. The design's device list has no
-// rotator row at all, so the sheet is built in the sheet language around the
-// component that already implements every control the gap analysis asks for:
-// `components/equipment/RotatorCard.tsx`.
+// rotator row at all, so the sheet is built in the shared device-sheet language
+// of hub-rig.md 0.2/0.3: a header with one live line, a 4-column readout grid
+// where the selected tile is what the one dial edits, and cards below it.
 //
-// STAGE 1, DELIBERATELY. The plan's two-stage approach picks stage 1 here:
-// mount `RotatorCard` inside the `Sheet` chrome for the dial and the motion
-// controls, and re-skin only the header and the readout tiles. The rationale is
-// the reuse map's own: the range-of-motion arc maths (`lib/rotatorDial.ts`), the
-// roving-tabindex radiogroup (`lib/radiogroup.ts`) and the out-of-range warning
-// computed from `adjustedPa` (`lib/rotation.ts:103-113`, where the sky/mech
-// offset is DERIVED because it is not on the wire) are exactly the kind of logic
-// that must not be re-derived in a second place. A full re-skin is a named
-// follow-up, not this task.
+// STAGE 2, CLOSING THE STAGE-1 DECISION THIS FILE USED TO DOCUMENT. Wave 1
+// mounted `components/equipment/RotatorCard.tsx` whole - a `Panel`, eleven
+// native `disabled` attributes and a hand-rolled radiogroup inside a device
+// sheet - and named the full rebuild as a follow-up. Wave R7's T-R7-8 is that
+// follow-up: `hubs/rig/rotator/RotatorPanel.tsx` re-implements the presentation
+// and SHARES the logic that must never be re-derived (`lib/rotation.ts`'s
+// `adjustedPa`/`mod360`, where the sky/mechanical offset is DERIVED because it
+// is not on the wire, and `lib/rotatorDial.ts`'s arc geometry). The legacy card
+// is not edited, not deleted and not imported from anywhere under `next/`; it
+// still serves `#/classic`.
 //
-// WHAT THE SHEET ADDS AROUND IT:
+// WHAT THE SHEET OWNS, AS OPPOSED TO THE PANEL:
 //
 //   - The header and its ONE live line, which carries the numbers the body does
 //     not repeat: sky PA, mechanical angle, and whether the two are related by a
 //     KNOWN offset (`synced`) or an unknown one.
-//   - Three read-only readout tiles, so the sheet reads as a device sheet at a
-//     glance rather than as a settings panel.
 //   - The framing hand-off row (GAP-2: "Framing already has camera rotation;
 //     when a rotator exists, DONE should send the PA to it"). This sheet does
 //     NOT implement the hand-off - the Sky hub owns framing - so the row states
 //     the contract and, when the rotator is not synced, warns that the angle
 //     framing sends would be off by the mechanical offset.
-//   - An EmptyCard when no rotator is connected. `RotatorCard` itself returns
-//     `null` in that case, which is right for a card in a list and wrong for a
-//     whole route: a sheet that renders nothing is a dead end.
+//   - An EmptyCard when no rotator is connected. A route that renders nothing
+//     is a dead end, so the sheet answers that state itself and the panel is
+//     only ever mounted with a device to talk to.
 //
-// THE SPLIT GATE IS DELIBERATE AND IS NOT THIS FILE'S TO CHANGE. Motion
-// (move / halt / reverse / rotate-to-pa) needs `control.capture`; the
-// range-of-motion CONFIG needs `config.backend`. The server enforces both
-// separately (app.py:2716-2775), `RotatorCard` states both in its own two lock
-// notes, and an operator without `config.backend` must keep a live rotator.
+// THE SPLIT GATE IS DELIBERATE. Motion (move / halt / reverse / rotate-to-pa /
+// sync-to-sky) needs `control.capture`; the range-of-motion CONFIG needs
+// `config.backend`. The server enforces both separately (app.py:6125-6199 vs
+// the `config.backend` gate on `POST /api/config/rotator`), the panel states
+// both in its own two lock notes, and an operator without `config.backend`
+// must keep a live rotator.
 
 import type { JSX } from "react";
 import { useConfig, useStatus, useStore } from "../../../../store";
 import type { RotatorConfig } from "../../../../types";
 import { resolveRoleConnected } from "../../../../lib/caps";
-import { mod360 } from "../../../../lib/rotation";
-import RotatorCard, { DEFAULT_ROTATOR_CFG } from "../../../../components/equipment/RotatorCard";
-import { Sheet, Card, ActionButton, ReadoutGrid, ReadoutTile, EmptyCard, ListRow } from "../../../ui";
+import { RotatorPanel, DEFAULT_ROTATOR_CFG } from "../rotator";
+import { Sheet, Card, ActionButton, EmptyCard, ListRow } from "../../../ui";
 import { NxIcon } from "../../../icons";
 import { nav } from "../../../router";
 
@@ -61,12 +60,6 @@ const FRAMING_NOTE =
 const UNSYNCED_WARNING =
   "Sync to sky first, or the angle framing sends will be off by the mechanical offset.";
 
-const RANGE_LABEL: Record<string, string> = {
-  full: "FULL",
-  half: "HALF",
-  quarter: "QUARTER",
-};
-
 export function RotatorSheet(): JSX.Element {
   const status = useStatus();
   const config = useConfig();
@@ -75,6 +68,8 @@ export function RotatorSheet(): JSX.Element {
   const role = resolveRoleConnected(
     "rotator", status?.backend_links, status?.connected, equipConnected,
   );
+  // Read here only for the live line's tolerance-free summary; the panel holds
+  // its own draft of the same block.
   const cfg: RotatorConfig = { ...DEFAULT_ROTATOR_CFG, ...(config?.rotator ?? {}) };
 
   // The live line. `synced` is load-bearing rather than decorative: it is the
@@ -86,11 +81,16 @@ export function RotatorSheet(): JSX.Element {
       rot.synced ? "synced" : "not synced",
       ...(rot.moving ? ["turning"] : []),
     ].join(" · ")
-    : "not connected";
+    : `not connected · range ${cfg.range_type}`;
 
   return (
     <Sheet
       title="ROTATOR"
+      // The device's own name. The legacy card carried it in its `Panel` title
+      // (`Rotator · ZWO CAA`) and nothing else in the new chrome names WHICH
+      // rotator this is - a rig with a CAA and a third-party rotator declared
+      // would otherwise show two identical sheets.
+      sub={rot?.name}
       icon={<NxIcon name="rotator" size={18} />}
       live={live}
       backLabel="RIG"
@@ -112,36 +112,9 @@ export function RotatorSheet(): JSX.Element {
         />
       )}
 
-      {rot && (
-        <ReadoutGrid cols={3} data-testid="rotator-tiles">
-          <ReadoutTile
-            label="SKY PA"
-            value={`${rot.sky_deg.toFixed(1)}°`}
-            sub={rot.synced ? "synced" : "not synced - sync to sky"}
-            tone={rot.synced ? undefined : "warn"}
-            data-testid="tile-sky-pa"
-          />
-          <ReadoutTile
-            label="MECHANICAL"
-            value={`${rot.mech_deg.toFixed(1)}°`}
-            // offset = mechanical - sky (lib/rotation.ts:105). Not on the wire;
-            // derived from the two live values, the same way `adjustedPa` does.
-            sub={`offset ${mod360(rot.mech_deg - rot.sky_deg).toFixed(1)}°`}
-            data-testid="tile-mechanical"
-          />
-          <ReadoutTile
-            label="RANGE"
-            value={RANGE_LABEL[cfg.range_type] ?? cfg.range_type.toUpperCase()}
-            sub={`start ${cfg.range_start_deg}° · tol ${cfg.tolerance_deg}°`}
-            data-testid="tile-range"
-          />
-        </ReadoutGrid>
-      )}
-
-      {/* The dial, the motion controls, the range-of-motion block and BOTH lock
-          notes, mounted whole. `RotatorCard` returns null with no rotator, which
-          is why the EmptyCard above is the sheet's own answer to that state. */}
-      <RotatorCard />
+      {/* The tiles, the dial, the arc, the motion controls, the range-of-motion
+          block and BOTH lock notes. */}
+      {rot && <RotatorPanel rot={rot} />}
 
       <Card data-testid="rotator-framing">
         <ListRow
