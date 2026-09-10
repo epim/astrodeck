@@ -308,6 +308,41 @@ test("the rig chips carry NUMBERS, not just labels", () => {
   assert(/SIM/.test(byId("header-backend")?.textContent ?? ""), "the sim backend must be named");
 });
 
+test("...and every one of them is short enough to survive a 390 px row", () => {
+  // MEASURED (probe, 390x844): this row used to ellipsise all of it at once -
+  // `CAM ...`, `MOUNT...`, `S...`, `D`. jsdom computes no widths, so the width
+  // POLICY is guarded by `shellCss.test.ts` reading the stylesheet and the
+  // measurement itself lives in a browser run. What is checkable here is the
+  // budget those widths came from: monospace at 10 px is 6 px a character, and
+  // the four readouts plus the control have 271 px of row at 390 px. A chip
+  // whose visible text grows past this is one that will be clipped, silently,
+  // on the width the design is drawn for.
+  const budget: Array<[string, number]> = [
+    // `CAM -10°` - the label, the sign, two digits and the degree.
+    ["header-cam", 8],
+    // `MOUNT` alone at phone: the state word is a separate element that
+    // `shell.css` drops at `data-bp="phone"` (see shellFixes).
+    ["header-mount", 5],
+    // `SIM` / `NINA` / `ALPACA` / `NATIVE` - the widest backend name.
+    ["header-backend", 6],
+  ];
+  for (const [id, max] of budget) {
+    const el = byId(id);
+    assert(el != null, `no ${id} chip`);
+    const phone = id === "header-mount"
+      ? el.textContent.replace(el.querySelector(".nx-mount-state")?.textContent ?? "", "")
+      : el.textContent;
+    assert(phone.length <= max,
+      `${id} prints "${phone}" (${phone.length} chars, ~${phone.length * 6} px) - the ` +
+        `390 px row budgets ${max}; a longer chip is one the row has to clip`);
+  }
+  // And the one control in the row prints nothing at all: its state is the
+  // sun/moon glyph, and the words are in its accessible name.
+  const night = byId("header-night");
+  assert(night != null, "no night control in the header");
+  eq(night.textContent, "", "the night toggle must be icon-only:");
+});
+
 // ------------------------------------------------------------- navigation
 
 await testAsync("tapping WEATHER changes the hash AND the screen", async () => {
