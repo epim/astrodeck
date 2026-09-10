@@ -177,11 +177,20 @@ export default function NextApp(): JSX.Element {
     if (!w || !a) return;
     void confirmDialog({
       title: "High cloud forecast tonight",
+      // WHAT THIS USED TO SAY WAS FALSE. The old last sentence was "Auto-resume
+      // will hold unless \"ignore weather tonight\" is set". The engine's
+      // auto-resume gate is RAIN-ONLY and fail-open
+      // (`server/astrodeck/weather.py` `veto_reason`): cloud informs, it does
+      // not gate, because a forecast over a ~10 km cell refused two nights in
+      // August that turned out clear past 02:00. Cloud holds are measured
+      // IN-RUN, from the rig's own frames. Telling an operator the forecast
+      // will hold the night is how a clear night gets given away.
       body:
         `Forecast peak ${a.peak_pct}% total cloud (${a.dominant_layer} layer ` +
         `dominant) between ${fmtHm(a.start_iso)} and ${fmtHm(a.end_iso)} - ` +
-        `at or above your ${w.threshold_pct}% threshold. Auto-resume will hold ` +
-        `unless "ignore weather tonight" is set.`,
+        `at or above your ${w.threshold_pct}% threshold. The forecast does not ` +
+        `hold a run: a running session holds on what its own frames show, and ` +
+        `only forecast rain inside the hour blocks an auto-resume.`,
       tone: "warn",
       mode: "ok",
     });
@@ -274,7 +283,7 @@ export default function NextApp(): JSX.Element {
       <div className="nx-col">
         <Header />
         <Banners route={route} nowMs={nowMs} />
-        <CampaignStrip route={route} />
+        <CampaignStrip />
         <SubNavBar route={route} nowMs={nowMs} />
         <main className="nx-body" id="nx-main" data-testid="hub-body">
           <Hub />

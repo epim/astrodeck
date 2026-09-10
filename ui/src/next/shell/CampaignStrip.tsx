@@ -1,57 +1,48 @@
 // CampaignStrip.tsx - the purple line under the banners while a multi-night
 // campaign is live (README "Cross-hub chrome").
 //
-// The design's line is `CAMPAIGN - M31 LRGB - night 2 of 4 - 5.2 of 12 h banked`.
-// The engine publishes only part of that on the live socket: `sequence.session`
-// carries `{id, name, count_mode, accepted, target}` and nothing about which
-// night this is or how many hours are in the bank (the night count lives on
-// `GET /api/sessions`, which the shell does not poll and must not start
-// polling - a strip is not worth a request every 20 seconds on a field link).
+// THE NUMBERS ARE NOT DERIVED HERE. `hubs/session/crossHub.ts` owns them
+// (`useCampaignStrip`, plan section E.1), because the Session hub's own ledger
+// card reads the same fold - and a strip that counted nights one way while the
+// ledger counted them another is not a cosmetic disagreement: the ledger is
+// what an operator reads to decide whether tonight can be cut short. One
+// derivation, two renderings.
 //
-// So the strip prints the parts it can READ and omits the rest. Inventing
-// "night 1 of 1" from a session that never said so would be worse than a
-// shorter line: the campaign ledger is the thing the user checks to decide
-// whether tonight can be cut short, and a made-up denominator there is a
-// decision made on fiction. The Session hub's own ledger (task T3) fetches the
-// session row and fills the full line in.
+// This file used to compose its own line from `sequence.session`, which carries
+// `{id, name, count_mode, accepted, target}` and nothing about which night this
+// is or how many hours are banked - so the strip said "41 frames banked" where
+// the design says "night 2 of ~4 - 5.2 of 12 h banked". The hook has the flow's
+// tonight payload and can say both.
+//
+// The hook also owns the two suppressions: no campaign, and the screen that IS
+// the campaign (Session - Now). A link to where you already are is not
+// information.
 
 import type { JSX } from "react";
-import { useStore } from "../../store";
-import { nav, type Route } from "../router";
+import { useCampaignStrip } from "../hubs/session/crossHub";
 
-export function CampaignStrip({ route }: { route: Route }): JSX.Element | null {
-  const sequence = useStore((s) => s.sequence);
+const TAG = "CAMPAIGN";
+const SEP = " · ";
 
-  const live = sequence.state === "running" || sequence.state === "paused" || sequence.state === "holding";
-  const session = sequence.session;
-  if (!live || !session) return null;
+export function CampaignStrip(): JSX.Element | null {
+  const strip = useCampaignStrip();
+  if (!strip) return null;
 
-  // Hidden on Session - Now, which IS the campaign screen. Everywhere else it
-  // is the way back to it.
-  if (route.hub === "session" && route.sub === "now") return null;
-
-  const bits: string[] = [];
-  const what = session.target || session.name;
-  if (what) bits.push(what);
-  if (typeof session.accepted === "number") {
-    bits.push(`${session.accepted} frame${session.accepted === 1 ? "" : "s"} banked`);
-  }
-  if (sequence.state === "paused") bits.push("paused");
-  if (sequence.state === "holding" && sequence.hold) bits.push(`holding: ${sequence.hold}`);
-
-  const line = bits.join(" - ");
+  // The hook's line leads with the word the design renders as its own micro
+  // label. Split it back off rather than printing "CAMPAIGN CAMPAIGN · ...".
+  const rest = strip.line.startsWith(TAG + SEP) ? strip.line.slice(TAG.length + SEP.length) : strip.line;
 
   return (
     <button
       type="button"
       className="nx-camp"
-      onClick={() => nav.go("/session/now")}
-      aria-label={`Campaign: ${line}. Open the session.`}
+      onClick={strip.onPress}
+      aria-label={`${TAG}: ${rest}. Open the session.`}
       data-testid="campaign-strip"
     >
       <span className="nx-camp-dot" aria-hidden="true" />
-      <span className="nx-camp-tag">CAMPAIGN</span>
-      <span className="nx-camp-line">{line}</span>
+      <span className="nx-camp-tag">{TAG}</span>
+      <span className="nx-camp-line">{rest}</span>
       <span className="nx-camp-chev" aria-hidden="true">&rsaquo;</span>
     </button>
   );

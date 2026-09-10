@@ -14,7 +14,7 @@
 // sideways, taking the link indicator off-screen - the one indicator you need
 // when the link is the problem. The chips give first, the wordmark last.
 
-import type { JSX } from "react";
+import { useEffect, useRef, type JSX } from "react";
 import { useStore, useStatus, useWsPhase, useTelemetryStale } from "../../store";
 import { usePrincipalRole } from "../../lib/caps";
 import { backendBadge, backendBadgeIsSim } from "../../lib/equipment";
@@ -57,6 +57,20 @@ export function Header(): JSX.Element {
   // in; `libraryLoaded` says whether it has ever been read, so an unloaded
   // library shows no count rather than a confident zero.
   const flowCount = useStore((s) => (s.flows.libraryLoaded ? s.flows.cards.length : null));
+
+  // ...and something has to read it, or the pill shows a dash all night on a
+  // rig with nine saved flows. ONE fetch per session, guarded by a ref rather
+  // than by `libraryLoaded` (which stays FALSE on an error, so keying off it
+  // would retry on every render for as long as the rig is unreachable) and
+  // never re-fired: the library changes when the user edits it, and the Flows
+  // screen reloads it then.
+  const loadLibrary = useStore((s) => s.flowsLoadLibrary);
+  const asked = useRef(false);
+  useEffect(() => {
+    if (asked.current) return;
+    asked.current = true;
+    void loadLibrary().catch(() => { /* offline: the pill keeps its dash */ });
+  }, [loadLibrary]);
 
   const camConnected = !!status?.connected?.camera?.connected;
   const mountConnected = !!status?.connected?.telescope?.connected;

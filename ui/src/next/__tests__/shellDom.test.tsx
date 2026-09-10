@@ -93,12 +93,71 @@ for (const k of [
 g.IS_REACT_ACT_ENVIRONMENT = true;
 
 // Every /api GET the shell fires (healthz, resume-arm, config, me, auth methods,
-// logs, monitor snapshot) answers 404 QUIETLY. The store's loaders all swallow a
-// failure and keep the seeded value, so the fixture below is what the shell sees
-// rather than a race with the network.
+// logs, monitor snapshot) answers 404 QUIETLY, EXCEPT the handful the cross-hub
+// chrome genuinely reads. The store's loaders all swallow a failure and keep the
+// seeded value, so the fixture below is what the shell sees rather than a race
+// with the network.
+//
+// The campaign fixture is the same shape `crossHub.test.ts` uses, because the
+// strip renders from the SAME hook: `budget` is the ledger, and `banked_h: null`
+// is "nobody has looked", not zero.
+const FLOW_CARD = {
+  id: "flow-m31", name: "M31 LRGB", folder: "My flows", tagline: "a campaign",
+  readonly: false, stages: 9, wires: 8, last_run: 1_757_000_000,
+  last_result: "ok", updated_ts: 1_757_000_500,
+};
+const SESSION_ROW = {
+  id: "s-camp", name: "M31 LRGB", status: "dormant",
+  created_ts: 1_756_000_000, updated_ts: 1_757_000_000,
+  nights: 2, accepted: 41, total: 120, auto_resume: true,
+};
+const SESSION_FULL = {
+  id: "s-camp", schema_version: 1, name: "M31 LRGB",
+  created_ts: SESSION_ROW.created_ts, updated_ts: SESSION_ROW.updated_ts,
+  status: "dormant", origin: "flow", origin_id: "flow-m31",
+  nights: ["2026-09-07", "2026-09-08"], auto_resume: true,
+  plan: {
+    name: "M31 LRGB", cool_to: -10, cool_timeout_s: 600,
+    targets: [{
+      id: "t1", name: "M31", steps: [{
+        id: "st-L", filter: "L", exposure_s: 120, count: 30,
+        gain: 100, offset: 10, binning: 1, frame_type: "Light",
+      }],
+    }],
+  },
+  frames: [],
+};
+const TONIGHT = {
+  ok: true, reason: "",
+  night: {
+    dusk_unix: 1_757_100_000, dawn_unix: 1_757_130_000,
+    dark_start_unix: 1_757_103_600, dark_end_unix: 1_757_126_000,
+  },
+  budget: [
+    { filter: "L", goal_h: 6, banked_h: 2.5, tonight_h: 1, has_ledger: true },
+    { filter: "Ha", goal_h: 6, banked_h: null, tonight_h: 1, has_ledger: false },
+  ],
+};
+
 const asked: string[] = [];
 g.fetch = async (url: any, init?: any) => {
-  asked.push(`${init?.method ?? "GET"} ${String(url)}`);
+  const u = String(url);
+  asked.push(`${init?.method ?? "GET"} ${u}`);
+  const ok = (data: unknown) => ({
+    ok: true, status: 200, statusText: "OK",
+    headers: { get: () => "application/json" },
+    json: async () => data,
+    text: async () => JSON.stringify(data),
+  });
+  if (u === "/api/flows") return ok([FLOW_CARD]);
+  if (u === "/api/flows/folders") return ok([{ name: "My flows", count: 1, readonly: false }]);
+  if (u === "/api/flows/flow-m31/tonight") return ok(TONIGHT);
+  if (u === "/api/sessions") return ok({ sessions: [SESSION_ROW] });
+  if (u === "/api/sessions/s-camp") return ok(SESSION_FULL);
+  if (u === "/api/reports") return ok([]);
+  if (u === "/api/alerts/health") {
+    return ok({ undelivered: 3, undelivered_by_sink: {}, deadman: { configured: false, healthy: true, last_ping_age_s: null } });
+  }
   return {
     ok: false, status: 404, statusText: "Not Found",
     headers: { get: () => "application/json" },
@@ -370,6 +429,197 @@ test("a down link also raises the banner that says the rig keeps going", () => {
     `the banner must say the session survives the link, got "${banners.textContent}"`);
   act(() => { useStore.setState({ wsPhase: "up", wsConnected: true } as never); });
   eq(byId("header-link"), null, "the chip must clear when the link comes back");
+});
+
+// -------------------------------------------------- the cross-hub wiring
+
+await testAsync("the flows pill reads the library and then stops asking", async () => {
+  await settle();
+  const pill = byId("header-flows");
+  assert(pill != null, "no flows pill in the header");
+  // The pill used to show a dash forever: nothing in the shell ever read the
+  // library, so `libraryLoaded` stayed false under a rig with saved flows.
+  assert(/1/.test(pill.textContent),
+    `the pill must carry the count it fetched, got "${pill.textContent}"`);
+
+  // And it is a LOAD, not a poll. A count on a chip is not worth a request
+  // every N seconds all night on a field link, so the guard is what this
+  // asserts: walking the hubs and letting the clock run adds no new reads.
+  const before = asked.filter((a) => a === "GET /api/flows").length;
+  click(byId("tab-rig"));
+  await settle();
+  click(byId("tab-sky"));
+  await settle();
+  eq(asked.filter((a) => a === "GET /api/flows").length, before,
+    "the saved-flow library is read on mount and never re-read by the chrome:");
+});
+
+await testAsync("the campaign strip prints the night and the bank, and not on the screen it points at", async () => {
+  act(() => {
+    useStore.setState({
+      resumeArm: {
+        armed: {
+          id: "s-camp", name: "M31 LRGB", owed: 58, accepted: 41, total: 99,
+          origin: "flow", origin_id: "flow-m31",
+        },
+        hold: null,
+      } as any,
+      sequence: {
+        state: "running", plan_name: "M31 LRGB",
+        session: { id: "s-camp", name: "M31 LRGB", count_mode: "attempts", accepted: 41 },
+      } as any,
+    } as never);
+  });
+  await settle();
+
+  const strip = byId("campaign-strip");
+  assert(strip != null, "a running campaign has no strip on another hub");
+  // The whole point of routing this through the Session hub's fold: the night
+  // number and the banked hours are NOT on the live socket, and the strip used
+  // to print "41 frames banked" because that is all `sequence.session` carries.
+  assert(/night 2 of ~\d+/.test(strip.textContent),
+    `the strip must name which night this is, got "${strip.textContent}"`);
+  assert(/of 12 h banked/.test(strip.textContent),
+    `and how much is in the bank, got "${strip.textContent}"`);
+
+  act(() => { win.location.hash = "#/session/now"; });
+  await settle();
+  eq(byId("campaign-strip"), null, "a link to where you already are is not information");
+});
+
+await testAsync("an incident banners on every OTHER hub, and the Session tab wears its dot", async () => {
+  act(() => { win.location.hash = "#/sky"; });
+  await settle();
+  act(() => {
+    useStore.setState({
+      // `sky.holding` rather than state "holding": the engine publishes the sky
+      // verdict beside `state` on every publish precisely so a routine
+      // `running` publish cannot hide a hold.
+      sequence: {
+        state: "running", plan_name: "M31 LRGB",
+        session: { id: "s-camp", name: "M31 LRGB", count_mode: "attempts", accepted: 41 },
+        sky: { cloudy: true, age_s: 30, score: 0.2, reason: "few stars", text: "4 stars", holding: true },
+      } as any,
+    } as never);
+  });
+  await settle();
+
+  const banners = byId("banners");
+  assert(banners != null, "a cloud hold on another hub must be announced");
+  assert(/CLOUD HOLD/.test(banners.textContent),
+    `the incident title leads the banner, got "${banners.textContent}"`);
+  assert(byId("tab-session-dot") != null, "the Session tab must pulse while a hold is up");
+
+  act(() => { win.location.hash = "#/session/now"; });
+  await settle();
+  const still = byId("banners");
+  assert(still == null || !/CLOUD HOLD/.test(still.textContent),
+    "on the Session hub the card is already on screen at full size");
+  eq(byId("tab-session-dot"), null, "and the tab you are on does not need a dot");
+});
+
+await testAsync("a second incident turns the NOW chip into `NOW 2`", async () => {
+  act(() => { win.location.hash = "#/session/gallery"; });
+  await settle();
+  const one = byId("subnav-now");
+  assert(one != null, "no NOW chip on the session sub-nav");
+  assert(!/2/.test(one.textContent), `precondition: one incident is the dot alone, got "${one.textContent}"`);
+
+  act(() => {
+    // The server's own low-disk flag, which is what the model reads now - not a
+    // free-bytes threshold recomputed on the phone.
+    useStore.setState({
+      status: {
+        ...(useStore.getState().status as any),
+        disk: { free_gb: 1.2, low: true, critical: false },
+      } as any,
+    } as never);
+  });
+  await settle();
+
+  const two = byId("subnav-now");
+  assert(/2/.test(two.textContent),
+    `a second card under the first is something the dot cannot say, got "${two.textContent}"`);
+  assert(two.querySelector(".nx-subnav-dot") != null, "the chip keeps its dot as well as its count");
+});
+
+await testAsync("the weather chip dims for a stale feed and warns for an un-ignored alert", async () => {
+  act(() => {
+    useStore.setState({
+      sequence: { state: "idle" } as any,
+      status: { ...(useStore.getState().status as any), disk: undefined } as any,
+      weather: {
+        enabled: true, fetched_ts: 1, stale: true, ignore_tonight: false,
+        threshold_pct: 70, sustain_minutes: 60, site_lat: null, site_lon: null,
+        forecast: null, astrospheric: null, alert: null,
+      } as any,
+    } as never);
+    win.location.hash = "#/weather/conditions";
+  });
+  await settle();
+  const stale = byId("subnav-conditions")?.querySelector(".nx-subnav-dot");
+  assert(stale != null, "a stale feed must show on the chip");
+  eq(stale.getAttribute("data-tone"), "dim",
+    "a stale feed is an absence of information, not bad news:");
+
+  act(() => {
+    useStore.setState({
+      weather: {
+        ...(useStore.getState().weather as any),
+        stale: false,
+        alert: {
+          kind: "high_cloud", start_iso: "2026-09-10T22:00:00Z",
+          end_iso: "2026-09-11T02:00:00Z", peak_pct: 92, dominant_layer: "high",
+        },
+      } as any,
+    } as never);
+  });
+  await settle();
+  eq(byId("subnav-conditions")?.querySelector(".nx-subnav-dot")?.getAttribute("data-tone"), "warn",
+    "an un-overridden alert is amber:");
+
+  act(() => {
+    useStore.setState({
+      weather: { ...(useStore.getState().weather as any), ignore_tonight: true } as any,
+    } as never);
+  });
+  await settle();
+  eq(byId("subnav-conditions")?.querySelector(".nx-subnav-dot"), null,
+    "an alert the operator has already overridden is not still a warning");
+});
+
+await testAsync("the high-cloud dialog says what the engine actually does with a forecast", async () => {
+  // The old last sentence claimed auto-resume would hold unless "ignore weather
+  // tonight" was set. The engine's auto-resume gate is RAIN-ONLY and fail-open
+  // (`server/astrodeck/weather.py` `veto_reason`), and cloud holds are measured
+  // in-run from the rig's own frames. Telling an operator the forecast will hold
+  // the night is how a clear night gets given away.
+  act(() => {
+    useStore.setState({
+      weather: {
+        ...(useStore.getState().weather as any),
+        ignore_tonight: false,
+        alert: {
+          kind: "high_cloud", start_iso: "2026-09-10T22:00:00Z",
+          end_iso: "2026-09-11T02:00:00Z", peak_pct: 92, dominant_layer: "high",
+        },
+      } as any,
+      weatherAlertKey: 1,
+    } as never);
+  });
+  await settle();
+
+  const card = byId("confirm-scrim");
+  assert(card != null, "the high-cloud notice never opened");
+  const body = String(card.textContent);
+  assert(/92% total cloud/.test(body), `the forecast peak is the news, got "${body}"`);
+  assert(!/Auto-resume will hold/i.test(body),
+    "the dialog still claims the forecast holds a run, which the engine does not do");
+  assert(/does not\s+hold a run/i.test(body), `the correction must be stated, got "${body}"`);
+  assert(/only forecast rain/i.test(body),
+    "and it must name what DOES block an auto-resume");
+  click(byId("confirm-ok"));
+  await settle();
 });
 
 // ---------------------------------------------------------------- the gate

@@ -39,8 +39,23 @@ export interface SubContext {
   /** Saved flows in the library, or null while it has never been read - which
    *  is not the same claim as zero. */
   flowCount: number | null;
-  /** The top incident's colour, for the dot on Session - Now. */
+  /** The top incident's severity tone, for the dot on Session - Now and on
+   *  Monitor - Live. */
   incidentTone: Tone | null;
+  /** How many incidents are live. `NOW 2` says there is a second card under the
+   *  one on screen; the dot alone would say only that something is wrong. */
+  incidentCount: number;
+  /** Alerts the dispatcher has not delivered (`GET /api/alerts/health`), or
+   *  null while it has never been read. */
+  alertsUndelivered: number | null;
+  /** Devices currently connected, or null before the first status arrives. */
+  rigDeviceCount: number | null;
+  /** DEVICES dot: bad when a role the rig was told to bring up did not, warn
+   *  when one came up at boot and has since dropped. */
+  rigLinkTone: Tone | null;
+  /** WEATHER dot: warn while a cloud alert stands un-overridden, dim while the
+   *  feed is stale - an absence of information, not good news. */
+  weatherDot: Tone | null;
 }
 
 export interface HubMeta {
@@ -59,19 +74,64 @@ function plainSubs(hub: HubId): (ctx: SubContext) => SubNavItem[] {
 
 export const HUB_META: Record<HubId, HubMeta> = {
   sky: { id: "sky", label: "SKY", icon: "sky", subs: plainSubs("sky") },
-  weather: { id: "weather", label: "WEATHER", icon: "weather", subs: plainSubs("weather") },
+  weather: {
+    id: "weather",
+    label: "WEATHER",
+    icon: "weather",
+    subs: (ctx) => [
+      { id: "conditions", label: "CONDITIONS", dot: ctx.weatherDot ?? undefined },
+      { id: "sky", label: "SKY" },
+      { id: "radar", label: "RADAR" },
+    ],
+  },
   session: {
     id: "session",
     label: "SESSION",
     icon: "session",
     subs: (ctx) => [
-      { id: "now", label: "NOW", dot: ctx.incidentTone ?? undefined },
+      // The count is the SECOND card and beyond: one incident is already the
+      // dot, and "NOW 1" beside a dot says the same thing twice. "NOW 2" says
+      // something the dot cannot - that acting on the card on screen does not
+      // clear the screen.
+      {
+        id: "now",
+        label: "NOW",
+        dot: ctx.incidentTone ?? undefined,
+        count: ctx.incidentCount > 1 ? ctx.incidentCount : undefined,
+      },
       { id: "gallery", label: "GALLERY" },
       { id: "flows", label: "FLOWS", count: ctx.flowCount ?? undefined },
     ],
   },
-  rig: { id: "rig", label: "RIG", icon: "rig", subs: plainSubs("rig") },
-  monitor: { id: "monitor", label: "MONITOR", icon: "monitor", subs: plainSubs("monitor") },
+  rig: {
+    id: "rig",
+    label: "RIG",
+    icon: "rig",
+    subs: (ctx) => [
+      {
+        id: "devices",
+        label: "DEVICES",
+        count: ctx.rigDeviceCount ?? undefined,
+        dot: ctx.rigLinkTone ?? undefined,
+      },
+      { id: "capture", label: "CAPTURE" },
+    ],
+  },
+  monitor: {
+    id: "monitor",
+    label: "MONITOR",
+    icon: "monitor",
+    subs: (ctx) => [
+      // Live wears the same incident tone the Session chip does: the Monitor's
+      // LIVE screen is where the run is watched from, and a hold that shows on
+      // one and not the other is two answers to one question.
+      { id: "live", label: "LIVE", dot: ctx.incidentTone ?? undefined },
+      { id: "log", label: "LOG" },
+      // Undelivered, not configured: how many sinks exist is a settings fact,
+      // how many messages did not get out is news.
+      { id: "alerts", label: "ALERTS", count: ctx.alertsUndelivered || undefined },
+    ],
+  },
   settings: { id: "settings", label: "SETTINGS", icon: "settings", subs: plainSubs("settings") },
 };
 

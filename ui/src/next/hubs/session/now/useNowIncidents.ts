@@ -3,9 +3,38 @@
 // The shell already folds the store into `next/lib/incidents.ts`'s pure inputs
 // (`shell/useIncidents.ts`), and this reuses it rather than writing a second
 // fold: two folds is how a tab dot ends up pulsing for an incident the card has
-// stopped showing. What this adds on top is `refineIncident` - the action
-// filter and the copy correction (see `incidentActions.ts` for why both live
-// in this hub and not in the shared lib).
+// stopped showing. What this adds on top is `refineIncident`.
+//
+// WHAT `refineIncident` IS STILL FOR, AFTER 2026-09-10 (INT-A).
+//
+// It was written as a COMPENSATION: `next/lib/incidents.ts` was another task's
+// file and, as shipped, it promised four things the engine does not do
+// ("Resumes after 3 clear frames", "Re-arms 30 minutes after the sensor reads
+// dry", "falls back to the relay after 30 seconds", "3 fails, then a blind
+// solve") and offered five buttons with no server verb behind them. The
+// integration task corrected the lib itself: the promises are gone, the
+// verbless actions are gone, safety no longer claims to resolve itself, and the
+// titles for SAFETY TRIP, DISK LOW/CRITICAL and COOLER CANNOT HOLD now come out
+// of the lib already composed from the live fields.
+//
+// So most of what `refineIncident` re-states is now a re-statement of what the
+// lib already said, and deleting those branches is a safe follow-up in the file
+// that owns them (`incidentActions.ts`, not this one). FIVE THINGS ARE NOT
+// REDUNDANT and must survive that deletion, because each needs something the
+// pure lib has no access to:
+//
+//   1. af    - the actual last-good focuser POSITION (`lastAutofocusResult`),
+//              which the lib is not given.
+//   2. link  - `telemetryStaleNotice(age)` from `lib/telemetry.ts`, which states
+//              the age instead of a vague "catching up" that reads the same at
+//              20 s and at 2 hours.
+//   3. stall - the name of the configured escalation policy, from `config`.
+//   4. cooler- the `ACCEPT <n>°C` label, whose number must be the one the POST
+//              body will carry.
+//   5. every kind - the ACTION table: the two honest additions this hub owns
+//              (`STOP GUIDING` in place of the un-fireable CONTINUE UNGUIDED,
+//              and `CONNECTION` at tablet width) plus the cloud card's
+//              IGNORE/UNDO label swap.
 //
 // The phase pill and the incident card read THIS, so they cannot disagree - and
 // the LINK LOST overlay on the live stack reads the same predicate, which is
