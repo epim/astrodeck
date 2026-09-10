@@ -10,6 +10,17 @@
 //   role:      `connect a ${humanRole} first`
 //   busy:      the lib/humanize.ts lane sentence, else `${lane} is running`
 //   extra:     the caller's string, verbatim
+//
+// `busyLane` is DECLARATIVE, not observational: the caller passes
+// `busyLane: "capture"` to mean "block me while that lane is busy", not "the
+// lane IS busy right now" — `lockReason` itself decides that by reading
+// `s.status?.busy_lanes` (RigStatus.busy_lanes: string[], the per-lane list)
+// and, as a fallback, the collapsed `s.status?.busy` word (RigStatus.busy:
+// "slewing"|"solving"|"focusing"|"capturing"|null — built for the stale-
+// telemetry banner, so it only distinguishes 4 words, mapped back to ONE lane
+// each here: slewing->goto, solving->solve, focusing->autofocus,
+// capturing->capture). A lane absent from both reads as NOT busy — presence
+// of `inp.busyLane` is no longer itself the signal.
 
 import { accessPhrase, capAllowed, resolveRoleConnected } from "../../lib/caps";
 import { humanizeLaneConflict, MAPPED_BUSY_LANES } from "../../lib/humanize";
@@ -24,9 +35,10 @@ export interface GateInput {
   /** Device role that must be connected: camera | telescope | guider | switch
    *  | focuser | filterwheel | rotator. */
   needsRole?: string;
-  /** Blocked while this server lane is busy (a `BusyLane` name from
-   *  lib/useBusy.ts, or any lane string) — the caller passes this only when
-   *  the lane IS busy; presence of the field is the signal. */
+  /** Block while THIS server lane is busy (a `BusyLane` name from
+   *  lib/useBusy.ts, or any lane string). Declarative: naming a lane here does
+   *  not mean it IS busy — `lockReason` reads `s.status.busy_lanes`/`busy` to
+   *  decide that itself. */
   busyLane?: string;
   /** Caller-specific reason (e.g. "a flow owns the mount"). */
   extra?: string | null;
@@ -56,6 +68,28 @@ export function roleLabel(role: string): string {
   }
 }
 
+// RigStatus.busy is the per-lane set collapsed to one word for the stale-
+// telemetry banner (lib/useBusy.ts's own doc comment: "it cannot tell one
+// control's operation from another's"), so it is only a fallback for when
+// `busy_lanes` is absent (a server older than 2026-08-05). Each collapsed word
+// maps back to exactly the one lane named here, not the fuller many-to-one
+// table `busy_lanes` itself would show.
+const BUSY_WORD_FOR_LANE: Record<string, string> = {
+  goto: "slewing",
+  solve: "solving",
+  autofocus: "focusing",
+  capture: "capturing",
+};
+
+/** True while `lane` is actually busy, per the rig's own status — either
+ *  listed in `busy_lanes`, or (fallback) the collapsed `busy` word for it. */
+function isLaneBusy(status: RigStatus | null | undefined, lane: string): boolean {
+  const lanes = status?.busy_lanes;
+  if (Array.isArray(lanes) && lanes.includes(lane)) return true;
+  const word = BUSY_WORD_FOR_LANE[lane];
+  return word != null && status?.busy === word;
+}
+
 /** The single lock-reason decision every honest-disabled control renders.
  *  `null` means unlocked. */
 export function lockReason(inp: GateInput, s: GateStoreSlice): string | null {
@@ -75,7 +109,7 @@ export function lockReason(inp: GateInput, s: GateStoreSlice): string | null {
     if (!connected) return `connect a ${roleLabel(inp.needsRole)} first`;
   }
 
-  if (inp.busyLane) {
+  if (inp.busyLane && isLaneBusy(s.status, inp.busyLane)) {
     if (MAPPED_BUSY_LANES.includes(inp.busyLane)) {
       const sentence = humanizeLaneConflict(`'${inp.busyLane}' is already running`);
       if (sentence) return sentence;
