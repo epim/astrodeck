@@ -48,9 +48,10 @@ for (const k of ["window", "document", "navigator", "localStorage", "sessionStor
 
 const { deriveIncidents } = await import("../../../lib/incidents");
 const {
-  actionsFor, INCIDENT_ACTIONS, OMITTED_ACTION_IDS, refineIncident, specFor,
+  actionsFor, capLockReason, INCIDENT_ACTIONS, OMITTED_ACTION_IDS, refineIncident, specFor,
 } = await import("../now/incidentActions");
 const { HUB_IDS } = await import("../../../router");
+const { accessPhrase } = await import("../../../../lib/caps");
 
 let passed = 0;
 let failed = 0;
@@ -294,6 +295,49 @@ test("DISK CRITICAL is a different card from DISK LOW", () => {
   });
   assert(/DISK CRITICAL/.test(crit.title), `critical title: ${crit.title}`);
   eq(crit.color, "#ff5470", "a critical disk is not amber:");
+});
+
+// -------------------------------------------------------- the two-cap lock
+// ignore_weather is declared with BOTH `cap: "control.capture"` and
+// `cap2: "view.weather"` (app.py:2476-2481: the route requires BOTH, because
+// the response echoes the weather payload's site_lat/site_lon - reasoned at
+// :2462-2471). Under the four shipped roles this gap never shows: every
+// control.capture holder (operator, admin) also holds view.weather, and
+// both caps happen to resolve to the SAME accessPhrase ("operator or admin
+// access", since operator+admin are the only holders of either one) - so a
+// SYNTHETIC split-role principal is the only way to see cap2 do anything at
+// all, which is also why the sabotage below only goes red under one.
+
+function gateFor(caps: string[]): any {
+  return {
+    principal: { role: "admin", email: "split@rig", caps },
+    status: null,
+    equipConnected: true,
+    wsPhase: "up",
+  };
+}
+
+test("ignore_weather locks on the OTHER cap's reason when only one of the pair is held", () => {
+  const onlyCapture = capLockReason(INCIDENT_ACTIONS.ignore_weather, gateFor(["control.capture"]));
+  eq(onlyCapture, `needs ${accessPhrase("view.weather")}`, "control.capture without view.weather:");
+
+  const onlyWeather = capLockReason(INCIDENT_ACTIONS.ignore_weather, gateFor(["view.weather"]));
+  eq(onlyWeather, `needs ${accessPhrase("control.capture")}`, "view.weather without control.capture:");
+});
+
+test("ignore_weather unlocks only once BOTH caps are held, and locks with neither", () => {
+  eq(capLockReason(INCIDENT_ACTIONS.ignore_weather, gateFor([])),
+    `needs ${accessPhrase("control.capture")}`, "neither cap:");
+  eq(capLockReason(INCIDENT_ACTIONS.ignore_weather, gateFor(["control.capture", "view.weather"])),
+    null, "both caps:");
+});
+
+test("positive control: a spec without cap2 reads unlocked for a control.capture-only principal - "
+  + "the exact gap this row exists to close", () => {
+  const withoutCap2 = { ...INCIDENT_ACTIONS.ignore_weather, cap2: undefined };
+  eq(capLockReason(withoutCap2, gateFor(["control.capture"])), null,
+    "a control.capture-only principal must read LOCKED once cap2 is declared - this positive "
+    + "control proves the assertion above is not vacuous");
 });
 
 const total = passed + failed;

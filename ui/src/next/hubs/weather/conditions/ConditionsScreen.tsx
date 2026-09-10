@@ -98,7 +98,18 @@ export function ConditionsScreen(): JSX.Element {
   const seq = useSeq();
   const plan = usePlan();
   const nowTs = useSlowClock();
-  const { lockedReason: ignoreLock, onExplain } = useLock({ cap: "control.capture" });
+  // ignore-tonight requires BOTH control.capture (the principal) and
+  // view.weather (a dependency: the response echoes the full weather payload,
+  // which carries site_lat/site_lon - server/astrodeck/api/app.py:2476-2481,
+  // reasoned at :2462-2471). Declaring control.capture alone let a
+  // control.capture holder without view.weather see this control as
+  // unlocked. `gate.ts`'s `GateInput` takes ONE `cap` (do not widen it), so
+  // this checks both locks and takes the first reason - the repo's pattern
+  // for a two-capability control (`incidentActions.ts`'s `busyLane2`).
+  const captureLock = useLock({ cap: "control.capture" });
+  const weatherLock = useLock({ cap: "view.weather" });
+  const ignoreLock = captureLock.lockedReason ?? weatherLock.lockedReason;
+  const onExplain = captureLock.onExplain;
   // The same gate the hub header's gear carries, so both doors to the sheet
   // behave identically - one of them refusing while the other opens would read
   // as a bug in whichever one the operator pressed second.
