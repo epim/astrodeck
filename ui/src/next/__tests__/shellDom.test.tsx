@@ -288,7 +288,10 @@ test("BACK pops the sheet and leaves the hub behind it", () => {
 });
 
 await testAsync("a sheet name no hub registers says so instead of rendering nothing", async () => {
-  act(() => { win.location.hash = "#/rig/devices/focuser"; });
+  // Was `focuser` until the Rig wave registered that sheet for real - which is
+  // the case SheetHost's own MissingSheet comment anticipated. The assertion is
+  // unchanged; only the example had to be a name that is still unregistered.
+  act(() => { win.location.hash = "#/rig/devices/nosuchsheet"; });
   await settle();
   const missing = byId("sheet-missing");
   assert(missing != null, "an unbuilt sheet rendered a blank layer, which reads as a broken app");
