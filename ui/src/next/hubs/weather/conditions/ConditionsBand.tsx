@@ -11,11 +11,32 @@
 // nulls each one on its own - "a station reporting wind but no dew point is a
 // real thing, and it must not take the whole reading down" - so each clause
 // below is dropped on its own rather than the tile printing NaN.
+//
+// THE ONE LINE UNDER THE BAND (D-RIG-3, T-U7b-6). The DEW tile says how many
+// degrees of margin the glass has left; the line under the band says what the
+// HEATERS are doing about it, from `status.dew`. They are two different facts
+// and the second is the one an operator can act on.
+//
+// WHY THIS FILE READS THE STORE and its five props do not grow to seven: the
+// dew loop is a RIG reading, not a weather one - it arrives on the status bus,
+// not in the weather payload - and the screen above this band fetches weather.
+// `next/ui/*` primitives are the store-free layer; a hub component reading the
+// store with narrow selectors is ARCHITECTURE section 9's own rule.
+//
+// `view.weather` GATES THE READINGS, NOT THE LINE. `api/redact.py:151-173`
+// deletes the margin, the air temperature and the dew point and nulls
+// `power_pct`, while `enabled`, `following`, `reason` and `ports` survive - so
+// a principal without it still learns whether anything is being done about the
+// dew point, and the DEW tile above says the capability is what is missing
+// rather than blaming the feed for a field it did send.
 
 import type { JSX } from "react";
-import { ReadoutGrid, ReadoutTile } from "../../../ui";
+import { Mono, ReadoutGrid, ReadoutTile } from "../../../ui";
 import type { Tone } from "../../../ui";
 import type { MoonInfo, WeatherNow } from "../../../../types";
+import { useConfig, useStatus } from "../../../../store";
+import { accessPhrase, useCanViewWeather } from "../../../../lib/caps";
+import { dewBandLine, dewView } from "../../rig/lib/dewModel";
 import { drift } from "./verdict";
 import { moonSub } from "./moon";
 
@@ -59,53 +80,74 @@ export function ConditionsBand({
 
   const humidity = now?.humidity_pct ?? null;
 
+  // --- what the heaters are doing about it ----------------------------------
+  const status = useStatus();
+  const config = useConfig();
+  const canViewWeather = useCanViewWeather();
+  const loopLine = dewBandLine(
+    dewView(status?.dew, canViewWeather),
+    config?.dew?.camera_window,
+  );
+  // A missing margin has two different causes and only one of them is the feed.
+  const dewSub = margin === null
+    ? (canViewWeather
+      ? "ambient or dew point missing"
+      : `the dew margin needs ${accessPhrase("view.weather")}`)
+    : `ambient ${(tempC as number).toFixed(1)} · dew ${(dewC as number).toFixed(1)}`;
+
   return (
-    <ReadoutGrid cols={3} data-testid="wx-band">
-      <ReadoutTile
-        label="WIND"
-        value={windKmh === null ? "not reported" : `${Math.round(windKmh)} km/h`}
-        sub={windKmh === null ? NO_WIND_HINT : (windClauses.join(" · ") || undefined)}
-        data-testid="wx-tile-wind"
-      />
-      <ReadoutTile
-        label="HUMIDITY"
-        value={humidity === null ? "not reported" : `${Math.round(humidity)}%`}
-        sub={margin === null ? undefined : `dew margin ${margin.toFixed(1)}°C`}
-        data-testid="wx-tile-humidity"
-      />
-      <ReadoutTile
-        label="SEEING"
-        value={seeing === null ? "not measured" : `${seeing}″`}
-        sub={seeing === null ? NO_ASTRO_HINT : "Astrospheric · 6 h model"}
-        data-testid="wx-tile-seeing"
-      />
-      <ReadoutTile
-        label="TRANSPARENCY"
-        // The raw model value, not a word. Astrospheric's transparency scale is
-        // not documented anywhere this codebase can see (`weather.py:414` takes
-        // `Astrospheric_Transparency` through unchanged), so grading it "above
-        // avg" would be a word the number does not support.
-        value={transparency === null ? "not measured" : String(transparency)}
-        sub={transparency === null ? NO_ASTRO_HINT : "Astrospheric · 6 h model"}
-        data-testid="wx-tile-transparency"
-      />
-      <ReadoutTile
-        label="DEW"
-        value={margin === null ? "not reported" : `${margin.toFixed(1)}°C`}
-        sub={
-          margin === null
-            ? "ambient or dew point missing"
-            : `ambient ${(tempC as number).toFixed(1)} · dew ${(dewC as number).toFixed(1)}`
-        }
-        tone={dewTone}
-        data-testid="wx-tile-dew"
-      />
-      <ReadoutTile
-        label="MOON"
-        value={moon === null ? "no target" : `${Math.round(moon.illumination * 100)}%`}
-        sub={moon === null ? moonReason : moonSub(moon, moonTargetName)}
-        data-testid="wx-tile-moon"
-      />
-    </ReadoutGrid>
+    <>
+      <ReadoutGrid cols={3} data-testid="wx-band">
+        <ReadoutTile
+          label="WIND"
+          value={windKmh === null ? "not reported" : `${Math.round(windKmh)} km/h`}
+          sub={windKmh === null ? NO_WIND_HINT : (windClauses.join(" · ") || undefined)}
+          data-testid="wx-tile-wind"
+        />
+        <ReadoutTile
+          label="HUMIDITY"
+          value={humidity === null ? "not reported" : `${Math.round(humidity)}%`}
+          sub={margin === null ? undefined : `dew margin ${margin.toFixed(1)}°C`}
+          data-testid="wx-tile-humidity"
+        />
+        <ReadoutTile
+          label="SEEING"
+          value={seeing === null ? "not measured" : `${seeing}″`}
+          sub={seeing === null ? NO_ASTRO_HINT : "Astrospheric · 6 h model"}
+          data-testid="wx-tile-seeing"
+        />
+        <ReadoutTile
+          label="TRANSPARENCY"
+          // The raw model value, not a word. Astrospheric's transparency scale is
+          // not documented anywhere this codebase can see (`weather.py:414` takes
+          // `Astrospheric_Transparency` through unchanged), so grading it "above
+          // avg" would be a word the number does not support.
+          value={transparency === null ? "not measured" : String(transparency)}
+          sub={transparency === null ? NO_ASTRO_HINT : "Astrospheric · 6 h model"}
+          data-testid="wx-tile-transparency"
+        />
+        <ReadoutTile
+          label="DEW"
+          value={margin === null ? "not reported" : `${margin.toFixed(1)}°C`}
+          sub={dewSub}
+          tone={dewTone}
+          data-testid="wx-tile-dew"
+        />
+        <ReadoutTile
+          label="MOON"
+          value={moon === null ? "no target" : `${Math.round(moon.illumination * 100)}%`}
+          sub={moon === null ? moonReason : moonSub(moon, moonTargetName)}
+          data-testid="wx-tile-moon"
+        />
+      </ReadoutGrid>
+      {loopLine != null && (
+        <div data-testid="wx-dew-loop">
+          {/* "heaters", not "dew heaters": every sentence the loop produces
+              already names the dew point or the dew margin, and the tile
+              immediately above this line is labelled DEW. */}
+          <Mono size={10.5} tone="dim">{`heaters · ${loopLine}`}</Mono>
+        </div>
+      )}
+    </>
   );
 }

@@ -71,17 +71,23 @@ const CONFIG = {
 // ------------------------------------------------------------- fetch recorder
 interface Asked { method: string; url: string; body: unknown }
 const asked: Asked[] = [];
+
+// What the server would be holding. A `POST /api/config {block}` replaces that
+// block wholesale (`api/backends.ts`), and every one of those writes is followed
+// by `loadConfig()`, so the mock has to REMEMBER: answering the re-read with the
+// pristine fixture would hide a write that dropped half its block, which is the
+// exact defect the dew tests below are for.
+let servedConfig: Record<string, unknown> = { ...CONFIG };
+
 g.fetch = async (url: string, init?: { method?: string; body?: string }) => {
   const method = init?.method ?? "GET";
   asked.push({ method, url: String(url), body: init?.body ? JSON.parse(init.body) : null });
-  // `setCoolingConfig` is followed by `loadConfig()`, so a bare {} here would
-  // blank the config the rest of the sheet reads and the assertions after the
-  // write would be testing a half-mounted screen.
   if (String(url).includes("/api/config")) {
-    const cooling = method === "POST"
-      ? (JSON.parse(init!.body as string) as { cooling: unknown }).cooling
-      : CONFIG.cooling;
-    return { ok: true, status: 200, statusText: "OK", json: async () => ({ ...CONFIG, cooling }) };
+    if (method === "POST") {
+      servedConfig = { ...servedConfig, ...(JSON.parse(init!.body as string) as object) };
+    }
+    const answer = { ...servedConfig };
+    return { ok: true, status: 200, statusText: "OK", json: async () => answer };
   }
   return { ok: true, status: 200, statusText: "OK", json: async () => ({}) };
 };
@@ -92,7 +98,12 @@ const { useStore } = await import("../../../../store");
 const { CameraSheet, cameraLiveLine, cameraSpecLine, binOptions, dialStops } =
   await import("../sheets/camera");
 const { RING_CIRCUMFERENCE } = await import("../lib/coolerCurve");
+const {
+  DEW_NOT_TICKED, dewBandLine, dewCameraNote, dewFollowNote, dewHiddenNote,
+  dewRefusal, dewView,
+} = await import("../lib/dewModel");
 type RigStatus = import("../../../../types").RigStatus;
+type DewStatus = import("../../../../types").DewStatus;
 
 // ------------------------------------------------------------------ harness
 let passed = 0;
@@ -155,6 +166,7 @@ const FRAMES = {
 };
 
 function seed(over: Record<string, unknown> = {}): void {
+  servedConfig = { ...CONFIG, ...((over.config as object) ?? {}) };
   act(() => {
     useStore.setState({
       status: camStatus(),
@@ -189,6 +201,22 @@ function pointer(node: any, type: string, clientX: number): void {
 const q = (sel: string) => container.querySelector(sel) as any;
 const qa = (sel: string) => Array.from(container.querySelectorAll(sel)) as any[];
 const text = () => (container.textContent || "") as string;
+const id = (marker: string) => q(`[data-testid="${marker}"]`);
+/** Type into a controlled input the way React can see. */
+function type(node: any, value: string): void {
+  act(() => {
+    Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, "value")!.set!
+      .call(node, value);
+    node.dispatchEvent(new win.Event("input", { bubbles: true }));
+  });
+}
+/** Commit a NumberField draft. Enter, not blur: React 18 delegates `onBlur`
+ *  from `focusout`, which jsdom will not raise for an element never focused. */
+function enter(node: any): void {
+  act(() => {
+    node.dispatchEvent(new win.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  });
+}
 
 // ====================================================== 1. the precondition
 seed();
@@ -366,9 +394,16 @@ await testAsync("the dew heater sends the level, and says the camera reports non
   assert(post != null, "the dew heater switch sent nothing");
   eq(JSON.stringify(post!.body), JSON.stringify({ power: 100 }),
     `the dew heater body is wrong (${JSON.stringify(post!.body)})`);
-  // E23: the design claims this heater follows the dew margin from Weather.
-  assert(!/dew margin/i.test(text()),
-    "the sheet claims the window heater follows the dew margin, which nothing in the engine does");
+  // E23 USED TO SAY the design's "follows the dew margin from Weather" was a
+  // claim nothing in the engine kept, and this assertion pinned the absence of
+  // the phrase. D-RIG-3 built the loop, so the phrase is now allowed - but ONLY
+  // where the engine publishes `status.dew`. This fixture has no dew node, so
+  // the sheet must still make no claim about a loop, and the note must still be
+  // the hand-set one.
+  assert(id("camera-follow-dew") == null,
+    "a FOLLOW DEW switch was rendered for an engine that publishes no dew node");
+  assert(/set the power by hand/.test(text()),
+    "with no dew loop in the engine, the sheet dropped the sentence that says the level is hand-set");
 });
 
 await testAsync("MEASURE GAIN runs the learn loop at the gain the camera is actually on", async () => {
@@ -457,6 +492,243 @@ await testAsync("MEASURE GAIN is honest-disabled while an alignment owns the cam
     await settle();
     eq(asked.length, 0, `the press reached the rig anyway: ${JSON.stringify(asked)}`);
   });
+
+// ================================== 8. the dew LOOP (D-RIG-3, task T-U7b-6)
+//
+// The window heater has two different things behind it now: the REGISTER, which
+// is what the glass is at, and the LOOP, which is what decides it. Everything
+// below is about telling those apart, and about the three ways this could lie
+// while rendering perfectly - a control bound to a field that is not there, a
+// partial write that resets the ramp to the server defaults, and a number
+// printed from a null that redaction produced.
+
+const DEW_CFG = {
+  enabled: true, margin_full_c: 1, margin_off_c: 5, min_power: 0, max_power: 100,
+  camera_window: true, manual_override_s: 7200, interval_s: 120,
+};
+const DEW_PORTS = [{ id: 2, name: "Dew A", follow_dew: true, value: 158 }];
+
+function dewNode(over: Record<string, unknown> = {}): DewStatus {
+  return {
+    enabled: true, following: true, override_until_ts: null,
+    margin_c: 3.4, temp_c: 11.2, dewpoint_c: 7.8, power_pct: 62,
+    reason: "following the dew margin", ports: DEW_PORTS,
+    ...over,
+  } as DewStatus;
+}
+const ADMIN = {
+  ...OPERATOR, role: "admin",
+  caps: [...OPERATOR.caps, "config.safety", "control.power"],
+};
+function seedDew(node: unknown, over: Record<string, unknown> = {}): void {
+  seed({
+    principal: ADMIN,
+    config: { ...CONFIG, dew: DEW_CFG },
+    status: camStatus({ dew: node }),
+    ...over,
+  });
+  mount();
+}
+
+// -------------------------------------------------- the pure model, five states
+test("dewView tells the five states apart, and an absent node from an un-ticked one", () => {
+  eq(dewView(undefined, true).kind, "absent", "an engine with no dew node:");
+  eq(dewView(null, true).kind, "idle", "a loop that exists but has not ticked:");
+  eq(dewView(dewNode({ enabled: false, following: false }), true).kind, "off", "a loop switched off:");
+  eq(dewView(dewNode(), true).kind, "following", "a loop driving the heaters:");
+  const until = Math.floor(Date.now() / 1000) + 1800;
+  const paused = dewView(dewNode({ following: false, override_until_ts: until }), true);
+  eq(paused.kind, "paused", "a hand-set level with an expiry:");
+  eq(paused.kind === "paused" ? paused.minutes : -1, 30, "the remaining minutes:");
+  // `override_until_ts` is null BOTH when nothing is overridden and when the
+  // override never expires; `following` is what tells them apart.
+  eq(dewView(dewNode({ following: false, override_until_ts: null }), true).kind, "waiting",
+    "a hand-set level whose override never expires:");
+  // An expiry in the PAST is not a pause - the server clears it on its own tick.
+  eq(dewView(dewNode({ override_until_ts: until - 7200 }), true).kind, "following",
+    "a lapsed override:");
+});
+
+test("a view.weather-stripped node follows with NO number, and says why", () => {
+  const stripped = dewNode() as any;
+  delete stripped.margin_c;
+  delete stripped.temp_c;
+  delete stripped.dewpoint_c;
+  stripped.power_pct = null;
+
+  const view = dewView(stripped as DewStatus, false);
+  eq(view.kind, "following", "a stripped node reads as idle instead of following:");
+  eq(view.kind === "following" ? view.margin : 0, null,
+    "an absent margin was defaulted to a number:");
+  eq(view.kind === "following" ? view.power : 0, null,
+    "a nulled power_pct was defaulted to a number:");
+
+  const note = dewCameraNote(view, true) ?? "";
+  assert(note.includes("following the dew margin"), `the loop's own sentence is gone: "${note}"`);
+  assert(note.includes(dewHiddenNote()), `the note does not say why there is no number: "${note}"`);
+  assert(!/\d+%/.test(note), `a percentage was printed from a null: "${note}"`);
+  assert(!/\d+(\.\d+)?°C/.test(note), `a margin was printed from an absent reading: "${note}"`);
+  // And the same node with the capability held prints both numbers.
+  const seen = dewCameraNote(dewView(dewNode(), true), true) ?? "";
+  assert(/62%/.test(seen) && /3\.4°C/.test(seen),
+    `the positive control lost its numbers: "${seen}"`);
+});
+
+test("the two refusals are the wire's own sentences, in the server's order", () => {
+  eq(dewRefusal({ ...DEW_CFG, margin_off_c: 1 }), "dew.margin_off_c must be above margin_full_c",
+    "a collapsed ramp:");
+  eq(dewRefusal({ ...DEW_CFG, margin_full_c: 6 }), "dew.margin_off_c must be above margin_full_c",
+    "an inverted ramp:");
+  eq(dewRefusal({ ...DEW_CFG, min_power: 80, max_power: 20 }),
+    "dew.max_power must be at least min_power", "an inverted power range:");
+  eq(dewRefusal(DEW_CFG), null, "a legal block was refused:");
+  // 0 is not "expires immediately" - it is an override that never expires.
+  assert(/never to expire/.test(dewFollowNote(0)),
+    `manual_override_s 0 was read as no override: "${dewFollowNote(0)}"`);
+  assert(/120 minutes/.test(dewFollowNote(7200)),
+    `the take-back time is wrong: "${dewFollowNote(7200)}"`);
+  // The band's line survives redaction too - `ports` is not a weather reading.
+  const band = dewBandLine(dewView(dewNode(), false), true) ?? "";
+  assert(/the camera window and 1 port/.test(band), `the band line: "${band}"`);
+});
+
+// ------------------------------------------------------------------ mounted
+await testAsync("FOLLOW DEW writes the WHOLE dew block, and turns the loop on with it", async () => {
+  seedDew(dewNode({ enabled: false, following: false, reason: "dew following is off" }),
+    { config: { ...CONFIG, dew: { ...DEW_CFG, enabled: false, camera_window: false } } });
+  await settle();
+  const sw = id("camera-follow-dew");
+  assert(sw != null, "no FOLLOW DEW switch on a sheet whose engine publishes a dew node");
+  eq(sw.getAttribute("aria-checked"), "false", "the switch claims to be following an off loop");
+
+  asked.length = 0;
+  click(sw);
+  await settle();
+  const post = asked.find((a) => a.method === "POST" && a.url === "/api/config");
+  assert(post != null, `FOLLOW DEW wrote nothing (${JSON.stringify(asked)})`);
+  const dew = (post!.body as { dew: Record<string, unknown> }).dew;
+  assert(dew != null, "the write did not carry a dew block");
+  eq(dew.camera_window, true, "FOLLOW DEW did not set the window to follow");
+  // Turning the window on turns the LOOP on: `camera_window` with `enabled`
+  // false is a switch that promises following and starts nothing.
+  eq(dew.enabled, true, "FOLLOW DEW left the loop switched off");
+  // THE WHOLE BLOCK. `POST /api/config {dew}` binds the whole model, so a
+  // partial body lands every omitted field on the server default - a tap on
+  // this switch would silently reset both margins and both power bounds.
+  for (const k of ["margin_full_c", "margin_off_c", "min_power", "max_power",
+    "manual_override_s", "interval_s"]) {
+    assert(k in dew, `the write dropped ${k} - the rig would take its default instead`);
+  }
+  eq(dew.margin_off_c, 5, "the ramp was not carried through the write");
+});
+
+await testAsync("while the loop is following, the hand control still works and says what it costs", async () => {
+  seedDew(dewNode());
+  await settle();
+
+  const line = id("dew-loop-line");
+  assert(line != null, "no live line under the window heater");
+  const t = String(line.textContent);
+  assert(t.includes("following the dew margin"),
+    `the loop's own reason is not printed verbatim: "${t}"`);
+  assert(/62%/.test(t) && /3\.4°C/.test(t), `the line dropped the loop's numbers: "${t}"`);
+
+  const note = id("dew-manual-note");
+  assert(note != null, "the hand control does not say what moving it costs");
+  assert(/120 minutes/.test(String(note.textContent)),
+    `the note does not name the take-back time from manual_override_s: "${note.textContent}"`);
+
+  // The hand write is a REAL override on the rig (dew.py:444-502), so the
+  // control must not be locked while the loop follows.
+  const up = q('[data-testid="dew-power"] button[aria-label="Sensor window heater power up"]');
+  assert(up != null, "the hand power control vanished while the loop was following");
+  eq(up.getAttribute("aria-disabled"), null,
+    "the hand power control was locked while the loop follows - the override is real, not a race");
+  asked.length = 0;
+  click(up);
+  await settle();
+  const post = asked.find((a) => a.url === "/api/camera/dew-heater");
+  assert(post != null, `the hand write was swallowed (${JSON.stringify(asked)})`);
+});
+
+await testAsync("a loop that has not ticked locks the switch with its own reason, and writes nothing", async () => {
+  seedDew(null);
+  await settle();
+  const sw = id("camera-follow-dew");
+  assert(sw != null, "the switch was hidden for a loop that exists but has not ticked");
+  eq(sw.getAttribute("aria-disabled"), "true", "an un-ticked loop left FOLLOW DEW live");
+  eq(sw.getAttribute("title"), DEW_NOT_TICKED, `the reason: ${sw.getAttribute("title")}`);
+  assert(!sw.hasAttribute("disabled"),
+    "the switch used the native disabled attribute, which takes the reason out of the a11y tree");
+  asked.length = 0;
+  click(sw);
+  await settle();
+  eq(asked.length, 0, `a locked switch reached the rig (${JSON.stringify(asked)})`);
+});
+
+await testAsync("an operator without config.safety sees FOLLOW DEW inert, with the cap phrase", async () => {
+  seedDew(dewNode(), { principal: OPERATOR });
+  await settle();
+  const sw = id("camera-follow-dew");
+  eq(sw.getAttribute("aria-disabled"), "true", "FOLLOW DEW is live without config.safety");
+  eq(sw.getAttribute("title"), "needs admin access", `the reason: ${sw.getAttribute("title")}`);
+  asked.length = 0;
+  click(sw);
+  await settle();
+  eq(asked.length, 0, `the press reached the rig (${JSON.stringify(asked)})`);
+  // The live line is a READOUT, so it stays visible for a role that cannot edit.
+  assert(id("dew-loop-line") != null, "the live line was hidden from a non-admin");
+
+  // And the ramp still OPENS: a locked group hides the five numbers from every
+  // role that cannot edit them, which is not the same as read-only.
+  click(q('[data-testid="dew-ramp"] .nx-disclosure-head'));
+  await settle();
+  const full = id("dew-margin-full");
+  assert(full != null, "the ramp editor refused to open for a role that may only read it");
+  eq(full.getAttribute("aria-disabled"), "true", "the ramp fields are editable without config.safety");
+  eq(full.getAttribute("title"), "needs admin access",
+    `the field does not say who may edit it (${full.getAttribute("title")})`);
+  assert(!full.hasAttribute("disabled"),
+    "the ramp field used the native disabled attribute, which takes the reason out of the a11y tree");
+  asked.length = 0;
+  type(full, "9");
+  enter(full);
+  await settle();
+  eq(asked.length, 0, `a read-only ramp field wrote to the rig (${JSON.stringify(asked)})`);
+});
+
+await testAsync("an inverted ramp is refused in the wire's words, before the press reaches the rig", async () => {
+  seedDew(dewNode());
+  await settle();
+  click(q('[data-testid="dew-ramp"] .nx-disclosure-head'));
+  await settle();
+  const full = id("dew-margin-full");
+  assert(full != null, "the ramp editor did not open");
+
+  asked.length = 0;
+  type(full, "9");
+  enter(full);
+  await settle();
+  eq(asked.filter((a) => a.method === "POST" && a.url === "/api/config").length, 0,
+    "a ramp the server would 422 was posted anyway");
+  const refusal = id("dew-refusal");
+  assert(refusal != null, "the refused edit said nothing");
+  assert(String(refusal.textContent).includes("dew.margin_off_c must be above margin_full_c"),
+    `the refusal is not the wire's own sentence: "${refusal.textContent}"`);
+  assert(/still following the numbers it had/.test(String(refusal.textContent)),
+    "the refusal does not say which numbers the heaters are on");
+
+  // And a legal edit goes through, whole.
+  type(full, "2");
+  enter(full);
+  await settle();
+  const post = asked.find((a) => a.method === "POST" && a.url === "/api/config");
+  assert(post != null, "a legal ramp edit wrote nothing");
+  const dew = (post!.body as { dew: Record<string, unknown> }).dew;
+  eq(dew.margin_full_c, 2, "the edited field did not reach the rig");
+  eq(dew.margin_off_c, 5, "the write dropped the other margin");
+  assert(id("dew-refusal") == null, "the refusal line survived a successful write");
+});
 
 act(() => { rootRef?.unmount(); });
 
