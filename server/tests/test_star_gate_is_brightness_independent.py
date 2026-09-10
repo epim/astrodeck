@@ -35,7 +35,8 @@ from astropy.io import fits
 from astrodeck.imaging.stars import (
     MIN_SIZE_PX, SIZE_FINE_MAX_BOX_HFR, SIZE_FINE_MAX_PEAK_R,
     SIZE_FINE_MAX_TRUNCATION, _bg_sigma, _box_truncation, _bright_population,
-    compact_star_population, detect_stars, focus_size, median_hfr, star_size,
+    compact_star_population, detect_stars, focus_size, median_hfr,
+    resolved_star_scale, star_size,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures" / "ngc604_20260906"
@@ -266,68 +267,85 @@ def test_a_ring_is_refused_for_its_shape_and_not_for_its_faintness():
             "through")
 
 
-def test_a_faint_extended_object_beside_stars_does_not_take_the_frame():
-    """REGIME 2, the half of it the gate gets right: sixty sigma=1.5 stars with
-    a 40 px-sigma galaxy in the middle of them.
-
-    While the galaxy stays under the stars' own peak the answer is still the
-    stars': the probes that sit on it read 0.96-1.44 against the off-galaxy
-    1.02-1.05, and the median over the population is 1.04. This is the M33
-    field of 2026-09-06, where G_0003 reads 1.11 on the whole 6248x4176 frame
-    with eight of its twenty-five probes sitting on the galaxy."""
-    for galaxy in (0.0, 5e3):
-        img = _field(sigma=1.5, n=60, amp=2e5, galaxy=galaxy)
-        size = star_size(img)
-        grader, _ = median_hfr(img)
-        assert size is not None and grader is not None
-        assert size.source == "stars" and size.scale == 1, (
-            f"galaxy peak {galaxy:.0f}: answered from the {size.source} path "
-            f"at {size.radius:.2f}px (scale {size.scale}) while sixty sharp "
-            "stars sat in the same frame")
-        assert size.radius == grader
+#: The galaxy's peak against the stars' own (~14100 ADU for sigma=1.5 at
+#: amp=2e5): from a fifteenth of it to twenty-one times it. The stars are the
+#: same PSF at every step, so the right answer never moves.
+_GALAXY_RAMP = (0.0, 5e3, 1e4, 2e4, 5e4, 1e5, 3e5)
 
 
-def test_a_galaxy_brighter_than_the_stars_takes_the_frame_and_that_is_the_next_defect():
-    """REGIME 2, the half it gets WRONG. Pinned, not asserted away.
+@pytest.mark.parametrize("galaxy", _GALAXY_RAMP)
+def test_an_extended_object_beside_stars_does_not_take_the_frame(galaxy):
+    """REGIME 2: sixty sigma=1.5 stars with a 40 px-sigma galaxy among them,
+    swept from well below the stars' peak to well above it.
 
-    ``_bright_population`` ranks by the 15 px box's flux, and that box subtracts
-    only its own border median — so a star sitting on a galaxy carries the
-    galaxy's pedestal in its flux and is ranked ABOVE the field. Past a galaxy
-    peak of about 1.4x the stars' own peak the top-flux half of the population
-    is entirely on-galaxy, its probes read 1.31-1.83 (the pedestal survives
-    inside the 15 px aperture), and the median crosses the gate. The pyramid
-    then answers with the GALAXY: 49 px at scale 32, on a frame whose stars are
-    1.9 px and whose grader reads 2.65.
+    THE BOTTOM OF THE RAMP was always right, and it is the M33 field of
+    2026-09-06: G_0003 reads a truncation of 1.11 on the whole 6248x4176 frame
+    with eight of its twenty-five probes on the galaxy, and the answer is still
+    the stars'.
 
-    Reproduced on the sky the same night: B_0032, a 6248x4176 B sub of the real
-    M33 field with 200 detections and a grader HFR of 3.69, reads a truncation
-    of 1.29 and answers 839.61 px at scale 64. Its stars are 30 px smears, so
-    refusing the fine path is right there; 839.61 px is not.
+    THE TOP OF THE RAMP WAS PINNED BROKEN ON 2026-09-08 AND FIXED ON
+    2026-09-10. Past a galaxy peak of about 1.4x the stars' the frame's brightest
+    detections are the galaxy's own smooth core, chopped into 15 px cells: they
+    carry more flux than any star (346137 against 201154 at galaxy 2e4), they
+    read the box's saturation HFR (4.03, against the field's 1.88), and they
+    take over ``_bright_population``. Gate 2 then crossed at galaxy 2e4 and
+    gate 1 at 5e4, and the PYRAMID answered with the galaxy — 49 px at scale 32
+    on a frame whose stars are 1.9 px — because a 49 px source carries 10^2
+    times a star's flux and ``SIZE_POPULATION_FRAC`` left it the sole voter.
 
-    NOT FIXED HERE, and the reason is a measurement rather than a preference:
-    no threshold separates it. The frames we hold put the highest must-pass
-    reading at 1.242 (jump_R60) and the lowest must-not at 1.287 (B_0032), and
-    a galaxy walks the median smoothly through that 4% gap as its surface
-    brightness rises. A fraction rule does no better — counting probes that
-    read compact, this frame scores 41% while staircase_G60, which must be
-    refused, scores 44%. Separating "stars on a bright nebula" from "trailed
-    stars" needs the pyramid to stop claiming the nebula, not a new number.
+    Refusing the fine path up there is defensible; answering 49 px is not. So
+    the pyramid is now bounded by ``resolved_star_scale``: at galaxy 2e4 and
+    above, no source may be claimed at more than 12x the 1.88 px median of the
+    detections the box sees whole, nothing else in the frame is that big, and
+    the stars answer. The number is ``median_hfr``'s at every step of the ramp.
 
-    WHEN THIS TEST FAILS the defect has been fixed: retire it and fold the
-    galaxy into
-    ``test_a_faint_extended_object_beside_stars_does_not_take_the_frame``.
+    The two ranking repairs this test's earlier docstring proposed were both
+    measured and both refuted; ``imaging.stars``' FINE FIRST block holds the
+    numbers.
+    """
+    img = _field(sigma=1.5, n=60, amp=2e5, galaxy=galaxy)
+    size = star_size(img)
+    grader, n = median_hfr(img)
+    assert size is not None and grader is not None
+    assert n >= 60, f"fixture drifted: {n} detections"
+    assert size.source == "stars" and size.scale == 1, (
+        f"galaxy peak {galaxy:.0f}: answered from the {size.source} path "
+        f"at {size.radius:.2f}px (scale {size.scale}) while sixty sharp "
+        "stars sat in the same frame")
+    assert size.radius == grader
+    # The stars are sigma=1.5 (flux-weighted mean radius 1.88) at every step.
+    # The box's own reading of them creeps to 4.11 at the top of the ramp,
+    # because the galaxy's curvature inside a 15 px cutout is real light; what
+    # must never come back is a number about the GALAXY, which is 26x this.
+    assert size.radius < 5.0, (
+        f"galaxy peak {galaxy:.0f}: {size.radius:.2f}px is not a sigma=1.5 "
+        "star field")
+
+
+def test_the_galaxy_case_is_bounded_by_the_stars_and_not_by_a_threshold():
+    """WHY the ramp above holds, at the seam, so a future edit cannot pass it
+    by widening a gate instead.
+
+    The fine path is still REFUSED at galaxy 2e4 — truncation 1.26 against the
+    1.25 bar, and nothing in the gate set moved on 2026-09-10. What changed is
+    that the pyramid may no longer answer with something a dozen times the size
+    of the stars this frame resolves.
     """
     img = _field(sigma=1.5, n=60, amp=2e5, galaxy=2e4)
-    grader, n = median_hfr(img)
-    size = star_size(img)
-    assert grader is not None and size is not None
-    assert n >= 60, f"fixture drifted: {n} detections"
-    assert size.source == "pyramid" and size.scale >= 8, (
-        "the galaxy no longer takes the frame — see the docstring, this test "
-        f"should now be retired (source {size.source}, scale {size.scale})")
-    assert size.radius > 10.0 * grader, (
-        f"the pyramid answered {size.radius:.2f}px against a grader of "
-        f"{grader:.2f}px; if that gap has closed the defect is fixed")
+    stars = detect_stars(img)
+    scale = resolved_star_scale(img, stars=stars)
+    assert scale is not None and 1.5 < scale < 2.5, (
+        f"the compact detections median {scale} — not a sigma=1.5 field")
+    assert compact_star_population(img, stars=stars) is None, (
+        "the gate now ADMITS the galaxy frame, so this test no longer shows "
+        "that the bound is what fixed it — re-read the FINE FIRST block")
+    bg, sigma = _bg_sigma(img)
+    probe = _box_truncation(img, bg, sigma, stars, min(img.shape) / 2.0)
+    assert probe is not None and probe[0] >= SIZE_FINE_MAX_TRUNCATION, (
+        f"truncation {probe[0]:.3f} now clears {SIZE_FINE_MAX_TRUNCATION}; the "
+        "threshold moved, and the 2026-09-08 measurement says no threshold "
+        "separates this case")
+    assert star_size(img).source == "stars"
 
 
 # ------------------------------------- (c) what the sweep must never be handed
