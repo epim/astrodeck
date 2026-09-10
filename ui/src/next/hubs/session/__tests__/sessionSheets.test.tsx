@@ -176,15 +176,15 @@ await testAsync("planEditor renders the phone reason instead of the editor below
   assert(container.textContent.includes(PLAN_EDITOR_PHONE_REASON),
     "a phone must be told where the editor opens, not shown an empty sheet");
   // matchMedia answers false, so this is the phone: the heavy editor must be
-  // ABSENT, not rendered and hidden. `Automation` is one of `SequenceView`'s
-  // own three panel titles - if it is on screen, so is the editor.
-  assert(!/Automation/.test(container.textContent),
-    "SequenceView must not be mounted on a phone");
+  // ABSENT, not rendered and hidden. The rebuilt editor's automation section
+  // carries the `plan-automation` marker - if it is on screen, so is the editor.
+  assert(container.querySelector('[data-testid="plan-automation"]') == null,
+    "the plan editor must not be mounted on a phone");
 
   await act(async () => { root.unmount(); });
 });
 
-await testAsync("at 768 px and up it mounts views/SequenceView whole", async () => {
+await testAsync("at 768 px and up it renders the rebuilt plan editor", async () => {
   // The POSITIVE CONTROL for the assertion above: without this, "Automation is
   // absent on a phone" would also pass over a sheet that never renders the
   // editor at any width, which is the failure mode the phone branch is meant to
@@ -197,10 +197,11 @@ await testAsync("at 768 px and up it mounts views/SequenceView whole", async () 
 
   assert(container.querySelector('[data-testid="session-plan-editor"]') != null,
     "precondition: the sheet rendered");
-  assert(/Automation/.test(container.textContent),
-    "SequenceView is not mounted - the quotas, the identity panel, the import/export "
-    + "and the when/then rules all live inside it and are lost with it");
-  assert(/Targets/.test(container.textContent), "and its targets editor came along");
+  assert(container.querySelector('[data-testid="plan-automation"]') != null,
+    "the automation section is not mounted - the quotas and the guards "
+    + "live inside it and are lost with it");
+  assert(container.querySelector('[data-testid="plan-targets"]') != null,
+    "and its targets editor came along");
   assert(!container.textContent.includes(PLAN_EDITOR_PHONE_REASON),
     "the phone reason must not be shown where the editor actually opens");
 
