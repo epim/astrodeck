@@ -553,6 +553,23 @@ class GuideConfig(BaseModel):
     #: re-centre plus one calibration walk.
     relock_limit: int = Field(3, ge=0, le=100)
     relock_window_min: float = Field(10.0, gt=0, le=120)
+    #: 2026-09-11. The re-lock gates above are the SEQUENCE ENGINE's, and they
+    #: run from its per-frame loop -- so a paused run has none of them. On the
+    #: night of 09-10/11 the guider re-locked twelve times inside 33 minutes,
+    #: each onto a star 530 to 6141 arcsec away, accumulating 64 DEGREES, and
+    #: walked the mount to 10 degrees altitude. Nothing was watching, because
+    #: no frames were being taken.
+    #:
+    #: These two are the GUIDER's own limits, enforced in its own loop with no
+    #: reference to any run, so they hold while paused, while idle, and for
+    #: standalone guiding with no sequence at all. Either one stops guiding.
+    #: 0 disables, the convention used throughout this file.
+    #:
+    #: Both are in ARCSEC and are inert unless the guide scope's image scale is
+    #: known -- otherwise the displacements are pixels and a threshold in
+    #: arcsec would mean nothing.
+    relock_arcsec_limit: float = Field(300.0, ge=0, le=100000)
+    relock_jump_arcsec: float = Field(120.0, ge=0, le=100000)
     #: 2026-09-10. How many CONSECUTIVE dither settle failures mean the field
     #: is walking. A settle failure means the guide error did not converge
     #: inside the 90 s settle window, where a stationary field converges in

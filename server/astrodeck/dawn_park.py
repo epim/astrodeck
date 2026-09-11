@@ -26,11 +26,19 @@ quantity the hazard is actually made of, and ``coords.sun_altaz`` needs nothing
 but the site and the time to compute it — no network, no ephemeris file.
 
 WHAT IT WILL NOT DO. It is a net under an EMPTY room; it must never wrestle
-somebody who is standing in it. It stays out of the way of a sequence run (the
-engine owns wind-down then, and racing it is worse than not acting), of a live
-polar alignment or slew, of a rig deliberately configured for solar work, and of
-an operator who unparks after it has acted — the latch is not re-armed until the
-Sun sets again.
+somebody who is standing in it. It stays out of the way of a RUNNING sequence
+(the engine owns wind-down then, and racing it is worse than not acting), of a
+live polar alignment or slew, of a rig deliberately configured for solar work,
+and of an operator who unparks after it has acted — the latch is not re-armed
+until the Sun sets again.
+
+A PAUSED RUN IS NOT SOMEBODY STANDING IN THE ROOM. ``engine.running`` stays
+True across a pause, so this net used to defer to a run that would never
+progress and never wind down. On 2026-09-11 at 06:19:55 it stood down for a run
+paused since 00:40 and the mount sat unparked at 10 degrees altitude, camera
+holding -9.9 C, until 09:41 — four hours past sunrise, with the warm ramp never
+started because it hangs off this same path. A run only holds this net off while
+it is actually RUNNING; see ``_hands_off_reason``.
 """
 from __future__ import annotations
 
@@ -387,8 +395,25 @@ class DawnPark:
         """Why this rig is somebody else's right now, or None if it is nobody's."""
         eng = self.engine
         if eng is not None and getattr(eng, "running", False):
-            return ("a sequence run is in progress and owns its own wind-down "
-                    "— racing it would be worse than waiting")
+            # A PAUSED RUN OWNS NO WIND-DOWN. ``running`` stays True across a
+            # pause, so this deferred to a run that would never progress: on
+            # 2026-09-11 at 06:19:55 the dawn park stood down for a run paused
+            # since 00:40, and the mount sat unparked at 10 degrees altitude
+            # with the camera at -9.9 C until 09:41 — four hours past sunrise,
+            # with the warm ramp never started because it rides this same path.
+            #
+            # A run that is RUNNING still gets the veto even when it is holding
+            # for a flip or recovering from a limit: that is a run actively
+            # managing itself, and racing it really would be worse. The
+            # distinction is whether anything is driving, not whether a frame
+            # happens to be open.
+            if not getattr(eng, "paused", False):
+                return ("a sequence run is in progress and owns its own "
+                        "wind-down — racing it would be worse than waiting")
+            bus.log("warning",
+                    "dawn: a sequence run is PAUSED, which owns no wind-down "
+                    "— parking and warming anyway rather than leaving the rig "
+                    "out for the day", "safety")
         solar = getattr(getattr(cfg, "safety", None), "solar_avoidance", True)
         if not solar:
             return ("this rig is configured for a solar session (sun avoidance "
