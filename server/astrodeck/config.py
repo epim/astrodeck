@@ -553,6 +553,16 @@ class GuideConfig(BaseModel):
     #: re-centre plus one calibration walk.
     relock_limit: int = Field(3, ge=0, le=100)
     relock_window_min: float = Field(10.0, gt=0, le=120)
+    #: 2026-09-10. How many CONSECUTIVE dither settle failures mean the field
+    #: is walking. A settle failure means the guide error did not converge
+    #: inside the 90 s settle window, where a stationary field converges in
+    #: about 5 — so it very nearly measures "the field is moving and the loop
+    #: is not winning". On the night the mount walked 3.19 deg the separation
+    #: was total: 0 failures in 31 healthy dithers, and 14 of 14 during the
+    #: walk. Two in a row is the gate because ONE can be a cloud crossing.
+    #: Reaches the same hold as ``relock_limit`` — re-centre and recalibrate —
+    #: and would have fired 55 minutes before the operator noticed. 0 is off.
+    dither_settle_fail_limit: int = Field(2, ge=0, le=20)
 
 
 # ------------------------------------------------- frame settings, by PURPOSE

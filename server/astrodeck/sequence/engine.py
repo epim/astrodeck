@@ -451,6 +451,8 @@ class SequenceEngine:
         self._frames_done = 0
         self._frames_since_dither = 0
         self._frames_since_focus = 0
+        #: consecutive dither SETTLE failures; the walking-field gate
+        self._dither_settle_fails = 0
         self._last_focus_temp: float | None = None
         #: The temperature-compensation reference (#D-RIG-2): ``(temp_c, pos)``
         #: or None for "not anchored yet".
@@ -709,6 +711,8 @@ class SequenceEngine:
         self._frames_done = sum(self._done.values())
         self._frames_since_dither = 0
         self._frames_since_focus = 0
+        #: consecutive dither SETTLE failures; the walking-field gate
+        self._dither_settle_fails = 0
         self._last_focus_temp = None
         self._last_focus_at = None
         self._focus_baseline_hfr = None
@@ -2655,10 +2659,16 @@ class SequenceEngine:
                     self._frames_since_dither = 0
                     self._record_event_cost("dither", time.time() - _t0)
                     self._frame_had_event = True
+                    self._dither_settle_fails = 0
                 except SafetyAbort:
                     raise
                 except Exception as e:
+                    self._note_dither_failure(e)
                     bus.log("warning", f"dither failed: {e}", "sequence")
+                # Checked here rather than at the top of the next frame: this
+                # is where the evidence is freshest, it is still between
+                # frames, and it saves one more sub shot at a walking field.
+                await self._maybe_hold_for_dither_failures(target)
 
             # Temperature compensation BEFORE the refocus check, deliberately.
             # A compensating move is cheap and keeps the focuser near-correct;
@@ -5344,9 +5354,30 @@ class SequenceEngine:
         if len(recent) < limit:
             return
         self._relock_hold_at = now
+        await self._hold_recentre_recalibrate(
+            f"guiding re-locked {len(recent)} times in {window_min:.0f} min",
+            target)
+
+    async def _hold_recentre_recalibrate(self, why: str, target=None) -> None:
+        """Stop, throw the calibration away, re-centre by plate solve, guide again.
+
+        The HOLD/RESUME checklist the operator runs by hand, and the one
+        response to "the field is no longer where the plan believes it is". Two
+        detectors reach it -- the GN-03 re-lock rate above, and the dither
+        settle-failure gate below -- and they share this body deliberately: a
+        second copy of a path that stops guiding, clears a calibration and
+        slews the mount is a second place for those to diverge.
+
+        ``why`` is the detector's own sentence, logged as the reason. Every
+        step is best-effort and non-fatal in the same way recovery is: a failed
+        re-centre leaves the mount where it already was, which is strictly
+        better than abandoning the run over it.
+        """
+        g = self.hub.guider
+        if not g or not g.connected:
+            return
         bus.log("warning",
-                f"guiding re-locked {len(recent)} times in {window_min:.0f} "
-                f"min: the field is walking; holding to re-centre and "
+                f"{why}: the field is walking; holding to re-centre and "
                 f"recalibrate", "sequence")
         self._set_state(detail="holding: the guided field is walking")
 
@@ -5389,10 +5420,68 @@ class SequenceEngine:
             await g.start_guiding()
         except Exception as e:
             bus.log("warning",
-                    f"guiding restart after the re-lock hold failed: {e}",
+                    f"guiding restart after the hold failed: {e}",
                     "sequence")
             return
+        # The hold is what those failures bought, so the counter starts again
+        # from here; leaving it set would hold on every frame afterwards.
+        self._dither_settle_fails = 0
         await self._await_guider_quiet("the next frame")
+
+    def _note_dither_failure(self, exc: BaseException) -> None:
+        """Count a dither failure toward the walking-field gate, if it counts.
+
+        Only a SETTLE failure is evidence about the FIELD. ``dither()`` also
+        raises when the guider is not guiding and when the Guiding Assistant
+        owns the mount, and neither says anything about where the scope is
+        pointing -- counting those would hold the run, slew it and recalibrate
+        it for a reason that is not a walking field.
+
+        This is a method rather than three lines inside the ``except`` because
+        the classifier is the part worth testing, and a test that greps the
+        handler's source for the condition passes just as happily when the
+        condition has been disabled in place. Call it and assert the count.
+        """
+        if "settle" in str(exc).lower():
+            self._dither_settle_fails = \
+                getattr(self, "_dither_settle_fails", 0) + 1
+
+    async def _maybe_hold_for_dither_failures(self, target=None) -> None:
+        """Treat CONSECUTIVE dither settle failures as a walking field.
+
+        A dither settle failure means the guide error never converged to the
+        settle criterion inside the 90 s window. On a stationary field the
+        move takes about 5 s -- 1.3 guide cycles in RA, 2.5 in Dec, even with
+        every dither pulse clamped by the mount's 1000 ms per-move cap. So a
+        settle failure is very nearly a direct measurement of "the field is
+        moving and the loop is not winning", and it needs no new telemetry:
+        the exception is already raised and already logged.
+
+        On 2026-09-10 the separation was total -- 0 failures across 31 healthy
+        dithers, then 14 of 14 while the mount walked 3.19 degrees, then 0
+        again after the recovery. Two in a row is the gate; ONE is left alone
+        because a cloud crossing can cost a single settle.
+
+        Only SETTLE failures count. ``dither()`` also raises when the guider
+        is not guiding or the Guiding Assistant owns the mount, and neither of
+        those says anything about where the field is.
+        """
+        if not (self.plan and self.plan.guide and self._policy.recover_guiding):
+            return
+        g = self.hub.guider
+        if not g or not g.connected:
+            return
+        cfg = self._cfg or config_store.cfg()
+        gcfg = getattr(cfg, "guide", None)
+        limit = int(getattr(gcfg, "dither_settle_fail_limit", 0) or 0)
+        if limit <= 0:
+            return                      # 0 is off, as everywhere else here
+        if getattr(self, "_dither_settle_fails", 0) < limit:
+            return
+        n = self._dither_settle_fails
+        self._dither_settle_fails = 0
+        await self._hold_recentre_recalibrate(
+            f"{n} consecutive dither settles failed", target)
 
     def _temp_comp_cfg(self) -> TempCompConfig:
         """The effective temperature-compensation settings (#D-RIG-2).
