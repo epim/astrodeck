@@ -592,6 +592,54 @@ const DIAL_OPTS = [
   });
 }
 
+// ======================================================== ReadoutGrid: wrap
+//
+// Camera's SETPOINT/GAIN/OFFSET/E-GAIN tiles clipped to "not measur", "cooler
+// ta...", "high · lu..." at 390 px because the grid stayed a fixed N columns
+// with no ellipsis anywhere else the string is shown. Mount and Optics opted
+// into `.nx-readouts-wrap` by hand; every OTHER prop-less caller (camera,
+// guider, wheel, power, and the settings/monitor bands) got the same clipping
+// until wrapping became the PRIMITIVE's default. A caller that still needs the
+// strict fixed grid passes `wrap={false}`.
+
+{
+  test("ReadoutGrid: wraps by default, with no prop and no className", () => {
+    render(createElement(ReadoutGrid, { cols: 4, "data-testid": "grid-default" } as any,
+      createElement(ReadoutTile, { label: "SETPOINT", value: "-10C", "data-testid": "t1" } as any),
+    ));
+    const classes = (q('[data-testid="grid-default"]').className || "").split(" ");
+    assert(classes.includes("nx-readouts-wrap"),
+      "a bare <ReadoutGrid> did not carry .nx-readouts-wrap: wrapping is supposed to be " +
+      "the default, so every prop-less call site (camera, guider, wheel, power, " +
+      "settings/monitor bands) is back to clipping its tiles at 390px");
+    assert(classes.includes("nx-readouts"), "the base .nx-readouts class was dropped");
+  });
+
+  test("ReadoutGrid: wrap={false} opts back out to the fixed N-column grid", () => {
+    render(createElement(ReadoutGrid, { cols: 3, wrap: false, "data-testid": "grid-fixed" } as any,
+      createElement(ReadoutTile, { label: "FRAMES", value: "12", "data-testid": "t2" } as any),
+    ));
+    const classes = (q('[data-testid="grid-fixed"]').className || "").split(" ");
+    assert(!classes.includes("nx-readouts-wrap"),
+      "wrap={false} still carries .nx-readouts-wrap: there is no way left to ask for " +
+      "the strict fixed grid a caller with a real reason needs");
+    assert(classes.includes("nx-readouts"), "the base .nx-readouts class was dropped");
+  });
+
+  test("ReadoutGrid: an explicit nx-readouts-wrap className still works with no other edit", () => {
+    render(createElement(ReadoutGrid, { cols: 4, className: "nx-readouts-wrap", "data-testid": "grid-explicit" } as any,
+      createElement(ReadoutTile, { label: "POINTING", value: "not verified", "data-testid": "t3" } as any),
+    ));
+    const el = q('[data-testid="grid-explicit"]');
+    const classes = (el.className || "").split(" ").filter(Boolean);
+    assert(classes.includes("nx-readouts-wrap"),
+      "mount.tsx and OpticsSheet.tsx pass className=\"nx-readouts-wrap\" by hand - that " +
+      "must still land on the element even though the default now adds it too");
+    eq(classes.filter((c: string) => c === "nx-readouts-wrap").length, 1,
+      "the explicit className and the default duplicated the same class token");
+  });
+}
+
 // ==================================================================== Sheet
 
 {
