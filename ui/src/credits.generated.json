@@ -2,7 +2,7 @@
  "generator": "tools/gen_credits.py",
  "project": {
   "name": "AstroDeck",
-  "version": "0.3.28",
+  "version": "0.3.29",
   "spdx": "Apache-2.0"
  },
  "scope": "Every component whose bytes ship inside an AstroDeck release or are compiled into one, plus every external program and network service AstroDeck depends on at runtime. Build-time-only tooling (vite, tailwindcss, typescript, pytest) is not listed: none of it places its own licensed code in a shipped artifact.",
