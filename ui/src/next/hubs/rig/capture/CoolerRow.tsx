@@ -24,10 +24,17 @@
 //    the old non-ramped `{on:false, ramp:false}`. That is a deliberate escape
 //    hatch, not a leftover.
 //
-// The dew heater has NO READ-BACK anywhere - no camera backend exposes one and
-// the hub publishes only `has_dew_heater` - so the only honest thing this panel
-// can say is what THIS browser last got the server to accept. Hence a level and
-// an explicit SEND rather than a control that looks like a reading.
+// THE DEW HEATER DOES READ BACK, where the camera can be asked. `hub.py`
+// publishes `status.camera.dew_heater` alongside `has_dew_heater`, and the key
+// is ABSENT (not 0) on a camera that cannot answer - so this panel seeds and
+// re-syncs from it exactly as the Camera sheet does, and falls back to "what
+// THIS browser last sent" only where there is genuinely nothing to read. It had
+// seeded 0 and printed "the camera reports none back" while the Camera sheet
+// one tap away showed 60, and a SEND from here then commanded 0 - which is not
+// merely a wrong number on screen: a hand write pauses the dew loop for
+// `manual_override_s` (`dew.py:444-502`), so it costs the night's dew margin.
+// The explicit SEND stays: a stepper on a bench is a coarse gesture and the
+// register is one the loop is also driving.
 
 import { useEffect, useRef, useState, type JSX } from "react";
 import { warmReadout } from "../../../../lib/cooling";
@@ -118,9 +125,33 @@ export function CoolerRow(props: CoolerRowProps): JSX.Element {
             ? `at target · ${cooler.power}% power` : "at target")
           : `cooling to ${cooler.target_c ?? "?"}°C`;
 
-  const [dew, setDew] = useState(0);
+  // ---- the dew heater. `status.camera.dew_heater` IS the register read back
+  // where the camera can be asked (absent means "cannot be asked", which is not
+  // 0 - hub.py publishes the key only when there is a level). Same resolution
+  // as the Camera sheet one tap away (`sheets/camera.tsx`'s
+  // `dewReported ?? dewSent ?? 0`), because the two panels describing one
+  // heater differently is how a SEND from this bench commanded 0 over a rig
+  // running 60 - and a hand write pauses the dew loop for `manual_override_s`,
+  // so that zero costs the night's dew margin, not just a number on screen.
+  const dewReported = cam?.dew_heater ?? null;
   const [dewSent, setDewSent] = useState<number | null>(null);
-  const dewPending = dewSent == null ? dew > 0 : dew !== dewSent;
+  const [dew, setDew] = useState<number>(() => dewReported ?? 0);
+  // RE-SYNC ON A MOVE, not on every poll. The same shape as the cooler
+  // set-point above and as `sheets/camera.tsx`'s `followed` ref: adopting the
+  // rig's number whenever it CHANGES keeps the stepper honest when the dew loop
+  // re-ramps or another client writes, while a level picked here is not yanked
+  // back by the next 2 s frame repeating what it already said.
+  const dewFollowed = useRef<number | null>(null);
+  useEffect(() => {
+    if (dewReported == null || dewFollowed.current === dewReported) return;
+    dewFollowed.current = dewReported;
+    setDew(dewReported);
+  }, [dewReported]);
+  // SEND lights only when the number on screen differs from what the RIG is at
+  // (or, on a camera that reports none back, from this browser's last write).
+  const dewPending = dewReported != null
+    ? dew !== dewReported
+    : dewSent == null ? dew > 0 : dew !== dewSent;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }} data-testid="capture-cooler">
@@ -232,9 +263,13 @@ export function CoolerRow(props: CoolerRowProps): JSX.Element {
             </ActionButton>
           </div>
           <Mono size={10} tone="dim">
-            {dewSent == null
-              ? "No heater level has been sent from this browser. The camera reports none back, so nothing here can read the current one."
-              : `Last sent from this browser: ${dewSent}%. The camera reports no level back.`}
+            {dewReported != null
+              ? `The rig reports ${dewReported}% on the window heater. A level set here pauses `
+                + "the dew loop until its override expires - the Camera sheet says for how long."
+              : dewSent == null
+                ? "This camera reports no heater level back, and nothing has been sent from this "
+                  + "browser, so the number above is a starting point rather than a reading."
+                : `This camera reports no heater level back. Last sent from this browser: ${dewSent}%.`}
           </Mono>
         </div>
       )}

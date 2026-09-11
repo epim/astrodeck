@@ -57,6 +57,7 @@ const {
   COOLER_OFF_REASON, COOLER_RANGE_REASON,
   videoRefusal, videoStopReason,
   VIDEO_RECORDING_REASON, VIDEO_LIVE_LOOP_REASON, VIDEO_CAMERA_BUSY_REASON,
+  VIDEO_STARTING_REASON,
 } = gate;
 type CaptureGateInput = import("../captureGate").CaptureGateInput;
 
@@ -278,7 +279,7 @@ test("SLEW needs the telescope connected, and says which device is missing", () 
 
 const VID = {
   path: "native" as const, pathReason: "the camera cannot record",
-  serverRefusal: null, recording: false, capturing: false,
+  serverRefusal: null, recording: false, capturing: false, starting: false,
 };
 
 test("videoRefusal reports the access floor before anything of its own", () => {
@@ -297,6 +298,16 @@ test("videoRefusal names the owner of the camera, one at a time", () => {
     "our own lane must name itself - it is the one the operator can end");
   eq(videoRefusal(inp({}), { ...VID, capturing: true }), VIDEO_CAMERA_BUSY_REASON,
     "another exposure");
+  // The window between the POST and the lane: the lane is not up yet, so
+  // `recording` is false and every other row here is false too. Without this
+  // clause `videoRefusal` answers null and the armed button posts twice.
+  eq(videoRefusal(inp({}), { ...VID, starting: true }), VIDEO_STARTING_REASON,
+    "a request already on the wire did not lock RECORD - the second press "
+    + "starts a second recording and abandons the first file half-written");
+  eq(videoRefusal(inp({}), { ...VID, starting: true, recording: true }),
+    VIDEO_STARTING_REASON,
+    "the in-flight clause must sit ABOVE the lane: one status frame earlier it "
+    + "is the same claim, and the lane's sentence is not yet true");
 });
 
 test("a camera with no video path is refused BEFORE the press, and says so", () => {
@@ -333,6 +344,7 @@ test("no reason on this screen carries an em-dash", () => {
     GAIN_FIX_REASON, PENDING_REASON, LOOP_RUNNING_REASON, NO_STACK_REASON,
     COOLER_OFF_REASON, COOLER_RANGE_REASON, SESSION_OWNS_MOUNT_REASON,
     VIDEO_RECORDING_REASON, VIDEO_LIVE_LOOP_REASON, VIDEO_CAMERA_BUSY_REASON,
+    VIDEO_STARTING_REASON,
     sequenceNotice("paused") ?? "", sequenceNotice("running") ?? "",
     gate.POLAR_NOTICE, gate.NO_LAST_LIGHT_REASON,
   ];

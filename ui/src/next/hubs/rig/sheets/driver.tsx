@@ -65,7 +65,14 @@ export function DriverSheet({ params }: SheetProps): JSX.Element {
   const toast = (level: string, message: string, opts?: { verbatim?: boolean }) =>
     useStore.getState().showToast(level, message, opts);
   const explain = (reason: string) => toast("warning", reason);
-  const { lockedReason } = useLock({ cap: "config.backend" });
+  // `needsLan` because every write this sheet makes is under `/api/drivers`,
+  // which the rig fences to the LAN (`app.py`'s
+  // `_REMOTE_LOCAL_ONLY_MUTATION_PREFIXES`) - declaring a driver chooses a
+  // serial port or a network destination on the box itself, so a tunnelled
+  // cookie is refused 403 `local_only` whatever role it carries. Said before
+  // the press rather than after it; the LAN rule outranks the capability one in
+  // `gate.ts` because an admin on the relay is refused for the ORIGIN.
+  const { lockedReason } = useLock({ cap: "config.backend", needsLan: true });
   const lock = lockedReason ?? (busy ? "The last change is still saving." : null);
 
   // Which backends this server actually has. ASIAIR only exists when the

@@ -145,8 +145,17 @@ export function PowerSheet(_p: SheetProps): JSX.Element {
   // (`lib/caps.ts` gives an operator neither), so the phrase is the same - but
   // the CAPABILITY is what the server checks, and folding these into one lock
   // would be a hand-written claim about the route rather than a reading of it.
+  //
+  // `needsLan` because `PUT /api/switch/ports/{id}` is on the rig's own fence
+  // (`app.py`'s `_REMOTE_LOCAL_ONLY_MUTATION_PREFIXES`, which `startswith`
+  // catches here and deliberately misses on `POST /api/switch/set`). Without
+  // it the segmented control renders armed over the relay and the refusal
+  // arrives as a 403 AFTER the press - `settingsRefusal` still translates that
+  // one, and keeping both is deliberate: the gate is what the user reads before
+  // pressing, the 403 branch is what catches a tab that moved onto the relay
+  // between render and press.
   const { lockedReason: settingsReason, onExplain: explainSettings } = useLock({
-    cap: "config.safety", needsRole: "switch",
+    cap: "config.safety", needsRole: "switch", needsLan: true,
   });
 
   const [ports, setPorts] = useState<SwitchPort[] | null>(null);

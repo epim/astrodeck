@@ -50,6 +50,13 @@ export interface ProfilesPopoverProps {
   rows: ProfileRow[] | null;
   liveDevices: number;
   canConfig: boolean;
+  /** `gate.ts`'s `LOCAL_ONLY_REASON` while this tab is on the relay, else null.
+   *  Activate, SAVE and delete all write under `/api/profiles`, a prefix on
+   *  `app.py`'s relay fence, so the rig refuses them 403 `local_only` for every
+   *  role. It goes FIRST in each chain below - the same order `gate.ts` uses,
+   *  and the reason it exists: telling an admin they need admin access is the
+   *  wrong blocker named truthfully. */
+  lanReason?: string | null;
   busy: BusyWhat;
   setBusy: (w: BusyWhat) => void;
   /** Fresh rows from any path that changes them (activate polls, delete, save). */
@@ -65,12 +72,17 @@ export function ProfilesPopover(p: ProfilesPopoverProps): JSX.Element {
   const toast = (level: string, message: string, opts?: { verbatim?: boolean }) =>
     useStore.getState().showToast(level, message, opts);
 
-  const activateLock = !p.canConfig
-    ? `Activating a profile needs ${accessPhrase("config.backend")}.`
-    : p.busy != null ? ACTIVATE_BUSY : null;
-  const deleteLock = profileDeleteLock(p.canConfig) ?? (p.busy != null ? ACTIVATE_BUSY : null);
+  const activateLock = p.lanReason
+    ?? (!p.canConfig
+      ? `Activating a profile needs ${accessPhrase("config.backend")}.`
+      : p.busy != null ? ACTIVATE_BUSY : null);
+  const deleteLock = p.lanReason
+    ?? profileDeleteLock(p.canConfig) ?? (p.busy != null ? ACTIVATE_BUSY : null);
   const saveLock = repointSaveLock(profileSaveLock({
-    permission: p.canConfig ? null : `Saving a profile needs ${accessPhrase("config.backend")}.`,
+    // `profileSaveLock` checks `permission` first, so handing it the LAN
+    // sentence keeps the one order without teaching that library about relays.
+    permission: p.lanReason
+      ?? (p.canConfig ? null : `Saving a profile needs ${accessPhrase("config.backend")}.`),
     name,
     live: p.liveDevices,
     // The popover saves what is RUNNING. Browser-local picks are saved from the

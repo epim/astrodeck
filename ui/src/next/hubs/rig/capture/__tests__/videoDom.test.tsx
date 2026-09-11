@@ -114,6 +114,12 @@ let startAnswer: { status: number; body: any } = {
   },
 };
 
+/** While true, `POST /api/capture/video` HANGS until `releaseStart()` is
+ *  called - the only way to have a start genuinely IN FLIGHT while a second
+ *  press arrives, which is the state the in-flight guard exists for. */
+let holdStart = false;
+let releaseStart: (() => void) | null = null;
+
 g.fetch = async (url: any, init: any) => {
   const u = String(url);
   const method = (init?.method ?? "GET").toUpperCase();
@@ -122,6 +128,9 @@ g.fetch = async (url: any, init: any) => {
   asks.push({ url: u, method, body });
 
   const ok = (b: any) => ({ ok: true, status: 200, statusText: "OK", json: async () => b });
+  if (method === "POST" && /\/api\/capture\/video$/.test(u) && holdStart) {
+    await new Promise<void>((resolve) => { releaseStart = resolve; });
+  }
   if (method === "POST" && /\/api\/capture\/video$/.test(u)) {
     if (startAnswer.status >= 400) {
       return {
@@ -160,8 +169,9 @@ const { createElement, act } = await import("react");
 const { createRoot } = await import("react-dom/client");
 const { useStore } = await import("../../../../../store");
 const { CaptureScreen } = await import("../CaptureScreen");
-const { NEEDS_CAPTURE_REASON } = await import("../captureGate");
+const { NEEDS_CAPTURE_REASON, VIDEO_STARTING_REASON } = await import("../captureGate");
 const { noVideoPathReason } = await import("../video/videoModel");
+const { VideoLibrarySheet } = await import("../../sheets/videoLibrary");
 
 // ------------------------------------------------------------------ harness
 let passed = 0;
@@ -551,6 +561,96 @@ await testAsync("a viewer sees the reason on RECORD and posts nothing", async ()
   const toasts = (useStore.getState() as any).toasts as Array<{ title?: string }>;
   assert(toasts.some((t) => t.title === NEEDS_CAPTURE_REASON),
     "the viewer's press was swallowed - the reason was said nowhere");
+});
+
+// ------------------------- the in-flight guard on RECORD (R7 P2, FIX-U-rig)
+//
+// Between the POST and the `video` lane appearing on the next status frame,
+// NOTHING in `videoRefusal` was true: `recording` reads the lane, and the
+// optimistic state only lands when the 202 answers. `ActionButton.busy` is a
+// spinner and deliberately does not block a press, so two more taps re-armed
+// the button and started a SECOND recording - the first file abandoned
+// half-written with the camera taken out from under it.
+//
+// Sabotage: drop `starting` from the `videoRefusal` call in VideoMode.tsx (or
+// the `v.starting` row in captureGate.ts) and the second POST lands, so
+// `videoPosts().length` is 2 and this goes red. Dropping only the `startingRef`
+// guard leaves this green - that ref is the within-one-batch belt and is graded
+// by the unit test in captureGate.test.ts, not here.
+await testAsync("a second RECORD while the first is on the wire posts nothing", async () => {
+  seed({ principal: OPERATOR, video: null });
+  await mountAt("#/rig/capture?mode=video");
+  asks.length = 0;
+  holdStart = true;
+
+  await armAndPress(q('[data-testid="video-record"]'));
+  eq(videoPosts().length, 1, "precondition: the armed press never reached the rig");
+  const rec = q('[data-testid="video-record"]');
+  assert(rec != null, "RECORD vanished mid-start - nothing may be hidden");
+  eq(rec.getAttribute("aria-disabled"), "true",
+    "RECORD is still pressable while its own POST is out");
+  eq(rec.getAttribute("title"), VIDEO_STARTING_REASON,
+    `RECORD gives no reason mid-start (${rec.getAttribute("title")})`);
+
+  // Two more taps: with the guard gone these are arm-then-fire and post again.
+  await press(q('[data-testid="video-record"]'));
+  await press(q('[data-testid="video-record"]'));
+  eq(videoPosts().length, 1,
+    `a second recording was started under the first: ${JSON.stringify(asks.map((a) => a.url))}`);
+  const toasts = (useStore.getState() as any).toasts as Array<{ title?: string }>;
+  assert(toasts.some((t) => t.title === VIDEO_STARTING_REASON),
+    "the extra press was swallowed with no explanation");
+
+  releaseStart?.();
+  holdStart = false;
+  await settle();
+  await settle();
+});
+
+// ------------------ the VIDEO LIBRARY's cold read (R7 P2, FIX-U-rig)
+//
+// `useVideo()` is the BUS, and a bus only carries what has happened since this
+// tab subscribed. The library sheet is opened onto a recording that started
+// before the sheet existed - the ordinary case, since recordings start on the
+// bench - so no event had arrived and the row for the file being WRITTEN
+// offered DELETE. `video_routes.py:194-195` then answers 409 `lane_busy`, a
+// refusal the operator had to press to discover.
+//
+// Sabotage: remove the `getVideoState()` effect from videoLibrary.tsx (or make
+// `writingId` read the bus alone again) and the lock assertion goes red.
+await testAsync("the VIDEO LIBRARY locks the file being written from a COLD read", async () => {
+  seed({ principal: OPERATOR, video: null });     // no bus event at all
+  currentState = {
+    ...IDLE_STATE, active: true, id: RECORDING.id, state: "recording",
+    frames: 120, target_frames: 300,
+  };
+  await act(async () => { root.render(createElement("div")); });
+  await settle();
+  await act(async () => {
+    root.render(createElement(VideoLibrarySheet as any, { params: {}, depth: 0 }));
+  });
+  await settle();
+
+  assert(q('[data-testid="rig-video-library"]') != null, "the library sheet did not render");
+  const row = q(`[data-rec="${RECORDING.id}"]`);
+  assert(row != null, "precondition: the recording row is not on screen");
+  const del = row.querySelector('[data-testid="video-delete"]');
+  assert(del != null, "no DELETE on the row - nothing may be hidden");
+  eq(del.getAttribute("title"), "That recording is still being written - stop it first.",
+    `DELETE offers to remove the file the rig is writing (${del.getAttribute("title")})`);
+
+  // And the other half: once the recorder is idle the row is deletable again,
+  // so the cold read is not a permanent lock.
+  currentState = IDLE_STATE;
+  await act(async () => { root.render(createElement("div")); });
+  await settle();
+  await act(async () => {
+    root.render(createElement(VideoLibrarySheet as any, { params: {}, depth: 0 }));
+  });
+  await settle();
+  const idleDel = q(`[data-rec="${RECORDING.id}"]`).querySelector('[data-testid="video-delete"]');
+  eq(idleDel.getAttribute("aria-disabled"), null,
+    "the cold read locked a finished recording for the rest of the visit");
 });
 
 act(() => { root.unmount(); });

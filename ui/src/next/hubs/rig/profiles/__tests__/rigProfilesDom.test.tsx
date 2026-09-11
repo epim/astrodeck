@@ -700,6 +700,55 @@ await testAsync("no next-side module imports components/settings/ProfileList", a
     + "instead:");
 });
 
+// ================================================= the LAN fence (FIX-U-rig)
+//
+// All six profile routes live under `/api/profiles`, a prefix on `app.py`'s
+// `_REMOTE_LOCAL_ONLY_MUTATION_PREFIXES`: activating one reconnects hardware to
+// caller-chosen serial ports and network hosts, which is the foothold the fence
+// exists for, so the rig answers 403 `local_only` over the relay whatever role
+// the cookie carries. The ADMIN below is the point of the test.
+//
+// Sabotage: drop `needsLan: true` from `ProfilesEditor`'s `useLock` and every
+// assertion on LOCAL_ONLY_REASON goes red - the buttons render armed and the
+// refusal arrives only after the press.
+const { LOCAL_ONLY_REASON } = await import("../../../../lib/gate");
+const { noteRemoteStatus, resetRelayForTests } = await import("../../../../lib/relay");
+
+await testAsync("on the relay every profile verb names the LAN, not a capability", async () => {
+  seed(ADMIN);
+  mount();
+  await settle();
+  // Precondition on the LAN: an admin's ACTIVATE is live, so what locks it
+  // below is the origin and nothing else.
+  const before = card(ROW_B.id).querySelector('[data-testid="profile-activate"]');
+  assert(before != null, "no ACTIVATE - the list did not render");
+  eq(before.getAttribute("aria-disabled"), null,
+    "precondition: an admin on the LAN cannot activate, so the relay case proves nothing");
+
+  act(() => { noteRemoteStatus({ via: "relay" }); });
+  await settle();
+  const row = card(ROW_B.id);
+  for (const marker of ["profile-activate", "profile-rename", "profile-delete"]) {
+    const btn = row.querySelector(`[data-testid="${marker}"]`);
+    assert(btn != null, `${marker} vanished on the relay - nothing may be hidden`);
+    eq(btn.getAttribute("title"), LOCAL_ONLY_REASON,
+      `${marker} names the wrong blocker over the relay (${btn.getAttribute("title")})`);
+  }
+  // The list itself still READS: `startswith` catches unsafe methods only, so
+  // GET /api/profiles answers over the relay and a remote operator can still
+  // see which rig is saved.
+  assert(cards().length >= 2, "the relay lock took the profile LIST with it");
+
+  asked.length = 0;
+  click(row.querySelector('[data-testid="profile-activate"]'));
+  await settle();
+  eq(asked.filter((a) => a.method !== "GET").length, 0,
+    `a relay press reached a fenced route: ${JSON.stringify(asked)}`);
+
+  act(() => { noteRemoteStatus({ via: "direct" }); });
+  resetRelayForTests();
+});
+
 act(() => { rootRef!.unmount(); });
 
 const total = passed + failed;

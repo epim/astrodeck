@@ -32,6 +32,13 @@ export interface ConnectOnceCardProps {
   /** The active profile, or null when none is active (or its id dangles). */
   profile: ProfileRow | null;
   canConfig: boolean;
+  /** `gate.ts`'s `LOCAL_ONLY_REASON` while this tab is on the relay, else null.
+   *  All three verbs below reach a route on the rig's LAN fence (`/api/profiles`
+   *  for the activate, `/api/connect` + `/api/drivers` for the simulator,
+   *  `/api/discover` for the scan DETECT MY HARDWARE lands on), so the refusal
+   *  is about the ORIGIN and outranks the capability sentence - an admin on the
+   *  relay is refused too. */
+  lanReason?: string | null;
   busy: boolean;
   onConnectProfile: (row: ProfileRow) => void;
   /** No profile yet: scan this computer for what is plugged into it. */
@@ -57,9 +64,11 @@ function body(profileName: string | null): string {
 }
 
 export function ConnectOnceCard(p: ConnectOnceCardProps): JSX.Element {
-  const lock = p.canConfig
-    ? (p.busy ? "A rig action is already running - wait for it to finish." : null)
-    : `needs ${accessPhrase("config.backend")}`;
+  // LAN first, capability second, busy last - the same order `gate.ts` uses.
+  const lock = p.lanReason
+    ?? (p.canConfig
+      ? (p.busy ? "A rig action is already running - wait for it to finish." : null)
+      : `needs ${accessPhrase("config.backend")}`);
 
   return (
     <Card tone="accent" padding={14} data-testid="first-night">

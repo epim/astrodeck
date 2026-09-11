@@ -495,8 +495,18 @@ export function AddDeviceSheet({ params }: SheetProps): JSX.Element {
   });
   const doDisconnect = () => void disconnectRig(liveDevices, hooks);
 
-  const configLock = useLock({ cap: "config.backend" });
-  const connectLock = useLock({ cap: "config.backend", busyLane: "connect" });
+  // `needsLan` on both: every write this sheet makes is on the rig's own fence
+  // (`app.py`'s `_REMOTE_LOCAL_ONLY_MUTATION_PREFIXES` / `_REMOTE_LOCAL_ONLY_
+  // PREFIXES`) - `/api/drivers` for the declarations, `/api/connect` for the
+  // two connect verbs and DISCONNECT, `/api/discover` for both SCAN buttons.
+  // All of them choose a serial port, a host or a network destination on the
+  // box, which is the SSRF/serial-foothold shape the fence exists for, so a
+  // tunnelled session is refused 403 `local_only` whatever role it carries.
+  // The READS stay live - the driver list, the roles table and the assignment
+  // rows all render over the relay, and the sheet is reachable from the devices
+  // screen over the relay too; it is the writes that carry the sentence.
+  const configLock = useLock({ cap: "config.backend", needsLan: true });
+  const connectLock = useLock({ cap: "config.backend", busyLane: "connect", needsLan: true });
   const lock = (base: string | null) => base ?? (busy ? "A rig action is already running." : null);
 
   // ------------------------------------------- save the picks as a profile

@@ -70,11 +70,28 @@ const sent: { url: string; body: unknown }[] = [];
 /** A refusal to plant for the next request whose URL contains this key. Set by
  *  the 422 test and cleared by it; nothing else may leave one armed. */
 let refuse: { match: string; status: number; body: unknown } | null = null;
+/** A SUCCESS body to answer with for the next request whose URL contains this
+ *  key. The default `{}` is enough for routes whose answer nothing reads; the
+ *  nudge's clamp fields ARE read, so that test plants a real one. */
+let answer: { match: string; body: unknown } | null = null;
+/** While set, every request whose URL contains this key HANGS until
+ *  `release()` is called - the only way to have a POST genuinely in flight
+ *  while a second press arrives. */
+let hold: string | null = null;
+let release: (() => void) | null = null;
 g.fetch = async (url: string, init?: { method?: string; body?: string }) => {
   asked.push(`${init?.method ?? "GET"} ${String(url)}`);
   let parsed: unknown = undefined;
   try { parsed = init?.body != null ? JSON.parse(init.body) : undefined; } catch { /* not json */ }
   sent.push({ url: String(url), body: parsed });
+  if (hold && String(url).includes(hold)) {
+    await new Promise<void>((resolve) => { release = resolve; });
+  }
+  if (answer && String(url).includes(answer.match)) {
+    const a = answer;
+    answer = null;
+    return { ok: true, status: 200, statusText: "OK", json: async () => a.body };
+  }
   if (refuse && String(url).includes(refuse.match)) {
     const r = refuse;
     refuse = null;
@@ -89,7 +106,7 @@ g.fetch = async (url: string, init?: { method?: string; body?: string }) => {
 const { createElement, act } = await import("react");
 const { createRoot } = await import("react-dom/client");
 const { useStore } = await import("../../../../store");
-const { MountSheet, FLOW_OWNS_MOUNT, fmtArcmin, fmtFlipIn, polarRowSub } =
+const { MountSheet, FLOW_OWNS_MOUNT, SENDING_REASON, fmtArcmin, fmtFlipIn, polarRowSub } =
   await import("../sheets/mount");
 
 // ------------------------------------------------------------------ harness
@@ -592,6 +609,119 @@ test("the polar row says what was measured, or that nothing was", () => {
     "a finished alignment does not report its error and verdict");
   eq(polarRowSub({ state: "done", total_error: 25 }), "error 25.0′ · keep going",
     "a session abandoned at 25' reads as a success");
+});
+
+// ============================ the in-flight clause on UNPARK and SOLVE + SYNC
+//
+// `/api/mount/unpark` and `/api/mount/solve_sync` are not `_spawn` lanes at the
+// moment they are posted, so `busy_lanes` says nothing while the request is in
+// flight - and `act()` / `pressSolve()` both DROP a second press. On a serial
+// LX200 mount that round trip is a real second or two, which is long enough to
+// press twice, and the second press went nowhere with nothing on screen.
+//
+// Sabotage: remove the `sending ? SENDING_REASON : null` clause from
+// `unparkReason` (or the `solving`/`sending` clauses from `solveReason`) in
+// mount.tsx and the title assertions go red - the button reads as live while
+// eating the press.
+await testAsync("UNPARK names the request already on the wire", async () => {
+  seed({ status: mountStatus({ parked: true }) });
+  mount();
+  await settle();
+  const before = q('[data-testid="mount-unpark"]');
+  assert(before != null, "precondition: no UNPARK on a parked mount");
+  eq(before.getAttribute("aria-disabled"), null,
+    "precondition: UNPARK is already locked, so the in-flight case proves nothing");
+
+  hold = "/api/mount/unpark";
+  asked.length = 0;
+  click(before);
+  await settle();
+  eq(asked.filter((a) => a.includes("/api/mount/unpark")).length, 1,
+    "the first press never reached the rig");
+
+  const during = q('[data-testid="mount-unpark"]');
+  eq(during.getAttribute("aria-disabled"), "true",
+    "UNPARK stays armed while its own POST is out, and eats the second press");
+  eq(during.getAttribute("title"), SENDING_REASON,
+    `UNPARK gives no reason mid-request (${during.getAttribute("title")})`);
+  click(during);
+  await settle();
+  eq(asked.filter((a) => a.includes("/api/mount/unpark")).length, 1,
+    "the second press posted a second unpark");
+  assert(lastToast().includes(SENDING_REASON),
+    `the swallowed press said nothing: ${lastToast()}`);
+
+  release?.();
+  hold = null;
+  await settle();
+});
+
+await testAsync("SOLVE + SYNC names its own solve rather than swallowing the press", async () => {
+  seed();
+  mount();
+  await settle();
+  const before = q('[data-testid="mount-solve"]');
+  eq(before.getAttribute("aria-disabled"), null,
+    "precondition: SOLVE is already locked, so the in-flight case proves nothing");
+
+  hold = "/api/mount/solve_sync";
+  asked.length = 0;
+  click(before);
+  await settle();
+  eq(asked.filter((a) => a.includes("/api/mount/solve_sync")).length, 1,
+    "the first press never reached the rig");
+  const during = q('[data-testid="mount-solve"]');
+  eq(during.getAttribute("aria-disabled"), "true", "SOLVE stays armed while solving");
+  assert((during.getAttribute("title") ?? "").length > 0,
+    "SOLVE gives no reason while its own request is out");
+  click(during);
+  await settle();
+  eq(asked.filter((a) => a.includes("/api/mount/solve_sync")).length, 1,
+    "the second press posted a second solve");
+
+  release?.();
+  hold = null;
+  await settle();
+});
+
+// =========================================== the nudge the pole clamped (S2)
+//
+// `_MAX_RA_OFFSET_HOURS` cuts an RA offset short near the pole, and until the
+// server grew `clamped`/`achieved_arcmin` the 202 echoed the size that was
+// ASKED for - so the tube moved 19 arcminutes of the 600 requested and nothing
+// said so. Optional fields: an older engine sends neither and must stay silent.
+//
+// Sabotage: drop the `nudgeClampNote` call from `nudge()` in mount.tsx, or make
+// it read `r.arcmin` instead of `r.achieved_arcmin`, and the first assertion
+// goes red.
+await testAsync("a clamped nudge names both numbers; an engine that cannot tell says nothing", async () => {
+  seed();
+  mount();
+  await settle();
+  click(q('[data-testid="mount-ra-step"] [data-value="600"]'));
+  await settle();
+  act(() => { useStore.setState({ toasts: [] } as never); });
+  answer = {
+    match: "/api/mount/nudge",
+    body: {
+      started: "goto",
+      from: { ra_hours: 2.1, dec_deg: 89.2 }, to: { ra_hours: 2.4, dec_deg: 89.2 },
+      arcmin: 600, clamped: true, achieved_arcmin: 19.4,
+    },
+  };
+  await tapPad("east", 21);
+  assert(/Moved 19' of the 600' asked/.test(lastToast()),
+    `the clamp was not named (${lastToast()})`);
+  assert(/saturates near the pole/.test(lastToast()),
+    `the clamp note does not say why (${lastToast()})`);
+
+  // The same press against an engine that reports neither field: the default
+  // `{}` answer. Silence is the only honest result - a sentence built from the
+  // REQUESTED size is the defect this closes.
+  act(() => { useStore.setState({ toasts: [] } as never); });
+  await tapPad("east", 22);
+  eq(lastToast(), "",
+    `an engine that cannot report a clamp had a clamp put in its mouth: ${lastToast()}`);
 });
 
 if (rootRef) act(() => { rootRef!.unmount(); });

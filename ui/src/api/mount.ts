@@ -47,6 +47,33 @@ export interface NudgeResult {
   from: { ra_hours: number; dec_deg: number };
   to: { ra_hours: number; dec_deg: number };
   arcmin: number;
+  /** True when `_MAX_RA_OFFSET_HOURS` cut the move short (`mount_offset.py`).
+   *  The RA offset a sky angle needs is the angle divided by cos(dec), so near
+   *  the pole an honest 600' request becomes hours of RA and the server clamps
+   *  it - and until S2 landed these two fields, the response echoed the
+   *  REQUESTED size and the toast said the mount had moved ten degrees it had
+   *  not. OPTIONAL because an older engine sends neither: absent is "this
+   *  engine cannot tell you", which is not the same as `false`, so the caller
+   *  must branch on `clamped === true` and say nothing otherwise. */
+  clamped?: boolean;
+  /** What the mount was actually given, in arcminutes on the sky. Present with
+   *  `clamped`; read it rather than recomputing, because the division that
+   *  produced it is the server's. */
+  achieved_arcmin?: number;
+}
+
+/** The toast for a nudge the pole clamped. `null` when nothing was clamped or
+ *  when the engine does not report it - silence is the honest answer there, and
+ *  a sentence built from the REQUESTED size would be the defect this closes.
+ *
+ *  It names both numbers and the reason, because the operator is about to press
+ *  again: knowing the move saturated is what stops four more taps that each
+ *  travel 19 arcminutes of the 600 asked for. */
+export function nudgeClampNote(r: NudgeResult): string | null {
+  if (r.clamped !== true || typeof r.achieved_arcmin !== "number") return null;
+  const asked = Math.round(Math.abs(r.arcmin));
+  const got = Math.round(Math.abs(r.achieved_arcmin));
+  return `Moved ${got}' of the ${asked}' asked - the RA offset saturates near the pole.`;
 }
 
 /** `POST /api/mount/nudge` (`control.mount`, reaches `Telescope.slew`) - move

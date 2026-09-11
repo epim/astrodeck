@@ -767,6 +767,45 @@ test("and that registration really loads THIS sheet", () => {
   eq(loadedSafety, SafetySheet as never, "the registry points at something other than this sheet");
 });
 
+// ------------------------- the "Saved" receipt is retired by a new edit (R7)
+//
+// `savedWhere` was set on a successful write and NEVER cleared. `SaveRow` only
+// HIDES the cue while the card is dirty, so editing a saved card and then
+// undoing the edit by hand brought a ten-minute-old "Saved" back over numbers
+// nobody had sent - a receipt for a write that did not happen.
+//
+// Sabotage: take `setSavedWhere(null)` out of `patch()` in safety.tsx and the
+// last assertion goes red.
+await testAsync("Saved belongs to the write, and a new edit retires it", async () => {
+  seed();
+  await mount();
+  const up = q('[data-testid="safety-unsafe-consecutive"] button[aria-label="After this many readings up"]');
+  assert(up != null, "precondition: no readings stepper on the trip card");
+  const trip = () => q('[data-testid="safety-trip-save"]').parentElement.textContent as string;
+
+  assert(!/Saved/.test(trip()), "precondition: the card claims a save before anything was written");
+  click(up);
+  await settle();
+  click(q('[data-testid="safety-trip-save"]'));
+  await settle();
+  assert(/Saved/.test(trip()), `a successful write left no receipt (${trip()})`);
+
+  // Edit again: the cue goes, which it always did (SaveRow hides it while
+  // dirty)...
+  click(up);
+  await settle();
+  assert(!/Saved/.test(trip()), "the receipt survived onto an unsaved edit");
+
+  // ...and now UNDO the edit by hand. The card is clean again and nothing was
+  // written, so there must be no receipt.
+  const down = q('[data-testid="safety-unsafe-consecutive"] button[aria-label="After this many readings down"]');
+  click(down);
+  await settle();
+  assert(!/Saved/.test(trip()),
+    `a stale receipt came back over an unwritten edit (${trip()}) - it says the rig took `
+    + "numbers it was never sent");
+});
+
 act(() => { rootRef?.unmount(); });
 
 const total = passed + failed;

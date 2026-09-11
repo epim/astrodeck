@@ -57,10 +57,12 @@ import {
 } from "../lib/slewStops";
 import { api } from "../../../../api";
 import {
-  NUDGE_ABSENT_NOTE, NUDGE_OUT_OF_RANGE_NOTE, isNudgeAbsent, isNudgeOutOfRange, nudgeMount,
+  NUDGE_ABSENT_NOTE, NUDGE_OUT_OF_RANGE_NOTE, isNudgeAbsent, isNudgeOutOfRange,
+  nudgeClampNote, nudgeMount,
 } from "../../../../api/mount";
 import { useConfig, usePolar, useSequence, useStatus, useStore } from "../../../../store";
 import { useBusyOrPending } from "../../../../lib/useBusy";
+import { humanizeLaneConflict } from "../../../../lib/humanize";
 import { useCanControlMount } from "../../../../lib/caps";
 import { useTouchSettings } from "../../../../lib/touchStore";
 import type { Axis, Dir } from "../../../../lib/slewController";
@@ -89,6 +91,17 @@ export const HOME_MOVING_REASON =
   + "mount parked.";
 export const PARKING_TITLE =
   "Parking - 30-60 s. Pressing again would cancel this park and start another.";
+
+/** The in-flight reason for the controls whose route is NOT a `_spawn` lane.
+ *
+ *  `act()` and `pressSolve()` both drop a press while `sending` is set, and a
+ *  press that is dropped with nothing on screen to say so is the swallow this
+ *  library exists to remove: on a serial LX200 mount a tracking or unpark round
+ *  trip is a real second or two, and `busy` is a spinner, not a refusal
+ *  (`ui/ActionButton.tsx` says so in its own props doc). So the same sentence
+ *  that has always guarded the tracking dial now guards UNPARK and SOLVE +
+ *  SYNC, which were the two that silently dropped the press. */
+export const SENDING_REASON = "a mount command is already on the wire";
 export const FOREIGN_MOTION_TITLE =
   "The mount is already moving. Park takes that move over and stows it - and if "
   + "the move is itself a park, this restarts it.";
@@ -218,11 +231,21 @@ export function MountSheet(_props: SheetProps): JSX.Element {
   // ------------------------------------------------------------------ gates
   //
   // ONE helper, composed. `useLock` answers link -> cap -> role -> ONE lane ->
-  // extra; PARK, UNPARK, HOME and GOTO are each blocked by TWO lanes, so the
-  // clauses are taken separately and `firstReason` re-applies the same order.
+  // extra, and SOLVE + SYNC is blocked by a different lane from the three
+  // motion verbs, so the clauses are taken separately and `firstReason`
+  // re-applies the same order.
+  //
+  // THERE IS NO `park` LANE and there never was. `app.py` spawns the park under
+  // `_spawn("goto", _park(), replace=True)` - park, home and goto are ONE
+  // server lane - so a `useLock({busyLane: "park"})` read a name that can never
+  // appear in `status.busy_lanes` and contributed nothing to any of the reasons
+  // below. It was dropped rather than left as a harmless no-op: a lock clause
+  // that cannot fire is indistinguishable from one that is broken, and the
+  // header claiming two lanes made it look deliberate. A park in flight is
+  // already covered - `motionLane` (the `goto` lane) drives `parking`, and
+  // PARK itself is the abort and must stay pressable during one.
   const base = useLock({ cap: "control.mount", needsRole: "telescope" });
   const laneGoto = useLock({ busyLane: "goto" });
-  const lanePark = useLock({ busyLane: "park" });
   const laneSolve = useLock({ busyLane: "solve" });
   const explain = base.onExplain;
 
@@ -339,8 +362,8 @@ export function MountSheet(_props: SheetProps): JSX.Element {
     : [{ value: "on", label: "on" }, { value: "off", label: "off" }];
 
   const trackingReason = firstReason(
-    base.lockedReason, laneGoto.lockedReason, lanePark.lockedReason,
-    sending ? "a mount command is already on the wire" : null,
+    base.lockedReason, laneGoto.lockedReason,
+    sending ? SENDING_REASON : null,
     flowExtra,
   );
 
@@ -446,8 +469,14 @@ export function MountSheet(_props: SheetProps): JSX.Element {
       : touchRef.current.reverseDec;
     const arcmin = step * dir * (reversed ? -1 : 1);
     try {
-      await nudgeMount(axis, arcmin);
+      const res = await nudgeMount(axis, arcmin);
       lastLegal.current[axis] = step;
+      // The move can be accepted and still be short of what was asked: near the
+      // pole `_MAX_RA_OFFSET_HOURS` clamps the RA offset, and without this the
+      // only evidence is a tube that barely moved. Said once, with both
+      // numbers, so the next four taps are a decision rather than a reflex.
+      const clamp = nudgeClampNote(res);
+      if (clamp) showToast("warning", clamp, { verbatim: true });
     } catch (e) {
       if (isNudgeOutOfRange(e)) {
         // The picker's fault, said in the picker's units, and the picker is put
@@ -484,19 +513,38 @@ export function MountSheet(_props: SheetProps): JSX.Element {
   };
 
   // --------------------------------------------------------- the actions
-  const parkReason = firstReason(base.lockedReason, lanePark.lockedReason);
+  // PARK is the motion-committing abort and takes the access floor ALONE: it
+  // stays pressable during a slew, during a park, and during a run.
+  const parkReason = base.lockedReason;
+  // UNPARK posts a plain route, not a `_spawn` lane, so the busy lane cannot
+  // tell you a request is out - only `sending` can, and `act()` drops the
+  // second press. Naming it is the difference between a slow mount and a dead
+  // button.
   const unparkReason = firstReason(
-    base.lockedReason, laneGoto.lockedReason, lanePark.lockedReason, flowExtra,
+    base.lockedReason, laneGoto.lockedReason,
+    sending ? SENDING_REASON : null,
+    flowExtra,
   );
   const homeReason = firstReason(
-    base.lockedReason, laneGoto.lockedReason, lanePark.lockedReason,
+    base.lockedReason, laneGoto.lockedReason,
     homing ? HOMING_TITLE : null,
     m?.slewing ? HOME_MOVING_REASON : null,
     flowExtra,
   );
-  const solveReason = firstReason(base.lockedReason, laneSolve.lockedReason, flowExtra);
+  // `pressSolve` returns early on `sending || solving` and neither half reached
+  // the button, so a press in that window did nothing and said nothing.
+  // `laneSolve` covers only the part of `solving` the RIG has published; the
+  // optimistic window between `solve.arm()` and the next status frame is the
+  // gap, and it is filled with the lane's OWN sentence out of the same table,
+  // so the two can never drift.
+  const solveReason = firstReason(
+    base.lockedReason, laneSolve.lockedReason,
+    solving ? humanizeLaneConflict("'solve' is already running") : null,
+    sending ? SENDING_REASON : null,
+    flowExtra,
+  );
   const gotoReason = firstReason(
-    base.lockedReason, laneGoto.lockedReason, lanePark.lockedReason, flowExtra,
+    base.lockedReason, laneGoto.lockedReason, flowExtra,
   );
 
   const pressSolve = () => {
