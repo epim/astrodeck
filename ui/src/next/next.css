@@ -271,9 +271,16 @@ button.nx-pill { cursor: pointer; }
 
 /* ------------------------------------------------------------- segmented */
 
+/* flex-shrink: 0 - same defect class as .nx-dial: <Segmented> renders this
+   root bare (no wrapper) and it is dropped directly into flex-column sheet
+   bodies (e.g. safety.tsx, driver.tsx) next to Label/Divider siblings. The
+   overflow: hidden here only rounds the option buttons to the border-radius,
+   but it still zeroes the automatic min-height the same way, so it is just as
+   collapsible under a height-constrained flex column. */
 .nx-seg {
   display: inline-flex; border: 1px solid var(--line-bright);
   border-radius: var(--nx-r-tile); overflow: hidden;
+  flex-shrink: 0;
 }
 .nx-seg-opt {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -370,9 +377,16 @@ button.nx-pill { cursor: pointer; }
 
 /* ------------------------------------------------------------------ dial */
 
+/* flex-shrink: 0 - a Dial is dropped bare into .nx-sheet-body (display: flex;
+   flex-direction: column). Its own overflow: hidden zeroes the flex item's
+   automatic min-height (min-height: auto computes to 0 whenever overflow is
+   not visible), so with the column's default flex-shrink: 1 and not enough
+   room, every dial on the mount sheet shrank to its 2px border and rendered
+   invisible at 820px while measuring "visible" to Playwright. */
 .nx-dial {
   border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
   border-radius: var(--nx-r-inner); background: var(--bg); overflow: hidden;
+  flex-shrink: 0;
 }
 .nx-dial-head {
   display: flex; justify-content: space-between; padding: 8px 12px 0;
@@ -435,7 +449,13 @@ button.nx-pill { cursor: pointer; }
 
 /* ------------------------------------------------------------------- bar */
 
-.nx-bar { width: 100%; border-radius: 999px; background: var(--line); overflow: hidden; }
+/* flex-shrink: 0 - the bare (non-segmented) <Bar> renders just this div, with
+   no wrapper, and several call sites (guider.tsx, CoolerRow, CaptureStage)
+   drop it straight into a flex-column stack alongside other rows. Its
+   overflow: hidden zeroes the automatic min-height the same way .nx-dial's
+   did; the bar is already only 3-14px tall, so a collapse reads as the
+   progress indicator vanishing rather than a visible height change. */
+.nx-bar { width: 100%; border-radius: 999px; background: var(--line); overflow: hidden; flex-shrink: 0; }
 .nx-bar-fill { height: 100%; background: var(--nx-tone); transition: width var(--nx-fill) ease-out; }
 .nx-bar-wrap { display: flex; flex-direction: column; gap: 8px; }
 .nx-bar-segs { display: flex; gap: 3px; width: 100%; }

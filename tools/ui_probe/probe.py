@@ -62,6 +62,41 @@ FORBIDDEN_SUBSTRINGS = ["sign in to control", "display disconnected"]
 MIN_BODY_CHARS = 200
 WORDMARK = "ASTRODECK"
 
+# A marker or testid used to count as "visible" the instant Playwright's own
+# is_visible() said so -- true for a 0-opacity element AND for one collapsed
+# to a couple of pixels by layout (measured 2026-09-10: every Dial on the
+# mount sheet at 820px had a 328 x 2 px box, its own children taller than
+# that, because `.nx-dial { overflow: hidden }` zeroed a flex item's
+# automatic min-height in `.nx-sheet-body`'s flex column -- see
+# ui/src/next/next.css and shellCss.test.ts). Playwright's is_visible() does
+# not look at size at all, so this shipped on every route and every width
+# without failing the probe. MIN_VISIBLE_PX is the floor below which a
+# "visible" element is almost certainly a collapsed control rather than a
+# small-but-real one -- 16px is smaller than any real tap target or readout
+# in this UI (the smallest deliberate glyph is the 44px touch target's own
+# icon), so it flags a genuine collapse without flagging legitimate small
+# elements.
+MIN_VISIBLE_PX = 16
+
+
+def _box_for(el) -> dict[str, float] | None:
+    """The element's bounding box in CSS px, or None if it cannot be measured
+    (detached, no layout box -- e.g. `display: none`)."""
+    try:
+        box = el.bounding_box()
+    except Exception:
+        return None
+    if box is None:
+        return None
+    return {"width": round(box["width"], 1), "height": round(box["height"], 1)}
+
+
+def _large_enough(box: dict[str, float] | None, min_px: int = MIN_VISIBLE_PX) -> bool:
+    """A box counts as genuinely visible only if BOTH dimensions clear
+    MIN_VISIBLE_PX -- a 328 x 2 px box (the measured dial defect) is wide
+    enough to look fine in a width-only check and must fail on height."""
+    return box is not None and box["width"] >= min_px and box["height"] >= min_px
+
 
 def _viewport_for(width: int) -> dict[str, Any]:
     profile = WIDTH_PROFILES.get(width)
@@ -118,14 +153,27 @@ def _visible_matches(page, text: str, exact: bool = False) -> list:
 
 
 def _wait_for_visible_text(page, text: str, timeout_ms: int = 8000,
-                            poll_ms: int = 200):
+                            poll_ms: int = 200) -> tuple[Any | None, dict[str, float] | None]:
+    """Polls for a marker that is both VISIBLE and at least MIN_VISIBLE_PX
+    square. Returns (element, box):
+      - (None, None)   -- no visible match ever appeared at all
+      - (element, box) -- a visible match appeared; the caller must still
+        check `_large_enough(box)`, because a match that is visible but
+        never grows past MIN_VISIBLE_PX is returned here too (as the last
+        visible-but-collapsed match seen), so the caller can report the
+        measured box instead of a bare "not found"."""
     deadline = time.monotonic() + timeout_ms / 1000.0
+    last_el = None
+    last_box = None
     while time.monotonic() < deadline:
         matches = _visible_matches(page, text, exact=False)
         if matches:
-            return matches[0]
+            last_el = matches[0]
+            last_box = _box_for(last_el)
+            if _large_enough(last_box):
+                return last_el, last_box
         page.wait_for_timeout(poll_ms)
-    return None
+    return last_el, last_box
 
 
 def _visible_css_matches(page, selector: str) -> list:
@@ -152,15 +200,24 @@ def _visible_css_matches(page, selector: str) -> list:
 
 
 def _wait_for_visible_testid(page, testid: str, timeout_ms: int = 8000,
-                              poll_ms: int = 200):
+                              poll_ms: int = 200) -> tuple[Any | None, dict[str, float] | None]:
+    """Same contract as `_wait_for_visible_text`, for a `[data-testid=...]`
+    selector: (None, None) means no visible match ever appeared; otherwise
+    the returned box may still be smaller than MIN_VISIBLE_PX and the caller
+    must check `_large_enough(box)` itself."""
     selector = f'[data-testid="{testid}"]'
     deadline = time.monotonic() + timeout_ms / 1000.0
+    last_el = None
+    last_box = None
     while time.monotonic() < deadline:
         matches = _visible_css_matches(page, selector)
         if matches:
-            return matches[0]
+            last_el = matches[0]
+            last_box = _box_for(last_el)
+            if _large_enough(last_box):
+                return last_el, last_box
         page.wait_for_timeout(poll_ms)
-    return None
+    return last_el, last_box
 
 
 # ------------------------------------------------------------------- guards
@@ -368,6 +425,8 @@ def _run_route(page, base: str, route: dict, out_dir: Path, width: int) -> dict:
     click_log: list[dict] = []
     overflow_info: dict[str, Any] = {}
     marker_ok = False
+    testid_box: dict[str, float] | None = None
+    marker_box: dict[str, float] | None = None
 
     try:
         page.goto(target, wait_until="networkidle", timeout=20000)
@@ -399,18 +458,43 @@ def _run_route(page, base: str, route: dict, out_dir: Path, width: int) -> dict:
         marker = route.get("marker")
 
         if testid:
-            found_testid = _wait_for_visible_testid(page, testid, timeout_ms=8000)
-            testid_ok = found_testid is not None
-            if not testid_ok:
+            found_testid, testid_box = _wait_for_visible_testid(page, testid, timeout_ms=8000)
+            if found_testid is None:
+                testid_ok = False
                 reasons.append(f"testid {testid!r} ([data-testid={testid!r}]) not "
                                f"visible after clicks (click log: {click_log})")
+            elif not _large_enough(testid_box):
+                # Present, and Playwright's own is_visible() agrees -- but too
+                # small to be a real control. This is the mount-dial defect
+                # class: `.nx-dial { overflow: hidden }` zeroed a flex item's
+                # automatic min-height, so the element measured 328 x 2 px
+                # while its own children measured taller than that.
+                testid_ok = False
+                h = testid_box["height"] if testid_box else "?"
+                w = testid_box["width"] if testid_box else "?"
+                reasons.append(
+                    f"testid {testid!r} ([data-testid={testid!r}]) is {h}px tall "
+                    f"- present but collapsed (box {w} x {h}px, need >= "
+                    f"{MIN_VISIBLE_PX} x {MIN_VISIBLE_PX}px; click log: {click_log})")
+            else:
+                testid_ok = True
 
         if marker:
-            found = _wait_for_visible_text(page, marker, timeout_ms=8000)
-            marker_ok = found is not None
-            if not marker_ok:
+            found, marker_box = _wait_for_visible_text(page, marker, timeout_ms=8000)
+            if found is None:
+                marker_ok = False
                 reasons.append(f"marker {marker!r} not visible after clicks "
                                f"(click log: {click_log})")
+            elif not _large_enough(marker_box):
+                marker_ok = False
+                h = marker_box["height"] if marker_box else "?"
+                w = marker_box["width"] if marker_box else "?"
+                reasons.append(
+                    f"marker {marker!r} is {h}px tall - present but collapsed "
+                    f"(box {w} x {h}px, need >= {MIN_VISIBLE_PX} x {MIN_VISIBLE_PX}px; "
+                    f"click log: {click_log})")
+            else:
+                marker_ok = True
         else:
             marker_ok = True  # no text marker required for this route
 
@@ -455,7 +539,8 @@ def _run_route(page, base: str, route: dict, out_dir: Path, width: int) -> dict:
     passed = len(reasons) == 0
     return {
         "width": width, "route": name, "url": target, "marker": route.get("marker"),
-        "marker_ok": marker_ok, "testid": route.get("testid"), "testid_ok": testid_ok,
+        "marker_ok": marker_ok, "marker_box": marker_box,
+        "testid": route.get("testid"), "testid_ok": testid_ok, "testid_box": testid_box,
         "passed": passed, "reasons": reasons,
         "click_log": click_log, "overflow": overflow_info,
         "console_errors": console_errors, "failed_requests": failed_requests,

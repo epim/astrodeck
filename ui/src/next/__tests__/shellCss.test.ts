@@ -371,6 +371,79 @@ test("the row sheds whole payloads, in the documented order", () => {
   );
 });
 
+// ================================================ dial/seg/bar flex-shrink
+//
+// THIRD MEASURED ESCAPE (2026-09-10, probe at 820x1180 on
+// #/rig/devices/mount). Every `Dial` on the mount sheet - SLEW RATE, RA STEP,
+// DEC STEP, and the mount-dial itself - measured a bounding box of 328 x 2 px,
+// with its own children (`.nx-dial-head` 23px + `.nx-dial-track` 56px) adding
+// to far more than that. Computed style was `display: block; height: 2px;
+// overflow: hidden`, and the parent `.nx-sheet-body` is `display: flex;
+// flex-direction: column`.
+//
+// The cause: `.nx-dial` sets `overflow: hidden`, and a flex item's
+// `min-height: auto` computes to 0 whenever its own overflow is not visible
+// (the CSS Flexbox "automatic minimum size" carve-out). With the column's
+// default `flex-shrink: 1` and not enough room in the sheet body for every
+// control, the dial shrank straight past its content down to its 2px border.
+// Playwright still counted the element as "visible" at 2px tall, so this
+// shipped on every route and every width without failing the probe (see the
+// `--only 16 x 16` guard in tools/ui_probe/probe.py).
+//
+// The same shape recurs wherever a primitive both (a) sets `overflow: hidden`
+// on its own root and (b) is dropped bare - no wrapper of its own - directly
+// into a `display: flex; flex-direction: column` body: `.nx-seg` (the
+// `<Segmented>` radiogroup root, used bare in safety.tsx/driver.tsx/etc.) and
+// `.nx-bar` (the non-segmented `<Bar>`, used bare in guider.tsx's local
+// `Stack`, CoolerRow, CaptureStage). Both get the same `flex-shrink: 0` fix.
+//
+// Audited and left alone (not the same shape): `.nx-pill-text`,
+// `.nx-btn-label`, `.nx-readout-sub`, `.nx-row-sub`, `.nx-sheet-sub` /
+// `.nx-sheet-live` are all text-truncation utilities nested inside a
+// ROW-direction (or otherwise unconstrained) parent, where `overflow: hidden`
+// is the intended single-line-ellipsis behaviour, not an accidental
+// height-collapse; `.nx-dial-track` sets `overflow: hidden` but its parent
+// `.nx-dial` is a plain block element, not a flex container, so the flex
+// auto-min-size rule never applies to it; `.nx-bar-seg` is a flex item of a
+// ROW (`.nx-bar-segs`), so its own `overflow: hidden` only zeroes its
+// auto-min-WIDTH, which is exactly the proportional-width behaviour its
+// explicit `flexGrow`/`flexBasis: 0` styling already wants.
+
+test("a bare Dial cannot be shrunk to its border by a height-constrained flex column", () => {
+  const body = ruleBodyFor("nx-dial", nextCss);
+  assert(body != null, "no .nx-dial rule in next.css");
+  assert(
+    declares(body, "flex-shrink", "0"),
+    ".nx-dial must declare `flex-shrink: 0` - its `overflow: hidden` zeroes " +
+      "the flex item's automatic min-height, so inside `.nx-sheet-body` " +
+      "(display: flex; flex-direction: column) the dial shrank to its 2px " +
+      "border and rendered invisible while still measuring as visible",
+  );
+});
+
+test("a bare Segmented control cannot be shrunk the same way as the dial", () => {
+  const body = ruleBodyFor("nx-seg", nextCss);
+  assert(body != null, "no .nx-seg rule in next.css");
+  assert(
+    declares(body, "flex-shrink", "0"),
+    ".nx-seg must declare `flex-shrink: 0` - same defect class as .nx-dial: " +
+      "it is dropped bare into flex-column sheet bodies and its `overflow: " +
+      "hidden` (there only to round the option buttons) zeroes its automatic " +
+      "min-height the same way",
+  );
+});
+
+test("a bare (non-segmented) Bar cannot be shrunk the same way as the dial", () => {
+  const body = ruleBodyFor("nx-bar", nextCss);
+  assert(body != null, "no .nx-bar rule in next.css");
+  assert(
+    declares(body, "flex-shrink", "0"),
+    ".nx-bar must declare `flex-shrink: 0` - same defect class as .nx-dial: " +
+      "the non-segmented <Bar> renders this div bare into flex-column " +
+      "stacks, and its `overflow: hidden` zeroes its automatic min-height",
+  );
+});
+
 // ---------------------------------------------------------------- report
 const total = passed + failed;
 console.log(`shellCss.test: ${passed}/${total} passed`);
