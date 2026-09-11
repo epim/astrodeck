@@ -33,6 +33,7 @@ import type { StandardsConfig } from "../../../../../types";
 import { useConfig, useStore } from "../../../../../store";
 import { nav } from "../../../../router";
 import { useLock } from "../../../../lib/gateHook";
+import { isLocalOnly, LOCAL_ONLY_REASON } from "../../../../lib/gate";
 import { Card, Label, LockNote, NumberField, Switch } from "../../../../ui";
 import {
   filesLockSentence, OFFSETS_LABEL, OFFSETS_NOTE, PLAN_LINK_AFTER, PLAN_LINK_BEFORE,
@@ -44,7 +45,8 @@ export function StandardsEditor(): JSX.Element {
   const config = useConfig();
   const saved = standardsOrDefault(config?.standards);
 
-  const gate = useLock({ cap: "config.safety" });
+  // `needsLan`: every field commits `POST /api/config {standards}`, on the fence.
+  const gate = useLock({ cap: "config.safety", needsLan: true });
   const lock = filesLockSentence(
     gate.lockedReason, accessPhrase("config.safety"), STANDARDS_SUBJECT,
   );
@@ -64,10 +66,12 @@ export function StandardsEditor(): JSX.Element {
       await setStandardsConfig(next);
       await useStore.getState().loadConfig();
     } catch (e) {
-      setErr(e instanceof ApiError
-        ? (e.status === 403 ? `Refused - ${accessPhrase("config.safety")} is needed here.`
-          : e.message)
-        : "Could not save.");
+      // `isLocalOnly` FIRST: the fence answers 403 for every role.
+      setErr(isLocalOnly(e) ? LOCAL_ONLY_REASON
+        : e instanceof ApiError
+          ? (e.status === 403 ? `Refused - ${accessPhrase("config.safety")} is needed here.`
+            : e.message)
+          : "Could not save.");
     } finally { setBusy(false); }
   };
 

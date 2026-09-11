@@ -40,12 +40,14 @@ import {
   Mono,
   ReadoutGrid,
   ReadoutTile,
+  NumberField,
   Sheet,
   Switch,
   TextInput,
 } from "../../../ui";
 import { NxIcon } from "../../../icons";
 import { nav } from "../../../router";
+import { isLocalOnly, LOCAL_ONLY_REASON } from "../../../lib/gate";
 import { useLock } from "../../../lib/gateHook";
 import { migrateKey, migrationDone } from "../../../lib/storageMigration";
 import { fmtDuration } from "../../../lib/format";
@@ -160,8 +162,14 @@ export function OpticsSheet(): JSX.Element {
   const computed = config?.optics_computed;
   const canEdit = useCan("config.site_optics");
   const canBackend = useCan("config.backend");
+  // `editLock` carries NO `needsLan`: SAVE OPTICS is `PUT /api/optics`, which is
+  // deliberately not on the rig's fence (it decides what this scope frames, not
+  // what the box does while nobody is beside it), so an operator on the relay
+  // can still set the focal length. `backendLock` does: the SOLVER pick writes
+  // `POST /api/config/providers` or `POST /api/profiles/{id}/providers`, both
+  // fenced, and so is the profile unpin beside it.
   const editLock = useLock({ cap: "config.site_optics" });
-  const backendLock = useLock({ cap: "config.backend" });
+  const backendLock = useLock({ cap: "config.backend", needsLan: true });
   const principal = usePrincipal();
 
   // D-SET-1: an engine old enough to answer with no `aperture_mm` at all (not
@@ -337,13 +345,18 @@ export function OpticsSheet(): JSX.Element {
       setSavedAt(Date.now());
     } catch (e) {
       setErr(
-        e instanceof ApiError
-          ? e.status === 409
-            ? "Someone else changed the optics while you were editing. Reload to see their values, then re-apply yours."
-            : e.status === 403
-              ? `Changing optics needs ${accessPhrase("config.site_optics")}.`
-              : e.message || "Could not save."
-          : "Could not save.",
+        // `isLocalOnly` first even here. `PUT /api/optics` is deliberately NOT
+        // on the rig's fence today, but the fence is a security list that grows,
+        // and the day it does this catch would start telling an admin they need
+        // admin access - the exact wrong-blocker defect the branch prevents.
+        isLocalOnly(e) ? LOCAL_ONLY_REASON
+          : e instanceof ApiError
+            ? e.status === 409
+              ? "Someone else changed the optics while you were editing. Reload to see their values, then re-apply yours."
+              : e.status === 403
+                ? `Changing optics needs ${accessPhrase("config.site_optics")}.`
+                : e.message || "Could not save."
+            : "Could not save.",
       );
     } finally {
       setBusy(false);
@@ -358,7 +371,8 @@ export function OpticsSheet(): JSX.Element {
       await clearProfileOverrides(overrideProfileId, { optics: true });
       await useStore.getState().loadConfig();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "could not clear the profile override");
+      setErr(isLocalOnly(e) ? LOCAL_ONLY_REASON
+        : e instanceof Error ? e.message : "could not clear the profile override");
     } finally {
       setClearing(false);
     }
@@ -393,7 +407,8 @@ export function OpticsSheet(): JSX.Element {
       }
       await useStore.getState().loadConfig();
     } catch (e) {
-      setErr(e instanceof ApiError ? e.message : "Could not change the solver.");
+      setErr(isLocalOnly(e) ? LOCAL_ONLY_REASON
+        : e instanceof ApiError ? e.message : "Could not change the solver.");
     } finally {
       setBusy(false);
     }
@@ -412,7 +427,8 @@ export function OpticsSheet(): JSX.Element {
       await clearProfileOverrides(id, { providers: ["solve"] });
       await useStore.getState().loadConfig();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "could not clear the profile pin");
+      setErr(isLocalOnly(e) ? LOCAL_ONLY_REASON
+        : e instanceof Error ? e.message : "could not clear the profile pin");
     } finally {
       setBusy(false);
     }
@@ -489,8 +505,13 @@ export function OpticsSheet(): JSX.Element {
             onPress={() => void save()}
             busy={busy}
             lockedReason={
-              editLock.lockedReason ??
-              (invalid ? "Focal length must be between 1 and 20000 mm." : null)
+              editLock.lockedReason
+              ?? (invalid ? "Focal length must be between 1 and 20000 mm." : null)
+              // `save()` returns silently on `!dirty`, so without this the
+              // button was a live-looking control that did nothing at all and
+              // said nothing about it. The sentence is what a press would have
+              // discovered.
+              ?? (dirty ? null : "these values already match what the rig has")
             }
             onExplain={editLock.onExplain}
             data-testid="optics-save"
@@ -744,34 +765,59 @@ export function OpticsSheet(): JSX.Element {
         />
         {!draft.auto_from_camera && (
           <div style={{ display: "grid", gap: 8, gridTemplateColumns: "repeat(3, minmax(0,1fr))", marginTop: 10 }}>
-            <Field label="PIXEL SIZE (µm)" hint="0 falls back to the camera.">
-              <TextInput
-                value={String(draft.pixel_size_um)}
-                onChange={(v) => patch({ pixel_size_um: Number(v) || 0 })}
-                ariaLabel="Pixel size in micrometres"
-                mono
-                lockedReason={editLock.lockedReason}
-                data-testid="optics-pixel-size"
-              />
-            </Field>
-            <Field label="SENSOR W (px)" hint="0 falls back to the camera.">
-              <TextInput
-                value={String(draft.sensor_width_px)}
-                onChange={(v) => patch({ sensor_width_px: Number(v) || 0 })}
-                ariaLabel="Sensor width in pixels"
-                mono
-                lockedReason={editLock.lockedReason}
-              />
-            </Field>
-            <Field label="SENSOR H (px)" hint="0 falls back to the camera.">
-              <TextInput
-                value={String(draft.sensor_height_px)}
-                onChange={(v) => patch({ sensor_height_px: Number(v) || 0 })}
-                ariaLabel="Sensor height in pixels"
-                mono
-                lockedReason={editLock.lockedReason}
-              />
-            </Field>
+            {/* NUMBER FIELDS, NOT TEXT INPUTS. These three were controlled from
+                `String(Number(v) || 0)`, which re-rendered the box from a parse
+                of every keystroke: typing "3." parsed to 3 and put "3" back
+                before the next digit could land, so a decimal pixel size - the
+                only kind there is - could not be typed at all, and 3.76 um had
+                to be reached through the dial. The same expression read a blank
+                box as `Number("") || 0` = 0 and committed it: a real, finite,
+                plausible pixel size of zero, which silently means "fall back to
+                the camera" on a rig whose camera is unplugged. `NumberField`
+                holds a RAW STRING draft, parses at blur and Enter only, and
+                REJECTS a value that does not parse rather than reading it as 0.
+                `resetKey` is `seed` so a refused or reloaded save puts the
+                rig's own number back in the box. */}
+            <NumberField
+              label="PIXEL SIZE (µm)"
+              hint="0 falls back to the camera."
+              value={draft.pixel_size_um}
+              onCommit={(n) => patch({ pixel_size_um: n })}
+              unit="µm"
+              min={0}
+              step={0.1}
+              ariaLabel="Pixel size in micrometres"
+              lockedReason={editLock.lockedReason}
+              onExplain={editLock.onExplain}
+              resetKey={seed}
+              data-testid="optics-pixel-size"
+            />
+            <NumberField
+              label="SENSOR W (px)"
+              hint="0 falls back to the camera."
+              value={draft.sensor_width_px}
+              onCommit={(n) => patch({ sensor_width_px: n })}
+              min={0}
+              integer
+              ariaLabel="Sensor width in pixels"
+              lockedReason={editLock.lockedReason}
+              onExplain={editLock.onExplain}
+              resetKey={seed}
+              data-testid="optics-sensor-w"
+            />
+            <NumberField
+              label="SENSOR H (px)"
+              hint="0 falls back to the camera."
+              value={draft.sensor_height_px}
+              onCommit={(n) => patch({ sensor_height_px: n })}
+              min={0}
+              integer
+              ariaLabel="Sensor height in pixels"
+              lockedReason={editLock.lockedReason}
+              onExplain={editLock.onExplain}
+              resetKey={seed}
+              data-testid="optics-sensor-h"
+            />
           </div>
         )}
       </Card>
@@ -845,7 +891,12 @@ export function OpticsSheet(): JSX.Element {
             <ActionButton
               kind="ghost"
               busy={busy}
-              lockedReason={canBackend ? null : backendLock.lockedReason}
+              // The LOCK, not `canBackend ? null : ...`: the capability is only
+              // one of the reasons `backendLock` answers with, and re-deriving
+              // it here threw the other two away - so a holder of
+              // `config.backend` on the relay saw an armed button for a
+              // `POST /api/profiles/{id}` the rig fences to the LAN.
+              lockedReason={backendLock.lockedReason}
               onExplain={backendLock.onExplain}
               onPress={() => void dropSolvePin()}
               data-testid="optics-solver-unpin"

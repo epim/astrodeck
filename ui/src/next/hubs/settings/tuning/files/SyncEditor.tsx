@@ -30,6 +30,7 @@ import { formatAge } from "../../../../../lib/telemetry";
 import type { SyncPushStatus } from "../../../../../types";
 import { useConfig, useStore } from "../../../../../store";
 import { useLock } from "../../../../lib/gateHook";
+import { isLocalOnly, LOCAL_ONLY_REASON } from "../../../../lib/gate";
 import { ActionButton, Card, Field, Label, LockNote, Mono, Switch, TextInput } from "../../../../ui";
 import {
   filesLockSentence, lastPassLine, pushBlockedReason, PUSH_SUBJECT, SYNC_BLURB,
@@ -48,8 +49,13 @@ export function SyncEditor(): JSX.Element {
   const showToast = useStore((s) => s.showToast);
 
   const canPush = useCan("view.media");
-  const editGate = useLock({ cap: "config.site_optics" });
-  const pushGate = useLock({ cap: "view.media" });
+  // `needsLan` on BOTH, and for two different fence entries: the destination
+  // and the enable switch write `POST /api/config/sync` (also an EXACT entry),
+  // and PUSH NOW is `POST /api/sync/push/now`. Both choose a host filesystem
+  // destination, which is precisely what the fence keeps off the tunnel. The
+  // status GET (`/api/sync/push`) is not fenced, so the card still reads.
+  const editGate = useLock({ cap: "config.site_optics", needsLan: true });
+  const pushGate = useLock({ cap: "view.media", needsLan: true });
   const editLock = filesLockSentence(
     editGate.lockedReason, accessPhrase("config.site_optics"), SYNC_SUBJECT,
   );
@@ -116,11 +122,14 @@ export function SyncEditor(): JSX.Element {
       await useStore.getState().loadConfig();
       await reload();
     } catch (e) {
-      setErr(e instanceof ApiError
-        ? (e.status === 403 ? `Refused - ${accessPhrase("config.site_optics")} is needed here.`
-          : e.status === 422 ? "Enter a destination folder before turning sync on."
-            : e.message)
-        : "Could not save.");
+      // `isLocalOnly` FIRST: the fence answers 403 for every role, so the
+      // capability sentence below would name the wrong blocker.
+      setErr(isLocalOnly(e) ? LOCAL_ONLY_REASON
+        : e instanceof ApiError
+          ? (e.status === 403 ? `Refused - ${accessPhrase("config.site_optics")} is needed here.`
+            : e.status === 422 ? "Enter a destination folder before turning sync on."
+              : e.message)
+          : "Could not save.");
     } finally { setBusy(false); }
   };
 
@@ -135,9 +144,10 @@ export function SyncEditor(): JSX.Element {
       if (s.last?.error) showToast("error", s.last.error, { verbatim: true });
       else if (s.last) showToast("success", s.last.summary);
     } catch (e) {
-      setErr(e instanceof ApiError && e.status === 403
-        ? `Refused - ${accessPhrase("view.media")} is needed to push frames.`
-        : e instanceof Error ? e.message : "The push failed.");
+      setErr(isLocalOnly(e) ? LOCAL_ONLY_REASON
+        : e instanceof ApiError && e.status === 403
+          ? `Refused - ${accessPhrase("view.media")} is needed to push frames.`
+          : e instanceof Error ? e.message : "The push failed.");
     } finally { setBusy(false); }
   };
 

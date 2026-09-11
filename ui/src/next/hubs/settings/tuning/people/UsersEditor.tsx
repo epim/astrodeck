@@ -30,13 +30,14 @@ import { listUsers } from "../../../../../api/backends";
 import { useCanAdminUsers } from "../../../../../lib/caps";
 import { usePrincipal } from "../../../../../store";
 import type { User } from "../../../../../types";
-import { useLock } from "../../../../lib/gateHook";
+import { useLock, useOnRelay } from "../../../../lib/gateHook";
 import { ActionButton, Card, EmptyCard, LockNote, Mono } from "../../../../ui";
 import { AddUserForm } from "./AddUserForm";
 import { Note, Section, Verdict } from "./PeopleSection";
 import { UserRow } from "./UserRow";
 import {
-  PEOPLE_CAP, PEOPLE_LIST_HIDDEN_HINT, PEOPLE_LIST_HIDDEN_TITLE, USERS_ADD, USERS_ADD_CANCEL,
+  PEOPLE_CAP, PEOPLE_LIST_HIDDEN_HINT, PEOPLE_LIST_HIDDEN_TITLE,
+  PEOPLE_LIST_LAN_ONLY_HINT, PEOPLE_LIST_LAN_ONLY_TITLE, USERS_ADD, USERS_ADD_CANCEL,
   USERS_EMPTY_HINT, USERS_EMPTY_TITLE, USERS_EYEBROW, USERS_INTRO, USERS_LOADING,
   USERS_LOAD_FAILED, errText,
 } from "./peopleModel";
@@ -49,21 +50,27 @@ export function UsersEditor(): JSX.Element {
   // for as long as the socket takes to come up, for no gain: the GET is
   // capability-checked server-side either way.
   const canAdmin = useCanAdminUsers();
-  const { lockedReason, onExplain } = useLock({ cap: PEOPLE_CAP });
+  // The bare fact as well as the lock: `GET /api/users` is fenced by prefix for
+  // EVERY method, so over the relay the read is refused too and firing it would
+  // put a red 403 on screen for a list nobody on this origin can have.
+  const onRelay = useOnRelay();
+  // `needsLan`: /api/users is fenced by PREFIX and for EVERY method, so the list
+  // READ is refused over the relay as well as the four mutations under it.
+  const { lockedReason, onExplain } = useLock({ cap: PEOPLE_CAP, needsLan: true });
 
   const [users, setUsers] = useState<User[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
 
   const refresh = useCallback(async () => {
-    if (!canAdmin) return;
+    if (!canAdmin || onRelay) return;
     try {
       setUsers(await listUsers());
       setErr(null);
     } catch (e) {
       setErr(errText(e, USERS_LOAD_FAILED));
     }
-  }, [canAdmin]);
+  }, [canAdmin, onRelay]);
 
   useEffect(() => { void refresh(); }, [refresh]);
 
@@ -96,7 +103,13 @@ export function UsersEditor(): JSX.Element {
         />
       )}
 
-      {!canAdmin ? (
+      {onRelay ? (
+        <EmptyCard
+          title={PEOPLE_LIST_LAN_ONLY_TITLE}
+          hint={PEOPLE_LIST_LAN_ONLY_HINT}
+          data-testid="users-lan-only"
+        />
+      ) : !canAdmin ? (
         <EmptyCard
           title={PEOPLE_LIST_HIDDEN_TITLE}
           hint={PEOPLE_LIST_HIDDEN_HINT}

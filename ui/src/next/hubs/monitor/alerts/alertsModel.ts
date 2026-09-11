@@ -69,6 +69,18 @@ export function lockSentence(verb: string, reason: string | null): string | null
   return reason.startsWith("needs ") ? `${verb} ${reason}` : reason;
 }
 
+/** The FOOTER note's remainder, same rule in reverse. `LockNote` prefixes
+ *  "Read-only - ", and the two constants below finish the capability sentence.
+ *  A reason that is NOT the capability one - the LAN-only fence, a dead link -
+ *  is the true blocker and is returned verbatim instead: over the relay the rig
+ *  refuses these writes for EVERY role, so printing "changing alerts needs
+ *  admin access" to an admin standing on the relay names the wrong blocker,
+ *  which is the whole defect `needsLan` exists to prevent. */
+export function lockNote(reason: string | null, capNote: string): string | null {
+  if (!reason) return null;
+  return reason.startsWith("needs ") ? capNote : reason;
+}
+
 /** The two footers, as `LockNote` reasons - the primitive prefixes
  *  "Read-only - ", so these are the remainder of the sentence and the full
  *  strings read:

@@ -39,6 +39,7 @@ import { useConfig, useStore } from "../../../../../store";
 import type { CalibrationConfig } from "../../../../../types";
 import { NxIcon } from "../../../../icons";
 import { useLock } from "../../../../lib/gateHook";
+import { isLocalOnly, LOCAL_ONLY_REASON } from "../../../../lib/gate";
 import { ActionButton, Card, Label, LockNote, Mono, NumberField } from "../../../../ui";
 import {
   binTooNarrow, binWarning, TOL_ALREADY_DEFAULT_REASON, TOL_BIN_REASON, TOL_BUSY_REASON,
@@ -53,7 +54,9 @@ export function CalibrationTolerancesEditor(): JSX.Element {
   // fall back to the same defaults the server model declares, so the editor is
   // never blank on a cold open.
   const stored = config?.calibration ?? TOL_DEFAULTS;
-  const lock = useLock({ cap: "config.site_optics" });
+  // `needsLan`: SAVE and RESET write `POST /api/config/calibration`, on the rig's
+  // LAN-only fence (`app.py` `_REMOTE_LOCAL_ONLY_MUTATION_PREFIXES`, /api/config).
+  const lock = useLock({ cap: "config.site_optics", needsLan: true });
 
   const [draft, setDraft] = useState<CalibrationConfig>(stored);
   const [busy, setBusy] = useState(false);
@@ -83,9 +86,13 @@ export function CalibrationTolerancesEditor(): JSX.Element {
       await useStore.getState().loadConfig();
       setSaved(true);
     } catch (e) {
-      setErr(e instanceof ApiError
-        ? (e.status === 403 ? toleranceForbidden() : e.message || TOL_SAVE_FAILED)
-        : TOL_SAVE_FAILED);
+      // `isLocalOnly` FIRST. A `local_only` 403 is the relay fence, not a
+      // capability this caller is missing, and `toleranceForbidden()` would
+      // tell an admin they need admin access.
+      setErr(isLocalOnly(e) ? LOCAL_ONLY_REASON
+        : e instanceof ApiError
+          ? (e.status === 403 ? toleranceForbidden() : e.message || TOL_SAVE_FAILED)
+          : TOL_SAVE_FAILED);
     } finally {
       setBusy(false);
     }

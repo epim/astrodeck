@@ -33,6 +33,7 @@ import { getEphemerisStatus, refreshEphemeris } from "../../../../api/ephemeris"
 import type { EphemerisCacheState, EphemerisStatus } from "../../../../types";
 import { NxIcon } from "../../../icons";
 import { fmtClock } from "../../../lib/format";
+import { isLocalOnly, LOCAL_ONLY_REASON } from "../../../lib/gate";
 import { useLock } from "../../../lib/gateHook";
 import { ActionButton, Card, Label, LockNote, Mono } from "../../../ui";
 
@@ -77,7 +78,11 @@ export function cacheLine(state: EphemerisCacheState | null | undefined): string
 }
 
 export function EphemerisCard(): JSX.Element {
-  const lock = useLock({ cap: "config.site_optics" });
+  // `needsLan`: REFRESH ELEMENTS is `POST /api/ephemeris/refresh`, which makes
+  // THIS BOX dial out to CelesTrak and the MPC - the SSRF shape the relay fence
+  // exists for (`app.py` `_REMOTE_LOCAL_ONLY_MUTATION_PREFIXES`), so it is
+  // refused over the tunnel for every role. The GET status stays open.
+  const lock = useLock({ cap: "config.site_optics", needsLan: true });
   const [status, setStatus] = useState<EphemerisStatus | null>(null);
   // "absent" is the 404 - the routes are not on this engine at all. It is a
   // different state from "we have not asked yet" and from "the request failed",
@@ -123,6 +128,12 @@ export function EphemerisCard(): JSX.Element {
       // for this one, so `ApiError.message` is the stringified body.
       if (e instanceof ApiError && e.code === "already_fetching") {
         setMsg(ALREADY_FETCHING);
+      } else if (isLocalOnly(e)) {
+        // The fence, not a fault and not a missing capability: the refresh
+        // dials out from the rig, so it is refused over the relay for every
+        // role. Branch before the message fallback, whose text is the server's
+        // own "this security-sensitive operation is LAN-only".
+        setErr(LOCAL_ONLY_REASON);
       } else if (e instanceof ApiError && e.status === 404) {
         setRoute("absent");
       } else {

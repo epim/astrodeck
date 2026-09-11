@@ -38,7 +38,7 @@ import { useCanAdminUsers } from "../../../../../lib/caps";
 import { useConfig, useStore } from "../../../../../store";
 import type { AuthState, PrincipalRole, User } from "../../../../../types";
 import { reconnectWs } from "../../../../../ws";
-import { useLock } from "../../../../lib/gateHook";
+import { useLock, useOnRelay } from "../../../../lib/gateHook";
 import {
   ActionButton, Card, Disclosure, EmptyCard, Field, LockNote, Mono, NumberField,
   Segmented, Switch, TextInput,
@@ -78,7 +78,16 @@ export function AuthMethodsEditor(): JSX.Element {
   const config = useConfig();
   const auth = config?.auth ?? null;
   const canAdmin = useCanAdminUsers();
-  const { lockedReason, onExplain } = useLock({ cap: PEOPLE_CAP });
+  // `GET /api/users` is on the fence by prefix for every method, so the guided
+  // card's "does an enabled admin exist" read is refused over the relay too.
+  // It stays honest without it (no confirmed admin), and SAVE METHODS is locked
+  // by the same fence, so the card cannot mislead anyone into a half-setup.
+  const onRelay = useOnRelay();
+  // `needsLan`: SAVE METHODS is `POST /api/auth/config`, an EXACT entry on the
+  // fence (every method), and the guided card reads `GET /api/users`, a fenced
+  // prefix. A tunnelled session is a replayable bearer credential, so the rig
+  // refuses both for an admin too.
+  const { lockedReason, onExplain } = useLock({ cap: PEOPLE_CAP, needsLan: true });
 
   const [draft, setDraft] = useState<AuthDraft>({
     localOn: false, googleOn: false, ttlH: 8, firstRun: true, trustLoopback: true,
@@ -107,7 +116,7 @@ export function AuthMethodsEditor(): JSX.Element {
   };
 
   const refreshSetupUsers = async () => {
-    if (!canAdmin) return;
+    if (!canAdmin || onRelay) return;
     try { setSetupUsers(await listUsers()); } catch { /* stays honest: no confirmed admin */ }
   };
 

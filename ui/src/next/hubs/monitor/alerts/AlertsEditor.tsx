@@ -40,6 +40,7 @@ import {
 import { uid } from "../../../../lib/ids";
 import { useConfig, useStore } from "../../../../store";
 import { confirmDialog } from "../../../../components/ConfirmDialog";
+import { isLocalOnly, LOCAL_ONLY_REASON } from "../../../lib/gate";
 import { useLock } from "../../../lib/gateHook";
 import type { AlertHealth, AlertSink, AlertSinkInput } from "../../../../types";
 import { ActionButton, Card, Field, Label, LockNote, Mono, Pill, TextInput } from "../../../ui";
@@ -48,7 +49,7 @@ import { SinkForm } from "./SinkForm";
 import {
   ADD_VERB, CONFLICT_TOAST, DEADMAN_LOCK_NOTE, DEADMAN_NOTE, DEADMAN_VERB, DELETE_VERB,
   EDIT_VERB, LOADING_CONFIG, NOTHING_WATCHING_BODY, NOTHING_WATCHING_LEAD, SECRET_UNCHANGED,
-  SINKS_INTRO, SINKS_LOCK_NOTE, TEST_VERB, lockSentence, setMarker, sinkDestination,
+  SINKS_INTRO, SINKS_LOCK_NOTE, TEST_VERB, lockNote, lockSentence, setMarker, sinkDestination,
 } from "./alertsModel";
 
 /** `HealthVerdict.tone` is already the primitive library's tone vocabulary. */
@@ -59,7 +60,12 @@ function VerdictPill({ v, testId }: { v: HealthVerdict; testId?: string }): JSX.
 const toastError = (e: unknown, fallback: string): void => {
   useStore.getState().enqueueToast({
     level: "error",
-    title: e instanceof Error ? e.message : fallback,
+    // `isLocalOnly` FIRST, for the same reason it comes first in `save`: the
+    // fence's 403 carries the server's own "this security-sensitive operation
+    // is LAN-only", which says nothing a user can act on. The one sentence the
+    // locks use says what to do instead - go back to the LAN.
+    title: isLocalOnly(e) ? LOCAL_ONLY_REASON
+      : e instanceof Error ? e.message : fallback,
   });
 };
 
@@ -68,8 +74,14 @@ export function AlertsEditor({ health, onRefreshHealth }: {
   onRefreshHealth: () => void;
 }): JSX.Element {
   const config = useConfig();
-  const { lockedReason, onExplain } = useLock({ cap: "config.alerts" });
-  const canEdit = lockedReason == null;
+  // `needsLan`: add/save/test/delete are `/api/alerts` writes and the dead-man
+  // save is `POST /api/config`, both on the rig's LAN-only fence. One flag here
+  // covers all six refusals, because they all read this one lock.
+  const { lockedReason, onExplain } = useLock({ cap: "config.alerts", needsLan: true });
+  // The two footers name the blocker the gate actually found, not the
+  // capability one every time: see `lockNote`.
+  const sinksNote = lockNote(lockedReason, SINKS_LOCK_NOTE);
+  const deadmanNote = lockNote(lockedReason, DEADMAN_LOCK_NOTE);
 
   const [editingId, setEditingId] = useState<string | null>(null); // a sink id, or "__new__"
   const [draft, setDraft] = useState<AlertSinkInput | null>(null);
@@ -124,6 +136,12 @@ export function AlertsEditor({ health, onRefreshHealth }: {
       if (e instanceof ApiError && e.status === 409) {
         await useStore.getState().loadConfig();
         useStore.getState().enqueueToast({ level: "error", title: CONFLICT_TOAST });
+      } else if (isLocalOnly(e)) {
+        // A `local_only` 403 is ALSO a 403, and it is not a capability the
+        // caller is missing - the rig refuses this write to every role over the
+        // relay. Branching on the code first is what keeps an admin from being
+        // told they need admin access.
+        useStore.getState().enqueueToast({ level: "error", title: LOCAL_ONLY_REASON });
       } else if (e instanceof ApiError && e.status === 403) {
         useStore.getState().enqueueToast({
           level: "error", title: "config.alerts is required to change alert sinks",
@@ -315,7 +333,7 @@ export function AlertsEditor({ health, onRefreshHealth }: {
 
           {editingId === "__new__" && form}
 
-          <LockNote reason={canEdit ? null : SINKS_LOCK_NOTE} data-testid="alerts-lock-note" />
+          <LockNote reason={sinksNote} data-testid="alerts-lock-note" />
         </div>
       </Card>
 
@@ -356,10 +374,7 @@ export function AlertsEditor({ health, onRefreshHealth }: {
               </ActionButton>
             </div>
           </Field>
-          <LockNote
-            reason={canEdit ? null : DEADMAN_LOCK_NOTE}
-            data-testid="alerts-deadman-lock-note"
-          />
+          <LockNote reason={deadmanNote} data-testid="alerts-deadman-lock-note" />
         </div>
       </Card>
     </div>

@@ -40,8 +40,9 @@ import {
   usePreview, useLogs, useSafety, useNight, useWsConnected, useTelemetryStale, useWeather,
   useBackendLinks, useBootConnectFailed, useProviders, usePhotometry,
 } from "../../../../store";
-import { useCanViewWeather } from "../../../../lib/caps";
+import { accessPhrase, useCan, useCanViewWeather } from "../../../../lib/caps";
 import { useLock } from "../../../lib/gateHook";
+import { explainLock } from "../../../shell/explain";
 import {
   deriveHealthIssues, HealthStrip, LiveTrendStrip, PreviewTile, RmsVerdict, ThermometerBar,
   useReducedMotion,
@@ -346,7 +347,16 @@ export function LiveScreen(): JSX.Element {
   // anything watching?) and is not a licence to fetch - a default (0,0) site
   // leaves it false while the tiles would still be requested.
   const radarOff = !weather || !weather.enabled;
-  const weatherSettingsLock = useLock({ cap: "config.site_optics" });
+  // `useCan`, NOT `useLock`. This button opens a LOCAL sheet - it issues
+  // nothing - and `lockReason` ranks a dropped link above everything else, so
+  // the gate answered "the rig is not reachable" and sealed the one door to the
+  // switch that turns weather back on. The capability is still named, because
+  // the sheet behind it does write. (The same call the USERS screen's two rows
+  // make, for the same reason; see `UsersScreen.tsx`'s header.)
+  const canWeatherSettings = useCan("config.site_optics");
+  const weatherSettingsReason = canWeatherSettings
+    ? null
+    : `Changing the weather settings needs ${accessPhrase("config.site_optics")}.`;
 
   const [trace, setTrace] = useState<"trace" | "scatter">("trace");
   const guideLock = useLock({ needsRole: "guider" });
@@ -561,8 +571,8 @@ export function LiveScreen(): JSX.Element {
                 <ActionButton
                   kind="secondary"
                   onPress={() => nav.sheet("weatherSettings")}
-                  lockedReason={weatherSettingsLock.lockedReason}
-                  onExplain={weatherSettingsLock.onExplain}
+                  lockedReason={weatherSettingsReason}
+                  onExplain={explainLock}
                   data-testid="monitor-radar-off-cta"
                 >
                   WEATHER SETTINGS

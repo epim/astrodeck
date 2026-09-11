@@ -38,6 +38,7 @@ import { useConfig, useStore } from "../../../../../store";
 import type { PackStatus } from "../../../../../types";
 import { NxIcon } from "../../../../icons";
 import { useLock } from "../../../../lib/gateHook";
+import { isLocalOnly, LOCAL_ONLY_REASON } from "../../../../lib/gate";
 import { ActionButton, Bar, Card, Label, LockNote, Mono, Switch } from "../../../../ui";
 import {
   ONLINE_BLURB, ONLINE_SWITCH_LABEL, ONLINE_TITLE, PACK_ATTRIBUTION, PACK_BUSY_REASON,
@@ -52,7 +53,10 @@ const POLL_MS = 2000;
 
 export function SkyPackEditor(): JSX.Element {
   const config = useConfig();
-  const lock = useLock({ cap: "config.site_optics" });
+  // `needsLan`: all three writes are fenced - `POST /api/config/survey` (the
+  // switch), `POST /api/survey/pack/fetch` (DOWNLOAD) and `DELETE
+  // /api/survey/pack` (DELETE). The status GET is not, so the card still reads.
+  const lock = useLock({ cap: "config.site_optics", needsLan: true });
   const onlineFetch = config?.survey?.online_fetch ?? false;
 
   const [status, setStatus] = useState<PackStatus | null>(null);
@@ -89,9 +93,13 @@ export function SkyPackEditor(): JSX.Element {
       await setSurveyConfig({ online_fetch: v });
       await useStore.getState().loadConfig();
     } catch (e) {
-      setErr(e instanceof ApiError
-        ? (e.status === 403 ? surveyForbidden() : e.message || SURVEY_SAVE_FAILED)
-        : SURVEY_SAVE_FAILED);
+      // `isLocalOnly` FIRST in all three catches below: a `local_only` 403 is
+      // the relay fence refusing every role, not a capability this caller is
+      // missing, and `surveyForbidden()` would name the wrong blocker.
+      setErr(isLocalOnly(e) ? LOCAL_ONLY_REASON
+        : e instanceof ApiError
+          ? (e.status === 403 ? surveyForbidden() : e.message || SURVEY_SAVE_FAILED)
+          : SURVEY_SAVE_FAILED);
     } finally {
       setBusy(false);
     }
@@ -105,11 +113,12 @@ export function SkyPackEditor(): JSX.Element {
       await startPackFetch();
       await reload();
     } catch (e) {
-      setErr(e instanceof ApiError
-        ? (e.status === 403 ? surveyForbidden()
-          : e.status === 507 ? PACK_NO_SPACE
-            : e.message || PACK_FETCH_FAILED)
-        : PACK_FETCH_FAILED);
+      setErr(isLocalOnly(e) ? LOCAL_ONLY_REASON
+        : e instanceof ApiError
+          ? (e.status === 403 ? surveyForbidden()
+            : e.status === 507 ? PACK_NO_SPACE
+              : e.message || PACK_FETCH_FAILED)
+          : PACK_FETCH_FAILED);
     } finally {
       setBusy(false);
     }
@@ -131,9 +140,10 @@ export function SkyPackEditor(): JSX.Element {
       await reload();
       useStore.getState().enqueueToast({ level: "success", title: PACK_DELETED_TOAST });
     } catch (e) {
-      setErr(e instanceof ApiError
-        ? (e.status === 403 ? surveyForbidden() : e.message || PACK_DELETE_FAILED)
-        : PACK_DELETE_FAILED);
+      setErr(isLocalOnly(e) ? LOCAL_ONLY_REASON
+        : e instanceof ApiError
+          ? (e.status === 403 ? surveyForbidden() : e.message || PACK_DELETE_FAILED)
+          : PACK_DELETE_FAILED);
     } finally {
       setBusy(false);
     }

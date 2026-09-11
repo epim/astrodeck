@@ -39,6 +39,7 @@ import { getRemoteStatus } from "../../../../api/backends";
 import { listLocations } from "../../../../api/site";
 import { listSessions } from "../../../../api/sessions";
 import type { RemoteStatus, SessionRow } from "../../../../types";
+import { usePlanning } from "../../../lib/planning";
 import { fRatioFrom } from "../sheets/opticsModel";
 import { ConnectionGlyph, GalleryGlyph } from "./glyphs";
 import { Group } from "./Group";
@@ -79,6 +80,20 @@ export function GeneralScreen(): JSX.Element {
   const camTemp = useStore((s) => s.status?.camera?.temperature ?? null);
   const filterNow = useStore((s) => s.status?.filterwheel?.current ?? null);
   const safeNow = useStore((s) => s.safety?.reading?.is_safe ?? null);
+
+  // THE CHIP IS A CLAIM ABOUT THE RIG, so it reads the rig's own answer. It was
+  // the literal string "from your last session", printed whether or not one had
+  // ever been generated - and the sheet behind it says "NOTHING LEARNED YET" on
+  // exactly that state, so the row and the screen it opens contradicted each
+  // other on a fresh install. `planning.learned` is `config.planning.quick.
+  // learned`, set by the sheet that LEARNS (the Sky hub's quick session) and
+  // never implicitly by the route, which is what makes it safe to print.
+  const planning = usePlanning();
+  const quickDefaultsChip = planning.loading
+    ? "reading"
+    : planning.learned
+      ? "from your last session"
+      : "not learned yet";
 
   // --- the rig's own answer to "how did this request arrive" ---------------
   const [remote, setRemote] = useState<RemoteStatus | null>(null);
@@ -252,7 +267,7 @@ export function GeneralScreen(): JSX.Element {
           icon={<NxIcon name="clock" />}
           title="QUICK SESSION DEFAULTS"
           sub="the hours, filters and extras a quick session starts from"
-          right={<Mono tone="dim">from your last session</Mono>}
+          right={<Mono tone="dim">{quickDefaultsChip}</Mono>}
           chevron
           onPress={() => nav.sheet("quickDefaults")}
           data-testid="row-quick-defaults"

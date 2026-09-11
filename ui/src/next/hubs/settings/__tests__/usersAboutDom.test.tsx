@@ -123,7 +123,8 @@ g.fetch = async (url: string, init?: { method?: string; body?: string }) => {
 const { createElement, act } = await import("react");
 const { createRoot } = await import("react-dom/client");
 const { useStore } = await import("../../../../store");
-const { accessPhrase, ROLE_CAPS } = await import("../../../../lib/caps");
+const { accessPhrase, ROLE_CAPS, ROLE_DESCRIPTIONS } = await import("../../../../lib/caps");
+const { PRINCIPAL_ROLES } = await import("../tuning/people");
 
 const { UsersScreen, AboutScreen } = await import("../sheets/set3");
 const { USERS_LOCK_SENTENCE, METHODS_NOT_READ_SUB } = await import("../sheets/UsersScreen");
@@ -267,6 +268,32 @@ test("the signed-in line shows the seeded admin's email and role", () => {
 test("ROLE_DESCRIPTIONS are printed on the USERS screen", () => {
   assert(/Live status and preview frames only/.test(uHost.textContent),
     "the viewer ROLE_DESCRIPTIONS sentence is not on screen");
+});
+
+// The ROLES block used to carry `["admin","operator","syncer","viewer"]` typed
+// out by hand - a third copy of the server's role table, after the two the
+// PEOPLE pickers had already stopped keeping. The disagreement would be silent:
+// a role added to `lib/caps.ts` would simply never appear on the one screen that
+// explains what these words mean. Sabotage: drop a role from `PRINCIPAL_ROLES`'s
+// source, or go back to a literal list, and the count assertion names it.
+test("the ROLES reference is the role TABLE, not a list typed into this screen", () => {
+  const rows = PRINCIPAL_ROLES.map((r) => q(uHost, `[data-testid="role-${r}"]`));
+  for (let i = 0; i < PRINCIPAL_ROLES.length; i++) {
+    assert(rows[i] != null,
+      `the ROLES block has no row for "${PRINCIPAL_ROLES[i]}", which the rig honours`);
+    assert(String(rows[i].textContent).includes(ROLE_DESCRIPTIONS[PRINCIPAL_ROLES[i]]),
+      `the ${PRINCIPAL_ROLES[i]} row does not print that role's own description`);
+  }
+  const drawn = Array.from(uHost.querySelectorAll('[data-testid^="role-"]'));
+  eq(drawn.length, PRINCIPAL_ROLES.length,
+    "the ROLES block and the role table disagree about how many roles there are");
+  // Most privileged first: the pickers want ascending privilege, this block
+  // reads best the other way, and the screen reverses rather than re-lists.
+  eq(
+    drawn.map((n: any) => String(n.getAttribute("data-testid"))).join(","),
+    [...PRINCIPAL_ROLES].reverse().map((r) => `role-${r}`).join(","),
+    "the ROLES block is not the role table in reverse:",
+  );
 });
 
 // ------------------------------- the two rows a non-admin used to lose entirely

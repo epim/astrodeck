@@ -33,6 +33,7 @@ import {
 import type { WcsStampConfig } from "../../../../../types";
 import { useConfig, useProviders, useStore } from "../../../../../store";
 import { useLock } from "../../../../lib/gateHook";
+import { isLocalOnly, LOCAL_ONLY_REASON } from "../../../../lib/gate";
 import {
   Disclosure, LockNote, NumberField, Segmented, Switch,
 } from "../../../../ui";
@@ -51,7 +52,8 @@ export function WcsStampEditor(): JSX.Element {
   // Named at RENDER time (`accessPhrase` reads the live role table) and phrased
   // as a sentence - never the raw capability string, which means nothing to a
   // user who has never read the RBAC table.
-  const gate = useLock({ cap: "config.site_optics" });
+  // `needsLan`: every write here is `POST /api/config/wcs`, on the LAN-only fence.
+  const gate = useLock({ cap: "config.site_optics", needsLan: true });
   const lock = filesLockSentence(
     gate.lockedReason, accessPhrase("config.site_optics"), WCS_SUBJECT,
   );
@@ -74,10 +76,12 @@ export function WcsStampEditor(): JSX.Element {
       await setWcsStampConfig({ solve_saved_lights: nextEnabled, wcs_stamp: next });
       await useStore.getState().loadConfig();
     } catch (e) {
-      setErr(e instanceof ApiError
-        ? (e.status === 403 ? `Refused - ${accessPhrase("config.site_optics")} is needed here.`
-          : e.message)
-        : "Could not save.");
+      // `isLocalOnly` FIRST: the fence answers 403 for every role.
+      setErr(isLocalOnly(e) ? LOCAL_ONLY_REASON
+        : e instanceof ApiError
+          ? (e.status === 403 ? `Refused - ${accessPhrase("config.site_optics")} is needed here.`
+            : e.message)
+          : "Could not save.");
     } finally { setBusy(false); }
   };
 

@@ -919,6 +919,131 @@ await testAsync("optics: a viewer sees the unpin locked with its reason, not hid
     `the locked unpin does not say who may press it: "${unpin.getAttribute("title")}"`);
 });
 
+// =====================================================================
+// OPTICS - the four hand-pinned sensor numbers (wave-2 review R8 P1)
+// =====================================================================
+//
+// THE DEFECT. All three were `TextInput`s controlled from
+// `String(Number(v) || 0)`, which re-renders the box from a parse of every
+// keystroke. Two consequences, both silent:
+//
+//   * "3." parses to 3 and the box snaps back to "3" before the next digit can
+//     land, so a DECIMAL pixel size - the only kind there is - could not be
+//     typed at all. The dial was the only way to reach 3.76 um.
+//   * a blank box is `Number("") || 0` = 0, a finite and plausible pixel size
+//     that the rig reads as "fall back to the camera". Clearing the field to
+//     retype it committed that zero.
+//
+// `NumberField` holds a raw-string draft and parses at blur/Enter only, and
+// REJECTS what does not parse instead of reading it as 0. Both halves are
+// asserted, because a fix for one is not a fix for the other.
+
+// `pixel_size_um` starts at 2.4, NOT the fixture's 3.76: `NumberField` calls
+// `onCommit` only when the committed number DIFFERS from the current value
+// (twenty call sites hang a PATCH off it), so typing the number already stored
+// would leave the draft clean and the SAVE assertion below would be grading an
+// early return rather than a write. `auto_from_camera` is off because that is
+// the only state in which the three hand-pinned fields render at all.
+const PINNED = { ...CONFIG, optics: { ...OPTICS, auto_from_camera: false, pixel_size_um: 2.4 } };
+
+await clearTree();
+seed("admin");
+useStore.setState({ config: PINNED } as never);
+await render(createElement(OpticsSheet));
+
+/** Type into a controlled React input one character at a time, as a user does:
+ *  React installs its own value tracker, so assigning `el.value` alone leaves it
+ *  thinking nothing changed - and typing the whole string at once would not
+ *  exercise the intermediate "3." state that was the defect. */
+const typeChars = async (el: any, value: string): Promise<void> => {
+  const setter = Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, "value")!.set!;
+  for (let i = 1; i <= value.length; i++) {
+    await act(async () => {
+      setter.call(el, value.slice(0, i));
+      el.dispatchEvent(new win.Event("input", { bubbles: true }));
+    });
+  }
+};
+/** React maps `onBlur` to the DOM's `focusout`, which BUBBLES - a native `blur`
+ *  event does not bubble and never reaches React's root listener, so dispatching
+ *  one leaves the commit unfired and every assertion after it grades an
+ *  uncommitted draft. */
+const blur = async (el: any): Promise<void> => {
+  await act(async () => {
+    el.dispatchEvent(new win.FocusEvent("focusout", { bubbles: true }));
+  });
+  await settle();
+};
+
+await testAsync("optics: a decimal pixel size is typed into a DRAFT, not parsed per keystroke", async () => {
+  const px = byId("optics-pixel-size");
+  assert(px != null, "the pixel-size field is not on the page - the fixture is wrong");
+  eq(px.hasAttribute("disabled"), false, "the pixel-size field uses the native disabled attribute");
+  eq(px.value, "2.4", "precondition: the box does not show the rig's own pixel size");
+  eq(byId("optics-save").getAttribute("aria-disabled"), "true",
+    "precondition: SAVE is already armed before anything was typed, so the "
+    + "draft assertion below could not tell a keystroke from a commit");
+
+  await typeChars(px, "3.76");
+  eq(px.value, "3.76", "the decimal point was eaten while typing; the box holds:");
+  // THE LOAD-BEARING HALF. The old control wrote `Number(v) || 0` into the draft
+  // on EVERY keystroke - which is what re-rendered "3" over "3." and made a
+  // decimal untypable in a browser. `NumberField` parses at blur and Enter only,
+  // so mid-edit the draft is still the rig's number and SAVE is still locked.
+  eq(byId("optics-save").getAttribute("aria-disabled"), "true",
+    "a half-typed number was written straight into the draft");
+
+  await blur(px);
+  eq(px.value, "3.76", "the committed value is not what was typed:");
+  eq(byId("optics-save").getAttribute("aria-disabled"), null,
+    "the commit at blur never reached the draft - SAVE is still locked as unchanged");
+});
+
+await testAsync("optics: the typed pixel size reaches the rig on SAVE, to two decimals", async () => {
+  asked.length = 0;
+  putOptics = null;
+  click(byId("optics-save"));
+  await settle();
+  assert(asked.some((a) => a === "PUT /api/optics"),
+    `SAVE did not PUT /api/optics: ${asked.join(", ")}`);
+  eq(putOptics?.optics?.pixel_size_um, 3.76, "the pixel size that went on the wire:");
+});
+
+await testAsync("optics: a blank sensor width is REJECTED, never committed as 0", async () => {
+  await clearTree();
+  seed("admin");
+  useStore.setState({ config: PINNED } as never);
+  await render(createElement(OpticsSheet));
+  const w = byId("optics-sensor-w");
+  assert(w != null, "the sensor-width field is not on the page");
+  eq(w.value, "6248", "precondition: the field does not show the rig's own width");
+  await typeChars(w, "");
+  await act(async () => {
+    const setter = Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, "value")!.set!;
+    setter.call(w, "");
+    w.dispatchEvent(new win.Event("input", { bubbles: true }));
+  });
+  await blur(w);
+  eq(w.value, "6248",
+    "a cleared box committed a value - 0 px is a real number the rig would store as "
+    + "'take it from the camera'");
+  asked.length = 0;
+  click(byId("optics-save"));
+  await settle();
+  eq(asked.filter((a) => a === "PUT /api/optics").length, 0,
+    "SAVE fired for a draft nothing changed - a blank box was read as an edit");
+});
+
+await testAsync("optics: SAVE with nothing changed says so instead of swallowing the press", async () => {
+  const save = byId("optics-save");
+  assert(save != null, "no SAVE button");
+  eq(save.getAttribute("aria-disabled"), "true",
+    "SAVE looks live on an untouched draft, and `save()` returns silently on !dirty - "
+    + "a press that does nothing and says nothing");
+  eq(save.getAttribute("title"), "these values already match what the rig has",
+    "the locked SAVE does not say why it would do nothing");
+});
+
 await act(async () => { root.unmount(); });
 
 const total = passed + failed;

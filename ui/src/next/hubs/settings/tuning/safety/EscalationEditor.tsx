@@ -42,6 +42,7 @@ import { accessPhrase } from "../../../../../lib/caps";
 import { useConfig, useStore } from "../../../../../store";
 import type { EscalationConfig } from "../../../../../types";
 import { useLock } from "../../../../lib/gateHook";
+import { isLocalOnly, LOCAL_ONLY_REASON } from "../../../../lib/gate";
 import {
   Card, Divider, EmptyCard, Label, LockNote, Mono, NumberField, Segmented, Switch,
 } from "../../../../ui";
@@ -69,7 +70,8 @@ export function EscalationEditor({ showLockNote = true }: {
 } = {}): JSX.Element {
   const config = useConfig();
   const esc = config?.escalation ?? null;
-  const lock = useLock({ cap: "config.alerts" });
+  // `needsLan`: every row writes `POST /api/config {escalation}`, on the fence.
+  const lock = useLock({ cap: "config.alerts", needsLan: true });
 
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -93,11 +95,13 @@ export function EscalationEditor({ showLockNote = true }: {
       await useStore.getState().loadConfig();
       setSaved(true);
     } catch (e) {
-      setErr(e instanceof ApiError
-        ? (e.status === 403
-          ? `Refused - ${accessPhrase("config.alerts")} is needed here.`
-          : e.message || SAVE_FAILED)
-        : SAVE_FAILED);
+      // `isLocalOnly` FIRST: the fence answers 403 for every role.
+      setErr(isLocalOnly(e) ? LOCAL_ONLY_REASON
+        : e instanceof ApiError
+          ? (e.status === 403
+            ? `Refused - ${accessPhrase("config.alerts")} is needed here.`
+            : e.message || SAVE_FAILED)
+          : SAVE_FAILED);
       setNonce((n) => n + 1);
     } finally {
       setBusy(false);
