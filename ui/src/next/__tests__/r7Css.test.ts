@@ -297,20 +297,65 @@ function coveredFor(sheet: string): Set<string> {
 // ------------------------------------------------------------- allow-lists
 
 /** Classes a module emits that NO stylesheet defines, with the reason each is
- *  allowed to stay that way. Found by this file, reported by T-R7-21, and each
- *  is named in the wave's follow-ups list rather than fixed here (removing a
- *  className is not one of the two edits this task is allowed to make).
+ *  allowed to stay that way. Found by this file, reported by T-R7-21.
  *
- *  Wave-1 code outside the R7 areas has ten more of these (`nx-chip-text`,
- *  `nx-dial-hint`, `nx-iconbtn-glyph`, `nx-glyphtile-glyph`, `nx-cap-mode`,
- *  `nx-locked-note`, `nx-sky-*`); they are outside this file's subject, which
- *  is the AREAS wave R7 built, and are reported in the same follow-up. */
-const UNSTYLED_OK: Record<string, string> = {
-  "nx-tn-sheet":
-    "tonight/TonightSheet.tsx:168 - a bare DOM hook on the sheet root with no " +
-    "rule of its own; the sheet takes its box from .nx-sheet and its body from " +
-    ".nx-tn-body. Follow-up: give it a rule or drop the class.",
-};
+ *  EMPTY as of the style-hook audit below (`nx-tn-sheet` was this file's one
+ *  entry; TonightSheet.tsx:168 dropped the class - see that audit's note).
+ *  Left as a live mechanism rather than deleted: the next genuinely-inert
+ *  class an area emits belongs here, not silently ignored.
+ *
+ *  STYLE-HOOK AUDIT (wave-1 classes outside the R7 areas this file scans -
+ *  `AREA_CSS` only enumerates `hubs/**` directories that HAVE a css file, so
+ *  `next/ui/**` primitives and the still-css-less `hubs/sky/**`,
+ *  `hubs/rig/capture/` (top level) and `hubs/settings/sheets/` areas were
+ *  never reached by test 4 at all - not exempted, just outside the scan).
+ *  Resolved, not merely catalogued:
+ *
+ *  - `nx-tn-sheet` (TonightSheet.tsx, was :168) - DEAD: removed. `.nx-sheet`
+ *    (the box) and `.nx-tn-body` (the body) already carry every pixel; no
+ *    other sheet in the tree tags its own `Sheet` root this way, so this was
+ *    a one-off with nothing depending on it.
+ *  - `nx-plan-sep` (was `session/plan/plan.css:145`, a rule with NO emitter) -
+ *    DEAD: rule removed. `session/plan/PlanTargetCard.tsx` already draws the
+ *    identical hairline with the shared `Divider` primitive (`.nx-divider`,
+ *    `next.css`) - `nx-plan-sep` was that same rule re-invented and then
+ *    superseded, never cleaned up.
+ *  - `nx-chip-text` (`ui/Chip.tsx`), `nx-dial-hint` (`ui/Dial.tsx`),
+ *    `nx-iconbtn-glyph` (`ui/IconButton48.tsx`), `nx-glyphtile-glyph`
+ *    (`ui/DeviceGlyphTile.tsx`) - KEEP, no rule needed. Each is a plain
+ *    sub-part span inside a primitive whose OWN rule already sets every pixel
+ *    that part renders with (`.nx-chip`'s font/color for the text,
+ *    `.nx-dial-head`'s font/color for the hint, `.nx-iconbtn`/`.nx-glyphtile`'s
+ *    flex centering for the glyph) - the same "give each part its own class"
+ *    shape as that primitive's OTHER, styled sibling span
+ *    (`.nx-chip-count`, `.nx-dial-name`, `.nx-iconbtn-label`,
+ *    `.nx-glyphtile-led`). A rule here would only restate the parent's
+ *    cascade or risk drifting from it.
+ *  - `nx-cap-mode` (`rig/capture/CaptureScreen.tsx`) - STYLING WAS MISSING:
+ *    fixed. The STILL/VIDEO toggle wraps each `Chip` in its own `flex: 1` div
+ *    but `.nx-chip` alone sizes to its own label, so the two mode chips sat
+ *    left-aligned in a half-width slot with a dead gap - not a two-way
+ *    toggle. New `rig/capture/capture.css` (`flex: 1; justify-content:
+ *    center;`), imported by `CaptureScreen.tsx`.
+ *  - `nx-locked-note` (`settings/sheets/LogExportSheet.tsx`) - STYLING WAS
+ *    MISSING: fixed. A plain status sentence, not the word-for-word
+ *    `lockReason()` copy `next.css`'s `.nx-locknote`/`LockNote` render
+ *    verbatim with their own lock glyph, so it earns its own class rather
+ *    than borrowing that primitive's - but it is the same dim, small
+ *    sans-serif register. New `settings/sheets/sheets.css`, imported by
+ *    `LogExportSheet.tsx`.
+ *  - `nx-sky-browse`, `nx-sky-cta`, `nx-sky-tool`, `nx-sky-lock`,
+ *    `nx-sky-patch`, `nx-sky-secondary`, `nx-sky-framing`, `nx-sky-frametool`,
+ *    `nx-sky-layer-switch` (`hubs/sky/cards/*`, `hubs/sky/frame/*`,
+ *    `SkyHub.tsx`) - KEEP, no rule needed. Every card and control in this
+ *    subtree is 100% inline-`style`-driven (colours, fonts, sizes all come
+ *    from per-instance `style={{...}}`, because much of it - `skin.bg`,
+ *    `patch?.color` - is computed at render time from props a static class
+ *    could not express) and already carries a `data-testid` for the same
+ *    identity purpose. These `nx-sky-*` classes are a second, class-shaped
+ *    hook on top of that - harmless, consistent across all nine sites, and
+ *    not something a CSS rule was ever going to style. */
+const UNSTYLED_OK: Record<string, string> = {};
 
 // Two modules emit ANOTHER area's classes and are fine because they import
 // that area's barrel, which carries its stylesheet: `session/sheets/archive.tsx`

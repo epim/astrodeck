@@ -165,7 +165,6 @@ export function FlowTonightSheet({ params }: SheetProps): JSX.Element {
   return (
     <Sheet
       data-testid="session-flow-tonight"
-      className="nx-tn-sheet"
       title="TONIGHT"
       sub={flowName || "no flow open"}
       live={live === "" ? undefined : live}

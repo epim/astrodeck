@@ -27,10 +27,10 @@ test("fmtMag formats a real number to one decimal", () => {
   eq(fmtMag(-1.5), "-1.5", "negative magnitude (bright objects go negative)");
 });
 test("fmtMag placeholders an explicit null", () => {
-  eq(fmtMag(null), "—", "null");
+  eq(fmtMag(null), "--", "null");
 });
 test("fmtMag placeholders undefined the same way", () => {
-  eq(fmtMag(undefined), "—", "undefined");
+  eq(fmtMag(undefined), "--", "undefined");
 });
 
 // -------------------------------------------------------------------- fmtAlt
@@ -39,8 +39,8 @@ test("fmtAlt formats a real number with a degree sign, no decimal", () => {
   eq(fmtAlt(0), "0°", "zero is a real altitude, not an absence");
 });
 test("fmtAlt placeholders a missing value (no view.site_derived)", () => {
-  eq(fmtAlt(undefined), "—", "undefined");
-  eq(fmtAlt(null), "—", "null, in case a caller ever sends one");
+  eq(fmtAlt(undefined), "--", "undefined");
+  eq(fmtAlt(null), "--", "null, in case a caller ever sends one");
 });
 
 // ------------------------------------------------------------------- altTone

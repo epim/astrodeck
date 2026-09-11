@@ -659,12 +659,12 @@ export default function SlewPad(props: SlewPadProps = {}) {
             </label>
           </div>
           <p className="text-center text-[12px] text-dim mt-1.5 max-w-[260px] mx-auto">
-            moves wrong way? toggle reverse — direction depends on pier side &amp; image
+            moves wrong way? toggle reverse - direction depends on pier side &amp; image
             orientation
           </p>
           {m && m.alt < MIN_SLEW_ALT_DEG + 5 && (
             <p className="text-center text-[12px] text-warn mt-1">
-              near horizon ({m.alt.toFixed(0)}°) — slew auto-stops below {MIN_SLEW_ALT_DEG}°
+              near horizon ({m.alt.toFixed(0)}°) - slew auto-stops below {MIN_SLEW_ALT_DEG}°
             </p>
           )}
         </>

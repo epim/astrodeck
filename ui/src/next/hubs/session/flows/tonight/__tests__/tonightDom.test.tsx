@@ -78,7 +78,10 @@ g.IS_REACT_ACT_ENVIRONMENT = true;
 // Real-shaped instants: a night that runs 20:00 -> 05:00 local on the box that
 // runs this file, so the geometry has a span to lay marks across whatever the
 // timezone is.
-const DAY = Math.floor(Date.now() / 86400000) * 86400;
+// LOCAL midnight, not UTC: `fmtClock` appends "(+1d)" when the instant's local
+// calendar date differs from today's, so a UTC-anchored day makes the dusk read
+// as tomorrow for every box west of Greenwich after 17:00 local.
+const DAY = (() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime() / 1000; })();
 const DUSK = DAY + 20 * 3600;
 const DARK_START = DUSK + 40 * 60;
 const DARK_END = DAY + 28 * 3600;

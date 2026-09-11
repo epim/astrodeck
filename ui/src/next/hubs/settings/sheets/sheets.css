@@ -1,0 +1,21 @@
+/* hubs/settings/sheets/sheets.css - classes shared by the many small settings
+ * sheets (Connection, Optics, Users, About, Update, Sync, Standards, Naming,
+ * WcsStamp, Restricted, FactoryReset, Credits, AuthMethods, Account,
+ * QuickDefaults, LogExport, Setup). Most of these otherwise use primitives +
+ * inline styles alone, the same "no area css needed yet" default
+ * `rig/capture` had until its own one-off class - this file exists because
+ * one of them needed a real rule too.
+ */
+
+/* LogExportSheet's status note under the export buttons: a plain sentence
+ * ("log persistence is off on this rig - there is nothing to export",
+ * "reading which nights are on disk...") - not the word-for-word
+ * `lockReason()` copy `next.css`'s `.nx-locknote`/`LockNote` renders verbatim
+ * with its own lock glyph, so it gets its own class rather than borrowing
+ * that primitive's. Same dim, small-sans-serif register as `.nx-locknote`,
+ * without the glyph layout this note does not carry.
+ */
+.nx-locked-note {
+  margin: 0; font-family: "IBM Plex Sans", sans-serif; font-size: 11px;
+  line-height: 1.5; color: var(--text-faint);
+}

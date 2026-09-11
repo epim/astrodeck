@@ -141,9 +141,6 @@
   background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
 
-/* A hairline between blocks inside one card. */
-.nx-plan-sep { height: 1px; background: var(--line); border: 0; margin: 2px 0; }
-
 @media (prefers-reduced-motion: reduce) {
   .nx-plan-spark { transition: none; }
 }

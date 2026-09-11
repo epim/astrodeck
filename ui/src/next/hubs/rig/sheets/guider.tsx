@@ -57,7 +57,7 @@ import {
   useGuideRmsByKind, useGuideAssistant, useFrameSettings, usePlan,
 } from "../../../../store";
 import type { CalibrationReport, GuideStats } from "../../../../types";
-import { resolveRoleConnected } from "../../../../lib/caps";
+import { accessPhrase, resolveRoleConnected, useCan } from "../../../../lib/caps";
 import { useBusy, useBusyLanes, useBusyOrPending } from "../../../../lib/useBusy";
 import { guideNarration } from "../../../../lib/guideNarration";
 import { selectGuideWindows } from "../../../../lib/guideRms";
@@ -199,7 +199,7 @@ function draftFromRaw(raw: RawGuideConfig): GuideSettings {
  *  field this UI does not render (`recover_guiding`, `recalibrate_after_pier_
  *  change`, the guide-camera dials the quick bar owns) survives every write from
  *  this sheet instead of snapping back to a model default. */
-function useGuideConfig(connected: boolean): {
+function useGuideConfig(connected: boolean, canRead: boolean): {
   raw: RawGuideConfig | null;
   loadError: string | null;
   saving: boolean;
@@ -213,12 +213,22 @@ function useGuideConfig(connected: boolean): {
 
   useEffect(() => {
     if (!connected) return;
+    // GET /api/guide/settings needs control.guide (app.py `guide_settings_get`)
+    // - the same cap the tuning editor's own SAVE is gated on. A viewer never
+    // holds it, so the request would always come back 403; render the SAME
+    // "could not read the saved tuning" honesty the sheet already has for a
+    // real failure, without spending the request.
+    if (!canRead) {
+      setRaw(null);
+      setLoadError(`needs ${accessPhrase("control.guide")}`);
+      return;
+    }
     let cancelled = false;
     api.get<RawGuideConfig>("/api/guide/settings")
       .then((r) => { if (!cancelled) { setRaw(r); setLoadError(null); } })
       .catch((e) => { if (!cancelled) setLoadError((e as Error).message); });
     return () => { cancelled = true; };
-  }, [connected, tick]);
+  }, [connected, canRead, tick]);
 
   const put = async (patch: RawGuideConfig) => {
     if (!raw) throw new Error("the saved guide settings have not been read yet");
@@ -296,7 +306,8 @@ export function GuiderSheet(): JSX.Element {
   };
 
   // ------------------------------------------------------------ guide settings
-  const cfg = useGuideConfig(connected);
+  const canReadGuideSettings = useCan("control.guide");
+  const cfg = useGuideConfig(connected, canReadGuideSettings);
   const [draft, setDraft] = useState<GuideSettings>(() => defaultGuideSettings());
   useEffect(() => { if (cfg.raw) setDraft(draftFromRaw(cfg.raw)); }, [cfg.raw]);
 
