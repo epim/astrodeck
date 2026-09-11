@@ -63,7 +63,7 @@ import {
 import { useConfig, usePolar, useSequence, useStatus, useStore } from "../../../../store";
 import { useBusyOrPending } from "../../../../lib/useBusy";
 import { humanizeLaneConflict } from "../../../../lib/humanize";
-import { useCanControlMount } from "../../../../lib/caps";
+import { accessPhrase, useCanControlMount } from "../../../../lib/caps";
 import { useTouchSettings } from "../../../../lib/touchStore";
 import type { Axis, Dir } from "../../../../lib/slewController";
 import { altTone, fmtAlt, fmtMag } from "../../../../lib/catalogFormat";
@@ -223,6 +223,11 @@ export function MountSheet(_props: SheetProps): JSX.Element {
 
   const m = status?.mount;
   const meridian = status?.meridian;
+  // A viewer (no view.site_derived) gets a mount block with alt/az ABSENT --
+  // the server redacts them (api/redact.py _MOUNT_DERIVED_KEYS) because an
+  // altitude pins the observer to a circle on the Earth. RA/Dec stay, so
+  // `m` itself is still truthy; only the two derived fields go missing.
+  const altAzKnown = !!m && typeof m.alt === "number" && typeof m.az === "number";
 
   // plan 0.5: a run holds the mount while it is running or paused.
   const flowOwns = sequence?.state === "running" || sequence?.state === "paused";
@@ -703,9 +708,17 @@ export function MountSheet(_props: SheetProps): JSX.Element {
         />
         <ReadoutTile
           label="ALT / AZ"
-          value={m ? `${m.alt}° / ${m.az}°` : "-"}
-          sub={m ? `RA ${m.ra_str} · Dec ${m.dec_str}` : "no pointing reported"}
-          tone={m && m.alt < 20 ? "warn" : undefined}
+          value={
+            !m ? "-"
+              : altAzKnown ? `${m.alt}° / ${m.az}°`
+              : "hidden"
+          }
+          sub={
+            !m ? "no pointing reported"
+              : altAzKnown ? `RA ${m.ra_str} · Dec ${m.dec_str}`
+              : `needs ${accessPhrase("view.site_derived")}`
+          }
+          tone={altAzKnown && m.alt < 20 ? "warn" : undefined}
           data-testid="tile-altaz"
         />
         <ReadoutTile
