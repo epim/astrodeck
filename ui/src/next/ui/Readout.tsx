@@ -3,15 +3,27 @@ import { lockedAttrs, lockedClass, honestPress } from "./honest";
 import type { Tone } from "./types";
 
 /** The device-sheet readout grid: 4 columns by default (README section 8,
- *  "readout tiles 60 px in a 4-col grid"). */
-export function ReadoutGrid({ children, cols = 4, className = "", ...rest }: {
+ *  "readout tiles 60 px in a 4-col grid").
+ *
+ *  WRAPPING IS THE DEFAULT (`.nx-readouts-wrap` in next.css). A fixed N-column
+ *  grid in the 420 px panel gives each tile ~77 px, 59 px of it text - at
+ *  390 px that clipped a label, value or sub with no ellipsis and nowhere else
+ *  the string is shown (mount's POINTING "NOT VERIFI", optics' FOCAL LENGTH
+ *  missing its H, camera's SETPOINT/GAIN/OFFSET/E-GAIN tiles). Wrapping turns
+ *  the fixed grid into `repeat(auto-fit, minmax(140px, 1fr))` and the 60 px
+ *  tile height into a floor, so a long value grows the tile instead of losing
+ *  characters. Pass `wrap={false}` only for a grid that must hold a strict
+ *  N-column shape regardless of width. */
+export function ReadoutGrid({ children, cols = 4, wrap = true, className = "", ...rest }: {
   children: ReactNode;
   cols?: 3 | 4;
+  wrap?: boolean;
   className?: string;
   "data-testid"?: string;
 }): JSX.Element {
+  const classes = new Set(["nx-readouts", ...(wrap ? ["nx-readouts-wrap"] : []), ...className.split(" ").filter(Boolean)]);
   return (
-    <div className={`nx-readouts ${className}`.trim()} data-cols={cols} data-testid={rest["data-testid"]}>
+    <div className={Array.from(classes).join(" ")} data-cols={cols} data-testid={rest["data-testid"]}>
       {children}
     </div>
   );

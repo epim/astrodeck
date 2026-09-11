@@ -328,10 +328,11 @@ button.nx-pill { cursor: pointer; }
    tile, 59 px of it text: MOUNT's POINTING read "NOT VERIFI" and OPTICS' FOCAL
    LENGTH lost its H, both cut at the sheet's edge, neither with an ellipsis and
    neither reachable anywhere else. Shortening either string is not available -
-   NOT VERIFIED is the state and FOCAL LENGTH is the field's name - so a row
-   that opts in wraps instead: two tiles across inside the panel, four in any
-   container past 578 px. The 60 px tile height becomes a floor rather than a
-   ceiling, and a label or value longer than its tile wraps inside it. */
+   NOT VERIFIED is the state and FOCAL LENGTH is the field's name - so the row
+   wraps instead: two tiles across inside the panel, four in any container past
+   578 px. The 60 px tile height becomes a floor rather than a ceiling, and a
+   label or value longer than its tile wraps inside it. `ReadoutGrid` emits
+   this class by default (`wrap={false}` opts back out to the fixed grid). */
 .nx-readouts-wrap[data-cols] { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
 .nx-readouts-wrap .nx-readout { height: auto; min-height: 60px; padding-block: 6px; }
 .nx-readouts-wrap .nx-readout-label { white-space: normal; }
