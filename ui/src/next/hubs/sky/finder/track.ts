@@ -17,9 +17,10 @@
 // across a stretch where the target is under the horizon, because a line there
 // would say the target travelled through the ground.
 
-import { hz, D2R, SIDEREAL_DEG_PER_HOUR } from "./equatorial";
+import { hz, D2R, SIDEREAL_DEG_PER_HOUR, wrapRaHours } from "./equatorial";
 import { isObstructed, type HorizonPoint } from "../../../lib/horizonModel";
 import { fmtClock } from "../../../lib/format";
+import { lstHours } from "../../../../lib/altaz";
 import type { Projector } from "./projection";
 
 /** The seeing floor, degrees (proto/logic.js:114). Below it the air path is long
@@ -209,4 +210,166 @@ export function buildTrack(
     dots,
     labels: labels.filter((l) => l.x > -40 && l.x < p.W + 40 && l.y > -20 && l.y < p.H + 20),
   };
+}
+
+// ------------------------------------------------ tracks for the hemisphere
+//
+// Everything above this line walks ONE object - whatever the finder has
+// tracked - and projects it into the finder's flat sky box. The dome needs
+// neither restriction: it draws several arcs at once, and one of them may be a
+// point in the sky with no catalogue object under it at all (the reticle aimed
+// at empty sky, which is what a survey for something new looks like).
+//
+// SO THE SUBJECT IS A PARAMETER AND SO IS THE CONTEXT. `trackSamplesFor` takes
+// any RA/Dec and any `TrackContext`, which is what lets the two dome screens
+// share one walk while still disagreeing - deliberately - about what each is
+// entitled to colour:
+//
+//   * The Sky hub's card runs the FINDER's context: the horizon mask forced on
+//     (the overlay draws the profile on that dome unconditionally, so an arc
+//     coloured as if there were no mask would run clear over a tree line) and
+//     the finder's own forecast `holdAt`, so an amber stretch means the same
+//     thing on the card as it does on the finder six cards above it.
+//   * WEATHER > SKY runs `holdAt: () => false`. The cloud on that screen is the
+//     dome itself - a measurement - and the amber would be a forecast painted
+//     over one with nothing on screen to say which of the two it came from.
+//
+// What neither may do is re-derive the WALK. Both call this function over the
+// same site and the same horizon, so two domes can never disagree about where
+// an object goes - only about what each is allowed to say about it.
+
+/** The id the reticle's own patch is published under. A constant because three
+ *  files have to agree on it: the model that makes the track, the card that
+ *  turns it into a `?ra=&dec=` link, and the test that asserts it is there. */
+export const AIM_TRACK_ID = "aim";
+
+/** How many arcs may be on one dome. Six is a measurement, not a taste: the
+ *  phone card's canvas is 280 px tall, an arc is a third of the dome wide, and
+ *  the seventh one turns the near half into hatching. The cut is by rank, and
+ *  the bright subject is always first, so what falls off the end is the least
+ *  worth pointing at. */
+export const MAX_DOME_TRACKS = 6;
+
+/** Anything a dome arc can be drawn for: a catalogue target, the locked target,
+ *  or a bare point in the sky. `name` is null for the last of those - a patch
+ *  of empty sky HAS no name, and inventing one ("target", "aim point") would be
+ *  a label that says nothing the arc does not. */
+export interface TrackSubject {
+  id: string;
+  name: string | null;
+  ra_hours: number;
+  dec_deg: number;
+  /** The one the reader came for: drawn solid and labelled, where the rest are
+   *  dim and unlabelled. */
+  bright?: boolean;
+}
+
+/** A `TrackContext` plus the two things a walk needs that the finder's own
+ *  context carries implicitly, because the finder walks from its own clock and
+ *  its own site: the longitude the hour angle is measured from, and when NOW
+ *  is. Passed rather than read so the whole thing stays pure and a test can
+ *  move the clock without moving the machine's. */
+export interface DomeTrackContext extends TrackContext {
+  /** Degrees east. */
+  lonDeg: number;
+  nowMs: number;
+}
+
+export interface DomeTrack {
+  id: string;
+  /** Drawn beside the arc on the bright ones, and listed under the dome. An
+   *  empty string draws no label, which is what an unnamed arc gets. */
+  label: string;
+  bright: boolean;
+  /**
+   * The bare position this arc is for, when no catalogue object sits at it -
+   * and null for every named target, whose id is what a link carries.
+   *
+   * IT IS THE COORDINATES AND NOT A FLAG because the one thing a caller wants
+   * to do with an unnamed arc is turn it back into a link (`?ra=&dec=`), and a
+   * boolean would send them looking for the numbers somewhere else.
+   */
+  point: { ra_hours: number; dec_deg: number } | null;
+  samples: TrackSample[];
+}
+
+function pad2(n: number): string {
+  return String(n).padStart(2, "0");
+}
+
+/**
+ * What a bare point in the sky is called, since it has nothing else.
+ *
+ * COMPACT ON PURPOSE. `raHmsStr` + `decDmsStr` is 26 characters, which beside
+ * an arc on a 280 px dome is a band of text across the sky rather than a label.
+ * Minutes are also as fine as this picture can mean anything at: one cloud cell
+ * on the dome under it is 6 x 10 degrees.
+ */
+export function pointLabel(raHours: number, decDeg: number): string {
+  const ra = wrapRaHours(raHours);
+  let rh = Math.floor(ra);
+  let rm = Math.round((ra - rh) * 60);
+  if (rm === 60) { rm = 0; rh = (rh + 1) % 24; }
+  const sign = decDeg < 0 ? "-" : "+";
+  const ad = Math.abs(decDeg);
+  let dd = Math.floor(ad);
+  let dm = Math.round((ad - dd) * 60);
+  if (dm === 60) { dm = 0; dd += 1; }
+  return `${pad2(rh)}h${pad2(rm)}m ${sign}${pad2(dd)}°${pad2(dm)}′`;
+}
+
+/** The label an arc carries: the object's name, or the point's coordinates. */
+export function domeTrackLabel(s: TrackSubject): string {
+  return s.name ?? pointLabel(s.ra_hours, s.dec_deg);
+}
+
+/**
+ * Walk ANY subject from now to dawn, in the caller's own context.
+ *
+ * The hour angle is `lst - ra`, and `lst` is a function of longitude and the
+ * clock - which is why both are in the context rather than read here. An empty
+ * list is returned for a subject with no usable coordinates and for a night
+ * that is already over; neither is an error, and both must draw nothing rather
+ * than an arc from a position nobody computed.
+ */
+export function trackSamplesFor(
+  subject: { ra_hours: number; dec_deg: number },
+  ctx: DomeTrackContext,
+): TrackSample[] {
+  if (!Number.isFinite(subject.ra_hours) || !Number.isFinite(subject.dec_deg)) return [];
+  if (!Number.isFinite(ctx.lonDeg) || !Number.isFinite(ctx.latDeg)) return [];
+  const lst = lstHours(ctx.lonDeg, ctx.nowMs / 1000);
+  return walkTrack(subject.dec_deg * D2R, (lst - subject.ra_hours) * 15 * D2R, ctx);
+}
+
+/**
+ * The arcs a dome draws, in the order they were handed over (bright first).
+ *
+ * A SUBJECT WITH NO WALK IS DROPPED HERE rather than passed on empty. An arc
+ * with no samples draws nothing, and a legend counting it would name a mark the
+ * reader then goes looking for - the same defect `DrawnMarks` exists to prevent
+ * one layer further down.
+ */
+export function buildDomeTracks(
+  subjects: TrackSubject[],
+  ctx: DomeTrackContext,
+  limit: number = MAX_DOME_TRACKS,
+): DomeTrack[] {
+  const out: DomeTrack[] = [];
+  const seen = new Set<string>();
+  for (const s of subjects) {
+    if (out.length >= limit) break;
+    if (seen.has(s.id)) continue;
+    seen.add(s.id);
+    const samples = trackSamplesFor(s, ctx);
+    if (samples.length === 0) continue;
+    out.push({
+      id: s.id,
+      label: domeTrackLabel(s),
+      bright: s.bright === true,
+      point: s.name === null ? { ra_hours: s.ra_hours, dec_deg: s.dec_deg } : null,
+      samples,
+    });
+  }
+  return out;
 }
