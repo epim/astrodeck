@@ -74,8 +74,9 @@ ui/src/next/
     sky/       SkyHub.tsx + finder/* (SkyView, model, camera, gyro, projection,
                equatorial, gestures, targets, clouds, wind, track, prefs), frame/*
                (FrameHost, FrameTools, FramingCard, FramedOverlay, MosaicNightCard,
-               SurveyPopover, mosaic, zoom, degraded), atlas/* (AtlasHost +
-               atlas.css - ATLAS mode's full-frame pannable sky), cards/* (LockCard, LensDial,
+               SurveyPopover, mosaic, zoom, degraded), atlas/* (AtlasHost,
+               AtlasMarkers, aim + atlas.css - ATLAS mode's full-frame pannable
+               sky), cards/* (LockCard, LensDial,
                LayersPopover, ReachStrip, StatusRow, BrowseBanner, PatchCard, glyphs,
                lockCta), sheets/* (targets, sites, horizon, coords, quick, flow, brief,
                photosphere + their model/copy/lane helper modules)
@@ -243,6 +244,23 @@ and the column share components (`hubs/session/now/*` export them).
 The finder in the Sky hub is 370 x 372 on phone; at tablet/desktop it fills
 its column up to 720 px square. The Flows canvas (Session · Flows at tablet
 and desktop) fills the hub body.
+
+**The Sky hub opens in ATLAS**, on every device (`finder/prefs.ts`'s
+`DEFAULT_MODE`; the per-device `astrodeck-next-sky-mode` key still beats it,
+and `legacyBridge`'s `?mode=atlas` still works). The mode row reads ATLAS,
+MAP (AR CAMERA where a camera exists), FRAME, GYRO. ATLAS mounts
+`atlas/AtlasHost` full-frame over `components/atlas/SkyCanvas` - the one
+kept-as-is renderer, section 11 - and adds three things the canvas has no
+notion of: the finder's own ranked list (`useSkyModel.targets`) drawn as the
+design's label pills with a tap that locks (`atlas/AtlasMarkers.tsx`), the
+finder's aim drawn as the reticle, and a tap on empty sky that MOVES that aim
+(`atlas/aim.ts` is the inverse of `lib/atlasFov.ts`'s `skyToView`, so a tap
+lands on the sky that was under the finger). Because there is a reticle on
+screen in ATLAS, the lock/patch card is on both modes; the reach strip and the
+FRAME cluster stay MAP's alone. The SURVEY layer (the stack icon, stored in
+the same `astrodeck-next-sky-layers` key as the three finder overlays,
+field-scoped writes because the key has two owners) turns the imagery off
+without turning the markers off, and fetches no tiles at all when it is off.
 
 ## 5. Sheets, popovers, confirm, toasts
 

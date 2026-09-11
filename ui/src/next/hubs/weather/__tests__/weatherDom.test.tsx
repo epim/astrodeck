@@ -580,6 +580,43 @@ await testAsync("with no wind in the feed there is NO arrow and the legend says 
     "the legend does not say the wind is absent");
 });
 
+await testAsync("a bare ?ra=&dec= point is tracked to dawn, named by its coordinates", async () => {
+  // THE POINT OF THIS ROUTE. `?target=` carries a NAME, resolved against the
+  // loaded plan - so a patch of sky nobody has catalogued cannot reach this
+  // screen that way at all. The Sky card's WEATHER button sends the finder's
+  // aimed reticle here as two numbers instead.
+  act(() => { useStore.setState({ weather: weatherFixture() } as never); });
+  asked.length = 0;
+  act(() => { nav.replace("/weather/sky?ra=19.5&dec=28.25"); });
+  await settle();
+
+  assert(byId("wx-sky") != null, "the sky screen did not render");
+  const vis = asked.filter((a) => a.url.includes("/api/visibility"));
+  assert(vis.length > 0,
+    "no visibility request for the aimed point - it would have no dawn to walk to, "
+    + "so the arc would silently not be drawn");
+  assert(vis.some((a) => /ra_hours=19\.5/.test(a.url) || /19\.5/.test(a.url)),
+    `the visibility call is not about the aimed point: ${vis.map((a) => a.url).join(" | ")}`);
+  assert(/tracking the point you aimed at/.test(text("wx-sky")),
+    `the screen does not say it took the point: "${text("wx-sky").slice(0, 200)}"`);
+  assert(/19h30m \+28/.test(text("wx-sky")),
+    `the point is not named by its own coordinates: "${text("wx-sky").slice(0, 200)}"`);
+});
+
+await testAsync("half a coordinate, or one out of range, is refused rather than guessed", async () => {
+  // A dec that does not parse read as 0 would draw an arc along the celestial
+  // equator - a real-looking path for a place the reader never named.
+  for (const q of ["?ra=19.5", "?dec=28.25", "?ra=19.5&dec=abc", "?ra=99&dec=28.25"]) {
+    act(() => { nav.replace(`/weather/sky${q}`); });
+    await settle();
+    assert(byId("wx-sky") != null, `the sky screen did not render for ${q}`);
+    assert(!/tracking the point you aimed at/.test(text("wx-sky")),
+      `"${q}" was taken as a place anyway: "${text("wx-sky").slice(0, 160)}"`);
+  }
+  act(() => { nav.replace("/weather/sky"); });
+  await settle();
+});
+
 // --------------------------------------------------------------- 5. the radar
 
 await testAsync("the radar map mounts when weather is on", async () => {

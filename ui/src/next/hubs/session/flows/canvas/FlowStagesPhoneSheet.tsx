@@ -51,7 +51,6 @@ import { useCallback, useEffect, useMemo, type JSX } from "react";
 
 import { flowOrder } from "../../../../../components/flows/autoLayout";
 import { NODE_DEFS } from "../../../../../components/flows/nodeDefs";
-import { nodeLossDetail, nodeLossLevel } from "../../../../../components/flows/flowsTypes";
 import type { FlowEdgeRec, FlowNodeRec } from "../../../../../components/flows/flowsTypes";
 import { useFlowRunControls } from "../../../../../components/flows/flowRunControls";
 import { accessPhrase, useCapability } from "../../../../../lib/caps";
@@ -70,8 +69,9 @@ import { FlowPortRow } from "./FlowNode";
 import { FlowTapWireBar } from "./FlowTapWireBar";
 import {
   ADD_STAGE_LABEL, IDLE_LOG_TEXT, LOG_TONE, NODE_STATUS_TONE, NODE_STATUS_WORD,
-  NO_WIRES_TEXT, asNodeStatus, formatEta, framesWord, logTail, logTime, lossLabel,
-  lossTone, saveLockReason, saveStateTone, saveStateWord, stageWord,
+  NO_WIRES_TEXT, RIG_VALUE_PREFIX, asNodeStatus, formatEta, framesWord, logTail,
+  logTime, markTone, markWord, nodeMarkDetail, nodeMarkLevel, rigValueFor,
+  saveLockReason, saveStateTone, saveStateWord, stageWord,
   tonightLockReason, unsavedRunReason, wireRemoveLabel, wireRowLabel,
 } from "./canvasModel";
 import "./canvas.css";
@@ -114,8 +114,12 @@ function StageRow({ node, nodes, edges, openId }: {
   openId: string;
 }): JSX.Element {
   const status = useStore((s) => asNodeStatus(s.flows.statuses[node.id]));
-  const loss = useStore((s) => nodeLossLevel(s.flows.compiled?.unmapped, node.type));
-  const lossWhy = useStore((s) => nodeLossDetail(s.flows.compiled?.unmapped, node.type));
+  // The same three primitives the canvas card subscribes to, and the same
+  // words: a stage that reads FROM THE RIG on a tablet must not read something
+  // else in the list a phone opens.
+  const mark = useStore((s) => nodeMarkLevel(s.flows.compiled?.unmapped, node.type));
+  const markWhy = useStore((s) => nodeMarkDetail(s.flows.compiled?.unmapped, node.type));
+  const rigValue = useStore((s) => rigValueFor(node.type, s.status));
   const selected = useStore((s) => s.flows.sel?.kind === "node" && s.flows.sel.id === node.id);
   const select = useStore((s) => s.flowsSelect);
   const setEditNode = useStore((s) => s.flowsSetEditNode);
@@ -177,10 +181,19 @@ function StageRow({ node, nodes, edges, openId }: {
         chevron
         onPress={open}
       />
-      {loss && (
+      {/* The rig's own value for a stage whose stored params name a provider it
+          overrides, in the same words the canvas card uses. */}
+      {rigValue && (
+        <div className="nx-flow-stage-rig">
+          <Mono size={10.5} tone="dim" data-testid="flow-stage-rig">
+            {RIG_VALUE_PREFIX}{rigValue}
+          </Mono>
+        </div>
+      )}
+      {mark && (
         <div className="nx-flow-stage-loss">
-          <Pill tone={lossTone(loss)}>{lossLabel(loss)}</Pill>
-          <Mono size={10.5} tone="dim">{lossWhy}</Mono>
+          <Pill tone={markTone(mark)} data-testid="flow-stage-mark">{markWord(mark)}</Pill>
+          <Mono size={10.5} tone="dim">{markWhy}</Mono>
         </div>
       )}
       <div className="nx-flow-stage-ports">

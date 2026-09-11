@@ -66,14 +66,20 @@ import {
   type Projector,
 } from "./projection";
 import {
+  AIM_TRACK_ID,
+  buildDomeTracks,
   buildTrack,
   FLOOR_DEG,
   isObstructedAt,
+  MAX_DOME_TRACKS,
   minutesAboveFloor,
   walkTrack,
+  type DomeTrack,
+  type DomeTrackContext,
   type TrackContext,
   type TrackRender,
   type TrackSample,
+  type TrackSubject,
 } from "./track";
 import {
   cloudBlobLabels,
@@ -107,6 +113,25 @@ import { startGyro, type GyroHandle } from "./gyro";
 export type { SkyKind, SkyTarget, Marker } from "./targets";
 export type { LayerPrefs, LensPrefs, SkyMode } from "./prefs";
 export { windowLabel };
+
+/** The dome's own accessors, re-exported from the pure module they live in.
+ *
+ *  They are DEFINED in `finder/track.ts` and not here on purpose: WEATHER > SKY
+ *  draws the same arcs from its own subjects and its own context, and importing
+ *  them from this file would drag the whole Sky model - the store, `api.ts`,
+ *  the cloud-map poller, the AR camera - into the weather chunk for two pure
+ *  functions. `track.ts` is what both hubs already share. */
+export {
+  AIM_TRACK_ID,
+  MAX_DOME_TRACKS,
+  buildDomeTracks,
+  domeTrackLabel,
+  pointLabel,
+  trackSamplesFor,
+  type DomeTrack,
+  type DomeTrackContext,
+  type TrackSubject,
+} from "./track";
 
 export { LOCK_RADIUS_PX };
 
@@ -196,6 +221,32 @@ export interface PatchModel {
   color: string;
 }
 
+/**
+ * What the skydome card draws that the finder does not.
+ *
+ * The finder answers "what can I point at"; the dome answers "where does it GO
+ * between now and dawn, and what is in the way". One arc answered that for the
+ * locked target only, which left the dome bare on every sweep - and bare is
+ * what it looked like even on a night with a dozen things up, because nothing
+ * had been tapped yet.
+ *
+ * So the arcs are a LIST, and three kinds of subject can be on it:
+ *
+ *   * the lock (bright, labelled) - the object nearest the reticle;
+ *   * the best of the ranked list (dim, unlabelled) - so the dome is never bare
+ *     on a night with targets, and so "is anything in the clear tonight" is a
+ *     glance rather than six taps;
+ *   * THE AIMED POINT (bright, labelled with its coordinates) when the reticle
+ *     is on empty sky. A patch with no catalogue object under it is exactly
+ *     what looking for something nobody has catalogued looks like, and it had
+ *     no way onto the dome at all before this.
+ */
+export interface DomeModel {
+  /** Brightest first, capped at `MAX_DOME_TRACKS`. Empty when this role cannot
+   *  place the sky (no site coordinates) or the night is already over. */
+  tracks: DomeTrack[];
+}
+
 export interface SkyModel {
   az: number;
   alt: number;
@@ -255,30 +306,25 @@ export interface SkyModel {
    * The walk `track` is drawn from, before it was projected into the finder's
    * flat sky box - alt/az samples, so a hemisphere could draw it too.
    *
-   * WHY THE DOME CARDS STILL WALK THEIR OWN, and that is deliberate rather
-   * than a leftover. This field describes the TRACKED object under the finder's
-   * OWN context, and a dome needs neither:
+   * WHY IT IS NOT THE SAME THING AS `dome.tracks`. This field is the TRACKED
+   * object - `trackId`, whatever was last tapped or deep-linked - walked under
+   * the finder's LIVE context, where the horizon mask follows the layers
+   * popover. `dome.tracks` is a list of subjects (the lock or the aimed point,
+   * then the ranked list) walked with the mask forced ON, because the overlay
+   * draws the horizon profile on that hemisphere whether the finder's layer is
+   * showing it or not, and an arc coloured as if there were no mask would run
+   * clear over a drawn tree line.
    *
-   *   * SUBJECT. `trackSamples` follows `trackId` - whatever was last tapped or
-   *     deep-linked. The skydome card on `SkyHub` and the path on WEATHER > SKY
-   *     both draw the LOCK (the object nearest the reticle) and the session's
-   *     context target respectively, and neither is `trackId` in general.
-   *   * COLOUR. `classify` is applied with the finder's live `TrackContext`, so
-   *     the horizon mask follows the layers popover and stretches under forecast
-   *     cloud come back `hold`. A dome draws the horizon profile
-   *     unconditionally, so a track coloured as if the mask were off would run
-   *     red over open sky; and it must never colour a cloud hold, because the
-   *     cloud on that card is a MEASUREMENT and a forecast painted over one is
-   *     worse than no forecast at all.
-   *
-   * What is shared, and is the part worth sharing, is the geometry: every
-   * consumer calls the same `walkTrack` over the same site and the same
-   * horizon, so the arcs cannot disagree about where the object GOES - only
-   * about what each screen is entitled to say about it. See `SkyHub.tsx`'s
-   * `domeTrack` and `weather/dome/DomeScreen.tsx`'s `track` for the two
-   * contexts written out.
+   * What both share, and the part worth sharing, is the WALK: every consumer
+   * goes through `trackSamplesFor` over the same site and the same horizon, so
+   * no two arcs in this product can disagree about where an object goes - only
+   * about what each screen is entitled to say about it. The two contexts are
+   * written out at `trackSamplesFor`'s own doc comment in `finder/track.ts`.
    */
   trackSamples: TrackSample[] | null;
+  /** The hemisphere's own arcs - see `DomeModel`. `SkyHub` hands these straight
+   *  to `DomeCard`; nothing walks a second track for the dome any more. */
+  dome: DomeModel;
   reticle: ReticleModel;
   patch: PatchModel | null;
   /** In-reach count per kind, IGNORING the lens - the number on each lens button
@@ -844,15 +890,47 @@ export function useSkyModel(boxPx: number): SkyModel {
   );
 
   // ---- the visibility anchor ---------------------------------------------
-  // Prefer whatever is tracked (its transit and moon numbers are shown); fall
-  // back to the top ranked pick so the DARK WINDOW - the same for every target -
-  // is known before anything has been locked.
+  // Prefer whatever is tracked (its transit and moon numbers are shown); then
+  // the top ranked pick so the DARK WINDOW - the same for every target - is
+  // known before anything has been locked; then a fixed point at this site,
+  // for the case where the ranking never answers at all (see below).
   const tracked = useMemo(
     () => tonight.rows.find((r) => r.id === trackId) ?? null,
     [tonight.rows, trackId],
   );
-  const anchorRa = tracked?.ra_hours ?? tonight.rows[0]?.ra_hours ?? null;
-  const anchorDec = tracked?.dec_deg ?? tonight.rows[0]?.dec_deg ?? null;
+  /**
+   * The anchor of last resort, and why one is needed at all.
+   *
+   * THE DARK WINDOW IS A PROPERTY OF THE SITE, NOT OF THE OBJECT.
+   * `/api/visibility` returns the same `dark_start_unix` and `dark_end_unix`
+   * whatever ra/dec it is asked about (measured on a live rig: three targets
+   * 120 degrees apart, one of them circumpolar-below, all three identical) -
+   * only the transit and moon numbers are the target's own, and this hub reads
+   * none of those off this response.
+   *
+   * So anchoring solely on the RANKED list made the night window a hostage of
+   * a ranking that can fail to arrive. On a rig still on the default site,
+   * `GET /api/catalog/tonight?alt_limit=15` takes 90 SECONDS and the hub's own
+   * request times out at 15, so `tonight.rows` stays empty - and with it
+   * `hoursToDawn` is 0, every `walkTrack` returns nothing, and the skydome, the
+   * finder's arc and every reach window are all silently blank with nothing on
+   * screen to say why. That is exactly what "I'm not seeing the target tracks
+   * on the skydome" looks like from the other end.
+   *
+   * A fixed point due south, halfway up, answers the same question and costs
+   * one request. It is keyed on the SITE alone and not on the clock or the
+   * reticle: the window does not move during a session, and re-deriving it from
+   * either would re-ask the server every time the view drifted.
+   */
+  const fallbackAnchor = useMemo(
+    () => (haveCoords ? raDecFromAltAz(45, 180, lat, lon, Date.now() / 1000) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [siteKey, haveCoords],
+  );
+  const anchorRa = tracked?.ra_hours ?? tonight.rows[0]?.ra_hours
+    ?? fallbackAnchor?.ra_hours ?? null;
+  const anchorDec = tracked?.dec_deg ?? tonight.rows[0]?.dec_deg
+    ?? fallbackAnchor?.dec_deg ?? null;
   const visibility = useVisibility(
     anchorRa,
     anchorDec,
@@ -1229,6 +1307,57 @@ export function useSkyModel(boxPx: number): SkyModel {
     };
   }, [view.alt, view.az, haveCoords, centreRaDec, trackCtx, tiles, hourlyCloud]);
 
+  // ---- the skydome's arcs -------------------------------------------------
+  //
+  // THE MASK IS FORCED ON, where the finder's own `trackCtx` lets the layers
+  // popover turn it off. The overlay draws the site's horizon profile on this
+  // hemisphere unconditionally, so an arc classified as if there were no mask
+  // would run clear-coloured straight through a drawn tree line - a picture
+  // that contradicts itself in the same 280 px.
+  const domeCtx: DomeTrackContext = useMemo(
+    () => ({
+      ...trackCtx,
+      horizon: horizonPoints,
+      horizonMinDeg,
+      maskOn: true,
+      lonDeg: lon,
+      nowMs,
+    }),
+    [trackCtx, horizonPoints, horizonMinDeg, lon, nowMs],
+  );
+
+  const domeTracks: DomeTrack[] = useMemo(() => {
+    if (!haveCoords || !(hoursToDawn > 0)) return [];
+    const subjects: TrackSubject[] = [];
+    // The bright one, and there is at most one. A lock beats the patch because
+    // a named object is what the reader asked about; the patch only becomes the
+    // subject when the reticle is on sky nothing is catalogued in, which is the
+    // case this list was extended for.
+    if (lock) {
+      subjects.push({
+        id: lock.id, name: lock.name, ra_hours: lock.ra_hours, dec_deg: lock.dec_deg,
+        bright: true,
+      });
+    } else if (patch) {
+      subjects.push({
+        id: AIM_TRACK_ID, name: null,
+        ra_hours: patch.ra_hours, dec_deg: patch.dec_deg,
+        bright: true,
+      });
+    }
+    // Then the ranking, lens-filtered: what the finder is already showing, in
+    // the order it already ranked. `buildDomeTracks` takes the first
+    // MAX_DOME_TRACKS that actually have a walk, so a target that never rises
+    // tonight does not silently occupy one of the six.
+    for (const t of visible) {
+      if (lock && t.id === lock.id) continue;
+      subjects.push({ id: t.id, name: t.name, ra_hours: t.ra_hours, dec_deg: t.dec_deg });
+    }
+    return buildDomeTracks(subjects, domeCtx, MAX_DOME_TRACKS);
+  }, [haveCoords, hoursToDawn, lock, patch, visible, domeCtx]);
+
+  const domeModel: DomeModel = useMemo(() => ({ tracks: domeTracks }), [domeTracks]);
+
   // ---- the AR camera ------------------------------------------------------
   useEffect(() => {
     if (mode !== "cam") return;
@@ -1398,6 +1527,7 @@ export function useSkyModel(boxPx: number): SkyModel {
     wind,
     track,
     trackSamples,
+    dome: domeModel,
     reticle,
     patch,
     kindCounts,

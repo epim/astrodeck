@@ -31,7 +31,7 @@ import { accessPhrase } from "../../../../lib/caps";
 import { nav } from "../../../router";
 import { ActionButton, Card, Label, Mono } from "../../../ui";
 import type { HorizonPoint } from "../../../lib/horizonModel";
-import type { TrackSample } from "../finder";
+import type { DomeTrack } from "../finder";
 import { DomeOverlay, type WindSummary } from "../../weather/dome/domeOverlay";
 
 /** The card's anchor, its testid and its probe name, written once. `SkyHub`'s
@@ -60,10 +60,13 @@ export interface DomeCardProps {
   /** The site's ACTIVE horizon polyline. Empty or null draws no profile. */
   horizon: HorizonPoint[] | null;
   wind: WindSummary | null;
-  /** The lock's walk to dawn. Null draws no path - never a path from a guessed
-   *  site (see `DomeScreen`'s PATH_NEEDS_SITE for the same refusal in words). */
-  track: TrackSample[] | null;
-  targetName: string | null;
+  /**
+   * Every arc to draw, brightest first - `SkyModel.dome.tracks`. Empty draws no
+   * path at all, which is what a role with no site coordinates gets: an arc
+   * from a guessed site is a path no object takes (see `DomeScreen`'s
+   * PATH_NEEDS_SITE for the same refusal in words).
+   */
+  tracks: DomeTrack[];
   /** Canvas height in CSS px, worked out by the hub from the measured column -
    *  see `SkyHub`'s `domeHeight`. */
   height: number;
@@ -83,11 +86,31 @@ export interface DomeCardProps {
  * re-orienting a screen the operator is not looking at.
  */
 export function DomeCard({
-  canViewWeather, pointing, target, horizon, wind, track, targetName,
+  canViewWeather, pointing, target, horizon, wind, tracks,
   height, lockId, onExplain,
 }: DomeCardProps): JSX.Element {
-  const toWeather = () =>
-    nav.go(`/weather/sky${lockId ? `?target=${encodeURIComponent(lockId)}` : ""}`);
+  const arcs = tracks;
+
+  /** The arc for a point with no catalogue object under it, if the reticle is
+   *  on one. It is what makes WEATHER carry coordinates rather than a name. */
+  const aimed = arcs.find((t) => t.point !== null) ?? null;
+
+  /**
+   * WEATHER OPENS ON WHAT THIS CARD IS ABOUT, and that is not always a name.
+   * A locked object travels as its id; a bare patch of sky has no id, so it
+   * travels as `?ra=&dec=` and `DomeScreen` draws the same arc from the same
+   * two numbers. Without this the one case the aimed track exists for - "I am
+   * pointed at nothing catalogued and want the full picture" - lost the aim the
+   * moment the reader pressed the button that promised more of it.
+   */
+  const toWeather = () => {
+    const q = lockId
+      ? `?target=${encodeURIComponent(lockId)}`
+      : aimed
+        ? `?ra=${aimed.point!.ra_hours.toFixed(5)}&dec=${aimed.point!.dec_deg.toFixed(4)}`
+        : "";
+    nav.go(`/weather/sky${q}`);
+  };
 
   return (
     <div id={DOME_CARD_ID} data-testid={DOME_CARD_ID} style={{ scrollMarginTop: 8 }}>
@@ -121,14 +144,30 @@ export function DomeCard({
                   args={a}
                   horizon={horizon}
                   wind={wind}
-                  track={track}
-                  targetName={targetName}
+                  tracks={arcs}
+                  // The canvas writes the locked target's name above its ring
+                  // (`SkyDome`'s `target` marker), and only when it is up.
+                  labelledOnCanvas={
+                    target && target.alt >= 0 ? (target.name ?? null) : null
+                  }
                 />
               )}
             />
           ) : (
             <Mono size={11} tone="dim" data-testid="sky-dome-locked">
               {DOME_NEEDS_WEATHER}
+            </Mono>
+          )}
+
+          {/* WHICH ARC IS WHICH. Only the bright one is labelled on the
+              picture - six labels on a 280 px hemisphere is a page of text -
+              so the dim ones are named here, in the order they are drawn,
+              which is the ranking's own order. Without it the extra arcs are
+              decoration: the reader can see that four things are up and not
+              which four. */}
+          {canViewWeather && arcs.length > 0 && (
+            <Mono size={10} tone="dim" data-testid="sky-dome-tracks">
+              {`to dawn: ${arcs.map((t) => t.label || "unnamed").join(" · ")}`}
             </Mono>
           )}
         </div>

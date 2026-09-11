@@ -55,18 +55,27 @@ export {
 } from "./targets";
 
 export {
+  AIM_TRACK_ID,
   FLOOR_DEG,
+  MAX_DOME_TRACKS,
   TRACK_COLORS,
+  buildDomeTracks,
   buildTrack,
   classify,
+  domeTrackLabel,
   isObstructedAt,
   minutesAboveFloor,
+  pointLabel,
+  trackSamplesFor,
   walkTrack,
+  type DomeTrack,
+  type DomeTrackContext,
   type TrackContext,
   type TrackRender,
   type TrackSample,
   type TrackSegment,
   type TrackState,
+  type TrackSubject,
 } from "./track";
 
 export {

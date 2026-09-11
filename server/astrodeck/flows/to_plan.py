@@ -1,6 +1,6 @@
 """A compiled flow, as something ``SequenceEngine`` can actually run.
 
-``compile_plan`` produces the README's documented five-key dict — the shape the
+``compile_plan`` produces the README's documented five-key dict - the shape the
 PLAN tab renders verbatim and ``resolve_tonight`` reads. ``SequencePlan`` is a
 different shape entirely. This module is the seam between them, and it exists as
 its own module rather than inside either one because both ``/compile`` and
@@ -24,14 +24,15 @@ that kept shooting through an overcast.
 
 WHAT IS NOT DECIDED HERE
 ------------------------
-Whether an unmapped item should BLOCK a run. This function is pure — it has no
-devices, no config and no clock beyond the one passed in — and "is there
+Whether an unmapped item should BLOCK a run. This function is pure - it has no
+devices, no config and no clock beyond the one passed in - and "is there
 actually a roof over this telescope" is not a question it can answer. It
 classifies and reports; the route decides. See ``blocking_reasons``.
 """
 from __future__ import annotations
 
-from typing import Any, Literal
+from dataclasses import dataclass
+from typing import Any, Literal, Sequence
 
 from ..catalog.coords import parse_dec, parse_ra
 from ..sequence.models import ActionKind, SequencePlan, TriggerKind
@@ -44,7 +45,7 @@ from .tonight import catalog_coords
 LEGAL_TRIGGERS: frozenset[str] = frozenset(TriggerKind.__args__)
 LEGAL_ACTIONS: frozenset[str] = frozenset(ActionKind.__args__)
 
-#: Triggers that answer with a VERDICT, not a measurement — so a threshold means
+#: Triggers that answer with a VERDICT, not a measurement - so a threshold means
 #: nothing to them.
 #:
 #: `_eval_predicate` reads ``threshold`` for ``hfr_above`` and
@@ -57,7 +58,7 @@ BOOLEAN_TRIGGERS: frozenset[str] = frozenset(
 
 #: Flow node types that ``compile_plan`` reads. Everything else in a graph is
 #: walked by ``flow_order`` and contributes nothing to the compiled dict, so its
-#: parameters are inert — see :func:`inert_nodes`.
+#: parameters are inert - see :func:`inert_nodes`.
 COMPILED_NODE_TYPES: frozenset[str] = frozenset(
     {"target", "pool", "capture", "dusk", "dome", "duskflats", "calib",
      "cycle"})
@@ -203,19 +204,256 @@ POOL_SCHEDULE_KEYS = {"min_altitude_deg": "min_altitude_deg",
 Level = Literal["warn", "danger", "note"]
 
 
-def _note(key: str, detail: str, level: Level = "warn") -> dict:
+def _note(key: str, detail: str, level: Level = "warn", *,
+          carried: list[str] | None = None,
+          ignored: list[str] | None = None,
+          source: str | None = None) -> dict:
     """One reported loss, or - at ``note`` - one thing an operator drew that is
     answered by some other part of the engine.
 
     ``level`` reuses ``doctor.Issue``'s vocabulary so the editor has ONE
-    severity scale — an operator should not have to learn that a doctor warning
+    severity scale - an operator should not have to learn that a doctor warning
     and an adapter warning mean different things.
+
+    ``carried`` / ``ignored`` / ``source`` are the three OPTIONAL fields that
+    turn a sentence into a reading. A blanket "the X node's settings do not
+    reach the run" made ten amber rows out of a clean flow on 2026-09-11 and
+    two of them were false; splitting the card into the half the plan honours,
+    the half it does not, and where the real value lives is what makes the row
+    checkable. They are omitted entirely when not supplied, so every entry that
+    has nothing extra to say stays byte-identical to what it was.
     """
-    return {"key": key, "detail": detail, "level": level}
+    out: dict = {"key": key, "detail": detail, "level": level}
+    if carried is not None:
+        out["carried"] = list(carried)
+    if ignored is not None:
+        out["ignored"] = list(ignored)
+    if source is not None:
+        out["source"] = source
+    return out
+
+
+# ------------------------------------------------- the card, split three ways
+
+class _Vals(dict):
+    """``format_map`` source that renders an absent param as nothing rather than
+    raising. A graph arriving over the API may carry a node with a param this
+    build does not know, and a KeyError inside a sentence about dropped settings
+    would be the module reporting its own loss with a 500."""
+
+    def __missing__(self, key: str) -> str:
+        return ""
+
+
+def _say(value: Any) -> str:
+    """One param value the way the operator typed it.
+
+    ``2.0`` back off a JSON round-trip is the 2 they entered, and a sentence
+    that says "2.0 arcsec" about a field showing "2" is the small kind of wrong
+    that makes a reader distrust the large kind.
+    """
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
+def _and_list(items: Sequence[str]) -> str:
+    if not items:
+        return ""
+    if len(items) == 1:
+        return items[0]
+    return ", ".join(items[:-1]) + " and " + items[-1]
+
+
+def _upper_first(text: str) -> str:
+    return text[:1].upper() + text[1:] if text else text
+
+
+@dataclass(frozen=True)
+class SettingsNote:
+    """What one node's card promises, split into the half the plan honours, the
+    half it does not, and WHERE the half it does not actually comes from.
+
+    ``carried`` and ``ignored`` are ``(param key, template)`` pairs rendered
+    against the node's own params - so the row names the operator's numbers,
+    not the shipped defaults - and an empty param key is a statement that does
+    not hang off any one field. A pair whose param is unset is dropped, because
+    a sentence about a field nobody filled in is noise.
+
+    A key written ``param=value`` fires only when that param holds that value,
+    which is how a two-state field can land on OPPOSITE sides of the split.
+    ABORT + PARK's "Park mount: Yes" is carried - the wind-down parks - and its
+    "Park mount: No" is not, because the wind-down parks anyway; one template
+    could not say both without lying in one of the two directions.
+
+    ``detail`` is a format string over ``{carried}``/``{ignored}`` (and their
+    ``{Carried}``/``{Ignored}`` sentence-case forms), ``{source}``, and any
+    param of the node by name.
+    """
+    carried: tuple[tuple[str, str], ...]
+    ignored: tuple[tuple[str, str], ...]
+    source: str
+    detail: str
+
+    def render(self, params: dict) -> tuple[str, list[str], list[str], str]:
+        shown = {k: _say(v) for k, v in (params or {}).items()}
+        carried = self._fill(self.carried, params, shown)
+        ignored = self._fill(self.ignored, params, shown)
+        fields = _Vals(shown)
+        fields.update({"carried": _and_list(carried),
+                       "Carried": _upper_first(_and_list(carried)),
+                       "ignored": _and_list(ignored),
+                       "Ignored": _upper_first(_and_list(ignored)),
+                       "source": self.source})
+        return self.detail.format_map(fields), carried, ignored, self.source
+
+    @staticmethod
+    def _fill(entries: tuple[tuple[str, str], ...], params: dict,
+              shown: dict) -> list[str]:
+        out: list[str] = []
+        for key, template in entries:
+            if not key:
+                out.append(template)
+                continue
+            wanted = None
+            if "=" in key:
+                key, wanted = key.split("=", 1)
+            if (params or {}).get(key) in (None, ""):
+                continue
+            if wanted is not None and shown.get(key, "").lower() != wanted.lower():
+                continue
+            out.append(template.format_map(_Vals({**shown,
+                                                  "value": shown.get(key, "")})))
+        return out
+
+
+#: The class of node whose card is answered SOMEWHERE ELSE, keyed by node type.
+#:
+#: Every one of these used to get the blanket "the X node's settings do not
+#: reach the run - the compiler does not carry them into the plan", at ``warn``.
+#: On the rig's "NGC 7129 - LRGB+SHO cycle" that printed eight amber rows plus
+#: two more from the tables below, so a graph with a clean structural check and
+#: no issues read as ten warnings - and the operator read a working flow as
+#: broken. Two of the ten sentences were also FALSE: the CONDITION node's
+#: threshold IS carried into the plan (the run's rule holds it), and the REFOCUS
+#: node's presence IS the refocus instruction.
+#:
+#: So they are ``note``, the level this module already uses for "you drew this
+#: and it happens, just not from here" (REDUNDANT_PORTS, HOLD_HONOURED), and
+#: each says which half is honoured, which half is not, and where the number the
+#: run actually obeys is set. A genuine loss - a factor out of range, a trigger
+#: the engine cannot detect, a port the compiler dropped - stays ``warn``, and
+#: ``losses`` still holds the run for those until the operator accepts them.
+NODE_SETTINGS: dict[str, SettingsNote] = {
+    "safety": SettingsNote(
+        carried=(("", "the unsafe watch itself: every run polls the rig's "
+                      "safety monitor and acts on an unsafe reading"),),
+        ignored=(("source", "the sensor choice {value}"),
+                 ("watch", "what it watches ({value})"),
+                 ("stale", "how a stale reading is read ({value})")),
+        source="Settings > Safety",
+        detail="The SAFETY MONITOR's watch is honoured: every run polls the "
+               "rig's safety monitor and acts on an unsafe reading, with or "
+               "without this node on the canvas. {Ignored} come from {source} "
+               "instead."),
+    # The tolerance and the attempt count are `hub.goto_and_center`'s own
+    # defaults (0.02 deg, 3), not config - so "where the real value lives" is
+    # the centring loop itself, and saying Settings would send someone looking
+    # for a box that does not exist.
+    "slew": SettingsNote(
+        carried=(("", "the slew and the plate-solve centring themselves: every "
+                      "target is centred before its first frame"),),
+        ignored=(("tol", "the {value} arcmin tolerance"),
+                 ("retries", "the {value} centring attempts"),
+                 ("solver", "the solver name {value}")),
+        source="the run's own centring loop (1.2 arcmin, at most 3 attempts, "
+               "the rig's configured solver)",
+        detail="SLEW + CENTER happens on every target: the run slews and "
+               "plate-solve centres before the first frame, with or without "
+               "this node on the canvas. {Ignored} come from {source} "
+               "instead."),
+    "autofocus": SettingsNote(
+        carried=(("", "the autofocus itself: the run focuses at each target's "
+                      "start, and again whenever a rule or the temperature "
+                      "asks"),),
+        ignored=(("method", "the {value} method"),
+                 ("step", "the {value}-step size"),
+                 ("samples", "the {value} samples")),
+        source="the focuser's own measured sweep geometry",
+        detail="AUTOFOCUS runs at every target's start, with or without this "
+               "node on the canvas. {Ignored} come from {source} instead - the "
+               "sweep sizes its step from the defocus slope this focuser has "
+               "measured, not from a number on the card."),
+    # #239 stage C: this node's PRESENCE decides whether the run guides at all,
+    # so the blanket "does not reach the run" line was a lie in the other
+    # direction, and the settle/dither/provider half is the part that is true.
+    "guide": SettingsNote(
+        carried=(("", "presence: the night guides"),),
+        ignored=(("settle", "settle below {value} arcsec"),
+                 ("dither", "dither every {value} frames"),
+                 ("provider", "the provider name {value}")),
+        source="Rig > Guider",
+        detail="The GUIDE stage decides that the night guides, which the run "
+               "honours. {Ignored} come from {source} instead."),
+    "report": SettingsNote(
+        carried=(("", "the session report itself: every run writes one"),),
+        ignored=(("format", "the {value} format"),
+                 ("dest", "the destination {value}")),
+        source="captures/reports, where the engine files every run's report "
+               "in its own format",
+        detail="SESSION REPORT is written for every run, with or without this "
+               "node on the canvas. {Ignored} do not reach the plan - the "
+               "report lands in {source}."),
+    # THE FIRST OF THE TWO FALSE SENTENCES. The threshold reaches the plan -
+    # `_instructions` copies it onto the rule, and the compiled plan for the
+    # rig's own flow shows `on_hfr_above` carrying it. Only the window and the
+    # once-per-run setting are dropped.
+    "condition": SettingsNote(
+        carried=(("when", "the {value} test, which becomes the run's rule"),
+                 ("threshold", "its threshold of {value}")),
+        ignored=(("window", "its {value} window"),
+                 ("once", "its 'fire {value}' setting")),
+        source="the engine's own rule evaluation, at every frame boundary",
+        detail="The CONDITION's {when} test and its threshold of {threshold} "
+               "both reach the run - the plan carries them as the rule the "
+               "engine evaluates. {Ignored} do not, and the engine checks the "
+               "rule at every frame boundary and fires it every time it holds."),
+    # THE SECOND FALSE SENTENCE. A rule wired to this node compiles to the
+    # plan's `refocus` action, so the node's presence IS the refocus.
+    "refocus": SettingsNote(
+        carried=(("", "presence: a rule wired here reaches the plan as the "
+                      "run's refocus action"),),
+        ignored=(("boundary", "its '{value}' setting"),),
+        source="the engine, which runs every rule at a frame boundary anyway",
+        detail="The REFOCUS node IS the refocus: a rule wired to it reaches "
+               "the plan as the run's refocus action. {Ignored} does not reach "
+               "the plan, and it does not need to: the engine runs every rule "
+               "at a frame boundary anyway."),
+    # `warm` is honest about its condition: the abort wind-down parks
+    # unconditionally and warms only when `safety.on_unsafe` is
+    # "abort_park_warm" (engine.py's SafetyAbort arm).
+    "abort": SettingsNote(
+        carried=(("park=Yes", "'Park mount: Yes' - the abort wind-down parks "
+                           "the mount"),
+                 ("warm=Yes", "'Warm camera: Yes' - it warms the camera when "
+                              "Settings > Safety's unsafe action is park and "
+                              "warm")),
+        ignored=(("park=No", "'Park mount: No' - the wind-down parks anyway"),
+                 ("warm=No", "'Warm camera: No' - the wind-down still warms "
+                             "when Settings > Safety asks it to"),
+                 ("message", "its reason text '{value}'")),
+        source="the engine's default wording",
+        detail="ABORT + PARK is what the engine already does on an abort: the "
+               "wind-down parks the mount, and warms the camera when Settings "
+               "> Safety's unsafe action asks for it. {Ignored} is not carried, "
+               "so an alert this flow raises uses {source}."),
+}
 
 
 class GraphNotRunnable(ValueError):
-    """The graph cannot become a plan at all — an operator error, not a bug.
+    """The graph cannot become a plan at all - an operator error, not a bug.
 
     Distinct from an unmapped item: unmapped means "this ran without that",
     while this means "there is nothing here to run". The route maps it to a 422
@@ -235,7 +473,7 @@ def _target_schedule(base: dict, entry: dict, *, is_pool: bool) -> dict:
 
     Two sources merge here. The DUSK WINDOW node's block applies to the whole
     night; a POOL member's constraints apply to that member. WHERE THEY
-    DISAGREE THE POOL WINS, because it is the more specific statement — an
+    DISAGREE THE POOL WINS, because it is the more specific statement - an
     operator who set a 30 degree floor on the night and 40 on one candidate
     meant 40 for that candidate.
     """
@@ -417,7 +655,7 @@ def _instructions(compiled: dict, out: list[dict]) -> list[dict]:
             if trigger == "on_hfr_above" and rule.get("relative"):
                 # GN-08: the CONDITION node's "HFR above (x focus)" form. The
                 # SAME 1.0 < factor <= 5.0 bound `Instruction` enforces at the
-                # model layer is checked here first — a rule that failed it
+                # model layer is checked here first - a rule that failed it
                 # would otherwise reach `SequencePlan.model_validate` and turn
                 # a bad canvas value into an unhandled ValidationError at
                 # /run, instead of a note on the PLAN tab like every other
@@ -448,8 +686,8 @@ def _instructions(compiled: dict, out: list[dict]) -> list[dict]:
                 # rule is to report ambiguity rather than resolve it.
                 key = f"instructions[{trigger}].threshold"
                 # ONCE PER TRIGGER, not once per rule. A CLOUD WATCH node's
-                # `in` port usually feeds several destinations — the hold AND
-                # the notify, in the shipped example — and each compiles to its
+                # `in` port usually feeds several destinations - the hold AND
+                # the notify, in the shipped example - and each compiles to its
                 # own rule carrying the same dead dial. Printed per rule, the
                 # operator sees the identical sentence twice and learns to skim
                 # a list whose whole value is that every line is news.
@@ -466,10 +704,27 @@ def _instructions(compiled: dict, out: list[dict]) -> list[dict]:
         # A rule carries its destination node's TYPE and nothing else, so a
         # NOTIFY node's text, an ABORT node's reason and a CONDITION node's
         # `once` are gone before this function ever sees them.
+        #
+        # A NOTE, not a warning: what the rules DO - the trigger and the action,
+        # which is the whole of what the operator wired - survives the compile
+        # intact. Only the wording does not, and an alert that arrives in the
+        # engine's own words is still an alert that arrives.
         out.append(_note(
             "instructions[*].message",
-            "rule text, severity and 'only once' are not carried through the "
-            "compile, so alerts from this flow use the engine's default wording"))
+            "Every rule's trigger and action reach the plan, so the wires "
+            "drawn on the canvas are the wires that run. The words are not "
+            "carried: a NOTIFY node's message text and severity, an ABORT "
+            "node's reason and a CONDITION node's 'fire once per run' are "
+            "dropped, so an alert this flow raises uses the engine's default "
+            "wording",
+            "note",
+            carried=[f"the trigger and the action of each of the "
+                     f"{len(rules)} rule{'' if len(rules) == 1 else 's'} this "
+                     f"flow compiles to"],
+            ignored=["a NOTIFY node's message text and severity",
+                     "an ABORT node's reason",
+                     "a CONDITION node's 'fire once per run'"],
+            source="the engine's default wording"))
     return rules
 
 
@@ -573,24 +828,22 @@ def _automation(compiled: dict, out: list[dict], *,
 
 
 #: Node types whose generic "settings do not reach the run" sentence is WRONG,
-#: keyed by type. One entry, and it is here rather than inline because the next
-#: node to half-work will want the same treatment.
+#: keyed by type, and which are still a genuine LOSS - so they keep ``warn``.
+#: One entry, and it is here rather than inline because the next node to
+#: half-work will want the same treatment.
 #:
 #: PARK + CLOSE claims four things and three of them happen - just not because
 #: this node is on the canvas. Telling an operator that none of them do is the
 #: same defect as telling them all of them do, and it is the more dangerous
 #: direction: someone who believes the night does not park will go out and park
-#: it themselves, or leave a run they would otherwise have trusted.
-#: #239 stage C: GUIDE is no longer wholly inert - its PRESENCE now decides
-#: whether the run guides at all - so the generic "does not reach the run" line
-#: would be a fresh lie in the other direction.
-NODE_LOSS_GUIDE = (
-    "whether this node is on the canvas decides whether the night guides, and "
-    "that IS honoured - but its settle time and dither settings are not: the "
-    "run uses the rig's own guiding settings for those")
-
+#: it themselves, or leave a run they would otherwise have trusted. The fourth -
+#: "Hold cold (day darks)" - is not honoured at all, which is why this one stays
+#: a warn while the :data:`NODE_SETTINGS` class became notes.
+#:
+#: (GUIDE used to live here. Its card is now split three ways by
+#: ``NODE_SETTINGS["guide"]``, which says the same thing in the same words and
+#: also names the settle, dither and provider values it is talking about.)
 NODE_LOSS: dict[str, str] = {
-    "guide": NODE_LOSS_GUIDE,
     "parkclose": (
         "most of what this node promises already happens, but not because it "
         "is here: every flow's night ends with the mount parked and the dust "
@@ -637,6 +890,14 @@ def inert_nodes(graph: FlowGraph | None) -> list[dict]:
         seen.add(node.type)
         if not node.params:
             continue
+        settings = NODE_SETTINGS.get(node.type)
+        if settings is not None:
+            # A NOTE, not a warning: the run does the thing the card draws, and
+            # the numbers it does it with are set somewhere the row now names.
+            detail, carried, ignored, source = settings.render(node.params)
+            out.append(_note(f"nodes.{node.type}", detail, "note",
+                             carried=carried, ignored=ignored, source=source))
+            continue
         out.append(_note(f"nodes.{node.type}",
                          NODE_LOSS.get(node.type) or (
                              f"the {node.type.upper()} node's settings do not "
@@ -651,7 +912,7 @@ def inert_nodes(graph: FlowGraph | None) -> list[dict]:
 #:
 #: The loop above cannot see these: it skips every type in
 #: ``COMPILED_NODE_TYPES`` wholesale, on the reasoning that a compiled node's
-#: params arrive. Mostly true, and for `reject` it is false — which made this
+#: params arrive. Mostly true, and for `reject` it is false - which made this
 #: the one dropped setting with NOTHING anywhere saying so, while
 #: `tonight.py`'s brief went on promising it by name and by number ("a sub is
 #: graded and only counts below HFR 3.5in"). A silent loss under a list whose
@@ -663,12 +924,23 @@ def inert_nodes(graph: FlowGraph | None) -> list[dict]:
 #: node's `reject` is presented everywhere as an absolute HFR in arcsec.
 #: Feeding 3.5 into a field that means "3.5x the median" would be a different
 #: rule wearing the same number, which is worse than not carrying it.
-INERT_PARAMS: dict[tuple[str, str], str] = {
-    (t, "reject"): (
-        f"the {t.upper()} node's HFR reject threshold does not reach the run - "
-        f"frame grading uses the rig's own standards (Settings > Safety), and "
-        f"the plan's nearest field is a MULTIPLE of the running median, not an "
-        f"absolute HFR, so this number is not carried into it")
+#:
+#: A ``note`` for the same reason the :data:`NODE_SETTINGS` class is: the stage
+#: itself reaches the run whole - its filters, exposures, gain and binning are
+#: the night - and the one dial that does not is set on the rig instead. Ten
+#: amber rows on a working flow is how an operator learns to stop reading them.
+INERT_PARAMS: dict[tuple[str, str], SettingsNote] = {
+    (t, "reject"): SettingsNote(
+        carried=(("", f"the {t.upper()} stage itself: its filters, exposures, "
+                      f"gain and binning all reach the plan"),),
+        ignored=(("reject", "its reject-HFR-above {value} arcsec"),),
+        source="Settings > Standards, plus the HFR factor under Settings > "
+               "Safety",
+        detail=f"The {t.upper()} stage reaches the run whole - filters, "
+               f"exposures, gain and binning are all carried. {{Ignored}} is "
+               f"not, because the plan's nearest field is a MULTIPLE of the "
+               f"running median rather than an absolute HFR; frame grading "
+               f"uses the rig's own standards instead ({{source}}).")
     for t in ("capture", "cycle")
 }
 
@@ -683,14 +955,16 @@ def _inert_params(graph: FlowGraph) -> list[dict]:
     out: list[dict] = []
     seen: set[tuple[str, str]] = set()
     for node in graph.nodes:
-        for (ntype, param), detail in INERT_PARAMS.items():
+        for (ntype, param), settings in INERT_PARAMS.items():
             if node.type != ntype or (ntype, param) in seen:
                 continue
             value = (node.params or {}).get(param)
             if value in (None, "", 0, 0.0):
                 continue
             seen.add((ntype, param))
-            out.append(_note(f"nodes.{ntype}.{param}", detail))
+            detail, carried, ignored, source = settings.render(node.params)
+            out.append(_note(f"nodes.{ntype}.{param}", detail, "note",
+                             carried=carried, ignored=ignored, source=source))
     return out
 
 
@@ -710,7 +984,7 @@ def plan_extras(compiled: dict) -> dict:
     # Not a policy invented here: the Tonight timeline has always closed with
     # "Dawn: loop ends, mount parks, camera warms", unconditionally, for every
     # flow. The plan just never carried it, so the preview promised a park that
-    # `park_when_done=False` guaranteed would not happen — a claim nothing
+    # `park_when_done=False` guaranteed would not happen - a claim nothing
     # keeps, told to the one operator who is asleep when it comes due.
     #
     # Unconditional because the flow vocabulary has no node for "deliberately
@@ -803,9 +1077,9 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
         # This used to read 0 as the sentinel, on the reasoning that 0 is what an
         # untouched field compiles to and that "a wrong None costs an operator
         # who really wanted PA 0 an unconstrained angle". Both halves were
-        # wrong-headed: PA 0 is a perfectly ordinary answer — it is north up,
+        # wrong-headed: PA 0 is a perfectly ordinary answer - it is north up,
         # the angle most people frame at and the one a mosaic is planned around
-        # — and a field whose most common value cannot be expressed is a field
+        # - and a field whose most common value cannot be expressed is a field
         # that lies. It also cost every flow a permanent advisory line, because
         # the warning fired on the DEFAULT.
         #
@@ -883,7 +1157,7 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
         # THE NIGHT HAS NO TEMPERATURE, AND THE EDITOR IS WHERE TO SAY IT.
         #
         # The engine warns at run start (`_warn_if_the_run_has_no_temperature`),
-        # which is what caught this on 2026-08-22 — 80 minutes and 19 frames at
+        # which is what caught this on 2026-08-22 - 80 minutes and 19 frames at
         # +23 °C against a -10 °C library. A line in a log at 22:00 is worth
         # less than a line on the canvas at 19:00, and this list is already the
         # thing the PLAN tab draws before anyone presses Run.
@@ -892,7 +1166,7 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
         # with "parts of this flow do not survive the compile", and refusing
         # here would block an intentionally uncooled night on a rig whose
         # vocabulary cannot express cooling in the first place. A note is the
-        # level for "worth reading, not worth blocking on" — the same reason
+        # level for "worth reading, not worth blocking on" - the same reason
         # HOLD_HONOURED and the redundant ports use it.
         unmapped.append(_note(
             "cooling.setpoint_c",

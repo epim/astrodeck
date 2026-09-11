@@ -199,6 +199,12 @@ _CLEAN_MODULES = [
     "catalog/ephemeris/routes.py",
     # ``planning.py``'s strings reach Session and Sky as the plan's own words.
     "planning.py",
+    # ``flows/to_plan.py``'s ``unmapped`` details are rendered verbatim on the
+    # PLAN tab and in the ``/run`` refusal body, and 2026-09-11 rewrote ten of
+    # them - the moment to start grading the module rather than after the next
+    # rewrite. Its docstrings still carry em-dashes and always have; this scan
+    # exempts those by construction, so only the copy is held to the rule.
+    "flows/to_plan.py",
 ]
 
 # ``flows/tonight.py`` is DELIBERATELY NOT on this list. Its ``_NO_SITE``
