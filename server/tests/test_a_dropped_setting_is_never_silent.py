@@ -44,18 +44,55 @@ def _graph(capture_type: str, reject) -> FlowGraph:
                            "to": "c", "toPort": "run"})])
 
 
-def _loss_keys(g):
+def _rows(g) -> list[dict]:
     _plan, unmapped = to_sequence_plan(compile_plan(g), g)
-    return {l["key"] for l in losses(unmapped)}
+    return unmapped
+
+
+def _reported_keys(g):
+    """THE WHOLE LIST, not `losses()`.
+
+    This read `losses()` until 2026-09-11, and the difference is the point of
+    that day's change rather than a relaxation. "Never silent" is a claim about
+    being REPORTED; `losses()` is the narrower question "should this hold the
+    run", and the reject line answers it no - the stage reaches the engine
+    whole, the rig grades frames to its own standards, and nothing about the
+    night is wrong. It was one of ten amber rows a clean flow printed, which is
+    how an operator learns to skim the list this file exists to keep worth
+    reading. The row still has to BE there, which is what is asserted here, and
+    `test_a_reject_is_a_note_not_an_amber_warning` pins the level.
+    """
+    return {row["key"] for row in _rows(g)}
 
 
 @pytest.mark.parametrize("ntype", ["cycle", "capture"])
 def test_a_reject_the_run_ignores_is_reported(ntype):
     """THE FIX. Both stages carry a `reject` and neither reaches the engine."""
-    keys = _loss_keys(_graph(ntype, 3.5))
+    keys = _reported_keys(_graph(ntype, 3.5))
     assert f"nodes.{ntype}.reject" in keys, (
         f"the {ntype.upper()} node's HFR threshold is dropped in silence — the "
         f"one list whose entire job is that dropped settings are not silent")
+
+
+@pytest.mark.parametrize("ntype", ["cycle", "capture"])
+def test_a_reject_is_a_note_not_an_amber_warning(ntype):
+    """The stage itself reaches the run whole, so the row must say which half
+    is carried and which is not, and must not hold the start.
+
+    A warn here put an amber row on a flow with nothing wrong with it, and
+    `losses()` is what `/api/flows/{id}/run` refuses on - so the operator was
+    asked to accept "parts of this flow do not survive the compile" about a
+    filter table that survives it entirely.
+    """
+    row = next(r for r in _rows(_graph(ntype, 3.5))
+               if r["key"] == f"nodes.{ntype}.reject")
+    assert row["level"] == "note", row
+    assert row not in losses(_rows(_graph(ntype, 3.5))), (
+        "a note must not hold the run")
+    assert any("3.5" in s for s in row["ignored"]), (
+        f"the row does not name the operator's own threshold: {row['ignored']}")
+    assert row["carried"], "the half that IS carried has to be named too"
+    assert row["source"], "the row has to say where the real standard is set"
 
 
 @pytest.mark.parametrize("ntype", ["cycle", "capture"])
@@ -63,7 +100,7 @@ def test_a_setting_nobody_set_earns_no_warning(ntype):
     """A list that fires on every flow is a list nobody reads. Only a `reject`
     the operator actually set is worth a line."""
     for off in (0, 0.0, None, ""):
-        assert f"nodes.{ntype}.reject" not in _loss_keys(_graph(ntype, off)), off
+        assert f"nodes.{ntype}.reject" not in _reported_keys(_graph(ntype, off)), off
 
 
 @pytest.mark.parametrize("ntype", ["cycle", "capture"])
