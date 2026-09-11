@@ -117,7 +117,7 @@ const OK_PAYLOAD: Record<string, unknown> = {
 };
 
 const NO_SITE_REASON =
-  "No observatory site is set, so there is no night to resolve — nothing "
+  "No observatory site is set, so there is no night to resolve - nothing "
   + "below would be about where you are.";
 
 /** What tonight.py's `_cannot` actually returns: every time-bearing key null,

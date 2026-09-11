@@ -15,6 +15,7 @@
 
 import { useEffect, useState } from "react";
 import { api } from "../../../../api";
+import { useCan } from "../../../../lib/caps";
 import type { VisibilityNight } from "../../../../types";
 
 const DEBOUNCE_MS = 300;
@@ -25,6 +26,12 @@ export function useVisibilityNight(
   altLimitDeg: number,
 ): VisibilityNight | null {
   const [night, setNight] = useState<VisibilityNight | null>(null);
+  // GET /api/visibility is gated server-side on `view.site_derived`
+  // (catalog/visibility.py) - a viewer holds neither it nor its 403's
+  // information, so the fetch itself never fires for one: the sheet renders
+  // the same "no curve" state it would show on a genuine 404, honestly, and
+  // without logging a failed request the caller could never have satisfied.
+  const canSiteDerived = useCan("view.site_derived");
   const keyRa = raHours == null || !Number.isFinite(raHours)
     ? null : Math.round(raHours * 1000) / 1000;
   const keyDec = decDeg == null || !Number.isFinite(decDeg)
@@ -32,7 +39,7 @@ export function useVisibilityNight(
   const limit = Number.isFinite(altLimitDeg) ? altLimitDeg : 0;
 
   useEffect(() => {
-    if (keyRa == null || keyDec == null) { setNight(null); return; }
+    if (!canSiteDerived || keyRa == null || keyDec == null) { setNight(null); return; }
     let alive = true;
     const timer = setTimeout(() => {
       void api
@@ -46,7 +53,7 @@ export function useVisibilityNight(
         .catch(() => { if (alive) setNight(null); });
     }, DEBOUNCE_MS);
     return () => { alive = false; clearTimeout(timer); };
-  }, [keyRa, keyDec, limit]);
+  }, [canSiteDerived, keyRa, keyDec, limit]);
 
   return night;
 }

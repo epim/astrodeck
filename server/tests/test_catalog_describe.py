@@ -65,7 +65,7 @@ def test_unmapped_hubble_code_fails_loudly():
     # with a day-precision date (William Herschel, 1786-02-15 — verified
     # against the live Wikidata item by hand before this test was written).
     ("NGC 6543",
-     "Cat's Eye Nebula — planetary nebula in Draco · mag 9.0 · "
+     "Cat's Eye Nebula - planetary nebula in Draco · mag 9.0 · "
      "discovered by William Herschel on 15 February 1786"),
     # Hubble type refines "galaxy" -> "spiral galaxy" (OpenNGC's Hubble=Sb).
     # No distance clause: M31's redshift is NEGATIVE (blueshifted, Local
@@ -73,7 +73,7 @@ def test_unmapped_hubble_code_fails_loudly():
     # example, straight from the survey. No discoverer either: M31's
     # Wikidata item carries no P61 statement at all ("known since antiquity"
     # has no single discoverer to record) — an honest gap, not a bug.
-    ("M31", "Andromeda Galaxy — spiral galaxy in Andromeda · mag 3.4"),
+    ("M31", "Andromeda Galaxy - spiral galaxy in Andromeda · mag 3.4"),
     # No common name (name == id in the data), has a magnitude, PLUS a Hubble
     # refinement ("E" -> "elliptical galaxy") and a positive, far-enough
     # redshift that clears the >= 10 Mpc reliability floor (z=0.010617 ->
@@ -84,7 +84,7 @@ def test_unmapped_hubble_code_fails_loudly():
     # NONE of the new layers add anything: not a galaxy (no Hubble), no
     # OpenNGC redshift at all, not an NGC/IC-coded id (no Wikidata join
     # possible) — the floor still holds exactly as before #195/#196.
-    ("B033", "Horsehead Nebula — dark nebula in Orion"),
+    ("B033", "Horsehead Nebula - dark nebula in Orion"),
     # Neither a common name nor a magnitude — the floor case, also untouched
     # by either new layer (open cluster, no Hubble; redshift present but
     # far below the reliability floor; no Wikidata join).
@@ -102,9 +102,9 @@ def test_edge_on_galaxy_gets_the_edge_on_prefix():
     ratio by a wide margin on this catalog's own numbers."""
     by_id = {o.id: o for o in CATALOG}
     assert describe(by_id["NGC 891"]).startswith(
-        "Silver Sliver Galaxy — edge-on spiral galaxy in")
+        "Silver Sliver Galaxy - edge-on spiral galaxy in")
     assert describe(by_id["NGC 4565"]).startswith(
-        "Needle Galaxy — edge-on spiral galaxy in")
+        "Needle Galaxy - edge-on spiral galaxy in")
 
 
 def test_face_on_galaxy_gets_no_edge_on_prefix():

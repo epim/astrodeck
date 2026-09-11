@@ -22,6 +22,7 @@ import { NxIcon } from "../../../icons";
 import { Card, EmptyCard, Label, Sheet, lockedAttrs, lockedClass } from "../../../ui";
 import { api } from "../../../../api";
 import { u } from "../../../../lib/base";
+import "./sheets.css";
 
 interface LogNightEntry {
   night: string;

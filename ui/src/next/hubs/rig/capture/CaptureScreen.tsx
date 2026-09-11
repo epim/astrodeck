@@ -42,6 +42,7 @@ import {
 import { suggestSubLength } from "../../../../lib/photometry";
 import { ActionButton, Card, Chip, Divider, Label, Mono, Segmented, Switch } from "../../../ui";
 import { buildHash, nav, useRoute } from "../../../router";
+import "./capture.css";
 import { CaptureStage } from "./CaptureStage";
 import { CaptureReadouts } from "./CaptureReadouts";
 import { CaptureControls } from "./CaptureControls";

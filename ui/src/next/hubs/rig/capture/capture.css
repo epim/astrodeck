@@ -1,0 +1,17 @@
+/* hubs/rig/capture/capture.css - the CAPTURE screen's own class.
+ *
+ * This area had no stylesheet at all before this file (CaptureScreen.tsx is
+ * otherwise inline-style-driven, per the wave's "primitives + inline" default
+ * for a screen with no reused-across-instances look). One class needed a real
+ * rule, so it gets a real per-area sheet rather than a next.css exception.
+ */
+
+/* The STILL/VIDEO capture-mode toggle: two `Chip`s, each already wrapped in
+ * its own `flex: 1` div (CaptureScreen.tsx), built from `Chip` rather than the
+ * `Segmented` primitive so each option keeps `Chip`'s own honest-disabled lock
+ * styling. `.nx-chip` alone is `display: inline-flex` sized to its own label,
+ * so without this the two mode chips sat left-aligned in their half-width
+ * slot with a dead gap on the right - not a two-way toggle, a button and a
+ * hole. This makes the chip itself fill the wrapper and center its label.
+ */
+.nx-cap-mode { flex: 1; justify-content: center; }

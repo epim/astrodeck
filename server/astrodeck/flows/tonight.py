@@ -73,7 +73,7 @@ CURVE_STEP_MIN = 10
 TONE_TEXT, TONE_DIM, TONE_FAINT = "text", "dim", "faint"
 TONE_GOOD, TONE_WARN, TONE_BAD = "good", "warn", "bad"
 
-_NO_SITE = ("No observatory site is set, so there is no night to resolve — "
+_NO_SITE = ("No observatory site is set, so there is no night to resolve - "
             "nothing below would be about where you are.")
 _BAD_SITE = ("This site's coordinates cannot be read as numbers, so no night "
              "can be resolved from them.")

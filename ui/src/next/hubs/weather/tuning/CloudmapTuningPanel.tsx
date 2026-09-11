@@ -40,7 +40,7 @@
 import { useEffect, useState, type JSX } from "react";
 import { ApiError } from "../../../../api";
 import { getCloudmap, setCloudmapConfig } from "../../../../api/cloudmap";
-import { accessPhrase } from "../../../../lib/caps";
+import { accessPhrase, useCan } from "../../../../lib/caps";
 import { useConfig, useStore } from "../../../../store";
 import { useLock } from "../../../lib/gateHook";
 import {
@@ -75,14 +75,21 @@ export function CloudmapTuningPanel(): JSX.Element {
   // say about which one is nearer.
   const [suggested, setSuggested] = useState<Platform | null>(null);
 
+  // GET /api/cloudmap needs view.weather (app.py `get_cloudmap`); a viewer
+  // holds neither it nor any use for the mispin advisory it feeds. Skipping the
+  // fetch lands in the exact same place a 403 already did - `suggested` stays
+  // null and the mispin line simply does not render - just without spending
+  // the request.
+  const canViewWeather = useCan("view.weather");
   const version = config?.version ?? null;
   useEffect(() => {
+    if (!canViewWeather) { setSuggested(null); return; }
     let alive = true;
     getCloudmap()
       .then((s) => { if (alive) setSuggested(s.suggested_platform ?? null); })
       .catch(() => { /* no suggestion to make; the pin still edits */ });
     return () => { alive = false; };
-  }, [version]);
+  }, [canViewWeather, version]);
 
   const write = async (edit: CloudmapEdit): Promise<void> => {
     if (busy || !c) return;

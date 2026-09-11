@@ -289,7 +289,7 @@ export function sweepReadiness(p: {
       // The numbers are already on the summary line beside this, so the warning
       // slot stays empty rather than printing them a second time — the refusal
       // above says what to do and that is the only thing left to say.
-      provenance: "nothing measured — defaults, not a match to your sky tonight",
+      provenance: "nothing measured - defaults, not a match to your sky tonight",
       warn: null,
     };
   }

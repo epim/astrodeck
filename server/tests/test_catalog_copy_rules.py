@@ -183,7 +183,25 @@ _CLEAN_MODULES = [
     "catalog/region.py",
     "sequence/policy.py",
     "weather.py",
+    # ``describe()``'s object-brief joiner (`{name} - {body}`) carried an
+    # em-dash the screenshot walk caught on every object brief; fixed and
+    # clean end to end (the module's one other em-dash is inside
+    # ``describe``'s own docstring, which this scan already exempts).
+    "catalog/describe.py",
 ]
+
+# ``flows/tonight.py`` is DELIBERATELY NOT on this list. Its ``_NO_SITE``
+# string (rendered on Session Now) carried an em-dash and is fixed above, but
+# the module's other ~25 narrative strings (campaign-ledger notes, watchdog
+# rule copy, moon/meridian lines) still do, and a handful of its em/en-dash
+# LITERALS are not copy at all - `_norm_coord`'s `.replace("—", "-")`
+# chain matches punctuation the TARGET node ships, the same "matched against
+# what a caller wrote, never shown to them" shape this scan already exempts
+# for a regex pattern's own literal. Sweeping the narrative copy AND teaching
+# the scanner that second exemption is real work with real regression risk
+# across Session/Monitor screens this task's screenshot walk never reached -
+# left to a dedicated follow-up rather than done here as a side effect of one
+# string.
 
 
 @pytest.mark.parametrize("relpath", _CLEAN_MODULES)

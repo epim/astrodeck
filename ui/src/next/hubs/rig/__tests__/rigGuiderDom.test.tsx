@@ -542,11 +542,20 @@ await testAsync("a finished assistant run offers its measurements and per-settin
 await testAsync("a viewer sees the whole sheet, changes nothing, and is told why", () => {
   // Seeded IDLE so the primary action shows its start face: what a viewer sees
   // is decided by the rig's state, and only its reachability by the role.
+  asked.length = 0;
   seed({ principal: VIEWER }, {
     guider: { ...guideStats({ guiding: false, phase: "idle" }), name: "AstroDeck native" },
   });
   mount();
   return settle().then(() => {
+    // GET /api/guide/settings needs control.guide (app.py `guide_settings_get`),
+    // which this viewer does not hold - the sheet must not even ask, and the
+    // tuning editor shows the same "could not read the saved tuning" honesty a
+    // live 403 would have produced.
+    eq(asked.filter((a) => a.method === "GET" && a.url.includes("/api/guide/settings")).length, 0,
+      "a viewer's mount must fire zero GET /api/guide/settings requests");
+    assert(/Could not read the saved tuning \(needs .*access\)/.test(text()),
+      "the tuning editor must still say why it has nothing but factory defaults");
     asked.length = 0;
     const primary = q('[data-testid="guider-primary"]');
     assert(primary != null, "the primary action is HIDDEN from a viewer - nothing may be hidden");

@@ -1010,8 +1010,23 @@ await testAsync("the poll interval and the window clamp to the server's own boun
 });
 
 await testAsync("a viewer sees the reason and every cloud map control refuses to write", async () => {
+  // GET /api/cloudmap needs view.weather (app.py `get_cloudmap`), which this
+  // viewer does not hold - the mispin-advisory fetch must not fire for one,
+  // not merely eat the 403 quietly. A FRESH mount (a new `key`, so React tears
+  // down and remounts rather than reusing the admin instance whose effect
+  // already ran and whose dependency array would not otherwise re-fire on a
+  // bare principal swap) is required to exercise the initial-mount fetch this
+  // gate actually guards.
+  const cloudmapGetsBefore = asked.filter(
+    (a) => a.method === "GET" && a.url.includes("/api/cloudmap")).length;
   act(() => { useStore.setState({ principal: VIEWER, toasts: [] } as never); });
+  await act(async () => { root.render(createElement(CloudmapSheet, { key: "viewer-remount" })); });
   await settle();
+
+  const cloudmapGetsAfter = asked.filter(
+    (a) => a.method === "GET" && a.url.includes("/api/cloudmap")).length;
+  eq(cloudmapGetsAfter, cloudmapGetsBefore,
+    "a viewer's fresh mount must fire zero GET /api/cloudmap requests");
 
   assert(byId("cloudmap-tuning-lock") != null, "no read-only note for a role that cannot edit");
   assert(/config\.site_optics/.test(text("cloudmap-tuning-lock")),

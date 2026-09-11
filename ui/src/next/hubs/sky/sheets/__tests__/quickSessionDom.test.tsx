@@ -265,6 +265,7 @@ await testAsync("a viewer sees the whole sheet, honest-disabled, and fires nothi
   await act(async () => { root.unmount(); });
   const root2 = createRoot(container);
   seed(VIEWER);
+  const visibilityAsksBefore = asks.filter((a) => a.url.includes("/api/visibility")).length;
   await act(async () => {
     root2.render(createElement(QuickSessionSheet, { params: { target: "m31" }, depth: 0 as const }));
   });
@@ -278,6 +279,17 @@ await testAsync("a viewer sees the whole sheet, honest-disabled, and fires nothi
   eq(cta.getAttribute("aria-disabled"), "true", "the CTA is refused for a viewer");
   const why = cta.getAttribute("title") ?? "";
   assert(/needs .* access/.test(why), `the reason must name the access level, got ${why}`);
+
+  // GET /api/visibility needs view.site_derived (catalog/visibility.py), which
+  // this viewer does not hold - the sheet must not even ask, not merely eat a
+  // 403 quietly (quickVisibility.ts's useVisibilityNight gates on useCan).
+  const visibilityAsksAfter = asks.filter((a) => a.url.includes("/api/visibility")).length;
+  eq(visibilityAsksAfter, visibilityAsksBefore, "a viewer's render must fire zero /api/visibility requests");
+  // And the screen renders the same honest fallback a null ephemeris always
+  // has (this is exactly what a 404/403 produced before the gate existed):
+  // no dark window to show, so no fabricated dawn time.
+  assert(/NO ASTRO-DARK/.test(container.textContent),
+    "the honest no-ephemeris state must still render for a viewer");
 
   const before = quickPosts().length;
   await act(async () => {

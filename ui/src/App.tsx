@@ -615,7 +615,14 @@ export default function App() {
                     : status.mount.tracking ? "TRACKING" : "IDLE"}
                 </span>
                 <span className="min-w-0 truncate">{status.mount.ra_str} {status.mount.dec_str}</span>
-                <span className="hidden lg:inline shrink-0 whitespace-nowrap">ALT {status.mount.alt.toFixed(0)}°</span>
+                {/* mount.alt is site-derived (redact.py `_MOUNT_DERIVED_KEYS`) and is
+                    ABSENT, not zero, for a principal without view.site_derived (a
+                    viewer) — the type says `number` but the wire does not always agree.
+                    Render nothing for this span rather than throw on `.toFixed` of
+                    undefined, which white-screened the whole classic root. */}
+                {typeof status.mount.alt === "number" && (
+                  <span className="hidden lg:inline shrink-0 whitespace-nowrap">ALT {status.mount.alt.toFixed(0)}°</span>
+                )}
               </>
             )}
             {status?.camera?.temperature != null && (

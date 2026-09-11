@@ -38,9 +38,9 @@ export function difficultyTone(t: DifficultyTier): "good" | "warn" | "bad" {
 
 export function difficultyHint(t: DifficultyTier): string {
   switch (t) {
-    case "easy": return "Bright and well-sized — a great first target.";
-    case "moderate": return "Doable, but dimmer or smaller — expect more subs.";
-    case "hard": return "Faint or low surface brightness — for experienced rigs.";
+    case "easy": return "Bright and well-sized - a great first target.";
+    case "moderate": return "Doable, but dimmer or smaller - expect more subs.";
+    case "hard": return "Faint or low surface brightness - for experienced rigs.";
   }
 }
 
