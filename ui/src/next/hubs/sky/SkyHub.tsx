@@ -5,12 +5,19 @@
 //
 //   browse banner   only with no rig - and it names the ONE thing that needs one
 //   status row      how many targets are in reach, how clear it is, which site
-//   finder          the sky, or the survey imagery once FRAME is on
-//   toolbar         AR CAMERA / MAP, FRAME / DONE / ADJUST, GYRO
+//   finder          the sky, the survey imagery once FRAME is on, or the whole
+//                   pannable sky in ATLAS
+//   toolbar         AR CAMERA / MAP, FRAME / DONE / ADJUST, GYRO, ATLAS
 //   framing card    FRAME mode only
 //   lock card       what is in the reticle, and the three things to do with it
 //   reach strip     everything else that is clear and up
 //   dome card       the cloud between here and there, on the hemisphere (D-SKY-2)
+//
+// ATLAS is the fourth mode and the classic Atlas's only door in this UI. It
+// replaces the box with `atlas/AtlasHost` and hides the three RETICLE cards
+// (lock, reach, and the FRAME cluster), because each of them answers a question
+// about a reticle that is not on screen; the status row and the dome card stay,
+// because both answer about the whole sky. See the ATLAS block below.
 //
 // ONE MODEL, MANY CARDS. Every number on this screen is a function of the same
 // six inputs (site, time, optics, weather, horizon, catalogue) and is derived
@@ -47,7 +54,7 @@ import {
 } from "./finder";
 import { KIND_LABEL, D2R, walkTrack, type TrackSample } from "./finder";
 import { windSummary } from "../weather/dome/domeOverlay";
-import { lstHours } from "../../../lib/altaz";
+import { altAzOf, lstHours } from "../../../lib/altaz";
 import { BrowseBanner } from "./cards/BrowseBanner";
 import { StatusRow } from "./cards/StatusRow";
 import { DomeCard, DOME_CARD_ID } from "./cards/DomeCard";
@@ -58,6 +65,7 @@ import { PatchCard } from "./cards/PatchCard";
 import { ReachStrip } from "./cards/ReachStrip";
 import { SkyGlyph } from "./cards/glyphs";
 import { obstructedReason, ctaToast, type LockCta } from "./cards/lockCta";
+import { AtlasHost } from "./atlas/AtlasHost";
 import { FrameHost } from "./frame/FrameHost";
 import { FramingCard } from "./frame/FramingCard";
 import { FramedOverlay } from "./frame/FramedOverlay";
@@ -434,10 +442,14 @@ export function SkyHub(): JSX.Element {
 
   // ---- FRAME mode ---------------------------------------------------------
   const frameTarget = frame.id;
+  // The catalogue for the patch the CANVAS is showing - so it runs for ATLAS
+  // as well as FRAME, and for neither while the schematic finder is up (the
+  // finder has its own markers from the model).
+  const canvasOn = (frame.on || model.mode === "atlas") && framing != null;
   const region = useSkyRegion(
     framing?.center ?? { ra_hours: 0, dec_deg: 0 },
     framing?.fovZoomDeg ?? 0,
-    frame.on && framing != null,
+    canvasOn,
   );
 
   // The single-frame field of view, which is what FIT OBJECT falls back to and
@@ -448,8 +460,11 @@ export function SkyHub(): JSX.Element {
   // The offline pack's state, polled ONLY while the survey is degraded with no
   // online source - the one state whose banner copy depends on it
   // (`AtlasView.tsx:234-244` does exactly this, and for the same reason).
+  // ATLAS mode runs its OWN copy of this poll, scoped to `AtlasHost`'s mount,
+  // so this one stands down there rather than the two of them asking the rig
+  // the same question twice every two seconds.
   useEffect(() => {
-    if (!frame.on || !shouldPollPack(surveyDegraded, onlineFetch)) return;
+    if (!frame.on || model.mode === "atlas" || !shouldPollPack(surveyDegraded, onlineFetch)) return;
     let live = true;
     const tick = (): void => {
       getPackStatus().then((p) => { if (live) setPack(p); }).catch(() => { /* the copy falls back */ });
@@ -457,7 +472,7 @@ export function SkyHub(): JSX.Element {
     tick();
     const id = setInterval(tick, PACK_POLL_MS);
     return () => { live = false; clearInterval(id); };
-  }, [frame.on, surveyDegraded, onlineFetch]);
+  }, [frame.on, model.mode, surveyDegraded, onlineFetch]);
 
   const enterFrame = useCallback(
     (t: SkyTarget, keep: boolean) => {
@@ -651,19 +666,6 @@ export function SkyHub(): JSX.Element {
     if (st.pts.size === 0) pinchRef.current = null;
   };
 
-  const frameLabel = frame.on ? "DONE" : frame.set ? "ADJUST" : "FRAME";
-  // A patch of sky is enough now: free-roam is what the third branch below is.
-  const frameReason = frame.on || lock || model.patch ? null : FRAME_NEEDS_AIM;
-  const onFramePress = () => {
-    if (frame.on) { void finishFrame(); return; }
-    const t = lock ?? model.reachList[0];
-    if (t) { enterFrame(t, frame.set && frame.id === t.id); return; }
-    // ADJUST on a kept free-roam framing RESUMES it. Re-entering through
-    // `enterFreeRoam` would call `openFraming` again and throw away the mosaic
-    // and the angle the button is offering to adjust.
-    if (frame.set && frame.id === null && resumeFrame()) return;
-    if (model.patch) { enterFreeRoam(model.patch); return; }
-  };
 
   // ---- `#/sky?frame=1`, the way Rig > Mount's catalogue hands a row over ----
   //
@@ -696,6 +698,184 @@ export function SkyHub(): JSX.Element {
     // anything was framed. Say so rather than opening an empty FRAME mode.
     toastRef.current({ level: "info", title: FRAME_PARAM_NOTHING });
   }, [frameParam, clearFrameParam, resumeFrame]);
+
+  // ---- ATLAS mode ---------------------------------------------------------
+  //
+  // The fourth button on the toolbar. It swaps the finder box for the classic
+  // pannable survey canvas (`atlas/AtlasHost`) over the SAME framing session
+  // FRAME uses - the Atlas and FRAME have always been two doors onto one
+  // session (`frame/FrameHost`'s header says so), and ATLAS is the third.
+  //
+  // It is a MODE, not a route: `finder/prefs.ts SkyMode` gained `"atlas"`, so
+  // the phone remembers which of the four this device last chose, exactly as
+  // it already remembered AR CAMERA versus MAP.
+  const atlasOn = model.mode === "atlas";
+
+  // Which finder mode ATLAS came from, so leaving it goes BACK rather than to
+  // a mode the user never chose. Assigned during render (the same idiom
+  // `routeRef` uses above) because it has to be current inside a press handler
+  // that runs before any effect would have updated it.
+  const finderModeRef = useRef<"cam" | "map">("map");
+  if (model.mode !== "atlas") finderModeRef.current = model.mode;
+  const finderMode = finderModeRef.current;
+
+  // ATLAS always has a session to draw. `store.openFraming()` with NO entry is
+  // the classic free-roam door (`AtlasView.tsx:570`) and seeds exactly what the
+  // Atlas always seeded: the centre from the mount, the zoom from the optics,
+  // the survey from night mode. This covers the two ways into ATLAS that are
+  // not a button press - the persisted preference on a cold start, and the
+  // `?mode=atlas` deep link.
+  useEffect(() => {
+    if (atlasOn && useStore.getState().framing == null) openFraming();
+  }, [atlasOn, openFraming]);
+
+  // ---- `#/sky?mode=atlas`, where the classic Atlas lands -------------------
+  //
+  // `legacyBridge.ts` maps the classic `atlas` view onto this URL, so an old
+  // `#/atlas` bookmark and the classic root's own Atlas link both open the
+  // pannable sky instead of the schematic finder.
+  //
+  // IGNORED WHILE FRAME IS ON, and that is not a special case - it is this
+  // screen's own write coming back. `store.openFraming()` sets `view: "atlas"`,
+  // so pressing FRAME here travels out through the bridge and returns as this
+  // parameter a tick later; without the guard the FRAME button would drop the
+  // user into ATLAS instead.
+  //
+  // Consumed with `nav.replace`, exactly as `?lock=` and `?frame=1` are, and
+  // for the same two reasons: a later re-render would otherwise re-enter ATLAS
+  // after the user left it, and Back from the next screen would do it again.
+  const modeParam = route.params.mode ?? null;
+  const handledModeRef = useRef<string | null>(null);
+  const clearModeParam = useCallback(() => {
+    const r = routeRef.current;
+    const params = { ...r.params };
+    delete params.mode;
+    nav.replace(buildHash({ hub: r.hub, sub: r.sub, sheets: r.sheets, params }));
+  }, []);
+  const frameOnRef = useRef(frame.on);
+  frameOnRef.current = frame.on;
+  const setModeRef = useRef(model.setMode);
+  setModeRef.current = model.setMode;
+
+  useEffect(() => {
+    if (modeParam !== "atlas") { handledModeRef.current = null; return; }
+    if (handledModeRef.current === modeParam) return;
+    handledModeRef.current = modeParam;
+    clearModeParam();
+    if (frameOnRef.current) return;
+    setModeRef.current("atlas");
+  }, [modeParam, clearModeParam]);
+
+  const pressAtlas = useCallback(() => {
+    if (atlasOn) { model.setMode(finderMode); return; }
+    // Seeded in the SAME batch as the mode flip, so the canvas never renders a
+    // frame with nothing to draw on the way in.
+    if (useStore.getState().framing == null) openFraming();
+    model.setMode("atlas");
+  }, [atlasOn, finderMode, model, openFraming]);
+
+  /**
+   * LOCK IN FINDER - the round trip the classic Atlas never had.
+   *
+   * It aims through `#/sky?lock=<id>`, the same hash the targets sheet and the
+   * catalog search use, so a lock from the atlas ends in exactly the state a
+   * tap on the marker would (centred, tracked, auto-aim off) and an object the
+   * ranking does not carry gets the same one-line refusal instead of silence.
+   *
+   * MAP rather than `finderMode`: a lock is a thing you read off the reticle,
+   * and AR CAMERA needs the phone physically pointed at that patch of sky
+   * before it shows anything at all.
+   */
+  const lockInFinder = useCallback(() => {
+    const t = useStore.getState().framing?.target;
+    if (!t) return;
+    model.setMode("map");
+    nav.go(`/sky?lock=${encodeURIComponent(t.id)}`);
+  }, [model]);
+
+  /** A search result or a tapped marker: recentre the atlas on it and make it
+   *  the framed object, so LOCK IN FINDER and FRAME both name it. */
+  const atlasPick = useCallback(
+    (entry: CatalogEntry) =>
+      setFraming({ target: entry, center: { ra_hours: entry.ra_hours, dec_deg: entry.dec_deg } }),
+    [setFraming],
+  );
+
+  /**
+   * The same move from a marker on the canvas rather than a search result.
+   *
+   * `alt`/`az` are OMITTED rather than filled in, verbatim from
+   * `AtlasView.tsx:639-651`: the type declares them because `/api/catalog`
+   * attaches them for a caller holding `view.site_derived`, but the sky-region
+   * payload deliberately carries no such pair - a pannable map must not be a
+   * coordinate oracle for the rig's location. An absent field is honest; a 0
+   * would claim the object sits on the horizon due north. `mag: 99` is this
+   * app's existing "unmeasured" sentinel.
+   */
+  const atlasPickRow = useCallback(
+    (row: SkyRow | null) => {
+      if (!row) return;
+      atlasPick({
+        id: row.id,
+        name: row.label,
+        type: row.type,
+        ra_hours: row.ra_hours,
+        dec_deg: row.dec_deg,
+        mag: row.mag ?? 99,
+        size_arcmin: row.size_arcmin,
+      } as CatalogEntry);
+    },
+    [atlasPick],
+  );
+
+  /**
+   * Is the atlas centre above the horizon?
+   *
+   * FRAME needs a patch of SKY: below the horizon there is nothing to point a
+   * camera at, which is the same rule `frameReason` applies to the reticle. The
+   * survey itself is drawable anywhere, so this gates only the hand-off.
+   *
+   * With no site there is no claim to make, so the control stays live rather
+   * than refusing on arithmetic it cannot do.
+   */
+  const atlasFrameReason = useMemo(() => {
+    if (!framing || trackLat === null || trackLon === null) return null;
+    const { altDeg } = altAzOf(
+      framing.center.ra_hours, framing.center.dec_deg, trackLat, trackLon, modelNowMs / 1000,
+    );
+    return altDeg > 0 ? null : FRAME_NEEDS_AIM;
+  }, [framing, trackLat, trackLon, modelNowMs]);
+
+  /** FRAME from the atlas: back to the finder, framing what is on screen. The
+   *  mosaic grid, the rotation dial and the panel arithmetic all live in FRAME
+   *  mode, and they are the reason this button exists rather than a second copy
+   *  of them here. */
+  const atlasFrame = useCallback(() => {
+    model.setMode(finderMode);
+    resumeFrame();
+  }, [model, finderMode, resumeFrame]);
+
+  // In ATLAS the toolbar's FRAME button does what the atlas's own FRAME button
+  // does - hands the centre on screen to FRAME mode - so it reads FRAME rather
+  // than DONE, and refuses for the same reason (a centre below the horizon).
+  const frameLabel = model.mode === "atlas"
+    ? "FRAME"
+    : frame.on ? "DONE" : frame.set ? "ADJUST" : "FRAME";
+  // A patch of sky is enough now: free-roam is what the third branch below is.
+  const frameReason = model.mode === "atlas"
+    ? atlasFrameReason
+    : frame.on || lock || model.patch ? null : FRAME_NEEDS_AIM;
+  const onFramePress = () => {
+    if (model.mode === "atlas") { atlasFrame(); return; }
+    if (frame.on) { void finishFrame(); return; }
+    const t = lock ?? model.reachList[0];
+    if (t) { enterFrame(t, frame.set && frame.id === t.id); return; }
+    // ADJUST on a kept free-roam framing RESUMES it. Re-entering through
+    // `enterFreeRoam` would call `openFraming` again and throw away the mosaic
+    // and the angle the button is offering to adjust.
+    if (frame.set && frame.id === null && resumeFrame()) return;
+    if (model.patch) { enterFreeRoam(model.patch); return; }
+  };
 
   // ---- the plan summary the primary CTA prints ----------------------------
   //
@@ -888,6 +1068,11 @@ export function SkyHub(): JSX.Element {
   const arPossible = model.secureContext && (model.cameraSupported || model.gyroSupported);
   const showModeToggle = bp !== "desktop" || arPossible;
   const modeReason = model.secureContext ? null : SECURE_REASON;
+  /** Where the AR CAMERA / MAP button goes: out of ATLAS it returns to the
+   *  finder mode the user left; inside the finder it toggles the two. */
+  const modeTarget: "cam" | "map" = atlasOn
+    ? finderMode
+    : finderMode === "cam" ? "map" : "cam";
   const gyroReason = !model.secureContext
     ? SECURE_REASON
     : model.gyroSupported
@@ -912,6 +1097,72 @@ export function SkyHub(): JSX.Element {
     ? model.markers.find((m) => m.id === frame.id) ?? null
     : null;
 
+  // THE TOOLBAR AS A VALUE, because ATLAS needs it in a different place.
+  // At 390 px the pannable sky is taller than the viewport, so a toolbar left
+  // below it puts the only way OUT of the atlas off the bottom of the screen.
+  // It goes above the canvas in ATLAS and stays below the box everywhere else,
+  // where the finder is short enough that the design's own order holds.
+  const toolbar = (
+    <div style={{ display: "flex", gap: 8 }}>
+      {showModeToggle && (
+        // WHILE ATLAS IS ON this button is the way back, and it names the
+        // finder mode it will return to rather than toggling between the two
+        // - a user who went to the atlas from AR CAMERA gets AR CAMERA back.
+        // Outside ATLAS it is the same toggle it has always been: the label
+        // names the CURRENT mode and a press swaps to the other one.
+        <IconButton48
+          glyph={<SkyGlyph name={finderMode === "cam" ? "arcamera" : "map"} />}
+          label={finderMode === "cam" ? "AR CAMERA" : "MAP"}
+          active={model.mode === "cam"}
+          // Locked only when the press would actually OPEN the camera, which
+          // is the condition the reason names - not merely when the label
+          // says MAP. Coming back from ATLAS to MAP opens nothing.
+          lockedReason={modeTarget === "cam" ? modeReason : null}
+          onExplain={onExplain}
+          onPress={() => model.setMode(modeTarget)}
+          className="nx-sky-tool"
+          data-testid="sky-mode"
+        />
+      )}
+      <IconButton48
+        glyph={<SkyGlyph name="frame" />}
+        label={frameLabel}
+        active={frame.on || frame.set}
+        lockedReason={frameReason}
+        onExplain={onExplain}
+        onPress={onFramePress}
+        className="nx-sky-tool"
+        data-testid="sky-frame"
+      />
+      <IconButton48
+        glyph={<SkyGlyph name="gyro" />}
+        label="GYRO"
+        active={model.gyro}
+        lockedReason={gyroReason}
+        onExplain={onExplain}
+        onPress={() => model.toggleGyro()}
+        className="nx-sky-tool"
+        data-testid="sky-gyro"
+      />
+      {/* NEVER LOCKED, and that is a fact about the server rather than a
+          decision: the three requests behind the atlas -
+          `/api/survey/tile/...`, `/api/survey/cutout.jpg` and
+          `/api/survey/pack` - are all `view.status`, and it needs no site, no
+          target and no connected device. A viewer on a rig with nothing
+          plugged in gets the same sky an admin does, which is the whole
+          reason the classic Atlas was reachable before anything was set up.*/}
+      <IconButton48
+        glyph={<SkyGlyph name="atlas" />}
+        label="ATLAS"
+        active={atlasOn}
+        onExplain={onExplain}
+        onPress={pressAtlas}
+        className="nx-sky-tool"
+        data-testid="sky-atlas-mode"
+      />
+    </div>
+  );
+
   return (
     <div data-testid="hub-sky" style={{ display: "flex", flexDirection: "column", gap: 10, minWidth: 0 }}>
       {!equipConnected && <BrowseBanner />}
@@ -923,6 +1174,8 @@ export function SkyHub(): JSX.Element {
         onDome={onDome}
       />
 
+      {atlasOn && toolbar}
+
       <div
         ref={wrapRef}
         style={{ position: "relative", minWidth: 0 }}
@@ -931,7 +1184,44 @@ export function SkyHub(): JSX.Element {
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
       >
-        {frame.on && framing ? (
+        {atlasOn ? (
+          // ATLAS wins over FRAME while it is on. The framing session is left
+          // exactly as it was, so MAP (or the atlas's own FRAME button) puts
+          // the mosaic and the angle back where the user left them - ATLAS
+          // suspends FRAME, it never ends it.
+          framing && (
+            <AtlasHost
+              framing={framing}
+              optics={mergedOptics}
+              night={night}
+              mode={frameMode}
+              imageBrightness={surveyBright}
+              surveyDegraded={surveyDegraded}
+              onlineFetch={onlineFetch}
+              mount={status?.mount ?? null}
+              rotator={status?.rotator ?? null}
+              pointingWhere={status?.mount ? `${status.mount.ra_str} ${status.mount.dec_str}` : null}
+              skyRows={region.rows}
+              region={{ degraded: region.degraded, truncated: region.truncated, error: region.error }}
+              selectedObjectId={framing.target?.id ?? null}
+              onPick={atlasPick}
+              onPickRow={atlasPickRow}
+              onCenterChange={(ra, dec) => setFraming({ center: { ra_hours: ra, dec_deg: dec } })}
+              onRotate={(deg) => setFraming({ rotation_deg: deg })}
+              onZoom={(f) => setFraming({ fovZoomDeg: f })}
+              onSurveyError={() => setSurveyDegraded(true)}
+              onSurveyLoad={() => setSurveyDegraded(false)}
+              // The SKY DATA sheet is Settings' own, so this NAVIGATES there the
+              // way the finder's optics and connection notes do rather than
+              // pulling another hub's sheet on top of the Sky hub.
+              onSurveySource={() => nav.go("/settings/general/skyPack")}
+              onLockInFinder={lockInFinder}
+              onFrame={atlasFrame}
+              frameReason={atlasFrameReason}
+              onExplain={onExplain}
+            />
+          )
+        ) : frame.on && framing ? (
           <FrameHost
             framing={framing}
             optics={mergedOptics}
@@ -985,40 +1275,7 @@ export function SkyHub(): JSX.Element {
         )}
       </div>
 
-      <div style={{ display: "flex", gap: 8 }}>
-        {showModeToggle && (
-          <IconButton48
-            glyph={<SkyGlyph name={model.mode === "cam" ? "arcamera" : "map"} />}
-            label={model.mode === "cam" ? "AR CAMERA" : "MAP"}
-            active={model.mode === "cam"}
-            lockedReason={model.mode === "map" ? modeReason : null}
-            onExplain={onExplain}
-            onPress={() => model.setMode(model.mode === "cam" ? "map" : "cam")}
-            className="nx-sky-tool"
-            data-testid="sky-mode"
-          />
-        )}
-        <IconButton48
-          glyph={<SkyGlyph name="frame" />}
-          label={frameLabel}
-          active={frame.on || frame.set}
-          lockedReason={frameReason}
-          onExplain={onExplain}
-          onPress={onFramePress}
-          className="nx-sky-tool"
-          data-testid="sky-frame"
-        />
-        <IconButton48
-          glyph={<SkyGlyph name="gyro" />}
-          label="GYRO"
-          active={model.gyro}
-          lockedReason={gyroReason}
-          onExplain={onExplain}
-          onPress={() => model.toggleGyro()}
-          className="nx-sky-tool"
-          data-testid="sky-gyro"
-        />
-      </div>
+      {!atlasOn && toolbar}
 
       {(model.cameraError || model.gyroError) && (
         <Card tone="dashed" data-testid="sky-sensor-note">
@@ -1063,7 +1320,12 @@ export function SkyHub(): JSX.Element {
         </Card>
       )}
 
-      {frame.on && framing && (
+      {/* The FRAME cluster belongs to the FINDER's framing session. ATLAS
+          suspends it rather than ending it, so these come back untouched the
+          moment the user leaves the atlas - but a mosaic grid and a rotation
+          dial under a whole-sky canvas would be controls for a rectangle that
+          is not on screen. */}
+      {frame.on && framing && !atlasOn && (
         <>
           <FrameTools
             fovZoomDeg={framing.fovZoomDeg}
@@ -1113,7 +1375,12 @@ export function SkyHub(): JSX.Element {
         </>
       )}
 
-      {lock ? (
+      {/* THE RETICLE'S THREE CARDS. Every one of them answers a question
+          about what is under the reticle - what is locked, what else is in
+          reach, what to do with it - and in ATLAS there is no reticle on
+          screen at all. They are one press of MAP away, which is where the
+          reticle they describe also is. */}
+      {!atlasOn && (lock ? (
         <LockCard
           lock={lock}
           equipConnected={equipConnected}
@@ -1147,12 +1414,14 @@ export function SkyHub(): JSX.Element {
           imageReason={capture.lockedReason}
           onExplain={onExplain}
         />
-      )}
+      ))}
 
-      <ReachStrip
-        reachList={model.reachList}
-        onAim={(t) => model.setView({ az: t.azNow, alt: t.altNow, trackId: t.id })}
-      />
+      {!atlasOn && (
+        <ReachStrip
+          reachList={model.reachList}
+          onAim={(t) => model.setView({ az: t.azNow, alt: t.altNow, trackId: t.id })}
+        />
+      )}
 
       {/* LAST, and below the reach strip, which is where the design's stack
           ends. It is the only card on this screen that answers a question about

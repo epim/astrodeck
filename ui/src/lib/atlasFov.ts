@@ -284,7 +284,7 @@ export function pointingFov(inp: PointingInputs, g: AtlasViewGeom): PointingRead
     caveatTone = "note";
   } else if (!rot.synced) {
     caveat =
-      "The rotator has never been synced to the sky, so its reading is mechanical only — plate-solve and sync to place the frame.";
+      "The rotator has never been synced to the sky, so its reading is mechanical only - plate-solve and sync to place the frame.";
     caveatTone = "fix";
   } else if (!paKnown) {
     caveat = "The rotator didn't report an angle in this update, so the frame's orientation is unknown right now.";

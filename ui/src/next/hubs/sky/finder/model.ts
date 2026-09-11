@@ -1321,7 +1321,12 @@ export function useSkyModel(boxPx: number): SkyModel {
   const setMode = useCallback((m: SkyMode) => {
     setModeState(m);
     prefs.setMode(m);
-    if (m === "map") setCameraError(null);
+    // Every mode that is NOT the camera clears the camera's error, not just
+    // MAP. ATLAS leaves the camera exactly as MAP does (the effect above tears
+    // the stream down for any `mode !== "cam"`), so a stale "camera refused"
+    // note surviving into the atlas would describe a device nothing on screen
+    // is asking for.
+    if (m !== "cam") setCameraError(null);
   }, []);
 
   const toggleGyro = useCallback(() => {

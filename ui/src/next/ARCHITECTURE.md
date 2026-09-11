@@ -74,7 +74,8 @@ ui/src/next/
     sky/       SkyHub.tsx + finder/* (SkyView, model, camera, gyro, projection,
                equatorial, gestures, targets, clouds, wind, track, prefs), frame/*
                (FrameHost, FrameTools, FramingCard, FramedOverlay, MosaicNightCard,
-               SurveyPopover, mosaic, zoom, degraded), cards/* (LockCard, LensDial,
+               SurveyPopover, mosaic, zoom, degraded), atlas/* (AtlasHost +
+               atlas.css - ATLAS mode's full-frame pannable sky), cards/* (LockCard, LensDial,
                LayersPopover, ReachStrip, StatusRow, BrowseBanner, PatchCard, glyphs,
                lockCta), sheets/* (targets, sites, horizon, coords, quick, flow, brief,
                photosphere + their model/copy/lane helper modules)
@@ -587,7 +588,11 @@ than the plot); the token-driven monitor surfaces (`Sparkline`,
 rest of `components/monitor`, plus `HoldButton`, the confirm mechanism
 `shell/ConfirmCard` reuses); the Sky/Atlas renderer and its search widget
 (`components/atlas/SkyCanvas`'s WebGL HiPS tiles,
-`components/atlas/CatalogSearch`); the mount pad and goto strip
+`components/atlas/CatalogSearch`) - mounted at THREE sites as of this
+revision, since `hubs/sky/atlas/AtlasHost.tsx` (ATLAS mode, the classic
+pannable sky's only door in the new UI) joined `views/AtlasView` and
+`hubs/sky/frame/FrameHost` on the one renderer rather than drawing a second
+sky; the mount pad and goto strip
 (`components/SlewPad`, `components/GotoStrip` - already the design's own
 D-pad and strip); the polar reticle, quick bar and solve ring
 (`components/polar`'s `PolarReticle` plus its tier/instruction/knob helpers,

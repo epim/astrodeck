@@ -16,7 +16,7 @@
 
 import type { JSX } from "react";
 
-export type SkyGlyphName = "arcamera" | "map" | "frame" | "gyro" | "plan";
+export type SkyGlyphName = "arcamera" | "map" | "frame" | "gyro" | "plan" | "atlas";
 
 const COMMON = {
   viewBox: "0 0 24 24",
@@ -63,6 +63,21 @@ export function SkyGlyph({ name, size = 20 }: { name: SkyGlyphName; size?: numbe
         </>
       )}
       {name === "plan" && <path d="M4 6h10M4 12h10M4 18h7M17 9v8M13 13h8" strokeWidth={1.7} />}
+      {/* ATLAS - a star chart inside a disc, transcribed from the classic icon
+          set's own `atlas` glyph (`components/icons.tsx:46`) so both roots draw
+          the same thing for the same screen. Deliberately NOT the `map` globe:
+          the two sit next to each other in the toolbar, and a second set of
+          meridians would make the fourth mode look like a variant of the
+          second rather than a different sky. */}
+      {name === "atlas" && (
+        <>
+          <circle cx="12" cy="12" r="8.8" />
+          <path d="M8 9.6l6-3M14 6.6l1.6 8.2M8 9.6l7.6 5.2" />
+          <circle cx="8" cy="9.6" r="1.2" fill="currentColor" stroke="none" />
+          <circle cx="14" cy="6.6" r="1.2" fill="currentColor" stroke="none" />
+          <circle cx="15.6" cy="14.8" r="1.2" fill="currentColor" stroke="none" />
+        </>
+      )}
     </svg>
   );
 }
