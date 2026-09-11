@@ -394,3 +394,26 @@ Two additions, both needed to drive `routes_next.json`:
   `server_ctl.py`, not arbitrary new JSON files. Unknown names match
   nothing rather than erroring, since a caller may reuse `--only` against a
   route file that does not have every name.
+
+## `probe.py` extension: the 16x16 visibility floor (2026-09-10)
+
+Measured escape: every `Dial` on the mount sheet (`#/rig/devices/mount` at
+820px) shipped invisible -- `.nx-dial { overflow: hidden }` zeroed a flex
+item's automatic min-height inside `.nx-sheet-body`'s flex column, so the
+control shrank to its 2px border while its own children measured 79px --
+and the probe never caught it, because Playwright's `is_visible()` only asks
+whether an element is rendered and non-zero-size, not whether it is big
+enough to be the control it claims to be. A `testid` or `marker` now only
+counts as visible if its bounding box is at least 16 x 16 CSS pixels in BOTH
+dimensions (`MIN_VISIBLE_PX`, `_box_for` / `_large_enough` in `probe.py`); a
+match that is present, `is_visible() == True`, and still under that floor
+fails the route with a reason naming the exact measured box (e.g. `testid
+'mount-dial' is 2px tall - present but collapsed (box 328 x 2px, need >= 16
+x 16px)`), and both `report.jsonl` and the returned result dict now carry
+the measured box under `"testid_box"` / `"marker_box"` (`{"width":
+..., "height": ...}`, or `null` when nothing visible ever appeared) so a
+collapse can be read straight from the report without re-running the probe
+headed. This gate applies only to the load-bearing `testid`/`marker`
+assertion, not to nav clicks (`_run_clicks`/`_visible_matches`), which stay
+size-agnostic on purpose -- a click target's own actionability check is
+Playwright's, not this harness's, job.
