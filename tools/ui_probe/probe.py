@@ -62,7 +62,7 @@ FORBIDDEN_SUBSTRINGS = ["sign in to control", "display disconnected"]
 MIN_BODY_CHARS = 200
 WORDMARK = "ASTRODECK"
 
-# A marker or testid used to count as "visible" the instant Playwright's own
+# A testid used to count as "visible" the instant Playwright's own
 # is_visible() said so -- true for a 0-opacity element AND for one collapsed
 # to a couple of pixels by layout (measured 2026-09-10: every Dial on the
 # mount sheet at 820px had a 328 x 2 px box, its own children taller than
@@ -71,12 +71,28 @@ WORDMARK = "ASTRODECK"
 # ui/src/next/next.css and shellCss.test.ts). Playwright's is_visible() does
 # not look at size at all, so this shipped on every route and every width
 # without failing the probe. MIN_VISIBLE_PX is the floor below which a
-# "visible" element is almost certainly a collapsed control rather than a
-# small-but-real one -- 16px is smaller than any real tap target or readout
-# in this UI (the smallest deliberate glyph is the 44px touch target's own
-# icon), so it flags a genuine collapse without flagging legitimate small
-# elements.
+# "visible" TESTID element is almost certainly a collapsed control rather
+# than a small-but-real one -- 16px is smaller than any real tap target or
+# readout in this UI (the smallest deliberate glyph is the 44px touch
+# target's own icon), so it flags a genuine collapse without flagging
+# legitimate small elements.
+#
+# This 16x16 rule applies ONLY to `"testid"` checks -- the controls the new
+# UI (`next.css`/`ui/src/next/**`) emits. It does NOT apply to text
+# `"marker"` checks: a marker matches PROSE (a heading, a nav caption, a
+# panel title), and legitimate prose is routinely under 16px tall -- e.g.
+# `#/classic`'s "Equipment" marker matches the desktop rail's small nav-icon
+# caption, measured 63.8 x 13.5 px, which is real, on-screen, and correctly
+# sized text, not a collapsed control (found 2026-09-10 when the 16x16 rule
+# was first applied to markers too and false-failed this route). Markers
+# instead use MIN_MARKER_HEIGHT_PX: visibility must hold (Playwright's own
+# is_visible(), as before) AND the box must clear a much lower height floor,
+# just enough to catch a genuinely zero/near-zero-height text node (the same
+# defect SHAPE as the dial, applied to text) without flagging real small
+# captions. Width is not checked for markers at all -- a narrow but readable
+# word is not a defect.
 MIN_VISIBLE_PX = 16
+MIN_MARKER_HEIGHT_PX = 8
 
 
 def _box_for(el) -> dict[str, float] | None:
@@ -92,10 +108,18 @@ def _box_for(el) -> dict[str, float] | None:
 
 
 def _large_enough(box: dict[str, float] | None, min_px: int = MIN_VISIBLE_PX) -> bool:
-    """A box counts as genuinely visible only if BOTH dimensions clear
-    MIN_VISIBLE_PX -- a 328 x 2 px box (the measured dial defect) is wide
-    enough to look fine in a width-only check and must fail on height."""
+    """TESTID rule: a box counts as genuinely visible only if BOTH dimensions
+    clear MIN_VISIBLE_PX -- a 328 x 2 px box (the measured dial defect) is
+    wide enough to look fine in a width-only check and must fail on height."""
     return box is not None and box["width"] >= min_px and box["height"] >= min_px
+
+
+def _tall_enough(box: dict[str, float] | None, min_px: int = MIN_MARKER_HEIGHT_PX) -> bool:
+    """MARKER rule: a text box only has to clear a low height floor -- wide
+    enough to still allow a genuinely small-but-real caption (see
+    MIN_MARKER_HEIGHT_PX above) while still failing a zero/near-zero-height
+    text node. No width check: a narrow word is not a defect."""
+    return box is not None and box["height"] >= min_px
 
 
 def _viewport_for(width: int) -> dict[str, Any]:
@@ -154,12 +178,13 @@ def _visible_matches(page, text: str, exact: bool = False) -> list:
 
 def _wait_for_visible_text(page, text: str, timeout_ms: int = 8000,
                             poll_ms: int = 200) -> tuple[Any | None, dict[str, float] | None]:
-    """Polls for a marker that is both VISIBLE and at least MIN_VISIBLE_PX
-    square. Returns (element, box):
+    """Polls for a marker that is both VISIBLE and at least
+    MIN_MARKER_HEIGHT_PX tall (the MARKER rule -- text, not a control; see
+    the comment on MIN_MARKER_HEIGHT_PX). Returns (element, box):
       - (None, None)   -- no visible match ever appeared at all
       - (element, box) -- a visible match appeared; the caller must still
-        check `_large_enough(box)`, because a match that is visible but
-        never grows past MIN_VISIBLE_PX is returned here too (as the last
+        check `_tall_enough(box)`, because a match that is visible but
+        never clears MIN_MARKER_HEIGHT_PX is returned here too (as the last
         visible-but-collapsed match seen), so the caller can report the
         measured box instead of a bare "not found"."""
     deadline = time.monotonic() + timeout_ms / 1000.0
@@ -170,7 +195,7 @@ def _wait_for_visible_text(page, text: str, timeout_ms: int = 8000,
         if matches:
             last_el = matches[0]
             last_box = _box_for(last_el)
-            if _large_enough(last_box):
+            if _tall_enough(last_box):
                 return last_el, last_box
         page.wait_for_timeout(poll_ms)
     return last_el, last_box
@@ -485,13 +510,19 @@ def _run_route(page, base: str, route: dict, out_dir: Path, width: int) -> dict:
                 marker_ok = False
                 reasons.append(f"marker {marker!r} not visible after clicks "
                                f"(click log: {click_log})")
-            elif not _large_enough(marker_box):
+            elif not _tall_enough(marker_box):
+                # MARKER rule (not the testid 16x16 rule): a marker matches
+                # PROSE, and legitimate prose is routinely under 16px tall
+                # (e.g. a nav-icon caption), so a marker only has to clear a
+                # low height floor -- just enough to catch a genuinely
+                # zero/near-zero-height text node, same defect SHAPE as the
+                # dial, without flagging real small captions.
                 marker_ok = False
                 h = marker_box["height"] if marker_box else "?"
                 w = marker_box["width"] if marker_box else "?"
                 reasons.append(
                     f"marker {marker!r} is {h}px tall - present but collapsed "
-                    f"(box {w} x {h}px, need >= {MIN_VISIBLE_PX} x {MIN_VISIBLE_PX}px; "
+                    f"(box {w} x {h}px, need >= {MIN_MARKER_HEIGHT_PX}px tall; "
                     f"click log: {click_log})")
             else:
                 marker_ok = True
