@@ -1,6 +1,6 @@
 """A compiled flow, as something ``SequenceEngine`` can actually run.
 
-``compile_plan`` produces the README's documented five-key dict — the shape the
+``compile_plan`` produces the README's documented five-key dict - the shape the
 PLAN tab renders verbatim and ``resolve_tonight`` reads. ``SequencePlan`` is a
 different shape entirely. This module is the seam between them, and it exists as
 its own module rather than inside either one because both ``/compile`` and
@@ -24,8 +24,8 @@ that kept shooting through an overcast.
 
 WHAT IS NOT DECIDED HERE
 ------------------------
-Whether an unmapped item should BLOCK a run. This function is pure — it has no
-devices, no config and no clock beyond the one passed in — and "is there
+Whether an unmapped item should BLOCK a run. This function is pure - it has no
+devices, no config and no clock beyond the one passed in - and "is there
 actually a roof over this telescope" is not a question it can answer. It
 classifies and reports; the route decides. See ``blocking_reasons``.
 """
@@ -45,7 +45,7 @@ from .tonight import catalog_coords
 LEGAL_TRIGGERS: frozenset[str] = frozenset(TriggerKind.__args__)
 LEGAL_ACTIONS: frozenset[str] = frozenset(ActionKind.__args__)
 
-#: Triggers that answer with a VERDICT, not a measurement — so a threshold means
+#: Triggers that answer with a VERDICT, not a measurement - so a threshold means
 #: nothing to them.
 #:
 #: `_eval_predicate` reads ``threshold`` for ``hfr_above`` and
@@ -58,7 +58,7 @@ BOOLEAN_TRIGGERS: frozenset[str] = frozenset(
 
 #: Flow node types that ``compile_plan`` reads. Everything else in a graph is
 #: walked by ``flow_order`` and contributes nothing to the compiled dict, so its
-#: parameters are inert — see :func:`inert_nodes`.
+#: parameters are inert - see :func:`inert_nodes`.
 COMPILED_NODE_TYPES: frozenset[str] = frozenset(
     {"target", "pool", "capture", "dusk", "dome", "duskflats", "calib",
      "cycle"})
@@ -212,7 +212,7 @@ def _note(key: str, detail: str, level: Level = "warn", *,
     answered by some other part of the engine.
 
     ``level`` reuses ``doctor.Issue``'s vocabulary so the editor has ONE
-    severity scale — an operator should not have to learn that a doctor warning
+    severity scale - an operator should not have to learn that a doctor warning
     and an adapter warning mean different things.
 
     ``carried`` / ``ignored`` / ``source`` are the three OPTIONAL fields that
@@ -453,7 +453,7 @@ NODE_SETTINGS: dict[str, SettingsNote] = {
 
 
 class GraphNotRunnable(ValueError):
-    """The graph cannot become a plan at all — an operator error, not a bug.
+    """The graph cannot become a plan at all - an operator error, not a bug.
 
     Distinct from an unmapped item: unmapped means "this ran without that",
     while this means "there is nothing here to run". The route maps it to a 422
@@ -473,7 +473,7 @@ def _target_schedule(base: dict, entry: dict, *, is_pool: bool) -> dict:
 
     Two sources merge here. The DUSK WINDOW node's block applies to the whole
     night; a POOL member's constraints apply to that member. WHERE THEY
-    DISAGREE THE POOL WINS, because it is the more specific statement — an
+    DISAGREE THE POOL WINS, because it is the more specific statement - an
     operator who set a 30 degree floor on the night and 40 on one candidate
     meant 40 for that candidate.
     """
@@ -655,7 +655,7 @@ def _instructions(compiled: dict, out: list[dict]) -> list[dict]:
             if trigger == "on_hfr_above" and rule.get("relative"):
                 # GN-08: the CONDITION node's "HFR above (x focus)" form. The
                 # SAME 1.0 < factor <= 5.0 bound `Instruction` enforces at the
-                # model layer is checked here first — a rule that failed it
+                # model layer is checked here first - a rule that failed it
                 # would otherwise reach `SequencePlan.model_validate` and turn
                 # a bad canvas value into an unhandled ValidationError at
                 # /run, instead of a note on the PLAN tab like every other
@@ -686,8 +686,8 @@ def _instructions(compiled: dict, out: list[dict]) -> list[dict]:
                 # rule is to report ambiguity rather than resolve it.
                 key = f"instructions[{trigger}].threshold"
                 # ONCE PER TRIGGER, not once per rule. A CLOUD WATCH node's
-                # `in` port usually feeds several destinations — the hold AND
-                # the notify, in the shipped example — and each compiles to its
+                # `in` port usually feeds several destinations - the hold AND
+                # the notify, in the shipped example - and each compiles to its
                 # own rule carrying the same dead dial. Printed per rule, the
                 # operator sees the identical sentence twice and learns to skim
                 # a list whose whole value is that every line is news.
@@ -912,7 +912,7 @@ def inert_nodes(graph: FlowGraph | None) -> list[dict]:
 #:
 #: The loop above cannot see these: it skips every type in
 #: ``COMPILED_NODE_TYPES`` wholesale, on the reasoning that a compiled node's
-#: params arrive. Mostly true, and for `reject` it is false — which made this
+#: params arrive. Mostly true, and for `reject` it is false - which made this
 #: the one dropped setting with NOTHING anywhere saying so, while
 #: `tonight.py`'s brief went on promising it by name and by number ("a sub is
 #: graded and only counts below HFR 3.5in"). A silent loss under a list whose
@@ -984,7 +984,7 @@ def plan_extras(compiled: dict) -> dict:
     # Not a policy invented here: the Tonight timeline has always closed with
     # "Dawn: loop ends, mount parks, camera warms", unconditionally, for every
     # flow. The plan just never carried it, so the preview promised a park that
-    # `park_when_done=False` guaranteed would not happen — a claim nothing
+    # `park_when_done=False` guaranteed would not happen - a claim nothing
     # keeps, told to the one operator who is asleep when it comes due.
     #
     # Unconditional because the flow vocabulary has no node for "deliberately
@@ -1077,9 +1077,9 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
         # This used to read 0 as the sentinel, on the reasoning that 0 is what an
         # untouched field compiles to and that "a wrong None costs an operator
         # who really wanted PA 0 an unconstrained angle". Both halves were
-        # wrong-headed: PA 0 is a perfectly ordinary answer — it is north up,
+        # wrong-headed: PA 0 is a perfectly ordinary answer - it is north up,
         # the angle most people frame at and the one a mosaic is planned around
-        # — and a field whose most common value cannot be expressed is a field
+        # - and a field whose most common value cannot be expressed is a field
         # that lies. It also cost every flow a permanent advisory line, because
         # the warning fired on the DEFAULT.
         #
@@ -1157,7 +1157,7 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
         # THE NIGHT HAS NO TEMPERATURE, AND THE EDITOR IS WHERE TO SAY IT.
         #
         # The engine warns at run start (`_warn_if_the_run_has_no_temperature`),
-        # which is what caught this on 2026-08-22 — 80 minutes and 19 frames at
+        # which is what caught this on 2026-08-22 - 80 minutes and 19 frames at
         # +23 °C against a -10 °C library. A line in a log at 22:00 is worth
         # less than a line on the canvas at 19:00, and this list is already the
         # thing the PLAN tab draws before anyone presses Run.
@@ -1166,7 +1166,7 @@ def to_sequence_plan(compiled: dict, graph: FlowGraph | None = None, *,
         # with "parts of this flow do not survive the compile", and refusing
         # here would block an intentionally uncooled night on a rig whose
         # vocabulary cannot express cooling in the first place. A note is the
-        # level for "worth reading, not worth blocking on" — the same reason
+        # level for "worth reading, not worth blocking on" - the same reason
         # HOLD_HONOURED and the redundant ports use it.
         unmapped.append(_note(
             "cooling.setpoint_c",
