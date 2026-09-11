@@ -108,6 +108,7 @@ const { createRoot } = await import("react-dom/client");
 const { useStore } = await import("../../../../store");
 const { MountSheet, FLOW_OWNS_MOUNT, SENDING_REASON, fmtArcmin, fmtFlipIn, polarRowSub } =
   await import("../sheets/mount");
+const { accessPhrase } = await import("../../../../lib/caps");
 
 // ------------------------------------------------------------------ harness
 let passed = 0;
@@ -156,6 +157,19 @@ function mountStatus(over: Record<string, unknown> = {}) {
       status: "counting", hours_to_flip: 1.63, flip_enabled: true, pier_side: "east",
     },
   };
+}
+
+/** A viewer's status frame: the server REMOVES `mount.alt`/`mount.az`
+ *  (`api/redact.py` `_MOUNT_DERIVED_KEYS`) for a principal without
+ *  `view.site_derived` - absent, not nulled - while RA/Dec stay. Built from
+ *  `mountStatus()` with the two keys deleted, not set to `undefined`, so the
+ *  fixture matches what the wire actually sends. */
+function viewerMountStatus(): ReturnType<typeof mountStatus> {
+  const s = mountStatus();
+  const mount = { ...(s.mount as Record<string, unknown>) };
+  delete mount.alt;
+  delete mount.az;
+  return { ...s, mount } as ReturnType<typeof mountStatus>;
 }
 
 function seed(over: Record<string, unknown> = {}): void {
@@ -336,6 +350,30 @@ test("the header live line and the tiles carry the rig's own numbers", () => {
     "the POINTING tile drops the reason the pointing is not verified");
   assert(/offset from target · 2\.4′/.test(text()) && /measured at the last solve/.test(text()),
     "the offset readout does not show the last solve's measured error");
+});
+
+// The redaction seam (`api/redact.py` `_MOUNT_DERIVED_KEYS`) removes
+// `mount.alt`/`mount.az` for a principal without `view.site_derived` while
+// RA/Dec stay - the mount node is still there, just missing two keys. A
+// template that still does `${m.alt}deg / ${m.az}deg` prints the literal
+// string "undefined" on screen instead of admitting the tile is hidden.
+// Sabotage: put the plain template back.
+test("a viewer's ALT / AZ tile says hidden, not undefined", () => {
+  seed({ principal: VIEWER, status: viewerMountStatus() });
+  mount();
+  const tile = q('[data-testid="tile-altaz"]');
+  assert(tile != null, "no ALT / AZ tile at all");
+  const tileText = tile.textContent || "";
+  assert(!/undefined/.test(tileText), `the tile prints undefined: ${tileText}`);
+  assert(/hidden/.test(tileText), `the tile does not say hidden: ${tileText}`);
+  assert(tileText.includes(`needs ${accessPhrase("view.site_derived")}`),
+    `the tile does not name what it needs: ${tileText}`);
+  // The rest of the sheet is unaffected: RA/Dec is not redacted, and the
+  // tile's OWN normal-case sub (`RA ... Dec ...`) is untouched - this fixture
+  // just has no alt/az to show it against.
+  assert(!/undefined/.test(text()), `the whole screen prints undefined: ${text()}`);
+  seed();
+  mount();
 });
 
 // ====================================================== 2. the TRACKING write

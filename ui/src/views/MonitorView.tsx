@@ -721,7 +721,7 @@ export default function MonitorView() {
               {!canRun && (
                 <p className="text-[11px] text-dim mt-2 inline-flex items-center gap-1.5">
                   <Icon name="lock" size={11} />
-                  View only — pausing, resuming or aborting this run needs{" "}
+                  View only - pausing, resuming or aborting this run needs{" "}
                   {accessPhrase("control.mount")}.
                 </p>
               )}

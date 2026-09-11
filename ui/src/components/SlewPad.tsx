@@ -526,7 +526,7 @@ export default function SlewPad(props: SlewPadProps = {}) {
               inert (W2.5 — disabled, never 403-on-tap). */}
           {!canMount && (
             <p className="text-[12px] text-warn text-center mb-2 tracking-wide">
-              View only — slewing needs {accessPhrase("control.mount")}.
+              View only - slewing needs {accessPhrase("control.mount")}.
             </p>
           )}
           {/* ---- pad grid: N on top, W [rate] E, S on bottom (R-§4.4) ---- */}
