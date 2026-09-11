@@ -144,13 +144,26 @@ export function setLayers(v: LayerPrefs): void {
 }
 
 // ------------------------------------------------------------------- mode
-export type SkyMode = "cam" | "map";
+/**
+ * The three things the Sky hub's box can be.
+ *
+ * `atlas` is the fourth toolbar button (MAP / FRAME / GYRO / ATLAS) and mounts
+ * the classic pannable survey canvas full-frame. It is a MODE rather than a
+ * route because it is a way of looking at the same screen, and it is persisted
+ * here with the other two for the same reason they are: which of them a phone
+ * opens in is a property of that phone (a tablet on the desk wants the atlas,
+ * a phone in the field wants the reticle), it never reaches the engine, and it
+ * would mean nothing to a second client. Nothing about the rig is stored -
+ * only which view this device last chose.
+ */
+export type SkyMode = "cam" | "map" | "atlas";
 
 /** The default differs by device, so the caller passes it: a phone opens in AR,
- *  a desktop has no camera worth pointing at the sky and opens in MAP. */
+ *  a desktop has no camera worth pointing at the sky and opens in MAP. ATLAS is
+ *  never a default - it is only ever a choice this phone made. */
 export function getMode(fallback: SkyMode): SkyMode {
   const raw = readRaw(K.mode);
-  return raw === "cam" || raw === "map" ? raw : fallback;
+  return raw === "cam" || raw === "map" || raw === "atlas" ? raw : fallback;
 }
 
 export function setMode(v: SkyMode): void {

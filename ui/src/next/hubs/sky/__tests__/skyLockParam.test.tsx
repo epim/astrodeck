@@ -22,6 +22,25 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+// ------------------------------------------------------------------ css stub
+// `SkyHub` reaches `hubs/sky/atlas/AtlasHost.tsx`, which imports `atlas.css`
+// (the r7Css rule: every area owns a stylesheet and a module of that area
+// imports it). Node has no idea what a `.css` file is, so a synchronous load
+// hook answers with an empty module - the same stub `shellDom.test.tsx` and
+// every other area's DOM test already use.
+{
+  const { registerHooks } = await import("node:module");
+  registerHooks({
+    load(url: string, context: any, nextLoad: any) {
+      if (url.endsWith(".css")) {
+        return { format: "module", shortCircuit: true, source: "export default {};" };
+      }
+      return nextLoad(url, context);
+    },
+  } as any);
+}
+
+
 import type { SkyTarget } from "../finder";
 
 // ---------------------------------------------------------------- jsdom first
