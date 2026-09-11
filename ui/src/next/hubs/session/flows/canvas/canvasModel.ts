@@ -314,6 +314,133 @@ export function checksLabel(openChecks: number): string {
   return openChecks === 1 ? "1 OPEN CHECK" : `${openChecks} OPEN CHECKS`;
 }
 
+/** What the pill says when the graph it graded is not the graph RUN would
+ *  execute.
+ *
+ *  `flowsCompile` posts the DRAFT (`flowsApi.compileDraft(graph, name)`), while
+ *  `POST /api/flows/{id}/run` compiles the STORED record. With unsaved edits
+ *  those are two different graphs, so a bare GRAPH VALID would be a claim about
+ *  a flow nobody can start. The prefix says which one was graded; RUN is locked
+ *  meanwhile (see {@link unsavedRunReason}), so the two controls agree. */
+export const CHECKS_DRAFT_PREFIX = "DRAFT: ";
+
+/** The pill's whole text: unknown, the draft's verdict, or the stored flow's. */
+export function checksWord(checked: boolean, openChecks: number, dirty: boolean): string {
+  if (!checked) return CHECKS_UNKNOWN;
+  return dirty ? `${CHECKS_DRAFT_PREFIX}${checksLabel(openChecks)}` : checksLabel(openChecks);
+}
+
+/** The pill's tone. GOOD is reserved for "the flow RUN would start is clean":
+ *  with unsaved edits a clean draft is dim, not green, because green here has
+ *  always meant "safe to press RUN". */
+export function checksTone(checked: boolean, openChecks: number, dirty: boolean): Tone {
+  if (!checked) return "dim";
+  if (openChecks > 0) return "warn";
+  return dirty ? "dim" : "good";
+}
+
+/** The popover's sentence while the checks describe the draft. */
+export const CHECKS_DRAFT_WHY =
+  "These checks are on the graph as drawn. RUN starts the SAVED flow, so save first "
+  + "and they describe what the rig will do.";
+
+// --------------------------------------------------------- saving and running
+
+/** The state word beside SAVE. Three states, three WORDS: an absence cannot say
+ *  "your edits are stored", and a colour cannot say it either. */
+export const SAVE_STATE_DIRTY = "UNSAVED EDITS";
+export const SAVE_STATE_CLEAN = "SAVED";
+export const SAVE_STATE_READONLY = "READ ONLY";
+
+export function saveStateWord(dirty: boolean, readonly: boolean): string {
+  if (readonly) return SAVE_STATE_READONLY;
+  return dirty ? SAVE_STATE_DIRTY : SAVE_STATE_CLEAN;
+}
+
+export function saveStateTone(dirty: boolean, readonly: boolean): Tone {
+  return !readonly && dirty ? "warn" : "dim";
+}
+
+/** Why SAVE cannot act on an example flow. `flowsSave` declines a `readonly`
+ *  record before it reaches the network, and the server refuses it too, so the
+ *  control has to say that rather than look pressable and do nothing. */
+export const SAVE_READONLY_REASON =
+  "This is an example flow - the rig will not store changes to it, so there is nothing to save.";
+
+/** Why SAVE cannot act with nothing changed. Not hidden: a SAVE that came and
+ *  went would leave the operator unsure whether the last press landed. */
+export const SAVE_CLEAN_REASON = "Nothing has changed since this flow was last saved.";
+
+export function saveLockReason(dirty: boolean, readonly: boolean): string | null {
+  if (readonly) return SAVE_READONLY_REASON;
+  return dirty ? null : SAVE_CLEAN_REASON;
+}
+
+/** RUN executes the STORED flow, so unsaved edits are a refusal, not a silent
+ *  save.
+ *
+ *  Two answers were available - save then run, or refuse - and this is the
+ *  refusal, for two reasons. A save can fail (an example flow refuses one
+ *  outright, and a PUT can 409), and a save-then-run that swallowed that would
+ *  start the OLD graph while the operator watched their edit on screen and
+ *  believed it went with it. And with the refusal in place the validation pill
+ *  can go on describing exactly the graph RUN will execute, which is the second
+ *  half of the same finding. */
+export const RUN_UNSAVED_REASON = "This flow has unsaved changes - save it first.";
+
+/** The example-flow case, which has no SAVE to send the operator to. It names
+ *  the blocker AND the way out; a lock with neither is a dead end. */
+export const RUN_UNSAVED_EXAMPLE_REASON =
+  "This example flow cannot be saved, so RUN would start the stored version, not the one "
+  + "drawn here. Leave the flow and open it again to drop these edits.";
+
+export function unsavedRunReason(dirty: boolean, readonly: boolean): string | null {
+  if (!dirty) return null;
+  return readonly ? RUN_UNSAVED_EXAMPLE_REASON : RUN_UNSAVED_REASON;
+}
+
+// ------------------------------------------------------------- wire, in words
+
+/** A wire as two phrases, for a surface that cannot draw one.
+ *
+ *  Null on the same condition `wireAnchors` returns null - a saved graph can
+ *  name a node or a port the vocabulary has since dropped - because a row
+ *  offering to remove "undefined -> undefined" claims a wire nobody can see. */
+export function wireRowLabel(
+  edge: FlowEdgeRec,
+  nodes: readonly FlowNodeRec[],
+): { out: string; into: string } | null {
+  const a = nodes.find((n) => n.id === edge.from);
+  const b = nodes.find((n) => n.id === edge.to);
+  if (!a || !b) return null;
+  const da = NODE_DEFS[a.type];
+  const db = NODE_DEFS[b.type];
+  if (!da || !db) return null;
+  const pa = da.outs.find((p) => p.id === edge.fromPort);
+  const pb = db.ins.find((p) => p.id === edge.toPort);
+  if (!pa || !pb) return null;
+  return { out: pa.label, into: `${db.label} · ${pb.label}` };
+}
+
+/** The remove control's accessible name. Says which wire, because a list of
+ *  four buttons all called "remove" is four guesses. */
+export function wireRemoveLabel(row: { out: string; into: string }): string {
+  return `Remove the wire from ${row.out} to ${row.into}`;
+}
+
+/** What the phone's wire list says when a stage feeds nothing. */
+export const NO_WIRES_TEXT = "feeds nothing yet - tap an output port, then an input port on another stage";
+
+/** The label on every control that adds a stage.
+ *
+ *  It lives in this pure module because two components in this area render it -
+ *  the canvas's floating control and the phone stage list's - and the phone
+ *  sheet is its own lazily-loaded chunk: importing the constant from the surface
+ *  would drag the canvas, its gestures and its wires into a bundle that must
+ *  never draw one. The label carries its own `+`, so no plus glyph is set beside
+ *  it (a glyph and the same character would read "+ + ADD STAGE"). */
+export const ADD_STAGE_LABEL = "+ ADD STAGE";
+
 /** The third state, and the reason it exists: the compiler has not answered for
  *  this flow yet (a fresh open, or every compile so far has failed - the slice
  *  keeps the LAST GOOD result, so a dropped request leaves this null rather than

@@ -96,11 +96,20 @@ g.IS_REACT_ACT_ENVIRONMENT = true;
 const asked: { url: string; method: string; body: any }[] = [];
 g.fetch = async (url: string, init?: { method?: string; body?: string }) => {
   const method = init?.method ?? "GET";
-  asked.push({ url, method, body: init?.body ? JSON.parse(init.body) : undefined });
+  const body = init?.body ? JSON.parse(init.body) : undefined;
+  asked.push({ url, method, body });
+  // `PUT /api/flows/{id}` is `flowsApi.save`, and the slice puts what comes back
+  // INTO `flows.record`. A stub answering `{ok: true}` there would leave the
+  // editor holding a record with no id and no `readonly`, so every assertion
+  // after a save would be about a flow that does not exist.
+  const one = /^\/api\/flows\/([^/]+)$/.exec(url);
+  const data = one && method === "PUT"
+    ? { ...RECORD, ...(body?.flow ?? {}), id: one[1] }
+    : { ok: true };
   return {
     ok: true, status: 200, statusText: "OK",
     headers: { get: () => "application/json" },
-    json: async () => ({ ok: true }),
+    json: async () => data,
     text: async () => "{}",
   };
 };
@@ -114,7 +123,14 @@ const { FlowCanvasSurface } = await import("../FlowCanvasSurface");
 const { FlowCanvasToolbar } = await import("../FlowCanvasToolbar");
 const { FlowStagesPhoneSheet } = await import("../FlowStagesPhoneSheet");
 const { flowCanvasSheets } = await import("../sheets");
-const { IDLE_LOG_TEXT, resolveWireDrop } = await import("../canvasModel");
+const {
+  ADD_STAGE_LABEL, CHECKS_DRAFT_PREFIX, IDLE_LOG_TEXT, RUN_UNSAVED_REASON,
+  SAVE_CLEAN_REASON, SAVE_READONLY_REASON, SAVE_STATE_CLEAN, SAVE_STATE_DIRTY,
+  SAVE_STATE_READONLY, resolveWireDrop,
+} = await import("../canvasModel");
+const { clearMountedFlowCanvas, flowCanvasDropPoint, setMountedFlowCanvas } =
+  await import("../canvasMount");
+const { resetRouterCacheForTests } = await import("../../../../../router");
 
 // ------------------------------------------------------------------ harness
 let passed = 0;
@@ -185,7 +201,12 @@ const ADMIN_CAPS = [
 
 /** Every seed goes through here so no test inherits another's run phase, wire in
  *  flight or selection. `flowsRun` writes `run.phase` optimistically and nothing
- *  server-side ever clears it. */
+ *  server-side ever clears it.
+ *
+ *  `dirty: false` is part of that, and it is not cosmetic: `flowsOpen` clears it,
+ *  so a freshly opened flow IS clean, and RUN is now refused while it is not
+ *  (`unsavedRunReason`). A fixture that inherited the drag test's `dirty` would
+ *  have every later test pressing a locked RUN. */
 function seed(role: string, caps: string[], flows: Record<string, unknown> = {}): void {
   act(() => {
     const s = useStore.getState();
@@ -200,6 +221,7 @@ function seed(role: string, caps: string[], flows: Record<string, unknown> = {})
         ...s.flows,
         record: RECORD as never,
         graph: JSON.parse(JSON.stringify(GRAPH)),
+        dirty: false,
         sel: null, editNode: null, wire: null, tapWire: null,
         statuses: {}, logs: [], compiled: null,
         pan: { x: 20, y: 10 }, zoom: 0.5,
@@ -502,6 +524,281 @@ await testAsync("on a phone the flowStages sheet replaces the canvas, editing an
   await settle();
   assert(tid("flow-tapwire") == null, "CANCEL did not disarm the wire");
   viewportW = 820;
+});
+
+// ================= 8. the save path, and what RUN is allowed to start
+
+await testAsync("SAVE stores the graph, and the toolbar says whether the rig has it", async () => {
+  // THE P0 THIS CLOSES: the canvas had no save at all. `flowsSave` and
+  // `flowsCloseEditor` existed and nothing under `next/**` called either, so
+  // every edit made here was dropped by BACK, by the FLOWS chip and by a reload.
+  viewportW = 820;
+  seed("admin", ADMIN_CAPS);
+  await mount(createElement(FlowCanvasToolbar as any));
+
+  eq(tid("flow-save-state").textContent, SAVE_STATE_CLEAN,
+    "a freshly opened flow has to say its graph is the one the rig holds");
+  eq(tid("flow-save").getAttribute("aria-disabled"), "true",
+    "SAVE with nothing changed must be honest-disabled, not live and silent");
+  eq(tid("flow-save").getAttribute("title"), SAVE_CLEAN_REASON, "and say why");
+
+  act(() => { useStore.getState().flowsAddNode("slew" as never, { x: 10, y: 10 }); });
+  await settle();
+  eq(tid("flow-save-state").textContent, SAVE_STATE_DIRTY,
+    "an edited graph must SAY it is unsaved - a dirty flag nobody renders is not a cue");
+  eq(tid("flow-save").getAttribute("aria-disabled"), null, "SAVE has to be live once there is an edit");
+
+  const before = asked.filter((a) => a.method === "PUT").length;
+  click(tid("flow-save"));
+  await settle();
+
+  const puts = asked.filter((a) => a.method === "PUT");
+  eq(puts.length, before + 1, "SAVE issued no PUT - the button is a decoration");
+  eq(puts[puts.length - 1].url, "/api/flows/flow-m16", "and it must store THIS flow");
+  eq((puts[puts.length - 1].body?.flow?.graph?.nodes ?? []).length, 4,
+    "the PUT carried a graph without the new stage in it");
+  eq(useStore.getState().flows.dirty, false, "a stored flow is still marked dirty");
+  eq(tid("flow-save-state").textContent, SAVE_STATE_CLEAN, "and the cue must go back to SAVED");
+});
+
+await testAsync("RUN is refused while the graph on screen is not the graph on the rig", async () => {
+  seed("admin", ADMIN_CAPS, { dirty: true });
+  await mount(createElement(FlowCanvasToolbar as any));
+
+  const run = tid("flow-run");
+  eq(run.getAttribute("aria-disabled"), "true",
+    "RUN starts the SAVED flow, so with unsaved edits it would start a graph nobody is looking at");
+  assert(run.getAttribute("disabled") == null, "never the native disabled attribute");
+  eq(run.getAttribute("title"), RUN_UNSAVED_REASON, "and the refusal has to name the way out");
+
+  const before = asked.filter((a) => a.method === "POST").length;
+  click(run);
+  await settle();
+  eq(asked.filter((a) => a.method === "POST").length, before,
+    "a locked RUN still reached the network");
+  eq(tid("flow-run").getAttribute("data-armed"), "false", "and it must not even arm");
+  assert(useStore.getState().toasts.some((t: any) => String(t.title) === RUN_UNSAVED_REASON),
+    "a locked press must SAY the reason rather than swallow the tap");
+});
+
+await testAsync("the validation pill grades the DRAFT, and says so, while RUN is locked", async () => {
+  // The other half of the same finding: `flowsCompile` posts the DRAFT graph,
+  // `POST /api/flows/{id}/run` compiles the SAVED record. A bare GRAPH VALID over
+  // an unsaved edit is a green claim about a flow nobody can start.
+  seed("admin", ADMIN_CAPS, {
+    dirty: true,
+    compiled: { plan: {}, structural: [], issues: [], unmapped: [] },
+  });
+  await mount(createElement(FlowCanvasToolbar as any));
+
+  const pill = tid("flow-checks");
+  assert(String(pill.textContent).startsWith(CHECKS_DRAFT_PREFIX),
+    `the pill has to say which graph it graded, got "${pill.textContent}"`);
+  assert(pill.getAttribute("data-tone") !== "good",
+    "a clean DRAFT must not read green - green here has always meant safe to press RUN");
+
+  seed("admin", ADMIN_CAPS, {
+    compiled: { plan: {}, structural: [], issues: [], unmapped: [] },
+  });
+  await mount(createElement(FlowCanvasToolbar as any));
+  eq(tid("flow-checks").textContent, "GRAPH VALID",
+    "with the graph stored the pill describes exactly what RUN would execute");
+  eq(tid("flow-checks").getAttribute("data-tone"), "good", "and it is allowed to be green there");
+  eq(tid("flow-run").getAttribute("aria-disabled"), null, "and RUN is live again");
+});
+
+await testAsync("an example flow says it cannot be saved rather than offering to", async () => {
+  seed("admin", ADMIN_CAPS, {
+    dirty: true,
+    record: { ...RECORD, readonly: true } as never,
+  });
+  await mount(createElement(FlowCanvasToolbar as any));
+
+  eq(tid("flow-save-state").textContent, SAVE_STATE_READONLY,
+    "an example flow must not claim its edits are stored, nor that they are pending");
+  eq(tid("flow-save").getAttribute("title"), SAVE_READONLY_REASON,
+    "SAVE has to name the blocker, not the generic nothing-changed sentence");
+  const before = asked.filter((a) => a.method === "PUT").length;
+  click(tid("flow-save"));
+  await settle();
+  eq(asked.filter((a) => a.method === "PUT").length, before,
+    "a read-only flow was PUT anyway - the server refuses it and the UI must too");
+  // And RUN names THAT blocker, not "save it first" - there is no save to make.
+  assert(/example flow cannot be saved/.test(String(tid("flow-run").getAttribute("title"))),
+    `RUN sent the operator to a SAVE that refuses them, got "${tid("flow-run").getAttribute("title")}"`);
+});
+
+// ======================= 9. the phone can finish what it starts
+
+await testAsync("the phone stage list can ADD a stage, at zero stages too", async () => {
+  viewportW = 390;
+  win.location.hash = "#/session/flows/flowStages?open=flow-m16";
+  resetRouterCacheForTests();
+  seed("admin", ADMIN_CAPS);
+  await mount(createElement(FlowStagesPhoneSheet as any, { params: { open: RECORD.id }, depth: 0 }));
+
+  const add = tid("flow-stages-add");
+  assert(add != null,
+    "the phone had no way to add a stage at all: the zero-stage state was one sentence "
+    + "pointing at a canvas a phone will never draw");
+  assert(String(add.textContent).includes(ADD_STAGE_LABEL),
+    "and it has to carry the design's own label");
+
+  click(add);
+  await settle();
+  eq(win.location.hash, "#/session/flows/flowStages/flowPalette?open=flow-m16",
+    "ADD STAGE dropped the flow from the URL, so the palette's BACK lands on a stage list "
+    + "whose flow nobody named");
+
+  // The zero-stage state is the one that most needs the control.
+  win.location.hash = "#/session/flows/flowStages?open=flow-m16";
+  resetRouterCacheForTests();
+  seed("admin", ADMIN_CAPS, { graph: { nodes: [], edges: [] } });
+  await mount(createElement(FlowStagesPhoneSheet as any, { params: { open: RECORD.id }, depth: 0 }));
+  assert(tid("flow-stages-empty") != null, "precondition: the empty state is not rendering");
+  assert(tid("flow-stages-add") != null,
+    "the empty flow is exactly the one with no way to add anything to it");
+  assert(!/opens on a tablet or desktop/.test(String(tid("flow-stages-empty").textContent)),
+    "the empty state still sends the operator to a screen their phone cannot draw");
+});
+
+await testAsync("a wire can be removed from the stage it leaves", async () => {
+  viewportW = 390;
+  win.location.hash = "#/session/flows/flowStages?open=flow-m16";
+  resetRouterCacheForTests();
+  seed("admin", ADMIN_CAPS);
+  await mount(createElement(FlowStagesPhoneSheet as any, { params: { open: RECORD.id }, depth: 0 }));
+
+  // The legacy phone editor selected the drawn edge and offered a cross ON it.
+  // There is no drawn graph here, so the wire is a row under the stage it leaves.
+  const row = tid("flow-wire-row-e1");
+  assert(row != null,
+    "the phone could make a wire and never unwire one: a graph it can break and cannot repair");
+  assert(/window/.test(row.textContent) && /TARGET/.test(row.textContent),
+    `the row has to name both ends, got "${row.textContent}"`);
+
+  const cut = tid("flow-wire-remove-e1");
+  assert(cut != null, "the wire row offers no way to remove the wire");
+  assert(/Remove the wire from/.test(String(cut.getAttribute("aria-label"))),
+    "four buttons all called REMOVE are four guesses - the name has to say which wire");
+
+  click(cut);
+  await settle();
+  const left = useStore.getState().flows.graph.edges;
+  eq(left.length, 1, "removing one wire must remove exactly one");
+  assert(!left.some((e: any) => e.id === "e1"), "the wrong wire was removed");
+  eq(useStore.getState().flows.dirty, true,
+    "an edit that is not marked dirty is an edit SAVE will skip");
+  assert(tid("flow-wire-row-e1") == null, "the removed wire is still listed");
+
+  // The phone can EDIT now, so it owes the same two answers the toolbar does:
+  // a SAVE, and a RUN that refuses to start the graph the rig still holds.
+  assert(tid("flow-stages-save") != null,
+    "a phone that can break a graph and cannot store the repair is worse than a read-only list");
+  eq(tid("flow-stages-run").getAttribute("aria-disabled"), "true",
+    "RUN would start the version on the rig, which still has the wire that was just cut");
+  eq(tid("flow-stages-run").getAttribute("title"), RUN_UNSAVED_REASON, "and it has to say so");
+  assert(String(container.textContent).includes(RUN_UNSAVED_REASON),
+    "the reason has to be readable without a hover a touch screen cannot perform");
+  assert(!/Read-only - This flow has unsaved/.test(String(container.textContent)),
+    "an unsaved edit is not a read-only flow, and the two sentences must not be framed alike");
+});
+
+await testAsync("the phone's stage editor route keeps the flow in the URL", async () => {
+  viewportW = 390;
+  win.location.hash = "#/session/flows/flowStages?open=flow-m16";
+  resetRouterCacheForTests();
+  seed("admin", ADMIN_CAPS);
+  await mount(createElement(FlowStagesPhoneSheet as any, { params: { open: RECORD.id }, depth: 0 }));
+
+  const rows = all('[data-testid="flow-stage-row"]');
+  assert(rows.length > 0, "precondition: no stage rows to press");
+  click(rows[0].querySelector("button"));
+  await settle();
+  assert(/open=flow-m16/.test(String(win.location.hash)),
+    `the stage editor dropped ?open=, so a reload or a share loses the flow: ${win.location.hash}`);
+  assert(/node=/.test(String(win.location.hash)),
+    "and it still has to name the stage being edited");
+});
+
+await testAsync("BACK out of the phone stage list saves before it reloads the library", async () => {
+  viewportW = 390;
+  win.location.hash = "#/session/flows/flowStages?open=flow-m16";
+  resetRouterCacheForTests();
+  seed("admin", ADMIN_CAPS);
+  await mount(createElement(FlowStagesPhoneSheet as any, { params: { open: RECORD.id }, depth: 0 }));
+
+  act(() => { useStore.getState().flowsAddNode("slew" as never, { x: 1, y: 1 }); });
+  await settle();
+  eq(useStore.getState().flows.dirty, true, "precondition: the edit was not recorded");
+
+  const from = asked.length;
+  click(container.querySelector(".nx-sheet-back"));
+  await settle();
+  const after = asked.slice(from);
+  const put = after.findIndex((a) => a.method === "PUT" && a.url === "/api/flows/flow-m16");
+  const list = after.findIndex((a) => a.method === "GET" && a.url === "/api/flows");
+  assert(put >= 0,
+    `BACK out of the phone editor threw the graph away: ${
+      JSON.stringify(after.map((a) => `${a.method} ${a.url}`))}`);
+  assert(list >= 0, "the library was never reloaded, so MY FLOWS still shows the pre-edit card");
+  assert(put < list, "the reload overtook the save, so the list is drawn from the old flow");
+  viewportW = 820;
+});
+
+// ============ 10. two window-level handlers that outlive their surface
+
+await testAsync("Delete does not remove a stage while a sheet covers the canvas", async () => {
+  viewportW = 820;
+  seed("admin", ADMIN_CAPS);
+  await mount(createElement(FlowCanvasSurface as any, { tier: "tablet" }));
+  act(() => { useStore.getState().flowsSelect({ kind: "node", id: "n2" } as never); });
+
+  const press = (): void => {
+    act(() => {
+      win.document.body.dispatchEvent(new win.KeyboardEvent("keydown", {
+        key: "Delete", bubbles: true, cancelable: true,
+      }));
+    });
+  };
+
+  // The listener is on the WINDOW, so it stayed live under the stage editor -
+  // and that sheet covers the canvas, so the stage that vanished was one the
+  // operator could not see going.
+  win.location.hash = "#/session/flows/flowNode?open=flow-m16&node=n2";
+  resetRouterCacheForTests();
+  press();
+  eq(useStore.getState().flows.graph.nodes.length, 3,
+    "a keystroke under an open sheet deleted a stage nobody could see");
+
+  win.location.hash = "#/session/flows?open=flow-m16";
+  resetRouterCacheForTests();
+  press();
+  eq(useStore.getState().flows.graph.nodes.length, 2,
+    "Delete on the bare canvas has to still remove the selected stage");
+  win.location.hash = "#/session/flows";
+  resetRouterCacheForTests();
+});
+
+test("an outgoing canvas unmounting does not clear the incoming one's handle", () => {
+  // React mounts the next tree before it unmounts the old one, so a cleanup that
+  // cleared "whatever is registered" wiped the handle the NEW canvas had already
+  // set. `flowCanvasDropPoint` then answered null with a canvas plainly on
+  // screen, and the palette dropped every stage on the (120,120) fallback.
+  const a = win.document.createElement("div");
+  const b = win.document.createElement("div");
+  a.getBoundingClientRect = () => ({ width: 800, height: 600, left: 0, top: 0 }) as any;
+  b.getBoundingClientRect = () => ({ width: 800, height: 600, left: 0, top: 0 }) as any;
+
+  setMountedFlowCanvas(a);
+  setMountedFlowCanvas(b);   // the incoming canvas registers
+  clearMountedFlowCanvas(a); // the outgoing one's cleanup runs afterwards
+  assert(flowCanvasDropPoint("tablet") != null,
+    "the late cleanup cleared the live canvas, so a dropped stage lands on the fallback point");
+
+  clearMountedFlowCanvas(b);
+  eq(flowCanvasDropPoint("tablet"), null,
+    "with no canvas mounted the drop point has to be null, so the caller owns the fallback");
 });
 
 test("the area registers exactly the flowStages sheet", () => {

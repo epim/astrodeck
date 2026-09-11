@@ -14,11 +14,31 @@
 //   * FLOW tab      -> the stage list, in the same reading order (`flowOrder`),
 //                      each row carrying its status word and its "the compiler
 //                      drops this" note.
+//   * + ADD STAGE   -> the same button the legacy graph pinned at the end of the
+//                      scroll (`FlowPhoneGraph.tsx:92-102`), opening the palette
+//                      as a sheet.
 //   * tap-to-wire   -> the port buttons on each row, with the armed hint bar as
-//                      the sheet's sticky footer.
+//                      the sheet's sticky footer, AND a removable row per wire,
+//                      which is what the legacy editor's select-the-edge plus
+//                      `FlowWireDelete` did with a hit target the phone cannot
+//                      reproduce (there is no wire on screen to tap).
 //   * the edit door -> a row press selects the stage and opens the `flowNode`
 //                      sheet at depth 1.
 //   * MONITOR tab   -> the four readouts, the log tail and RUN / STOP.
+//   * the way out   -> BACK saves, exactly as the legacy `< LIBRARY` did.
+//
+// THREE THINGS THE WHOLE-BRANCH REVIEW FOUND MISSING HERE, and they are one
+// thing: this sheet could create but not finish. It could wire but not unwire;
+// it had no way to add a stage at all (the zero-stage state was one sentence
+// pointing at a canvas a phone will never draw); and nothing it did was ever
+// saved, because no exit called `flowsCloseEditor`. An editor that cannot undo
+// and cannot store is worse than a read-only list.
+//
+// EVERY ROUTE OUT OF HERE CARRIES `?open=`. `nav.sheet(name, params)` rebuilds
+// the whole hash from the params it is HANDED (`router.ts`), so
+// `nav.sheet("flowNode", { node })` dropped the flow from the URL: reload or
+// share it and the stage editor opens on a flow nobody named. Both navigations
+// pass `{ open, node }` / `{ open }`.
 //
 // WHAT IT MAY NOT INVENT. `run.phase`, `run.etaS`, `run.curStage` and
 // `run.frames` are written by nothing server-side: there is no `flow.node`
@@ -27,7 +47,7 @@
 // client-side countdown from an assumed total, or a stage name inferred from the
 // graph, would look identical to one the rig computed.
 
-import { useEffect, useMemo, type JSX } from "react";
+import { useCallback, useEffect, useMemo, type JSX } from "react";
 
 import { flowOrder } from "../../../../../components/flows/autoLayout";
 import { NODE_DEFS } from "../../../../../components/flows/nodeDefs";
@@ -45,12 +65,14 @@ import {
 } from "../../../../ui";
 import type { SheetProps } from "../../../sheets";
 import { PLAN_EDITOR_PHONE_REASON } from "../../sheets/planEditor";
+import { leaveFlowEditor } from "../openFlow";
 import { FlowPortRow } from "./FlowNode";
 import { FlowTapWireBar } from "./FlowTapWireBar";
 import {
-  IDLE_LOG_TEXT, LOG_TONE, NODE_STATUS_TONE, NODE_STATUS_WORD, asNodeStatus,
-  formatEta, framesWord, logTail, logTime, lossLabel, lossTone, stageWord,
-  tonightLockReason,
+  ADD_STAGE_LABEL, IDLE_LOG_TEXT, LOG_TONE, NODE_STATUS_TONE, NODE_STATUS_WORD,
+  NO_WIRES_TEXT, asNodeStatus, formatEta, framesWord, logTail, logTime, lossLabel,
+  lossTone, saveLockReason, saveStateTone, saveStateWord, stageWord,
+  tonightLockReason, unsavedRunReason, wireRemoveLabel, wireRowLabel,
 } from "./canvasModel";
 import "./canvas.css";
 
@@ -81,7 +103,16 @@ export function stageOrder(
 
 // -------------------------------------------------------------- a stage row
 
-function StageRow({ node }: { node: FlowNodeRec }): JSX.Element {
+function StageRow({ node, nodes, edges, openId }: {
+  node: FlowNodeRec;
+  /** The whole graph, from the sheet's two subscriptions. Passed rather than
+   *  read here so a wire added anywhere re-renders one list, not sixteen - and
+   *  so a wire row names the stage at its far end without a second lookup. */
+  nodes: readonly FlowNodeRec[];
+  edges: readonly FlowEdgeRec[];
+  /** The flow id the route names, carried into every sheet this row opens. */
+  openId: string;
+}): JSX.Element {
   const status = useStore((s) => asNodeStatus(s.flows.statuses[node.id]));
   const loss = useStore((s) => nodeLossLevel(s.flows.compiled?.unmapped, node.type));
   const lossWhy = useStore((s) => nodeLossDetail(s.flows.compiled?.unmapped, node.type));
@@ -89,6 +120,7 @@ function StageRow({ node }: { node: FlowNodeRec }): JSX.Element {
   const select = useStore((s) => s.flowsSelect);
   const setEditNode = useStore((s) => s.flowsSetEditNode);
   const tapPort = useStore((s) => s.flowsTapPort);
+  const deleteSel = useStore((s) => s.flowsDeleteSel);
 
   const def = NODE_DEFS[node.type];
   const word = NODE_STATUS_WORD[status];
@@ -99,7 +131,26 @@ function StageRow({ node }: { node: FlowNodeRec }): JSX.Element {
     // parameters.
     select({ kind: "node", id: node.id });
     setEditNode(node.id);
-    nav.sheet("flowNode", { node: node.id });
+    // `open` travels with `node`: `nav.sheet` builds the whole hash from what it
+    // is handed, so passing only the node id would leave the URL claiming the
+    // FLOWS LIST is showing - copy it, share it or reload it and the flow is
+    // gone.
+    nav.sheet("flowNode", openId ? { open: openId, node: node.id } : { node: node.id });
+  };
+
+  // THE WIRES THIS STAGE FEEDS. Outgoing only, so each wire is listed once and
+  // reads as a sentence about the stage it is under: "window -> TARGET · arm".
+  // The legacy phone editor selected the wire on the drawn graph and offered a
+  // 26 px cross on it; there is no drawn graph here, so the row IS the wire.
+  const outgoing = edges.filter((e) => e.from === node.id);
+
+  /** `flowsDeleteSel` deletes what is SELECTED, so selecting the edge is part of
+   *  the removal rather than a side effect of it. Both are plain `set` calls and
+   *  zustand applies them synchronously, so the delete sees the selection this
+   *  line just made. The selection is cleared by `flowsDeleteSel` itself. */
+  const removeWire = (edgeId: string): void => {
+    select({ kind: "edge", id: edgeId });
+    deleteSel();
   };
 
   if (!def) {
@@ -142,7 +193,55 @@ function StageRow({ node }: { node: FlowNodeRec }): JSX.Element {
             onTapPort={(n, id, dir) => tapPort(n, id, dir)} />
         ))}
       </div>
+
+      {/* Only for a stage that HAS outputs. A sink - ABORT + PARK, NOTIFY - has
+          none, and telling its reader to "tap an output port" would send them
+          looking for a control that is not on the card. */}
+      {def.outs.length > 0 && (
+        <div className="nx-flow-stage-wires" data-testid={`flow-stage-wires-${node.id}`}>
+          <Label size={10}>WIRES OUT</Label>
+          {outgoing.length === 0 ? (
+            <Mono size={10.5} tone="dim">{NO_WIRES_TEXT}</Mono>
+          ) : (
+            outgoing.map((e) => (
+              <WireRow key={e.id} edge={e} nodes={nodes} onRemove={removeWire} />
+            ))
+          )}
+        </div>
+      )}
     </Card>
+  );
+}
+
+// --------------------------------------------------------------- a wire row
+
+/** One outgoing wire, with the control that removes it.
+ *
+ *  Renders NOTHING when either end cannot be resolved - `wireRowLabel` answers
+ *  null for a node or port the vocabulary has since dropped, which is the same
+ *  rule `wireAnchors` applies before drawing a wire on the canvas. A row reading
+ *  "undefined -> undefined" would offer to cut a wire nobody can see, and the
+ *  graph would still hold the edge afterwards. */
+function WireRow({ edge, nodes, onRemove }: {
+  edge: FlowEdgeRec;
+  nodes: readonly FlowNodeRec[];
+  onRemove: (edgeId: string) => void;
+}): JSX.Element | null {
+  const row = wireRowLabel(edge, nodes);
+  if (!row) return null;
+  return (
+    <div className="nx-flow-wire-row" data-testid={`flow-wire-row-${edge.id}`}>
+      <Mono size={10.5} tone="dim">{`${row.out} -> ${row.into}`}</Mono>
+      <ActionButton
+        kind="ghost"
+        data-testid={`flow-wire-remove-${edge.id}`}
+        glyph={<NxIcon name="x" size={13} />}
+        ariaLabel={wireRemoveLabel(row)}
+        onPress={() => onRemove(edge.id)}
+      >
+        REMOVE
+      </ActionButton>
+    </div>
   );
 }
 
@@ -160,11 +259,14 @@ export function FlowStagesPhoneSheet({ params }: SheetProps): JSX.Element {
   const frames = useStore((s) => s.flows.run.frames);
   const frameGoal = useStore((s) => s.flows.run.frameGoal);
   const logs = useStore((s) => s.flows.logs);
+  const dirty = useStore((s) => s.flows.dirty);
+  const readonly = useStore((s) => s.flows.record?.readonly ?? false);
   const flowsOpen = useStore((s) => s.flowsOpen);
+  const save = useStore((s) => s.flowsSave);
 
   const canViewSiteDerived = useCapability("view.site_derived");
   const phone = useBreakpoint() === "phone";
-  const { running, reason: runReason, explain, act } = useFlowRunControls();
+  const { running, reason: hookRunReason, explain, act } = useFlowRunControls();
 
   const openId = record?.id ?? null;
   useEffect(() => {
@@ -182,6 +284,32 @@ export function FlowStagesPhoneSheet({ params }: SheetProps): JSX.Element {
     : tonightLockReason(accessPhrase("view.site_derived"));
   const planReason = phone ? PLAN_EDITOR_PHONE_REASON : null;
 
+  // Same three decisions as the canvas toolbar, from the same pure helpers, so
+  // the phone and the tablet cannot end up disagreeing about whether a flow is
+  // safe to start. The rig's own refusal outranks the unsaved one.
+  const runReason = hookRunReason ?? (running ? null : unsavedRunReason(dirty, readonly));
+  const saveReason = saveLockReason(dirty, readonly);
+  const stateWord = saveStateWord(dirty, readonly);
+
+  /** BACK saves, exactly as the legacy `< LIBRARY` button did.
+   *
+   *  POP FIRST, THEN CLOSE. `leaveFlowEditor` clears `flows.record`, and this
+   *  sheet's own effect re-opens whatever `?open=` still names the moment
+   *  `openId` goes null - so closing while the sheet is still mounted would
+   *  fetch the flow straight back and the save would look like it did nothing.
+   *  The close runs on the store, so unmounting this component does not cancel
+   *  the PUT. */
+  const back = useCallback((): void => {
+    nav.back();
+    void leaveFlowEditor();
+  }, []);
+
+  /** `?open=` travels, or the palette's own BACK would land on a stage list
+   *  whose flow the URL no longer names. */
+  const addStage = useCallback((): void => {
+    nav.sheet("flowPalette", want ? { open: want } : {});
+  }, [want]);
+
   return (
     <Sheet
       data-testid="session-flow-stages"
@@ -189,10 +317,33 @@ export function FlowStagesPhoneSheet({ params }: SheetProps): JSX.Element {
       sub={`${nodes.length} stages · ${edges.length} wires`}
       icon={<NxIcon name="flows" size={18} />}
       live={<Mono size={10.5} tone="dim">{`${phase.toUpperCase()} · ETA ${formatEta(etaS)}`}</Mono>}
-      onBack={() => nav.back()}
+      right={(
+        <span data-testid="flow-stages-save-state">
+          <Pill tone={saveStateTone(dirty, readonly)} ariaLabel={`This flow: ${stateWord}`}>
+            {stateWord}
+          </Pill>
+        </span>
+      )}
+      onBack={back}
       footer={(
         <div className="nx-flow-stages-foot">
           <FlowTapWireBar />
+          {/* SAVE above RUN, because RUN is refused until it has been pressed.
+              A full-width pair would put the two most consequential buttons on
+              the phone under one thumb sweep, so SAVE is the smaller of the
+              two and RUN keeps the 56 px primary. */}
+          <ActionButton
+            kind="secondary"
+            size="lg"
+            full
+            data-testid="flow-stages-save"
+            glyph={<NxIcon name="check" size={15} />}
+            lockedReason={saveReason}
+            onExplain={explain}
+            onPress={() => { void save(); }}
+          >
+            SAVE
+          </ActionButton>
           <ActionButton
             kind={running ? "danger" : "primary"}
             size="xl"
@@ -208,7 +359,16 @@ export function FlowStagesPhoneSheet({ params }: SheetProps): JSX.Element {
           >
             {running ? "STOP" : "RUN"}
           </ActionButton>
-          <LockNote reason={runReason} />
+          {/* `LockNote` prints "Read-only - <reason>", which is the right frame
+              for a capability or a missing camera and the WRONG one for an
+              unsaved edit: this flow is not read-only, it is ahead of the rig.
+              So the rig's refusals keep the note and ours gets its own line. */}
+          <LockNote reason={hookRunReason} />
+          {!hookRunReason && runReason && (
+            <span data-testid="flow-stages-run-reason">
+              <Mono size={10.5} tone="warn">{runReason}</Mono>
+            </span>
+          )}
         </div>
       )}
     >
@@ -224,13 +384,30 @@ export function FlowStagesPhoneSheet({ params }: SheetProps): JSX.Element {
         <EmptyCard
           data-testid="flow-stages-empty"
           title="THIS FLOW HAS NO STAGES"
-          hint="Stages are added on the canvas, which opens on a tablet or desktop."
+          hint="Nothing will happen when this flow runs. Add the first stage below."
         />
       ) : (
         <div className="nx-flow-stages">
-          {rows.map((n) => <StageRow key={n.id} node={n} />)}
+          {rows.map((n) => (
+            <StageRow key={n.id} node={n} nodes={nodes} edges={edges} openId={want} />
+          ))}
         </div>
       )}
+
+      {/* PINNED AT THE END OF THE LIST, and rendered at zero stages too - which
+          is the state that most needs it. The legacy phone graph put the same
+          control in the same place (`FlowPhoneGraph.tsx:92-102`) and wave 1
+          dropped it, leaving a screen that could open a flow, wire it and run it
+          but never add anything to it. */}
+      <ActionButton
+        kind="purple"
+        size="lg"
+        full
+        data-testid="flow-stages-add"
+        onPress={addStage}
+      >
+        {ADD_STAGE_LABEL}
+      </ActionButton>
 
       <Label size={10}>LOG</Label>
       <div role="log" className="nx-flow-log-body" data-testid="flow-stages-log">
@@ -254,7 +431,7 @@ export function FlowStagesPhoneSheet({ params }: SheetProps): JSX.Element {
         chevron
         lockedReason={tonightReason}
         onExplain={explain}
-        onPress={() => nav.sheet("flowTonight")}
+        onPress={() => nav.sheet("flowTonight", want ? { open: want } : {})}
       />
       <ListRow
         data-testid="flow-stages-plan"
@@ -264,7 +441,7 @@ export function FlowStagesPhoneSheet({ params }: SheetProps): JSX.Element {
         chevron
         lockedReason={planReason}
         onExplain={explain}
-        onPress={() => nav.sheet("planEditor")}
+        onPress={() => nav.sheet("planEditor", want ? { open: want } : {})}
       />
       <LockNote reason={planReason} />
     </Sheet>

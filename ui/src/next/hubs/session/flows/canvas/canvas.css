@@ -532,4 +532,26 @@ div:has(> .nx-flow-host) {
   gap: 6px;
   padding: 0 12px 12px;
 }
+
+/* The wires a stage feeds, on the surface that cannot draw one. The row wraps
+   because a stage label plus a port label plus REMOVE does not fit on one line
+   at 390 px, and truncating the wire's far end would leave four rows that all
+   read the same. */
+.nx-flow-stage-wires {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 12px 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+.nx-flow-wire-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 44px;
+}
+
 .nx-flow-stages-foot { display: flex; flex-direction: column; gap: 8px; }

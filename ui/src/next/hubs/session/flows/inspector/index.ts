@@ -25,6 +25,7 @@ export {
   type FlowPaletteRailProps,
 } from "./FlowPaletteRail";
 export { flowInspectorSheets, FlowNodeSheet, FlowPaletteSheet, NO_STAGE_HINT } from "./sheets";
+export { FLOW_NODE_SHEET, FLOW_PALETTE_SHEET } from "./reg";
 
 export {
   selectOptions, fieldIsNumeric, numericValue, splitUnit, fieldAriaLabel, filterInk,

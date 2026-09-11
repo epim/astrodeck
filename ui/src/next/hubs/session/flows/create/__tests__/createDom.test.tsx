@@ -153,7 +153,7 @@ const { createElement, act } = await import("react");
 const { createRoot } = await import("react-dom/client");
 const { useStore } = await import("../../../../../../store");
 const { resetRouterCacheForTests } = await import("../../../../../router");
-const { FlowNewSheet } = await import("../wizard");
+const { FlowNewSheet, newFlowRoute } = await import("../wizard");
 const { FlowQuickSheet, NO_FILTER_REASON } = await import("../quick");
 const area = await import("../index");
 const mine = await import("../quickPayload");
@@ -316,6 +316,19 @@ test("the generated flow is OPENED, not merely saved", () => {
   assert(asked.some((a) => a.url === "/api/flows/gen-1" && a.method === "GET"),
     "opening the flow loads the record");
   assert(posts("/api/flows/compile").length > 0, "and re-compiles it, which is what the canvas draws");
+});
+
+test("and the URL names it, so a reload or a share keeps the new flow", () => {
+  // Whole-branch review, R5 P2. GENERATE called `flowsOpen` and left the hash on
+  // `#/session/flows`: the canvas appeared, drawn from `flows.ui.screen` alone,
+  // over an address bar claiming the LIST was showing. Reload it, share it or
+  // press the browser's Back button and the flow just made was gone.
+  eq(win.location.hash, "#/session/flows?open=gen-1",
+    "the wizard left the route on the library while the canvas was showing the new flow");
+  eq(newFlowRoute("gen-1", false), "/session/flows?open=gen-1", "the tablet and desktop door");
+  eq(newFlowRoute("gen-1", true), "/session/flows/flowStages?open=gen-1",
+    "a phone cannot draw the canvas, so it opens the same stage list a row tap does - two doors "
+    + "to one flow that opened different screens would be the defect this wave keeps closing");
 });
 
 await testAsync("closing pops the sheet, and writes no legacy overlay flag on the way out", async () => {
