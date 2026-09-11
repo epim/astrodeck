@@ -2850,9 +2850,29 @@ export interface SatellitePass {
   /** When it crosses into / out of the Earth's shadow, or null when it does not
    *  cross within the pass. Both null with a fraction between 0 and 1 is a real
    *  case (the crossing sits outside the refined window) - say "partly sunlit"
-   *  rather than computing a number out of nulls. */
+   *  rather than computing a number out of nulls.
+   *
+   *  ORDER MATTERS when both are present: `leaves` before `enters` means the
+   *  satellite ROSE in the Earth's shadow and came out of it part-way across,
+   *  which is the opposite advice from the other way round. */
   enters_shadow_unix: number | null;
   leaves_shadow_unix: number | null;
+  /**
+   * The window worth going outside for: up AND sunlit AND the sky dark,
+   * bisected the same way the horizon crossings are (`passes.py`).
+   *
+   * NOT the same as `start_unix`/`end_unix`, which are the horizon crossings
+   * and stay exactly that. A pass that rises into the Earth's shadow is above
+   * the skyline for ten minutes and visible for four, and a card that showed
+   * the ten would send someone out at the wrong time.
+   *
+   * OPTIONAL because they are additive: an engine older than the release that
+   * added them sends neither, and a client must render the horizon pair in
+   * that case rather than a blank. Treat a half-answer (one field, or an end at
+   * or before the start) as absent.
+   */
+  visible_start_unix?: number | null;
+  visible_end_unix?: number | null;
   elements_age_days: number;
 }
 

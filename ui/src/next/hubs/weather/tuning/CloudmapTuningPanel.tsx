@@ -39,7 +39,7 @@
 
 import { useEffect, useState, type JSX } from "react";
 import { ApiError } from "../../../../api";
-import { getCloudmap, setCloudmapConfig } from "../../../../api/cloudmap";
+import { getCloudmap, resetCloudmapDomeCache, setCloudmapConfig } from "../../../../api/cloudmap";
 import { accessPhrase, useCan } from "../../../../lib/caps";
 import { useConfig, useStore } from "../../../../store";
 import { useLock } from "../../../lib/gateHook";
@@ -104,6 +104,14 @@ export function CloudmapTuningPanel(): JSX.Element {
         poll_minutes: edit.poll_minutes ?? c.poll_minutes,
         half_px: edit.half_px ?? c.half_px,
       });
+      // THE DOME GRID IS CACHED FOR MINUTES, and this write may have changed
+      // which satellite it comes from. `getCloudmapDome` keeps a TTL cache
+      // shared by the Sky finder's dome card and the Weather hub's dome screen,
+      // so without this the operator switches GOES-18 to GOES-19, the pin
+      // lands, and both screens keep drawing the OLD bird's grid until the TTL
+      // runs out - a picture of a platform the rig is no longer polling, with
+      // nothing on screen to say so.
+      resetCloudmapDomeCache();
       await useStore.getState().loadConfig();
     } catch (e) {
       if (e instanceof ApiError && e.status === 409) {

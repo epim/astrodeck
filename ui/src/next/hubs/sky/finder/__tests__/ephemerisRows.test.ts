@@ -228,12 +228,39 @@ test("sunlit throughout, in shadow throughout, and the split - three sentences",
   // 0 is not a dim pass. It is one nobody can see, and that is a sentence.
   eq(sunlitClause(pass({ sunlit_fraction: 0 })),
     "in shadow the whole pass - not visible", "fully shadowed:");
+  // Both crossings refined, `enters` FIRST: the pass rose sunlit and went into
+  // the Earth's shadow four minutes in, coming back out at minute eight.
   const split = sunlitClause(pass({
     sunlit_fraction: 0.4,
     enters_shadow_unix: 1_757_000_240,
     leaves_shadow_unix: 1_757_000_500,
   }));
-  eq(split, "sunlit for the first 4 of 10 minutes", "split pass:");
+  eq(split, "sunlit for the first 4 of 10 minutes, then in shadow until minute 8", "split pass:");
+});
+
+test("THE ORDER of the two crossings is the answer, not a detail", () => {
+  // The same two instants the other way round: the satellite ROSE in shadow,
+  // came out of it at minute four and went back in at minute eight. The card
+  // used to assume every pass began sunlit and printed the sentence above for
+  // this one too - advice to go and look at exactly the minutes it is invisible.
+  const shadowFirst = sunlitClause(pass({
+    sunlit_fraction: 0.4,
+    leaves_shadow_unix: 1_757_000_240,
+    enters_shadow_unix: 1_757_000_500,
+  }));
+  eq(shadowFirst, "in shadow for the first 4 of 10 minutes, then sunlit until minute 8",
+    "a pass that rose in shadow:");
+  assert(!/^sunlit for the first/.test(shadowFirst),
+    "a pass that rose in the Earth's shadow was described as starting sunlit");
+});
+
+test("ONE refined crossing names only what it knows", () => {
+  eq(sunlitClause(pass({ sunlit_fraction: 0.4, enters_shadow_unix: 1_757_000_240, leaves_shadow_unix: null })),
+    "sunlit for the first 4 of 10 minutes",
+    "with no exit refined there is no 'until' to name:");
+  eq(sunlitClause(pass({ sunlit_fraction: 0.4, enters_shadow_unix: null, leaves_shadow_unix: 1_757_000_240 })),
+    "in shadow for the first 4 of 10 minutes, then sunlit",
+    "and with no entry refined it stays lit as far as anyone measured:");
 });
 
 test("a partial pass with no refined crossing does NOT invent a minute", () => {

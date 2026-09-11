@@ -37,8 +37,6 @@ import { buildHash, nav, useRoute } from "../../router";
 import { useBreakpoint } from "../../breakpoint";
 import { useLock } from "../../lib/gateHook";
 import { usePlanning } from "../../lib/planning";
-import { finishesAt } from "../../lib/allocation";
-import { fmtClock } from "../../lib/format";
 import {
   SkyView,
   skyPrefs,
@@ -74,8 +72,11 @@ import { OVERLAP, fetchPanels, framedStrip, frameText } from "./frame/mosaic";
 import { effectiveOptics } from "../../../lib/effective";
 import { fovFromOptics, type OpticsLike } from "../../../lib/framing";
 import { useSkyRegion, type SkyRow } from "../../../lib/skyRegion";
-import { useCapability } from "../../../lib/caps";
-import { resolveWheel } from "../../../components/flows/cyclePlanRows";
+import { resolveRoleConnected, useCapability } from "../../../lib/caps";
+import {
+  OSC_LABEL, finishLabel, hoursLabel, oscCount, resolveQuickHours, wheelModel,
+} from "./sheets/quickModel";
+import { hoursToDawn } from "./sheets/quickNightArc";
 import { getPackStatus } from "../../../api/backends";
 import {
   useConfig,
@@ -116,6 +117,20 @@ export const FRAME_NEEDS_LOCK = FRAME_NEEDS_AIM;
  *  first, so this is the hand-typed-URL case. */
 export const FRAME_PARAM_NOTHING =
   "Nothing is framed yet - aim at a target and press FRAME.";
+
+/** Why SINGLE FRAME refuses a satellite. The number is the one that decides it:
+ *  a low-orbit pass moves about four degrees of sky per second, so a sub of any
+ *  useful length is a streak across the frame rather than a picture of it. */
+export const SAT_NO_SINGLE =
+  "A pass crosses about four degrees of sky a second, so one sub is a streak - "
+  + "open the pass list for when and where to look.";
+
+/** Why + PLAN refuses a satellite. Tonight's pool is a list of deep-sky targets
+ *  a flow shoots in turn; a pass is a five-minute event on a fixed clock and
+ *  there is no slot in the plan that means "be outside at 21:04". */
+export const SAT_NO_PLAN =
+  "Tonight's plan queues deep-sky targets for a flow. A pass lasts minutes at a "
+  + "fixed time, so it belongs in the pass list, not the pool.";
 
 /** What a `#/sky?lock=<id>` deep link says when the ranking settles without the
  *  object it names. It prints the id the link asked for, because that is the
@@ -683,16 +698,70 @@ export function SkyHub(): JSX.Element {
   }, [frameParam, clearFrameParam, resumeFrame]);
 
   // ---- the plan summary the primary CTA prints ----------------------------
-  const wheel = resolveWheel(status?.filterwheel?.names, status?.filterwheel?.opaque);
-  const chosenFilters = wheel.filters.filter((f) => quick.on[f] !== false);
+  //
+  // THROUGH THE QUICK SHEET'S OWN SEAM, not a second one. This button OPENS
+  // that sheet, so the line under the label and the line the sheet's GENERATE
+  // FLOW prints have to describe the same night. Three things came apart when
+  // it did not:
+  //
+  //   * `resolveWheel` hands back the ASSUMED seven names for a rig with no
+  //     wheel, so a one-shot-colour camera on a refractor read "7 filters"
+  //     while the sheet one tap away built ONE channel and posted
+  //     `filters: []`. `wheelModel` is the seam that knows the difference
+  //     (`oneChannel`/`source`), and it is the one `quick.tsx:270` uses.
+  //   * `quick.hours` is the STORED number and is meaningless while
+  //     `quick.dawn` is set - the window is then tonight's dawn, which is a
+  //     different length every night. `resolveQuickHours` is the one rule.
+  //   * the raw float printed "5.216388888h". `hoursLabel` renders the window
+  //     the way the sheet's own stop labels do, and `finishLabel` renders the
+  //     clock with the day-delta suffix suppressed, so a session that ends
+  //     after midnight does not read "00:14 (+1d)" on every phone.
+  const fw = status?.filterwheel;
+  // A STRING SIGNATURE, not the live block: `status.filterwheel` is a fresh
+  // object on every 2 s status frame, so anything keyed on it directly would
+  // rebuild this label thirty times a minute for a wheel that never moved.
+  const wheelKey = fw
+    ? [
+        (fw.names ?? []).join("|"),
+        (fw.opaque ?? []).map((b) => (b ? 1 : 0)).join(""),
+        (fw.narrowband ?? []).map((b) => (b ? 1 : 0)).join(""),
+        (fw.exposures ?? []).join(","),
+      ].join("::")
+    : "";
+  // The house helper, not a raw `status.connected.camera` read: a bridged rig
+  // reports its roles on `backend_links` instead, and `wheelModel` needs to
+  // tell "a rig with a camera and no wheel" (one channel) from "no rig to ask"
+  // (the assumed seven).
+  const cameraConnected = useStore((s) => resolveRoleConnected(
+    "camera", s.status?.backend_links, s.status?.connected, s.equipConnected,
+  ).connected);
+  const quickOn = quick.on;
+  const quickExp = quick.exp;
+  const wheel = useMemo(
+    () => wheelModel(fw, quickOn, quickExp, cameraConnected),
+    // `wheelKey` stands in for `fw` deliberately - see the signature above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [wheelKey, quickOn, quickExp, cameraConnected],
+  );
+  const dawnH = hoursToDawn(model.visibility, model.nowMs);
+  const planHours = resolveQuickHours(quick.hours, quick.dawn, dawnH);
   const planSummary = useMemo(() => {
-    const hours = quick.hours;
-    const finish = fmtClock(finishesAt(Date.now(), hours));
-    const middle = chosenFilters.length > 0 ? `${chosenFilters.length} filters` : "one-shot colour";
-    return `${hours}h · ${middle} · finishes ${finish}`;
-    // `chosenFilters.length` and not the array: a new array every render would
-    // recompute the clock every render and make the label tick.
-  }, [quick.hours, chosenFilters.length]);
+    const oneSlot = wheel.source === "one-slot" ? (wheel.slots[0] ?? null) : null;
+    const oscExposure = oneSlot?.exposure ?? quickExp[OSC_LABEL] ?? 120;
+    const checkedCount = wheel.slots.filter((s) => s.checked).length;
+    const middle = wheel.oneChannel
+      ? `${oscExposure}s × ${oscCount(planHours, oscExposure)}`
+      : checkedCount === 0
+        ? "pick a filter"
+        // "assumed" is the no-rig-to-ask case: the seven names are this app's,
+        // not a wheel's, and a bare "7 filters" on a laptop would be a claim
+        // about hardware nobody has plugged in.
+        : wheel.source === "assumed"
+          ? `${checkedCount} filters assumed`
+          : `${checkedCount} filters`;
+    return `${hoursLabel(planHours, dawnH)} · ${middle} · `
+      + `finishes ${finishLabel(model.nowMs, planHours)}`;
+  }, [wheel, quickExp, planHours, dawnH, model.nowMs]);
 
   // ---- actions ------------------------------------------------------------
   const goQuick = (t: SkyTarget) => nav.sheet("quick", { target: t.id });
@@ -701,6 +770,22 @@ export function SkyHub(): JSX.Element {
       `/rig/capture?mode=video&target=${encodeURIComponent(t.name)}` +
       `&ra=${t.ra_hours}&dec=${t.dec_deg}`,
     );
+  /**
+   * A SATELLITE LOCK, which today cannot happen and one day will.
+   *
+   * `finder/targets.ts SATELLITE_MARKERS` is `false`, so no satellite is ever
+   * drawn on the reticle and this branch is unreachable - but `lockCta` ALREADY
+   * answers `kind: "passes"` for one, and without the case below the default
+   * arm sent it to the quick sheet, which would queue a deep-sky night on a
+   * body that has left the frame before the first sub finishes. The whole
+   * point of that constant is that flipping it is the ONLY change needed, so
+   * every branch behind it is written now rather than found at the eyepiece.
+   *
+   * The pass list lives in the targets sheet (it owns the `/api/satellites/
+   * passes` fetch and the withheld-reason copy), so the id travels in the hash
+   * the same way `?lock=` does.
+   */
+  const goPasses = (t: SkyTarget) => nav.sheet("targets", { sat: t.id });
 
   const pressPrimary = (cta: LockCta) => {
     if (!lock) return;
@@ -712,6 +797,9 @@ export function SkyHub(): JSX.Element {
         return;
       case "video":
         goVideo(lock);
+        return;
+      case "passes":
+        goPasses(lock);
         return;
       case "obstructed":
         return;
@@ -736,6 +824,15 @@ export function SkyHub(): JSX.Element {
     }
     const next = pool.includes(lock.id) ? pool.filter((id) => id !== lock.id) : [...pool, lock.id];
     putPool(next);
+  };
+
+  // The x beside + PLAN. It exists only for the one state in which the button
+  // itself stopped being a toggle (`LockCard`'s `showRemove`), and it writes the
+  // pool through the same `putPool` the toggle does - the pool is the rig's, not
+  // this phone's, so there is no local copy to keep in step.
+  const pressRemoveFromPool = () => {
+    if (!lock) return;
+    putPool(pool.filter((id) => id !== lock.id));
   };
 
   const pressPatch = (patch: PatchModel) =>
@@ -777,7 +874,13 @@ export function SkyHub(): JSX.Element {
   const primaryReason = ctaConnect
     ? null
     : capture.lockedReason ?? (lock?.obstructed ? obstructedReason(lock.name, model.siteName) : null);
-  const singleReason = capture.lockedReason;
+  // Both secondaries refuse a SATELLITE before they refuse anything else - see
+  // `goPasses` above for why the branch exists while `SATELLITE_MARKERS` is
+  // false. The primary needs no such clause: `lockCta` already routes a
+  // satellite to its own `passes` case, which is the one useful answer.
+  const satLock = lock?.kind === "satellite";
+  const singleReason = satLock ? SAT_NO_SINGLE : capture.lockedReason;
+  const planReason = satLock ? SAT_NO_PLAN : null;
 
   // MAP is the only mode a desktop has: no camera worth pointing at the sky and
   // no orientation sensor, so the toggle is hidden rather than offered and
@@ -1024,8 +1127,10 @@ export function SkyHub(): JSX.Element {
           onPlan={pressPlan}
           inPool={pool.includes(lock.id)}
           poolCount={pool.length}
+          onRemoveFromPool={pressRemoveFromPool}
           primaryReason={primaryReason}
           singleReason={singleReason}
+          planReason={planReason}
           onExplain={onExplain}
         />
       ) : (

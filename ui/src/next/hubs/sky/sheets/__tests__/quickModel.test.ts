@@ -10,10 +10,13 @@
 // a piece of metal), and an unchecked slot still contributing its exposure.
 
 import {
-  OSC_LABEL, channelLabel, filterColor, hourStops, hoursLabel, nextExposure, oscCount,
-  oscLabel, passesFor, planLine, quickRows, resolveColour, snapHours, wheelModel,
+  NO_DARK_SPAN_H, OSC_LABEL, channelLabel, filterColor, hourStops, hoursLabel, nextExposure,
+  oscCount, oscLabel, passesFor, planLine, quickRows, resolveColour, resolveQuickHours,
+  snapHours, wheelModel,
 } from "../quickModel";
-import { ONE_CHANNEL_FOOTER, OSC_FOOTER, oscFooter } from "../quickCopy";
+import {
+  ONE_CHANNEL_FOOTER, OSC_FOOTER, moonSepText, moonSepWord, oscFooter,
+} from "../quickCopy";
 
 let passed = 0;
 let failed = 0;
@@ -353,6 +356,46 @@ test("an unknown filter name gets the neutral colour, never a guessed hue", () =
   eq(filterColor("Oiii"), "var(--nx-filter-OIII)", "case and spelling differ across wheels");
   eq(filterColor("S2"), "var(--nx-filter-SII)", "");
   assert(!filterColor("Clear").startsWith("var("), "an unknown slot must not borrow L's white");
+});
+
+// ------------------------------------------------- the window, resolved once
+//
+// Two screens read `QuickPrefs` - this sheet and the lock card's CTA - and a
+// stored `hours` beside a set `dawn` flag is the value that made them disagree.
+
+test("a dawn choice resolves tonight's dawn and ignores the stored number", () => {
+  eq(resolveQuickHours(2, true, 5.216), 5.216,
+    "the stored 2 h is what 'until dawn' was recorded beside, not the window");
+  eq(resolveQuickHours(2, false, 5.216), 2, "without the flag the stored number IS the window");
+});
+
+test("the window never exceeds the night it is planned against", () => {
+  eq(resolveQuickHours(6, false, 4), 4, "a 6 h default on a 4 h night is a 4 h window");
+  eq(resolveQuickHours(12, false, null), NO_DARK_SPAN_H,
+    "with no dark window at all the span is the honest fallback, not 12 h");
+  eq(resolveQuickHours(3, true, null), 3,
+    "a dawn choice on a night with no dawn falls back to the stored number");
+});
+
+// ------------------------------------------------------ the moon, in words
+
+test("the moon separation is a word, and only where a word is warranted", () => {
+  eq(moonSepWord(12), "very close", "under 15 degrees");
+  eq(moonSepWord(24), "close", "under 30");
+  eq(moonSepWord(31), null, "a comfortable separation needs no qualifier on every row");
+  // The thresholds are `moonSepGlyph`'s own, so the classic UI and this one
+  // cannot disagree about which targets are compromised.
+  eq(moonSepWord(15), "close", "the boundary belongs to the softer tier");
+  eq(moonSepWord(30), null, "and so does the top one");
+});
+
+test("the reading names the moon, the angle and the verdict - and no glyph", () => {
+  eq(moonSepText(12), "moon 12° very close", "");
+  eq(moonSepText(84), "moon 84°", "");
+  for (const sep of [5, 12, 24, 45, 84]) {
+    assert(!/[✕⚠☾]/.test(moonSepText(sep)),
+      `a severity glyph is back in the reading for ${sep} degrees`);
+  }
 });
 
 const total = passed + failed;

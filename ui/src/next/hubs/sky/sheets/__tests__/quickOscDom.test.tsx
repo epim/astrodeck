@@ -25,23 +25,16 @@
 //  5. NEVER "RGB". A mono camera with no wheel shoots luminance. With neither
 //     the status bus nor a captured frame naming a colour, the card says ONE
 //     CHANNEL and the word RGB is nowhere.
-//  6. THE STATUS BUS NOW ANSWERS TOO (ruling Q7 / T-U7b-10), and does so
-//     without ever needing a captured frame. `quick.tsx` (owned by T-U7b-11,
-//     not this task) has ONE call site that still reads only
-//     `preview?.bayer_pattern` and hands it to `channelLabel` as a bare
-//     string (or `null`); `channelLabel`/`oscLabel` now read a
-//     `ResolvedColour` object (`quickModel.ts`), and a legacy string or
-//     `null` is coerced at the top of `oscLabel` rather than trusted - a
-//     string is read as the FRAME rung (exactly what it always meant), `null`
-//     as no signal, so the mounted card below keeps behaving exactly as it
-//     did before this file existed and does NOT crash on a `null` preview.
-//     What that coercion genuinely cannot do is answer for a camera that has
-//     told the STATUS bus it is colour and has never yet returned a captured
-//     frame - that value never reaches the call site at all today. Section 0
-//     below proves that one case at the model + copy level, the same
-//     functions the mounted card calls, rather than by asserting a DOM
-//     result today's call site cannot produce; it goes green in the DOM too
-//     once T-U7b-11 applies the delivered line.
+//  6. THE STATUS BUS ANSWERS TOO (ruling Q7), and does so without ever needing
+//     a captured frame. `quick.tsx` resolves the colour through
+//     `resolveColour(status.camera, preview.bayer_pattern)`, so a camera that
+//     has told the status bus it is one-shot colour is described as such from
+//     the moment it connects - section 0 mounts exactly that rig, with no
+//     frame ever captured, and reads the answer off the screen. The frame
+//     remains the FALLBACK rung for an engine that publishes no colour fields
+//     at all, and `oscLabel` still coerces a bare string or a `null` at its
+//     top rather than trusting the call site, because a crashed sheet is a
+//     worse defect than a stale label.
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -203,8 +196,9 @@ const OSC_STATUS = {
   busy_lanes: [] as string[],
 };
 
-/** The only colour signal the client has: a bayer pattern off a captured frame
- *  (`PreviewInfo.bayer_pattern`). `RigStatus.camera` carries no colour flag. */
+/** The FALLBACK colour signal: a bayer pattern off a captured frame
+ *  (`PreviewInfo.bayer_pattern`), which is all an engine older than the
+ *  camera-colour status fields ever sends. */
 const OSC_PREVIEW = {
   id: 1, ts: 0, exposure_s: 120, gain: 100, binning: 1,
   data_width: 6248, data_height: 4176, display_width: 1400, display_height: 936,
@@ -219,10 +213,14 @@ function seed(opts: {
   filterwheel?: unknown;
   /** False = nothing plugged in: a laptop planner, not a one-channel rig. */
   camera?: boolean;
+  /** The camera's OWN colour self-report on the status bus (`camera.is_color`
+   *  / `camera.bayer_pattern`), which needs no captured frame. */
+  cameraColour?: { is_color?: boolean | null; bayer_pattern?: string | null };
 } = {}): void {
   const camera = opts.camera !== false;
   const status = {
     ...OSC_STATUS,
+    camera: { ...OSC_STATUS.camera, ...(opts.cameraColour ?? {}) },
     connected: camera ? OSC_STATUS.connected : {},
     ...(opts.filterwheel != null ? { filterwheel: opts.filterwheel } : {}),
   };
@@ -255,21 +253,32 @@ async function mount(opts: Parameters<typeof seed>[0] = {}): Promise<{ unmount()
 
 // ============================================== 0. status alone, no frame ever
 //
-// GAP (see item 6 above): `quick.tsx` does not yet build a `ResolvedColour`
-// from `status.camera`, so a rig that has told the status bus it is
-// one-shot-colour but has never yet returned a captured frame cannot be
-// proven through the mounted sheet today. Proven instead against the exact
-// functions the card calls, `resolveColour` then `oscLabel` - the contract
-// the DOM will render the moment T-U7b-11 applies the delivered line.
-test("a camera that has said is_color, with no frame ever captured, is still one-shot colour", () => {
+// The camera says it is one-shot colour on the status bus and NO frame has
+// ever been captured (`preview: null`). This is the state every OSC rig is in
+// for the first several minutes of every session, and the only rung that can
+// answer for it is the camera's own self-report - so it is asserted on the
+// mounted card, not just against the two pure functions behind it.
+test("the model rung: is_color alone is a colour claim and names no matrix", () => {
   const colour = resolveColour({ is_color: true, bayer_pattern: null }, null);
   eq(colour.source, "status", "the status bus answered - no frame involved at all");
   eq(colour.pattern, null, "is_color alone names no matrix");
   const label = oscLabel(colour);
-  eq(label.title, "ONE-SHOT COLOUR - NO WHEEL",
-    "today's mounted card, reading only the preview, would print ONE CHANNEL here - "
-    + "this is the gap T-U7b-11's delivered line closes");
+  eq(label.title, "ONE-SHOT COLOUR - NO WHEEL", "the title for a camera that said colour");
   assert(!/[A-Z]{4}/.test(label.sub), "no matrix is named when only is_color spoke");
+});
+
+await testAsync("a camera that has said is_color, with no frame ever captured, renders as one-shot colour", async () => {
+  const m = await mount({ preview: null, cameraColour: { is_color: true, bayer_pattern: null } });
+  try {
+    assert(q('[data-testid="quick-osc-exposure"]') != null,
+      "precondition: the one-channel card is not on screen, so nothing below is about it");
+    eq(q('[data-testid="quick-osc-title"]')?.textContent, "ONE-SHOT COLOUR - NO WHEEL",
+      "the status bus said colour and the card did not");
+    assert(/the camera reports one-shot colour/.test(q('[data-testid="quick-osc-sub"]')?.textContent ?? ""),
+      "the sub line must say WHO said it - a frame and a driver are different confidences");
+    assert(text().includes(OSC_FOOTER),
+      "the colour footer belongs under a camera that claimed colour");
+  } finally { await m.unmount(); }
 });
 
 // ============================================================ 1. one-shot colour

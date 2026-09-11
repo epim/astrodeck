@@ -254,6 +254,52 @@ await testAsync(
   },
 );
 
+// ------------------------------------------------- the DEW tile's two silences
+//
+// `api/redact.py:151-173` DELETES the margin, the ambient and the dew point on
+// their way out for a principal without `view.weather`. Client-side the two
+// causes are indistinguishable - `now.temp_c` and `now.dewpoint_c` are null
+// either way - so the tile has to read the CAPABILITY to tell them apart. It
+// used to print "not reported" for both, blaming a feed that had sent the
+// numbers, directly above a sub line saying the capability is what is missing.
+
+await testAsync("a principal without view.weather sees the DEW value as HIDDEN, not 'not reported'", async () => {
+  act(() => {
+    useStore.setState({
+      principal: SPLIT_CAPTURE_ONLY,
+      weather: weatherFixture({ now: { ts: new Date(NOW * 1000).toISOString(), temp_c: null, dewpoint_c: null, humidity_pct: 68, wind_kmh: 12, wind_dir_deg: 225, gust_kmh: null, cloud_base_m: null } }),
+      toasts: [],
+    } as never);
+  });
+  await settle();
+
+  const tile = byId("wx-tile-dew");
+  assert(tile != null, "no DEW tile at all - the fixture is wrong, not the component");
+  const body = String(tile.textContent);
+  assert(/hidden/.test(body), `the DEW value does not say it is withheld: "${body}"`);
+  assert(!/not reported/.test(body),
+    `the tile blames the feed for a number the redactor removed: "${body}"`);
+  assert(/needs operator or admin access/.test(body),
+    `the sub line must still name what is missing: "${body}"`);
+});
+
+await testAsync("a HOLDER with the same missing fields is told the feed is short, not the role", async () => {
+  // The positive control: same nulls, different principal. Without it "hidden"
+  // above could be the tile printing one word for every absence.
+  act(() => {
+    useStore.setState({
+      principal: OPERATOR,
+      weather: weatherFixture({ now: { ts: new Date(NOW * 1000).toISOString(), temp_c: null, dewpoint_c: null, humidity_pct: 68, wind_kmh: 12, wind_dir_deg: 225, gust_kmh: null, cloud_base_m: null } }),
+      toasts: [],
+    } as never);
+  });
+  await settle();
+
+  const body = String(byId("wx-tile-dew").textContent);
+  assert(/not reported/.test(body), `a holder's missing field must blame the feed: "${body}"`);
+  assert(!/hidden/.test(body), `nothing is hidden from a holder: "${body}"`);
+});
+
 act(() => { root.unmount(); });
 
 // ------------------------------------------------------------------- tally

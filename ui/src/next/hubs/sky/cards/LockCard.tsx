@@ -7,7 +7,10 @@
 //
 //   IMAGE <name>    a quick session - the flow that runs until dawn
 //   Single frame    one exposure, aimed here, no flow
-//   + PLAN          add to tonight's pool; at two the label becomes PLAN N TARGETS
+//   + PLAN          add to tonight's pool. Once THIS target is in a pool of two
+//                   or more the button stops toggling and opens the multi-target
+//                   sheet instead, so an x appears beside it to take it back out
+//                   (see `planLabel` / `showRemove` for the argument).
 //
 // EVERY ONE OF THEM IS HONEST-DISABLED RATHER THAN HIDDEN. A viewer sees the
 // same three buttons an operator does, dimmed, each carrying the reason. That is
@@ -71,8 +74,13 @@ export interface LockCardProps {
   onPlan: () => void;
   inPool: boolean;
   poolCount: number;
+  /** Take THIS target back out of the pool. Rendered as its own control only
+   *  when the button beside it has stopped being a toggle - see `planLabel`. */
+  onRemoveFromPool: () => void;
   primaryReason: string | null;
   singleReason: string | null;
+  /** Why + PLAN cannot be pressed, when it cannot (a satellite). */
+  planReason?: string | null;
   onExplain: (reason: string) => void;
   /** Passes found for a locked SATELLITE, or null when nobody has answered
    *  yet. Only `lockCta` reads it, and only for a satellite. */
@@ -92,22 +100,52 @@ export function LockCard({
   onPlan,
   inPool,
   poolCount,
+  onRemoveFromPool,
   primaryReason,
   singleReason,
+  planReason = null,
   onExplain,
   passCount = null,
 }: LockCardProps): JSX.Element {
   const cta = lockCta({ ...lock, passCount }, equipConnected);
   const skin = ctaSkin(cta);
 
-  // At two or more the secondary button stops being "add one more" and becomes
-  // the way INTO the multi-target night - the pool is the feature, not the count.
-  const planLabel = poolCount >= 2 ? `PLAN ${poolCount} TARGETS` : inPool ? "IN TONIGHT'S PLAN" : "+ PLAN";
-  const planSub = poolCount >= 2
+  /**
+   * WHAT THE SECOND BUTTON SAYS, AND WHAT PRESSING IT DOES - the same thing.
+   *
+   * The label used to come from `poolCount` alone, so a target that was NOT in
+   * a pool of three still read "PLAN 3 TARGETS" while `SkyHub`'s `pressPlan`
+   * added it to the pool: a button naming an action it does not perform. The
+   * open-the-sheet case is `inPool && poolCount >= 2` - the same condition
+   * `pressPlan` branches on - and every other case is the toggle.
+   *
+   * Which leaves a hole the old label hid: once that condition holds, the
+   * button no longer removes anything, so a member of a pool of two or more had
+   * no way out of it except the quick sheet. Hence `showRemove` and the x
+   * beside it.
+   */
+  const opensPool = inPool && poolCount >= 2;
+  const planLabel = opensPool ? `PLAN ${poolCount} TARGETS` : inPool ? "IN TONIGHT'S PLAN" : "+ PLAN";
+  const planSub = opensPool
     ? "queued for one flow"
     : inPool
       ? "tap to remove"
-      : "add to tonight's pool";
+      : poolCount > 0
+        ? `${poolCount} already queued`
+        : "add to tonight's pool";
+
+  /**
+   * AN x, NOT A LONG PRESS.
+   *
+   * A long press is already spoken for on this screen - "hold any control for a
+   * plain-language explanation" is the design's own idiom and `honestPress`
+   * implements it on every locked control - so binding removal to the same
+   * gesture would make one hold mean two different things depending on state.
+   * An x is also the affordance this very card already uses for the kept
+   * framing row three rows up, so there is one way to take something off this
+   * card rather than two.
+   */
+  const showRemove = opensPool;
 
   return (
     <Card tone="accent" className="nx-sky-lock" data-testid="sky-lock">
@@ -268,7 +306,10 @@ export function LockCard({
           <button
             type="button"
             data-testid="sky-plan"
-            onClick={onPlan}
+            data-plan-opens={opensPool ? "sheet" : "toggle"}
+            className={lockedClass(planReason)}
+            onClick={honestPress(planReason, onExplain, onPlan)}
+            {...lockedAttrs(planReason)}
             style={{
               flex: 1, minWidth: 0, height: 50, borderRadius: 12,
               border: `1px solid ${inPool ? "var(--accent)" : "var(--line-bright)"}`,
@@ -285,6 +326,24 @@ export function LockCard({
               </span>
             </span>
           </button>
+
+          {showRemove && (
+            <button
+              type="button"
+              data-testid="sky-plan-remove"
+              aria-label={`take ${lock.name} out of tonight's plan`}
+              title={`take ${lock.name} out of tonight's plan`}
+              onClick={onRemoveFromPool}
+              style={{
+                width: 44, height: 50, borderRadius: 12, flexShrink: 0,
+                border: "1px solid var(--line-bright)", background: "var(--bg-raise)",
+                color: "var(--text-dim)", fontFamily: MONO, fontSize: 14,
+                cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+              }}
+            >
+              ×
+            </button>
+          )}
         </div>
       </div>
     </Card>

@@ -150,6 +150,30 @@ const PASSES = {
       enters_shadow_unix: NOW / 1000 + 15_840, leaves_shadow_unix: NOW / 1000 + 16_100,
       elements_age_days: 9.1,
     },
+    // ROSE IN SHADOW, came out of it halfway across. Both crossings are
+    // refined and `leaves` comes FIRST, which is the case the card used to
+    // describe backwards: it assumed every pass began sunlit, so this one read
+    // "sunlit for the first 3 minutes" at exactly the minutes it was invisible.
+    {
+      norad_id: 25544, name: "ISS (ZARYA)",
+      start_unix: NOW / 1000 + 20_000, peak_unix: NOW / 1000 + 20_300, end_unix: NOW / 1000 + 20_600,
+      start_az: 240, peak_az: 190, end_az: 110,
+      max_alt_deg: 38, duration_s: 600, sunlit_fraction: 0.5,
+      leaves_shadow_unix: NOW / 1000 + 20_180, enters_shadow_unix: NOW / 1000 + 20_480,
+      elements_age_days: 9.1,
+    },
+    // FIX-S1's visible window, which is NOT the horizon window: up for ten
+    // minutes, worth going outside for six. The fields are optional on the
+    // wire, so this row is the only one that carries them.
+    {
+      norad_id: 25544, name: "ISS (ZARYA)",
+      start_unix: NOW / 1000 + 26_000, peak_unix: NOW / 1000 + 26_300, end_unix: NOW / 1000 + 26_600,
+      start_az: 280, peak_az: 200, end_az: 100,
+      max_alt_deg: 52, duration_s: 600, sunlit_fraction: 1,
+      enters_shadow_unix: null, leaves_shadow_unix: null,
+      visible_start_unix: NOW / 1000 + 26_120, visible_end_unix: NOW / 1000 + 26_480,
+      elements_age_days: 9.1,
+    },
   ],
   horizon_source: "the horizon polyline saved for this site",
   elements: {
@@ -176,6 +200,13 @@ const PICKS = [
 ];
 
 const asks: string[] = [];
+/** When set, `GET /api/satellites/passes` answers 409 with this code and
+ *  sentence instead of the pass list. */
+let passesFailure: { code: string; detail: string } | null = null;
+/** The server's own site-unset sentence, which the card must show verbatim. */
+const SITE_UNSET_DETAIL =
+  "This rig has no site set, so there is nothing to compute passes from. "
+  + "Set one under the site pill.";
 /** Flipped by the viewer scenario: the SERVER is what withholds satellites, so
  *  the fixture withholds them the way the server does - empty rows plus its own
  *  sentence - rather than the UI deciding not to ask. */
@@ -185,7 +216,19 @@ g.fetch = async (url: any, init: any) => {
   const u = String(url);
   asks.push(`${(init?.method ?? "GET").toUpperCase()} ${u}`);
   const ok = (data: any) => ({ ok: true, status: 200, statusText: "OK", json: async () => data });
-  if (u.includes("/api/satellites/passes")) return ok(PASSES);
+  if (u.includes("/api/satellites/passes")) {
+    // The route's two 409s, in the server's own nested shape
+    // (`HTTPException(409, detail={"detail": ..., "code": ...})`), so the code
+    // reaches the card through `parseApiError` rather than being planted.
+    if (passesFailure) {
+      const f = passesFailure;
+      return {
+        ok: false, status: 409, statusText: "Conflict",
+        json: async () => ({ detail: { detail: f.detail, code: f.code } }),
+      };
+    }
+    return ok(PASSES);
+  }
   if (u.includes("/api/catalog/tonight")) return ok({ date: "2026-09-10", site_is_default: false, picks: PICKS });
   if (u.includes("/api/catalog?q=satellites")) {
     return satellitesWithheld
@@ -193,6 +236,11 @@ g.fetch = async (url: any, init: any) => {
       : ok({ results: SATELLITES, notes: [STALE_NOTE] });
   }
   if (u.includes("/api/catalog?q=comets")) return ok({ results: COMETS, notes: [] });
+  // The free-text search for a satellite. `/api/catalog` discriminates every
+  // row it serves, so the hit carries `kind: "satellite"` and its NORAD id -
+  // which is the whole reason the sheet can answer with a pass list rather
+  // than aiming a finder that never draws one.
+  if (u.includes("/api/catalog?q=iss")) return ok({ results: [SATELLITES[0]], notes: [] });
   if (u.includes("/api/catalog?q=")) return ok({ results: [], notes: [] });
   if (u.includes("/api/cloudmap/dome")) {
     return ok({ enabled: true, observed_at: null, stale: false, rows: [], alt_start: 5, alt_step: 6, az_step: 10, reason: null });
@@ -203,6 +251,9 @@ g.fetch = async (url: any, init: any) => {
 };
 
 const passAsks = () => asks.filter((a) => a.includes("/api/satellites/passes"));
+/** Where the `?sat=` remount starts in `asks`, so its request can be told from
+ *  the ones the first mount made. */
+let satParamFrom = 0;
 
 // ------------------------------------------ imports, AFTER the globals are set
 const { createElement, act } = await import("react");
@@ -368,7 +419,7 @@ await testAsync("tapping a satellite fetches its passes ONCE and renders them", 
   await settle();
 
   assert(byId("sky-passes") != null, "no passes card after picking a satellite");
-  eq(qa('[data-testid="sky-pass-row"]').length, 3, "pass rows:");
+  eq(qa('[data-testid="sky-pass-row"]').length, 5, "pass rows:");
   eq(passAsks().length, 1, "passes requests after one pick:");
   // The URL carries the one NORAD id, repeated-key style, and the window.
   assert(/ids=25544/.test(passAsks()[0]), `the request did not scope to the satellite: ${passAsks()[0]}`);
@@ -416,6 +467,73 @@ test("a pass row names the time AND the direction to face", () => {
   assert(/10 min/.test(t), `the duration is missing: ${t}`);
 });
 
+test("a pass that ROSE in shadow is described in that order", () => {
+  const clauses = qa('[data-testid="sky-pass-sunlit"]').map((n) => String(n.textContent));
+  // `leaves` at +180 s and `enters` at +480 s of a 600 s pass: dark for the
+  // first three minutes, lit for the next five.
+  assert(clauses.some((c) => /^in shadow for the first 3 of 10 minutes, then sunlit until minute 8$/.test(c)),
+    `the shadow-first pass is not described in the order it happened: ${clauses.join(" | ")}`);
+  // And the opposite order still reads the other way round, so the branch is a
+  // branch rather than a reworded constant.
+  assert(clauses.some((c) => /^sunlit for the first 4 of 10 minutes, then in shadow until minute 8$/.test(c)),
+    `the sunlit-first pass lost its own order: ${clauses.join(" | ")}`);
+});
+
+test("a pass carrying a VISIBLE window shows that window, not the horizon one", () => {
+  const rows = qa('[data-testid="sky-pass-row"]');
+  const row = rows[rows.length - 1];
+  const t = String(row.textContent);
+  assert(/VISIBLE/.test(t) && /UNTIL/.test(t),
+    `the row still leads with the horizon crossings: ${t}`);
+  assert(!/RISE/.test(t), `the horizon crossing is still the headline: ${t}`);
+  // Six minutes of visibility inside a ten-minute pass. The duration shown has
+  // to be the window shown, or the row contradicts itself.
+  assert(/6 min/.test(t), `the duration is the horizon window, not the visible one: ${t}`);
+  assert(!/10 min/.test(t), `the ten-minute horizon window is still being claimed: ${t}`);
+  // The compass points exist only on the horizon crossings, so they may not sit
+  // beside a visible-window time - they move to their own clause instead.
+  const horizon = row.querySelector('[data-testid="sky-pass-horizon"]');
+  assert(horizon != null,
+    "the horizon crossings were dropped entirely - they are the bearings you face");
+  assert(/ W to /.test(String(horizon.textContent)) && / E$/.test(String(horizon.textContent).trim()),
+    `the horizon clause names no bearings: ${String(horizon.textContent)}`);
+
+  // Every OTHER row has no such fields and must be unchanged.
+  const first = String(rows[0].textContent);
+  assert(/RISE/.test(first) && !/VISIBLE/.test(first),
+    `a row with no visible window invented one: ${first}`);
+});
+
+// ------------------------------------------------ 2b. how a satellite is REACHED
+await testAsync("a satellite search hit opens its passes instead of aiming the finder", async () => {
+  // Start from nothing selected, so the card below can only be this pick's.
+  click(qa('[data-testid="target-row-satellite"]')[0]);
+  await settle();
+  assert(byId("sky-passes") == null, "precondition: the passes card should be closed again");
+
+  const hashBefore = String(win.location.hash);
+  const input = q("input");
+  assert(input != null, "no catalogue search field on the sheet");
+  act(() => {
+    Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, "value")!.set!
+      .call(input, "iss");
+    input.dispatchEvent(new win.Event("input", { bubbles: true }));
+  });
+  await settle();
+
+  const hit = qa("button").find((b: any) => /ISS \(ZARYA\)/.test(String(b.textContent))
+    && !String(b.getAttribute("data-testid") ?? "").startsWith("target-row"));
+  assert(hit != null, "the search dropdown never offered the satellite the server returned");
+  click(hit);
+  await settle();
+
+  assert(byId("sky-passes") != null,
+    "a satellite search hit did not open its pass list - the only answer a rig has about one");
+  eq(String(win.location.hash), hashBefore,
+    "the hit aimed the finder at a body that is never drawn on it, which the hub then "
+    + "blames on tonight's list:");
+});
+
 // -------------------------------------------------- 3. the settings link
 test("a note that asks for a refresh carries the link to the sheet it names", () => {
   const link = byId("ephemeris-settings-link");
@@ -426,6 +544,82 @@ test("a note that asks for a refresh carries the link to the sheet it names", ()
 });
 
 await act(async () => { root.unmount(); });
+
+// ================================== 3b. `?sat=`, the hash the lock card hands over
+//
+// `SkyHub`'s NEXT PASS CTA (`lockCta`'s `passes` case) cannot be exercised
+// today - `SATELLITE_MARKERS` is false, so a satellite is never the lock - but
+// the CONTRACT it depends on is this sheet's, and it is reachable: the hub
+// navigates to `#/sky/targets?sat=<id>` and this sheet has to open that
+// satellite's pass list. If this end is not wired, the day the constant flips
+// the CTA opens an empty sheet.
+satParamFrom = asks.length;
+root = createRoot(container);
+await act(async () => {
+  root.render(createElement(TargetsSheet, { params: { sat: "ISS (ZARYA)" }, depth: 0 as const }));
+});
+await settle();
+
+test("?sat= opens that satellite's pass list without a tap", () => {
+  assert(byId("sky-targets") != null, "the sheet did not render at all");
+  assert(byId("sky-passes") != null,
+    "the hash named a satellite and the sheet opened no pass list for it");
+  assert(/PASSES - ISS \(ZARYA\)/.test(String(byId("sky-passes").textContent)),
+    `the card is not about the satellite the hash named: ${String(byId("sky-passes").textContent).slice(0, 80)}`);
+  const fired = asks.slice(satParamFrom).filter((a) => a.includes("/api/satellites/passes"));
+  assert(fired.length >= 1 && /ids=25544/.test(fired[0]),
+    `the passes request did not scope to the named satellite: ${fired.join(" | ")}`);
+});
+
+await act(async () => { root.unmount(); });
+
+// ============================== 3c. the two 409s the route answers, and their faces
+
+passesFailure = { code: "satellites_unavailable", detail: SITE_UNSET_DETAIL };
+root = createRoot(container);
+await act(async () => {
+  root.render(createElement(TargetsSheet, { params: { sat: "ISS (ZARYA)" }, depth: 0 as const }));
+});
+await settle();
+
+test("no site set is a STATE, in the server's words, with nothing to retry", () => {
+  const card = byId("sky-passes");
+  assert(card != null, "precondition: no passes card at all, so its face cannot be graded");
+  const withheld = byId("sky-passes-withheld");
+  assert(withheld != null,
+    "a refusal nobody can retry rendered as a failure - the fix is to set a site, not to press again");
+  eq(String(withheld.textContent), SITE_UNSET_DETAIL,
+    "the sentence must be the server's, verbatim:");
+  assert(byId("sky-passes-retry") == null,
+    "TRY AGAIN is offered for a refusal that will answer exactly the same way until a site is set");
+  assert(card.querySelector('[role="alert"]') == null,
+    "the withheld state is not an alert - nothing has gone wrong");
+});
+
+await act(async () => { root.unmount(); });
+
+passesFailure = { code: "passes_busy", detail: "A pass search is already running." };
+root = createRoot(container);
+await act(async () => {
+  root.render(createElement(TargetsSheet, { params: { sat: "ISS (ZARYA)" }, depth: 0 as const }));
+});
+await settle();
+
+test("a busy pass search says what to wait for and KEEPS the retry", () => {
+  const card = byId("sky-passes");
+  assert(card != null, "precondition: no passes card at all");
+  assert(byId("sky-passes-withheld") == null,
+    "a refusal that waiting fixes was rendered as a permanent state");
+  const alert = card.querySelector('[role="alert"]');
+  assert(alert != null, "no alert for a refusal");
+  assert(/one at a time/.test(String(alert.textContent)),
+    `the sentence does not say why waiting is the answer: ${String(alert.textContent)}`);
+  assert(byId("sky-passes-retry") != null,
+    "the one refusal a retry actually fixes lost its retry button");
+});
+
+await act(async () => { root.unmount(); });
+passesFailure = null;
 
 // ============================================================ the viewer
 satellitesWithheld = true;

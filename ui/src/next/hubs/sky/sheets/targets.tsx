@@ -39,7 +39,7 @@
 // the search behaviour itself, though: its zero-result copy, its outside-tap
 // dismissal and its stale-response guard.
 
-import { useState, type JSX } from "react";
+import { useEffect, useRef, useState, type JSX } from "react";
 import type { SheetProps } from "../../sheets";
 import { Card, EmptyCard, Label, Mono, Sheet } from "../../../ui";
 import { NxIcon } from "../../../icons";
@@ -47,7 +47,7 @@ import { nav } from "../../../router";
 import { CatalogSearch } from "../../../../components/atlas/CatalogSearch";
 import { useCapability } from "../../../../lib/caps";
 import { difficultyGlyph, difficultyLabel } from "../../../../lib/difficulty";
-import { moonSepGlyph } from "../../../../lib/visibility";
+
 import type { CatalogEntry, CometRow, DifficultyTier, SatelliteRow } from "../../../../types";
 import { windowLabel } from "../../../lib/reach";
 import {
@@ -62,7 +62,7 @@ import { LensDial } from "../cards/LensDial";
 import { LENS_LEARN } from "../cards/lens";
 import { PassesCard } from "../cards/PassesCard";
 import { useStore } from "../../../../store";
-import { TARGETS_EMPTY, TARGETS_FOOTER } from "./quickCopy";
+import { TARGETS_EMPTY, TARGETS_FOOTER, moonSepText, moonSepWord } from "./quickCopy";
 import {
   RANK_DEFAULT_SITE, RANK_NEEDS_SITE, RANK_NOT_EMPTY, RANK_STILL_WORKING, SLOW_AFTER_S,
   useTargetsModel,
@@ -96,15 +96,17 @@ function knownTier(t: string | undefined): DifficultyTier | null {
 }
 
 /** Moon-separation hints, verbatim from `VisibilityPanel`'s own legend. The
- *  GLYPH is the carrier, not the tone: the night palette collapses good/warn/bad
- *  toward coral and a colour-only signal would vanish under it. */
+ *  WORD is the carrier, not the tone: the night palette collapses
+ *  good/warn/bad toward coral and a colour-only signal would vanish under it.
+ *  (The classic UI carries a glyph here - see `moonSepText` for why this side
+ *  spells it out instead.) */
 function moonHint(sep: number): string {
   if (sep < 15) return "Very close to the moon - heavy gradient/glow.";
   if (sep < 30) return "Near the moon - expect some gradient.";
   return "Comfortable separation from the moon.";
 }
 
-export function TargetsSheet(_p: SheetProps): JSX.Element {
+export function TargetsSheet(p: SheetProps): JSX.Element {
   const model = useTargetsModel();
   const enqueueToast = useStore((s) => s.enqueueToast);
   const [lensOpen, setLensOpen] = useState(false);
@@ -132,7 +134,51 @@ export function TargetsSheet(_p: SheetProps): JSX.Element {
     nav.go(`/sky?lock=${encodeURIComponent(id)}`);
   };
 
-  const onPick = (e: CatalogEntry): void => aim(e.id);
+  /**
+   * A SEARCH HIT, ROUTED BY WHAT IT IS.
+   *
+   * Everything else aims the finder. A satellite cannot BE aimed at: it is not
+   * drawn on the reticle at all (`finder/targets.ts SATELLITE_MARKERS`), so
+   * `aim()` navigated to `#/sky?lock=<id>`, the hub waited out its grace and
+   * then toasted "<id> is not in tonight's list" - blaming the ranked list for
+   * a row the search had just handed over. The answer a satellite has is its
+   * pass list, so a satellite hit selects into the same `pickedSat` the
+   * ephemeris rows write and the card below renders it.
+   *
+   * `CatalogEntry` carries no `kind` (the type is the deep-sky shape), but the
+   * WIRE row does - `/api/catalog` discriminates every row, and a satellite row
+   * is a `SatelliteRow` complete with the `norad_id` the passes route needs. So
+   * the fields are read optionally off the value that actually arrived rather
+   * than by widening the search component's prop type.
+   */
+  const onPick = (e: CatalogEntry): void => {
+    const row = e as CatalogEntry & Partial<SatelliteRow>;
+    if (row.kind === "satellite" && typeof row.norad_id === "number") {
+      setPickedSat(row as SatelliteRow);
+      return;
+    }
+    aim(e.id);
+  };
+
+  /**
+   * `#/sky/targets?sat=<id>`, the way the lock card's NEXT PASS opens this.
+   *
+   * A sheet is route state, not a child of the screen under it, so the id
+   * travels in the hash exactly as `?lock=` does. It is consumed ONCE per id:
+   * `eph.satellites` is refetched on a timer and a naive effect would re-select
+   * the row - and undo the operator's own tap on a different satellite - every
+   * time the poll returned.
+   */
+  const satParam = p.params.sat ?? null;
+  const handledSat = useRef<string | null>(null);
+  useEffect(() => {
+    if (satParam == null || satParam === "") { handledSat.current = null; return; }
+    if (handledSat.current === satParam) return;
+    const row = eph.satellites.find((r) => r.id === satParam);
+    if (!row) return;
+    handledSat.current = satParam;
+    setPickedSat(row);
+  }, [satParam, eph.satellites]);
 
   const sub = [
     model.clearPct == null ? "clear -" : `clear ${model.clearPct}%`,
@@ -323,6 +369,7 @@ export function TargetsSheet(_p: SheetProps): JSX.Element {
             notes={passes.notes}
             loading={passes.loading}
             error={passes.error}
+            errorCode={passes.errorCode}
             lockedReason={passesAllowed ? null : (eph.satelliteNotes[0] ?? null)}
             onExplain={(reason) => enqueueToast({ level: "info", title: reason })}
             onRefresh={passes.refresh}
@@ -403,11 +450,11 @@ function TargetRow({ t, onAim }: { t: SkyTarget; onAim: () => void }): JSX.Eleme
           {sep != null && (
             <span
               className="nx-mono"
-              data-moon-glyph={moonSepGlyph(sep)}
+              data-moon-sep={moonSepWord(sep) ?? "clear"}
               title={moonHint(sep)}
               style={{ fontSize: 10, color: sep < 15 ? "var(--bad, #ff5470)" : sep < 30 ? "var(--warn, #ffb454)" : "var(--text-3, #7683a5)" }}
             >
-              {`${moonSepGlyph(sep)} ${Math.round(sep)}°`}
+              {moonSepText(sep)}
             </span>
           )}
           {tier && (

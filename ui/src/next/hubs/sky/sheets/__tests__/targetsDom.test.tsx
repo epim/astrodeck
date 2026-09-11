@@ -269,11 +269,22 @@ test("a hole in the cloud map is not 0% cloud", () => {
     `the row should fall back to the hourly figure, got ${row.textContent}`);
 });
 
-test("the moon-separation glyph warns on a close target and not on a far one", () => {
-  const near = q('[data-target-row="m31"] [data-moon-glyph]');
-  const far = q('[data-target-row="n869"] [data-moon-glyph]');
-  eq(near?.getAttribute("data-moon-glyph"), "✕", "12 degrees from the moon is the worst tier");
-  eq(far?.getAttribute("data-moon-glyph"), "☾", "84 degrees is comfortable");
+// A WORD, NOT A GLYPH. The classic UI draws `moonSepGlyph`'s cross / warning
+// triangle / crescent here; this side prints "very close" / "close" / nothing,
+// because two of those three glyphs are generic severity marks that say nothing
+// about the moon and none of the three survives being read aloud.
+test("the moon separation is a readable claim, not a severity glyph", () => {
+  const near = q('[data-target-row="m31"] [data-moon-sep]');
+  const far = q('[data-target-row="n869"] [data-moon-sep]');
+  eq(near?.getAttribute("data-moon-sep"), "very close", "12 degrees from the moon is the worst tier");
+  eq(far?.getAttribute("data-moon-sep"), "clear", "84 degrees is comfortable");
+  assert(/^moon 12° very close$/.test(near?.textContent ?? ""),
+    `the close row must name the moon, the angle and the verdict: "${near?.textContent}"`);
+  eq(far?.textContent, "moon 84°", "and a comfortable separation gets no qualifier at all");
+  for (const el of [near, far]) {
+    assert(!/[✕⚠☾]/.test(el?.textContent ?? ""),
+      "a glyph is back in the reading");
+  }
   assert(/heavy gradient/.test(near?.getAttribute("title") ?? ""),
     "the close row does not explain itself");
 });

@@ -128,7 +128,14 @@ export function ConditionsBand({
         />
         <ReadoutTile
           label="DEW"
-          value={margin === null ? "not reported" : `${margin.toFixed(1)}°C`}
+          // "not reported" BLAMES THE FEED, and for a principal without
+          // `view.weather` the feed sent the number: `api/redact.py:151-173`
+          // deletes it on the way out. Two different facts, two different words
+          // - and the sub line beside this one already names the capability, so
+          // a tile reading "not reported" over it contradicted its own caption.
+          value={margin !== null
+            ? `${margin.toFixed(1)}°C`
+            : canViewWeather ? "not reported" : "hidden"}
           sub={dewSub}
           tone={dewTone}
           data-testid="wx-tile-dew"

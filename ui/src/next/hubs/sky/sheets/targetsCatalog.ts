@@ -75,15 +75,24 @@ export async function searchCatalog(q: string): Promise<CatalogAnswer> {
  *  Id first because the hash carries an id, and a search for "M31" also returns
  *  rows whose NAME mentions it. Matching on name alone opens the brief for a
  *  different object than the row that was tapped. Separators are squashed for
- *  the same reason the server squashes them: "M 31" and "M31" are one object. */
+ *  the same reason the server squashes them: "M 31" and "M31" are one object.
+ *
+ *  NO MATCH IS `null`, NOT `rows[0]`. The fallback looked harmless - the search
+ *  route is asked for one id and usually answers with it first - but it turned
+ *  "the catalogue does not carry this" into "here is a different object with
+ *  the same confidence", and every caller renders the answer as THE target: the
+ *  brief titles it, and the quick sheet takes its `ra_hours`/`dec_deg` into the
+ *  flow it generates. A night pointed at a neighbouring galaxy because an id
+ *  was mistyped is not a rendering bug. Both callers already handle the absence
+ *  (`quick.tsx` locks GENERATE FLOW on `target == null` and prints the server's
+ *  own `notes[]`), so the honest answer costs nothing. */
 export function pickRow(rows: readonly SearchRow[], q: string): SearchRow | null {
   const key = q.trim().toLowerCase();
   const squash = (s: string): string => s.toLowerCase().replace(/[\s_-]+/g, "");
   const byId = rows.find((r) => r.id.toLowerCase() === key)
     ?? rows.find((r) => squash(r.id) === squash(key));
   if (byId) return byId;
-  const byName = rows.find((r) => (r.name ?? "").toLowerCase() === key);
-  return byName ?? rows[0] ?? null;
+  return rows.find((r) => (r.name ?? "").toLowerCase() === key) ?? null;
 }
 
 /** The map's row for the same object - the only source of `describe`,

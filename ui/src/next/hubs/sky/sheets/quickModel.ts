@@ -236,20 +236,22 @@ export function resolveColour(
 }
 
 /**
- * RUNTIME SAFETY NET for a caller mid-integration.
+ * THE RUNTIME NET UNDER A TYPE THAT IS ALREADY RIGHT.
  *
- * `oscLabel`'s TYPE is `ResolvedColour`, full stop - `tsc` must keep refusing
- * `quick.tsx`'s unmodified `channelLabel(wheel, bayerPattern)` call site until
- * T-U7b-11 applies the delivered line (see the T-U7b-10 report for the exact
- * line). But that call site's actual
- * RUNTIME value is still whatever `preview?.bayer_pattern ?? null` was before
- * this file existed - a bare string, or `null` - and `null.isColor` would
- * throw and take the whole sheet's render down with it. A crashed screen is a
- * strictly worse defect than a stale label, so a non-object argument is
- * coerced rather than trusted: a non-empty string reads as the FRAME rung of
- * `resolveColour` (exactly what it always meant before this file existed),
- * anything else as no signal at all. A genuine `ResolvedColour` - anything
- * carrying its own `source` - passes through untouched.
+ * `oscLabel`'s parameter is a `ResolvedColour` and `quick.tsx` passes one, so
+ * `tsc` guarantees the shape of every call site in this tree. What it cannot
+ * guarantee is the VALUE: this label is reached from a store read
+ * (`resolveColour(status.camera, preview.bayer_pattern)`), and a payload shape
+ * older or newer than this build - a persisted preference, a replayed fixture,
+ * a bridged engine - can still put a bare bayer string or a `null` where the
+ * object should be. `null.isColor` throws, and a crashed sheet is a strictly
+ * worse defect than a stale label.
+ *
+ * So a non-object argument is coerced rather than trusted: a non-empty string
+ * reads as the FRAME rung of `resolveColour` (which is exactly what a bare
+ * bayer pattern always meant), anything else as no signal at all. A genuine
+ * `ResolvedColour` - anything carrying its own `source` - passes through
+ * untouched.
  */
 function coerceColour(colour: ResolvedColour): ResolvedColour {
   const c: unknown = colour;
@@ -421,6 +423,33 @@ export function hoursLabel(hours: number, dawnHours: number | null): string {
   const h = Math.floor(min / 60);
   const m = min % 60;
   return h > 0 ? `${h}h ${String(m).padStart(2, "0")}m` : `${m} min`;
+}
+
+/**
+ * The window to plan against when the site has NO dark window tonight.
+ *
+ * A high-latitude summer is a real answer, not a gap: `hoursToDawn` returns
+ * null and there is no dawn stop to clamp to, so the sheet offers eight hours
+ * of sky and says so through `hoursLabel`. It lives here rather than in the
+ * sheet because the lock card's CTA resolves the same window (`SkyHub.tsx`'s
+ * plan summary) and the two must not clamp differently.
+ */
+export const NO_DARK_SPAN_H = 8;
+
+/**
+ * The window a quick session would ACTUALLY use, from the stored preference.
+ *
+ * `QuickPrefs.hours` alone is not the answer: while `dawn` is set the window is
+ * tonight's dawn, which is a different length every night, and the stored
+ * number is whatever hour stop the flag was recorded beside. Both the sheet
+ * and the lock card's CTA resolve through this one function, so the button and
+ * the sheet it opens cannot name two different windows.
+ */
+export function resolveQuickHours(
+  hours: number, dawn: boolean, dawnHours: number | null,
+): number {
+  const span = dawnHours ?? NO_DARK_SPAN_H;
+  return Math.min(dawn && dawnHours != null ? dawnHours : hours, span);
 }
 
 /** The five stops the HOW LONG handle snaps to (proto logic.js:363). The last

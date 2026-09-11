@@ -960,6 +960,46 @@ await testAsync("picking a satellite writes the WHOLE block, not just the field 
   eq(p[0].body?.cloudmap?.enabled, true, "the wholesale replace dropped the enable flag:");
 });
 
+await testAsync("changing the pin drops the cached dome, so no screen draws the old bird's grid", async () => {
+  // `getCloudmapDome` keeps a TTL cache shared by the Sky finder's dome card
+  // and the Weather hub's dome screen. A platform change makes every cached
+  // grid a picture of a satellite the rig is no longer polling, and nothing on
+  // either screen would say so - the age readout is the OBSERVATION's, and the
+  // old bird's observation is perfectly fresh.
+  const { getCloudmapDome, resetCloudmapDomeCache } = await import("../../../../api/cloudmap");
+
+  // A known-empty start: earlier tests in this file have mounted screens that
+  // fetch the dome, and whether their entries are still cached is not this
+  // test's subject.
+  resetCloudmapDomeCache();
+  const empty = asked.filter((a) => a.url.includes("/api/cloudmap/dome")).length;
+
+  // Prime it, and prove the cache is real: a second call must not ask again.
+  await getCloudmapDome(6, 10);
+  const primed = asked.filter((a) => a.url.includes("/api/cloudmap/dome")).length;
+  assert(primed === empty + 1,
+    `precondition: priming the cache fired ${primed - empty} requests, not one`);
+  await getCloudmapDome(6, 10);
+  eq(asked.filter((a) => a.url.includes("/api/cloudmap/dome")).length, primed,
+    "precondition: the second call went to the wire, so this test cannot tell a drop from a miss:");
+
+  const before = asked.length;
+  click(q('[data-value="G18"]'));
+  await settle();
+  const wrote = posts(before).filter(
+    (a) => a.url.includes("/api/config") && !a.url.includes("/api/config/weather"));
+  eq(wrote.length, 1, "precondition: the pin change did not write:");
+
+  await getCloudmapDome(6, 10);
+  assert(asked.filter((a) => a.url.includes("/api/cloudmap/dome")).length > primed,
+    "the dome grid cached under the OLD platform survived the pin change, so the next screen "
+    + "to open draws a satellite the rig is no longer polling");
+
+  // Put the pin back where the next test expects it.
+  click(q('[data-value="G19"]'));
+  await settle();
+});
+
 await testAsync("a pin the geometry disagrees with is named, and one press undoes it", async () => {
   // The fixture's `suggested_platform` is G18 and the pin is now G19, which is
   // the case the legacy panel existed to surface: a Pydantic default written
