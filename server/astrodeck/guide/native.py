@@ -371,6 +371,8 @@ class NativeGuider(Guider):
         self._relock_pending = False
         self._relocks = 0
         self._relock_arcsec_total = 0.0
+        #: why the guider stopped ITSELF on re-lock displacement, or ""
+        self._relock_stop_reason = ""
         self._relock_events: list[dict] = []
 
         # NOV-7: a small host hint set during the finding/calibrating steps
@@ -612,6 +614,7 @@ class NativeGuider(Guider):
                 self._relock_pending = False
                 self._relocks = 0
                 self._relock_arcsec_total = 0.0
+                self._relock_stop_reason = ""
                 self._relock_events = []
                 rates = await self._read_guide_rates()
                 self._engine = _native.GuideEngine(self._build_engine_config(rates))
@@ -1367,6 +1370,26 @@ class NativeGuider(Guider):
         self._relock_events.append({"t": round(time.time(), 3),
                                     "arcsec": round(d, 3)})
         del self._relock_events[:-_RELOCK_EVENTS_MAX]
+        # THE GUIDER JUDGES ITSELF, before anything else gets a chance to.
+        # Every other re-lock gate in this system belongs to the sequence
+        # engine's per-frame loop, so a paused run -- or standalone guiding
+        # with no run at all -- has no gate whatever. See
+        # `_relock_limit_exceeded`.
+        reason = self._relock_limit_exceeded(d)
+        if reason:
+            bus.log("error", f"native guider: {reason} — stopping", "guide")
+            self._relock_stop_reason = reason
+            # The honest-death path, identical to the camera-fault one: latch
+            # `_lost`, drop `_active` so `is_active()` goes false for the
+            # sequence engine's recovery, set `_stop` so the loop exits on its
+            # next pass, and refresh the cached snapshot BEFORE publishing so
+            # no reader can be handed a stale guiding=True from before this.
+            self._lost = True
+            self._active = False
+            self._stop.set()
+            self._last_stats = self.stats()
+            bus.publish("guide", **self._last_stats.__dict__)
+            return
         if d_px <= _RELOCK_SAME_STAR_PX:
             bus.log("info",
                     f"native guider: re-acquired the same star ({d:.1f} {unit} "
@@ -1376,6 +1399,66 @@ class NativeGuider(Guider):
         bus.log("warning",
                 f"native guider: re-locked on a star {d:.1f} {unit} from the "
                 f"last lock (re-lock {self._relocks} this session)", "guide")
+
+    def _relock_arcsec_in_window(self, window_min: float) -> float:
+        """Accumulated re-lock displacement inside the window, in arcsec.
+
+        A WINDOW, not a session total: a long clear night legitimately collects
+        re-locks as stars flicker behind thin cloud, and a session-total gate
+        would eventually stop a healthy run for having been long.
+        """
+        events = self._relock_events
+        if window_min <= 0:
+            return sum(float(e.get("arcsec") or 0.0) for e in events)
+        floor = time.time() - window_min * 60.0
+        return sum(float(e.get("arcsec") or 0.0) for e in events
+                   if float(e.get("t") or 0.0) > floor)
+
+    def _relock_limit_exceeded(self, d_arcsec: float) -> str:
+        """Why guiding should stop itself, or "" to carry on.
+
+        A re-lock adopts whatever star is under the search box and resets the
+        error to zero around it, so the RMS cannot see the jump -- which is why
+        a walking field reads as healthy guiding. The engine has gates for this
+        (``guide.relock_limit`` in ``guide.relock_window_min``) but they run
+        from its PER-FRAME loop, so a paused run, an idle rig or standalone
+        guiding has none of them. On 2026-09-10/11 that cost 64 degrees of
+        accumulated displacement and put the tube at 10 degrees altitude while
+        a paused run took no frames and nothing looked.
+
+        Two limits, either of which is enough:
+
+        * a SINGLE re-lock past ``relock_jump_arcsec`` -- one jump that large
+          is a different star, not a flickering one (last night's first was
+          573.6 arcsec, and the largest 6141);
+        * the ACCUMULATED displacement in the window past
+          ``relock_arcsec_limit`` -- the quantity that actually moves the
+          field, and the one the engine's count-based gate misses when the
+          re-locks are few and large.
+
+        INERT WITHOUT A KNOWN IMAGE SCALE. Without the guide scope's focal
+        length the displacements above are pixels, not arcsec (that is what
+        ``is_arcsec`` says), and comparing pixels against an arcsec threshold
+        would fire at a different sensitivity on every rig. Returning "" is the
+        honest answer: this rig cannot judge itself in these units yet.
+        """
+        if not (self._image_scale_known and self._image_scale > 0):
+            return ""
+        cfg = self.config
+        jump = float(cfg.get("relock_jump_arcsec", 120.0) or 0.0)
+        if jump > 0 and d_arcsec >= jump:
+            return (f"a single re-lock moved the lock {d_arcsec:.0f} arcsec, "
+                    f"at or past the {jump:.0f} arcsec limit — that is a "
+                    f"different star, not a flickering one")
+        total = float(cfg.get("relock_arcsec_limit", 300.0) or 0.0)
+        if total > 0:
+            window_min = float(cfg.get("relock_window_min", 10.0) or 10.0)
+            acc = self._relock_arcsec_in_window(window_min)
+            if acc >= total:
+                return (f"re-locks have moved the lock {acc:.0f} arcsec in "
+                        f"{window_min:.0f} min, at or past the {total:.0f} "
+                        f"arcsec limit — the field is walking")
+        return ""
 
     # -------------------------------------------------------------- exposures
 

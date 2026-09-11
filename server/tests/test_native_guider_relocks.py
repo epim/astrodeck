@@ -298,6 +298,17 @@ async def test_relock_events_are_bounded(monkeypatch):
         pos = (30.0 + 12.0 * (i + 1), 30.0)
         positions += [None, pos, pos]
     g, _e, _t, _f = _harness(monkeypatch, actions=actions, positions=positions)
+    # OPT OUT OF THE GUIDER'S OWN WALK LIMIT, deliberately. This test walks the
+    # lock 12 px sixty times, which is 720 px of accumulated re-lock
+    # displacement -- a walking field by any measure, and since 2026-09-11 the
+    # guider stops itself for exactly that (`_relock_limit_exceeded`), which
+    # capped this at 13 re-locks. What is under test here is the RING BUFFER's
+    # 50-entry bound, an orthogonal concern, so the walk limits are disabled
+    # rather than the input softened: softening it would leave the buffer bound
+    # untested above 50. The limits themselves are graded in
+    # test_paused_run_is_unguarded.py.
+    g.config["relock_arcsec_limit"] = 0.0
+    g.config["relock_jump_arcsec"] = 0.0
 
     await g._guide_loop()
 
