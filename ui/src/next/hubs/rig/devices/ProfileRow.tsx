@@ -24,6 +24,10 @@ export interface ProfileRowProps {
   activeId: string | null;
   liveDevices: number;
   canConfig: boolean;
+  /** `gate.ts`'s `LOCAL_ONLY_REASON` while this tab is on the relay, else null.
+   *  Passed straight through to the popover, whose three verbs all write under
+   *  `/api/profiles` - a prefix on the rig's LAN fence. */
+  lanReason?: string | null;
   busy: BusyWhat;
   setBusy: (w: BusyWhat) => void;
   onRows: (rows: ProfileRowData[]) => void;
@@ -79,6 +83,7 @@ export function ProfileRow(p: ProfileRowProps): JSX.Element {
           rows={p.rows}
           liveDevices={p.liveDevices}
           canConfig={p.canConfig}
+          lanReason={p.lanReason}
           busy={p.busy}
           setBusy={p.setBusy}
           onRows={p.onRows}

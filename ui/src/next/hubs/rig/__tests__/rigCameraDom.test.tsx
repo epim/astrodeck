@@ -79,9 +79,21 @@ const asked: Asked[] = [];
 // exact defect the dew tests below are for.
 let servedConfig: Record<string, unknown> = { ...CONFIG };
 
+/** What `POST /api/dew/resume` answers with. 404 is the engine that predates
+ *  the route, which the sheet has to survive without offering a dead button. */
+let resumeStatus = 200;
 g.fetch = async (url: string, init?: { method?: string; body?: string }) => {
   const method = init?.method ?? "GET";
   asked.push({ method, url: String(url), body: init?.body ? JSON.parse(init.body) : null });
+  if (String(url).includes("/api/dew/resume")) {
+    if (resumeStatus >= 400) {
+      return {
+        ok: false, status: resumeStatus, statusText: "Not Found",
+        json: async () => ({ detail: "Not Found" }),
+      };
+    }
+    return { ok: true, status: 200, statusText: "OK", json: async () => ({}) };
+  }
   if (String(url).includes("/api/config")) {
     if (method === "POST") {
       servedConfig = { ...servedConfig, ...(JSON.parse(init!.body as string) as object) };
@@ -728,6 +740,72 @@ await testAsync("an inverted ramp is refused in the wire's words, before the pre
   eq(dew.margin_full_c, 2, "the edited field did not reach the rig");
   eq(dew.margin_off_c, 5, "the write dropped the other margin");
   assert(id("dew-refusal") == null, "the refusal line survived a successful write");
+});
+
+// ------------------- RESUME FOLLOWING on the pause face (S2's UI half, R7)
+//
+// `dew.py:486-490` reads `manual_override_s: 0` as an override that NEVER
+// expires - the honest reading of "no timeout" and the opposite of what the
+// number looks like - so a level set by hand under that setting held the
+// heaters for the rest of the night with no control anywhere to hand them
+// back. `POST /api/dew/resume` is that control. It is `control.power` (it
+// operates heaters now; it does not change what the loop will do) and it is
+// NOT on the relay fence, so no LAN clause here.
+//
+// Sabotage: delete the `dew-resume` button from camera.tsx and the first
+// assertion goes red; make the 404 branch fall through to the generic error
+// toast and the "retired, with the way out that does exist" assertion goes red.
+await testAsync("a paused loop offers RESUME FOLLOWING, and an idle one does not", async () => {
+  const until = Math.floor(Date.now() / 1000) + 1800;
+  seedDew(dewNode({ following: false, override_until_ts: until, reason: "a level was set by hand" }));
+  await settle();
+  const btn = id("dew-resume");
+  assert(btn != null, "a paused dew loop offers no way back - the override is the whole problem");
+  eq(btn.getAttribute("aria-disabled"), null, "an admin's RESUME FOLLOWING is locked");
+
+  asked.length = 0;
+  click(btn);
+  await settle();
+  const post = asked.find((a) => a.method === "POST" && a.url === "/api/dew/resume");
+  assert(post != null, `RESUME FOLLOWING sent nothing (${JSON.stringify(asked)})`);
+
+  // A loop that IS following has nothing to resume, so the button must not be
+  // there - otherwise it is a control with no effect on the commonest face.
+  seedDew(dewNode());
+  await settle();
+  eq(id("dew-resume"), null, "RESUME FOLLOWING is offered while the loop is already following");
+});
+
+await testAsync("the never-expiring override gets the same way out", async () => {
+  // `override_until_ts: null` with `following: false` is `waiting` - the
+  // infinite override taken under manual_override_s = 0.
+  seedDew(
+    dewNode({ following: false, override_until_ts: null, reason: "a level was set by hand" }),
+    { config: { ...CONFIG, dew: { ...DEW_CFG, manual_override_s: 0 } } },
+  );
+  await settle();
+  assert(id("dew-resume") != null,
+    "an override configured never to expire has no way out at all - which is the "
+    + "state this route exists for");
+});
+
+await testAsync("an engine without the route retires the button and names what it does have", async () => {
+  resumeStatus = 404;
+  const until = Math.floor(Date.now() / 1000) + 1800;
+  seedDew(dewNode({ following: false, override_until_ts: until, reason: "a level was set by hand" }));
+  await settle();
+  const btn = id("dew-resume");
+  assert(btn != null, "precondition: the button is not offered at all");
+  click(btn);
+  await settle();
+  eq(id("dew-resume"), null,
+    "the button survived a 404 - it would answer Not Found on every press for the rest of the visit");
+  const note = id("dew-resume-absent");
+  assert(note != null, "the retired button left no explanation");
+  assert(/HAND-SET OVERRIDE/.test(String(note.textContent)),
+    `the note does not name the way out this engine DOES have: "${note.textContent}"`);
+  assert(!/Not Found/.test(String(note.textContent)), "the raw 404 reached the user");
+  resumeStatus = 200;
 });
 
 act(() => { rootRef?.unmount(); });

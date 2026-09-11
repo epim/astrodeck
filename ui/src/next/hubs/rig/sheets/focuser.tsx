@@ -702,6 +702,15 @@ export function FocuserSheet(_p: SheetProps): JSX.Element {
   // and the rig would end up 0.5 higher instead of 1.5. Hold the value locally,
   // debounce the write, and let the server's answer - or its refusal - take the
   // local copy away again.
+  //
+  // THE TIMER IS NOT CLEARED ON UNMOUNT, deliberately, for the reason
+  // `sheets/wheel.tsx:232-237` gives about the filter offsets: the debounce
+  // exists to COALESCE presses, not to cancel them. A user who steps the
+  // threshold and immediately presses BACK would otherwise lose the edit with
+  // nothing on screen to say so, which is the silent-discard shape this branch
+  // keeps finding. The trailing write still lands; its `setTempDelta(null)` on
+  // an unmounted tree is a React no-op, while its error toast still reaches the
+  // store and is seen on whatever screen replaced this one.
   const [tempDelta, setTempDelta] = useState<number | null>(null);
   const tempDeltaTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const shownDelta = tempDelta ?? standards.refocus_on_temp_delta_c;
@@ -740,6 +749,14 @@ export function FocuserSheet(_p: SheetProps): JSX.Element {
   // from the same stale block and the second would undo the first. Hold the
   // patch locally, merge into it, write once, and let the server's answer - or
   // its refusal - take the local copy away again.
+  //
+  // Its timer is NOT cleared on unmount either, and here the argument is
+  // stronger than for the threshold above: the trailing write re-reads the
+  // focus block, merges the pending patch and posts the WHOLE block, so
+  // cancelling it on BACK would throw away a coefficient the operator typed and
+  // leave the engine compensating with the old sign - visible only as a night
+  // of drifting focus. The `setTcDraft` / `setTcResetKey` calls that follow are
+  // no-ops on an unmounted tree; the toast on a refusal is not.
   const [tcDraft, setTcDraft] = useState<Partial<TempCompConfig>>({});
   const tcPending = useRef<Partial<TempCompConfig>>({});
   const tcTimer = useRef<ReturnType<typeof setTimeout> | null>(null);

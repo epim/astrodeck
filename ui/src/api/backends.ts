@@ -6,7 +6,7 @@
 // 15s budget in api.ts is correct for activate/apply (only the legacy synchronous
 // /api/connect/{nina,alpaca,phd2} paths get the long budget).
 
-import { api } from "../api";
+import { api, ApiError } from "../api";
 import type {
   AppConfig,
   AuthMethods,
@@ -357,6 +357,38 @@ export const setFocusConfig = (focus: FocusConfig): Promise<AppConfig> =>
  *  before the press rather than surface the 422 after it. */
 export const setDewConfig = (dew: DewConfig): Promise<AppConfig> =>
   api.post<AppConfig>("/api/config", { dew });
+
+/** `POST /api/dew/resume` (`control.power`) → hand the heaters back to the dew
+ *  loop NOW, before the hand-set override would have expired.
+ *
+ *  WHY THE ROUTE HAD TO EXIST. `dew.py:486-490` reads `manual_override_s: 0` as
+ *  an override that NEVER expires - the honest reading of "no timeout", and the
+ *  opposite of what the number looks like. A level set by hand under that
+ *  setting therefore held the heaters for the rest of the night, and the only
+ *  way back was to edit the config block and wait for the next tick. This
+ *  clears the override; the loop takes the surfaces back on its own schedule.
+ *
+ *  It is NOT on the relay fence (operating heaters remotely is the product, the
+ *  same reasoning as `POST /api/switch/set`), so no `needsLan` on its control.
+ *
+ *  404 IS A REAL ANSWER AND IS THE CALLER'S TO HANDLE: the rig on the other end
+ *  may be older than this UI, which is the normal case during a rollout. Every
+ *  other refusal this route can raise is a 403 (the capability). So a caller
+ *  probes once, and where it 404s it does not offer the button at all rather
+ *  than offering one that answers "Not Found" - see `isDewResumeAbsent`. */
+export const resumeDew = (): Promise<void> =>
+  api.post<void>("/api/dew/resume", {});
+
+/** Did `resumeDew` fail because this engine predates the route? */
+export function isDewResumeAbsent(e: unknown): boolean {
+  return e instanceof ApiError && e.status === 404;
+}
+
+/** The note for a rig that has no resume route. It has to name the way out that
+ *  DOES exist on that engine, or it is a dead end dressed as an explanation. */
+export const DEW_RESUME_ABSENT_NOTE =
+  "This engine cannot hand the heaters back early - it takes them back when the "
+  + "hand-set override expires, and HAND-SET OVERRIDE below is what sets that.";
 
 // ------------------------------------------------------ dome / roof (PRO-4)
 import type { DomeShutter } from "../lib/dome";

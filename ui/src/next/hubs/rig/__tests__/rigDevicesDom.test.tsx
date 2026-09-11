@@ -853,6 +853,130 @@ await testAsync("but a real edit re-enables it, and it posts", async () => {
     "the edit never reached the rig");
 });
 
+// ============================================= 10. the LAN fence (FIX-U-rig)
+//
+// Every write reachable from this screen is on `app.py`'s relay fence:
+// `/api/connect` (the two connect verbs and DISCONNECT), `/api/config/drivers`
+// (under the `/api/config` prefix), `/api/profiles` (activate, capture,
+// delete) and `/api/discover` - which is fenced for EVERY method, GET
+// included, so both SCAN buttons are refused too. A tunnelled session is a
+// replayable bearer credential, so the rig answers 403 `local_only` to all of
+// them whatever role the cookie carries.
+//
+// These grade the control BEFORE the press. The sabotage is `needsLan: true`:
+// drop it from `configLock`/`connectLock` in addDevice.tsx, from the driver
+// sheet's `useLock`, or drop `lanReason` from DevicesScreen, and the reason
+// goes back to null for an admin - the button renders armed and the refusal
+// arrives as a 403 nobody asked for. The ADMIN principal is the whole point:
+// naming a capability here would be a true sentence about the wrong blocker.
+const { LOCAL_ONLY_REASON } = await import("../../../lib/gate");
+const { noteRemoteStatus, resetRelayForTests } = await import("../../../lib/relay");
+
+/** Put this tab on the relay, the way the Connection sheet does: hand the
+ *  module the rig's own `via`. Wrapped in `act` because `useOnRelay` is a
+ *  `useSyncExternalStore` subscription and the notify re-renders. */
+function goRelay(on: boolean): void {
+  act(() => { noteRemoteStatus(on ? { via: "relay" } : { via: "direct" }); });
+}
+
+await testAsync("on the relay the FIRST NIGHT verbs name the LAN, not a capability", async () => {
+  clearPicks();
+  seed({
+    principal: ADMIN,
+    equipConnected: false,
+    status: NOTHING_CONNECTED,
+    safety: null,
+  });
+  mount();
+  await settle();
+  // Precondition, on the LAN: an admin's CONNECT is live. Without this the
+  // assertion below would pass on a card that renders every button locked.
+  const before = q('[data-testid="first-night-connect"]');
+  assert(before != null, "no CONNECT CTA - the FIRST NIGHT card did not render");
+  eq(before.getAttribute("aria-disabled"), null,
+    "precondition: an admin on the LAN cannot connect, so the relay case proves nothing");
+
+  goRelay(true);
+  await settle();
+  for (const id of ["first-night-connect", "first-night-sim"]) {
+    const btn = q(`[data-testid="${id}"]`);
+    assert(btn != null, `${id} vanished on the relay - nothing may be hidden`);
+    eq(btn.getAttribute("aria-disabled"), "true",
+      `${id} renders armed over the relay; the rig 403s it for every role`);
+    eq(btn.getAttribute("title"), LOCAL_ONLY_REASON,
+      `${id} names the wrong blocker: ${btn.getAttribute("title")}`);
+  }
+  asked.length = 0;
+  click(q('[data-testid="first-night-sim"]'));
+  await settle();
+  eq(asked.length, 0,
+    `a relay press reached the rig: ${JSON.stringify(asked.map((a) => a.url))}`);
+  goRelay(false);
+});
+
+await testAsync("on the relay ADD A DEVICE locks both scans and the connect", async () => {
+  clearPicks();
+  seed({ principal: ADMIN, toasts: [] });
+  mountSheet(AddDeviceSheet);
+  await settle();
+  await settle();
+  const scanBefore = q('[data-testid="scan-hardware"]');
+  assert(scanBefore != null, "no SCAN THIS COMPUTER - the sheet did not render");
+  eq(scanBefore.getAttribute("aria-disabled"), null,
+    "precondition: an admin on the LAN cannot scan, so the relay case proves nothing");
+
+  goRelay(true);
+  await settle();
+  for (const id of ["scan-hardware", "scan-network", "connect-rig", "run-simulator", "disconnect-rig"]) {
+    const btn = q(`[data-testid="${id}"]`);
+    assert(btn != null, `${id} vanished on the relay - the reads still render, only the writes lock`);
+    eq(btn.getAttribute("title"), LOCAL_ONLY_REASON,
+      `${id} names the wrong blocker: ${btn.getAttribute("title")}`);
+  }
+  // The READS are untouched: the sheet still lists what the rig has, which is
+  // the half of `startswith` that deliberately misses GET /api/drivers.
+  assert(qa('[data-testid^="role-driver-"]').length > 0,
+    "the assignment rows went with the writes - a remote operator can no longer "
+    + "see what the rig is running");
+  asked.length = 0;
+  click(q('[data-testid="scan-hardware"]'));
+  click(q('[data-testid="run-simulator"]'));
+  await settle();
+  eq(asked.length, 0,
+    `a relay press reached the rig: ${JSON.stringify(asked.map((a) => a.url))}`);
+  goRelay(false);
+});
+
+await testAsync("on the relay the driver sheet refuses a VALID form, and says why", async () => {
+  mountSheet(DriverSheet);
+  await settle();
+  const host = q('[data-testid="driver-host"]');
+  act(() => {
+    const setter = Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, "value")!.set!;
+    setter.call(host, "10.0.0.5");
+    host.dispatchEvent(new win.Event("input", { bubbles: true }));
+  });
+  await settle();
+  // Precondition: the form is VALID, so what locks it below is the origin and
+  // not the validator - the one thing that would make this test vacuous.
+  eq(q('[data-testid="driver-add"]').getAttribute("aria-disabled"), null,
+    "precondition: a filled form is still refused on the LAN");
+
+  goRelay(true);
+  await settle();
+  const add = q('[data-testid="driver-add"]');
+  eq(add.getAttribute("aria-disabled"), "true", "ADD DRIVER renders armed over the relay");
+  eq(add.getAttribute("title"), LOCAL_ONLY_REASON,
+    `ADD DRIVER names the wrong blocker: ${add.getAttribute("title")}`);
+  asked.length = 0;
+  click(add);
+  await settle();
+  eq(asked.filter((a) => a.method === "POST").length, 0,
+    `the relay press posted a driver declaration: ${JSON.stringify(asked)}`);
+  goRelay(false);
+  resetRelayForTests();
+});
+
 act(() => { rootRef?.unmount(); });
 
 const total = passed + failed;

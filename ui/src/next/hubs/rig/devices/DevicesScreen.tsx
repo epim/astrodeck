@@ -28,7 +28,8 @@ import {
   BannerCard, Card, EmptyCard, ActionButton, ListRow, Mono,
 } from "../../../ui";
 import { nav } from "../../../router";
-import { useLock } from "../../../lib/gateHook";
+import { useLock, useOnRelay } from "../../../lib/gateHook";
+import { LOCAL_ONLY_REASON } from "../../../lib/gate";
 import { listDrivers, listProfiles } from "../../../../api/backends";
 import { accessPhrase, useCanConfigBackend } from "../../../../lib/caps";
 import { liveRoleCount, type AssignmentMap } from "../../../../lib/equipment";
@@ -106,6 +107,25 @@ export function DevicesScreen(): JSX.Element {
 
   const addLock = useLock({ cap: "config.backend" });
 
+  // The LAN sentence for the three verbs on this screen that reach a fenced
+  // route: CONNECT <profile> and the popover's activate/save/delete go to
+  // `/api/profiles`, RUN THE SIMULATOR goes to `/api/connect` and
+  // `/api/drivers`, and DETECT MY HARDWARE opens the sheet that starts a
+  // `/api/discover` scan on arrival. All four prefixes are on `app.py`'s
+  // relay fence, so the rig answers 403 `local_only` for every role.
+  //
+  // Passed down rather than taken with `useLock` inside each card: those two
+  // components are props-only and take `canConfig` as a boolean, and the ONE
+  // thing that must not happen is a relay tab reading "needs admin access"
+  // while holding admin. The cards put this reason FIRST, which is the order
+  // `gate.ts` uses for the same pair.
+  //
+  // ADD A DEVICE keeps `addLock` alone: it only navigates, and the sheet it
+  // opens renders the driver list, the roles table and the assignment rows
+  // read-only over the relay (ARCHITECTURE section 8 - nothing is hidden, the
+  // writes carry the reason).
+  const lanReason = useOnRelay() ? LOCAL_ONLY_REASON : null;
+
   const onSimulator = () => void runSimulatorRig(
     data?.roles ?? [],
     data?.drivers ?? [],
@@ -163,6 +183,7 @@ export function DevicesScreen(): JSX.Element {
         <ConnectOnceCard
           profile={activeProfile}
           canConfig={canConfig}
+          lanReason={lanReason}
           busy={busy != null}
           explain={explain}
           onConnectProfile={(row) => void activateProfileRow(row, liveDevices, {
@@ -181,6 +202,7 @@ export function DevicesScreen(): JSX.Element {
         activeId={activeId}
         liveDevices={liveDevices}
         canConfig={canConfig}
+        lanReason={lanReason}
         busy={busy}
         setBusy={setBusy}
         onRows={setProfiles}

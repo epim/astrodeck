@@ -109,6 +109,14 @@ export interface VideoGateInput {
   recording: boolean;
   /** `capture` in `status.busy_lanes` - a still exposure has the camera. */
   capturing: boolean;
+  /** `POST /api/capture/video` is OUT and has not answered. Neither `recording`
+   *  above can be true yet (the lane only appears on the next status frame) nor
+   *  can the 202's optimistic state, so without this the armed button is
+   *  pressable again and a second POST starts a SECOND recording - the first
+   *  one's file left half-written, with the camera taken from under it.
+   *  `ActionButton.busy` does not block a press by design, so the guard has to
+   *  be a reason. */
+  starting: boolean;
 }
 
 export const VIDEO_RECORDING_REASON =
@@ -117,12 +125,20 @@ export const VIDEO_LIVE_LOOP_REASON =
   "The live loop owns the camera - press Stop first.";
 export const VIDEO_CAMERA_BUSY_REASON =
   "The camera is busy with another exposure - wait for that frame to land.";
+export const VIDEO_STARTING_REASON =
+  "The recorder is arming - it answers in a second or two.";
 
 /** The FIRST real reason RECORD cannot fire, or null.
  *
  *  Order: link down -> capability -> camera role (all three from
- *  `accessReason`) -> polar -> sequence -> the live loop -> our own lane -> the
- *  capture lane -> the camera cannot record -> whatever the rig last said. */
+ *  `accessReason`) -> polar -> sequence -> the live loop -> our own request
+ *  still out -> our own lane -> the capture lane -> the camera cannot record ->
+ *  whatever the rig last said.
+ *
+ *  `starting` sits immediately above `recording` because it is the same claim
+ *  one status frame earlier: between the POST and the lane appearing, "a
+ *  recording is already running" is not yet true and "nothing is happening" is
+ *  the lie that lets a second one start. */
 export function videoRefusal(
   inp: CaptureGateInput, v: VideoGateInput,
 ): string | null {
@@ -131,6 +147,7 @@ export function videoRefusal(
   if (inp.polarBusy) return POLAR_REASON;
   if (inp.seqState === "running" || inp.seqState === "paused") return SEQUENCE_REASON;
   if (inp.looping) return VIDEO_LIVE_LOOP_REASON;
+  if (v.starting) return VIDEO_STARTING_REASON;
   if (v.recording) return VIDEO_RECORDING_REASON;
   if (v.capturing) return VIDEO_CAMERA_BUSY_REASON;
   if (v.path === "none") return v.pathReason;

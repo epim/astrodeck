@@ -721,6 +721,61 @@ await testAsync("an operator sees both policies, inert, with the reason, and wri
     "the press was swallowed with no explanation");
 });
 
+// ============================================ 12. the LAN fence, BEFORE the press
+//
+// `PUT /api/switch/ports/{id}` is on `app.py`'s relay fence
+// (`_REMOTE_LOCAL_ONLY_MUTATION_PREFIXES`, matched by prefix), so over the
+// relay it 403s for EVERY role - the ADMIN below included. Test 11 above
+// already proves the 403 is translated after the fact; this one proves the
+// control never renders armed in the first place, which is the difference
+// between a policy you cannot change and a policy you have to press to learn
+// you cannot change.
+//
+// Sabotage: drop `needsLan: true` from the `settingsReason` `useLock` in
+// power.tsx and the title goes back to null for an admin - both assertions on
+// LOCAL_ONLY_REASON go red, and so does the "no PUT" one.
+const { LOCAL_ONLY_REASON } = await import("../../../lib/gate");
+const { noteRemoteStatus, resetRelayForTests } = await import("../../../lib/relay");
+
+await testAsync("on the relay the port POLICIES lock and the port SWITCH does not", async () => {
+  served = ANNOTATED.map((p) => ({ ...p }));
+  seed({ principal: ADMIN, sequence: { state: "idle" } });
+  await mount();
+  opened.clear();
+  openSettings(2);
+  // Precondition on the LAN: an admin CAN set the policy here. Without it this
+  // whole section would pass against a sheet that locks everything.
+  eq(segOption(2, "on").getAttribute("aria-disabled"), null,
+    "precondition: an admin on the LAN cannot set the policy, so the relay case proves nothing");
+
+  act(() => { noteRemoteStatus({ via: "relay" }); });
+  await settle();
+  const seg = q('[data-testid="port-protect-2"]');
+  const dew = q('[data-testid="port-follow-dew-2"]');
+  eq(seg.getAttribute("title"), LOCAL_ONLY_REASON,
+    `PROTECT DURING RUN names the wrong blocker over the relay (${seg.getAttribute("title")})`);
+  eq(dew.getAttribute("title"), LOCAL_ONLY_REASON,
+    `FOLLOW DEW names the wrong blocker over the relay (${dew.getAttribute("title")})`);
+  assert(!seg.hasAttribute("disabled") && !dew.hasAttribute("disabled"),
+    "the native disabled attribute was used, taking the reason out of the tree");
+
+  asked.length = 0;
+  click(segOption(2, "on"));
+  click(dew);
+  await settle();
+  eq(puts().length, 0,
+    `an armed-looking policy control reached the fenced route (${JSON.stringify(asked)})`);
+
+  // AND THE OTHER HALF, which is why the fence is a prefix and not `/api/switch`:
+  // operating a power box over the relay is the product.
+  click(q('[data-testid="port-2"]'));
+  await settle();
+  eq(sets().length, 1,
+    "the relay lock took the port's own on/off switch with it - that route is not fenced");
+  act(() => { noteRemoteStatus({ via: "direct" }); });
+  resetRelayForTests();
+});
+
 // ------------------------------------------------- the model, without a DOM
 test("the tri-state model keeps null, true and false apart", () => {
   const named = { ...ANNOTATED[0] };          // Camera/Mount name, unset

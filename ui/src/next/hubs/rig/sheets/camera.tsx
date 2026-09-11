@@ -61,7 +61,9 @@ import { resolveRoleConnected, useCanViewWeather } from "../../../../lib/caps";
 import { warmReadout } from "../../../../lib/cooling";
 import { suggestSubLength } from "../../../../lib/photometry";
 import { api } from "../../../../api";
-import { setCoolingConfig, setDewConfig } from "../../../../api/backends";
+import {
+  DEW_RESUME_ABSENT_NOTE, isDewResumeAbsent, resumeDew, setCoolingConfig, setDewConfig,
+} from "../../../../api/backends";
 import type { CoolingConfig, DewConfig, RigStatus } from "../../../../types";
 import {
   BUILDING_NOTE, CURVE_H, CURVE_W, coolerCurve, pushTemp, ringDash, ringFraction,
@@ -112,6 +114,12 @@ const DEW_SURFACE_NOTE = "anti-dew on the sensor window";
  *  the humidity. */
 const FOLLOW_DEW_NOTE =
   "the loop sets this heater from the margin between air temperature and the dew point";
+
+/** What RESUME FOLLOWING actually did, in the loop's terms: the override is
+ *  gone, and the loop decides the level on its own next tick rather than this
+ *  press setting one. */
+const DEW_RESUMED_NOTE =
+  "The hand-set override is cleared - the dew loop sets the heaters again on its next tick.";
 
 /** Appended to a refused ramp edit. The field keeps the number that was typed
  *  (it is the user's draft, not the rig's answer), so the line has to say which
@@ -401,6 +409,38 @@ export function CameraSheet(_p: SheetProps): JSX.Element {
    *  next to a rig still running 30. See `NumberField`'s `resetKey`. */
   const [dewResetKey, setDewResetKey] = useState(0);
   const refuseDew = (): void => setDewResetKey((n) => n + 1);
+
+  // ---- RESUME FOLLOWING (the UI half of S2's `POST /api/dew/resume`).
+  //
+  // `control.power`, not `config.safety`: it operates the heaters now, it does
+  // not change what the loop will do. No `needsLan` - the route is not on the
+  // relay fence, for the same reason `POST /api/switch/set` is not.
+  //
+  // THE 404 IS PROBED BY PRESSING, once. There is no cheap GET that says
+  // whether the route exists, and a speculative POST on every sheet open would
+  // clear an override the operator had deliberately taken. So the button is
+  // offered, and a rig older than the route retires it and says what that
+  // engine's way out is instead (`DEW_RESUME_ABSENT_NOTE` names HAND-SET
+  // OVERRIDE, which is on this same sheet).
+  const dewResumeLock = useLock({ cap: "control.power" });
+  const [resuming, setResuming] = useState(false);
+  const [resumeAbsent, setResumeAbsent] = useState(false);
+  const doResumeDew = async (): Promise<void> => {
+    if (resuming) return;
+    setResuming(true);
+    try {
+      await resumeDew();
+      // The loop publishes its own node on the next tick, so nothing is written
+      // to local state: the line above re-reads `status.dew` and says what the
+      // rig is actually doing rather than what was asked for.
+      showToast("success", DEW_RESUMED_NOTE, { verbatim: true });
+    } catch (e) {
+      if (isDewResumeAbsent(e)) { setResumeAbsent(true); return; }
+      showToast("error", (e as Error).message, { verbatim: true });
+    } finally {
+      setResuming(false);
+    }
+  };
 
   const writeDew = async (patch: Partial<DewConfig>): Promise<void> => {
     const base = useStore.getState().config?.dew ?? DEW_DEFAULTS;
@@ -738,6 +778,30 @@ export function CameraSheet(_p: SheetProps): JSX.Element {
                       {dewLine}
                     </Mono>
                   </div>
+                )}
+                {/* THE PAUSE FACE'S WAY OUT. `paused` is a hand write with a
+                    clock on it; `waiting` is one taken while
+                    `manual_override_s` was 0, which `dew.py:486-490` reads as
+                    never expiring - so on that setting the loop had the
+                    heaters taken off it for the rest of the night and no
+                    control anywhere handed them back. */}
+                {(dewLoop.kind === "paused" || dewLoop.kind === "waiting") && (
+                  resumeAbsent ? (
+                    <div data-testid="dew-resume-absent">
+                      <Mono size={10.5} tone="dim">{DEW_RESUME_ABSENT_NOTE}</Mono>
+                    </div>
+                  ) : (
+                    <ActionButton
+                      kind="secondary"
+                      busy={resuming}
+                      onPress={() => void doResumeDew()}
+                      lockedReason={dewResumeLock.lockedReason}
+                      onExplain={dewResumeLock.onExplain}
+                      data-testid="dew-resume"
+                    >
+                      RESUME FOLLOWING
+                    </ActionButton>
+                  )
                 )}
                 <Disclosure
                   summary="DEW RAMP"

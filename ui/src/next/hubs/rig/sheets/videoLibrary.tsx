@@ -13,7 +13,7 @@
 // opened rarely, and a cache would be one more thing to invalidate on the
 // `video_stack` lane edge.
 
-import { useState, type JSX } from "react";
+import { useEffect, useState, type JSX } from "react";
 import type { SheetProps } from "../../sheets";
 import { nav } from "../../../router";
 import { NxIcon } from "../../../icons";
@@ -21,6 +21,8 @@ import { Mono, Sheet } from "../../../ui";
 import { useLock } from "../../../lib/gateHook";
 import { useStatus, useVideo } from "../../../../store";
 import { fmtBytes } from "../../../../lib/gallery";
+import { getVideoState } from "../../../../api/video";
+import type { VideoState } from "../../../../types";
 import {
   KEEP_OPTIONS, RecordingsList, isTerminalVideoState, laneBusy, useVideoLibrary,
 } from "../capture/video";
@@ -30,6 +32,37 @@ export function VideoLibrarySheet(_props: SheetProps): JSX.Element {
   const busEvent = useVideo();
   const library = useVideoLibrary(true);
   const [keepPct, setKeepPct] = useState<number>(25);
+
+  // THE COLD READ. `useVideo()` is the BUS, and a bus only carries what has
+  // happened since this tab subscribed: open this sheet onto a recording that
+  // started before the sheet existed - the ordinary case, since the bench is
+  // where recordings start - and no event has arrived, so the row for the file
+  // being written looked deletable. `video_routes.py:194-195` then answers 409
+  // `lane_busy`, which is a refusal the user had to press to discover.
+  //
+  // One shot, on mount, exactly like `VideoMode`'s own `refreshState`: after
+  // this the bus is the live source and is strictly newer, so `busEvent` wins
+  // below. A failure (404 on an engine without the route, or anything else)
+  // leaves this null and the row behaves as it did before - the bus is still a
+  // source, and a sheet that refused to list files because one GET failed would
+  // be worse than the lock it is trying to place.
+  const [coldState, setColdState] = useState<VideoState | null>(null);
+  useEffect(() => {
+    let live = true;
+    getVideoState().then(
+      (s) => { if (live) setColdState(s); },
+      () => { /* no route, or no answer: the bus still carries the live ones */ },
+    );
+    return () => { live = false; };
+  }, []);
+
+  /** The recording that cannot be deleted because it is still being written.
+   *  The bus first (it is newer), then the cold read. */
+  const writingId = busEvent
+    ? (isTerminalVideoState(busEvent.state) ? null : busEvent.id)
+    : coldState?.active && coldState.id != null
+      ? coldState.id
+      : null;
 
   const mediaLock = useLock({ cap: "view.media" });
   const previewLock = useLock({ cap: "view.preview" });
@@ -83,7 +116,7 @@ export function VideoLibrarySheet(_props: SheetProps): JSX.Element {
           stackingId={library.stackingId}
           // The file being written cannot be deleted (`video_routes.py:194-195`
           // answers 409 `lane_busy`), so the row says so before the press.
-          writingId={busEvent && !isTerminalVideoState(busEvent.state) ? busEvent.id : null}
+          writingId={writingId}
           onStack={(id) => library.stack(id, keepPct)}
           onDelete={library.remove}
           onExplain={mediaLock.onExplain}

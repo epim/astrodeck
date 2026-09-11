@@ -512,6 +512,70 @@ await testAsync("a viewer sees the reason on every verb and fires nothing", asyn
   eq(asks.length, 0, "a viewer's presses reached the server");
 });
 
+// ------------------------------- the dew heater reads BACK (R7 P1, FIX-U-rig)
+//
+// `hub.py` publishes `status.camera.dew_heater` wherever the camera can be
+// asked, and the Camera sheet one tap away has always shown it. This bench
+// seeded 0 and printed "The camera reports none back", so a rig running 60%
+// looked like a rig running none - and SEND from here then commanded 0, which
+// is not merely a wrong number: a hand write pauses the dew loop for
+// `manual_override_s`, so it costs the night's dew margin.
+//
+// Sabotage: put `useState(0)` back (drop the `dewReported ?? 0` seed and the
+// re-sync effect in CoolerRow.tsx) and the "60%" assertion goes red; restore
+// the old note and the "reports none back" assertion goes red.
+await testAsync("the dew stepper shows what the RIG reports, and the note says so", async () => {
+  seed({
+    status: {
+      connected: { camera: { connected: true, name: "sim" } },
+      looping: false,
+      live_stack_active: false,
+      camera: {
+        temperature: -10, can_cool: true, width: 1000, height: 1000,
+        max_gain: 500, max_bin: 4,
+        has_dew_heater: true, dew_heater: 60,
+        cooler: { on: true, power: 40, target_c: -10, at_target: true, can_report_power: true },
+      },
+    },
+  });
+  await act(async () => { root.render(createElement(CaptureScreen)); });
+  await settle();
+
+  const stepper = q('[data-testid="dew-stepper"]');
+  assert(stepper != null, "precondition: no dew stepper on a camera that has a heater");
+  eq(stepper.querySelector(".nx-stepper-value").textContent, "60%",
+    "the bench seeded 0 over a rig reporting 60 - a SEND here would command 0 and "
+    + "pause the dew loop");
+  const panel = q('[data-testid="capture-cooler"]').textContent as string;
+  assert(!/reports none back/.test(panel),
+    "the panel still says the camera reports no level while it is reporting one");
+  assert(!/reports no level back/.test(panel),
+    "the panel still denies the read-back it is rendering");
+  assert(/rig reports 60% on the window heater/.test(panel),
+    `the note does not state the level it is showing (${panel})`);
+
+  // The other half: a camera that genuinely cannot answer keeps the honest
+  // "this is not a reading" copy, so the fix did not turn absent into 0.
+  seed({
+    status: {
+      connected: { camera: { connected: true, name: "sim" } },
+      looping: false,
+      live_stack_active: false,
+      camera: {
+        temperature: -10, can_cool: true, width: 1000, height: 1000,
+        max_gain: 500, max_bin: 4,
+        has_dew_heater: true,
+        cooler: { on: true, power: 40, target_c: -10, at_target: true, can_report_power: true },
+      },
+    },
+  });
+  await act(async () => { root.render(createElement(CaptureScreen)); });
+  await settle();
+  const bare = q('[data-testid="capture-cooler"]').textContent as string;
+  assert(/reports no heater level back/.test(bare),
+    `a camera that cannot answer must still say so (${bare})`);
+});
+
 act(() => { root.unmount(); });
 
 const total = passed + failed;

@@ -85,7 +85,15 @@ export function ProfilesEditor({ onRows }: {
   const enqueueToast = useStore((s) => s.enqueueToast);
   // Every write here is `config.backend` server-side. The gate is read once and
   // handed to every control, so the sheet says one thing.
-  const { lockedReason, onExplain } = useLock({ cap: PROFILES_CAP });
+  //
+  // `needsLan` because all six routes live under `/api/profiles`, which the rig
+  // fences to the LAN (`app.py`'s `_REMOTE_LOCAL_ONLY_MUTATION_PREFIXES`):
+  // activating a profile reconnects hardware to caller-chosen serial ports and
+  // network hosts, so a tunnelled cookie is refused 403 `local_only` for every
+  // role, an admin included. The LAN rule sits above the capability rule in
+  // `gate.ts` for exactly that reason - naming the capability here would be a
+  // true sentence about the wrong blocker.
+  const { lockedReason, onExplain } = useLock({ cap: PROFILES_CAP, needsLan: true });
   // The capability alone, without the link state - the last-line guard before
   // the one irreversible call, for a token downgraded while a dialog was open.
   const canConfig = useCanConfigBackend();

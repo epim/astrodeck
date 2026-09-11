@@ -363,6 +363,11 @@ export function SafetySheet(_p: SheetProps): JSX.Element {
   const baseRef = useRef<SafetyBlock | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<{ where: string; msg: string } | null>(null);
+  /** Which card's SAVE last landed, so exactly one SaveRow can say "Saved".
+   *  Cleared by `patch()` below: the cue belongs to the WRITE, not to the card,
+   *  and it was never retired - `SaveRow` only HIDES it while the card is
+   *  dirty, so editing a saved card and then undoing the edit by hand brought a
+   *  ten-minute-old "Saved" back over numbers nobody had sent. */
   const [savedWhere, setSavedWhere] = useState<string | null>(null);
   const [dome, setDome] = useState<DomeState | null>(null);
   const [health, setHealth] = useState<AlertHealth | null>(null);
@@ -477,7 +482,12 @@ export function SafetySheet(_p: SheetProps): JSX.Element {
   const cardDirty = (keys: (keyof SafetyBlock)[]) =>
     keys.some((k) => JSON.stringify(draft[k]) !== JSON.stringify(server[k]));
 
-  const patch = (p: Partial<SafetyBlock>) => setDraft((d) => (d ? { ...d, ...p } : d));
+  const patch = (p: Partial<SafetyBlock>) => {
+    // A new edit retires the old receipt. Every control on this sheet reaches
+    // the draft through here, so one line covers all four cards.
+    setSavedWhere(null);
+    setDraft((d) => (d ? { ...d, ...p } : d));
+  };
 
   // ------------------------------------------------------------------ derived
 

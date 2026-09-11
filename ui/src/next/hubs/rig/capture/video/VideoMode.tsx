@@ -107,6 +107,8 @@ export function VideoMode(props: VideoModeProps): JSX.Element {
   const [fetched, setFetched] = useState<VideoState | null>(null);
   const [routeAbsent, setRouteAbsent] = useState(false);
   const [starting, setStarting] = useState(false);
+  /** The synchronous half of the in-flight guard - see `onRecord`. */
+  const startingRef = useRef(false);
   const [refusal, setRefusal] = useState<{ code?: string; message: string } | null>(null);
   const [shortfall, setShortfall] = useState<VideoSpaceShortfall | null>(null);
 
@@ -159,6 +161,7 @@ export function VideoMode(props: VideoModeProps): JSX.Element {
     serverRefusal: refusal?.code === "no_video_path" ? refusal.message : null,
     recording,
     capturing: laneBusy(status, "capture") || laneBusy(status, "looping"),
+    starting,
   });
   const stopReason = videoStopReason(props.gate);
   const editReason = recording
@@ -175,6 +178,15 @@ export function VideoMode(props: VideoModeProps): JSX.Element {
 
   // -------------------------------------------------------------- the verbs
   const onRecord = () => {
+    // BELT AND BRACES, and the ref is the belt. `starting` now reaches
+    // `recordReason`, so the armed button refuses the second press and says
+    // why; the ref catches the case state cannot - two handlers firing inside
+    // one React batch both read the same stale `starting`, which is the shape
+    // the power sheet's `inFlightRef` exists for. A second POST here does not
+    // fail cleanly: it starts a SECOND recording and abandons the first file
+    // half-written.
+    if (startingRef.current) return;
+    startingRef.current = true;
     setShortfall(null);
     setRefusal(null);
     setStarting(true);
@@ -206,7 +218,7 @@ export function VideoMode(props: VideoModeProps): JSX.Element {
         const err = e as ApiError;
         setRefusal({ code: err?.code, message: err?.message ?? "the recording was refused" });
       },
-    ).finally(() => setStarting(false));
+    ).finally(() => { startingRef.current = false; setStarting(false); });
   };
 
   const onStop = () => {
