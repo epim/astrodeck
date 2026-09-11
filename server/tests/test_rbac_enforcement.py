@@ -1408,6 +1408,62 @@ def test_a_meridian_node_of_an_unexpected_shape_fails_closed():
     assert "meridian" not in ev["data"]
 
 
+# ------------------------------------------ the strip must not reach BACKWARDS
+# Every test above hands the helper ``dict(_MERIDIAN)``, and that is precisely
+# why the defect below lived here unnoticed for a wave: a copy per call hides an
+# in-place write. The ROUTE does not pass a copy. ``hub.poll_status`` builds the
+# meridian block, stashes it as ``hub.last_meridian`` (so the engine's sync ETA
+# can window-gate the flip cost without device I/O) and puts THE SAME OBJECT on
+# the payload -- so a REST strip that wrote through it blanked the hub's own
+# copy, and a single viewer's ``GET /api/status`` dropped the flip ETA for the
+# ENGINE and for every later reader until the next poll rebuilt it.
+
+def test_the_rest_strip_copies_the_meridian_node_it_is_handed():
+    """THE SAME DICT THE ROUTE PASSES, not a copy of it."""
+    from astrodeck.api.redact import _redact_site_for
+
+    live = dict(_MERIDIAN)          # stands in for hub.last_meridian
+    out = _redact_site_for({"meridian": live}, principal_for_role("viewer"))
+    assert out["meridian"]["hours_to_flip"] is None, "the caller is still served"
+    assert out["meridian"] is not live
+    assert live["hours_to_flip"] == 1.8342, (
+        "the REST strip wrote through the node it was handed; that node is "
+        "hub.last_meridian, and the engine reads it")
+    assert live["status"] == "counting"
+
+
+def test_the_rest_strip_copies_the_mount_node_too():
+    """Same rule, same loop: nothing in the derived tables is written in place,
+    whether or not today's caller happens to own the dict."""
+    from astrodeck.api.redact import _redact_site_for
+
+    live = {"ra_hours": 20.9705, "dec_deg": 60.0, "alt": 46.2, "az": 131.7}
+    out = _redact_site_for({"mount": live}, principal_for_role("viewer"))
+    assert "alt" not in out["mount"] and "az" not in out["mount"]
+    assert live["alt"] == 46.2 and live["az"] == 131.7
+
+
+def test_a_viewers_status_poll_does_not_cost_the_engine_the_flip_eta(
+        tmp_path, monkeypatch):
+    """End to end, through the real route, with the aliasing the hub really
+    has. SABOTAGE (run red, restored): strip the derived nodes in place again."""
+    _store, app = _make_client(tmp_path, monkeypatch)
+    live = dict(_MERIDIAN)
+    monkeypatch.setattr(app_module.hub, "last_meridian", live, raising=False)
+
+    async def _poll():
+        # Exactly what hub.poll_status does: one object, published AND stashed.
+        return {"meridian": app_module.hub.last_meridian}
+
+    monkeypatch.setattr(app_module.hub, "poll_status", _poll)
+    _install(principal_for_role("viewer"))
+    with TestClient(app) as c:
+        body = c.get("/api/status").json()
+    assert body["meridian"]["hours_to_flip"] is None
+    assert app_module.hub.last_meridian["hours_to_flip"] == 1.8342, (
+        "a viewer's status poll blanked the flip countdown the ENGINE reads")
+
+
 def _fake_status(monkeypatch, payload):
     """Serve one fabricated ``poll_status`` body (no devices needed)."""
     async def _poll():
@@ -1797,6 +1853,15 @@ _S7_MATRIX = (
     # exactly who decides that.
     ("PUT", "/api/planning", {"pool": ["M31"]},
      {"viewer": _DENY, "syncer": _DENY, "operator": {200}, "admin": {200}}),
+
+    # -- hand the dew heaters back to the loop (D-RIG-3) ----------------------
+    # control.power, which the shipped OPERATOR does not hold: switching the
+    # power box can brown out the rig, and putting a heater back under the
+    # loop's control is the same authority as the hand write that took it.
+    # 200 for the admin on a rig with no dew controller ticked yet is the
+    # honest "nothing was paused" answer, not a missing route.
+    ("POST", "/api/dew/resume", None,
+     {"viewer": _DENY, "syncer": _DENY, "operator": _DENY, "admin": {200}}),
 )
 
 

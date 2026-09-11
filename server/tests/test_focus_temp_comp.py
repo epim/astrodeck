@@ -511,3 +511,132 @@ class TestTheCompensatingMoveArrivesFromOneSide:
         eng = _cooling_engine(sim_hub, fake_focuser)
         await _run(eng, _plan(count=2))
         assert fake_focuser.moves == [REF_POS - 30], fake_focuser.moves
+
+
+# ------------------------------------------- compensation vs filter offsets
+
+class TestAFilterOffsetMovesTheReferenceWithIt:
+    """The two focus mechanisms that both write an ABSOLUTE position.
+
+    A per-filter offset move (`SequenceEngine._apply_filter`) says "focus for
+    this filter is `delta` steps from focus for the last one" and moves the
+    drawtube. Compensation then computes `reference_position + steps_per_c *
+    (temp - reference_temp)` and moves the drawtube to THAT. With nothing
+    joining them, the reference still described the previous filter's focus, so
+    the first frame boundary after every filter change read the offset as drift
+    and took it straight back out - and both log lines were true on their own,
+    which is why it could run all night unnoticed: "applied filter offset +120
+    for Ha", then "temperature compensation moved the focuser -120 steps".
+
+    The plans below cool by NOTHING (`per_frame=0.0`), so every move the
+    focuser records is a move some mechanism decided to make on a rig whose
+    temperature never changed. That is what makes "no move" an assertion.
+    """
+
+    @staticmethod
+    def _plan(count=1, a="L", b="Ha"):
+        """One target, two filters. The sim wheel's offsets are
+        [0, 12, 10, 15, 120, 110, 115, 0], so L -> Ha is +120 steps - six times
+        the 18-20 steps this rig's broadband offsets are, and well past the
+        deadband either way."""
+        t = Target(name="offsets", ra_hours=5.5, dec_deg=-5.0, center=False,
+                   autofocus_first=False,
+                   steps=[ExposureStep(filter=a, exposure_s=0.05, count=count),
+                          ExposureStep(filter=b, exposure_s=0.05, count=count)])
+        return SequencePlan(name="tc-offsets", guide=False, dither_every=0,
+                            autofocus_every=0, meridian_flip=False,
+                            safety_check=False, targets=[t])
+
+    @staticmethod
+    def _offset(hub, a="L", b="Ha") -> int:
+        fw = hub.devices["filterwheel"]
+        return (fw.filter_offsets[fw.filter_names.index(b)]
+                - fw.filter_offsets[fw.filter_names.index(a)])
+
+    async def test_the_next_boundary_commands_no_move_at_all(
+            self, sim_hub, fake_focuser, temp_store):
+        """SABOTAGE (run red, restored): delete the
+        `_shift_temp_comp_reference` call from `_apply_filter`. The focuser
+        then records a third move, straight back to the reference position -
+        Ha shot at L's focus."""
+        arm(temp_store, enabled=True, steps_per_c=30.0, deadband_steps=5,
+            reference_temp_c=REF_TEMP, reference_position=REF_POS)
+        sim_hub.sim_rig.filter_slot = 0          # start on L, so only L->Ha moves
+        offset = self._offset(sim_hub)
+        assert offset == 120, "the sim wheel's offsets moved; retune this test"
+        overshoot = temp_store.cfg().focus.approach_overshoot_steps
+        eng = _cooling_engine(sim_hub, fake_focuser, per_frame=0.0)
+        await _run(eng, self._plan())
+
+        # The OFFSET move, and nothing else. It is outward, so it goes through
+        # `focus.approach` (overshoot, then back down onto the target) - that
+        # pair is one move, and the list is empty of anything after it.
+        assert fake_focuser.moves == [REF_POS + offset + overshoot,
+                                      REF_POS + offset], (
+            f"the frame boundary after the filter change moved the focuser "
+            f"again: {fake_focuser.moves}")
+        assert fake_focuser.position == REF_POS + offset
+
+    async def test_the_reference_is_the_one_that_moved(
+            self, sim_hub, fake_focuser, temp_store):
+        """The fix is a REFERENCE shift, not a suppressed move, so it has to be
+        visible in the reference - and at the SAME temperature, because a
+        filter change is not a thermometer reading."""
+        arm(temp_store, enabled=True, steps_per_c=30.0, deadband_steps=5,
+            reference_temp_c=REF_TEMP, reference_position=REF_POS)
+        sim_hub.sim_rig.filter_slot = 0
+        offset = self._offset(sim_hub)
+        eng = _cooling_engine(sim_hub, fake_focuser, per_frame=0.0)
+        await _run(eng, self._plan())
+
+        assert eng._temp_comp_ref == (REF_TEMP, REF_POS + offset)
+        # ...and on disk, like every other anchor: a restart mid-run must not
+        # come back pointing at the previous filter's focus.
+        tc = temp_store.cfg().focus.temp_comp
+        assert tc.reference_temp_c == pytest.approx(REF_TEMP)
+        assert tc.reference_position == REF_POS + offset
+
+    async def test_the_drift_that_is_really_there_is_still_corrected(
+            self, sim_hub, fake_focuser, temp_store):
+        """The shift must not become a way to swallow real drift. One degree of
+        cooling per frame, a filter change in the middle: the offset survives
+        AND the temperature is still tracked on top of it."""
+        arm(temp_store, enabled=True, steps_per_c=30.0, deadband_steps=5,
+            reference_temp_c=REF_TEMP, reference_position=REF_POS)
+        sim_hub.sim_rig.filter_slot = 0
+        offset = self._offset(sim_hub)
+        eng = _cooling_engine(sim_hub, fake_focuser, per_frame=-1.0)
+        await _run(eng, self._plan(count=2))
+
+        # Two L frames, the offset, two Ha frames; the tube drops 1 C after
+        # every captured frame. Three frames are behind the LAST boundary, so
+        # it reads 7.0 C - three degrees under the reference - and asks for
+        # 30 * -3 = -90 steps on top of the +120 offset baseline.
+        drift = int(round(30.0 * -3.0))
+        assert fake_focuser.position == REF_POS + offset + drift, (
+            f"final position {fake_focuser.position}, moves "
+            f"{fake_focuser.moves}")
+        # THE DISCRIMINATING HALF. Both mechanisms are live here, so an
+        # assertion on the drift alone would also hold for a run that had
+        # thrown the offset away: an unshifted reference lands this same night
+        # on REF_POS + drift, 120 steps low and inside Ha's focus tolerance of
+        # nothing at all.
+        assert fake_focuser.position - drift == REF_POS + offset
+
+    async def test_an_unarmed_rig_pays_nothing_and_writes_nothing(
+            self, sim_hub, fake_focuser, temp_store):
+        """The shift is guarded by the same two conditions `_apply_temp_comp`
+        is, so a rig with compensation off does not gain a config write per
+        filter change."""
+        arm(temp_store, enabled=False, steps_per_c=30.0,
+            reference_temp_c=REF_TEMP, reference_position=REF_POS)
+        sim_hub.sim_rig.filter_slot = 0
+        offset = self._offset(sim_hub)
+        overshoot = temp_store.cfg().focus.approach_overshoot_steps
+        eng = _cooling_engine(sim_hub, fake_focuser, per_frame=0.0)
+        await _run(eng, self._plan())
+
+        assert fake_focuser.moves == [REF_POS + offset + overshoot,
+                                      REF_POS + offset]
+        tc = temp_store.cfg().focus.temp_comp
+        assert tc.reference_position == REF_POS, "an OFF rig re-anchored"

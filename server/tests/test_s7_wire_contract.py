@@ -64,6 +64,13 @@ _WIRE = (
     # -- rig-level planning prefs (D-FU-1) -----------------------------------
     ("GET", "/api/planning", "view.status"),
     ("PUT", "/api/planning", "control.capture"),
+
+    # -- hand the dew heaters back to the loop (D-RIG-3) ---------------------
+    # ``control.power`` and not ``config.safety``: this changes no policy, it
+    # returns a running heater to the loop - the same authority as the hand
+    # write that took it, and the same cap as POST /api/switch/set, which is
+    # where most overrides come from.
+    ("POST", "/api/dew/resume", "control.power"),
 )
 
 

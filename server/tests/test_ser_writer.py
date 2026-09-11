@@ -17,7 +17,9 @@ from datetime import datetime, timezone
 import numpy as np
 import pytest
 
-from astrodeck.imaging.ser import SerWriter, color_id_for
+from astrodeck.imaging import ser
+from astrodeck.imaging.ser import (SerWriter, color_id_for, read_frames,
+                                   read_header)
 
 # Offsets typed from the spec, not imported. See the module docstring.
 _OFF = {
@@ -238,3 +240,122 @@ def test_a_wrong_sized_frame_is_refused_rather_than_written(tmp_path):
         with pytest.raises(ValueError, match="shift every later frame"):
             writer.add_frame(_frame(W - 2, H, seed=2), ts=_START)
     assert _parse(path)["frames"] == 1
+
+
+# ================================ the count survives a process that never closed
+#
+# FrameCount is written as 0 by ``open`` and patched by ``close``, which covers
+# a cancel, a cloud hold and a camera error - all three unwind through
+# ``__exit__``. It does not cover the process not getting to run any of that: a
+# power cut, a kill, the rig PC's thermal reset on 2026-09-08. The header then
+# still says 0, and every reader in the world - SER Player, PIPP, AutoStakkert,
+# Siril, and this module's own ``read_frames`` - reads that as an empty file. So
+# the frames that DID land are unreadable at the exact moment they are the only
+# ones there are.
+#
+# Two answers, and both are needed. The writer CHECKPOINTS the count every
+# ``FRAMECOUNT_PATCH_EVERY`` frames, so a killed file is already playable back
+# to the last checkpoint; and ``repair_frame_count`` recovers the rest from the
+# file's own length, which is the second witness a header cannot corrupt.
+
+def _kill(writer) -> None:
+    """Drop a live writer the way a power cut does: the bytes that were flushed
+    are on disk, ``close`` never runs, and no trailer is written."""
+    writer._fh.flush()
+    writer._fh.close()
+    writer._fh = None
+    writer._closed = True
+
+
+def test_the_count_is_checkpointed_while_the_recording_runs(tmp_path):
+    """SABOTAGE (run red, restored): drop the ``_patch_frame_count`` call from
+    ``add_frame``. A killed recording reads as an empty file."""
+    path = tmp_path / "killed.ser"
+    w = SerWriter(path, width=8, height=4, bit_depth=16).open()
+    frame = np.arange(32, dtype="<u2").reshape((4, 8))
+    for _ in range(ser.FRAMECOUNT_PATCH_EVERY + 5):
+        w.add_frame(frame)
+    _kill(w)
+
+    head = read_header(path)
+    assert head["frames"] == ser.FRAMECOUNT_PATCH_EVERY, (
+        "the header was never checkpointed, so a killed recording is empty")
+    # ...and those frames really read back, which is the whole point.
+    assert len(list(read_frames(path))) == ser.FRAMECOUNT_PATCH_EVERY
+
+
+def test_the_checkpoint_does_not_corrupt_the_frames_it_interrupts(tmp_path):
+    """The patch seeks BACKWARDS into a file that is still being appended to.
+    A seek that did not return to the end would overwrite the header with
+    pixels, or interleave frames, and the file would still look plausible."""
+    path = tmp_path / "checkpointed.ser"
+    n = ser.FRAMECOUNT_PATCH_EVERY * 2 + 3
+    with SerWriter(path, width=8, height=4, bit_depth=16) as w:
+        for i in range(n):
+            w.add_frame(np.full((4, 8), i, dtype="<u2"))
+    parsed = _parse(path)
+    assert parsed["frames"] == n
+    assert len(parsed["pixels"]) == n
+    for i, frame in enumerate(parsed["pixels"]):
+        assert int(frame[0][0]) == i, f"frame {i} is not the one written"
+
+
+def test_the_count_is_recovered_from_the_file_size(tmp_path):
+    """SABOTAGE (run red, restored): make ``repair_frame_count`` a no-op. The
+    tail of a killed recording - everything since the last checkpoint - stays
+    unreadable, and on a short file that is the whole recording."""
+    path = tmp_path / "torn.ser"
+    w = SerWriter(path, width=8, height=4, bit_depth=16).open()
+    for i in range(7):                  # fewer than one checkpoint interval
+        w.add_frame(np.full((4, 8), i, dtype="<u2"))
+    _kill(w)
+    assert read_header(path)["frames"] == 0, "precondition: the header says 0"
+
+    assert ser.repair_frame_count(path) == 7
+    assert read_header(path)["frames"] == 7
+    assert [int(f[0][0]) for f in read_frames(path)] == list(range(7))
+
+
+def test_the_repair_is_a_no_op_on_a_file_that_closed_properly(tmp_path):
+    """It runs on every file the library lists, so it has to be safe on the
+    ordinary case - including not counting the TRAILER as extra frames, which
+    on a small planetary ROI is a dozen frames' worth of bytes."""
+    path = tmp_path / "clean.ser"
+    with SerWriter(path, width=8, height=4, bit_depth=16) as w:
+        for i in range(5):
+            w.add_frame(np.full((4, 8), i, dtype="<u2"))
+    before = path.read_bytes()
+    assert ser.repair_frame_count(path) == 5
+    assert path.read_bytes() == before, "the repair rewrote a healthy file"
+
+
+def test_a_frame_torn_in_half_is_not_counted(tmp_path):
+    """A partial frame is not a frame: counting it would shift every reader's
+    idea of where the next one starts."""
+    path = tmp_path / "half.ser"
+    w = SerWriter(path, width=8, height=4, bit_depth=16).open()
+    for i in range(3):
+        w.add_frame(np.full((4, 8), i, dtype="<u2"))
+    _kill(w)
+    with open(path, "r+b") as fh:       # lose half of the last frame
+        fh.truncate(path.stat().st_size - 32)
+    assert ser.repair_frame_count(path) == 2
+
+
+def test_the_library_lists_a_killed_recording_with_its_real_count(tmp_path,
+                                                                  monkeypatch):
+    """The repair where a user meets it: a recording whose process died shows
+    the frames it got instead of 0, and is stackable."""
+    from astrodeck.imaging import video as video_mod
+
+    monkeypatch.setattr(video_mod, "video_dir", lambda: tmp_path)
+    path = tmp_path / "night-01.ser"
+    w = SerWriter(path, width=8, height=4, bit_depth=16).open()
+    for i in range(9):
+        w.add_frame(np.full((4, 8), i, dtype="<u2"))
+    _kill(w)
+
+    rows = video_mod.list_recordings()
+    assert len(rows) == 1
+    assert rows[0]["frames"] == 9, (
+        "the library called a killed recording empty")

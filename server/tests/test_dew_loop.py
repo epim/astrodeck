@@ -509,7 +509,9 @@ async def test_an_override_of_zero_never_expires_on_its_own():
     # plus the reason is how a never-expiring override is reported.
     assert snap["override_until_ts"] is None
     assert "does not expire" in snap["reason"]
-    assert ctl._override_until == math.inf
+    assert ctl._overrides == {"camera": math.inf}, (
+        "the override is keyed by SURFACE: a hand write to the window heater "
+        "must not also hold the switch ports")
 
 
 # ------------------------------------------------------- the change threshold
@@ -598,7 +600,7 @@ async def test_the_snapshot_is_a_copy():
 
     snap = ctl.snapshot()
     assert snap["ports"] == [{"id": 1, "name": "Dew A", "follow_dew": True,
-                              "value": 128.0}]
+                              "value": 128.0, "paused": False}]
     snap["power_pct"] = 999
     snap["ports"][0]["value"] = 999
     again = ctl.snapshot()
@@ -638,3 +640,317 @@ async def test_disabled_touches_nothing():
     snap = ctl.snapshot()
     assert snap["enabled"] is False and snap["following"] is False
     assert snap["power_pct"] is None and snap["ports"] == []
+
+
+# ------------------------------------------------- the override is PER SURFACE
+#
+# It always was on the way IN and never was on the way OUT. ``note_manual``
+# filtered on which surface the write touched and dropped only that surface's
+# last-commanded memory, and then set ONE shared deadline that stopped the loop
+# driving everything. So nudging one dew strap by hand at 22:00 also stopped the
+# camera window heater and every other strap for two hours, and the only
+# evidence was a ``reason`` string that did not say which.
+
+async def test_a_hand_write_to_one_port_leaves_the_others_following():
+    """SABOTAGE (run red, restored): key the override on one shared deadline
+    again. Port 2 and the camera window stop being commanded because somebody
+    touched port 1."""
+    clock = Clock()
+    cam = FakeCamera()
+    sw = FakeSwitch([_port(1, "Dew A", lo=0.0, hi=255.0, boolean=False),
+                     _port(2, "Dew B", lo=0.0, hi=255.0, boolean=False)])
+    power_guard.set_port_settings(1, follow_dew=True)
+    power_guard.set_port_settings(2, follow_dew=True)
+    weather = FakeWeather(_reading(temp_c=10.0, dewpoint_c=7.0))    # margin 3
+    ctl, _hub = _controller(camera=cam, switch=sw, weather=weather, clock=clock,
+                            enabled=True, manual_override_s=7200)
+    await ctl.tick()
+    assert cam.writes == [50] and sw.calls == [(1, 128.0), (2, 128.0)]
+
+    ctl.note_manual("switch", 1)        # one strap, set by hand
+    # The margin moves far enough that every surface WOULD be re-commanded.
+    weather.reading = _reading(temp_c=10.0, dewpoint_c=9.0)         # margin 1
+    clock.advance(60.0)
+    await ctl.tick()
+
+    assert sw.calls == [(1, 128.0), (2, 128.0), (2, 255.0)], (
+        "the hand-held port was written, or the other one was not")
+    assert cam.writes == [50, 100], (
+        "a hand write to a switch port stopped the camera window heater")
+    snap = ctl.snapshot()
+    assert snap["following"] is False, "something IS held, and the panel says so"
+    assert "switch port 1" in snap["reason"], snap["reason"]
+    held, free = snap["ports"]
+    assert held["id"] == 1 and held["paused"] is True
+    assert free["id"] == 2 and free["paused"] is False
+
+
+async def test_the_pause_reason_names_the_camera_window():
+    clock = Clock()
+    cam = FakeCamera()
+    weather = FakeWeather(_reading(temp_c=10.0, dewpoint_c=7.0))
+    ctl, _hub = _controller(camera=cam, weather=weather, clock=clock,
+                            enabled=True, manual_override_s=7200)
+    await ctl.tick()
+    ctl.note_manual("camera")
+    clock.advance(60.0)
+    await ctl.tick()
+    reason = ctl.snapshot()["reason"]
+    assert "the camera window" in reason, reason
+    assert "119 min" in reason, reason
+
+
+async def test_a_write_to_an_unnamed_port_holds_every_port():
+    """``note_manual("switch", None)`` is a caller that knows a port was touched
+    and cannot say which. Holding all of them is the fail-toward-respecting-the-
+    human reading, and it is the same reading ``_drives`` takes."""
+    clock = Clock()
+    sw = FakeSwitch([_port(1, "Dew A", lo=0.0, hi=255.0, boolean=False),
+                     _port(2, "Dew B", lo=0.0, hi=255.0, boolean=False)])
+    power_guard.set_port_settings(1, follow_dew=True)
+    power_guard.set_port_settings(2, follow_dew=True)
+    weather = FakeWeather(_reading(temp_c=10.0, dewpoint_c=7.0))
+    ctl, _hub = _controller(switch=sw, weather=weather, clock=clock,
+                            enabled=True, manual_override_s=7200)
+    await ctl.tick()
+    ctl.note_manual("switch", None)
+    weather.reading = _reading(temp_c=10.0, dewpoint_c=9.0)
+    clock.advance(60.0)
+    await ctl.tick()
+    assert sw.calls == [(1, 128.0), (2, 128.0)], "a held port was commanded"
+    assert "every switch port" in ctl.snapshot()["reason"]
+
+
+async def test_each_surface_expires_on_its_own_clock():
+    clock = Clock()
+    cam = FakeCamera()
+    sw = FakeSwitch([_port(1, "Dew A", lo=0.0, hi=255.0, boolean=False)])
+    power_guard.set_port_settings(1, follow_dew=True)
+    weather = FakeWeather(_reading(temp_c=10.0, dewpoint_c=7.0))
+    ctl, _hub = _controller(camera=cam, switch=sw, weather=weather, clock=clock,
+                            enabled=True, manual_override_s=600)
+    await ctl.tick()
+    ctl.note_manual("camera")
+    clock.advance(300.0)
+    ctl.note_manual("switch", 1)        # 300 s later, so 300 s longer to run
+    clock.advance(400.0)                # the camera's is up, the port's is not
+    await ctl.tick()
+    snap = ctl.snapshot()
+    assert snap["following"] is False
+    assert "switch port 1" in snap["reason"]
+    assert "the camera window" not in snap["reason"], snap["reason"]
+    assert ctl._overrides.keys() == {"port:1"}
+
+
+# ------------------------------------------------------------- the way out
+
+async def test_resume_clears_every_override_and_says_which():
+    """SABOTAGE (run red, restored): make ``resume`` a no-op. An override taken
+    under ``manual_override_s = 0`` then has no way out but a restart, which on
+    this rig is the next night."""
+    clock = Clock()
+    cam = FakeCamera()
+    sw = FakeSwitch([_port(1, "Dew A", lo=0.0, hi=255.0, boolean=False)])
+    power_guard.set_port_settings(1, follow_dew=True)
+    weather = FakeWeather(_reading(temp_c=10.0, dewpoint_c=7.0))
+    ctl, _hub = _controller(camera=cam, switch=sw, weather=weather, clock=clock,
+                            enabled=True, manual_override_s=0)   # never expires
+    await ctl.tick()
+    ctl.note_manual("camera")
+    ctl.note_manual("switch", 1)
+    clock.advance(365 * 24 * 3600.0)
+    await ctl.tick()
+    assert ctl.snapshot()["following"] is False, "precondition: it never expired"
+
+    cleared = ctl.resume()
+    assert cleared == ["the camera window", "switch port 1"]
+    assert ctl._overrides == {}
+    # The READOUT moves now, not at the next tick - a panel that showed the
+    # pause face for another two minutes after the button was pressed reads as
+    # a button that did nothing.
+    snap = ctl.snapshot()
+    assert snap["following"] is True
+    assert snap["ports"][0]["paused"] is False
+    assert "next tick" in snap["reason"], snap["reason"]
+
+    # ...and the loop really does drive again, with the last-commanded memory
+    # dropped so a level within the 5-point threshold is still re-sent.
+    await ctl.tick()
+    assert cam.writes == [50, 50] and sw.calls == [(1, 128.0), (1, 128.0)]
+
+
+async def test_resume_is_idempotent():
+    """A button whose job is "put it back" must be pressable when the operator
+    is unsure."""
+    ctl, _hub = _controller(enabled=True)
+    assert ctl.resume() == []
+    assert ctl.snapshot() is None       # and it did not invent one
+
+
+async def test_resume_does_not_touch_a_device():
+    """It runs inside a request. A heater write here would let a wedged strap
+    hold the response open for the device timeout."""
+    clock = Clock()
+    cam = FakeCamera()
+    sw = FakeSwitch([_port(1, "Dew A", lo=0.0, hi=255.0, boolean=False)])
+    power_guard.set_port_settings(1, follow_dew=True)
+    weather = FakeWeather(_reading(temp_c=10.0, dewpoint_c=7.0))
+    ctl, _hub = _controller(camera=cam, switch=sw, weather=weather, clock=clock,
+                            enabled=True, manual_override_s=7200)
+    await ctl.tick()
+    before_cam, before_sw = list(cam.writes), list(sw.calls)
+    ctl.note_manual("camera")
+    ctl.resume()
+    assert cam.writes == before_cam and sw.calls == before_sw
+
+
+# ------------------------------------------------------- POST /api/dew/resume
+# The controller half above is the rule. These drive the SHIPPED route, because
+# a resume nothing calls is a resume that resumes nothing.
+
+@pytest.fixture
+def dew_client(monkeypatch):
+    """The real app, with the module-level dew controller re-pointed at a fake
+    rig and a fixed principal."""
+    from fastapi.testclient import TestClient
+
+    import astrodeck.api.app as app_module
+    import astrodeck.config as config_mod
+    from astrodeck.auth import (principal_for_role, reset_active_provider,
+                                set_active_provider)
+
+    class _Fixed:
+        name = "fake"
+
+        def __init__(self, principal):
+            self._principal = principal
+
+        async def resolve(self, request):
+            return self._principal
+
+    def _client(who="admin"):
+        """``who`` is a role name or a ready-made Principal."""
+        monkeypatch.setattr(app_module, "config_store", config_mod.config_store)
+        # The app's lifespan re-reads the configured auth backend and would
+        # replace the provider installed here with the open default (admin) -
+        # which is the same fixture note tests/test_ephemeris_redaction.py
+        # carries, and the reason a redaction assertion can silently be made
+        # against an admin.
+        monkeypatch.setattr(app_module, "configure_provider_from_auth",
+                            lambda _auth: app_module.get_active_provider())
+        set_active_provider(_Fixed(
+            principal_for_role(who) if isinstance(who, str) else who))
+        return TestClient(app_module.create_app())
+
+    yield _client
+    reset_active_provider()
+
+
+def _armed_controller(monkeypatch, **dew_kwargs):
+    """A controller with one override running, attached where the routes look."""
+    import astrodeck.api.app as app_module
+
+    clock = Clock()
+    cam = FakeCamera()
+    weather = FakeWeather(_reading(temp_c=10.0, dewpoint_c=7.0))
+    ctl, _hub = _controller(camera=cam, weather=weather, clock=clock,
+                            enabled=True, **dew_kwargs)
+    monkeypatch.setattr(app_module, "dew_controller", ctl)
+    monkeypatch.setattr(app_module.hub, "dew_controller", ctl, raising=False)
+    return ctl, cam, clock
+
+
+async def test_the_resume_route_clears_the_override(dew_client, monkeypatch):
+    """SABOTAGE (run red, restored): drop the ``dew_controller.resume()`` call
+    from the route. It answers 200 with ``resumed: true`` and nothing moves."""
+    ctl, _cam, _clock = _armed_controller(monkeypatch, manual_override_s=0)
+    await ctl.tick()
+    ctl.note_manual("camera")
+    await ctl.tick()
+    assert ctl.snapshot()["following"] is False
+
+    r = dew_client().post("/api/dew/resume")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["resumed"] is True
+    assert body["cleared"] == ["the camera window"]
+    assert body["following"] is True
+    assert "the camera window" in body["reason"]
+    assert body["dew"]["following"] is True
+    assert ctl._overrides == {}
+
+
+async def test_the_resume_route_is_idempotent(dew_client, monkeypatch):
+    """A button whose job is "put it back" is pressable when the operator is
+    unsure, and must not answer an error for it."""
+    ctl, _cam, _clock = _armed_controller(monkeypatch, manual_override_s=7200)
+    await ctl.tick()
+    body = dew_client().post("/api/dew/resume").json()
+    assert body["resumed"] is False
+    assert body["cleared"] == []
+    assert body["reason"] == "dew following was not paused"
+
+
+async def test_the_resume_route_is_refused_without_control_power(dew_client,
+                                                                 monkeypatch):
+    _armed_controller(monkeypatch, manual_override_s=7200)
+    for role in ("viewer", "syncer", "operator"):
+        r = dew_client(role).post("/api/dew/resume")
+        assert r.status_code == 403, f"{role}: {r.text[:200]}"
+
+
+async def test_a_viewer_cannot_read_the_readings_off_the_resume_echo(
+        dew_client, monkeypatch):
+    """The echoed snapshot is the dew node, and the dew node is stripped for a
+    principal without ``view.weather`` everywhere else. A route that answered it
+    bare would be the fourth carrier of the same number."""
+    from astrodeck.auth import CAP_CONTROL_POWER, CAP_VIEW_STATUS, Principal
+
+    ctl, _cam, _clock = _armed_controller(monkeypatch, manual_override_s=7200)
+    await ctl.tick()
+    assert ctl.snapshot()["margin_c"] == 3.0    # precondition: there IS one
+
+    # No shipped role holds control.power without view.weather (admin holds
+    # both), which is exactly why keying this off a role would make the
+    # assertion inert the day somebody adds one.
+    power_only = Principal(role="power-only",
+                           caps=frozenset({CAP_VIEW_STATUS, CAP_CONTROL_POWER}))
+    body = dew_client(power_only).post("/api/dew/resume").json()
+    assert body["dew"] is not None
+    assert "margin_c" not in body["dew"]
+    assert body["dew"]["power_pct"] is None
+
+
+async def test_rewriting_the_override_window_clears_a_running_override(
+        dew_client, monkeypatch):
+    """SABOTAGE (run red, restored): drop the ``resume`` call from the
+    ``body.dew`` branch of POST /api/config. Changing the window then applies
+    only to the NEXT override, so the setting that looks like it fixed the
+    infinite one did not."""
+    ctl, _cam, _clock = _armed_controller(monkeypatch, manual_override_s=0)
+    await ctl.tick()
+    ctl.note_manual("camera")
+    assert ctl._overrides == {"camera": math.inf}
+
+    r = dew_client().post("/api/config", json={"dew": {"manual_override_s": 1800}})
+    assert r.status_code == 200, r.text
+    assert ctl._overrides == {}, (
+        "the override window was re-written and the running override kept the "
+        "old rule")
+
+
+async def test_an_unrelated_dew_edit_leaves_a_running_override_alone(
+        dew_client, monkeypatch):
+    """The other direction: turning the camera window off, or moving a
+    threshold, is not a statement about the pause somebody is holding."""
+    ctl, _cam, _clock = _armed_controller(monkeypatch, manual_override_s=7200)
+    await ctl.tick()
+    ctl.note_manual("camera")
+    held = dict(ctl._overrides)
+    assert held
+
+    r = dew_client().post("/api/config",
+                          json={"dew": {"manual_override_s": 7200,
+                                        "margin_full_c": 1.5}})
+    assert r.status_code == 200, r.text
+    assert ctl._overrides == held

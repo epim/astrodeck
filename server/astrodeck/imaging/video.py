@@ -57,6 +57,7 @@ from pathlib import Path
 from ..devices.base import DeviceError
 from ..events import bus
 from .ser import (SER_HEADER_BYTES, SerWriter, color_id_for, read_frames,
+                  repair_frame_count,
                   read_header)
 
 #: The engine's exposure-poll floor (devices/cameras/engine.py:109). Not
@@ -572,7 +573,7 @@ def list_recordings() -> list[dict]:
                 meta = json.loads(side.read_text(encoding="utf-8"))
         head: dict = {}
         with contextlib.suppress(Exception):
-            head = read_header(ser)
+            head = _repaired_header(ser)
         try:
             size = ser.stat().st_size
             mtime = ser.stat().st_mtime
@@ -594,22 +595,58 @@ def list_recordings() -> list[dict]:
     return out
 
 
+def _repaired_header(ser: Path) -> dict:
+    """``read_header`` with FrameCount repaired from the file size first.
+
+    THE HEADER IS WRITTEN WITH 0 AND PATCHED AT CLOSE, so a recording whose
+    process never got to close - a power cut, a kill, the rig PC's thermal
+    reset - is a file full of frames that every reader calls empty. The frames
+    are on disk and only the four bytes that count them are wrong, so they are
+    rewritten from the length before anything reads the count.
+
+    TOTAL: a file that is not a SER, or one on a read-only archive, falls
+    through to the plain header rather than costing the caller its listing.
+    """
+    with contextlib.suppress(Exception):
+        repair_frame_count(ser)
+    return read_header(ser)
+
+
 def run_stack(ser: Path, *, keep_pct: float) -> dict:
     """Read a .ser, lucky-stack it, write ``<id>.stack.png``. BLOCKING.
 
     Called on a worker thread (see ``spawn_stack``): a 1800-frame file is read
     twice - once to score every frame, once to stack the keepers - and neither
     pass belongs on the event loop.
+
+    TWO STREAMS, NOT A LIST. This used to open with ``list(read_frames(ser))``
+    while the sentence above claimed otherwise, and the gap between the two was
+    the whole recording: 1800 full-ROI frames is 7.6 GB of pixels and a long
+    4k burst runs to a hundred, so the observatory's 6 GB box could not stack
+    the file it had just written and said so with a MemoryError out of a worker
+    thread. ``read_frames`` was already a generator holding one frame at a
+    time; both passes now consume it as one, and what survives pass 1 is two
+    numbers per frame (``lucky.FrameScan``) rather than the frame.
     """
-    from .lucky import lucky_stack
+    from .lucky import lucky_stack, scan_frames, select_frames
     from .processing import to_png
-    frames = list(read_frames(ser))
-    if not frames:
-        raise ValueError(f"{ser.name} has no frames to stack")
-    result = lucky_stack(frames, keep_pct=keep_pct)
+    # FrameCount first: ``read_frames`` yields ``head["frames"]`` frames, so a
+    # recording whose process was killed stacks as empty until the count is
+    # recovered from the file's own size. Suppressed rather than required: a
+    # file we cannot rewrite is still a file we can try to stack.
+    with contextlib.suppress(Exception):
+        repair_frame_count(ser)
+    try:
+        scan = scan_frames(read_frames(ser))            # pass 1: measure
+    except ValueError as exc:
+        if "at least one frame" in str(exc):
+            raise ValueError(f"{ser.name} has no frames to stack") from exc
+        raise
+    sel = select_frames(scan, keep_pct=keep_pct)
+    result = lucky_stack(read_frames(ser), scan=scan, sel=sel)  # pass 2: stack
     out = stack_path(ser.stem)
     out.write_bytes(to_png(result.image.astype("float64")))
-    return {"id": ser.stem, "frames": len(frames), "kept": len(result.kept),
+    return {"id": ser.stem, "frames": len(scan.scores), "kept": len(result.kept),
             "keep_pct": result.keep_pct, "aligned": result.aligned,
             "path": f"video/{out.name}"}
 

@@ -430,3 +430,254 @@ def test_a_principal_holding_site_caps_but_not_weather_still_loses_dew():
     assert "margin_c" not in out["dew"] and out["dew"]["power_pct"] is None
     ev = _redact_ws_event({"type": "status", "data": {"dew": _dew()}}, p)
     assert "margin_c" not in ev["data"]["dew"]
+
+
+# =========================== the OTHER TWO carriers of the same duty cycle
+# Nulling ``dew.power_pct`` was necessary and not sufficient. The level the
+# ramp computes is WRITTEN to two registers, and each of them is published on
+# its own:
+#
+#   camera.dew_heater              the camera window heater, on /api/status
+#   GET /api/switch/ports  value   a follow_dew port, on its own route
+#
+# Both are the dew margin re-encoded for exactly as long as the loop is
+# driving them -- ``dew.ramp_power`` is a published function of four config
+# numbers a viewer reads off /api/config, so inverting it recovers the margin
+# to about 0.2 C. Both stop being readings the moment the loop is off or
+# paused, because then the number is the one a human put there. One predicate,
+# ``redact.dew_is_following``, decides for all three.
+
+def _following(**over) -> dict:
+    """A dew snapshot with the loop actually driving."""
+    return {**_dew(), **over}
+
+
+def _paused() -> dict:
+    """The same loop, paused by a manual override: the registers now carry
+    whatever a human set, so nothing about them is a weather reading."""
+    return _following(following=False, power_pct=None)
+
+
+class TestTheCameraWindowHeater:
+    def test_a_viewer_loses_the_level_while_the_loop_is_following(self):
+        from astrodeck.api.redact import _redact_site_for
+
+        out = _redact_site_for(
+            {"dew": _following(), "camera": {"temperature": -10.0,
+                                             "has_dew_heater": True,
+                                             "dew_heater": 38}},
+            principal_for_role("viewer"))
+        assert "dew_heater" not in out["camera"], (
+            "camera.dew_heater IS dew.power_pct on the register the loop just "
+            "wrote it to; inverting the ramp recovers the margin from it")
+        # ...and ONLY that key. The camera block is the biggest node on the
+        # status frame and every other field of it is about the camera.
+        assert out["camera"]["temperature"] == -10.0
+        assert out["camera"]["has_dew_heater"] is True
+
+    def test_an_operator_keeps_it(self):
+        from astrodeck.api.redact import _redact_site_for
+
+        out = _redact_site_for({"dew": _following(),
+                                "camera": {"dew_heater": 38}},
+                               principal_for_role("operator"))
+        assert out["camera"]["dew_heater"] == 38
+
+    def test_a_paused_loop_leaves_it_alone(self):
+        """The argument for publishing it at all, and it is still right half
+        the time. With the loop paused the register holds the level an operator
+        set by hand from the Capture bench - it is 60% whether the dew point is
+        -10 C or 14 C - and the readout exists precisely so that slider shows
+        the heater instead of its own last write."""
+        from astrodeck.api.redact import _redact_site_for
+
+        out = _redact_site_for({"dew": _paused(), "camera": {"dew_heater": 60}},
+                               principal_for_role("viewer"))
+        assert out["camera"]["dew_heater"] == 60
+
+    def test_a_disabled_loop_leaves_it_alone(self):
+        from astrodeck.api.redact import _redact_site_for
+
+        out = _redact_site_for(
+            {"dew": _following(enabled=False, following=False),
+             "camera": {"dew_heater": 60}}, principal_for_role("viewer"))
+        assert out["camera"]["dew_heater"] == 60
+
+    def test_no_dew_node_at_all_leaves_it_alone(self):
+        """A build with no dew controller, or one whose first tick has not
+        happened: nothing has commanded that register, so there is no weather
+        in it."""
+        from astrodeck.api.redact import _redact_site_for
+
+        out = _redact_site_for({"camera": {"dew_heater": 60}},
+                               principal_for_role("viewer"))
+        assert out["camera"]["dew_heater"] == 60
+
+    def test_the_ws_push_strips_it_without_mutating_the_shared_event(self):
+        """``Event.data`` is shared across every subscriber - the same reason
+        the site, mount and dew nodes are copied before they are scrubbed."""
+        from astrodeck.api.redact import _redact_ws_event
+
+        ev = {"type": "status",
+              "data": {"dew": _following(), "camera": {"dew_heater": 38}}}
+        viewer = _redact_ws_event(ev, principal_for_role("viewer"))
+        assert "dew_heater" not in viewer["data"]["camera"]
+        assert ev["data"]["camera"]["dew_heater"] == 38, (
+            "the shared event's camera node was mutated")
+        admin = _redact_ws_event(ev, principal_for_role("admin"))
+        assert admin["data"]["camera"]["dew_heater"] == 38
+
+
+class TestAFollowingPortsLevel:
+    """``GET /api/switch/ports`` publishes the same number wearing a port id."""
+
+    def _rows(self):
+        return [{"id": 3, "name": "Dew Strap C", "follow_dew": True,
+                 "value": 97.0, "protected_now": False},
+                {"id": 0, "name": "Mount", "follow_dew": False, "value": 1,
+                 "protected_now": True}]
+
+    def test_a_viewer_loses_a_following_ports_level(self):
+        from astrodeck.api.redact import _redact_switch_ports_for
+
+        out = _redact_switch_ports_for(self._rows(),
+                                       principal_for_role("viewer"),
+                                       _following())
+        dew_row, mount_row = out
+        assert dew_row["value"] is None
+        # The ROW survives: the Power sheet cannot draw a port at all without
+        # the id, the name and the protection policy, and none of the three is
+        # a weather reading.
+        assert dew_row["id"] == 3 and dew_row["name"] == "Dew Strap C"
+        assert dew_row["follow_dew"] is True
+        assert dew_row["protected_now"] is False
+        # A port that does NOT follow keeps its value: nobody derived it from
+        # the air, and blanking it would hide a mount relay for no reason.
+        assert mount_row["value"] == 1
+
+    def test_an_operator_keeps_it(self):
+        from astrodeck.api.redact import _redact_switch_ports_for
+
+        out = _redact_switch_ports_for(self._rows(),
+                                       principal_for_role("operator"),
+                                       _following())
+        assert out[0]["value"] == 97.0
+
+    def test_a_paused_loop_leaves_every_level_alone(self):
+        from astrodeck.api.redact import _redact_switch_ports_for
+
+        out = _redact_switch_ports_for(self._rows(),
+                                       principal_for_role("viewer"), _paused())
+        assert out[0]["value"] == 97.0
+
+    def test_a_row_of_an_unrecognised_shape_is_treated_as_following(self):
+        """Fail CLOSED, the same reading ``_strip_dew`` takes: a row with no
+        ``follow_dew`` is one whose shape we do not recognise, and the safe
+        answer for a level we cannot classify is to withhold it."""
+        from astrodeck.api.redact import _redact_switch_ports_for
+
+        out = _redact_switch_ports_for([{"id": 9, "value": 44}],
+                                       principal_for_role("viewer"),
+                                       _following())
+        assert out[0]["value"] is None
+
+    def test_the_caller_s_rows_are_not_mutated(self):
+        from astrodeck.api.redact import _redact_switch_ports_for
+
+        rows = self._rows()
+        _redact_switch_ports_for(rows, principal_for_role("viewer"),
+                                 _following())
+        assert rows[0]["value"] == 97.0
+
+
+# ------------------------------------------- and the same thing over the wire
+# The unit tests above grade the RULE. This grades that the two surfaces that
+# carry the number are actually wired to it: a rule nothing calls withholds
+# nothing, and ``GET /api/switch/ports`` in particular had no principal at all
+# until this fix, so there was no seam for the rule to live at.
+
+@pytest.fixture
+def dew_rig(client, monkeypatch):
+    """A rig with the loop FOLLOWING and both registers at what it commanded.
+
+    The camera reads its heater back (``_ReadableCamera``, the shape every
+    backend that can be asked has); the sim power box's slot 3 is a dew strap
+    flagged ``follow_dew``; and the controller's snapshot says the loop is
+    driving. Yields the client.
+    """
+    from astrodeck import power_guard
+    from astrodeck.devices.sim import SimCamera, SimRig, SimSwitch
+
+    class _ReadableCamera(SimCamera):
+        async def get_dew_heater(self) -> int | None:
+            return self._dew_power
+
+    cam = _ReadableCamera(SimRig())
+    cam.connected = True
+    cam._dew_power = 38
+    sw = SimSwitch()
+    sw.connected = True
+    # Slot 3 is the sim's 0..255 dew strap; put it where a 38% ramp output
+    # would land so the value under test is a real number and not a default 0.
+    sw._ports[3].value = 97.0
+    monkeypatch.setitem(app_module.hub.devices, "camera", cam)
+    monkeypatch.setitem(app_module.hub.devices, "switch", sw)
+    power_guard.set_port_settings(3, follow_dew=True)
+    monkeypatch.setattr(app_module.dew_controller, "_snap", _following())
+    try:
+        yield client
+    finally:
+        # The port store is session-scoped (conftest), so this flag would
+        # otherwise be the next test's starting condition.
+        power_guard.set_port_settings(3, follow_dew=False)
+
+
+def test_an_admin_reads_both_levels(dew_rig, as_role):
+    """THE PRECONDITION, and without it the withholding test below could pass
+    against a rig that publishes neither number to anybody."""
+    as_role("admin")
+    cam = dew_rig.get("/api/status").json()["camera"]
+    assert cam["dew_heater"] == 38
+    rows = dew_rig.get("/api/switch/ports").json()
+    strap = next(r for r in rows if r["id"] == 3)
+    assert strap["follow_dew"] is True
+    assert strap["value"] == 97.0, (
+        "the sim dew strap is a 0..255 port sitting at 97; if this moved, the "
+        "assertion below stops proving anything")
+
+
+def test_a_viewer_reads_neither(dew_rig, as_role):
+    """SABOTAGE (run red, restored): drop ``camera`` from
+    ``_WEATHER_DERIVED_NODES``, or drop the ``_redact_switch_ports_for`` call
+    from the ports route. Either one alone puts the duty cycle back on the
+    wire, and inverting ``dew.ramp_power`` (four numbers on /api/config)
+    recovers the dew margin from it to about 0.2 C."""
+    as_role("viewer")
+    cam = dew_rig.get("/api/status").json()["camera"]
+    assert "dew_heater" not in cam, (
+        "the camera window heater's level reached a principal without "
+        "view.weather while the dew loop was driving it")
+    # ...and the camera node is still there, with everything that is about the
+    # camera rather than about the air.
+    assert "temperature" in cam and cam["has_dew_heater"] is True
+    rows = dew_rig.get("/api/switch/ports").json()
+    strap = next(r for r in rows if r["id"] == 3)
+    assert strap["value"] is None, (
+        "a dew-following port's level is dew.power_pct wearing a port id")
+    assert strap["name"] == "Dew Strap C", "the row itself is equipment; it stays"
+    # A port the loop does not drive is untouched: nobody derived it from the
+    # air, and blanking it would hide the mount relay for no reason.
+    assert next(r for r in rows if r["id"] == 0)["value"] == 1
+
+
+def test_a_viewer_keeps_both_once_the_loop_is_paused(dew_rig, as_role,
+                                                     monkeypatch):
+    """The conditional is the whole design. A manual override means the level
+    on either register is the one a human set, and withholding it would break
+    the Capture bench's slider for a viewer to hide a number that is not a
+    measurement."""
+    as_role("viewer")
+    monkeypatch.setattr(app_module.dew_controller, "_snap", _paused())
+    assert dew_rig.get("/api/status").json()["camera"]["dew_heater"] == 38
+    rows = dew_rig.get("/api/switch/ports").json()
+    assert next(r for r in rows if r["id"] == 3)["value"] == 97.0

@@ -165,3 +165,99 @@ def test_frames_of_different_shapes_are_refused(burst):
 def test_an_empty_burst_is_refused():
     with pytest.raises(ValueError, match="at least one frame"):
         lucky_stack([])
+
+
+# ------------------------------------------------- the burst is never in RAM
+#
+# A headline recording is 1800 full-ROI frames = 7.6 GB of pixels, and a long
+# 4k burst runs to a hundred gigabytes. ``run_stack`` opened with
+# ``list(read_frames(ser))`` while its own docstring described two streaming
+# passes, so the observatory's 6 GB box could not stack the file it had just
+# written. The assertion that matters is therefore not "the stack is correct"
+# (which held before and after) but "no frame the accumulator has finished with
+# is still alive", and that is measurable: the fake reader below hands out a
+# FRESH array per frame, keeps a weak reference to it, and counts how many are
+# still reachable once the consumer has asked for the next one.
+
+def _streamed(frames):
+    """A ``read_frames`` stand-in, plus the two witnesses.
+
+    Returns ``(reader, calls, peak)``: ``calls`` grows by one per full stream,
+    ``peak`` records - after every yield has been consumed - how many of the
+    frames handed out so far are still alive somewhere.
+    """
+    import gc
+    import weakref
+
+    calls: list[object] = []
+    peak: list[int] = []
+    refs: list[weakref.ref] = []
+
+    def _reader(path, *, limit=None):
+        calls.append(path)
+        for row in frames:
+            arr = np.array(row, dtype=np.float64)     # a fresh array, as the
+            refs.append(weakref.ref(arr))             # real reader yields
+            yield arr
+            del arr
+            gc.collect()
+            peak.append(sum(1 for r in refs if r() is not None))
+
+    return _reader, calls, peak
+
+
+def test_run_stack_streams_the_file_twice_and_holds_no_frame(burst, tmp_path,
+                                                             monkeypatch):
+    """SABOTAGE (run red, restored): put ``list(read_frames(ser))`` back in
+    ``run_stack``. ``calls`` drops to 1 and ``peak`` goes to the length of the
+    recording - which on the real file is the 7.6 GB."""
+    from astrodeck.imaging import video as video_mod
+
+    frames, _centres = burst
+    reader, calls, peak = _streamed(frames)
+    monkeypatch.setattr(video_mod, "read_frames", reader)
+    monkeypatch.setattr(video_mod, "video_dir", lambda: tmp_path)
+
+    out = video_mod.run_stack(tmp_path / "burst-01.ser", keep_pct=25.0)
+
+    assert len(calls) == 2, (
+        f"the recording was streamed {len(calls)} time(s); the two-pass design "
+        f"is one pass to score and one to accumulate")
+    assert max(peak) <= 2, (
+        f"up to {max(peak)} frames were alive at once out of {len(frames)}; "
+        f"the stacker is materialising the burst")
+    # ...and it still produced the right answer. A streaming stacker that
+    # dropped every frame would also score 0 on the line above.
+    assert out["frames"] == len(frames)
+    assert out["kept"] == 5
+    assert (tmp_path / "burst-01.stack.png").is_file()
+
+
+def test_the_streamed_stack_is_the_same_picture_as_the_in_memory_one(burst):
+    """The refactor has to be a refactor. Same frames, same keep, same pixels."""
+    from astrodeck.imaging.lucky import scan_frames, select_frames
+
+    frames, _ = burst
+    whole = lucky_stack(frames, keep_pct=25.0)
+    scan = scan_frames(iter(frames))
+    sel = select_frames(scan, keep_pct=25.0)
+    streamed = lucky_stack(iter(frames), scan=scan, sel=sel)
+
+    assert streamed.kept == whole.kept
+    assert streamed.reference == whole.reference
+    assert streamed.shifts == whole.shifts
+    assert streamed.aligned == whole.aligned
+    assert np.array_equal(streamed.image, whole.image)
+
+
+def test_a_second_pass_over_a_shorter_stream_is_refused(burst):
+    """Two passes only work if they are over the SAME file. A truncated
+    re-read that silently stacked what arrived would publish a picture whose
+    ``kept`` count is a lie about how many frames are in it."""
+    from astrodeck.imaging.lucky import scan_frames, select_frames
+
+    frames, _ = burst
+    scan = scan_frames(iter(frames))
+    sel = select_frames(scan, keep_pct=25.0)
+    with pytest.raises(ValueError, match="the same recording"):
+        lucky_stack(iter(frames[:3]), scan=scan, sel=sel)

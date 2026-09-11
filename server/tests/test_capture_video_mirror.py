@@ -88,6 +88,30 @@ def client(tmp_path, monkeypatch):
         hub.devices["camera"] = prev
 
 
+def _refusal(response) -> tuple[str, str]:
+    """(sentence, code) out of a structured 4xx body.
+
+    Every 4xx on this server carries a machine ``code``; these three used to
+    answer a bare string, so a client had nothing but the status to branch on
+    and could not tell "a recording owns the camera" from any other 409."""
+    detail = response.json()["detail"]
+    return detail["detail"], detail["code"]
+
+
+def _record_and_wait(client, duration_s=20.0):
+    """Start a recording and return once it is really running."""
+    started = client.post("/api/capture/video", json={
+        "roi": {"x": 0, "y": 0, "w": 32, "h": 16, "bin": 1},
+        "fps": 30.0, "exposure_ms": 1.0, "gain": 100, "duration_s": duration_s})
+    assert started.status_code == 202, started.text
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline:
+        if client.get("/api/capture/video").json()["frames"] >= 2:
+            return
+        time.sleep(0.05)
+    raise AssertionError("the recording never started producing frames")
+
+
 def test_a_single_capture_is_refused_while_a_recording_owns_the_camera(client):
     """The mirror of the video route's own refusals.
 
@@ -109,7 +133,8 @@ def test_a_single_capture_is_refused_while_a_recording_owns_the_camera(client):
 
     refused = client.post("/api/capture", json={"exposure_s": 1.0, "gain": 100})
     assert refused.status_code == 409, refused.text
-    assert refused.json()["detail"] == "a video recording owns the camera"
+    assert _refusal(refused) == (app_module._VIDEO_OWNS_CAMERA,
+                                 "video_owns_camera")
 
     stopped = client.post("/api/capture/video/stop").json()
     assert stopped["cancelled"] is True
@@ -140,7 +165,8 @@ def test_the_loop_and_the_live_stack_are_refused_too(client):
     for path in ("/api/capture/loop", "/api/capture/livestack/start"):
         r = client.post(path, json={"exposure_s": 1.0, "gain": 100})
         assert r.status_code == 409, f"{path}: {r.text}"
-        assert r.json()["detail"] == "a video recording owns the camera", path
+        assert _refusal(r) == (app_module._VIDEO_OWNS_CAMERA,
+                               "video_owns_camera"), path
 
     # The refusal came BEFORE the arming, which is the half a status code
     # cannot show: hub.start_live_stack sits under the guard in the handler,
@@ -150,3 +176,62 @@ def test_the_loop_and_the_live_stack_are_refused_too(client):
     assert hub.looping is False, "the refused loop started the camera anyway"
 
     assert client.post("/api/capture/video/stop").json()["cancelled"] is True
+
+
+# ---------------------------------------- and the eight routes that had no guard
+#
+# The three capture routes above said the sentence inline; every OTHER route
+# that takes the camera said nothing, so the refusal happened inside the
+# spawned lane after a 202 had already gone back. Two of them are worse than
+# that: ``/api/sequence/start`` and ``/api/polar/start`` SLEW. A plan or an
+# alignment started under a planetary recording takes the mount away and leaves
+# the recorder writing empty sky for the rest of the file, with nothing in
+# either UI saying the two had met.
+
+_CAMERA_ROUTES = (
+    ("/api/sequence/start", {"name": "t", "targets": [
+        {"name": "M42", "ra_hours": 5.5, "dec_deg": -5.0,
+         "steps": [{"filter": None, "exposure_s": 1.0, "count": 1}]}]}),
+    ("/api/polar/start", None),
+    ("/api/focuser/autofocus", {"exposure_s": 1.0, "gain": 100}),
+    ("/api/focuser/coarse", {"exposure_s": 1.0, "gain": 100}),
+    ("/api/mount/solve_sync", None),
+    ("/api/align/guide-offset/measure", None),
+    ("/api/rotator/sync-to-sky", {"exposure_s": 1.0}),
+    ("/api/rotator/rotate-to-pa", {"target_pa_deg": 90.0, "exposure_s": 1.0}),
+)
+
+
+@pytest.mark.parametrize("path,body", _CAMERA_ROUTES,
+                         ids=[p for p, _ in _CAMERA_ROUTES])
+def test_every_route_that_takes_the_camera_refuses_a_live_recording(
+        client, path, body):
+    """SABOTAGE (run red, restored): delete the ``_refuse_if_camera_owned()``
+    call from any one of these handlers. That route answers 202 (or 200) with
+    the recording still running - and for the two that slew, the mount moves."""
+    _record_and_wait(client)
+    r = client.post(path, json=body)
+    assert r.status_code == 409, f"{path} answered {r.status_code}: {r.text[:200]}"
+    assert _refusal(r) == (app_module._VIDEO_OWNS_CAMERA,
+                           "video_owns_camera"), path
+    # The refusal came BEFORE anything was spawned: a 409 with the lane already
+    # running is the shape this whole file is about.
+    assert not [name for name, task in hub._busy.items()
+                if name != "video" and task is not None and not task.done()], (
+        f"{path} was refused and started a lane anyway: {sorted(hub._busy)}")
+    assert client.post("/api/capture/video/stop").json()["cancelled"] is True
+
+
+@pytest.mark.parametrize("path,body", _CAMERA_ROUTES,
+                         ids=[p for p, _ in _CAMERA_ROUTES])
+def test_the_same_routes_are_not_refused_with_no_recording(client, path, body):
+    """THE OTHER HALF, and without it the parametrised test above would pass
+    against a guard wired to ``True``. None of these can SUCCEED on a rig with
+    no mount, focuser or rotator connected - but none of them may answer the
+    recording's 409 either."""
+    r = client.post(path, json=body)
+    if r.status_code == 409:
+        detail = r.json().get("detail")
+        code = detail.get("code") if isinstance(detail, dict) else None
+        assert code != "video_owns_camera", (
+            f"{path} blamed a recording that is not running: {r.text[:200]}")

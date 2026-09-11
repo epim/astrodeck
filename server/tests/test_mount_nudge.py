@@ -35,6 +35,7 @@ from astrodeck.auth import (CAP_CONTROL_MOUNT, Principal, principal_for_role,
                             require, reset_active_provider, set_active_provider)
 from astrodeck.auth.rbac import assert_route_capabilities, declare
 from astrodeck.devices.base import DeviceError
+from astrodeck import mount_offset
 from astrodeck.mount_offset import (MAX_NUDGE_ARCMIN, MIN_NUDGE_ARCMIN,
                                     nudge_target, parse_nudge)
 
@@ -212,7 +213,8 @@ def _build_app(rig: _Rig) -> FastAPI:
         # J2000 would add a precession-sized error to EVERY tap.
         from_ra, from_dec = await app_module.hub.from_mount_frame(
             tel, cur_ra, cur_dec)
-        to_ra, to_dec = nudge_target(from_ra, from_dec, body.axis, arcmin)
+        moved = mount_offset.nudge(from_ra, from_dec, body.axis, arcmin)
+        to_ra, to_dec = moved.ra_hours, moved.dec_deg
         blocked = _horizon_block(to_ra, to_dec)
         if blocked is not None:
             raise HTTPException(409, detail=blocked)
@@ -223,7 +225,9 @@ def _build_app(rig: _Rig) -> FastAPI:
         return {**started,
                 "from": {"ra_hours": from_ra, "dec_deg": from_dec},
                 "to": {"ra_hours": to_ra, "dec_deg": to_dec},
-                "arcmin": arcmin}
+                "arcmin": arcmin,
+                "clamped": moved.clamped,
+                "achieved_arcmin": moved.achieved_arcmin}
     # --- END mirror ----------------------------------------------------------
 
     return app
@@ -385,3 +389,110 @@ def test_an_operator_can_nudge(client, rig):
     set_active_provider(FakeAuthProvider(principal_for_role("operator")))
     r = client.post("/api/mount/nudge", json={"axis": "ra", "arcmin": 30.0})
     assert r.status_code == 200, r.text
+
+
+# ============================ what the nudge ACTUALLY moved, when it is clamped
+#
+# Both clamps in ``mount_offset`` are silent, and both bite exactly where a
+# nudge is most used: polar alignment and circumpolar targets. Near the pole the
+# cos(dec) division saturates against ``_MAX_RA_OFFSET_HOURS``, so 600 arcmin
+# east at dec 89.9 is 18.9 arcmin of sky; a dec tap into +90 stops at the pole.
+# The response echoed the REQUESTED size either way, so the pad reported a
+# correction it had not made and the operator waited for a field that was never
+# going to arrive.
+
+def test_an_unclamped_nudge_says_so_and_reports_what_it_asked_for():
+    """The control. Without it every assertion below would also hold for a
+    function that always answered ``clamped``."""
+    out = mount_offset.nudge(6.0, 40.0, "ra", 10.0)
+    assert out.clamped is False
+    assert out.achieved_arcmin == pytest.approx(10.0, abs=1e-3)
+    out = mount_offset.nudge(6.0, 40.0, "dec", -30.0)
+    assert out.clamped is False
+    assert out.achieved_arcmin == pytest.approx(-30.0, abs=1e-3)
+
+
+def test_an_ra_nudge_near_the_pole_reports_the_sky_it_could_cover():
+    """At dec 89.9 a 600-arcmin request is 382 HOURS of RA, saturated to 12.
+    Twelve hours at that declination is 18.85 arcmin of sky, and that is the
+    number the toast has to say."""
+    out = mount_offset.nudge(6.0, 89.9, "ra", 600.0)
+    assert out.clamped is True
+    assert out.achieved_arcmin == pytest.approx(18.85, abs=0.01)
+    assert abs(out.achieved_arcmin) < 600.0
+
+
+def test_an_ra_nudge_at_the_pole_itself_reports_approximately_nothing():
+    """And that is the honest answer: half a turn of RA is no distance at all
+    when the tube is standing on the axis."""
+    out = mount_offset.nudge(6.0, 90.0, "ra", 600.0)
+    assert out.clamped is True
+    assert out.achieved_arcmin == pytest.approx(0.0, abs=1e-3)
+
+
+def test_a_dec_nudge_into_the_pole_reports_the_degrees_it_got():
+    """40 arcmin north from dec 89.5 runs into +90 after 30."""
+    out = mount_offset.nudge(6.0, 89.5, "dec", 40.0)
+    assert out.dec_deg == pytest.approx(90.0)
+    assert out.clamped is True
+    assert out.achieved_arcmin == pytest.approx(30.0)
+
+
+def test_a_dec_nudge_that_lands_exactly_on_the_pole_is_not_clamped():
+    """The boundary: asking for exactly the distance that remains is a nudge
+    that fully happened, and calling it clamped would put a warning on a move
+    that did what it said."""
+    out = mount_offset.nudge(6.0, 89.5, "dec", 30.0)
+    assert out.dec_deg == pytest.approx(90.0)
+    assert out.clamped is False
+    assert out.achieved_arcmin == pytest.approx(30.0)
+
+
+def test_nudge_target_is_the_same_destination_under_the_older_name():
+    """The thin wrapper has to stay the same function, or a caller that only
+    wants the destination starts getting a different one."""
+    for axis, size, dec in (("ra", 10.0, 40.0), ("ra", 600.0, 89.9),
+                            ("dec", 30.0, 89.5), ("dec", -45.0, 0.0)):
+        full = mount_offset.nudge(6.0, dec, axis, size)
+        assert nudge_target(6.0, dec, axis, size) == (full.ra_hours,
+                                                      full.dec_deg)
+
+
+def test_the_route_carries_the_clamp_to_the_client(client, rig):
+    """SABOTAGE (run red, restored): echo ``arcmin`` alone again. The toast
+    says the pad moved 600 arcmin east when it moved nineteen."""
+    rig.tel.dec = 89.9
+    r = client.post("/api/mount/nudge", json={"axis": "ra", "arcmin": 600.0})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["arcmin"] == 600.0, "the REQUEST is still echoed, unchanged"
+    assert body["clamped"] is True
+    assert body["achieved_arcmin"] == pytest.approx(18.85, abs=0.01)
+    _await_goto(client)
+
+
+def test_the_route_says_nothing_was_clamped_when_nothing_was(client, rig):
+    r = client.post("/api/mount/nudge", json={"axis": "dec", "arcmin": 30.0})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["clamped"] is False
+    assert body["achieved_arcmin"] == pytest.approx(30.0)
+    _await_goto(client)
+
+
+def test_the_shipped_route_carries_the_two_fields_too(monkeypatch):
+    """The mirror above is a copy, and a copy cannot fail when the original
+    does. This drives ``api/app.py``'s own handler."""
+    from fastapi.testclient import TestClient as _TC
+
+    tel = _Tel(ra=6.0, dec=89.9)
+    app = app_module.create_app()
+    monkeypatch.setattr(app_module.hub, "require", lambda role: tel)
+    monkeypatch.setattr(app_module.hub, "_check_solar",
+                        lambda ra, dec, **kw: None, raising=False)
+    with _TC(app) as c:
+        r = c.post("/api/mount/nudge", json={"axis": "ra", "arcmin": 600.0})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["clamped"] is True
+    assert body["achieved_arcmin"] == pytest.approx(18.85, abs=0.01)

@@ -240,3 +240,88 @@ def test_the_real_move_route_falls_back_to_0_6_for_a_mount_that_cannot_say(
     assert r.status_code == 200, r.text
     assert tel.moves == [("ra", pytest.approx(TOUCH_MAX_RATE_DEG_S))]
     assert armed == [("ra", pytest.approx(TOUCH_MAX_RATE_DEG_S))]
+
+
+def test_the_real_move_route_hands_a_1_44_mount_its_own_ceiling(monkeypatch):
+    """The other half, on the SHIPPED handler rather than the mirror.
+
+    Everything above this line about 1.44 was graded against the throwaway app
+    at the top of the file, so the whole point of the change - a driver that
+    CAN say gets its own measured figure - was only ever asserted against a
+    copy of the two clamp lines. A copy cannot fail when the original does:
+    deleting the ``getattr(tel, "max_rate_deg_s", ...)`` from app.py left every
+    test in this file green and every AM5 jog back at 0.6 deg/s.
+    """
+    tel = _Tel(1.44)
+    armed: list[tuple[str, float]] = []
+    app = app_module.create_app()
+    monkeypatch.setattr(app_module.hub, "require", lambda role: tel)
+    monkeypatch.setattr(app_module.hub, "note_move",
+                        lambda axis, rate: armed.append((axis, rate)))
+    with TestClient(app) as c:
+        r = c.post("/api/mount/move", json={"axis": "ra", "rate_deg_s": 5.0})
+    assert r.status_code == 200, r.text
+    # The real route answers ``{"ok": true}`` and not the rate, so the DRIVER
+    # is the only witness - which is the right one anyway: what matters is the
+    # number that reached the mount, not the number in the reply.
+    assert tel.moves == [("ra", pytest.approx(1.44))], (
+        "the shipped route clamped an AM5 to something other than its own "
+        f"measured R8 rate: {tel.moves}")
+    assert armed == [("ra", pytest.approx(1.44))], (
+        "the deadman was armed with a rate the mount is not moving at")
+
+
+# ------------------------------------------------------------------ NOT A NUMBER
+# The clamp is ``max(-ceiling, min(ceiling, rate))``, and EVERY comparison with
+# a NaN is False - so ``min(ceiling, nan)`` returns ``ceiling``'s partner by
+# position and ``max`` does the same, and the pair comes out as the FULL driver
+# ceiling. A body that named no rate at all therefore drove an AM5 at
+# 1.44 deg/s with the deadman armed to match. ``json.loads`` accepts the bare
+# token ``NaN``, so nothing before validation can stop it.
+
+def test_a_literal_nan_rate_is_a_422(monkeypatch):
+    """SABOTAGE (run red, restored): drop ``allow_inf_nan=False`` from
+    ``MoveAxisBody.rate_deg_s``. The post then answers 200 and the mount
+    receives 1.44."""
+    tel = _Tel(1.44)
+    armed: list[tuple[str, float]] = []
+    app = app_module.create_app()
+    monkeypatch.setattr(app_module.hub, "require", lambda role: tel)
+    monkeypatch.setattr(app_module.hub, "note_move",
+                        lambda axis, rate: armed.append((axis, rate)))
+    with TestClient(app) as c:
+        r = c.post("/api/mount/move",
+                   content=b'{"axis": "ra", "rate_deg_s": NaN}',
+                   headers={"content-type": "application/json"})
+    assert r.status_code == 422, r.text
+    # THE CLAMP NEVER SAW IT. A 422 with the mount already moving would be a
+    # refusal after the fact, which is the shape this whole file is about.
+    assert tel.moves == [], f"a NaN reached the driver: {tel.moves}"
+    assert armed == [], f"the deadman was armed off a NaN: {armed}"
+
+
+@pytest.mark.parametrize("token", ["Infinity", "-Infinity"])
+def test_an_infinite_rate_is_a_422_too(monkeypatch, token):
+    """The same hole with the sign attached: ``min(1.44, inf)`` is 1.44 and
+    ``min(1.44, -inf)`` is -inf, which the ``max`` then lifts to -1.44. Both
+    are the full ceiling from a body that asked for something impossible."""
+    tel = _Tel(1.44)
+    app = app_module.create_app()
+    monkeypatch.setattr(app_module.hub, "require", lambda role: tel)
+    monkeypatch.setattr(app_module.hub, "note_move", lambda axis, rate: None)
+    with TestClient(app) as c:
+        r = c.post("/api/mount/move",
+                   content=f'{{"axis": "ra", "rate_deg_s": {token}}}'.encode(),
+                   headers={"content-type": "application/json"})
+    assert r.status_code == 422, r.text
+    assert tel.moves == []
+
+
+def test_a_nan_is_what_the_clamp_would_have_done_with_it(clamp):
+    """The finding, as arithmetic, so the 422 above is visibly a fix and not a
+    coincidence. This is the ONE place the old behaviour is written down."""
+    ceiling = 1.44
+    nan = float("nan")
+    assert max(-ceiling, min(ceiling, nan)) == pytest.approx(ceiling), (
+        "if this stops being true the validator is still right, but the "
+        "sentence above it is not")

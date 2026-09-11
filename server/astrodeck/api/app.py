@@ -11,6 +11,7 @@ import hmac
 import ipaddress
 import io
 import json
+import math
 import os
 import re
 import shutil
@@ -25,6 +26,8 @@ from uuid import uuid4
 import httpx
 from fastapi import (Depends, FastAPI, HTTPException, Query, Request, WebSocket,
                      WebSocketDisconnect)
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import (FileResponse, JSONResponse, Response,
                                StreamingResponse)
 from fastapi.staticfiles import StaticFiles
@@ -52,7 +55,8 @@ from ..auth.rbac import assert_route_capabilities, declare
 # importing them back out of app.py would be a circular import.
 from .redact import (WS_AUTH_RECHECK_S, _redact_drivers_for,  # re-exported at module scope
                      _redact_profile_for, _redact_report_for,
-                     _redact_session_for, _redact_site_for, _redact_ws_event,
+                     _redact_session_for, _redact_site_for,
+                     _redact_switch_ports_for, _redact_ws_event,
                      report_csv_columns)
 from ..persist import safe_id_path, safe_subpath, secure_private_tree
 from ..catalog import search          # rows AND the reasons for what is missing
@@ -115,7 +119,8 @@ from ..hub import CAPTURE_DIR, TOUCH_MAX_RATE_DEG_S, PromoteRefused, hub
 from ..calibration import CalibrationLibrary, MatchTolerance
 from ..calibration.matcher import LightNeed
 from ..imaging import build_caption, compose_share_jpeg, fmt_share_date, to_png
-from ..mount_offset import nudge_target, parse_nudge
+from ..mount_offset import nudge as nudge_offset
+from ..mount_offset import parse_nudge
 from ..naming import sanitize_component
 from ..plans import PLAN_SCHEMA, plan_library
 from .. import power_guard
@@ -692,6 +697,38 @@ def _refuse_if_lane_blocked(name: str) -> None:
             code="lane_blocked", lane=name, blocked_by=blocker)
 
 
+#: The one sentence a route refuses with when a .ser recording holds the camera.
+#: A constant because it is asserted by name in tests and shown verbatim by the
+#: UI, and because eight routes saying it eight ways is eight strings to drift.
+_VIDEO_OWNS_CAMERA = "a video recording owns the camera"
+
+
+def _refuse_if_camera_owned() -> None:
+    """Raise 409 ``video_owns_camera`` while a .ser recording is running.
+
+    ONE HELPER, CALLED FROM EVERY ROUTE THAT EXPOSES. A recording holds the
+    hub's exposure guard for the whole file, so any other route that wants the
+    camera is going to be refused - the only question is WHERE. Refused here,
+    the caller gets a 409 and the rig does nothing. Refused inside the spawned
+    lane, the route has already answered 202, the UI has already drawn a
+    running sweep, and the failure arrives as a log line nobody is reading.
+
+    THE WORSE HALF IS THE MOUNT. ``/api/sequence/start`` and ``/api/polar/start``
+    do not merely want the camera - they SLEW. Starting a plan while a
+    planetary recording is running took the mount out from under the file and
+    left an hour of frames of empty sky, and the recording kept writing them.
+    Same for the rotator's two solving routes, which turn the camera AND the
+    rotator, and for the guide-offset measurement, which is two plate solves.
+
+    The three capture routes said this inline and the other eight said nothing;
+    it is one function now so the next route that exposes gets the guard by
+    calling it rather than by remembering the sentence.
+    """
+    if video_recorder.active:
+        raise HTTPException(409, detail={"detail": _VIDEO_OWNS_CAMERA,
+                                         "code": "video_owns_camera"})
+
+
 def _spawn(name: str, coro, *, replace: bool = False) -> dict:
     """Run a long operation as a named background task (one per name).
 
@@ -1009,7 +1046,15 @@ class MoveAxisBody(BaseModel):
     # must 422 here — never silently command Alpaca DEC (axis!='ra' → 1) while
     # arming the deadman against a name the watchdog can't zero.
     axis: Literal["ra", "dec"]
-    rate_deg_s: float
+    #: allow_inf_nan=False, and this one is not hardening-in-general. The clamp
+    #: downstream is ``max(-ceiling, min(ceiling, rate))``, and EVERY comparison
+    #: with a NaN is False - so ``min`` returns its first argument and ``max``
+    #: returns its first argument, and a posted ``NaN`` came out of the clamp as
+    #: the FULL driver ceiling (1.44 deg/s on the AM5). The deadman was then
+    #: armed with 1.44 and the mount driven at it, from a body that named no
+    #: rate at all. A literal ``NaN`` survives ``json.loads``, so the only place
+    #: to stop it is validation.
+    rate_deg_s: float = Field(..., allow_inf_nan=False)
 
 
 class NudgeBody(BaseModel):
@@ -2189,6 +2234,39 @@ def create_app(*, bind_host: str | None = None,
                 "Strict-Transport-Security", "max-age=31536000")
         return response
 
+    @app.exception_handler(RequestValidationError)
+    async def _request_validation_error(request, exc: RequestValidationError):
+        """A 422 that can actually be SERIALISED, with a machine code on it.
+
+        FastAPI's own handler answers ``{"detail": jsonable_encoder(
+        exc.errors())}``, and each error carries the offending ``input`` -- so
+        a body containing a value ``json.dumps`` cannot write took the RESPONSE
+        down instead of the request. ``NaN`` is exactly that value: it survives
+        ``json.loads`` on the way in, pydantic refuses it (every ``Field(...,
+        allow_inf_nan=False)`` on this server exists to make it), and then the
+        refusal itself raised ``ValueError: Out of range float values are not
+        JSON compliant`` out of the encoder. The caller saw a 500 with no body,
+        which reads as "the server is broken" rather than "that is not a
+        number" -- and a client retrying a 500 is a client retrying a NaN.
+
+        So the errors are walked and every non-finite float is replaced by its
+        name. ``detail`` keeps the shape and position FastAPI gives it (the
+        list of per-field errors) so nothing that already reads it changes;
+        ``code`` is added because every 4xx on this server carries one."""
+        def _finite(value):
+            if isinstance(value, float) and not math.isfinite(value):
+                return repr(value)          # "nan" / "inf" / "-inf"
+            if isinstance(value, dict):
+                return {k: _finite(v) for k, v in value.items()}
+            if isinstance(value, (list, tuple)):
+                return [_finite(v) for v in value]
+            return value
+
+        return JSONResponse(
+            {"detail": _finite(jsonable_encoder(exc.errors())),
+             "code": "invalid_request"},
+            status_code=422)
+
     @app.exception_handler(SessionUnreadable)
     async def _session_unreadable(request, exc: SessionUnreadable):
         """A damaged session file is an answer, not a crash.
@@ -3321,7 +3399,19 @@ def create_app(*, bind_host: str | None = None,
         if body.focus is not None:
             config_store.set_focus(body.focus)
         if body.dew is not None:
+            # THE OVERRIDE WINDOW IS A SETTING, SO RE-WRITING IT IS AN
+            # INSTRUCTION. An override taken while ``manual_override_s`` was 0
+            # never expires on its own, and before ``POST /api/dew/resume``
+            # existed the only way out was a restart. Changing the window is the
+            # operator saying what they want the pause to be, and applying the
+            # new number only to the NEXT override would leave the current one
+            # running under the old rule - which is the setting that looks like
+            # it fixed the problem and did not.
+            prior_override_s = getattr(config_store.cfg().dew,
+                                       "manual_override_s", None)
             config_store.set_dew(body.dew)
+            if getattr(body.dew, "manual_override_s", None) != prior_override_s:
+                dew_controller.resume("the manual-override window was changed")
         if body.alerts is not None:
             config_store.set_alerts(_merge_alert_verified(body.alerts))
         if body.clear_deadman_url:
@@ -3689,6 +3779,16 @@ def create_app(*, bind_host: str | None = None,
             # gates nothing until someone re-applied the location — a claim the
             # UI would make and nothing would keep.
             await asyncio.to_thread(_write_active_horizon, loc.horizon_points)
+            bus.publish("config", version=config_store.cfg().version)
+        # The row the site was applied FROM just moved, and a library edit does
+        # not move the mount - so the pointer now names coordinates the rig is
+        # not using. Same claim ``set_site`` clears when they are typed in.
+        moved = (before is not None
+                 and (abs(float(loc.latitude) - float(before.latitude)) > 1e-6
+                      or abs(float(loc.longitude) - float(before.longitude))
+                      > 1e-6))
+        if moved and await asyncio.to_thread(
+                config_store.clear_active_location, loc_id):
             bus.publish("config", version=config_store.cfg().version)
         return loc.model_dump()
 
@@ -5301,12 +5401,11 @@ def create_app(*, bind_host: str | None = None,
             # task but no exposure in flight, and taking a frame is what an
             # operator pauses in order to do. See SequenceEngine.owns_camera.
             raise HTTPException(409, "a sequence is running")
-        if video_recorder.active:
-            # A recording HOLDS the exposure guard for the whole file, so
-            # without this the refusal still happens - inside the spawned
-            # task, after the route has already answered 200. The operator
-            # sees a capture start and no frame arrive.
-            raise HTTPException(409, "a video recording owns the camera")
+        # A recording HOLDS the exposure guard for the whole file, so without
+        # this the refusal still happens - inside the spawned task, after the
+        # route has already answered 200. The operator sees a capture start
+        # and no frame arrive.
+        _refuse_if_camera_owned()
         try:
             hub.require("camera")
         except DeviceError as e:
@@ -5364,12 +5463,11 @@ def create_app(*, bind_host: str | None = None,
             # task but no exposure in flight, and taking a frame is what an
             # operator pauses in order to do. See SequenceEngine.owns_camera.
             raise HTTPException(409, "a sequence is running")
-        if video_recorder.active:
-            # A recording HOLDS the exposure guard for the whole file, so
-            # without this the refusal still happens - inside the spawned
-            # task, after the route has already answered 200. The operator
-            # sees a capture start and no frame arrive.
-            raise HTTPException(409, "a video recording owns the camera")
+        # A recording HOLDS the exposure guard for the whole file, so without
+        # this the refusal still happens - inside the spawned task, after the
+        # route has already answered 200. The operator sees a capture start
+        # and no frame arrive.
+        _refuse_if_camera_owned()
         try:
             hub.require("camera")
         except DeviceError as e:
@@ -5407,12 +5505,11 @@ def create_app(*, bind_host: str | None = None,
             # task but no exposure in flight, and taking a frame is what an
             # operator pauses in order to do. See SequenceEngine.owns_camera.
             raise HTTPException(409, "a sequence is running")
-        if video_recorder.active:
-            # A recording HOLDS the exposure guard for the whole file, so
-            # without this the refusal still happens - inside the spawned
-            # task, after the route has already answered 200. The operator
-            # sees a capture start and no frame arrive.
-            raise HTTPException(409, "a video recording owns the camera")
+        # A recording HOLDS the exposure guard for the whole file, so without
+        # this the refusal still happens - inside the spawned task, after the
+        # route has already answered 200. The operator sees a capture start
+        # and no frame arrive.
+        _refuse_if_camera_owned()
         try:
             hub.require("camera")
         except DeviceError as e:
@@ -5966,7 +6063,8 @@ def create_app(*, bind_host: str | None = None,
         # server is in. Nudging in the mount's frame and slewing the answer as
         # J2000 would add a precession-sized error to EVERY tap.
         from_ra, from_dec = await hub.from_mount_frame(tel, cur_ra, cur_dec)
-        to_ra, to_dec = nudge_target(from_ra, from_dec, body.axis, arcmin)
+        moved = nudge_offset(from_ra, from_dec, body.axis, arcmin)
+        to_ra, to_dec = moved.ra_hours, moved.dec_deg
         # The DESTINATION passes the same two gates a goto does. A nudge is
         # small, but "small" is exactly how a tube walks below a tree line or
         # into the solar cone one tap at a time.
@@ -5980,7 +6078,15 @@ def create_app(*, bind_host: str | None = None,
         return {**started,
                 "from": {"ra_hours": from_ra, "dec_deg": from_dec},
                 "to": {"ra_hours": to_ra, "dec_deg": to_dec},
-                "arcmin": arcmin}
+                # The REQUESTED size, unchanged, and beside it what the geometry
+                # could actually deliver. Both clamps in ``mount_offset`` are
+                # silent and both bite near the pole - the exact place a nudge
+                # is most used - so echoing only the request meant the pad said
+                # "moved 600' east" for a move of nineteen, and the operator
+                # waited for a field that was never going to arrive.
+                "arcmin": arcmin,
+                "clamped": moved.clamped,
+                "achieved_arcmin": moved.achieved_arcmin}
 
     @app.get("/api/align/guide-offset",
              dependencies=[Depends(require(CAP_VIEW_STATUS))])
@@ -6007,6 +6113,7 @@ def create_app(*, bind_host: str | None = None,
         the pointing model it feeds. The capability that governs pointing is
         the honest gate.
         """
+        _refuse_if_camera_owned()
         try:
             hub.require("camera")
         except DeviceError as e:
@@ -6017,6 +6124,7 @@ def create_app(*, bind_host: str | None = None,
     @app.post("/api/mount/solve_sync", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
     @declare(CAP_CONTROL_MOUNT, reaches={"Telescope.sync"})
     async def solve_sync():
+        _refuse_if_camera_owned()
         try:
             hub.require("telescope"), hub.require("camera")
         except DeviceError as e:
@@ -6337,6 +6445,7 @@ def create_app(*, bind_host: str | None = None,
         if engine.running or hub.looping:
             raise HTTPException(409, "camera is busy (a capture loop or sequence "
                                      "is running)")
+        _refuse_if_camera_owned()
         try:
             cam = hub.require("camera")
             foc = hub.require("focuser")
@@ -6369,6 +6478,7 @@ def create_app(*, bind_host: str | None = None,
         if engine.running or hub.looping:
             raise HTTPException(409, "camera is busy (a capture loop or sequence "
                                      "is running)")
+        _refuse_if_camera_owned()
         try:
             cam = hub.require("camera")
             foc = hub.require("focuser")
@@ -6491,6 +6601,7 @@ def create_app(*, bind_host: str | None = None,
         """Measure the sky position angle and tell the rotator where it is.
         MOVES NOTHING. Before this the only way to establish the sky↔mechanical
         offset was to command a rotation (2026-08-07)."""
+        _refuse_if_camera_owned()
         try:
             hub.require("rotator")
             hub.require("camera")
@@ -6502,6 +6613,7 @@ def create_app(*, bind_host: str | None = None,
               dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
     @declare(CAP_CONTROL_CAPTURE)
     async def rotator_rotate_to_pa(body: RotateToPaBody):
+        _refuse_if_camera_owned()
         try:
             hub.require("rotator")
             hub.require("camera")
@@ -6618,47 +6730,87 @@ def create_app(*, bind_host: str | None = None,
         """Which profile's port settings apply. Ports are named per rig."""
         return config_store.cfg().active_profile_id
 
-    @app.get("/api/switch/ports", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    def _dew_snapshot() -> dict | None:
+        """The dew loop's last answer, or None. Never raises, never blocks.
+
+        Read for ONE thing: whether the loop is currently driving the heaters,
+        which is what decides if a ``follow_dew`` port's level is a weather
+        reading (``redact._redact_switch_ports_for``). Through ``getattr`` and
+        a bare except so a build without the controller, or one whose first
+        tick has not happened, answers "not following" rather than failing a
+        power-box readout."""
+        try:
+            ctrl = getattr(hub, "dew_controller", None)
+            return ctrl.snapshot() if ctrl is not None else None
+        except Exception:       # noqa: BLE001 - a readout never 500s on this
+            return None
+
+    def _switch_rows(ports, principal: Principal | None) -> list:
+        """Annotated port rows, redacted for ``principal``. ONE builder for all
+        three switch routes, so the GET and the two echoes cannot drift."""
+        rows = [p.__dict__ for p in power_guard.annotate(
+            ports, run_active=bool(getattr(hub.engine, "running", False)),
+            profile_id=_switch_profile_id())]
+        return _redact_switch_ports_for(rows, principal, _dew_snapshot())
+
+    @app.get("/api/switch/ports")
     @declare(CAP_VIEW_STATUS)
-    async def switch_ports():
+    async def switch_ports(principal: Principal = Depends(require(CAP_VIEW_STATUS))):
         """The power box's ports, annotated with the protection policy (#D-RIG-5).
 
         ``protect_during_run`` is the STORED tri-state (null = nobody has
         decided, follow the name); ``protected_now`` is the effective answer
         already ANDed with a live run. The annotation is on COPIES - the driver
-        reports a port's value, not who may change it."""
+        reports a port's value, not who may change it.
+
+        REDACTED, which is why it takes a principal. While the dew loop is
+        following, the level on a ``follow_dew`` port IS the duty cycle the
+        ramp computed from the dew margin - the same number ``_strip_dew``
+        nulls on ``/api/status`` - so this route was the way to read it
+        without ``view.weather``. The row stays, the level goes."""
         try:
             sw = hub.require("switch")
-            return [p.__dict__ for p in power_guard.annotate(
-                await sw.get_ports(),
-                run_active=bool(getattr(hub.engine, "running", False)),
-                profile_id=_switch_profile_id())]
+            ports = await sw.get_ports()
         except DeviceError as e:
             raise _err(e)
+        return _switch_rows(ports, principal)
 
-    @app.post("/api/switch/set", dependencies=[Depends(require(CAP_CONTROL_POWER))])
+    @app.post("/api/switch/set")
     @declare(CAP_CONTROL_POWER)
-    async def switch_set(body: SwitchBody):
+    async def switch_set(body: SwitchBody,
+                         principal: Principal = Depends(require(CAP_CONTROL_POWER))):
         """Set one port, unless a live run protects it (#D-RIG-5).
 
         THE REFUSAL COMES BEFORE THE WRITE. The lock used to be a regex in a
         React sheet, which meant curl could cut power to the mount mid-sequence
         and the server would do it without comment. A guard that refuses after
         the write has already cut the power is not a guard - and from the
-        status code alone the two are indistinguishable."""
+        status code alone the two are indistinguishable.
+
+        AND AN UNKNOWN PORT ID IS A 404, NOT A WRITE. ``target is None`` used to
+        mean "no row to check", so the whole protection guard was SKIPPED and
+        the write went to the driver anyway. That is the guard failing open on
+        the one input it cannot reason about: a port id that is not in
+        ``get_ports()`` is either a client built against a different power box
+        or an off-by-one, and on a Pegasus UPB the neighbouring id is the mount.
+        Refusing by NAME is the only safe reading, and the 404 says which id
+        was not found."""
         try:
             sw = hub.require("switch")
             profile_id = _switch_profile_id()
             run_active = bool(getattr(hub.engine, "running", False))
             ports = await sw.get_ports()
             target = next((p for p in ports if p.id == body.port_id), None)
-            if target is not None:
-                why = power_guard.refusal(target, run_active=run_active,
-                                          profile_id=profile_id)
-                if why is not None:
-                    raise HTTPException(409, detail={
-                        "detail": why, "code": "port_protected",
-                        "port_id": target.id, "port_name": target.name})
+            if target is None:
+                raise HTTPException(404, detail={
+                    "detail": f"this power box has no port {body.port_id}",
+                    "code": "unknown_port", "port_id": body.port_id})
+            why = power_guard.refusal(target, run_active=run_active,
+                                      profile_id=profile_id)
+            if why is not None:
+                raise HTTPException(409, detail={
+                    "detail": why, "code": "port_protected",
+                    "port_id": target.id, "port_name": target.name})
             await sw.set_port(body.port_id, body.value)
             # The dew loop has to know a human just touched a heater, so it
             # backs off for the override window instead of overwriting the
@@ -6666,18 +6818,17 @@ def create_app(*, bind_host: str | None = None,
             # filters out ports that do not follow the dew margin, and a second
             # copy of that decision here is a second copy to drift.
             dew_controller.note_manual("switch", body.port_id)
-            return [p.__dict__ for p in power_guard.annotate(
-                await sw.get_ports(), run_active=run_active,
-                profile_id=profile_id)]
+            return _switch_rows(await sw.get_ports(), principal)
         except (DeviceError, RuntimeError) as e:
-            # HTTPException is NOT caught here on purpose: the 409 above must
-            # reach the client with its structured body, not be re-wrapped.
+            # HTTPException is NOT caught here on purpose: the 404/409 above
+            # must reach the client with its structured body, not be re-wrapped.
             raise _err(e)
 
-    @app.put("/api/switch/ports/{port_id}",
-             dependencies=[Depends(require(CAP_CONFIG_SAFETY))])
+    @app.put("/api/switch/ports/{port_id}")
     @declare(CAP_CONFIG_SAFETY)
-    async def switch_port_settings(port_id: int, body: SwitchPortSettingsBody):
+    async def switch_port_settings(
+            port_id: int, body: SwitchPortSettingsBody,
+            principal: Principal = Depends(require(CAP_CONFIG_SAFETY))):
         """Write one port's protection/dew settings (#D-RIG-5).
 
         ``config.safety``, not ``control.power``: this does not operate a port,
@@ -6687,12 +6838,24 @@ def create_app(*, bind_host: str | None = None,
 
         ABSENT MEANS UNCHANGED, read off ``model_fields_set``. The switch is
         required FIRST so a disconnected power box fails before anything
-        persists."""
+        persists.
+
+        AND THE PORT HAS TO EXIST. Requiring the switch is not the same as
+        requiring the PORT: an id no box reports used to persist a policy under
+        itself and answer 200, so a client posting a stale or off-by-one id got
+        a success for a setting that would never be read - and, because the
+        store is keyed per profile per port id, the orphan row would come back
+        to life the day a box with that many ports was plugged in. 404 with
+        the id, before anything is written."""
         try:
             sw = hub.require("switch")
             ports = await sw.get_ports()
         except DeviceError as e:
             raise _err(e)
+        if not any(getattr(p, "id", None) == port_id for p in ports):
+            raise HTTPException(404, detail={
+                "detail": f"this power box has no port {port_id}",
+                "code": "unknown_port", "port_id": port_id})
         present = body.model_fields_set
         try:
             power_guard.set_port_settings(
@@ -6704,10 +6867,62 @@ def create_app(*, bind_host: str | None = None,
                             else UNCHANGED),
                 profile_id=_switch_profile_id())
         except ValueError as e:
-            raise HTTPException(422, str(e))
-        return [p.__dict__ for p in power_guard.annotate(
-            ports, run_active=bool(getattr(hub.engine, "running", False)),
-            profile_id=_switch_profile_id())]
+            # A MACHINE CODE, like every other 4xx on this server. A bare string
+            # detail is readable by a person and opaque to a client, which then
+            # has nothing to branch on but the status - and 422 is also what a
+            # schema rejection looks like.
+            raise HTTPException(422, detail={"detail": str(e),
+                                             "code": "invalid_port_setting",
+                                             "port_id": port_id})
+        return _switch_rows(ports, principal)
+
+    # ------------------------------------------------------------------ dew
+
+    @app.post("/api/dew/resume")
+    @declare(CAP_CONTROL_POWER)
+    async def dew_resume(
+            principal: Principal = Depends(require(CAP_CONTROL_POWER))):
+        """Clear the dew loop's manual override and start following again.
+
+        THE WAY BACK, and there was not one. Any hand write to a heater - the
+        camera dew slider, a switch port - pauses following for
+        ``dew.manual_override_s``, and 0 means "until I say otherwise", which is
+        infinity. There was no "I say otherwise": the only way back to following
+        was a server restart, which on this rig is the next night, so the
+        heaters held whatever the last hand write left them at through every
+        change in the weather.
+
+        ``control.power`` and not ``config.safety``: this does not change a
+        policy, it hands a running heater back to the loop - the same authority
+        as the write that took it. It is also the same cap as
+        ``POST /api/switch/set``, which is where most overrides come from.
+
+        IDEMPOTENT. Resuming a loop that is already following answers
+        ``resumed: false`` with an empty ``cleared`` and the sentence saying so,
+        not an error: a button whose job is "put it back" should be pressable
+        whenever the operator is unsure, and a 409 there would be a refusal with
+        nothing to fix.
+        """
+        cleared = dew_controller.resume("an operator asked for it")
+        snap = _dew_snapshot()
+        reason = ("dew following resumed on " + " and ".join(cleared)
+                  + " - the loop re-commands the heaters on its next tick"
+                  if cleared else "dew following was not paused")
+        return {
+            "resumed": bool(cleared),
+            # The surfaces that WERE held, as phrases ("the camera window",
+            # "switch port 3", "every switch port"). Equipment names, never
+            # readings, so this list is safe for a principal without
+            # view.weather.
+            "cleared": cleared,
+            "following": bool(snap.get("following")) if snap else True,
+            "reason": reason,
+            # The fresh snapshot, redacted like every other carrier of it, so a
+            # caller can repaint without a second round trip. None before the
+            # loop's first tick.
+            "dew": (_redact_site_for({"dew": snap}, principal).get("dew")
+                    if snap else None),
+        }
 
     # ---------------------------------------------------------------- guide
 
@@ -6951,6 +7166,13 @@ def create_app(*, bind_host: str | None = None,
             body.model_dump(exclude={"force"}))
         if not plan.targets or plan.total_frames() == 0:
             raise HTTPException(422, "plan has no frames")
+        # BEFORE ANY OF THE PRE-FLIGHT, because a plan start is a SLEW. A
+        # planetary .ser is minutes of frames of one small ROI on one object,
+        # and a run starting under it takes the mount away and leaves the
+        # recorder writing empty sky for the rest of the file - with nothing
+        # in either UI saying the two had met. ``force`` does not reach this:
+        # it overrides the horizon pre-flight, not another lane's hardware.
+        _refuse_if_camera_owned()
         # Unbounded accepted-quota guard (Task 4 review, IMPORTANT): the
         # accepted-mode capture loop (_run_step, spec §3) only terminates via an
         # accepted frame, a reject-guard trip, or a frozen stop boundary — the
@@ -7365,6 +7587,9 @@ def create_app(*, bind_host: str | None = None,
         # aligned). The reverse direction, refusing a slew while this runs, is
         # the same table read the other way.
         _refuse_if_lane_blocked("polar")
+        # ...and the camera, which polar alignment also takes: three plate
+        # solves with a slew between each.
+        _refuse_if_camera_owned()
         try:
             await hub.polar.start()
         except RuntimeError as e:
