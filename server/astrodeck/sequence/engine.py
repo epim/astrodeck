@@ -261,6 +261,12 @@ GUIDE_QUIET_TIMEOUT_S = 240.0   # cap on waiting for the guider to stop pulsing
 GUIDE_QUIET_POLL_S = 2.0
 COOLER_CMD_TIMEOUT_S = 30.0     # a single set_cooler / get_temperature call
 MOUNT_QUERY_TIMEOUT_S = 30.0    # is_parked / set_tracking / time_to_meridian_flip
+
+#: How often the flip-owed hold re-checks the pier side and re-attempts the
+#: flip. Thirty seconds: the flip itself takes minutes, so polling faster only
+#: adds serial traffic, and polling slower makes the hold feel wedged to anyone
+#: watching the log.
+FLIP_OWED_POLL_S = 30.0
 #: A mount that answers "not tracking" is re-asked this many more times, this
 #: far apart, before the answer is believed (`SequenceEngine._tracking_now`).
 #: Sized to outlast an east guide pulse's tracking-suspend window (capped near
@@ -520,6 +526,15 @@ class SequenceEngine:
         #: Rate-limit for the "armed but the mount is offline" warning, so a
         #: dropped link says so once instead of once per frame.
         self._flip_offline_logged = False
+        #: The pier side this target was OBSERVED on while it was still east of
+        #: the meridian, i.e. before its flip was owed. The flip-owed invariant
+        #: (`_enforce_flip_owed`) compares against this rather than against a
+        #: convention, so it cannot be fooled by a mount whose east/west sense
+        #: is the opposite of ours. None until such a reading exists.
+        self._pre_flip_side: str | None = None
+        #: True while `_enforce_flip_owed` is refusing to open the shutter.
+        #: Published in the status block as `meridian.flip_owed`.
+        self._flip_owed = False
         #: Targets that have already spent their ONE park/unpark recovery from a
         #: refused-tracking mount this run (`_recover_from_tracking_refusal`).
         #: Keyed by target id, cleared only at run start — a recovery that can
@@ -727,6 +742,8 @@ class SequenceEngine:
         self._flip_armed = False
         self._flip_no_op = set()
         self._flip_offline_logged = False
+        self._pre_flip_side = None
+        self._flip_owed = False
         self._tracking_recovered = set()
         self._paused.set()
         self._started_at = time.time()
@@ -2692,6 +2709,14 @@ class SequenceEngine:
             # the worst case "one exposure late" instead of "one exposure plus
             # whatever the loop decided to do first".
             await self._maybe_meridian_flip(target, step.exposure_s)
+
+            # AND THE INVARIANT UNDER BOTH OF THEM. Everything above is the
+            # flip machinery doing its best; this asks the only question that
+            # matters afterwards -- is the mount still on the side it was on
+            # before the crossing? -- and refuses the frame if it is. It sits
+            # here, after the second gate and before the shutter, because that
+            # is the last moment at which refusing costs nothing.
+            await self._enforce_flip_owed(target)
 
             # LAST GATE BEFORE THE SHUTTER. The recovery path above already
             # waits, so in the ordinary run this is a no-op that returns on its
@@ -5879,6 +5904,144 @@ class SequenceEngine:
             return True                  # no step in hand: assume it matters
         return (getattr(step, "frame_type", "Light")
                 or "Light").strip().lower() == "light"
+
+    @property
+    def flip_owed(self) -> bool:
+        """True while the engine is refusing to expose because a meridian flip
+        is owed and the mount has not performed it. Read by the hub into
+        ``status.meridian.flip_owed``."""
+        return bool(getattr(self, "_flip_owed", False))
+
+    async def _enforce_flip_owed(self, target: Target) -> None:
+        """AN INVARIANT, NOT A RETRY: do not open the shutter while a flip is
+        owed and the mount is provably still on the pre-flip side.
+
+        WHAT THIS IS FOR. On 2026-09-10/11 the mount refused the flip at 00:13,
+        the park/unpark recovery re-acquired the target without flipping it,
+        and the run went on imaging for hours on the wrong side of the pier,
+        walking 65 arcsec/min. The flip latch was left ARMED on purpose so that
+        a retry would fire, and across two frames and twenty-four minutes no
+        retry fired. The condition inside that gate which suppressed it was
+        never found.
+
+        That is precisely why this is written as an invariant. It does not need
+        to know what the flip state machine did or failed to do; it asserts the
+        one thing that must be true before a photon is worth collecting, and it
+        fails safe when it is not. A retry that depends on understanding the
+        bug cannot protect against the bug nobody has understood.
+
+        THE TEST IS MEASURED, NOT ASSUMED. The tempting form -- "past the
+        meridian, so the side ought to be east" -- bakes in a pier-side
+        convention, and a mount whose sense is the other way round would then
+        be held forever on a perfectly good flip. Instead this remembers the
+        side the mount ACTUALLY REPORTED while the target was still east of the
+        meridian, and trips only when the side after the crossing is that same
+        one. No convention, and nothing to get backwards. The cost is that a
+        target acquired already west of the meridian has no pre-flip reading
+        and is never guarded -- correctly, because a mount that slewed there
+        landed on the side it chose and owes nothing.
+
+        UNREADABLE IS NOT A VERDICT, in both directions: no mount, a dropped
+        link or a driver that raises yields None from ``_pier_side_now``, and
+        this then neither records a pre-flip side nor trips on one.
+        """
+        if not (self.plan and self.plan.meridian_flip):
+            return                      # nobody asked for a flip; nothing is owed
+        cfg = self._cfg or config_store.cfg()
+        hold_min = float(getattr(getattr(cfg, "safety", None),
+                                 "flip_owed_hold_min", 0.0) or 0.0)
+        if hold_min <= 0:
+            self._flip_owed = False
+            return                      # 0 is off, as everywhere else here
+        try:
+            lon = self.hub.site["longitude"]
+            ttf_h = schedule.hours_to_meridian_flip(target.ra_hours, lon)
+        except Exception:               # noqa: BLE001 - unknown geometry guards nothing
+            return
+        side = await self._pier_side_now()
+        if side not in ("east", "west"):
+            return                      # nobody can say; do not record, do not trip
+        if ttf_h > 0:
+            # Still east of the meridian: this IS the pre-flip side, by
+            # definition. Recorded every frame rather than once, so a target
+            # re-acquired mid-run (a recovery, a resume) refreshes it.
+            self._pre_flip_side = side
+            self._flip_owed = False
+            return
+        if self._pre_flip_side is None or side != self._pre_flip_side:
+            # Either nobody saw the side before the crossing, or it has changed
+            # since -- and a changed side is what a flip looks like from here.
+            self._flip_owed = False
+            return
+        # A GEM that may legitimately track through its own meridian is owed no
+        # flip. Same predicate the flip gate itself uses, so the two cannot
+        # disagree about which targets are exempt.
+        try:
+            if schedule.flip_can_be_skipped(target.dec_deg,
+                                            self.hub.site["latitude"], side):
+                self._flip_owed = False
+                return
+        except Exception:               # noqa: BLE001 - not skippable is the safe read
+            pass
+        await self._hold_for_owed_flip(target, side, hold_min)
+
+    async def _hold_for_owed_flip(self, target: Target, side: str,
+                                  hold_min: float) -> None:
+        """Refuse to expose, re-arm the flip, and wait for the side to change.
+
+        BOUNDED, and it ends by handing the night on rather than by giving up
+        on the invariant. A hold that never expires burns every remaining hour
+        of a good night on one target whose mount will not flip; ``StopTarget``
+        sends the scheduler to the next target, which may well be east of the
+        meridian and perfectly shootable. What it must never do is fall through
+        and expose, which is the one outcome this whole function exists to
+        prevent.
+
+        Re-arming the latch is deliberate and is NOT what makes this safe: the
+        refusal is. It is here because the flip gate is the only thing that can
+        actually perform the flip, and giving it another chance costs two mount
+        queries per pass.
+        """
+        deadline = time.time() + hold_min * 60.0
+        bus.log("error",
+                f"{target.name}: a meridian flip is owed and the mount is "
+                f"still on the {side} side -- refusing to expose. Holding up "
+                f"to {hold_min:.0f} min for the flip.", "sequence")
+        self._flip_owed = True
+        self._set_state(detail="holding: a meridian flip is owed and the "
+                               "mount has not flipped")
+        try:
+            while time.time() < deadline:
+                # Give the flip gate a real second chance: clear the no-op
+                # memory for this target so its lead is dropped rather than the
+                # attempt skipped, and re-arm.
+                self._flip_no_op.discard(
+                    getattr(target, "id", None) or target.name)
+                self._flip_armed = True
+                try:
+                    await self._maybe_meridian_flip(target, 0.0)
+                except (SafetyAbort, StopTarget):
+                    raise
+                except Exception as e:  # noqa: BLE001 - a failed retry is not the end
+                    bus.log("warning",
+                            f"{target.name}: the flip retry failed ({e}); "
+                            f"still holding", "sequence")
+                now_side = await self._pier_side_now()
+                if now_side in ("east", "west") and now_side != side:
+                    bus.log("info",
+                            f"{target.name}: the mount is on the {now_side} "
+                            f"side now -- the flip happened, resuming",
+                            "sequence")
+                    self._pre_flip_side = now_side
+                    return
+                await self._checkpoint()
+                await asyncio.sleep(FLIP_OWED_POLL_S)
+        finally:
+            self._flip_owed = False
+        raise StopTarget(
+            f"{target.name}: a meridian flip has been owed for "
+            f"{hold_min:.0f} min and the mount is still on the {side} side; "
+            f"moving on rather than exposing across the pier")
 
     async def _pier_side_now(self) -> str | None:
         """The mount's pier side as a lower-case string, or None.
