@@ -40,6 +40,7 @@ import { useConfig, usePrincipal, useStatus, useWsPhase } from "../../../../stor
 import { usePrincipalRole } from "../../../../lib/caps";
 import { getHealth, getMe, getRemoteStatus } from "../../../../api/backends";
 import type { RemoteStatus } from "../../../../types";
+import { noteRemoteStatus } from "../../../lib/relay";
 import {
   connectionModel,
   readConnPref,
@@ -155,6 +156,10 @@ export function ConnectionSheet(): JSX.Element {
     void (async () => {
       try {
         const r = await getRemoteStatus();
+        // The rig's own `via`, handed to the shared derivation so every
+        // LAN-fenced control elsewhere in the app locks off the same answer
+        // this screen draws its cards from (`next/lib/relay.ts`).
+        noteRemoteStatus(r);
         if (live) setRemote(r);
       } catch {
         /* an older rig has no such route: the model falls back to the pathname */

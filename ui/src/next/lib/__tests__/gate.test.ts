@@ -6,7 +6,13 @@
 // red; treating `busyLane`'s mere PRESENCE as busy (instead of reading
 // `status.busy_lanes`/`status.busy`) turns "a lane not listed as busy is
 // unlocked" red; dropping the BUSY_WORD_FOR_LANE fallback turns the four
-// collapsed-word mapping tests red.
+// collapsed-word mapping tests red; moving the `needsLan` rule BELOW the cap
+// rule turns "LAN-only beats the capability sentence" red (an admin on the
+// relay would be told they need admin access); moving it ABOVE the link rule
+// turns "link down still wins over LAN-only" red; treating `needsLan`'s mere
+// presence as blocking (instead of reading `s.onRelay`) turns "a LAN origin
+// does not lock a LAN-only control" red; dropping `isLocalOnly`'s `code`
+// comparison turns the two `isLocalOnly` tests red.
 //
 // gate.ts is pure, but it imports ui/src/lib/caps.ts (ARCHITECTURE.md #8:
 // "using lib/caps helpers"), and caps.ts imports the real zustand store,
@@ -41,7 +47,7 @@ if (typeof g.window === "undefined") {
   };
 }
 
-const { lockReason, roleLabel } = await import("../gate");
+const { lockReason, roleLabel, LOCAL_ONLY_REASON, isLocalOnly } = await import("../gate");
 const { humanizeLaneConflict } = await import("../../../lib/humanize");
 import type { GateInput, GateStoreSlice } from "../gate";
 import type { Principal } from "../../../types";
@@ -168,6 +174,75 @@ test("busy lane: a collapsed status.busy word for a DIFFERENT lane does not unlo
 test("busy lane: either signal is enough — busy_lanes empty but the collapsed word still matches -> busy", () => {
   const busy = lockReason({ busyLane: "solve" }, slice({ status: statusWith({ busy_lanes: [], busy: "solving" }) }));
   eq(busy !== null, true, "the collapsed word is an OR with busy_lanes, not overridden by an empty list");
+});
+
+// ------------------------------------------------------------- LAN-only (R8)
+//
+// The rig fences a dozen write families to the LAN (`app.py`'s
+// `_REMOTE_LOCAL_ONLY_MUTATION_PREFIXES` / `_REMOTE_LOCAL_ONLY_EXACT`) and
+// answers 403 `code: "local_only"` to a tunnelled session. Before this rule
+// existed those controls rendered armed over the relay and the refusal arrived
+// only after the press.
+
+test("LAN-only: the sentence is the one the review fixed, verbatim", () => {
+  eq(
+    LOCAL_ONLY_REASON,
+    "This changes the rig's own settings, so it needs the LAN - you are connected through the relay.",
+  );
+});
+
+test("LAN-only: a relay origin locks the control", () => {
+  eq(lockReason({ needsLan: true }, slice({ onRelay: true })), LOCAL_ONLY_REASON);
+});
+
+test("LAN-only: a LAN origin does not lock a LAN-only control", () => {
+  // Declarative, like `busyLane`: naming the fence does not mean this tab is
+  // behind it. Getting this backwards would lock every fenced control on the
+  // LAN UI, which is the only place they were ever meant to work.
+  eq(lockReason({ needsLan: true }, slice({ onRelay: false })), null);
+  eq(lockReason({ needsLan: true }, slice({})), null, "no relay field reads as the LAN:");
+  eq(lockReason({}, slice({ onRelay: true })), null, "a control that needs no LAN is untouched:");
+});
+
+test("LAN-only: link down still wins over LAN-only (priority order)", () => {
+  // With the socket down, the origin is not why the button cannot be pressed.
+  eq(
+    lockReason({ needsLan: true, cap: "control.power" }, slice({ wsPhase: "down", onRelay: true })),
+    "the rig is not reachable",
+  );
+});
+
+test("LAN-only: beats the capability sentence, and role/busy/extra under it", () => {
+  // The fence refuses EVERY role, an admin included, so a capability sentence
+  // here would name a blocker that is not the blocker: the same press works
+  // for the same principal on the LAN.
+  const inp: GateInput = {
+    needsLan: true, cap: "control.power", needsRole: "camera", busyLane: "solve",
+    extra: "should not show",
+  };
+  eq(lockReason(inp, slice({ principal: viewer(), onRelay: true })), LOCAL_ONLY_REASON);
+  eq(lockReason(inp, slice({ principal: admin(), onRelay: true })), LOCAL_ONLY_REASON,
+    "an admin on the relay is refused for the origin, not the role:");
+  // And with the relay out of the picture the cap sentence is back.
+  eq(lockReason(inp, slice({ principal: viewer(), onRelay: false })), "needs admin access");
+});
+
+test("isLocalOnly: only a `local_only` code, and nothing else, is the fence", () => {
+  eq(isLocalOnly({ code: "local_only", status: 403 }), true);
+  eq(isLocalOnly({ code: "forbidden", status: 403 }), false,
+    "an RBAC 403 must still get the capability sentence:");
+  eq(isLocalOnly({ status: 403 }), false, "a 403 with no code is not this one:");
+});
+
+test("isLocalOnly: survives whatever a catch block actually hands it", () => {
+  eq(isLocalOnly(null), false);
+  eq(isLocalOnly(undefined), false);
+  eq(isLocalOnly("local_only"), false, "a bare string has no code field:");
+  eq(isLocalOnly(new Error("boom")), false);
+  const e = Object.assign(new Error("this security-sensitive operation is LAN-only"), {
+    status: 403, code: "local_only",
+  });
+  eq(isLocalOnly(e), true, "the real ApiError shape the fence produces:");
 });
 
 test("extra: returned verbatim when nothing else blocks", () => {

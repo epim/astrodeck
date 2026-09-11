@@ -44,19 +44,33 @@ export function fmtPct(v: number | null | undefined, digits = 0): string {
   return `${v.toFixed(digits)}%`;
 }
 
-/** "22h 57m" - right ascension in hours:minutes. */
+// BOTH FORMATTERS ROUND IN ONE PLACE, TOTAL MINUTES, and then split - because
+// rounding the minutes separately from the degrees/hours drops the carry. The
+// wave-2 review found it: 22.9999 h printed "22h 00m" (the minutes rounded to
+// 60 and `% 60` folded them back to 0 while the hours stayed at 22), an hour
+// wrong on a readout an operator uses to check the mount is where the plan
+// says. 62.996 degrees printed "+62° 00′" the same way. Splitting a single
+// rounded total cannot do that: the carry is already inside the number.
+
+/** "22h 57m" - right ascension in hours:minutes, wrapped into [0h, 24h). */
 export function fmtRA(hours: number): string {
   const h = ((hours % 24) + 24) % 24;
-  const hh = Math.floor(h);
-  const mm = Math.round((h - hh) * 60) % 60;
+  // Modulo AFTER rounding, so 23h 59.7m carries to 24h and then wraps to 0h
+  // rather than printing "23h 00m" - a whole hour off, and on the one value
+  // where a wrong answer looks most plausible.
+  const total = Math.round(h * 60) % (24 * 60);
+  const hh = Math.floor(total / 60);
+  const mm = total % 60;
   return `${String(hh).padStart(2, "0")}h ${String(mm).padStart(2, "0")}m`;
 }
 
-/** "+62° 37'" (unicode minus for negative) - declination in degrees:minutes. */
+/** "+62° 37′" (unicode minus for negative) - declination in degrees:minutes. */
 export function fmtDec(deg: number): string {
   const sign = deg < 0 ? "−" : "+";
-  const a = Math.abs(deg);
-  const dd = Math.floor(a);
-  const mm = Math.round((a - dd) * 60) % 60;
+  // No wrap here, unlike RA: declination runs -90..+90 and +90° 00′ is the
+  // pole, a real place to point, not an overflow to fold away.
+  const total = Math.round(Math.abs(deg) * 60);
+  const dd = Math.floor(total / 60);
+  const mm = total % 60;
   return `${sign}${String(dd).padStart(2, "0")}° ${String(mm).padStart(2, "0")}′`;
 }
