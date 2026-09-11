@@ -70,6 +70,40 @@
 }
 .nx-flowins-delete { margin-top: 2px; }
 
+/* ------------------------------------------------- FROM THE RIG (note level)
+
+   The design's weight for secondary information (screenshots 06-flow-card,
+   29-my-flows): dim slate ink, small mono, a name in the caps face above it.
+   NO amber anywhere in this block, and that is the whole point - a clean flow
+   carries ten of these rows, and while they were painted like findings the
+   canvas reported a working rig as a failing build. */
+.nx-flowins-lead {
+  font-size: 11px; line-height: 1.5; color: var(--text-faint); text-wrap: pretty;
+}
+.nx-flowins-note {
+  display: flex; flex-direction: column; gap: 2px; min-width: 0;
+  padding-left: 8px;
+  border-left: 1px solid var(--line);
+}
+.nx-flowins-note-name {
+  font-family: "Chakra Petch", sans-serif; font-weight: 600;
+  font-size: 10px; letter-spacing: .14em; color: var(--text-dim);
+}
+.nx-flowins-note-line {
+  font-family: "IBM Plex Mono", monospace; font-size: 10.5px; line-height: 1.45;
+  color: var(--text-faint); text-wrap: pretty;
+}
+/* The tag is the half that says WHICH list this is, so it keeps a little more
+   ink than the values it introduces. */
+.nx-flowins-note-tag { color: var(--text-dim); }
+
+/* The rig's own answer beside a stage's stored one, in the editor's footer.
+   Same note weight: it is not a warning, it is the value that will be used. */
+.nx-flowins-rig {
+  font-family: "IBM Plex Mono", monospace; font-size: 10px; line-height: 1.45;
+  color: var(--text-faint);
+}
+
 /* ------------------------------------------------------------ field rows */
 
 .nx-flowfield { display: flex; flex-direction: column; gap: 6px; min-width: 0; }

@@ -26,7 +26,10 @@ import type { FlowIssue, FlowUnmapped } from "../../../../../lib/flowsApi";
 import { Field, Label, LockNote, Mono, TextInput } from "../../../../ui";
 import { explainLock } from "../../../../shell/explain";
 import { FlowNodeEditor } from "./FlowNodeEditor";
-import { levelWord, splitUnmapped } from "./issues";
+import {
+  CARRIED_TAG, FROM_RIG_TAG, MARK_RIG, NOTES_LEAD, levelWord, noteRows, splitUnmapped,
+  type NoteRow,
+} from "./issues";
 import type { FlowFieldVariant } from "./FlowFieldRow";
 import "./inspector.css";
 
@@ -187,21 +190,60 @@ function InspectorOverview({ lockedReason }: { lockedReason: string | null }): J
         </div>
       )}
 
-      {/* ANSWERED ANOTHER WAY - the `note` level, and it needs its own heading
-          rather than a dimmer line under the one above. Every row here says the
-          thing an operator drew DOES happen, by some other part of the engine:
-          the cloud hold releases itself, the scheduler advances the pool. */}
+      {/* FROM THE RIG - the `note` level, in ONE panel at note weight. Every
+          row says the same thing about a different stage: the numbers on the
+          card are shown for reference and the run takes the real ones from the
+          rig's own settings. Nothing here is a lock, an error or a finding
+          against the graph, so nothing here is amber - ten of these on a clean
+          flow read as a failing build for as long as they were painted like
+          one (2026-09-11, on the box). */}
       {notes.length > 0 && (
         <div className="nx-flowins-group" data-testid="flow-notes">
-          <Label size={10}>ANSWERED ANOTHER WAY</Label>
-          {notes.map((u) => (
-            <Finding key={u.key} level="note" text={u.detail} />
+          <Label size={10}>{MARK_RIG}</Label>
+          <p className="nx-flowins-lead">{NOTES_LEAD}</p>
+          {noteRows(notes).map((r) => (
+            <NoteLine key={r.key} row={r} />
           ))}
         </div>
       )}
 
       <p className="nx-flowins-foot">{INSPECTOR_FOOTER}</p>
     </>
+  );
+}
+
+/** One row of the FROM THE RIG panel: which stage, what the plan carries, and
+ *  what it takes from the rig instead - with the screen the real value lives on.
+ *
+ *  An engine that sends none of the three optional fields (an older rig, and
+ *  every rig until the `to_plan` change lands) has only its own sentence, so the
+ *  row prints that. The shape changes; the panel, the heading and the tone do
+ *  not. */
+function NoteLine({ row }: { row: NoteRow }): JSX.Element {
+  // The key rides as an attribute rather than inside the testid: a rule key is
+  // `instructions[dusk -> hold.pause]`, which no CSS selector can name.
+  return (
+    <div className="nx-flowins-note" data-testid="flow-note-row" data-note-key={row.key}>
+      {row.name && <span className="nx-flowins-note-name">{row.name}</span>}
+      {row.structured ? (
+        <>
+          {row.carried.length > 0 && (
+            <p className="nx-flowins-note-line">
+              <span className="nx-flowins-note-tag">{CARRIED_TAG}</span>
+              {` ${row.carried.join(", ")}`}
+            </p>
+          )}
+          {row.ignored.length > 0 && (
+            <p className="nx-flowins-note-line">
+              <span className="nx-flowins-note-tag">{FROM_RIG_TAG}</span>
+              {` ${row.ignored.join(", ")}${row.source ? ` - ${row.source}` : ""}`}
+            </p>
+          )}
+        </>
+      ) : (
+        <p className="nx-flowins-note-line">{row.detail}</p>
+      )}
+    </div>
   );
 }
 

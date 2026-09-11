@@ -31,5 +31,11 @@ export {
   selectOptions, fieldIsNumeric, numericValue, splitUnit, fieldAriaLabel, filterInk,
   SEGMENTED_MAX, UNIT_INLINE_MAX,
 } from "./fieldModel";
-export { splitUnmapped, levelWord, RIG_ADVISORY, type UnmappedSplit } from "./issues";
+export {
+  splitUnmapped, levelWord, RIG_ADVISORY, noteRows, stageNameFor, markSentence,
+  nodeMarkLevel, nodeMarkDetail, markWord, markTone, isLoss, rigValueFor,
+  MARK_LOST, MARK_PARTIAL, MARK_RIG, NOTES_LEAD, CARRIED_TAG, FROM_RIG_TAG,
+  RIG_VALUE_PREFIX,
+  type UnmappedSplit, type UnmappedLevel, type NoteRow,
+} from "./issues";
 export { paletteDropPoint, PALETTE_FALLBACK_DROP } from "./paletteDrop";

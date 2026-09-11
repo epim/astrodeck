@@ -32,13 +32,13 @@ import { memo, type JSX, type MouseEvent as RMouseEvent, type PointerEvent as RP
 
 import { NODE_DEFS, type PortDef } from "../../../../../components/flows/nodeDefs";
 import { PORT_ROW_H, nodeW, type PortDir } from "../../../../../components/flows/geometry";
-import { nodeLossDetail, nodeLossLevel } from "../../../../../components/flows/flowsTypes";
 import type { FlowNodeRec } from "../../../../../components/flows/flowsTypes";
 import { useStore } from "../../../../../store";
 import { nav } from "../../../../router";
 import { ActionButton, Mono, Pill, StatusPill } from "../../../../ui";
 import {
-  NODE_STATUS_TONE, NODE_STATUS_WORD, asNodeStatus, lossLabel, lossTone, portAttr,
+  NODE_STATUS_TONE, NODE_STATUS_WORD, RIG_VALUE_PREFIX, asNodeStatus, isLoss,
+  markTone, markWord, nodeMarkDetail, nodeMarkLevel, portAttr, rigValueFor,
 } from "./canvasModel";
 
 // ------------------------------------------------------------------- a port
@@ -160,14 +160,22 @@ export interface FlowNodeCardProps {
 }
 
 function FlowNodeCardBase({ node, phone = false, onStartDrag, onStartWire, onTapPort }: FlowNodeCardProps): JSX.Element {
-  // Three subscriptions, all returning a primitive, so all three are exact
-  // under Object.is. `nodeLossLevel` returns a string or null and never a fresh
+  // Five subscriptions, all returning a primitive, so all five are exact under
+  // Object.is. `nodeMarkLevel` returns a string or null and never a fresh
   // object, so a compile that changes nothing for this type does not wake this
-  // card.
+  // card - and `rigValueFor` reaches into `status.providers` for ONE label
+  // rather than taking the providers object, which would be a new reference on
+  // every poll and would re-render every card on the canvas four times a
+  // minute.
   const status = useStore((s) => asNodeStatus(s.flows.statuses[node.id]));
   const selected = useStore((s) => s.flows.sel?.kind === "node" && s.flows.sel.id === node.id);
-  const loss = useStore((s) => nodeLossLevel(s.flows.compiled?.unmapped, node.type));
-  const lossWhy = useStore((s) => nodeLossDetail(s.flows.compiled?.unmapped, node.type));
+  const mark = useStore((s) => nodeMarkLevel(s.flows.compiled?.unmapped, node.type));
+  const markWhy = useStore((s) => nodeMarkDetail(s.flows.compiled?.unmapped, node.type));
+  const rigValue = useStore((s) => rigValueFor(node.type, s.status));
+  // A LOSS earns the `!` and the card outline; a note does not. The note says
+  // the run uses the rig's own value for these settings, which is not a defect
+  // in the graph and must not be painted as one.
+  const lost = isLoss(mark);
 
   // Actions are stable references on the store, so selecting them costs nothing.
   const select = useStore((s) => s.flowsSelect);
@@ -232,9 +240,13 @@ function FlowNodeCardBase({ node, phone = false, onStartDrag, onStartWire, onTap
       // selection is what the operator is doing right now, busy is what the rig
       // is doing right now, and a loss is a standing fact about the graph, true
       // whether or not anyone is looking.
+      //
+      // `data-loss` carries the LEVEL, `note` included, so the attribute still
+      // reports what the compile said - but `canvas.css` paints a border for
+      // the two LOSS levels only. A note is not a defect in the graph.
       data-selected={selected ? "true" : "false"}
       data-status={status}
-      data-loss={loss ?? undefined}
+      data-loss={mark ?? undefined}
       style={{ width: w, transform: `translate3d(${node.x}px,${node.y}px,0)` }}
       onClick={onCardClick}
     >
@@ -253,13 +265,18 @@ function FlowNodeCardBase({ node, phone = false, onStartDrag, onStartWire, onTap
           aria-hidden="true"
         />
         <span className="nx-flow-node-kind">{def.label}</span>
-        {loss && (
+        {/* THE `!` IS FOR A LOSS ONLY. It used to fire on every `nodes.<type>`
+            entry, which was every standard stage the compiler does not read -
+            ten of them on a clean flow, five amber marks on the canvas and an
+            amber outline on two cards, all of it saying "you have a problem"
+            about a rig doing exactly what it was asked. */}
+        {mark && lost && (
           <span
             className="nx-flow-node-loss"
-            data-level={loss}
-            data-node-loss={loss}
-            title={lossWhy}
-            aria-label={`settings not honoured by a run: ${lossWhy}`}
+            data-level={mark}
+            data-node-loss={mark}
+            title={markWhy}
+            aria-label={`settings not honoured by a run: ${markWhy}`}
           >
             !
           </span>
@@ -315,15 +332,30 @@ function FlowNodeCardBase({ node, phone = false, onStartDrag, onStartWire, onTap
         {/* Computed from the CURRENT params, so an edit shows on the card
             without opening anything. */}
         <Mono size={10} tone="dim">{def.sum(node.params)}</Mono>
+        {/* And what the rig will really use, for the stages whose stored params
+            name a provider it overrides: GUIDE ships "PHD2" and SLEW ships
+            "ASTAP" in the vocabulary's own defaults, so a rig that guides
+            natively and solves with its own engine has been reading someone
+            else's names off its own canvas. Labelled, so which value is which
+            needs no guessing; absent when the rig has not said. */}
+        {rigValue && (
+          <Mono size={10} tone="dim" className="nx-flow-node-rig" data-testid="flow-node-rig">
+            {RIG_VALUE_PREFIX}{rigValue}
+          </Mono>
+        )}
         <div className="nx-flow-node-marks">
           {status !== "idle" && (
             <StatusPill text={word} tone={NODE_STATUS_TONE[status]} pulse={status === "busy"} />
           )}
-          {loss && (
-            // A word, not an amber ring. The night palette collapses warn and
-            // bad toward coral, so a coloured mark alone is indistinguishable
-            // from a red one - and from nothing at all under a colourblind eye.
-            <Pill tone={lossTone(loss)} ariaLabel={lossWhy}>{lossLabel(loss)}</Pill>
+          {mark && (
+            // A word, not a ring. The night palette collapses warn and bad
+            // toward coral, so a coloured mark alone is indistinguishable from
+            // a red one - and from nothing at all under a colourblind eye. At
+            // note level the word is FROM THE RIG and the tone is dim: it is
+            // secondary information, not a finding.
+            <Pill tone={markTone(mark)} ariaLabel={markWhy} data-testid="flow-node-mark">
+              {markWord(mark)}
+            </Pill>
           )}
         </div>
         {selected && (

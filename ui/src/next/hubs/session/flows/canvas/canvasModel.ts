@@ -29,6 +29,10 @@ import type {
   FlowRunPhase, PortKind,
 } from "../../../../../components/flows/flowsTypes";
 import type { Tone } from "../../../../ui";
+// The loss word the pill prints, taken from the one module that owns the
+// compile-mark vocabulary (re-exported further down with the rest of it) rather
+// than spelled a second time here.
+import { MARK_LOST as MARK_LOST_WORD } from "../inspector/issues";
 
 // ------------------------------------------------------------------ wiring
 
@@ -225,17 +229,27 @@ export const NODE_STATUS_TONE: Record<FlowNodeStatus, Tone> = {
   idle: "dim", busy: "accent", ok: "good", warn: "warn", bad: "bad",
 };
 
-/** The one sentence a stage whose settings the compiler drops carries. The
- *  detail is the server's own wording, which already names WHICH setting and
- *  what the run does instead - a bare glyph would leave the operator to go find
- *  that out. */
-export function lossLabel(level: "warn" | "danger"): string {
-  return level === "danger" ? "NOT HONOURED" : "PARTLY HONOURED";
-}
-
-export function lossTone(level: "warn" | "danger"): Tone {
-  return level === "danger" ? "bad" : "warn";
-}
+// The mark a stage carries when the compile has something to say about it -
+// THREE levels, three words, one home.
+//
+// The words used to live here as `lossLabel`/`lossTone`, over a two-member
+// union that could not express a `note` at all. That was fine while every
+// `nodes.<type>` entry the engine emitted was a `warn`; the moment the standard
+// node-settings entries moved to `note` (server `to_plan`), a canvas that knew
+// only "loss or nothing" had to either paint a note amber or drop it. It did
+// both, in that order, and a clean flow read as a failing build.
+//
+// `../inspector/issues` owns them now, because the inspector panel, this card
+// and the phone stage row must print the SAME word, and the module is pure with
+// no stylesheet of its own - importing it here costs the canvas chunk nothing
+// (importing the inspector BARREL would pull `inspector.css` in, which is the
+// trap `hubs/sky/sheets/quick.tsx` documents).
+export {
+  markWord, markTone, isLoss, nodeMarkLevel, nodeMarkDetail, rigValueFor,
+  lossCount, worstLoss,
+  MARK_LOST, MARK_PARTIAL, MARK_RIG, RIG_VALUE_PREFIX,
+  type UnmappedLevel,
+} from "../inspector/issues";
 
 // ----------------------------------------------------------------------- log
 
@@ -308,8 +322,23 @@ export function formatEta(secs: number | null | undefined): string {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
-/** The validation pill's word once the checker has answered. */
-export function checksLabel(openChecks: number): string {
+/** The validation pill's word once the checker has answered.
+ *
+ *  TWO different facts, in priority order, because they are not the same news:
+ *  `losses` is a promise the graph makes that the run will not keep, `openChecks`
+ *  is the doctor's advice about a good night. A loss outranks advice, so the
+ *  count the pill prints is the one an operator would act on first.
+ *
+ *  WHY THE LOSS COUNT IS HERE AT ALL. The pill graded `compiled.issues` and
+ *  nothing else, so a flow whose compile said "nothing will bind the dome or
+ *  close it on an unsafe reading during this run" - a DANGER row, two inches
+ *  below on the same screen - still read GRAPH VALID in green. Green here has
+ *  always meant "safe to press RUN". Seen on the probe, 2026-09-11.
+ *
+ *  NOTES DO NOT COUNT, and that is the other half: `lossCount` skips them, so
+ *  a clean flow with ten "the run takes this from the rig" notes stays green. */
+export function checksLabel(openChecks: number, losses = 0): string {
+  if (losses > 0) return losses === 1 ? `1 ${MARK_LOST_WORD}` : `${losses} ${MARK_LOST_WORD}`;
   if (openChecks <= 0) return "GRAPH VALID";
   return openChecks === 1 ? "1 OPEN CHECK" : `${openChecks} OPEN CHECKS`;
 }
@@ -325,17 +354,26 @@ export function checksLabel(openChecks: number): string {
 export const CHECKS_DRAFT_PREFIX = "DRAFT: ";
 
 /** The pill's whole text: unknown, the draft's verdict, or the stored flow's. */
-export function checksWord(checked: boolean, openChecks: number, dirty: boolean): string {
+export function checksWord(
+  checked: boolean, openChecks: number, dirty: boolean, losses = 0,
+): string {
   if (!checked) return CHECKS_UNKNOWN;
-  return dirty ? `${CHECKS_DRAFT_PREFIX}${checksLabel(openChecks)}` : checksLabel(openChecks);
+  const word = checksLabel(openChecks, losses);
+  return dirty ? `${CHECKS_DRAFT_PREFIX}${word}` : word;
 }
 
 /** The pill's tone. GOOD is reserved for "the flow RUN would start is clean":
  *  with unsaved edits a clean draft is dim, not green, because green here has
  *  always meant "safe to press RUN". */
-export function checksTone(checked: boolean, openChecks: number, dirty: boolean): Tone {
+export function checksTone(
+  checked: boolean, openChecks: number, dirty: boolean,
+  worst: "warn" | "danger" | null = null,
+): Tone {
   if (!checked) return "dim";
-  if (openChecks > 0) return "warn";
+  // A blocking loss is coral: `/run` refuses it outright, which is a different
+  // state from "this will not do everything you drew".
+  if (worst === "danger") return "bad";
+  if (worst === "warn" || openChecks > 0) return "warn";
   return dirty ? "dim" : "good";
 }
 
@@ -450,6 +488,15 @@ export const CHECKS_UNKNOWN = "NOT CHECKED";
 
 export const CHECKS_UNKNOWN_WHY = "The graph checker has not answered for this flow yet.";
 export const CHECKS_CLEAN_WHY = "The graph checker found nothing to flag.";
+
+/** The popover's line for the losses the pill is counting. It names where the
+ *  sentences are, which is the one thing a count cannot say. */
+export function lossesWhy(losses: number): string {
+  const n = losses === 1
+    ? "One setting drawn on this graph does"
+    : `${losses} settings drawn on this graph do`;
+  return `${n} not reach the run. The FLOW column lists them under NOT HONOURED BY A RUN.`;
+}
 
 /** `run.etaS` has no publisher, so a null is the rig's silence and the tooltip
  *  says so rather than letting a bare `-` read as zero. */

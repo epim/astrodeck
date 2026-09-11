@@ -45,6 +45,21 @@ export interface FlowUnmapped {
    *  the cloud hold releases itself, the scheduler advances the pool. `/start`
    *  does not make the operator accept these (server: `to_plan.losses`). */
   level: "warn" | "danger" | "note";
+  // --- the three OPTIONAL fields `to_plan._note` gained so a note can be
+  //     rendered as a statement about the rig rather than as a defect report.
+  //     Every one is optional and every consumer must degrade to `detail`: an
+  //     older engine sends the sentence and nothing else, and this client is
+  //     routinely pointed at one (a rig on the previous release, the relay).
+  /** The card's own fields the plan DOES carry, already worded for display
+   *  ("presence: the night guides", "threshold 3.2"). */
+  carried?: string[];
+  /** The card's fields the plan does not carry, worded the same way
+   *  ("settle 1.5 s", "dither 3 px", "provider PHD2"). NOT a loss on its own:
+   *  at `note` level the run takes these from the rig instead. */
+  ignored?: string[];
+  /** Where the values in `ignored` really live, as a screen path the reader can
+   *  follow ("Rig > Guider"). */
+  source?: string;
 }
 
 export interface FlowIssue {

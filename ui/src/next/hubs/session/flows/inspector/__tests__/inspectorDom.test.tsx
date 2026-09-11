@@ -100,7 +100,10 @@ const { PALETTE_FALLBACK_DROP } = await import("../../../../../../components/flo
 const { resetRouterCacheForTests } = await import("../../../../../router");
 const {
   FlowInspectorColumn, FLOW_READONLY_REASON, FlowPaletteRail,
-  flowInspectorSheets, splitUnmapped,
+  flowInspectorSheets, splitUnmapped, noteRows, markWord, markTone, isLoss,
+  nodeMarkLevel, nodeMarkDetail, rigValueFor, stageNameFor,
+  MARK_LOST, MARK_PARTIAL, MARK_RIG, NOTES_LEAD, CARRIED_TAG, FROM_RIG_TAG,
+  RIG_VALUE_PREFIX,
 } = await import("../index");
 
 // ------------------------------------------------------------------ harness
@@ -478,7 +481,7 @@ test("unmapped splits into three statements, not one list", () => {
   ]);
   eq(split.losses.length, 1, "a warn-level entry is a LOSS, not a note");
   eq(split.advisories.map((u) => u.key).join(","), "cooling.setpoint_c",
-    "the rig advisory was filed under ANSWERED ANOTHER WAY, where it contradicts "
+    "the rig advisory was filed under FROM THE RIG, where it contradicts "
     + "its own heading");
   eq(split.notes.map((u) => u.key).join(","), "nodes.cloud",
     "a note about a wire is not an advisory about this rig");
@@ -518,8 +521,273 @@ await testAsync("each of the three lists gets its own heading on screen", async 
     "a danger-level loss lost its word or its sentence");
   assert(/no target temperature/.test(text("flow-advisories", "BEFORE YOU RUN")),
     "BEFORE YOU RUN is missing the rig advisory");
-  assert(/cloud hold releases itself/.test(text("flow-notes", "ANSWERED ANOTHER WAY")),
-    "ANSWERED ANOTHER WAY is missing its note");
+  assert(/cloud hold releases itself/.test(text("flow-notes", MARK_RIG)),
+    "FROM THE RIG is missing its note");
+});
+
+// ============ 9. the note level is not a quieter warning, it is a statement
+//
+// THE DEFECT, AS SEEN ON THE RIG (2026-09-11). A clean flow - GRAPH VALID, ALL
+// INPUTS WIRED - printed TEN amber WARNING rows under NOT HONOURED BY A RUN,
+// one per standard stage whose params the compiler does not read. The rows were
+// true and the weight was a lie: nothing was wrong, the run simply takes those
+// settings from the rig's own. `to_plan` now calls them `note` and attaches
+// `carried` / `ignored` / `source`; this section is the client half.
+//
+// SABOTAGE CHECKS:
+//   * paint a note amber (hand the notes list back to `Finding`, or give
+//     `.nx-flowins-note` the warn token) -> "ten notes are ten quiet rows in
+//     ONE panel" goes red on the level and word assertions.
+//   * split the notes back into two panels -> the same test's one-panel count
+//     goes red.
+//   * drop the `carried`/`ignored` reading (render `u.detail` always) -> "a
+//     structured note says what is carried and what the rig owns" goes red.
+//   * render the tags unconditionally -> "an older engine's note still says
+//     something" goes red on a row promising a list it has not got.
+//   * make `rigValueFor` fall back to the node's own param -> "the rig's own
+//     value is read from the resolved provider, or not at all" goes red.
+
+/** The ten entries the rig produced on a clean flow, in the shape `to_plan`
+ *  sends them once the change lands: nine about a stage, one about a rule, and
+ *  the last of them carrying NO structured fields - the older-engine shape this
+ *  client still has to render, because a rig in the field is a release behind
+ *  more often than not. */
+const TEN_NOTES = [
+  {
+    key: "nodes.safety", level: "note" as const,
+    detail: "the SAFETY node's settings do not reach the run - the compiler does not carry them into the plan",
+    carried: ["presence: the night is guarded"],
+    ignored: ["source Cloud + rain sensor", "stale reading Unsafe"],
+    source: "Rig > Safety",
+  },
+  {
+    key: "nodes.slew", level: "note" as const,
+    detail: "the SLEW node's settings do not reach the run",
+    carried: ["presence: the run centres on the target"],
+    ignored: ["tolerance 0.5 arcmin", "solver ASTAP"], source: "Settings > Standards",
+  },
+  {
+    key: "nodes.autofocus", level: "note" as const,
+    detail: "the AUTOFOCUS node's settings do not reach the run",
+    carried: ["presence: the night focuses"], ignored: ["step 12", "samples 9"],
+    source: "Rig > Focuser",
+  },
+  {
+    key: "nodes.guide", level: "note" as const,
+    detail: "the GUIDE node's settings do not reach the run",
+    carried: ["presence: the night guides", "threshold 3.2"],
+    ignored: ["settle 1.5 s", "dither 3 px", "provider PHD2"], source: "Rig > Guider",
+  },
+  {
+    key: "nodes.report", level: "note" as const,
+    detail: "the REPORT node's settings do not reach the run",
+    carried: ["presence: the night files a report"], ignored: ["notify phone"],
+    source: "Settings > Alerts",
+  },
+  {
+    key: "nodes.condition", level: "note" as const,
+    detail: "the CONDITION node's settings do not reach the run",
+    carried: ["presence: frames are graded"], ignored: ["HFR above 3.2"],
+    source: "Settings > Safety",
+  },
+  {
+    key: "nodes.refocus", level: "note" as const,
+    detail: "the REFOCUS node's settings do not reach the run",
+    carried: ["presence: focus is rechecked"], ignored: ["at frame boundary"],
+    source: "Rig > Focuser",
+  },
+  {
+    key: "nodes.abort", level: "note" as const,
+    detail: "the ABORT node's settings do not reach the run",
+    carried: ["presence: the night parks"], ignored: ["always warm the camera"],
+    source: "Rig > Safety",
+  },
+  {
+    key: "nodes.cycle.reject", level: "note" as const,
+    detail: "the CYCLE node's HFR reject threshold does not reach the run",
+    ignored: ["reject 3.2"], source: "Settings > Safety",
+  },
+  // The older-engine shape: a sentence and nothing else.
+  {
+    key: "instructions[clouds in -> hold.pause]", level: "note" as const,
+    detail: "the cloud hold releases itself when the sky clears, so this rule is already honoured",
+  },
+];
+
+/** Seed a compile result and let the column re-render. */
+async function compiled(
+  unmapped: unknown[], structural: string[] = [], issues: unknown[] = [],
+): Promise<void> {
+  act(() => {
+    const s = useStore.getState();
+    useStore.setState({
+      flows: { ...s.flows, compiled: { plan: {}, structural, issues, unmapped } },
+    } as never);
+  });
+  await settle();
+}
+
+await testAsync("ten notes are ten quiet rows in ONE panel, with no warning anywhere", async () => {
+  seed({ sel: null });
+  await mount(createElement(FlowInspectorColumn as any));
+  await compiled(TEN_NOTES);
+
+  const panel = tid("flow-notes");
+  assert(panel != null,
+    "the note panel is not on screen at all - the fixture never reached the column");
+  eq(container.querySelectorAll('[data-testid="flow-notes"]').length, 1,
+    "the notes are spread over more than one panel again");
+  assert(String(panel.textContent).includes(MARK_RIG),
+    `the panel has to be headed ${MARK_RIG}, got "${String(panel.textContent).slice(0, 80)}"`);
+  assert(String(panel.textContent).includes(NOTES_LEAD),
+    "the panel never says what it IS - a list of stage names with no rule above it "
+    + "reads as a list of faults");
+  eq(container.querySelectorAll('[data-testid="flow-note-row"]').length, 10,
+    "one row per note, and every one of them on screen");
+
+  // NOT A FINDING. No amber, no level word, no NOT HONOURED heading: this is the
+  // whole defect, and every channel it used is asserted absent.
+  eq(tid("flow-losses"), null, "a note was filed under NOT HONOURED BY A RUN");
+  eq(tid("flow-advisories"), null, "a plain note was filed under BEFORE YOU RUN");
+  eq(container.querySelectorAll('[data-level="warn"]').length, 0,
+    "something in this column is still painted at warn level on a flow with no warnings");
+  eq(container.querySelectorAll('[data-level="danger"]').length, 0,
+    "something in this column is painted at danger level on a flow with no losses");
+  assert(!/WARNING|DANGER/.test(String(panel.textContent)),
+    "the note panel prints a level word, which is the amber row wearing another colour");
+});
+
+await testAsync("a structured note says what is carried and what the rig owns", async () => {
+  seed({ sel: null });
+  await mount(createElement(FlowInspectorColumn as any));
+  await compiled(TEN_NOTES);
+
+  const rows = Array.from(container.querySelectorAll('[data-testid="flow-note-row"]')) as any[];
+  const guide = rows.find((r: any) => r.getAttribute("data-note-key") === "nodes.guide");
+  assert(guide != null, "the GUIDE note has no row");
+  const text = String(guide.textContent);
+  assert(/GUIDE/.test(text), `the row has to name its stage, got "${text}"`);
+  assert(text.includes(CARRIED_TAG) && /presence: the night guides/.test(text),
+    `the row never says what the plan DOES carry, got "${text}"`);
+  assert(text.includes(FROM_RIG_TAG) && /settle 1\.5 s, dither 3 px, provider PHD2/.test(text),
+    `the row never says which values the rig owns, got "${text}"`);
+  assert(/Rig > Guider/.test(text),
+    `the row names no screen to go and read the real value on, got "${text}"`);
+  assert(!/does not reach the run/.test(text),
+    "the structured row prints the compiler's own sentence as well, so the reader "
+    + "gets the defect wording back under a calm heading");
+});
+
+await testAsync("an older engine's note still says something", async () => {
+  seed({ sel: null });
+  await mount(createElement(FlowInspectorColumn as any));
+  await compiled(TEN_NOTES);
+
+  const rows = Array.from(container.querySelectorAll('[data-testid="flow-note-row"]')) as any[];
+  const rule = rows.find((r: any) =>
+    r.getAttribute("data-note-key") === "instructions[clouds in -> hold.pause]");
+  assert(rule != null, "the rule note has no row");
+  const text = String(rule.textContent);
+  assert(/cloud hold releases itself/.test(text),
+    `an entry with no structured fields has to fall back to the sentence, got "${text}"`);
+  assert(!text.includes(CARRIED_TAG) && !text.includes(FROM_RIG_TAG),
+    "an empty carried/ignored list rendered its tag anyway, so the row promises a "
+    + "list and shows none");
+});
+
+await testAsync("a real loss is still a warning, and it is still a loss", async () => {
+  seed({ sel: null });
+  await mount(createElement(FlowInspectorColumn as any));
+  await compiled([
+    {
+      key: "nodes.parkclose", level: "warn",
+      detail: "Hold cold (day darks) is not honoured and no darks are taken after a shutdown",
+    },
+    ...TEN_NOTES,
+  ]);
+
+  const losses = tid("flow-losses");
+  assert(losses != null, "a warn-level entry stopped being reported as a loss");
+  assert(/WARNING/.test(String(losses.textContent)),
+    "the loss lost its level word, so the tone is the only channel left");
+  assert(/Hold cold/.test(String(losses.textContent)), "the loss lost its sentence");
+  assert(tid("flow-notes") != null, "the notes went away when a warning arrived beside them");
+  eq(container.querySelectorAll('[data-testid="flow-note-row"]').length, 10,
+    "a warning beside the notes changed how many notes there are");
+});
+
+// ------------------------------------------------- the pure model underneath
+
+test("the three levels have three words and three tones, and only two are losses", () => {
+  eq(markWord("danger"), MARK_LOST, "a blocking loss lost its word");
+  eq(markWord("warn"), MARK_PARTIAL, "a loss lost its word");
+  eq(markWord("note"), MARK_RIG, "a note lost its word");
+  eq(markTone("danger"), "bad", "a blocking loss is not coral");
+  eq(markTone("warn"), "warn", "a loss is not amber");
+  eq(markTone("note"), "dim", "A NOTE IS PAINTED AMBER - this is the defect itself");
+  eq(isLoss("note"), false, "a note counted as a loss, so it earns the ! and the outline");
+  eq(isLoss("warn"), true, "a warn stopped counting as a loss");
+  eq(isLoss("danger"), true, "a danger stopped counting as a loss");
+  eq(isLoss(null), false, "a stage with nothing attached counted as a loss");
+});
+
+test("a node's mark is the worst level attached to it, note included", () => {
+  const u = [
+    { key: "nodes.guide", detail: "a", level: "note" as const },
+    { key: "nodes.cycle", detail: "b", level: "note" as const },
+    { key: "nodes.cycle.reject", detail: "c", level: "warn" as const },
+    { key: "nodes.abort", detail: "d", level: "danger" as const },
+  ];
+  eq(nodeMarkLevel(u, "guide"), "note",
+    "a note no longer reaches its card at all - the canvas went silent about it the "
+    + "moment the engine stopped calling it a warning");
+  eq(nodeMarkLevel(u, "cycle"), "warn",
+    "a dropped PARAM on a compiled node lost to the node's own note");
+  eq(nodeMarkLevel(u, "abort"), "danger", "a danger stopped outranking everything");
+  eq(nodeMarkLevel(u, "target"), null, "a stage with nothing attached grew a mark");
+  eq(nodeMarkLevel(undefined, "guide"), null, "no compile at all still produced a mark");
+});
+
+test("a mark's sentence prefers the structured fields and falls back to the server's", () => {
+  eq(nodeMarkDetail(TEN_NOTES as never, "guide"),
+    "carried: presence: the night guides, threshold 3.2 · "
+    + "from the rig: settle 1.5 s, dither 3 px, provider PHD2 - Rig > Guider",
+    "the tooltip is not the short true sentence");
+  eq(nodeMarkDetail([{ key: "nodes.guide", detail: "the old sentence", level: "note" }], "guide"),
+    "the old sentence", "an older engine's mark has no tooltip at all");
+});
+
+test("the note rows name their stage in the canvas's own vocabulary", () => {
+  const rows = noteRows(TEN_NOTES as never);
+  eq(rows.length, 10, "a note was dropped between the wire and the panel");
+  eq(rows[3].name, "GUIDE", "the GUIDE row is not headed by the stage the canvas draws");
+  eq(rows[0].name, "SAFETY MONITOR", "the row uses the wire's raw type instead of the stage label");
+  eq(rows[9].name, null, "a rule entry was given a stage name it does not have");
+  eq(rows[9].structured, false, "an entry with no fields claimed to have some");
+  eq(rows[3].structured, true, "an entry with fields was rendered as a bare sentence");
+  eq(stageNameFor("nodes.notatype"), "NOTATYPE",
+    "a stage this build has no vocabulary for lost its name entirely");
+  eq(stageNameFor("cooling.setpoint_c"), null, "a non-stage key was given a stage name");
+});
+
+test("the rig's own value is read from the resolved provider, or not at all", () => {
+  const status = {
+    providers: {
+      guide: { kind: "astrodeck", label: "AstroDeck native", reason: "" },
+      solve: { kind: "sim", label: "Simulator", reason: "" },
+      autofocus: { kind: "unavailable", label: "Unavailable", reason: "no focuser" },
+    },
+  };
+  eq(rigValueFor("guide", status), "AstroDeck native",
+    "the GUIDE card still has only the node's stored PHD2 to show");
+  eq(rigValueFor("slew", status), "Simulator",
+    "the SLEW card still has only the node's stored ASTAP to show");
+  eq(rigValueFor("capture", status), null, "a stage whose card names no provider grew one");
+  eq(rigValueFor("guide", null), null, "a rig that has not polled yet had a value invented for it");
+  eq(rigValueFor("guide", {}), null, "a status with no providers block had a value invented");
+  eq(rigValueFor("guide", { providers: { guide: { kind: "unavailable", label: "Unavailable" } } }),
+    null, "Unavailable was printed as though it were the thing the rig will use");
+  eq(RIG_VALUE_PREFIX, "rig: ", "the label that says WHICH value this is went missing");
 });
 
 // ------------------------------------------------------------------ tally
