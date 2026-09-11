@@ -15,6 +15,7 @@
 
 import { useState, type JSX } from "react";
 import { useStore, useNotifyEnabled } from "../../../../store";
+import { requestNotifyPermission } from "../../../../lib/notify";
 import { Switch } from "../../../ui";
 
 export const NOTIFY_NOTE =
@@ -53,10 +54,18 @@ export function NotifyRow(): JSX.Element | null {
         onExplain={(r) => useStore.getState().enqueueToast({ level: "warning", title: r })}
         onChange={(next) => {
           useStore.getState().setNotifyEnabled(next);
-          // The permission prompt resolves after this returns; re-read it on the
-          // next turn so a granted prompt flips the knob rather than leaving it
-          // saying OFF over a working notification channel.
-          setTimeout(() => setPerm(permission()), 0);
+          if (!next) { setPerm(permission()); return; }
+          // RE-READ WHEN THE PROMPT IS ANSWERED, not one turn later. The store's
+          // `setNotifyEnabled` fires `requestNotifyPermission()` and drops the
+          // promise, and a `setTimeout(..., 0)` lands while the browser dialog
+          // is still open: `Notification.permission` is still "default", the
+          // knob stays OFF, and a user who has just pressed ALLOW is looking at
+          // a switch that says their notifications are off. Awaiting the same
+          // helper reads the answer at the moment it exists. It short-circuits
+          // on an already-granted or already-denied permission, and a browser
+          // shows ONE dialog for concurrent requests, so this adds no second
+          // prompt.
+          void requestNotifyPermission().then(() => setPerm(permission()));
         }}
         data-testid="notify-switch"
       />

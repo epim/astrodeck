@@ -29,17 +29,29 @@ import { useCallback, useEffect, useRef, useState, type JSX } from "react";
 import { api } from "../../../../../api";
 import { useSequence, useStatus, useStore } from "../../../../../store";
 import { useCanAdminUsers } from "../../../../../lib/caps";
+import { isLocalOnly, LOCAL_ONLY_REASON } from "../../../../lib/gate";
+import { useLock, useOnRelay } from "../../../../lib/gateHook";
 import { confirmDialog } from "../../../../../components/ConfirmDialog";
 import { ActionButton, Card, Field, Label, LockNote, Mono, Switch, TextInput } from "../../../../ui";
 import { explainLock } from "../../../../shell/explain";
 import {
-  RESET_ARM_NOTE, RESET_CAP_NOTE, RESET_LEAD, RESET_WORD, clause, clearClientState,
-  confirmWordOk, human, noNumbersLine, plural, rigBlocker, type ResetPreview,
+  RESET_ARM_NOTE, RESET_CAP_NOTE, RESET_COUNTS_LAN_ONLY, RESET_LEAD, RESET_WORD, clause,
+  clearClientState, confirmWordOk, human, noNumbersLine, plural, rigBlocker,
+  type ResetPreview,
 } from "./systemModel";
 import "./system.css";
 
 export function FactoryResetEditor(): JSX.Element {
   const canAdmin = useCanAdminUsers();
+  // BOTH HALVES OF THE FENCE. `/api/system/factory-reset` is an EXACT entry on
+  // `app.py`'s `_REMOTE_LOCAL_ONLY_EXACT`, which catches EVERY method - so the
+  // scope preview GET is refused over the relay exactly like the POST that
+  // performs the reset. `fence` is the sentence every control states (it also
+  // ranks a dead link above the relay); `onRelay` is the bare fact, and it is
+  // what stops the read, because a request this screen knows will 403 is a red
+  // box on screen for a number nobody can act on.
+  const fence = useLock({ needsLan: true });
+  const onRelay = useOnRelay();
   const showToast = useStore((s) => s.showToast);
   const [snap, setSnap] = useState<ResetPreview | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
@@ -54,14 +66,15 @@ export function FactoryResetEditor(): JSX.Element {
     // Never fire the preview GET for somebody the route will refuse: an
     // admin.users-gated read from a viewer is a 403 in the log and a red box on
     // screen, for a number they are not allowed to see anyway.
-    if (!canAdmin) return;
+    if (!canAdmin || onRelay) return;
     try {
       setSnap(await api.get<ResetPreview>("/api/system/factory-reset"));
       setLoadErr(null);
     } catch (e) {
-      setLoadErr(e instanceof Error ? e.message : "could not read the reset scope");
+      setLoadErr(isLocalOnly(e) ? LOCAL_ONLY_REASON
+        : e instanceof Error ? e.message : "could not read the reset scope");
     }
-  }, [canAdmin]);
+  }, [canAdmin, onRelay]);
 
   // The server refuses a reset while the rig is working and the preview GET
   // carries that answer - but the GET runs once, at mount. Derive it live from
@@ -87,15 +100,18 @@ export function FactoryResetEditor(): JSX.Element {
   // Capability first (it is the only one that will not change on its own), then
   // what the screen could not read, then the rig, then the typed word. Each is
   // a sentence a user can act on; none of them is a native `disabled`.
-  const capReason = canAdmin ? null : RESET_CAP_NOTE;
+  // The fence (and a dead link) OUTRANK the capability sentence: over the relay
+  // the rig refuses this for an admin too, so naming `admin.users` there would
+  // be a true sentence about the wrong blocker.
+  const capReason = fence.lockedReason ?? (canAdmin ? null : RESET_CAP_NOTE);
   const blocked =
     capReason
     ?? (loadErr ? `Cannot read what a reset would clear - ${loadErr}.` : null)
     ?? (rigBlock ? `Cannot reset while ${clause(rigBlock)}.` : null)
     ?? (confirmWordOk(typed) ? null : RESET_ARM_NOTE);
 
-  const counting = canAdmin && !snap && !loadErr;
-  const noNumbers = noNumbersLine(counting);
+  const counting = canAdmin && !onRelay && !snap && !loadErr;
+  const noNumbers = onRelay && !snap ? RESET_COUNTS_LAN_ONLY : noNumbersLine(counting);
   /** "3 saved profiles" with a snapshot; "Saved profiles" without one. */
   const count = (n: number | undefined, one: string, many = `${one}s`) =>
     snap ? plural(n ?? 0, one, many) : many;
@@ -164,7 +180,12 @@ export function FactoryResetEditor(): JSX.Element {
     } catch (e) {
       runningRef.current = false;
       setBusy(false);
-      showToast("error", e instanceof Error ? e.message : "factory reset failed", { verbatim: true });
+      showToast(
+        "error",
+        isLocalOnly(e) ? LOCAL_ONLY_REASON
+          : e instanceof Error ? e.message : "factory reset failed",
+        { verbatim: true },
+      );
       void refresh();
     }
   };
@@ -306,7 +327,7 @@ export function FactoryResetEditor(): JSX.Element {
             <p className="nx-sys-warn" data-testid="reset-reason">{blocked}</p>
           )}
           <LockNote reason={capReason} data-testid="reset-lock-note" />
-          {!canAdmin && (
+          {(!canAdmin || onRelay) && (
             <p className="nx-sys-note" data-testid="reset-hidden-note">
               {`The counts above are ${noNumbers} - they come from the same route the reset `
                 + "itself uses, so this screen shows you nouns instead of inventing numbers."}

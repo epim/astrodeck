@@ -33,6 +33,7 @@ import { useConfig, useStore } from "../../../../../store";
 import type { SafetyConfig } from "../../../../../types";
 import { NxIcon } from "../../../../icons";
 import { useLock } from "../../../../lib/gateHook";
+import { isLocalOnly, LOCAL_ONLY_REASON } from "../../../../lib/gate";
 import { nav } from "../../../../router";
 import { Card, EmptyCard, Label, ListRow, LockNote, Mono, Segmented } from "../../../../ui";
 import { EscalationEditor } from "./EscalationEditor";
@@ -65,13 +66,24 @@ export const WARM_LINK_SUB =
 /** The sheet's ONE read-only sentence. Two capabilities are edited here and
  *  `LockNote` is deliberately singular, so this folds them: same reason, one
  *  clause; different reasons, one clause each. It starts lower-case because
- *  `LockNote` prefixes "Read-only - ". */
+ *  `LockNote` prefixes "Read-only - ".
+ *
+ *  ONLY THE CAPABILITY REASON IS A CLAUSE. `lockReason` also answers with whole
+ *  sentences - "the rig is not reachable", and the LAN-only one the relay fence
+ *  raises - and gluing "changing the safety preset (config.safety)" in front of
+ *  one of those produced a line that does not parse. Those outrank the
+ *  capability anyway (gate.ts's priority), so they are returned verbatim, which
+ *  is the same rule `filesLockSentence` and `escalationLockSentence` follow. */
+const isCapClause = (reason: string): boolean => reason.startsWith("needs ");
+
 export function tuningLockSentence(
   safetyReason: string | null,
   alertsReason: string | null,
 ): string | null {
   const preset = "changing the safety preset (config.safety)";
   const policy = "the recovery policy (config.alerts)";
+  if (safetyReason && !isCapClause(safetyReason)) return safetyReason;
+  if (alertsReason && !isCapClause(alertsReason)) return alertsReason;
   if (safetyReason && alertsReason) {
     return safetyReason === alertsReason
       ? `${preset} or ${policy} ${safetyReason}`
@@ -85,8 +97,12 @@ export function tuningLockSentence(
 export function SafetyTuningPanel(): JSX.Element {
   const config = useConfig();
   const safety = (config?.safety ?? null) as SafetyConfig | null;
-  const safetyLock = useLock({ cap: "config.safety" });
-  const alertsLock = useLock({ cap: "config.alerts" });
+  // `needsLan` on both: the preset writes `POST /api/config {safety}` and the
+  // escalation editor below writes `POST /api/config {escalation}`, both on the
+  // rig's LAN-only fence. The alerts lock is the note's half of the sentence, so
+  // it has to agree with what the editor it describes will actually allow.
+  const safetyLock = useLock({ cap: "config.safety", needsLan: true });
+  const alertsLock = useLock({ cap: "config.alerts", needsLan: true });
 
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -104,11 +120,13 @@ export function SafetyTuningPanel(): JSX.Element {
       await setSafetyConfig({ ...safety, ...patch } as SafetyConfig);
       await useStore.getState().loadConfig();
     } catch (e) {
-      setErr(e instanceof ApiError
-        ? (e.status === 403
-          ? `Refused - ${accessPhrase("config.safety")} is needed here.`
-          : e.message || PRESET_SAVE_FAILED)
-        : PRESET_SAVE_FAILED);
+      // `isLocalOnly` FIRST: the fence answers 403 for every role.
+      setErr(isLocalOnly(e) ? LOCAL_ONLY_REASON
+        : e instanceof ApiError
+          ? (e.status === 403
+            ? `Refused - ${accessPhrase("config.safety")} is needed here.`
+            : e.message || PRESET_SAVE_FAILED)
+          : PRESET_SAVE_FAILED);
     } finally {
       setBusy(false);
     }

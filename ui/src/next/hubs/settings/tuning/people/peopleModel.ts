@@ -25,6 +25,7 @@
 // (ARCHITECTURE.md non-negotiable 5).
 
 import { ROLE_DESCRIPTIONS, accessPhrase } from "../../../../../lib/caps";
+import { isLocalOnly, LOCAL_ONLY_REASON } from "../../../../lib/gate";
 import { ApiError } from "../../../../../api";
 import type { AuthState, PrincipalRole } from "../../../../../types";
 
@@ -70,6 +71,17 @@ export const PEOPLE_CAP = "admin.users" as const;
 export const PEOPLE_LOCK_SENTENCE = `Managing people and sign-in needs ${accessPhrase(PEOPLE_CAP)}.`;
 export const PEOPLE_LIST_HIDDEN_TITLE = "PEOPLE LIST HIDDEN";
 export const PEOPLE_LIST_HIDDEN_HINT = `The people list needs ${accessPhrase(PEOPLE_CAP)}. Nothing was requested from the rig.`;
+/** ...and what the same region says over the RELAY, where the capability is not
+ *  the blocker. `/api/users` is fenced by PREFIX and for every method, so an
+ *  admin on the tunnel cannot read the list either - and "needs admin access"
+ *  told to an admin is the wrong-blocker defect the fence rule exists to
+ *  prevent. */
+export const PEOPLE_LIST_LAN_ONLY_TITLE = "PEOPLE LIST IS LAN-ONLY";
+export const PEOPLE_LIST_LAN_ONLY_HINT =
+  "Accounts are a trust root, so the rig answers the account list only on its own "
+  + "network - for every role, an admin included. Nothing was requested. Open "
+  + "AstroDeck on the LAN to add, disable or delete people.";
+
 export const METHODS_HIDDEN_TITLE = "SIGN-IN METHODS HIDDEN";
 export const METHODS_HIDDEN_HINT = `Reading the sign-in configuration needs ${accessPhrase(PEOPLE_CAP)}. Nothing was requested from the rig.`;
 
@@ -80,6 +92,12 @@ export const METHODS_HIDDEN_HINT = `Reading the sign-in configuration needs ${ac
  *  `UsersPanel.tsx:42-51`; 409 keeps the server's own message because that is
  *  where "last admin" and "duplicate username" are told apart. */
 export function errText(e: unknown, fallback: string): string {
+  // `local_only` FIRST. The fence refuses every /api/users and /api/auth/config
+  // request over the relay, for an admin as readily as for anyone else, and the
+  // server's own detail for it ("this security-sensitive operation is LAN-only")
+  // says nothing a user can act on. One sentence, the same one every locked
+  // control here states.
+  if (isLocalOnly(e)) return LOCAL_ONLY_REASON;
   if (e instanceof ApiError) {
     if (e.status === 409) return e.message || "That change conflicts with what the rig already has.";
     if (e.status === 422) return "Password is too long (max 72 bytes).";

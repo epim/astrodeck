@@ -34,6 +34,7 @@ import { Card, Label, ListRow } from "../../../ui";
 import { NxIcon } from "../../../icons";
 import { nav } from "../../../router";
 import { accessPhrase, ROLE_DESCRIPTIONS, useCanAdminUsers } from "../../../../lib/caps";
+import { PRINCIPAL_ROLES } from "../tuning/people/peopleModel";
 import { useAuthMethods, useStore } from "../../../../store";
 import type { PrincipalRole } from "../../../../types";
 import { AccountBody } from "./AccountSheet";
@@ -54,7 +55,19 @@ function methodsSummary(methods: string[] | undefined): string {
   return `${methods.join(" + ")} enabled`;
 }
 
-const ROLE_ORDER: readonly PrincipalRole[] = ["admin", "operator", "syncer", "viewer"];
+/** The four roles, most privileged first. DERIVED, not typed out: a hand-written
+ *  list is a second copy of the server's role table, and the disagreement is
+ *  silent - a role added to `lib/caps.ts` would simply never appear in this
+ *  reference block, so the one screen that explains what the words mean would
+ *  quietly stop explaining one of them. `PRINCIPAL_ROLES` is
+ *  `Object.keys(ROLE_DESCRIPTIONS)`, whose `Record<PrincipalRole, string>` type
+ *  makes the compiler refuse a role that reaches `PrincipalRole` without
+ *  reaching it. That order is ascending privilege (the pickers want it that
+ *  way), and this block reads best the other way round, so it is reversed
+ *  rather than re-listed. `peopleModel` is a constants-and-decisions module -
+ *  no React, no component, no stylesheet - so importing one array from it does
+ *  not pull the PEOPLE editors into this screen's chunk. */
+const ROLE_ORDER: readonly PrincipalRole[] = [...PRINCIPAL_ROLES].reverse();
 
 /** The one sentence both locked rows state. The same words the people editor
  *  behind them uses (`tuning/people`'s `PEOPLE_LOCK_SENTENCE`), spelled here

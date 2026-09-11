@@ -665,7 +665,92 @@ act(() => { root2.unmount(); });
       "the reason must name the access level, got: " + String(note?.textContent));
     eq(planningPuts.length, 0, "a viewer's tap reached the rig; writes sent:");
   });
+
+  // EVERY control, not just the footer's RESET. `save()` refused the write and
+  // toasted the reason, so "writes nothing" above was already green - while the
+  // row moved under the finger and eleven controls looked live to somebody who
+  // could not change one of them. ARCHITECTURE section 8 asks for the opposite:
+  // dim it, carry the reason, fire nothing. Sabotage: drop `lockedReason` from
+  // any one of these and its id is named in the failure.
+  test("a viewer's eleven quick-defaults controls are all honest-disabled, with the reason", () => {
+    const reason = "needs operator or admin access";
+    // `Stepper2` marks its two BUTTONS rather than the group it labels, so the
+    // steppers are asked for their buttons. Everything else marks itself.
+    const ids = [
+      "quick-hours",
+      "quick-filter-L", "quick-filter-Ha",
+      "quick-extra-af", "quick-extra-guide", "quick-extra-dither",
+      "quick-extra-cloud", "quick-extra-hfr", "quick-extra-stack",
+      "quick-reset",
+    ];
+    const steppers = ["quick-exp-L", "quick-exp-Ha", "quick-dither-n"];
+    const check = (el: any, what: string): void => {
+      assert(el != null, `${what} was hidden from a viewer instead of rendered read-only`);
+      eq(el.hasAttribute("disabled"), false, `${what} uses the native disabled attribute`);
+      eq(el.getAttribute("aria-disabled"), "true", `${what} looks live to a viewer`);
+      eq(el.getAttribute("title"), reason, `${what} does not carry the reason`);
+    };
+    for (const id of ids) check(q(`[data-testid="${id}"]`), id);
+    for (const id of steppers) {
+      const group = q(`[data-testid="${id}"]`);
+      assert(group != null, `${id} was hidden from a viewer`);
+      const btns = Array.from(group.querySelectorAll("button")) as any[];
+      eq(btns.length, 2, `${id} does not have its two step buttons`);
+      check(btns[0], `${id} (down)`);
+      check(btns[1], `${id} (up)`);
+    }
+  });
   act(() => { ro.unmount(); });
+  resetPlanningForTests();
+}
+
+// ================================ 8b. the QUICK SESSION DEFAULTS row's chip
+// The row printed the literal string "from your last session" whether or not a
+// session had ever been generated - and the sheet it opens says "NOTHING
+// LEARNED YET" on exactly that state, so on a fresh install the row and the
+// screen behind it contradicted each other. The chip is a claim about the rig,
+// so it reads the rig's own `quick.learned`.
+{
+  const { GeneralScreen } = await import("../general/GeneralScreen");
+  const { resetPlanningForTests } = await import("../../../lib/planning");
+
+  planningBlock = { quick: { ...NOTHING_LEARNED }, pool: [] };
+  resetPlanningForTests();
+  const fresh = createRoot(host);
+  seed(ADMIN);
+  act(() => { fresh.render(createElement(GeneralScreen)); });
+  await settle();
+
+  test("with nothing learned the row says so, instead of naming a session that never ran", () => {
+    const row = q('[data-testid="row-quick-defaults"]');
+    assert(row != null, "the QUICK SESSION DEFAULTS row is not on the page");
+    const t = String(row.textContent);
+    assert(/not learned yet/.test(t), `the chip claims a history the rig has not got: "${t}"`);
+    assert(!/from your last session/.test(t),
+      `the row contradicts the sheet it opens, which says NOTHING LEARNED YET: "${t}"`);
+  });
+  act(() => { fresh.unmount(); });
+
+  planningBlock = {
+    quick: {
+      hours: 3, dawn: false, on: { L: true }, exp: { L: 120 },
+      extras: {}, dither_n: 3, learned: true,
+    },
+    pool: [],
+  };
+  resetPlanningForTests();
+  const learned = createRoot(host);
+  seed(ADMIN);
+  act(() => { learned.render(createElement(GeneralScreen)); });
+  await settle();
+
+  test("once the rig HAS learned, the row says where the numbers came from", () => {
+    const row = q('[data-testid="row-quick-defaults"]');
+    assert(row != null, "the QUICK SESSION DEFAULTS row is not on the page");
+    assert(/from your last session/.test(String(row.textContent)),
+      `the positive control failed, so the test above proves nothing: "${row.textContent}"`);
+  });
+  act(() => { learned.unmount(); });
   resetPlanningForTests();
 }
 

@@ -881,6 +881,65 @@ await testAsync("a viewer sees the sinks read-only, with the reason, and writes 
 
 await act(async () => { alertRoot.unmount(); });
 
+// ------------------------------------------------- THIS PHONE: the permission
+// NOTIFY ON THIS PHONE turns the store flag on, and the store fires
+// `requestNotifyPermission()` and DROPS the promise. The row used to re-read
+// `Notification.permission` on a `setTimeout(..., 0)`, which lands while the
+// browser's own dialog is still open: the permission is still "default", the
+// knob renders OFF, and somebody who has just pressed ALLOW is looking at a
+// switch that says their notifications are off - and nothing re-reads it until
+// the sheet is closed and opened again. Awaiting the same helper reads the
+// answer at the moment it exists.
+//
+// Sabotage: put the `setTimeout(() => setPerm(permission()), 0)` back and "the
+// knob follows the answer" fails, with the switch still aria-checked false.
+{
+  let resolvePrompt: ((p: string) => void) | null = null;
+  const N: any = class {};
+  N.permission = "default";
+  N.requestPermission = () =>
+    new Promise<string>((res) => {
+      resolvePrompt = (p: string) => { N.permission = p; res(p); };
+    });
+  Object.defineProperty(g, "Notification", { value: N, writable: true, configurable: true });
+
+  const phoneRoot = createRoot(container);
+  seed({ principal: ADMIN, notifyEnabled: false });
+  await act(async () => { phoneRoot.render(createElement(AlertsScreen)); });
+  await settle();
+
+  await testAsync("THIS PHONE: the knob follows the browser's answer, not a timer", async () => {
+    const row = q('[data-testid="notify-row"]');
+    assert(row != null,
+      "the notify row is absent with a Notification API present - every assertion "
+      + "below would be vacuous");
+    const sw = q('[data-testid="notify-switch"]');
+    assert(sw != null, "no notify switch");
+    eq(sw.getAttribute("aria-checked"), "false", "precondition: the switch is already on");
+
+    await click(sw);
+    // The prompt is still open. Nothing may claim it was answered.
+    eq(sw.getAttribute("aria-checked"), "false",
+      "the switch claimed notifications were granted before the browser answered");
+    assert(resolvePrompt != null,
+      "the row never asked the browser - `requestNotifyPermission` was not reached, so "
+      + "there is no promise to resolve and nothing below is under test");
+
+    await act(async () => {
+      resolvePrompt!("granted");
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    await settle();
+    eq(q('[data-testid="notify-switch"]').getAttribute("aria-checked"), "true",
+      "the user pressed ALLOW and the switch still says OFF - the permission was "
+      + "re-read on a timer that fired while the dialog was open");
+  });
+
+  await act(async () => { phoneRoot.unmount(); });
+  Object.defineProperty(g, "Notification", { value: undefined, writable: true, configurable: true });
+}
+
+
 // ================================================== LIVE · the weather block
 //
 // `RadarMap` fetches a GRID of `/api/weather/tile/...` images and re-fires them
@@ -926,6 +985,46 @@ test("weather OFF: the conditions card is still framed by the design, the radar 
     "the sky-conditions widget is mounted bare - wave R7 rewraps it in a Card");
   assert(q('[data-testid="live-radar-card"]') == null,
     "a radar card was drawn around a radar that never mounted");
+});
+
+// The one door on this screen back to the switch that turns weather on, and it
+// opens a LOCAL sheet - it issues nothing. It was gated through `useLock`, whose
+// FIRST rule is "the rig is not reachable", so a flapping socket sealed the door
+// on exactly the screen an operator is watching when the link flaps. The
+// capability is still named, because the sheet behind it does write.
+//
+// Sabotage: put `useLock({cap:"config.site_optics"})` back and this goes red the
+// moment `wsPhase` is anything but "up".
+await testAsync("weather OFF: WEATHER SETTINGS still opens while the socket is down", async () => {
+  // `config.site_optics` is not an operator's, and the seeded principal here is
+  // one - so the admin is the case that can tell the link rule from the cap rule.
+  await act(async () => { useStore.setState({ principal: ADMIN } as never); });
+  await settle();
+  const cta0 = q('[data-testid="monitor-radar-off-cta"]');
+  assert(cta0 != null, "the off-card has no CTA - the assertion below would be vacuous");
+  eq(cta0.getAttribute("aria-disabled"), null,
+    "precondition: an admin on a live link already found WEATHER SETTINGS locked");
+
+  await act(async () => { useStore.setState({ wsPhase: "reconnecting" } as never); });
+  await settle();
+  const cta = q('[data-testid="monitor-radar-off-cta"]');
+  assert(cta != null, "the off-card vanished with the link");
+  eq(cta.getAttribute("aria-disabled"), null,
+    "a dropped socket locked the one door back to the weather switch, which is a "
+    + "local sheet that issues nothing");
+
+  // The CAPABILITY half, still enforced: an operator holds `view.weather` (so the
+  // block is on the page at all) and not `config.site_optics` (so the sheet
+  // behind this button would refuse). A viewer cannot serve here - it loses
+  // `view.weather` and the whole block with it.
+  await act(async () => { useStore.setState({ principal: OPERATOR, wsPhase: "up" } as never); });
+  await settle();
+  const opCta = q('[data-testid="monitor-radar-off-cta"]');
+  assert(opCta != null, "the off-card was hidden from an operator");
+  eq(opCta.getAttribute("aria-disabled"), "true",
+    "an operator found WEATHER SETTINGS live, and the sheet behind it does write");
+  assert(/access/.test(String(opCta.getAttribute("title"))),
+    `the locked CTA does not name what it would need: "${opCta.getAttribute("title")}"`);
 });
 
 test("weather OFF: the block says so, in WEATHER · RADAR's own words", () => {

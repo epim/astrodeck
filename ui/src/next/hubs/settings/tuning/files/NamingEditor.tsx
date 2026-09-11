@@ -28,6 +28,7 @@ import { accessPhrase } from "../../../../../lib/caps";
 import { DEFAULT_TEMPLATE, NAMING_TOKENS } from "../../../../../lib/naming";
 import { useConfig, useStore } from "../../../../../store";
 import { useLock } from "../../../../lib/gateHook";
+import { isLocalOnly, LOCAL_ONLY_REASON } from "../../../../lib/gate";
 import { ActionButton, Card, Chip, Field, Label, LockNote, Mono, TextInput } from "../../../../ui";
 import {
   filesLockSentence, NAMING_FOOTNOTE, NAMING_SUBJECT, namingPreview, tokenText,
@@ -38,7 +39,8 @@ export function NamingEditor(): JSX.Element {
   const config = useConfig();
   const stored = config?.naming?.template ?? DEFAULT_TEMPLATE;
 
-  const gate = useLock({ cap: "config.site_optics" });
+  // `needsLan`: SAVE writes `POST /api/config/naming`, on the LAN-only fence.
+  const gate = useLock({ cap: "config.site_optics", needsLan: true });
   const lock = filesLockSentence(
     gate.lockedReason, accessPhrase("config.site_optics"), NAMING_SUBJECT,
   );
@@ -71,10 +73,13 @@ export function NamingEditor(): JSX.Element {
       await useStore.getState().loadConfig();
       useStore.getState().showToast("success", "capture naming saved");
     } catch (e) {
-      setErr(e instanceof ApiError
-        ? (e.status === 403 ? `Refused - ${accessPhrase("config.site_optics")} is needed here.`
-          : e.message)
-        : "Could not save.");
+      // `isLocalOnly` FIRST: the fence answers 403 for every role, so the
+      // capability sentence below would name the wrong blocker.
+      setErr(isLocalOnly(e) ? LOCAL_ONLY_REASON
+        : e instanceof ApiError
+          ? (e.status === 403 ? `Refused - ${accessPhrase("config.site_optics")} is needed here.`
+            : e.message)
+          : "Could not save.");
     } finally { setBusy(false); }
   };
 

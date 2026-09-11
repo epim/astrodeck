@@ -123,9 +123,12 @@ export function QuickDefaultsSheet(_p: SheetProps): JSX.Element {
     return out;
   }, [wheelNames, wheelOpaque, q]);
 
-  // Only the keys that moved. This sheet never sends `learned`: it renders
-  // nothing at all until the rig says something was learned, so it cannot be
-  // the screen that learns it.
+  // EVERY control takes this, not just the footer's RESET. `save()` already
+  // refused a write from a role without `control.capture` and explained itself
+  // - but only AFTER the press, from a control that looked live, with the row
+  // visibly moving under the finger before the toast arrived. ARCHITECTURE
+  // section 8's rule is the opposite: dim it, say why, fire nothing.
+  const locked = planning.lockedReason;
   const save = (patch: Partial<QuickPrefs>) => {
     if (planning.lockedReason) { explainLock(planning.lockedReason); return; }
     planning.putQuick(patch);
@@ -164,7 +167,7 @@ export function QuickDefaultsSheet(_p: SheetProps): JSX.Element {
             full
             onPress={reset}
             data-testid="quick-reset"
-            lockedReason={planning.lockedReason}
+            lockedReason={locked}
             onExplain={explainLock}
           >
             RESET TO THE WHEEL&rsquo;S DEFAULTS
@@ -174,7 +177,7 @@ export function QuickDefaultsSheet(_p: SheetProps): JSX.Element {
     >
       {/* One sentence for a role that can read the rig's plan but not change
           it, in the same words every locked press repeats. */}
-      <LockNote reason={planning.lockedReason} />
+      <LockNote reason={locked} />
       {!q ? (
         <EmptyCard
           title="NOTHING LEARNED YET"
@@ -190,6 +193,8 @@ export function QuickDefaultsSheet(_p: SheetProps): JSX.Element {
               value={hoursValue(q)}
               onChange={(v) => save(withHours(v))}
               label="How long the quick session runs"
+              lockedReason={locked}
+              onExplain={explainLock}
               data-testid="quick-hours"
             />
             <p style={NOTE}>
@@ -220,6 +225,8 @@ export function QuickDefaultsSheet(_p: SheetProps): JSX.Element {
                       onChange={(next) =>
                         save({ on: { ...q.on, [f]: next } })}
                       label={f}
+                      lockedReason={locked}
+                      onExplain={explainLock}
                       data-testid={`quick-filter-${f}`}
                     />
                     <span style={{ flex: 1 }} />
@@ -231,6 +238,8 @@ export function QuickDefaultsSheet(_p: SheetProps): JSX.Element {
                       max={1800}
                       format={(v) => `${v} s`}
                       label={`${f} exposure`}
+                      lockedReason={locked}
+                      onExplain={explainLock}
                       data-testid={`quick-exp-${f}`}
                     />
                   </div>
@@ -248,6 +257,8 @@ export function QuickDefaultsSheet(_p: SheetProps): JSX.Element {
                 onChange={(v) => save({ extras: { ...q.extras, [r.key]: v } })}
                 label={r.label}
                 note={r.note}
+                lockedReason={locked}
+                onExplain={explainLock}
                 data-testid={`quick-extra-${r.key}`}
               />
             ))}
@@ -263,6 +274,8 @@ export function QuickDefaultsSheet(_p: SheetProps): JSX.Element {
                 max={10}
                 format={(v) => `${v} subs`}
                 label="Dither every N subs"
+                lockedReason={locked}
+                onExplain={explainLock}
                 data-testid="quick-dither-n"
               />
             </div>

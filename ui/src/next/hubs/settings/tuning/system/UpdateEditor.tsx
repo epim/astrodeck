@@ -31,6 +31,8 @@ import { useEffect, useRef, useState, type JSX } from "react";
 import { ApiError } from "../../../../../api";
 import { applyUpdate, checkUpdate, setUpdateConfig } from "../../../../../api/backends";
 import { useCan } from "../../../../../lib/caps";
+import { isLocalOnly, LOCAL_ONLY_REASON } from "../../../../lib/gate";
+import { useLock } from "../../../../lib/gateHook";
 import { appVersion } from "../../../../lib/versions";
 import { useBusyOrPending } from "../../../../../lib/useBusy";
 import { useConfig, useSequence, useStatus, useStore, useUpdate } from "../../../../../store";
@@ -126,7 +128,16 @@ export function UpdateEditor(): JSX.Element {
     if (rigNow === null && stale) void useStore.getState().loadUpdate();
   }, [rigNow, stale]);
 
-  const capNote = canUpdate ? null : UPDATE_LOCK_NOTE;
+  // THE RELAY FENCE, ABOVE THIS PANEL'S OWN CAPABILITY COPY. All three writes
+  // here - `POST /api/update/check`, `/api/update/apply` and `/api/update/config`
+  // - are EXACT entries on `app.py`'s `_REMOTE_LOCAL_ONLY_EXACT`, so over the
+  // relay the rig answers 403 `local_only` to an admin as readily as to anyone
+  // else. `useLock` ranks the two reasons that outrank a capability (the link,
+  // then the fence) and this panel's own sentence answers only when neither
+  // applies - which is `gate.ts`'s priority, spelled out here because the copy
+  // is the panel's rather than the gate's.
+  const fence = useLock({ needsLan: true });
+  const capNote = fence.lockedReason ?? (canUpdate ? null : UPDATE_LOCK_NOTE);
 
   // The one version fact no other screen carries. An apply restarts the server
   // on the new build while THIS browser keeps the bundle it already downloaded,
@@ -153,7 +164,8 @@ export function UpdateEditor(): JSX.Element {
       await checkUpdate();
       await useStore.getState().loadUpdate();
     } catch (e) {
-      setErr(e instanceof ApiError ? e.message : "Check failed.");
+      setErr(isLocalOnly(e) ? LOCAL_ONLY_REASON
+        : e instanceof ApiError ? e.message : "Check failed.");
     } finally {
       checkingRef.current = false;
       setChecking(false);
@@ -190,9 +202,10 @@ export function UpdateEditor(): JSX.Element {
       arm();
     } catch (e) {
       setErr(
-        e instanceof ApiError
-          ? e.message || "Could not start the update."
-          : "Could not start the update.",
+        isLocalOnly(e) ? LOCAL_ONLY_REASON
+          : e instanceof ApiError
+            ? e.message || "Could not start the update."
+            : "Could not start the update.",
       );
     } finally {
       setBusy(false);
@@ -220,9 +233,10 @@ export function UpdateEditor(): JSX.Element {
       setSavedAt(Date.now());
     } catch (e) {
       setErr(
-        e instanceof ApiError
-          ? e.message || "Could not save."
-          : "Could not save.",
+        isLocalOnly(e) ? LOCAL_ONLY_REASON
+          : e instanceof ApiError
+            ? e.message || "Could not save."
+            : "Could not save.",
       );
     } finally {
       setBusy(false);

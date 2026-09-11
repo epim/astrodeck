@@ -235,6 +235,13 @@ export function noNumbersLine(counting: boolean): string {
   return counting ? "counting..." : `hidden (needs ${accessPhrase("admin.users")})`;
 }
 
+/** ...and what it says over the RELAY, where the capability is not the blocker.
+ *  `GET /api/system/factory-reset` is an EXACT entry on the rig's LAN-only
+ *  fence, so the preview is refused for an admin too - and "counting..." would
+ *  sit there forever over a request this screen deliberately never makes. */
+export const RESET_COUNTS_LAN_ONLY =
+  "not read - the scope count is LAN-only, like the reset itself";
+
 export const CREDITS_SEARCH_PLACEHOLDER = "package, licence, or what it requires";
 
 /** Why this one screen has no capability gate at all. */
