@@ -154,11 +154,9 @@ export const ONE_CHANNEL_FOOTER =
  * `ONE_CHANNEL_FOOTER`, because neither may claim a colour that came out of
  * a sensor's matrix.
  *
- * Not yet called from `quick.tsx` - its one call site still compares the raw
- * preview string (`bayerPattern ? OSC_FOOTER : ONE_CHANNEL_FOOTER`), which
- * happens to still read correctly today because that string, unlike a
- * resolved colour object, is genuinely falsy when there is no frame. See the
- * T-U7b-10 report for the file:line this is delivered against.
+ * Called from `quick.tsx`'s one-channel card, which resolves the colour
+ * through `resolveColour(status.camera, preview.bayer_pattern)` and passes
+ * the object straight in.
  */
 export function oscFooter(colour: { isColor: boolean | null }): string {
   return colour.isColor === true ? OSC_FOOTER : ONE_CHANNEL_FOOTER;
@@ -251,6 +249,40 @@ export const TARGETS_FOOTER =
 
 /** A.10's empty state. */
 export const TARGETS_EMPTY = "Nothing matches the lens - tap the lens to show more kinds.";
+
+/**
+ * HOW CLOSE THE MOON IS, IN WORDS.
+ *
+ * `lib/visibility.ts`'s `moonSepGlyph` answers the same question with a glyph
+ * (a cross, a warning triangle, a crescent), which the classic UI still
+ * renders and which is not edited here. On this side the glyphs cannot carry
+ * the claim: two of the three are generic severity marks that say nothing
+ * about the moon, the crescent is decoration rather than a reading, and none
+ * of them survives being read aloud - which is how the hold-to-learn copy and
+ * a screen reader both meet this row.
+ *
+ * `null` above 30 degrees is deliberate: "far from the moon" is not a fact
+ * worth a word on every row in the list. The number is still printed, and the
+ * absence of a qualifier IS the good case.
+ *
+ * Thresholds are `moonSepGlyph`'s own (15 / 30 degrees) so the two UIs cannot
+ * disagree about which targets are compromised.
+ */
+export function moonSepWord(sepDeg: number): "very close" | "close" | null {
+  if (sepDeg < 15) return "very close";
+  if (sepDeg < 30) return "close";
+  return null;
+}
+
+/** The whole reading for a row: "moon 84" on its own, "moon 12 very close"
+ *  when it matters. The noun is in the string because the row already carries
+ *  two other angles (altitude and the window) and a bare degree sign beside
+ *  them names nothing. */
+export function moonSepText(sepDeg: number): string {
+  const word = moonSepWord(sepDeg);
+  const deg = `moon ${Math.round(sepDeg)}°`;
+  return word === null ? deg : `${deg} ${word}`;
+}
 
 /** A.11's honesty footer for a deep-sky object, from `ObjectCard.tsx:164-170`.
  *

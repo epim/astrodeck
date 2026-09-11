@@ -238,9 +238,15 @@ test("a stripped node still says the loop is following, with no number behind it
   assert(!/\d+(\.\d+)?°C/.test(line), `a temperature was printed from an absent reading: "${line}"`);
 
   const tile = textOf("wx-tile-dew");
-  assert(/not reported/.test(tile), `the DEW tile: "${tile}"`);
-  assert(tile.includes(`the dew margin needs ${accessPhrase("view.weather")}`),
+  // "hidden", not "not reported": `api/redact.py:151-173` DELETED the ambient
+  // and the dew point on the way out, so the feed sent them and the role is
+  // what is missing. The two look identical from here - both fields are null
+  // either way - which is exactly why the tile reads the capability.
+  assert(/hidden/.test(tile), `the DEW tile: "${tile}"`);
+  assert(!/not reported/.test(tile),
     `the tile blames the feed for a field the redaction removed: "${tile}"`);
+  assert(tile.includes(`the dew margin needs ${accessPhrase("view.weather")}`),
+    `the tile does not name what is missing: "${tile}"`);
   assert(!/\d+(\.\d+)?°C/.test(tile), `the tile printed a margin nobody sent it: "${tile}"`);
   eq(asked.length, 0, `a viewer's band asked the rig for something: ${asked.join(", ")}`);
 });

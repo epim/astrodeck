@@ -59,8 +59,9 @@ import {
   floorLegend, mosaicPlanNote, oscFooter,
 } from "./quickCopy";
 import {
-  OSC_LABEL, channelLabel, filterColor, finishLabel, hourStops, hoursLabel, isDawnStop,
-  nextExposure, oscCount, passesFor, planLine, quickRows, resolveColour, snapHours, wheelModel,
+  NO_DARK_SPAN_H, OSC_LABEL, channelLabel, filterColor, finishLabel, hourStops, hoursLabel,
+  isDawnStop, nextExposure, oscCount, passesFor, planLine, quickRows, resolveColour,
+  resolveQuickHours, snapHours, wheelModel,
 } from "./quickModel";
 import {
   NightArc, curveFromNight, hoursToDawn, type ArcCurve, type ArcHold,
@@ -91,11 +92,6 @@ const CALIBRATION: { key: string; label: string; info: string }[] = [
 ];
 
 const DITHER_STEPS = [1, 2, 3, 5, 10];
-
-/** Hours the arc spans when the site has no astronomical darkness tonight. A
- *  high-latitude summer is a real answer; eight hours of chart is the honest
- *  fallback, and the dawn label says "no astro-dark" rather than a time. */
-const NO_DARK_SPAN_H = 8;
 
 function targetFromParams(
   params: Record<string, string>,
@@ -273,7 +269,11 @@ export function QuickSessionSheet({ params }: SheetProps): JSX.Element {
     [wheelNames, wheelOpaque, wheelNarrow, wheelExposures, prefs.on, prefs.exp, cameraConnected],
   );
 
-  const hours = Math.min(prefs.dawn && dawnH != null ? dawnH : prefs.hours, span);
+  // One rule, shared with the lock card's CTA (`SkyHub.tsx`'s plan summary):
+  // the stored `hours` is meaningless while `dawn` is set, and both screens
+  // have to clamp the same way or the button and the sheet it opens name two
+  // different windows.
+  const hours = resolveQuickHours(prefs.hours, prefs.dawn, dawnH);
 
   /**
    * THE CYCLE ARITHMETIC IS NOT COMPUTED FOR A RIG THAT HAS NO CYCLE.

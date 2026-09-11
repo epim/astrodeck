@@ -92,11 +92,20 @@ export interface PassesQuery {
  *  gets a 403 from the dependency, not an empty list - show the server's
  *  withheld sentence from the `/api/catalog` notes instead of calling this.
  *
- *  409 when the SITE IS UNSET (`SatellitesUnavailable`, a bare-string detail, so
- *  `ApiError.message` IS the sentence and carries no code). 409 rather than 500
- *  or an empty list on purpose: the server is fine and the rig is not ready, and
- *  an empty list here would read as "no passes tonight", which is a different
- *  and false statement. */
+ *  TWO DIFFERENT 409s, told apart by `ApiError.code`, and they need different
+ *  faces:
+ *
+ *    `satellites_unavailable`  the SITE IS UNSET. The detail is the server's
+ *        own sentence and is shown verbatim, but there is nothing to retry -
+ *        the fix is to set a site - so this renders as a withheld STATE and not
+ *        as a failure with a TRY AGAIN beside it.
+ *    `passes_busy`  another pass search is already running. The route serialises
+ *        them behind a semaphore because each one is thousands of SGP4
+ *        evaluations. This one IS worth retrying, in a moment.
+ *
+ *  409 rather than 500 or an empty list in both cases on purpose: the server is
+ *  fine, and an empty list here would read as "no passes tonight", which is a
+ *  different and false statement. */
 export function getSatellitePasses(q: PassesQuery = {}): Promise<PassesResponse> {
   const p = new URLSearchParams();
   if (q.hours !== undefined) p.set("hours", String(q.hours));

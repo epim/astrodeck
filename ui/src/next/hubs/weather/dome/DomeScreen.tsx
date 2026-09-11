@@ -34,6 +34,7 @@ import { contextTarget, fetchVisibility, targetNotes } from "../conditions/moon"
 import {
   DomeLegend, DomeOverlay, windSummary, type DrawnMarks,
 } from "./domeOverlay";
+import { useSlowClock } from "../slowClock";
 
 /** The clause a role without `view.site_precise` gets instead of the path. The
  *  path is a function of the site's latitude and longitude; drawing one from a
@@ -97,7 +98,19 @@ export function DomeScreen(): JSX.Element {
     return () => { gone = true; };
   }, [canSiteDerived, target]);
 
-  const nowTs = Date.now() / 1000;
+  /**
+   * THE SCREEN'S CLOCK, and every derived mark hangs off it.
+   *
+   * `Date.now()` inside a memo is not a clock - it is the instant that memo
+   * last ran. The target ring and the path to dawn were keyed on
+   * `[target, lat, lon]`, none of which moves during a session, so both froze
+   * at mount while the dome under them kept re-tiling: an hour in, the ring
+   * marked where the object had BEEN and the arc started from a position it had
+   * already left. `useSlowClock` re-publishes every minute, which is finer than
+   * anything either mark claims, and it is the same hook the conditions screen
+   * reads so the two screens cannot disagree about "now".
+   */
+  const nowTs = useSlowClock();
 
   // Where the scope is looking: the dome's pierce point, drawn by the panel
   // from this prop. Below the horizon is not a pointing anyone can image
@@ -117,10 +130,9 @@ export function DomeScreen(): JSX.Element {
   const lon = typeof site?.longitude === "number" ? site.longitude : null;
   const targetAltAz = useMemo(() => {
     if (!target || lat === null || lon === null) return null;
-    const { altDeg, azDeg } = altAzOf(target.ra_hours, target.dec_deg, lat, lon, Date.now() / 1000);
+    const { altDeg, azDeg } = altAzOf(target.ra_hours, target.dec_deg, lat, lon, nowTs);
     return { alt: altDeg, az: azDeg, name: target.name };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [target, lat, lon]);
+  }, [target, lat, lon, nowTs]);
 
   const wind = windSummary(weather?.now ?? null);
 
@@ -139,10 +151,9 @@ export function DomeScreen(): JSX.Element {
     if (!target || lat === null || lon === null) return null;
     const dawn = night?.dark_end_unix;
     if (typeof dawn !== "number") return null;
-    const nowSec = Date.now() / 1000;
-    const hoursToDawn = (dawn - nowSec) / 3600;
+    const hoursToDawn = (dawn - nowTs) / 3600;
     if (!(hoursToDawn > 0)) return null;
-    const lst = lstHours(lon, nowSec);
+    const lst = lstHours(lon, nowTs);
     const samples = walkTrack(target.dec_deg * D2R, (lst - target.ra_hours) * 15 * D2R, {
       latDeg: lat,
       hoursToDawn,
@@ -155,8 +166,7 @@ export function DomeScreen(): JSX.Element {
       holdAt: () => false,
     });
     return samples.length > 0 ? samples : null;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [target, lat, lon, night?.dark_end_unix, points, site?.horizon_min_deg]);
+  }, [target, lat, lon, night?.dark_end_unix, points, site?.horizon_min_deg, nowTs]);
 
   // The cloud model's switch lives in config, so the off state is known without
   // asking the model (which would be a request for a feature that is off). When

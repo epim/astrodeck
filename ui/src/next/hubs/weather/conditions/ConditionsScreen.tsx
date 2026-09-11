@@ -27,6 +27,7 @@ import { ActionButton, BannerCard, Card, Label, Mono, Pill, Switch } from "../..
 import type { MoonInfo, VisibilityNight, WeatherState } from "../../../../types";
 import { CloudChart } from "./CloudChart";
 import { ConditionsBand, NO_MOON_TARGET_HINT } from "./ConditionsBand";
+import { useSlowClock } from "../slowClock";
 import { contextTarget, fetchVisibility } from "./moon";
 import {
   deriveVerdict, windowSamples, WEATHER_OFF_HINT, WEATHER_OFF_TITLE,
@@ -77,17 +78,6 @@ function nearestAstro(
   if (best < 0 || bestD > 2 * 3600) return null;
   const v = a[key][best];
   return typeof v === "number" ? v : null;
-}
-
-/** A clock that ticks slowly enough not to redraw a 96-sample chart on every
- *  2 s status frame, and often enough that "updated 4 min ago" is true. */
-function useSlowClock(periodMs = 60_000): number {
-  const [t, setT] = useState(() => Date.now() / 1000);
-  useEffect(() => {
-    const id = window.setInterval(() => setT(Date.now() / 1000), periodMs);
-    return () => window.clearInterval(id);
-  }, [periodMs]);
-  return t;
 }
 
 export function ConditionsScreen(): JSX.Element {

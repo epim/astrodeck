@@ -30,9 +30,7 @@ import { NxIcon } from "../../../icons";
 import { nav } from "../../../router";
 import { useSite, useStore } from "../../../../store";
 import { useCapability } from "../../../../lib/caps";
-import {
-  fmtHoursAboveLimit, fmtMoonPhase, moonSepGlyph,
-} from "../../../../lib/visibility";
+import { fmtHoursAboveLimit, fmtMoonPhase } from "../../../../lib/visibility";
 import { difficultyHint, difficultyLabel } from "../../../../lib/difficulty";
 import { effectiveOptics } from "../../../../lib/effective";
 import { fovFromOptics } from "../../../../lib/framing";
@@ -41,7 +39,7 @@ import type { DifficultyTier } from "../../../../types";
 import { fmtClock } from "../../../lib/format";
 import { displayName, fullName } from "../finder";
 import { framingMatches } from "../frame/mosaic";
-import { DSO_HONESTY, INFO } from "./quickCopy";
+import { DSO_HONESTY, INFO, moonSepWord } from "./quickCopy";
 import { regionRowFor, useCatalogTarget } from "./targetsCatalog";
 import { useVisibilityNight } from "./quickVisibility";
 
@@ -293,12 +291,21 @@ function ObjectBrief({ id }: { id: string }): JSX.Element {
                       : "no astronomical darkness tonight"}
                     dim={night.dark_start_unix == null}
                   />
+                  {/* `fmtHoursAboveLimit` measures across the DARK WINDOW, so
+                      with no dark window it has nothing to measure and returns
+                      a bare em-dash - a character that is both against the copy
+                      rules and unreadable as an answer. The row below is one of
+                      the two places it is rendered, and the row above has
+                      already said there is no astronomical darkness; this says
+                      what that means for the hours. */}
                   <Row
                     term={`Above ${Math.round(night.alt_limit_deg)}°`}
                     value={night.never_rises_above_limit
                       ? "never, from this site tonight"
-                      : fmtHoursAboveLimit(night)}
-                    dim={night.never_rises_above_limit}
+                      : (night.dark_start_unix == null || night.dark_end_unix == null)
+                        ? "no dark window tonight"
+                        : fmtHoursAboveLimit(night)}
+                    dim={night.never_rises_above_limit || night.dark_start_unix == null}
                   />
                   {night.best_window && (
                     <Row
@@ -311,9 +318,16 @@ function ObjectBrief({ id }: { id: string }): JSX.Element {
                   {moon && (
                     <>
                       <Row term="Moon" value={fmtMoonPhase(moon.illumination, moon.phase_name)} />
+                      {/* A word, not `moonSepGlyph`'s cross/triangle/crescent:
+                          see `moonSepWord` for why this side spells it out. The
+                          term already says Separation, so the noun `moonSepText`
+                          adds for a dense list row would be redundant here. */}
                       <Row
                         term="Separation"
-                        value={`${moonSepGlyph(moon.separation_deg)} ${Math.round(moon.separation_deg)}°`}
+                        value={`${Math.round(moon.separation_deg)}°`
+                          + (moonSepWord(moon.separation_deg) === null
+                            ? ""
+                            : ` - ${moonSepWord(moon.separation_deg) as string} to the moon`)}
                       />
                     </>
                   )}

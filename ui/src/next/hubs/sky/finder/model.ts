@@ -252,13 +252,31 @@ export interface SkyModel {
   wind: WindModel | null;
   track: TrackRender | null;
   /**
-   * The SAME walk `track` is drawn from, before it was projected into the
-   * finder's flat sky box - alt/az samples, so a hemisphere can draw it too.
+   * The walk `track` is drawn from, before it was projected into the finder's
+   * flat sky box - alt/az samples, so a hemisphere could draw it too.
    *
-   * `TrackRender` is SVG polylines in box pixels and cannot be put on a dome,
-   * which is why `SkyHub`'s skydome card re-walked the arc by hand. Exposing
-   * the samples here is what lets that duplicate walk go: two walks over the
-   * same inputs are two chances to disagree about where an object goes.
+   * WHY THE DOME CARDS STILL WALK THEIR OWN, and that is deliberate rather
+   * than a leftover. This field describes the TRACKED object under the finder's
+   * OWN context, and a dome needs neither:
+   *
+   *   * SUBJECT. `trackSamples` follows `trackId` - whatever was last tapped or
+   *     deep-linked. The skydome card on `SkyHub` and the path on WEATHER > SKY
+   *     both draw the LOCK (the object nearest the reticle) and the session's
+   *     context target respectively, and neither is `trackId` in general.
+   *   * COLOUR. `classify` is applied with the finder's live `TrackContext`, so
+   *     the horizon mask follows the layers popover and stretches under forecast
+   *     cloud come back `hold`. A dome draws the horizon profile
+   *     unconditionally, so a track coloured as if the mask were off would run
+   *     red over open sky; and it must never colour a cloud hold, because the
+   *     cloud on that card is a MEASUREMENT and a forecast painted over one is
+   *     worse than no forecast at all.
+   *
+   * What is shared, and is the part worth sharing, is the geometry: every
+   * consumer calls the same `walkTrack` over the same site and the same
+   * horizon, so the arcs cannot disagree about where the object GOES - only
+   * about what each screen is entitled to say about it. See `SkyHub.tsx`'s
+   * `domeTrack` and `weather/dome/DomeScreen.tsx`'s `track` for the two
+   * contexts written out.
    */
   trackSamples: TrackSample[] | null;
   reticle: ReticleModel;
@@ -480,6 +498,16 @@ export interface PassesState {
   notes: string[];
   loading: boolean;
   error: string | null;
+  /**
+   * `ApiError.code` from the refusal, or null.
+   *
+   * The two 409s this route answers need different FACES, not different
+   * wording: `satellites_unavailable` (no site set) has nothing to retry, and
+   * `passes_busy` (another search is already running behind the route's
+   * semaphore) has nothing else. A card branching on the sentence would be
+   * matching prose the server is free to reword.
+   */
+  errorCode: string | null;
   /** A VISIBLE retry, never an automatic one - see the cost note below. */
   refresh: () => void;
 }
@@ -500,17 +528,19 @@ export interface PassesState {
  */
 export function useSatellitePasses(noradId: number | null, enabled: boolean): PassesState {
   const [state, setState] = useState<Omit<PassesState, "refresh">>({
-    passes: null, elements: null, notes: [], loading: false, error: null,
+    passes: null, elements: null, notes: [], loading: false, error: null, errorCode: null,
   });
   const [attempt, setAttempt] = useState(0);
   const refresh = useCallback(() => setAttempt((a) => a + 1), []);
   useEffect(() => {
     if (noradId == null || !enabled) {
-      setState({ passes: null, elements: null, notes: [], loading: false, error: null });
+      setState({
+        passes: null, elements: null, notes: [], loading: false, error: null, errorCode: null,
+      });
       return;
     }
     let alive = true;
-    setState((s) => ({ ...s, loading: true, error: null }));
+    setState((s) => ({ ...s, loading: true, error: null, errorCode: null }));
     void getSatellitePasses({ hours: PASS_WINDOW_HOURS, ids: [noradId] })
       .then((res) => {
         if (!alive) return;
@@ -520,16 +550,21 @@ export function useSatellitePasses(noradId: number | null, enabled: boolean): Pa
           notes: Array.isArray(res?.notes) ? res.notes : [],
           loading: false,
           error: null,
+          errorCode: null,
         });
       })
       .catch((e: unknown) => {
         if (!alive) return;
-        // The 409 for an unset site carries a bare-string detail, so the message
-        // IS the server's sentence and is shown as it stands.
-        const msg = (e as { message?: string } | null)?.message ?? "";
+        // The refusals carry a bare-string detail, so the message IS the
+        // server's sentence and is shown as it stands. The CODE travels beside
+        // it because the two 409s need different faces (see `errorCode`), and
+        // a card that matched on the prose would break the day it is reworded.
+        const err = e as { message?: string; code?: string } | null;
+        const msg = err?.message ?? "";
         setState({
           passes: null, elements: null, notes: [], loading: false,
           error: msg !== "" ? msg : PASSES_FAILED,
+          errorCode: typeof err?.code === "string" ? err.code : null,
         });
       });
     return () => { alive = false; };
@@ -1132,8 +1167,9 @@ export function useSkyModel(boxPx: number): SkyModel {
   //
   // The walk and the projection are SEPARATE memos on purpose: `TrackRender` is
   // box pixels and cannot be drawn on a hemisphere, so the alt/az samples are
-  // published beside it (`SkyModel.trackSamples`) rather than being re-walked
-  // by whoever needs them in another projection.
+  // published beside it (`SkyModel.trackSamples`) for any consumer whose
+  // subject and context match this one's. The dome cards' do not - see the
+  // field's own doc comment for which two things differ and why.
   const trackSamples = useMemo(() => {
     if (!trackId || !haveCoords) return null;
     const t = ranked.find((r) => r.id === trackId);
