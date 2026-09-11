@@ -27,6 +27,19 @@ SESSION_SCHEMA = 1
 MAX_SESSIONS = 200
 
 
+class SessionUnreadable(Exception):
+    """A session file exists and parses as JSON but is not a valid Session.
+
+    Distinct from ``KeyError`` (no such session) because the two deserve
+    different answers: one is "you asked for something that is not here", the
+    other is "what is here is damaged", and calling the second one the first
+    sends the user looking for a session they can see in the list."""
+
+    def __init__(self, session_id: str):
+        super().__init__(f"session file is unreadable: {session_id}")
+        self.session_id = session_id
+
+
 def _sessions_dir() -> Path:
     # Resolved lazily (module-attribute lookup) so tests that monkeypatch
     # hub.CAPTURE_DIR are honored — same pattern as engine's old _resume_file().
@@ -158,10 +171,60 @@ class SessionStore:
         return safe_id_path(_sessions_dir(), session_id)
 
     def load(self, session_id: str) -> Session:
+        """The stored session, or ``KeyError`` when there is no readable file.
+
+        A file that parses as JSON but is not a ``Session`` raises
+        :class:`SessionUnreadable`, NOT ``KeyError``: the six routes that load
+        a session all answer ``KeyError`` with "session not found", and that is
+        a false statement about a session that exists and is corrupt. It used
+        to be an uncaught ``ValidationError``, i.e. a 500 with a traceback and
+        no sentence naming the file."""
         raw = read_json_or(self._path(session_id))
         if not isinstance(raw, dict):
             raise KeyError(session_id)
-        return Session.model_validate(raw)
+        try:
+            return Session.model_validate(raw)
+        except Exception as e:
+            raise SessionUnreadable(session_id) from e
+
+    def _scan_status(self, status: str) -> list[tuple[float, Path]]:
+        """(updated_ts, path) for every stored session with ``status``, newest
+        first, WITHOUT building a ``Session`` for any of them.
+
+        ``load_all()`` fully pydantic-validates every archived session — 200
+        sessions x 170 frames is 34 000 ``SessionFrame`` models — to read one
+        string off each. Measured at the store's own soft cap, that scan was
+        0.982 s while the fold it fed took 0.002 s, i.e. the whole cost of
+        ``GET /api/sessions/current/files`` was finding the session. The status
+        and the timestamp are two top-level scalars in a file we have already
+        parsed, so ask the raw dict for them and validate only the winner."""
+        rows: list[tuple[float, Path]] = []
+        for path in list_json(_sessions_dir()):
+            raw = read_json_or(path)
+            if not isinstance(raw, dict) or raw.get("status") != status:
+                continue
+            ts = raw.get("updated_ts")
+            rows.append((float(ts) if isinstance(ts, (int, float)) else 0.0,
+                         path))
+        rows.sort(key=lambda r: r[0], reverse=True)
+        return rows
+
+    def active(self) -> Session | None:
+        """The session a run is writing to right now, or None.
+
+        Most recently updated wins defensively — there should only ever be one.
+        A file that no longer validates is SKIPPED rather than raised, the same
+        rule ``load_all`` keeps: a corrupt archive must not make the live
+        session unfindable."""
+        for _ts, path in self._scan_status("active"):
+            raw = read_json_or(path)
+            if not isinstance(raw, dict):
+                continue
+            try:
+                return Session.model_validate(raw)
+            except Exception:
+                continue
+        return None
 
     def load_all(self) -> list[Session]:
         out: list[Session] = []

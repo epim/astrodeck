@@ -217,6 +217,39 @@ def test_a_polar_run_blocks_a_restart(client, monkeypatch):
     assert hub.restart_blocker is None
 
 
+
+def _without_comments(src: str) -> str:
+    """``src`` with every ``#`` comment blanked out, positions preserved.
+
+    Blanked rather than deleted so a tokenize failure on one file cannot shift
+    the rest of it; on a SyntaxError the source comes back untouched, which
+    fails LOUD (an invented lane) rather than silently scanning nothing."""
+    import io
+    import tokenize
+
+    try:
+        toks = list(tokenize.generate_tokens(io.StringIO(src).readline))
+    except (tokenize.TokenError, SyntaxError, IndentationError):
+        return src
+    lines = src.splitlines(keepends=True)
+    for tok in toks:
+        if tok.type != tokenize.COMMENT:
+            continue
+        (row, col), (_, end_col) = tok.start, tok.end
+        line = lines[row - 1]
+        lines[row - 1] = line[:col] + " " * (end_col - col) + line[end_col:]
+    return "".join(lines)
+
+
+def _lanes_in(src: str) -> set[str]:
+    """Every lane name this source claims: ``_spawn("x")`` and
+    ``hub._busy["x"] = ...`` (which also catches ``self._hub._busy[...]``)."""
+    import re as _re
+    found = set(_re.findall(r'_spawn\(\s*"([^"]+)"', src))
+    found |= set(_re.findall(r'_busy\[\s*"([^"]+)"\s*\]\s*=', src))
+    return found
+
+
 def test_every_lane_is_classified_as_blocking_or_not():
     """The guard that would have caught the roof the day the lane moved.
 
@@ -231,16 +264,33 @@ def test_every_lane_is_classified_as_blocking_or_not():
     thing that went stale."""
     import inspect
     import pathlib
-    import re
 
     import astrodeck.hub as hub_mod
 
-    src = pathlib.Path(inspect.getfile(app_module)).read_text(encoding="utf-8")
-    lanes = set(re.findall(r'_spawn\(\s*"([^"]+)"', src))
-    lanes |= set(re.findall(r'hub\._busy\[\s*"([^"]+)"\s*\]\s*=', src))
-    assert {"goto", "dome", "polar"} <= lanes, (
+    # EVERY .py IN THE PACKAGE, not just api/app.py. A lane is claimed wherever
+    # a task is parked in ``hub._busy``, and since the routers started moving
+    # out of app.py (the atlas routers, then imaging/video_routes.py) that is no
+    # longer only here: ``video`` and ``video_stack`` are claimed in
+    # imaging/video.py, so a guard reading app.py alone was quietly grading a
+    # shrinking share of the app while still reporting a full pass. A guard that
+    # narrows its own scope as the code moves is worse than no guard, because it
+    # keeps saying yes.
+    roots = [pathlib.Path(inspect.getfile(app_module))]
+    roots += sorted(pathlib.Path(inspect.getfile(hub_mod)).parent.rglob("*.py"))
+    lanes: set[str] = set()
+    for path in roots:
+        # COMMENTS FIRST. Widening to the package put hub.py's own prose in
+        # range, and the sentence describing this very scrape contains a
+        # ``_spawn("...")`` example -- so the guard's first act was to invent a
+        # lane called "..." and fail on it. Blanking comments is the narrow fix:
+        # the lane literals we are after are code, and nothing else in the
+        # package writes one in a docstring.
+        lanes |= _lanes_in(_without_comments(path.read_text(encoding="utf-8")))
+    assert {"goto", "dome", "polar", "video"} <= lanes, (
         f"precondition: the scrape actually found the lanes it is judging "
         f"(if _spawn's call shape changed, fix this regex, not the tables); "
+        f"``video`` is claimed OUTSIDE api/app.py, so it is also the witness "
+        f"that the scrape still reaches the whole package; "
         f"found {sorted(lanes)}")
 
     known = {n for n, _ in hub_mod.BUSY_LANE_LABELS} | set(hub_mod.UNLABELLED_LANES)

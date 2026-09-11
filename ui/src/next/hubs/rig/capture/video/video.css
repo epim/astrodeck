@@ -1,0 +1,194 @@
+/* video.css - VIDEO mode's own classes (wave U7b, T-U7b-4).
+ *
+ * `next.css` is a single shared file that a wave of concurrent tasks cannot
+ * own, so every class this area needs lives here and is imported once, by the
+ * area root (`index.ts`).
+ *
+ * Rules this file keeps: single-class selectors only, variants on `data-*`, no
+ * class defined in `next.css` appears in any selector here (not even as an
+ * ancestor), tokens from `index.css` only, nothing below the 10 px type floor,
+ * and every hit target that is a control is at least 44 px.
+ */
+
+.nx-vid {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.nx-vid-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* ------------------------------------------------------------------ subframe */
+
+.nx-vid-roi {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Wraps rather than scrolling: four presets must all be reachable at 320 px,
+ * and a row that scrolls sideways hides the one the operator wants. */
+.nx-vid-roi-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.nx-vid-roi-preset {
+  flex: 1 1 64px;
+  min-height: 44px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--bg-raise);
+  color: var(--text-dim);
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+}
+
+/* State by border AND weight, never hue alone - the night theme swaps the
+ * tokens and a colour-only selection disappears under it. */
+.nx-vid-roi-preset[data-on="true"] {
+  border-color: var(--accent);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.nx-vid-roi-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+/* ------------------------------------------------------------------ controls */
+
+.nx-vid-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.nx-vid-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.nx-vid-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.nx-vid-refusal {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* ---------------------------------------------------------------- recordings */
+
+.nx-vid-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.nx-vid-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.nx-vid-row-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.nx-vid-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+/* The download is a real anchor, so it is styled to read as one rather than
+ * being dressed up as a button that a long-press cannot save. */
+.nx-vid-download {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  color: var(--accent);
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  text-decoration: none;
+}
+
+/* Its honest-disabled twin: the same shape, dimmed, with the reason in the
+ * text. NOT an anchor - a link that 403s reports itself to the browser as a
+ * broken download, which is the worst way to learn about a capability. */
+.nx-vid-fakelink {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 12px;
+  border-radius: 10px;
+  border: 1px dashed var(--line);
+  color: var(--text-faint);
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.nx-vid-stack-img {
+  width: 100%;
+  max-width: 100%;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  display: block;
+}
+
+.nx-vid-keep {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.nx-vid-keep-opt {
+  flex: 1 1 80px;
+  min-height: 44px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--bg-raise);
+  color: var(--text-dim);
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.nx-vid-keep-opt[data-on="true"] {
+  border-color: var(--accent);
+  color: var(--text);
+  font-weight: 600;
+}
+
+@media (min-width: 768px) {
+  .nx-vid-roi-fields,
+  .nx-vid-fields {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}

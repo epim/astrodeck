@@ -210,6 +210,8 @@ test("effectiveOptics draws from the WINNING layer, not config.optics", () => {
     sensor_height_px: 4176,
     auto_from_camera: false,
     telescope_name: "",
+    aperture_mm: 0,
+    reducer: 1,
   };
   const c = cfg({
     "optics.focal_length_mm": entry({ value: 250, layer: "profile", config: 530 }),
@@ -234,6 +236,8 @@ test("without provenance, effectiveOptics reproduces the OLD camera merge", () =
     sensor_height_px: 0,
     auto_from_camera: true,
     telescope_name: "",
+    aperture_mm: 0,
+    reducer: 1,
   };
   const o = effectiveOptics(cfg({}), global, {
     pixel_size_um: 3.76,
@@ -298,6 +302,8 @@ test("an optics block is summarised by the two facts that identify a scope", () 
         sensor_height_px: 0,
         auto_from_camera: true,
         telescope_name: "Redcat 51",
+        aperture_mm: 0,
+        reducer: 1,
       },
     }) ?? "";
   assert(s.includes("250 mm"), `focal length: ${s}`);

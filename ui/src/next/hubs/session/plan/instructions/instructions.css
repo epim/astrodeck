@@ -1,0 +1,146 @@
+/* instructions.css - the conditional sequencer's own chrome.
+ *
+ * Area css (wave R7 section 1), imported by `PlanInstructionsSection.tsx` only.
+ * Prefix `nx-planrule-` / `nx-planrules-` so it cannot collide with the sibling
+ * areas under `plan/` or with `next.css`. Tokens only. */
+
+.nx-planrules {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.nx-planrules-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.nx-planrules-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+/* One rule. A left rule-line rather than a box: the rules are a list of
+ * sentences, and boxing each one in a 420 px column costs more horizontal room
+ * than the sentences have to spare. */
+.nx-planrule {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding-left: 10px;
+  border-left: 2px solid var(--line);
+}
+
+.nx-planrule-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+
+.nx-planrule-field {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.nx-planrule-grow {
+  flex: 1 1 180px;
+  min-width: 0;
+}
+
+/* The picker. `next/ui` has no select primitive, so this borrows the input
+ * shape from `.nx-input` rather than inventing a second one. A locked select is
+ * `aria-disabled`, never `disabled`, so the arrow stays and the press explains
+ * itself. */
+.nx-planrule-select {
+  min-height: 44px;
+  width: 100%;
+  max-width: 100%;
+  padding: 0 10px;
+  border: 1px solid var(--line2);
+  border-radius: 10px;
+  background: var(--bg-raise);
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 12px;
+}
+
+.nx-planrule-select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.nx-planrule-select[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.nx-planrule-note {
+  margin: 0;
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+
+.nx-planrule-note[data-tone="dim"] { color: var(--text-3); }
+.nx-planrule-note[data-tone="warn"] { color: var(--warn); }
+
+.nx-planrule-adv {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.nx-planrule-compound {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  padding-left: 8px;
+  border-left: 1px solid var(--line);
+}
+
+.nx-planrule-problems {
+  margin: 0;
+  padding-left: 16px;
+  color: var(--warn);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+.nx-planrule-sim {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.nx-planrule-outcomes {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* Never colour alone: the sentence beside each mark already says "would fire"
+ * or "waiting", and the border is the second channel for a red-light screen. */
+.nx-planrule-outcomes li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-left: 8px;
+  border-left: 2px solid var(--line);
+  min-width: 0;
+}
+
+.nx-planrule-outcomes li[data-fire="yes"] { border-left-color: var(--good); }
+.nx-planrule-outcomes li[data-fire="destructive"] { border-left-color: var(--warn); }

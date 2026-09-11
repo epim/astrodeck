@@ -55,6 +55,21 @@ class CameraCapabilities:
     max_adu: int
     read_modes: tuple[str, ...] = ()
     hcg_threshold_gain: int | None = None
+    #: Can this adapter run a bounded BURST - many short exposures at a fixed
+    #: ROI without re-configuring the sensor between them? False (the default)
+    #: means the only way to get N frames is N full start/ready/read cycles,
+    #: which on this engine's polling floor tops out near 20 fps. Declared, never
+    #: assumed: a brand that has not implemented the hooks below says so here.
+    burst_supported: bool = False
+    #: Highest frame rate this adapter will honour at full ROI, or None when it
+    #: cannot say. Informational: the recorder clamps to it and reports the
+    #: clamp rather than silently delivering a slower file than the caller asked
+    #: for - the same rule Focuser.is_moving keeps about hopeful answers.
+    max_fps: float | None = None
+    #: Smallest ROI alignment the sensor will actually apply, in unbinned pixels
+    #: (ZWO wants width % 8 == 0 and height % 2 == 0). The recorder rounds to it
+    #: BEFORE the request so applied_roi never has to disagree.
+    roi_align: tuple[int, int] = (1, 1)
     extra: Mapping[str, object] = field(default_factory=dict)
 
 
@@ -84,6 +99,47 @@ class CameraAdapter(ABC):
     # --- optional (implement only if the hardware has it) -----------------
     def set_read_mode(self, mode: str) -> None:
         raise DeviceError("camera has no selectable read modes")
+
+    # --- burst / video (stage 1b) -----------------------------------------
+    #
+    # THE FAST-CADENCE PATH, AND WHY IT IS THREE HOOKS AND NOT ONE.
+    #
+    # The four exposure primitives above are SNAP mode: configure the sensor,
+    # start, poll, download, repeat. Every vendor SDK here also has a streaming
+    # mode that keeps the sensor configured and hands frames off a running
+    # pipeline (ZWO: ASIStartVideoCapture / ASIGetVideoData / ASIStopVideoCapture;
+    # Player One: POAStartExposure(True) / POAGetImageData / POAStopExposure),
+    # and that is the difference between ~20 fps and the hundreds of fps a
+    # planetary recording wants.
+    #
+    # Nothing implements them yet. No binding in this tree declares a video entry
+    # point at all -- zwo_asi_sdk._SIGNATURES binds only the four exposure calls,
+    # and _ASI_CAMERA_INFO.SupportedVideoFormat is read by nothing -- so
+    # implementing these for ZWO and Player One is a vendor-verification exercise
+    # (devices/vendor_verify.py) against the real DLLs, deferred as stage 1b.
+    # Until then imaging/video.py uses its generic fallback and SAYS SO in the
+    # recording's clamp_reason, rather than quietly delivering 20 fps to someone
+    # who asked for 200.
+    #
+    # Three hooks rather than one because the recorder must be able to stop: a
+    # single blocking "record N frames" call cannot be cancelled, cannot publish
+    # progress, and cannot leave a valid short file behind.
+    def burst_begin(self, *, roi: ROI, gain: int, offset: int,
+                    exposure_s: float) -> None:
+        """Configure the sensor once and start the stream."""
+        raise DeviceError("camera has no burst/video path")
+
+    def burst_next(self, timeout_s: float) -> bytes | None:
+        """One frame's raw bytes, or None when none arrived within the timeout.
+
+        None is a DROPPED frame, not an error and not the end: a stream that
+        misses a frame under USB contention is normal, and the recorder counts
+        it. Only an exception ends a recording."""
+        raise DeviceError("camera has no burst/video path")
+
+    def burst_end(self) -> None:
+        """Stop the stream. Must be safe to call after a failed begin."""
+        raise DeviceError("camera has no burst/video path")
 
     def set_target_temp(self, celsius: float) -> None:
         raise DeviceError("camera has no cooler")

@@ -141,6 +141,122 @@ class TestReportsAndSessions:
             "place would corrupt every other consumer")
 
 
+class TestTheZipIsNotALoopholeEither:
+    """``GET /api/reports/{id}/bundle.zip`` is the same report, the same
+    frames, and the same ``view.status`` floor as the two routes above -- and
+    it never took a principal and never called the externalizer. Its
+    ``manifest.json``, ``weights.csv`` and ``build.sh``/``build.ps1`` members
+    each carried ``fr.saved_path`` verbatim, so the file that gets mailed to a
+    forum thread named the observatory's account, drive and directory scheme
+    three times over. No FITS bytes leak; the filesystem layout did.
+    """
+
+    def _zip(self, captures, tmp_path, monkeypatch, rel="NGC 6946/a.fits"):
+        store = config_mod.ConfigStore(path=tmp_path / "astrodeck.json")
+        monkeypatch.setattr(config_mod, "config_store", store)
+        monkeypatch.setattr(app_module, "config_store", store)
+
+        from astrodeck.sequence.report import FrameRecord, SessionReport
+
+        rep = SessionReport(id="r1", name="n", started_ts=time.time())
+        rep.frames.append(FrameRecord(
+            ts=time.time(), target="NGC 6946", filter="L", frame_type="LIGHT",
+            exposure_s=60.0, gain=100, binning=1, hfr=2.0, accepted=True,
+            saved_path=_abs(captures, rel)))
+        monkeypatch.setattr(app_module.SessionReporter, "load",
+                            staticmethod(lambda rid: rep))
+        c = TestClient(app_module.create_app())
+        r = c.get("/api/reports/r1/bundle.zip")
+        assert r.status_code == 200, r.text
+        import io
+        import zipfile
+        z = zipfile.ZipFile(io.BytesIO(r.content))
+        return {n: z.read(n).decode("utf-8") for n in z.namelist()}
+
+    def test_no_member_carries_the_capture_root(self, captures, tmp_path,
+                                                monkeypatch):
+        members = self._zip(captures, tmp_path, monkeypatch)
+        assert set(members) == {"manifest.json", "weights.csv", "README.txt",
+                                "build.sh", "build.ps1"}
+        for name, body in members.items():
+            assert str(captures) not in body, \
+                f"{name} leaked the absolute path:\n{body[:400]}"
+
+    def test_the_relative_path_is_still_there_to_use(self, captures, tmp_path,
+                                                     monkeypatch):
+        """Withholding the location is not the same as withholding the file: a
+        stacker still needs to know WHICH sub each row is."""
+        members = self._zip(captures, tmp_path, monkeypatch)
+        assert "NGC 6946/a.fits" in members["manifest.json"]
+        assert "NGC 6946/a.fits" in members["weights.csv"]
+        assert json.loads(members["manifest.json"])["groups"][0]["lights"][0][
+            "src"] == "NGC 6946/a.fits"
+
+    def test_the_build_scripts_still_resolve(self, captures, tmp_path,
+                                             monkeypatch):
+        """A relative source with nothing to resolve it against would be a
+        script that no longer builds -- the fix has to keep the one-click
+        promise, so both shells read the user's own capture folder from
+        CAPTURE_ROOT and refuse to run without it."""
+        members = self._zip(captures, tmp_path, monkeypatch)
+        sh = members["build.sh"]
+        assert 'CAPTURE_ROOT:?' in sh, sh
+        assert 'cp -- "$CAPTURE_ROOT"/' in sh, sh
+        assert "\\" not in sh, sh
+        ps1 = members["build.ps1"]
+        assert "$env:CAPTURE_ROOT" in ps1, ps1
+        assert "Join-Path $CaptureRoot 'NGC 6946/a.fits'" in ps1, ps1
+        assert "CAPTURE_ROOT" in members["README.txt"]
+
+    def test_an_adversarial_filename_is_still_only_a_quoted_literal(
+            self, captures, tmp_path, monkeypatch):
+        """The CAPTURE_ROOT join must not become an escape: the variable is
+        expanded in its own quoted word and the relative path stays a shell
+        literal beside it."""
+        import shlex
+        evil = "NGC 6946/$(reboot)`id`; & rmdir 'y'.fits"
+        members = self._zip(captures, tmp_path, monkeypatch, rel=evil)
+        dest = json.loads(members["manifest.json"])[
+            "groups"][0]["lights"][0]["dest"]
+        sh = members["build.sh"]
+        assert f'"$CAPTURE_ROOT"/{shlex.quote(evil)}' in sh, sh
+        # Both halves of the cp are quoted literals; blank them and nothing
+        # metacharacter-shaped is left loose in the script.
+        bare = sh.replace(shlex.quote(evil), "<SRC>").replace(
+            shlex.quote(dest), "<DEST>")
+        assert "$(reboot)" not in bare, bare
+        ps1 = members["build.ps1"]
+        assert "'" + evil.replace("'", "''") + "'" in ps1
+        bare_ps = ps1.replace(evil.replace("'", "''"), "<SRC>").replace(
+            dest.replace("'", "''"), "<DEST>")
+        assert "$(reboot)" not in bare_ps, bare_ps
+
+    def test_a_source_outside_the_library_is_absent_not_absolute(
+            self, captures, tmp_path, monkeypatch):
+        """The same rule ``_externalize_frame_paths`` keeps for a NINA save on
+        another host: a path we cannot express relatively is dropped, never
+        fallen back to."""
+        from astrodeck.sequence.bundle import (Bundle, Group, LightEntry,
+                                               build_script, externalize_bundle,
+                                               manifest_json)
+        elsewhere = str(tmp_path / "nina" / "x.fits")
+        light = LightEntry(src=elsewhere, dest="M42/L/60s/lights/x.fits", ts=1.0,
+                           accepted=True, hfr=None, ecc=None, guide_rms=None,
+                           sensor_temp_c=None, altitude_deg=None, weight=1.0)
+        b = Bundle(report_id="r1", plan_name="p", layout="grouped",
+                   groups=(Group(dir="M42/L/60s", target="M42", filter="L",
+                                 exposure_s=60.0, gain=None, binning=None,
+                                 lights=(light,), masters={}, master_sources={},
+                                 missing_masters=()),),
+                   warnings=())
+        from astrodeck import gallery
+        out = externalize_bundle(b, gallery.relpath_under_capture)
+        assert out.groups[0].lights[0].src == ""
+        assert "src" not in manifest_json(out)["groups"][0]["lights"][0]
+        assert elsewhere not in build_script(out, "sh")
+        assert elsewhere not in build_script(out, "ps1")
+
+
 class TestCsvIsNotALoophole:
     def test_the_csv_carries_the_same_relative_value_as_the_json(
             self, captures, tmp_path, monkeypatch):

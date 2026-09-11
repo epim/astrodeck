@@ -61,26 +61,307 @@ _SITE_STRIP_KEYS = ("name", "latitude", "longitude", "elevation_m")
 # So the derived values are ABSENT for a non-holder, the same as the raw ones.
 _MOUNT_DERIVED_KEYS = ("alt", "az")
 
+# The SECOND site-derived node, and it sits at the top level as a sibling of
+# ``mount`` rather than inside it, which is exactly how it survived the audit
+# that closed alt/az. ``hub._compute_meridian`` builds the countdown from the
+# hour angle: ``lst = lst_hours(site["longitude"])``, ``ha = LST - RA``,
+# ``hours_to_flip = -ha``. So a caller who holds ``mount.ra_hours`` (which is
+# not site data) recovers ``LST = ra_hours - hours_to_flip`` and from it
+# ``longitude = (LST - GMST(t)) * 15``. The value is rounded to 4 decimal
+# hours = 0.36 s of hour angle = ~120 m of longitude, so the rounding is not a
+# defence.
+#
+# The STATUS word leaks too, coarsely, and had to be collapsed with it:
+# ``n_a_over_pole`` is ``flip_unnecessary_over_pole(dec, site["latitude"])``, a
+# latitude-dependent predicate a caller can sweep by pointing the mount, and
+# ``counting`` / ``due`` is the SIGN of that same hour angle. The three below
+# are the site-derived verdicts; ``n_a_fork`` (pier side), ``flip_disabled``
+# (the plan) and ``unknown`` are not, and stay.
+_MERIDIAN_DERIVED_KEYS = ("hours_to_flip",)
+_MERIDIAN_DERIVED_STATUSES = frozenset({"counting", "due", "n_a_over_pole"})
+#: What a collapsed status becomes. Both UI consumers already render this as
+#: "unknown"/"the mount does not report a flip" rather than crashing, and
+#: ``flip_enabled``/``pier_side`` still ride the block, so a non-holder keeps
+#: the two facts that are about the MOUNT rather than about where it stands.
+_MERIDIAN_UNKNOWN = "unknown"
 
-def _strip_mount_derived(mount: dict) -> None:
+
+def _strip_mount_derived(mount: dict, container: dict | None = None) -> None:
     """Remove the site-derived pointing values from a mount block IN PLACE.
 
     RA/Dec stay: they say where the telescope looks, not where it stands.
     Alt/az are the same fact expressed in the OBSERVER's frame, which is the
-    part that localizes them."""
+    part that localizes them.
+
+    ``container`` is the payload the node came out of, passed to EVERY stripper
+    so a rule that depends on a SIBLING node can be written (see
+    ``_strip_camera_dew``). Unused here."""
     for k in _MOUNT_DERIVED_KEYS:
         mount.pop(k, None)
 
 
-def _scrub_derived_node(container: dict) -> None:
-    """Make ``container['mount']`` safe for a non-holder IN PLACE, fail-CLOSED
-    on an unexpected shape — same rule as :func:`_scrub_site_node`."""
-    if "mount" not in container:
+def _strip_meridian_derived(meridian: dict, container: dict | None = None) -> None:
+    """Remove the site-derived flip timing from a meridian block IN PLACE.
+
+    ``hours_to_flip`` becomes NULL rather than absent (the field is typed
+    ``number | null`` on every client and already has a "no countdown" render),
+    and a site-derived ``status`` collapses to ``unknown``. ``flip_enabled``
+    and ``pier_side`` are properties of the mount and the loaded plan, not of
+    the observer's position, so they stay."""
+    for k in _MERIDIAN_DERIVED_KEYS:
+        if k in meridian:
+            meridian[k] = None
+    if meridian.get("status") in _MERIDIAN_DERIVED_STATUSES:
+        meridian["status"] = _MERIDIAN_UNKNOWN
+
+
+#: node key -> the in-place stripper for it. ONE table, so a third derived node
+#: is added in one place and both the REST seam and the WS seam get it.
+_DERIVED_NODES = (("mount", _strip_mount_derived),
+                  ("meridian", _strip_meridian_derived))
+
+# WHY SATELLITES ARE NOT IN THAT TABLE, and are gated whole instead (D-SKY-1).
+# Every entry above works by DEGRADING a node: mount.alt/az come off and RA/Dec
+# stay; meridian's countdown goes null and the pier side stays. The planets take
+# the same shape one level down -- ``solar_system._observer(site_derived)``
+# hands a non-holder the GEOCENTRIC observer, so the row is computed from the
+# centre of the Earth and no field of it can carry the site, at a cost of at
+# most 12.8 arcsec of position. That trick works because a planet is far away.
+# It does not transfer to a satellite: at 400 km, topocentric parallax is TENS
+# OF DEGREES, so the geocentric answer is not a coarser version of the
+# topocentric one, it is a different part of the sky. There is nothing to
+# degrade to. So ``GET /api/satellites/passes`` is gated WHOLE on
+# ``view.site_derived`` (like ``GET /api/catalog/tonight``), and the satellite
+# rows inside ``GET /api/catalog`` are withheld inside ``objects.search()``
+# BEFORE the propagator runs -- the Moon's rule, for a much larger number. A
+# stripper here would have been the wrong tool twice over: it would have had to
+# remove every field of the row, and it would have run after the answer already
+# existed.
+
+# ------------------------------------------- values DERIVED from the WEATHER
+# The dew-heater node, carried here for the dew-control lane (which does not own
+# this file). Gated on ``view.weather``, the cap that already decides whether a
+# principal sees the forecast at all -- and it has to be gated, because a heater
+# power driven from the dew margin IS THE DEW MARGIN RE-ENCODED. The same shape
+# as ``mount.alt`` being latitude: the number does not carry the word.
+#
+# What stays is the SETTINGS (is the heater on, is it following the dew point,
+# is there a manual override running, which ports exist); what goes is the
+# READINGS (the margin, the air temperature, the dew point, and the duty cycle
+# computed from them).
+#
+# AND THE DUTY CYCLE HAS THREE CARRIERS, not one. That is what the first pass
+# missed: nulling ``dew.power_pct`` and the dew node's own port rows left the
+# SAME number reaching a viewer as ``camera.dew_heater`` (the register the loop
+# writes) and as the ``value`` of a ``follow_dew`` port on
+# ``GET /api/switch/ports`` (the port the loop writes). Each is gated here, on
+# ``view.weather``, under one predicate - ``dew_is_following`` - so the three
+# can never answer differently:
+#
+#   dew.power_pct + dew.ports[].value  ->  _strip_dew
+#   camera.dew_heater                  ->  _strip_camera_dew
+#   GET /api/switch/ports  value       ->  _redact_switch_ports_for
+_WEATHER_DERIVED_KEYS = ("margin_c", "temp_c", "dewpoint_c")
+
+
+def dew_is_following(dew: object) -> bool:
+    """Is the dew loop DRIVING the heaters right now?
+
+    The ONE predicate behind every "this heater level is a weather reading"
+    decision, so the status node, the WS push and ``GET /api/switch/ports``
+    cannot answer it three different ways. ``enabled and following`` is the
+    only combination in which a level on a heater was CHOSEN BY THE RAMP; with
+    the loop off, or paused by a manual override, the number on the register is
+    the one a human put there and says nothing about the air.
+
+    Total: anything that is not a dew snapshot with both flags true is False
+    (the loop has not ticked, the build has no dew controller, the node came
+    back in a shape we do not recognise)."""
+    return bool(isinstance(dew, dict)
+                and dew.get("enabled") and dew.get("following"))
+
+
+def _strip_dew(dew: dict, container: dict | None = None) -> None:
+    """Remove the dew-point READINGS from a dew block IN PLACE.
+
+    ``margin_c``/``temp_c``/``dewpoint_c`` are made ABSENT and ``power_pct``
+    becomes NULL (the field is typed ``number | null`` on the client and already
+    renders a "not reporting" state). ``power_pct`` is collapsed rather than
+    kept because a heater following the dew point is a continuous function of
+    the margin: publishing the duty cycle publishes the margin at whatever
+    resolution the caller cares to sample, which is the same finding that closed
+    ``mount.alt``.
+
+    ``enabled``/``following``/``override_until_ts``/``reason``/``ports`` stay:
+    they are settings and identities, not measurements of the air -- but a
+    FOLLOWING port's ``value`` is the same leak as ``power_pct`` wearing a
+    port id, because it IS the duty cycle this loop just wrote to that port.
+    So the row survives (the id, the name and the fact that it follows are
+    equipment) and its level is nulled. A port that does NOT follow keeps its
+    value: nobody derived it from the air."""
+    for k in _WEATHER_DERIVED_KEYS:
+        dew.pop(k, None)
+    if "power_pct" in dew:
+        dew["power_pct"] = None
+    rows = dew.get("ports")
+    if isinstance(rows, list):
+        # A NEW LIST OF NEW ROWS, never an in-place edit of the caller's. The
+        # WS seam hands us a SHALLOW copy of the dew node (_redact_ws_event),
+        # so the list and its dicts are still the shared bus event's -- writing
+        # through them would take the level out of the admin's copy too, which
+        # is the same bug the copy above exists to prevent.
+        #
+        # `follow_dew` MISSING is treated as following: fail-closed on a row
+        # whose shape we do not recognise.
+        dew["ports"] = [
+            {**row, "value": None}
+            if isinstance(row, dict) and row.get("follow_dew", True)
+            and "value" in row else row
+            for row in rows]
+
+
+#: The camera node's dew-heater register. Its own constant because it is the
+#: only key of that node this module has any opinion about.
+_CAMERA_DEW_KEY = "dew_heater"
+
+
+def _strip_camera_dew(camera: dict, container: dict | None = None) -> None:
+    """Remove ``camera.dew_heater`` IN PLACE **while the dew loop is driving it**.
+
+    THE SECOND CARRIER OF THE SAME NUMBER, and it is the one that survived the
+    first pass. ``_strip_dew`` nulls ``dew.power_pct`` because a heater power
+    that follows the dew point IS the dew margin re-encoded - and then the very
+    same duty cycle was published one node over as ``camera.dew_heater``,
+    unstripped, to any holder of ``view.status``. Inverting the ramp
+    (``dew.ramp_power``, four config numbers a viewer reads off ``GET
+    /api/config``) recovers the margin from it to about 0.2 C, which is the
+    whole quantity ``view.weather`` exists to withhold.
+
+    CONDITIONAL, because the original argument for publishing it is still
+    right when the loop is NOT driving. This is a DEVICE READOUT of a register
+    an operator sets by hand from the Capture bench, and it exists so that
+    slider shows the level the heater is actually at instead of its own last
+    write (the bug that reading it fixed). With the loop off or paused, the
+    number on the register is the one a human put there: it is 60% whether the
+    dew point is -10 C or 14 C, and withholding it would break a control an
+    operator has always had in order to hide something that is not a
+    measurement. With the loop FOLLOWING, the same field is the ramp's output
+    and nothing else.
+
+    ``container`` is the payload the camera node came out of, and the sibling
+    ``dew`` node in it is what says which of the two it is. A payload with no
+    ``dew`` node at all (the loop has not ticked yet, or this build has no dew
+    controller) is "not following" - nothing has commanded that register, so
+    there is no weather in it.
+
+    ABSENT, not nulled, and only this one key: ``camera`` is the biggest node
+    on the status frame and every other field of it (temperature, cooler,
+    binning, the video capabilities) is about the camera."""
+    if not dew_is_following((container or {}).get("dew")):
         return
-    if isinstance(container.get("mount"), dict):
-        _strip_mount_derived(container["mount"])
-    else:
-        container.pop("mount", None)
+    camera.pop(_CAMERA_DEW_KEY, None)
+
+
+#: node key -> stripper, for nodes gated on ``view.weather`` rather than
+#: ``view.site_derived``. A separate table because it is a separate cap: an
+#: operator holds weather and not site_precise, a syncer holds neither.
+#:
+#: ``camera`` is in the WEATHER table and not the site one, and it is stripped
+#: PARTIALLY (one key) rather than wholesale - see ``_strip_camera_dew``.
+_WEATHER_DERIVED_NODES = (("dew", _strip_dew), ("camera", _strip_camera_dew))
+
+
+def _scrub_derived_node(container: dict, table=_DERIVED_NODES) -> None:
+    """Make every DERIVED node in ``container`` safe for a non-holder,
+    fail-CLOSED on an unexpected shape - same rule as :func:`_scrub_site_node`.
+
+    ``table`` is which family of derived nodes to strip: ``_DERIVED_NODES``
+    (site) or ``_WEATHER_DERIVED_NODES``. One implementation, two caps, so a
+    node added to either table gets the fail-closed behaviour for free.
+
+    EVERY NODE IS COPIED BEFORE IT IS STRIPPED, and that is a correctness fix
+    rather than tidiness. ``_redact_site_for``'s docstring promised it was
+    handed "a fresh per-call dict", and for the top level it is - but the NODES
+    inside it are not always fresh. ``hub.poll_status`` stashes the meridian
+    block it just built as ``hub.last_meridian`` and puts THE SAME OBJECT on
+    the payload, so stripping it in place blanked ``hours_to_flip`` in the
+    hub's own copy: one viewer's ``GET /api/status`` dropped the flip ETA for
+    the ENGINE (which reads ``last_meridian`` to window-gate the flip cost) and
+    for every later reader, until the next poll rebuilt it. The WS seam already
+    copied for the same reason; now both do."""
+    for key, strip in table:
+        if key not in container:
+            continue
+        node = container.get(key)
+        if isinstance(node, dict):
+            new_node = dict(node)
+            strip(new_node, container)
+            container[key] = new_node
+        else:
+            container.pop(key, None)
+
+
+def _panic_scrub_weather(container: dict) -> None:
+    """Last-resort scrub of the weather-gated nodes, for the ``except`` arms.
+
+    NOT a plain ``pop`` of every key in the table, which is what the site and
+    site-derived arms do. ``camera`` is the whole camera block - temperature,
+    cooler, binning, video capabilities - and only ONE key of it rides
+    ``view.weather``. Dropping the node would take a viewer's entire camera
+    panel off the wire to hide one integer, which is a worse failure than the
+    one the guard exists for.
+
+    So the panic path drops the ``dew`` node wholesale (all of it is readings)
+    and takes exactly ``dew_heater`` off a copy of the camera node -
+    UNCONDITIONALLY here, because the condition is the thing we just failed to
+    evaluate, and an unevaluated condition fails closed."""
+    container.pop("dew", None)
+    cam = container.get("camera")
+    if isinstance(cam, dict):
+        cam = dict(cam)
+        cam.pop(_CAMERA_DEW_KEY, None)
+        container["camera"] = cam
+    elif "camera" in container:
+        container.pop("camera", None)   # unexpected shape -> fail CLOSED
+
+
+def _redact_switch_ports_for(rows: list, principal: Principal | None,
+                             dew: object) -> list:
+    """``GET /api/switch/ports`` rows, with a dew-FOLLOWING port's ``value``
+    nulled for a principal lacking ``view.weather``.
+
+    THE THIRD CARRIER, and the one furthest from the word "weather". The dew
+    loop writes the ramp's output onto every port flagged ``follow_dew``, so
+    that port's reported value IS ``dew.power_pct`` wearing a port id - the
+    same number ``_strip_dew`` already nulls on the dew node's own ``ports``
+    rows, published again by the route that lists the power box. A non-holder
+    who could not read it at ``/api/status`` could read it at
+    ``/api/switch/ports``.
+
+    Same rule, same shape as ``_strip_dew``: the ROW survives (the id, the
+    name, the protection policy and the fact that it follows are equipment,
+    and the Power sheet needs all four to render a port at all) and only the
+    LEVEL goes. A port that does not follow keeps its value - nobody derived it
+    from the air - and every port keeps it while the loop is off or paused,
+    because then the level is whatever a human last set.
+
+    ``follow_dew`` MISSING is treated as following, the same fail-closed
+    reading ``_strip_dew`` takes on a row whose shape it does not recognise.
+
+    Copies each row it changes; ``power_guard.annotate`` already hands us
+    copies, but this helper is also the seam a future caller will reach for
+    with rows it did not build."""
+    if principal is not None and principal.has(CAP_VIEW_WEATHER):
+        return rows
+    if not isinstance(rows, list) or not dew_is_following(dew):
+        return rows
+    out = []
+    for row in rows:
+        if (isinstance(row, dict) and row.get("follow_dew", True)
+                and "value" in row):
+            row = {**row, "value": None}
+        out.append(row)
+    return out
 
 
 def _strip_site(site: dict) -> None:
@@ -129,8 +410,14 @@ def _redact_site_for(payload: dict, principal: Principal | None) -> dict:
     # operator's alt/az, keyed on derived it hands a viewer the coordinates.
     has_precise = principal is not None and principal.has(CAP_VIEW_SITE_PRECISE)
     has_derived = principal is not None and principal.has(CAP_VIEW_SITE_DERIVED)
-    if has_precise and has_derived:
-        return payload  # holder of both: untouched
+    # THREE caps now, and the early return has to name all three. Every role
+    # that holds precise+derived today also holds weather, so leaving `weather`
+    # out of this test would be inert -- and that is exactly the kind of
+    # inertness that stops being inert the day somebody adds a role. Fail
+    # closed: only a holder of everything skips the work.
+    has_weather = principal is not None and principal.has(CAP_VIEW_WEATHER)
+    if has_precise and has_derived and has_weather:
+        return payload  # holder of all three: untouched
     if not isinstance(payload, dict):
         return payload
     try:
@@ -141,6 +428,8 @@ def _redact_site_for(payload: dict, principal: Principal | None) -> dict:
                 _scrub_site_node(cfg)
         if not has_derived:
             _scrub_derived_node(payload)
+        if not has_weather:
+            _scrub_derived_node(payload, _WEATHER_DERIVED_NODES)
     except Exception:  # noqa: BLE001 - never 500 a surface: fail CLOSED
         if not has_precise:
             payload.pop("site", None)
@@ -148,7 +437,10 @@ def _redact_site_for(payload: dict, principal: Principal | None) -> dict:
             if isinstance(cfg, dict):
                 cfg.pop("site", None)
         if not has_derived:
-            payload.pop("mount", None)
+            for key, _strip in _DERIVED_NODES:
+                payload.pop(key, None)
+        if not has_weather:
+            _panic_scrub_weather(payload)
     return payload
 
 
@@ -187,8 +479,10 @@ def _redact_ws_event(ev_json: dict, principal: Principal | None) -> dict | None:
     make, none of which contained the word "latitude".
 
     So: coordinates go at ``data.site``/``data.config.site``, DERIVED values are
-    stripped here too (``mount.alt``/``az``), and a surface that exists to answer
-    a site-relative question — visibility, framing, the sky panel — is gated on
+    stripped here too (``mount.alt``/``az``, and ``meridian``'s flip timing —
+    a top-level sibling of ``mount``, which is how it outlived the alt/az fix),
+    and a surface that exists to answer a site-relative question — visibility,
+    framing, the sky panel — is gated on
     ``view.site_precise`` rather than redacted, because there is nothing left of
     it once the answer is removed. Adding a derived value to a viewer-visible
     payload is a capability decision, not a formatting one."""
@@ -196,11 +490,12 @@ def _redact_ws_event(ev_json: dict, principal: Principal | None) -> dict | None:
         if principal is not None and principal.has(CAP_VIEW_WEATHER):
             return ev_json  # holder (operator or admin): verbatim, unstripped
         return None          # non-holder (viewer): dropped entirely
-    # Two caps, independent — see _redact_site_for. An operator holds derived
-    # and not precise, so neither one alone decides this event.
+    # Three caps, independent — see _redact_site_for. An operator holds derived
+    # and weather but not precise, so no one of them alone decides this event.
     has_precise = principal is not None and principal.has(CAP_VIEW_SITE_PRECISE)
     has_derived = principal is not None and principal.has(CAP_VIEW_SITE_DERIVED)
-    if has_precise and has_derived:
+    has_weather = principal is not None and principal.has(CAP_VIEW_WEATHER)
+    if has_precise and has_derived and has_weather:
         return ev_json
     data = ev_json.get("data")
     if not isinstance(data, dict):
@@ -220,21 +515,36 @@ def _redact_ws_event(ev_json: dict, principal: Principal | None) -> dict | None:
                 # (a coordinate we cannot key-strip must never leak).
                 new_data = dict(data)
                 new_data.pop("site", None)
-        # Site-DERIVED pointing (mount.alt/az). Copied before popping for the
-        # same reason the site node is: Event.data is shared across every
-        # subscriber, so mutating it in place would strip the values from the
-        # holder's copy too.
-        if not has_derived and "mount" in data:
-            mount = data.get("mount")
-            if isinstance(mount, dict):
-                if any(k in mount for k in _MOUNT_DERIVED_KEYS):
+        # Site-DERIVED nodes (mount.alt/az; meridian's flip timing). Copied
+        # before stripping for the same reason the site node is: Event.data is
+        # shared across every subscriber, so mutating it in place would strip
+        # the values from the holder's copy too.
+        # The dew node rides ``view.weather`` rather than ``view.site_derived``
+        # (a heater duty cycle following the dew point IS the dew margin), so
+        # the two tables are walked under their own caps but through the same
+        # copy-before-strip loop -- the shared ``Event.data`` must not be
+        # mutated for anybody else's subscriber.
+        for gated, table in ((has_derived, _DERIVED_NODES),
+                             (has_weather, _WEATHER_DERIVED_NODES)):
+            if gated:
+                continue
+            for key, strip in table:
+                if key not in data:
+                    continue
+                node = data.get(key)
+                if isinstance(node, dict):
+                    new_node = dict(node)
+                    # ``data`` and not ``new_data``: the strippers that consult
+                    # a sibling (``_strip_camera_dew`` reads ``dew``) want the
+                    # UNredacted one, and no stripper touches the two flags it
+                    # reads, so the two are the same answer either way.
+                    strip(new_node, data)
+                    if new_node != node:
+                        new_data = new_data if new_data is not None else dict(data)
+                        new_data[key] = new_node
+                else:
                     new_data = new_data if new_data is not None else dict(data)
-                    new_mount = dict(mount)
-                    _strip_mount_derived(new_mount)
-                    new_data["mount"] = new_mount
-            else:
-                new_data = new_data if new_data is not None else dict(data)
-                new_data.pop("mount", None)   # unexpected shape -> fail CLOSED
+                    new_data.pop(key, None)   # unexpected shape -> fail CLOSED
         cfg = data.get("config")
         if not has_precise and isinstance(cfg, dict) and "site" in cfg:
             base = new_data if new_data is not None else dict(data)
@@ -260,7 +570,10 @@ def _redact_ws_event(ev_json: dict, principal: Principal | None) -> dict | None:
         if not has_precise:
             safe.pop("site", None)
         if not has_derived:
-            safe.pop("mount", None)
+            for key, _strip in _DERIVED_NODES:
+                safe.pop(key, None)
+        if not has_weather:
+            _panic_scrub_weather(safe)
         cfg = safe.get("config")
         if isinstance(cfg, dict):
             cfg = dict(cfg)
@@ -448,6 +761,8 @@ def report_csv_columns(cols: list[str], principal: Principal | None) -> list[str
 
 __all__ = [
     "WS_AUTH_RECHECK_S",
+    "dew_is_following",
+    "_redact_switch_ports_for",
     "_redact_site_for",
     "_redact_ws_event",
     "_redact_drivers_for",
@@ -456,6 +771,9 @@ __all__ = [
     "_redact_report_for",
     "report_csv_columns",
     "_strip_site",
+    "_strip_dew",
+    "_strip_camera_dew",
     "_scrub_site_node",
     "_SITE_STRIP_KEYS",
+    "_WEATHER_DERIVED_NODES",
 ]

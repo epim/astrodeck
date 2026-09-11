@@ -51,7 +51,7 @@ export function captureFilterDialCategory(
     icon: "frame",
     options: usable.map(({ name, i }) => ({
       id: String(i),
-      label: wheel?.opaque?.[i] ? `${String(name).trim()} — blackout` : String(name).trim(),
+      label: wheel?.opaque?.[i] ? `${String(name).trim()} - blackout` : String(name).trim(),
     })),
     selected: typeof wheel?.position === "number" ? String(wheel.position) : undefined,
     onPick: (id) => onPick(Number(id)),

@@ -76,7 +76,14 @@ export const ROLE_DESCRIPTIONS: Record<PrincipalRole, string> = {
 // beside a disabled control names the SAME policy the control enforces
 // (R4B-PLAN-01 / R4B-SESS-01/02: hand-written notes claimed "operator or
 // admin" on control.mount / config.* actions that operators do NOT hold).
-const ROLE_CAPS: Record<PrincipalRole, readonly Capability[]> = {
+/** The role table itself. EXPORTED because it is the only honest answer to
+ *  "which roles exist and what does each hold", and a test that has to parse
+ *  this file's source to find out is a test that breaks on a reformat and
+ *  passes on a rename. Read it; never copy it.
+ *
+ *  Mirrored from the server (`auth/capabilities.py`), which is the source of
+ *  truth - see the note above. */
+export const ROLE_CAPS: Record<PrincipalRole, readonly Capability[]> = {
   // VIEWER_LINK_CAPS: live-watch only.
   viewer: ["view.status", "view.preview"],
   // ROLES_CAP["syncer"]: a headless data mover — the event stream and the raw

@@ -583,9 +583,20 @@ def test_ws_valid_principal_survives_recheck(tmp_path, monkeypatch):
             got = None
             for _ in range(50):
                 ev = ws.receive_json()
-                if ev.get("type") == "log":
-                    got = ev
-                    break
+                if ev.get("type") != "log":
+                    continue
+                # CONTINUE past a log that is not ours, do not latch it. This
+                # used to break on the FIRST log event and then assert its
+                # message, which made the test order-dependent: any earlier
+                # test that left a coalesced hub log in flight (a device
+                # warning, a config publish) put a different message at the
+                # head of the queue and this failed with "still-alive" nowhere
+                # in sight. The socket surviving is what is under test, and the
+                # arrival of OUR event is what proves it.
+                if ev.get("data", {}).get("message") != "still-alive":
+                    continue
+                got = ev
+                break
             assert got is not None and got["data"]["message"] == "still-alive"
 
 
@@ -1078,9 +1089,17 @@ def test_admin_weather_get_and_ignore_roundtrip(tmp_path, monkeypatch):
         r = c.get("/api/weather")
         assert r.status_code == 200
         body = r.json()
+        # EXACT, not a subset. Relaxing it to ``<=`` for the additive
+        # ``surface``/``now`` block left nothing able to see a key being
+        # REMOVED -- and this is the only assertion that ever could, because
+        # "the holder gets the whole payload" is a statement about the whole
+        # key set. Adding a key is a one-line edit here; silently dropping
+        # ``site_lat`` (the deliberate I2 exception) or ``alert`` would
+        # otherwise have shipped green.
         assert set(body) == {"enabled", "fetched_ts", "stale", "ignore_tonight",
                              "threshold_pct", "sustain_minutes", "site_lat",
-                             "site_lon", "forecast", "astrospheric", "alert"}
+                             "site_lon", "forecast", "surface", "now",
+                             "astrospheric", "alert"}
         assert body["enabled"] is False and body["forecast"] is None
         # site_lat/site_lon ride this payload for a view.weather holder (I2)
         assert body["site_lat"] == _PRECISE_LAT and body["site_lon"] == _PRECISE_LON
@@ -1297,6 +1316,223 @@ def test_the_ws_push_strips_altaz_without_mutating_the_shared_event():
     assert ev["data"]["mount"]["alt"] == 46.2, "the shared event was mutated"
     admin = _redact_ws_event(ev, principal_for_role("admin"))
     assert admin["data"]["mount"]["alt"] == 46.2
+
+
+# ------------------------------------------- the meridian countdown (2026-09-10)
+#
+# The SAME defect, one node over, and it survived the alt/az fix because
+# ``meridian`` is a TOP-LEVEL sibling of ``mount`` rather than a key inside it.
+# ``hub._compute_meridian`` builds it from ``lst_hours(site["longitude"])``:
+#
+#   LST       = ra_hours - hours_to_flip        (ra_hours is not site data)
+#   longitude = (LST - GMST(t)) * 15
+#
+# rounded to 4 decimal hours = 0.36 s of hour angle = ~120 m. ``n_a_over_pole``
+# leaks latitude coarsely on top of that (it is a latitude-dependent predicate
+# a caller sweeps by pointing the mount), and ``counting``/``due`` is the sign
+# of the same hour angle -- so the STATUS collapses with the number.
+
+_MERIDIAN = {"status": "counting", "hours_to_flip": 1.8342,
+             "flip_enabled": True, "pier_side": "east"}
+
+
+def test_a_viewer_gets_no_meridian_timing(tmp_path, monkeypatch):
+    from astrodeck.api.redact import _redact_site_for
+    payload = {"site": {"latitude": 40.0, "longitude": -74.0, "is_default": False},
+               "mount": {"ra_hours": 20.9705, "dec_deg": 60.0},
+               "meridian": dict(_MERIDIAN)}
+    out = _redact_site_for(dict(payload), principal_for_role("viewer"))
+    assert out["meridian"]["hours_to_flip"] is None, (
+        "one authorized request and a clock is the whole attack: "
+        f"{out['meridian']}")
+    assert out["meridian"]["status"] == "unknown"
+    # The two facts that are about the MOUNT rather than about where it stands
+    # stay, so the tile can still say "flip disabled" or name the pier.
+    assert out["meridian"]["flip_enabled"] is True
+    assert out["meridian"]["pier_side"] == "east"
+
+
+@pytest.mark.parametrize("status", ["counting", "due", "n_a_over_pole"])
+def test_every_site_derived_flip_status_collapses_for_a_viewer(status):
+    """The word alone is a channel: `due` vs `counting` is the SIGN of the hour
+    angle, and `n_a_over_pole` is f(dec, latitude) with the caller choosing the
+    dec."""
+    from astrodeck.api.redact import _redact_site_for
+    out = _redact_site_for({"meridian": {**_MERIDIAN, "status": status}},
+                           principal_for_role("viewer"))
+    assert out["meridian"]["status"] == "unknown"
+
+
+@pytest.mark.parametrize("status", ["n_a_fork", "flip_disabled", "unknown"])
+def test_the_flip_statuses_that_are_not_site_derived_survive(status):
+    """`n_a_fork` comes from the pier report and `flip_disabled` from the loaded
+    plan. Collapsing those too would be a redaction that withholds nothing and
+    costs the viewer a true sentence."""
+    from astrodeck.api.redact import _redact_site_for
+    out = _redact_site_for(
+        {"meridian": {**_MERIDIAN, "status": status, "hours_to_flip": None}},
+        principal_for_role("viewer"))
+    assert out["meridian"]["status"] == status
+
+
+def test_an_operator_keeps_the_flip_countdown(tmp_path, monkeypatch):
+    """view.site_derived is exactly the cap for this: an operator runs the flip
+    and needs to know when it is due."""
+    from astrodeck.api.redact import _redact_site_for
+    out = _redact_site_for({"meridian": dict(_MERIDIAN)},
+                           principal_for_role("operator"))
+    assert out["meridian"]["hours_to_flip"] == 1.8342
+    assert out["meridian"]["status"] == "counting"
+
+
+def test_the_ws_push_strips_the_flip_countdown_without_mutating_the_event():
+    """Same shared-``Event.data`` rule as alt/az: strip in place and the ADMIN's
+    copy loses the countdown too."""
+    from astrodeck.api.redact import _redact_ws_event
+    ev = {"type": "status", "data": {"meridian": dict(_MERIDIAN)}}
+    viewer = _redact_ws_event(ev, principal_for_role("viewer"))
+    assert viewer["data"]["meridian"]["hours_to_flip"] is None
+    assert viewer["data"]["meridian"]["status"] == "unknown"
+    assert ev["data"]["meridian"]["hours_to_flip"] == 1.8342, \
+        "the shared event was mutated"
+    admin = _redact_ws_event(ev, principal_for_role("admin"))
+    assert admin["data"]["meridian"]["hours_to_flip"] == 1.8342
+
+
+def test_a_meridian_node_of_an_unexpected_shape_fails_closed():
+    from astrodeck.api.redact import _redact_site_for, _redact_ws_event
+    out = _redact_site_for({"meridian": [1.8342]}, principal_for_role("viewer"))
+    assert "meridian" not in out
+    ev = _redact_ws_event({"type": "status", "data": {"meridian": 1.8342}},
+                          principal_for_role("viewer"))
+    assert "meridian" not in ev["data"]
+
+
+# ------------------------------------------ the strip must not reach BACKWARDS
+# Every test above hands the helper ``dict(_MERIDIAN)``, and that is precisely
+# why the defect below lived here unnoticed for a wave: a copy per call hides an
+# in-place write. The ROUTE does not pass a copy. ``hub.poll_status`` builds the
+# meridian block, stashes it as ``hub.last_meridian`` (so the engine's sync ETA
+# can window-gate the flip cost without device I/O) and puts THE SAME OBJECT on
+# the payload -- so a REST strip that wrote through it blanked the hub's own
+# copy, and a single viewer's ``GET /api/status`` dropped the flip ETA for the
+# ENGINE and for every later reader until the next poll rebuilt it.
+
+def test_the_rest_strip_copies_the_meridian_node_it_is_handed():
+    """THE SAME DICT THE ROUTE PASSES, not a copy of it."""
+    from astrodeck.api.redact import _redact_site_for
+
+    live = dict(_MERIDIAN)          # stands in for hub.last_meridian
+    out = _redact_site_for({"meridian": live}, principal_for_role("viewer"))
+    assert out["meridian"]["hours_to_flip"] is None, "the caller is still served"
+    assert out["meridian"] is not live
+    assert live["hours_to_flip"] == 1.8342, (
+        "the REST strip wrote through the node it was handed; that node is "
+        "hub.last_meridian, and the engine reads it")
+    assert live["status"] == "counting"
+
+
+def test_the_rest_strip_copies_the_mount_node_too():
+    """Same rule, same loop: nothing in the derived tables is written in place,
+    whether or not today's caller happens to own the dict."""
+    from astrodeck.api.redact import _redact_site_for
+
+    live = {"ra_hours": 20.9705, "dec_deg": 60.0, "alt": 46.2, "az": 131.7}
+    out = _redact_site_for({"mount": live}, principal_for_role("viewer"))
+    assert "alt" not in out["mount"] and "az" not in out["mount"]
+    assert live["alt"] == 46.2 and live["az"] == 131.7
+
+
+def test_a_viewers_status_poll_does_not_cost_the_engine_the_flip_eta(
+        tmp_path, monkeypatch):
+    """End to end, through the real route, with the aliasing the hub really
+    has. SABOTAGE (run red, restored): strip the derived nodes in place again."""
+    _store, app = _make_client(tmp_path, monkeypatch)
+    live = dict(_MERIDIAN)
+    monkeypatch.setattr(app_module.hub, "last_meridian", live, raising=False)
+
+    async def _poll():
+        # Exactly what hub.poll_status does: one object, published AND stashed.
+        return {"meridian": app_module.hub.last_meridian}
+
+    monkeypatch.setattr(app_module.hub, "poll_status", _poll)
+    _install(principal_for_role("viewer"))
+    with TestClient(app) as c:
+        body = c.get("/api/status").json()
+    assert body["meridian"]["hours_to_flip"] is None
+    assert app_module.hub.last_meridian["hours_to_flip"] == 1.8342, (
+        "a viewer's status poll blanked the flip countdown the ENGINE reads")
+
+
+def _fake_status(monkeypatch, payload):
+    """Serve one fabricated ``poll_status`` body (no devices needed)."""
+    async def _poll():
+        return {k: (dict(v) if isinstance(v, dict) else v)
+                for k, v in payload.items()}
+    monkeypatch.setattr(app_module.hub, "poll_status", _poll)
+    return _poll
+
+
+_STATUS_WITH_MERIDIAN = {
+    "site": {"name": "Ridge Road Pad", "latitude": 47.6104,
+             "longitude": -122.3312, "elevation_m": 40.0, "is_default": False},
+    "mount": {"ra_hours": 20.9705, "dec_deg": 60.0, "alt": 46.2, "az": 131.7},
+    "meridian": dict(_MERIDIAN),
+}
+
+
+def test_the_status_route_withholds_the_countdown_from_a_viewer(tmp_path,
+                                                                monkeypatch):
+    """End to end, because the unit above only proves the helper: GET
+    /api/status is CAP_VIEW_STATUS -- every role -- and it is where the value
+    was measured leaving the box."""
+    _store, app = _make_client(tmp_path, monkeypatch)
+    _fake_status(monkeypatch, _STATUS_WITH_MERIDIAN)
+    _install(principal_for_role("viewer"))
+    with TestClient(app) as c:
+        r = c.get("/api/status")
+    body = r.json()
+    assert body["meridian"]["hours_to_flip"] is None
+    assert body["meridian"]["status"] == "unknown"
+    assert "1.8342" not in r.text, r.text
+
+
+def test_the_status_route_still_gives_an_operator_the_countdown(tmp_path,
+                                                                monkeypatch):
+    _store, app = _make_client(tmp_path, monkeypatch)
+    _fake_status(monkeypatch, _STATUS_WITH_MERIDIAN)
+    _install(principal_for_role("operator"))
+    with TestClient(app) as c:
+        body = c.get("/api/status").json()
+    assert body["meridian"]["hours_to_flip"] == 1.8342
+    assert body["meridian"]["status"] == "counting"
+    # and still no coordinates: the two caps stay independent.
+    assert "latitude" not in body["site"]
+
+
+def test_the_monitor_snapshot_rides_the_same_seam(tmp_path, monkeypatch):
+    """The cold-load aggregator carries a WHOLE ``poll_status`` under
+    ``status``, one level deeper than the redactor looks -- so it served a
+    viewer the precise site block, the mount's alt/az and the flip countdown
+    that every other surface strips. Found while closing the meridian leak."""
+    _store, app = _make_client(tmp_path, monkeypatch)
+
+    async def _snap():
+        return {"sequence": {"state": "idle"},
+                "status": {k: dict(v) if isinstance(v, dict) else v
+                           for k, v in _STATUS_WITH_MERIDIAN.items()},
+                "preview_id": None, "guide_recent": [], "busy": []}
+
+    monkeypatch.setattr(app_module.hub, "monitor_snapshot", _snap)
+    _install(principal_for_role("viewer"))
+    with TestClient(app) as c:
+        r = c.get("/api/monitor/snapshot")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "latitude" not in body["status"]["site"], body["status"]["site"]
+    assert "Ridge Road Pad" not in r.text
+    assert "alt" not in body["status"]["mount"]
+    assert body["status"]["meridian"]["hours_to_flip"] is None
 
 
 def test_the_catalog_still_lists_targets_for_a_viewer_without_altaz(tmp_path,
@@ -1518,3 +1754,165 @@ def test_an_admin_still_gets_to_scan(tmp_path, monkeypatch):
         for path in _DISCOVERY_ROUTES:
             r = c.get(path)
             assert r.status_code != 403, f"{path} refused an ADMIN: {r.text[:200]}"
+
+
+# ======================================================== wave-S7 role matrix
+# One row per route wave S7 added or re-capped, graded for all four shipped
+# roles. The point is the DECISION (403 or not), because that is the half a
+# copy-paste of the wrong ``require(...)`` gets wrong silently: a route that
+# 403s nobody looks identical to a working one until the wrong person uses it.
+#
+# The second half of each row is the set of codes an ALLOWED caller may see in
+# this harness, which has no devices connected and an empty capture tree. It is
+# there so "allowed" cannot quietly degrade into "404, route missing" - the
+# shape that made the atlas routers unreachable behind the SPA catch-all.
+
+_DENY = "403"
+
+#: (method, path, body, {role: expected}), where expected is ``_DENY`` or a set
+#: of acceptable status codes.
+_S7_MATRIX = (
+    # -- ephemerides (D-SKY-1) ------------------------------------------------
+    ("GET", "/api/ephemeris/status", None,
+     {"viewer": {200}, "syncer": {200}, "operator": {200}, "admin": {200}}),
+    # config.site_optics, not a view cap and not control.*: this makes the
+    # SERVER dial out to CelesTrak. An operator running tonight's session does
+    # not get to trigger an outbound fetch.
+    ("POST", "/api/ephemeris/refresh", {"which": "satellites"},
+     {"viewer": _DENY, "syncer": _DENY, "operator": _DENY, "admin": {202}}),
+    # A pass is when a named object crosses THIS sky: it is f(site, target),
+    # so it rides view.site_derived exactly as the Moon's row does. 409 is the
+    # route's OWN refusal on a rig whose site is still the default - a low-orbit
+    # satellite is tens of degrees apart from two towns, so it will not place
+    # one from a guess - and this harness has no site configured.
+    ("GET", "/api/satellites/passes", None,
+     {"viewer": _DENY, "syncer": _DENY, "operator": {200, 409},
+      "admin": {200, 409}}),
+
+    # -- promote the last frame (D-SES-4) ------------------------------------
+    ("GET", "/api/capture/last", None,
+     {"viewer": {200}, "syncer": {200}, "operator": {200}, "admin": {200}}),
+    # 404 here is "nothing is held", which is the honest answer on a box that
+    # has taken no frame - not a missing route.
+    ("POST", "/api/capture/last/save", {},
+     {"viewer": _DENY, "syncer": _DENY, "operator": {200, 404},
+      "admin": {200, 404}}),
+
+    # -- SER video (D-RIG-1) --------------------------------------------------
+    ("POST", "/api/capture/video",
+     {"fps": 10.0, "exposure_ms": 5.0, "gain": 100},
+     {"viewer": _DENY, "syncer": _DENY, "operator": {202, 409},
+      "admin": {202, 409}}),
+    ("GET", "/api/capture/video", None,
+     {"viewer": {200}, "syncer": {200}, "operator": {200}, "admin": {200}}),
+    ("POST", "/api/capture/video/stop", None,
+     {"viewer": _DENY, "syncer": _DENY, "operator": {200}, "admin": {200}}),
+    ("GET", "/api/captures/video", None,
+     {"viewer": {200}, "syncer": {200}, "operator": {200}, "admin": {200}}),
+    # THE SPLIT THAT MATTERS. The .ser IS raw science data, so it rides
+    # view.media - which the SYNCER holds and the OPERATOR does not. The stack
+    # PNG is a rendered picture, so it rides view.preview - which the operator
+    # and the viewer hold and the syncer does not. The two roles are orthogonal
+    # and this pair of rows is where that stops being a claim.
+    ("GET", "/api/captures/video/nope-01.ser", None,
+     {"viewer": _DENY, "syncer": {200, 404}, "operator": _DENY,
+      "admin": {200, 404}}),
+    ("GET", "/api/captures/video/nope-01/stack.png", None,
+     {"viewer": {200, 404}, "syncer": _DENY, "operator": {200, 404},
+      "admin": {200, 404}}),
+    ("DELETE", "/api/captures/video/nope-01", None,
+     {"viewer": _DENY, "syncer": _DENY, "operator": {200, 404},
+      "admin": {200, 404}}),
+    ("POST", "/api/captures/video/nope-01/stack", {"keep_pct": 25.0},
+     {"viewer": _DENY, "syncer": _DENY, "operator": {202, 404},
+      "admin": {202, 404}}),
+
+    # -- the nudge (D-RIG-4) --------------------------------------------------
+    # control.mount, like every other thing that moves the tube. 409 here is
+    # "no telescope connected".
+    ("POST", "/api/mount/nudge", {"axis": "ra", "arcmin": 5.0},
+     {"viewer": _DENY, "syncer": _DENY, "operator": {200, 409},
+      "admin": {200, 409}}),
+
+    # -- protected ports (D-RIG-5) --------------------------------------------
+    # config.safety and NOT control.power, which is the whole point: the
+    # shipped operator holds control.power nowhere and still must not be able
+    # to re-point which ports the engine protects. 409 for the admin here is
+    # "no switch connected" - the route requires the device before it persists
+    # anything, so a disconnected box cannot half-apply a policy.
+    ("PUT", "/api/switch/ports/1", {"follow_dew": True},
+     {"viewer": _DENY, "syncer": _DENY, "operator": _DENY,
+      "admin": {200, 409}}),
+
+    # -- planning prefs (D-FU-1) ----------------------------------------------
+    # The pool discloses nothing site-related, so a viewer reads the same list.
+    ("GET", "/api/planning", None,
+     {"viewer": {200}, "syncer": {200}, "operator": {200}, "admin": {200}}),
+    # control.capture, NOT a config cap: these settings decide what tonight
+    # shoots, and the shipped operator - who holds no config.* at all - is
+    # exactly who decides that.
+    ("PUT", "/api/planning", {"pool": ["M31"]},
+     {"viewer": _DENY, "syncer": _DENY, "operator": {200}, "admin": {200}}),
+
+    # -- hand the dew heaters back to the loop (D-RIG-3) ----------------------
+    # control.power, which the shipped OPERATOR does not hold: switching the
+    # power box can brown out the rig, and putting a heater back under the
+    # loop's control is the same authority as the hand write that took it.
+    # 200 for the admin on a rig with no dew controller ticked yet is the
+    # honest "nothing was paused" answer, not a missing route.
+    ("POST", "/api/dew/resume", None,
+     {"viewer": _DENY, "syncer": _DENY, "operator": _DENY, "admin": {200}}),
+)
+
+
+@pytest.fixture
+def _s7_offline(monkeypatch):
+    """No outbound fetch and no devices, for every row of the matrix.
+
+    ``POST /api/ephemeris/refresh`` really does dial CelesTrak, and an RBAC
+    test that reaches the internet is a test that fails on a train. The stub
+    keeps the ROUTE (and therefore the 202 an admin must get) while removing
+    the socket."""
+    from astrodeck.catalog.ephemeris import elements as _elements
+
+    monkeypatch.setattr(_elements.ephemeris_store, "start_refresh",
+                        lambda which: None)
+    saved = dict(app_module.hub.devices)
+    app_module.hub.devices.clear()
+    try:
+        yield
+    finally:
+        app_module.hub.devices.clear()
+        app_module.hub.devices.update(saved)
+
+
+@pytest.mark.parametrize("role", ["viewer", "syncer", "operator", "admin"])
+def test_the_wave_s7_routes_grade_every_shipped_role(tmp_path, monkeypatch,
+                                                     role, _s7_offline):
+    import astrodeck.planning as planning_mod
+
+    _store, app = _make_client(tmp_path, monkeypatch)
+    # planning.py binds ``config_store`` by name at import, so the isolated
+    # store has to be pointed at there too or the PUT writes the developer's
+    # real config (tests/conftest.py catches that, loudly, at session teardown).
+    monkeypatch.setattr(planning_mod, "config_store", _store)
+    _install(principal_for_role(role))
+    with TestClient(app) as c:
+        for method, path, body, expected in _S7_MATRIX:
+            want = expected[role]
+            r = c.request(method, path, json=body)
+            if want is _DENY:
+                assert r.status_code == 403, (
+                    f"{method} {path} answered {r.status_code} for a {role}; "
+                    f"the matrix says 403. A wrong code here is a wrong "
+                    f"REASON: 401 sends the UI to a login it does not need, "
+                    f"404 says the feature does not exist: {r.text[:200]}")
+            else:
+                assert r.status_code != 403, (
+                    f"{method} {path} 403'd a {role} that the matrix allows: "
+                    f"{r.text[:200]}")
+                assert r.status_code in want, (
+                    f"{method} {path} answered {r.status_code} for a {role}; "
+                    f"expected one of {sorted(want)}. A 404 here would mean "
+                    f"the router never made it in front of the SPA catch-all: "
+                    f"{r.text[:200]}")

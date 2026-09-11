@@ -272,6 +272,15 @@ class ZwoAm5Telescope(Telescope):
     #: pedrift_L60.fits.gz). The flow doctor's own "will this trail" rule only
     #: fired at 120 s and up, so a 60 s unguided cycle on this mount read clean.
     needs_guiding = True
+    #: The fastest MANUAL rate this mount has been MEASURED to deliver: R8, the
+    #: top row of ``_RATE_TABLE``, whose calibration note (2026-07-20, dec-axis
+    #: nudges) records "R8~344x (1.44 deg/s; R8/R9 measurements were
+    #: acceleration-ramp-limited)". R9 is NOT published here even though the
+    #: mount has one: that same note says the measurement was ramp-limited, so
+    #: nobody knows what R9 sustains. A ceiling with no measurement behind it is
+    #: a number, not a limit - and this field is what the server's touch-pad
+    #: clamp hands the operator.
+    max_rate_deg_s = 1.44
 
     def __init__(self, link, name: str = "ZWO AM5"):
         super().__init__(name)

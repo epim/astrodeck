@@ -105,7 +105,7 @@ export function focusCaptureBlocker(p: {
   gainMax?: number | null;
 }): string | null {
   if (p.readOnlyReason) return p.readOnlyReason;
-  if (!p.hasCamera) return "No camera is connected — connect one on the Equipment page";
+  if (!p.hasCamera) return "No camera is connected - connect a camera first";
   if (p.polarBusy) return "Polar alignment owns the camera right now";
   if (p.sequenceOwnsCamera) return "A sequence owns the camera — stop it first";
   // The sweep exposes continuously for minutes; a manual frame would queue
@@ -289,7 +289,7 @@ export function sweepReadiness(p: {
       // The numbers are already on the summary line beside this, so the warning
       // slot stays empty rather than printing them a second time — the refusal
       // above says what to do and that is the only thing left to say.
-      provenance: "nothing measured — defaults, not a match to your sky tonight",
+      provenance: "nothing measured - defaults, not a match to your sky tonight",
       warn: null,
     };
   }

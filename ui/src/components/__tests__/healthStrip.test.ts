@@ -139,6 +139,81 @@ eq(
   "a normal counting flip is not an issue",
 );
 
+// --- meridian, THIRD state: the countdown is null, not zero and not absent ---
+// A principal without view.site_derived (every viewer, every syncer) gets
+// `hours_to_flip: null` from the server while `status: "flip_disabled"` rides
+// through untouched (server/astrodeck/api/redact.py:98-108). The old
+// `(hours_to_flip ?? 1)` read that null as "an hour away", so the tier-2 rung
+// was unreachable for that role forever and the strip printed "near meridian" -
+// a claim about a distance the role was never told. Three states, three
+// branches. Asserting the TIER explicitly is what makes this test fail if the
+// `?? 1` default is ever restored.
+{
+  const issues = deriveHealthIssues({
+    safety: null,
+    wsConnected: true,
+    meridian: { status: "flip_disabled", hours_to_flip: null, flip_enabled: false, pier_side: "east" },
+  });
+  eq(issues.length, 1, "a redacted countdown on a disabled flip raises exactly one issue");
+  eq(issues[0].tier, 2, "flip_disabled with an UNKNOWN countdown is Act (tier 2), not a Notice");
+  eq(
+    issues[0].text.includes("near meridian"),
+    false,
+    "a role that cannot see the countdown is never told how near the meridian is",
+  );
+  eq(
+    issues[0].text.includes("hidden for your role"),
+    true,
+    "the unknown-countdown text names WHY there is no number, not just that the flip is off",
+  );
+  eq(issues[0].icon, "alert", "the unknown-countdown issue keeps the meridian icon the ladder uses");
+}
+
+// --- meridian: a principal WITH the countdown is unchanged in both directions -
+{
+  const due = deriveHealthIssues({
+    safety: null,
+    wsConnected: true,
+    meridian: { status: "flip_disabled", hours_to_flip: -0.2, flip_enabled: false, pier_side: "west" },
+  });
+  eq(tiers(due), [2], "a real negative countdown on a disabled flip is still Act (tier 2)");
+  eq(due[0].text.includes("due but disabled"), true, "the past-meridian sentence is unchanged");
+  eq(due[0].text.includes("hidden for your role"), false, "a holder is not told the countdown is hidden");
+
+  const ahead = deriveHealthIssues({
+    safety: null,
+    wsConnected: true,
+    meridian: { status: "flip_disabled", hours_to_flip: 3, flip_enabled: false, pier_side: "east" },
+  });
+  eq(tiers(ahead), [1], "a real positive countdown on a disabled flip is still Notice (tier 1)");
+  eq(ahead[0].text.includes("near meridian"), true, "the hours-away sentence is unchanged");
+}
+
+// --- meridian: an idle rig feeds no meridian block at all --------------------
+// Both roots pass `runActive ? status.meridian : null`, so a rig with no plan
+// loaded (which reports `flip_disabled` because there is no plan to enable the
+// flip on) raises nothing - including the new tier-2 unknown rung, which would
+// otherwise be a sticky red banner on an idle rig forever.
+eq(
+  deriveHealthIssues({ safety: null, wsConnected: true, meridian: null }).length,
+  0,
+  "no meridian block (idle rig, or a run not in flight) raises no meridian issue",
+);
+
+// --- ordering holds with the meridian notice pushed from the tier-2 section --
+// The three-way meridian decision lives in the tier-2 section, so its tier-1
+// outcome is pushed before the other notices. The ladder's invariant is that
+// every Act precedes every Notice, and that still holds.
+{
+  const issues = deriveHealthIssues({
+    safety: { connected: true, streak: 0, reading: { is_safe: false, reason: "wind", source: "weather", stale: false, ts: 0 } },
+    disk: { free_gb: 8, low: true, critical: false },
+    wsConnected: true,
+    meridian: { status: "flip_disabled", hours_to_flip: 3, flip_enabled: false, pier_side: "east" },
+  });
+  eq(tiers(issues), [2, 1, 1], "Act still precedes every Notice with a meridian notice in the mix");
+}
+
 // --- nina_link unhealthy (but not warming up) => Notice ----------------------
 eq(
   tiers(

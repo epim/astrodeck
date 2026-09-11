@@ -71,10 +71,65 @@ export interface CloudmapAt {
 export const getCloudmap = (): Promise<CloudmapStatus> =>
   api.get<CloudmapStatus>("/api/cloudmap");
 
+/** How long one dome grid is reused.
+ *
+ *  THE ROUTE IS FETCHED TWICE PER CYCLE ON `#/sky`. The finder's cloud layer
+ *  polls it (`next/hubs/sky/finder/model.ts`, CLOUD_REFRESH_MS = 60_000) and so
+ *  does the dome card's own panel (`components/cloudmap/SkyDomePanel`, POLL_MS
+ *  = 60_000), and the two are not phase-locked, so the second one arrives some
+ *  arbitrary number of seconds after the first and asks for the same grid. Each
+ *  request makes the server WALK 540 rays through the cloud volume, which is
+ *  why `getCloudmapDome`'s own docstring tells callers to pick a resolution
+ *  they can draw.
+ *
+ *  Just under that shared cadence, so a poller asking every 60 s still gets a
+ *  fresh grid every 60 s and its unlucky twin gets the one already in hand.
+ *  Well inside a granule either way: GOES delivers every 5-10 minutes, and the
+ *  grid carries its own `observed_at`, so nothing downstream mistakes a reused
+ *  answer for a newer observation. */
+export const DOME_TTL_MS = 55_000;
+
+const domeKey = (altStep: number, azStep: number): string => `${altStep}x${azStep}`;
+/** Keyed by resolution: two callers asking for different steps are asking two
+ *  different questions and must not share an answer. */
+const domeCache = new Map<string, { at: number; grid: CloudmapDome }>();
+/** The SAME promise while a request is in the air, so two callers a millisecond
+ *  apart make one request rather than two and a cache that fills too late. */
+const domeInFlight = new Map<string, Promise<CloudmapDome>>();
+
 /** Coarser steps cost the server real work per ray (it walks each one through
- *  the cloud volume), so callers pick the resolution they can actually draw. */
-export const getCloudmapDome = (altStep = 6, azStep = 10): Promise<CloudmapDome> =>
-  api.get<CloudmapDome>(`/api/cloudmap/dome?alt_step=${altStep}&az_step=${azStep}`);
+ *  the cloud volume), so callers pick the resolution they can actually draw.
+ *
+ *  Answers from a `DOME_TTL_MS` cache, shared across every caller in the tab.
+ *  A FAILURE IS NEVER CACHED: the entry is only written on success, so a dead
+ *  feed is retried on the next poll rather than remembered for a minute.
+ *
+ *  The returned object is shared, not copied. Nothing in this app mutates a
+ *  dome grid - it is drawn and read - and copying 540 cells per caller to guard
+ *  against a mutation nobody makes would give the saved request straight back. */
+export function getCloudmapDome(altStep = 6, azStep = 10): Promise<CloudmapDome> {
+  const key = domeKey(altStep, azStep);
+  const hit = domeCache.get(key);
+  if (hit && Date.now() - hit.at < DOME_TTL_MS) return Promise.resolve(hit.grid);
+  const flying = domeInFlight.get(key);
+  if (flying) return flying;
+  const p = api
+    .get<CloudmapDome>(`/api/cloudmap/dome?alt_step=${altStep}&az_step=${azStep}`)
+    .then((grid) => {
+      domeCache.set(key, { at: Date.now(), grid });
+      return grid;
+    })
+    .finally(() => { domeInFlight.delete(key); });
+  domeInFlight.set(key, p);
+  return p;
+}
+
+/** Drop everything cached. For tests, and for a caller that has just changed
+ *  the cloudmap configuration and must not draw the old platform's grid. */
+export function resetCloudmapDomeCache(): void {
+  domeCache.clear();
+  domeInFlight.clear();
+}
 
 export const getCloudmapAt = (alt: number, az: number, aheadS = 0): Promise<CloudmapAt> =>
   api.get<CloudmapAt>(

@@ -126,6 +126,13 @@ class Bundle:
     #: Normalized-weight cutoff in [0,1] the caller asked for (None = no tail
     #: flagging; every light keeps ``keep=True``).
     keep_threshold: float | None = None
+    #: True once :func:`externalize_bundle` has rewritten every ``src`` to a
+    #: capture-root-relative path. The serializers key on it: a relative bundle
+    #: emits the ``CAPTURE_ROOT`` prologue and joins against it, so the scripts
+    #: still resolve on the user's own machine. Every bundle that LEAVES the
+    #: process is externalized; the absolute form exists only for
+    #: ``bundle_materialize_plan``, which copies files on this box.
+    src_relative: bool = False
 
 
 # --------------------------------------------------- PRO-1 library adapter
@@ -520,6 +527,79 @@ def build_bundle(report: SessionReport, library: MasterLibrary, *,
                   keep_threshold=keep_threshold)
 
 
+# ------------------------------------------------------------ externalization
+#: The variable the generated scripts read for the user's capture folder, and
+#: the base every ``src`` in an externalized bundle is relative to.
+CAPTURE_ROOT_VAR = "CAPTURE_ROOT"
+
+#: What a ``src`` becomes when it cannot be expressed under the capture root
+#: (a master kept in a library on another volume). Empty, never the absolute
+#: path: the serializers skip an empty source rather than disclose it.
+_NO_SRC = ""
+
+
+def externalize_bundle(bundle: Bundle,
+                       to_relative: Callable[[str], str | None]) -> Bundle:
+    """A copy of ``bundle`` whose every ``src`` is capture-root-relative.
+
+    An absolute path names the observatory's account, drive and directory
+    scheme, and ``GET /api/reports/{id}/bundle.zip`` is ``view.status`` — every
+    role. Its sibling routes were fixed for exactly this in
+    ``redact._redact_report_for`` (``saved_path`` -> relative) and the CSV
+    export was pinned as "not a loophole"; the zip's ``manifest.json``,
+    ``weights.csv`` and ``build.sh``/``build.ps1`` still carried
+    ``fr.saved_path`` verbatim.
+
+    ``to_relative`` is injected (``gallery.relpath_under_capture`` in the
+    route) to keep this module free of filesystem I/O, and it is the SAME
+    function ``hub._is_local_save`` decides containment with, so "is it in the
+    library" and "what is its relative path" cannot disagree. A path it cannot
+    express becomes empty — never the absolute one — and the serializers omit
+    that row's source rather than invent a location.
+    """
+    def _rel(src: str) -> str:
+        if not src:
+            return _NO_SRC
+        try:
+            return to_relative(src) or _NO_SRC
+        except Exception:      # noqa: BLE001 - a path we cannot express is not
+            return _NO_SRC     # a reason to fail the download; it is absent
+    def _sources(group: Group) -> dict[str, str]:
+        # A master we cannot express relatively is DROPPED from the mapping
+        # rather than emitted empty: the script generators already skip a kind
+        # with no source, so one absent entry costs one copy line and no lie.
+        out: dict[str, str] = {}
+        for kind_lc, src in group.master_sources.items():
+            rel = _rel(src)
+            if rel:
+                out[kind_lc] = rel
+        return out
+
+    groups = tuple(
+        Group(dir=g.dir, target=g.target, filter=g.filter,
+              exposure_s=g.exposure_s, gain=g.gain, binning=g.binning,
+              lights=tuple(_replace_src(l, _rel(l.src)) for l in g.lights),
+              masters=dict(g.masters), master_sources=_sources(g),
+              missing_masters=tuple(g.missing_masters))
+        for g in bundle.groups)
+    return Bundle(report_id=bundle.report_id, plan_name=bundle.plan_name,
+                  layout=bundle.layout, groups=groups,
+                  warnings=tuple(bundle.warnings),
+                  weight_altitude=bundle.weight_altitude,
+                  keep_threshold=bundle.keep_threshold,
+                  src_relative=True)
+
+
+def _replace_src(light: LightEntry, src: str) -> LightEntry:
+    """``LightEntry`` is frozen, so a rewritten source is a new one."""
+    return LightEntry(src=src, dest=light.dest, ts=light.ts,
+                      accepted=light.accepted, hfr=light.hfr, ecc=light.ecc,
+                      guide_rms=light.guide_rms,
+                      sensor_temp_c=light.sensor_temp_c,
+                      altitude_deg=light.altitude_deg, weight=light.weight,
+                      fwhm_est=light.fwhm_est, keep=light.keep)
+
+
 # --------------------------------------------------------------- serializers
 
 def manifest_json(bundle: Bundle) -> dict:
@@ -536,6 +616,13 @@ def manifest_json(bundle: Bundle) -> dict:
                           "measured HFR, not a fitted PSF FWHM"),
         "keep_note": ("keep=false is advisory only (weight < keep_threshold); "
                       "no sub is removed from the bundle or the build script"),
+        # WHAT ``src`` IS MEASURED FROM, stated in the manifest rather than
+        # left to be inferred: an externalized bundle carries capture-root
+        # relative sources (no absolute path leaves this process), and a
+        # source that could not be expressed that way is ABSENT, not guessed.
+        "src_base": (f"relative to your AstroDeck capture folder; the build "
+                     f"scripts read that folder from ${CAPTURE_ROOT_VAR}"
+                     if bundle.src_relative else "absolute"),
         "warnings": list(bundle.warnings),
         "groups": [
             {
@@ -550,7 +637,9 @@ def manifest_json(bundle: Bundle) -> dict:
                 "missing_masters": list(g.missing_masters),
                 "lights": [
                     {
-                        "src": l.src,
+                        # Absent, never fabricated, when the source is not
+                        # expressible under the capture root.
+                        **({"src": l.src} if l.src else {}),
                         "dest": l.dest,
                         "ts": l.ts,
                         "accepted": l.accepted,
@@ -681,6 +770,16 @@ def readme_text(bundle: Bundle) -> str:
     lines.append("  weights.csv    one row per sub — feed to SubframeSelector/Siril")
     lines.append("  build.sh /.ps1 materialize the tree from your captures")
     lines.append("")
+    if bundle.src_relative:
+        # Say where the sources are measured from, because the scripts refuse
+        # to run without it. Source paths are relative on purpose: an absolute
+        # one would name the observatory's account and drive layout to whoever
+        # downloads this, and no stacker needs that.
+        lines.append("Source paths are relative to your AstroDeck capture")
+        lines.append(f"folder. Set {CAPTURE_ROOT_VAR} before running the build script:")
+        lines.append(f"  {CAPTURE_ROOT_VAR}=/path/to/captures sh build.sh")
+        lines.append(f"  $env:{CAPTURE_ROOT_VAR} = 'D:/AstroDeck/captures'; ./build.ps1")
+        lines.append("")
     lines.append("Columns worth knowing:")
     lines.append(f"  fwhm_est  ESTIMATED FWHM = {HFR_TO_FWHM_K:g} x hfr. AstroDeck measures HFR,")
     lines.append("            NOT a fitted PSF FWHM — the exact factor depends on your PSF")
@@ -794,7 +893,14 @@ def build_script(bundle: Bundle, shell: str = "sh") -> str:
     (spaces, ``;``, ``$(...)``, backticks, quotes, ``& rmdir``, newlines). It is
     ALWAYS quoted/escaped so it can only ever be a literal path argument, never a
     command: POSIX via :func:`shlex.quote`; PowerShell via single-quoted literals
-    with ``'`` doubled and ``-LiteralPath`` (no wildcard/variable expansion)."""
+    with ``'`` doubled and ``-LiteralPath`` (no wildcard/variable expansion).
+
+    An EXTERNALIZED bundle (:func:`externalize_bundle`, which is what the
+    download route ships) carries capture-root-relative sources, so the script
+    opens by requiring ``CAPTURE_ROOT`` and joins each source onto it. The join
+    keeps the quoting property: the variable is expanded in its own quoted word
+    and the relative path stays a quoted literal beside it, so neither half can
+    become a command."""
     if shell == "ps1":
         return _build_ps1(bundle)
     return _build_sh(bundle)
@@ -806,18 +912,38 @@ def _build_sh(bundle: Bundle) -> str:
     out.append("# AstroDeck stacking bundle — materialize lights + masters here.")
     out.append("# Every path below is shell-quoted; run from an empty directory.")
     out.append("set -eu")
+    if bundle.src_relative:
+        out.append("")
+        out.append("# Sources are relative to your AstroDeck capture folder —")
+        out.append("# the one holding <TARGET>/... Set it before running:")
+        out.append(f"#   {CAPTURE_ROOT_VAR}=/path/to/captures sh build.sh")
+        out.append(f': "${{{CAPTURE_ROOT_VAR}:?'
+                   f'set {CAPTURE_ROOT_VAR} to your AstroDeck capture folder}}"')
     out.append("")
+
+    def _src(value: str) -> str:
+        # "$CAPTURE_ROOT"/'rel/path' — two quoted halves, one word. The
+        # expansion is quoted (so a space in the root is safe) and the relative
+        # path stays a shlex literal, which is what keeps an adversarial
+        # filename from becoming a command.
+        if not bundle.src_relative:
+            return q(value)
+        return f'"${CAPTURE_ROOT_VAR}"/{q(value)}'
+
     for g in bundle.groups:
         out.append(f"# --- {g.dir}")
         out.append(f"mkdir -p {q(_lights_dir(bundle.layout, g.dir))}")
         for l in g.lights:
-            out.append(f"cp -- {q(l.src)} {q(l.dest)}")
+            if not l.src:
+                out.append(f"# no source path for {q(l.dest)} — copy it by hand")
+                continue
+            out.append(f"cp -- {_src(l.src)} {q(l.dest)}")
         for kind_lc, dest in g.masters.items():
             src = g.master_sources.get(kind_lc)
             if not src:
                 continue
             out.append(f"mkdir -p {q(_parent_dir(dest))}")
-            out.append(f"cp -- {q(src)} {q(dest)}")
+            out.append(f"cp -- {_src(src)} {q(dest)}")
         out.append("")
     return "\n".join(out)
 
@@ -834,13 +960,38 @@ def _build_ps1(bundle: Bundle) -> str:
     out.append("# Every path is a single-quoted literal (-LiteralPath); "
                "run from an empty directory.")
     out.append("$ErrorActionPreference = 'Stop'")
+    if bundle.src_relative:
+        out.append("")
+        out.append("# Sources are relative to your AstroDeck capture folder —")
+        out.append("# the one holding <TARGET>/... Set it before running:")
+        # Forward slashes on purpose: PowerShell takes them, and the bundle's
+        # own dests are POSIX by construction (a backslash in a generated
+        # script is the bug test_build_sh_never_emits_a_backslash pins).
+        out.append(f"#   $env:{CAPTURE_ROOT_VAR} = 'D:/AstroDeck/captures'")
+        out.append(f"if (-not $env:{CAPTURE_ROOT_VAR}) {{ throw "
+                   f"'Set $env:{CAPTURE_ROOT_VAR} to your AstroDeck capture "
+                   f"folder.' }}")
+        out.append(f"$CaptureRoot = $env:{CAPTURE_ROOT_VAR}")
     out.append("")
+
+    def _src(value: str) -> str:
+        # Join-Path with a single-quoted literal: the root comes from the
+        # environment, the relative path is still a literal PowerShell string
+        # in which nothing is interpreted.
+        if not bundle.src_relative:
+            return _ps1_lit(value)
+        return f"(Join-Path $CaptureRoot {_ps1_lit(value)})"
+
     for g in bundle.groups:
         out.append(f"# --- {g.dir}")
         out.append("New-Item -ItemType Directory -Force -Path "
                    f"{_ps1_lit(_lights_dir(bundle.layout, g.dir))} | Out-Null")
         for l in g.lights:
-            out.append(f"Copy-Item -LiteralPath {_ps1_lit(l.src)} "
+            if not l.src:
+                out.append(f"# no source path for {_ps1_lit(l.dest)} — "
+                           "copy it by hand")
+                continue
+            out.append(f"Copy-Item -LiteralPath {_src(l.src)} "
                        f"-Destination {_ps1_lit(l.dest)}")
         for kind_lc, dest in g.masters.items():
             src = g.master_sources.get(kind_lc)
@@ -848,7 +999,7 @@ def _build_ps1(bundle: Bundle) -> str:
                 continue
             out.append("New-Item -ItemType Directory -Force -Path "
                        f"{_ps1_lit(_parent_dir(dest))} | Out-Null")
-            out.append(f"Copy-Item -LiteralPath {_ps1_lit(src)} "
+            out.append(f"Copy-Item -LiteralPath {_src(src)} "
                        f"-Destination {_ps1_lit(dest)}")
         out.append("")
     return "\n".join(out)

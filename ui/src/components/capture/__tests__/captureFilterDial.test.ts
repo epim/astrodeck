@@ -44,7 +44,10 @@ test("every slot on the wheel is offered, including the blackout", () => {
   assert(!!cat, "Capture's dial has no FILT ring — the #181 gap is still open");
   const o = opts(cat);
   assert(o.length === 8, `${o.length} of 8 slots offered`);
-  assert(o.some((x) => /Dark — blackout/.test(x.label)),
+  // Hyphen, not an em-dash: house copy rule (ARCHITECTURE.md non-negotiable 5),
+  // and the new UI was rewriting this label character by character on the way to
+  // its own dial. Graded on the WHOLE label so a stray em-dash fails here.
+  assert(o.some((x) => x.label === "Dark - blackout"),
     "the blackout slot was dropped. Capture is the one screen where parking on "
     + "it is a real workflow — it is how you shoot darks on a rig with a wheel — "
     + "and dropping it here loses a function the panel below still has");

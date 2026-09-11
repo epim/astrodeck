@@ -148,7 +148,7 @@ NOT_CARRIED: dict[str, str] = {
     "pluto": ("Pluto is not carried: its position needs a JPL kernel this rig "
               "does not download, and the approximation that works for the "
               "eight planets is wrong for Pluto by more than a finder field."),
-    "earth": ("Earth is not a target — you are standing on it. To see where "
+    "earth": ("Earth is not a target - you are standing on it. To see where "
               "the mount is pointing, use the Mount screen."),
     "ceres": ("Minor planets are not carried: an asteroid's position needs "
               "orbital elements that go stale, and a stale element set points "
@@ -201,9 +201,9 @@ def sun_block_reason() -> str | None:
 
     cone = getattr(config_store.cfg().safety, "solar_exclusion_deg", 30.0)
     return (f"The Sun is not offered as a target: sun avoidance is armed and "
-            f"the mount refuses anything within {cone:.0f}° of it. Solar "
+            f"the mount refuses anything within {cone:.0f} degrees of it. Solar "
             f"observing needs a filtered scope and a solar session "
-            f"(Settings → Safety, admin only).")
+            f"(Settings > Safety, admin only).")
 
 
 def offered_bodies() -> tuple[Body, ...]:
@@ -412,21 +412,21 @@ def describe(body: Body, p: dict, sun_sep_deg: float, cone_deg: float) -> str:
     parts.append(f"in {p['constellation']}")
     parts.append(_size_phrase(p["size_arcmin"]))
     if body.key == "sun":
-        parts.append("solar session — needs a filtered scope")
+        parts.append("solar session - needs a filtered scope")
     elif cone_deg > 0.0 and sun_sep_deg < cone_deg:
         # Not a warning about glare: the mount will actually refuse this slew.
-        parts.append(f"{sun_sep_deg:.0f}° from the Sun — the mount will refuse "
-                     f"this slew")
+        parts.append(f"{sun_sep_deg:.0f} degrees from the Sun - the mount will "
+                     f"refuse this slew")
     # The Moon is the only body where standing at the centre of the Earth is
     # VISIBLE (0.92°, nearly two lunar diameters). Two reasons, two sentences:
     # telling a viewer on a fully-configured rig to "set your site" is advice to
     # fix a setting that is already correct.
     why = p.get("geocentric_reason")
     if body.key == "moon" and why == "site_unset":
-        parts.append("geocentric until you set your site (moves it up to 1°)")
+        parts.append("geocentric until you set your site (moves it up to 1 degree)")
     elif body.key == "moon" and why == "not_permitted":
-        parts.append("geocentric for your role, so up to 1° off — where the "
-                     "Moon appears would give away this rig's location")
+        parts.append("geocentric for your role, so up to 1 degree off - where "
+                     "the Moon appears would give away this rig's location")
     return " · ".join(parts)
 
 

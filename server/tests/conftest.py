@@ -96,17 +96,43 @@ def _never_touch_the_real_config():
     checkout only, pointing at guiding code that was completely innocent."""
     import tempfile
     import astrodeck.config as config_mod
+    from astrodeck.catalog.ephemeris import elements as elements_mod
     real = config_mod.config_store._path
     real_dir = config_mod.CONFIG_DIR
+    real_elements = (elements_mod.ELEMENTS_DIR, elements_mod.SATELLITE_FILE,
+                     elements_mod.COMET_FILE)
+    real_start = elements_mod.EphemerisStore.start
     with tempfile.TemporaryDirectory(prefix="astrodeck-test-config-") as d:
         config_mod.config_store._path = Path(d) / "astrodeck.json"
         config_mod.config_store._cfg = None      # drop anything already loaded
         config_mod.CONFIG_DIR = Path(d)
+        # THE ORBITAL-ELEMENT CACHE, for the third time in this fixture's life
+        # and for the same reason (2026-09-10). ``elements.py`` computes
+        # ``ELEMENTS_DIR = CONFIG_DIR / "ephemeris"`` at IMPORT, so repointing
+        # CONFIG_DIR above does not move it -- and once S7L started the poller
+        # in the app lifespan, any test whose TestClient outlived the 60 s check
+        # interval fetched CelesTrak and the MPC and wrote 400 kB into the
+        # developer's real ``server/config/ephemeris/``. That file is not inert:
+        # ``catalog.search`` merges comet rows out of it, so a suite that had
+        # ever run long enough got an extra row in ``search("sun")`` and three
+        # catalog tests failed on a machine-specific artefact of an earlier run.
+        elements_mod.ELEMENTS_DIR = Path(d) / "ephemeris"
+        elements_mod.SATELLITE_FILE = elements_mod.ELEMENTS_DIR / "satellites.json"
+        elements_mod.COMET_FILE = elements_mod.ELEMENTS_DIR / "comets.json"
+        # ...and no poller at all. The redirect above makes the write harmless;
+        # this makes the FETCH not happen, because a test suite that reaches the
+        # internet fails on a train and passes at a desk. A test that wants the
+        # loop calls ``_run``/``refresh`` directly, which is what the ephemeris
+        # tests already do.
+        elements_mod.EphemerisStore.start = lambda self: None
         assert config_mod.config_store._path != real
         yield
     config_mod.config_store._path = real
     config_mod.config_store._cfg = None
     config_mod.CONFIG_DIR = real_dir
+    (elements_mod.ELEMENTS_DIR, elements_mod.SATELLITE_FILE,
+     elements_mod.COMET_FILE) = real_elements
+    elements_mod.EphemerisStore.start = real_start
 
 
 @pytest.fixture(autouse=True)

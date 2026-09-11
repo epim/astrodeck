@@ -1,0 +1,233 @@
+/* system.css - the four SYSTEM editors' own classes (wave R7, T-R7-12).
+ *
+ * `next.css` is a single shared file that twenty concurrent tasks cannot own,
+ * so every class this area needs lives here and is imported by the area's own
+ * roots (`UpdateEditor.tsx`, `FactoryResetEditor.tsx`, `CreditsBrowser.tsx`,
+ * `RestrictedList.tsx`), never added to `NextApp.tsx`.
+ *
+ * Rules this file keeps: single-class selectors only, variants on `data-*`, no
+ * class defined in `next.css` appears in any selector here (not even as an
+ * ancestor - a `.nx-sys-x .nx-card` rule would still be redefining a shared
+ * primitive from an area file), tokens from `index.css` only, and no animation
+ * at all, so there is nothing for `prefers-reduced-motion` to switch off.
+ */
+
+/* The column every card in these four sheets uses. */
+.nx-sys-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+/* An eyebrow on the left, a value or state on the right. */
+.nx-sys-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+/* A readout on the left and one control on the right, stacking under about
+   380 px so a 44 px button never squeezes the sentence beside it. */
+.nx-sys-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.nx-sys-grow {
+  flex: 1 1 220px;
+  min-width: 0;
+  display: block;
+}
+
+.nx-sys-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* ------------------------------------------------------------- sentences */
+
+.nx-sys-note {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+
+.nx-sys-warn {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--warn);
+  overflow-wrap: anywhere;
+}
+
+.nx-sys-bad {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--bad);
+  overflow-wrap: anywhere;
+}
+
+.nx-sys-good {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--good);
+  overflow-wrap: anywhere;
+}
+
+.nx-sys-link {
+  color: var(--accent);
+  text-decoration: underline;
+  overflow-wrap: anywhere;
+}
+
+.nx-sys-code {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+/* --------------------------------------------------------- long verbatim */
+
+/* Release notes and licence bodies. `pre-wrap` keeps the source's own line
+   breaks (for a legal text those are part of the text); the box scrolls on its
+   own so a long unbroken URL inside a licence cannot widen the phone. */
+.nx-sys-pre {
+  margin: 0;
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--line);
+  border-radius: var(--nx-r-inner, 14px);
+  background: var(--bg);
+  padding: 10px;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+
+/* The licensor's own words, kept visibly separate from our reading of them. */
+.nx-sys-quote {
+  margin: 0;
+  border-left: 2px solid var(--line-bright);
+  padding-left: 10px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  font-style: italic;
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+
+/* ------------------------------------------------------- the reset scope */
+
+/* Two lists side by side where there is room, stacked where there is not. */
+.nx-sys-cols {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+@media (min-width: 560px) {
+  .nx-sys-cols { grid-template-columns: 1fr 1fr; }
+}
+
+.nx-sys-col {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--nx-r-inner, 14px);
+  background: var(--bg);
+  padding: 10px;
+  min-width: 0;
+}
+
+.nx-sys-list {
+  margin: 0;
+  padding-left: 16px;
+  list-style: disc;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--text-dim);
+}
+
+/* A line the switches above have taken out of "Kept". Struck AND dimmed, so
+   the change is carried by more than one channel. */
+.nx-sys-struck {
+  text-decoration: line-through;
+  opacity: .55;
+}
+
+/* ------------------------------------------------------------- credits */
+
+.nx-sys-entries {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+}
+
+.nx-sys-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+  min-width: 0;
+}
+
+/* An entry whose licence still needs a decision from the project owner: the
+   bar is an addition to the "Needs a decision" sentence inside it, never the
+   only carrier. */
+.nx-sys-entry[data-flagged="true"] {
+  border-left: 2px solid var(--warn);
+  padding-left: 10px;
+}
+
+.nx-sys-entryhead {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.nx-sys-entryname {
+  font-family: "Chakra Petch", sans-serif;
+  font-weight: 600;
+  font-size: 12px;
+  letter-spacing: .04em;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.nx-sys-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+/* ------------------------------------------------------------- progress */
+
+.nx-sys-progress {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}

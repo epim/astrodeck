@@ -147,7 +147,7 @@ function AtlasEmpty({
         <div className="flex flex-col gap-3 mt-1">
           <CatalogSearch
             onPick={onPick}
-            placeholder="Search catalog — e.g. M 31"
+            placeholder="Search catalog - e.g. M 31"
             className="w-full"
           />
           <button type="button" className="btn btn-accent btn-touch w-full" onClick={onFreeRoam}>

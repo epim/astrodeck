@@ -1,0 +1,118 @@
+// A FALSE CLAIM guard, not a copy-style test.
+//
+// Two surfaces in the classic shell told the user that a high-cloud FORECAST
+// would hold an auto-resume:
+//
+//   App.tsx                     "Auto-resume will hold unless \"ignore weather
+//                                tonight\" is set."
+//   weather/SkyConditionsPanel  "high cloud tonight - auto-resume will hold
+//                                unless overridden"
+//
+// The engine does not do that and has deliberately not done it since 2026-08-19.
+// `WeatherService.veto_reason` (server/astrodeck/weather.py) is rain-only and
+// fail-open, and its own docstring says why: "RAIN VETOES. CLOUD DOES NOT ...
+// A forecast over a ~10 km grid cell is the WRONG instrument, and using it to
+// refuse to start is self-fulfilling: decline to open and you never learn the
+// sky was clear." It then names the two consecutive nights this gate refused
+// under a 100% cloud forecast that turned out clear past 02:00.
+//
+// So the promise was not merely stale wording - it described a mechanism that
+// was removed, and it pointed the user at an override ("ignore weather tonight")
+// for a block that would never happen. A cloud HOLD is measured in-run, from the
+// rig's own frames.
+//
+// This reads the two sources rather than importing them, because neither string
+// is exported: one is built inline in a `confirmDialog` call, the other is JSX
+// text. Same dependency-free node access as src/__tests__/cssClasses.test.ts.
+//
+//   Run directly:  npx tsx src/__tests__/weatherHoldClaim.test.ts
+
+interface NodeFsLike { readFileSync(path: string, encoding: string): string }
+const nodeImport = (s: string): Promise<unknown> =>
+  (Function("m", "return import(m)") as (m: string) => Promise<unknown>)(s);
+const fs = (await nodeImport("node:fs")) as NodeFsLike;
+
+const pathOf = (rel: string): string => {
+  const u = new URL(rel, import.meta.url);
+  return decodeURIComponent(u.pathname).replace(/^\/([A-Za-z]:)/, "$1");
+};
+
+/** The file's TEXT as the user would read it: full-line `//` comments dropped
+ *  (this test's own subject matter is quoted in them), template-literal joins
+ *  closed up, and all whitespace collapsed so a sentence broken across JSX or
+ *  string-concatenation lines still reads as one sentence. */
+function renderedText(rel: string): string {
+  const raw = fs.readFileSync(pathOf(rel), "utf8");
+  return raw
+    .replace(/^[ \t]*\/\/.*$/gm, "")      // whole-line comments only: not https://
+    .replace(/`\s*\+\s*`/g, "")           // `...a ` + `b...`  ->  `...ab...`
+    .replace(/\s+/g, " ");
+}
+
+// ---------------------------------------------------------------- harness
+let passed = 0;
+let failed = 0;
+const failures: string[] = [];
+function test(name: string, fn: () => void): void {
+  try { fn(); passed++; } catch (e) { failed++; failures.push(`x ${name}: ${(e as Error).message}`); }
+}
+function assert(cond: boolean, msg: string): void { if (!cond) throw new Error(msg); }
+
+// The sentence both surfaces now carry. Graded literally: a reword that keeps
+// the shape but drops "only forecast rain" would put the claim back.
+const TRUE_CLAIM =
+  "the forecast does not hold a run: a running session holds on what its own "
+  + "frames show, and only forecast rain inside the hour blocks an auto-resume";
+
+const SURFACES: [string, string][] = [
+  ["App.tsx high-cloud dialog", "../App.tsx"],
+  ["SkyConditionsPanel chips row", "../components/weather/SkyConditionsPanel.tsx"],
+];
+
+// How far back from the corrected claim to look for the word "cloud". Large
+// enough to reach across the surrounding sentence/JSX wrapper in both
+// surfaces (measured: 16 chars on SkyConditionsPanel, 144 on App.tsx's
+// `confirmDialog` body), small enough to stay inside that one message and
+// not reach whatever unrelated code happens to precede it in the file.
+const CLOUD_CONTEXT_WINDOW = 250;
+
+for (const [what, rel] of SURFACES) {
+  const text = renderedText(rel);
+  const claimIndex = text.toLowerCase().indexOf(TRUE_CLAIM);
+
+  test(`${what}: does not claim a cloud forecast holds an auto-resume`, () => {
+    assert(!/auto-resume will hold/i.test(text),
+      "the removed rain-only-veto promise is back: the engine's veto_reason is "
+      + "rain-only and fail-open, so a cloud forecast holds nothing");
+    assert(!/hold unless/i.test(text),
+      "the copy still offers an override for a block that never happens");
+  });
+
+  test(`${what}: says what actually decides, in the shipped wording`, () => {
+    assert(claimIndex >= 0,
+      `the corrected sentence is not on this surface. Expected to find:\n  ${TRUE_CLAIM}`);
+  });
+
+  test(`${what}: still names the forecast, in the same message as the corrected claim`, () => {
+    // Graded around the claim's own position, not the whole file. `cloud` is
+    // also a property name and prefix elsewhere in these files (SkyConditions-
+    // Panel.tsx alone has 14 hits that are all identifiers - `f.cloud[i]`,
+    // `out.cloud.push`, `cloud_low` - none of them visible text), so a bare
+    // /cloud/i.test(text) over the whole source stays green even if the
+    // user-visible "high cloud" wording were deleted from this exact message.
+    // Require "cloud" in the text immediately BEFORE the corrected claim -
+    // the paragraph the user actually reads it in.
+    assert(claimIndex >= 0, "the corrected sentence is missing (see the previous assertion)");
+    const surroundingText = text.slice(Math.max(0, claimIndex - CLOUD_CONTEXT_WINDOW), claimIndex);
+    assert(/cloud/i.test(surroundingText),
+      "the message introducing the corrected claim no longer mentions cloud - checked the "
+      + `${CLOUD_CONTEXT_WINDOW} characters before it: ${JSON.stringify(surroundingText)}`);
+  });
+}
+
+// ---------------------------------------------------------------- summary
+const total = passed + failed;
+console.log(`weatherHoldClaim.test: ${passed}/${total} passed`);
+for (const f of failures) console.error(f);
+
+export const result = { passed, failed, total };

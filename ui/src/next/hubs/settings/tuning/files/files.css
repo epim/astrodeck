@@ -1,0 +1,132 @@
+/* files.css - the FILES AND STANDARDS area's own classes (wave R7, T-R7-13).
+ *
+ * `next.css` is a single shared file that twenty concurrent tasks cannot own,
+ * so every class this area needs lives here. It is imported by each of the four
+ * editors rather than by one nominal root: the four are mounted by four
+ * independent sheets (and the WCS one by a fifth, the Optics sheet), and a
+ * sheet that pulls in only its own editor would otherwise render it unstyled.
+ * The same reason `canvas.css` and `inspector.css` carry more than one import
+ * site in this wave.
+ *
+ * Rules this file keeps: single-class selectors only, variants on `data-*`, no
+ * class defined in `next.css` appears in any selector here (not even as an
+ * ancestor), tokens from `index.css` only, and no animation that
+ * `prefers-reduced-motion` would have to turn off.
+ */
+
+/* The whole sheet body: cards, then the notes and the lock note under them. */
+.nx-files-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+/* The stack inside one card. 10 px is the settings-card row rhythm. */
+.nx-files-col {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+/* A row of buttons: 8 px apart, wrapping rather than shrinking below the 44 px
+ * hit target the primitives already set. */
+.nx-files-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+/* A field with a button on its right (destination + SAVE DESTINATION).
+ * `align-items: flex-end` puts the button on the input's baseline rather than
+ * on the label's. */
+.nx-files-pair {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+/* Hung on the field inside a pair so the input takes the slack. `min-width: 0`
+ * because a flex item's default `auto` minimum is its content width, which is
+ * what lets a long UNC path push a row wider than the sheet. */
+.nx-files-grow {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
+/* The six numeric standards. One column on a phone, two from 420 px of CARD
+ * width - container units, not a viewport media query, because this same body
+ * renders in a 420 px desktop panel and in a full-width phone sheet. */
+.nx-files-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px 12px;
+  min-width: 0;
+}
+
+@media (min-width: 480px) {
+  .nx-files-grid { grid-template-columns: 1fr 1fr; }
+}
+
+/* The token chips. */
+.nx-files-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* The naming preview path. It wraps mid-token rather than scrolling: the whole
+ * value is the answer, and a path clipped at the sheet edge hides the folder
+ * depth that is the point of the template. */
+.nx-files-preview {
+  overflow-wrap: anywhere;
+  line-height: 1.6;
+}
+
+/* Explanatory prose under a control. 11.5 px is the sheet-footnote size. */
+.nx-files-note {
+  margin: 0;
+  padding: 0 2px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-faint);
+}
+
+.nx-files-warn {
+  margin: 0;
+  padding: 0 2px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--warn);
+}
+
+.nx-files-err {
+  margin: 0;
+  padding: 0 2px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--bad);
+}
+
+/* An inline destination inside a sentence. It is a link in every way but the
+ * element: underlined, accent, and it inherits the sentence's size so the line
+ * does not jump around it. */
+.nx-files-link {
+  appearance: none;
+  border: 0;
+  padding: 0;
+  background: none;
+  font: inherit;
+  color: var(--accent);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.nx-files-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}

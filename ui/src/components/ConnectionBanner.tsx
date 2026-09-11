@@ -96,7 +96,7 @@ export default function ConnectionBanner() {
         <Icon name="rig" size={14} className="text-faint shrink-0" />
         <span className="label !text-[11px] text-dim shrink-0">NO RIG CONNECTED</span>
         <span className="text-[11px] text-faint hidden sm:inline truncate">
-          Connect equipment on the Rig page to see live telemetry.
+          Connect a mount, camera, or other device to see live telemetry.
         </span>
       </div>
     );

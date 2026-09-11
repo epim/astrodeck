@@ -282,4 +282,4 @@ def describe(obj: DSO) -> str:
     if extra is not None and extra.ned_note:
         body = f"{body} · {extra.ned_note}"
 
-    return f"{obj.name} — {body}" if has_name else body
+    return f"{obj.name} - {body}" if has_name else body

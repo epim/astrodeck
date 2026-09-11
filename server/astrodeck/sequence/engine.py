@@ -40,6 +40,9 @@ from ..focus import run_autofocus
 from ..focus.approach import approach, configured_overshoot
 from ..focus.autofocus import SWEEP_EXPOSURE_S, SWEEP_GAIN, TrackingLost
 from ..focus.filter_offsets import narrowband_sweep_settings, solve_filter_slot
+from ..focus.tempcomp import (
+    TempCompConfig, decide as temp_comp_decide, status_node as temp_comp_node,
+)
 from ..guide.base import rms_total_arcsec
 from ..hub import Hub
 from ..imaging.processing import to_jpeg
@@ -449,6 +452,22 @@ class SequenceEngine:
         self._frames_since_dither = 0
         self._frames_since_focus = 0
         self._last_focus_temp: float | None = None
+        #: The temperature-compensation reference (#D-RIG-2): ``(temp_c, pos)``
+        #: or None for "not anchored yet".
+        #:
+        #: IT LIVES ON THE ENGINE, NOT IN CONFIG, and that is a seam not a
+        #: choice: there is no ``config_store.set_focus`` to persist it through
+        #: until S7i lands one, and a reference written into `astrodeck.json`
+        #: by the frame loop would be rewritten on every boundary anyway. So it
+        #: is anchored per run - the first boundary of a run seeds it from the
+        #: focuser's own reading, and every autofocus re-anchors it (see
+        #: `_capture_focus_temp`). A configured `focus.temp_comp.reference_*`
+        #: pair, when S7i gives the config one, seeds it instead.
+        self._temp_comp_ref: tuple[float, int] | None = None
+        #: Signed steps of the last compensating move actually made, and the
+        #: reason string of the last decision - both for the status bus.
+        self._temp_comp_last_move: int | None = None
+        self._temp_comp_last_reason: str | None = None
         #: ``time.monotonic()`` of the last SUCCESSFUL sweep, or None.
         #:
         #: Monotonic, not wall clock: this is only ever read as an AGE, and a
@@ -2641,6 +2660,12 @@ class SequenceEngine:
                 except Exception as e:
                     bus.log("warning", f"dither failed: {e}", "sequence")
 
+            # Temperature compensation BEFORE the refocus check, deliberately.
+            # A compensating move is cheap and keeps the focuser near-correct;
+            # the trigger below still gets its say, because compensation tracks
+            # only the linear part of the drift and the trigger is what catches
+            # the rest. See focus/tempcomp.py for the whole argument.
+            await self._apply_temp_comp()
             if await self._refocus_due():
                 await self._autofocus("refocus", step=step, target=target)
                 self._frame_had_event = True
@@ -4736,6 +4761,36 @@ class SequenceEngine:
                     FOCUSER_MOVE_TIMEOUT_S, "focuser offset move",
                     note="the focuser may be left above the offset position")
                 bus.log("info", f"applied filter offset {delta:+d} for {label}", "sequence")
+                # AND THE COMPENSATION REFERENCE MOVES WITH IT.
+                #
+                # `tempcomp.decide` computes an ABSOLUTE target,
+                # `reference_position + steps_per_c * (temp - reference_temp)`,
+                # and nothing here used to touch that reference - so the moment
+                # this offset landed, the drawtube was `delta` steps away from
+                # where compensation believed focus was. The very next frame
+                # boundary "corrected" that as drift and moved it straight back.
+                # Ha then shot at L's focus, with BOTH log lines present and
+                # nothing anywhere disagreeing: the offset line says it applied
+                # +120, the compensation line says it moved -120 for the
+                # temperature, and neither is wrong on its own.
+                #
+                # WHY THE REFERENCE SHIFTS RATHER THAN `decide` GAINING A TERM.
+                # The alternative was to carry the accumulated filter offset as
+                # an extra input to `decide`. That would mean a second piece of
+                # engine state threaded into a module whose entire value is that
+                # it is PURE - the nine-rule table is tested with no focuser, no
+                # clock and no engine, and every new argument is a new way for
+                # the tested arithmetic and the running arithmetic to differ.
+                # Shifting the reference keeps `decide` untouched.
+                #
+                # It is also the more exact statement. "reference_position +
+                # delta at the SAME reference_temp_c" is literally true - this
+                # filter focuses `delta` steps from the last one, at every
+                # temperature - whereas re-anchoring on the current reading
+                # would additionally swallow whatever drift had not been
+                # corrected yet and silently rebase the night's baseline on a
+                # filter change.
+                self._shift_temp_comp_reference(delta)
                 if overshoot and delta > 0:
                     # "up to", because the extra leg is clamped to the
                     # focuser's ceiling and dropped entirely at the top of its
@@ -5338,6 +5393,169 @@ class SequenceEngine:
                     "sequence")
             return
         await self._await_guider_quiet("the next frame")
+
+    def _temp_comp_cfg(self) -> TempCompConfig:
+        """The effective temperature-compensation settings (#D-RIG-2).
+
+        THE `getattr` IS THE SEAM S7i CLOSES. `FocusConfig` does not carry a
+        `temp_comp` block until S7i hangs one on it, so reading it defensively
+        is what lets this code (and its tests) run before that lands. Once it
+        does, the getattr finds the real block and nothing else changes.
+
+        The reference pair is overlaid from the engine's own state when it has
+        been anchored, because that is where it lives - see `_temp_comp_ref`.
+        """
+        cfg = self._cfg or config_store.cfg()
+        base = getattr(cfg.focus, "temp_comp", None) or TempCompConfig()
+        if self._temp_comp_ref is not None:
+            t, p = self._temp_comp_ref
+            base = base.model_copy(update={"reference_temp_c": t,
+                                           "reference_position": p})
+        return base
+
+    def _anchor_temp_comp(self, temp_c: float, position: int) -> None:
+        """Anchor the compensation reference: on the engine AND on disk.
+
+        The engine's copy is what THIS run reads (`_temp_comp_cfg` overlays
+        it). The config copy is what survives a restart, and it is the promise
+        `ConfigStore.set_focus` makes when its docstring says the run
+        re-anchors the reference - a promise nothing would keep if this wrote
+        only to memory.
+
+        Written from a FRESH read of the block, so a Settings edit made while
+        the run is going is not reverted by it, and swallowed entirely: a
+        reference that fails to persist costs one re-anchor at the next
+        boundary, and nothing on this path may end a night.
+        """
+        self._temp_comp_ref = (float(temp_c), int(position))
+        try:
+            focus = config_store.cfg().focus
+            tc = getattr(focus, "temp_comp", None)
+            if tc is None:
+                return          # pre-S7i config: the engine's copy is all there is
+            if (tc.reference_temp_c == float(temp_c)
+                    and tc.reference_position == int(position)):
+                return          # already says so; a save would only bump a version
+            config_store.set_focus(focus.model_copy(update={
+                "temp_comp": tc.model_copy(update={
+                    "reference_temp_c": float(temp_c),
+                    "reference_position": int(position)})}))
+        except Exception as e:      # noqa: BLE001 - see the docstring
+            bus.log("warning", f"the temperature-compensation reference could "
+                               f"not be persisted: {e}", "sequence")
+
+    def _shift_temp_comp_reference(self, delta: int) -> None:
+        """Move the compensation reference by ``delta`` steps, same temperature.
+
+        Called after a per-filter offset move (`_apply_filter`), which changes
+        where focus IS without changing the temperature it was measured at.
+        Anchoring through `_anchor_temp_comp` rather than writing
+        `_temp_comp_ref` directly, so the shifted reference is persisted the
+        same way every other anchor is and a restart mid-run does not come back
+        pointing at the previous filter's focus.
+
+        Costs an unanchored or unarmed rig NOTHING: with no reference yet, the
+        next boundary's seed-on-first-use rule anchors on the position the
+        focuser is already at, which is past this move.
+        """
+        cfg = self._temp_comp_cfg()
+        if not cfg.enabled or not cfg.steps_per_c:
+            return
+        if cfg.reference_temp_c is None or cfg.reference_position is None:
+            return
+        self._anchor_temp_comp(float(cfg.reference_temp_c),
+                               int(cfg.reference_position) + int(delta))
+
+    async def _apply_temp_comp(self) -> None:
+        """Nudge the focuser for the temperature drift since the reference.
+
+        Runs at every frame boundary, immediately BEFORE `_refocus_due` - see
+        `focus.tempcomp.TEMP_COMP_PRECEDENCE`. It never ends a night: every
+        device read and the move itself are guarded, and a failure is a warning
+        and a no-op. A compensation move is an improvement on the frame that
+        follows it, not a precondition for taking one.
+        """
+        cfg = self._temp_comp_cfg()
+        if not cfg.enabled or not cfg.steps_per_c:
+            # Checked here as well as inside `decide` so the OFF rig pays no
+            # device round trips at all between frames.
+            return
+        foc = self.hub.devices.get("focuser")
+        if foc is None or not foc.connected:
+            return
+        try:
+            pos = int(await _bounded(foc.get_position(),
+                                     FOCUSER_MOVE_TIMEOUT_S,
+                                     "focuser get_position"))
+        except SafetyAbort:
+            raise
+        except Exception as e:
+            bus.log("warning", f"temperature compensation skipped: the focuser "
+                               f"position could not be read ({e})", "sequence")
+            return
+        try:
+            temp = await foc.get_temperature()
+        except Exception as e:
+            bus.log("warning", f"temperature compensation skipped: the focuser "
+                               f"temperature could not be read ({e})", "sequence")
+            return
+        try:
+            # GUARDED LIKE THE DEVICE READS, not because the arithmetic is
+            # expected to raise but because NOTHING on this path may end a
+            # night: a bad number in the config reaching `round()` would
+            # otherwise take the frame loop down between two frames.
+            decision = temp_comp_decide(
+                cfg=cfg, current_temp_c=temp, current_position=pos,
+                focuser_max=int(getattr(foc, "max_position", 0) or 0))
+        except Exception as e:
+            bus.log("warning", f"temperature compensation skipped: {e}",
+                    "sequence")
+            return
+        self._temp_comp_last_reason = decision.reason
+        if decision.rebased and temp is not None:
+            self._anchor_temp_comp(float(temp), pos)
+            bus.log("info", f"temperature compensation anchored at "
+                            f"{float(temp):.1f} C, position {pos}", "sequence")
+            return
+        if decision.move_to is None:
+            return
+        try:
+            # THROUGH `approach`, LIKE EVERY OTHER MOVE OUTSIDE A SWEEP. A
+            # compensating move is tens of steps on a focuser with about forty
+            # steps of slack, so an OUTWARD one taken directly turns the motor
+            # and leaves the tube exactly where it was - and nothing downstream
+            # measures it, so the log would say "compensated" all night while
+            # the focus walked. This is the single most likely way to get this
+            # feature wrong; `focus.approach` is the one place that knows.
+            overshoot = configured_overshoot()
+            await _bounded(
+                approach(foc, decision.move_to, overshoot=overshoot,
+                         current=pos),
+                FOCUSER_MOVE_TIMEOUT_S, "focuser temperature-compensation move",
+                note="the focuser may be left above the compensated position")
+        except SafetyAbort:
+            raise
+        except Exception as e:
+            bus.log("warning",
+                    f"temperature compensation move failed: {e}", "sequence")
+            return
+        self._temp_comp_last_move = decision.delta_steps
+        self._frame_had_event = True
+        bus.log("info",
+                f"temperature compensation moved the focuser {decision.delta_steps:+d} "
+                f"steps to {decision.move_to} ({decision.reason})", "sequence")
+
+    def temp_comp_status(self, temperature_c: float | None,
+                         position: int | None,
+                         focuser_max: int) -> dict:
+        """The `focuser.temp_comp` status node, built from readings the caller
+        ALREADY HAS (S7c). Takes no device I/O of its own so the status path
+        cannot add a round trip to a screen refresh."""
+        return temp_comp_node(
+            self._temp_comp_cfg(), temperature_c=temperature_c,
+            position=position, focuser_max=focuser_max,
+            last_move_steps=self._temp_comp_last_move,
+            last_reason=self._temp_comp_last_reason)
 
     async def _refocus_due(self) -> bool:
         plan = self.plan
@@ -6189,9 +6407,19 @@ class SequenceEngine:
         trigger's question is "how far has it drifted since we last tried", not
         "since we last succeeded". Requires the focuser itself (the caller's may
         be unbound on the error path) and swallows everything — a focuser with no
-        temperature probe leaves the baseline exactly as it was."""
+        temperature probe leaves the baseline exactly as it was.
+
+        ONE MOMENT, ONE BASELINE. The temperature-compensation reference
+        (#D-RIG-2) is re-anchored from the SAME reading in the same call, so
+        the trigger's baseline and the compensation's reference can never
+        disagree about where and when focus was last found - which two values
+        set in two places eventually would, silently."""
         try:
-            self._last_focus_temp = await self.hub.require("focuser").get_temperature()
+            foc = self.hub.require("focuser")
+            t = await foc.get_temperature()
+            self._last_focus_temp = t
+            if t is not None:
+                self._anchor_temp_comp(float(t), int(await foc.get_position()))
         except Exception:
             pass
 

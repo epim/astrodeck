@@ -47,6 +47,8 @@ const { renderToStaticMarkup } = await import("react-dom/server");
 const { useStore } = await import("../../store");
 const TasksPanel = (await import("../equipment/TasksPanel")).default;
 const OpticsPanel = (await import("../settings/OpticsPanel")).default;
+const { BANNER_KEYS } = await import("../settings/OpticsPanel");
+const { OPTICS_KEYS } = await import("../../lib/effective");
 
 // ------------------------------------------------------------------ harness
 let passed = 0;
@@ -94,6 +96,11 @@ const CONFIG = {
     "optics.sensor_height_px": entry({ value: 2822, layer: "profile", profile: 2822, config: 4176, ...PROFILE }),
     "optics.auto_from_camera": entry({ value: true, layer: "profile", profile: true, config: false, ...PROFILE }),
     "optics.guide_focal_length_mm": entry({ value: 200, layer: "profile", profile: 200, config: null, ...PROFILE }),
+    // The two fields wave 2 added to the optics block. The server builds this
+    // map from `Optics.model_fields` (`provenance.py:79`), so a real rig sends
+    // them; the banner had no row for either until the wave-2 review.
+    "optics.aperture_mm": entry({ value: 106, layer: "profile", profile: 106, config: 72, ...PROFILE }),
+    "optics.reducer": entry({ value: 0.8, layer: "profile", profile: 0.8, config: 1, ...PROFILE }),
   },
 };
 
@@ -298,6 +305,29 @@ test("the banner explains the WHOLE-BLOCK swap, which is why a scope name vanish
   assert(
     opticsText.includes("Guide scope focal length: 200 mm"),
     `covers the fields outside the visible form too: ${opticsText}`,
+  );
+});
+
+test("the banner lists EVERY field the block carries, not the ones it used to", () => {
+  // The banner's whole claim is "a profile optics block replaces every field at
+  // once, including the ones it never set" - so a field missing from this list
+  // is the banner making that claim and then not keeping it. `aperture_mm` and
+  // `reducer` were exactly that from the day wave 2 added them until the wave-2
+  // review. Derived from OPTICS_KEYS so a TENTH field fails here too.
+  const listed = BANNER_KEYS.map(([k]) => k);
+  for (const k of OPTICS_KEYS) {
+    assert(listed.includes(k), `the banner has no row for optics.${k}`);
+  }
+  assert(
+    listed.length === OPTICS_KEYS.length,
+    `the banner lists ${listed.length} rows for ${OPTICS_KEYS.length} fields`,
+  );
+  // And they reach the rendered output, with their units, not just the table.
+  assert(opticsText.includes("Aperture: 106 mm"), `aperture row rendered: ${opticsText}`);
+  assert(opticsText.includes("Reducer: 0.8x"), `reducer row rendered: ${opticsText}`);
+  assert(
+    opticsText.includes("this panel shows 72 mm"),
+    `and each names what this panel would have shown: ${opticsText}`,
   );
 });
 

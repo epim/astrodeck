@@ -65,7 +65,18 @@ function wedgePath(x: number, y: number, bearingDeg: number): string {
   return `M${x},${y} L${l.x.toFixed(1)},${l.y.toFixed(1)} L${r.x.toFixed(1)},${r.y.toFixed(1)} Z`;
 }
 
-export default function RadarMap() {
+export default function RadarMap({ chrome = "panel" }: {
+  /** Who draws the frame around the map.
+   *
+   *  `panel` is the legacy `Panel` - a bordered section titled "Radar" - and is
+   *  the DEFAULT, so `#/classic`'s monitor grid renders byte for byte what it
+   *  always has. The next UI mounts this inside its own `Card`, which already
+   *  carries the title and the border, so `panel` there drew a second title
+   *  inside a second box. `bare` drops the wrapper and NOTHING else: the IEM
+   *  attribution line stays, because it is a compliance claim about the tile
+   *  source that the caller's title cannot make for it. */
+  chrome?: "panel" | "bare";
+}) {
   const site = useSite();
   const weather = useWeather();
   const mount = useStore((s) => s.status?.mount);
@@ -332,8 +343,7 @@ export default function RadarMap() {
   }
   const farthest = pierce.length > 0 ? pierce[pierce.length - 1] : null;
 
-  return (
-    <Panel className="col-span-full lg:col-span-6" title="Radar">
+  const body = (
       <div className="data-dim flex flex-col gap-2">
         {/* controls: word-labeled buttons + readout chip (hue-free) */}
         <div className="flex items-center gap-2 flex-wrap text-[11px]">
@@ -523,6 +533,13 @@ export default function RadarMap() {
           Radar/satellite: Iowa Environmental Mesonet · radar is ~5 min delayed
         </p>
       </div>
+  );
+
+  if (chrome === "bare") return <div data-radar-bare="">{body}</div>;
+
+  return (
+    <Panel className="col-span-full lg:col-span-6" title="Radar">
+      {body}
     </Panel>
   );
 }

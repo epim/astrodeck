@@ -79,13 +79,15 @@ def store(tmp_path, monkeypatch):
 PROFILE_OPTICS = Optics(focal_length_mm=1000.0, pixel_size_um=2.4,
                         sensor_width_px=4144, sensor_height_px=2822,
                         auto_from_camera=True, guide_focal_length_mm=200.0,
-                        telescope_name="profile scope")
+                        telescope_name="profile scope",
+                        aperture_mm=106.0, reducer=0.8)
 # Every field DELIBERATELY differs from the model's own default, so "the global
 # block won" is distinguishable from "nobody ever set this" on every key.
 GLOBAL_OPTICS = Optics(focal_length_mm=700.0, pixel_size_um=3.76,
                        sensor_width_px=6248, sensor_height_px=4176,
                        auto_from_camera=False, guide_focal_length_mm=120.0,
-                       telescope_name="global scope")
+                       telescope_name="global scope",
+                       aperture_mm=203.2, reducer=0.7)
 
 #: Every key a profile can override, with the profile value that overrides it.
 #: This list IS the contract — if a new overridable key appears and is not here,

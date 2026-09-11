@@ -7,7 +7,7 @@
 // WHOLE Mount view behind the "Couldn't load this screen" chunk-failure pane —
 // a render bug reported to the user as a WiFi drop. This file mounts the real
 // view against exactly that payload and asserts it renders instead of throwing,
-// with the app's own "—" placeholder standing in for the missing numbers
+// with the app's own "--" placeholder standing in for the missing numbers
 // (lib/catalogFormat.ts).
 //
 // Run directly:  npx tsx src/views/__tests__/mountViewCatalogNulls.test.tsx
@@ -112,9 +112,9 @@ await act(async () => { await new Promise((r) => setTimeout(r, 400)); });
 test("the row renders with the app's own placeholder for the missing numbers", () => {
   const text = container.textContent || "";
   assert(/NGC 604/.test(text), "the NGC 604 row never rendered at all");
-  // "mag —" (narrow layout) and a bare "—" in the Mag column (wide layout) —
+  // "mag --" (narrow layout) and a bare "--" in the Mag column (wide layout) -
   // either is proof the null was handled rather than thrown on.
-  assert(/mag —/.test(text) || /—/.test(text),
+  assert(/mag --/.test(text) || /--/.test(text),
     "no placeholder for the missing magnitude/altitude anywhere in the row");
 });
 

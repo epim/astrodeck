@@ -2,7 +2,7 @@
  "generator": "tools/gen_credits.py",
  "project": {
   "name": "AstroDeck",
-  "version": "0.3.22",
+  "version": "0.3.29",
   "spdx": "Apache-2.0"
  },
  "scope": "Every component whose bytes ship inside an AstroDeck release or are compiled into one, plus every external program and network service AstroDeck depends on at runtime. Build-time-only tooling (vite, tailwindcss, typescript, pytest) is not listed: none of it places its own licensed code in a shipped artifact.",
@@ -81,6 +81,7 @@
   "b4802610e0210758": "Copyright (c) Aymeric Augustin and contributors\n\nRedistribution and use in source and binary forms, with or without\nmodification, are permitted provided that the following conditions are met:\n\n    * Redistributions of source code must retain the above copyright notice,\n      this list of conditions and the following disclaimer.\n    * Redistributions in binary form must reproduce the above copyright notice,\n      this list of conditions and the following disclaimer in the documentation\n      and/or other materials provided with the distribution.\n    * Neither the name of the copyright holder nor the names of its contributors\n      may be used to endorse or promote products derived from this software\n      without specific prior written permission.\n\nTHIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS \"AS IS\" AND\nANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED\nWARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE\nDISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE\nFOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL\nDAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR\nSERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER\nCAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,\nOR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE\nOF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.",
   "b5ca961ec84fc519": "This package contains a modified version of ca-bundle.crt:\n\nca-bundle.crt -- Bundle of CA Root Certificates\n\nThis is a bundle of X.509 certificates of public Certificate Authorities\n(CA). These were automatically extracted from Mozilla's root certificates\nfile (certdata.txt).  This file can be found in the mozilla source tree:\nhttps://hg.mozilla.org/mozilla-central/file/tip/security/nss/lib/ckfw/builtins/certdata.txt\nIt contains the certificates in PEM format and therefore\ncan be directly used with curl / libcurl / php_curl, or with\nan Apache+mod_ssl webserver for SSL client authentication.\nJust configure this file as the SSLCACertificateFile.#\n\n***** BEGIN LICENSE BLOCK *****\nThis Source Code Form is subject to the terms of the Mozilla Public License,\nv. 2.0. If a copy of the MPL was not distributed with this file, You can obtain\none at http://mozilla.org/MPL/2.0/.\n\n***** END LICENSE BLOCK *****\n@(#) $RCSfile: certdata.txt,v $ $Revision: 1.80 $ $Date: 2011/11/03 15:11:58 $",
   "ba688422eec320f9": "Copyright (c) 2016 - 2023 Ulrik Sverdrup \"bluss\"\nCopyirhgt (c) 2018 R. Janis Goldschmidt\nCopyright (c) 2021 DutchGhost [constparse.rs]\n\nPermission is hereby granted, free of charge, to any\nperson obtaining a copy of this software and associated\ndocumentation files (the \"Software\"), to deal in the\nSoftware without restriction, including without\nlimitation the rights to use, copy, modify, merge,\npublish, distribute, sublicense, and/or sell copies of\nthe Software, and to permit persons to whom the Software\nis furnished to do so, subject to the following\nconditions:\n\nThe above copyright notice and this permission notice\nshall be included in all copies or substantial portions\nof the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF\nANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED\nTO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A\nPARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT\nSHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY\nCLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION\nOF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR\nIN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER\nDEALINGS IN THE SOFTWARE.",
+  "c120e40edf0144e8": "The MIT License (MIT)\nCopyright © 2012–2016 Brandon Rhodes\n\nPermission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the \"Software\"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.",
   "c96302294382bf16": "Copyright (c) The Rust Project Developers\n\nPermission is hereby granted, free of charge, to any\nperson obtaining a copy of this software and associated\ndocumentation files (the \"Software\"), to deal in the\nSoftware without restriction, including without\nlimitation the rights to use, copy, modify, merge,\npublish, distribute, sublicense, and/or sell copies of\nthe Software, and to permit persons to whom the Software\nis furnished to do so, subject to the following\nconditions:\n\nThe above copyright notice and this permission notice\nshall be included in all copies or substantial portions\nof the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF\nANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED\nTO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A\nPARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT\nSHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY\nCLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION\nOF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR\nIN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER\nDEALINGS IN THE SOFTWARE.",
   "c9f9a11bf419f955": "Copyright © 2020, [Encode OSS Ltd](https://www.encode.io/).\nAll rights reserved.\n\nRedistribution and use in source and binary forms, with or without\nmodification, are permitted provided that the following conditions are met:\n\n* Redistributions of source code must retain the above copyright notice, this\n  list of conditions and the following disclaimer.\n\n* Redistributions in binary form must reproduce the above copyright notice,\n  this list of conditions and the following disclaimer in the documentation\n  and/or other materials provided with the distribution.\n\n* Neither the name of the copyright holder nor the names of its\n  contributors may be used to endorse or promote products derived from\n  this software without specific prior written permission.\n\nTHIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS \"AS IS\"\nAND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE\nIMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE\nDISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE\nFOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL\nDAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR\nSERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER\nCAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,\nOR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE\nOF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.",
   "ca0b1a204ec948ce": "# PCG64\n\n## The MIT License\n\nPCG Random Number Generation for C.\n\nCopyright 2014 Melissa O'Neill <oneill@pcg-random.org>\n\nPermission is hereby granted, free of charge, to any person obtaining \na copy of this software and associated documentation files (the \"Software\"), \nto deal in the Software without restriction, including without limitation \nthe rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in \nall copies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR \nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS \nFOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR \nCOPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER \nIN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN \nCONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.",
@@ -334,6 +335,19 @@
      "notes": "Sky survey imagery behind the Atlas: the hips2fits cutout service and the HiPS tile mirrors, operated by CDS at the Universite de Strasbourg / CNRS. AstroDeck acknowledges the use of the Aladin sky atlas and the HiPS services developed at CDS.\n\nOnline fetching is OFF by default — an observatory usually has no internet, so the local survey pack is the primary source and CDS is asked only when you turn it on."
     },
     {
+     "name": "CelesTrak",
+     "version": "",
+     "spdx": "LicenseRef-Public-Domain",
+     "tier": "service",
+     "requires": [],
+     "summaries": [
+      "Public domain — no attribution legally required. Credited because the publisher asks for it and it costs us nothing to say so."
+     ],
+     "texts": [],
+     "url": "https://celestrak.org/",
+     "notes": "Where AstroDeck gets satellite orbital elements from — the GP element sets behind the satellite search and the pass predictor. CelesTrak is Dr T.S. Kelso's service, and has been the public source for two-line element sets since 1985; the elements themselves originate with the US Space Force's 18th Space Defense Squadron and are US Government work.\n\nWHAT WE DO WITH IT: AstroDeck fetches the curated `visual` group (plus the ISS, Tiangong and Hubble by catalogue number), caches the result on this rig's own disk so a dark site keeps working offline, and does NOT redistribute it — no element set ships in a release, and nothing is re-served to anyone else.\n\nCelesTrak ask clients not to fetch a given file more than four times a day and to identify themselves. Both are honoured: the refresh interval is twelve hours and every request carries the same `AstroDeck/0.1` user agent the weather client sends."
+    },
+    {
      "name": "ESA / ESAC Science Data Centre",
      "version": "",
      "spdx": "LicenseRef-ESA-Credit",
@@ -373,6 +387,19 @@
      "texts": [],
      "url": "https://developers.google.com/identity/openid-connect/openid-connect",
      "notes": "Optional sign-in with a Google account. Contacted only if you configure Google as an authentication method; the default LAN posture never calls it. No attribution required — listed for completeness."
+    },
+    {
+     "name": "IAU Minor Planet Center",
+     "version": "",
+     "spdx": "LicenseRef-Public-Domain",
+     "tier": "service",
+     "requires": [],
+     "summaries": [
+      "Public domain — no attribution legally required. Credited because the publisher asks for it and it costs us nothing to say so."
+     ],
+     "texts": [],
+     "url": "https://www.minorplanetcenter.net/",
+     "notes": "Where AstroDeck gets comet orbital elements from: `CometEls.txt`, the MPC's orbit file for every known comet. The Minor Planet Center operates at the Smithsonian Astrophysical Observatory under the auspices of Division F of the International Astronomical Union, and is funded by NASA.\n\nMPC data are freely available and the Center asks to be acknowledged, which is what this entry does. The underlying OBSERVATIONS belong to the observers who submitted them — professional surveys and amateurs alike — and the orbits are computed from their work; that credit passes through.\n\nThe file is fetched weekly at most (the MPC republish it weekly), cached on this rig's disk, and never redistributed in a release."
     },
     {
      "name": "Iowa Environmental Mesonet (Iowa State University)",
@@ -1322,6 +1349,26 @@
       }
      ],
      "url": "https://pyyaml.org/"
+    },
+    {
+     "name": "sgp4",
+     "version": "2.27",
+     "spdx": "MIT",
+     "tier": "redistributed",
+     "requires": [
+      "notice"
+     ],
+     "summaries": [
+      "Reproduce the copyright notice and permission notice with the distribution. No source-code obligation."
+     ],
+     "texts": [
+      {
+       "title": "LICENSE",
+       "hash": "c120e40edf0144e8"
+      }
+     ],
+     "url": "https://github.com/brandon-rhodes/python-sgp4",
+     "notes": "Turns a satellite's two-line element set into a position. By Brandon Rhodes, and it is the reference implementation of AIAA 2006-6753 rather than a reading of it — the C++ that paper ships, ported, with the paper's own verification corpus (SGP4-VER.TLE and tcppver.out) inside the package. AstroDeck's test suite propagates that corpus on every run.\n\nChosen over Skyfield, which is by the same author and equally correct on satellites, because Skyfield's planetary half wants a downloaded JPL kernel and this app has to work at a dark site with no network. sgp4 ships no data files at all."
     },
     {
      "name": "starlette",

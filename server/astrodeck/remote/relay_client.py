@@ -379,6 +379,15 @@ class RelayClient:
         self._req_tasks: dict[int, asyncio.Task] = {}
         self._ws_streams: dict[Any, asyncio.Task] = {}
         self._reapers: set[asyncio.Task] = set()
+        # Observable tunnel health (read by GET /api/remote/status). These are
+        # the only place the client says out loud what its logs already say:
+        # ``connected`` flips True only after the relay ACKs the HELLO (a dialed
+        # socket that never authenticated is NOT connected), and ``last_error``
+        # is the reason it is not connected -- cleared on the next good ACK, so
+        # a stale error can never sit next to a live tunnel.
+        self._connected = False
+        self._connected_since: float | None = None
+        self._last_error: str | None = None
 
     # -- public lifecycle ------------------------------------------------------
 
@@ -386,9 +395,25 @@ class RelayClient:
     def generation(self) -> int:
         return self._generation
 
+    def status(self) -> dict:
+        """A JSON-safe snapshot of the tunnel for the status route.
+
+        Carries NO secret: the device token and the relay URL stay here (the
+        route derives a hostname from config itself). ``since_unix`` is the wall
+        clock at the current session's HELLO_ACK, so the UI can age it, and it
+        is None whenever ``connected`` is False."""
+        return {
+            "connected": bool(self._connected),
+            "last_error": self._last_error,
+            "since_unix": self._connected_since,
+            "gen": int(self._generation),
+        }
+
     def stop(self) -> None:
         """Signal the run loop to stop (called on app shutdown)."""
         self._stop.set()
+        self._connected = False
+        self._connected_since = None
 
     async def run(self) -> None:
         """The reconnect supervisor: dial, serve, redial with capped backoff.
@@ -412,6 +437,13 @@ class RelayClient:
                 raise
             except Exception as exc:  # noqa: BLE001 - degrade to local-only, never crash
                 held = time.monotonic() - started
+                # Exactly the text the log line below already publishes to every
+                # view.status subscriber, so surfacing it on /api/remote/status
+                # discloses nothing new. A relay-supplied HELLO rejection reason
+                # is NOT in it (see _serve_once: that reason is deliberately
+                # never reflected back), so this stays the failure class plus our
+                # own words.
+                self._last_error = f"{type(exc).__name__}: {exc}"
                 # A DROP IS NOT A CLEAN RETURN, and for the whole life of this
                 # loop that was the only thing that reset `attempt`. So the first
                 # failure of a process poisoned every redial after it: from
@@ -493,6 +525,11 @@ class RelayClient:
                 # material. The operator still gets the failure class.
                 raise ProtocolError("relay HELLO rejected")
             bus.log("info", f"relay authenticated (gen={self._generation})", "remote")
+            # Connected means AUTHENTICATED, not dialed: everything above this
+            # line can still fail with a socket open.
+            self._connected = True
+            self._connected_since = time.time()
+            self._last_error = None
             config_watch = asyncio.create_task(
                 self._watch_connection_config(ws, cfg))
             async for raw in messages:
@@ -503,6 +540,8 @@ class RelayClient:
                     raise
                 await self._dispatch(frame)
         finally:
+            self._connected = False
+            self._connected_since = None
             if config_watch is not None:
                 config_watch.cancel()
                 with contextlib.suppress(BaseException):
@@ -970,6 +1009,38 @@ def _event_payload(obj: dict) -> bytes:
     return json.dumps(obj, separators=(",", ":")).encode("utf-8")
 
 
+# The client the CURRENT app lifespan launched, or None when remote is off. A
+# module singleton (the ConfigStore/location_store pattern) rather than app
+# state, so a read route can answer without the lifespan having to hand the
+# object anywhere. ``run_relay_client`` assigns it on EVERY boot, including the
+# disabled case, so a stopped client from a previous app can never be reported
+# as the live one.
+_current_client: "RelayClient | None" = None
+
+#: What ``relay_status()`` answers when no client is running. Not "unknown":
+#: nothing is dialed, so nothing is connected -- the route's ``enabled`` flag is
+#: what distinguishes "turned off" from "turned on and failing".
+_NO_CLIENT_STATUS = {"connected": False, "last_error": None,
+                     "since_unix": None, "gen": None}
+
+
+def current_client() -> "RelayClient | None":
+    """The live ``RelayClient``, or None when remote is disabled/unconfigured."""
+    return _current_client
+
+
+def relay_status() -> dict:
+    """Tunnel health for ``GET /api/remote/status``: ``{connected, last_error,
+    since_unix, gen}``. Never raises and never returns a secret."""
+    client = _current_client
+    if client is None:
+        return dict(_NO_CLIENT_STATUS)
+    try:
+        return client.status()
+    except Exception:  # noqa: BLE001 - a status read must never 500 the route
+        return dict(_NO_CLIENT_STATUS)
+
+
 async def run_relay_client(
     app: Callable[..., Awaitable[None]],
     config_provider: Callable[[], RemoteConfig],
@@ -980,15 +1051,18 @@ async def run_relay_client(
     OPT-IN: dials ONLY when ``enabled`` and a ``relay_url`` are set, so the default
     config does nothing (LAN-only is byte-for-byte today). ISOLATED: the run loop
     never raises, so a relay outage can never take the app down."""
+    global _current_client
     cfg = config_provider()
     if not (cfg.enabled and cfg.relay_url):
+        _current_client = None
         return None
     client = RelayClient(app, config_provider)
+    _current_client = client
     asyncio.create_task(client.run())
     return client
 
 
 __all__ = [
     "RelayClient", "run_relay_client", "scope_is_remote",
-    "REMOTE_SCOPE_KEY",
+    "REMOTE_SCOPE_KEY", "current_client", "relay_status",
 ]
