@@ -1,0 +1,88 @@
+/* atlas.css - ATLAS mode's own chrome (r7Css rule: one sheet per area, named
+   after its directory, imported by a module inside it).
+ *
+ * The CANVAS is not styled here at all. `components/atlas/SkyCanvas` carries
+ * its own `maxWidth: min(720px, 85svh)` inline (SkyCanvas.tsx:890) - which is
+ * exactly ARCHITECTURE section 4's cap for a full-frame canvas - so this sheet
+ * dresses the rows AROUND it and never touches the square itself. A width rule
+ * here would be a second answer to a question that already has one.
+ *
+ * Every class below is emitted only by `AtlasHost.tsx`, which imports this
+ * file, so the area's stylesheet travels with its one mount site. */
+
+.nx-atlas {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* The search row is full width at 390 px, where it is the first thing a
+   thumb reaches, and stops growing past a readable field on a desktop. */
+.nx-atlas-search {
+  width: 100%;
+  max-width: 420px;
+}
+
+.nx-atlas-canvas {
+  min-width: 0;
+}
+
+/* The degraded row is a ROUTE, not a second complaint: SkyCanvas already prints
+   the sentence over the empty sky and again in its own banner directly above
+   this, so what lands here is the way out of the state. Amber on the raised
+   surface, never a wash over the imagery - the wallpaper reads straight through
+   a translucent advisory, which is the legibility failure `AtlasView` had to
+   fix for its own banners. 44 px because a finger presses it. */
+.nx-atlas-degraded {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 44px;
+  border: 1px solid var(--warn, #ffb454);
+  border-radius: 12px;
+  background: var(--bg-raise, #12141c);
+  color: var(--warn, #ffb454);
+  font-family: "Chakra Petch", system-ui, sans-serif;
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: .12em;
+  line-height: 1.4;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+
+/* The catalogue's own absences, in the dim register the FRAME host uses for
+   the same three sentences. */
+.nx-atlas-note {
+  display: block;
+  color: var(--text-faint, #7683a5);
+  font-size: 11px;
+  line-height: 1.45;
+  padding: 0 2px;
+}
+
+.nx-atlas-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.nx-atlas-actions > * {
+  flex: 1 1 150px;
+  min-width: 0;
+}
+
+/* Where the sky is centred, in mono, under the buttons. The canvas prints the
+   field width and the pixel scale but never the centre, so this row is the one
+   place the numbers a user would read out over the phone exist. */
+.nx-atlas-where {
+  margin: 0;
+  color: var(--text-faint, #7683a5);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  padding: 0 2px;
+}

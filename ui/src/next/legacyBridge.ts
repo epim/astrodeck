@@ -55,7 +55,18 @@ export const LEGACY_VIEW_ROUTE: Record<ViewName, string> = {
   power: "/rig/devices/power",
   settings: "/settings",
   monitor: "/monitor/live",
-  atlas: "/sky?frame=1",
+  // ATLAS IS ITS OWN MODE NOW, not the finder with FRAME switched on. This
+  // used to be `/sky?frame=1`, which resumed the framing session in the Sky
+  // hub's FRAME mode - and where there was no session (an old `#/atlas`
+  // bookmark, the classic root's own Atlas link) it landed on the schematic
+  // finder with a toast saying nothing was framed, which reads as "no atlas
+  // loaded". `?mode=atlas` mounts the pannable survey canvas the classic
+  // `views/AtlasView` always showed, whether or not anything is framed.
+  // `?frame=1` is still honoured by `SkyHub` for a link that specifically
+  // means "resume the framing", and `SkyHub` ignores `?mode=atlas` while FRAME
+  // is already on, because `store.openFraming()` writes `view: "atlas"` and
+  // that write travels back through here.
+  atlas: "/sky?mode=atlas",
   tonight: "/sky/targets",
   report: "/session/gallery/report",
   help: "/settings/help",
