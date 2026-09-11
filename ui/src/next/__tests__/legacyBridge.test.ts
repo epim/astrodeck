@@ -79,7 +79,7 @@ test("every ViewName has a route, and every route parses to a real hub", () => {
   // The five the brief pins down by name, so a silent re-point is a red test.
   eq(LEGACY_VIEW_ROUTE.monitor, "/monitor/live");
   eq(LEGACY_VIEW_ROUTE.polar, "/rig/devices/mount/polar");
-  eq(LEGACY_VIEW_ROUTE.atlas, "/sky?frame=1");
+  eq(LEGACY_VIEW_ROUTE.atlas, "/sky?mode=atlas");
   eq(LEGACY_VIEW_ROUTE.sequence, "/session/flows/planEditor");
   eq(LEGACY_VIEW_ROUTE.connect, "/rig/devices");
 });
@@ -123,11 +123,38 @@ test("openHelp with no topic still reaches Help", () => {
   eq(win.location.hash, "#/settings/general/help");
 });
 
+// ------------------------------------------------------- the Atlas's own door
+//
+// The classic `atlas` view is the one legacy destination with no hub of its
+// own: the new IA folded framing into the Sky hub, and for a while this route
+// was `/sky?frame=1`, which RESUMES a framing session. That is the right answer
+// for `store.openFraming()` (the Rig > Mount catalogue's FRAME button) and the
+// wrong one for everything else that writes this view - an old `#/atlas`
+// bookmark, the classic root's Atlas link - because with no session to resume
+// it lands on the SCHEMATIC finder and toasts "nothing is framed yet", which
+// reads as "no atlas loaded". `?mode=atlas` opens the pannable survey canvas
+// whether or not anything is framed, which is what the classic Atlas did.
+//
+// SABOTAGE: point `LEGACY_VIEW_ROUTE.atlas` back at "/sky" (or at
+// "/sky?frame=1") and both assertions below go red by value - the table row
+// above names the string, and this one proves the store write actually reaches
+// that hash.
+
+test("the classic atlas view lands on ATLAS mode, not the bare Sky hub", () => {
+  act(() => { useStore.getState().setView("monitor"); });
+  eq(win.location.hash, "#/monitor/live", "precondition: somewhere else first");
+  act(() => { useStore.getState().setView("atlas"); });
+  eq(win.location.hash, "#/sky?mode=atlas",
+    "an old #/atlas link must open the atlas, not the schematic finder:");
+  assert(/mode=atlas/.test(win.location.hash),
+    "without the mode parameter the Sky hub opens on whatever the phone last chose");
+});
+
 test("an unrelated store write does not navigate", () => {
   act(() => { useStore.getState().setView("atlas"); });
-  eq(win.location.hash, "#/sky?frame=1", "precondition: parked on the sky");
+  eq(win.location.hash, "#/sky?mode=atlas", "precondition: parked on the sky");
   act(() => { useStore.getState().setCaptureTarget("M31"); });
-  eq(win.location.hash, "#/sky?frame=1",
+  eq(win.location.hash, "#/sky?mode=atlas",
     "only view/helpTopic/logOpen/wizardOpen are navigation; nothing else in the store is:");
 });
 
