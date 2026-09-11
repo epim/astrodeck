@@ -220,7 +220,10 @@ const { SessionColumn } = await import("../../../shell/SessionColumn");
 const { FLIP_SITE_REASON } = await import("../../monitor/live/FlipTile");
 const { RUN_CONTROL_REASON } = await import("../now/RunControls");
 const { ConfirmCard } = await import("../../../shell/ConfirmCard");
-const { TONIGHT_LOCK_NOTE, RUNNABLE_ROW_CAP, TONIGHT_RESOLVE_CAP } = await import("../now/NowEmpty");
+const {
+  TONIGHT_LOCK_NOTE, TONIGHT_AND_RUN_LOCK_NOTE, tonightLockNote,
+  RUNNABLE_ROW_CAP, TONIGHT_RESOLVE_CAP,
+} = await import("../now/NowEmpty");
 const { RERUN_PHONE_REASON } = await import("../now/Interrupted");
 
 // ------------------------------------------------------------------ harness
@@ -688,6 +691,22 @@ await testAsync("both sub-lines say how they end - the verdict whole, the descri
     `the verdict was truncated in the copy instead of wrapped in the layout: "${verdict}"`);
 });
 
+// A claim nothing keeps: the note used to say "The list and RUN still work"
+// unconditionally, while every RUN on this same list sits honest-locked for a
+// viewer (`control.mount`). `tonightLockNote` branches the sentence on the
+// SAME capability RUN is gated on, so this is a pure check of the branch
+// itself before the DOM test below checks it is actually wired in.
+test("tonightLockNote says RUN still works only when RUN's own capability allows it", () => {
+  eq(tonightLockNote(false), TONIGHT_LOCK_NOTE,
+    "RUN live (canControlMount true) must keep the sentence that promises RUN still works");
+  eq(tonightLockNote(true), TONIGHT_AND_RUN_LOCK_NOTE,
+    "RUN capability-locked must say RUN needs it too, not claim RUN still works");
+  assert(!TONIGHT_AND_RUN_LOCK_NOTE.includes("still work"),
+    `the locked sentence still claims RUN still works: "${TONIGHT_AND_RUN_LOCK_NOTE}"`);
+  assert(TONIGHT_AND_RUN_LOCK_NOTE.includes("operator or admin access"),
+    `the locked sentence's role phrase drifted from accessPhrase("control.mount"): "${TONIGHT_AND_RUN_LOCK_NOTE}"`);
+});
+
 await testAsync("a viewer gets the list and the verbs, locked, and fires NOTHING at /tonight", async () => {
   await act(async () => {
     const st = useStore.getState() as any;
@@ -722,6 +741,13 @@ await testAsync("a viewer gets the list and the verbs, locked, and fires NOTHING
   eq(planVerb.getAttribute("title"), "Running a plan needs operator or admin access.",
     "the plan row is refused with the wrong noun:");
 
+  // The row's own lock reason is the CAPABILITY sentence (`runBlockedReason`),
+  // never the card-level tonight-verdict note - the two must not bleed into
+  // each other.
+  assert(verb.getAttribute("title") !== TONIGHT_LOCK_NOTE
+    && verb.getAttribute("title") !== TONIGHT_AND_RUN_LOCK_NOTE,
+    "the row's own RUN lock reason was replaced by the tonight-verdict note");
+
   await click(verb);
   eq(asks.length, before, "a viewer's press reached the server");
   eq(gets("/api/flows/f9/tonight").length, 0,
@@ -730,8 +756,47 @@ await testAsync("a viewer gets the list and the verbs, locked, and fires NOTHING
   assert(!/usable from/.test(text), "a viewer was shown a site-derived window");
   // The note sits above the rows, so it is read off the whole card.
   const cardText = byId("now-empty").textContent as string;
+  // RUN is honest-locked for this same viewer on every row above (control.mount),
+  // so the note must not claim "The list and RUN still work" - that claim is
+  // kept for nobody in this state.
+  assert(!cardText.includes("still work"),
+    `a viewer whose RUN is locked was told RUN "still work[s]": "${cardText.slice(0, 400)}"`);
+  assert(!cardText.includes(TONIGHT_LOCK_NOTE),
+    `the viewer got the RUN-still-works sentence despite every RUN being locked: "${cardText.slice(0, 400)}"`);
+  assert(cardText.includes(TONIGHT_AND_RUN_LOCK_NOTE),
+    `the viewer is not told tonight's verdict AND RUN both need access: "${cardText.slice(0, 400)}"`);
+});
+
+await testAsync("an operator whose RUN still works keeps the current sentence", async () => {
+  // Not a real role (`ROLE_CAPS` never grants `view.site_derived` without
+  // `control.mount` alongside it), but the branch is on the CAPABILITY, not
+  // the role name, and this is the one principal shape that actually exercises
+  // the "RUN is live" half of `tonightLockNote` end to end rather than only in
+  // the pure check above: RUN's own capability is held, so the note must keep
+  // promising RUN still works even though the ephemeris is withheld.
+  const OPERATOR_RUN_ONLY = {
+    role: "operator", email: "op2@rig",
+    caps: ["view.status", "view.preview", "control.capture", "control.mount", "control.guide"],
+  };
+  await act(async () => {
+    useStore.setState({ principal: OPERATOR_RUN_ONLY } as never);
+  });
+  await settle();
+  await settle();
+
+  const verb = byId("run-flow-f1");
+  assert(verb != null, "the verb is gone for this principal");
+  assert(verb.getAttribute("aria-disabled") !== "true",
+    "RUN is locked for a principal that holds control.mount - the fixture is wrong, not the note");
+
+  const cardText = byId("now-empty").textContent as string;
   assert(cardText.includes(TONIGHT_LOCK_NOTE),
-    `the viewer is not told why the verdicts are missing: "${cardText.slice(0, 400)}"`);
+    `RUN still works here, so the current sentence must still print: "${cardText.slice(0, 400)}"`);
+  assert(!cardText.includes(TONIGHT_AND_RUN_LOCK_NOTE),
+    `RUN still works here, but the RUN-is-also-locked sentence printed anyway: "${cardText.slice(0, 400)}"`);
+
+  await act(async () => { useStore.setState({ principal: OPERATOR } as never); });
+  await settle();
 });
 
 await testAsync("RUN on a saved plan asks first, and KEEP posts nothing", async () => {
