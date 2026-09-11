@@ -184,6 +184,16 @@ class SafetyConfig(BaseModel):
     horizon: list[tuple[float, float]] | None = None  # sorted (az,alt) control pts
     nogo_box: list[dict] | None = None     # optional [{az_min,az_max,alt_max}] pier guard
     enforce_pier_limits: bool = False      # only settable if mount reports pier side
+    #: Minutes the engine will refuse to expose, waiting for a meridian flip it
+    #: can prove has not happened, before handing the night on to the next
+    #: target. 0 disables the invariant entirely.
+    #:
+    #: Twenty minutes because that is roughly what one failed flip plus one
+    #: retry costs on this rig, and because the alternative on 2026-09-10/11
+    #: was four hours of subs taken across the pier with the field walking 65
+    #: arcsec/min. Every one of those frames was thrown away; twenty minutes of
+    #: waiting would have been the cheapest outcome available that night.
+    flip_owed_hold_min: float = Field(20.0, ge=0, le=240)
     twilight_deg: float = -12.0            # nautical default (C1-26)
     # Sun-exclusion cone (W1.10). ON by default to protect deep-sky gear; a
     # deliberate solar-astronomy session disarms it via solar_avoidance=False
