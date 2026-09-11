@@ -103,6 +103,31 @@ const NIGHT = {
   never_rises_above_limit: false,
 };
 
+/** One dormant session, so the ledger inside the editor really has a row and
+ *  the viewer assertion on `plan-session-delete-s1` is not vacuous. */
+const SESSION_ROW = {
+  id: "s1", name: "NGC 7331 Ha", status: "dormant",
+  created_ts: 1_757_000_000, updated_ts: 1_757_090_000,
+  nights: 2, accepted: 31, total: 60, auto_resume: false,
+};
+
+const SESSION_DETAIL = {
+  ...SESSION_ROW, schema_version: 1,
+  nights: ["2026-09-08", "2026-09-09"],
+  plan: {
+    name: "NGC 7331 Ha",
+    targets: [{
+      id: "t1", name: "NGC 7331", ra_hours: 22.6, dec_deg: 34.4,
+      center: true, autofocus_first: true, calibration: false,
+      steps: [{
+        id: "st1", filter: "Ha", exposure_s: 300, gain: 100, offset: 30,
+        binning: 1, count: 60, frame_type: "Light",
+      }],
+    }],
+  },
+  frames: [],
+};
+
 g.fetch = async (url: string, init?: { method?: string; body?: string }) => {
   const method = init?.method ?? "GET";
   let body: any = null;
@@ -121,6 +146,8 @@ g.fetch = async (url: string, init?: { method?: string; body?: string }) => {
   if (url.startsWith("/api/sequence/preflight")) return json({ verdict: "ok", alt: 55 });
   if (url.startsWith("/api/visibility")) return json(NIGHT);
   if (url.startsWith("/api/calibration/masters")) return json([]);
+  if (url === "/api/sessions") return json({ sessions: [SESSION_ROW] });
+  if (/^\/api\/sessions\/[^/]+$/.test(url)) return json(SESSION_DETAIL);
   if (url.startsWith("/api/sessions")) return json({ sessions: [] });
   if (url.startsWith("/api/reports")) return json([]);
   return miss();
@@ -162,6 +189,12 @@ const click = (el: any) => {
   act(() => { el.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true })); });
 };
 const text = (): string => container.textContent ?? "";
+/** Open a `Disclosure` head, or leave it alone if it is already open: one group
+ *  is open at a time and a second click on the open one CLOSES it, which would
+ *  un-mount the very control the next assertion is about. */
+const expand = (head: any) => {
+  if (head && head.getAttribute("aria-expanded") !== "true") click(head);
+};
 
 const CAPS_ADMIN = ["view.status", "view.preview", "view.media", "control.mount", "control.capture"];
 const CAPS_VIEWER = ["view.status", "view.preview"];
@@ -332,6 +365,73 @@ await testAsync("a viewer sees START honest-disabled with the derived phrase and
     eq(asked.filter((a) => a.url.endsWith("/api/sequence/start")).length, before,
       "a locked press must not reach the network, armed or not");
   });
+
+// THE COMPOSED MOUNT, not the sections on their own. Each of the three sections
+// has its own DOM test, and each of those handed the section a `lockedReason` -
+// so what was graded was a string the test supplied. The PRODUCTION caller is
+// this file's `PlanEditorSheet`, and it passed `lockedReason={null}` to all
+// three: a viewer got a live twenty-control automation column, a live when/then
+// rule editor and five live destructive session verbs, and learned the rule from
+// a 403 (or, for the draft-only halves, never - the refusal arrived at START
+// after the editing was done).
+//
+// SABOTAGE: put `lockedReason={null}` back on any of the three sections in
+// `PlanEditor.tsx`, or drop `useCanControlMount()` from `PlanSessionsSection`,
+// and one of the three assertions below goes red.
+await testAsync("a viewer's composed editor locks all three sections, not just START",
+  async () => {
+    const phrase = accessPhrase("control.mount");
+    // Disclosures do not mount their children while closed, so each section is
+    // opened before its control is looked for. A missing element here is a
+    // failure, not a pass.
+    const heads = Array.from(container.querySelectorAll(
+      '[data-testid="plan-automation-group"] button[aria-expanded]')) as any[];
+    assert(heads.length > 0, "no automation groups rendered - the assertions below are vacuous");
+    expand(heads[0]);
+    const guide = tid("plan-guard-guide");
+    assert(guide != null, "the guiding switch never rendered inside the composed editor");
+    eq(guide.getAttribute("aria-disabled"), "true",
+      "a viewer can toggle GUIDE in the plan editor: the automation section was "
+      + "mounted with no reason at all");
+    assert((guide.getAttribute("title") ?? "").includes(phrase),
+      `the automation lock must quote accessPhrase, got "${guide.getAttribute("title")}"`);
+
+    const rules = tid("plan-instructions-rules");
+    assert(rules != null, "the when/then rules section never rendered");
+    expand(rules.querySelector("button[aria-expanded]"));
+    const add = tid("plan-instructions-add");
+    assert(add != null, "ADD RULE never rendered");
+    eq(add.getAttribute("aria-disabled"), "true",
+      "a viewer can add a conditional rule to the plan draft with nothing to save it with");
+
+    const del = tid("plan-session-delete-s1");
+    assert(del != null,
+      "the session row never rendered - the ledger fixture is wrong, not the lock");
+    eq(del.getAttribute("aria-disabled"), "true",
+      "a viewer's DELETE on a multi-night session ledger is LIVE and reaches "
+      + "DELETE /api/sessions/s1");
+    eq(del.hasAttribute("disabled"), false,
+      "the native disabled attribute drops the reason out of the accessibility tree");
+    assert((del.getAttribute("title") ?? "").includes(phrase),
+      `the session verb's reason must come from accessPhrase, got "${del.getAttribute("title")}"`);
+  });
+
+// ...and the same three are LIVE for an operator, so the assertions above are
+// grading a lock rather than three controls that are always dim.
+await testAsync("an admin's composed editor leaves all three sections live", async () => {
+  seed(CAPS_ADMIN, { state: "idle" });
+  await settle();
+  const heads = Array.from(container.querySelectorAll(
+    '[data-testid="plan-automation-group"] button[aria-expanded]')) as any[];
+  expand(heads[0]);
+  eq(tid("plan-guard-guide").getAttribute("aria-disabled"), null,
+    "GUIDE is locked for an admin on an idle rig");
+  expand(tid("plan-instructions-rules").querySelector("button[aria-expanded]"));
+  eq(tid("plan-instructions-add").getAttribute("aria-disabled"), null,
+    "ADD RULE is locked for an admin on an idle rig");
+  eq(tid("plan-session-delete-s1").getAttribute("aria-disabled"), null,
+    "DELETE is locked for an admin on a dormant session");
+});
 
 // ================================= 4. a live run locks the structure and says so
 

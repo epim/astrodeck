@@ -127,8 +127,23 @@ let key = "";
 let raw: { data: Raw | null; loading: boolean; error: string | null } =
   { data: null, loading: false, error: null };
 let fetchedAt = 0;
+/** The `sequence.state` the held answer was fetched under. `tonight` is planned
+ *  against what the night has already banked, so idle-at-dusk and running are
+ *  two different documents from one route. */
+let fetchedState = "";
+/** The request in flight, shared. Five components read this module (the ledger
+ *  card, the run header, the vitals band, the empty screen's flow id and the
+ *  cross-hub strip) and they mount in one tick, so without this every one of
+ *  them fired its own `GET /api/flows/{id}/tonight` - an astropy ephemeris pass
+ *  per request, five times, for one answer. Same shape as `sessionData.ts`. */
+let inFlight: Promise<void> | null = null;
 const listeners = new Set<() => void>();
 const REFETCH_MS = 10 * 60_000;
+
+/** How many components are reading. The slow re-read runs once for all of them
+ *  rather than once each. */
+let mounted = 0;
+let ticker: ReturnType<typeof setInterval> | null = null;
 
 function publish(next: typeof raw): void {
   raw = next;
@@ -152,9 +167,29 @@ function parseNight(v: unknown): NightWindow | null {
   };
 }
 
-function loadTonight(flowId: string, k: string): void {
+/**
+ * Read tonight's budget for `flowId`, at most once.
+ *
+ * Every caller gets the SAME promise while one is in flight, and a caller whose
+ * answer is still fresh gets no request at all. `force` is the slow ticker's
+ * door past the freshness window; a change of flow or of `seqState` opens it by
+ * itself.
+ */
+function loadTonight(flowId: string, seqState: string, force = false): Promise<void> {
+  if (key === flowId && inFlight) return inFlight;
+  const answered = raw.data != null || raw.error != null;
+  const stale = force
+    || key !== flowId
+    || seqState !== fetchedState
+    || !answered
+    || Date.now() - fetchedAt >= REFETCH_MS;
+  if (!stale) return Promise.resolve();
+
+  key = flowId;
+  fetchedState = seqState;
+  const k = flowId;
   publish({ ...raw, loading: true, error: null });
-  void flowsApi.tonight(flowId).then(
+  const p = flowsApi.tonight(flowId).then(
     (r) => {
       if (key !== k) return;
       fetchedAt = Date.now();
@@ -175,12 +210,29 @@ function loadTonight(flowId: string, k: string): void {
       fetchedAt = Date.now();
       publish({ data: null, loading: false, error: e.message });
     },
-  );
+  ).finally(() => { if (inFlight === p) inFlight = null; });
+  inFlight = p;
+  return p;
+}
+
+/** The slow re-read `REFETCH_MS` was only ever used to SUPPRESS. Nothing re-ran
+ *  the fetch, so a campaign opened at dusk still showed dusk's banked figure at
+ *  02:00 - on the card an operator reads to decide whether to cut the night
+ *  short. One interval for every consumer. */
+function startTicker(): void {
+  if (ticker) return;
+  ticker = setInterval(() => {
+    if (key) void loadTonight(key, fetchedState, true);
+  }, REFETCH_MS);
 }
 
 export function resetCampaignForTests(): void {
   key = "";
   fetchedAt = 0;
+  fetchedState = "";
+  inFlight = null;
+  mounted = 0;
+  if (ticker) { clearInterval(ticker); ticker = null; }
   raw = { data: null, loading: false, error: null };
   listeners.clear();
 }
@@ -254,18 +306,31 @@ export function useCampaign(): CampaignState {
   useEffect(() => {
     const fn = () => bump((n) => n + 1);
     listeners.add(fn);
-    return () => { listeners.delete(fn); };
+    mounted += 1;
+    startTicker();
+    return () => {
+      listeners.delete(fn);
+      mounted -= 1;
+      if (mounted === 0 && ticker) { clearInterval(ticker); ticker = null; }
+    };
   }, []);
 
   useEffect(() => {
     if (!flowId || !canRead) {
-      if (key !== "") { key = ""; publish({ data: null, loading: false, error: null }); }
+      if (key !== "") {
+        key = "";
+        fetchedState = "";
+        inFlight = null;
+        publish({ data: null, loading: false, error: null });
+      }
       return;
     }
-    if (key === flowId && Date.now() - fetchedAt < REFETCH_MS) return;
-    key = flowId;
-    loadTonight(flowId, flowId);
-  }, [flowId, canRead]);
+    // `seq.state` is a dependency, not decoration: crossing idle -> running (or
+    // running -> complete) changes what the server will say about tonight, and
+    // the freshness window inside `loadTonight` is what stops five consumers
+    // turning one edge into five requests.
+    void loadTonight(flowId, seq.state);
+  }, [flowId, canRead, seq.state]);
 
   const reports = useReports(Boolean(flowId) && canRead);
 

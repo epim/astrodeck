@@ -33,6 +33,7 @@ import {
   armedQualityGates, countShrinksSilently,
 } from "../../../../../components/sequence/stepDefaults";
 import { planPolicy, POLICY_FIELDS, type PolicyField } from "../../../../../lib/standards";
+import { isSequenceLive } from "../planModel";
 import { useConfig, useSequence, useStore } from "../../../../../store";
 import type { SequencePlan } from "../../../../../types";
 import {
@@ -67,10 +68,13 @@ export function PlanAutomationSection({ lockedReason, onExplain }: PlanSectionPr
   const setPlan = useStore((s) => s.setPlan);
   const config = useConfig();
   const sequence = useSequence();
-  // Same fold as `SequenceView.tsx:352`: "aborting" is still a run, and the
-  // frozen-copy note has to hold through it.
-  const running = sequence.state === "running" || sequence.state === "paused"
-    || sequence.state === "aborting";
+  // THE AREA'S OWN PREDICATE, not a fourth hand-written list of states. This
+  // read `running || paused || aborting` and dropped `holding` - the state a
+  // weather or safety hold parks a run in, which is exactly when an operator
+  // opens this column to change what the rig does next. Through a hold, every
+  // one of these twenty controls moved with no note saying the live run cannot
+  // see the edit, and the run resumed on its frozen copy.
+  const running = isSequenceLive(sequence.state);
   const runningPlanName = sequence.plan_name ?? plan?.name ?? "A plan";
 
   // Which group is open. One at a time: on a 420 px column two open groups push

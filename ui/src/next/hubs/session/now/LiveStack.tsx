@@ -17,12 +17,14 @@
 //
 // A CHANNEL IS A DIFFERENT PICTURE, NOT A TINT (D-SES-1). Picking Ha in the
 // strip changes the URL this <img> asks for; the server renders that channel's
-// own accumulator. An <img> cannot read a status code, so the one refusal that
-// matters - 404, nothing stacked in that channel yet - arrives as `onError`,
-// and it is CAUGHT: the picture falls back to the composite, the badge stops
-// saying "Ha only", and a sentence says which of the two is on screen. A silent
-// fallback would leave the badge and the picture disagreeing, which is the
-// exact defect the per-channel route was added to end.
+// own accumulator. An <img> cannot read a status code, so a refusal arrives as
+// `onError`, and it is CAUGHT: the picture falls back to the composite, the
+// badge stops saying "Ha only", and a sentence says which of the two is on
+// screen. A silent fallback would leave the badge and the picture disagreeing,
+// which is the exact defect the per-channel route was added to end. WHICH
+// sentence is decided by `channelFallbackNote` from the stack's own per-channel
+// frame count - `onError` does not carry a status code, and "nothing stacked in
+// Ha yet" over 42 banked Ha subs is a false statement about the night.
 //
 // THE EMPTY FACE CARRIES THE COST OF THE PRESS. Switching the stack on used to
 // mean "from the next frame", so arming it at 2am showed two of the night's
@@ -57,8 +59,33 @@ const CORNER: CSSProperties = {
   fontFamily: '"IBM Plex Mono", monospace', fontSize: 11,
 };
 
+/** Before the first `GET /api/sequence/stack` answers there is no stack state,
+ *  and "LIVE STACK IS OFF" is a claim about the rig, not about the request. */
+export const UNANSWERED_HINT =
+  "The rig has not answered about the stack yet, so whether it is already "
+  + "building a picture is unknown. This is not the off state.";
+
+export const UNANSWERED_START_REASON =
+  "The rig has not said yet whether the stack is already running. "
+  + "This clears when the first status lands.";
+
+/** The sentence under a channel that fell back to the composite.
+ *
+ *  AN `<img>` ERROR IS NOT A 404. `onError` fires for a channel the server has
+ *  no accumulator for, and equally for a dropped link, a truncated JPEG or a
+ *  render that timed out. The strip already knows which of those is even
+ *  possible, because the stack publishes a frame count per channel: zero frames
+ *  is the one case where "nothing stacked yet" is a fact. With 42 Ha subs banked
+ *  it told the operator the night had shot nothing - on the screen whose whole
+ *  job is to say what the night has shot. */
+export function channelFallbackNote(name: string, frames: number): string {
+  return frames > 0
+    ? `Could not load the ${name} frame (${frames} subs are stacked) - showing the combined picture.`
+    : `Nothing stacked in ${name} yet - showing the combined picture.`;
+}
+
 export function LiveStack({ height = 250 }: { height?: number }): JSX.Element {
-  const { status, busy, error, start } = useSessionStackStatus();
+  const { status, busy, error, answered, start } = useSessionStackStatus();
   const { channel, cssFilter, stretch } = useStackView();
   // Which (seq, channel) pair the server has already refused. Keyed by the pair
   // rather than a bare boolean so a new frame (seq moves) or a different chip
@@ -94,7 +121,7 @@ export function LiveStack({ height = 250 }: { height?: number }): JSX.Element {
     ? `${shown} only · ${status ? channelFrames(status, shown) : 0} subs · ${stretchWord} stretch`
     : status && Array.isArray(status.channels)
       ? `${modeLabel(status)} · ${stretchWord} stretch`
-      : "nothing stacked yet";
+      : answered ? "nothing stacked yet" : "reading the stack";
 
   const phase = phaseOf({
     state: seq.state,
@@ -115,7 +142,9 @@ export function LiveStack({ height = 250 }: { height?: number }): JSX.Element {
   const hfr = preview?.hfr;
   const hfrLine = typeof hfr === "number" ? hfr.toFixed(2) : "-";
 
-  const startReason = canCapture ? null : `Stacking needs ${accessPhrase("control.capture")}.`;
+  const startReason = !canCapture
+    ? `Stacking needs ${accessPhrase("control.capture")}.`
+    : answered ? null : UNANSWERED_START_REASON;
 
   return (
     <div data-testid="now-live-stack" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -144,10 +173,13 @@ export function LiveStack({ height = 250 }: { height?: number }): JSX.Element {
             alignItems: "center", justifyContent: "center",
           }}>
             <EmptyCard
-              title={status?.enabled ? "NOTHING STACKED YET" : "LIVE STACK IS OFF"}
-              hint={status?.enabled
-                ? "The first accepted sub of the run makes the first picture."
-                : "Every sub the run accepts is stacked per filter and composited into colour."}
+              title={!answered ? "READING THE STACK"
+                : status?.enabled ? "NOTHING STACKED YET" : "LIVE STACK IS OFF"}
+              hint={!answered
+                ? UNANSWERED_HINT
+                : status?.enabled
+                  ? "The first accepted sub of the run makes the first picture."
+                  : "Every sub the run accepts is stacked per filter and composited into colour."}
               action={
                 <ActionButton
                   kind="primary"
@@ -209,10 +241,10 @@ export function LiveStack({ height = 250 }: { height?: number }): JSX.Element {
         </div>
       </div>
 
-      {channelMissing && (
+      {channelMissing && channel && (
         <span data-testid="channel-missing-note">
           <Mono size={10} tone="warn">
-            Nothing stacked in {channel} yet - showing the combined picture.
+            {channelFallbackNote(channel, status ? channelFrames(status, channel) : 0)}
           </Mono>
         </span>
       )}

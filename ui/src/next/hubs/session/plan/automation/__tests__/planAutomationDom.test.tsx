@@ -94,6 +94,10 @@ const SESSION = {
   ],
 };
 
+/** The ledger index. Mutable so the fetch-cap test can hand the section a rig
+ *  with more sessions than it is allowed to read in full. */
+let SESSION_ROWS: Record<string, unknown>[] = [SESSION_ROW];
+
 const asked: { url: string; method: string }[] = [];
 
 g.fetch = async (url: string, init?: { method?: string }) => {
@@ -102,8 +106,10 @@ g.fetch = async (url: string, init?: { method?: string }) => {
   const json = (data: unknown) => ({
     ok: true, status: 200, statusText: "OK", json: async () => data,
   });
-  if (url === "/api/sessions") return json({ sessions: [SESSION_ROW] });
-  if (/^\/api\/sessions\/[^/]+$/.test(url)) return json(SESSION);
+  if (url === "/api/sessions") return json({ sessions: SESSION_ROWS });
+  if (/^\/api\/sessions\/[^/]+$/.test(url)) {
+    return json({ ...SESSION, id: url.slice("/api/sessions/".length) });
+  }
   return { ok: false, status: 404, statusText: "Not Found", json: async () => ({ detail: "no" }) };
 };
 
@@ -118,7 +124,8 @@ const { PlanInstructionsSection } = await import("../../instructions/index");
 // Imported through the area `index.ts` on purpose: that file is the contract
 // T-R7-5 composes against, so a rename that breaks composition breaks here too.
 const { PlanSessionsSection } = await import("../../sessions/index");
-const { NO_SESSIONS } = await import("../../sessions/PlanSessionsSection");
+const { NO_SESSIONS, SESSION_DETAIL_CAP } = await import("../../sessions/PlanSessionsSection");
+const { accessPhrase } = await import("../../../../../../lib/caps");
 const { instructionsSummary, NO_INSTRUCTIONS_SUMMARY, hyphenate } =
   await import("../../instructions/instructionsModel");
 
@@ -369,6 +376,39 @@ test("a running sequence says these settings reach the NEXT run", () => {
   act(() => { useStore.setState({ sequence: { state: "idle" } as never } as never); });
 });
 
+// EVERY LIVE STATE, not three of four. `holding` is the weather/safety hold -
+// the state an operator is MOST likely to open this column in, because the rig
+// has stopped and they are deciding what it does next. The run is still the
+// engine's and still executing its own frozen copy of the plan, so the note has
+// to hold through it; without `holding` the column silently claimed these edits
+// reached the paused run.
+//
+// SABOTAGE: put back `state === "running" || "paused" || "aborting"` and the
+// `holding` and `aborting` cases below go red.
+for (const state of ["running", "holding", "paused", "aborting"]) {
+  test(`the frozen-copy note holds through state "${state}"`, () => {
+    act(() => {
+      useStore.setState({
+        sequence: { state, plan_name: "NGC 7331 Ha" } as never,
+      } as never);
+    });
+    const note = tid("plan-automation-run-note");
+    assert(note != null,
+      `no frozen-copy note in "${state}" - the run still owns its frozen plan copy `
+      + "and this column just told the operator their edit reached it");
+    eq(note.textContent, runCopyNote("NGC 7331 Ha"),
+      "the note must be the one sentence automationModel holds");
+    act(() => { useStore.setState({ sequence: { state: "idle" } as never } as never); });
+  });
+}
+
+test("and the note is absent when nothing is running", () => {
+  act(() => { useStore.setState({ sequence: { state: "idle" } as never } as never); });
+  eq(tid("plan-automation-run-note"), null,
+    "the frozen-copy note is up over an idle engine - it would be a false claim, "
+    + "and it is also the vacuity guard for the four cases above");
+});
+
 // ============================================ 7. a viewer: locked, once
 
 await testAsync("a viewer sees every control locked and ONE lock note", async () => {
@@ -447,13 +487,34 @@ await testAsync("the sessions ledger lists the rig's sessions and locks its verb
   assert(tid("plan-session-delete-s1") != null, "DELETE must be present");
 
   const before = asked.length;
-  await mount(PlanSessionsSection, { lockedReason: "needs operator or admin access" });
+  // THE CALLER PASSES NOTHING. This is the production mount: `PlanEditor` gave
+  // this section `lockedReason={null}` for its whole life, so a test that hands
+  // it a reason of its own graded a string it supplied, not a lock the section
+  // keeps. A viewer principal and a null prop is the shape that was shipping.
+  //
+  // SABOTAGE: drop `useCanControlMount()` from `PlanSessionsSection` (or make
+  // `rowVerbReasons` ignore `canControl`) and every assertion below goes red.
+  seed("viewer", ["view.status", "view.preview"]);
+  await mount(PlanSessionsSection, { lockedReason: null });
   await settle();
+  const phrase = accessPhrase("control.mount");
   for (const verb of ["resume", "update", "abandon", "delete"]) {
     const el = tid(`plan-session-${verb}-s1`);
     assert(el != null, `the ${verb} verb must still be rendered for a viewer`);
-    eq(el.getAttribute("aria-disabled"), "true", `${verb} must be honest-disabled`);
+    eq(el.getAttribute("aria-disabled"), "true",
+      `${verb} is LIVE for a viewer with no reason from the caller - it reaches the `
+      + "route and learns the rule from a 403 after the confirm dialog");
+    eq(el.hasAttribute("disabled"), false,
+      "never the native disabled attribute - the press has to explain itself");
+    assert((el.getAttribute("title") ?? "").includes(phrase),
+      `${verb}'s reason must come from accessPhrase, got "${el.getAttribute("title")}"`);
   }
+  const arm = tid("plan-session-arm-s1");
+  assert(arm != null, "the auto-resume switch must still be rendered for a viewer");
+  eq(arm.getAttribute("aria-disabled"), "true",
+    "AUTO-RESUME is live for a viewer - arming an unattended start is the "
+    + "most expensive of the five");
+
   // REVIEW is a read and stays live, which is correct.
   assert(tid("plan-session-review-s1").getAttribute("aria-disabled") == null,
     "reading a session's frames needs no capability");
@@ -462,6 +523,42 @@ await testAsync("the sessions ledger lists the rig's sessions and locks its verb
   eq(useStore.getState().confirm, null, "a locked verb must not even raise a confirm");
   eq(asked.filter((a) => a.method === "DELETE").length, 0, "and must not reach the network");
   assert(asked.length >= before, "the ledger still refreshed");
+
+  // ...and the section-wide prop still outranks the per-verb sentence when the
+  // caller does have one to give.
+  seed("admin", ["view.status", "control.mount"]);
+  await mount(PlanSessionsSection, { lockedReason: "the plan is read-only here" });
+  await settle();
+  assert((tid("plan-session-delete-s1").getAttribute("title") ?? "")
+    .includes("the plan is read-only here"),
+    "the caller's own reason was dropped in favour of the capability sentence");
+});
+
+await testAsync("the ledger reads at most twelve session details, one at a time", async () => {
+  // `GET /api/sessions/{id}` carries every frame row of every night. This fired
+  // one per row, in parallel, on every run-state edge.
+  //
+  // SABOTAGE: restore `Promise.all(all.map(...))` and this goes red on the count.
+  SESSION_ROWS = Array.from({ length: 20 }, (_, i) => ({
+    ...SESSION_ROW, id: `big-${i}`, name: `Big ${i}`,
+  }));
+  const detailsOf = () =>
+    asked.filter((a) => a.url.startsWith("/api/sessions/big-")).length;
+  const before = detailsOf();
+  seed("admin", ["view.status", "control.mount"]);
+  await mount(PlanSessionsSection);
+  // Sequential reads need one turn each, so this waits for more turns than the
+  // cap rather than the four a parallel fan-out would have needed.
+  for (let i = 0; i < 40; i++) {
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+  }
+  const details = detailsOf() - before;
+  assert(tid("plan-session-big-0") != null,
+    "the twenty-row fixture never reached the section - the count below is vacuous");
+  assert(details > 0, "no session detail was read at all, so the cap proves nothing");
+  eq(details, SESSION_DETAIL_CAP,
+    `twenty rows must cost ${SESSION_DETAIL_CAP} ledger reads, not one per row`);
+  SESSION_ROWS = [SESSION_ROW];
 });
 
 // ============================================= 10. the pure model, directly

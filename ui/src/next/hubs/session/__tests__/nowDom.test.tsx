@@ -172,11 +172,15 @@ function tonightOk(): any {
   };
 }
 
+/** `GET /api/sequence/recoverable`. Mutable so the Interrupted card can be put
+ *  on screen without a second harness. */
+let RECOVERABLE: any = { recoverable: false };
+
 function answer(url: string): any {
   if (url.includes("/api/sessions/sess-1")) return SESSION;
   if (url.includes("/api/sessions")) return { sessions: [{ id: "sess-1", name: "M31 LRGB", status: "active", created_ts: 1, updated_ts: 2, nights: 2, accepted: 2, total: 18, auto_resume: true }] };
   if (url.includes("/api/sequence/stack")) return STACK;
-  if (url.includes("/api/sequence/recoverable")) return { recoverable: false };
+  if (url.includes("/api/sequence/recoverable")) return RECOVERABLE;
   if (url.includes("/api/reports")) return [];
   // Ordered longest-path-first: the catch-alls at the bottom must not swallow
   // the specific routes above them.
@@ -217,6 +221,7 @@ const { FLIP_SITE_REASON } = await import("../../monitor/live/FlipTile");
 const { RUN_CONTROL_REASON } = await import("../now/RunControls");
 const { ConfirmCard } = await import("../../../shell/ConfirmCard");
 const { TONIGHT_LOCK_NOTE, RUNNABLE_ROW_CAP, TONIGHT_RESOLVE_CAP } = await import("../now/NowEmpty");
+const { RERUN_PHONE_REASON } = await import("../now/Interrupted");
 
 // ------------------------------------------------------------------ harness
 let passed = 0;
@@ -810,6 +815,117 @@ await testAsync("the list caps at twelve rows and at five tonight requests", asy
   eq(asked[0].url.includes("/m0/"), true, "the newest flow was not asked first:");
   assert(!asked.some((a) => /\/m[5-9]|\/m1[0-3]/.test(a.url)),
     "a row below the fold was resolved ahead of one above it");
+});
+
+// ===================== 10. a STALE run phase is not a run, and RUN still runs
+//
+// `flows.run.phase` is written once by `flowsRun` and by nothing else in the
+// app - no socket topic, no run-state GET (`flowsSlice.ts` §G-1). So after ONE
+// flow run it reads "running" for the life of the page, and the guard above it
+// was stuck on: every later RUN press navigated to a Now screen with no run on
+// it, silently, on the only phone-reachable way to start a saved plan. And with
+// the guard simply removed, `act()`'s toggle would have sent
+// `POST /api/sequence/abort` from a row labelled RUN.
+//
+// SABOTAGE: drop the `runIsLive(seq)` half of `divertedWhileRunning`, or the
+// `clearStaleRunPhase()` call in `runFlow`, and this goes red.
+await testAsync("a leftover run phase with an idle engine neither diverts nor aborts",
+  async () => {
+    // A fresh mount, so the screen's own "I just pressed RUN" memory is empty -
+    // which is the state of a page whose run ended hours ago.
+    await act(async () => { root.render(createElement("div")); });
+    await act(async () => {
+      const st = useStore.getState() as any;
+      useStore.setState({
+        principal: OPERATOR,
+        sequence: { state: "idle" },
+        resumeArm: null,
+        flows: {
+          ...st.flows,
+          cards: [card("f1", "Veil east flow", 100, 10)],
+          libraryLoaded: true, libraryError: null,
+          record: null,
+          // The leftover: the engine is idle and this still says running.
+          run: { ...st.flows.run, phase: "running" },
+        },
+      } as never);
+    });
+    await act(async () => {
+      root.render(createElement(Fragment, null,
+        createElement(NowScreen), createElement(ConfirmCard)));
+    });
+    await settle();
+    await settle();
+
+    assert(byId("run-flow-f1") != null,
+      "the flow row never rendered - the assertions below would be vacuous");
+    const abortsBefore = posts("/api/sequence/abort").length;
+    const runsBefore = posts("/api/flows/f1/run").length;
+    win.location.hash = "#/session/flows";
+
+    await click(byId("run-flow-f1"));
+    await settle();
+    await settle();
+
+    eq(posts("/api/sequence/abort").length, abortsBefore,
+      "a press on a row labelled RUN sent the ABORT route, because act() read the "
+      + "leftover phase as a live run:");
+    eq(posts("/api/flows/f1/run").length, runsBefore + 1,
+      "RUN did not start the flow - the leftover phase swallowed the press:");
+    eq(win.location.hash, "#/session/flows",
+      "the press was diverted to a Now screen with no run on it:");
+  });
+
+// ============================ 11. the interrupted card names what its verb does
+
+await testAsync("RE-RUN names the door it opens, not a run it does not start", async () => {
+  // The verb read RE-RUN FROM FRAME 1 and opened the plan editor. It is not
+  // wired to POST /api/sequence/start instead, because the recoverable record is
+  // the SERVER'S and the editor starts the STORE'S draft - the two are the same
+  // plan only if nothing has been loaded since, so a one-press re-run here would
+  // start whatever plan happened to be open under this run's frame count.
+  RECOVERABLE = {
+    recoverable: true, session_id: "sess-1", name: "M31 LRGB",
+    frames_done: 7, frames_total: 18, ts: 1_757_000_000,
+  };
+  await act(async () => { root.render(createElement("div")); });
+  await act(async () => {
+    useStore.setState({ principal: OPERATOR, sequence: { state: "idle" } } as never);
+  });
+  await act(async () => { root.render(createElement(NowScreen)); });
+  await settle();
+  await settle();
+
+  const card2 = byId("now-interrupted");
+  assert(card2 != null,
+    "the interrupted card never rendered - the fixture is wrong, not the label");
+  const rerun = byId("interrupted-rerun");
+  assert(rerun != null, "the second verb never rendered");
+  const label = (rerun.textContent ?? "").trim();
+  assert(!/RE-RUN FROM FRAME 1/.test(label),
+    `the verb still promises a run it does not start: "${label}"`);
+  assert(/PLAN EDITOR/.test(label),
+    `the verb does not name the door it opens: "${label}"`);
+  const before = posts("/api/sequence/start").length;
+  const hashBefore = win.location.hash;
+  await click(rerun);
+  await settle();
+  eq(posts("/api/sequence/start").length, before,
+    "the press started a run, which is not what its label now says:");
+  // This harness reports phone width (every media query answers false), and at
+  // phone width the editor itself is honest-locked - so the press explains
+  // rather than navigating, and the reason is the same constant every other
+  // locked door to that editor quotes.
+  eq(rerun.getAttribute("aria-disabled"), "true",
+    "the door to a tablet-only editor is open on a phone");
+  assert((rerun.getAttribute("title") ?? "").includes(RERUN_PHONE_REASON),
+    `the phone lock does not quote the shared reason: "${rerun.getAttribute("title")}"`);
+  eq(win.location.hash, hashBefore,
+    "a locked press navigated anyway:");
+  const text = card2.textContent as string;
+  assert(/whichever plan is LOADED/.test(text),
+    `the card does not say why re-running is two steps: "${text.slice(0, 300)}"`);
+  RECOVERABLE = { recoverable: false };
 });
 
 act(() => { root.unmount(); });

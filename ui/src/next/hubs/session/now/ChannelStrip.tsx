@@ -25,7 +25,8 @@
 // of them. Switching the live stack off used to take the whole strip away and
 // the only per-filter tally on the screen with it. With the stack off and no
 // channels, the ledger line now renders alone and says the stack is off, so a
-// count is never left standing with no explanation for the missing chips.
+// count is never left standing with no explanation for the missing chips - and
+// "off" is only printed once the rig has actually said so (`answered`).
 
 import type { JSX } from "react";
 
@@ -71,9 +72,14 @@ export function ledgerDiffers(chips: readonly Row[], ledger: readonly Row[]): bo
   return false;
 }
 
+/** The ledger line while the stack has not answered. "Live stack off" is a
+ *  claim about the rig; before the first `GET /api/sequence/stack` lands there
+ *  is nothing to claim, and the night's counts are true either way. */
+export const UNANSWERED_LEDGER = "The stack has not answered yet.";
+
 export function ChannelStrip(): JSX.Element | null {
   const { session } = useActiveSession();
-  const { status } = useSessionStackStatus();
+  const { status, answered } = useSessionStackStatus();
   const { channel, setChannel, stretch, setStretch } = useStackView();
 
   // The offered channels ARE the stack's channels. A chip for a channel the
@@ -87,11 +93,16 @@ export function ChannelStrip(): JSX.Element | null {
   if (rows.length === 0 && !status?.enabled) {
     // Nothing to say about the stack, and nothing shot yet either.
     if (ledger.length === 0) return null;
+    // THE UNANSWERED BRANCH COMES FIRST. `status == null` is both "the poll has
+    // not come back" and "the poll failed", and printing "Live stack off" over
+    // either one tells an operator the rig is not building a picture when
+    // nothing has asked it yet.
     return (
       <div data-testid="now-channel-strip" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
         <span data-testid="channel-ledger-note">
           <Mono size={10} tone="dim">
-            {`Live stack off. This night's accepted subs: ${ledgerWords(ledger)}.`}
+            {`${answered ? "Live stack off." : UNANSWERED_LEDGER} `
+              + `This night's accepted subs: ${ledgerWords(ledger)}.`}
           </Mono>
         </span>
       </div>

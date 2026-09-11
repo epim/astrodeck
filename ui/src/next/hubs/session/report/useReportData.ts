@@ -131,6 +131,18 @@ export function useReportData(reportId?: string): ReportData {
 
   useEffect(() => { reloadList(); }, [reloadList]);
 
+  // A NEW `?id=` ON A MOUNTED SHEET IS A NEW REQUEST, not noise. `sel` was
+  // seeded from `reportId` once, at first render, so the second half of every
+  // deep link into an already-open report sheet was dropped: the Gallery's
+  // REPORT verb on a second card, a notification link, the picker's own
+  // `nav.sheet("report", {id})` - all of them left the previous night on screen
+  // under the new URL. The store's `lastReportId` is deliberately NOT a
+  // dependency (see `wantedRef`): that one moves when a run finishes, and it
+  // must not yank the selection out from under someone reading an older night.
+  useEffect(() => {
+    if (reportId) setSel(reportId);
+  }, [reportId]);
+
   // Detail. Cancelled-flag guard against out-of-order responses, and CLEAR
   // FIRST: holding the outgoing report on screen while the new one loads left
   // the previous night's title, integration, rejected count and trends fully

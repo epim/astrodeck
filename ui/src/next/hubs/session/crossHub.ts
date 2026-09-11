@@ -20,10 +20,11 @@
 // 302-308`) - which is exactly E.1's definition of parked. Asking a second
 // route for the same fact would be a chance for the two to disagree.
 //
-// NOT YET WIRED. The shell currently renders `CampaignStrip` and `Banners` from
-// its own narrow store reads; pointing it at these hooks is a later integration
-// task (ARCHITECTURE.md section 14, wave 8). Until then these are the richer
-// answers, tested on their own.
+// WIRED. `shell/CampaignStrip.tsx` reads `useCampaignStrip`, `shell/Banners.tsx`
+// reads `useSessionBanners`, and `shell/TabBar.tsx` and `shell/Rail.tsx` both
+// read `useSessionDot`. Nothing in the shell derives any of these three for
+// itself, which is the point: the strip over every hub and the ledger card on
+// the Now screen count one campaign's nights the same way.
 
 import { useCallback, useEffect, useState } from "react";
 
