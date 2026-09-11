@@ -52,6 +52,11 @@ BIG_PASS_START = 1_789_094_981.6
 BIG_PASS_PEAK = 1_789_095_182.6
 BIG_PASS_PEAK_ALT = 83.23
 
+#: The one pass of the four that is visible from the instant it clears the
+#: horizon to the instant it sets: 2026-09-12 03:39:49 UTC, 21.9 degrees up,
+#: sunlit throughout, under a sky that is already dark. Its two windows agree.
+WHOLE_PASS_START = 1_789_184_389.1
+
 #: A low one in the north-west, 15.8 degrees up, that a drawn tree line removes.
 LOW_PASS_START = 1_789_100_883.4
 LOW_PASS_PEAK = 1_789_101_013.3
@@ -156,6 +161,104 @@ def test_the_reported_boundaries_really_are_the_horizon_crossings(rig):
         assert abs(float(alt[2]) - floor_end) < 0.35
         assert float(alt[1]) == pytest.approx(p["max_alt_deg"], abs=0.02)
         assert float(az[1]) == pytest.approx(p["peak_az"], abs=0.2)
+
+
+# ======================================== the visible window, beside the pass
+
+def test_the_visible_window_is_reported_beside_the_horizon_crossings(rig):
+    """TWO WINDOWS, AND A CARD THAT PRINTS THE WRONG ONE SENDS SOMEBODY OUT
+    EARLY.
+
+    ``start_unix``/``end_unix`` are the horizon crossings: when the station
+    clears the tree line and when it drops back behind it. That is the pass.
+    ``visible_start_unix``/``visible_end_unix`` are when there is something to
+    SEE -- up AND sunlit AND the observer in the dark.
+
+    Graded against the propagator rather than against a stored number: inside
+    the reported visible window all three conditions hold, and one second
+    outside it at least one of them does not."""
+    out = P.find_passes(48.0, 0.0, None, WHEN)
+    sky = P._Sky(WHEN, 48.0)
+    sat = sats._satrec(ISS_ROW)
+    narrowed = 0
+    for p in out["passes"]:
+        vs, ve = p["visible_start_unix"], p["visible_end_unix"]
+        assert p["start_unix"] - 1.0 <= vs <= ve <= p["end_unix"] + 1.0, (
+            f"the visible window is not inside the pass: {p}")
+        inside = sky.visible_sign(sat, [vs + 2.0, ve - 2.0])
+        assert list(inside) == [1.0, 1.0], (
+            f"the reported visible window contains an instant with nothing to "
+            f"see: {p}")
+        if vs - p["start_unix"] > 2.0:
+            narrowed += 1
+            before = sky.visible_sign(sat, [vs - 2.0])
+            assert float(before[0]) == -1.0, (
+                "visible_start is not a boundary: it was already visible two "
+                "seconds earlier")
+        if p["end_unix"] - ve > 2.0:
+            narrowed += 1
+            after = sky.visible_sign(sat, [ve + 2.0])
+            assert float(after[0]) == -1.0
+    assert narrowed >= 1, (
+        "no pass in this window was narrowed by the sunlight/darkness rule, so "
+        "this test would pass on start/end copied straight across")
+
+
+def test_a_pass_visible_end_to_end_has_the_two_windows_agree(rig):
+    """The 2026-09-12 03:39 pass is sunlit throughout AND happens under a sky
+    that is already dark, so its visible window IS its pass -- to within the one
+    second both pairs are bisected to. This is the half that stops the new
+    fields being an unrelated number that merely sits inside the pass."""
+    out = P.find_passes(48.0, 0.0, None, WHEN)
+    whole = next(p for p in out["passes"]
+                 if abs(p["start_unix"] - WHOLE_PASS_START) < 2.0)
+    assert whole["sunlit_fraction"] == 1.0
+    assert whole["enters_shadow_unix"] is None
+    assert whole["visible_start_unix"] == pytest.approx(whole["start_unix"],
+                                                        abs=1.0)
+    assert whole["visible_end_unix"] == pytest.approx(whole["end_unix"], abs=1.0)
+
+
+def test_the_big_pass_rises_before_the_sky_is_dark_and_says_so(rig):
+    """WHY THE TWO WINDOWS ARE BOTH ON THE ROW, in one number.
+
+    The 83-degree pass is the best of the night and it clears the horizon 56
+    seconds before civil twilight ends here. ``start_unix`` is when it rises;
+    there is nothing to look at yet. A card that printed the rise as the time to
+    be outside would be a minute early on the only pass anybody cares about."""
+    from astrodeck.catalog.coords import sun_altaz
+
+    big = next(p for p in P.find_passes(48.0, 0.0, None, WHEN)["passes"]
+               if abs(p["start_unix"] - BIG_PASS_START) < 2.0)
+    assert big["sunlit_fraction"] == 1.0, "not the shadow, then"
+    assert big["visible_start_unix"] - big["start_unix"] > 30.0, (
+        "the twilight-limited start was not reported")
+    assert sun_altaz(37.5, -122.3, big["start_unix"])[0] > -6.0, (
+        "the sky was already dark at the rise; this pass is not the example")
+    assert sun_altaz(37.5, -122.3, big["visible_start_unix"])[0] == \
+        pytest.approx(-6.0, abs=0.05), (
+        "visible_start is not the moment the observer's sky reached civil "
+        "twilight")
+
+
+def test_a_pass_that_fades_out_ends_visible_where_it_enters_the_shadow(rig):
+    """The third condition doing the narrowing, and a cross-check between two
+    numbers bisected independently: a pass that goes into the Earth's shadow and
+    does not come back out stops being visible exactly there, so
+    ``visible_end_unix`` has to equal ``enters_shadow_unix``. It does not
+    "fade" -- the 15.8-degree pass on the 11th is visible for 214 seconds of its
+    260 and then there is nothing in the eyepiece."""
+    fading = [p for p in P.find_passes(48.0, 0.0, None, WHEN)["passes"]
+              if p["enters_shadow_unix"] is not None
+              and p["leaves_shadow_unix"] is None]
+    assert fading, "the fixture changed: no pass fades out in this window"
+    for p in fading:
+        assert p["visible_end_unix"] == pytest.approx(p["enters_shadow_unix"],
+                                                      abs=1.0), (
+            f"the pass stayed 'visible' after it entered the shadow: {p}")
+        assert p["end_unix"] - p["visible_end_unix"] > 10.0, (
+            "it entered the shadow at the moment it set, which makes this a "
+            "weaker test than it reads as")
 
 
 # ============================================ (2) a pass in shadow is not one
@@ -303,12 +406,40 @@ def test_the_coarse_lookup_table_matches_the_exact_function(rig):
 # ============================================================ query handling
 
 def test_ids_narrows_the_search_and_an_unknown_id_finds_nothing(rig):
+    """AN ID THAT MATCHES NOTHING IS A FACT ABOUT THE FILTER, NOT ABOUT THE RIG.
+
+    This used to answer "No satellite elements have been downloaded yet" and
+    ``horizon_source: "none"`` -- on a rig with a fresh element cache and a
+    10-degree floor configured. Every word of it was false, and it pointed the
+    operator at Sky settings to fix a cache that was already there.
+
+    The cache state is on the payload either way, so the two cases can be told
+    apart without reading the sentence."""
     assert P.find_passes(24.0, 0.0, [25544], WHEN)["passes"]
+
     empty = P.find_passes(24.0, 0.0, [99999], WHEN)
     assert empty["passes"] == []
-    assert any("have been downloaded yet" in n for n in empty["notes"]), (
-        "an id that matches no cached element set must say so rather than "
-        "return an empty list that reads as 'no passes tonight'")
+    assert empty["elements"]["present"] is True and empty["elements"]["count"] == 1
+    assert empty["horizon_source"] == "horizon_min_deg", (
+        "the drawn horizon is a fact about the rig, not about this search")
+    note = empty["notes"][0]
+    assert "99999" in note, (
+        f"the note must name the id that matched nothing: {note}")
+    assert "have been downloaded yet" not in note, (
+        "a rig with a cached element set was told its cache was empty")
+
+
+def test_an_empty_cache_still_says_nothing_has_been_downloaded(rig, monkeypatch):
+    """The other half of the branch above: when the cache really is missing,
+    the sentence is still the one that sends the operator to the refresh."""
+    monkeypatch.setattr(el, "SATELLITE_FILE",
+                        el.SATELLITE_FILE.parent / "absent.json")
+    out = P.find_passes(24.0, 0.0, [25544], WHEN)
+    assert out["passes"] == []
+    assert out["elements"]["present"] is False
+    assert "have been downloaded yet" in out["notes"][0]
+    assert out["horizon_source"] == "horizon_min_deg", (
+        "a rig with a horizon floor has one whether or not it has elements")
 
 
 def test_min_alt_deg_drops_the_low_ones(rig):
@@ -339,7 +470,10 @@ def test_no_elements_is_a_sentence_not_an_empty_list(tmp_path, monkeypatch):
                         tmp_path / "ephemeris" / "satellites.json")
     out = P.find_passes(24.0, 0.0, None, WHEN)
     assert out["passes"] == []
-    assert out["horizon_source"] == "none"
+    # The rig's own floor, reported whether or not there are elements to search:
+    # this site carries the default 15-degree minimum altitude, and answering
+    # "none" here told the operator their horizon was unconfigured.
+    assert out["horizon_source"] == "horizon_min_deg"
     assert "will not guess" in out["notes"][0]
 
 

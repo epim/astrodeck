@@ -1771,6 +1771,29 @@ def _refuse_lockout(auth: "AuthConfig") -> None:
 
 
 
+#: How far two sets of coordinates may differ and still be the same place:
+#: 1e-6 degrees, about 0.1 m. Far below any GPS fix, so it survives a round trip
+#: through JSON and never matches two genuinely different sites. The same
+#: tolerance ``api/app.py:_location_is_active_site`` compares with, deliberately
+#: -- one idea of "the rig is standing here".
+_SAME_PLACE_DEG = 1e-6
+
+
+def _site_moved(old: "Site", new: "Site") -> bool:
+    """Did the rig MOVE, as opposed to having its description edited?
+
+    Latitude and longitude only. A rename, a corrected elevation or a new
+    horizon floor are edits to how the same spot is described; a changed
+    latitude is a different spot, and it is the only thing that can invalidate
+    which saved location the site came from."""
+    try:
+        return (abs(float(old.latitude) - float(new.latitude)) > _SAME_PLACE_DEG
+                or abs(float(old.longitude) - float(new.longitude))
+                > _SAME_PLACE_DEG)
+    except (TypeError, ValueError):     # a site without usable coordinates
+        return True
+
+
 def _unknown_keys(raw: dict) -> dict:
     """Top-level keys in the file that this build's AppConfig has no field for.
 
@@ -2032,8 +2055,40 @@ class ConfigStore:
         cfg = self.cfg()
         # a user-saved site is, by definition, no longer the default.
         site = site.model_copy(update={"is_default": False})
+        # TYPED-IN COORDINATES POINT AT NO SAVED LOCATION. ``active_location_id``
+        # means "the site came from THIS row of the library" (see AppConfig), and
+        # this route is the one that types coordinates in by hand. Leaving the
+        # pointer where it was left the Sky hub naming a saved site while the rig
+        # stood somewhere else -- a label that contradicts the numbers beside it,
+        # and a "re-apply" that would silently move the mount back.
+        #
+        # ONLY ON A MOVE. A save that renames the site or corrects its elevation
+        # while the coordinates hold is still the same place, and clearing the
+        # pointer there would deselect a location for a typo fix.
+        if _site_moved(cfg.site, site):
+            cfg.active_location_id = None
         cfg.site = site
         return self.bump_and_save()
+
+    def clear_active_location(self, loc_id: str) -> bool:
+        """Forget the active-location pointer if it names ``loc_id``.
+
+        For the caller that MOVED that row: ``PUT /api/locations/{id}`` can
+        rewrite the latitude and longitude of the very row the site was applied
+        from, and it does not push them into ``config.site`` (a library edit is
+        not a request to move the mount). The pointer then names a location
+        whose coordinates are not the ones the rig is using, which is the same
+        broken claim ``set_site`` clears above.
+
+        Returns whether anything changed, so a caller can skip the version bump
+        -- a save that changes nothing costs every open client its field-level
+        write token."""
+        cfg = self.cfg()
+        if cfg.active_location_id != loc_id:
+            return False
+        cfg.active_location_id = None
+        self.bump_and_save()
+        return True
 
     def set_site_and_safety(self, site: Site, safety: SafetyConfig,
                             expected_version: int | None = None) -> AppConfig:

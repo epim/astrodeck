@@ -169,6 +169,84 @@ def test_deleting_a_different_location_leaves_the_pointer_alone(
             "or every open client loses its field-level write token for free")
 
 
+def test_typing_coordinates_into_the_site_clears_the_pointer(
+        tmp_path, monkeypatch):
+    """"None when the coordinates were typed in" is the pointer's contract, and
+    ``PUT /api/site`` is the route that types them in.
+
+    Left alone, the pointer outlives the site it described: the Sky hub shows
+    BACKYARD selected while the rig stands at the numbers somebody just typed,
+    which is a label contradicting the coordinates printed beside it -- and the
+    obvious repair (press the selected row again) would move the mount back."""
+    cfg, _locs, app = _make_client(tmp_path, monkeypatch)
+    _install(_writer())
+    with TestClient(app) as c:
+        lid = c.post("/api/locations", json=_BACKYARD).json()["id"]
+        assert c.post(f"/api/locations/{lid}/apply").status_code == 200
+        assert cfg.cfg().active_location_id == lid
+
+        r = c.put("/api/site", json={"site": {
+            "name": "Somewhere else", "latitude": 44.0, "longitude": -71.0,
+            "elevation_m": 100.0}})
+        assert r.status_code == 200, r.text
+        assert cfg.cfg().active_location_id is None, (
+            "the site moved and the pointer still names the location it came "
+            "from")
+        assert cfg.cfg().site.latitude == pytest.approx(44.0)
+
+
+def test_renaming_the_site_in_place_keeps_the_pointer(tmp_path, monkeypatch):
+    """The other direction, so the clear above cannot be a blanket one: a save
+    that corrects the name or the elevation without moving the rig is an edit to
+    how the same spot is DESCRIBED, and deselecting the applied location there
+    would cost the pointer to a typo fix."""
+    cfg, _locs, app = _make_client(tmp_path, monkeypatch)
+    _install(_writer())
+    with TestClient(app) as c:
+        lid = c.post("/api/locations", json=_BACKYARD).json()["id"]
+        assert c.post(f"/api/locations/{lid}/apply").status_code == 200
+
+        r = c.put("/api/site", json={"site": {
+            "name": "Backyard (east lawn)",
+            "latitude": _BACKYARD["latitude"],
+            "longitude": _BACKYARD["longitude"], "elevation_m": 13.0}})
+        assert r.status_code == 200, r.text
+        assert cfg.cfg().active_location_id == lid, (
+            "a rename with the coordinates unchanged deselected the location")
+
+
+def test_moving_the_active_row_clears_the_pointer(tmp_path, monkeypatch):
+    """``PUT /api/locations/{id}`` can rewrite the coordinates of the very row
+    the site was applied from, and it deliberately does NOT push them into
+    ``config.site`` -- editing the library is not a request to move the mount.
+    The pointer is then naming a row whose numbers are not the ones the rig is
+    using, which is the same false claim ``set_site`` clears.
+
+    Graded on ``ConfigStore.clear_active_location``, which is the half of this
+    that lives in config.py. The route half is one call in ``api/app.py``'s
+    ``update_location`` (owned by FIX-S2); this pins the behaviour it needs."""
+    cfg, _locs, app = _make_client(tmp_path, monkeypatch)
+    _install(_writer())
+    with TestClient(app) as c:
+        live = c.post("/api/locations", json=_BACKYARD).json()["id"]
+        spare = c.post("/api/locations", json=_RIDGE).json()["id"]
+        assert c.post(f"/api/locations/{live}/apply").status_code == 200
+
+    before = cfg.cfg().version
+    assert cfg.clear_active_location(spare) is False, (
+        "editing an unused saved site must not deselect the live one")
+    assert cfg.cfg().active_location_id == live
+    assert cfg.cfg().version == before, (
+        "a clear that changed nothing bumped the config version, which costs "
+        "every open client its field-level write token")
+
+    assert cfg.clear_active_location(live) is True
+    assert cfg.cfg().active_location_id is None
+    assert cfg.cfg().version == before + 1
+    assert cfg.cfg().site.latitude == pytest.approx(40.5), (
+        "clearing the pointer moved the rig")
+
+
 def test_an_old_config_with_no_pointer_reads_as_none(tmp_path, monkeypatch):
     """The field is additive: a config written before it existed loads with the
     pointer unset rather than failing validation."""

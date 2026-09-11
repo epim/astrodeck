@@ -96,6 +96,39 @@ def horizon_profile() -> tuple[list | None, float, str]:
     return None, floor, "horizon_min_deg" if floor > 0.0 else "none"
 
 
+def no_rows_note(ids, state: dict) -> str:
+    """The sentence for a search that produced no element sets to propagate.
+
+    THREE DIFFERENT FACTS WEAR THE SAME EMPTY LIST, and telling a caller the
+    wrong one sends them to the wrong screen:
+
+    * nothing has ever been downloaded -- the rig needs a network and a refresh,
+      which is what ``NO_SATELLITES_NOTE`` says;
+    * the cache is there and the ids asked for are not in it -- refreshing
+      changes nothing, because CelesTrak's bright-object group is a curated list
+      and most catalogue numbers are simply not on it. The ids get NAMED, so the
+      caller can see it was their filter and not the sky;
+    * the cache is there and carries no usable rows at all, which is a broken
+      file rather than an empty sky.
+
+    Before this, an ``ids`` filter that matched nothing on a rig with 200 fresh
+    element sets answered "No satellite elements have been downloaded yet",
+    which was false in every particular."""
+    if not state["present"]:
+        return state["note"] or _elements.NO_SATELLITES_NOTE
+    if ids:
+        wanted = ", ".join(str(int(i)) for i in ids)
+        return (f"No element set is cached for catalogue number {wanted}. "
+                f"AstroDeck keeps CelesTrak's bright-object group (currently "
+                f"{state['count']} objects) plus the ISS, Tiangong and Hubble, "
+                f"so a satellite outside that list is not one it can place. "
+                f"This is the filter, not the sky: clear it to see tonight's "
+                f"passes.")
+    return ("The satellite element file is present but carries no usable "
+            "element sets. Refresh the elements from Sky settings while the "
+            "rig is online.")
+
+
 def floor_at(poly, floor_deg: float, az_deg: float) -> float:
     """The altitude a target must clear at azimuth ``az_deg``.
 
@@ -167,6 +200,26 @@ class _Sky:
                            for a in np.atleast_1d(az)], dtype=float)
         return np.atleast_1d(alt) - floors
 
+    def visible_sign(self, sat, unix_times) -> np.ndarray:
+        """+1 where ALL THREE conditions hold (up, sunlit, observer in the
+        dark), -1 anywhere else.
+
+        The sign function the visible window is bisected against, exactly as
+        ``margin`` is for the horizon crossings and ``_shadow_edges``' own
+        ``lit_sign`` is for the shadow. Whichever of the three flips is the one
+        the crossing lands on, and over a ten-second bracket only one of them
+        ever does."""
+        from ..coords import sun_altaz
+
+        times = np.atleast_1d(np.asarray(unix_times, dtype=float))
+        alt, az, _rng, lit = self.sample(sat, times)
+        floors = np.array([floor_at(self.poly, self.floor_deg, float(a))
+                           for a in np.atleast_1d(az)], dtype=float)
+        up = np.atleast_1d(alt) > floors
+        dark = np.array([sun_altaz(self.lat, self.lon, float(u))[0]
+                         for u in times], dtype=float) < PASS_SUN_ALT_MAX_DEG
+        return np.where(up & np.atleast_1d(lit) & dark, 1.0, -1.0)
+
 
 def _bisect(f, lo: np.ndarray, hi: np.ndarray, tol_s: float) -> np.ndarray:
     """Vectorised bisection of ``f`` between ``lo`` and ``hi``.
@@ -217,9 +270,13 @@ def find_passes(hours: float = DEFAULT_HOURS, min_alt_deg: float = 0.0,
     state = _elements.cache_state(_elements.SATELLITES, t0)
     rows = _sat.rows_by_id(ids) if ids else _sat.cached_rows()
     if not rows:
-        return {"passes": [], "horizon_source": "none",
+        # ``horizon_source`` IS ANSWERED HERE TOO. It is a fact about the rig's
+        # configuration, not about this search: reporting "none" on a rig with a
+        # drawn tree line, purely because the row filter matched nothing, is the
+        # card telling the operator their horizon is not set up.
+        return {"passes": [], "horizon_source": horizon_profile()[2],
                 "elements": state,
-                "notes": [state["note"] or _elements.NO_SATELLITES_NOTE]}
+                "notes": [no_rows_note(ids, state)]}
     if state["note"]:
         notes.append(state["note"])
 
@@ -253,15 +310,37 @@ def find_passes(hours: float = DEFAULT_HOURS, min_alt_deg: float = 0.0,
             if float(alt[peak_i]) < float(min_alt_deg):
                 continue
             out.append(_one_pass(sky, sat, el, name, age, alt, az, lit,
-                                 first, last, peak_i))
+                                 visible, first, last, peak_i))
     out.sort(key=lambda p: p["peak_unix"])
     return {"passes": out, "horizon_source": sky.source, "elements": state,
             "notes": notes}
 
 
-def _one_pass(sky, sat, el, name, age, alt, az, lit, first, last,
+def _one_pass(sky, sat, el, name, age, alt, az, lit, visible, first, last,
               peak_i) -> dict:
-    """Refine one above-the-horizon run into a reported pass."""
+    """Refine one above-the-horizon run into a reported pass.
+
+    TWO WINDOWS, AND THEY ARE NOT THE SAME WINDOW. Both are on the row because
+    both are true and a caller needs to know which one it is reading:
+
+    * ``start_unix`` / ``end_unix`` are the HORIZON CROSSINGS -- when the
+      satellite clears the drawn tree line and when it drops back behind it.
+      This is the pass, and it is what the geometry of the orbit says.
+    * ``visible_start_unix`` / ``visible_end_unix`` are the window in which
+      there is something to SEE: up AND sunlit AND the observer in the dark, the
+      same three conditions that decided the pass was reportable at all. A pass
+      that rises in the Earth's shadow or before the sky is dark begins minutes
+      after ``start_unix``, and telling somebody to be outside then is telling
+      them to watch an empty sky.
+
+    They are computed the same way, which is the point: the visible edges are
+    bisected to one second against ``_Sky.visible_sign`` exactly as the horizon
+    crossings are against ``margin``. Where the pass is visible end to end the
+    two pairs agree to within the refinement.
+
+    A pass that enters the Earth's shadow half way through has ONE visible
+    window here, from the first visible instant to the last, and
+    ``enters_shadow_unix`` / ``leaves_shadow_unix`` name the gap inside it."""
     def margin(times):
         return sky.margin(sat, times)
 
@@ -288,12 +367,16 @@ def _one_pass(sky, sat, el, name, age, alt, az, lit, first, last,
     lit_run = lit[first:last + 1]
     frac = float(np.count_nonzero(lit_run)) / float(max(1, lit_run.size))
     enters, leaves = _shadow_edges(sky, sat, lit, first, last)
+    vis_start, vis_end = _visible_edges(sky, sat, visible, first, last,
+                                        start, end)
     return {
         "norad_id": int(el.get("norad_id", 0)),
         "name": name,
         "start_unix": start,
         "peak_unix": peak_unix,
         "end_unix": end,
+        "visible_start_unix": vis_start,
+        "visible_end_unix": vis_end,
         "start_az": round(float(z0[0]), 1),
         "peak_az": round(float(z0[1]), 1),
         "end_az": round(float(z0[2]), 1),
@@ -319,6 +402,40 @@ def _ternary_max(f, lo: float, hi: float, tol_s: float) -> float:
         else:
             hi = m2
     return 0.5 * (lo + hi)
+
+
+def _visible_edges(sky, sat, visible, first, last, start, end):
+    """``(visible_start_unix, visible_end_unix)`` for one pass.
+
+    The first and last instants at which the satellite is up AND sunlit AND the
+    observer is in the dark, bisected to one second the same way the horizon
+    crossings are -- see ``_one_pass`` for why this is a different window from
+    ``start_unix``/``end_unix`` and why both are reported.
+
+    Clipped to the pass: a run that begins visible at the search window's own
+    first sample has no crossing to find before it, and inventing one would
+    report a sighting that started before the caller asked."""
+    def sign(times):
+        return sky.visible_sign(sat, times)
+
+    run = np.flatnonzero(visible[first:last + 1])
+    if run.size == 0:                   # not reachable: unseen passes are
+        return start, end               # dropped before _one_pass is called
+    v_first = first + int(run[0])
+    v_last = first + int(run[-1])
+
+    vis_start = float(sky.unix[v_first])
+    if v_first > 0 and not bool(visible[v_first - 1]):
+        vis_start = float(_bisect(sign, np.array([sky.unix[v_first - 1]]),
+                                  np.array([sky.unix[v_first]]), REFINE_S)[0])
+    vis_end = float(sky.unix[v_last])
+    if v_last + 1 < sky.unix.size and not bool(visible[v_last + 1]):
+        vis_end = float(_bisect(sign, np.array([sky.unix[v_last + 1]]),
+                                np.array([sky.unix[v_last]]), REFINE_S)[0])
+    # The visible window is INSIDE the pass by construction; the two refinements
+    # are independent bisections, so clamp rather than let a sub-second
+    # disagreement print a sighting that starts before the satellite rose.
+    return max(vis_start, start), min(vis_end, end)
 
 
 def _shadow_edges(sky, sat, lit, first, last):

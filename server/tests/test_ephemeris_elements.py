@@ -58,6 +58,56 @@ class _Failing:
         raise OSError("connection reset by peer")
 
 
+class _Resp:
+    """An ``httpx.Response`` stand-in: the text, and a ``raise_for_status`` that
+    does not."""
+
+    def __init__(self, text):
+        self.text = text
+
+    def raise_for_status(self):
+        pass
+
+
+def _gp_json(ids) -> str:
+    """CelesTrak GP JSON for ``ids``, in the order given."""
+    return json.dumps([{"OBJECT_NAME": f"SAT {int(i)}",
+                        "NORAD_CAT_ID": int(i),
+                        "TLE_LINE1": _ROWS[0]["line1"],
+                        "TLE_LINE2": _ROWS[0]["line2"]} for i in ids])
+
+
+def _legs(group_ids=None, pinned=True):
+    """An ``httpx.AsyncClient`` class whose GROUP leg and PINNED legs succeed or
+    fail INDEPENDENTLY.
+
+    The satellite fetch is four requests -- the group file plus the three pinned
+    catalogue numbers -- and the outages worth testing are the partial ones, so
+    the fake is built per leg rather than as one on/off switch.
+    ``group_ids=None`` fails the group; ``pinned=False`` fails all three."""
+    class _Client:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url, **kw):
+            if "GROUP=" in url:
+                if group_ids is None:
+                    raise OSError("group unavailable")
+                return _Resp(_gp_json(group_ids))
+            if not pinned:
+                raise OSError("catalogue number unavailable")
+            catnr = int(url.split("CATNR=")[1].split("&")[0])
+            return _Resp(_gp_json([catnr]))
+
+    return _Client
+
+
 @pytest.fixture
 def store(tmp_path, monkeypatch):
     """An EphemerisStore whose two files live under tmp_path."""
@@ -232,6 +282,45 @@ def test_is_due_is_false_inside_the_refresh_interval(store):
     assert el.is_due(el.SATELLITES, WHEN + el.SATELLITE_REFRESH_S + 1.0) is True
 
 
+def test_the_poller_stats_the_file_rather_than_re_parsing_it(store,
+                                                             monkeypatch):
+    """``is_due`` asks about both files every minute and ``cache_state`` asks
+    again on every status poll, and all either of them wants out of a 200-row
+    JSON document is one float. Parsing it a few times a minute, forever, on a
+    board whose other job is guiding, is a cost nobody asked for.
+
+    AND THE MEMO HAS TO SEE A WRITE. That is the half that can go silently
+    wrong: Windows file timestamps move in ~15 ms steps and a rewritten envelope
+    of the same length lands the same ``(mtime, size)``, so a memo keyed on stat
+    alone would keep serving the old rows. The second half of this test rewrites
+    the file with a value that is byte-for-byte the same LENGTH and asks for it
+    back."""
+    import astrodeck.persist as persist
+
+    reads: list = []
+    real = persist.read_json
+
+    def _counted(path):
+        reads.append(str(path))
+        return real(path)
+
+    monkeypatch.setattr(persist, "read_json", _counted)
+
+    el.write_envelope(el.SATELLITE_FILE, "celestrak-visual", _ROWS, WHEN)
+    assert el.is_due(el.SATELLITES, WHEN) is False
+    assert len(reads) == 1, f"the first read did not parse the file: {reads}"
+    for _ in range(20):
+        el.is_due(el.SATELLITES, WHEN)
+        el.cache_state(el.SATELLITES, WHEN)
+    assert len(reads) == 1, (
+        f"40 poller reads re-parsed the element file {len(reads) - 1} times")
+
+    later = WHEN + 100_000.0          # same digit count, so the same file size
+    el.write_envelope(el.SATELLITE_FILE, "celestrak-visual", _ROWS, later)
+    assert el.cache_state(el.SATELLITES, later)["fetched_unix"] == later, (
+        "a write was not seen: the memo served the envelope it replaced")
+
+
 # ================================================== the fetch-in-flight lock
 
 def test_a_second_refresh_while_one_runs_is_refused(store):
@@ -250,38 +339,13 @@ def test_a_second_refresh_while_one_runs_is_refused(store):
 
 def test_the_group_fetch_and_the_pinned_ids_fail_independently(store,
                                                                monkeypatch):
-    """A group fetch that fails must not cost us the ISS, and vice versa. The
-    three pinned catalogue numbers exist precisely so the objects a beginner
-    types survive a partial outage."""
-    class _GroupFails:
-        def __init__(self, *a, **kw):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *a):
-            return False
-
-        async def get(self, url, **kw):
-            if "GROUP=" in url:
-                raise OSError("group unavailable")
-            catnr = url.split("CATNR=")[1].split("&")[0]
-            return _Resp(json.dumps([{
-                "OBJECT_NAME": f"OBJ {catnr}", "NORAD_CAT_ID": int(catnr),
-                "TLE_LINE1": _ROWS[0]["line1"],
-                "TLE_LINE2": _ROWS[0]["line2"]}]))
-
-    class _Resp:
-        def __init__(self, text):
-            self.text = text
-
-        def raise_for_status(self):
-            pass
-
+    """A group fetch that fails must not cost us the ISS. The three pinned
+    catalogue numbers exist precisely so the objects a beginner types survive a
+    partial outage. (The other direction is the test below, and what a partial
+    outage must not do to an EXISTING cache is the one after that.)"""
     import httpx
 
-    monkeypatch.setattr(httpx, "AsyncClient", _GroupFails)
+    monkeypatch.setattr(httpx, "AsyncClient", _legs(group_ids=None))
     asyncio.run(store._fetch_one(el.SATELLITES))
     env = el.load(el.SATELLITES)
     assert env is not None
@@ -290,15 +354,93 @@ def test_the_group_fetch_and_the_pinned_ids_fail_independently(store,
         f"the pinned ids did not survive a failed group fetch: {got}")
 
 
-def test_the_group_is_capped_at_max_satellites(store):
+def test_the_pinned_ids_failing_does_not_cost_us_the_group(store, monkeypatch):
+    """AND VICE VERSA, which nothing exercised: three pinned fetches that 404 or
+    time out must leave the group file that arrived intact. The pinned legs are
+    a top-up, and a top-up that fails is not a failed fetch."""
+    import httpx
+
+    monkeypatch.setattr(httpx, "AsyncClient",
+                        _legs(group_ids=[11, 22, 33], pinned=False))
+    asyncio.run(store._fetch_one(el.SATELLITES))
+    env = el.load(el.SATELLITES)
+    assert env is not None
+    assert [r["norad_id"] for r in env["rows"]] == [11, 22, 33], (
+        "the group rows did not survive three failed pinned fetches")
+    assert env["source"] == "celestrak-visual", (
+        "a leg that failed must not be claimed as a source")
+    assert store.snapshot(WHEN)["last_outcome"]["satellites"] == "ok"
+
+
+def test_a_failed_group_leg_never_shrinks_a_good_cache(store, monkeypatch):
+    """THE CACHE-DESTROYING SHAPE, and it needs no failure at all to look like a
+    success.
+
+    The group leg fails, the three pinned legs succeed, and the fetch returns
+    three perfectly good rows. Written straight out, those three rows REPLACE a
+    two-hundred-row envelope and get stamped with the current clock -- so the rig
+    silently loses 197 satellites AND reports its elements as downloaded moments
+    ago. One flaky night at CelesTrak would do it, and nothing on any screen
+    would say so.
+
+    So the fresh rows are merged in and the timestamp is left where it was: the
+    envelope is still mostly the group fetch from days ago, and ``stale`` has to
+    keep telling the truth about that."""
+    seeded = [{"name": f"SAT {i}", "norad_id": i,
+               "line1": _ROWS[0]["line1"], "line2": _ROWS[0]["line2"]}
+              for i in range(1, 201)]
+    el.write_envelope(el.SATELLITE_FILE, "celestrak-visual", seeded, WHEN)
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "AsyncClient", _legs(group_ids=None))
+    asyncio.run(store._fetch_one(el.SATELLITES))
+
+    env = el.load(el.SATELLITES)
+    ids = [r["norad_id"] for r in env["rows"]]
+    assert len(ids) >= 200, (
+        f"a failed group leg shrank a good 200-row cache to {len(ids)} rows")
+    assert list(range(1, 201)) == ids[:200], (
+        "the cached rows were reordered or replaced rather than merged into")
+    assert set(el.PINNED_NORAD) <= set(ids), (
+        "the pinned rows that DID arrive were dropped")
+    assert env["fetched_ts"] == WHEN, (
+        f"fetched_ts moved to {env['fetched_ts']} on a partial fetch -- the "
+        f"cache would then read as fresh while carrying elements from before "
+        f"the group leg failed")
+
+    # And the honesty that timestamp buys: four days on, this is stale, because
+    # 200 of its 203 rows really are four days old.
+    late = WHEN + (el.SATELLITE_STALE_DAYS + 1.0) * 86400.0
+    state = el.cache_state(el.SATELLITES, late)
+    assert state["stale"] is True and state["count"] == len(ids)
+    assert store.snapshot(WHEN)["last_outcome"]["satellites"] == "partial"
+
+
+def test_the_group_is_capped_at_max_satellites(store, monkeypatch):
     """CelesTrak's own order, cut at the cap -- not a re-ranking of our own,
-    because there is no magnitude to rank by (see the satellites module)."""
-    payload = [{"OBJECT_NAME": f"SAT {i}", "NORAD_CAT_ID": i,
-                "TLE_LINE1": _ROWS[0]["line1"], "TLE_LINE2": _ROWS[0]["line2"]}
-               for i in range(el.MAX_SATELLITES + 50)]
-    rows = el._satellite_rows_from_json(payload)
-    assert len(rows) == el.MAX_SATELLITES + 50
-    assert rows[:3] == rows[:3]         # order preserved before the cap
+    because there is no magnitude to rank by (see the satellites module).
+
+    GRADED ON THE FILE, not on the parser: the parser is deliberately uncapped
+    (it returns everything the response carried) and the cap is applied by
+    ``fetch_satellites`` on the way to disk, so a test that only measured the
+    parser would pass with the cap deleted."""
+    ids = list(range(1, el.MAX_SATELLITES + 51))
+    assert len(el._satellite_rows_from_json(
+        json.loads(_gp_json(ids)))) == len(ids), (
+        "the parser is not where the cap lives")
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "AsyncClient",
+                        _legs(group_ids=ids, pinned=False))
+    asyncio.run(store._fetch_one(el.SATELLITES))
+
+    written = [r["norad_id"] for r in el.load(el.SATELLITES)["rows"]]
+    assert len(written) == el.MAX_SATELLITES, (
+        f"{len(written)} rows were written; the cap is {el.MAX_SATELLITES}")
+    assert written == ids[:el.MAX_SATELLITES], (
+        "the cap re-ordered the group; CelesTrak's order is the ranking")
 
 
 def test_a_tle_format_fallback_parses_both_shapes():

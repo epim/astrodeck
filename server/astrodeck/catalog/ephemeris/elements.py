@@ -23,6 +23,11 @@ forecast:
 * A FAILED FETCH CHANGES NOTHING. The previous file is left byte-for-byte
   alone, ``fetched_ts`` does not move, and no empty envelope is ever written.
   Half the value of a cache is that a bad night cannot destroy a good one.
+* AND A PARTIAL FETCH ADDS ONLY. The satellite fetch has four legs (the group
+  plus three pinned ids) and can come back with three rows out of two hundred.
+  Those three are MERGED into the envelope rather than written over it, and the
+  file keeps its old ``fetched_ts`` -- see ``merge_satellite_rows``, which is
+  where the finding that a lost group leg could empty a good cache is fixed.
 * STALENESS IS DERIVED, NEVER STORED. It is ``now - fetched_ts`` measured at
   read time. A stored ``stale: true`` flag is a claim that goes wrong the
   moment the clock moves and nobody rewrites it.
@@ -169,6 +174,50 @@ def _valid(raw: object) -> dict | None:
             "rows": rows}
 
 
+#: Parsed envelopes, keyed by path, each stamped with the ``(mtime_ns, size)``
+#: it was parsed from.
+#:
+#: THE POLLER IS WHY. ``is_due`` asks about both files every ``CHECK_INTERVAL_S``
+#: and ``cache_state`` asks again on every ``GET /api/ephemeris/status``, so a
+#: 200-row satellite file was being read and JSON-parsed a few times a minute,
+#: forever, on a board whose other job is guiding. The answer either function
+#: wants out of it is one float.
+#:
+#: KEYED ON THE FILE'S OWN STAT, not on "we wrote it last": a file replaced by
+#: anything at all -- this process, an operator dropping one in, the ``.bak``
+#: recovery below -- changes mtime or size and misses the memo. ``write_envelope``
+#: drops the entry explicitly as well, because Windows file timestamps move in
+#: ~15 ms steps and two writes inside one step can land the same stat.
+#:
+#: No lock: the status route reads this from a worker thread while the poller
+#: writes from the loop, and every operation on it is a single dict get/set/pop,
+#: which is atomic. The worst a race can cost is one redundant parse.
+_MEMO: dict[str, tuple[tuple[int, int], dict]] = {}
+
+
+def _stat_key(path: Path) -> tuple[int, int] | None:
+    """``(mtime_ns, size)``, or None when the file is not there to stat."""
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
+def _forget(path: Path) -> None:
+    """Drop the memo for ``path`` (and its ``.bak``), so the next read parses."""
+    _MEMO.pop(str(path), None)
+    _MEMO.pop(str(_bak_path(path)), None)
+
+
+def _memoise(path: Path, env: dict) -> None:
+    # Stat AFTER the read: a file rewritten while we were parsing it must not be
+    # remembered under the stat it had before.
+    key = _stat_key(path)
+    if key is not None:
+        _MEMO[str(path)] = (key, env)
+
+
 def read_envelope(path: Path) -> dict | None:
     """The envelope at ``path``, recovering from ``<path>.bak`` when the primary
     is missing or unreadable, or None when neither is usable.
@@ -176,15 +225,26 @@ def read_envelope(path: Path) -> dict | None:
     Mirrors ``LocationStore._restore_from_bak``: the recovered copy is written
     back over the primary so the next read is a plain read, and the event bus
     says it happened. A silent recovery is a corruption nobody ever finds out
-    about."""
+    about.
+
+    The returned dict is a fresh top-level copy of the memoised one, so a caller
+    that stamps a key onto it cannot edit what the next caller reads. The rows
+    list inside it is shared and is READ-ONLY to callers."""
     from ...persist import read_json, write_json_atomic
+
+    key = _stat_key(path)
+    if key is not None:
+        hit = _MEMO.get(str(path))
+        if hit is not None and hit[0] == key:
+            return dict(hit[1])
 
     try:
         env = _valid(read_json(path))
     except (FileNotFoundError, ValueError, OSError):
         env = None
     if env is not None:
-        return env
+        _memoise(path, env)
+        return dict(env)
     try:
         env = _valid(read_json(_bak_path(path)))
     except (FileNotFoundError, ValueError, OSError):
@@ -198,7 +258,8 @@ def read_envelope(path: Path) -> dict | None:
         write_json_atomic(path, env, backup=False)
     except OSError:                     # a read-only disk still gets the rows
         pass
-    return env
+    _memoise(path, env)
+    return dict(env)
 
 
 def write_envelope(path: Path, source: str, rows: list[dict],
@@ -219,6 +280,65 @@ def write_envelope(path: Path, source: str, rows: list[dict],
     write_json_atomic(path, {"fetched_ts": float(
         fetched_ts if fetched_ts is not None else time.time()),
         "source": source, "rows": rows})
+    _forget(path)
+
+
+def _norad_of(row: object) -> int | None:
+    if not isinstance(row, dict):
+        return None
+    try:
+        return int(row.get("norad_id"))
+    except (TypeError, ValueError):
+        return None
+
+
+def merge_satellite_rows(path: Path, source: str, rows: list[dict]) -> None:
+    """Fold a PARTIAL satellite fetch into the envelope already on disk.
+
+    THE FAILURE THIS EXISTS FOR. ``fetch_satellites`` deliberately survives a
+    failed group leg: the three pinned catalogue numbers are separate requests,
+    so a night that loses CelesTrak's group file still comes back with the ISS.
+    Those three rows are worth keeping and they are NOT a cache. Writing them
+    through ``write_envelope`` would replace a good 200-row envelope with three
+    rows AND stamp it with the current clock, so the rig would be blind to 197
+    objects while ``cache_state`` reported the elements as downloaded minutes
+    ago. Both halves of that are damage: the count, and the lie in the
+    timestamp.
+
+    So the fresh rows are merged into the ones already there (matched on
+    ``norad_id``, the fetched copy winning, the existing order kept) and the
+    envelope KEEPS ITS OLD ``fetched_ts`` -- because that is when the rows it is
+    still mostly made of were actually fetched, and it is what makes ``stale``
+    honest. The file therefore stays due, and the next tick tries the group
+    again.
+
+    Satellites only: comets are one file from one request, so there is no
+    partial state to merge."""
+    old = read_envelope(path)
+    if old is None:
+        # Nothing to protect. A partial set is better than no set at all, and
+        # its fetched_ts really is now.
+        write_envelope(path, source, rows)
+        return
+    fresh: dict[int, dict] = {}
+    for r in rows:
+        key = _norad_of(r)
+        if key is not None:
+            fresh[key] = r
+    merged: list[dict] = []
+    for r in old["rows"]:
+        key = _norad_of(r)
+        merged.append(fresh.pop(key, r) if key is not None else r)
+    merged.extend(fresh.values())
+    # Provenance is additive and de-duplicated: the group rows in here really
+    # did come from the group fetch that succeeded days ago.
+    parts = [p for p in str(old["source"] or "").split("+") if p]
+    for p in str(source or "").split("+"):
+        if p and p not in parts:
+            parts.append(p)
+    write_envelope(path, "+".join(parts) or source,
+                   merged[:MAX_SATELLITES + len(PINNED_NORAD)],
+                   old["fetched_ts"])
 
 
 # ------------------------------------------------------------------ accessors
@@ -367,15 +487,24 @@ def satellite_rows_from_tle(text: str) -> list[dict]:
     return out
 
 
-async def fetch_satellites(client) -> tuple[str, list[dict]]:
-    """``(source, rows)`` for the satellite cache. Raises on any failure.
+async def fetch_satellites(client) -> tuple[str, list[dict], bool]:
+    """``(source, rows, group_ok)`` for the satellite cache. Raises on a total
+    failure.
 
     The group fetch and the three pinned ids are separate requests and separate
     failures. A group fetch that fails does not cost us the ISS; three pinned
     fetches that fail do not cost us the group. Only a total failure raises,
-    and only then does the caller leave the old cache alone."""
+    and only then does the caller leave the old cache alone.
+
+    ``group_ok`` IS THE THIRD VALUE BECAUSE THE ROW COUNT CANNOT SAY IT. A run
+    that lost the group and kept the pinned ids returns three perfectly good
+    rows, and three good rows written over a good 200-row cache is a rig that
+    can no longer find 197 satellites -- with a fresh timestamp on the file, so
+    nothing about it even looks wrong. The caller merges instead of overwriting
+    when this is False (``merge_satellite_rows``)."""
     rows: list[dict] = []
     source_parts: list[str] = []
+    group_ok = False
     try:
         text = await _get(client, SATELLITE_URL)
         try:
@@ -385,6 +514,7 @@ async def fetch_satellites(client) -> tuple[str, list[dict]]:
         except ValueError:
             rows = satellite_rows_from_tle(text)
         source_parts.append("celestrak-visual")
+        group_ok = True
     except Exception as e:                       # noqa: BLE001 - outcome only
         log.warning("satellite group fetch failed: %s", type(e).__name__)
     rows = rows[:MAX_SATELLITES]
@@ -408,7 +538,7 @@ async def fetch_satellites(client) -> tuple[str, list[dict]]:
             log.warning("satellite %s fetch failed: %s", catnr, type(e).__name__)
     if not rows:
         raise ElementsUnavailable("no satellite elements could be fetched")
-    return "+".join(source_parts) or "celestrak", rows
+    return "+".join(source_parts) or "celestrak", rows, group_ok
 
 
 async def fetch_comets(client) -> tuple[str, list[dict]]:
@@ -525,11 +655,19 @@ class EphemerisStore:
         try:
             async with httpx.AsyncClient(timeout=_TIMEOUT_S) as client:
                 if which == SATELLITES:
-                    source, rows = await fetch_satellites(client)
+                    source, rows, group_ok = await fetch_satellites(client)
                 else:
                     source, rows = await fetch_comets(client)
-            write_envelope(_file_for(which), source, rows)
-            self._last[which] = "ok"
+                    group_ok = True     # one file, one request, no half-state
+            if group_ok:
+                write_envelope(_file_for(which), source, rows)
+            else:
+                # A PARTIAL SET NEVER REPLACES A WHOLE ONE. See
+                # ``merge_satellite_rows``: the pinned rows are folded in and
+                # the envelope keeps the timestamp of the group fetch that is
+                # still most of it, so ``stale`` stays true to what is in there.
+                merge_satellite_rows(_file_for(which), source, rows)
+            self._last[which] = "ok" if group_ok else "partial"
         except asyncio.CancelledError:
             raise
         except Exception as e:          # noqa: BLE001 - outcome only, no URL
