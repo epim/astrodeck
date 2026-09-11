@@ -775,3 +775,241 @@ percent over; 01:35:14 median 0.81, **60 percent over**; 01:38:34 median 0.79,
 Scripts used for this analysis, on the box:
 `guide_probe.py`, `walk_csv.py`, `home_and_reslew.py`, `guide_restart.py`.
 Local: `scratchpad/forensics.py`, `scratchpad/walk.csv`.
+
+---
+
+# Part 2: the night of 2026-09-10/11
+
+Written 2026-09-11. The same run, the same target, the next night. It failed
+again, differently, and it ended with the scope pointed west at **10 degrees
+altitude** -- nearly at the horizon -- unparked, with the camera still at
+-9.9 C, for about four hours past sunrise.
+
+This part supersedes Part 1's design. Part 1 put four detectors in the
+sequence engine's per-frame loop. **Last night proved that is the wrong place,
+and Part 1's own Detector E inherited the defect it was meant to fix.**
+
+## 10. What happened
+
+### 10.1 Timeline
+
+| time | event |
+|---|---|
+| 21:52:23 | run starts, 105 frames. Rotator fails to reach PA 23 (`rotate: plate solve failed: no solution`) and the run continues unrotated |
+| 22:16 | I raise a false alarm: the mount reports 245 arcmin off while the sub exposing at that moment solves to 3.16 arcmin |
+| 00:13:06 | **the meridian flip is REFUSED**: `the meridian flip was refused by a mount that is not tracking (ZWO AM5 (native serial): tracking on rejected (reply '0'))` |
+| 00:13:06 | the engine falls back: `the mount refuses to track - parking, unparking and re-acquiring the target, once` |
+| 00:15:31 | `recovered in 145s - the mount is tracking again and the target is re-centred`, 0.5' off |
+| 00:15:45 | the rotator finally engages: `solved PA 96.6 deg, target 23.4, error 73.2, commanding -73.2` |
+| 00:20:42 | frame 0326: mount reports **1.20 arcmin** off target. The park reset its coordinate error |
+| 00:34-00:39 | two dither settle failures; guide error median 747 then 1731 arcsec; frame 0328 **will not plate solve** |
+| 00:40 | I pause the run, home the mount, re-centre to 0.3' |
+| 00:43:48 | I start a fresh guider calibration |
+| **00:50:37** | **the calibration completes and guiding STARTS** -- I had told the operator I stopped it |
+| 00:50-04:56 | guiding holds the field at 1-2 arcsec RMS, on a PAUSED run taking no frames, unattended |
+| 04:56-05:29 | dawn twilight: **12+ re-locks**, each 530 to **6141 arcsec** away, **~230600 arcsec (64 degrees) accumulated** |
+| 05:29:49 | `guide star not reacquired - stopping` |
+| **06:19:55** | **`dawn park held off at Sun -6.0: a sequence run is in progress and owns its own wind-down - racing it would be worse`** |
+| 09:41 | I park the mount and start the warm ramp. 44 of 105 frames, 3 rejected |
+
+### 10.2 The walk, measured
+
+`MOUNTRAD`/`MOUNTDCD` per frame, offsets from target in arcmin, on-sky:
+
+| frame | shot | filter | mount off | dRA | dDec |
+|---|---|---|---|---|---|
+| 0320 | 23:53:44 | L | 243.44 | -243.44 | 1.38 |
+| 0323 | 23:59:49 | B | 241.15 | -241.14 | 1.96 |
+| 0325 | 00:07:50 | Ha | 237.22 | -237.21 | 2.41 |
+| 0326 | 00:20:42 | Oiii | **1.20** | 0.90 | 0.79 |
+| 0327 | 00:35:57 | L | 13.03 | -11.04 | 6.91 |
+| 0328 | 00:39:01 | R | 21.10 | -17.83 | 11.29 |
+
+Two separate things are visible here and they must not be conflated.
+
+**The 4-degree standing offset (0320-0325) is the mount lying, not a walk.**
+It reports ~240 arcmin off while the subs solve to 2-3 arcmin of target. It
+even *decreases* slowly. This is the same fiction that produced my 22:16 false
+alarm, and the **park at 00:13 reset it** -- which is why 0326 reads 1.20.
+Anything built on the mount's reported position inherits this.
+
+**The real walk is 0326 to 0328**: 1.20 to 21.10 arcmin in 18.3 minutes =
+**1.09 arcmin/min = 65 arcsec/min**, both axes. It is real because the park
+had just zeroed the mount's reference, and because the guider agreed (median
+747 arcsec at 00:34, 1731 at 00:39 -- 12.4 and 28.9 arcmin) and because frame
+0328 would not solve.
+
+### 10.3 The flip never happened
+
+Field rotation from the plate solves, with the rotator **static** (it failed at
+21:52 and did not move until 00:15:45):
+
+| when | field rotation |
+|---|---|
+| 23:59:49, frame 0323, before the meridian | 96.74 deg |
+| 00:15:45, after the recovery, before the rotator moved | 96.6 deg |
+
+A real flip changes field rotation by 180 degrees. It did not change. **The
+mount was still on the same side of the pier**, tracking past the meridian,
+and the 65 arcsec/min walk is that drive.
+
+Two cautions on this method, both learned the hard way here:
+
+- **It is only valid with a known rotator angle.** The invariant is
+  `PA_sky - rotator_mechanical`, not `PA_sky`. I nearly drew the wrong
+  conclusion from frames after 00:15:45, where a 73 degree rotator correction
+  is folded into the same number.
+- It is nonetheless the *only* pier-side measurement available from the data
+  products, and see 10.6 F3 for why that matters.
+
+### 10.4 What the engine got right, and the one thing it did not
+
+The flip code is better than Part 1 gave it credit for. It has an explicit
+"nothing flipped" branch (`engine.py:5021`) that re-arms the latch when the
+mount reports the same side after a flip, and the refusal path
+(`engine.py:4985-4989`) deliberately leaves the latch armed with the comment
+*"the next frame's gate is the right place to decide whether a flip is still
+owed"*. The countdown is correctly signed negative past the meridian and its
+docstring calls out the wrap bug I went looking for. The AM5 driver really does
+report pier side, over LX200 `:Gm#`.
+
+And yet: **two frames and 24 minutes passed after the recovery with an armed
+latch and no flip attempt appears in the log at all.** I have not found the
+suppressing condition inside the gate. That is an open item (10.7), and it is
+the reason the fix below is an INVARIANT rather than a better retry: an
+invariant fails safe without depending on why a state machine did not fire.
+
+## 11. The thesis
+
+> Every safety mechanism in this system is a passenger on a value-producing
+> path. When the work stops, the check stops. The hazard does not.
+
+Five instances, found on five different nights, all the same shape:
+
+1. `_maybe_recover_guiding`, `_maybe_hold_for_relocks`,
+   `_maybe_hold_for_dither_failures`, `_enforce_tracking`, `_enforce_cooling`
+   are all called from the per-frame loop. No frames, no checks -- and during
+   a 180 s exposure, checks at most every three minutes.
+2. `_current_field_solve` computes a real pointing discrepancy and spends it
+   invalidating a **display cache** (Part 1, section 3.3).
+3. The dawn park defers to "a sequence run is in progress", which is true of a
+   paused run that will never progress. **This is the 06:19:55 line.**
+4. Memory `astrodeck-no-dawn-park`: every park path hangs off the RUN
+   lifecycle, so a night ending without a run tracks through sunrise.
+5. Memory `astrodeck-resume-never-armed`: auto-resume only ever armed FRESH
+   runs.
+
+This keeps happening because a run is the natural home for orchestration, and
+a safety check feels like orchestration. But a run is a **workload**. The
+hazards are properties of the equipment and the world: a motorised mount under
+power, a cooled sensor, a rising sun. None of them pause.
+
+### 11.1 The principle
+
+**A safety check must be driven by the clock of the hazard it guards, never by
+the progress of the work.**
+
+| hazard | its own clock | where the check belongs |
+|---|---|---|
+| the guider dragging the mount | the guide loop tick, ~2 s | **inside the guider**, as a self-limit |
+| the field walked off target | frame completion | the engine (Part 1 Detector A is correctly placed) |
+| a flip owed but not performed | the flip's own completion, and every frame after | the engine, as an invariant |
+| mount unparked at sunrise | the wall clock | the safety/dawn tick |
+| sensor cooled past sunrise | the wall clock | the safety/dawn tick |
+| guiding running with nobody driving | the wall clock | the safety tick |
+
+Note what this rescues: Part 1's Detector A (a verification solve every N
+frames) is **correctly** frame-driven, because its hazard -- wasting subs --
+only exists while subs are being taken. The error in Part 1 was not "frames
+are a bad clock"; it was giving *every* check the frame clock regardless of
+hazard.
+
+### 11.2 The corollary about the guider
+
+The guider already computes, in its own loop, every number these checks want:
+re-lock count, accumulated re-lock displacement, pulse durations, whether the
+driver capped them. Today it **reports** them and waits to be judged by the
+engine. It should be able to **refuse**.
+
+A guider whose accumulated re-lock displacement exceeds a threshold should stop
+itself and say why, with no reference to any sequence. That is:
+
+- independent of the run entirely, so a paused run cannot disable it;
+- free, because the numbers are already there;
+- correct for standalone guiding, which is a real use case with no run at all;
+- and it is what would have stopped last night at about 5 arcmin instead of 64
+  degrees.
+
+## 12. The fixes
+
+In the order they should be built. F1 and F2 together fully prevent last
+night; F3 prevents the night before.
+
+**F1 -- the guider stops itself.** `guide.relock_arcsec_limit` (default 300
+arcsec) and `guide.relock_jump_limit` (default 120 arcsec): accumulated
+re-lock displacement inside the window, and any single re-lock, either of
+which stops guiding with a stated reason. In `guide/native.py`, driven by the
+guide loop, no dependency on the sequence. Would have fired at the FIRST
+re-lock last night (573.6 arcsec).
+
+**F2 -- the dawn park stops accepting a veto from a run that is not
+progressing.** A run vetoes the dawn park only while it is `running` AND has
+completed a frame recently (two exposure lengths, floor 15 min). A `paused`
+run gets no veto, and at dawn the park should end it, because resuming a run
+into daylight is never right. This also restores the warm ramp, which is why
+the camera sat at -9.9 C for four hours.
+
+**F3 -- an invariant, not a retry: do not expose while a flip is owed.**
+Before each frame, if the target is past the meridian, the mount is a GEM, the
+flip is not skippable, and the measured pier side still equals the pre-flip
+side, then refuse to expose and hold. Fails safe whatever the flip state
+machine did or did not do.
+
+**F4 -- guiding with nobody driving.** On the wall-clock safety tick: guiding
+active, no run `running`, for more than 10 minutes, stop guiding. This is the
+narrow, direct fix for the 4.5 hours of unsupervised guiding.
+
+**F5 -- move Part 1's detectors off the frame clock** per the table in 11.1.
+Detector A stays. Detectors B, C and E move to the guide loop or the safety
+tick. `dither_settle_fail_limit` (shipped as ce84fea3) keeps its frame-driven
+placement, because a dither only happens between frames -- but it must be
+documented as protecting a running sequence only.
+
+**F6 -- pier side into the status block, and pier limits made real.** The AM5
+answers `:Gm#`, but `/api/status` carries no pier side at all, so the UI and
+every external check are blind to it. Publish it. Then
+`safety.enforce_pier_limits` (set true 2026-09-11 on the operator's word)
+becomes testable instead of unproven; and where a mount will not answer,
+`PA_sky - rotator_mechanical`, calibrated once per side, supplies it from a
+plate solve.
+
+## 13. Corrections to Parts 1 and 2 of this document
+
+Recorded because two of them were wrong in ways that changed what was built.
+
+- Part 1 claimed the 1000 ms pulse cap made every dither settle fail. **False**
+  -- corrected in section 3.1a. 31 of 45 dithers settled with the cap in force.
+- Part 1 placed all four detectors in the per-frame loop. **Wrong place**, per
+  section 11.
+- On the night itself I twice reported an AM5 hardware tracking fault. One
+  tracking refusal at 00:13 was real; the 6.1 arcsec/s figure was the
+  wrong-pier-side drive, and the horizon excursion was the re-lock storm.
+  **Prefer the explanation where the software did something over the one where
+  the hardware went bad.**
+- I reported that I had stopped the guider calibration. I had killed my own ssh
+  client; the rig completed the calibration and started guiding. **Killing a
+  local client is not stopping a remote operation** -- verify the rig's state,
+  not the exit code of your transport.
+
+## 14. Open items
+
+- **Why the armed flip latch produced no retry** across two frames and 24
+  minutes after the 00:13 recovery. Evidence in 10.4; mechanism unknown. F3
+  makes it non-fatal but does not explain it.
+- **Part 1's Defect B** (the 2026-09-10 walk, 117 arcsec/min with a healthy
+  Dec) is still not mechanised, and the telemetry gaps in Part 1 section 6
+  remain the reason.
+- The frames of 2026-09-10/11 are **two framing groups**: the rotator failed at
+  21:52 and engaged at 00:15:45 with a 73 degree correction, so subs either
+  side of that will not stack as one set.
+- `SITELAT`/`SITELONG` in every FITS header, still undecided (Part 1, 6.6).
