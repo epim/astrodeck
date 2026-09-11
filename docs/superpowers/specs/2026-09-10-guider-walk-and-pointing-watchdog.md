@@ -1013,3 +1013,105 @@ Recorded because two of them were wrong in ways that changed what was built.
   21:52 and engaged at 00:15:45 with a 73 degree correction, so subs either
   side of that will not stack as one set.
 - `SITELAT`/`SITELONG` in every FITS header, still undecided (Part 1, 6.6).
+
+## 15. What was built, 2026-09-11 (F3, F4, F6)
+
+F1 and F2 shipped in 0.3.30 (`aeb2a038`, `ce84fea3`). F3, F4 and F6 were built
+the same afternoon and target 0.3.32, after the UI session's 0.3.31.
+
+### F3 -- the flip-owed invariant
+
+`SequenceEngine._enforce_flip_owed`, called from the frame loop after the
+SECOND `_maybe_meridian_flip` and before `_begin_frame`. It refuses to open the
+shutter, holds for `safety.flip_owed_hold_min` (default 20 min) re-arming the
+flip on each pass, and raises `StopTarget` if the side never changes.
+
+**The test is measured, not assumed**, and this is the part worth keeping in
+mind. The obvious rule -- "past the meridian, so the pier side ought to be
+east" -- bakes in a convention, and a mount whose east/west sense is the
+opposite of ours would then be held forever after a flip that worked perfectly:
+the invariant becoming the outage. So the engine records the side the mount
+ACTUALLY REPORTED while the target was still east of the meridian
+(`_pre_flip_side`) and trips only when the side after the crossing is that same
+one. Nothing to get backwards, and `TestItReasonsFromMeasurementNotConvention`
+runs the whole thing with an inverted mount and expects no hold.
+
+A target acquired already west of the meridian has no pre-flip reading and is
+never guarded. That is correct: a mount that slewed there landed on the side it
+chose and owes nothing.
+
+### F4 -- guiding with nobody driving
+
+`DawnPark._check_unattended_guiding`, called from `tick()` **above** the Sun
+gate and above the site gate. Guiding active, no run `running` (a PAUSED run
+does not count), no hands-off lane, for `safety.unattended_guide_min` (default
+10 min) -> stop guiding. A failed stop re-arms rather than latching.
+
+The module docstring was rewritten: `dawn_park.py` is now the rig's wall-clock
+safety tick, of which the dawn park is one duty. The two hazards share a timer
+and must not share a clock -- putting the guiding check below the Sun gate
+would turn it back into a dawn check, which is the defect it exists to fix.
+
+### F6 -- pier side published, and the toggle made real
+
+Two halves, and the first one is worse than section 12 recorded.
+
+**`safety.enforce_pier_limits` was not merely unproven, it was INERT.**
+`engine._enforce_mount_floor` gates the whole pier-collision check on
+`tel.reports_destination_pier_side`, and of the drivers this rig can load, only
+`sim.py` and `alpaca.py` ever set it. The toggle the operator switched on at
+09:52 on 2026-09-11 was in the Settings panel, answered True over the API, and
+guarded nothing on the only mount this rig owns. A safety control that reports
+itself armed while doing nothing is worse than an absent one.
+
+Fixed by implementing `destination_pier_side` on `ZwoAm5Telescope`. The AM5 has
+no `DestinationSideOfPier` command, so the side is predicted from hour-angle
+geometry -- and **checked before it is trusted**: the rule is first applied to
+where the mount is pointing now and compared against `:Gm#`. Agreement means
+the convention holds and the same rule is applied to the destination;
+disagreement means nobody knows which is right and the answer is UNKNOWN, which
+the guard passes. That disagreement is exactly the flip-owed state, where a
+slew guard's opinion is worth nothing anyway.
+
+**The status block.** Section 12 said `/api/status` carries no pier side. That
+was wrong: `status.meridian.pier_side` has been there all along, and
+`redact.py` deliberately preserves it for a non-holder because it is a fact
+about the mount rather than about where it stands. What was wrong is that one
+timed-out serial read collapsed it to `"unknown"` -- and took `status` and
+`flip_enabled` with it, because `_is_gem` reads the same variable. Three fields
+added:
+
+| field | values | note |
+|---|---|---|
+| `pier_side` | `east` / `west` / `unknown` | now falls back to the cache |
+| `pier_side_source` | `mount` / `cached` / `none` | `cached` is a real reading inside `PIER_SIDE_STALE_S` (300 s) |
+| `pier_side_age_s` | number / null | 0.0 when fresh |
+| `flip_owed` | boolean / **null** | F3's refusal, surfaced |
+
+`flip_owed` is NULLED for a caller without `view.site_derived`, for the same
+reason the `due` status was: it is true only after the crossing, so it is
+another reading of the sign of an hour angle. Null and not False -- False is a
+claim that no flip is owed, and a redaction seam must never answer a safety
+question on behalf of a caller it is withholding the answer from.
+
+### Two things found while building it
+
+- **One copy of the pier-side rule.** `coords.pier_side_for_hour_angle` is now
+  the only statement of "which side does a GEM's tube belong on", read by the
+  simulator, the AM5 driver and the engine's invariant. `sim.py` had a private
+  copy; that class had already contradicted ITSELF at 8 of 24 RA hours once.
+  `hour_angle_h` moved to `coords` with `schedule` delegating, because two
+  hour-angle functions is how there came to be two pier-side oracles.
+- **A swallowed ImportError.** The first draft of `destination_pier_side` wrote
+  `from ..config import config_store` (one dot short) inside a
+  `try/except Exception: return UNKNOWN`. The prediction never worked once, and
+  reported itself as a mount that would not say. The import now sits outside
+  the try: a wrong import is a programming error and must crash, and only the
+  DEVICE reads are allowed to degrade. Section 12's own F1/F2 review should
+  have caught that this file's failure style can hide defects.
+
+### Still owed after this
+
+- **F5** -- move Part 1's detectors B, C and E off the frame clock per 11.1.
+- Section 14's open items are unchanged. In particular F3 makes the missing
+  flip retry non-fatal and still does not explain it.
