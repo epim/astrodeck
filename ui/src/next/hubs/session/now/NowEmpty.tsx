@@ -54,7 +54,10 @@ import { buildPreflight } from "../../../../lib/preflight";
 import {
   accessPhrase, useCanControlMount, useCapability, useRoleConnected,
 } from "../../../../lib/caps";
-import { runBlockedReason, useFlowRunControls } from "../../../../components/flows/flowRunControls";
+import {
+  isRunPhaseLive, runBlockedReason, useFlowRunControls,
+} from "../../../../components/flows/flowRunControls";
+import { runIsLive } from "../../../../lib/lastSessionFrame";
 import {
   useMasters, useResumeArm, useSafety, useSeq, useSite, useStatus, useStore,
 } from "../../../../store";
@@ -88,6 +91,17 @@ export const TONIGHT_RESOLVE_CAP = 5;
 
 /** The full list is capped so the card cannot become the Flows screen. */
 export const RUNNABLE_ROW_CAP = 12;
+
+/** How long the optimistic `flows.run.phase` is believed on its own.
+ *
+ *  `flowsRun` sets it the moment `POST /api/flows/{id}/run` returns and NOTHING
+ *  ever sets it back - not the socket, not a terminal transition. It is
+ *  therefore evidence of a live run only for as long as the engine could still
+ *  be about to confirm one; after that the engine's own state is the only fact
+ *  on the subject. Generous, because it covers a slow socket over a field link;
+ *  bounded, because the alternative is a screen whose RUN button stops working
+ *  for the rest of the night. */
+export const RUN_PHASE_GRACE_MS = 20_000;
 
 /** The desktop SessionColumn's density. Unchanged from what this card always
  *  showed there: three flows, no plans, no verdicts (see `compact` below). */
@@ -251,6 +265,12 @@ export function NowEmpty({ compact = false }: { compact?: boolean }): JSX.Elemen
   const site = useSite();
   const masters = useMasters();
   const { state, retry } = useReportList();
+  /** When THIS screen last dispatched a run. See `RUN_PHASE_GRACE_MS`. */
+  const startedAt = useRef(0);
+  /** The CURRENT render's run/stop toggle, so a handler created before a state
+   *  correction does not fire the decision that correction just invalidated. */
+  const actRef = useRef(flowControls.act);
+  actRef.current = flowControls.act;
 
   const armed = resumeArm?.armed ?? null;
   const hold = resumeArm?.hold ?? null;
@@ -306,16 +326,60 @@ export function NowEmpty({ compact = false }: { compact?: boolean }): JSX.Elemen
    *  `useFlowRunControls().act()` is a toggle, so a press while something is
    *  going would abort it - from the row that looked idle
    *  (`FlowsScreen.tsx:123-127`). Returns true when the press has been handled
-   *  and the caller must stop. */
+   *  and the caller must stop.
+   *
+   *  TWO SOURCES, BECAUSE NEITHER IS ENOUGH ON ITS OWN.
+   *
+   *  `flows.run.phase` is written optimistically by `flowsRun` and by NOTHING
+   *  server-side, so it LEADS the engine by however long the socket takes - and
+   *  it is never written back. A guard on the phase alone was therefore stuck on
+   *  for the life of the screen: one flow run at 21:00 and every RUN press for
+   *  the rest of the night navigated to a Now screen with no run on it, with no
+   *  message, on the only phone-reachable way to start a saved plan.
+   *
+   *  `seq.state` alone is not enough either: it is still `idle` in the seconds
+   *  between the POST returning and the engine's first event, which is exactly
+   *  the double-press window, and `act()` in that window STOPS the run that was
+   *  just started.
+   *
+   *  So: the engine being live is the fact, and the optimistic phase is trusted
+   *  only for as long as the engine could still be about to confirm it. */
   const divertedWhileRunning = useCallback((): boolean => {
-    if (!flowControls.running) return false;
+    const justStarted = flowControls.running
+      && Date.now() - startedAt.current < RUN_PHASE_GRACE_MS;
+    if (!runIsLive(seq) && !justStarted) return false;
     nav.go("/session/now");
     return true;
-  }, [flowControls]);
+  }, [flowControls, seq]);
+
+  /** Correct the optimistic phase once the engine has been shown to own no run.
+   *
+   *  `flowsSlice.ts:402` is the ONLY assignment to `flows.run.phase` in the app
+   *  and nothing ever writes it back (that slice's own §G-1: there is no flow
+   *  run topic and no run-state GET). So after one flow run the flag reads
+   *  "running" for the life of the page - and `useFlowRunControls().act()` is a
+   *  TOGGLE, so the next press of a button labelled RUN would send
+   *  `POST /api/sequence/abort`. Reaching this line means
+   *  `divertedWhileRunning()` already answered false: the engine is idle and no
+   *  press of ours is outstanding, so the flag is a leftover and is cleared
+   *  against the state that is actually authoritative. */
+  const clearStaleRunPhase = (): void => {
+    const st = useStore.getState();
+    if (!isRunPhaseLive(st.flows.run.phase)) return;
+    useStore.setState({ flows: { ...st.flows, run: { ...st.flows.run, phase: "idle" } } });
+  };
 
   const runFlow = (id: string) => () => {
     if (divertedWhileRunning()) return;
     if (runReason) { explainLock(runReason); return; }
+    clearStaleRunPhase();
+    // THE ACT IS TAKEN FROM THE LATEST RENDER, not from this closure.
+    // `flowControls.act` captures `running` at render time, so the object this
+    // handler was created with would still toggle to STOP even after the line
+    // above corrected the flag. React flushes the state write at the end of this
+    // event handler, long before `flowsOpen`'s request comes back, so by then
+    // the ref holds an `act` that starts.
+    
     // The SHARED run control, not a second copy of it: `useFlowRunControls`
     // owns the 409-unmapped question, the abort route and the timeout rule.
     // Selecting the flow first is the only thing this screen adds, and it is
@@ -324,7 +388,8 @@ export function NowEmpty({ compact = false }: { compact?: boolean }): JSX.Elemen
     // NO ARM TWO-TAP, matching `FlowsScreen`: RUN starts a run, it does not end
     // one, and the two-tap arm in this app guards the controls that STOP an
     // unattended night (`now-stop`). Arming a start would train the arm away.
-    void flowsOpen(id).then(() => flowControls.act());
+    startedAt.current = Date.now();
+    void flowsOpen(id).then(() => actRef.current());
   };
 
   /** RESUME picks the ARMED session back up; it does not start a fresh run.
@@ -437,6 +502,7 @@ export function NowEmpty({ compact = false }: { compact?: boolean }): JSX.Elemen
       // Loaded, then started - never the other way round.
       setPlan(plan, false);
       setLoadedPlanId(row.id);
+      startedAt.current = Date.now();
       try {
         await api.post("/api/sequence/start", { ...plan, force: false });
       } catch (e) {

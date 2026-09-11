@@ -500,6 +500,37 @@ await testAsync("a deep link opens the report it names, and asks for no other", 
     "and the newest report must not be fetched on the way past");
 });
 
+await testAsync("a new ?id= on a MOUNTED sheet follows it, without a remount", async () => {
+  // `sel` was seeded from `reportId` ONCE, at first render. The sheet stays
+  // mounted while the route changes under it, which is exactly what the
+  // Gallery's REPORT verb, a notification link and the picker's own
+  // `nav.sheet("report", {id})` all do - so the second of any two deep links
+  // into this sheet left the FIRST night's numbers on screen, under the new URL,
+  // above a frames.csv button pointing at the night that had just been asked
+  // for. Same shape as the CLEAR-FIRST bug the detail effect already guards.
+  //
+  // SABOTAGE: delete the `useEffect` on `reportId` in `useReportData.ts` and
+  // this goes red on the summary still reading M31.
+  asked.length = 0;
+  seed("admin", ADMIN);
+  await mount("R1");
+  assert(/M31 LRGB/.test(tid("report-summary").textContent),
+    "precondition: R1 is the night on screen, so the swap below means something");
+  const before = gets(/^\/api\/reports\/R2$/).length;
+
+  // No intermediate render: the component instance is not replaced, only its
+  // prop changes.
+  await act(async () => {
+    root.render(createElement(ReportScreen as any, { reportId: "R2" }));
+  });
+  await settle();
+
+  assert(/NGC 7331/.test(tid("report-summary").textContent),
+    "the sheet kept showing the previous night's numbers under the new ?id=");
+  eq(gets(/^\/api\/reports\/R2$/).length, before + 1,
+    "the night named by the new param was fetched:");
+});
+
 await testAsync("with no id, the newest report on the rig opens", async () => {
   asked.length = 0;
   await mount(undefined);

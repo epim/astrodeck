@@ -13,7 +13,7 @@
 // layout put it below twenty automation controls and finding it cost the wrong
 // thirty seconds on the night a run had to be restarted.
 //
-// TWO THINGS THIS ROOT OWNS BECAUSE THEY MUST EXIST EXACTLY ONCE.
+// THREE THINGS THIS ROOT OWNS BECAUSE THEY MUST EXIST EXACTLY ONCE.
 //
 // 1. THE RUN-LOCK NOTES. Three sentences about what a live run does and does
 //    not read (`SequenceView.tsx:1052-1057`, `:1496-1499`, `:1758-1759`): the
@@ -29,11 +29,20 @@
 //    edit is not a destructive one, and charging a one-second hold for every
 //    routine edit is how an editor becomes unusable in gloves.
 //
+// 3. THE CAPABILITY SENTENCE THE THREE SECTIONS RENDER. All three took
+//    `lockedReason={null}` - a literal, not a decision - so a viewer got a fully
+//    live automation column, when/then rule editor and session ledger. The draft
+//    writes are local, so nothing 403s while you edit; the refusal arrives at
+//    START, after the twenty settings have been changed and cannot be saved. One
+//    reason, from `useCanControlMount()`, passed to all three, so the sections
+//    say the same thing at the same moment START does.
+//
 // The start itself lives in `planStart.ts`, because the footer needs the same
 // decision and a second copy is the "prices one thing, fires another" defect.
 
 import { useEffect, useRef, useState, type JSX } from "react";
 
+import { accessPhrase, useCanControlMount } from "../../../../lib/caps";
 import {
   skyElectronsPerSub, skyLimitedSubSeconds, skyRateEPerSec,
 } from "../../../../lib/photometry";
@@ -149,6 +158,14 @@ export function PlanEditorBody(): JSX.Element {
   const live = isSequenceLive(seq.state);
   const { rec, clear: clearRecoverable } = useRecoverable(live);
   const { items, verdict, startLockedReason, start } = usePlanStart();
+  const canControl = useCanControlMount();
+
+  /** The one sentence the three composed sections render. It is the SAME
+   *  capability `POST /api/sequence/start` enforces, so the lock note beside a
+   *  frozen control and the reason on START name one policy. */
+  const planWriteReason = canControl
+    ? null
+    : `editing the plan needs ${accessPhrase("control.mount")}`;
 
   // The site's own horizon limit drives the per-target sparkline and the
   // tonight ordering. 30 degrees is the same fallback `/api/visibility` uses
@@ -247,7 +264,7 @@ export function PlanEditorBody(): JSX.Element {
           the maintenance problem this file's header names, so the note stays
           where it can sit against the controls it governs, and
           `automationLockNote` is exported for whoever needs the string. */}
-      <PlanAutomationSection lockedReason={null} onExplain={explainLock} />
+      <PlanAutomationSection lockedReason={planWriteReason} onExplain={explainLock} />
 
       {/* The RULES note does live here, tight above the section rather than
           inside it: `PlanInstructionsSection`'s own lock copy is about the
@@ -255,9 +272,9 @@ export function PlanEditorBody(): JSX.Element {
           as a permissions problem would be a second false statement. */}
       <LockNote reason={live ? instructionsLockNote(planName) : null}
         data-testid="plan-instructions-run-lock" />
-      <PlanInstructionsSection lockedReason={null} onExplain={explainLock} />
+      <PlanInstructionsSection lockedReason={planWriteReason} onExplain={explainLock} />
 
-      <PlanSessionsSection lockedReason={null} onExplain={explainLock} />
+      <PlanSessionsSection lockedReason={planWriteReason} onExplain={explainLock} />
       {/* ------------------------------------------------------------------ */}
 
       {undo && (

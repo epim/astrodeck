@@ -2,10 +2,20 @@
 // actions (GAP-ANALYSIS section 11).
 //
 // THE DISTINCTION THIS CARD EXISTS FOR is worth 75 minutes of clear sky on
-// narrowband: RESUME picks up at frame N, RE-RUN starts over at frame 1 and
+// narrowband: RESUME picks up at frame N, re-running starts over at frame 1 and
 // re-shoots what is already on disk. Both are always offered; only the emphasis
 // moves - and the difference is said IN WORDS, because button order alone does
 // not survive a glance in the dark.
+//
+// THE SECOND VERB IS NAMED FOR WHAT IT DOES. It read RE-RUN FROM FRAME 1 and
+// opened the plan editor, which is a label promising a run that the press does
+// not start. It is NOT wired to `POST /api/sequence/start` instead, because the
+// recoverable record is the server's and the editor's plan is the STORE'S
+// DRAFT: the two are the same plan only if nothing has been loaded since, so a
+// one-press re-run here would start whatever plan happens to be open under a
+// button labelled with this run's frame count. The editor is where the plan
+// being started is on screen, so that is where the press goes, and the sentence
+// under the card says to check the name before pressing RE-RUN PLAN there.
 //
 // RESUMABLE IS THE BACKEND'S FLAG, not `state === "error"`. That client-side
 // narrowing silently excluded the far more common `aborted`, so on night two the
@@ -30,8 +40,11 @@ import { explainLock } from "../../../shell/explain";
 import { nav } from "../../../router";
 
 export const RERUN_PHONE_REASON = "Starting over opens on a tablet or desktop.";
+/** Said on this card's second verb. It NAMES THE DOOR, not the outcome: the
+ *  press opens the plan editor, and the run starts from RE-RUN PLAN there. */
 export const RERUN_TITLE =
-  "Starts over at frame 1 - the frames already on disk are not reused";
+  "Opens the plan editor, where RE-RUN PLAN starts over at frame 1 "
+  + "- the frames already on disk are not reused";
 
 interface Recoverable {
   recoverable: boolean;
@@ -125,12 +138,14 @@ export function Interrupted(): JSX.Element | null {
           ariaLabel={RERUN_TITLE}
           data-testid="interrupted-rerun"
         >
-          RE-RUN FROM FRAME 1
+          OPEN THE PLAN EDITOR TO RE-RUN
         </ActionButton>
       </div>
       <Mono size={10} tone="dim">
-        Resume picks up at frame {done} of {total}. Re-run starts over from frame 1
-        and re-shoots what you already have.
+        Resume picks up at frame {done} of {total}. Starting over is two steps on
+        purpose: the editor runs whichever plan is LOADED, which need not be
+        {" "}{rec.name ?? "this one"}, so check the name there before RE-RUN PLAN
+        re-shoots all {total} frames.
       </Mono>
     </div>
   );

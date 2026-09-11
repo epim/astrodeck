@@ -340,6 +340,49 @@ await testAsync("a dismissed banner stays dismissed under its own id", async () 
 
 act(() => { root.unmount(); });
 
+// ========================= 6. the headers describe the code that exists now
+
+await testAsync("no file in this area still claims it is NOT YET WIRED", async () => {
+  // A header that says a module is unused is read as permission to leave it
+  // unused. Both of these had already been wired - `shell/CampaignStrip.tsx`,
+  // `shell/Banners.tsx`, `shell/TabBar.tsx` and `shell/Rail.tsx` all read this
+  // module, and `IncidentStack.tsx` calls `capLockReason` - while the comments
+  // still told the next reader the wiring was someone else's later task.
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const { dirname, join } = await import("node:path");
+  const here = dirname(fileURLToPath(import.meta.url));
+  const files: [string, string][] = [
+    ["crossHub.ts", join(here, "..", "crossHub.ts")],
+    ["now/incidentActions.ts", join(here, "..", "now", "incidentActions.ts")],
+  ];
+  for (const [name, path] of files) {
+    const src = readFileSync(path, "utf8");
+    assert(!/NOT YET WIRED/.test(src),
+      `${name} still carries a NOT YET WIRED header for code the shell already calls`);
+    assert(!/does not call this yet/.test(src),
+      `${name} still says a caller has not been written that has`);
+  }
+
+  // ...and the claim the headers make instead is checked, not asserted: the
+  // shell really does read all three hooks from this module.
+  const shell = join(here, "..", "..", "..", "shell");
+  for (const [file, hook] of [
+    ["CampaignStrip.tsx", "useCampaignStrip"],
+    ["Banners.tsx", "useSessionBanners"],
+    ["TabBar.tsx", "useSessionDot"],
+    ["Rail.tsx", "useSessionDot"],
+  ]) {
+    const src = readFileSync(join(shell, file), "utf8");
+    assert(src.includes(hook) && /hubs\/session\/crossHub/.test(src),
+      `shell/${file} no longer reads ${hook} from crossHub - the header's claim is stale again`);
+  }
+  const stack = readFileSync(join(here, "..", "now", "IncidentStack.tsx"), "utf8");
+  assert(/capLockReason/.test(stack),
+    "IncidentStack.tsx stopped calling capLockReason, so a two-capability spec is "
+    + "graded on one capability again");
+});
+
 // ------------------------------------------------------------------- tally
 const total = passed + failed;
 console.log(`crossHub.test: ${passed}/${total} passed`);

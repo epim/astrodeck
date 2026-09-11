@@ -105,9 +105,17 @@ interface StackState {
   status: SessionStackStatus | null;
   busy: boolean;
   error: string | null;
+  /** Has `GET /api/sequence/stack` come back even once?
+   *
+   *  WITHOUT THIS, `status == null` MEANS TWO THINGS. It is the state before the
+   *  first poll lands AND the state after a poll fails, and both were read as
+   *  "the live stack is switched off" - a positive claim about the rig, printed
+   *  on the picture panel and on the channel strip, in the second before the
+   *  answer arrives and for as long as the route is unreachable. */
+  answered: boolean;
 }
 
-let stack: StackState = { status: null, busy: false, error: null };
+let stack: StackState = { status: null, busy: false, error: null, answered: false };
 const stackListeners = new Set<() => void>();
 let poller: ReturnType<typeof setInterval> | null = null;
 let mounted = 0;
@@ -120,12 +128,12 @@ function publishStack(next: StackState): void {
 async function refresh(): Promise<void> {
   try {
     const s = await getSessionStack();
-    publishStack({ ...stack, status: s, error: null });
+    publishStack({ ...stack, status: s, error: null, answered: true });
   } catch (e) {
     // A failed poll is not worth a red panel: the run is unaffected and the next
     // tick is ten seconds away. It is only SAID when there is nothing at all to
     // show, so nobody stares at a stale picture that looks live.
-    publishStack({ ...stack, error: (e as Error).message });
+    publishStack({ ...stack, error: (e as Error).message, answered: true });
   }
 }
 
@@ -161,7 +169,7 @@ export function useSessionStackStatus(): StackRead {
   const act = (fn: () => Promise<SessionStackStatus>) => {
     publishStack({ ...stack, busy: true });
     void fn().then(
-      (s) => { publishStack({ status: s, busy: false, error: null }); schedule(); },
+      (s) => { publishStack({ status: s, busy: false, error: null, answered: true }); schedule(); },
       (e: Error) => { publishStack({ ...stack, busy: false, error: e.message }); },
     );
   };
@@ -178,6 +186,6 @@ export function useSessionStackStatus(): StackRead {
 export function resetSessionStackStateForTests(): void {
   if (poller) { clearInterval(poller); poller = null; }
   mounted = 0;
-  stack = { status: null, busy: false, error: null };
+  stack = { status: null, busy: false, error: null, answered: false };
   stackListeners.clear();
 }

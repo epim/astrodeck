@@ -128,8 +128,8 @@ const { dirname, join } = await import("node:path");
 const { createElement, act, Fragment } = await import("react");
 const { createRoot } = await import("react-dom/client");
 const { useStore } = await import("../../../../store");
-const { ChannelStrip, ledgerDiffers } = await import("../now/ChannelStrip");
-const { LiveStack } = await import("../now/LiveStack");
+const { ChannelStrip, ledgerDiffers, UNANSWERED_LEDGER } = await import("../now/ChannelStrip");
+const { LiveStack, channelFallbackNote } = await import("../now/LiveStack");
 const { resetStackViewForTests, resetSessionStackStateForTests } = await import("../now/stackView");
 const { resetSessionDataForTests } = await import("../now/sessionData");
 
@@ -269,11 +269,31 @@ await testAsync("onError falls back to the composite AND says so", async () => {
   assert(note != null,
     "the composite came back with no sentence: the badge and the picture would then disagree");
   const text = note.textContent as string;
-  assert(/Nothing stacked in Ha yet - showing the combined picture\./.test(text),
-    `the sentence does not name the channel or what is on screen: "${text}"`);
+  // AND IT SAYS THE RIGHT THING. `onError` carries no status code: it fires for
+  // a channel the stacker has no accumulator for AND for a dropped link, a
+  // truncated JPEG or a render that timed out. The stack says Ha holds 42 subs,
+  // so "nothing stacked in Ha yet" would be a false statement about the night on
+  // the one screen whose job is to say what the night has shot.
+  assert(/Could not load the Ha frame/.test(text),
+    `an <img> error over 42 banked Ha subs was reported as an empty channel: "${text}"`);
+  assert(/42 subs are stacked/.test(text),
+    `the sentence drops the count that contradicts "empty": "${text}"`);
+  assert(/showing the combined picture\./.test(text),
+    `the sentence does not say what is on screen instead: "${text}"`);
   const badge = byId("live-stack-mode").textContent as string;
   assert(!/Ha only/.test(badge),
     `the badge still claims a channel that 404d: "${badge}"`);
+});
+
+await testAsync("and an EMPTY channel still reads as empty", () => {
+  // The pure half, both branches, because the DOM fixture can only be in one of
+  // them at a time and the zero case is the one the sentence was written for.
+  eq(channelFallbackNote("Sii", 0),
+    "Nothing stacked in Sii yet - showing the combined picture.",
+    "a channel with no subs must still say so:");
+  assert(/Could not load the Sii frame \(7 subs are stacked\)/
+    .test(channelFallbackNote("Sii", 7)),
+  `a channel with subs must not claim to be empty: "${channelFallbackNote("Sii", 7)}"`);
 });
 
 await testAsync("going back to the composite clears the sentence", async () => {
@@ -335,7 +355,83 @@ await testAsync("the night's per-filter counts survive the stack being switched 
 
 await act(async () => { offRoot.unmount(); });
 
-// ------------------------------------------------------- 5. the tint cannot return
+// ------------------------- 5. before the first answer, nothing claims "off"
+//
+// `status == null` was read as "the live stack is switched off" - and it is also
+// the state before the first `GET /api/sequence/stack` returns, and the state
+// after that poll FAILS. So a slow or unreachable rig had the screen state, as a
+// fact, that it was not building a picture.
+//
+// SABOTAGE: drop `answered` from `stackView.ts` (or read `status?.enabled`
+// alone again) and both assertions below go red.
+const HANGS = new Promise<never>(() => { /* the rig never answers */ });
+g.fetch = async (url: any, init: any) => {
+  const u = String(url);
+  asks.push(`${(init?.method ?? "GET").toUpperCase()} ${u}`);
+  if (u.includes("/api/sequence/stack")) return HANGS;
+  const body = u.includes("/api/sessions/sess-1") ? SESSION
+    : u.includes("/api/sessions") ? { sessions: [] }
+      : { ok: true };
+  return {
+    ok: true, status: 200, statusText: "OK",
+    headers: { get: () => "application/json" },
+    json: async () => body,
+    text: async () => "",
+  };
+};
+
+resetStackViewForTests();
+resetSessionStackStateForTests();
+resetSessionDataForTests();
+const quietRoot = createRoot(container);
+await act(async () => {
+  quietRoot.render(createElement(Fragment, null,
+    createElement(ChannelStrip),
+    createElement(LiveStack)));
+});
+await settle();
+
+await testAsync("the unanswered fixture really is unanswered - the vacuity guard", async () => {
+  assert(byId("now-live-stack") != null, "the picture panel never mounted");
+  eq(byId("live-stack-image"), null,
+    "there is a picture on screen, so the stack DID answer and the two assertions "
+    + "below would be about the answered case");
+  assert(byId("now-channel-strip") != null,
+    "the strip is absent, so the ledger line below cannot be read");
+});
+
+await testAsync('an unanswered stack is not reported as "off"', async () => {
+  const note = byId("channel-ledger-note");
+  assert(note != null, "no ledger line at all");
+  const text = note.textContent as string;
+  assert(text.includes(UNANSWERED_LEDGER),
+    `the strip does not say the stack has not answered: "${text}"`);
+  assert(!/Live stack off/.test(text),
+    `the strip told the operator the stack is OFF before the rig said anything: "${text}"`);
+  assert(/H-alpha 1/.test(text),
+    `the night's own counts went missing while the stack was unknown: "${text}"`);
+});
+
+await testAsync("and the picture panel says it is still reading, not that it is off",
+  async () => {
+    const empty = byId("live-stack-empty");
+    assert(empty != null, "the empty face never rendered");
+    const text = empty.textContent as string;
+    assert(/READING THE STACK/.test(text),
+      `the panel claims a state the rig has not reported: "${text}"`);
+    assert(!/LIVE STACK IS OFF/.test(text),
+      `the panel declared the stack off before the first status landed: "${text}"`);
+    const start = byId("live-stack-start");
+    assert(start != null, "START must still be rendered, never removed");
+    eq(start.getAttribute("aria-disabled"), "true",
+      "START is live while it is unknown whether a stack is already running");
+    assert(/has not said yet/.test(start.getAttribute("title") ?? ""),
+      `START's reason does not say what is unknown: "${start.getAttribute("title")}"`);
+  });
+
+await act(async () => { quietRoot.unmount(); });
+
+// ------------------------------------------------------- 6. the tint cannot return
 await testAsync("no greyscale and no blend layer anywhere in the three files", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   for (const name of ["stackView.ts", "ChannelStrip.tsx", "LiveStack.tsx"]) {

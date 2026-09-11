@@ -177,15 +177,11 @@ export function specFor(id: string): IncidentActionSpec | null {
 // non-null reason wins) - the same shape `IncidentStack.tsx`'s own
 // `lockedFor` already applies to `busyLane`/`busyLane2`.
 //
-// It lives HERE, not in `IncidentStack.tsx`, on purpose: this task
-// (T-U7a-H) owns `incidentActions.ts` but not `IncidentStack.tsx`, and
-// `IncidentStack.tsx`'s `lockedFor` (the only place `INCIDENT_ACTIONS`'s
-// `cap` currently reaches a rendered lock) checks `s.cap` alone - it does
-// not call this yet. Exporting the correct resolver here means the fix for
-// `ignore_weather` is a one-line wire-up (`lockedFor` calling
-// `capLockReason(s, gate)` instead of `lockReason({cap: s.cap, ...}, gate)`)
-// whenever that file's owner makes it, rather than a second copy of this
-// logic. See the report for what that leaves open right now.
+// It lives HERE rather than in `IncidentStack.tsx` because the spec table is
+// here: a spec that names two capabilities and a resolver that reads one is a
+// lock that grades half the rule. `IncidentStack.tsx`'s `lockedFor` calls this,
+// so `ignore_weather` (control.capture AND view.weather) is refused on whichever
+// of the two the principal is missing, by name.
 export function capLockReason(
   s: Pick<IncidentActionSpec, "cap" | "cap2">,
   gate: GateStoreSlice,
