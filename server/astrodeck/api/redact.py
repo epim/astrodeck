@@ -77,7 +77,15 @@ _MOUNT_DERIVED_KEYS = ("alt", "az")
 # ``counting`` / ``due`` is the SIGN of that same hour angle. The three below
 # are the site-derived verdicts; ``n_a_fork`` (pier side), ``flip_disabled``
 # (the plan) and ``unknown`` are not, and stay.
-_MERIDIAN_DERIVED_KEYS = ("hours_to_flip",)
+#
+# ``flip_owed`` joins it for the same reason ``due`` did. It is true only once
+# the target has crossed, so it is another reading of the SIGN of that hour
+# angle -- weaker, because it also needs the mount to have failed to flip, but
+# a caller who can point the mount can arrange that condition and then sweep
+# the boolean. It is NULLED rather than set False: false is a claim that no
+# flip is owed, and this seam must never answer a safety question on behalf of
+# a caller it is withholding the answer from.
+_MERIDIAN_DERIVED_KEYS = ("hours_to_flip", "flip_owed")
 _MERIDIAN_DERIVED_STATUSES = frozenset({"counting", "due", "n_a_over_pole"})
 #: What a collapsed status becomes. Both UI consumers already render this as
 #: "unknown"/"the mount does not report a flip" rather than crashing, and
@@ -105,9 +113,11 @@ def _strip_meridian_derived(meridian: dict, container: dict | None = None) -> No
 
     ``hours_to_flip`` becomes NULL rather than absent (the field is typed
     ``number | null`` on every client and already has a "no countdown" render),
-    and a site-derived ``status`` collapses to ``unknown``. ``flip_enabled``
-    and ``pier_side`` are properties of the mount and the loaded plan, not of
-    the observer's position, so they stay."""
+    and a site-derived ``status`` collapses to ``unknown``. ``flip_owed`` goes
+    null with it -- see the key list for why null and not False. ``flip_enabled``,
+    ``pier_side`` and its ``pier_side_source``/``pier_side_age_s`` are
+    properties of the mount and the loaded plan, not of the observer's
+    position, so they stay."""
     for k in _MERIDIAN_DERIVED_KEYS:
         if k in meridian:
             meridian[k] = None

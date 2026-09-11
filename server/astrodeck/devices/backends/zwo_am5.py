@@ -17,6 +17,8 @@ import threading
 import time
 from datetime import datetime, timezone
 
+from ...catalog import coords
+from ...config import config_store
 from ...events import bus
 from .. import lx200
 from ..base import (DeviceError, GotoRefused, PierSide, Telescope,
@@ -266,6 +268,15 @@ class ZwoAm5Telescope(Telescope):
     max_pulse_ms = _PULSE_MAX_MS
     can_set_tracking_rate = True
     can_find_home = True      # :hP# homes (and parks); find_home unparks after
+    #: The pre-slew pier-collision guard is armed for this mount. Not because
+    #: the AM5 answers ``DestinationSideOfPier`` -- it has no such command --
+    #: but because ``destination_pier_side`` below predicts it from hour-angle
+    #: geometry and CHECKS the prediction against ``:Gm#`` before returning it,
+    #: falling back to UNKNOWN (which the guard passes) whenever the two
+    #: disagree. Until this flag went True, ``safety.enforce_pier_limits`` was
+    #: a switch the operator could turn on that guarded nothing on the only
+    #: mount this rig owns.
+    reports_destination_pier_side = True
     #: GN-09: this is a harmonic drive with large periodic error. Measured on
     #: 2026-09-06: switched to UNGUIDED at 03:04 after the guider misbehaved,
     #: and every unguided 60 s sub afterward trailed by ~15 px (fixture
@@ -809,6 +820,66 @@ class ZwoAm5Telescope(Telescope):
         if side.startswith("W"):
             return PierSide.WEST
         return PierSide.UNKNOWN
+
+    async def destination_pier_side(self, ra_hours: float,
+                                    dec_deg: float) -> PierSide:
+        """Which side this mount would land on after slewing to ``ra_hours``.
+
+        WHY THIS EXISTS AT ALL. ``safety.enforce_pier_limits`` was switched on
+        by the operator on 2026-09-11 and guarded NOTHING, because
+        ``engine._enforce_mount_floor`` gates the whole pier check on
+        ``reports_destination_pier_side`` and only the simulator and the Alpaca
+        bridge ever set it. The toggle was in the Settings panel, answering
+        True over the API, and inert on the one mount this rig owns. A safety
+        control that reports itself armed while doing nothing is worse than an
+        absent one, so either this method exists or that toggle should not.
+
+        The AM5 has no ``DestinationSideOfPier`` command -- ``:Gm#`` reports
+        where the tube is NOW and nothing more -- so the destination side is
+        predicted from hour-angle geometry
+        (:func:`coords.pier_side_for_hour_angle`), the same single rule the
+        engine and the simulator read.
+
+        AND IT IS CHECKED BEFORE IT IS TRUSTED. A prediction from a convention
+        is only worth as much as the convention, and an INVERTED one would hand
+        the pre-slew guard a confident wrong answer -- the failure mode that
+        costs a tube. So the rule is first applied to where the mount is
+        pointing right now and compared against what ``:Gm#`` actually reports.
+        They agree: the convention holds for this mount at this moment, and the
+        same rule is applied to the destination. They disagree: NOBODY KNOWS
+        which of the two is right, and the honest answer is ``UNKNOWN``, which
+        the guard passes.
+
+        That disagreement is not a hypothetical. It is exactly the state of a
+        mount that has crossed the meridian and has not flipped -- 2026-09-10/11
+        for four hours -- where geometry says "east", the mount says "west",
+        and a slew guard's opinion is worth nothing anyway. The invariant that
+        handles THAT is the engine's flip-owed gate, not this.
+        """
+        try:
+            measured = await self.pier_side()
+        except DeviceError:
+            return PierSide.UNKNOWN
+        if measured is PierSide.UNKNOWN:
+            return PierSide.UNKNOWN     # never predict from a mount that will not say
+        # The import sits OUTSIDE the try, deliberately. It was inside, spelt
+        # `..config` instead of `...config`, and the `except Exception` below
+        # turned that ImportError into a perfectly plausible UNKNOWN on every
+        # single call -- a prediction that never worked, reported as a mount
+        # that would not say. A wrong import is a programming error and must
+        # crash; only the DEVICE reads below it are allowed to degrade.
+        lon = float(config_store.cfg().site.longitude)
+        try:
+            ra_now, _dec_now = await self.get_position()
+        except Exception:               # noqa: BLE001 - a failed probe is UNKNOWN
+            return PierSide.UNKNOWN
+        now = time.time()
+        predicted_now = coords.pier_side_for_hour_angle(
+            coords.hour_angle_h(ra_now, lon, now))
+        if predicted_now != measured.value:
+            return PierSide.UNKNOWN
+        return PierSide(coords.pier_side_for_hour_angle(
+            coords.hour_angle_h(float(ra_hours), lon, now)))
 
     #: sidereal rate in deg/s (15.041"/s) — the unit :GdG# is a fraction of.
     _SIDEREAL_DEG_S = 0.004178074

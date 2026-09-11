@@ -93,6 +93,12 @@ def _harness():
 #: panel's 2.5s poll, not to be a good guiding sub. A real guide loop, when one
 #: exists, always wins — see the ordering in ``guide_preview_png``.
 GUIDE_PREVIEW_EXPOSURE_S = 1.0
+
+#: How long a pier-side reading stays quotable after the mount stops answering.
+#: Five minutes: long enough to ride out a serial hiccup or a reconnect, short
+#: enough that it cannot outlive somebody flipping the mount by hand while the
+#: link is down. Past it the honest answer is "nobody can say".
+PIER_SIDE_STALE_S = 300.0
 #: Preview gain WISH, not a hardware fact — clamped to the camera's own reported
 #: ceiling before it is sent. An ASI120MM Mini, the commonest ZWO guide camera
 #: there is, tops out at 100, and the ZWO SDK RAISES on an out-of-range control
@@ -619,6 +625,10 @@ class Hub:
         # last meridian dict from poll_status, so the engine's (sync) ETA can
         # window-gate the flip cost without device I/O.
         self.last_meridian: dict | None = None
+        #: (side, unix_time) of the last REAL pier-side reading, or None. See
+        #: `_note_pier_side` -- a serial read that times out must not turn a
+        #: fact nobody disputes into "unknown".
+        self._pier_side_seen: tuple[str, float] | None = None
         #: ((ra, dec), taken_at_monotonic, (ra_j2000, dec_j2000)) - see
         #: ``from_mount_frame``. One entry, because a mount points at one place.
         self._precess_memo: tuple[tuple[float, float], float,
@@ -6551,6 +6561,50 @@ class Hub:
         is not determinable (fork mounts report unknown/none)."""
         return side in ("east", "west")
 
+    def _engine_flip_owed(self) -> bool:
+        """Is the sequence engine refusing to expose because a flip is owed?
+
+        Read through ``getattr`` and defaulted False: this block is built on
+        every status poll, including with no engine, no run and no plan."""
+        return bool(getattr(self.engine, "flip_owed", False))
+
+    def _note_pier_side(self, side: str) -> dict:
+        """Fold this poll's pier-side reading into the cache, and say what the
+        status block should report: ``pier_side``, ``pier_side_source`` and
+        ``pier_side_age_s``.
+
+        WHY A CACHE AT ALL. ``:Gm#`` is one round trip on a serial link that
+        this rig has twice watched go quiet mid-night, and the read is wrapped
+        in a bare except that turns any hiccup into ``"unknown"``. A tube does
+        not change sides because a serial read timed out, so reporting
+        "unknown" on that evidence tells the operator, the UI's pier tile and
+        the flip-owed invariant that a fact nobody disputes has become
+        unknowable. The last real answer, with its age attached, is strictly
+        more information -- and the age is what lets a reader decide for
+        themselves whether to trust it.
+
+        The cache NEVER manufactures a side it was not told: it only repeats a
+        reading this mount actually gave, and only for ``PIER_SIDE_STALE_S``.
+        Past that the answer really is "none", because a link that has been
+        quiet for five minutes may well have had a mount flipped by hand
+        underneath it.
+        """
+        now = time.time()
+        if side in ("east", "west"):
+            self._pier_side_seen = (side, now)
+            return {"pier_side": side, "pier_side_source": "mount",
+                    "pier_side_age_s": 0.0}
+        seen = getattr(self, "_pier_side_seen", None)
+        if seen is not None:
+            last, t = seen
+            age = now - t
+            if age <= PIER_SIDE_STALE_S:
+                return {"pier_side": last, "pier_side_source": "cached",
+                        "pier_side_age_s": round(age, 1)}
+            self._pier_side_seen = None
+        return {"pier_side": "unknown", "pier_side_source": "none",
+                "pier_side_age_s": None}
+
     async def _compute_meridian(self, tel, ra_hours: float | None,
                                 dec_deg: float | None = None) -> dict:
         """The MeridianInfo block. Prefers the device's own value (NINA); for
@@ -6565,7 +6619,15 @@ class Hub:
         from .catalog.coords import lst_hours
         meridian: dict[str, Any] = {
             "status": "unknown", "hours_to_flip": None,
-            "flip_enabled": self._plan_flip_enabled(), "pier_side": "unknown"}
+            "flip_enabled": self._plan_flip_enabled(), "pier_side": "unknown",
+            # WHERE THE SIDE CAME FROM, and how old it is. "mount" is a fresh
+            # `:Gm#` this poll; "cached" is the last one this mount gave, still
+            # inside PIER_SIDE_STALE_S, reported because a serial read that
+            # times out once does not move the tube; "none" is nobody can say.
+            "pier_side_source": "none", "pier_side_age_s": None,
+            # Is the engine refusing to expose because a flip is owed and the
+            # mount has not performed it? See `SequenceEngine.flip_owed`.
+            "flip_owed": self._engine_flip_owed()}
         try:
             ttf = await tel.time_to_meridian_flip()      # NINA → number; others None
         except Exception:
@@ -6574,7 +6636,14 @@ class Hub:
             side = (await tel.pier_side()).value
         except Exception:
             side = "unknown"
-        meridian["pier_side"] = side
+        meridian.update(self._note_pier_side(side))
+        # AND THE REST OF THIS FUNCTION READS THE RESOLVED SIDE, not the raw
+        # one. `_is_gem` below decides `status` and `flip_enabled` from it, so
+        # leaving `side` as the unknown a single timed-out serial read produced
+        # would flip a GEM to "unknown"/not-a-GEM for one poll and take the
+        # flip countdown down with it -- the caching would then be visible in
+        # one field and contradicted by two others.
+        side = meridian["pier_side"]
         if ttf is None and ra_hours is not None:
             # HA = LST − RA, wrapped to [−12, 12]; a GEM on the east side tracking
             # west flips when the target crosses the meridian (HA crosses 0).
