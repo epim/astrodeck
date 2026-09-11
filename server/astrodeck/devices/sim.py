@@ -1103,15 +1103,23 @@ class SimTelescope(Telescope):
     def _side_for_ra(self, ra_hours: float) -> PierSide:
         """ASCOM convention: a target EAST of the meridian is observed with the
         tube on the WEST side. Shared by both pier-side oracles so they cannot
-        drift apart."""
+        drift apart.
+
+        The RULE ITSELF now lives in `coords.pier_side_for_hour_angle`, read by
+        the engine's flip-owed invariant and the AM5's destination prediction
+        as well. It was written here first, and "shared by both oracles" was
+        true only of the two inside this class: a third copy appeared the
+        moment anything outside the simulator needed to reason about a pier
+        side. One copy, or the copies disagree -- which is how this class came
+        to contradict itself at 8 of 24 RA hours."""
         try:
-            from ..catalog.coords import lst_hours
+            from ..catalog.coords import hour_angle_h, pier_side_for_hour_angle
             from ..config import config_store
             lon = float(config_store.cfg().site.longitude)
-            ha = ((lst_hours(lon) - ra_hours + 12.0) % 24.0) - 12.0
+            ha = hour_angle_h(ra_hours, lon)
         except Exception:  # noqa: BLE001 - a sim must never fail a geometry query
             return PierSide.WEST
-        return PierSide.EAST if ha > 0.0 else PierSide.WEST
+        return PierSide(pier_side_for_hour_angle(ha))
 
     async def destination_pier_side(self, ra_hours: float, dec_deg: float) -> PierSide:
         """What ``pier_side`` will report once we are pointing there.

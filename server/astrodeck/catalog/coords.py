@@ -126,6 +126,54 @@ def lst_hours(longitude_deg: float, unix_time: float | None = None) -> float:
     return (gmst + longitude_deg / 15.0) % 24.0
 
 
+def hour_angle_h(ra_hours: float, lon_deg: float,
+                 unix_time: float | None = None) -> float:
+    """Signed hour angle HA = LST - RA, wrapped to ``[-12, 12)``.
+
+    Negative => the target is EAST of the meridian (rising toward transit);
+    positive => WEST (past transit).
+
+    Lives here rather than in ``sequence.schedule`` -- which is where it was
+    written and which still re-exports it -- because the device layer needs it
+    too (the AM5's destination-pier prediction) and a driver importing from the
+    sequence engine is a layering the rest of this package does not have.
+    """
+    lst = lst_hours(lon_deg, unix_time)
+    return ((lst - ra_hours + 12.0) % 24.0) - 12.0
+
+
+#: The two real sides. ``"unknown"`` is a THIRD answer, produced only by a
+#: mount that declines to say, and it is never a value this geometry returns:
+#: an hour angle always implies a side.
+PIER_EAST, PIER_WEST = "east", "west"
+
+
+def pier_side_for_hour_angle(ha_hours: float) -> str:
+    """Which side of the pier a German equatorial's tube belongs on at this
+    hour angle -- ``"east"`` or ``"west"``.
+
+    ASCOM convention, and measured on this rig's AM5N on 2026-08-06 on BOTH
+    sides: a target still east of the meridian (HA < 0, rising toward transit)
+    is observed with the tube on the WEST side of the pier; once it has crossed
+    (HA > 0) the tube belongs on the EAST. The meridian flip IS that swap, and
+    a mount still reporting the old side after the crossing is a mount that has
+    not flipped.
+
+    ONE COPY, because two oracles that disagree about this are worse than
+    neither. ``sim.SimTelescope`` used to own a private version of this rule
+    while its own ``destination_pier_side`` owned a different one, and the two
+    contradicted each other at 8 of 24 RA hours at every sidereal time -- which
+    is what every meridian-flip decision taken in the simulator was graded
+    against. The engine's flip-owed invariant, the pre-slew pier guard and the
+    AM5 driver's destination prediction now all read this function.
+
+    HA exactly 0 is called WEST, i.e. "not yet flipped": the flip is owed from
+    the crossing onward, and the boundary case has to fall on the side that
+    does not assert a flip has already happened.
+    """
+    return PIER_EAST if float(ha_hours) > 0.0 else PIER_WEST
+
+
 def altaz(ra_hours: float, dec_deg: float, lat_deg: float, lon_deg: float,
           unix_time: float | None = None) -> tuple[float, float]:
     """Return (altitude_deg, azimuth_deg)."""

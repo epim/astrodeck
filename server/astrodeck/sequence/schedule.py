@@ -29,7 +29,8 @@ import math
 import time
 from typing import TYPE_CHECKING, Any
 
-from ..catalog.coords import (altaz, angular_sep_deg, lst_hours,
+from ..catalog.coords import (altaz, angular_sep_deg,
+                              hour_angle_h as coords_hour_angle_h, lst_hours,
                               moon_illumination, moon_radec, sun_altaz)
 
 if TYPE_CHECKING:  # avoid an import cycle at runtime; only needed for typing
@@ -448,9 +449,14 @@ def hour_angle_h(ra_hours: float, lon_deg: float, now: float | None = None) -> f
     Negative => target is EAST of the meridian (rising toward transit); positive
     => WEST (past transit). Single source of the HA truth shared by the meridian
     countdown (:func:`hours_to_meridian_flip`) and the PRO-14 hour-angle gate
-    (:func:`constraint_gate`)."""
-    lst = lst_hours(lon_deg, now)
-    return ((lst - ra_hours + 12.0) % 24.0) - 12.0    # HA in [-12, 12)
+    (:func:`constraint_gate`).
+
+    THE BODY MOVED to ``catalog.coords`` so the device layer can read the same
+    one (the AM5's destination-pier prediction needs it, and a driver importing
+    from the sequence engine is a layering this package does not otherwise
+    have). This delegates rather than duplicating: two hour-angle functions is
+    how the simulator ended up with two pier-side oracles that disagreed."""
+    return coords_hour_angle_h(ra_hours, lon_deg, now)
 
 
 #: Degrees of clearance the tube must keep above the horizon at its LOWEST point
