@@ -86,6 +86,43 @@ WIND_LEVELS_HPA: tuple[int, ...] = (850, 700, 500, 400, 300, 250, 200)
 #: empty column rather than the nearest thing on file.
 WIND_COLUMN_MAX_AGE_S = 3600.0
 
+#: The surface observations, and the response key each one is read back under.
+#:
+#: ``(payload_key, (requested_name, *accepted_aliases))``. The FIRST name is
+#: what the request asks for and what Open-Meteo therefore echoes back; the
+#: rest are the current-generation spellings of the same variable, accepted on
+#: the way in so a future rename upstream (or a body recorded from the other
+#: spelling) reads as data rather than as a missing series.
+#:
+#: THEY RIDE THE SAME REQUEST as the pressure-level winds above, for the same
+#: reasons: one connection to Open-Meteo, one place a site coordinate leaves
+#: the rig. See WIND_LEVELS_HPA.
+#:
+#: Units are Open-Meteo's defaults, which this request does not override:
+#: degrees Celsius, percent, km/h, degrees. The payload key names say so.
+SURFACE_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("temp_c", ("temperature_2m",)),
+    ("dewpoint_c", ("dewpoint_2m", "dew_point_2m")),
+    ("humidity_pct", ("relativehumidity_2m", "relative_humidity_2m")),
+    ("wind_kmh", ("windspeed_10m", "wind_speed_10m")),
+    ("wind_dir_deg", ("winddirection_10m", "wind_direction_10m")),
+    ("gust_kmh", ("windgusts_10m", "wind_gusts_10m")),
+)
+#: How far from ``now`` a surface sample may sit and still describe it. The
+#: same rule, and the same reasoning, as ``WIND_COLUMN_MAX_AGE_S``: the series
+#: is hourly, so one that covers this moment is never more than 30 min away,
+#: and past an hour the honest answer is no reading rather than the nearest
+#: thing on file presented as the weather outside.
+SURFACE_MAX_AGE_S = WIND_COLUMN_MAX_AGE_S
+#: Metres of cloud base per degree Celsius of temperature/dew-point spread.
+#:
+#: The lifting condensation level, the standard field approximation (Espy's
+#: rule): ~125 m of height above the SURFACE for every degree the air is above
+#: its dew point. It is an estimate of the base of convective cloud, not a
+#: measurement and not a ceiling report -- a layer advected in from elsewhere
+#: sits where it sits, and this number says nothing about it.
+LCL_M_PER_DEG_C = 125.0
+
 
 def _wind_fields() -> list[str]:
     """The ``hourly=`` field list for the pressure-level winds."""
@@ -95,6 +132,24 @@ def _wind_fields() -> list[str]:
         fields.append("wind_direction_%dhPa" % level)
         fields.append("geopotential_height_%dhPa" % level)
     return fields
+
+
+def _surface_request_fields() -> list[str]:
+    """The ``hourly=`` field list for the surface observations."""
+    return [names[0] for _key, names in SURFACE_FIELDS]
+
+
+def cloud_base_m(temp_c: float | None,
+                 dewpoint_c: float | None) -> float | None:
+    """Estimated cloud base above the site, metres, or None.
+
+    ``LCL_M_PER_DEG_C * (T - Td)``, clamped at zero (saturated air condenses at
+    the ground; a negative height is not a thing). None when either input is
+    missing: a spread nobody measured is not a clear sky.
+    """
+    if temp_c is None or dewpoint_c is None:
+        return None
+    return max(0.0, LCL_M_PER_DEG_C * (float(temp_c) - float(dewpoint_c)))
 
 
 async def _fetch_open_meteo(lat: float, lon: float) -> dict:
@@ -109,8 +164,10 @@ async def _fetch_open_meteo(lat: float, lon: float) -> dict:
         # separate key in the same payload. A response that carries no `hourly`
         # -- an older cached body, a partial reply -- still parses, and the
         # wind column simply comes back empty, which is not a refutation of
-        # anything (stage 5 §5.2).
-        "hourly": ",".join(_wind_fields()),
+        # anything (stage 5 §5.2). The surface fields are appended to the same
+        # list for the same reason the winds are there at all: this module owns
+        # the only connection to Open-Meteo there is.
+        "hourly": ",".join(_wind_fields() + _surface_request_fields()),
         "forecast_days": "2",
         "timezone": "UTC",
     }
@@ -175,6 +232,87 @@ def _parse_open_meteo(js: dict) -> tuple[list[float], dict[str, list[int]]]:
     return times, series
 
 
+def _hourly_times(block: object) -> list[float]:
+    """The hourly block's time base as unix seconds, or an empty list.
+
+    ONE definition, because the pressure-level winds and the surface readings
+    are two views of the same hourly grid and the index that means 03:00 has to
+    mean 03:00 in both. Total by construction: anything that is not the shape
+    expected -- a missing block, a `time` that is not a list, one stamp that
+    does not parse -- answers with an empty base, and both consumers read that
+    as "no hourly data", never as an error worth losing the cloud forecast for.
+    """
+    if not isinstance(block, dict):
+        return []
+    raw = block.get("time")
+    if not isinstance(raw, list):
+        return []
+    times: list[float] = []
+    for t in raw:
+        try:
+            dt = datetime.strptime(str(t), "%Y-%m-%dT%H:%M").replace(
+                tzinfo=timezone.utc)
+        except (TypeError, ValueError):
+            return []
+        times.append(dt.timestamp())
+    return times
+
+
+def _num_at(seq: object, i: int) -> float | None:
+    """``seq[i]`` as a float, or None for anything that is not a real number.
+
+    Booleans are not numbers here: ``True`` is not a 1 km/h wind.
+    """
+    if not isinstance(seq, list) or i >= len(seq):
+        return None
+    v = seq[i]
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    return float(v)
+
+
+def _parse_surface(js: dict) -> tuple[list[float], dict[str, list]]:
+    """hourly block -> (unix sample times, one series per surface field).
+
+    Series are parallel to the returned times and to each other, ``None`` where
+    the upstream had no value. A field the response does not carry at all comes
+    back as an all-None series of the right length rather than as a missing key,
+    so a consumer indexing by hour never has to ask which fields arrived.
+
+    ``wind_dir_deg`` IS THE METEOROLOGICAL CONVENTION -- where the surface wind
+    comes FROM -- matching ``_parse_wind_column``'s ``from_deg`` and every
+    weather report anyone has ever read. It is not turned around here.
+
+    ``cloud_base_m`` is DERIVED, not fetched: the lifting-condensation estimate
+    from the temperature/dew-point spread (see ``cloud_base_m``).
+
+    Total by construction, for the reason given on ``_hourly_times``.
+    """
+    block = js.get("hourly")
+    times = _hourly_times(block)
+    # The isinstance re-test is redundant (an empty base is the only thing a
+    # non-dict block can produce) and is here anyway, because the alternative
+    # is an `assert` that `python -O` deletes.
+    if not times or not isinstance(block, dict):
+        return [], {}
+    series: dict[str, list] = {}
+    for key, names in SURFACE_FIELDS:
+        raw: object = None
+        for name in names:
+            candidate = block.get(name)
+            if isinstance(candidate, list):
+                raw = candidate
+                break
+        vals = [_num_at(raw, i) for i in range(len(times))]
+        if key == "wind_dir_deg":
+            vals = [None if v is None else v % 360.0 for v in vals]
+        series[key] = vals
+    series["cloud_base_m"] = [
+        cloud_base_m(t, d)
+        for t, d in zip(series["temp_c"], series["dewpoint_c"])]
+    return times, series
+
+
 def _parse_wind_column(js: dict) -> tuple[list[float], list[list[dict]]]:
     """hourly block -> (unix sample times, one level list per sample).
 
@@ -197,34 +335,18 @@ def _parse_wind_column(js: dict) -> tuple[list[float], list[list[dict]]]:
     # refresh, and an exception here would cost the cloud forecast that had
     # already parsed cleanly out of the same body.
     block = js.get("hourly")
-    if not isinstance(block, dict):
+    times = _hourly_times(block)
+    if not times or not isinstance(block, dict):   # see _parse_surface
         return [], []
-    times: list[float] = []
-    for t in (block.get("time") if isinstance(block.get("time"), list) else []):
-        try:
-            dt = datetime.strptime(str(t), "%Y-%m-%dT%H:%M").replace(
-                tzinfo=timezone.utc)
-        except (TypeError, ValueError):
-            return [], []
-        times.append(dt.timestamp())
-    if not times:
-        return [], []
-
-    def _num(seq, i) -> float | None:
-        if not isinstance(seq, list) or i >= len(seq):
-            return None
-        v = seq[i]
-        if isinstance(v, bool) or not isinstance(v, (int, float)):
-            return None
-        return float(v)
-
     samples: list[list[dict]] = []
     for i in range(len(times)):
         levels: list[dict] = []
         for level in WIND_LEVELS_HPA:
-            speed = _num(block.get("wind_speed_%dhPa" % level), i)
-            direction = _num(block.get("wind_direction_%dhPa" % level), i)
-            height_m = _num(block.get("geopotential_height_%dhPa" % level), i)
+            speed = _num_at(block.get("wind_speed_%dhPa" % level), i)
+            direction = _num_at(
+                block.get("wind_direction_%dhPa" % level), i)
+            height_m = _num_at(
+                block.get("geopotential_height_%dhPa" % level), i)
             if speed is None or direction is None or height_m is None:
                 continue
             levels.append({
@@ -325,6 +447,10 @@ class WeatherService:
         # folded into the 15-minute series.
         self._wind_times: list[float] = []
         self._wind_samples: list[list[dict]] = []
+        # Surface observations (2 m / 10 m), riding the same hourly block as
+        # the pressure-level winds and sharing its time base exactly.
+        self._sfc_times: list[float] = []
+        self._sfc_series: dict[str, list] = {}
         # Astrospheric cache
         self._as_times: list[float] = []
         self._as_seeing: list[float | None] = []
@@ -400,6 +526,7 @@ class WeatherService:
         self._om_times, self._om_series, self._om_fetched_ts = [], {}, None
         self._om_attempt_at = 0.0
         self._wind_times, self._wind_samples = [], []
+        self._sfc_times, self._sfc_series = [], {}
         self._as_times, self._as_seeing, self._as_trans = [], [], []
         self._as_fetched_ts, self._as_credits = None, None
         self._as_attempt_at = 0.0
@@ -438,6 +565,17 @@ class WeatherService:
             self._wind_times, self._wind_samples = [], []
             bus.log("warning",
                     f"wind column unusable: {type(exc).__name__}", "weather")
+        # Its OWN try, not the one above: the surface readings and the wind
+        # column are read out of the same block but neither is evidence about
+        # the other, and one of them being unusable is no reason to discard the
+        # one that parsed.
+        try:
+            self._sfc_times, self._sfc_series = _parse_surface(js)
+        except Exception as exc:  # noqa: BLE001 — an unusable block is empty
+            self._sfc_times, self._sfc_series = [], {}
+            bus.log("warning",
+                    f"surface readings unusable: {type(exc).__name__}",
+                    "weather")
         self._om_fetched_ts = now
         # spec §5: evaluate BEFORE publishing so a fresh alert rides this
         # payload (the publish is emission #1; the bus.log inside is #2).
@@ -661,6 +799,33 @@ class WeatherService:
             return []
         return [dict(level) for level in self._wind_samples[best]]
 
+    def surface_now(self, now: float) -> dict | None:
+        """The surface reading nearest ``now``, or None.
+
+        ``{"ts", "temp_c", "dewpoint_c", "humidity_pct", "wind_kmh",
+        "wind_dir_deg", "gust_kmh", "cloud_base_m"}`` -- ``ts`` is the ISO-Z
+        stamp of the hour this actually came from, because "nearest" is up to
+        half an hour away and a reader deserves to know which hour they are
+        being told about.
+
+        Individual values stay None when the upstream had none; the whole
+        reading is None when there is no hourly series, or when the nearest
+        sample is further from ``now`` than ``SURFACE_MAX_AGE_S``. An old
+        sample presented as the current conditions is worse than no sample:
+        nobody can tell the difference by looking at it.
+        """
+        if not self._sfc_times:
+            return None
+        best = min(range(len(self._sfc_times)),
+                   key=lambda i: abs(self._sfc_times[i] - now))
+        if abs(self._sfc_times[best] - now) > SURFACE_MAX_AGE_S:
+            return None
+        out: dict = {"ts": _iso_z(self._sfc_times[best])}
+        for key in [k for k, _names in SURFACE_FIELDS] + ["cloud_base_m"]:
+            series = self._sfc_series.get(key) or []
+            out[key] = series[best] if best < len(series) else None
+        return out
+
     # -- high-cloud night warning (spec §5, REQUIRED) --------------------------
 
     def _evaluate_night_warning(self, now: float) -> None:
@@ -726,7 +891,7 @@ class WeatherService:
         end_hhmm = time.strftime("%H:%M", time.localtime(end_ts))
         bus.log("warning",
                 f"high cloud forecast tonight: peak {peak}% ({dominant} layer) "
-                f"{start_hhmm}–{end_hhmm}", "weather")
+                f"{start_hhmm}-{end_hhmm}", "weather")
 
     # -- payload (spec §7) -----------------------------------------------------
 
@@ -749,7 +914,14 @@ class WeatherService:
         route-gate rule on ``view.weather`` (spec §8; api/redact.py,
         api/app.py get_weather/weather_tile), not key-stripping -- a viewer
         never reaches this payload at all, over REST (403) or WS (dropped
-        entirely)."""
+        entirely).
+
+        ``surface`` (hourly series) and ``now`` (the sample nearest this
+        moment) carry temperature, dew point, humidity, the 10 m wind and the
+        estimated cloud base. They are readings AT the site and carry no
+        coordinate of it: the only two coordinate-bearing keys in this payload
+        are still ``site_lat``/``site_lon`` above, and nothing was added to
+        that list."""
         now = self._clock() if now is None else now
         cfg = config_store.cfg().weather
         site = config_store.cfg().site
@@ -764,6 +936,14 @@ class WeatherService:
             "site_lat": None if site.is_default else site.latitude,
             "site_lon": None if site.is_default else site.longitude,
             "forecast": None,
+            # The surface observations are HOURLY and ``forecast`` is a
+            # 15-minute grid, so they get their own block with their own
+            # ``times`` rather than being indexed alongside series they do not
+            # line up with. Padding one grid onto the other would have meant
+            # inventing three values out of every four and no reader could tell
+            # which was measured.
+            "surface": None,
+            "now": None,
             "astrospheric": None,
             "alert": None,
         }
@@ -777,6 +957,12 @@ class WeatherService:
                 "cloud_mid": list(self._om_series.get("cloud_cover_mid") or []),
                 "cloud_high": list(self._om_series.get("cloud_cover_high") or []),
             }
+        if self._sfc_times:
+            surface: dict = {"times": [_iso_z(t) for t in self._sfc_times]}
+            for key in [k for k, _names in SURFACE_FIELDS] + ["cloud_base_m"]:
+                surface[key] = list(self._sfc_series.get(key) or [])
+            out["surface"] = surface
+        out["now"] = self.surface_now(now)
         if self._as_fetched_ts is not None:
             out["astrospheric"] = {
                 "times": [_iso_z(t) for t in self._as_times],

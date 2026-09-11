@@ -74,6 +74,40 @@ export interface MountStatus {
     reason: string;
     error_arcmin: number | null;
   };
+  /** How fast this mount will ACTUALLY slew, deg/s (D-RIG-4).
+   *  Server: hub.py:6691, from `devices/base.py:290-296 Telescope.max_rate_deg_s`.
+   *
+   *  `null` means THE DRIVER DID NOT SAY, which is not "no limit": the client
+   *  falls back to 0.6 (`lib/slewController.ts TOUCH_MAX_RATE_DEG_S`), exactly
+   *  as the server's clamp does (`getattr(tel, "max_rate_deg_s", None) or
+   *  TOUCH_MAX_RATE_DEG_S`). ABSENT means an engine older than S7c, and reads
+   *  the same way. The AM5N reports 1.44. */
+  max_rate_deg_s?: number | null;
+}
+
+/** `focuser.temp_comp` - move the drawtube between frames as the tube cools
+ *  (D-RIG-2). Server: `focus/tempcomp.py:212-234 status_node`.
+ *
+ *  THE SIGN CONVENTION (`focus/tempcomp.py:50-61`):
+ *  `position = reference_position + steps_per_c * (temperature - reference_temp)`.
+ *  A POSITIVE coefficient moves the drawtube IN as the night cools. The sheet
+ *  states that in words; nothing lets an operator infer it. (The class
+ *  docstring at `focus/tempcomp.py:87-88` still says the opposite - reported,
+ *  not fixed here.) */
+export interface TempCompStatus {
+  enabled: boolean;
+  /** SIGNED, steps per degree C. 0 disables the loop even when `enabled`. */
+  steps_per_c: number;
+  /** `null` is NOT 0 - it means no reference has been taken. */
+  reference_temp_c: number | null;
+  reference_position: number | null;
+  /** Where compensation would put the focuser RIGHT NOW, against the live
+   *  reading: what the next frame boundary would do, before it does it. `null`
+   *  when there is no position to predict from or the rules say no move. */
+  predicted_position: number | null;
+  last_move_steps: number | null;
+  /** The server's own sentence for the last decision. */
+  last_reason: string | null;
 }
 
 export interface RigStatus {
@@ -109,6 +143,10 @@ export interface RigStatus {
       basis: string;
       measured: boolean;
     };
+    /** Temperature compensation, config plus what it would do next (D-RIG-2).
+     *  Server: hub.py:6758-6771. ABSENT on an engine older than S7c, and on a
+     *  tick where the block threw - never read absence as "switched off". */
+    temp_comp?: TempCompStatus;
   };
   filterwheel?: {
     position: number;
@@ -157,6 +195,69 @@ export interface RigStatus {
     // Tech-debt hardening (c1): MEASURED e-/ADU per gain setting from the
     // auto-learn loop. Advanced-UI only — the driver value above always wins.
     egain_learned?: Record<string, number>;
+    // Dew-heater LEVEL, 0..100 %, read back from the camera. ABSENT means "this
+    // camera cannot be asked", which is NOT the same as 0: the heater used to be
+    // write-only, so a fresh tab drew 0 from its own last write while the heater
+    // ran at 60% and dragging the slider up turned it DOWN. The server refuses to
+    // publish a 0 fallback for exactly that reason (hub.py: "Publishing 0 as a
+    // fallback would move that same lie server-side"), so a consumer must show
+    // the absence, never substitute a number for it.
+    dew_heater?: number;
+    // WHAT COLOUR THIS SENSOR IS (ruling Q7). Server: hub.py:6871,6928-6929.
+    // NORMALISED to the full four letters through `normalise_bayer`
+    // (imaging/sessionstack.py:154-164): the native ZWO and Player One bindings
+    // report only the top-left pair ("RG"), and a client comparing against
+    // "RGGB" would call the same camera mono on one backend and colour on
+    // another. Anything unrecognised is null - fail-closed, never a guess.
+    //
+    // `null` means MONO OR UNREPORTED and the two are not worth separating: the
+    // honest behaviour is the same (do not debayer, do not offer colour
+    // controls). ABSENT means an engine older than S7c, which reads the same
+    // way. Binning is deliberately not considered - a sensor keeps its filter
+    // array whatever the readout does.
+    bayer_pattern?: string | null;
+    // `bayer_pattern !== null`, published because it is the question most
+    // callers actually have. Server: hub.py:6929.
+    is_color?: boolean;
+    // ---- video capability (D-RIG-1), so VIDEO is honest-disabled BEFORE the
+    // press rather than refusing on the first one. WAVE2-RULINGS line 63 asked
+    // S7c for these four and S7c LANDED them (`hub.py:6959-6968`). Every one
+    // stays optional anyway: the rig on the other end may be an older engine,
+    // and there a consumer must degrade to "render live, carry the server's 409
+    // sentence after the first refusal" rather than lock a control on a field
+    // nobody sent.
+    // Source of truth: `devices/cameras/adapter.py:63-73 CameraCapabilities`.
+    //
+    // Can this camera record at all? Mirrors the `no_video_path` refusal in
+    // `imaging/video_routes.py:118-127` (burst_supported, or a NativeCamera).
+    //
+    // A STRING, not a boolean: `hub.py:6968` publishes `"native" | "none"`, and
+    // the union leaves room for a second recording path (an SDK video binding,
+    // stage 1b) without every consumer having to re-read a flag that suddenly
+    // means something narrower. ABSENT is a third answer and not a falsy one -
+    // an engine older than S7c does not know, and a consumer must render the
+    // control live and carry the server's own 409 sentence instead of locking
+    // it on a field nobody sent.
+    video_path?: "native" | "none";                                  // S7c
+    // Can the adapter run a bounded burst - many short exposures at a fixed
+    // ROI without re-configuring the sensor between them? False means N frames
+    // costs N full start/ready/read cycles, which tops out near 20 fps.
+    burst_supported?: boolean;                                       // S7c
+    // Highest frame rate the adapter will honour at full ROI. `null` = it
+    // cannot say; the recorder clamps and REPORTS the clamp either way
+    // (VideoState.clamped / clamp_reason).
+    max_fps?: number | null;                                         // S7c
+    // Smallest subframe alignment the sensor will actually apply, in UNBINNED
+    // pixels, as [width, height] (ZWO wants width % 8 == 0, height % 2 == 0).
+    // The client rounds to it before asking; the server rounds again
+    // (`imaging/video.py:133-160 align_roi`, to lcm(roi_align, bin)) and the
+    // response's `roi` is authoritative. Absent -> use the (8, 2) default.
+    //
+    // Typed as a LIST as well as a pair because that is what arrives:
+    // `hub.py:6963` publishes `list(caps.roi_align)`, and JSON has no tuples -
+    // a consumer that destructured a declared 2-tuple would be trusting a
+    // length the wire never promised.
+    roi_align?: readonly [number, number] | number[];                // S7c
   };
   guider?: GuideStats & { name: string };
   // --- guide-frame preview (SHARED lane; additive). Present only when the backend
@@ -242,6 +343,55 @@ export interface RigStatus {
     horizon_min_deg: number;
   };
   optics?: OpticsComputed;
+  /** The dew loop's own view of itself (D-RIG-3). Server: hub.py:6642-6657,
+   *  from `dew.py:540-564 snapshot()`.
+   *
+   *  TOP LEVEL rather than inside `camera`, because the loop drives the camera
+   *  window heater AND switch ports; hanging it off one of the two devices it
+   *  commands would have hidden the other.
+   *
+   *  ABSENT (not null) until the controller exists and has ticked once. That
+   *  distinction is load-bearing: a node full of nulls reads as "the loop ran
+   *  and found nothing", which is a different thing from "the loop has not
+   *  run". `null` is typed alongside for a server that publishes the key with
+   *  no snapshot behind it. */
+  dew?: DewStatus | null;
+}
+
+/** `status.dew` - what the heaters are doing about the dew point (D-RIG-3).
+ *  Server: `dew.py:552-573` (the snapshot), `api/redact.py:151-173` (what a
+ *  principal without `view.weather` is allowed to see). */
+export interface DewStatus {
+  enabled: boolean;
+  /** Is the loop driving the heaters right now, or has a hand-set level
+   *  suppressed it? Read with `reason`, which says which in words. */
+  following: boolean;
+  /** When a manual override lapses. `null` BOTH when nothing is overridden and
+   *  when the override was configured never to expire (`manual_override_s: 0`);
+   *  JSON has no infinity to put here. Tell them apart by `following` and
+   *  `reason`. */
+  override_until_ts: number | null;
+  /** Air temperature minus dew point, degrees C - the whole input to the ramp.
+   *
+   *  OPTIONAL BECAUSE REDACTION MAKES IT ABSENT, not because an old server
+   *  omits it: `api/redact.py:164-165` pops the three readings entirely for a
+   *  principal without `view.weather`. `null` is the different case where the
+   *  loop has no weather reading this tick. */
+  margin_c?: number | null;
+  temp_c?: number | null;
+  dewpoint_c?: number | null;
+  /** Duty cycle the ramp landed on, 0..100. NULL rather than absent for a
+   *  non-`view.weather` principal (`redact.py:167-168`), because a heater
+   *  following the dew point is a continuous function of the margin: publishing
+   *  the duty cycle publishes the margin at whatever resolution the caller
+   *  cares to sample. Also null when the loop commanded nothing this tick. */
+  power_pct: number | null;
+  /** The loop's own sentence for this tick. Digit-free by construction
+   *  (test-pinned) so it survives redaction. */
+  reason: string;
+  /** ONLY the ports that follow the loop. The full inventory, with each port's
+   *  `follow_dew` flag, is `GET /api/switch/ports`. */
+  ports: { id: number; name: string; follow_dew: boolean; value: number }[];
 }
 
 // Rotator live state (CAA spec §3.2/§5.2). `sky_deg`/`mech_deg` are the sky
@@ -630,6 +780,17 @@ export interface SequenceState {
   // short (a target set aside by its altitude floor, a missed start, a skip
   // instruction). Its session stays dormant and armed. Renders as UNFINISHED.
   end_reason?: "complete" | "aborted" | "error" | "unsafe" | "dawn_cutoff" | "cooling_skip" | "quality" | "incomplete";
+  /** The engine's own sky verdict, published beside `state` on every
+   *  publish (sequence/engine.py `_sky_state`). `cloudy` is TRI-STATE:
+   *  null means UNKNOWN, never "clear". */
+  sky?: {
+    cloudy: boolean | null;
+    age_s: number | null;
+    score: number | null;
+    reason: string;
+    text: string;
+    holding: boolean;
+  };
 }
 
 export interface CoolerInfo {
@@ -782,6 +943,29 @@ export interface SwitchPort {
   min: number;
   max: number;
   unit: string;
+  /** May this port be switched while a run is live (D-RIG-5)? The STORED
+   *  TRI-STATE, filled in by `power_guard.annotate` (`power_guard.py:269-296`)
+   *  and defined at `devices/base.py:667-673`.
+   *
+   *  `null` IS A REAL THIRD VALUE, not "missing": nobody has decided, so the
+   *  port follows its NAME (`/mount|camera|usb/i`) and keeps following it
+   *  through a rename. `true` is protected whatever it is called, `false` is
+   *  not protected whatever it is called. `null` and `false` must not collapse
+   *  - "unset" adapts to a rename, "the operator said no" is a decision that
+   *  has to survive one. A settings toggle that cannot tell them apart cannot
+   *  show what it is about to change.
+   *
+   *  ABSENT is the separate case of an engine that predates S7h/S7L. */
+  protect_during_run?: boolean | null;
+  /** DERIVED, not stored: is this port protected RIGHT NOW? The effective
+   *  answer, already ANDed with the run (`power_guard.py:290-292`), so the
+   *  client and the engine can never disagree about whether a tap will be
+   *  refused. `run_active` is true through a PAUSE, on purpose. */
+  protected_now?: boolean;
+  /** Does this port's power follow the dew margin (D-RIG-3)? Stored beside
+   *  `protect_during_run` in `power_guard`, because two stores for one port's
+   *  settings are two stores that drift. */
+  follow_dew?: boolean;
 }
 
 export interface AlpacaServer {
@@ -926,6 +1110,18 @@ export interface Optics {
   // set and omitted when blank. Not the mount device name — stackers group on
   // this, so a wrong string splits one target across two groups.
   telescope_name: string;
+  // D-SET-1: clear aperture in mm. 0 = not set, the same "nobody filled this
+  // in" convention pixel_size_um and the sensor dimensions use. There is no
+  // camera fallback and none is possible, so an unset aperture leaves
+  // OpticsComputed.f_ratio null rather than showing a guess.
+  aperture_mm: number;
+  // D-SET-1: focal reducer / extender factor (0.8 for a 0.8x reducer, 2.0 for
+  // a Barlow, 1.0 for none). RECORDED, NOT APPLIED: focal_length_mm stays the
+  // explicit number the framing maths, the solve hint and the FITS header all
+  // use, so nothing multiplies it behind the operator's back. The "use the
+  // reduced focal length" action writes focal_length_mm, and that write is the
+  // only thing that ever changes framing.
+  reducer: number;
 }
 
 export interface OpticsComputed {
@@ -939,6 +1135,12 @@ export interface OpticsComputed {
   fov_w_deg: number | null;
   fov_h_deg: number | null;
   fov_diag_deg: number | null;
+  // D-SET-1. Derived server-side (focal_length_mm / aperture_mm, 2 dp) and
+  // never stored. null when the aperture is unset — which must render as "we
+  // do not know", never as a plausible number.
+  aperture_mm: number;
+  reducer: number;
+  f_ratio: number | null;
 }
 
 // ---------------------------------------------------------------- provenance
@@ -1084,6 +1286,86 @@ export interface AppConfig {
   // --- file-sync push destination (Phase 2; appended). Optional: an old WS
   //     `hello` bootstrap predates the field. ---
   sync_push?: SyncPushConfig;
+  //     How the focuser is DRIVEN (server config.py:958-1023). Writable through
+  //     `POST /api/config {focus}` at `config.safety` (setFocusConfig in
+  //     api/backends.ts). Optional: an engine that predates the block simply has
+  //     no key, and the WS `hello` bootstrap may omit it.
+  focus?: FocusConfig;
+  //     The dew-heater policy (server config.py:1028-1080). Writable through
+  //     `POST /api/config {dew}` at `config.safety` (setDewConfig). Optional for
+  //     the same reason.
+  dew?: DewConfig;
+  //     The planning surface's persisted state (server config.py:1154-1189).
+  //     It rides on `GET /api/config` but is NOT writable there: the write is
+  //     `PUT /api/planning` at `control.capture` (api/planning.ts), because a
+  //     shortlist and a per-filter exposure are not rig configuration. Read it
+  //     from `getPlanning()`; this key is the bootstrap copy.
+  planning?: PlanningConfig;
+}
+
+/** How the focuser is DRIVEN, in a sweep and outside one.
+ *  Server: `config.py:958-1023 FocusConfig`. Written WHOLESALE through
+ *  `POST /api/config {focus}` (`config.safety`), so a caller must echo the
+ *  current block with its edits applied - the `setSafetyConfig` contract. */
+export interface FocusConfig {
+  /** How far past an OUT target to travel before returning to it, in focuser
+   *  steps, so the last leg of every move is an IN move and matches the
+   *  direction the sweep measured the curve in. */
+  approach_overshoot_steps: number;
+  temp_comp: TempCompConfig;
+}
+
+/** The persisted half of temperature compensation (D-RIG-2).
+ *  Server: `focus/tempcomp.py:81-105 TempCompConfig`. The live half, including
+ *  what the next frame boundary would do, is `TempCompStatus` on the bus. */
+export interface TempCompConfig {
+  enabled: boolean;
+  /** SIGNED, and 0 DISABLES THE LOOP EVEN WHEN `enabled` - the server treats
+   *  "on with no coefficient" as off rather than as a move of zero steps.
+   *  Bounds -500..500. Positive moves the drawtube IN as the tube cools; see
+   *  TempCompStatus for the formula. */
+  steps_per_c: number;
+  /** `null` is NOT 0 (`focus/tempcomp.py:97`): no reference has been taken. */
+  reference_temp_c: number | null;
+  reference_position: number | null;
+  /** Backstop under a wrong coefficient or a glitching thermometer. 1..5000. */
+  max_step_per_move: number;
+  /** Under the EAF's backlash a 3-step move turns the motor, not the tube.
+   *  0..500. */
+  deadband_steps: number;
+}
+
+/** Drive the dew heaters from the margin between air temperature and dew point
+ *  (D-RIG-3). Server: `config.py:1028-1080 DewConfig`. Written WHOLESALE through
+ *  `POST /api/config {dew}` (`config.safety`).
+ *
+ *  TWO THRESHOLDS, NOT ONE, and the server rejects them out of order (422). A
+ *  single "turn on below N degrees" makes the heater a switch, and a switch
+ *  flapping around one number spends the night at 0 and 100 and never at 40. */
+export interface DewConfig {
+  enabled: boolean;
+  /** Margin (air temperature minus dew point, C) at or below which the heater
+   *  runs at `max_power`. NEGATIVE IS LEGAL - the air can already be at its own
+   *  dew point. Bounds -5..20. */
+  margin_full_c: number;
+  /** Margin at or above which the heater drops to `min_power`. MUST BE ABOVE
+   *  `margin_full_c`; the gap between them is the ramp, and the ramp is what
+   *  keeps the heater off the two rails. Bounds -5..30. */
+  margin_off_c: number;
+  /** Floor the ramp never goes below while the loop runs. 0..100. */
+  min_power: number;
+  /** Ceiling the ramp never goes above. 0..100, and at least `min_power`. */
+  max_power: number;
+  /** Also heat the camera window, not only the objective. */
+  camera_window: boolean;
+  /** How long a hand-set power level suppresses the loop before it takes the
+   *  heaters back. 0 = the override never expires on its own, which is why
+   *  `DewStatus.override_until_ts` is null in two different situations.
+   *  0..86400. */
+  manual_override_s: number;
+  /** How often the loop re-reads the weather and re-computes the ramp.
+   *  10..3600. */
+  interval_s: number;
 }
 
 // ------------------------------------------------------ file-sync push (Phase 2)
@@ -1483,6 +1765,13 @@ export interface SafetyConfig {
   // On ⇒ instead of ending the run, close the roof, wait for safe-again, REOPEN and
   // resume. Off (default) ⇒ close_dome_on_unsafe still aborts (byte-identical).
   reopen_dome_when_safe: boolean;
+  // Cloud hold from the FRAMES, not the forecast (server config.py:142, default
+  // true). Inert unless safety is armed AND no monitor is assigned: a cloudy
+  // verdict measured on the rig's own exposures then HOLDS the run — stand down
+  // the guider, probe, resume on a clear streak — instead of parking it. Optional
+  // on the wire because an older server omits it; a consumer must degrade to "the
+  // hold is on" rather than blanking the control.
+  sky_fallback_hold?: boolean;
 }
 
 /** Cooler warm-down policy (server: config.CoolingConfig). Lives beside the
@@ -1522,6 +1811,11 @@ export interface EscalationConfig {
   no_progress_watchdog_s: number;                     // 0 = off
   reconnect_resume: boolean;                          // Alpaca-only; off by default
   reconnect_retries: number;
+  // An ABSENT safety monitor, treated as a disconnected one (server config.py:252,
+  // default false). Off, the run proceeds and the gap is SAID once per run at
+  // warning level; on, it drives `on_unsafe` exactly like a monitor that went
+  // unsafe. Optional on the wire — an older server omits it.
+  require_safety_monitor?: boolean;
 }
 
 // SiteConfig is the persisted lat/lon/elevation shape the automation config carries.
@@ -1756,6 +2050,11 @@ export interface SiteInfo {
   elevation_m?: number;
   is_default: boolean;
   horizon_min_deg: number;
+  // S1: the ACTIVE horizon polyline (config.safety.horizon) as [az, alt] pairs.
+  // Only GET /api/site fills it; the status/summary site block does not carry
+  // it. Retained for every role, exactly like horizon_min_deg -- the four
+  // precise keys above are the ones view.site_precise strips.
+  horizon_points?: [number, number][] | null;
 }
 
 // Saved observing location (server astrodeck/locations.py SavedLocation). Served
@@ -1767,6 +2066,11 @@ export interface SavedLocation {
   longitude: number;  // +E (East-positive)
   elevation_m: number;
   horizon_min_deg: number | null;
+  // S1: the drawn horizon PROFILE for this site, sorted by azimuth with one
+  // point per azimuth. `null`/absent = no line drawn (applying the location
+  // leaves the configured profile alone); `[]` = no obstructions, an explicit
+  // clear. Copied into config.safety.horizon when the location is applied.
+  horizon_points?: [number, number][] | null;
   created_ts: number;
   updated_ts: number;
 }
@@ -2082,7 +2386,13 @@ export interface PlanRow {
 }
 
 // ------------------------------------------------------------- touch ergonomics
-export type SlewRateId = "pulse" | "fine" | "set";
+/** The four speed CLASSES a stop can belong to, which is what the pad's shape
+ *  glyph encodes (never colour). `pulse`/`fine`/`set` are the three stops that
+ *  ship; `ceiling` is a stop that exists only because THIS mount reported a
+ *  faster ceiling than the shipped ladder assumed (`hubs/rig/lib/slewStops.ts`,
+ *  `Telescope.max_rate_deg_s`). `#/classic` offers the first three and nothing
+ *  else, so adding the fourth cannot change what it renders. */
+export type SlewRateId = "pulse" | "fine" | "set" | "ceiling";
 
 export interface SlewRateOption {
   id: SlewRateId;
@@ -2152,6 +2462,45 @@ export interface WeatherState {
   forecast: WeatherForecast | null;
   astrospheric: WeatherAstrospheric | null;
   alert: WeatherAlert | null;
+  // --- surface conditions (server wave S2, 2026-09-10) -----------------------
+  // Optional because they are additive: a payload from an older engine, or one
+  // whose upstream dropped the hourly block, carries neither and every existing
+  // reader keeps working. HOURLY, unlike `forecast`'s 15-minute grid, which is
+  // why they have their own `times` instead of sharing that index space.
+  surface?: WeatherSurface | null;
+  now?: WeatherNow | null;
+}
+
+/** Hourly surface observations at the site. Every series is parallel to
+ *  `times` and to each other, `null` where the upstream had no value. */
+export interface WeatherSurface {
+  times: string[];                  // ISO-8601 Z, hourly
+  temp_c: (number | null)[];        // 2 m air temperature, Celsius
+  dewpoint_c: (number | null)[];    // 2 m dew point, Celsius
+  humidity_pct: (number | null)[];  // 2 m relative humidity, %
+  wind_kmh: (number | null)[];      // 10 m wind speed, km/h
+  /** 10 m wind direction, degrees, METEOROLOGICAL convention: where the wind
+   *  comes FROM. Turn it around before drawing an arrow that points downwind. */
+  wind_dir_deg: (number | null)[];
+  gust_kmh: (number | null)[];      // 10 m gusts, km/h
+  /** Estimated cloud base above the site, metres. DERIVED, not observed: the
+   *  lifting-condensation approximation 125 m per degree of temperature/dew-
+   *  point spread. Says nothing about a layer advected in from elsewhere. */
+  cloud_base_m: (number | null)[];
+}
+
+/** The surface reading nearest this moment; null when the hourly series does
+ *  not cover now (more than an hour away). `ts` is the ISO-Z stamp of the hour
+ *  it actually came from -- "nearest" is up to half an hour off. */
+export interface WeatherNow {
+  ts: string;
+  temp_c: number | null;
+  dewpoint_c: number | null;
+  humidity_pct: number | null;
+  wind_kmh: number | null;
+  wind_dir_deg: number | null;
+  gust_kmh: number | null;
+  cloud_base_m: number | null;
 }
 
 // ============================================================================
@@ -2286,4 +2635,479 @@ export interface GalleryPurgeResult {
   purged: number;
   bytes: number;
   failed: GalleryFailure[];
+}
+
+
+// ------------------------------------------------------------- remote / relay
+// S3: GET /api/remote/status (view.status). `connected` is the TUNNEL's state;
+// `via` is how THIS request arrived, which is a different question -- a LAN
+// browser reads "direct" while the tunnel is up. Carries no secret: `relay_host`
+// is the hostname parsed out of relay_url, never the url and never the device
+// token.
+export interface RemoteStatus {
+  enabled: boolean;
+  home_id: string | null;
+  relay_host: string | null;
+  connected: boolean;
+  last_error: string | null;
+  since_unix: number | null;
+  gen: number | null;
+  via: "direct" | "relay";
+}
+
+
+// ------------------------------------------- session files index (S5)
+// GET /api/sessions/{id}/files and GET /api/sessions/current/files
+// (view.preview, so an operator sees frame grades). The server folds the
+// ledger against the plan; no on-disk path appears in this payload in any
+// form -- `bytes` is what the file contributes, and `thumb` is a URL onto
+// the existing per-frame thumb route, not a location.
+
+export interface SessionFileFrame {
+  /** The ledger frame id -- the argument to PATCH
+   *  /api/sessions/{id}/frames/{frame_id}, so a row here can be regraded. */
+  id: string;
+  ts: number;
+  /** Size on disk; 0 when the frame was never saved locally or is gone. */
+  bytes: number;
+  /** The EFFECTIVE verdict: `override` when set, else the auto grade. */
+  accepted: boolean;
+  override: "accept" | "reject" | null;
+  hfr: number | null;
+  stars: number | null;
+  guide_rms: number | null;
+  /** URL of the rendered thumbnail, or null when none exists on disk. */
+  thumb: string | null;
+}
+
+export interface SessionFilterFiles {
+  /** Filter name; "" when the step names no filter, "?" when the frames'
+   *  step is no longer in the plan (a dormant session's plan is editable). */
+  filter: string;
+  count: number;
+  accepted: number;
+  /** The step's exposure, or the median of the frames' when the step is gone. */
+  exposure_s: number;
+  bytes: number;
+  /** Seconds summed over ACCEPTED frames only. */
+  integration_s: number;
+  frames: SessionFileFrame[];
+}
+
+export interface SessionFilesTotals {
+  frames: number;
+  accepted: number;
+  bytes: number;
+  integration_s: number;
+}
+
+export interface SessionFilesIndex {
+  target: string;
+  totals: SessionFilesTotals;
+  /** In plan step order; any dangling-step bucket last. */
+  by_filter: SessionFilterFiles[];
+}
+
+// ============================================================================
+// WAVE S7 / U7b - the wire the U7b tasks consume.
+//
+// Every field here was read off the server tree, and the comment on each block
+// names the file and line it came from so a reviewer can check it against the
+// code rather than against this file. Where the tree and the wire table in the
+// plan disagreed, the tree won and the difference is called out.
+//
+// A field marked `// S7c` is one the status bus does NOT publish in the working
+// tree yet (WAVE2-RULINGS line 63 commissioned it): typed from the plan, and
+// optional, so a consumer degrades instead of blanking a screen.
+//
+// THE RULE FOR THIS WHOLE SECTION: the rig on the other end may be an older
+// engine. A required field on an optional wire is how a whole screen goes
+// blank, so anything S7L has not landed yet is optional here.
+// ============================================================================
+
+// ------------------------------------------------------------- ephemerides
+// (D-SKY-1). Server: server/astrodeck/catalog/ephemeris/.
+
+/** One cache's state - what has been downloaded, when, and whether it is old
+ *  enough to be worth a warning. Server: `elements.py:247-269 cache_state`.
+ *
+ *  `age_days` is computed on every read from `fetched_unix`, never stored: a
+ *  stored staleness flag is a claim that stops being true the moment the clock
+ *  moves and nobody rewrites it. */
+export interface EphemerisCacheState {
+  which: "satellites" | "comets";
+  present: boolean;
+  /** Where the file came from ("celestrak", "mpc"), or null when there is none. */
+  source: string | null;
+  fetched_unix: number | null;
+  age_days: number | null;
+  /** True when there is no cache AT ALL as well as when the one on disk is old
+   *  - `present` is what separates the two. */
+  stale: boolean;
+  count: number;
+  /** THE SERVER'S OWN SENTENCE, and null when the cache is neither absent nor
+   *  stale. Render it VERBATIM: the stale notes carry the drift magnitude in
+   *  numbers ("a pass time this old can be a minute out") and both of them end
+   *  "Refresh them from Sky settings when the rig is online.", which is what
+   *  decides where the REFRESH ELEMENTS control lives.
+   *  `elements.py:121-129` (absent) and `:132-143` (stale). */
+  note: string | null;
+}
+
+/** `GET /api/ephemeris/status`. Server: `elements.py:546-552 snapshot`, routed
+ *  at `catalog/ephemeris/routes.py:50-57` (`view.status`).
+ *
+ *  Cache state only - no positions. A status surface that quietly computed one
+ *  would be a site-derived answer behind a status capability. */
+export interface EphemerisStatus {
+  satellites: EphemerisCacheState;
+  comets: EphemerisCacheState;
+  /** Which fetches are in flight right now. POLL ONLY WHILE THIS IS NON-EMPTY
+   *  and stop on the first tick where it is empty. */
+  fetching: string[];
+  /** which -> the last outcome, as the exception class name for a failure.
+   *  Diagnostic; not a sentence to show. */
+  last_outcome: Record<string, string>;
+}
+
+/** One satellite row from `GET /api/catalog`. Server:
+ *  `catalog/ephemeris/satellites.py:421-441`.
+ *
+ *  THE SOLAR-SYSTEM NAMING CONVENTION, and this is the third row family to use
+ *  it: `id` is the LABEL ("ISS (ZARYA)") and `name` is a composed SENTENCE. A
+ *  card that printed `name` would print a paragraph.
+ *
+ *  ALT/AZ USED TO BE WRONG THROUGH `/api/catalog`: the route recomputed both
+ *  from the row's RA/Dec for a `view.site_derived` caller, but a satellite's
+ *  RA/Dec is GEOCENTRIC (`satellites.py:414-416`) while its alt/az are
+ *  TOPOCENTRIC (`:411`), so at 400 km the recompute overwrote the right answer
+ *  with one tens of degrees away. S7L landed the `kind == "satellite"` guard
+ *  (`api/app.py:7473-7482`) and these are correct again - AS OF THE INSTANT
+ *  `ephemeris_unix` names. They decay at about four degrees of sky a second, so
+ *  a marker drawn from a cached row is still wrong; see
+ *  `next/hubs/sky/finder/targets.ts SATELLITE_MARKERS`. */
+export interface SatelliteRow extends CatalogEntry {
+  kind: "satellite";
+  type: "Satellite";
+  /** NULL FOREVER, by ruling 3: there is no open magnitude source for
+   *  satellites, and an invented one would be indistinguishable from a measured
+   *  one on screen. */
+  mag: null;
+  norad_id: number;
+  alt: number;
+  az: number;
+  range_km: number;
+  sunlit: boolean;
+  /** "sunlit" / "penumbra" / "umbra" - the shadow state in the server's word. */
+  shadow: string;
+  elements_age_days: number;
+  ephemeris_unix: number;
+}
+
+/** One comet row from `GET /api/catalog`. Server:
+ *  `catalog/ephemeris/comets.py:453-490`. Same id/name convention as above.
+ *
+ *  A comet is served to EVERY caller (`comets.py:511`), unlike a satellite. A
+ *  non-holder of `view.site_derived` simply gets no `alt`/`az` and
+ *  `topocentric: false` - and a geocentric comet must not be drawn on the
+ *  horizon dome at all, because there is no horizon it was computed against. */
+export interface CometRow extends CatalogEntry {
+  kind: "comet";
+  type: "Comet";
+  r_au: number;
+  delta_au: number;
+  /** null when the elements carry no epoch to age against. */
+  elements_age_days: number | null;
+  ephemeris_unix: number;
+  /** False = computed from the centre of the Earth. `alt`/`az` are then ABSENT,
+   *  not zero. */
+  topocentric: boolean;
+  /** Why it fell back to geocentric, in the server's words, or null. */
+  geocentric_reason: string | null;
+}
+
+/** One visible pass. Server: `catalog/ephemeris/passes.py:291-306`.
+ *
+ *  Times are unix seconds, azimuths degrees, refined to one second against the
+ *  exact horizon. A pass clipped by the edge of the search window keeps the
+ *  window's own boundary rather than an invented crossing. */
+export interface SatellitePass {
+  norad_id: number;
+  name: string;
+  start_unix: number;
+  peak_unix: number;
+  end_unix: number;
+  start_az: number;
+  peak_az: number;
+  end_az: number;
+  max_alt_deg: number;
+  duration_s: number;
+  /** 0..1, the fraction of the pass the satellite is in sunlight. Render it as
+   *  WORDS: it is a fraction of THIS pass, and a bare percentage is a
+   *  percentage of nothing. 1 = sunlit throughout, 0 = in shadow the whole pass
+   *  and therefore not visible. */
+  sunlit_fraction: number;
+  /** When it crosses into / out of the Earth's shadow, or null when it does not
+   *  cross within the pass. Both null with a fraction between 0 and 1 is a real
+   *  case (the crossing sits outside the refined window) - say "partly sunlit"
+   *  rather than computing a number out of nulls.
+   *
+   *  ORDER MATTERS when both are present: `leaves` before `enters` means the
+   *  satellite ROSE in the Earth's shadow and came out of it part-way across,
+   *  which is the opposite advice from the other way round. */
+  enters_shadow_unix: number | null;
+  leaves_shadow_unix: number | null;
+  /**
+   * The window worth going outside for: up AND sunlit AND the sky dark,
+   * bisected the same way the horizon crossings are (`passes.py`).
+   *
+   * NOT the same as `start_unix`/`end_unix`, which are the horizon crossings
+   * and stay exactly that. A pass that rises into the Earth's shadow is above
+   * the skyline for ten minutes and visible for four, and a card that showed
+   * the ten would send someone out at the wrong time.
+   *
+   * OPTIONAL because they are additive: an engine older than the release that
+   * added them sends neither, and a client must render the horizon pair in
+   * that case rather than a blank. Treat a half-answer (one field, or an end at
+   * or before the start) as absent.
+   */
+  visible_start_unix?: number | null;
+  visible_end_unix?: number | null;
+  elements_age_days: number;
+}
+
+/** `GET /api/satellites/passes`. Server: `passes.py:255-259`, routed at
+ *  `catalog/ephemeris/routes.py:78-110` (`view.site_derived` for the WHOLE
+ *  route; a non-holder gets 403, not an empty list).
+ *
+ *  THE TREE WINS over the wire table in wave-s7.md:108, which omits `elements`:
+ *  it is `cache_state` again, and it is the staleness source for the passes
+ *  list.
+ *
+ *  OFF THE EVENT LOOP and thousands of SGP4 evaluations - DO NOT POLL IT.
+ *  Fetch once per lock. */
+export interface PassesResponse {
+  passes: SatellitePass[];
+  /** Which horizon the crossings were measured against. */
+  horizon_source: string;
+  elements: EphemerisCacheState;
+  /** The server's own sentences (no elements, stale elements, the site unset).
+   *  Render verbatim. */
+  notes: string[];
+}
+
+// -------------------------------------------------------------- SER video
+// (D-RIG-1). Server: server/astrodeck/imaging/video.py + video_routes.py.
+
+/** A subframe, in UNBINNED sensor pixels, with the binning that applies to it.
+ *  The server rounds a request onto `lcm(caps.roi_align, bin)`
+ *  (`video.py:133-160 align_roi`), so the ROI on a RESPONSE is authoritative and
+ *  the one the client asked for is only a request. */
+export interface VideoRoi {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  bin: number;
+}
+
+/** The states a recording moves through, the two it ends on, and the idle
+ *  shape's own word. Server: `video.py` (`TERMINAL_STATES`, `IDLE_STATUS`). */
+export type VideoRecordingState =
+  | "idle"
+  | "arming"
+  | "recording"
+  | "finalising"
+  | "done"
+  | "cancelled"
+  | "failed";
+
+/** `GET /api/capture/video`. Server: `video.py:241-253` (live) and
+ *  `video.py:255-262 IDLE_STATUS` (before anything has run).
+ *
+ *  THE IDLE SHAPE IS SMALLER THAN THE LIVE ONE, which is why five of these are
+ *  optional: `requested_fps`, `actual_fps`, `clamped`, `clamp_reason` and
+ *  `camera` exist only once a recording has been prepared.
+ *
+ *  `fps` AND `actual_fps` ARE DIFFERENT NUMBERS AND MUST NOT SHARE A LABEL.
+ *  `fps` is MEASURED - frames divided by elapsed, the rate achieved so far
+ *  (`video.py:225-229`). `actual_fps` is the PLAN - what the recorder decided it
+ *  could deliver after clamping the request. A screen that showed one under the
+ *  other's caption would report a healthy recording as a slow one, or the
+ *  reverse. */
+export interface VideoState {
+  /** `state` is not terminal. The one field to gate a poll on. */
+  active: boolean;
+  id: string | null;
+  state: VideoRecordingState;
+  frames: number;
+  target_frames: number;
+  elapsed_s: number;
+  /** MEASURED frames per second so far. See the block comment above. */
+  fps: number;
+  dropped: number;
+  bytes: number;
+  /** null in the idle shape. */
+  roi: VideoRoi | null;
+  /** What the caller asked for. */
+  requested_fps?: number;
+  /** What the recorder PLANNED after clamping. See the block comment above. */
+  actual_fps?: number;
+  clamped?: boolean;
+  /** The server's sentence for the clamp. Show it whenever `clamped`: a file
+   *  slower than the one that was asked for is news, and delivering it silently
+   *  is the failure the field exists to prevent. */
+  clamp_reason?: string | null;
+  camera?: string;
+  started_ts: number | null;
+  finished_ts: number | null;
+  error: string | null;
+}
+
+/** The `video` bus event, published at about 2 Hz while recording. Server:
+ *  `video.py:231-240 event()`. A STRICT SUBSET of VideoState with one field of
+ *  its own: `path`, which is non-null only in the `done` event. */
+export interface VideoEvent {
+  id: string;
+  state: VideoRecordingState;
+  frames: number;
+  target_frames: number;
+  elapsed_s: number;
+  /** MEASURED, like `VideoState.fps`. */
+  fps: number;
+  dropped: number;
+  bytes: number;
+  /** Capture-root-relative, and null until the file is closed. */
+  path: string | null;
+}
+
+/** 202 from `POST /api/capture/video`. Server: `video.py:345-360 start`.
+ *
+ *  The tree also carries `roi`, which the wire table at wave-s7.md:113 omits:
+ *  it is the ALIGNED subframe, and it is what the picker should display once a
+ *  recording starts. */
+export interface VideoStarted {
+  started: "video";
+  id: string;
+  target_frames: number;
+  actual_fps: number;
+  clamped: boolean;
+  clamp_reason: string | null;
+  est_bytes: number;
+  roi: VideoRoi;
+}
+
+/** `POST /api/capture/video/stop`. Server: `video.py:362-376 stop`.
+ *  `cancelled: false` with a non-null id is the "it had already finished"
+ *  answer, not a failure. */
+export interface VideoStopped {
+  cancelled: boolean;
+  id: string | null;
+  frames: number;
+  bytes: number;
+}
+
+/** One row of `GET /api/captures/video`. Server: `video.py:580-592`. Newest
+ *  first. `roi` is null for a file whose sidecar and header are both
+ *  unreadable. */
+export interface VideoRecording {
+  id: string;
+  ts: number;
+  bytes: number;
+  frames: number;
+  /** The ACHIEVED rate recorded in the sidecar; 0 when it is unknown. */
+  fps: number;
+  roi: VideoRoi | null;
+  camera: string;
+  /** Is there a `<id>.stack.png` beside it? Gates the stack preview and the
+   *  QUICK STACK label. */
+  has_stack: boolean;
+}
+
+/** 202 from `POST /api/captures/video/{id}/stack`. Server:
+ *  `video_routes.py:204-215`. The RESULT arrives on the `video_stack` bus
+ *  event, not here. */
+export interface VideoStackStarted {
+  started: "video_stack";
+  id: string;
+}
+
+/** The `video_stack` bus event. Server: `video.py:627-641`. `done` is the only
+ *  state that carries the tally. A NON-BLOCKING lane (`hub.py:346-352`):
+ *  stacking touches no device, so it must never read as "the camera is busy". */
+export interface VideoStackEvent {
+  state: "running" | "done" | "cancelled" | "failed";
+  id: string;
+  keep_pct?: number;
+  frames?: number;
+  kept?: number;
+  aligned?: number;
+  /** Capture-root-relative. */
+  path?: string;
+  error?: string;
+}
+
+// --------------------------------------------------------------- planning
+// (D-FU-1). Server: server/astrodeck/planning.py + config.py:1094-1189.
+
+/** What the quick-plan sheet was left set to, so the next night opens where the
+ *  last one did. Server: `config.py:1094-1152 QuickDefaults`.
+ *
+ *  Remembered rather than defaulted because the answer is a property of the rig
+ *  and the operator, not of the software: which filters this wheel has, how long
+ *  this f/5 refractor needs per sub, whether this operator dithers. */
+export interface QuickDefaults {
+  /** Hours the quick plan runs. IGNORED when `dawn` is set. 0 < h <= 24. */
+  hours: number;
+  /** "until dawn" was CHOSEN, and it is a different thing from a number of
+   *  hours: dawn is a different length every night, so remembering the hours it
+   *  happened to work out to last time would silently shorten or overrun
+   *  tonight. */
+  dawn: boolean;
+  /** Per-slot "shoot this filter", keyed by WHEEL SLOT NAME. ABSENT MEANS
+   *  CHECKED - a wheel that gains a slot, or a rig whose slot names are
+   *  re-typed, must not silently drop the new filter out of every plan. */
+  on: Record<string, boolean>;
+  /** Per-slot exposure in seconds, keyed the same way. FINITE POSITIVES ONLY;
+   *  the server rejects NaN explicitly (`config.py:1145-1151`), because NaN
+   *  survives float() and every bound pydantic can express and then reaches the
+   *  camera as a NaN. */
+  exp: Record<string, number>;
+  /** The sheet's other toggles (dither, autofocus, and whatever it grows), keyed
+   *  by name so this block does not have to move when the sheet does. */
+  extras: Record<string, boolean>;
+  /** Dither every N frames, 0 = never. NOTE THE SPELLING: the wire key is
+   *  `dither_n` and the shipped localStorage key was `ditherN`; the migration in
+   *  T-U7b-11 crosses that gap. 0..100. */
+  dither_n: number;
+  /** Has anything ever been learned here? Without it an operator who genuinely
+   *  wants every filter unchecked is indistinguishable from a rig that has never
+   *  had a quick plan built on it, and the sheet cannot tell whether to seed
+   *  itself from the wheel or to honour the empty maps.
+   *
+   *  IT IS THE CLIENT'S FLAG. `PUT /api/planning` never sets it implicitly
+   *  (`planning.py:190-198`) - the sheet that learns the defaults sends it. */
+  learned: boolean;
+}
+
+/** `GET /api/planning` (`view.status`) and the answer to `PUT /api/planning`
+ *  (`control.capture`, NOT relay-fenced). Server: `config.py:1154-1189
+ *  PlanningConfig`, routed at `planning.py:173-180` and `:182-205`. */
+export interface PlanningConfig {
+  quick: QuickDefaults;
+  /** The operator's shortlist of target ids, IN THEIR ORDER. A list and not a
+   *  set: the order is the shortlist's running order, and re-sorting it would
+   *  throw away the only thing the user actually did. At most 200 entries, each
+   *  1..64 characters after trimming; duplicates are dropped SILENTLY (a
+   *  double-tap on "add" is not an error), while an empty or over-long id is a
+   *  422. */
+  pool: string[];
+}
+
+/** A PARTIAL planning update. Both blocks are optional, and the two of them
+ *  merge by DIFFERENT rules - see `putPlanning` in api/planning.ts, which is the
+ *  only place that should build one. */
+export interface PlanningPatch {
+  quick?: Partial<QuickDefaults>;
+  pool?: string[];
 }

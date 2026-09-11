@@ -1,0 +1,193 @@
+/* calibration.css - the Calibration / Sky-pack tuning area's own classes (wave
+ * R7, T-R7-14).
+ *
+ * `next.css` is a single shared file that twenty concurrent tasks cannot own,
+ * so every class this area needs lives here. It is imported by exactly one
+ * module, this area's `index.ts`, which is the module BOTH mount sheets
+ * (`CalibrationSheet`, `SkyPackSheet`) import their components from - so the
+ * styles arrive with whichever of the two the user opens first, and neither
+ * sheet can be rendered without them.
+ *
+ * Rules this file keeps: single-class selectors only, variants on `data-*`, no
+ * class defined in `next.css` appears in any selector here (not even as an
+ * ancestor), tokens from `index.css` only, and no animation, so there is
+ * nothing for `prefers-reduced-motion` to undo.
+ *
+ * THE LAYOUT RULE THAT MATTERS. Everything here is a single column with no
+ * fixed track and no `min-width`. The surfaces this replaces were viewport-keyed
+ * Tailwind grids (`sm:grid-cols-2`, `min-w-[12rem]`) that laid out a two-column
+ * form inside a 360 px sheet. Nothing below may reintroduce a width the
+ * container cannot shrink to.
+ */
+
+/* The contents of one card. `.nx-card` sets padding and the border and nothing
+ * else, so the stacking belongs to whoever fills it. */
+.nx-cal-col {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+/* Heading beside the card's one action or its summary readout. It wraps rather
+ * than shrinking the button below the 44 px hit-target floor. */
+.nx-cal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.nx-cal-intro {
+  margin: 0;
+  font-family: "IBM Plex Sans", sans-serif;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--text-faint);
+}
+
+/* What the last rebuild did: three numbers that stay on screen, because a
+ * rebuild which found nothing looks exactly like one that rebuilt everything. */
+.nx-cal-report {
+  margin: 0;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--good);
+}
+
+.nx-cal-good {
+  margin: 0;
+  font-family: "IBM Plex Sans", sans-serif;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--good);
+}
+
+/* A refusal or a failure. The glyph is inline so the sentence keeps its
+ * hanging indent when it wraps. */
+.nx-cal-err {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
+  font-family: "IBM Plex Sans", sans-serif;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--bad);
+}
+
+/* Something the rig will do that the user probably did not mean - the narrow
+ * temperature bin, unsaved numbers, tiles that failed. */
+.nx-cal-warn {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
+  font-family: "IBM Plex Sans", sans-serif;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--warn);
+}
+
+/* A load failure is not an empty library: its own row, with its own RETRY. */
+.nx-cal-loaderr {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  border: 1px solid var(--bad);
+  border-radius: 12px;
+  min-width: 0;
+}
+
+.nx-cal-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.nx-cal-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* One master. The summary can be long (exposure, gain, temperature, binning,
+ * filter, frame count) so it wraps rather than clipping - the temperature is
+ * the field that decides whether reusing it is honest, and it sits at the end. */
+.nx-cal-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 4px 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  min-width: 0;
+}
+
+.nx-cal-rowtext {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+
+/* The 44 px hit target the row's delete needs. It is a button, not an icon in a
+ * padded span, so it focuses and announces on its own. */
+.nx-cal-del {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--bad);
+  cursor: pointer;
+}
+
+.nx-cal-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+/* SAVE and RESET. They wrap instead of shrinking, for the same reason as the
+ * head row. */
+.nx-cal-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.nx-pack-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* The DSS2 attribution. It is a licence condition, not decoration, so it is
+ * always rendered and never behind a disclosure. */
+.nx-cal-attrib {
+  margin: 0;
+  font-family: "IBM Plex Sans", sans-serif;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--text-faint);
+}

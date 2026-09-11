@@ -197,7 +197,14 @@ def _provider_entries(hub: object) -> dict[str, dict]:
 
 
 def _optics_entries(hub: object) -> dict[str, dict]:
-    """Provenance for the seven optics fields.
+    """Provenance for the optics fields (nine today).
+
+    ONE ROW PER FIELD OF ``Optics``, built from ``Optics.model_fields`` rather
+    than from a list written out here - so the count in that first line is a
+    description and not a contract, and a field added to the model gets its
+    provenance for free. It said "seven" for two fields longer than that was
+    true (``aperture_mm`` and ``reducer`` landed with D-SET-1), which is the
+    kind of drift a hand-written count is for.
 
     The winning values come from ``Hub.effective_optics`` (the one profile-aware
     readout in the config payload, and the same numbers that reach plate-solving,

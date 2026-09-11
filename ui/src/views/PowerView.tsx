@@ -150,7 +150,7 @@ export default function PowerView() {
     return (
       <Panel title="Power & Dew Control">
         <p className="text-dim text-xs py-8 text-center tracking-widest uppercase">
-          no power box connected — connect a switch device (Pegasus UPB, etc.) on the Rig page
+          no power box connected - connect a switch device (Pegasus UPB, etc.) first
         </p>
       </Panel>
     );

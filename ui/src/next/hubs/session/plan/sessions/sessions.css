@@ -1,0 +1,60 @@
+/* sessions.css - the multi-night ledger inside the plan editor.
+ *
+ * Area css (wave R7 section 1), imported by `PlanSessionsSection.tsx` only.
+ * Prefix `nx-plansess-`. Tokens only; single-class selectors. */
+
+.nx-plansess {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.nx-plansess-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.nx-plansess-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--bg-raise);
+  min-width: 0;
+}
+
+.nx-plansess-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+/* Name, bar, tally. The bar takes whatever is left so a long target name
+ * shortens the bar rather than pushing the tally off a 420 px column. */
+.nx-plansess-target {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(48px, 2fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.nx-plansess-verbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.nx-plansess-warn {
+  margin: 0;
+  color: var(--warn);
+  font-size: 10.5px;
+  line-height: 1.45;
+}

@@ -1,0 +1,101 @@
+/* tuning.css - the Weather tuning area's own classes (wave R7, T-R7-15).
+ *
+ * `next.css` is a single shared file that twenty concurrent tasks cannot own,
+ * so every class this area needs lives here. It is imported by exactly one
+ * module, `./index.ts`, which is the door both mount files come through
+ * (`sheets/WeatherSettingsSheet.tsx` and `sheets/CloudmapSheet.tsx`). The area
+ * has TWO roots - one panel per sheet, neither rendering the other - so hanging
+ * the import off one of them would leave the other unstyled for anyone who
+ * opened only that sheet. Precedent: `session/flows/create/index.ts`.
+ *
+ * Rules this file keeps: single-class selectors only, variants on `data-*`, no
+ * class defined in `next.css` appears in any selector here (not even as an
+ * ancestor, and not reached through a child combinator - a rule that shapes
+ * `.nx-field` from an area file is still redefining a shared primitive), tokens
+ * from `index.css` only, and no animation, so there is nothing for
+ * `prefers-reduced-motion` to undo.
+ *
+ * ONE LAYOUT RULE MATTERS MORE THAN THE REST. Both panels replace Tailwind
+ * `grid-cols-2` rows that hold a fixed two-column track at every width: at
+ * 360 px that puts two numeric inputs and their labels into 170 px each and the
+ * label wraps mid-word. Every row below is `auto-fit`/`minmax`, so it is two
+ * columns when there is room for two and one when there is not, with no
+ * viewport query and no width the container cannot shrink to.
+ */
+
+/* The sheet body: cards down one column. */
+.nx-wxtune-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+/* A card's contents. `.nx-card` sets padding and the border and nothing else,
+ * so the stacking belongs to whoever fills it. */
+.nx-wxtune-col {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+/* Title row: the heading and the state word that says whether the feature is
+ * doing anything at all right now. */
+.nx-wxtune-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* What the block is for, in the words the operator needs before touching it. */
+.nx-wxtune-intro {
+  margin: 0;
+  font-family: "IBM Plex Sans", sans-serif;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--text-faint);
+}
+
+/* A consequence line under a control: what the number the user just set will
+ * actually do. Smaller than the intro, same voice. */
+.nx-wxtune-note {
+  margin: 0;
+  font-family: "IBM Plex Sans", sans-serif;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-faint);
+}
+
+/* The one amber sentence a panel can print: the feature is on but something it
+ * depends on is not set, or a pin disagrees with the geometry. Amber because it
+ * is a live condition the operator can fix, not a refusal - and the SENTENCE
+ * carries the state, so a reader who cannot see the hue loses nothing
+ * (`nx-rot-warn` is the same shape in the rotator area). */
+.nx-wxtune-warn {
+  margin: 0;
+  font-family: "IBM Plex Sans", sans-serif;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--warn);
+}
+
+/* Two numeric fields side by side while the container is wide enough for two,
+ * one underneath the other when it is not. No breakpoint: the sheet is a 420 px
+ * panel on a desktop and the full width of a 360 px phone, and only the
+ * container knows which. */
+.nx-wxtune-pair {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  min-width: 0;
+}
+
+/* Buttons that act on the field above them (send the key, clear the key). */
+.nx-wxtune-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}

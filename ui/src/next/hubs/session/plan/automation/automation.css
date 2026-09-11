@@ -1,0 +1,76 @@
+/* automation.css - the plan editor's automation column.
+ *
+ * Area css (wave R7 section 1): `next.css` is shared and belongs to one task,
+ * so every class this area needs lives here and is imported by
+ * `PlanAutomationSection.tsx`, never added to `NextApp.tsx`. The `nx-planauto-`
+ * prefix keeps it out of the way of the sibling areas in `plan/`.
+ *
+ * Tokens only - nothing here defines a colour, a radius or a font that
+ * `index.css` already names. Single-class selectors, variants on `data-*`. */
+
+.nx-planauto {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.nx-planauto-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* The frozen-copy note. Warn tone, because it contradicts what the controls
+ * under it appear to promise while a run is in progress. Not a lock: these
+ * settings really are editable, they just reach the NEXT run. */
+.nx-planauto-runnote {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--warn);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--warn) 8%, transparent);
+  color: var(--ink);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.nx-planauto-group {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 4px 0 2px;
+}
+
+/* One setting: the control, then whatever says where its value came from. The
+ * row wraps rather than truncates - a 420 px sheet at 200% text size still has
+ * to show the layer chip, which is the only exit from an override. */
+.nx-planauto-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.nx-planauto-row > .nx-field {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
+.nx-planauto-layer {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+}
+
+.nx-planauto-warn {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--warn);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--warn) 8%, transparent);
+}

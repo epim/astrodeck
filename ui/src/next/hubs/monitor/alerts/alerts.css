@@ -1,0 +1,155 @@
+/* alerts.css - the MONITOR - ALERTS area's own classes (wave R7, T-R7-10).
+ *
+ * `next.css` is a single shared file that twenty concurrent tasks cannot own,
+ * so every class this area needs lives here and is imported by the area root
+ * (`AlertsScreen.tsx`), never added to `NextApp.tsx`.
+ *
+ * Rules this file keeps: single-class selectors only, variants on `data-*`, no
+ * class defined in `next.css` appears in any selector here (not even as an
+ * ancestor - a `.nx-alerts-row .nx-btn` rule would still be redefining a
+ * shared primitive from an area file), and only tokens already declared by
+ * `index.css` / `next.css`'s `:root` are read.
+ */
+
+.nx-alerts-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.nx-alerts-col {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* Eyebrow on the left, the one action on the right. Wraps rather than
+ * squeezing the button below its 44 px floor on a 360 px phone. */
+.nx-alerts-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* ------------------------------------------------------------- a sink row */
+
+.nx-alerts-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--nx-r-inner);
+  background: var(--bg-raise);
+  flex-wrap: wrap;
+}
+
+.nx-alerts-rowtile {
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  border-radius: var(--nx-r-tile);
+  border: 1px solid var(--line-bright);
+  background: var(--bg);
+  color: var(--text-faint);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.nx-alerts-rowtext {
+  flex: 1 1 180px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  overflow-wrap: anywhere;
+}
+
+.nx-alerts-rowhead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* Three actions. They wrap onto their own line under about 320 px of row width
+ * rather than shrinking, because DELETE at 30 px beside TEST is how the wrong
+ * one gets pressed in the dark. */
+.nx-alerts-rowacts {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  flex: 0 1 auto;
+}
+
+/* ---------------------------------------------------------------- the form */
+
+.nx-alerts-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--line-bright);
+  border-radius: var(--nx-r-inner);
+  background: var(--bg-raise);
+}
+
+.nx-alerts-formrow {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+/* One column on a phone, two once the viewport can hold two 44 px rows side by
+ * side without either label wrapping. */
+.nx-alerts-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+
+.nx-alerts-wide {
+  grid-column: 1 / -1;
+}
+
+@media (min-width: 700px) {
+  .nx-alerts-grid { grid-template-columns: 1fr 1fr; }
+}
+
+.nx-alerts-events {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.nx-alerts-formfoot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+
+/* The write-only URL and its SAVE. The input takes the slack; the button keeps
+ * its own width so it never falls under the hit-target floor. */
+.nx-alerts-deadrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.nx-alerts-deadinput {
+  flex: 1 1 200px;
+  min-width: 0;
+}

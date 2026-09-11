@@ -1,0 +1,334 @@
+/* people.css - the SETTINGS > PEOPLE area's own classes (wave R7, T-R7-11).
+ *
+ * `next.css` is one shared file that twenty concurrent tasks cannot own, so
+ * every class this area needs lives here and is imported by exactly one module,
+ * `PeopleSection.tsx` - the component all three roots (`UsersEditor`,
+ * `AuthMethodsEditor`, `AccountIdentity`) render through. See that file's
+ * header for why the import is not on a root.
+ *
+ * Rules this file keeps: single-class selectors only, variants on `data-*`, no
+ * class defined in `next.css` appears in any selector here (not even as an
+ * ancestor - `.nx-people-row .nx-btn` would still be redefining a shared
+ * primitive from an area file), and only tokens already declared by
+ * `index.css` / `next.css`'s `:root` are read.
+ */
+
+.nx-people {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+/* Eyebrow left, the one action right. Wraps rather than squeezing a button
+   below the 44 px hit floor on a 360 px phone. */
+.nx-people-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.nx-people-headact {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+/* ------------------------------------------------------------- sentences */
+
+.nx-people-note {
+  margin: 4px 0 0;
+  font-family: "IBM Plex Sans", sans-serif;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text-faint);
+}
+
+/* A sentence that describes what the NEXT press will do gets a box, so it is
+   not skimmed as commentary. Tone by border AND by the leading rule, never by
+   hue alone - the night palette flattens every hue onto one red. */
+.nx-people-note[data-tone="warn"],
+.nx-people-note[data-tone="bad"] {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line-bright);
+  border-left-width: 3px;
+  border-radius: var(--nx-r-tile);
+  color: var(--text-dim);
+}
+
+.nx-people-note[data-tone="warn"] { border-left-color: var(--warn); }
+.nx-people-note[data-tone="bad"] { border-left-color: var(--bad); }
+
+.nx-people-verdict {
+  margin: 8px 0 0;
+  font-family: "IBM Plex Sans", sans-serif;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.nx-people-verdict[data-tone="bad"] { color: var(--bad); }
+.nx-people-verdict[data-tone="good"] { color: var(--good); }
+
+/* ----------------------------------------------------------- control rows */
+
+.nx-people-ctlrow {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+
+.nx-people-ctltext {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.nx-people-ctltitle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-family: "IBM Plex Sans", sans-serif;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.nx-people-ctlright {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+}
+
+/* A radiogroup that will not fit 360 px scrolls sideways rather than clipping.
+   The group itself is untouched design vocabulary; only this box is ours. */
+.nx-people-scroll {
+  overflow-x: auto;
+  max-width: 100%;
+  padding-bottom: 2px;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* -------------------------------------------------------------- the badge */
+
+.nx-people-badge {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10px;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border: 1px solid var(--line-bright);
+  border-radius: var(--nx-r-pill);
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.nx-people-badge[data-tone="accent"] { color: var(--accent); border-color: var(--accent); }
+.nx-people-badge[data-tone="warn"] { color: var(--warn); border-color: var(--warn); }
+
+/* ------------------------------------------------------------- user rows */
+
+.nx-people-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.nx-people-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+
+/* A disabled account is dimmed AND says DISABLED in its badge row - the dim
+   alone would be a hue signal. */
+.nx-people-row[data-enabled="false"] { opacity: .72; }
+
+.nx-people-rowtile {
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  border-radius: var(--nx-r-tile);
+  border: 1px solid var(--line-bright);
+  background: var(--bg);
+  color: var(--text-faint);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.nx-people-rowtext {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
+.nx-people-rowname {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.nx-people-rowuser {
+  font-family: "IBM Plex Sans", sans-serif;
+  font-size: 13px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.nx-people-rowmail {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+
+.nx-people-rowctl {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+  min-width: 0;
+}
+
+.nx-people-rowbtns {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.nx-people-reset {
+  flex-basis: 100%;
+  margin-top: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+/* ------------------------------------------------------------- the forms */
+
+.nx-people-form {
+  margin-top: 8px;
+}
+
+.nx-people-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+  align-items: start;
+}
+
+@media (min-width: 560px) {
+  .nx-people-grid { grid-template-columns: 1fr 1fr; }
+}
+
+.nx-people-span2 { grid-column: 1 / -1; }
+
+.nx-people-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+.nx-people-allow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+/* -------------------------------------------------------- the setup steps */
+
+.nx-people-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+}
+
+.nx-people-steptext {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.nx-people-stepbadge {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  margin-top: 2px;
+  border: 1px solid var(--line-bright);
+  border-radius: var(--nx-r-tile);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.nx-people-stepbadge[data-state="done"] { color: var(--good); border-color: var(--good); }
+.nx-people-stepbadge[data-state="locked"] { color: var(--text-faint); }
+.nx-people-stepbadge[data-state="active"] { color: var(--text); }
+
+/* ----------------------------------------------------------- the identity */
+
+.nx-people-id {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.nx-people-idtile {
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  border-radius: var(--nx-r-tile);
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.nx-people-idtile[data-viewer="true"] {
+  border-color: var(--line-bright);
+  color: var(--text-dim);
+}
+
+.nx-people-idtext { min-width: 0; }
+
+.nx-people-idrole {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.nx-people-rolelabel {
+  font-family: "Chakra Petch", sans-serif;
+  font-weight: 600;
+  font-size: 13px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--text);
+}
+
+.nx-people-idmail {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}

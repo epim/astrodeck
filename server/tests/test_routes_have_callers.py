@@ -84,6 +84,14 @@ _NO_UI_CALLER = {
         "path is reachable, and test_frame_settings.py asserts the two doors "
         "open onto one room. The path stays because external clients and "
         "test_polar_solve_settings.py name it",
+    "/api/dew/resume":
+        "the server half of RESUME FOLLOWING landed first, deliberately: the "
+        "camera sheet's pause face needs a route to call before it can grow a "
+        "button, and the UI half (FIX-U-rig) lands it behind a route-absent "
+        "404 fallback. Until then this is the ONLY way out of an override "
+        "taken while dew.manual_override_s is 0, which never expires - so it "
+        "is reachable by hand and by script, and that is better than not "
+        "existing while the UI catches up",
     "/api/auth/ws-ticket":
         "deliberately not called by the browser UI (OPEN-011): the SPA "
         "authenticates the /ws upgrade by same-origin session cookie, which "

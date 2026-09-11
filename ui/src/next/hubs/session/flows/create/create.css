@@ -1,0 +1,143 @@
+/* create.css - the two flow-creation sheets' own classes (wave R7 rule:
+   `next.css` belongs to T-R7-0 alone, so every area writes its own file and
+   imports it from the area root - here `create/index.ts`).
+
+   Every selector below is a single class of its own, prefixed `nx-create-`, so
+   nothing here can redefine a `next.css` component class or be beaten by one.
+   Variants ride on `data-*`, the same convention `next.css` uses.
+
+   Tokens only: `--line`, `--text`, `--text-faint` and `--text-dim` come from
+   `index.css`; no colour is written as a literal and none carries a literal
+   fallback, so day, night and the red mode all swap with everything else. (The
+   `var(--text-3, #7683a5)` shape used by some wave-1 sheets is NOT copied here:
+   there is no `--text-3` token, so that pattern pins the colour to the dark
+   palette and stops swapping.) */
+
+/* The sheet body's own column. 12 px is the design's section rhythm. */
+.nx-create-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* One question, or one readout block: an eyebrow over its control. */
+.nx-create-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* Eyebrow left, the line that says what is inside right. `baseline` so the
+   10 px mono sits on the same line as the 10 px caps label rather than
+   centring against it. */
+.nx-create-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* Wrapping row of toggle chips. */
+.nx-create-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* The explanatory paragraph under a block. 11.5 px is the design's note size;
+   `pretty` keeps a one-word last line off the bottom of a 360 px sheet. */
+.nx-create-note {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-faint);
+  text-wrap: pretty;
+}
+
+/* The picked target: name, coordinates, and the way back to the search. */
+.nx-create-target {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-height: 44px;
+  min-width: 0;
+}
+
+/* A display-face name inside a row. `data-big` is the target's own name, which
+   is the heading of its card rather than one row label among several. */
+.nx-create-name {
+  font-family: "Chakra Petch", sans-serif;
+  font-weight: 600;
+  font-size: 12px;
+  letter-spacing: .1em;
+  color: var(--text);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nx-create-name[data-big="true"] {
+  font-size: 12.5px;
+}
+
+/* One channel: the tick and its name on the left, the sub length on the right.
+   `auto` rather than a fixed second column so a three-digit exposure does not
+   clip and a locale that renders the unit wider still fits. */
+.nx-create-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.nx-create-row:last-child {
+  border-bottom: 0;
+}
+/* Unticked is dimmed, not hidden: the slot is still on this rig's wheel, and a
+   row that vanished would read as a wheel that had changed. */
+.nx-create-row[data-checked="false"] {
+  opacity: .55;
+}
+
+.nx-create-rowname {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+/* The per-channel sub length. Narrow enough that seven of them do not push the
+   filter names out of a 360 px sheet. */
+.nx-create-exp {
+  width: 92px;
+  flex: none;
+}
+
+/* The sheet footer's button row. The primary grows; a second button keeps its
+   own width so the two do not read as one control. */
+.nx-create-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+}
+
+/* The SAVE AND RUN confirm's body: the three facts an operator checks before
+   walking away from the rig. Rendered by `shell/ConfirmCard`, outside this
+   area's tree, which is why it is a class and not an inline style. */
+.nx-create-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-dim);
+}

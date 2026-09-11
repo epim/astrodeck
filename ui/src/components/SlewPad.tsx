@@ -20,6 +20,14 @@
 //     — but ONLY while this pad actually owns a slew (see the guard at the
 //     effect; an idle pad leaving the screen must not touch the mount at all).
 //
+// EVERY PROP BELOW IS OPTIONAL, AND THAT IS THE CONTRACT (D-RIG-4). The pad
+// shipped as a self-contained component and `#/classic` still mounts it with no
+// props at all: with none passed it holds its own rate index, offers SLEW_RATES,
+// clamps at TOUCH_MAX_RATE_DEG_S and nudges the way it always has. The new UI's
+// mount sheet passes them so the rate the SHEET shows and the rate the PAD sends
+// are one value rather than two that can disagree, and so a tap becomes a real
+// arcminute move instead of a timed one.
+//
 // Consumes: SlewController + haptics + Icon (icons.tsx) + Toggle (ui.tsx).
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -45,6 +53,7 @@ import { haptics } from "../lib/haptics";
 import { useTouchSettings, useSetTouch, useLocked } from "../lib/touchStore";
 import { handleRadioKeyDown, rovingTabIndex } from "../lib/radiogroup";
 import { accessPhrase, useCanControlMount } from "../lib/caps";
+import type { SlewRateOption } from "../types";
 
 const axisLabelText: Record<string, string> = {
   "dec:1": "north",
@@ -69,7 +78,35 @@ function key(axis: Axis, dir: Dir): string {
   return `${axis}:${dir}`;
 }
 
-export default function SlewPad() {
+export interface SlewPadProps {
+  /** The rate ladder to offer. Defaults to `SLEW_RATES`. The mount sheet builds
+   *  it from the driver's own ceiling (`rig/lib/slewStops.ts`). */
+  rates?: SlewRateOption[];
+  /** Lifted selection. Given WITH `onRateIndex` the selection lives in the
+   *  caller; given neither, the pad keeps its own (today's `useState(0)`). One
+   *  value, two views - never two sources. */
+  rateIndex?: number;
+  onRateIndex?: (i: number) => void;
+  /** `status.mount.max_rate_deg_s`: how fast this mount will actually slew.
+   *  `null` means the driver did not say and the clamp falls back to 0.6. */
+  maxRateDegS?: number | null;
+  /** REPLACES the pad's own nudge entirely when given - both branches of it.
+   *
+   *  The two it replaces were the best a client could do with the routes that
+   *  existed. The pulse branch drove `/api/mount/move` for 250 ms and could not
+   *  say how far the mount went; the NINA branch built a relative goto by adding
+   *  a flat 0.25 degrees to `ra_hours` WITH NO cos(dec) TERM, so it was correct
+   *  at the equator and increasingly wrong towards the pole - at dec 60 it moved
+   *  half as far as it claimed, and polar alignment is exactly where people
+   *  nudge. `POST /api/mount/nudge` is told a size in arcminutes, does that
+   *  division server-side, and passes the same horizon and sun guards a goto
+   *  does. It works for every driver, NINA included, so there is nothing left
+   *  for the branch to decide. */
+  onNudge?: (axis: Axis, dir: Dir) => Promise<void> | void;
+}
+
+export default function SlewPad(props: SlewPadProps = {}) {
+  const { rates: ratesProp, rateIndex, onRateIndex, maxRateDegS = null, onNudge } = props;
   const status = useStatus();
   const showToast = useStore((s) => s.showToast);
   const touch = useTouchSettings();
@@ -84,7 +121,16 @@ export default function SlewPad() {
   // UX-01: default to the tap-only GUIDE rate so the first thing a user does — a
   // tap — produces a visible discrete nudge. At a continuous rate a tap is a brief
   // start/stop below the visible-motion threshold, so the pad "feels dead".
-  const [rateIdx, setRateIdx] = useState(0); // local UI state (transient, not global)
+  const [ownRateIdx, setOwnRateIdx] = useState(0); // local UI state (transient, not global)
+  const rates = ratesProp ?? SLEW_RATES;
+  // Clamped, not trusted: a lifted index survives a ladder that just got shorter
+  // (the mount reconnects and reports a lower ceiling), and an out-of-range index
+  // would hand the controller `undefined.rateDegS`.
+  const rateIdx = Math.min(rates.length - 1, Math.max(0, rateIndex ?? ownRateIdx));
+  const setRateIdx = (i: number) => {
+    if (onRateIndex) onRateIndex(i);
+    else setOwnRateIdx(i);
+  };
   const [slewState, setSlewState] = useState<SlewState>({
     mode: "idle",
     axis: null,
@@ -141,6 +187,12 @@ export default function SlewPad() {
   // Keep mutable refs the controller closures read so we never rebuild it per render.
   const rateIdxRef = useRef(rateIdx);
   rateIdxRef.current = rateIdx;
+  const ratesRef = useRef(rates);
+  ratesRef.current = rates;
+  const maxRateRef = useRef(maxRateDegS);
+  maxRateRef.current = maxRateDegS;
+  const onNudgeRef = useRef(onNudge);
+  onNudgeRef.current = onNudge;
   const touchRef = useRef(touch);
   touchRef.current = touch;
   const altRef = useRef<number | null>(m?.alt ?? null);
@@ -152,15 +204,24 @@ export default function SlewPad() {
   const ctrl = useMemo(
     () =>
       new SlewController({
-        getRate: () => SLEW_RATES[rateIdxRef.current],
+        getRate: () => ratesRef.current[rateIdxRef.current] ?? ratesRef.current[0],
         reverseRa: () => touchRef.current.reverseRa,
         reverseDec: () => touchRef.current.reverseDec,
         getAlt: () => altRef.current,
+        getMaxRate: () => maxRateRef.current ?? null,
         isNina: () => ninaRef.current,
         postMove: async (axis, rateDegS) => {
           await api.post("/api/mount/move", { axis, rate_deg_s: rateDegS });
         },
         postNudge: async (axis, dir) => {
+          // The caller's nudge, when it has one, is the WHOLE nudge: it applies
+          // the reverse toggles and the step size itself, so neither branch
+          // below runs and neither one's approximation is in play.
+          const lifted = onNudgeRef.current;
+          if (lifted) {
+            await lifted(axis, dir);
+            return;
+          }
           if (ninaRef.current) {
             // NINA: no manual pulse path -> a small relative GOTO from current pos.
             const cur = useStore.getState().status?.mount;
@@ -281,7 +342,7 @@ export default function SlewPad() {
     }
   }, [padDisabled, ctrl, clearFallback]);
 
-  const curRate = SLEW_RATES[rateIdx];
+  const curRate = rates[rateIdx] ?? rates[0];
   const holdDisabledForRate = curRate.rateDegS <= 0 || isNina;
 
   /** Bind this press's release to `window` because the element could not hold
@@ -465,7 +526,7 @@ export default function SlewPad() {
               inert (W2.5 — disabled, never 403-on-tap). */}
           {!canMount && (
             <p className="text-[12px] text-warn text-center mb-2 tracking-wide">
-              View only — slewing needs {accessPhrase("control.mount")}.
+              View only - slewing needs {accessPhrase("control.mount")}.
             </p>
           )}
           {/* ---- pad grid: N on top, W [rate] E, S on bottom (R-§4.4) ---- */}
@@ -484,15 +545,19 @@ export default function SlewPad() {
               role="radiogroup"
               aria-label="Slew rate"
             >
-              {SLEW_RATES.map((r, i) => (
+              {rates.map((r, i) => (
                 <button
-                  key={r.id}
+                  // The ladder can carry two stops with the same `id` (a mount
+                  // that reports a high ceiling contributes a half-ceiling and a
+                  // ceiling stop, both `"ceiling"`), so the key is the position,
+                  // which is unique by construction.
+                  key={`${r.id}-${i}`}
                   role="radio"
                   aria-checked={i === rateIdx}
                   // UX-20: roving tabindex + shared arrow-key model
                   tabIndex={rovingTabIndex(i, rateIdx)}
                   onClick={() => setRateIdx(i)} /* NO haptic on rate change (R26) */
-                  onKeyDown={(e) => handleRadioKeyDown(e, i, SLEW_RATES.length, setRateIdx)}
+                  onKeyDown={(e) => handleRadioKeyDown(e, i, rates.length, setRateIdx)}
                   className={`tap min-h-[44px] btn !py-1 !px-1 !text-[11px] inline-flex items-center justify-center gap-1
                     ${i === rateIdx ? "!border-accent !text-accent bg-accent/10" : ""}`}
                 >
@@ -594,12 +659,12 @@ export default function SlewPad() {
             </label>
           </div>
           <p className="text-center text-[12px] text-dim mt-1.5 max-w-[260px] mx-auto">
-            moves wrong way? toggle reverse — direction depends on pier side &amp; image
+            moves wrong way? toggle reverse - direction depends on pier side &amp; image
             orientation
           </p>
           {m && m.alt < MIN_SLEW_ALT_DEG + 5 && (
             <p className="text-center text-[12px] text-warn mt-1">
-              near horizon ({m.alt.toFixed(0)}°) — slew auto-stops below {MIN_SLEW_ALT_DEG}°
+              near horizon ({m.alt.toFixed(0)}°) - slew auto-stops below {MIN_SLEW_ALT_DEG}°
             </p>
           )}
         </>

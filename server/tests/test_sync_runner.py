@@ -369,12 +369,28 @@ class TestNoteSaved:
 
     def test_the_capture_path_calls_it(self):
         """The seam itself. A runner nothing pokes is the shape this task
-        existed to close."""
+        existed to close.
+
+        THE CAPTURE PATH IS THREE METHODS since D-SES-4 split it (the header
+        must describe the rig at exposure time, so the rig read, the file write
+        and the tail are separate). The scrape follows all three rather than
+        only ``capture`` -- a guard that keeps reading one method after the
+        code moved out of it is a guard that passes while the seam is gone."""
         import ast
         import inspect
         from astrodeck import hub as hub_module
-        src = inspect.getsource(hub_module.Hub.capture)
-        tree = ast.parse(src.lstrip())
-        called = {n.func.attr for n in ast.walk(tree)
-                  if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)}
+        called: set[str] = set()
+        for fn in (hub_module.Hub.capture,
+                   hub_module.Hub._save_captured_frame,
+                   hub_module.Hub._after_frame_saved):
+            tree = ast.parse(inspect.getsource(fn).lstrip())
+            called |= {n.func.attr for n in ast.walk(tree)
+                       if isinstance(n, ast.Call)
+                       and isinstance(n.func, ast.Attribute)}
         assert "_note_frame_saved" in called
+        # and the tail really is reachable from capture()
+        capture_calls = {
+            n.func.attr for n in ast.walk(
+                ast.parse(inspect.getsource(hub_module.Hub.capture).lstrip()))
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)}
+        assert "_after_frame_saved" in capture_calls

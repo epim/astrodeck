@@ -1,0 +1,97 @@
+/* boundary.css - the handful of rules the review-fix wave needed, kept OUT of
+   `shell.css` so two authors are never editing one cascade at once.
+   Imported once, by `NextApp.tsx`, after `shell.css` - same contract as the
+   other two sheets: one import site, so the order cannot depend on module
+   resolution order.
+
+   Everything here is either a token-only rule or a hit-target fix. No layout
+   is redefined; nothing overrides a `shell.css` selector. */
+
+/* --------------------------------------------------------- error boundary */
+
+/* The thrown Error's own text, shown verbatim so a screenshot from the field
+   is a bug report rather than a mystery. Monospace and red for the same reason
+   the legacy pane uses them: it is machine text, not a sentence we wrote. */
+.nx-boundary-message {
+  display: block;
+  margin-top: 6px;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--bad);
+  overflow-wrap: anywhere;
+}
+
+/* ------------------------------------------------------------ night toggle */
+
+/* The header's chips are 26 px, which is right for a readout and wrong for the
+   one CONTROL in that row. The touch target is grown to the 44 px floor with a
+   pseudo-element rather than with height, because a taller chip would push the
+   whole header down on a phone - and the header's own note is that this row
+   costs 44 px and must not cost more.
+
+   The chip stays visually 26 px; the finger gets a full 44 x 44.
+
+   ICON-ONLY (measured 2026-09-10). The toggle used to print DAY / NIGHT beside
+   the glyph. At 390 px that word was the first casualty of the header's
+   ellipsis - the probe screenshot shows a chip reading "D" - and a truncated
+   state word is not a state. The glyph is the state now, so the button carries
+   no text child at all and its `aria-label` / `title` say both halves (what the
+   screen is in, and what pressing it does). The empty `.nx-pill-text` span
+   `Pill` would have rendered is gone with it; this rule zeroes the pill's gap
+   anyway so a future text child cannot creep back in unnoticed. */
+.nx-night-toggle {
+  position: relative;
+  cursor: pointer;
+  /* No text child, so no gap to leave between a glyph and nothing. Stated
+     rather than left to the empty case, so a text child cannot creep back in
+     later and quietly inherit 5 px of air. */
+  gap: 0;
+}
+
+.nx-night-toggle::after {
+  content: "";
+  position: absolute;
+  /* A real 44 x 44 target on BOTH axes (the chip itself is 28 x 26). Anchored
+     to the button's RIGHT edge rather than centred on it, because this is the
+     last chip in an end-justified row whose container clips the inline axis: a
+     centred 44 px box would have its outer 8 px clipped away and the target
+     would be 36 px wide again. Growing leftwards keeps all 44 px inside the
+     clip; the 16 px it reaches over the backend badge costs nothing, that chip
+     being a readout with no click of its own.
+
+     The block axis is only free because `.nx-header-chips` is `overflow-y:
+     visible` (shell.css) - under the `overflow: hidden` it used to have, this
+     44 px was clipped to the row's 26 px and the target was never real. */
+  right: 0;
+  top: 50%;
+  width: 44px;
+  height: 44px;
+  transform: translateY(-50%);
+}
+
+/* -------------------------------------------------------- monitor tab dot */
+
+/* The unseen-error badge on the MONITOR tab and rail button (review #12). It
+   is a COUNT, not only a dot: "3" says three errors have scrolled past while
+   the log was closed, which a dot cannot. Positioned like `.nx-tab-dot` so the
+   two badges cannot drift apart, but square-ish and unanimated - an error that
+   has already happened is not an emergency in progress. */
+.nx-tab-badge {
+  position: absolute;
+  right: 4px;
+  top: 3px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 7px;
+  border: 1px solid var(--bad);
+  background: var(--bg);
+  color: var(--bad);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 12px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}

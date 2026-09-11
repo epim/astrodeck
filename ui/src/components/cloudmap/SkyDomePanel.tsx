@@ -10,12 +10,13 @@
 // that). The frames decide whether tonight is worth exposing; this says WHERE
 // in the sky the cloud is, which no scalar forecast can express.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 
 import { getCloudmap, getCloudmapAt, getCloudmapDome,
          type CloudmapAt, type CloudmapDome, type CloudmapStatus } from "../../api/cloudmap";
 import { ageWords, domeGapFraction, domeStatus, occlusionWord } from "../../lib/domeProjection";
 import { Panel } from "../ui";
-import { SkyDome } from "./SkyDome";
+import { SkyDome, type DomeGeometry } from "./SkyDome";
 import { altAzOf } from "../../lib/altaz";
 import { getResumeArm, getSession } from "../../api/sessions";
 import { useSequence, useSite } from "../../store";
@@ -55,9 +56,38 @@ const AGE_TICK_MS = 15_000;
  *  fresher. */
 const ASSUMED_STALE_AFTER_S = 3 * 10 * 60;
 
-export function SkyDomePanel({ pointing, target }: {
+/** What an overlay is handed. The geometry is the canvas's own -- including the
+ *  yaw, which stays PRIVATE state here (see `yawDeg` below) and reaches a
+ *  second renderer only through the geometry the canvas actually painted with.
+ *  `grid` is null unless there are rows worth drawing, and `stale` is the same
+ *  flag that makes the cloud recede, so an overlay can decline to extrapolate a
+ *  granule the panel has already stopped believing. */
+export interface DomeOverlayArgs {
+  geom: DomeGeometry;
+  grid: CloudmapDome | null;
+  stale: boolean;
+}
+
+export function SkyDomePanel({ pointing, target, overlay, height = 280, onGeometry,
+                              chrome = "panel" }: {
   pointing?: { alt: number; az: number } | null;
   target?: { alt: number; az: number; name?: string } | null;
+  /** Drawn over the dome canvas, in its own projection. Absent = the panel is
+   *  exactly what it was before this prop existed. */
+  overlay?: (o: DomeOverlayArgs) => ReactNode;
+  height?: number;
+  onGeometry?: (g: DomeGeometry) => void;
+  /** Who draws the frame around all this.
+   *
+   *  `panel` is the legacy `Panel` - a bordered section titled "Sky dome" -
+   *  and it is the DEFAULT so `#/classic`'s monitor grid renders byte for byte
+   *  what it always has. The next UI mounts this inside its own `Card`, which
+   *  already carries a SKYDOME label and a border, so `panel` there drew a
+   *  second title inside a second box. `bare` drops the wrapper and NOTHING
+   *  else: the freshness chip keeps its own line, because "9m old" is the one
+   *  thing in that header the caller's title cannot say and losing it would
+   *  leave an old granule looking like a current one. */
+  chrome?: "panel" | "bare";
 }) {
   const [status, setStatus] = useState<CloudmapStatus | null>(null);
   const [dome, setDome] = useState<CloudmapDome | null>(null);
@@ -204,16 +234,8 @@ export function SkyDomePanel({ pointing, target }: {
   const beamRatio = cellM && beamM && beamM > 0 ? cellM / beamM : null;
 
 
-  return (
-    <Panel
-      className="col-span-full sm:col-span-2 lg:col-span-6"
-      title="Sky dome"
-      right={
-        <span className="text-[10px] text-dim">
-          {st.chip}
-        </span>
-      }
-    >
+  const body = (
+    <>
       <SkyDome
         grid={gridUsable ? dome : null}
         pointing={pointing}
@@ -225,7 +247,11 @@ export function SkyDomePanel({ pointing, target }: {
                        : serverReason ?? "waiting for a granule"}
         stale={st.stale}
         staleNote={st.kind === "dead" ? "feed down" : ageWords(ageS) ?? undefined}
-        height={280}
+        height={height}
+        onGeometry={onGeometry}
+        overlay={overlay
+          ? (g) => overlay({ geom: g, grid: gridUsable ? dome : null, stale: st.stale })
+          : undefined}
       />
 
       {/* THE PAN IS INVISIBLE WITHOUT THIS. A canvas that happens to respond to
@@ -347,7 +373,7 @@ export function SkyDomePanel({ pointing, target }: {
           // patch of cloud and the answer above is averaged over 2.9 km of it.
           <p className="text-dim">
             one cell is {beamRatio.toFixed(0)}x the beam ({(cellM / 1000).toFixed(1)} km
-            vs {beamM.toFixed(0)} m) &mdash; a gap narrower than that cannot show
+            vs {beamM.toFixed(0)} m) - a gap narrower than that cannot show
             up above
           </p>
         )}
@@ -365,10 +391,37 @@ export function SkyDomePanel({ pointing, target }: {
         )}
 
         <p className="text-dim text-[10px]">
-          Modelled from {status?.credit?.source ?? "NOAA GOES"}. Advisory only &mdash;
+          Modelled from {status?.credit?.source ?? "NOAA GOES"}. Advisory only -
           nothing in the sequencer reads it.
         </p>
       </div>
+    </>
+  );
+
+  if (chrome === "bare") {
+    return (
+      <div data-dome-bare="">
+        {/* The chip, and only the chip. See the `chrome` prop: the caller owns
+            the title and the border, but nobody except this component knows
+            whether the granule under the dome is fresh, stale, or a feed that
+            stopped answering three minutes ago. */}
+        <div className="mb-1 flex justify-end text-[10px] text-dim">{st.chip}</div>
+        {body}
+      </div>
+    );
+  }
+
+  return (
+    <Panel
+      className="col-span-full sm:col-span-2 lg:col-span-6"
+      title="Sky dome"
+      right={
+        <span className="text-[10px] text-dim">
+          {st.chip}
+        </span>
+      }
+    >
+      {body}
     </Panel>
   );
 }

@@ -1,0 +1,629 @@
+/* =====================================================================
+   shell.css - the LAYOUT classes for the new front end's chrome.
+
+   Why this file exists and next.css does not carry these rules: next.css is
+   T0.2's file and owns the PRIMITIVES (a button, a pill, a sheet frame). The
+   shell owns the regions those primitives sit in - the root grid, the header,
+   the tab bar, the rail, the sheet host, the session column, the toast stack
+   and the confirm card. Splitting them by owner keeps two tasks off one file;
+   splitting them by KIND keeps "what a control looks like" separate from
+   "where the screen puts it", which is the line the three breakpoints move.
+
+   Same rules as next.css (ARCHITECTURE.md section 7): nx- prefix, one flat
+   class per selector, variants on data-* attributes, unlayered so Tailwind
+   utilities do not outrank it, every colour from an index.css token. Imported
+   once, by NextApp.tsx, beside next.css.
+   ===================================================================== */
+
+/* ------------------------------------------------------------------- root */
+
+.nx-app {
+  height: 100%;
+  display: flex;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "IBM Plex Sans", system-ui, sans-serif;
+  overflow: hidden;
+}
+
+/* Phone: one column, tab bar at the foot. */
+.nx-app[data-bp="phone"] { flex-direction: column; }
+
+/* Tablet and desktop: the rail is a sibling column on the left. */
+.nx-app[data-bp="tablet"],
+.nx-app[data-bp="desktop"] { flex-direction: row; }
+
+/* The hub column: header, banners, strip, sub-nav, body. */
+.nx-col {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.nx-app[data-bp="desktop"] .nx-col { max-width: 1100px; }
+
+/* ----------------------------------------------------------------- header */
+
+.nx-header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: calc(8px + env(safe-area-inset-top)) 16px 8px;
+  min-height: 44px;
+}
+
+.nx-app[data-bp="phone"] .nx-header {
+  /* The design's 58 px top inset is the iOS standalone status bar. In a browser
+     tab there is no inset to clear and 58 px of nothing is a stolen row, so the
+     inset is asked for rather than assumed. */
+  padding-top: calc(10px + env(safe-area-inset-top));
+}
+
+.nx-header-chips {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  /* `clip` rather than `hidden`, and only on the inline axis. `hidden` clipped
+     the night control's 44 px touch pseudo-element down to this row's 26 px -
+     the hit target `boundary.css` says it has never actually had one. `clip`
+     is the one overflow value that does NOT force the other axis to `auto`, so
+     the block axis can stay `visible` and let that target reach into the
+     header's own padding, while the inline axis still clips an over-wide row
+     from the left instead of widening the app. */
+  overflow-x: clip;
+  overflow-y: visible;
+}
+
+/* WIDTH POLICY: a chip is WHOLE OR ABSENT, and the ROW is what sheds.
+   Measured at 390x844 before this rule (probe screenshot, admin AND viewer):
+   `flex-shrink: 1` on the chips plus `.nx-pill-text { text-overflow: ellipsis }`
+   in next.css gave every chip a haircut at the same time - "CAM ...",
+   "MOUNT...", "S...", "D" for an admin, "C...", "MO...", "S.", "V..." for a
+   viewer - so the row cost its full 390 px and carried none of its payload. An
+   ellipsised readout is strictly worse than a dropped one: it still takes the
+   width, and the three characters it leaves are not a temperature, a mount
+   state, a backend or a role.
+
+   This does NOT bring back the 382 px app-wide floor. `.nx-header-chips` keeps
+   `min-width: 0` and clips its inline axis above, so an over-wide row is cut by
+   the container (from the LEFT, the row being end-justified, which is why the
+   night control is last) instead of widening the app. The floor is the
+   wordmark, and only the wordmark. */
+.nx-header-chips > * { flex-shrink: 0; white-space: nowrap; }
+
+/* ...and the text inside a chip that never shrinks has nothing to ellipsise,
+   so say so rather than leaving a dormant `text-overflow` to fire the moment
+   some future rule reintroduces shrinking. */
+.nx-header-chips .nx-pill-text { overflow: visible; text-overflow: clip; }
+
+/* The wordmark is the ONE item in this row allowed to be clipped rather than
+   dropped, so it is the one item that gets `min-width: 0` - a flex item's
+   `auto` minimum would otherwise let nine letters set the header's floor. */
+.nx-header-wordmark { min-width: 0; overflow: hidden; }
+
+/* --- what the row sheds, in order, as the glass narrows ------------------- */
+
+/* 1. The mount's state word. The design's own phone screenshots (01/07/13)
+      show `MOUNT`, not `MOUNT TRACK`; the LED beside it already carries the
+      tone, and the chip's tablet+ form still spells it out. */
+.nx-app[data-bp="phone"] .nx-mount-state { display: none; }
+
+/* 2. The wordmark's tracking, exactly as the classic header already does it
+      (App.tsx: `tracking-[0.14em] sm:tracking-[0.3em]`). Nine letters at .22em
+      spend 8 px on air. */
+.nx-app[data-bp="phone"] .nx-header-wordmark { letter-spacing: .14em; }
+
+/* 3. The flows pill's COUNT, when this session is also carrying a role chip.
+      `data-dense` is set by `Header.tsx` and is the only thing about this row
+      that varies per USER rather than per WIDTH - a viewer at 390 px has one
+      more chip than an admin at 390 px, so no media query can see it. The
+      glyph stays: the shortcut is still tappable, it just stops reporting a
+      number that the Flows screen repeats one tap later. */
+.nx-app[data-bp="phone"] .nx-header-chips[data-dense="true"] .nx-flows-pill .nx-pill-text {
+  display: none;
+}
+
+/* 4. The flows pill itself. It is the only element in this row that is a
+      SHORTCUT rather than a READOUT - Flows is two taps away in the tab bar,
+      whereas nothing else on the screen you are on tells you the sensor is at
+      -10 degrees - so it goes before any readout is touched. Thresholds are
+      measured, not guessed: a dense (role-chip) row runs out of width below
+      400 px, so it loses the pill at 390; a plain admin row not until 360. */
+@media (max-width: 399px) {
+  .nx-app[data-bp="phone"] .nx-header-chips[data-dense="true"] .nx-flows-pill { display: none; }
+}
+@media (max-width: 359px) {
+  .nx-app[data-bp="phone"] .nx-flows-pill { display: none; }
+}
+
+/* 5. And the row's own air, last, because it costs every chip a little rather
+      than costing one chip everything. A phone header is a dense strip: 5 px
+      between chips and 6 px inside them instead of 6 and 8. Measured: that is
+      24 px on a viewer's five-chip row at 390 px, which is the difference
+      between `CAM -10°` reading whole and losing its left edge to the clip. */
+.nx-app[data-bp="phone"] .nx-header-chips { gap: 5px; }
+.nx-app[data-bp="phone"] .nx-header-chips .nx-pill { padding-inline: 6px; }
+
+/* ...and one notch tighter again below 360 px, where even the four readouts
+   alone do not fit: measured at 320 px, the row was 3.9 px over and the camera
+   chip lost its left border to the clip. 4 px of gap and 5 px of pill padding
+   give it back with room to spare, and take the worst case - a six-character
+   backend badge (`ALPACA` / `NATIVE`) instead of `SIM` - from a 22 px bite out
+   of the camera chip to an 11 px one. */
+@media (max-width: 359px) {
+  .nx-app[data-bp="phone"] .nx-header-chips { gap: 4px; }
+  .nx-app[data-bp="phone"] .nx-header-chips .nx-pill { padding-inline: 5px; }
+
+  /* 6. And below 360 px a row that also carries a role chip is 49 px short
+        even after all of the above, so one whole chip has to go rather than be
+        sliced. It is the role chip, and the reason is that the alternative is
+        WORSE THAN MISSING: measured at 320 px as a viewer before this rule,
+        the clip cut the camera chip 49 px in and left it reading "10°" - a
+        temperature with its minus sign shaved off, which is not a degraded
+        readout, it is a wrong one. The role is still stated everywhere it
+        changes what happens: every locked control carries its own read-only
+        badge, and Settings names the signed-in principal. What it stops being
+        is the thing that costs the sensor temperature its sign. */
+  .nx-app[data-bp="phone"] .nx-header-chips[data-dense="true"] .nx-role-chip { display: none; }
+}
+
+.nx-chip-led {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--nx-tone);
+  flex-shrink: 0;
+}
+
+.nx-chip-led[data-led="off"] { background: transparent; border: 1.5px solid var(--text-faint); }
+.nx-chip-led[data-pulse="true"] { animation: nx-pulse var(--nx-pulse, 1400ms) ease-in-out infinite; }
+
+/* ---------------------------------------------------------------- banners */
+
+.nx-banners {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 16px 8px;
+}
+
+/* --------------------------------------------------------- campaign strip */
+
+.nx-camp {
+  flex-shrink: 0;
+  margin: 0 16px 8px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  min-height: 44px;
+  border-radius: var(--nx-r-btn, 12px);
+  border: 1px solid color-mix(in srgb, var(--accent-dim) 50%, transparent);
+  background: color-mix(in srgb, var(--accent-dim) 10%, transparent);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10.5px;
+}
+
+.nx-camp-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent-dim);
+  flex-shrink: 0;
+  animation: nx-pulse var(--nx-pulse, 1400ms) ease-in-out infinite;
+}
+
+.nx-camp-tag {
+  font-family: "Chakra Petch", sans-serif;
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: .16em;
+  color: var(--accent-dim);
+  white-space: nowrap;
+}
+
+.nx-camp-line {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.nx-camp-chev { color: var(--text-faint); font-size: 12px; flex-shrink: 0; }
+
+/* ------------------------------------------------------------------- body */
+
+.nx-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0 16px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.nx-app[data-bp="phone"] .nx-body { padding-bottom: 24px; }
+
+/* ---------------------------------------------------------------- tab bar */
+
+.nx-tabbar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--line);
+  background: var(--bg);
+  position: relative;
+  z-index: 4;
+}
+
+.nx-tab {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 44px;
+  height: 44px;
+  border-radius: var(--nx-r-btn, 12px);
+  border: 0;
+  background: transparent;
+  color: var(--text-faint);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  cursor: pointer;
+  padding: 0 8px;
+  overflow: hidden;
+}
+
+.nx-tab[data-active="true"] {
+  flex: 2 1 0;
+  background: var(--accent-fill);
+  color: var(--accent);
+}
+
+.nx-tab-label {
+  font-family: "Chakra Petch", sans-serif;
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: .14em;
+  white-space: nowrap;
+}
+
+.nx-tab-dot,
+.nx-rail-dot {
+  position: absolute;
+  right: 6px;
+  top: 6px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  animation: nx-pulse var(--nx-pulse, 1400ms) ease-in-out infinite;
+}
+
+/* ------------------------------------------------------------------- rail */
+
+.nx-rail {
+  flex-shrink: 0;
+  width: 72px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 6px calc(10px + env(safe-area-inset-bottom));
+  border-right: 1px solid var(--line);
+  background: var(--bg);
+  overflow-y: auto;
+}
+
+.nx-rail-btn {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 56px;
+  border-radius: var(--nx-r-btn, 12px);
+  border: 0;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+  padding: 6px 2px;
+}
+
+.nx-rail-btn[data-active="true"] { background: var(--accent-fill); color: var(--accent); }
+
+.nx-rail-label {
+  font-family: "Chakra Petch", sans-serif;
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: .1em;
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------- sheet host */
+
+/* Phone: a full layer over the hub. The sheet under the top one stays MOUNTED
+   (its scroll position, its half-typed field and its in-flight request all
+   survive a BACK) but goes `inert`, so nothing under the glass answers a tap. */
+.nx-sheet-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  background: var(--bg);
+}
+
+.nx-sheet-slot { position: absolute; inset: 0; display: flex; }
+.nx-sheet-slot[data-under="true"] { visibility: hidden; }
+
+/* Tablet and desktop: a 420 px panel beside the hub, not over it.
+   `position: relative` makes this element the containing block for the
+   `.nx-sheet-slot` it holds. `.nx-sheet-slot` is `position: absolute; inset: 0`
+   for the PHONE layer (`.nx-sheet-layer` is `position: fixed`), and without a
+   positioned ancestor here that `inset: 0` resolves against the initial
+   containing block instead - the slot (and the sheet inside it) span the full
+   viewport from x=0, covering the rail and the hub column beside this panel.
+   `min-width: 0` on the slot stops a wide sheet body from stretching this
+   420 px panel out past its own width. */
+.nx-sheet-panel {
+  position: relative;
+  flex-shrink: 0;
+  width: 420px;
+  max-width: 44vw;
+  display: flex;
+  border-left: 1px solid var(--line);
+  background: var(--bg);
+}
+
+.nx-sheet-panel .nx-sheet-slot { min-width: 0; }
+
+/* --------------------------------------------------------- session column */
+
+.nx-session-col {
+  flex-shrink: 0;
+  width: 360px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border-left: 1px solid var(--line);
+  background: var(--bg);
+  overflow-y: auto;
+}
+
+.nx-session-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* ----------------------------------------------------------------- toasts */
+
+.nx-toasts {
+  position: fixed;
+  z-index: 45;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.nx-app[data-bp="phone"] .nx-toasts,
+.nx-toasts[data-bp="phone"] { top: calc(12px + env(safe-area-inset-top)); left: 16px; right: 16px; }
+.nx-toasts[data-bp="tablet"],
+.nx-toasts[data-bp="desktop"] { bottom: 24px; right: 24px; width: 360px; }
+
+.nx-toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: var(--nx-r-btn, 12px);
+  background: var(--bg-raise);
+  border: 1px solid var(--nx-tone);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.45;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, .5);
+}
+
+.nx-toast-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.nx-toast-title { color: var(--text); }
+.nx-toast-detail { color: var(--text-dim); font-size: 11.5px; }
+.nx-toast-level {
+  font-family: "Chakra Petch", sans-serif;
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: .14em;
+  color: var(--nx-tone);
+  flex-shrink: 0;
+}
+.nx-toast-x {
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  margin: -10px -10px -10px 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+  font-size: 14px;
+}
+.nx-toast-action { align-self: flex-start; }
+
+/* ----------------------------------------------------------- confirm card */
+
+.nx-confirm-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgba(6, 7, 11, .72);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 0 12px calc(44px + env(safe-area-inset-bottom));
+}
+
+.nx-confirm-card {
+  width: 100%;
+  max-width: 440px;
+  border: 1px solid var(--line-bright);
+  border-radius: 18px;
+  background: var(--bg-raise);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, .6);
+}
+
+.nx-confirm-card[data-tone="danger"] { border-color: var(--bad); }
+.nx-confirm-card[data-tone="warn"] { border-color: var(--warn); }
+
+.nx-confirm-title {
+  font-family: "Chakra Petch", sans-serif;
+  font-weight: 600;
+  font-size: 12px;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+
+.nx-confirm-body { font-size: 12.5px; color: var(--text-dim); line-height: 1.5; }
+.nx-confirm-row { display: flex; gap: 8px; }
+.nx-confirm-row > * { flex: 1; }
+
+.nx-confirm-btn {
+  flex: 1;
+  height: 48px;
+  border-radius: var(--nx-r-btn, 12px);
+  border: 1px solid var(--line-bright);
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Chakra Petch", sans-serif;
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: .12em;
+  cursor: pointer;
+}
+
+.nx-confirm-btn[data-kind="ok"] {
+  border-color: var(--accent);
+  background: var(--accent-fill);
+  color: var(--accent);
+}
+
+.nx-confirm-btn[data-kind="danger"] {
+  border-color: var(--bad);
+  background: var(--bad);
+  color: var(--accent-ink);
+}
+
+.nx-hold {
+  position: relative;
+  overflow: hidden;
+  flex: 1;
+  height: 48px;
+  border-radius: var(--nx-r-btn, 12px);
+  border: 1px solid var(--bad);
+  background: transparent;
+  color: var(--bad);
+  font-family: "Chakra Petch", sans-serif;
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: .12em;
+  cursor: pointer;
+  touch-action: none;
+}
+
+.nx-hold-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: color-mix(in srgb, var(--bad) 35%, transparent);
+  transition: width 80ms linear;
+  pointer-events: none;
+}
+
+.nx-hold-text { position: relative; }
+
+/* ------------------------------------------------------- splash and login */
+
+.nx-gate {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px 16px;
+  overflow-y: auto;
+}
+
+.nx-gate-note {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10.5px;
+  letter-spacing: .18em;
+  color: var(--text-faint);
+  text-transform: uppercase;
+}
+
+.nx-gate-sheet { width: 100%; max-width: 420px; display: flex; }
+
+/* ------------------------------------------------------ brightness hatch */
+
+/* Deliberately NOT inside .dim-content: the reset for a screen dimmed to the
+   floor must not itself be dimmed to the floor. */
+.nx-bright-reset {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(84px + env(safe-area-inset-bottom));
+  z-index: 46;
+  min-height: 44px;
+  padding: 0 14px;
+  border-radius: var(--nx-r-pill, 999px);
+  border: 1px solid var(--line-bright);
+  background: var(--bg-raise);
+  color: var(--text);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10.5px;
+  cursor: pointer;
+}
+
+/* ---------------------------------------------------------------- utility */
+
+.nx-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nx-camp-dot,
+  .nx-chip-led[data-pulse="true"],
+  .nx-tab-dot,
+  .nx-rail-dot { animation: none; }
+  .nx-hold-fill { transition: none; }
+}

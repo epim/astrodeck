@@ -9,15 +9,20 @@
 // three-character query ("604"). These three helpers are the one place that
 // null/undefined case is handled, so no render site has to remember it.
 
+/** The app's placeholder for a value nobody has published - a hyphen pair,
+ *  never an em-dash (ARCHITECTURE.md copy rule #5), matching the same
+ *  placeholder `next/lib/format.ts`'s `fmtDeg`/`fmtPct` already use. */
+const NO_VALUE = "--";
+
 /** "12.3", or the app's placeholder for a value nobody has published. */
 export function fmtMag(mag: number | null | undefined): string {
-  return mag == null ? "—" : mag.toFixed(1);
+  return mag == null ? NO_VALUE : mag.toFixed(1);
 }
 
 /** "55°", or the placeholder for a caller without view.site_derived (no
  *  alt/az on the row at all). */
 export function fmtAlt(alt: number | null | undefined): string {
-  return alt == null ? "—" : `${alt.toFixed(0)}°`;
+  return alt == null ? NO_VALUE : `${alt.toFixed(0)}°`;
 }
 
 /** Tone class for an altitude cell/badge: low glyph-red under 20°, good above

@@ -56,14 +56,23 @@ const FMT: Record<OpticsKey, (v: unknown) => string> = {
   auto_from_camera: (v) => (v ? "on" : "off"),
   guide_focal_length_mm: (v) => `${v} mm`,
   telescope_name: (v) => `“${v}”`,
+  aperture_mm: (v) => `${v} mm`,
+  reducer: (v) => `${v}x`,
 };
 
 /** The override banner is the answer to "what is my rig actually using", so it
- *  lists ALL SEVEN fields rather than the handful the user was looking at —
+ *  lists ALL NINE fields rather than the handful the user was looking at —
  *  the whole point of the whole-block swap is that it reaches fields nobody
  *  thought they were changing. Ordered as the form reads, not as the model
- *  declares. */
-const BANNER_KEYS: [OpticsKey, string][] = [
+ *  declares.
+ *
+ *  `aperture_mm` and `reducer` joined `OPTICS_KEYS` when wave 2 moved them onto
+ *  the rig, and this list did not follow — so a profile that swapped the block
+ *  changed the aperture and the reducer and the banner did not say so, which is
+ *  the one thing it exists to do. They are DISPLAY rows only: this panel still
+ *  writes the seven fields its form has, and the two new ones are edited in the
+ *  next UI's Optics sheet. */
+export const BANNER_KEYS: [OpticsKey, string][] = [
   ["focal_length_mm", "Focal length"],
   ["telescope_name", "Telescope name"],
   ["auto_from_camera", "Sensor from camera"],
@@ -71,6 +80,8 @@ const BANNER_KEYS: [OpticsKey, string][] = [
   ["sensor_width_px", "Sensor width"],
   ["sensor_height_px", "Sensor height"],
   ["guide_focal_length_mm", "Guide scope focal length"],
+  ["aperture_mm", "Aperture"],
+  ["reducer", "Reducer"],
 ];
 
 export default function OpticsPanel(): JSX.Element {
@@ -177,7 +188,7 @@ export default function OpticsPanel(): JSX.Element {
 
       {/* ------------------------------------------- the profile-override banner
           Stated ONCE, at the top, because the override is one fact about the
-          whole panel rather than seven facts about seven fields: a profile
+          whole panel rather than nine facts about nine fields: a profile
           optics block is swapped WHOLE, so a profile that only meant to change
           a focal length also reverts the pixel size to ITS default. Enumerating
           the differing keys is the part that carries information — "overridden"

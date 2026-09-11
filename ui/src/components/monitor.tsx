@@ -802,7 +802,7 @@ export function HealthStrip({
       return (
         <div className="flex items-center gap-1.5 flex-wrap text-xs text-dim" role="status">
           <Icon name="info" size={13} className="shrink-0" />
-          <span>No faults reported — but weather monitoring is off, so nothing is watching the sky.</span>
+          <span>No faults reported - but weather monitoring is off, so nothing is watching the sky.</span>
           {onEnableWeather && (
             <button
               type="button"

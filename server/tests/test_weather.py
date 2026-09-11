@@ -183,6 +183,12 @@ from astrodeck.weather import (ASTROSPHERIC_INTERVAL_S,  # noqa: E402
 
 BASE = 1_700_000_000.0 - (1_700_000_000.0 % 900.0)   # 15-min-aligned anchor
 
+#: The GET /api/weather key set as spec §7 fixed it, before anything was added
+#: to it. Every later key is an addition on top of these; none of these may go.
+SPEC_7_KEYS = {"enabled", "fetched_ts", "stale", "ignore_tonight",
+               "threshold_pct", "sustain_minutes", "site_lat", "site_lon",
+               "forecast", "astrospheric", "alert"}
+
 
 def _iso_minute(ts: float) -> str:
     """Open-Meteo minutely_15 time format: ISO-8601 to the minute, no zone
@@ -242,6 +248,7 @@ class _FakeWxClient:
     om_calls = 0
     astro_calls = 0
     last_astro_body = None
+    last_om_params: dict | None = None
 
     def __init__(self, *a, **k):
         pass
@@ -254,6 +261,7 @@ class _FakeWxClient:
 
     async def get(self, url, params=None):
         type(self).om_calls += 1
+        type(self).last_om_params = dict(params or {})
         if type(self).fail_om:
             raise httpx.ConnectError("down")
         return _FakeJsonResp(type(self).om_payload)
@@ -303,6 +311,7 @@ def svc(tmp_path, monkeypatch):
     _FakeWxClient.fail_om = _FakeWxClient.fail_astro = False
     _FakeWxClient.om_calls = _FakeWxClient.astro_calls = 0
     _FakeWxClient.last_astro_body = None
+    _FakeWxClient.last_om_params = None
     monkeypatch.setattr(WeatherService, "_tonight", lambda self, t: None)
     # #200: the Astrospheric client is inert until this instance has
     # acknowledged their terms. Isolated to tmp_path (a developer's real
@@ -474,9 +483,12 @@ async def test_payload_shape_matches_spec_7(svc):
     _FakeWxClient.om_payload = _om_payload([1, 2, 3, 4])
     await s.tick()
     p = s.payload(now["t"])
-    assert set(p) == {"enabled", "fetched_ts", "stale", "ignore_tonight",
-                      "threshold_pct", "sustain_minutes", "site_lat",
-                      "site_lon", "forecast", "astrospheric", "alert"}
+    # The spec §7 key set, snapshotted BEFORE the surface fields were added
+    # (2026-09-10, S2). It is asserted as a SUBSET, not an equality: this
+    # payload is additive by contract, so a new key is allowed and a
+    # disappeared one is not.
+    assert SPEC_7_KEYS <= set(p), sorted(SPEC_7_KEYS - set(p))
+    assert set(p) - SPEC_7_KEYS == {"surface", "now"}
     assert p["enabled"] is True and p["ignore_tonight"] is False
     assert p["threshold_pct"] == 50 and p["sustain_minutes"] == 30
     f = p["forecast"]
@@ -628,11 +640,14 @@ async def test_night_warning_latch_once_per_night_and_reset(svc, monkeypatch):
     # B log rule: times + percentages ONLY — never coordinates
     assert "34.2" not in warn_logs[0] and "118.1" not in warn_logs[0]
     # #228: the window is quoted in LOCAL time. It used to be formatted in UTC
-    # and labelled "tonight", so on 2026-08-11 an operator read "09:15–12:15"
-    # — mid-morning, hours after dawn — for the window the modal correctly
-    # showed as 02:15–05:15. Same window, seven hours apart, printed beside a
+    # and labelled "tonight", so on 2026-08-11 an operator read "09:15-12:15"
+    # - mid-morning, hours after dawn - for the window the modal correctly
+    # showed as 02:15-05:15. Same window, seven hours apart, printed beside a
     # log stamp that events.py renders in local time.
-    expect = (f"{time.strftime('%H:%M', time.localtime(BASE + 16 * 900))}–"
+    #
+    # T-R7-21a item 22: the separator is a HYPHEN now. It was an EN DASH, the
+    # one character the house copy rule forbids, and this assertion pinned it.
+    expect = (f"{time.strftime('%H:%M', time.localtime(BASE + 16 * 900))}-"
               f"{time.strftime('%H:%M', time.localtime(BASE + 19 * 900))}")
     assert expect in warn_logs[0], (
         f"banner says {warn_logs[0]!r}; local window is {expect}")
@@ -668,3 +683,219 @@ async def test_no_night_means_no_warning_evaluation(svc):
     assert s.payload(now["t"])["alert"] is None
     assert not [m for lvl, m, src in rec.logs
                 if "high cloud forecast tonight" in m]
+
+
+# ================================================= surface conditions (S2)
+# Temperature, dew point, humidity, the 10 m wind and the derived cloud base,
+# fetched in the SAME Open-Meteo call as the pressure-level winds and served
+# as the hourly `surface` block plus the single `now` reading.
+
+
+def _surface_block(*, start: float = BASE, hours: int = 6,
+                   temp=None, dew=None, humidity=None, wind=None,
+                   direction=None, gust=None, names: dict | None = None) -> dict:
+    """An Open-Meteo `hourly` block carrying the surface fields.
+
+    `names` renames a requested field to one of its accepted aliases, so a body
+    written in the other spelling can be shown to parse identically.
+    """
+    from datetime import datetime, timezone
+    stamps = [
+        datetime.fromtimestamp(start + i * 3600.0, tz=timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M")
+        for i in range(hours)]
+    block: dict = {"time": stamps}
+    series = {
+        "temperature_2m": temp if temp is not None else [15.0] * hours,
+        "dewpoint_2m": dew if dew is not None else [11.0] * hours,
+        "relativehumidity_2m": humidity if humidity is not None else [77] * hours,
+        "windspeed_10m": wind if wind is not None else [12.0] * hours,
+        "winddirection_10m": direction if direction is not None else [230.0] * hours,
+        "windgusts_10m": gust if gust is not None else [25.0] * hours,
+    }
+    for key, vals in series.items():
+        block[(names or {}).get(key, key)] = vals
+    return block
+
+
+_SURFACE_KW = {"hours", "temp", "dew", "humidity", "wind", "direction",
+               "gust", "names"}
+
+
+def _om_payload_with_surface(cloud, **kw) -> dict:
+    """The minutely_15 cloud body every other test uses, plus the hourly
+    surface block. Two blocks, one response, one connection."""
+    surface_kw = {k: kw.pop(k) for k in list(kw) if k in _SURFACE_KW}
+    start = kw.get("start", BASE)
+    out = _om_payload(cloud, **kw)
+    out["hourly"] = _surface_block(start=start, **surface_kw)
+    return out
+
+
+def test_cloud_base_is_the_lifting_condensation_estimate():
+    """125 m per degree of spread, clamped at zero, None on a missing input.
+
+    15 C over an 11 C dew point is a 4 degree spread: 500 m.
+    """
+    assert weather_mod.cloud_base_m(15.0, 11.0) == 500.0
+    assert weather_mod.cloud_base_m(11.0, 11.0) == 0.0
+    # Saturated and then some (a fog/inversion reading) is not negative height.
+    assert weather_mod.cloud_base_m(9.0, 11.0) == 0.0
+    assert weather_mod.cloud_base_m(None, 11.0) is None
+    assert weather_mod.cloud_base_m(15.0, None) is None
+
+
+async def test_the_forecast_request_asks_for_the_surface_fields(svc):
+    """Read off the params the FETCHER built, not off a list rebuilt here.
+
+    The fake client answers with a canned body whether or not the request asked
+    for anything, so a surface field silently dropped from `hourly=` would show
+    up nowhere else: every other assertion in this file would still pass while
+    the rig fetched nothing. This is the only test that can see it.
+    """
+    s, now, store, rec = svc
+    await s.tick()
+    hourly = (_FakeWxClient.last_om_params or {}).get("hourly", "").split(",")
+    for name in ("temperature_2m", "dewpoint_2m", "relativehumidity_2m",
+                 "windspeed_10m", "winddirection_10m", "windgusts_10m"):
+        assert name in hourly, name
+    # ... and the pressure levels the cloud model corroborates against are
+    # still in the same request. Appended, not substituted.
+    for level in weather_mod.WIND_LEVELS_HPA:
+        assert "wind_speed_%dhPa" % level in hourly
+    # km/h and Celsius are Open-Meteo's defaults; this request must not have
+    # started overriding them, or every number above changes meaning silently.
+    params = _FakeWxClient.last_om_params or {}
+    assert "windspeed_unit" not in params and "wind_speed_unit" not in params
+    assert "temperature_unit" not in params
+
+
+async def test_surface_series_parse_and_ride_the_payload(svc):
+    s, now, store, rec = svc
+    _FakeWxClient.om_payload = _om_payload_with_surface(
+        [1, 2, 3, 4], hours=4,
+        temp=[15.0, 16.0, 17.0, 18.0], dew=[11.0, 11.0, 12.0, 12.0],
+        humidity=[77, 72, 70, 68], wind=[12.0, 14.0, 16.0, 18.0],
+        direction=[230.0, 240.0, 250.0, 370.0], gust=[25.0, 26.0, 27.0, 28.0])
+    await s.tick()
+    sfc = s.payload(now["t"])["surface"]
+    assert set(sfc) == {"times", "temp_c", "dewpoint_c", "humidity_pct",
+                        "wind_kmh", "wind_dir_deg", "gust_kmh", "cloud_base_m"}
+    assert sfc["times"][0] == weather_mod._iso_z(BASE)
+    assert sfc["temp_c"] == [15.0, 16.0, 17.0, 18.0]
+    assert sfc["dewpoint_c"] == [11.0, 11.0, 12.0, 12.0]
+    assert sfc["humidity_pct"] == [77.0, 72.0, 70.0, 68.0]
+    assert sfc["wind_kmh"] == [12.0, 14.0, 16.0, 18.0]
+    assert sfc["gust_kmh"] == [25.0, 26.0, 27.0, 28.0]
+    # wind direction is wrapped into 0-360, like the pressure-level column
+    assert sfc["wind_dir_deg"] == [230.0, 240.0, 250.0, 10.0]
+    # cloud base is derived per hour from that hour's own spread
+    assert sfc["cloud_base_m"] == [500.0, 625.0, 625.0, 750.0]
+    # every series is parallel to the times, so an index means one hour
+    assert all(len(sfc[k]) == len(sfc["times"]) for k in sfc if k != "times")
+
+
+async def test_the_surface_fields_are_optional_all_the_way_down(svc):
+    """A body with no hourly block at all -- every fixture written before S2 --
+    still parses, and answers `surface`/`now` with null rather than raising or
+    zeroing. An absent reading is not a calm, dry, 0 C night."""
+    s, now, store, rec = svc
+    _FakeWxClient.om_payload = _om_payload([1, 2, 3, 4])      # no `hourly` key
+    await s.tick()
+    p = s.payload(now["t"])
+    assert p["surface"] is None and p["now"] is None
+    assert p["forecast"]["cloud"] == [1, 2, 3, 4]             # untouched
+    # an hourly block with the TIME base but none of the surface variables
+    body = _om_payload([1, 2, 3, 4])
+    body["hourly"] = {"time": _surface_block(hours=3)["time"]}
+    _FakeWxClient.om_payload = body
+    now["t"] += OPEN_METEO_INTERVAL_S
+    await s.tick()
+    p = s.payload(now["t"])
+    assert p["surface"]["temp_c"] == [None, None, None]
+    assert p["surface"]["cloud_base_m"] == [None, None, None]
+    assert p["now"]["temp_c"] is None
+
+
+async def test_the_current_spelling_of_each_field_parses_too(svc):
+    """Open-Meteo's newer names for the same variables. The request asks in the
+    older spelling; a body that answers in either is the same reading."""
+    s, now, store, rec = svc
+    _FakeWxClient.om_payload = _om_payload_with_surface(
+        [0] * 4, hours=2, names={
+            "dewpoint_2m": "dew_point_2m",
+            "relativehumidity_2m": "relative_humidity_2m",
+            "windspeed_10m": "wind_speed_10m",
+            "winddirection_10m": "wind_direction_10m",
+            "windgusts_10m": "wind_gusts_10m"})
+    await s.tick()
+    sfc = s.payload(now["t"])["surface"]
+    assert sfc["dewpoint_c"] == [11.0, 11.0]
+    assert sfc["humidity_pct"] == [77.0, 77.0]
+    assert sfc["wind_kmh"] == [12.0, 12.0]
+    assert sfc["wind_dir_deg"] == [230.0, 230.0]
+    assert sfc["gust_kmh"] == [25.0, 25.0]
+
+
+async def test_now_is_the_nearest_hour_and_says_which_one(svc):
+    s, now, store, rec = svc
+    _FakeWxClient.om_payload = _om_payload_with_surface(
+        [0] * 8, hours=6, temp=[10.0, 11.0, 12.0, 13.0, 14.0, 15.0],
+        dew=[2.0] * 6)
+    await s.tick()
+    # 20 min past the third hour: nearest is index 2, not the newest sample
+    p = s.payload(BASE + 2 * 3600.0 + 20 * 60.0)
+    assert p["now"]["temp_c"] == 12.0
+    assert p["now"]["ts"] == weather_mod._iso_z(BASE + 2 * 3600.0)
+    assert p["now"]["cloud_base_m"] == 1250.0
+    assert set(p["now"]) == {"ts", "temp_c", "dewpoint_c", "humidity_pct",
+                             "wind_kmh", "wind_dir_deg", "gust_kmh",
+                             "cloud_base_m"}
+    # 40 min past it rounds up to the next hour rather than reporting the past
+    assert s.payload(BASE + 2 * 3600.0 + 40 * 60.0)["now"]["temp_c"] == 13.0
+    # and a moment the series does not cover has no reading at all
+    assert s.payload(BASE + 12 * 3600.0)["now"] is None
+    assert s.payload(BASE - 12 * 3600.0)["now"] is None
+
+
+async def test_the_new_keys_carry_no_site_coordinate(svc):
+    """The one coordinate exception in this payload is still exactly
+    site_lat/site_lon (weather.payload docstring). The surface block is a set
+    of readings, not a fix."""
+    s, now, store, rec = svc
+    _FakeWxClient.om_payload = _om_payload_with_surface([0] * 4)
+    await s.tick()
+    p = s.payload(now["t"])
+    for block in (p["surface"], p["now"]):
+        assert block is not None
+        for key in block:
+            assert "lat" not in key and "lon" not in key, key
+    flat = repr(p["surface"]) + repr(p["now"])
+    assert "34.2" not in flat and "118.1" not in flat
+
+
+async def test_the_ws_event_carries_the_surface_reading_too(svc):
+    """One dict feeds both GET /api/weather and the `weather` WS event
+    (api/app.py get_weather / bus.publish). A field that reached only one of
+    them would be a field half the clients never see."""
+    s, now, store, rec = svc
+    _FakeWxClient.om_payload = _om_payload_with_surface([0] * 4)
+    await s.tick()
+    published = [d for t, d in rec.published if t == "weather"]
+    assert published, "a successful refresh publishes"
+    event = published[-1]
+    assert set(event) == set(s.payload(now["t"]))
+    assert event["surface"]["temp_c"][0] == 15.0
+    assert event["now"]["cloud_base_m"] == 500.0
+
+
+async def test_disabled_clears_the_surface_reading_with_everything_else(svc):
+    s, now, store, rec = svc
+    _FakeWxClient.om_payload = _om_payload_with_surface([0] * 4)
+    await s.tick()
+    assert s.payload(now["t"])["surface"] is not None
+    store.cfg().weather.enabled = False
+    now["t"] += 60.0
+    await s.tick()
+    p = s.payload(now["t"])
+    assert p["surface"] is None and p["now"] is None

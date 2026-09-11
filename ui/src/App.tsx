@@ -458,11 +458,17 @@ export default function App() {
     if (!w || !a) return;
     void confirmDialog({
       title: "High cloud forecast tonight",
+      // What follows the forecast is NOT "auto-resume will hold". The engine's
+      // auto-resume veto is rain-only and fail-open (server/astrodeck/weather.py
+      // `veto_reason`: "RAIN VETOES. CLOUD DOES NOT."), after this same gate
+      // refused two consecutive clear nights on a 100% cloud forecast. A cloud
+      // hold is measured in-run, from the rig's own frames.
       body:
         `Forecast peak ${a.peak_pct}% total cloud (${a.dominant_layer} layer ` +
         `dominant) between ${fmtHm(a.start_iso)} and ${fmtHm(a.end_iso)} — ` +
-        `at/above your ${w.threshold_pct}% threshold. Auto-resume will hold ` +
-        `unless "ignore weather tonight" is set.`,
+        `at/above your ${w.threshold_pct}% threshold. The forecast does not ` +
+        `hold a run: a running session holds on what its own frames show, and ` +
+        `only forecast rain inside the hour blocks an auto-resume.`,
       tone: "warn",
       mode: "ok",
     });
@@ -609,7 +615,14 @@ export default function App() {
                     : status.mount.tracking ? "TRACKING" : "IDLE"}
                 </span>
                 <span className="min-w-0 truncate">{status.mount.ra_str} {status.mount.dec_str}</span>
-                <span className="hidden lg:inline shrink-0 whitespace-nowrap">ALT {status.mount.alt.toFixed(0)}°</span>
+                {/* mount.alt is site-derived (redact.py `_MOUNT_DERIVED_KEYS`) and is
+                    ABSENT, not zero, for a principal without view.site_derived (a
+                    viewer) — the type says `number` but the wire does not always agree.
+                    Render nothing for this span rather than throw on `.toFixed` of
+                    undefined, which white-screened the whole classic root. */}
+                {typeof status.mount.alt === "number" && (
+                  <span className="hidden lg:inline shrink-0 whitespace-nowrap">ALT {status.mount.alt.toFixed(0)}°</span>
+                )}
               </>
             )}
             {status?.camera?.temperature != null && (

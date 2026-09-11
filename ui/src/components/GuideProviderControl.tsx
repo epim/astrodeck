@@ -301,7 +301,7 @@ export default function GuideProviderControl({
         {!canConfig && (
           <p className="text-[11px] text-dim inline-flex items-center gap-1.5">
             <Icon name="lock" size={11} aria-hidden />
-            Read-only — changing the guide provider needs{" "}
+            Read-only - changing the guide provider needs{" "}
             {accessPhrase("config.backend")}.
           </p>
         )}

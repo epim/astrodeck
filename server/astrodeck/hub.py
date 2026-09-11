@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from . import cooling
-from .config import (config_store, fov_deg, frames_payload,
+from .config import (config_store, f_ratio, fov_deg, frames_payload,
                      image_scale_arcsec_px, redacted)
 from .persist import read_json_or, write_json_atomic
 from .devices.base import (
@@ -56,7 +56,7 @@ from .imaging import (
     write_wcs,
 )
 from .imaging.processing import frame_stats, to_png
-from .imaging.sessionstack import effective_bayer
+from .imaging.sessionstack import effective_bayer, normalise_bayer
 from .imaging.stackbackfill import plan_backfill, run_backfill
 from .polar import PolarAlignSession
 from .profiles import Profile, ProfileDevice, profiles, resolve_optics
@@ -217,10 +217,26 @@ _CAPTURE_ENV = (os.environ.get("ASTRODECK_CAPTURE_DIR") or "").strip()
 CAPTURE_DIR = Path(_CAPTURE_ENV) if _CAPTURE_ENV else (Path(__file__).resolve().parents[2] / "captures")
 
 #: Touch-safety motion constants (master plan §A.7 / §C-Risk-5). The manual-move
+#: How long a JNOW->J2000 precession may be reused for the EXACT same reported
+#: coordinates (seconds). See ``Hub.from_mount_frame``: a tracking mount reports
+#: one position frame after frame, and the transform moves by well under a
+#: milliarcsecond over this window (precession is 50 arcsec a YEAR), so the memo
+#: returns the same answer rather than a stale one. Short anyway, because a
+#: cheap number that is right is worth more than a free number that might not be.
+_PRECESS_MEMO_TTL_S = 60.0
+
 #: rate cap (the server clamp in ``/api/mount/move`` imports this) and the
 #: move-axis deadman window. Defined ONCE here so the touch surface and the
 #: Batch-4 safety surface share one source of truth — both reuse the single
 #: ``_move_watchdog`` task below; neither re-creates these values.
+#:
+#: SINCE D-RIG-4 THIS IS THE FALLBACK, NOT THE CEILING. A driver that can say
+#: how fast it will actually slew publishes ``Telescope.max_rate_deg_s`` (the
+#: AM5 reports 1.44 deg/s, its highest MEASURED rate), and the server clamp
+#: prefers that number: ``getattr(tel, "max_rate_deg_s", None) or
+#: TOUCH_MAX_RATE_DEG_S``. 0.6 is what a mount that cannot say gets - a
+#: conservative guess about somebody else's gearbox, which is exactly why it
+#: should lose to a measurement whenever one exists.
 TOUCH_MAX_RATE_DEG_S = 0.6
 MOVE_DEADMAN_MS = 1200
 
@@ -299,6 +315,10 @@ BUSY_LANE_LABELS: tuple[tuple[str, str], ...] = (
     ("autofocus", "focusing"),
     ("focuser", "focusing"),
     ("filter_offsets", "focusing"),
+    # SER video (D-RIG-1). It holds ``exposure_guard`` for the whole file, so
+    # it is a capture that lasts minutes rather than seconds; a restart
+    # mid-file leaves a truncated .ser.
+    ("video", "recording"),
     ("capture", "capturing"),
     ("looping", "capturing"),
     ("egain", "capturing"),
@@ -334,6 +354,10 @@ UNLABELLED_LANES: dict[str, str] = {
     "guide_assistant": (
         "a measurement run: it watches the guider, it does not command the "
         "mount."),
+    "video_stack": (
+        "pure compute on a file already on disk: it touches no device, and a "
+        "restart costs a stack that can be re-run in seconds from the same "
+        ".ser. (`video` IS labelled: that one owns the camera.)"),
 }
 
 
@@ -473,6 +497,87 @@ def external_preview(info: dict) -> dict:
     return out
 
 
+@dataclass(frozen=True)
+class CaptureSnapshot:
+    """EVERYTHING THE HEADER READS OFF THE RIG, FROZEN AT EXPOSURE TIME.
+
+    A FITS header describes the rig that took the frame, not the rig that
+    happened to be there when somebody pressed save. That distinction did not
+    matter while the only way to write a file was to ask for one up front; it
+    is the whole hazard of "promote the last frame" (D-SES-4), where the save
+    can land minutes and one slew after the shutter closed. Rebuilding the
+    header at promote time would stamp the CURRENT pointing, the CURRENT
+    filter and the CURRENT focuser position onto pixels that know nothing
+    about any of them - a lie of exactly the kind GN-07 was raised for, only
+    worse, because it would look perfectly self-consistent.
+
+    So ``Hub.capture`` reads the rig ONCE, on the exposure's own timeline, and
+    hands the result here. ``_save_captured_frame`` writes from this and from
+    the frame's pixels alone; it never touches ``self.devices``. Frozen so a
+    later caller cannot edit a value into it and quietly re-open that seam -
+    ``promote_last_frame`` overrides the operator's target with
+    ``dataclasses.replace``, which produces a new snapshot rather than
+    mutating this one.
+    """
+    target: str
+    frame_type: str
+    gain: int
+    offset: int
+    exposure_s: float
+    binning: int
+    filter_name: str
+    #: the mount's OWN report at exposure time (may be None: no mount, or a
+    #: mount that could not answer). MOUNTRA/MOUNTDEC come from these.
+    ra: float | None
+    dec: float | None
+    #: the BEST KNOWN pointing (``_resolve_pointing``) and which source won it.
+    #: OBJCTRA/OBJCTDEC and the numeric RA/DEC cards come from these.
+    best_ra: float | None
+    best_dec: float | None
+    pointing_source: str | None
+    meta: FrameMeta
+    telescope_name: str
+    #: the camera's own name, for INSTRUME
+    instrument: str = ""
+    #: verdict cards measured against this frame's own pixels
+    dark_cards: list = field(default_factory=list)
+    beam_cards: list = field(default_factory=list)
+    #: what OBJECT should say, and the identification provenance behind it
+    object_name: str = ""
+    id_cards: list = field(default_factory=list)
+    #: the sensor temperature the FILENAME token was built from
+    sensor_temp_c: float | None = None
+
+
+@dataclass(frozen=True)
+class PendingSave:
+    """One unsaved frame kept for ``promote_last_frame`` (D-SES-4)."""
+    #: monotonic within this process, so a client can name the frame it meant
+    #: and a stale press cannot save a different one.
+    id: int
+    frame: Any
+    snap: CaptureSnapshot
+    ts: float
+
+
+class PromoteRefused(RuntimeError):
+    """A refusal from ``promote_last_frame``, carrying its wire shape.
+
+    ``status``/``code`` are on the exception rather than decided at the route
+    so the two refusals stay distinguishable all the way out: "there is
+    nothing to save" (404 ``nothing_to_promote``) and "you already saved that
+    one" (409 ``already_saved``) look identical from the buffer alone once the
+    entry has been popped, and a client that cannot tell them apart cannot
+    tell the operator which happened.
+    """
+
+    def __init__(self, detail: str, code: str, *, status: int = 409) -> None:
+        super().__init__(detail)
+        self.detail = detail
+        self.code = code
+        self.status = status
+
+
 class Hub:
     def __init__(self) -> None:
         self.devices: dict[str, Any] = {}     # role -> Device
@@ -486,6 +591,17 @@ class Hub:
         self.previews: dict[int, PreviewEntry] = {}   # id -> ring slot
         self.preview_thumbs: dict[int, bytes] = {}    # id -> thumb (kept longer)
         self.last_frame = None                  # most recent CameraFrame
+        # ONE frame per role, replaced on every capture: a 26 MP uint16 frame
+        # is ~50 MB on a Pi, so a queue of them is a queue of out-of-memory
+        # kills. The bound is the feature's shape, not a limitation of it -
+        # "promote the LAST frame" is what the operator asks for when a
+        # throw-away exposure turns out to be worth keeping.
+        self._promotable: dict[str, PendingSave] = {}
+        self._promote_seq = 0
+        # role -> the id of the last frame actually promoted, so a second press
+        # can answer "already saved" instead of "nothing to save". See
+        # PromoteRefused.
+        self._promoted_ids: dict[str, int] = {}
         # Live View (NOV-1): the single EAA running-mean accumulator, non-None while
         # armed. Fed each raw linear sub in _publish_preview; None = feature off.
         self.live_stacker = None
@@ -503,6 +619,10 @@ class Hub:
         # last meridian dict from poll_status, so the engine's (sync) ETA can
         # window-gate the flip cost without device I/O.
         self.last_meridian: dict | None = None
+        #: ((ra, dec), taken_at_monotonic, (ra_j2000, dec_j2000)) - see
+        #: ``from_mount_frame``. One entry, because a mount points at one place.
+        self._precess_memo: tuple[tuple[float, float], float,
+                                  tuple[float, float]] | None = None
         self._loop_task: asyncio.Task | None = None
         self._status_task: asyncio.Task | None = None
         # --- per-frame WCS stamping (per-frame-wcs spec §2.1) -------------------
@@ -1197,6 +1317,12 @@ class Hub:
         self.stop_wcs_worker()              # per-frame-wcs R1: never outlive the hub
         self.live_stacker = None            # NOV-1: release the accumulator on teardown
         self.bahtinov = None                # NOV-12: disarm the focus aid on teardown
+        # D-SES-4: the held frame goes with the rig. Its snapshot describes a
+        # camera, a wheel and a mount that are no longer connected, and a
+        # reconnect can bring back different ones (#182) - so there is nothing
+        # honest left to promote, and ~50 MB of pixels are released with it.
+        self._promotable.clear()
+        self._promoted_ids.clear()
         # #182: a reconnect can bring back a DIFFERENT camera, a different mount,
         # or the same mount somewhere else entirely. Nothing solved before the
         # rig went away describes the rig that comes back.
@@ -1814,6 +1940,8 @@ class Hub:
         w = o.sensor_width_px or (getattr(cam, "sensor_width", 0) if cam_on else 0)
         h = o.sensor_height_px or (getattr(cam, "sensor_height", 0) if cam_on else 0)
         have = bool(px and w and h)
+        aperture = float(getattr(o, "aperture_mm", 0.0) or 0.0)
+        reducer = float(getattr(o, "reducer", 1.0) or 1.0)
         fw, fh, diag = fov_deg(o.focal_length_mm, px, w, h) if have else (0.0, 0.0, 0.0)
         if o.pixel_size_um and o.sensor_width_px:
             src = "config"
@@ -1838,6 +1966,27 @@ class Hub:
             # a preference, not a measurement), so they pass through verbatim.
             "guide_focal_length_mm": o.guide_focal_length_mm,
             "auto_from_camera": o.auto_from_camera,
+            # D-SET-1. getattr seams so this readout survives a config schema
+            # that has not grown the fields yet.
+            "aperture_mm": aperture,
+            "reducer": reducer,
+            # DERIVED, NEVER STORED. Nothing writes f_ratio: it is focal length
+            # over aperture and nothing else, so it cannot drift from the two
+            # numbers it is made of. None when the aperture was never filled in
+            # - there is no camera fallback and none is possible, and an f/5.3
+            # printed next to a frame is read as a fact about the rig.
+            #
+            # THE REDUCER IS NOT APPLIED HERE, deliberately: if USE THE REDUCED
+            # FOCAL LENGTH was pressed then focal_length_mm already carries it,
+            # and applying it here would double-count.
+            #
+            # THROUGH ``config.f_ratio``, which is where all of that is written
+            # down. This used to re-derive the division inline, and the function
+            # existed with no caller but its own tests - so the ONE rule about
+            # this number (None is not a fallback, the reducer is not applied)
+            # was documented in a place the running code did not read, and two
+            # copies of a rule are two rules.
+            "f_ratio": f_ratio(o.focal_length_mm, aperture),
             "have_optics": have,
             "source": src,
             "image_scale_arcsec_px":
@@ -2406,15 +2555,34 @@ class Hub:
     async def from_mount_frame(self, tel, ra_hours: float,
                                dec_deg: float) -> tuple[float, float]:
         """Convert a mount-reported position back to J2000. No-op unless the mount
-        is a JNOW Alpaca mount. Same fail-safe fallback as ``to_mount_frame``."""
+        is a JNOW Alpaca mount. Same fail-safe fallback as ``to_mount_frame``.
+
+        MEMOISED ON THE EXACT INPUT, briefly. Every status poll and every frame
+        of a live loop runs this, and on an Alpaca rig each one is a thread hop
+        plus the whole apparent-place transform. A TRACKING mount reports the
+        same RA/Dec frame after frame - that is what tracking IS - so the cache
+        key is the coordinate pair itself: the memo can only ever answer the
+        precession of the coordinates it was asked for, and a slew changes the
+        key and recomputes. Over ``_PRECESS_MEMO_TTL_S`` the transform itself
+        moves by well under a milliarcsecond (precession is 50 arcsec a YEAR),
+        so the entry is not a stale answer, it is the same answer.
+        """
         if not await self._mount_expects_jnow(tel):
             return ra_hours, dec_deg
+        key = (float(ra_hours), float(dec_deg))
+        hit = self._precess_memo
+        if hit is not None and hit[0] == key and (
+                time.monotonic() - hit[1]) < _PRECESS_MEMO_TTL_S:
+            return hit[2]
         try:
-            return await asyncio.to_thread(precess_jnow_to_j2000, ra_hours, dec_deg)
+            out = await asyncio.to_thread(precess_jnow_to_j2000,
+                                          ra_hours, dec_deg)
         except Exception as e:  # noqa: BLE001 - availability over precision here
             bus.log("warning", f"JNOW->J2000 precession failed ({e}); "
                                "using raw coordinates", "mount")
             return ra_hours, dec_deg
+        self._precess_memo = (key, time.monotonic(), out)
+        return out
 
     def _judge_dark_frame(self, frame, frame_type: str, filter_name: str,
                           opaque_slot: int | None
@@ -2509,18 +2677,51 @@ class Hub:
             ("BEAMWHY", _ascii_card(why), "Blackout-slot check evidence"),
         ]
 
-    async def _opaque_slot_in_beam(self) -> int | None:
+    async def _wheel_slot(self) -> int | None:
+        """The slot the wheel is physically on, or None. Never raises.
+
+        ONE READ, SHARED. The capture path asks two questions of the wheel per
+        exposure - what is the filter called (``_active_filter_name``) and is
+        this slot opaque (``_opaque_slot_in_beam``) - and both used to issue
+        their own ``get_position``. That is two round trips on a bus that is
+        also carrying the guide camera, on every frame of a live loop whose
+        frames are otherwise free. The answer is the same answer: it is the same
+        wheel at the same instant.
+
+        NOT CACHED ACROSS EXPOSURES, and that is the point of passing the slot
+        down rather than memoising it here. A TTL cache would put the wheel's
+        position a second or two in the past, and the one thing this rig has
+        already been burned by is a FILTER card naming the wrong slot (every
+        frame before 2026-08-02 is off by one). Two questions about one instant
+        get one read; two instants get two.
+        """
+        try:
+            fw = self.devices.get("filterwheel")
+            if not fw or not getattr(fw, "connected", False):
+                return None
+            pos = await fw.get_position()
+            return None if pos is None else int(pos)
+        except Exception:  # noqa: BLE001
+            return None
+
+    async def _opaque_slot_in_beam(self, slot: int | None = ...) -> int | None:
         """The wheel's current slot when the operator has flagged it opaque,
         else None. Never raises: no wheel, an unreadable position or a missing
         flag list all mean "we cannot say which slot", which is not the same as
         "the slot is fine" — the frame is still judged on its pixels, the
-        rejection just cannot name a flag to retract."""
+        rejection just cannot name a flag to retract.
+
+        ``slot`` is an ALREADY-READ position (``_wheel_slot``), so a caller that
+        has one does not buy a second round trip for the same instant. The
+        sentinel default means "read it yourself"; ``None`` is a real value and
+        means "the wheel could not be read", which is why the default is not
+        ``None``."""
         try:
             fw = self.devices.get("filterwheel")
             if not fw or not getattr(fw, "connected", False):
                 return None
             flags = list(getattr(fw, "filter_opaque", []) or [])
-            pos = await fw.get_position()
+            pos = await self._wheel_slot() if slot is ... else slot
             if pos is None or pos < 0 or pos >= len(flags):
                 return None
             return int(pos) if flags[pos] else None
@@ -2667,7 +2868,7 @@ class Hub:
             meta.star_count = int(frame.stars)
         return meta
 
-    async def _active_filter_name(self) -> str:
+    async def _active_filter_name(self, slot: int | None = ...) -> str:
         """The name of the filter the wheel is PHYSICALLY on right now, or ``""``
         when there is no connected wheel (or it can't be read).
 
@@ -2675,13 +2876,16 @@ class Hub:
         the FITS ``FILTER`` card, the ``$$FILTER$$`` filename token and the
         ``info["filter"]`` the sequence engine records — so the header, the
         filename, the session report, the stacking-bundle folder and the CSV can
-        never disagree again. Never raises."""
+        never disagree again. Never raises.
+
+        ``slot`` is an ALREADY-READ position (see ``_wheel_slot``); the sentinel
+        default reads one."""
         fw = self.devices.get("filterwheel")
         if not fw or not getattr(fw, "connected", False):
             return ""
         try:
             names = list(getattr(fw, "filter_names", []) or [])
-            pos = await fw.get_position()
+            pos = await self._wheel_slot() if slot is ... else slot
             if pos is None or pos < 0 or pos >= len(names):
                 return ""
             return str(names[pos] or "")
@@ -2710,100 +2914,58 @@ class Hub:
         # sitting at L while the step said "no filter" wrote FILTER=L into the file
         # and ``filter: null`` into the report, and the stacking bundle grouped the
         # night under ``NoFilter/`` — silently handing the stacker the wrong flats.
-        # One source, one answer. Only resolved when we're SAVING (the live loop's
-        # throw-away frames must not pay a wheel read per exposure).
-        filt = await self._active_filter_name() if save else ""
+        # One source, one answer.
+        #
+        # PAID FOR AN UNSAVED LOCAL FRAME TOO, since D-SES-4. It used to be
+        # resolved only when saving, on the grounds that the live loop's
+        # throw-away frames must not buy a wheel read per exposure. But a frame
+        # that can be PROMOTED later is not throw-away, and the FILTER card it
+        # would then carry has to name the slot that was in the beam when the
+        # shutter opened, not the slot the wheel has moved to by the time
+        # somebody presses save. A rig with no wheel still pays nothing
+        # (``_active_filter_name`` answers "" without any I/O).
+        remote_save = frame.rendered_bytes is not None
+        # ONE wheel read for this exposure, threaded into both consumers (the
+        # FILTER card's name and the opaque-slot judgement) so the live loop
+        # pays one round trip a frame instead of two. Read at the same moment
+        # either would have read it, so nothing about WHEN is different.
+        # The sentinel (not None) when nothing wanted it: None is a real value
+        # here and means "the wheel could not be read", which would take the
+        # blackout-slot check out of the cloud gate on the one path that does
+        # not need a filter name (a NINA remote save on the live loop).
+        wheel_slot = ...
+        filt = ""
+        if save or not remote_save:
+            wheel_slot = await self._wheel_slot()
+            filt = await self._active_filter_name(wheel_slot)
         # For local (sim/Alpaca) saves, write the FITS BEFORE publishing the
         # preview so the first `preview` event already carries the correct
         # saved_path/saved_local (P2-2). NINA saves on the imaging host during
         # expose() and the frame already carries its saved_path.
         local_save_path: Path | None = None
-        if save and frame.rendered_bytes is None:
-            local_save_path = self._capture_path(
-                target or "untargeted", frame_type, filt,
-                gain=gain, exposure_s=exposure_s, binning=binning,
-                sensor_temp_c=getattr(frame, "temperature_c", None))
-            ra = dec = None
-            tel = self.devices.get("telescope")
-            if tel and tel.connected:
-                try:
-                    ra, dec = await tel.get_position()
-                    # Bring a JNOW Alpaca mount's report to J2000 (the frame ASTAP
-                    # and the catalog use); no-op for sim/NINA. Best-effort guarded
-                    # (supervisor ruling 3).
-                    if ra is not None:
-                        ra, dec = await self.from_mount_frame(tel, ra, dec)
-                except Exception:
-                    pass
-            # The identification's staleness check and its pointing fallback both
-            # ride THIS read — the one the header was already paying for — so
-            # naming the field never adds a device round-trip to the capture path.
-            self._note_pointing(ra, dec)
-            # NOT self.note_pointing_moved() here (GN-07/GN-10). This call used
-            # to run unconditionally on every saved frame, which invalidated
-            # `_pointing_verified`/`_solved_pointing` before the header for THIS
-            # SAME frame was even built -- a plate-solved centre could never
-            # survive past the first sub of a run, defeating the whole point of
-            # carrying a solved pointing forward. Capturing (even right after a
-            # dither) is not evidence the tube left a solved centre; only an
-            # actual slew/park/sync/unpark/home is, and those already run
-            # through `note_pointing_verified(False, ...)` (a failed re-centre)
-            # or overwrite it with a fresh `note_pointing_verified(True, ...)`.
+        snap: CaptureSnapshot | None = None
+        if not remote_save:
+            # THE RIG, READ ONCE, ON THE EXPOSURE'S OWN TIMELINE - for the
+            # unsaved frame as well, because that is the frame
+            # ``promote_last_frame`` may be asked to write minutes and one slew
+            # later (D-SES-4). The cost is a handful of guarded device reads per
+            # unsaved frame, which is exactly what a saved frame has always
+            # paid; the alternative is a promoted header describing wherever the
+            # mount, wheel and focuser have got to since.
             #
-            # Resolved ONCE, here, and threaded into both the meta builder and
-            # the save_fits call below so OBJCTRA/OBJCTDEC and the numeric
-            # RA/DEC cards can never disagree about which pointing won.
-            best_ra, best_dec, pointing_source = self._resolve_pointing(ra, dec)
-            # Gather header telemetry (best-effort; never fails the save) and the
-            # OTA name for TELESCOP (omitted when blank). Wrapping the whole meta
-            # build keeps spec §9 (a header write never fails a capture) structural,
-            # not dependent on CameraFrame's field set staying non-raising.
-            try:
-                meta = await self._frame_meta(frame, ra, dec, best_ra, best_dec,
-                                              pointing_source)
-            except Exception:
-                meta = FrameMeta()
-            try:
-                telescope_name = (self.effective_optics().get("telescope_name")
-                                  or "").strip()
-            except Exception:
-                telescope_name = ""
-            # Offloaded so a 25-120 MB uint16 FITS write to the Pi's SD card never
-            # freezes the event loop for seconds every frame (WS/preview stall,
-            # queued guide events, delayed STOP) — same as solve_and_sync's write.
-            # IS THIS "DARK" ACTUALLY DARK? Measured here, against the pixels,
-            # and stamped into the file. ``imaging.darks`` was written for the
-            # 2026-08-01 incident — a wheel slot ticked ``filter_opaque`` that
-            # was EMPTY, and three daylight darks at median 65535 filed as a
-            # dark library — and until now nothing called it. A detector with no
-            # caller protects nothing; this is that caller.
-            in_beam = await self._opaque_slot_in_beam()
-            opaque_slot = (in_beam
-                           if frame_type.upper() in ("DARK", "BIAS") else None)
-            dark_cards = await asyncio.to_thread(
-                self._judge_dark_frame, frame, frame_type, filt, opaque_slot)
-            # AND THE OTHER DIRECTION, which cost fifty-four minutes of a clear
-            # night before anyone looked. See _blackout_light_cards.
-            beam_cards = self._blackout_light_cards(frame_type, in_beam, filt)
-            # WHAT THE SKY SAYS THIS IS (#182). ``object_name`` is what reaches
-            # the OBJECT card; ``local_save_path`` above was already built from
-            # the operator's string alone and is NOT recomputed here — that
-            # ordering is the invariant, not a coincidence.
-            object_name, id_cards = self._object_cards(target, frame_type)
-            await asyncio.to_thread(
-                save_fits, frame, local_save_path, target=object_name,
-                filter_name=filt,
-                # BEST KNOWN pointing (GN-07), not necessarily the mount's raw
-                # `ra`/`dec` -- see `_resolve_pointing` above. `meta` carries
-                # the mount's own report separately as MOUNTRA/MOUNTDEC.
-                frame_type=frame_type, ra_hours=best_ra, dec_deg=best_dec,
-                telescope=telescope_name, instrument=cam.name, meta=meta,
-                extra_cards=(dark_cards or []) + beam_cards + id_cards)
-            # carry the path on the frame so _publish_preview reports a correct
-            # saved_path/saved_local in the very first event (no stale re-publish).
-            frame.saved_path = str(local_save_path)
+            # ``note_pointing`` stays on the SAVING path only: recording the
+            # mount's last report drives the field-identification staleness
+            # check, and an unsaved throw-away frame is not evidence about
+            # anything. It costs the header nothing - the snapshot already
+            # carries the read.
+            snap = await self._capture_snapshot(
+                frame, target=target, frame_type=frame_type, gain=gain,
+                offset=offset, exposure_s=exposure_s, binning=binning,
+                filter_name=filt, note_pointing=save, wheel_slot=wheel_slot)
+        if save and snap is not None:
+            local_save_path = await self._save_captured_frame(frame, snap)
 
-        info = await self._publish_preview(frame)
+        info = await self._publish_preview(frame, wheel_slot=wheel_slot)
         if save and isinstance(info, dict):
             # UX #1: hand the RESOLVED filter (same value the FITS card carries)
             # back to the caller. The sequence engine records THIS, not the plan's
@@ -2817,50 +2979,306 @@ class Hub:
                 bus.log("info", f"NINA saved {Path(frame.saved_path).name}", "capture")
             else:
                 bus.log("info", "NINA saved the frame", "capture")
-        elif local_save_path is not None:
-            bus.log("info", f"saved {local_save_path.name}", "capture")
-            # WARM THE GALLERY THUMBNAIL NOW, while nobody is waiting for it.
-            # Rendering one costs ~1.5 s (auto_stretch over 26 megapixels), and
-            # a desktop grid asks for forty at once — measured 2026-08-10: the
-            # relay's per-IP bucket answered 19 of 41 with 429 and the gallery
-            # showed nothing at all. Doing it here turns every later view into
-            # a small disk read. Fire-and-forget by design: a gap is harmless
-            # because the route still renders on demand.
-            self._enqueue_thumb(local_save_path)
-            # And tell the file-sync runner a frame landed. Two assignments and
-            # no I/O — it decides on its own time whether that warrants a pass,
-            # and does nothing at all unless a destination is configured. Only
-            # on the LOCAL-save branch, because the push reads from this box's
-            # capture root and a NINA/remote save is not on it.
-            self._note_frame_saved()
+        elif local_save_path is not None and snap is not None:
+            self._after_frame_saved(local_save_path, snap,
+                                    info if isinstance(info, dict) else None)
 
+        if snap is not None:
+            # THE PROMOTE BUFFER (D-SES-4). One slot for the imaging camera,
+            # replaced every capture. A saved frame CLEARS it: there is nothing
+            # left to promote once the file is on disk, and leaving the previous
+            # unsaved frame behind would let a later press write a stale one
+            # under a fresh operator's assumption that "last" meant the frame
+            # they are looking at.
+            if save:
+                self._promotable.pop("camera", None)
+                self._promoted_ids.pop("camera", None)
+            else:
+                self._promote_seq += 1
+                self._promotable["camera"] = PendingSave(
+                    id=self._promote_seq, frame=frame, snap=snap,
+                    ts=time.time())
+        return info
+
+    # ------------------------------------------------------ promote the last
+    #
+    # WHY THE FRAME IS HELD AT ALL. A test exposure is how an operator decides
+    # whether the framing, the focus and the guiding are worth committing to,
+    # and until now the answer "yes, keep that one" meant taking a second
+    # exposure and hoping the sky had not moved. The pixels were already in
+    # memory; only the decision to write them was missing.
+
+    async def promote_last_frame(self, *, role: str = "camera",
+                                 frame_id: int | None = None,
+                                 target: str | None = None) -> dict:
+        """Write the held unsaved frame to disk (D-SES-4).
+
+        RE-RESOLVES NOTHING. The mount, the wheel, the focuser and the rotator
+        are not consulted: every header value comes from the snapshot frozen
+        when the shutter closed, so a promote after a slew still describes the
+        sky the pixels came from. ``target`` is the ONE thing the operator may
+        change after the fact, because it is the one thing that was never a
+        measurement - it is what they meant to call the field, and naming it
+        correctly is often the reason they are saving at all. Overriding it
+        re-runs ``_object_cards`` so OBJECT and the identification cards stay
+        consistent with each other; nothing else moves.
+
+        Raises :class:`PromoteRefused` with the wire shape attached."""
+        pending = self._promotable.get(role)
+        if pending is None:
+            last = self._promoted_ids.get(role)
+            if last is not None and (frame_id is None or int(frame_id) == last):
+                raise PromoteRefused("that frame has already been saved",
+                                     "already_saved", status=409)
+            raise PromoteRefused("no unsaved frame to save",
+                                 "nothing_to_promote", status=404)
+        if frame_id is not None and int(frame_id) != pending.id:
+            # A DISTINCT REFUSAL, not "already saved": the operator is looking
+            # at one frame and the buffer holds a newer one, so saving what is
+            # held would write pixels they never chose.
+            raise PromoteRefused(
+                f"that frame is no longer the one being held (asked for "
+                f"{int(frame_id)}, holding {pending.id})",
+                "frame_id_mismatch", status=409)
+        snap = pending.snap
+        override = (target or "").strip()
+        if override and override != snap.target:
+            object_name, id_cards = self._object_cards(override,
+                                                       snap.frame_type)
+            snap = replace(snap, target=override, object_name=object_name,
+                           id_cards=list(id_cards))
+        # Popped BEFORE the write so two presses in flight cannot both save,
+        # and put back if the write fails so a full disk costs the operator a
+        # retry rather than the frame.
+        self._promotable.pop(role, None)
+        try:
+            path = await self._save_captured_frame(pending.frame, snap)
+        except Exception:
+            # ``setdefault``, not ``[role] =``. The write is awaited, and the
+            # live loop keeps taking frames while it runs - so a slow or failing
+            # save (a full disk, a USB drive that went away) can finish AFTER a
+            # newer exposure has already claimed the slot, and putting this one
+            # back unconditionally would hand the operator an OLDER frame under
+            # "save the last one". The retry they are about to press must write
+            # the frame they are looking at.
+            self._promotable.setdefault(role, pending)
+            raise
+        self._promoted_ids[role] = pending.id
+        self._after_frame_saved(path, snap, None)
+        from . import gallery as _gallery
+        return {
+            "saved": True,
+            # capture-root-relative, the only form of a frame's location that
+            # may leave the process (see gallery.relpath_under_capture).
+            "path": _gallery.relpath_under_capture(path),
+            "filter": snap.filter_name,
+            "id": pending.id,
+            "target": snap.target,
+            "ts": pending.ts,
+        }
+
+    def promotable_summary(self, role: str = "camera") -> dict:
+        """What ``GET /api/capture/last`` reports: the held frame's identity and
+        settings, or an explicit "nothing held".
+
+        ``saved`` is always False, and is in the payload rather than implied so
+        a client rendering the row never has to infer it from ``available``."""
+        p = self._promotable.get(role)
+        if p is None:
+            return {"available": False, "id": None, "ts": None,
+                    "exposure_s": None, "gain": None, "binning": None,
+                    "frame_type": None, "target": None, "filter": None,
+                    "saved": False}
+        s = p.snap
+        return {"available": True, "id": p.id, "ts": p.ts,
+                "exposure_s": s.exposure_s, "gain": s.gain,
+                "binning": s.binning, "frame_type": s.frame_type,
+                "target": s.target, "filter": s.filter_name, "saved": False}
+
+    # ----------------------------------------------- one frame, written once
+    #
+    # THREE PIECES, AND THE SPLIT IS THE POINT (D-SES-4):
+    #   ``_capture_snapshot``   reads the rig, on the exposure's own timeline
+    #   ``_save_captured_frame`` writes the file, touching NO device
+    #   ``_after_frame_saved``  the tail every locally saved frame shares
+    # ``capture()`` runs all three in a row; ``promote_last_frame`` runs the
+    # last two, minutes later, against the snapshot the first one froze. That
+    # is what makes a promoted frame's header describe the rig that took it
+    # rather than the rig that happens to be there now.
+
+    async def _capture_snapshot(self, frame, *, target: str, frame_type: str,
+                                gain: int, offset: int, exposure_s: float,
+                                binning: int, filter_name: str,
+                                note_pointing: bool = True,
+                                wheel_slot: int | None = ...) -> CaptureSnapshot:
+        """Read the rig ONCE and freeze what the header depends on.
+
+        Every device read the FITS header needs lives here and nowhere else,
+        which is exactly what lets ``_save_captured_frame`` be device-free.
+        Total by construction: every read is individually guarded, as it was
+        inline, because spec §9 says a header write never fails a capture."""
+        cam = self.devices.get("camera")
+        ra = dec = None
+        tel = self.devices.get("telescope")
+        if tel and tel.connected:
+            try:
+                ra, dec = await tel.get_position()
+                # Bring a JNOW Alpaca mount's report to J2000 (the frame ASTAP
+                # and the catalog use); no-op for sim/NINA. Best-effort guarded
+                # (supervisor ruling 3).
+                if ra is not None:
+                    ra, dec = await self.from_mount_frame(tel, ra, dec)
+            except Exception:
+                pass
+        if note_pointing:
+            # The identification's staleness check and its pointing fallback both
+            # ride THIS read — the one the header was already paying for — so
+            # naming the field never adds a device round-trip to the capture path.
+            self._note_pointing(ra, dec)
+        # NOT self.note_pointing_moved() here (GN-07/GN-10). This call used
+        # to run unconditionally on every saved frame, which invalidated
+        # `_pointing_verified`/`_solved_pointing` before the header for THIS
+        # SAME frame was even built -- a plate-solved centre could never
+        # survive past the first sub of a run, defeating the whole point of
+        # carrying a solved pointing forward. Capturing (even right after a
+        # dither) is not evidence the tube left a solved centre; only an
+        # actual slew/park/sync/unpark/home is, and those already run
+        # through `note_pointing_verified(False, ...)` (a failed re-centre)
+        # or overwrite it with a fresh `note_pointing_verified(True, ...)`.
+        #
+        # Resolved ONCE, here, and threaded into both the meta builder and
+        # the save_fits call below so OBJCTRA/OBJCTDEC and the numeric
+        # RA/DEC cards can never disagree about which pointing won.
+        best_ra, best_dec, pointing_source = self._resolve_pointing(ra, dec)
+        # Gather header telemetry (best-effort; never fails the save) and the
+        # OTA name for TELESCOP (omitted when blank). Wrapping the whole meta
+        # build keeps spec §9 (a header write never fails a capture) structural,
+        # not dependent on CameraFrame's field set staying non-raising.
+        try:
+            meta = await self._frame_meta(frame, ra, dec, best_ra, best_dec,
+                                          pointing_source)
+        except Exception:
+            meta = FrameMeta()
+        try:
+            telescope_name = (self.effective_optics().get("telescope_name")
+                              or "").strip()
+        except Exception:
+            telescope_name = ""
+        # IS THIS "DARK" ACTUALLY DARK? Measured here, against the pixels,
+        # and stamped into the file. ``imaging.darks`` was written for the
+        # 2026-08-01 incident — a wheel slot ticked ``filter_opaque`` that
+        # was EMPTY, and three daylight darks at median 65535 filed as a
+        # dark library — and until now nothing called it. A detector with no
+        # caller protects nothing; this is that caller.
+        in_beam = await self._opaque_slot_in_beam(wheel_slot)
+        opaque_slot = (in_beam
+                       if frame_type.upper() in ("DARK", "BIAS") else None)
+        dark_cards = await asyncio.to_thread(
+            self._judge_dark_frame, frame, frame_type, filter_name, opaque_slot)
+        # AND THE OTHER DIRECTION, which cost fifty-four minutes of a clear
+        # night before anyone looked. See _blackout_light_cards.
+        beam_cards = self._blackout_light_cards(frame_type, in_beam, filter_name)
+        # WHAT THE SKY SAYS THIS IS (#182). ``object_name`` is what reaches
+        # the OBJECT card; the capture PATH is built from the operator's string
+        # alone (``snap.target``) and is never built from this - that ordering
+        # is the invariant, not a coincidence.
+        object_name, id_cards = self._object_cards(target, frame_type)
+        return CaptureSnapshot(
+            target=target, frame_type=frame_type, gain=gain, offset=offset,
+            exposure_s=exposure_s, binning=binning, filter_name=filter_name,
+            ra=ra, dec=dec, best_ra=best_ra, best_dec=best_dec,
+            pointing_source=pointing_source, meta=meta,
+            telescope_name=telescope_name,
+            # INSTRUME is a rig read too: a promote that ran `self.require(
+            # "camera").name` could stamp a camera that was swapped in after
+            # the exposure.
+            instrument=(getattr(cam, "name", "") or ""),
+            dark_cards=list(dark_cards or []), beam_cards=list(beam_cards),
+            object_name=object_name, id_cards=list(id_cards),
+            sensor_temp_c=getattr(frame, "temperature_c", None))
+
+    async def _save_captured_frame(self, frame, snap: CaptureSnapshot) -> Path:
+        """Write ONE frame into the capture library from a frozen snapshot.
+
+        Reads no device and consults no live rig state: the frame's pixels and
+        ``snap`` are the whole input, which is what makes this replayable by
+        ``promote_last_frame`` long after the exposure."""
+        path = self._capture_path(
+            # The operator's string, NOT ``snap.object_name`` - the filename
+            # follows what they typed even when a solve identified the field.
+            snap.target or "untargeted", snap.frame_type, snap.filter_name,
+            gain=snap.gain, exposure_s=snap.exposure_s, binning=snap.binning,
+            sensor_temp_c=snap.sensor_temp_c)
+        # Offloaded so a 25-120 MB uint16 FITS write to the Pi's SD card never
+        # freezes the event loop for seconds every frame (WS/preview stall,
+        # queued guide events, delayed STOP) — same as solve_and_sync's write.
+        await asyncio.to_thread(
+            save_fits, frame, path, target=snap.object_name,
+            filter_name=snap.filter_name,
+            # BEST KNOWN pointing (GN-07), not necessarily the mount's raw
+            # `ra`/`dec` -- see `_resolve_pointing`. `meta` carries the
+            # mount's own report separately as MOUNTRA/MOUNTDEC.
+            frame_type=snap.frame_type, ra_hours=snap.best_ra,
+            dec_deg=snap.best_dec, telescope=snap.telescope_name,
+            instrument=snap.instrument, meta=snap.meta,
+            extra_cards=(list(snap.dark_cards) + list(snap.beam_cards)
+                         + list(snap.id_cards)))
+        # carry the path on the frame so _publish_preview reports a correct
+        # saved_path/saved_local in the very first event (no stale re-publish).
+        frame.saved_path = str(path)
+        return path
+
+    def _after_frame_saved(self, path: Path, snap: CaptureSnapshot,
+                           info: dict | None = None) -> None:
+        """The tail every LOCALLY saved frame shares: log it, warm its
+        thumbnail, tell the sync runner, and (for a light, when the feature is
+        on) hand it to the background WCS worker.
+
+        ``info`` is the preview event this frame produced, when there is one.
+        A promoted frame has none - its preview was published minutes ago, at
+        capture time - so the star gate and the preview back-reference simply
+        go unset rather than being invented from a second detection pass."""
+        bus.log("info", f"saved {path.name}", "capture")
+        # WARM THE GALLERY THUMBNAIL NOW, while nobody is waiting for it.
+        # Rendering one costs ~1.5 s (auto_stretch over 26 megapixels), and
+        # a desktop grid asks for forty at once — measured 2026-08-10: the
+        # relay's per-IP bucket answered 19 of 41 with 429 and the gallery
+        # showed nothing at all. Doing it here turns every later view into
+        # a small disk read. Fire-and-forget by design: a gap is harmless
+        # because the route still renders on demand.
+        self._enqueue_thumb(path)
+        # And tell the file-sync runner a frame landed. Two assignments and
+        # no I/O — it decides on its own time whether that warrants a pass,
+        # and does nothing at all unless a destination is configured. Only
+        # on the LOCAL-save branch, because the push reads from this box's
+        # capture root and a NINA/remote save is not on it.
+        self._note_frame_saved()
         # Opt-in (default OFF): hand the saved light to the BACKGROUND WCS worker
         # so its plate solve stamps astrometry into the header without the
         # capture path ever waiting on it (per-frame-wcs spec §2.1 — an inline
         # 2-10 s ASTAP run would delay the next sub by its whole duration, every
-        # frame). Guarded on local_save_path: a local save ran => ra/dec are
-        # bound AND the file is on this box (decision D5 — a NINA/remote save
-        # lives on the imaging host and cannot be reopened here). Enqueue is
-        # non-blocking, bounded and total: it can neither await nor raise into
-        # the capture.
+        # frame). Only ever reached on the LOCAL-save branch: a NINA/remote save
+        # lives on the imaging host and cannot be reopened here (decision D5).
+        # Enqueue is non-blocking, bounded and total: it can neither await nor
+        # raise into the capture.
         # LIGHT only, as the config field is named: a dark/bias/flat has no stars
         # to solve, so enqueuing one only burns a full ASTAP run (and its 60 s
         # kill timeout) per frame — a 50-frame dark library would peg a core of
         # the Pi for the whole unattended run and flood the log with failures.
-        if (local_save_path is not None and frame_type.upper() == "LIGHT"
+        if (snap.frame_type.upper() == "LIGHT"
                 and config_store.cfg().solve_saved_lights):
+            i = info or {}
             # star count from the preview's SINGLE detection pass (info["stars"]),
             # not frame.stars — the latter is only ever set by a backend that
             # measured it (NINA), so the min-stars gate would be a silent no-op
             # on exactly the local frames it exists to filter.
             self._enqueue_wcs_stamp(
-                local_save_path, ra, dec, info.get("stars"),
+                path, snap.ra, snap.dec, i.get("stars"),
                 # so the solution can be published back onto THIS frame's pixels
                 # when it lands, seconds after the picture is already on screen.
-                preview_id=info.get("id"),
-                data_w=int(info.get("data_width") or 0),
-                data_h=int(info.get("data_height") or 0))
-        return info
+                preview_id=i.get("id"),
+                data_w=int(i.get("data_width") or 0),
+                data_h=int(i.get("data_height") or 0))
 
     # ------------------------------------------------- per-frame WCS stamping
     # (per-frame-wcs spec §2; the mechanism — solvers, WcsSolution, write_wcs —
@@ -3310,7 +3728,8 @@ class Hub:
             return None
         return round(float(base) * max(1, int(binning or 1)), 3)
 
-    async def _publish_preview(self, frame) -> dict:
+    async def _publish_preview(self, frame, *,
+                               wheel_slot: int | None = ...) -> dict:
         """Build + publish the ``preview`` event = the PreviewInfo contract
         (live-preview spec §4.5/§6). Two corrected paths:
 
@@ -3477,7 +3896,11 @@ class Hub:
                 # indeterminate - fires nothing, re-arms nothing. A hold whose
                 # probes are blind therefore keeps holding, which is the only
                 # safe reading of "I cannot see".
-                blocked = await self._opaque_slot_in_beam()
+                # THE SLOT THE CAPTURE ALREADY READ, when the caller has one.
+                # It is also the more correct question: what mattered is the
+                # slot that was in the beam when this frame was exposed, not
+                # where the wheel has got to by the time the preview is built.
+                blocked = await self._opaque_slot_in_beam(wheel_slot)
                 if blocked is None:
                     cloud = await asyncio.to_thread(
                         cloud_score, sub, stars=stars)
@@ -6173,6 +6596,18 @@ class Hub:
             meridian["status"] = "n_a_fork" if side != "unknown" else "unknown"
         elif not self._plan_flip_enabled():
             meridian["status"] = "flip_disabled"          # GEM but plan disabled it
+            # AND THE COUNTDOWN STILL RIDES ALONG. Switching the flip off does
+            # not stop a GEM from reaching its meridian; it means nobody will
+            # move the tube when it does, which is precisely when the operator
+            # most needs to know how long they have. The number was being
+            # withheld from the person who had turned the automation off - the
+            # one case where the strip is the only warning. `status` still says
+            # `flip_disabled`, so nothing reads it as a promise to flip, and the
+            # redaction seam still nulls it for a caller without
+            # `view.site_derived` (it is derived from the hour angle, and the
+            # hour angle is derived from the longitude - redact.py).
+            if ttf is not None:
+                meridian["hours_to_flip"] = round(ttf, 4)
         elif over_pole:
             # A GEM, a plan that asks for a flip — and a target that does not
             # need one. Not `flip_disabled`: nothing is switched off and there is
@@ -6302,6 +6737,22 @@ class Hub:
         # device I/O here — the poller did it). None when no monitor / not yet read.
         sr = self._safety_reading
         out["safety"] = self._safety_reading_dict(sr) if sr is not None else None
+        # THE DEW LOOP'S OWN VIEW OF ITSELF (D-RIG-3), cached by its own tick -
+        # no weather fetch and no device read happen here. TOP LEVEL rather than
+        # inside `camera`, because the loop drives camera window heaters AND
+        # switch ports, and hanging it off one of the two devices it commands
+        # would have hidden the other. ABSENT (not null) until the controller
+        # exists and has ticked once: a node full of nulls reads as "the loop
+        # ran and found nothing", which is a different thing from "the loop has
+        # not run". Read through getattr so hub.py carries no import of the
+        # controller and works identically on a build without it.
+        try:
+            _dew = getattr(self, "dew_controller", None)
+            _snap = _dew.snapshot() if _dew is not None else None
+            if _snap is not None:
+                out["dew"] = _snap
+        except Exception:
+            pass
         tel = self.devices.get("telescope")
         if tel and tel.connected:
             ra = dec = None
@@ -6329,6 +6780,13 @@ class Hub:
                     # button on this, so a mount with no home sensor never shows
                     # a control that would 400.
                     "can_find_home": getattr(tel, "can_find_home", False),
+                    # HOW FAST THIS MOUNT WILL ACTUALLY SLEW (D-RIG-4), deg/s,
+                    # or null when the driver cannot say. The manual-move clamp
+                    # prefers it over TOUCH_MAX_RATE_DEG_S, and the slew pad
+                    # reads it so the fastest button on screen is a rate the
+                    # mount really has rather than a guess about somebody
+                    # else's gearbox.
+                    "max_rate_deg_s": getattr(tel, "max_rate_deg_s", None),
                     # Was this pointing CONFIRMED against the sky, or is it the
                     # mount's own opinion? See `note_pointing_verified`.
                     "pointing": {
@@ -6356,11 +6814,21 @@ class Hub:
                 out["focuser"] = {
                     "position": await foc.get_position(),
                     "max": foc.max_position,
-                    "temperature": await foc.get_temperature(),
                 }
             except Exception:
                 pass
             else:
+                # TEMPERATURE IS ITS OWN READ. It used to share the try above,
+                # so an EAF with an unplugged probe (or any driver that raises
+                # rather than returning None) took the POSITION off the status
+                # frame with it - the one number the focus screen cannot work
+                # without. The key stays present and null on a failure, which
+                # is what every client already renders as "cannot say"; only
+                # the coupling is gone.
+                try:
+                    out["focuser"]["temperature"] = await foc.get_temperature()
+                except Exception:
+                    out["focuser"]["temperature"] = None
                 # Its OWN try, deliberately: `moving` is the newest and least
                 # universally-supported reading here, and it must never be able
                 # to cost the position/max/temperature readouts the user is
@@ -6373,6 +6841,34 @@ class Hub:
                 # whether to offer re-anchoring at all.
                 out["focuser"]["can_set_position"] = bool(
                     getattr(foc, "can_set_position_reference", False))
+                # WHAT COMPENSATION WOULD DO AT THE NEXT FRAME BOUNDARY
+                # (D-RIG-2), so the Focus screen can show the move before it
+                # happens instead of only reporting it afterwards. Its OWN try,
+                # like `moving` above and for the same reason: this is the
+                # newest thing in the block and must never cost the position
+                # readout the operator is actually watching. Read-only - it
+                # calls the same pure decision the engine calls and commands
+                # nothing.
+                try:
+                    _eng = self.engine
+                    _pos = out["focuser"].get("position")
+                    _temp = out["focuser"].get("temperature")
+                    _tc = getattr(_eng, "temp_comp_status", None)
+                    if callable(_tc):
+                        out["focuser"]["temp_comp"] = _tc(
+                            _temp, _pos, foc.max_position)
+                    else:
+                        # No run loaded: the config still has an answer, and a
+                        # screen that showed nothing until a plan started would
+                        # be hiding the setting from the person configuring it.
+                        from .focus.tempcomp import TempCompConfig, status_node
+                        _cfg = (getattr(config_store.cfg().focus, "temp_comp",
+                                        None) or TempCompConfig())
+                        out["focuser"]["temp_comp"] = status_node(
+                            _cfg, temperature_c=_temp, position=_pos,
+                            focuser_max=foc.max_position)
+                except Exception:
+                    pass
                 # WHAT A SWEEP WOULD ACTUALLY DO, so the Focus screen can print
                 # it before the tap. The width is no longer a constant the UI
                 # can derive for itself — it is sized from this focuser's
@@ -6470,6 +6966,33 @@ class Hub:
         if cam and cam.connected:
             try:
                 temp = await cam.get_temperature()
+                _bayer = normalise_bayer(getattr(cam, "bayer_pattern", None))
+                # CAN THIS CAMERA RECORD VIDEO AT ALL (D-RIG-1), answered
+                # BEFORE the press. Without it the only way to find out is to
+                # start a recording and read a 409 `no_video_path` back, which
+                # is a control that looks live, costs a round trip, and then
+                # explains it was never available.
+                #
+                # MIRRORED, not imported: the authority is the refusal in
+                # `imaging/video_routes.py` (the `no_video_path` branch, which
+                # reads `caps.burst_supported or isinstance(cam,
+                # NativeCamera)`). Kept in step by hand because the route
+                # raises rather than returning a verdict; if that predicate
+                # ever earns a name, this should call it.
+                #
+                # Guarded and fail-CLOSED: an import that fails leaves
+                # "none", which disables a control rather than offering one
+                # that cannot work.
+                _vcaps = None
+                _native_cam = False
+                try:
+                    from .devices.cameras.engine import NativeCamera
+                    from .imaging.video import camera_capabilities
+                    _vcaps = camera_capabilities(cam)
+                    _native_cam = isinstance(cam, NativeCamera)
+                except Exception:
+                    pass
+                _burst = bool(getattr(_vcaps, "burst_supported", False))
                 out["camera"] = {
                     "temperature": temp,
                     "can_cool": cam.can_cool,
@@ -6493,6 +7016,54 @@ class Hub:
                     # Advanced-UI only; the driver value above always wins.
                     "egain_learned": {str(g): v
                                       for g, v in self._egain_learned.items()},
+                    # WHAT COLOUR THIS SENSOR IS, published as the four-letter
+                    # pattern and as the one boolean most callers actually
+                    # want.
+                    #
+                    # NORMALISED, not raw: the FITS card and the Alpaca/NINA
+                    # paths give the full four letters, while the native ZWO
+                    # and Player One bindings report only the TOP-LEFT PAIR
+                    # ("RG"), and a client comparing against "RGGB" would
+                    # decide the same camera was mono on one backend and
+                    # colour on another.
+                    #
+                    # BINNING IS DELIBERATELY NOT CONSIDERED. A sensor keeps
+                    # its colour filter array whatever the readout does;
+                    # `effective_bayer` answers the DIFFERENT question of
+                    # whether a particular frame can still be debayered (a 2x2
+                    # bin has already mixed the colours in the pixels that
+                    # arrive), and that is a property of the frame, not of the
+                    # camera this node describes. Deriving this from the
+                    # current bin would make a camera stop being colour when
+                    # somebody changed a dropdown.
+                    #
+                    # None means MONO OR UNREPORTED, and the two are not worth
+                    # separating here: the honest consumer behaviour is the
+                    # same (do not debayer, do not offer colour controls), and
+                    # fail-closed is the right direction - a mono rig wrongly
+                    # told it is colour gets three planes of the same grey,
+                    # which is the failure that is hard to see.
+                    #
+                    # It is also the answer for a rig with no filter wheel at
+                    # all, which is the case this exists for: a mono camera
+                    # with no wheel and an OSC camera both shoot every frame
+                    # through "no filter", so the filter name cannot tell them
+                    # apart and only the sensor can.
+                    "bayer_pattern": _bayer,
+                    "is_color": _bayer is not None,
+                    # Video capability (D-RIG-1). All four are additive and
+                    # inert for a client that does not ask.
+                    #
+                    # ``roi_align`` is the (x, y) grid a subframe must land on,
+                    # (1, 1) when nothing constrains it - the ROI picker rounds
+                    # to it so the server does not have to round underneath the
+                    # operator and hand back a different rectangle.
+                    "roi_align": list(getattr(_vcaps, "roi_align", (1, 1))),
+                    "burst_supported": _burst,
+                    # frames per second the driver will sustain, null when it
+                    # does not say (which is not the same as "slow").
+                    "max_fps": getattr(_vcaps, "max_fps", None),
+                    "video_path": "native" if (_burst or _native_cam) else "none",
                 }
                 # Dew-heater LEVEL, in its own try for the same reason the warm
                 # block below is outside this one: it is the newest and least
@@ -6505,6 +7076,25 @@ class Hub:
                 # with the heater running at 60% it read 0% and dragging it up
                 # turned the heater DOWN. Publishing 0 as a fallback would move
                 # that same lie server-side, where the client cannot detect it.
+                #
+                # STRIPPED FOR A NON-HOLDER OF `view.weather`, BUT ONLY WHILE
+                # THE DEW LOOP IS DRIVING IT (redact.py::_strip_camera_dew).
+                # The argument below is right exactly half the time, and the
+                # half it is wrong about was a leak: with the loop FOLLOWING,
+                # this register carries the ramp's output, and the ramp is a
+                # published function of four config numbers - so inverting it
+                # recovers the dew margin to about 0.2 C, which is the whole
+                # quantity `view.weather` withholds.
+                #
+                # With the loop off or paused it stays, and that is the part
+                # that was always true: this is a DEVICE READOUT - what a knob
+                # is set to, because somebody set it by hand - and it predates
+                # the dew loop by a year. It is then 60% whether the dew point
+                # is -10 C or 14 C, and withholding it would break a control an
+                # operator has always had to hide a number that is not a
+                # reading. The `dew` node one level up is what tells the two
+                # apart, which is why the rule lives at the redaction seam
+                # (where both nodes are in hand) and not here.
                 try:
                     getd = getattr(cam, "get_dew_heater", None)
                     dew = await getd() if callable(getd) else None

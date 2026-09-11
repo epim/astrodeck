@@ -1,0 +1,51 @@
+{
+  "_comment": "Route list for the CURRENT (classic) AstroDeck UI. There is NO URL routing here -- views are React state (setView), so every entry navigates to '/' fresh (a full reload resets state) and then drives the visible nav to the target view. See ui/src/App.tsx (desktop rail, NAV) and ui/src/components/BottomNav.tsx / NavMoreSheet.tsx (phone bottom nav + More sheet) -- the SAME labels exist in both places but only one is visible at a given width (rail: 'hidden sm:flex', bottom nav: 'sm:hidden'), which is why every click step is matched with a VISIBLE-only filter and treated as a no-op when nothing visible matches at this width (e.g. the 'More' step is a no-op on desktop/tablet, where Monitor/Settings sit directly on the rail).",
+  "_marker_notes": "Markers are chosen to NOT collide with any nav label (see astrodeck-ui-probe-traps.md trap #1/#3): 'Equipment' and 'Settings' are themselves nav labels and would false-pass from the nav alone even on the wrong view, so the Equipment route asserts the inner 'Devices' panel and the Settings route asserts the inner 'Connection Status' panel instead.",
+  "routes": [
+    {
+      "url": "/",
+      "name": "equipment",
+      "click": [],
+      "marker": "Devices",
+      "shot": "equipment"
+    },
+    {
+      "url": "/",
+      "name": "capture",
+      "click": [
+        { "text": "Capture", "visible": true }
+      ],
+      "marker": "Live Preview",
+      "shot": "capture"
+    },
+    {
+      "url": "/",
+      "name": "focus",
+      "click": [
+        { "text": "Focus", "visible": true }
+      ],
+      "marker": "Focuser",
+      "shot": "focus"
+    },
+    {
+      "url": "/",
+      "name": "monitor",
+      "click": [
+        { "text": "More", "visible": true },
+        { "text": "Monitor", "visible": true }
+      ],
+      "marker": "Progress",
+      "shot": "monitor"
+    },
+    {
+      "url": "/",
+      "name": "settings",
+      "click": [
+        { "text": "More", "visible": true },
+        { "text": "Settings", "visible": true }
+      ],
+      "marker": "Connection Status",
+      "shot": "settings"
+    }
+  ]
+}

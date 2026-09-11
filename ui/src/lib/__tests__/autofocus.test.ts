@@ -146,7 +146,7 @@ test("derive: a MEASURED span from the server beats every rule in this file", ()
   // than the shipped ±1400. If this file kept deriving its own number, the line
   // printed under the button would describe a sweep that does not happen, which
   // is the exact defect the `source`/`basis` split was added to end.
-  const measured = "75 steps (±300) — sized from a defocus slope of 0.0780 px/step";
+  const measured = "75 steps (±300) - sized from a defocus slope of 0.0780 px/step";
   const p = deriveAutofocusParams({ focuserMax: 30000, maxBin: 4, maxGain: 300,
     liveExposureS: 2, liveGain: 120, liveBinning: 1, liveStars: 40, liveHfr: 2,
     serverSweep: { step: 75, basis: measured } });
@@ -285,7 +285,7 @@ test("plainFocusVerdict: a SUCCESSFUL run's advice is rendered, not replaced by 
   assert(good.detail === thin, "same for a merely good run");
   // And with nothing to add, the canned reassurance is still there.
   assert(plainFocusVerdict({ state: "done", hfr: 1.8, r2: 0.997, ...TH }).detail
-         === "Stars are tight — you're focused.", "no advice -> the plain sentence");
+         === "Stars are tight - you're focused.", "no advice -> the plain sentence");
   // A run that finished with no HFR at all is still a run that happened.
   const noHfr = plainFocusVerdict({ state: "done", hfr: null, r2: null, ...TH, advice: thin });
   assert(noHfr.detail === thin, `a done-but-unmeasured run keeps its advice: ${noHfr.detail}`);

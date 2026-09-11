@@ -20,6 +20,14 @@
 //
 // Each child imports its file and exits on the file's own exported result, so
 // the pass/fail signal is the file's, not a guess parsed out of its stdout.
+//
+// The scoring functions below (`parseCounts`, `assertionStyle`, `computeOk`)
+// are exported so a unit test can exercise them directly, without spawning
+// real child processes or planting a fixture file that a normal `npm test`
+// walk would have to run (and, for the crash/false-tally shapes these guard
+// against, would have to run withOUT failing the real suite). Importing this
+// module for those exports must not itself run the whole suite — see the
+// `isMain` guard at the bottom of the file.
 
 import { readdirSync, statSync } from "node:fs";
 import { execFile } from "node:child_process";
@@ -56,7 +64,7 @@ function findTests(dir, out = []) {
  *  is a genuine "cannot tell", and it fails — a file whose output we cannot
  *  read must never be scored as a pass.
  */
-function parseCounts(text) {
+export function parseCounts(text) {
   const both = /(\d+)\s+passed,\s*(\d+)\s+failed/i.exec(text);
   if (both) {
     return { passed: +both[1], failed: +both[2], total: +both[1] + +both[2] };
@@ -66,6 +74,11 @@ function parseCounts(text) {
     const [passed, total] = [+ratio[1], +ratio[2]];
     return { passed, failed: total - passed, total };
   }
+  // Bare "N passed", with no fail count of its own — carries no evidence
+  // about whether anything failed. Reading zero failures out of it is only
+  // sound alongside a clean exit; a nonzero exit paired with this shape must
+  // still fail the file (see `computeOk`), not be waved through because the
+  // text alone looked green.
   const only = /(\d+)\s+passed\b/i.exec(text);
   if (only) return { passed: +only[1], failed: 0, total: +only[1] };
   return null;
@@ -76,8 +89,24 @@ function parseCounts(text) {
  *  the end. For those the CHILD'S EXIT CODE is the signal — a failed assertion
  *  throws, the import rejects, and the child dies nonzero. Recognised by the
  *  phrase so that a file which prints nothing still counts as unscorable. */
-function assertionStyle(text) {
+export function assertionStyle(text) {
   return /\bOK\b|all assertions passed/i.test(text);
+}
+
+/** Whether one file's run counts as green. `err` is the `execFile` callback's
+ *  error — truthy on ANY nonzero exit, not only a timeout — and disqualifies
+ *  the run outright, even when a passing tally was recovered from its output.
+ *  Without this a file that prints "2/2 passed" and then dies (a throw in
+ *  teardown, a stray unhandled rejection, or a hand-written file using the
+ *  bare "N passed" form — which `parseCounts` reads as zero failures because
+ *  it carries no fail count of its own — behind a `process.exit(1)`) reports
+ *  "all green" purely because the printed text looked clean. `byExit` already
+ *  requires `!err` to be true (a throw-on-failure file that reached its end
+ *  cleanly), so folding `err` in here does not change that path — it only
+ *  closes the tally branch, which used to ignore the exit code entirely. */
+export function computeOk({ counts, byExit, err, timedOut }) {
+  if (timedOut || err) return false;
+  return (counts !== null && counts.failed === 0) || byExit;
 }
 
 function runOne(file) {
@@ -112,9 +141,9 @@ function runOne(file) {
           file,
           counts,
           byExit,
-          // A crash (nonzero exit with no counts) is a failure even though the
-          // file never got as far as saying so.
-          ok: !timedOut && ((counts !== null && counts.failed === 0) || byExit),
+          // A crash (nonzero exit, with or without counts) is a failure even
+          // when a passing tally was printed before it died — see `computeOk`.
+          ok: computeOk({ counts, byExit, err, timedOut }),
           timedOut,
           output,
         });
@@ -123,42 +152,52 @@ function runOne(file) {
   });
 }
 
-const files = findTests(join(ROOT, "src")).sort();
-if (files.length === 0) {
-  console.error("no test files found — the discovery walk is broken, which " +
-                "would otherwise read as a clean run");
-  process.exit(1);
-}
-
-const results = [];
-let next = 0;
-await Promise.all(
-  Array.from({ length: Math.min(CONCURRENCY, files.length) }, async () => {
-    while (next < files.length) results.push(await runOne(files[next++]));
-  }),
-);
-
-let passed = 0, failed = 0;
-const broken = [];
-for (const r of results) {
-  passed += r.counts?.passed ?? 0;
-  failed += r.counts?.failed ?? 0;
-  if (!r.ok) {
-    const why = r.timedOut ? `timed out after ${TIMEOUT_MS / 1000}s`
-      : r.counts ? `${r.counts.failed} failed`
-        : "no pass/fail tally in its output — cannot be scored";
-    broken.push({ name: relative(ROOT, r.file), why, output: r.output });
+async function main() {
+  const files = findTests(join(ROOT, "src")).sort();
+  if (files.length === 0) {
+    console.error("no test files found — the discovery walk is broken, which " +
+                  "would otherwise read as a clean run");
+    process.exit(1);
   }
+
+  const results = [];
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(CONCURRENCY, files.length) }, async () => {
+      while (next < files.length) results.push(await runOne(files[next++]));
+    }),
+  );
+
+  let passed = 0, failed = 0;
+  const broken = [];
+  for (const r of results) {
+    passed += r.counts?.passed ?? 0;
+    failed += r.counts?.failed ?? 0;
+    if (!r.ok) {
+      const why = r.timedOut ? `timed out after ${TIMEOUT_MS / 1000}s`
+        : r.counts ? `${r.counts.failed} failed`
+          : "no pass/fail tally in its output — cannot be scored";
+      broken.push({ name: relative(ROOT, r.file), why, output: r.output });
+    }
+  }
+
+  console.log(`\n${"=".repeat(64)}`);
+  console.log(`${files.length} files · ${passed} passed · ${failed} failed`);
+  if (broken.length) {
+    for (const b of broken) {
+      console.error(`\n--- ${b.name}: ${b.why}`);
+      if (b.output) console.error(b.output);
+    }
+    console.error(`\n${broken.length} file(s) not green`);
+    process.exit(1);
+  }
+  console.log("all green");
 }
 
-console.log(`\n${"=".repeat(64)}`);
-console.log(`${files.length} files · ${passed} passed · ${failed} failed`);
-if (broken.length) {
-  for (const b of broken) {
-    console.error(`\n--- ${b.name}: ${b.why}`);
-    if (b.output) console.error(b.output);
-  }
-  console.error(`\n${broken.length} file(s) not green`);
-  process.exit(1);
-}
-console.log("all green");
+// Only run the whole suite when this file is the process entry point (`npm
+// test` -> `node --import tsx run-tests.mjs`), never when it is imported for
+// its exported scoring functions (`parseCounts`, `assertionStyle`,
+// `computeOk`) — e.g. from src/__tests__/runTests.test.ts. Importing this
+// module must be side-effect-free; only executing it drives the suite.
+const isMain = import.meta.url === pathToFileURL(process.argv[1] ?? "").href;
+if (isMain) await main();

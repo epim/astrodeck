@@ -113,3 +113,91 @@ async def test_no_mount_position_means_no_pointing_cards_at_all(hub, monkeypatch
         h = hdul[0].header
     for absent in ("OBJCTRA", "OBJCTDEC", "MOUNTRA", "MOUNTDEC", "PNTGSRC"):
         assert absent not in h, absent
+
+
+# ================================ what an UNSAVED frame costs the live loop
+#
+# Since D-SES-4 every unsaved LOCAL frame pays a full rig snapshot, because a
+# frame that can be PROMOTED later has to carry the header of the moment the
+# shutter opened rather than of wherever the rig has got to by the time somebody
+# presses save. That is the right call and it has a price, and the live preview
+# loop is a stream of exactly those frames: it used to be two wheel reads and a
+# JNOW precession per frame, on a bus that is also carrying the guide camera.
+#
+# Neither fix moves anything in TIME. The wheel is read once for the exposure
+# and the answer handed to both consumers - the same instant, one round trip -
+# and the precession is memoised on the EXACT coordinate pair, which a tracking
+# mount reports unchanged frame after frame. A TTL cache over the wheel would
+# have been the other option and is deliberately not taken: this rig has already
+# shipped a night of frames whose FILTER card was one slot out.
+
+class _CountingWheel:
+    """The sim wheel, with every position read written down."""
+
+    def __init__(self, inner):
+        self._inner = inner
+        self.reads = 0
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    async def get_position(self) -> int:
+        self.reads += 1
+        return await self._inner.get_position()
+
+
+async def test_one_exposure_reads_the_filter_wheel_once(hub):
+    """SABOTAGE (run red, restored): give ``_active_filter_name`` and
+    ``_opaque_slot_in_beam`` their own ``get_position`` calls again."""
+    wheel = _CountingWheel(hub.devices["filterwheel"])
+    hub.devices["filterwheel"] = wheel
+
+    await hub.capture(0.05, 100, 30, 1, save=False, target="")
+    assert wheel.reads == 1, (
+        f"one exposure asked the wheel {wheel.reads} times; the FILTER name "
+        f"and the opaque-slot judgement are two questions about ONE instant")
+    # ...and the answer is still right, which is the half a read counter cannot
+    # see. The sim rig starts on a real slot with a real name.
+    assert hub._promotable["camera"].snap.filter_name == (
+        wheel.filter_names[await wheel.get_position()])
+
+
+async def test_a_saved_frame_reads_it_once_too(hub):
+    wheel = _CountingWheel(hub.devices["filterwheel"])
+    hub.devices["filterwheel"] = wheel
+    await hub.capture(0.05, 100, 30, 1, save=True, target="")
+    assert wheel.reads == 1, wheel.reads
+
+
+async def test_the_precession_is_not_recomputed_for_a_mount_that_has_not_moved(
+        hub, monkeypatch):
+    """A tracking mount reports one position frame after frame - that is what
+    tracking IS - so the memo keyed on the exact pair hits on every frame of a
+    live loop and misses the moment the tube moves."""
+    calls: list[tuple[float, float]] = []
+
+    def _precess(ra, dec):
+        calls.append((ra, dec))
+        return ra + 0.001, dec + 0.001
+
+    monkeypatch.setattr(hub_module, "precess_jnow_to_j2000", _precess)
+    tel = hub.devices["telescope"]
+    # The sim mount is not an Alpaca one, so the transform is skipped entirely;
+    # force the JNOW branch the way a real Alpaca mount takes it.
+    monkeypatch.setattr(Hub, "_mount_expects_jnow",
+                        lambda self, t: _true(), raising=False)
+
+    first = await hub.from_mount_frame(tel, 5.5, 40.0)
+    again = await hub.from_mount_frame(tel, 5.5, 40.0)
+    assert again == first
+    assert len(calls) == 1, (
+        f"the same reported position was precessed {len(calls)} times")
+
+    # A slew changes the key, and the memo must not answer for it.
+    moved = await hub.from_mount_frame(tel, 6.5, 40.0)
+    assert moved != first
+    assert len(calls) == 2
+
+
+async def _true() -> bool:
+    return True
