@@ -1,4 +1,22 @@
-"""Dawn park — the safety net for a night that ended without a run.
+"""The rig's wall-clock safety tick. Two duties; the dawn park is the older.
+
+ONE TIMER, TWO HAZARDS, and they keep different clocks:
+
+  * THE DAWN PARK (everything below `tick`'s Sun-altitude gate): a mount left
+    tracking into sunrise. Fires once, at dawn.
+  * UNATTENDED GUIDING (`_check_unattended_guiding`, ABOVE that gate): a guide
+    loop driving the mount with no sequence and nobody at the controls. Fires
+    any time of night, and deliberately runs before the site check as well,
+    because a rig that never configured a site is exactly the rig most likely
+    to be left guiding.
+
+They share this task rather than growing a second one, but they must not share
+a clock. Putting the guiding check below the Sun gate would make it a dawn
+check, which is precisely the defect it exists to fix: on 2026-09-11 the loop
+that needed stopping had been running since 00:50.
+
+THE RULE BOTH OF THEM ENCODE: a safety check must be driven by the clock of the
+HAZARD it guards, never by the progress of the work.
 
 WHY THIS EXISTS. Every park AstroDeck performs lives inside the sequence
 engine's run lifecycle (``engine._wind_down``): park-at-end, the safety
@@ -147,6 +165,10 @@ class DawnPark:
         # once instead of every minute.
         self._held: str | None = None
         self._warned_no_site = False
+        #: When the guide loop was first seen running with nobody driving it,
+        #: or None. NOT a dawn thing: this one runs all night. See
+        #: `_check_unattended_guiding`.
+        self._guiding_alone_since: float | None = None
         # Consecutive-failure bookkeeping, so a net that is failing says so
         # once and then keeps a heartbeat instead of shouting every minute.
         # See _fail and FAIL_LOG_EVERY.
@@ -202,6 +224,11 @@ class DawnPark:
     async def tick(self) -> None:
         """One decision. Safe to call as often as you like."""
         cfg = config_store.cfg()
+        # BEFORE THE SITE GATE AND BEFORE THE SUN, because this hazard keeps a
+        # different clock from the dawn park. A guider running with nobody
+        # driving it is dangerous at midnight, and every line below this one is
+        # about sunrise. See `_check_unattended_guiding`.
+        await self._check_unattended_guiding(cfg)
         site = self.hub.site
         if site.get("is_default", True):
             # An unconfigured site is not a location, it is a placeholder — and
@@ -313,6 +340,105 @@ class DawnPark:
                            "sequence wind-down, so nothing else was going to "
                            "stop it tracking into the Sun", "safety")
         await self._release_cooler(alt)
+
+    # ------------------------------------------- guiding with nobody driving
+
+    async def _check_unattended_guiding(self, cfg) -> None:
+        """Stop a guide loop that has been running with nobody driving it.
+
+        THE HAZARD KEEPS ITS OWN CLOCK, which is the whole point of putting
+        this here rather than inside the sequence engine. On 2026-09-11 the
+        guider was started at 00:50:37 on a run that had been PAUSED since
+        00:40. Every guard that could have caught what followed -- the re-lock
+        rate gate, the pointing checks, the tracking enforcement -- lives in
+        the engine's per-frame loop, and there were no frames. So a guider
+        chasing a washed-out star at dawn walked the mount sixty-four degrees,
+        one re-lock at a time, down to ten degrees of altitude, and nothing in
+        the system was looking.
+
+        A guide loop is only ever a servant of something else: a sequence
+        taking frames, or a person at the Guide screen calibrating. When
+        neither is true for ``safety.unattended_guide_min``, the loop is
+        driving the mount on nobody's behalf, and the safe thing is to stop it.
+
+        WHAT COUNTS AS SOMEBODY DRIVING is the same rule the dawn park already
+        uses for its own veto, and deliberately so: a run that is ``running``
+        (not merely paused, which owns no wind-down), or one of the hands-off
+        lanes -- a goto, a dome move, a polar alignment -- which is a person or
+        a job with a hand on the mount.
+
+        THE TIMER IS WHY THIS IS NOT RUDE. Ten minutes is longer than any
+        calibration, longer than a slew-and-solve, and longer than the gap
+        between two frames of any plan this rig runs; an operator who walks
+        away mid-calibration gets their calibration. What they do not get is
+        four and a half hours.
+        """
+        limit_min = float(getattr(getattr(cfg, "safety", None),
+                                  "unattended_guide_min", 0.0) or 0.0)
+        if limit_min <= 0:
+            self._guiding_alone_since = None
+            return                          # 0 is off, as everywhere else here
+        if not await self._guider_is_guiding():
+            self._guiding_alone_since = None
+            return
+        if self._somebody_is_driving(cfg):
+            self._guiding_alone_since = None
+            return
+
+        now = self._clock()
+        if self._guiding_alone_since is None:
+            self._guiding_alone_since = now
+            return
+        if now - self._guiding_alone_since < limit_min * 60.0:
+            return
+
+        # Re-armed rather than cleared, so a stop that FAILS is retried one
+        # interval later instead of never. A guider that will not stop is worse
+        # news than one that was left running, and it has to keep being news.
+        self._guiding_alone_since = now
+        g = getattr(self.hub, "guider", None)
+        if g is None:
+            return
+        bus.log("warning",
+                f"guiding has been running for {limit_min:.0f} min with no "
+                f"sequence and nobody at the controls -- stopping it before it "
+                f"walks the mount somewhere nobody chose", "safety")
+        try:
+            await asyncio.wait_for(g.stop_guiding(), MOUNT_QUERY_TIMEOUT_S)
+        except Exception as e:      # noqa: BLE001 - a refusal is news, not a crash
+            bus.log("error",
+                    f"could not stop the unattended guide loop ({e}); it is "
+                    f"still running and this will try again in "
+                    f"{limit_min:.0f} min", "safety")
+
+    async def _guider_is_guiding(self) -> bool:
+        """Is a guide loop actually closed on a star right now?
+
+        Never raises and never blocks the tick: an unreadable guider reads as
+        "not guiding", because acting on a guider nobody can talk to would mean
+        this net stopping something it cannot see."""
+        g = getattr(self.hub, "guider", None)
+        if g is None or not getattr(g, "connected", False):
+            return False
+        try:
+            return bool(await asyncio.wait_for(g.is_active(),
+                                               MOUNT_QUERY_TIMEOUT_S))
+        except Exception:           # noqa: BLE001
+            return False
+
+    def _somebody_is_driving(self, cfg) -> bool:
+        """Is a sequence or a person using this guide loop right now?
+
+        Deliberately NOT ``_hands_off_reason``: that one also stands down for a
+        rig configured for solar work and it LOGS when it overrides a paused
+        run, neither of which belongs on a check that runs every minute all
+        night long. The two conditions that matter here are shared with it: a
+        run that is genuinely running, and a hands-off lane in flight."""
+        eng = self.engine
+        if eng is not None and getattr(eng, "running", False) \
+                and not getattr(eng, "paused", False):
+            return True
+        return bool(self._busy_lanes() & HANDS_OFF_LANES)
 
     async def _release_cooler(self, alt: float) -> None:
         """Let the camera warm, now that the night is definitively over.

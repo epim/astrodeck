@@ -194,6 +194,17 @@ class SafetyConfig(BaseModel):
     #: arcsec/min. Every one of those frames was thrown away; twenty minutes of
     #: waiting would have been the cheapest outcome available that night.
     flip_owed_hold_min: float = Field(20.0, ge=0, le=240)
+    #: Minutes the guider may run with nobody driving it -- no sequence
+    #: running, no operator job on the mount -- before the safety tick stops
+    #: it. 0 disables the check.
+    #:
+    #: Ten minutes, and this is the narrow fix for the 4.5 hours of 2026-09-11:
+    #: a calibration completed at 00:50:37 on a run that had been PAUSED ten
+    #: minutes earlier, guiding started, and at dawn the star washed out and
+    #: twelve re-locks walked the mount 64 degrees to within 10 degrees of the
+    #: horizon. Nothing was driving from 00:40 onward, and nothing was watching
+    #: either, because every guard in this system rode the sequence.
+    unattended_guide_min: float = Field(10.0, ge=0, le=1440)
     twilight_deg: float = -12.0            # nautical default (C1-26)
     # Sun-exclusion cone (W1.10). ON by default to protect deep-sky gear; a
     # deliberate solar-astronomy session disarms it via solar_avoidance=False
