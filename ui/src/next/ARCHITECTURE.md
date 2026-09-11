@@ -391,16 +391,46 @@ export interface GateInput {
                                     // view.media, view.weather, view.site_precise, view.site_derived
   needsRole?: string;               // device role that must be connected: camera|telescope|guider|switch|focuser|filterwheel|rotator
   busyLane?: string;                // blocked while this lane is busy
+  needsLan?: boolean;               // this write is on the server's LAN-only relay fence (see below)
   extra?: string | null;            // caller-specific reason (e.g. "a flow owns the mount")
 }
 export function lockReason(inp: GateInput, s: {
   principal: Principal | null; status: RigStatus | null; equipConnected: boolean; wsPhase: WsPhase;
-}): string | null;   // priority: link down -> cap -> role not connected -> busy lane -> extra
+  onRelay?: boolean;
+}): string | null;   // priority: link down -> LAN-only -> cap -> role not connected -> busy lane -> extra
 export function useLock(inp: GateInput): { lockedReason: string | null; onExplain: (r: string) => void };
 ```
-Reason copy: link down: "the rig is not reachable"; cap: `needs ${accessPhrase(cap)}`
-(from `lib/caps.ts`, e.g. "needs operator or admin access"); role:
-"connect a camera first"; busy: the `lib/humanize.ts` lane sentence.
+Reason copy: link down: "the rig is not reachable"; LAN-only: `LOCAL_ONLY_REASON`
+below; cap: `needs ${accessPhrase(cap)}` (from `lib/caps.ts`, e.g. "needs
+operator or admin access"); role: "connect a camera first"; busy: the
+`lib/humanize.ts` lane sentence.
+
+- The relay fence (added in the wave-2 whole-branch review). The server
+  refuses a fixed set of writes over the relay - `app.py`'s
+  `_REMOTE_LOCAL_ONLY_MUTATION_PREFIXES`/`_EXACT`: `/api/config`,
+  `/api/alerts`, `/api/drivers`, `/api/profiles`, `/api/connect`,
+  `/api/survey/pack`, `/api/ephemeris`, `/api/locations`,
+  `/api/switch/ports`, the update routes, `/api/users`, `/api/auth/*` - with
+  403 `code: "local_only"`, because a tunnelled session is a replayable
+  bearer credential. Every control that issues one of these writes passes
+  `useLock({ needsLan: true, ... })` so it renders honest-locked with
+  `LOCAL_ONLY_REASON` ("This changes the rig's own settings, so it needs the
+  LAN - you are connected through the relay.") before the press, never after
+  a 403 the operator had no way to expect. The priority order is link down,
+  then LAN-only, then cap, then role, then busy lane, then extra: LAN-only
+  sits ABOVE the capability rule because over the relay the write is refused
+  for every role including admin, so naming a capability there would be a
+  true sentence about the wrong blocker; it sits BELOW the link rule because
+  with the socket down nothing about which origin the tab is on is the
+  reason a press fails. Any catch around a fenced write checks
+  `isLocalOnly(err)` (`err.code === "local_only"`) BEFORE falling back to a
+  capability sentence, for the same wrong-blocker reason. `next/lib/relay.ts`
+  is the one source of "is this tab on the relay": the pathname
+  (`/h/<home_id>/...`) answers before any request has been made, `GET
+  /api/remote/status`'s own `via` refines it the moment any surface has read
+  it, and Settings > Connection's `connectionModel.ts` and `gateHook.ts`'s
+  `useLock` both read the same module, so the two can never disagree about
+  which network a tab is on.
 
 - Viewer rendering: primary CTAs (IMAGE THIS, RUN NOW, CAPTURE, PARK, pad,
   toggles) render honest-disabled with the reason; nothing is hidden, so a
@@ -457,6 +487,28 @@ Reason copy: link down: "the rig is not reachable"; cap: `needs ${accessPhrase(c
   phone already set up under the classic root keeps its settings when it
   switches to the next one.
 - Never write `store.view` from the new UI except the classic handoff.
+- Two more pinned rules, from the wave-2 whole-branch review, that any next
+  surface must honour:
+  - The end-to-end probe's visibility floor. A `data-testid` element only
+    counts as visible if its box clears 16 x 16 px in both dimensions
+    (`MIN_VISIBLE_PX`, `tools/ui_probe/probe.py:94`, checked by
+    `_large_enough`, `probe.py:110-114`) - Playwright's own `is_visible()`
+    does not look at size at all, so a control that CSS had shrunk to a 2px
+    border still read as "visible". A text `marker` match only has to clear
+    8 px of HEIGHT (`MIN_MARKER_HEIGHT_PX`, `probe.py:95`, checked by
+    `_tall_enough`, `probe.py:117-122`) and carries no width check: a marker
+    matches PROSE (a nav caption, a heading), and legitimate prose is
+    routinely under 16 px tall or narrower than a control.
+  - A primitive that sets `overflow: hidden` on its own bare root and is
+    mounted with no wrapper directly inside a `display: flex;
+    flex-direction: column` body must also declare `flex-shrink: 0`.
+    `overflow: hidden` zeroes a flex item's automatic minimum height (the
+    Flexbox "automatic minimum size" carve-out), so without the override the
+    column's default `flex-shrink: 1` can shrink the control past its
+    content down to its own border while it still measures as visible.
+    `next.css`'s `.nx-dial` (`next.css:389`), `.nx-seg` (`next.css:283`) and
+    `.nx-bar` (`next.css:458`) carry the rule; `__tests__/shellCss.test.ts`
+    pins it on all three.
 
 ## 10. Incident model
 
@@ -492,45 +544,81 @@ hub with a "session ›" CTA.
 
 ## 11. Reuse map (existing components mounted inside the new UI)
 
-Mount as-is (props-driven or self-subscribed), wrapped in the new chrome:
+This section used to narrate the mount-as-is list by hand; wave R7 rebuilt 77
+presentation components as new files under `ui/src/next/**` that share the
+legacy LOGIC and re-implement only presentation, which made a hand-written
+list a thing that drifts the moment someone imports a component back in and
+nothing fails. The enforced answer now lives in
+`ui/src/next/__tests__/r7Parity.test.ts`, which reads every import under
+`ui/src/next/**` and fails by file, module and binding the moment one
+matches a React component from `components/**` or `views/**` that is not on
+one of its two allow-lists.
 
-- Preview stack: `components/preview/PreviewStage`, `StretchHistogram`,
-  `LoupePanel`, `FrameStats`, `FrameFilmstrip`, `SnrChip`, `PreviewToolbar`
-  (Inspect mode in Rig · Capture and Session · Now).
-- `components/preview/SessionStack` (live stack), `LiveStackReadout`.
-- Sky: `components/atlas/SkyCanvas` (+ `TileEngine`), `CatalogSearch`,
-  `FovOverlay`, `PointingFrame`, `AnnotationMarkers`, `VisibilityPanel`,
-  `MosaicNight`, `TonightPicker` (ranking source for Suggested targets).
-- Flows: `components/flows/FlowsView` (canvas, editor, inspector, library) at
-  tablet/desktop; `QuickFlow` (quick-session compile); `TonightCampaign`,
-  `TonightTimeline`, `TonightStory`, `TonightPlan`, `CalibrationMatrix`.
-- Plan editor: `views/SequenceView` inside the `planEditor` sheet at
-  tablet/desktop (quotas, scheduling, identity, import/export, instructions).
-- Weather: `components/weather/RadarMap`, `SkyConditionsPanel`,
-  `components/cloudmap/SkyDome` (+ `SkyDomePanel`).
-- Polar: `components/polar` (`PolarReticle`), `PolarQuickBar`, `PolarSolveRing`,
-  `GuideFramePreview`.
-- Guide: `GuideGraph`/`GuideScatter` (components/graphs), `GuideProviderControl`,
-  `GuideFramePreview`, guide-assistant panel logic (`lib/guideAssistant.ts`).
-- Mount: `SlewPad` + `lib/slewController.ts`, `GotoStrip`.
-- Focus: `components/focus/FocusPod`, `BahtinovAid`, `FocusVerdict`.
-- Equipment: `DriversPanel`, `ProfileList`, `BackendLinkGrid`, `RotatorCard`,
-  `TasksPanel` logic; the role-assignment table logic from `EquipmentView`
-  (`lib/equipment.ts`).
-- Settings panels: `UsersPanel`, `AuthMethodPanel`, `AccountPanel`, `AlertsPanel`,
-  `EscalationPanel`, `SafetyPanel`, `SafetyLimitsPanel`, `StandardsPanel`,
-  `CalibrationLibraryPanel`, `CalibrationTolerancesPanel`, `NamingPanel`,
-  `WcsStampPanel`, `SyncPanel`, `RestrictedAssetsPanel`, `FactoryResetPanel`,
-  `UpdatePanel`, `CreditsPanel`, `CloudmapPanel`, `WeatherPanel`,
-  `SkyAtlasPanel`, `OpticsPanel` logic, `SitePanel` logic, `HelpView`,
-  `views/ReportView`, gallery `FrameTile`/`FrameViewer`/`TrashPanel`.
-- Login: `views/Login` (whole).
+`HELPER_ONLY` names fourteen legacy PRESENTATION modules the new UI still
+takes a single pure value or helper out of - never the component itself -
+pinned to the exact export names so a later import of anything else from the
+same file is a violation, not an oversight: the one confirm mechanism
+(`components/ConfirmDialog`'s `confirmDialog`/`ConfirmHost`); the preflight
+verdict hook (`components/PreflightStrip`); a chunk-load predicate
+(`components/ViewBoundary`); the exposure/gain/bin option tables
+(`components/ui/CameraPickers`); the live-stack and frame-tile
+hooks/constants (`components/preview/SessionStack`,
+`components/gallery/FrameTile`); the device-link tri-state
+(`components/settings/BackendLinkGrid`) and the role vocabulary
+(`views/EquipmentView`'s one comparator); a drift-test-only import of
+`components/settings/ProfileList`; and, from the Flows area, the
+flow-library card's meta line, the calibration matrix's verdict map, and the
+three Tonight cards' pure geometry, row and campaign types. `DRIFT_TESTS`
+names the tests allowed to import a legacy module on purpose, to pin one of
+these copies against the original - not a violation, the reason the copies
+are safe.
 
-Rebuilt in the new language (design-specified screens): the six hubs' primary
-screens and the device sheets listed in the README. A reused panel is mounted
-inside a `Sheet` with the design header; its internal `Panel` chrome is
-acceptable for tuning editors (tablet/desktop) and MUST be restyled where the
-README specifies the screen (device sheets, Settings groups, Files, Gallery).
+`KEEP_AS_IS` names the only legacy COMPONENTS the new UI may still mount:
+section 2.3's eighteen classified design-neutral (a canvas, an image
+transform, a scientific plot, a reticle - surfaces the design language has
+no vocabulary for, so none was invented for them), plus six the wave-2
+whole-branch review added by ruling. The eighteen, one sentence per group:
+the preview pixel pipeline (`PreviewStage`/`StageControls` - double-buffered
+`<img>` swap, transform layer, overlay canvas); the pure SVG plots
+(`components/graphs`' `GuideGraph`, `GuideScatter`, `VCurve` and `FocusFit` -
+tokens only, no chrome, because inventing a plot vocabulary would be worse
+than the plot); the token-driven monitor surfaces (`Sparkline`,
+`LiveTrendStrip`, `ThermometerBar`, `HealthStrip`, `CountdownTile` and the
+rest of `components/monitor`, plus `HoldButton`, the confirm mechanism
+`shell/ConfirmCard` reuses); the Sky/Atlas renderer and its search widget
+(`components/atlas/SkyCanvas`'s WebGL HiPS tiles,
+`components/atlas/CatalogSearch`); the mount pad and goto strip
+(`components/SlewPad`, `components/GotoStrip` - already the design's own
+D-pad and strip); the polar reticle, quick bar and solve ring
+(`components/polar`'s `PolarReticle` plus its tier/instruction/knob helpers,
+`components/PolarQuickBar`, `components/PolarSolveRing`); the guide-provider
+trio (`components/GuideProviderControl`, `components/GuideQuickBar`,
+`components/GuideFramePreview`); and three small token-only controls
+(`components/capture/TargetField`, `components/ui/ActivityRing`,
+`components/OverrideNote`'s `LayerChip`).
+The six ruling additions: `SessionReviewDrawer`, a per-session
+frame-grading surface that was never in R7's inventory at all, mounted
+as-is pending its own rebuild (a named follow-up, not a silent keep);
+`RadarMap`, `SkyConditionsPanel` and `SkyDomePanel`/`SkyDome` (the dome's
+own geometry type, needed to draw the D-WX-1 overlay on top of it), each
+rewrapped with the additive `chrome="bare"` prop so their own `Panel`
+chrome does not double the new `Card`; and two app-level surfaces kept for
+the same reason - shared with `#/classic` so the two roots can never
+disagree - `TouchGuard` (the pointer-type guard `NextApp` wraps the whole
+app in) and `Login` (the one sign-in form in the product).
+
+The sabotage check that proves the rule is live: re-adding `import
+FlowsView from "../../../../components/flows/FlowsView"` to
+`session/flows/FlowsCanvasHost.tsx` fails `r7Parity.test.ts`'s "no legacy
+presentation component is mounted" by name, module and binding.
+
+Rebuilt in the new language: everything else the README specifies a screen
+for, including the tuning editors and every Settings panel D-X-3 restyled
+(guide algorithms, quotas, safety limits, calibration library/tolerances,
+standards, naming, WCS stamp, sync, restricted assets, update, credits) -
+`r7Parity.test.ts`'s `REBUILT_SURFACES` list names every one of these legacy
+files as a surface nothing under `next/**` may import any more, component or
+helper alike.
 
 ## 12. Server additions (Wave S, Python, own tests, additive only)
 
