@@ -28,6 +28,7 @@
 import { deriveBase } from "../../../../lib/base";
 import type { RemoteStatus, WsPhase } from "../../../../types";
 import { fmtClock, fmtDuration } from "../../../lib/format";
+import { reachFromPath, resolveHere, type ReachId } from "../../../lib/relay";
 
 // ------------------------------------------------------------- the preference
 
@@ -93,7 +94,13 @@ export function writeConnPref(p: ConnPref): void {
 
 // ------------------------------------------------------------------ the model
 
-export type ReachId = "direct" | "relay";
+// The derivation this model used to own now lives in `next/lib/relay.ts`,
+// because a second caller needs the same answer: every control that issues a
+// write the rig fences to the LAN is honest-disabled from it (`gate.ts`'s
+// `needsLan`). Two copies of "am I on the relay" would be two screens quietly
+// disagreeing about the same origin. The TYPE stays exported from here so
+// nothing that imports it from this module has to move.
+export type { ReachId };
 
 export interface ReachAction {
   label: string;
@@ -186,10 +193,10 @@ export const PAIR_OVER_RELAY =
 
 export function connectionModel(inp: ConnectionInputs): ConnectionModel {
   const base = deriveBase(inp.pathname);
-  const fromPath: ReachId = base === "" ? "direct" : "relay";
+  const fromPath = reachFromPath(inp.pathname);
   // `via` wins. It is stamped by the relay client onto the ASGI scope of the
   // request in your hand; the pathname is a guess made from the mount point.
-  const here: ReachId = inp.remote ? inp.remote.via : fromPath;
+  const here = resolveHere(inp.pathname, inp.remote);
 
   const notes: string[] = [];
   if (inp.remote && inp.remote.via !== fromPath) {

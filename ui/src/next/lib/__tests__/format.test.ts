@@ -1,7 +1,12 @@
 // Pure-lib test for format.ts. Sabotage check: reusing eta.ts's fmtDuration
 // verbatim (no space before a lone "s") turns the "45 s" worked example red;
 // dropping the RA wrap-to-[0,24) turns the negative-hours fmtRA test red;
-// forgetting the unicode minus in fmtDec turns the negative-declination test red.
+// forgetting the unicode minus in fmtDec turns the negative-declination test red;
+// rounding the minutes separately from the hours/degrees (`Math.round((h - hh)
+// * 60) % 60`, which is what shipped) turns both carry tests red - 22.9999 h
+// prints "22h 00m" and 62.996 degrees prints "+62° 00′"; applying the 24 h wrap
+// BEFORE the rounding instead of after turns "23h 59.7m carries round to 00h"
+// red.
 import { fmtBytes, fmtClock, fmtDec, fmtDeg, fmtDuration, fmtPct, fmtRA } from "../format";
 
 let passed = 0, failed = 0; const failures: string[] = [];
@@ -46,9 +51,36 @@ test("fmtRA: hours -> HHh MMm, wraps negative hours into [0,24)", () => {
   eq(fmtRA(-1), "23h 00m");
 });
 
+test("fmtRA: 60 minutes CARRIES into the hour, it does not fold back to :00", () => {
+  // The review's own example. Rounding the minutes on their own gave "22h 00m"
+  // here - the same string 22.0 prints, an hour from the truth, on the readout
+  // an operator uses to check the mount is where the plan says.
+  eq(fmtRA(22.9999), "23h 00m");
+  eq(fmtRA(2.9999), "03h 00m");
+  eq(fmtRA(0.9999), "01h 00m");
+});
+
+test("fmtRA: 23h 59.7m carries round to 00h, not to 24h", () => {
+  eq(fmtRA(23.9999), "00h 00m", "the wrap has to happen after the carry:");
+  eq(fmtRA(23.99), "23h 59m", "and half a minute short of it does not wrap:");
+});
+
 test("fmtDec: sign, zero-padded degrees and minutes", () => {
   eq(fmtDec(62.6167), "+62° 37′");
   eq(fmtDec(-5.5), "−05° 30′");
+});
+
+test("fmtDec: 60 minutes CARRIES into the degree, on both signs", () => {
+  eq(fmtDec(62.996), "+63° 00′");
+  eq(fmtDec(-62.996), "−63° 00′");
+  eq(fmtDec(-0.999), "−01° 00′", "a target just south of the equator:");
+});
+
+test("fmtDec: the pole carries to +90, which is a place and not an overflow", () => {
+  // RA wraps at 24 h because 24 h IS 0 h; declination must not, because
+  // folding 90 back to 0 would put Polaris on the celestial equator.
+  eq(fmtDec(89.9999), "+90° 00′");
+  eq(fmtDec(-89.9999), "−90° 00′");
 });
 
 console.log(`${passed} passed, ${failed} failed`);

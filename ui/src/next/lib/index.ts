@@ -9,6 +9,11 @@
 // request. Import it directly: `next/lib/planning`.
 
 export * from "./gate";
+// `relay.ts` is which origin this tab is on - `deriveBase` over the pathname
+// plus whatever `GET /api/remote/status` last said. It holds module state (the
+// rig's own answer) but no React and no fetch of its own, so it belongs here;
+// the HOOK over it lives in `gateHook.ts` with `useLock`.
+export * from "./relay";
 export * from "./incidents";
 export * from "./allocation";
 export * from "./reach";

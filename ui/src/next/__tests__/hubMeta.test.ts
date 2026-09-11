@@ -37,6 +37,23 @@
 // mode is silent - the same URL opens different things depending on which
 // registry composed last. The check runs at module load; these tests prove it
 // is checking the right thing and that the shared names really are shared.
+//
+// AND THE ID HAS TO BE TRUE. `id` is what the duplicate-registration check in
+// `hubs/index.ts` compares (two `lazy()` wrappers around one module are never
+// `===`), so an id that names a DIFFERENT module from the one its `load()`
+// imports disarms that check silently: two names over one module read as the
+// shared-component case, and one name over two modules stops being caught. It
+// was the only item the wave-2 review could not verify by reading, so the last
+// block of this file loads every registered chunk and compares the module the
+// loader actually resolved against the id it is filed under.
+//   * file an entry under another module's id (e.g. give `optics` the id
+//     "settings/sheets/ConnectionSheet") -> "every SheetEntry.id names the
+//     module its loader imports" goes red, naming both paths.
+//   * point a loader at the wrong module while keeping its id -> the same test
+//     goes red from the other side.
+//   * break a sheet module so its chunk cannot load at all -> "every
+//     registered sheet loads and hands back a component" goes red, which is
+//     the vacuity guard the id comparison rests on.
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -44,9 +61,21 @@
 // `lib/base.ts`, which reads `window.location.pathname` at module scope, and a
 // few `.css` files Node has no idea what to do with. A stub for each is cheaper
 // than splitting the registry the architecture names as one module.
+/** Every module URL Node has resolved since this array was last cleared. It is
+ *  how the last block of this file learns WHICH module a `load()` thunk pulled
+ *  in: the thunk hands back a namespace object, and a namespace object does not
+ *  know where it came from. The first resolution recorded during one `load()`
+ *  is that loader's own specifier; everything after it is that module's
+ *  transitive imports. */
+const resolvedUrls: string[] = [];
 {
   const { registerHooks } = await import("node:module");
   registerHooks({
+    resolve(specifier: string, context: any, nextResolve: any) {
+      const r = nextResolve(specifier, context);
+      resolvedUrls.push(String(r.url));
+      return r;
+    },
     load(url: string, context: any, nextLoad: any) {
       if (url.endsWith(".css")) {
         return { format: "module", shortCircuit: true, source: "export default {};" };
@@ -342,6 +371,68 @@ test("SHEETS answers synchronously for every registered name", () => {
   // that was merely still arriving.
   for (const name of Object.keys(SHEET_ENTRIES)) {
     ok(SHEETS[name] != null, `SHEETS["${name}"] is empty at module load`);
+  }
+});
+
+// ------------------------------------------- the id names the real module
+//
+// Loaded once, up front, because `test()` is synchronous and these are chunks.
+// ~35 modules, about a second: that is the whole cost of proving the registry
+// is not lying about itself.
+
+const { existsSync } = await import("node:fs");
+const { fileURLToPath } = await import("node:url");
+/** `file:///.../ui/src/next/hubs/` - every id is relative to this. */
+const HUBS = new URL("../hubs/", import.meta.url).href;
+
+interface Loaded { name: string; id: string; url: string | null; def: string }
+const loaded: Loaded[] = [];
+for (const [name, entry] of Object.entries(SHEET_ENTRIES)) {
+  resolvedUrls.length = 0;
+  let def: string;
+  try {
+    const mod = await entry.load();
+    def = typeof (mod as any)?.default;
+  } catch (e) {
+    def = `threw: ${(e as Error).message}`;
+  }
+  // The loader's own specifier resolves first; its imports follow.
+  loaded.push({ name, id: entry.id, url: resolvedUrls[0] ?? null, def });
+}
+
+test("every registered sheet loads and hands back a component", () => {
+  // The vacuity guard for the comparison below: an id cannot be checked against
+  // a module that never arrived, and a registry whose chunks do not load is a
+  // screen that renders the suspense fallback for ever.
+  ok(loaded.length > 20, `only ${loaded.length} sheets loaded`);
+  for (const l of loaded) {
+    eq(l.def, "function", `sheet "${l.name}" (${l.id}) exports no component:`);
+  }
+});
+
+test("every SheetEntry.id names the module its loader imports", () => {
+  for (const l of loaded) {
+    // "hub/dir/module" or "hub/dir/module:NamedExport" - the second form is a
+    // module carrying more than one sheet (the flows inspector) or a component
+    // defined inside a registry file (`demo`).
+    const modulePath = l.id.split(":")[0];
+    const stem = HUBS + modulePath;
+    if (l.url == null) {
+      // No dynamic import at all. Legitimate for a component defined in a file
+      // that is already loaded, but then the id has to say WHICH file, and that
+      // file has to exist - otherwise the id is unfalsifiable.
+      ok(l.id.includes(":"),
+        `"${l.name}" imports nothing and its id "${l.id}" names no export in a module`);
+      ok(
+        existsSync(fileURLToPath(`${stem}.tsx`)) || existsSync(fileURLToPath(`${stem}.ts`)),
+        `"${l.name}" is filed under "${l.id}" but ${modulePath} is not a module on disk`,
+      );
+      continue;
+    }
+    ok(
+      l.url === `${stem}.tsx` || l.url === `${stem}.ts`,
+      `"${l.name}" is filed under "${l.id}" but its loader imports ${l.url.slice(HUBS.length)}`,
+    );
   }
 });
 

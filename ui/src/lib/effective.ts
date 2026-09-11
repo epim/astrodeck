@@ -138,7 +138,7 @@ export function overriddenCaps(
 
 /** True when the active profile carries an optics block. Checked through the
  *  provenance of a single field rather than by looking for the block, because
- *  the block wins WHOLE: if one optics key reports `profile`, all seven do. */
+ *  the block wins WHOLE: if one optics key reports `profile`, all nine do. */
 export function opticsOverridden(
   config: AppConfig | null | undefined,
 ): boolean {
@@ -299,7 +299,7 @@ export function profileOverrideSummary(row: {
     }
   }
   if (row.optics) {
-    // Only the two numbers that identify a telescope; the block carries seven
+    // Only the two numbers that identify a telescope; the block carries nine
     // fields and listing them all here would bury the ones that matter.
     const o = row.optics;
     const bits = [

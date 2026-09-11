@@ -152,7 +152,13 @@ let state: PlanningState = localState("loading");
 const listeners = new Set<() => void>();
 let started = false;
 /** Monotonic, so a slow answer to an earlier write cannot land on top of a
- *  later one and put a control back where the user just moved it from. */
+ *  later one and put a control back where the user just moved it from.
+ *
+ *  BOTH halves of every `.then` consult it. The success half is the obvious
+ *  one; the REJECTION half is the one the wave-2 review found unguarded, and it
+ *  is the more damaging of the two - it republishes `before`, a snapshot taken
+ *  two edits ago, so one failed early write silently reverted a later write
+ *  that had already been acknowledged by the rig. */
 let writeSeq = 0;
 
 function publish(next: PlanningState): void {
@@ -319,7 +325,14 @@ function sendQuick(
       const parsed = parseBlock(block);
       if (parsed) publish(fromBlock(parsed, true));
     },
-    (e: Error) => { publish({ ...before, error: e.message }); },
+    (e: Error) => {
+      // A LATER write has already landed: `before` is a snapshot of a state two
+      // edits ago, so republishing it would undo the newer one and put the
+      // control back where the user has since moved it from. The failure is
+      // real but it is no longer about anything on screen.
+      if (seq !== writeSeq) return;
+      publish({ ...before, error: e.message });
+    },
   );
 }
 
@@ -342,7 +355,14 @@ function sendPool(next: string[], canWrite: boolean): void {
       const parsed = parseBlock(block);
       if (parsed) publish(fromBlock(parsed, true));
     },
-    (e: Error) => { publish({ ...before, error: e.message }); },
+    (e: Error) => {
+      // A LATER write has already landed: `before` is a snapshot of a state two
+      // edits ago, so republishing it would undo the newer one and put the
+      // control back where the user has since moved it from. The failure is
+      // real but it is no longer about anything on screen.
+      if (seq !== writeSeq) return;
+      publish({ ...before, error: e.message });
+    },
   );
 }
 
@@ -368,7 +388,14 @@ function forgetQuick(canWrite: boolean): void {
       const parsed = parseBlock(block);
       if (parsed) publish(fromBlock(parsed, true));
     },
-    (e: Error) => { publish({ ...before, error: e.message }); },
+    (e: Error) => {
+      // A LATER write has already landed: `before` is a snapshot of a state two
+      // edits ago, so republishing it would undo the newer one and put the
+      // control back where the user has since moved it from. The failure is
+      // real but it is no longer about anything on screen.
+      if (seq !== writeSeq) return;
+      publish({ ...before, error: e.message });
+    },
   );
 }
 
