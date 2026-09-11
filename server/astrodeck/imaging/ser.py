@@ -58,6 +58,7 @@ won, and the difference is called out in the task report. Readers trim both.)
 """
 from __future__ import annotations
 
+import logging
 import struct
 from datetime import datetime, timezone
 from pathlib import Path
@@ -65,10 +66,33 @@ from typing import Iterator
 
 import numpy as np
 
+log = logging.getLogger(__name__)
+
 #: Fixed header size (spec: "Header with fixed size of 178 Byte").
 SER_HEADER_BYTES = 178
 #: 14 ASCII characters, fixed.
 SER_FILE_ID = b"LUCAM-RECORDER"
+#: Byte offset of the 4_FrameCount int32 (spec table, reproduced above).
+FRAME_COUNT_OFFSET = 38
+#: Bytes per timestamp in the trailer: one int64 per frame.
+TRAILER_BYTES_PER_FRAME = 8
+
+#: How often FrameCount is re-patched WHILE THE RECORDING IS STILL RUNNING.
+#:
+#: ``close`` patches it, and that covers a cancel, a cloud hold and a camera
+#: error, because all three unwind through ``__exit__``. What it does not cover
+#: is the process not getting to run any of that: a power cut, a kill -9, the
+#: 2026-09-08 thermal reset of the rig PC. The header then still says 0 and
+#: every reader in the world (SER Player, PIPP, AutoStakkert, Siril, and this
+#: server's own ``read_frames``) reads it as an empty file - so the frames that
+#: DID land are lost at the exact moment they are the only ones there are.
+#:
+#: 60 frames is two seconds at 30 fps, and the cost is a flush, two seeks and a
+#: four-byte write - against a frame write of kilobytes to megabytes. The worst
+#: case is therefore losing the tail of at most a second or two of a recording
+#: whose process died, and ``repair_frame_count`` recovers even that from the
+#: file's size.
+FRAMECOUNT_PATCH_EVERY = 60
 
 # --- 3_ColorID, verbatim from the spec's enumeration ------------------------
 COLOR_MONO = 0
@@ -252,7 +276,34 @@ class SerWriter:
         self._fh.write(payload)
         self._timestamps.append(utc_ticks(ts if ts is not None else _time.time()))
         self.frames += 1
+        if self.frames % FRAMECOUNT_PATCH_EVERY == 0:
+            # A LIVE HEADER, so a file whose process never gets to close it is
+            # still playable back to the last checkpoint. See
+            # FRAMECOUNT_PATCH_EVERY.
+            self._patch_frame_count()
         return self.frames
+
+    def _patch_frame_count(self) -> None:
+        """Write the current count at offset 38 and come back to the end.
+
+        NEVER RAISES. This runs between two frames of a live recording, and a
+        failure to update a bookkeeping field must not end the recording it is
+        bookkeeping for - the count is patched again at the next checkpoint and
+        by ``close``, and ``repair_frame_count`` can recover it from the file's
+        size even if none of those ever run.
+        """
+        fh = self._fh
+        if fh is None:
+            return
+        try:
+            fh.flush()
+            here = fh.tell()
+            fh.seek(FRAME_COUNT_OFFSET)
+            fh.write(struct.pack("<i", self.frames))
+            fh.flush()
+            fh.seek(here)
+        except OSError as e:        # pragma: no cover - a failing filesystem
+            log.debug("ser: could not checkpoint FrameCount (%s)", e)
 
     def _pack(self, frame) -> bytes:
         if isinstance(frame, (bytes, bytearray, memoryview)):
@@ -283,7 +334,7 @@ class SerWriter:
                 self._fh.write(struct.pack("<q", tick))
             # THE PATCH. Offset 38, one int32, the count that really landed.
             self._fh.flush()
-            self._fh.seek(38)
+            self._fh.seek(FRAME_COUNT_OFFSET)
             self._fh.write(struct.pack("<i", self.frames))
             self._fh.flush()
         finally:
@@ -321,6 +372,67 @@ def read_header(path: str | Path) -> dict:
         "datetime_utc_ticks": dt_utc,
         "bytes_per_pixel": bytes_per_pixel(depth),
     }
+
+
+def frame_count_from_size(head: dict, size_bytes: int) -> int:
+    """How many whole frames a .ser of ``size_bytes`` actually holds.
+
+    THE FILE'S OWN SIZE IS THE SECOND WITNESS, and it is the one that survives a
+    kill. A SER is header + N fixed-stride frames + N int64 timestamps, so N is
+    recoverable from the length whatever the header claims - the only question
+    is whether the trailer got written.
+
+    THE HEADER'S OWN CLAIM IS CHECKED FIRST, and it is not circular. A file
+    that closed properly is exactly ``header + N frames + N timestamps``, so
+    substituting the header's N has to reproduce the length to the byte; when it
+    does, nothing is wrong and there is nothing to recompute. That test is what
+    keeps this function off healthy files, and it has to be the test rather than
+    "does the length divide evenly", because the two readings COLLIDE: nine
+    64-byte frames with no trailer is the same length as eight of them with one.
+
+    When it does not hold, ``close`` never ran - so there is no trailer, and the
+    frames are all there is. The answer is then the whole frames the body holds:
+    a final torn frame is not a frame, and counting it would shift every
+    reader's idea of where the next one starts. (A trailer that was half-written
+    before the process died adds fewer bytes than one frame on every ROI this
+    rig records, so it rounds away; on a very small ROI it could read as one
+    extra frame, which is a frame of zeros rather than a corrupt file.)
+    """
+    stride = (int(head.get("width", 0)) * int(head.get("height", 0))
+              * int(head.get("bytes_per_pixel", 0)))
+    if stride <= 0:
+        return 0
+    size = int(size_bytes)
+    claimed = int(head.get("frames", 0) or 0)
+    if claimed > 0 and SER_HEADER_BYTES + claimed * (
+            stride + TRAILER_BYTES_PER_FRAME) == size:
+        return claimed
+    return max(0, size - SER_HEADER_BYTES) // stride
+
+
+def repair_frame_count(path: str | Path) -> int:
+    """Rewrite a .ser's FrameCount from the file's SIZE. Returns the count.
+
+    For the recording whose process never ran ``close``: the header still says
+    0 (that is what ``open`` writes, because the count is not known yet) and
+    every reader - SER Player, PIPP, AutoStakkert, Siril, and this module's own
+    ``read_frames`` - reads that as an empty file. The frames are all there on
+    disk; only the four bytes that say how many are wrong.
+
+    A NO-OP when the header already agrees with the size, so it is safe to call
+    on every file. Raises ``ValueError`` for something that is not a SER, and
+    ``OSError`` if the file cannot be rewritten (a read-only archive) - the
+    caller decides whether that is fatal, and the two video callers treat it as
+    "leave it alone" rather than "fail the library listing".
+    """
+    path = Path(path)
+    head = read_header(path)
+    real = frame_count_from_size(head, path.stat().st_size)
+    if real != int(head.get("frames", 0)):
+        with open(path, "r+b") as fh:
+            fh.seek(FRAME_COUNT_OFFSET)
+            fh.write(struct.pack("<i", real))
+    return real
 
 
 def read_frames(path: str | Path, *, limit: int | None = None) -> Iterator[np.ndarray]:

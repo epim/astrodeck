@@ -42,17 +42,23 @@ following stops for ``manual_override_s``. It resumes ON ITS OWN afterwards
 (with one log line), because an override that has to be cleared by hand is an
 override somebody forgets at 22:00 and discovers at dawn as a dewed-up mirror.
 
-WHAT IS REDACTED, AND THE ONE THING THAT IS NOT. ``margin_c``, ``temp_c`` and
-``dewpoint_c`` in :meth:`DewController.snapshot` are weather readings AT the
-site, so S7a's ``api/redact.py::_strip_dew`` removes them - and nulls
-``power_pct``, which is a lossy but real function of them - for a principal
-without ``view.weather``. ``camera.dew_heater`` in the hub's status payload is
-deliberately NOT stripped: it predates this loop, it is a DEVICE READOUT of a
-register an operator sets by hand from the Capture screen, and it exists
-precisely so that slider can show the level the heater is actually at instead
-of its own last write (hub.py:6497-6512). Stripping it would put back the bug
-that reading it fixed, and it discloses nothing about the site - a percentage
-on a register is not a weather observation.
+WHAT IS REDACTED, AND WHERE ELSE THE SAME NUMBER COMES OUT. ``margin_c``,
+``temp_c`` and ``dewpoint_c`` in :meth:`DewController.snapshot` are weather
+readings AT the site, so S7a's ``api/redact.py::_strip_dew`` removes them - and
+nulls ``power_pct``, which is a lossy but real function of them - for a
+principal without ``view.weather``.
+
+That was necessary and it was not sufficient, because THE DUTY CYCLE HAS THREE
+CARRIERS and only one of them is on the dew node. The level this loop commands
+also reaches a caller as ``camera.dew_heater`` (the register :meth:`_drive_camera`
+writes) and as the ``value`` of a ``follow_dew`` port on ``GET
+/api/switch/ports`` (the port :meth:`_port_rows` writes). Both are now gated on
+``view.weather`` too, under ONE predicate - ``redact.dew_is_following`` - and
+only ``while enabled and following``: with the loop off or paused, the number
+on either register is the one a human put there, it is 60% whether the dew
+point is -10 C or 14 C, and withholding it would break a control an operator
+has always had. That conditional is the whole reason the rule lives at the
+redaction seam, where the ``dew`` node and the other two are in hand together.
 """
 from __future__ import annotations
 
@@ -196,12 +202,19 @@ class DewController:
         #: What was last PUBLISHED, so the bus only sees edges.
         self._edge = None
 
-        #: Wall-clock instant following resumes; 0.0 = not overridden,
-        #: ``math.inf`` = an override configured never to expire on its own.
-        self._override_until = 0.0
-        self._override_kind: str | None = None
-        self._override_port_id: int | None = None
-        self._resume_logged = True
+        #: SURFACE -> the wall-clock instant following resumes on it.
+        #: ``math.inf`` is an override configured never to expire on its own; an
+        #: absent key is a surface that is being followed.
+        #:
+        #: PER SURFACE, because the override always WAS per surface on the way
+        #: in and global on the way out: ``note_manual`` already filtered on
+        #: which surface the write touched, dropped only that surface's
+        #: last-commanded memory, and then set one shared deadline that stopped
+        #: the loop driving everything. So nudging one dew strap by hand at
+        #: 22:00 also stopped the camera window heater and every other port for
+        #: two hours, and the only evidence was a ``reason`` string that did not
+        #: say which. See ``_surface_key`` for the vocabulary.
+        self._overrides: dict[str, float] = {}
 
         #: Last level COMMANDED to each surface, in percent, so the change
         #: threshold compares intent with intent. None = never commanded.
@@ -275,7 +288,7 @@ class DewController:
         now_ts = self._clock()
         # Before anything else, so an override that has run out is GONE from the
         # snapshot rather than lingering as a stale timestamp on every readout.
-        self._expire_override(now_ts)
+        self._expire_overrides(now_ts)
         reading = self._surface_now(now_ts)
         temp = reading.get("temp_c") if isinstance(reading, dict) else None
         dewp = reading.get("dewpoint_c") if isinstance(reading, dict) else None
@@ -283,28 +296,27 @@ class DewController:
             # DO NOTHING and change nothing. Not 0, not a middle - see the
             # module docstring. ``power`` reports what the heaters were last put
             # at, because that is where they still are.
-            self._record(cfg, following=self._following(now_ts), reading=None,
+            self._record(cfg, following=not self._overrides, reading=None,
                          power=self._last_power, reason="no dew-point reading",
-                         ports=await self._port_rows(None))
+                         ports=await self._port_rows(None, now_ts))
             return
 
         margin = float(temp) - float(dewp)
         power = ramp_power(cfg, margin)
 
-        if not self._following(now_ts):
-            # The target is still computed and reported: an operator looking at
-            # a paused panel wants to see what the loop WOULD be doing, which is
-            # how they decide whether to let the override run out.
-            self._record(cfg, following=False,
-                         reading={"temp_c": float(temp), "dewpoint_c": float(dewp),
-                                  "margin_c": margin},
-                         power=power, reason=self._pause_reason(now_ts),
-                         ports=await self._port_rows(None))
-            return
-
-        wrote_camera = await self._drive_camera(cfg, power)
-        rows = await self._port_rows(power)
-        self._last_power = power
+        # EVERY SURFACE IS DRIVEN EXCEPT THE OVERRIDDEN ONES. The target is
+        # still computed and reported for the paused ones too: an operator
+        # looking at a paused panel wants to see what the loop WOULD be doing,
+        # which is how they decide whether to let the override run out.
+        camera_paused = self._is_overridden("camera", now_ts)
+        wrote_camera = await self._drive_camera(cfg, power, now_ts)
+        rows = await self._port_rows(power, now_ts)
+        if (cfg.camera_window and not camera_paused) or any(
+                not r["paused"] for r in rows):
+            # ``_last_power`` is where the heaters ACTUALLY ARE, which is what a
+            # later reading-less tick reports. A tick on which nothing was
+            # driveable did not put them anywhere.
+            self._last_power = power
 
         # NO WEATHER NUMBER IN THE REASON. The obvious string here is
         # "margin 3.0 C - heaters at 50%", and it would walk the margin straight
@@ -313,10 +325,13 @@ class DewController:
         # ``view.weather`` - a key filter cannot withhold a number spelled out
         # in a sentence. The numbers live in the structured fields, which are
         # strippable; this field says what the loop is DOING.
-        reason = "following the dew margin"
-        if not wrote_camera and not any(r.get("wrote") for r in rows):
+        if self._overrides:
+            reason = self._pause_reason(now_ts)
+        elif not wrote_camera and not any(r.get("wrote") for r in rows):
             reason = "following the dew margin - no change worth commanding"
-        self._record(cfg, following=True,
+        else:
+            reason = "following the dew margin"
+        self._record(cfg, following=not self._overrides,
                      reading={"temp_c": float(temp), "dewpoint_c": float(dewp),
                               "margin_c": margin},
                      power=power, reason=reason, ports=rows)
@@ -350,13 +365,17 @@ class DewController:
 
     # -------------------------------------------------------------- the writes
 
-    async def _drive_camera(self, cfg: DewConfig, power: int) -> bool:
+    async def _drive_camera(self, cfg: DewConfig, power: int,
+                            now_ts: float) -> bool:
         """Command the camera window heater if it has one. True when written.
 
         EVERY failure is caught here rather than at the tick: a camera that
         cannot take a heater write must not cost the switch ports their tick.
+
+        An override on the CAMERA stops this and nothing else: a hand write to
+        a switch port says nothing about the window heater.
         """
-        if not cfg.camera_window:
+        if not cfg.camera_window or self._is_overridden("camera", now_ts):
             return False
         cam = self._device("camera")
         # ``has_dew_heater`` is the capability the hub's own camera status node
@@ -379,13 +398,21 @@ class DewController:
         self._last_camera = int(power)
         return True
 
-    async def _port_rows(self, power: int | None) -> list[dict]:
+    async def _port_rows(self, power: int | None,
+                         now_ts: float | None = None) -> list[dict]:
         """The followed switch ports, commanded to ``power`` when it is not None.
 
-        ``power=None`` is the read-only pass a paused or reading-less tick makes:
-        it still reports which ports follow the dew loop, because "nothing
-        happened" is only legible next to what would have.
+        ``power=None`` is the read-only pass a reading-less tick makes: it still
+        reports which ports follow the dew loop, because "nothing happened" is
+        only legible next to what would have.
+
+        A port with a live override of its own is reported and NOT commanded,
+        whatever ``power`` says - and ``row["paused"]`` records which, so the
+        tick can tell "the loop drove nothing because there was nothing to
+        change" from "the loop drove nothing because a human is holding it".
         """
+        if now_ts is None:
+            now_ts = self._clock()
         sw = self._device("switch")
         if sw is None:
             return []
@@ -407,10 +434,11 @@ class DewController:
             # than raising, so one bad JSON file cannot stop the heaters.
             if not power_guard.port_settings(port_id).get("follow_dew"):
                 continue
+            paused = self._port_is_overridden(port_id, now_ts)
             row = {"id": port_id, "name": getattr(port, "name", "") or "",
                    "follow_dew": True, "value": _num(getattr(port, "value", 0.0), 0.0),
-                   "wrote": False}
-            if power is not None and self._should_command(
+                   "wrote": False, "paused": paused}
+            if power is not None and not paused and self._should_command(
                     self._last_ports.get(port_id), power):
                 value = scale_to_port(port, power)
                 try:
@@ -480,15 +508,15 @@ class DewController:
         if not self._drives(cfg, kind, port_id):
             return
         now_ts = self._clock()
-        was_paused = not self._following(now_ts)
+        key = self._surface_key(kind, port_id)
+        was_paused = self._is_overridden(key, now_ts)
         # 0 means "never expires on its own" (config.DewConfig), which is
         # infinity and not "expire immediately" - the opposite reading would
         # make the safest-looking setting the one that silently ignores the
-        # operator's level on the very next tick.
-        self._override_until = math.inf if seconds <= 0 else now_ts + seconds
-        self._override_kind = str(kind)
-        self._override_port_id = port_id
-        self._resume_logged = False
+        # operator's level on the very next tick. There IS a way out of it now
+        # (POST /api/dew/resume, and re-writing ``dew.manual_override_s``),
+        # which is what makes 0 a setting rather than a trap.
+        self._overrides[key] = math.inf if seconds <= 0 else now_ts + seconds
         if kind == "camera":
             self._last_camera = None
         elif port_id is None:
@@ -496,10 +524,46 @@ class DewController:
         else:
             self._last_ports.pop(port_id, None)
         if not was_paused:
-            # ONE line per override episode, not one per POST: a slider dragged
-            # across the screen is a dozen writes and would be a dozen lines.
-            bus.log("info", f"dew following paused - a level was set by hand "
-                            f"({self._override_kind})", "dew")
+            # ONE line per override episode PER SURFACE, not one per POST: a
+            # slider dragged across the screen is a dozen writes and would be a
+            # dozen lines.
+            bus.log("info", f"dew following paused on {self._label(key)} - a "
+                            f"level was set by hand", "dew")
+
+    # --------------------------------------------------- the surface vocabulary
+    #
+    # THREE KINDS OF KEY, and the third is what makes the other two safe.
+    # ``camera`` is the window heater. ``port:<id>`` is one switch port.
+    # ``ports`` is EVERY switch port, which is what ``note_manual("switch",
+    # None)`` means - a caller that knows a port was touched and cannot say
+    # which. Holding every port is the fail-toward-respecting-the-human reading
+    # of that, and it is the same reading ``_drives`` takes.
+
+    @staticmethod
+    def _surface_key(kind: str, port_id: int | None) -> str:
+        if kind == "camera":
+            return "camera"
+        if port_id is None:
+            return "ports"
+        return f"port:{int(port_id)}"
+
+    @staticmethod
+    def _label(key: str) -> str:
+        """The surface, as a phrase a sentence can be built around."""
+        if key == "camera":
+            return "the camera window"
+        if key == "ports":
+            return "every switch port"
+        return "switch port " + key.split(":", 1)[1]
+
+    def _is_overridden(self, key: str, now_ts: float) -> bool:
+        until = self._overrides.get(key)
+        return until is not None and now_ts < until
+
+    def _port_is_overridden(self, port_id, now_ts: float) -> bool:
+        """A port is held by its OWN override or by the all-ports one."""
+        return (self._is_overridden(self._surface_key("switch", port_id), now_ts)
+                or self._is_overridden("ports", now_ts))
 
     @staticmethod
     def _drives(cfg, kind: str, port_id: int | None) -> bool:
@@ -520,32 +584,103 @@ class DewController:
                 return True
         return True
 
-    def _following(self, now_ts: float) -> bool:
-        return not (self._override_until and now_ts < self._override_until)
-
     def _pause_reason(self, now_ts: float) -> str:
-        if self._override_until == math.inf:
-            return ("following is paused - a level was set by hand and the "
-                    "override does not expire on its own")
-        minutes = max(0, int((self._override_until - now_ts) / 60.0))
-        return f"following is paused for another {minutes} min - a level was set by hand"
+        """WHICH surface is held, and for how long.
 
-    def _expire_override(self, now_ts: float) -> None:
-        """Drop an override whose time is up, and say so ONCE.
+        It used to say neither. "following is paused" on a rig with a window
+        heater and three dew straps leaves the operator to guess whether the
+        loop stopped because of the slider they moved or because of the strap
+        they unplugged, and the answer decides whether to wait it out or go and
+        look. The labels are equipment names and never readings, so this
+        sentence stays safe to publish to a principal without ``view.weather``
+        (the reason field survives ``_strip_dew``, and always has).
+        """
+        held = sorted(self._overrides)
+        names = " and ".join(self._label(k) for k in held) or "nothing"
+        if any(self._overrides[k] == math.inf for k in held):
+            return (f"following is paused on {names} - a level was set by hand "
+                    f"and the override does not expire on its own")
+        minutes = max(0, int((max(self._overrides.values()) - now_ts) / 60.0))
+        return (f"following is paused on {names} for another {minutes} min - "
+                f"a level was set by hand")
+
+    def _expire_overrides(self, now_ts: float) -> None:
+        """Drop each override whose time is up, and say so ONCE per surface.
 
         The resume is automatic on purpose (see the module docstring), and an
         automatic resume with no log line is a heater changing level for a
         reason nobody can find in the morning.
         """
-        if not self._override_until or now_ts < self._override_until:
+        for key in [k for k, until in self._overrides.items() if now_ts >= until]:
+            self._overrides.pop(key, None)
+            bus.log("info", f"dew following resumed on {self._label(key)} - the "
+                            f"manual override has expired", "dew")
+
+    def resume(self, why: str = "somebody asked for it") -> list[str]:
+        """Clear every manual override NOW. Returns the surfaces that were held,
+        as the phrases ``_label`` makes ("the camera window", "switch port 3") -
+        the route echoes them and the log line is built from them, so there is
+        one spelling rather than two.
+
+        THE WAY OUT, and until this existed there was not one. An override taken
+        while ``dew.manual_override_s`` is 0 never expires - 0 means "until I
+        say otherwise", which is the right reading of the setting - so the only
+        way back to following was to restart the server, which on this rig is
+        the next night. The heaters sat where the last hand write left them
+        through every change in the weather, and the panel said so in a sentence
+        nobody was reading.
+
+        Idempotent and total: resuming a loop that is already following is an
+        empty list and no log line, not an error.
+        """
+        held = sorted(self._overrides)
+        if not held:
+            return []
+        labels = [self._label(k) for k in held]
+        self._overrides.clear()
+        # The last-commanded memory goes with it, for the reason ``note_manual``
+        # documents: the ramp may well want a level within the 5-point threshold
+        # of what the loop itself last sent, and the heater would then stay
+        # where the HAND put it while the panel reported the ramp's number.
+        self._last_camera = None
+        self._last_ports.clear()
+        bus.log("info", f"dew following resumed on {' and '.join(labels)} - "
+                        f"{why}", "dew")
+        # THE READOUT HAS TO MOVE NOW, not at the next tick. The snapshot is
+        # only rebuilt by ``tick``, and the interval is two minutes by default -
+        # so a panel that showed a RESUME FOLLOWING button would have gone on
+        # showing the pause face for two minutes after it was pressed, which
+        # reads as a button that did nothing. The heaters themselves are still
+        # re-commanded on the loop's own schedule (this method does no device
+        # I/O: a request must not be able to block on a wedged heater write).
+        self._release_snapshot()
+        return labels
+
+    def _release_snapshot(self) -> None:
+        """Mark the stored snapshot as following again, and publish the edge.
+
+        A field-level edit of the last tick's answer rather than a re-tick: no
+        weather read, no device read, and every number in it is still the number
+        that tick measured. Only the override state changed, so only the
+        override state is rewritten.
+        """
+        snap = self._snap
+        if snap is None:
             return
-        self._override_until = 0.0
-        self._override_kind = None
-        self._override_port_id = None
-        if not self._resume_logged:
-            self._resume_logged = True
-            bus.log("info", "dew following resumed - the manual override has "
-                            "expired", "dew")
+        snap["following"] = True
+        snap["override_until_ts"] = None
+        snap["reason"] = ("following the dew margin again - the loop re-commands "
+                          "the heaters on its next tick")
+        snap["ports"] = [{**row, "paused": False} for row in snap["ports"]]
+        edge = (snap["enabled"], snap["following"], snap["reason"],
+                snap["power_pct"], self._last_camera,
+                tuple(sorted(self._last_ports.items())))
+        if edge != self._edge:
+            self._edge = edge
+            try:
+                bus.publish("dew", **self.snapshot())
+            except Exception as e:  # noqa: BLE001 - a publish never fails this
+                log.debug("dew: publish failed (%s)", e)
 
     # ---------------------------------------------------------------- readout
 
@@ -559,17 +694,24 @@ class DewController:
             # configured never to expire (``manual_override_s = 0``); the two
             # are told apart by ``following``, and by ``reason``, which says so
             # in words. A JSON payload has no infinity to put here.
-            "override_until_ts": (self._override_until
-                                  if self._override_until
-                                  and self._override_until != math.inf else None),
+            #
+            # THE LATEST of the live overrides, because it answers the question
+            # a countdown is asked: "when is the loop following everything
+            # again". A surface that comes back sooner is not the answer to
+            # that, and ``reason`` names each one anyway.
+            "override_until_ts": self._override_until_ts(),
             "margin_c": (round(reading["margin_c"], 2)
                          if reading is not None else None),
             "temp_c": reading["temp_c"] if reading is not None else None,
             "dewpoint_c": reading["dewpoint_c"] if reading is not None else None,
             "power_pct": None if power is None else int(power),
             "reason": reason,
+            # ``paused`` rides the row so a client can mark ONE strap as held
+            # instead of greying the whole panel off the top-level flag. It is
+            # equipment state, not a reading, so it survives ``_strip_dew``.
             "ports": [{"id": r["id"], "name": r["name"],
-                       "follow_dew": r["follow_dew"], "value": r["value"]}
+                       "follow_dew": r["follow_dew"], "value": r["value"],
+                       "paused": bool(r.get("paused", False))}
                       for r in ports],
         }
         self._snap = snap
@@ -587,6 +729,17 @@ class DewController:
                 bus.publish("dew", **snap)
             except Exception as e:  # noqa: BLE001 - a publish never fails a tick
                 log.debug("dew: publish failed (%s)", e)
+
+    def _override_until_ts(self) -> float | None:
+        """The latest finite expiry among the live overrides, or None.
+
+        None also means "at least one of them never expires on its own": a JSON
+        payload has no infinity to put here, and ``following`` plus ``reason``
+        already tell that apart from "nothing is overridden"."""
+        if not self._overrides or any(v == math.inf
+                                      for v in self._overrides.values()):
+            return None
+        return max(self._overrides.values())
 
     def snapshot(self) -> dict | None:
         """This loop's last answer, or None before the first tick.

@@ -256,3 +256,64 @@ def test_an_old_config_with_no_pointer_reads_as_none(tmp_path, monkeypatch):
     store = ConfigStore(path=path)
     assert store.cfg().active_location_id is None
     assert store.cfg().site.name == "Old"
+
+
+# ------------------------------------------------------- the route half (S2)
+# The test above grades ``ConfigStore.clear_active_location``. A store method
+# nothing calls clears nothing, and that gap is exactly the shape this whole
+# file exists for -- so the PUT is driven here.
+
+def test_the_put_clears_the_pointer_when_it_moves_the_live_row(
+        tmp_path, monkeypatch):
+    """SABOTAGE (run red, restored): delete the ``clear_active_location`` call
+    from ``update_location``. The pointer keeps naming a row whose coordinates
+    are not the site the rig is standing at, and the picker shows it selected."""
+    cfg, _locs, app = _make_client(tmp_path, monkeypatch)
+    _install(_writer())
+    with TestClient(app) as c:
+        lid = c.post("/api/locations", json=_BACKYARD).json()["id"]
+        assert c.post(f"/api/locations/{lid}/apply").status_code == 200
+        assert cfg.cfg().active_location_id == lid
+
+        r = c.put(f"/api/locations/{lid}",
+                  json={**_BACKYARD, "latitude": 44.0})
+        assert r.status_code == 200, r.text
+        assert cfg.cfg().active_location_id is None, (
+            "the row the site was applied from moved and the pointer still "
+            "names it")
+        # A LIBRARY EDIT IS NOT A REQUEST TO MOVE THE MOUNT: the site is
+        # exactly where it was, which is why the pointer had to go.
+        assert cfg.cfg().site.latitude == pytest.approx(40.5)
+
+
+def test_the_put_keeps_the_pointer_for_a_rename(tmp_path, monkeypatch):
+    """The other direction, so the clear is not a blanket one: correcting the
+    NAME of the applied row leaves it applied."""
+    cfg, _locs, app = _make_client(tmp_path, monkeypatch)
+    _install(_writer())
+    with TestClient(app) as c:
+        lid = c.post("/api/locations", json=_BACKYARD).json()["id"]
+        assert c.post(f"/api/locations/{lid}/apply").status_code == 200
+        before = cfg.cfg().version
+
+        r = c.put(f"/api/locations/{lid}",
+                  json={**_BACKYARD, "name": "Backyard (east lawn)"})
+        assert r.status_code == 200, r.text
+        assert cfg.cfg().active_location_id == lid
+        assert cfg.cfg().version == before, (
+            "a rename that changed nothing in config bumped the version, "
+            "which costs every open client its field-level write token")
+
+
+def test_the_put_leaves_a_different_rows_pointer_alone(tmp_path, monkeypatch):
+    """Moving a saved site the rig is NOT standing at deselects nothing."""
+    cfg, _locs, app = _make_client(tmp_path, monkeypatch)
+    _install(_writer())
+    with TestClient(app) as c:
+        live = c.post("/api/locations", json=_BACKYARD).json()["id"]
+        spare = c.post("/api/locations", json=_RIDGE).json()["id"]
+        assert c.post(f"/api/locations/{live}/apply").status_code == 200
+
+        r = c.put(f"/api/locations/{spare}", json={**_RIDGE, "latitude": 44.0})
+        assert r.status_code == 200, r.text
+        assert cfg.cfg().active_location_id == live

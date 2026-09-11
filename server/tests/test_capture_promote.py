@@ -253,3 +253,74 @@ async def test_only_the_target_may_be_changed_on_the_way_to_disk(
     with fits.open(saved[0]) as hdul:
         assert hdul[0].header["OBJECT"] == "Veil east"
     assert "Veil" in out["path"]
+
+
+async def test_a_failed_promote_does_not_put_an_older_frame_over_a_newer_one(
+        sim_hub, monkeypatch):
+    """SABOTAGE (run red, restored): put the unconditional
+    ``self._promotable[role] = pending`` back on the failure path.
+
+    The slot is popped BEFORE the write so two presses in flight cannot both
+    save, and put back if the write fails so a full disk costs the operator a
+    retry rather than the frame. Both halves are right; what was missing is that
+    the write is AWAITED and the live loop keeps exposing while it runs. A slow
+    or failing save - a full disk, a capture drive that went away - can
+    therefore finish after a newer frame has already claimed the slot, and
+    restoring unconditionally hands the operator an OLDER frame under "save the
+    last one". The retry they are about to press has to write the frame they
+    are looking at.
+    """
+    import asyncio
+
+    hub = sim_hub
+    await hub.capture(0.05, 100, 30, 1, save=False, target="the old one")
+    older = hub._promotable["camera"].id
+
+    gate = asyncio.Event()
+    real_save = hub._save_captured_frame
+
+    async def _stuck_then_fails(frame, snap):
+        await gate.wait()
+        raise OSError("the capture drive went away")
+
+    monkeypatch.setattr(hub, "_save_captured_frame", _stuck_then_fails)
+    press = asyncio.create_task(hub.promote_last_frame())
+    for _ in range(200):                        # let the save reach the gate
+        await asyncio.sleep(0.005)
+        if "camera" not in hub._promotable:
+            break
+    assert "camera" not in hub._promotable, (
+        "precondition: the slot is popped BEFORE the write")
+
+    # A newer exposure lands while that save is still in flight.
+    monkeypatch.setattr(hub, "_save_captured_frame", real_save)
+    await hub.capture(0.05, 100, 30, 1, save=False, target="the new one")
+    newer = hub._promotable["camera"].id
+    assert newer != older
+
+    gate.set()
+    with pytest.raises(OSError):
+        await press
+
+    held = hub._promotable["camera"]
+    assert held.id == newer, (
+        "the failed promote put the older frame back over a newer capture")
+    assert held.snap.target == "the new one"
+
+
+async def test_a_failed_promote_still_gives_the_frame_back_when_nothing_replaced_it(
+        sim_hub, monkeypatch):
+    """The other half, and the reason the restore exists at all: an ordinary
+    failed save must cost a retry, not the frame."""
+    hub = sim_hub
+    await hub.capture(0.05, 100, 30, 1, save=False, target="keep me")
+    held = hub._promotable["camera"].id
+
+    async def _fails(frame, snap):
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(hub, "_save_captured_frame", _fails)
+    with pytest.raises(OSError):
+        await hub.promote_last_frame()
+    assert hub._promotable["camera"].id == held
+    assert hub.promotable_summary()["available"] is True

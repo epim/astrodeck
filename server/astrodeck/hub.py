@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from . import cooling
-from .config import (config_store, fov_deg, frames_payload,
+from .config import (config_store, f_ratio, fov_deg, frames_payload,
                      image_scale_arcsec_px, redacted)
 from .persist import read_json_or, write_json_atomic
 from .devices.base import (
@@ -217,6 +217,14 @@ _CAPTURE_ENV = (os.environ.get("ASTRODECK_CAPTURE_DIR") or "").strip()
 CAPTURE_DIR = Path(_CAPTURE_ENV) if _CAPTURE_ENV else (Path(__file__).resolve().parents[2] / "captures")
 
 #: Touch-safety motion constants (master plan §A.7 / §C-Risk-5). The manual-move
+#: How long a JNOW->J2000 precession may be reused for the EXACT same reported
+#: coordinates (seconds). See ``Hub.from_mount_frame``: a tracking mount reports
+#: one position frame after frame, and the transform moves by well under a
+#: milliarcsecond over this window (precession is 50 arcsec a YEAR), so the memo
+#: returns the same answer rather than a stale one. Short anyway, because a
+#: cheap number that is right is worth more than a free number that might not be.
+_PRECESS_MEMO_TTL_S = 60.0
+
 #: rate cap (the server clamp in ``/api/mount/move`` imports this) and the
 #: move-axis deadman window. Defined ONCE here so the touch surface and the
 #: Batch-4 safety surface share one source of truth — both reuse the single
@@ -611,6 +619,10 @@ class Hub:
         # last meridian dict from poll_status, so the engine's (sync) ETA can
         # window-gate the flip cost without device I/O.
         self.last_meridian: dict | None = None
+        #: ((ra, dec), taken_at_monotonic, (ra_j2000, dec_j2000)) - see
+        #: ``from_mount_frame``. One entry, because a mount points at one place.
+        self._precess_memo: tuple[tuple[float, float], float,
+                                  tuple[float, float]] | None = None
         self._loop_task: asyncio.Task | None = None
         self._status_task: asyncio.Task | None = None
         # --- per-frame WCS stamping (per-frame-wcs spec §2.1) -------------------
@@ -1967,8 +1979,14 @@ class Hub:
             # THE REDUCER IS NOT APPLIED HERE, deliberately: if USE THE REDUCED
             # FOCAL LENGTH was pressed then focal_length_mm already carries it,
             # and applying it here would double-count.
-            "f_ratio": (round(o.focal_length_mm / aperture, 2)
-                        if aperture > 0 and o.focal_length_mm > 0 else None),
+            #
+            # THROUGH ``config.f_ratio``, which is where all of that is written
+            # down. This used to re-derive the division inline, and the function
+            # existed with no caller but its own tests - so the ONE rule about
+            # this number (None is not a fallback, the reducer is not applied)
+            # was documented in a place the running code did not read, and two
+            # copies of a rule are two rules.
+            "f_ratio": f_ratio(o.focal_length_mm, aperture),
             "have_optics": have,
             "source": src,
             "image_scale_arcsec_px":
@@ -2537,15 +2555,34 @@ class Hub:
     async def from_mount_frame(self, tel, ra_hours: float,
                                dec_deg: float) -> tuple[float, float]:
         """Convert a mount-reported position back to J2000. No-op unless the mount
-        is a JNOW Alpaca mount. Same fail-safe fallback as ``to_mount_frame``."""
+        is a JNOW Alpaca mount. Same fail-safe fallback as ``to_mount_frame``.
+
+        MEMOISED ON THE EXACT INPUT, briefly. Every status poll and every frame
+        of a live loop runs this, and on an Alpaca rig each one is a thread hop
+        plus the whole apparent-place transform. A TRACKING mount reports the
+        same RA/Dec frame after frame - that is what tracking IS - so the cache
+        key is the coordinate pair itself: the memo can only ever answer the
+        precession of the coordinates it was asked for, and a slew changes the
+        key and recomputes. Over ``_PRECESS_MEMO_TTL_S`` the transform itself
+        moves by well under a milliarcsecond (precession is 50 arcsec a YEAR),
+        so the entry is not a stale answer, it is the same answer.
+        """
         if not await self._mount_expects_jnow(tel):
             return ra_hours, dec_deg
+        key = (float(ra_hours), float(dec_deg))
+        hit = self._precess_memo
+        if hit is not None and hit[0] == key and (
+                time.monotonic() - hit[1]) < _PRECESS_MEMO_TTL_S:
+            return hit[2]
         try:
-            return await asyncio.to_thread(precess_jnow_to_j2000, ra_hours, dec_deg)
+            out = await asyncio.to_thread(precess_jnow_to_j2000,
+                                          ra_hours, dec_deg)
         except Exception as e:  # noqa: BLE001 - availability over precision here
             bus.log("warning", f"JNOW->J2000 precession failed ({e}); "
                                "using raw coordinates", "mount")
             return ra_hours, dec_deg
+        self._precess_memo = (key, time.monotonic(), out)
+        return out
 
     def _judge_dark_frame(self, frame, frame_type: str, filter_name: str,
                           opaque_slot: int | None
@@ -2640,18 +2677,51 @@ class Hub:
             ("BEAMWHY", _ascii_card(why), "Blackout-slot check evidence"),
         ]
 
-    async def _opaque_slot_in_beam(self) -> int | None:
+    async def _wheel_slot(self) -> int | None:
+        """The slot the wheel is physically on, or None. Never raises.
+
+        ONE READ, SHARED. The capture path asks two questions of the wheel per
+        exposure - what is the filter called (``_active_filter_name``) and is
+        this slot opaque (``_opaque_slot_in_beam``) - and both used to issue
+        their own ``get_position``. That is two round trips on a bus that is
+        also carrying the guide camera, on every frame of a live loop whose
+        frames are otherwise free. The answer is the same answer: it is the same
+        wheel at the same instant.
+
+        NOT CACHED ACROSS EXPOSURES, and that is the point of passing the slot
+        down rather than memoising it here. A TTL cache would put the wheel's
+        position a second or two in the past, and the one thing this rig has
+        already been burned by is a FILTER card naming the wrong slot (every
+        frame before 2026-08-02 is off by one). Two questions about one instant
+        get one read; two instants get two.
+        """
+        try:
+            fw = self.devices.get("filterwheel")
+            if not fw or not getattr(fw, "connected", False):
+                return None
+            pos = await fw.get_position()
+            return None if pos is None else int(pos)
+        except Exception:  # noqa: BLE001
+            return None
+
+    async def _opaque_slot_in_beam(self, slot: int | None = ...) -> int | None:
         """The wheel's current slot when the operator has flagged it opaque,
         else None. Never raises: no wheel, an unreadable position or a missing
         flag list all mean "we cannot say which slot", which is not the same as
         "the slot is fine" — the frame is still judged on its pixels, the
-        rejection just cannot name a flag to retract."""
+        rejection just cannot name a flag to retract.
+
+        ``slot`` is an ALREADY-READ position (``_wheel_slot``), so a caller that
+        has one does not buy a second round trip for the same instant. The
+        sentinel default means "read it yourself"; ``None`` is a real value and
+        means "the wheel could not be read", which is why the default is not
+        ``None``."""
         try:
             fw = self.devices.get("filterwheel")
             if not fw or not getattr(fw, "connected", False):
                 return None
             flags = list(getattr(fw, "filter_opaque", []) or [])
-            pos = await fw.get_position()
+            pos = await self._wheel_slot() if slot is ... else slot
             if pos is None or pos < 0 or pos >= len(flags):
                 return None
             return int(pos) if flags[pos] else None
@@ -2798,7 +2868,7 @@ class Hub:
             meta.star_count = int(frame.stars)
         return meta
 
-    async def _active_filter_name(self) -> str:
+    async def _active_filter_name(self, slot: int | None = ...) -> str:
         """The name of the filter the wheel is PHYSICALLY on right now, or ``""``
         when there is no connected wheel (or it can't be read).
 
@@ -2806,13 +2876,16 @@ class Hub:
         the FITS ``FILTER`` card, the ``$$FILTER$$`` filename token and the
         ``info["filter"]`` the sequence engine records — so the header, the
         filename, the session report, the stacking-bundle folder and the CSV can
-        never disagree again. Never raises."""
+        never disagree again. Never raises.
+
+        ``slot`` is an ALREADY-READ position (see ``_wheel_slot``); the sentinel
+        default reads one."""
         fw = self.devices.get("filterwheel")
         if not fw or not getattr(fw, "connected", False):
             return ""
         try:
             names = list(getattr(fw, "filter_names", []) or [])
-            pos = await fw.get_position()
+            pos = await self._wheel_slot() if slot is ... else slot
             if pos is None or pos < 0 or pos >= len(names):
                 return ""
             return str(names[pos] or "")
@@ -2852,7 +2925,19 @@ class Hub:
         # somebody presses save. A rig with no wheel still pays nothing
         # (``_active_filter_name`` answers "" without any I/O).
         remote_save = frame.rendered_bytes is not None
-        filt = await self._active_filter_name() if (save or not remote_save) else ""
+        # ONE wheel read for this exposure, threaded into both consumers (the
+        # FILTER card's name and the opaque-slot judgement) so the live loop
+        # pays one round trip a frame instead of two. Read at the same moment
+        # either would have read it, so nothing about WHEN is different.
+        # The sentinel (not None) when nothing wanted it: None is a real value
+        # here and means "the wheel could not be read", which would take the
+        # blackout-slot check out of the cloud gate on the one path that does
+        # not need a filter name (a NINA remote save on the live loop).
+        wheel_slot = ...
+        filt = ""
+        if save or not remote_save:
+            wheel_slot = await self._wheel_slot()
+            filt = await self._active_filter_name(wheel_slot)
         # For local (sim/Alpaca) saves, write the FITS BEFORE publishing the
         # preview so the first `preview` event already carries the correct
         # saved_path/saved_local (P2-2). NINA saves on the imaging host during
@@ -2876,11 +2961,11 @@ class Hub:
             snap = await self._capture_snapshot(
                 frame, target=target, frame_type=frame_type, gain=gain,
                 offset=offset, exposure_s=exposure_s, binning=binning,
-                filter_name=filt, note_pointing=save)
+                filter_name=filt, note_pointing=save, wheel_slot=wheel_slot)
         if save and snap is not None:
             local_save_path = await self._save_captured_frame(frame, snap)
 
-        info = await self._publish_preview(frame)
+        info = await self._publish_preview(frame, wheel_slot=wheel_slot)
         if save and isinstance(info, dict):
             # UX #1: hand the RESOLVED filter (same value the FITS card carries)
             # back to the caller. The sequence engine records THIS, not the plan's
@@ -2969,7 +3054,14 @@ class Hub:
         try:
             path = await self._save_captured_frame(pending.frame, snap)
         except Exception:
-            self._promotable[role] = pending
+            # ``setdefault``, not ``[role] =``. The write is awaited, and the
+            # live loop keeps taking frames while it runs - so a slow or failing
+            # save (a full disk, a USB drive that went away) can finish AFTER a
+            # newer exposure has already claimed the slot, and putting this one
+            # back unconditionally would hand the operator an OLDER frame under
+            # "save the last one". The retry they are about to press must write
+            # the frame they are looking at.
+            self._promotable.setdefault(role, pending)
             raise
         self._promoted_ids[role] = pending.id
         self._after_frame_saved(path, snap, None)
@@ -3017,7 +3109,8 @@ class Hub:
     async def _capture_snapshot(self, frame, *, target: str, frame_type: str,
                                 gain: int, offset: int, exposure_s: float,
                                 binning: int, filter_name: str,
-                                note_pointing: bool = True) -> CaptureSnapshot:
+                                note_pointing: bool = True,
+                                wheel_slot: int | None = ...) -> CaptureSnapshot:
         """Read the rig ONCE and freeze what the header depends on.
 
         Every device read the FITS header needs lives here and nowhere else,
@@ -3077,7 +3170,7 @@ class Hub:
         # was EMPTY, and three daylight darks at median 65535 filed as a
         # dark library — and until now nothing called it. A detector with no
         # caller protects nothing; this is that caller.
-        in_beam = await self._opaque_slot_in_beam()
+        in_beam = await self._opaque_slot_in_beam(wheel_slot)
         opaque_slot = (in_beam
                        if frame_type.upper() in ("DARK", "BIAS") else None)
         dark_cards = await asyncio.to_thread(
@@ -3635,7 +3728,8 @@ class Hub:
             return None
         return round(float(base) * max(1, int(binning or 1)), 3)
 
-    async def _publish_preview(self, frame) -> dict:
+    async def _publish_preview(self, frame, *,
+                               wheel_slot: int | None = ...) -> dict:
         """Build + publish the ``preview`` event = the PreviewInfo contract
         (live-preview spec §4.5/§6). Two corrected paths:
 
@@ -3802,7 +3896,11 @@ class Hub:
                 # indeterminate - fires nothing, re-arms nothing. A hold whose
                 # probes are blind therefore keeps holding, which is the only
                 # safe reading of "I cannot see".
-                blocked = await self._opaque_slot_in_beam()
+                # THE SLOT THE CAPTURE ALREADY READ, when the caller has one.
+                # It is also the more correct question: what mattered is the
+                # slot that was in the beam when this frame was exposed, not
+                # where the wheel has got to by the time the preview is built.
+                blocked = await self._opaque_slot_in_beam(wheel_slot)
                 if blocked is None:
                     cloud = await asyncio.to_thread(
                         cloud_score, sub, stars=stars)
@@ -6979,16 +7077,24 @@ class Hub:
                 # turned the heater DOWN. Publishing 0 as a fallback would move
                 # that same lie server-side, where the client cannot detect it.
                 #
-                # DELIBERATELY NOT STRIPPED for a principal lacking
-                # `view.weather`, unlike the `dew` node below. This is a DEVICE
-                # READOUT - what a knob is set to, usually because somebody set
-                # it by hand - and it predates the dew loop by a year. It says
-                # nothing about the air: it is 60% whether the dew point is
-                # -10 C or 14 C. The `dew` node is the one that carries
-                # measurements of the weather, and that is the one `_strip_dew`
-                # exists for (redact.py). Withholding this one would break a
-                # control an operator has always had, to hide a number that is
-                # not a reading.
+                # STRIPPED FOR A NON-HOLDER OF `view.weather`, BUT ONLY WHILE
+                # THE DEW LOOP IS DRIVING IT (redact.py::_strip_camera_dew).
+                # The argument below is right exactly half the time, and the
+                # half it is wrong about was a leak: with the loop FOLLOWING,
+                # this register carries the ramp's output, and the ramp is a
+                # published function of four config numbers - so inverting it
+                # recovers the dew margin to about 0.2 C, which is the whole
+                # quantity `view.weather` withholds.
+                #
+                # With the loop off or paused it stays, and that is the part
+                # that was always true: this is a DEVICE READOUT - what a knob
+                # is set to, because somebody set it by hand - and it predates
+                # the dew loop by a year. It is then 60% whether the dew point
+                # is -10 C or 14 C, and withholding it would break a control an
+                # operator has always had to hide a number that is not a
+                # reading. The `dew` node one level up is what tells the two
+                # apart, which is why the rule lives at the redaction seam
+                # (where both nodes are in hand) and not here.
                 try:
                     getd = getattr(cam, "get_dew_heater", None)
                     dew = await getd() if callable(getd) else None

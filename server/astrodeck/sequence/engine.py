@@ -4761,6 +4761,36 @@ class SequenceEngine:
                     FOCUSER_MOVE_TIMEOUT_S, "focuser offset move",
                     note="the focuser may be left above the offset position")
                 bus.log("info", f"applied filter offset {delta:+d} for {label}", "sequence")
+                # AND THE COMPENSATION REFERENCE MOVES WITH IT.
+                #
+                # `tempcomp.decide` computes an ABSOLUTE target,
+                # `reference_position + steps_per_c * (temp - reference_temp)`,
+                # and nothing here used to touch that reference - so the moment
+                # this offset landed, the drawtube was `delta` steps away from
+                # where compensation believed focus was. The very next frame
+                # boundary "corrected" that as drift and moved it straight back.
+                # Ha then shot at L's focus, with BOTH log lines present and
+                # nothing anywhere disagreeing: the offset line says it applied
+                # +120, the compensation line says it moved -120 for the
+                # temperature, and neither is wrong on its own.
+                #
+                # WHY THE REFERENCE SHIFTS RATHER THAN `decide` GAINING A TERM.
+                # The alternative was to carry the accumulated filter offset as
+                # an extra input to `decide`. That would mean a second piece of
+                # engine state threaded into a module whose entire value is that
+                # it is PURE - the nine-rule table is tested with no focuser, no
+                # clock and no engine, and every new argument is a new way for
+                # the tested arithmetic and the running arithmetic to differ.
+                # Shifting the reference keeps `decide` untouched.
+                #
+                # It is also the more exact statement. "reference_position +
+                # delta at the SAME reference_temp_c" is literally true - this
+                # filter focuses `delta` steps from the last one, at every
+                # temperature - whereas re-anchoring on the current reading
+                # would additionally swallow whatever drift had not been
+                # corrected yet and silently rebase the night's baseline on a
+                # filter change.
+                self._shift_temp_comp_reference(delta)
                 if overshoot and delta > 0:
                     # "up to", because the extra leg is clamped to the
                     # focuser's ceiling and dropped entirely at the top of its
@@ -5413,6 +5443,28 @@ class SequenceEngine:
         except Exception as e:      # noqa: BLE001 - see the docstring
             bus.log("warning", f"the temperature-compensation reference could "
                                f"not be persisted: {e}", "sequence")
+
+    def _shift_temp_comp_reference(self, delta: int) -> None:
+        """Move the compensation reference by ``delta`` steps, same temperature.
+
+        Called after a per-filter offset move (`_apply_filter`), which changes
+        where focus IS without changing the temperature it was measured at.
+        Anchoring through `_anchor_temp_comp` rather than writing
+        `_temp_comp_ref` directly, so the shifted reference is persisted the
+        same way every other anchor is and a restart mid-run does not come back
+        pointing at the previous filter's focus.
+
+        Costs an unanchored or unarmed rig NOTHING: with no reference yet, the
+        next boundary's seed-on-first-use rule anchors on the position the
+        focuser is already at, which is past this move.
+        """
+        cfg = self._temp_comp_cfg()
+        if not cfg.enabled or not cfg.steps_per_c:
+            return
+        if cfg.reference_temp_c is None or cfg.reference_position is None:
+            return
+        self._anchor_temp_comp(float(cfg.reference_temp_c),
+                               int(cfg.reference_position) + int(delta))
 
     async def _apply_temp_comp(self) -> None:
         """Nudge the focuser for the temperature drift since the reference.

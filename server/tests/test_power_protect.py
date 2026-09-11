@@ -12,13 +12,15 @@ pin the two halves of moving that decision here:
    ``config.safety`` (so the shipped operator, who holds neither that nor
    ``control.power``, cannot re-point which ports the engine protects).
 
-THE ROUTES ARE MIRRORED, NOT IMPORTED. ``api/app.py`` belongs to task S7L and is
-edited by another agent in this same wave, so the three routes under test are
-declared here on a throwaway FastAPI app, verbatim in body and in
-``require(...)``/``@declare(...)`` wiring to the patch S7L is applying. That is
-enough to grade the guard's ORDER (the fake switch keeps a call log) and its
-RBAC, and it is honest about what it does not grade: that the patch landed.
-``tests/test_rbac_enforcement.py`` and the boot assertion grade the real surface.
+THE POLICY HALF IS MIRRORED; THE REFUSALS ARE NOT. The three routes are declared
+here on a throwaway FastAPI app, verbatim in body and in
+``require(...)``/``@declare(...)``, because that is what lets the guard's ORDER
+be graded at all (the fake switch keeps a call log, so "refused before the
+write" is an assertion rather than a status code). What a mirror cannot grade is
+that the patch LANDED - a copy cannot fail when the original does - so the
+section at the bottom of this file drives the SHIPPED routes out of
+``api/app.py`` with the same fake box behind them, and every refusal that is
+about the request rather than about the policy is asserted there.
 """
 from __future__ import annotations
 
@@ -128,13 +130,16 @@ def _make_app(hub) -> FastAPI:
             run_active = bool(getattr(hub.engine, "running", False))
             ports = await sw.get_ports()
             target = next((p for p in ports if p.id == body.port_id), None)
-            if target is not None:
-                why = power_guard.refusal(target, run_active=run_active,
-                                          profile_id=profile_id)
-                if why is not None:
-                    raise HTTPException(409, detail={
-                        "detail": why, "code": "port_protected",
-                        "port_id": target.id, "port_name": target.name})
+            if target is None:
+                raise HTTPException(404, detail={
+                    "detail": f"this power box has no port {body.port_id}",
+                    "code": "unknown_port", "port_id": body.port_id})
+            why = power_guard.refusal(target, run_active=run_active,
+                                      profile_id=profile_id)
+            if why is not None:
+                raise HTTPException(409, detail={
+                    "detail": why, "code": "port_protected",
+                    "port_id": target.id, "port_name": target.name})
             await sw.set_port(body.port_id, body.value)
             return [p.__dict__ for p in power_guard.annotate(
                 await sw.get_ports(), run_active=run_active,
@@ -151,6 +156,10 @@ def _make_app(hub) -> FastAPI:
             ports = await sw.get_ports()
         except DeviceError as e:
             raise HTTPException(409, str(e))
+        if not any(getattr(p, "id", None) == port_id for p in ports):
+            raise HTTPException(404, detail={
+                "detail": f"this power box has no port {port_id}",
+                "code": "unknown_port", "port_id": port_id})
         present = body.model_fields_set
         try:
             power_guard.set_port_settings(
@@ -162,7 +171,9 @@ def _make_app(hub) -> FastAPI:
                             else UNCHANGED),
                 profile_id=_profile_id())
         except ValueError as e:
-            raise HTTPException(422, str(e))
+            raise HTTPException(422, detail={"detail": str(e),
+                                             "code": "invalid_port_setting",
+                                             "port_id": port_id})
         return [p.__dict__ for p in power_guard.annotate(
             ports, run_active=bool(getattr(hub.engine, "running", False)),
             profile_id=_profile_id())]
@@ -561,3 +572,130 @@ def test_the_settings_put_is_behind_the_relay_fence_and_the_switch_itself_is_not
         pytest.skip("S7L has not landed the /api/switch/ports fence prefix yet")
     assert any("/api/switch/ports/1".startswith(p) for p in prefixes)
     assert not any("/api/switch/set".startswith(p) for p in prefixes)
+
+
+# ============================================== the SHIPPED routes, not a mirror
+#
+# Everything above drives the copy at the top of this file, and a copy cannot
+# fail when the original does. These drive ``api/app.py`` itself with the same
+# fake power box behind ``hub.require``, and they grade the refusals that are
+# about the REQUEST rather than about the policy:
+#
+#   POST /api/switch/set          an unknown port id used to SKIP the whole
+#                                 protection guard (``target is None`` meant
+#                                 "no row to check") and write anyway
+#   PUT  /api/switch/ports/{id}   an unknown port id used to persist a policy
+#                                 under itself and answer 200
+#
+# Both are the guard failing open on the one input it cannot reason about. On a
+# Pegasus UPB the id next to the dew strap is the mount.
+
+def _real_client(monkeypatch, *, ports=None, running=False, role="admin"):
+    """The shipped app, with one fake power box and one fixed principal."""
+    import astrodeck.api.app as app_module
+    import astrodeck.config as config_mod
+
+    sw = FakeSwitch(ports if ports is not None else
+                    [_port(1, "Mount"), _port(2, "Dew A")])
+    app = app_module.create_app()
+    # app.py bound ``config_store`` by name at import; the isolated store has to
+    # be pointed at there too or ``_switch_profile_id`` reads the real one.
+    monkeypatch.setattr(app_module, "config_store", config_mod.config_store)
+    monkeypatch.setattr(app_module.hub, "require", lambda kind: sw)
+    # ``SequenceEngine.running`` is a read-only property, so the run state is
+    # supplied by swapping the engine rather than by writing through it.
+    monkeypatch.setattr(app_module.hub, "engine", FakeEngine(running=running))
+    set_active_provider(FakeAuthProvider(principal_for_role(role)))
+    return TestClient(app), sw
+
+
+def test_the_real_set_route_404s_an_unknown_port_and_writes_nothing(monkeypatch):
+    """SABOTAGE (run red, restored): put ``if target is not None:`` back around
+    the protection check in ``switch_set``. The post answers 200 and the driver
+    has the write."""
+    client, sw = _real_client(monkeypatch)
+    r = client.post("/api/switch/set", json={"port_id": 99, "value": 1.0})
+    assert r.status_code == 404, r.text
+    detail = r.json()["detail"]
+    assert detail["code"] == "unknown_port"
+    assert detail["port_id"] == 99
+    assert sw.calls == [], (
+        "an id this box does not report reached the driver: the protection "
+        f"guard was skipped for it: {sw.calls}")
+
+
+def test_the_real_set_route_still_switches_a_port_that_exists(monkeypatch):
+    """The other half: the 404 must be about the id and not about the route."""
+    client, sw = _real_client(monkeypatch)
+    r = client.post("/api/switch/set", json={"port_id": 2, "value": 0.0})
+    assert r.status_code == 200, r.text
+    assert sw.calls == [(2, 0.0)]
+
+
+def test_the_real_set_route_still_refuses_a_protected_port_during_a_run(
+        monkeypatch):
+    """And the 404 is inserted BEFORE the protection check without displacing
+    it: a real port that is protected is still a 409, not a 404."""
+    client, sw = _real_client(monkeypatch, running=True)
+    r = client.post("/api/switch/set", json={"port_id": 1, "value": 0.0})
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["code"] == "port_protected"
+    assert sw.calls == []
+
+
+def test_the_real_settings_put_404s_an_unknown_port_and_persists_nothing(
+        monkeypatch):
+    """SABOTAGE (run red, restored): drop the ``any(... p.id == port_id ...)``
+    check. The put answers 200 and writes an orphan row - which is not inert,
+    because the store is keyed per profile per port id and the row comes back
+    to life the day a box with that many ports is plugged in."""
+    client, _sw = _real_client(monkeypatch)
+    r = client.put("/api/switch/ports/99", json={"follow_dew": True})
+    assert r.status_code == 404, r.text
+    assert r.json()["detail"]["code"] == "unknown_port"
+    assert power_guard.port_settings(99)["follow_dew"] is False, (
+        "a policy was persisted for a port no box reports")
+
+
+def test_the_real_settings_put_still_writes_a_port_that_exists(monkeypatch):
+    client, _sw = _real_client(monkeypatch)
+    r = client.put("/api/switch/ports/2", json={"follow_dew": True})
+    assert r.status_code == 200, r.text
+    assert power_guard.port_settings(2)["follow_dew"] is True
+
+
+def test_the_real_settings_put_422s_with_a_machine_code(monkeypatch):
+    """Every 4xx on this server carries a ``code``. This one answered a bare
+    string, so a client had nothing to branch on but the status - and 422 is
+    also what a schema rejection looks like, which is a different bug with a
+    different fix."""
+    client, _sw = _real_client(monkeypatch)
+    r = client.put("/api/switch/ports/2",
+                   json={"protect_during_run": "sometimes"})
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    # A SCHEMA rejection (pydantic) also lands here, and it is a list of field
+    # errors rather than our sentence. Either way the body must be structured
+    # and carry a code the client can read.
+    code = r.json().get("code") if isinstance(detail, list) else detail["code"]
+    assert code in ("invalid_request", "invalid_port_setting"), r.text
+
+
+def test_the_real_settings_put_422s_the_stores_own_refusal_with_its_code(
+        monkeypatch):
+    """The branch above that is OURS: a value that clears the schema and is
+    refused by ``power_guard.set_port_settings``."""
+    import astrodeck.api.app as app_module
+
+    client, _sw = _real_client(monkeypatch)
+
+    def _boom(*a, **kw):
+        raise ValueError("protect_during_run must be true, false or null")
+
+    monkeypatch.setattr(app_module.power_guard, "set_port_settings", _boom)
+    r = client.put("/api/switch/ports/2", json={"follow_dew": True})
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert detail["code"] == "invalid_port_setting"
+    assert detail["port_id"] == 2
+    assert "must be true, false or null" in detail["detail"]
