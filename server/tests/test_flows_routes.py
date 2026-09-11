@@ -358,15 +358,24 @@ class TestRun:
         at all: the 409 stopped firing and the assertion tripped over the NEXT
         409 ("no camera connected") instead.
 
-        A GUIDE node is the durable choice. Its settle and dither never reach
-        the run and never have — `to_plan.NODE_LOSS_GUIDE` is written about
-        exactly that — so the premise cannot evaporate under an unrelated
-        default change again.
+        A GUIDE node WAS the durable choice, and on 2026-09-11 it stopped being
+        one. Its card is now a `note`: the node's presence decides whether the
+        night guides and the run honours that, so the settle/dither/provider
+        half is reported with the rig's own source named rather than as an
+        amber loss - and `losses()` (which is what the 409 gates on) no longer
+        contains it.
+
+        A NOTIFY node is the durable choice now, and for the opposite reason:
+        its sink, channel and severity reach NOTHING. An alert an operator
+        routed to their phone does not go there, which is a real loss the run
+        should confess before it starts - exactly the class this 409 exists
+        for. If that ever stops being true, this assertion is the thing that
+        should fail.
         """
         graph = {"nodes": [*GRAPH["nodes"],
-                           {"id": "gd", "type": "guide", "x": 700, "y": 200,
-                            "params": {"provider": "PHD2", "settle": 1.5,
-                                       "dither": 3}}],
+                           {"id": "nf", "type": "notify", "x": 700, "y": 200,
+                            "params": {"sink": "ntfy", "channel": "rig-alerts",
+                                       "level": "warning"}}],
                  "edges": GRAPH["edges"]}
         fid = client.post("/api/flows",
                           json={"flow": _flow(graph=graph)}).json()["id"]
@@ -377,6 +386,42 @@ class TestRun:
             f"the refusal came back as a bare string, so this is a DIFFERENT "
             f"409 and the unmapped gate never fired: {body!r}")
         assert body["code"] == "unmapped" and body["unmapped"]
+        assert any(u["level"] != "note" and u["key"] == "nodes.notify"
+                   for u in body["unmapped"]), (
+            f"the 409 fired on something other than the real loss: "
+            f"{[(u['level'], u['key']) for u in body['unmapped']]}")
+
+    def test_a_flow_whose_settings_live_on_the_RIG_does_not_refuse(self, client):
+        """The other half of the 2026-09-11 fix, at the route.
+
+        A GUIDE node's settle, dither and provider come from Rig > Guider and
+        always have; the node's own presence is what decides that the night
+        guides, and the run honours that. So the compile has nothing to confess
+        and the unmapped gate must not fire - the operator was being asked to
+        accept "parts of this flow do not survive the compile" about a flow
+        that survives it whole.
+
+        The 409 this DOES get is "no camera connected", which is the proof: the
+        request reached the device guards, so the unmapped gate passed it.
+        """
+        graph = {"nodes": [*GRAPH["nodes"],
+                           {"id": "gd", "type": "guide", "x": 700, "y": 200,
+                            "params": {"provider": "PHD2", "settle": 1.5,
+                                       "dither": 3}}],
+                 "edges": GRAPH["edges"]}
+        fid = client.post("/api/flows",
+                          json={"flow": _flow(graph=graph)}).json()["id"]
+        r = client.post(f"/api/flows/{fid}/run", json={})
+        body = r.json()["detail"]
+        code = body.get("code") if isinstance(body, dict) else None
+        assert code != "unmapped", (
+            f"a flow whose only unmapped rows are notes was refused as a loss: "
+            f"{body}")
+        # And the notes still travel on /compile, where the PLAN tab reads them.
+        rows = client.post(f"/api/flows/{fid}/compile").json()["unmapped"]
+        guide = next(u for u in rows if u["key"] == "nodes.guide")
+        assert guide["level"] == "note"
+        assert guide["carried"] and guide["ignored"] and guide["source"]
 
     def _dome_flow(self, client):
         graph = {"nodes": [*GRAPH["nodes"],

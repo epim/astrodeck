@@ -32,8 +32,8 @@ import pytest
 
 from astrodeck.flows import examples as ex
 from astrodeck.flows.compile import compile_plan
-from astrodeck.flows.to_plan import (INERT_PARAMS, NODE_LOSS, inert_nodes,
-                                     to_sequence_plan)
+from astrodeck.flows.to_plan import (INERT_PARAMS, NODE_LOSS, NODE_SETTINGS,
+                                     inert_nodes, to_sequence_plan)
 from astrodeck.flows.tonight import resolve_tonight
 
 SITE = {"latitude": 37.0, "longitude": -122.0, "elevation_m": 100.0}
@@ -141,12 +141,17 @@ class TestTheDroppedDialIsReportedInstead:
         quietly needed one, this catches it as an unexplained mismatch rather
         than letting a wrong sentence ship.
 
-        TWO tables now. `NODE_LOSS` overrides the wording for a whole node whose
-        params are inert; `INERT_PARAMS` (2026-08-17) covers a single dropped
-        setting on a node the compiler otherwise reads — the case that let
-        CAPTURE/CYCLE's `reject` be dropped in silence while the brief promised
-        it by number. A row must come from one of the two, or be the generic
-        sentence; bespoke wording written inline is what this refuses.
+        THREE tables now. `NODE_LOSS` overrides the wording for a whole node
+        whose params are inert and whose loss is REAL (PARK + CLOSE's cooler
+        hold), so it stays a warn; `NODE_SETTINGS` (2026-09-11) is the class
+        whose card is answered somewhere else - the run guides, slews, focuses,
+        aborts and reports whatever the node says, only with the rig's numbers -
+        so it is a note with a carried/ignored/source split; `INERT_PARAMS`
+        (2026-08-17) covers a single dropped setting on a node the compiler
+        otherwise reads — the case that let CAPTURE/CYCLE's `reject` be dropped
+        in silence while the brief promised it by number. A row must come from
+        one of the three, or be the generic sentence; bespoke wording written
+        inline is what this refuses.
         """
         rec, _ = _campaign()
         for row in inert_nodes(rec.graph):
@@ -157,7 +162,16 @@ class TestTheDroppedDialIsReportedInstead:
                 ntype, param = kind.split(".", 1)
                 assert (ntype, param) in INERT_PARAMS, (
                     f"{kind} is a param-level loss with no INERT_PARAMS entry")
-                assert row["detail"] == INERT_PARAMS[(ntype, param)]
+                node = next(n for n in rec.graph.nodes if n.type == ntype)
+                assert row["detail"] == \
+                    INERT_PARAMS[(ntype, param)].render(node.params)[0]
+                continue
+            if kind in NODE_SETTINGS:
+                node = next(n for n in rec.graph.nodes if n.type == kind)
+                assert row["detail"] == NODE_SETTINGS[kind].render(node.params)[0]
+                assert row["level"] == "note", (
+                    f"{kind}'s card is answered elsewhere, so an amber warning "
+                    f"about it is the over-report this file exists to catch")
                 continue
             assert "do not reach the run" in row["detail"], (
                 f"{kind} has bespoke wording that is not in NODE_LOSS")
