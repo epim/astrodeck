@@ -395,7 +395,7 @@ Two additions, both needed to drive `routes_next.json`:
   nothing rather than erroring, since a caller may reuse `--only` against a
   route file that does not have every name.
 
-## `probe.py` extension: the 16x16 visibility floor (2026-09-10)
+## `probe.py` extension: the visibility floor -- 16x16 for testids, 8px tall for markers (2026-09-10)
 
 Measured escape: every `Dial` on the mount sheet (`#/rig/devices/mount` at
 820px) shipped invisible -- `.nx-dial { overflow: hidden }` zeroed a flex
@@ -403,17 +403,36 @@ item's automatic min-height inside `.nx-sheet-body`'s flex column, so the
 control shrank to its 2px border while its own children measured 79px --
 and the probe never caught it, because Playwright's `is_visible()` only asks
 whether an element is rendered and non-zero-size, not whether it is big
-enough to be the control it claims to be. A `testid` or `marker` now only
-counts as visible if its bounding box is at least 16 x 16 CSS pixels in BOTH
-dimensions (`MIN_VISIBLE_PX`, `_box_for` / `_large_enough` in `probe.py`); a
-match that is present, `is_visible() == True`, and still under that floor
-fails the route with a reason naming the exact measured box (e.g. `testid
-'mount-dial' is 2px tall - present but collapsed (box 328 x 2px, need >= 16
-x 16px)`), and both `report.jsonl` and the returned result dict now carry
-the measured box under `"testid_box"` / `"marker_box"` (`{"width":
-..., "height": ...}`, or `null` when nothing visible ever appeared) so a
-collapse can be read straight from the report without re-running the probe
-headed. This gate applies only to the load-bearing `testid`/`marker`
-assertion, not to nav clicks (`_run_clicks`/`_visible_matches`), which stay
-size-agnostic on purpose -- a click target's own actionability check is
-Playwright's, not this harness's, job.
+enough to be the control it claims to be. The fix applies two DIFFERENT
+floors, because a `testid` and a `marker` assert different things:
+
+- **`testid` -- a CONTROL, checked against 16 x 16 CSS px in BOTH
+  dimensions** (`MIN_VISIBLE_PX`, `_box_for` / `_large_enough`). A testid
+  names a specific widget the new UI (`ui/src/next/**`) emits, and nothing
+  deliberately built there is smaller than that in both axes (the smallest
+  deliberate glyph is the 44px touch target's own icon), so 16x16 flags a
+  genuine collapse without flagging anything real.
+- **`marker` -- PROSE, checked against 8px tall ONLY** (`MIN_MARKER_HEIGHT_PX`,
+  `_tall_enough`), with no width floor at all. A marker matches a heading, a
+  nav caption, or a panel title, and legitimate prose is routinely under
+  16px tall and often narrow -- e.g. `#/classic`'s `"Equipment"` marker
+  matches the classic desktop rail's small nav-icon caption, measured 63.8 x
+  13.5px, which is real, on-screen, correctly sized text, not a collapsed
+  control. Applying the 16x16 rule to markers false-failed that route the
+  first time this landed (2026-09-10); `MIN_MARKER_HEIGHT_PX` is low enough
+  to leave real captions alone while still catching a genuinely
+  zero/near-zero-height text node, which is the same defect SHAPE as the
+  dial, just on a marker instead of a testid.
+
+Either way, a match that is present and `is_visible() == True` but still
+under its floor fails the route with a reason naming the exact measured box
+(e.g. `testid 'mount-dial' is 2px tall - present but collapsed (box 328 x
+2px, need >= 16 x 16px)`, or `marker 'foo' is 3px tall - present but
+collapsed (box 40 x 3px, need >= 8px tall)`), and both `report.jsonl` and the
+returned result dict carry the measured box under `"testid_box"` /
+`"marker_box"` (`{"width": ..., "height": ...}`, or `null` when nothing
+visible ever appeared) so a collapse can be read straight from the report
+without re-running the probe headed. Neither gate applies to nav clicks
+(`_run_clicks`/`_visible_matches`), which stay size-agnostic on purpose -- a
+click target's own actionability check is Playwright's, not this harness's,
+job.
