@@ -35,9 +35,15 @@ export {
   HIT_W_CANVAS, HIT_W_AUTO,
   LOG_TAIL, LOG_TONE, IDLE_LOG_TEXT, logTail, logTime,
   tapWireHint, formatEta, checksLabel, stageWord, framesWord,
-  CHECKS_UNKNOWN, CHECKS_UNKNOWN_WHY, CHECKS_CLEAN_WHY, ETA_UNREPORTED,
+  CHECKS_UNKNOWN, CHECKS_UNKNOWN_WHY, CHECKS_CLEAN_WHY, ETA_UNREPORTED, lossesWhy,
   PLAN_TITLE, tonightLockReason,
-  NODE_STATUS_WORD, NODE_STATUS_TONE, asNodeStatus, lossLabel, lossTone,
+  NODE_STATUS_WORD, NODE_STATUS_TONE, asNodeStatus,
+  // The compile-mark vocabulary, re-exported through `canvasModel` from the
+  // one module that owns it (`../inspector/issues`) so the badge on a card and
+  // the panel in the inspector cannot drift apart.
+  markWord, markTone, isLoss, nodeMarkLevel, nodeMarkDetail, rigValueFor,
+  lossCount, worstLoss,
+  MARK_LOST, MARK_PARTIAL, MARK_RIG, RIG_VALUE_PREFIX, type UnmappedLevel,
   // The save / run / draft-checks vocabulary the review's P0 added. One home,
   // because the canvas toolbar and the phone stage list both render it and a
   // second copy is how the two surfaces end up disagreeing about whether a flow

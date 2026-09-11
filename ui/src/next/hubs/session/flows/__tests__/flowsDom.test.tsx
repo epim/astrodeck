@@ -1078,6 +1078,88 @@ test("FlowsCanvasHost styles its boxes from the area stylesheet", () => {
     "FlowsCanvasHost.tsx emits canvas.css classes without importing the sheet");
 });
 
+// ========== 10. a clean flow does not read as a failing build, end to end
+//
+// Both halves of the screen at once, because that is how the defect was seen
+// (2026-09-11, on the rig): the inspector column printed ten amber WARNING rows
+// while the toolbar said GRAPH VALID and the canvas put an amber `!` on five
+// cards. Each surface is guarded in its own file; this one asserts they agree.
+//
+// SABOTAGE CHECKS:
+//   * let a note through `isLoss` -> the `!` count and the `data-loss` count go
+//     red here and in canvasDom.
+//   * file notes under NOT HONOURED BY A RUN again -> the `flow-losses` and
+//     `data-level="warn"` assertions go red here and in inspectorDom.
+
+const NOTE_GRAPH = {
+  nodes: [
+    { id: "n-slew", type: "slew", x: 0, y: 0, params: {} },
+    { id: "n-guide", type: "guide", x: 300, y: 0, params: {} },
+  ],
+  edges: [{ id: "e-1", from: "n-slew", fromPort: "centered", to: "n-guide", toPort: "run" }],
+};
+
+const NOTES_E2E = [
+  {
+    key: "nodes.slew", level: "note",
+    detail: "the SLEW node's settings do not reach the run",
+    carried: ["presence: the run centres on the target"],
+    ignored: ["solver ASTAP"], source: "Settings > Standards",
+  },
+  {
+    key: "nodes.guide", level: "note",
+    detail: "the GUIDE node's settings do not reach the run",
+    carried: ["presence: the night guides"],
+    ignored: ["settle 1.5 s", "dither 3 px", "provider PHD2"], source: "Rig > Guider",
+  },
+];
+
+await testAsync("a flow whose only findings are notes reads as clean on every surface", async () => {
+  viewportW = 1440;
+  await mountAt("#/session/flows?open=quick-m31");
+  assert(tid("flows-canvas") != null, "precondition: the canvas is not on screen at desktop width");
+
+  act(() => {
+    const s = useStore.getState();
+    useStore.setState({
+      flows: {
+        ...s.flows,
+        graph: JSON.parse(JSON.stringify(NOTE_GRAPH)),
+        compiled: { plan: {}, structural: [], issues: [], unmapped: NOTES_E2E },
+      } as never,
+    } as never);
+  });
+  await settle();
+
+  const nodes = [...container.querySelectorAll('[data-testid="flow-node"]')];
+  eq(nodes.length, 2,
+    "precondition: the seeded graph never drew, so the canvas assertions would pass over nothing");
+
+  // ONE panel, in the note vocabulary, and no loss heading anywhere.
+  const panel = tid("flow-notes");
+  assert(panel != null, "the inspector column has no FROM THE RIG panel");
+  assert(String(panel.textContent).includes("FROM THE RIG"),
+    `the panel is not headed in the note vocabulary, got "${String(panel.textContent).slice(0, 60)}"`);
+  eq(container.querySelectorAll('[data-testid="flow-note-row"]').length, 2,
+    "one row per note, and every one of them on screen");
+  eq(tid("flow-losses"), null, "a note was filed under NOT HONOURED BY A RUN");
+
+  // No amber, anywhere on the screen.
+  eq(container.querySelectorAll(".nx-flow-node-loss").length, 0,
+    "a clean flow still puts the amber ! on its cards");
+  eq(container.querySelectorAll('[data-loss="warn"], [data-loss="danger"]').length, 0,
+    "a clean flow still outlines its cards in amber");
+  eq(container.querySelectorAll('.nx-flowins-line[data-level="warn"]').length, 0,
+    "the inspector still prints an amber line on a flow with no warnings");
+
+  // And the verdict pill agrees with them.
+  const pill = container.querySelector('[data-testid="flow-toolbar"] [data-testid="flow-checks"]');
+  assert(pill != null, "the toolbar's verdict pill is missing");
+  eq(String(pill.textContent), "GRAPH VALID",
+    "the pill disagrees with the two panels below it about whether this graph is valid");
+  eq(pill.getAttribute("data-tone"), "good", "the verdict went off green over settings the rig owns");
+});
+
 // Unmount before the tally, the way `canvasDom.test.tsx` does. jsdom was built
 // with `pretendToBeVisual: true`, so a tree left mounted keeps a requestAnimation
 // Frame loop alive and the process never exits - `npx tsx <file>` then prints

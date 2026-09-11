@@ -152,7 +152,13 @@ div:has(> .nx-flow-host) {
 /* Selection outranks status; a loss sits below both and above idle. Selection is
    what the operator is doing right now, busy is what the rig is doing right now,
    and a loss is a standing fact about the graph, true whether anyone is looking
-   or not. */
+   or not.
+
+   `data-loss="note"` is DELIBERATELY not styled. The attribute carries all three
+   levels the compile can report, and only the two LOSS levels earn an outline: a
+   note says the run takes these settings from the rig's own, which is not a
+   defect in the graph. Two amber-ringed cards on a clean flow is what this
+   omission fixes. */
 .nx-flow-node[data-loss="warn"] {
   border-color: color-mix(in srgb, var(--warn) 70%, transparent);
   box-shadow: 0 0 12px color-mix(in srgb, var(--warn) 22%, transparent), 0 4px 14px rgba(0, 0, 0, .45);
@@ -263,6 +269,18 @@ div:has(> .nx-flow-host) {
   min-width: 0;
 }
 .nx-flow-node-marks { display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* What the RIG will really use, under what the card stores. A 188 px card
+   cannot wrap a provider name without pushing the marks row around, so it
+   clips - the whole sentence is on the pill's accessible name and in the
+   inspector's FROM THE RIG panel. */
+.nx-flow-node-rig {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
 
 /* ---------------------------------------------------------------- ports */
 
@@ -525,6 +543,15 @@ div:has(> .nx-flow-host) {
   flex-direction: column;
   gap: 4px;
   padding: 0 12px 8px;
+}
+/* The rig's own value, above the mark that explains why it is the one that
+   counts. Its own rule rather than the row's `sub`, because the summary line is
+   what the CARD stores and this is what the RIG answers - stacking them under
+   one style would be the two values the label exists to tell apart. */
+.nx-flow-stage-rig {
+  display: flex;
+  padding: 0 12px 4px;
+  min-width: 0;
 }
 .nx-flow-stage-ports {
   display: flex;
