@@ -76,13 +76,21 @@ win.WebSocket = class {
 };
 win.Element.prototype.setPointerCapture = function () { /* jsdom has none */ };
 win.Element.prototype.releasePointerCapture = function () { /* jsdom has none */ };
+// The Sky hub is the default hub AND ATLAS is its default mode, so mounting
+// `NextApp` now reaches `components/atlas/SkyCanvas` - a renderer that measures
+// itself with a ResizeObserver and probes WebGL, neither of which jsdom has.
+// Without these two the hub's error boundary catches, and every assertion in
+// this file about what is on screen sees the boundary instead.
+win.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
+win.HTMLCanvasElement.prototype.getContext = function () { return null; };
 
 const g = globalThis as any;
 for (const k of [
   "window", "document", "navigator", "HTMLElement", "HTMLInputElement",
   "Element", "Node", "Event", "CustomEvent", "MouseEvent", "KeyboardEvent",
   "localStorage", "sessionStorage", "getComputedStyle", "matchMedia", "WebSocket",
-  "requestAnimationFrame", "cancelAnimationFrame",
+  "requestAnimationFrame", "cancelAnimationFrame", "ResizeObserver",
+  "HTMLCanvasElement", "HTMLImageElement", "Image", "SVGElement",
   // `ws.ts` reads the BARE `location` (not `window.location`) to build the
   // socket URL, and `api.ts` does the same at module scope.
   "location", "history",
