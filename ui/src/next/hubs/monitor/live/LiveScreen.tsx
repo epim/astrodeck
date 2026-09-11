@@ -362,6 +362,16 @@ export function LiveScreen(): JSX.Element {
   const guideLock = useLock({ needsRole: "guider" });
   const recentLog = useMemo(() => [...logs].reverse().slice(0, 6), [logs]);
 
+  // `rms_total` defaults to 0.0 on the server BEFORE the first sample
+  // (GuideStats in guide/base.py) - it is never null, so a session that has
+  // not guided yet reports the same 0.0 a perfectly-guiding session would
+  // envy. The wire carries no sample count either. `recent` is the one signal
+  // that distinguishes "nothing measured" from "measured and it is zero", so
+  // gate on its length rather than trust the number - an empty ring means no
+  // RMS exists yet, not a good one.
+  const guideHasSamples = guideRecent.length > 0;
+  const guideRmsValue = guideHasSamples ? guideRms?.rms_total ?? null : null;
+
   return (
     <div data-testid="monitor-live" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
       {/* ------------------------------------------------------------- title */}
@@ -429,7 +439,7 @@ export function LiveScreen(): JSX.Element {
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
             <Label>GUIDING · RMS &Prime;</Label>
             <Mono size={11}>
-              {guideRms?.rms_total != null ? `${guideRms.rms_total.toFixed(2)}" total` : "no RMS yet"}
+              {guideRmsValue != null ? `${guideRmsValue.toFixed(2)}" total` : "no RMS yet"}
             </Mono>
           </div>
           <Segmented
@@ -450,7 +460,7 @@ export function LiveScreen(): JSX.Element {
               {guideLock.lockedReason ?? "no guide samples yet"}
             </Mono>
           )}
-          <RmsVerdict rms={guideRms?.rms_total} stale={guideStale} />
+          <RmsVerdict rms={guideRmsValue} stale={guideStale} />
         </div>
       </Card>
 
