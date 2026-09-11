@@ -188,6 +188,17 @@ _CLEAN_MODULES = [
     # clean end to end (the module's one other em-dash is inside
     # ``describe``'s own docstring, which this scan already exempts).
     "catalog/describe.py",
+    # The ephemeris package, whole. Every module in it writes sentences a user
+    # reads verbatim -- the "no elements downloaded" and "not on the list"
+    # refusals, the staleness warnings, the satellite briefs, the comet ones --
+    # and they were written after S7a's sweep, so nothing had ever graded them.
+    "catalog/ephemeris/elements.py",
+    "catalog/ephemeris/satellites.py",
+    "catalog/ephemeris/comets.py",
+    "catalog/ephemeris/passes.py",
+    "catalog/ephemeris/routes.py",
+    # ``planning.py``'s strings reach Session and Sky as the plan's own words.
+    "planning.py",
 ]
 
 # ``flows/tonight.py`` is DELIBERATELY NOT on this list. Its ``_NO_SITE``
