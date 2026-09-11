@@ -48,9 +48,18 @@ if (typeof g.window === "undefined") {
 }
 if (typeof g.location === "undefined") g.location = g.window.location;
 
-const { ghostsFor, pathRuns, windSummary, GHOST_STEP_DEG, HORIZON_STEP_DEG } =
-  await import("../dome/domeOverlay");
+const {
+  ghostsFor, legendKeys, pathRuns, placeTrack, windSummary,
+  GHOST_STEP_DEG, HORIZON_STEP_DEG,
+} = await import("../dome/domeOverlay");
 const { horizonAltAt } = await import("../../../lib/horizonModel");
+const {
+  buildDomeTracks, domeTrackLabel, pointLabel, trackSamplesFor,
+  MAX_DOME_TRACKS, TRACK_COLORS,
+} = await import("../../sky/finder/track");
+type DomeTrack = import("../../sky/finder/track").DomeTrack;
+type DomeTrackContext = import("../../sky/finder/track").DomeTrackContext;
+type DrawnMarks = import("../dome/domeOverlay").DrawnMarks;
 type WeatherNow = import("../../../../types").WeatherNow;
 type CloudmapDome = import("../../../../api/cloudmap").CloudmapDome;
 type TrackSample = import("../../sky/finder/track").TrackSample;
@@ -228,6 +237,167 @@ test("a sample round the back of the dome is dropped and splits the line", () =>
   ]);
   eq(runs.length, 2, "the far-side sample must split the run:");
   eq(runs[0].length + runs[1].length, 2, "the far-side sample must not be drawn:");
+});
+
+// ================================================ 6. many arcs, not one path
+//
+// WHAT THIS GUARDS. The dome used to take ONE track and one name. It now takes
+// a list, and four things about that list are wrong in ways a rendered dome
+// still looks perfectly fine with:
+//
+//   * AN ARC PER SUBJECT, IN ITS OWN COLOUR. Collapsing the list to its first
+//     entry, or colouring every arc from the first one's state, draws a picture
+//     that is right about one object and confidently wrong about five.
+//   * A POINT HAS NO NAME. The whole reason the aimed arc exists is that the
+//     reader is looking at sky nothing is catalogued in; a label reading
+//     "target" there says nothing the arc does not, and one reading a nearby
+//     object's name is a lie about what is being tracked.
+//   * THE LEGEND COUNTS WHAT IS DRAWN. An arc with no samples, or one that
+//     falls entirely round the back of the dome, contributes nothing - and a
+//     legend still reading "3 tracks to dawn" over two arcs sends the reader
+//     hunting for a third.
+//   * THE CAP KEEPS THE BRIGHT ONE. A cut that took the first six of a list the
+//     bright subject happened to be seventh in would drop the only arc the
+//     reader asked for and keep six they did not.
+
+/** A context with a real site and a real night, so the walks below are the ones
+ *  the finder would make rather than a fixture's idea of one. */
+const CTX: DomeTrackContext = {
+  latDeg: 47.61,
+  lonDeg: -122.33,
+  nowMs: Date.UTC(2026, 8, 10, 6, 0, 0),
+  hoursToDawn: 4,
+  horizon: [],
+  horizonMinDeg: 0,
+  maskOn: true,
+  holdAt: () => false,
+};
+
+/** A hand-built arc, so each run's STATE is the fixture's and not the
+ *  geometry's - the assertion is about colour reaching the picture per track.
+ *  Due south and well up is the near half of the dome at yaw 0 (see GEOM). */
+function arc(id: string, st: TrackState, over: Partial<DomeTrack> = {}): DomeTrack {
+  return {
+    id,
+    label: id.toUpperCase(),
+    bright: false,
+    point: null,
+    samples: [sample(50, 178, st), sample(51, 182, st), sample(52, 186, st)],
+    ...over,
+  };
+}
+
+test("every track handed over becomes its own arc, in its own colour", () => {
+  const tracks = [arc("a", "ok"), arc("b", "hold"), arc("c", "mask")];
+  const placed = tracks.map((t) => placeTrack(GEOM, t));
+  eq(placed.filter((p) => p !== null).length, 3, "three arcs in, three placed:");
+
+  const tones = placed.map((p) => TRACK_COLORS[p!.runs[0][0].st]);
+  eq(tones[0], TRACK_COLORS.ok, "the clear track's colour:");
+  eq(tones[1], TRACK_COLORS.hold, "the clouded track's colour:");
+  eq(tones[2], TRACK_COLORS.mask, "the obstructed track's colour:");
+  assert(new Set(tones).size === 3,
+    "two arcs came out the same colour, so the list is being coloured from one "
+    + "subject rather than per track");
+  for (const p of placed) {
+    assert(p!.now !== null, "an arc that is up and facing drew no current-position dot");
+  }
+  eq(placed[2]!.now!.st, "mask", "the dot takes its own sample's state:");
+});
+
+test("a subject with no name is labelled with its coordinates", () => {
+  const samples = trackSamplesFor({ ra_hours: 5.5, dec_deg: 12.25 }, CTX);
+  assert(samples.length > 0, "precondition: the walk produced samples");
+
+  const [named] = buildDomeTracks(
+    [{ id: "m31", name: "M31", ra_hours: 5.5, dec_deg: 12.25, bright: true }], CTX);
+  const [bare] = buildDomeTracks(
+    [{ id: "aim", name: null, ra_hours: 5.5, dec_deg: 12.25, bright: true }], CTX);
+
+  eq(named.label, "M31", "a catalogued object is called by its name:");
+  eq(named.point, null, "a named object carries a bare point it should not have:");
+  eq(bare.label, pointLabel(5.5, 12.25), "an unnamed point is called by its coordinates:");
+  assert(/^[0-9]{2}h[0-9]{2}m [+-][0-9]{2}/.test(bare.label),
+    `the aimed label is not a coordinate pair: "${bare.label}"`);
+  assert(bare.point !== null && bare.point.ra_hours === 5.5,
+    "the aimed arc dropped the coordinates, so nothing can link back to the point");
+  eq(domeTrackLabel({ id: "x", name: null, ra_hours: 5.5, dec_deg: 12.25 }), bare.label,
+    "the label helper and the builder disagree:");
+});
+
+test("a track with no samples draws nothing at all", () => {
+  eq(placeTrack(GEOM, arc("empty", "ok", { samples: [] })), null,
+    "an empty arc was placed anyway:");
+  // And the builder never makes one: a subject whose night is already over.
+  const over = buildDomeTracks(
+    [{ id: "m31", name: "M31", ra_hours: 5.5, dec_deg: 12.25 }],
+    { ...CTX, hoursToDawn: 0 });
+  eq(over.length, 0, "a subject with no walk became a track anyway:");
+});
+
+test("an arc entirely round the back of the dome is not placed", () => {
+  // Due north at 40 degrees is the FAR side at this tilt (see the pathRuns
+  // tests above), so nothing of this walk is visible.
+  const back = arc("far", "ok", {
+    samples: [sample(40, 0, "ok"), sample(41, 4, "ok"), sample(42, 356, "ok")],
+  });
+  eq(placeTrack(GEOM, back), null, "an invisible arc reached the picture:");
+});
+
+test("the dome is capped, and the bright subject survives the cut", () => {
+  const many = Array.from({ length: 9 }, (_, i) => ({
+    id: `t${i}`, name: `T${i}`, ra_hours: (i * 2.5) % 24, dec_deg: 20 + i,
+    bright: i === 0,
+  }));
+  const out = buildDomeTracks(many, CTX);
+  assert(out.length <= MAX_DOME_TRACKS,
+    `${out.length} arcs on one dome, past the ${MAX_DOME_TRACKS} cap`);
+  assert(out.length > 1, "the cap swallowed the whole list");
+  eq(out[0].id, "t0", "the bright subject must survive the cut, first:");
+  eq(out[0].bright, true, "the first subject lost its brightness:");
+});
+
+// -------------------------------------------------- the legend names the arcs
+
+const MARKS = (over: Partial<DrawnMarks> = {}): DrawnMarks => ({
+  horizon: false, ghosts: false, tracks: 0, states: [], aimed: null, ...over,
+});
+const labels = (d: DrawnMarks): string[] => legendKeys(false, d).map((k) => k.label);
+
+test("the legend counts the arcs that were drawn, and omits the entry at zero", () => {
+  assert(!labels(MARKS()).some((l) => /track/.test(l)),
+    "the legend names tracks over a dome with none on it");
+  const three = labels(MARKS({ tracks: 3, states: ["ok"] }));
+  assert(three.includes("3 tracks to dawn"),
+    `the legend does not count the arcs: ${three.join(" | ")}`);
+  const one = labels(MARKS({ tracks: 1, states: ["ok"] }));
+  assert(one.includes("1 track to dawn"),
+    `one arc is not "1 track": ${one.join(" | ")}`);
+});
+
+test("the legend names only the states an arc is actually drawn in", () => {
+  const clear = labels(MARKS({ tracks: 2, states: ["ok"] }));
+  assert(!clear.some((l) => /cloud hold/.test(l)),
+    "the legend names a forecast hold on a dome with no held stretch on it");
+  assert(!clear.some((l) => /behind your horizon/.test(l)),
+    "the legend names a masked stretch that is not drawn");
+  assert(!clear.some((l) => /degree floor/.test(l)),
+    "the legend names a floor stretch that is not drawn");
+
+  const all = labels(MARKS({ tracks: 2, states: ["ok", "hold", "mask", "floor"] }));
+  assert(all.some((l) => /forecast cloud hold/.test(l)), `no hold entry: ${all.join(" | ")}`);
+  assert(all.some((l) => /behind your horizon profile/.test(l)),
+    `no mask entry: ${all.join(" | ")}`);
+  assert(all.some((l) => /degree floor/.test(l)), `no floor entry: ${all.join(" | ")}`);
+});
+
+test("an aimed point puts its coordinates in the legend, and only then", () => {
+  const none = labels(MARKS({ tracks: 2, states: ["ok"] }));
+  assert(!none.some((l) => /aimed at/.test(l)),
+    "the legend claims an aimed point on a dome that has none");
+  const aimed = labels(MARKS({ tracks: 2, states: ["ok"], aimed: "05h30m +12d15m" }));
+  assert(aimed.includes("aimed at 05h30m +12d15m"),
+    `the aimed point is not named in the legend: ${aimed.join(" | ")}`);
 });
 
 console.log(`domeOverlay.test: ${passed}/${passed + failed} passed`);

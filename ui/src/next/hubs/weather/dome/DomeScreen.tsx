@@ -9,24 +9,35 @@
 // cannot appear on the picture at all. Redrawing the dome would re-open all of
 // them for a different set of tiles.
 //
-// What this file adds is the words around it, and the three marks that go ON it
+// What this file adds is the words around it, and the marks that go ON it
 // through the panel's `overlay` slot - the horizon profile, the +30 min cloud
-// ghosts and the target's path to dawn, each drawn with the geometry the canvas
-// published rather than a re-derivation (see `domeOverlay.tsx`'s header for the
-// argument that used to forbid this and what retired it).
+// ghosts and a path to dawn for every target on the sky tonight, each drawn
+// with the geometry the canvas published rather than a re-derivation (see
+// `domeOverlay.tsx`'s header for the argument that used to forbid this and what
+// retired it).
+//
+// THE ARCS ARE A LIST, AND ONE OF THEM MAY HAVE NO NAME. The session's target
+// is the bright one; the rest of the loaded plan is drawn behind it, because
+// the panel already numbers those same objects as dots and a dot with no path
+// says nothing about where the object is going. And `?ra=&dec=` draws a path
+// for a bare point in the sky - the Sky finder's reticle on somewhere nothing
+// is catalogued, which is what looking for something new looks like and had no
+// way onto this screen at all before.
 
 import { useEffect, useMemo, useState, type CSSProperties, type JSX } from "react";
 import {
   SkyDomePanel, type DomeOverlayArgs,
 } from "../../../../components/cloudmap/SkyDomePanel";
 import { getSite } from "../../../../api/site";
-import { altAzOf, lstHours } from "../../../../lib/altaz";
+import { altAzOf } from "../../../../lib/altaz";
 import { useCan } from "../../../../lib/caps";
 import { useLock } from "../../../lib/gateHook";
 import { useConfig, useMount, usePlan, useSeq, useSite, useWeather } from "../../../../store";
 import { horizonAltAt, isObstructed, summary, type HorizonPoint } from "../../../lib/horizonModel";
-import { D2R } from "../../sky/finder/equatorial";
-import { walkTrack, type TrackSample } from "../../sky/finder/track";
+import {
+  buildDomeTracks, pointLabel,
+  type DomeTrack, type DomeTrackContext, type TrackSubject,
+} from "../../sky/finder/track";
 import { nav, useRoute } from "../../../router";
 import { ActionButton, Card, Label, Mono } from "../../../ui";
 import type { VisibilityNight } from "../../../../types";
@@ -42,7 +53,14 @@ import { useSlowClock } from "../slowClock";
 export const PATH_NEEDS_SITE =
   "the path to dawn needs the site's coordinates - your role gets it in words above";
 
-const NO_MARKS: DrawnMarks = { horizon: false, ghosts: false, path: false };
+const NO_MARKS: DrawnMarks = {
+  horizon: false, ghosts: false, tracks: 0, states: [], aimed: null,
+};
+
+/** What a `?ra=&dec=` pair in the hash is called on the dome, and the clause
+ *  that says the screen took it. An arbitrary point has no name, so the label
+ *  IS the coordinates - see `pointLabel`. */
+export const AIMED_PARAM_ID = "aimed";
 
 export const CLOUDMAP_OFF_TITLE = "The cloud model is off.";
 export const CLOUDMAP_OFF_HINT = "Turn it on in Cloud map settings.";
@@ -89,14 +107,39 @@ export function DomeScreen(): JSX.Element {
     [seq?.target, route.params, plan?.targets],
   );
 
+  /**
+   * THE ARBITRARY POINT. `?ra=<hours>&dec=<degrees>` puts a path on this dome
+   * for a position with no catalogue object at it - the Sky finder's reticle
+   * aimed at empty sky, carried through by the skydome card's WEATHER button,
+   * which is the only way a point nobody has named can reach this screen (a
+   * `?target=` name is resolved against the loaded plan and a bare patch of sky
+   * is in no plan). Both numbers must parse and be in range or nothing is
+   * drawn: half a coordinate is not a place, and a dec of "abc" read as 0 would
+   * draw an arc along the celestial equator that nobody asked for.
+   */
+  const aimed = useMemo(() => {
+    const ra = Number(route.params.ra);
+    const dec = Number(route.params.dec);
+    if (route.params.ra === undefined || route.params.dec === undefined) return null;
+    if (!Number.isFinite(ra) || !Number.isFinite(dec)) return null;
+    if (ra < 0 || ra >= 24 || dec < -90 || dec > 90) return null;
+    return { ra_hours: ra, dec_deg: dec };
+  }, [route.params.ra, route.params.dec]);
+
+  /** Whose night this screen asks about. `dark_end_unix` is a property of the
+   *  SITE and not of the object, so either subject answers it - but the route
+   *  needs an ra/dec to answer at all, and without one the aimed point would
+   *  have no dawn to walk to and would silently draw nothing. */
+  const nightOf = target ?? aimed;
+
   useEffect(() => {
-    if (!canSiteDerived || !target) { setNight(null); return; }
+    if (!canSiteDerived || !nightOf) { setNight(null); return; }
     let gone = false;
-    void fetchVisibility(target.ra_hours, target.dec_deg)
+    void fetchVisibility(nightOf.ra_hours, nightOf.dec_deg)
       .then((n) => { if (!gone) setNight(n); })
       .catch(() => { if (!gone) setNight(null); });
     return () => { gone = true; };
-  }, [canSiteDerived, target]);
+  }, [canSiteDerived, nightOf]);
 
   /**
    * THE SCREEN'S CLOCK, and every derived mark hangs off it.
@@ -147,26 +190,62 @@ export function DomeScreen(): JSX.Element {
   // (the hour angle is longitude, the altitude is latitude), so a role without
   // `view.site_precise` gets no path at all and the clause below says why: an
   // arc drawn from a guessed site is a path no object takes.
-  const track = useMemo<TrackSample[] | null>(() => {
-    if (!target || lat === null || lon === null) return null;
+  /**
+   * The arcs on the dome: the target this screen is about (bright), the point
+   * the hash aimed at if there is one (bright), and the rest of the loaded
+   * plan behind them (dim) - the same objects the panel already numbers as dots
+   * under the picture, so a dot and an arc always mean the same target.
+   *
+   * They need the site's own coordinates (the hour angle is longitude, the
+   * altitude is latitude), so a role without `view.site_precise` gets no arcs
+   * at all and `PATH_NEEDS_SITE` says why: an arc drawn from a guessed site is
+   * a path no object takes.
+   */
+  const tracks = useMemo<DomeTrack[]>(() => {
+    if (lat === null || lon === null) return [];
     const dawn = night?.dark_end_unix;
-    if (typeof dawn !== "number") return null;
+    if (typeof dawn !== "number") return [];
     const hoursToDawn = (dawn - nowTs) / 3600;
-    if (!(hoursToDawn > 0)) return null;
-    const lst = lstHours(lon, nowTs);
-    const samples = walkTrack(target.dec_deg * D2R, (lst - target.ra_hours) * 15 * D2R, {
+    if (!(hoursToDawn > 0)) return [];
+    const ctx: DomeTrackContext = {
       latDeg: lat,
+      lonDeg: lon,
+      nowMs: nowTs * 1000,
       hoursToDawn,
       horizon: points ?? [],
       horizonMinDeg: site?.horizon_min_deg ?? 0,
       maskOn: true,
       // No forecast is consulted here, so nothing is ever coloured "cloud
       // hold": an invented hold is worse than none, and the cloud on this
-      // screen is the dome underneath, not a scalar.
+      // screen is the dome underneath, not a scalar. The Sky hub's card DOES
+      // colour holds, because the finder six cards above it does too - see
+      // `trackSamplesFor`'s comment for why the two are allowed to differ.
       holdAt: () => false,
-    });
-    return samples.length > 0 ? samples : null;
-  }, [target, lat, lon, night?.dark_end_unix, points, site?.horizon_min_deg, nowTs]);
+    };
+    const subjects: TrackSubject[] = [];
+    if (target) {
+      subjects.push({
+        id: `target:${target.name}`, name: target.name,
+        ra_hours: target.ra_hours, dec_deg: target.dec_deg, bright: true,
+      });
+    }
+    if (aimed) {
+      subjects.push({
+        id: AIMED_PARAM_ID, name: null,
+        ra_hours: aimed.ra_hours, dec_deg: aimed.dec_deg, bright: true,
+      });
+    }
+    for (const t of plan?.targets ?? []) {
+      if (typeof t.ra_hours !== "number" || typeof t.dec_deg !== "number") continue;
+      if (target && t.name.trim().toLowerCase() === target.name.trim().toLowerCase()) continue;
+      subjects.push({
+        id: `plan:${t.name}`, name: t.name,
+        ra_hours: t.ra_hours, dec_deg: t.dec_deg,
+      });
+    }
+    return buildDomeTracks(subjects, ctx);
+  }, [target, aimed, plan?.targets, lat, lon, night?.dark_end_unix, points,
+      site?.horizon_min_deg, nowTs]);
 
   // The cloud model's switch lives in config, so the off state is known without
   // asking the model (which would be a request for a feature that is off). When
@@ -186,6 +265,14 @@ export function DomeScreen(): JSX.Element {
       );
     }
     if (lat === null || lon === null) clauses.push(PATH_NEEDS_SITE);
+  }
+  if (aimed) {
+    clauses.push(
+      `tracking the point you aimed at, ${pointLabel(aimed.ra_hours, aimed.dec_deg)}`,
+    );
+  }
+  if (tracks.length > 1) {
+    clauses.push(`${tracks.length} paths drawn to dawn`);
   }
   if (points === null) clauses.push("horizon profile could not be read");
   else if (points.length === 0) clauses.push("no horizon profile drawn for this site");
@@ -235,8 +322,12 @@ export function DomeScreen(): JSX.Element {
                 args={a}
                 horizon={points}
                 wind={wind}
-                track={track}
-                targetName={target?.name ?? null}
+                tracks={tracks}
+                // The canvas writes this name above its own ring, and only
+                // while the target is above the horizon.
+                labelledOnCanvas={
+                  targetAltAz && targetAltAz.alt >= 0 ? targetAltAz.name : null
+                }
                 onDrawn={setDrawn}
               />
             )}
