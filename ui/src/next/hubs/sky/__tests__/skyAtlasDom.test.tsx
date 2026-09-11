@@ -200,7 +200,10 @@ const { createRoot } = await import("react-dom/client");
 const { useStore } = await import("../../../../store");
 const { resetRouterCacheForTests } = await import("../../../router");
 const { SkyHub, FRAME_NEEDS_AIM } = await import("../SkyHub");
-const { AtlasHost, ATLAS_NO_OBJECT, centreLabel, surveyLabel } = await import("../atlas/AtlasHost");
+const { AtlasHost, ATLAS_NO_OBJECT, centreLabel, surveyLabel, SURVEY_LAYER_OFF_NOTE } =
+  await import("../atlas/AtlasHost");
+const { boxToSky, skyToBox } = await import("../atlas/aim");
+const { DEFAULT_MODE, SKY_PREF_KEYS } = await import("../finder/prefs");
 const { DEGRADED_NO_SOURCE, DEGRADED_PACK_PRESENT, PACK_POLL_MS } = await import("../frame/degraded");
 
 // ------------------------------------------------------------------ harness
@@ -241,6 +244,39 @@ const click = (el: any) => {
   act(() => { el.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true })); });
 };
 const packCalls = (): number => asked.filter((a) => a.includes("/api/survey/pack")).length;
+const tileCalls = (): number =>
+  asked.filter((a) => a.includes("/api/survey/cutout") || a.includes("/api/survey/tile")).length;
+const all = (sel: string): any[] => [...container.querySelectorAll(sel)];
+
+/**
+ * A tap on the sky canvas, at canvas-relative CSS pixels.
+ *
+ * jsdom has no layout, so the canvas measures 0 x 0 and `SkyCanvas`'s own tap
+ * arithmetic (which is all done against `getBoundingClientRect`) would divide
+ * by nothing. The rect is stubbed on the ONE element the arithmetic reads, not
+ * on `Element.prototype`, so nothing else in the tree starts believing it has a
+ * size. `pointerdown` then `pointerup` at the same point inside `TAP_MS` is
+ * exactly what SkyCanvas recognises as a tap.
+ *
+ * MouseEvent rather than PointerEvent on purpose: jsdom does not construct
+ * PointerEvent, and React reads the handler off the native event's TYPE, so a
+ * MouseEvent dispatched as "pointerdown" reaches `onPointerDown` with the two
+ * fields this path uses (`button`, `clientX/Y`) real and the rest absent -
+ * which is the same shape a mouse actually delivers.
+ */
+function tapCanvas(x: number, y: number, size = 400): void {
+  const box = container.querySelector('[role="application"]') as any;
+  assert(box != null, "tapCanvas: no sky canvas on screen - the fixture is wrong");
+  box.getBoundingClientRect = () => ({
+    left: 0, top: 0, right: size, bottom: size, width: size, height: size, x: 0, y: 0,
+    toJSON() { /* the shape DOMRect has */ },
+  });
+  const at = { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0 };
+  act(() => {
+    box.dispatchEvent(new win.MouseEvent("pointerdown", at));
+    box.dispatchEvent(new win.MouseEvent("pointerup", at));
+  });
+}
 
 /** A VIEWER, deliberately: `view.status` is the only capability the atlas
  *  needs, so the role that can do least is the one that proves it. */
@@ -273,8 +309,212 @@ function seedStore(): void {
   } as never);
 }
 
-// ===================================================== the hub, on the finder
+// ============================================== 1. a phone that has never chosen
+//
+// ATLAS is the default mode now, on every device: what a user opens the app to
+// see is the sky with tonight's targets on it. Everything in this section is
+// about the screen a FRESH phone gets - nothing stored, nothing pressed.
 win.localStorage.clear();
+act(() => { seedStore(); });
+win.location.hash = "#/sky";
+resetRouterCacheForTests();
+
+const atlasRoot = createRoot(container);
+await act(async () => { atlasRoot.render(createElement(SkyHub)); });
+await settle();
+
+// VACUITY GUARD. "the atlas is on screen" is trivially satisfiable by a hub
+// that rendered one div, so the screen has to be genuinely there first: the
+// status row with its own ranked count, the canvas, and the ranked list the
+// rest of this section is about.
+test("precondition: the default screen is a real one", () => {
+  assert(byId("hub-sky") != null, "no hub-sky marker - the fixture is wrong, not the component");
+  const pill = byId("sky-suggested");
+  assert(pill != null && /Show \d+ suggested targets/.test(pill.textContent),
+    `the suggested-targets pill printed no count: "${pill?.textContent}"`);
+  assert(byId("atlas-canvas") != null, "no canvas on the screen the hub opened in");
+});
+
+test("a phone with nothing stored opens in ATLAS", () => {
+  eq(DEFAULT_MODE, "atlas", "the preference module's own default:");
+  eq(win.localStorage.getItem(SKY_PREF_KEYS.mode), null,
+    "precondition: nothing may be stored, or this proves nothing about the DEFAULT:");
+  assert(byId("sky-atlas") != null, "the hub did not open in ATLAS");
+  eq(byId("sky-atlas-mode")?.getAttribute("aria-pressed"), "true",
+    "the toolbar does not report ATLAS as the mode:");
+  // The schematic finder's own furniture must NOT be up: a bearing readout
+  // means the box is still the reticle and the atlas is merely stacked on it.
+  assert(!/az \d{3}° · alt/.test(container.textContent as string),
+    "the schematic finder rendered underneath - the mode did not change, a card did");
+});
+
+test("the mode row reads ATLAS, MAP, FRAME, GYRO", () => {
+  const labels = all('[data-testid^="sky-"]')
+    .filter((b) => ["sky-atlas-mode", "sky-mode", "sky-frame", "sky-gyro"]
+      .includes(b.getAttribute("data-testid")))
+    .map((b) => b.getAttribute("data-testid"));
+  eq(labels.join(","), "sky-atlas-mode,sky-mode,sky-frame,sky-gyro",
+    "the toolbar is in the wrong order - ATLAS is the mode the screen opens in and reads first:");
+  // The second button is the way OUT, and on this insecure-origin fixture there
+  // is no camera, so it names MAP rather than offering a camera that cannot open.
+  assert(/MAP/.test(byId("sky-mode").textContent),
+    `the way out of the atlas is not labelled: "${byId("sky-mode").textContent}"`);
+});
+
+test("the atlas opened on tonight's best target, not on the parked mount", () => {
+  const f = useStore.getState().framing;
+  eq(f?.target?.id ?? null, "m31",
+    "the atlas seeded from the mount (0h +0 on this fixture) instead of the ranking:");
+  assert(/M31/.test(byId("sky-atlas").textContent),
+    "the atlas does not name the object it opened on");
+});
+
+test("the atlas draws one marker per ranked target, in the design's label pill", () => {
+  const markers = all("[data-atlas-marker]");
+  const ranked = Number((byId("sky-suggested")?.textContent ?? "").replace(/\D+/g, ""));
+  assert(ranked >= 2, `precondition: the fixture ranks two targets, the pill says ${ranked}`);
+  eq(markers.length, ranked,
+    "the atlas drew a different number of markers than the ranking has targets:");
+  const m31 = container.querySelector('[data-atlas-marker="m31"]');
+  assert(m31 != null, "M31 is in the ranked list and is not drawn on the atlas");
+  // The pill's vocabulary is the finder's own (screenshot 01-sky-finder): the
+  // name, then the altitude in mono. The altitude is the SERVER's 58, which is
+  // also how we know the pill is fed the merged ranking and not raw catalogue.
+  assert(/M31/.test(m31.textContent), `the pill does not name the target: "${m31.textContent}"`);
+  assert(/58°/.test(m31.textContent), `the pill does not carry the altitude: "${m31.textContent}"`);
+  assert(container.querySelector('[data-atlas-marker="ngc7000"]') != null,
+    "only one of the two ranked targets reached the sky");
+  // The lock ring is on the locked one and nowhere else.
+  eq(m31.getAttribute("data-atlas-locked"), "true", "the atlas's own lock has no ring:");
+  eq(container.querySelector('[data-atlas-marker="ngc7000"]').getAttribute("data-atlas-locked"),
+    null, "a target that is not locked is wearing the lock ring:");
+});
+
+test("the lock card is under the atlas, about the target on it", () => {
+  eq(byId("sky-lock-name")?.textContent, "M31",
+    "the lock card is missing or names something else than the atlas does:");
+  const cta = byId("sky-cta");
+  assert(cta != null, "no primary CTA under the atlas - the card rendered without its button");
+  assert(/^IMAGE |^CONNECT THE RIG FIRST$/.test(cta.querySelector("span")?.textContent ?? ""),
+    `the CTA label is not one of the five cases: "${cta.textContent}"`);
+  // The reach strip stays behind: it lists what is NOT on screen, and on the
+  // atlas those things ARE on screen, as pills.
+  assert(byId("sky-reach") == null, "the reach strip duplicates the markers beside it");
+});
+
+await testAsync("tapping a target marker locks it, exactly as a MAP marker does", async () => {
+  click(container.querySelector('[data-atlas-marker="ngc7000"]'));
+  await settle();
+  eq(byId("sky-lock-name")?.textContent, "NGC 7000",
+    "a tap on the atlas did not move the finder's lock:");
+  eq(useStore.getState().framing?.target?.id ?? null, "ngc7000",
+    "and it did not frame what it locked, so FRAME and LOCK IN FINDER still name the old one:");
+  eq(container.querySelector('[data-atlas-marker="ngc7000"]').getAttribute("data-atlas-locked"),
+    "true", "the ring did not follow the lock:");
+});
+
+await testAsync("a tap on empty sky aims the reticle there and the card shows the patch face", async () => {
+  // Move the picture to a patch with nothing ranked anywhere near it - 01h30m
+  // +20 is 21 degrees below M31's marker and 35 from NGC 7000's, well outside
+  // the finder's 46 px (7.5 degree) reticle - so what comes back is the PATCH
+  // face and not the same lock card with a nudged reticle.
+  act(() => {
+    useStore.setState({
+      framing: { ...(useStore.getState().framing as any), center: { ra_hours: 1.5, dec_deg: 20 } },
+    } as never);
+  });
+  await settle();
+
+  tapCanvas(200, 200);           // dead centre: the tangent point itself
+  await settle();
+
+  assert(byId("sky-patch") != null,
+    "a tap on bare sky left the lock card up - the aim never reached the finder");
+  const patchCta = byId("sky-patch-image");
+  assert(/IMAGE THIS PATCH/.test(patchCta?.textContent ?? ""),
+    `the patch face is missing its CTA: "${patchCta?.textContent}"`);
+  assert(/01h\s*30m/.test(patchCta.textContent.replace(/\s+/g, " ")),
+    `the patch CTA does not carry the coordinates the tap chose: "${patchCta.textContent}"`);
+  assert(byId("atlas-reticle") != null, "the aimed point is not drawn on the atlas");
+  const readout = byId("atlas-aim");
+  assert(readout != null, "the atlas readout does not print where the reticle is");
+  assert(/reticle\s+01h/.test(readout.textContent),
+    `the readout does not carry the aimed RA: "${readout.textContent}"`);
+  // A patch of sky is not a catalogued object, so the framing must stop
+  // claiming one - LOCK IN FINDER has nothing to hand over any more.
+  eq(useStore.getState().framing?.target ?? null, null,
+    "the tap left the previous object framed while the reticle moved off it:");
+});
+
+await testAsync("SURVEY off fetches no imagery and still draws the markers and the reticle", async () => {
+  click(byId("atlas-layers"));
+  await settle();
+  const pop = win.document.querySelector('[data-testid="sky-layers"]');
+  assert(pop != null, "the layers button did not open the popover");
+  const sw = pop.querySelector('[data-layer-row="survey"] [role="switch"]');
+  assert(sw != null, "no Survey imagery switch in the layers popover");
+  eq(sw.getAttribute("aria-checked"), "true", "precondition: the survey layer starts on");
+
+  // The state that proves "no tiles" is a COUNT, so it is read after the
+  // screen has had a full settle to ask for whatever it was going to ask for.
+  const tilesBefore = tileCalls();
+  assert(tilesBefore > 0,
+    "precondition: with the layer ON the canvas must have fetched imagery at least once, "
+    + "or the assertion below cannot fail");
+
+  click(sw);
+  await settle();
+  eq(JSON.parse(win.localStorage.getItem(SKY_PREF_KEYS.layers) ?? "{}").survey, false,
+    "the survey layer did not reach localStorage:");
+
+  // TWO OWNERS, ONE KEY. The three overlays below are `useSkyModel`'s state and
+  // the survey flag is the hub's, and both write this one object. Each seeded
+  // its copy at mount, so a writer that saves `{...its own copy}` wholesale
+  // hands back the OTHER owner's stale value - toggle survey off, toggle cloud
+  // off, and the survey silently comes back on. Field-scoped writes are what
+  // stop that, and this is the press that would prove they had been undone.
+  const cloudSwitch = win.document
+    .querySelector('[data-testid="sky-layers"] [data-layer-row="clouds"] [role="switch"]');
+  assert(cloudSwitch != null, "no Cloud deck switch to press after the survey one");
+  click(cloudSwitch);
+  await settle();
+  act(() => { win.document.dispatchEvent(new win.MouseEvent("mousedown", { bubbles: true })); });
+  await settle();
+
+  const stored = JSON.parse(win.localStorage.getItem(SKY_PREF_KEYS.layers) ?? "{}");
+  eq(stored.clouds, false, "the cloud layer did not reach localStorage:");
+  eq(stored.survey, false,
+    "the model's own layer write resurrected the survey layer the hub had just switched off:");
+
+  const tilesAfter = tileCalls();
+  const packAfter = packCalls();
+  await settle();
+  await wait(PACK_POLL_MS + 300);
+  eq(tileCalls(), tilesAfter, "the survey is off and the canvas is still fetching imagery:");
+  eq(packCalls(), packAfter,
+    "the pack poll outlived the layer that needed it - nothing is degraded when nothing was asked for:");
+
+  assert(container.querySelector("[data-atlas-marker]") != null,
+    "SURVEY off took the target markers with it - only the tiles were meant to go");
+  assert(byId("atlas-reticle") != null, "SURVEY off took the reticle with it");
+  assert(byId("atlas-degraded") == null,
+    "a survey nobody asked for is being complained about");
+  const note = byId("atlas-survey-off");
+  assert(note != null && note.textContent === SURVEY_LAYER_OFF_NOTE,
+    "a deliberately blank sky says nothing about itself, so it reads as a failure");
+  assert(/no imagery/.test(byId("sky-atlas").textContent),
+    "the where-line still credits a survey that drew nothing");
+});
+
+await act(async () => { atlasRoot.unmount(); });
+
+// ====================================== 2. a phone that HAS chosen, on the finder
+//
+// The stored mode beats the default, in both directions. Everything below is
+// the ATLAS-as-a-mode contract, driven from the finder the way it was before
+// the atlas became the opening screen.
+win.localStorage.clear();
+win.localStorage.setItem(SKY_PREF_KEYS.mode, "map");
 act(() => { seedStore(); });
 win.location.hash = "#/sky";
 resetRouterCacheForTests();
@@ -283,18 +523,21 @@ const root = createRoot(container);
 await act(async () => { root.render(createElement(SkyHub)); });
 await settle();
 
-// VACUITY GUARD. Every assertion below is about a screen SWAP, and both halves
-// of a swap are trivially true of a hub that rendered nothing at all. So the
-// finder has to be genuinely on screen first, with its own ranked count and its
-// own reticle readout, before anything asks the atlas to replace it.
-test("precondition: the finder rendered a real screen, and the atlas is not it", () => {
+// VACUITY GUARD, and the other half of the default. Every assertion below is
+// about a screen SWAP, and both halves of a swap are trivially true of a hub
+// that rendered nothing at all - so the finder has to be genuinely on screen
+// first, with its own ranked count and its own reticle readout. That it is on
+// screen AT ALL is the second contract: a stored choice beats `DEFAULT_MODE`,
+// or the preference is decoration.
+test("a remembered MAP beats the ATLAS default, and it is a real finder", () => {
+  eq(win.localStorage.getItem(SKY_PREF_KEYS.mode), "map", "precondition: the stored choice:");
   assert(byId("hub-sky") != null, "no hub-sky marker - the fixture is wrong, not the component");
   const pill = byId("sky-suggested");
   assert(pill != null && /Show \d+ suggested targets/.test(pill.textContent),
     `the suggested-targets pill printed no count: "${pill?.textContent}"`);
   assert(/az \d{3}° · alt/.test(container.textContent as string),
     "the finder never printed a bearing - there is no reticle to replace");
-  assert(byId("sky-atlas") == null, "the atlas is mounted before anything asked for it");
+  assert(byId("sky-atlas") == null, "the stored MAP was overruled by the default");
   assert(byId("atlas-canvas") == null, "the atlas canvas is mounted before anything asked for it");
 });
 
@@ -324,24 +567,34 @@ test("the ATLAS button is on the toolbar and is never locked, even for a viewer"
     "the ATLAS button replaced a sibling instead of joining the row");
 });
 
-await testAsync("pressing ATLAS mounts the pannable sky canvas and puts the reticle cards away", async () => {
+await testAsync("pressing ATLAS mounts the pannable sky canvas, on what the finder had locked", async () => {
   click(byId("sky-atlas-mode"));
   await settle();
   assert(byId("sky-atlas") != null, "ATLAS did not mount its screen");
   assert(byId("atlas-canvas") != null, "ATLAS mounted without the canvas - the flag moved, the sky did not");
   assert(byId("atlas-search") != null, "no catalog search on the atlas");
   eq(byId("sky-atlas-mode").getAttribute("aria-pressed"), "true", "the button does not report the mode:");
-  // The three cards that answer about a reticle that is no longer on screen.
-  assert(byId("sky-cta") == null && byId("sky-patch") == null,
-    "the lock/patch card is still describing a reticle nobody can see");
-  assert(byId("sky-reach") == null, "the reach strip aims a finder that is not on screen");
-  // The session the canvas draws is the store's, seeded free-roam.
+  // The card that answers about a reticle STAYS, because the atlas has one -
+  // the aim is drawn on the sky and a tap moves it. What goes is the strip of
+  // things that are not on screen, because on the atlas they are.
+  assert(byId("sky-cta") != null, "the lock card went away with the schematic finder");
+  assert(byId("sky-reach") == null, "the reach strip duplicates the markers beside it");
+  // ATLAS OPENS ON THE LOCK. `openFraming()` seeds the centre from the MOUNT,
+  // which on this fixture is nothing at all (0h +0) - so without the seed the
+  // user would arrive at a correct picture of an empty patch of sky.
   const f = useStore.getState().framing;
   assert(f != null, "ATLAS mounted with no framing session for the canvas to draw");
-  eq(f?.target ?? null, null, "a free-roam atlas must not invent a target:");
+  eq(f?.target?.id ?? null, "ngc7000",
+    "the atlas opened on the mount instead of on the object the finder had locked:");
 });
 
-test("LOCK IN FINDER refuses honestly while nothing is framed", () => {
+await testAsync("LOCK IN FINDER refuses honestly once there is no object framed", async () => {
+  // A tap on bare sky is how a framed object goes away - it is a patch now,
+  // and a patch is not something the finder can lock onto.
+  tapCanvas(20, 20);
+  await settle();
+  eq(useStore.getState().framing?.target ?? null, null,
+    "precondition: the aim-anywhere tap must clear the framed object:");
   const b = byId("atlas-lock-in-finder");
   assert(b != null, "no LOCK IN FINDER button on the atlas");
   eq(b.getAttribute("aria-disabled"), "true", "with no object there is nothing to lock:");
@@ -461,6 +714,18 @@ function hostProps(over: Record<string, unknown>): any {
     selectedObjectId: null,
     onPick: () => {},
     onPickRow: () => {},
+    targets: [],
+    lockId: null,
+    kindIcon: {
+      galaxy: "galaxy", nebula: "nebula", cluster: "cluster", planet: "planet",
+      moon: "moon", satellite: "satellite", comet: "comet",
+    },
+    onPickTarget: () => {},
+    rankingNotes: [],
+    aim: null,
+    onAimSky: () => {},
+    survey: true,
+    onLayers: () => {},
     onCenterChange: () => {},
     onRotate: () => {},
     onZoom: () => {},
@@ -566,6 +831,41 @@ await testAsync("the degraded row names the cause per state, offers the fix, and
 });
 
 // ------------------------------------------------------------- pure helpers
+
+test("a tap and a marker use ONE projection, and it round-trips", () => {
+  const centre = { ra_hours: 5.5, dec_deg: -12.4 };
+  const fov = 3.2;
+  const box = 400;
+  // Centre of the square IS the tangent point, exactly - the one case the
+  // inverse special-cases, and the one the "aim where I tapped" gesture hits
+  // most often.
+  const mid = boxToSky({ x: 200, y: 200 }, centre, fov, box);
+  assert(Math.abs(mid.ra_hours - centre.ra_hours) < 1e-9
+    && Math.abs(mid.dec_deg - centre.dec_deg) < 1e-9,
+    `the centre of the canvas is not the centre of the sky: ${JSON.stringify(mid)}`);
+
+  // And anywhere else: tap -> sky -> back to the same pixel. A second, "quick"
+  // projection for one of the two directions is what this guards against; it
+  // would agree here at the centre and drift by a pixel at the corner.
+  for (const [x, y] of [[40, 60], [360, 90], [120, 380]] as [number, number][]) {
+    const sky = boxToSky({ x, y }, centre, fov, box);
+    const back = skyToBox(sky, centre, fov, box);
+    assert(back != null, `(${x},${y}) came back off the projection entirely`);
+    assert(Math.hypot((back as { x: number }).x - x, (back as { y: number }).y - y) < 1e-6,
+      `(${x},${y}) round-tripped to (${back?.x.toFixed(3)},${back?.y.toFixed(3)})`);
+  }
+
+  // North is UP and East is LEFT, the Atlas's own mapping: a point at higher
+  // declination is higher on the canvas. Getting this backwards round-trips
+  // perfectly and puts every marker on the wrong side of the sky.
+  const north = skyToBox({ ra_hours: 5.5, dec_deg: -11.4 }, centre, fov, box);
+  assert(north != null && north.y < 200, "north is not up on the atlas");
+
+  // Beyond the projection's own horizon there is no pixel, and a folded-over
+  // mirror image would be a confident label on the wrong patch of sky.
+  eq(skyToBox({ ra_hours: 17.5, dec_deg: 12.4 }, centre, fov, box), null,
+    "the far hemisphere was given a place on the canvas:");
+});
 
 test("the where-line carries what the canvas never prints", () => {
   // The canvas draws the field width and the pixel scale in its own corners and

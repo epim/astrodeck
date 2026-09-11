@@ -31,7 +31,7 @@ import { accessPhrase } from "../../../../lib/caps";
 import { nav } from "../../../router";
 import { ActionButton, Card, Label, Mono } from "../../../ui";
 import type { HorizonPoint } from "../../../lib/horizonModel";
-import type { DomeTrack, TrackSample } from "../finder";
+import type { DomeTrack } from "../finder";
 import { DomeOverlay, type WindSummary } from "../../weather/dome/domeOverlay";
 
 /** The card's anchor, its testid and its probe name, written once. `SkyHub`'s
@@ -66,20 +66,7 @@ export interface DomeCardProps {
    * from a guessed site is a path no object takes (see `DomeScreen`'s
    * PATH_NEEDS_SITE for the same refusal in words).
    */
-  tracks?: DomeTrack[];
-  /**
-   * THE ONE-ARC CALL SHAPE, and the only reason it still exists.
-   *
-   * `SkyHub` walked the lock's path itself and handed the samples over; the
-   * model now publishes the whole list (`SkyModel.dome.tracks`) and the hub is
-   * to pass that instead. Until that hunk lands the card must keep drawing the
-   * one arc it was given, because a card that quietly drew nothing while its
-   * caller was mid-migration is the exact defect this programme keeps finding.
-   * DELETE BOTH PROPS AND `arcs`' fallback with that change - not later, and
-   * not "when someone notices": nothing else in the tree passes them.
-   */
-  track?: TrackSample[] | null;
-  targetName?: string | null;
+  tracks: DomeTrack[];
   /** Canvas height in CSS px, worked out by the hub from the measured column -
    *  see `SkyHub`'s `domeHeight`. */
   height: number;
@@ -99,20 +86,10 @@ export interface DomeCardProps {
  * re-orienting a screen the operator is not looking at.
  */
 export function DomeCard({
-  canViewWeather, pointing, target, horizon, wind, tracks, track, targetName,
+  canViewWeather, pointing, target, horizon, wind, tracks,
   height, lockId, onExplain,
 }: DomeCardProps): JSX.Element {
-  // See `track` above: the list wins whenever the caller has one.
-  const arcs: DomeTrack[] = tracks
-    ?? (track && track.length > 0
-      ? [{
-          id: "lock",
-          label: targetName ?? "",
-          bright: true,
-          point: null,
-          samples: track,
-        }]
-      : []);
+  const arcs = tracks;
 
   /** The arc for a point with no catalogue object under it, if the reticle is
    *  on one. It is what makes WEATHER carry coordinates rather than a name. */

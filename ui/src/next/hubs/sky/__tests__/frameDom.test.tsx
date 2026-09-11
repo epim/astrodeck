@@ -238,6 +238,11 @@ act(() => {
   } as never);
 });
 
+// ATLAS is the Sky hub's default mode now (`finder/prefs.ts DEFAULT_MODE`),
+// and every contract below is about the schematic finder - so this phone is
+// one that has already chosen MAP. Without the line the hub opens on the
+// pannable canvas and none of the reticle's controls are on screen at all.
+win.localStorage.setItem("astrodeck-next-sky-mode", "map");
 win.location.hash = "#/sky";
 const root = createRoot(container);
 await act(async () => { root.render(createElement(SkyHub)); });

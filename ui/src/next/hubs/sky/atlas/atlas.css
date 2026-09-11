@@ -24,8 +24,120 @@
   max-width: 420px;
 }
 
+/* `position: relative` is not decoration: the marker overlay and the layers
+   button are positioned against this box, and the canvas square inside it is
+   centred by SkyCanvas's own `mx-auto`, so its offsetLeft/offsetTop (measured,
+   never re-derived) are what the overlay is placed with. */
 .nx-atlas-canvas {
   min-width: 0;
+  position: relative;
+}
+
+/* ------------------------------------------------- targets on the atlas */
+
+/* The overlay is exactly the square: measured from the canvas element itself,
+   so there is no second copy of SkyCanvas's `min(720px, 85svh)` rule to drift.
+   It never eats a gesture - each pill turns pointer events back on for itself,
+   so the sky still drags everywhere between the labels. */
+.nx-atlas-markers {
+  position: absolute;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+/* Where the finder is aimed. A dashed square at the finder's own 46 px lock
+   radius, so the thing you aim with is the same size and the same shape in
+   both modes; its colour is the patch's own status colour, which is the one
+   fact the square cannot carry by being a square. */
+.nx-atlas-reticle {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  border: 1px dashed currentColor;
+  border-radius: 8px;
+  opacity: .85;
+}
+
+.nx-atlas-marker {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  padding: 6px;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.nx-atlas-marker-ring {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1.5px solid currentColor;
+}
+
+/* The locked target carries a second, wider ring - the atlas's answer to the
+   reticle square the schematic finder draws around whatever it has locked.
+   Shape, not hue: the pill colour already means clear/clouded/obstructed. */
+.nx-atlas-marker[data-atlas-locked="true"] .nx-atlas-marker-ring {
+  width: 26px;
+  height: 26px;
+  border-width: 2px;
+  border-color: var(--accent, #00d2ff);
+  box-shadow: 0 0 18px rgba(0, 210, 255, .35);
+}
+
+.nx-atlas-marker-pill {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line, #1d2230);
+  background: var(--bg-panel, #0b0d14);
+  font-family: "Chakra Petch", system-ui, sans-serif;
+  font-weight: 600;
+  font-size: 10.5px;
+  letter-spacing: .08em;
+  white-space: nowrap;
+}
+
+.nx-atlas-marker-alt {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-weight: 400;
+  color: var(--text-dim, #7683a5);
+}
+
+/* The stack icon, in the same corner of the canvas the schematic finder puts
+   it in (`finder/SkyView.tsx`: right 10), so one control lives in one place
+   whichever mode is up. 60 px down rather than 10 because SkyCanvas pins its
+   own LOADING chip at top-right; sharing that corner would put a transient
+   status label under a finger. 44 px because a finger presses it. */
+.nx-atlas-layers {
+  position: absolute;
+  right: 10px;
+  top: 60px;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 1px solid var(--line-bright, #2a3246);
+  background: color-mix(in srgb, var(--bg, #04060a) 80%, transparent);
+  color: var(--text-dim, #7683a5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 2;
+}
+
+/* SURVEY off: the markers, the reticle and the footprint on the plain dark
+   surface, which is a state worth naming rather than leaving the user to
+   wonder whether the imagery failed. */
+.nx-atlas-layers[data-survey="off"] {
+  border-color: var(--accent, #00d2ff);
+  color: var(--accent, #00d2ff);
 }
 
 /* The degraded row is a ROUTE, not a second complaint: SkyCanvas already prints

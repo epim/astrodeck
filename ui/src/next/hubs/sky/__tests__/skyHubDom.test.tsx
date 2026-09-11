@@ -64,6 +64,12 @@ win.WebSocket = class { close() {} addEventListener() {} send() {} };
 win.Element.prototype.setPointerCapture = function () { /* jsdom has none */ };
 win.Element.prototype.releasePointerCapture = function () { /* jsdom has none */ };
 win.Element.prototype.scrollBy = function () { /* jsdom has none */ };
+// ATLAS is the default mode now, so this file reaches `components/atlas/SkyCanvas`
+// on the root at the bottom that proves it. That renderer measures itself with a
+// ResizeObserver and probes WebGL - neither exists in jsdom - so the same two
+// stubs `skyAtlasDom.test.tsx` already uses live here too.
+win.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
+win.HTMLCanvasElement.prototype.getContext = function () { return null; };
 
 // ------------------------------------------------------------- fetch double
 const asked: string[] = [];
@@ -141,7 +147,7 @@ for (const k of [
   "HTMLVideoElement", "Element", "SVGElement", "Node", "Event", "CustomEvent",
   "MouseEvent", "KeyboardEvent", "PointerEvent", "localStorage", "getComputedStyle",
   "matchMedia", "requestAnimationFrame", "cancelAnimationFrame", "WebSocket",
-  "location", "history",
+  "location", "history", "ResizeObserver", "HTMLCanvasElement", "HTMLImageElement", "Image",
 ]) {
   const v = k === "window" ? win : win[k];
   if (v === undefined) continue;
@@ -243,6 +249,14 @@ function seed(caps: string[], equipConnected = true): void {
 }
 
 // ===================================================== the operator's screen
+//
+// THIS PHONE HAS ALREADY CHOSEN. ATLAS is the Sky hub's default mode
+// (`finder/prefs.ts DEFAULT_MODE`) and every contract in this section is about
+// the schematic finder - the reticle, the lens dial, the reach strip - so the
+// stored preference puts the screen there. The default itself, and the fact
+// that this line is what overrules it, are asserted on their own root at the
+// bottom of the file.
+win.localStorage.setItem("astrodeck-next-sky-mode", "map");
 seed(CAPS_OPERATOR);
 win.location.hash = "#/sky";
 const root = createRoot(container);
@@ -416,6 +430,37 @@ await testAsync("with no rig the browse banner appears and the CTA offers to fix
 });
 
 act(() => { root.unmount(); });
+
+// ================================================ the mode this phone opens in
+//
+// Two claims, and they have to be tested together or neither means anything: a
+// phone that has never chosen opens in ATLAS, and a phone that HAS chosen keeps
+// its choice. A default with no override is a hard-coded screen; an override
+// with no default is a preference nobody ever set.
+await testAsync("a fresh phone opens in ATLAS, and a stored MAP still wins", async () => {
+  win.localStorage.removeItem("astrodeck-next-sky-mode");
+  seed(CAPS_OPERATOR);
+  win.location.hash = "#/sky";
+  const fresh = createRoot(container);
+  await act(async () => { fresh.render(createElement(SkyHub)); });
+  await settle();
+  assert(byId("sky-atlas") != null, "a phone with nothing stored did not open in ATLAS");
+  eq(byId("sky-atlas-mode")?.getAttribute("aria-pressed"), "true",
+    "the toolbar does not report ATLAS as the mode:");
+  assert(!/az \d{3}° · alt/.test(text()),
+    "the schematic finder is still the box - the default changed a card, not the mode");
+  await act(async () => { fresh.unmount(); });
+
+  win.localStorage.setItem("astrodeck-next-sky-mode", "map");
+  seed(CAPS_OPERATOR);
+  const chosen = createRoot(container);
+  await act(async () => { chosen.render(createElement(SkyHub)); });
+  await settle();
+  assert(byId("sky-atlas") == null, "the stored MAP was overruled by the default");
+  assert(/az \d{3}° · alt/.test(text()), "the stored MAP did not bring the reticle back");
+  await act(async () => { chosen.unmount(); });
+});
+
 Date.now = realNow;
 
 const total = passed + failed;
