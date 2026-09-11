@@ -67,6 +67,13 @@ Object.defineProperty(win, "isSecureContext", { value: false, configurable: true
 win.WebSocket = class { close() {} addEventListener() {} send() {} };
 win.Element.prototype.setPointerCapture = function () { /* jsdom has none */ };
 win.Element.prototype.releasePointerCapture = function () { /* jsdom has none */ };
+// The Sky hub's DEFAULT mode is ATLAS, which mounts `components/atlas/SkyCanvas` -
+// a renderer that measures itself with a ResizeObserver and probes WebGL, neither
+// of which jsdom has. This file pins the stored mode to MAP, so it does not reach
+// that renderer today; the stubs are here anyway, because the next test that
+// forgets the pin would fail inside an error boundary rather than on an assertion.
+win.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
+win.HTMLCanvasElement.prototype.getContext = function () { return null; };
 win.Element.prototype.scrollBy = function () { /* jsdom has none */ };
 
 // ------------------------------------------------------------- fetch double
@@ -160,7 +167,8 @@ for (const k of [
   "HTMLVideoElement", "Element", "SVGElement", "Node", "Event", "CustomEvent",
   "MouseEvent", "KeyboardEvent", "PointerEvent", "localStorage", "getComputedStyle",
   "matchMedia", "requestAnimationFrame", "cancelAnimationFrame", "WebSocket",
-  "location", "history",
+  "location", "history", "ResizeObserver", "HTMLCanvasElement",
+  "HTMLImageElement", "Image", "SVGElement",
 ]) {
   const v = k === "window" ? win : win[k];
   if (v === undefined) continue;
@@ -408,6 +416,11 @@ async function mountHub(planning: unknown): Promise<{ unmount(): Promise<void> }
   planningBody = planning;
   resetPlanningForTests();
   seedState();
+  // ATLAS is the Sky hub's default mode now (`finder/prefs.ts DEFAULT_MODE`),
+  // and every contract below is about the schematic finder - so this phone is
+  // one that has already chosen MAP. Without the line the hub opens on the
+  // pannable canvas and none of the reticle's controls are on screen at all.
+  win.localStorage.setItem("astrodeck-next-sky-mode", "map");
   win.location.hash = "#/sky";
   const root = createRoot(hubBox);
   await act(async () => { root.render(createElement(SkyHub)); });

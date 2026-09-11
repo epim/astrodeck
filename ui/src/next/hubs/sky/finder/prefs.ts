@@ -139,8 +139,49 @@ export function getLayers(): LayerPrefs {
   };
 }
 
+/**
+ * The three finder overlays, written FIELD BY FIELD rather than wholesale.
+ *
+ * The layers key now holds a fourth field (`survey`, below) with a DIFFERENT
+ * owner: these three come from `useSkyModel`'s own `layers` state, the survey
+ * flag comes from `SkyHub`'s. Two owners writing one object with `{...cur}`
+ * over a value each of them last read at mount is the drift this module's
+ * header warns about - toggle SURVEY off, then toggle CLOUDS, and the model's
+ * stale copy turns the survey back on. So each writer names only its own
+ * fields and reads the rest off the stored object at write time.
+ */
 export function setLayers(v: LayerPrefs): void {
-  writeJson(K.layers, v);
+  const stored = readJson<Record<string, unknown>>(K.layers, {});
+  writeJson(K.layers, {
+    ...stored, clouds: v.clouds, horizon: v.horizon, wind: v.wind,
+  });
+}
+
+// ----------------------------------------------------------- survey layer
+/**
+ * Is the survey IMAGERY drawn under the atlas, or only the markers, the
+ * reticle and the pointing footprint on the plain dark surface?
+ *
+ * ON by default, because the pictures are the reason the atlas exists. Off is
+ * a real choice with two real reasons - a dark-adapted eye at the eyepiece,
+ * and a rig on a phone hotspot where every tile is a round trip - and turning
+ * it off fetches NO tiles at all rather than fetching them and dimming them.
+ *
+ * It lives in the layers key beside the other three because it is the same
+ * kind of thing (which overlays this DEVICE draws) and it belongs under the
+ * same control, the stack icon. See `setLayers` for why the two owners of that
+ * key each write only their own fields.
+ */
+export const DEFAULT_SURVEY_LAYER = true;
+
+export function getSurveyLayer(): boolean {
+  const stored = readJson<Partial<Record<string, unknown>>>(K.layers, {});
+  return typeof stored.survey === "boolean" ? stored.survey : DEFAULT_SURVEY_LAYER;
+}
+
+export function setSurveyLayer(on: boolean): void {
+  const stored = readJson<Record<string, unknown>>(K.layers, {});
+  writeJson(K.layers, { ...stored, survey: on });
 }
 
 // ------------------------------------------------------------------- mode
@@ -158,12 +199,50 @@ export function setLayers(v: LayerPrefs): void {
  */
 export type SkyMode = "cam" | "map" | "atlas";
 
-/** The default differs by device, so the caller passes it: a phone opens in AR,
- *  a desktop has no camera worth pointing at the sky and opens in MAP. ATLAS is
- *  never a default - it is only ever a choice this phone made. */
-export function getMode(fallback: SkyMode): SkyMode {
+/**
+ * What the Sky hub opens in on a device that has never chosen.
+ *
+ * ATLAS, on every device. The sky the user came to look at is the whole sky
+ * with tonight's targets drawn on it, not a reticle aimed at one of them: the
+ * atlas answers "what is up and where is it" before you have decided anything,
+ * and the schematic finder answers "what is in the reticle", which is a
+ * question you only have once you have aimed. The finder is one press away and
+ * a device that presses it is remembered - `setMode` writes this key on every
+ * mode change, so a stored choice always beats this default.
+ */
+export const DEFAULT_MODE: SkyMode = "atlas";
+
+/**
+ * The mode this device opens in: its stored choice, or `DEFAULT_MODE`.
+ *
+ * `_deviceFinderMode` is the caller's own per-device FINDER default (`"cam"` on
+ * a phone with a camera, `"map"` on a desktop or an insecure origin). It is
+ * accepted and ignored: the opening mode is the atlas on every device now, and
+ * the finder fallback is still a real answer but to a different question -
+ * "which of the two reticle modes does this device return to" - which is what
+ * `getFinderMode` below answers, and what `SkyHub` asks it. The parameter stays
+ * in the signature because `useSkyModel` (`finder/model.ts`, not this task's
+ * file) passes it; dropping it there is a one-line follow-up for that file's
+ * owner, and nothing breaks in the meantime.
+ */
+export function getMode(_deviceFinderMode?: SkyMode): SkyMode {
   const raw = readRaw(K.mode);
-  return raw === "cam" || raw === "map" || raw === "atlas" ? raw : fallback;
+  return raw === "cam" || raw === "map" || raw === "atlas" ? raw : DEFAULT_MODE;
+}
+
+/**
+ * Which RETICLE mode this device goes back to when it leaves the atlas.
+ *
+ * The stored mode when it is one of the two finder modes, otherwise the
+ * caller's device default - because `prefs.ts` knows nothing about cameras or
+ * secure contexts and must not pretend to. With ATLAS the opening mode, a
+ * phone that has never pressed MAP has no stored finder half at all, and
+ * hard-coding `"map"` there would have sent every phone with a camera to the
+ * schematic map the first time it left the atlas.
+ */
+export function getFinderMode(fallback: "cam" | "map"): "cam" | "map" {
+  const raw = readRaw(K.mode);
+  return raw === "cam" || raw === "map" ? raw : fallback;
 }
 
 export function setMode(v: SkyMode): void {

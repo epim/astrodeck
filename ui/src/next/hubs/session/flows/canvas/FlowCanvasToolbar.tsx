@@ -64,8 +64,9 @@ import { ActionButton, Chip, Label, Mono, Pill, Popover, type Tone } from "../..
 import { NxIcon } from "../../../../icons";
 import {
   CHECKS_CLEAN_WHY, CHECKS_DRAFT_WHY, CHECKS_UNKNOWN_WHY, ETA_UNREPORTED,
-  PLAN_TITLE, checksTone, checksWord, formatEta, saveLockReason, saveStateTone,
-  saveStateWord, tonightLockReason, unsavedRunReason,
+  PLAN_TITLE, checksTone, checksWord, formatEta, lossCount, lossesWhy,
+  saveLockReason, saveStateTone, saveStateWord, tonightLockReason,
+  unsavedRunReason, worstLoss,
 } from "./canvasModel";
 
 /** A fresh `[]` in a selector defeats `useShallow` on every first render, so the
@@ -93,6 +94,16 @@ export function FlowCanvasToolbar(): JSX.Element {
   // would not be on the surface.
   const phase = useStore((s) => s.flows.run.phase);
   const issues = useStore(useShallow((s) => s.flows.compiled?.issues ?? EMPTY_ISSUES));
+  // THE LOSSES, AS TWO PRIMITIVES. The pill used to grade `issues` alone, so a
+  // compile that said "nothing will bind the dome or close it on an unsafe
+  // reading during this run" left it reading GRAPH VALID in green while that
+  // DANGER row sat two inches below on the same screen. Notes are not counted:
+  // a clean flow with ten of them stays green, which is the other half of the
+  // same fix.
+  const losses = useStore((s) =>
+    lossCount(s.flows.compiled?.unmapped, s.flows.compiled?.structural));
+  const worst = useStore((s) =>
+    worstLoss(s.flows.compiled?.unmapped, s.flows.compiled?.structural));
   // The two facts SAVE and RUN both read. `dirty` is the store's own edit flag,
   // written by every graph action in `flowsSlice`; `readonly` is the server's
   // word on an example flow, which `flowsSave` refuses before the network.
@@ -121,8 +132,8 @@ export function FlowCanvasToolbar(): JSX.Element {
   const checksRef = useRef<HTMLSpanElement | null>(null);
 
   const openChecks = issues.length;
-  const checksText = checksWord(checked, openChecks, dirty);
-  const checksPillTone: Tone = checksTone(checked, openChecks, dirty);
+  const checksText = checksWord(checked, openChecks, dirty, losses);
+  const checksPillTone: Tone = checksTone(checked, openChecks, dirty, worst);
   const saveReason = saveLockReason(dirty, readonly);
   const stateWord = saveStateWord(dirty, readonly);
 
@@ -161,10 +172,16 @@ export function FlowCanvasToolbar(): JSX.Element {
             the issues are still the checker's, they just describe a graph the
             rig has not been given yet. */}
         {checked && dirty && <p className="nx-flow-issue">{CHECKS_DRAFT_WHY}</p>}
+        {/* A loss is not a check, so it gets its own line rather than a row in
+            the checker's list - and it says WHERE the sentences are, because
+            the pill's count is a number and the FLOW column has the words. */}
+        {checked && losses > 0 && <p className="nx-flow-issue">{lossesWhy(losses)}</p>}
         {!checked ? (
           <p className="nx-flow-issue">{CHECKS_UNKNOWN_WHY}</p>
         ) : openChecks === 0 ? (
-          <p className="nx-flow-issue">{CHECKS_CLEAN_WHY}</p>
+          // Suppressed while there are losses: "nothing to flag" is true of the
+          // CHECKER and reads as an all-clear for the graph.
+          losses > 0 ? null : <p className="nx-flow-issue">{CHECKS_CLEAN_WHY}</p>
         ) : (
           <ul className="nx-flow-issues">
             {issues.map((i, n) => <li key={`${i.text}-${n}`} className="nx-flow-issue">{i.text}</li>)}

@@ -70,6 +70,11 @@ win.matchMedia = (query: string) => ({
 });
 Object.defineProperty(win, "isSecureContext", { value: false, configurable: true });
 win.WebSocket = class { close() {} addEventListener() {} send() {} };
+// The Sky hub reaches `atlas/AtlasHost` -> `components/atlas/SkyCanvas`, which
+// observes its own box on mount. jsdom ships no ResizeObserver, and an
+// unhandled throw inside a layout effect takes the whole process down rather
+// than failing one assertion.
+win.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
 win.Element.prototype.setPointerCapture = function () { /* jsdom has none */ };
 win.Element.prototype.releasePointerCapture = function () { /* jsdom has none */ };
 win.Element.prototype.scrollBy = function () { /* jsdom has none */ };
@@ -169,7 +174,7 @@ for (const k of [
   "HTMLVideoElement", "HTMLCanvasElement", "Element", "SVGElement", "Node",
   "Event", "CustomEvent", "MouseEvent", "KeyboardEvent", "PointerEvent",
   "localStorage", "getComputedStyle", "matchMedia", "requestAnimationFrame",
-  "cancelAnimationFrame", "WebSocket", "location", "history",
+  "cancelAnimationFrame", "WebSocket", "ResizeObserver", "location", "history",
 ]) {
   const v = k === "window" ? win : win[k];
   if (v === undefined) continue;
@@ -502,6 +507,186 @@ test("the viewer's WEATHER button is honest-disabled, not missing and not native
 });
 
 act(() => { viewerRoot.unmount(); });
+
+// ================================================= the arcs, on the real card
+//
+// MOUNTED DIRECTLY AND NOT THROUGH `SkyHub`, on purpose. The hub's own call
+// site is mid-migration to `model.dome.tracks` (a hunk handed to the agent that
+// owns `SkyHub.tsx`), so a test that read the arcs off a hub render would grade
+// whichever of the two shapes that file happens to be on today. The card is
+// what turns a list into a picture, and that is what these assert.
+//
+// FOUR THINGS, each of which a card can get wrong while still drawing a dome:
+//
+//   1. N IN, N OUT. Collapsing the list to its first entry draws one arc and
+//      looks entirely plausible; the group count is the only thing that says
+//      the other two objects reached the sky.
+//   2. DIM UNLESS ASKED FOR. With nothing locked, every arc is one of the
+//      ranked suggestions and none of them is the answer to a question the
+//      reader asked - so none is bright, and none carries a label on the dome.
+//   3. THE LOCK IS THE BRIGHT ONE. It is the object under the reticle; if the
+//      brightness landed on a ranked suggestion instead, the reader would read
+//      the wrong arc as "the one I am pointed at".
+//   4. AN AIMED POINT SURVIVES THE WEATHER BUTTON. A patch of empty sky has no
+//      id, so `?target=` cannot carry it. Without `?ra=&dec=` the one case the
+//      aimed arc exists for loses its aim the moment the reader presses the
+//      button that promised a bigger picture.
+
+seed(CAPS_OPERATOR);
+
+const { buildDomeTracks } = await import("../finder/track");
+const { DomeCard } = await import("../cards/DomeCard");
+
+/** The site the fixture's `/api/site` returns, as the walk's own context. */
+const TRACK_CTX = {
+  latDeg: 47.61,
+  lonDeg: -122.33,
+  nowMs: NOW,
+  hoursToDawn: 5,
+  horizon: [{ az: 0, alt: 12 }, { az: 180, alt: 8 }, { az: 359, alt: 12 }],
+  horizonMinDeg: 20,
+  maskOn: true,
+  holdAt: () => false,
+};
+
+/** Three real objects, all up and on the near half of the dome at NOW from the
+ *  fixture's site - checked against `placeTrack` rather than assumed, because
+ *  an arc round the back draws nothing and would make the count vacuous. */
+const RANKED = [
+  { id: "m31", name: "M31", ra_hours: 0.7123, dec_deg: 41.269 },
+  { id: "m27", name: "M27", ra_hours: 19.9934, dec_deg: 22.7211 },
+  { id: "m57", name: "M57", ra_hours: 18.8853, dec_deg: 33.03 },
+];
+
+const cardHost = win.document.createElement("div");
+win.document.body.appendChild(cardHost);
+
+/** One root at a time on one host: a second `createRoot` over a live tree is a
+ *  React warning and two mounted panels polling `/api/cloudmap`. */
+let cardRoot: { unmount(): void; render(n: unknown): void } | null = null;
+async function mountCard(props: Record<string, unknown>): Promise<void> {
+  if (cardRoot) act(() => { cardRoot?.unmount(); });
+  const r = createRoot(cardHost);
+  cardRoot = r as never;
+  await act(async () => {
+    r.render(createElement(DomeCard, {
+      canViewWeather: true,
+      pointing: { alt: 57, az: 64 },
+      target: null,
+      horizon: TRACK_CTX.horizon,
+      wind: null,
+      height: 280,
+      lockId: null,
+      onExplain: () => {},
+      ...props,
+    } as never));
+  });
+  await settle();
+}
+const arcs = (): any[] => Array.from(cardHost.querySelectorAll("[data-track]"));
+
+await testAsync("three ranked targets and no lock put three arcs on the card", async () => {
+  const tracks = buildDomeTracks(RANKED, TRACK_CTX);
+  eq(tracks.length, 3, "precondition: the builder walked all three:");
+
+  await mountCard({ tracks });
+  assert(
+    cardHost.querySelector('[data-testid="wx-dome-path"]') != null,
+    "no track group on the card at all",
+  );
+  eq(arcs().length, 3, "three tracks in, arcs out:");
+  const ids = arcs().map((g) => g.getAttribute("data-track")).sort();
+  eq(ids.join(","), "m27,m31,m57", "the arcs are not the three subjects:");
+  assert(
+    arcs().every((g) => g.getAttribute("data-bright") === "0"),
+    "a ranked suggestion is drawn as bright, so the reader cannot tell which arc "
+    + "is the one they asked about",
+  );
+  assert(
+    arcs().every((g) => g.querySelector("text") == null),
+    "a dim arc carries a label - six labels on a 280 px dome is a page of text",
+  );
+  // The names still have to reach the reader; they do it under the picture.
+  const caption = cardHost.querySelector('[data-testid="sky-dome-tracks"]');
+  assert(caption != null, "the arcs are unnamed anywhere on the card");
+  for (const n of ["M31", "M27", "M57"]) {
+    assert((caption.textContent ?? "").includes(n),
+      `the caption does not name ${n}: "${caption.textContent}"`);
+  }
+});
+
+await testAsync("with a lock, the locked arc is the bright one and it is labelled", async () => {
+  const tracks = buildDomeTracks(
+    [{ ...RANKED[0], bright: true }, RANKED[1], RANKED[2]], TRACK_CTX);
+  eq(tracks.length, 3, "precondition: three arcs again:");
+
+  // NO `target` HERE, so the canvas underneath writes no name of its own and
+  // the arc's label is the only one. The duplicate case is the next test.
+  await mountCard({ tracks, lockId: "m31", target: null });
+  const bright = arcs().filter((g) => g.getAttribute("data-bright") === "1");
+  eq(bright.length, 1, "exactly one arc may be bright:");
+  eq(bright[0].getAttribute("data-track"), "m31", "the bright arc is not the lock:");
+  const label = bright[0].querySelector("text");
+  assert(label != null, "the bright arc is not labelled on the dome");
+  eq(label.textContent, "M31", "the bright arc's label:");
+});
+
+await testAsync("the arc does not repeat a name the canvas has already written", async () => {
+  // `SkyDome` writes the locked target's name above its own ring, from the
+  // `target` prop. The arc's label lands at the same point, so both together
+  // put "M31" on the dome twice, twenty pixels apart - which the probe shot
+  // caught as overlapping glyphs before the offset was moved and as a plain
+  // duplicate after.
+  const tracks = buildDomeTracks(
+    [{ ...RANKED[0], bright: true }, RANKED[1], RANKED[2]], TRACK_CTX);
+  await mountCard({ tracks, lockId: "m31", target: { alt: 42, az: 71, name: "M31" } });
+  const bright = arcs().filter((g) => g.getAttribute("data-bright") === "1");
+  eq(bright.length, 1, "precondition: one bright arc:");
+  eq(bright[0].querySelector("text"), null,
+    "the overlay repeated a name the canvas underneath had already written:");
+
+  // The muting is by NAME and not "bright arcs never label": a canvas marking
+  // some other object must not silence this one.
+  await mountCard({ tracks, lockId: "m31", target: { alt: 42, az: 71, name: "M27" } });
+  const still = arcs().filter((g) => g.getAttribute("data-bright") === "1");
+  assert(still[0].querySelector("text") != null,
+    "a canvas label for a DIFFERENT object silenced the bright arc's own label");
+});
+
+await testAsync("an aimed point carries its coordinates to the Weather hub", async () => {
+  // The reticle on empty sky: no catalogue object, so the subject has no name
+  // and the card has no id to put in `?target=`.
+  const tracks = buildDomeTracks(
+    [{ id: "aim", name: null, ra_hours: 19.5, dec_deg: 28.0, bright: true }, RANKED[1]],
+    TRACK_CTX,
+  );
+  assert(tracks.length >= 1, "precondition: the aimed point has a walk");
+  eq(tracks[0].point?.ra_hours, 19.5, "the aimed arc carries its own position:");
+
+  await mountCard({ tracks, lockId: null });
+  const aimedArc = cardHost.querySelector('[data-aimed="1"]') as any;
+  assert(aimedArc != null,
+    "the aimed point has no arc on the dome - the one subject this feature exists for");
+  eq(aimedArc.getAttribute("data-bright"), "1", "the aimed arc must be the bright one:");
+  const aimedLabel = aimedArc.querySelector("text");
+  assert(aimedLabel != null, "the aimed arc is unlabelled, so the reader cannot tell what it is");
+  assert(/^[0-9]{2}h[0-9]{2}m [+-][0-9]{2}/.test(String(aimedLabel.textContent)),
+    `the aimed arc is not labelled with its coordinates: "${aimedLabel.textContent}"`);
+
+  const btn = cardHost.querySelector('[data-testid="sky-dome-weather"]') as any;
+  assert(btn != null, "no WEATHER button on the card");
+  act(() => {
+    btn.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true }));
+  });
+  const h = decodeURIComponent(win.location.hash);
+  assert(h.startsWith("#/weather/sky"), `WEATHER went to ${h}`);
+  assert(/ra=19\.5/.test(h) && /dec=28/.test(h),
+    `WEATHER dropped the aimed point instead of carrying it: ${h}`);
+  act(() => { win.location.hash = "#/sky"; });
+});
+
+if (cardRoot) act(() => { cardRoot?.unmount(); });
+cardHost.remove();
 
 // ================================================ the classic mount, unchanged
 await testAsync("with no chrome prop the panel still draws its own Panel", async () => {

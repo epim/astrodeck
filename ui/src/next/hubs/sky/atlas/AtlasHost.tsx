@@ -49,7 +49,7 @@
 // the ATLAS button is never locked - a viewer on a rig with nothing plugged in
 // gets the same sky an admin does.
 
-import { useEffect, useState, type JSX } from "react";
+import { useCallback, useEffect, useRef, useState, type JSX, type PointerEvent as ReactPointerEvent } from "react";
 import { CatalogSearch } from "../../../../components/atlas/CatalogSearch";
 import { SkyCanvas } from "../../../../components/atlas/SkyCanvas";
 import type { SkyRow } from "../../../../lib/skyRegion";
@@ -59,10 +59,14 @@ import type {
 } from "../../../../types";
 import { getPackStatus } from "../../../../api/backends";
 import { ActionButton } from "../../../ui";
+import { NxIcon, type NxIconName } from "../../../icons";
 import {
   PACK_POLL_MS, regionNotes, shouldPollPack, surveyDegradedText,
   type RegionNoteInput,
 } from "../frame/degraded";
+import type { PatchModel, SkyKind, SkyTarget } from "../finder";
+import { AtlasMarkers } from "./AtlasMarkers";
+import { boxToSky } from "./aim";
 import "./atlas.css";
 
 /** Why LOCK IN FINDER is refused with nothing framed. It names the two ways to
@@ -110,6 +114,14 @@ export function packFixLabel(pack: PackStatus | null): string {
   return "SKY PACK ›";
 }
 
+/** What a deliberately blank sky says about itself. Without it, SURVEY off and
+ *  a survey that cannot be reached look identical - a dark square - and the
+ *  second one has a fix while the first one is a choice. */
+export const SURVEY_LAYER_OFF_NOTE =
+  "Survey imagery is off for this device, so no tiles are fetched - the "
+  + "markers, the reticle and the pointing footprint are still drawn. Turn it "
+  + "back on under the layers button.";
+
 export interface AtlasHostProps {
   framing: FramingSession;
   optics: OpticsLike | null;
@@ -128,6 +140,36 @@ export interface AtlasHostProps {
   /** A search result, or a marker tapped on the sky: both recentre the atlas. */
   onPick: (entry: CatalogEntry) => void;
   onPickRow: (row: SkyRow | null) => void;
+
+  // ---- tonight's targets, on the atlas --------------------------------------
+  /** `useSkyModel.targets` - the same ranked, lens-filtered list the schematic
+   *  MAP draws. Drawn here as the design's label pills; see `AtlasMarkers`. */
+  targets: SkyTarget[];
+  /** The finder's current lock, which wears the ring. */
+  lockId: string | null;
+  kindIcon: Record<SkyKind, NxIconName>;
+  /** A tap on one of those pills: the hub aims the finder at it, exactly as a
+   *  tap on a MAP marker does, and frames it here. */
+  onPickTarget: (t: SkyTarget) => void;
+  /** The model's own sentences about the ranking - why it is empty, or why most
+   *  of the sky cannot be placed for this role. Shown verbatim, because they
+   *  are the server's and this hub's reasons and not new ones. */
+  rankingNotes: string[];
+
+  // ---- aim anywhere --------------------------------------------------------
+  /** Where the finder is aimed, in RA/Dec, or null with no site / below the
+   *  horizon. Drawn as the reticle and printed in the readout line. */
+  aim: PatchModel | null;
+  /** A tap that landed on empty sky: the RA/Dec under the finger. */
+  onAimSky: (raHours: number, decDeg: number) => void;
+
+  // ---- the survey layer ----------------------------------------------------
+  /** False draws the markers, the reticle and the footprint on the plain dark
+   *  surface and fetches no tiles at all. Persisted per device by the hub. */
+  survey: boolean;
+  /** Open the layers popover - the same one the schematic finder's stack icon
+   *  opens, so the four overlays live under one control in both modes. */
+  onLayers: () => void;
   onCenterChange: (ra: number, dec: number) => void;
   onRotate: (deg: number) => void;
   onZoom: (fov: number) => void;
@@ -147,7 +189,13 @@ export interface AtlasHostProps {
 }
 
 export function AtlasHost(p: AtlasHostProps): JSX.Element {
-  const { surveyDegraded, onlineFetch } = p;
+  const { onlineFetch, survey: surveyLayer } = p;
+  // WITH THE LAYER OFF NOTHING IS DEGRADED, because nothing was asked for. The
+  // banner, the poll and the fix row all hang off this one value rather than
+  // off the raw flag, so turning the imagery off cannot leave a complaint about
+  // imagery on screen - or a request for pack status running every two seconds
+  // for a sky nobody is fetching.
+  const surveyDegraded = surveyLayer && p.surveyDegraded;
   const [pack, setPack] = useState<PackStatus | null>(null);
 
   // Polled ONLY while the copy depends on it, and only while this component is
@@ -167,6 +215,82 @@ export function AtlasHost(p: AtlasHostProps): JSX.Element {
   const notes = regionNotes(p.region);
   const target = p.framing.target ?? null;
 
+  // ---- the canvas square, MEASURED ----------------------------------------
+  //
+  // The marker overlay has to sit exactly on the square `SkyCanvas` draws, and
+  // that square sizes itself (`min(720px, 85svh)`, centred). Re-stating that
+  // rule here would be a second answer to a question that already has one and
+  // would drift the first time either number moved, so the element is measured
+  // instead: its offset inside this host (which is the overlay's positioned
+  // ancestor) and its edge. Zero is a real answer - a layout that has not
+  // happened yet, or jsdom, which has no layout at all - and the overlay
+  // renders anyway, so the markers are in the tree either way.
+  const canvasWrapRef = useRef<HTMLDivElement | null>(null);
+  const [box, setBox] = useState({ left: 0, top: 0, size: 0 });
+
+  useEffect(() => {
+    const wrap = canvasWrapRef.current;
+    if (!wrap || typeof window === "undefined") return;
+    const read = (): void => {
+      const el = wrap.querySelector('[role="application"]') as HTMLElement | null;
+      if (!el) return;
+      const size = el.clientWidth || 0;
+      setBox((cur) =>
+        cur.left === el.offsetLeft && cur.top === el.offsetTop && cur.size === size
+          ? cur
+          : { left: el.offsetLeft, top: el.offsetTop, size });
+    };
+    read();
+    const RO = (window as unknown as {
+      ResizeObserver?: new (cb: () => void) => { observe(t: Element): void; disconnect(): void };
+    }).ResizeObserver;
+    if (!RO) {
+      window.addEventListener("resize", read);
+      return () => window.removeEventListener("resize", read);
+    }
+    const ro = new RO(read);
+    ro.observe(wrap);
+    return () => ro.disconnect();
+  }, []);
+
+  // ---- aim anywhere --------------------------------------------------------
+  //
+  // WHICH GESTURE, and why it is this one. `SkyCanvas` exposes exactly one
+  // empty-sky hook: `onPickObject(null)`, fired on a TAP (pointer down and up
+  // inside `TAP_SLOP_PX` within `TAP_MS`) that hit no marker. It exposes no
+  // long-press at all, and it is on ARCHITECTURE section 11's keep-as-is list,
+  // so a long-press would have meant either editing that file or hand-rolling a
+  // second gesture recogniser beside its own - two recognisers on one surface
+  // being the reliable way to make a drag sometimes aim.
+  //
+  // What the hook does NOT carry is WHERE the tap was, so the position is read
+  // off the very same pointer event: the canvas's own `onPointerUp` runs first
+  // (it is the inner handler) and sets the flag, then this one bubbles with the
+  // coordinates still on it. A tap on one of our own target pills never reaches
+  // the canvas at all, so it can never be mistaken for empty sky.
+  const emptyTapRef = useRef(false);
+  const { onPickRow, onAimSky } = p;
+  const centreRa = p.framing.center.ra_hours;
+  const centreDec = p.framing.center.dec_deg;
+  const fovDeg = p.framing.fovZoomDeg;
+
+  const pickRow = useCallback((row: SkyRow | null) => {
+    emptyTapRef.current = row == null;
+    onPickRow(row);
+  }, [onPickRow]);
+
+  const onCanvasPointerUp = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
+    if (!emptyTapRef.current) return;
+    emptyTapRef.current = false;
+    const el = (e.target as Element | null)?.closest?.('[role="application"]') as HTMLElement | null;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    if (!(rect.width > 0)) return;
+    const at = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    const sky = boxToSky(at, { ra_hours: centreRa, dec_deg: centreDec }, fovDeg, rect.width);
+    onAimSky(sky.ra_hours, sky.dec_deg);
+  }, [centreRa, centreDec, fovDeg, onAimSky]);
+
   return (
     <div className="nx-atlas" data-testid="sky-atlas">
       <div className="nx-atlas-search" data-testid="atlas-search">
@@ -176,7 +300,12 @@ export function AtlasHost(p: AtlasHostProps): JSX.Element {
         <CatalogSearch className="w-full" onPick={p.onPick} />
       </div>
 
-      <div className="nx-atlas-canvas" data-testid="atlas-canvas">
+      <div
+        className="nx-atlas-canvas"
+        data-testid="atlas-canvas"
+        ref={canvasWrapRef}
+        onPointerUp={onCanvasPointerUp}
+      >
         <SkyCanvas
           center={p.framing.center}
           rotationDeg={p.framing.rotation_deg}
@@ -187,7 +316,13 @@ export function AtlasHost(p: AtlasHostProps): JSX.Element {
           mosaic={p.framing.mosaic}
           catalogTarget={target ?? undefined}
           night={p.night}
-          mode={p.mode}
+          // SURVEY OFF IS `schematic`, which is not a near-miss for "no tiles" -
+          // it is exactly the state `SkyCanvas` already has for it: the tile
+          // engine is gated on `mode === "survey"` and the cutout scheduler
+          // returns early, so not one request leaves the phone, while the SVG
+          // layer (the planned box, the catalogue markers, the live footprint)
+          // draws on over the dark backdrop.
+          mode={surveyLayer ? p.mode : "schematic"}
           imageBrightness={p.imageBrightness}
           surveyDegraded={surveyDegraded}
           degradedText={degradedText}
@@ -197,13 +332,41 @@ export function AtlasHost(p: AtlasHostProps): JSX.Element {
           pointingWhere={p.pointingWhere}
           skyRows={p.skyRows}
           selectedObjectId={p.selectedObjectId}
-          onPickObject={p.onPickRow}
+          onPickObject={pickRow}
           onCenterChange={p.onCenterChange}
           onRotate={p.onRotate}
           onZoom={p.onZoom}
           onSurveyError={p.onSurveyError}
           onSurveyLoad={p.onSurveyLoad}
         />
+
+        <AtlasMarkers
+          box={box}
+          centre={p.framing.center}
+          fovDeg={fovDeg}
+          targets={p.targets}
+          lockId={p.lockId}
+          kindIcon={p.kindIcon}
+          aim={p.aim}
+          onPick={p.onPickTarget}
+        />
+
+        <button
+          type="button"
+          className="nx-atlas-layers"
+          data-sky-layers
+          data-survey={surveyLayer ? "on" : "off"}
+          data-testid="atlas-layers"
+          aria-label={
+            surveyLayer
+              ? "overlays: survey imagery, cloud, horizon, wind"
+              : "overlays: survey imagery off, cloud, horizon, wind"
+          }
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={p.onLayers}
+        >
+          <NxIcon name="layers" size={20} />
+        </button>
       </div>
 
       {surveyDegraded && (
@@ -223,7 +386,16 @@ export function AtlasHost(p: AtlasHostProps): JSX.Element {
         </button>
       )}
 
-      {notes.map((n) => (
+      {!surveyLayer && (
+        <span className="nx-atlas-note" data-testid="atlas-survey-off">
+          {SURVEY_LAYER_OFF_NOTE}
+        </span>
+      )}
+
+      {/* The catalogue's own absences, then the RANKING's - two different
+          silences with two different fixes, and the ranking's are the model's
+          own sentences rather than second ones written here. */}
+      {[...notes, ...p.rankingNotes].map((n) => (
         <span className="nx-atlas-note" key={n}>{n}</span>
       ))}
 
@@ -259,8 +431,19 @@ export function AtlasHost(p: AtlasHostProps): JSX.Element {
       <p className="nx-atlas-where">
         {target ? `${target.name} · ` : "free roam · "}
         {centreLabel(p.framing.center.ra_hours, p.framing.center.dec_deg)}
-        {` · ${surveyLabel(p.framing.survey)}`}
+        {` · ${surveyLayer ? surveyLabel(p.framing.survey) : "no imagery"}`}
       </p>
+
+      {/* WHERE THE RETICLE IS, which is not always where the picture is
+          centred: pan the sky and the aim stays on the patch it was put on.
+          These are the coordinates the patch card will send and the FITS header
+          will be filed under, plus the one thing the marker's colour carries
+          for anyone who can see it - clear, clouded, or behind the tree line. */}
+      {p.aim && (
+        <p className="nx-atlas-where" data-testid="atlas-aim">
+          {`reticle ${p.aim.raStr} ${p.aim.decStr} · ${p.aim.statusTxt}`}
+        </p>
+      )}
     </div>
   );
 }

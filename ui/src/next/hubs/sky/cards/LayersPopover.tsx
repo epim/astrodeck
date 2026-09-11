@@ -18,6 +18,7 @@
 import type { JSX, RefObject } from "react";
 import { Popover, Switch } from "../../../ui";
 import { NxIcon, type NxIconName } from "../../../icons";
+import { SkyGlyph } from "./glyphs";
 
 export type LayerKey = "clouds" | "horizon" | "wind";
 
@@ -33,6 +34,17 @@ export interface LayersPopoverProps {
   onClose: () => void;
   layers: Record<LayerKey, boolean>;
   onToggle: (key: LayerKey, on: boolean) => void;
+  /**
+   * The atlas's survey imagery, when the atlas is the thing behind this
+   * popover. Absent in the schematic finder, which has no imagery to draw.
+   *
+   * It is a fourth OVERLAY rather than a setting of its own: it answers the
+   * same question the other three do - what is painted on this device's sky -
+   * and it belongs under the same stack icon. It is NOT one of `LayerKey`'s
+   * three, because those are `useSkyModel`'s own state and this one is the
+   * hub's; see `finder/prefs.ts setLayers` for how one key survives two owners.
+   */
+  survey?: { on: boolean; onToggle: (on: boolean) => void } | null;
   /** One sentence: the model's `layersNote`, already chosen for this principal
    *  and this site. */
   note: string;
@@ -50,6 +62,7 @@ export function LayersPopover({
   onClose,
   layers,
   onToggle,
+  survey,
   note,
   windNote,
   weatherReason,
@@ -69,6 +82,25 @@ export function LayersPopover({
       >
         OVERLAYS
       </div>
+      {survey && (
+        <div
+          data-layer-row="survey"
+          style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 6px", minHeight: 44 }}
+        >
+          <span style={{ display: "flex", color: "var(--text-dim)", flexShrink: 0 }}>
+            <SkyGlyph name="atlas" size={18} />
+          </span>
+          <Switch
+            checked={survey.on}
+            onChange={survey.onToggle}
+            label="Survey imagery"
+            // The note is the reason to turn it OFF, which is the half nobody
+            // guesses: off is not a dimmer, it stops the fetching.
+            note="off draws the markers and the reticle only, and fetches no tiles"
+            className="nx-sky-layer-switch"
+          />
+        </div>
+      )}
       {ROWS.map((row) => {
         const reason = row.key === "horizon" ? null : weatherReason;
         return (

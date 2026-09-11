@@ -127,6 +127,7 @@ const {
   ADD_STAGE_LABEL, CHECKS_DRAFT_PREFIX, IDLE_LOG_TEXT, RUN_UNSAVED_REASON,
   SAVE_CLEAN_REASON, SAVE_READONLY_REASON, SAVE_STATE_CLEAN, SAVE_STATE_DIRTY,
   SAVE_STATE_READONLY, resolveWireDrop,
+  MARK_LOST, MARK_PARTIAL, MARK_RIG, RIG_VALUE_PREFIX,
 } = await import("../canvasModel");
 const { clearMountedFlowCanvas, flowCanvasDropPoint, setMountedFlowCanvas } =
   await import("../canvasMount");
@@ -804,6 +805,215 @@ test("an outgoing canvas unmounting does not clear the incoming one's handle", (
 test("the area registers exactly the flowStages sheet", () => {
   eq(Object.keys(flowCanvasSheets).join(","), "flowStages",
     "the cutover composes this registry - an extra or missing name is a wrong screen");
+});
+
+// ============ 11. a note is not a defect, and the canvas must not paint one
+//
+// THE DEFECT, AS SEEN ON THE RIG (2026-09-11). A clean flow put an amber `!` on
+// five stage cards, an amber outline on two of them and a PARTLY HONOURED badge
+// on each - because every `nodes.<type>` entry the compiler emits was a `warn`,
+// and the card knew only "loss or nothing". The entries are notes now: the
+// settings are taken from the rig's own, which is a statement, not a finding.
+//
+// SABOTAGE CHECKS:
+//   * let a note through `isLoss` (return true for "note") -> "ten notes leave
+//     the canvas with no ! and no amber" goes red on the glyph count AND on the
+//     outline attribute.
+//   * give a note the warn tone in `markTone` -> the same test goes red on the
+//     badge's `data-tone`.
+//   * stop rendering the badge for a note -> it goes red on the badge count,
+//     because a note that paints NOTHING is the other half of the same bug: the
+//     card stops saying where its numbers come from.
+//   * drop `rigValueFor` from the card -> "the card names the provider the rig
+//     will really use" goes red.
+
+const NOTE_GRAPH = {
+  nodes: [
+    { id: "n1", type: "dusk", x: 0, y: 0, params: {} },
+    { id: "n2", type: "slew", x: 300, y: 0, params: {} },
+    { id: "n3", type: "guide", x: 600, y: 0, params: {} },
+  ],
+  edges: [{ id: "e1", from: "n2", fromPort: "centered", to: "n3", toPort: "run" }],
+};
+
+const NOTES = [
+  {
+    key: "nodes.slew", level: "note",
+    detail: "the SLEW node's settings do not reach the run",
+    carried: ["presence: the run centres on the target"],
+    ignored: ["tolerance 0.5 arcmin", "solver ASTAP"], source: "Settings > Standards",
+  },
+  {
+    key: "nodes.guide", level: "note",
+    detail: "the GUIDE node's settings do not reach the run",
+    carried: ["presence: the night guides"],
+    ignored: ["settle 1.5 s", "dither 3 px", "provider PHD2"], source: "Rig > Guider",
+  },
+];
+
+/** The resolved per-capability answer `hub.poll_status` attaches to `status`.
+ *  Both values DIFFER from the node's stored param, which is the whole point:
+ *  the GUIDE node ships "PHD2" and this rig guides natively. */
+const RESOLVED = {
+  connected: { camera: { connected: true } },
+  providers: {
+    guide: { kind: "astrodeck", label: "AstroDeck native", reason: "guide camera assigned" },
+    solve: { kind: "sim", label: "Simulator", reason: "no ASTAP on this box" },
+  },
+};
+
+/** `seed` owns `status`, so this puts the resolved providers on top of it. */
+function withStatus(status: unknown): void {
+  act(() => { useStore.setState({ status } as never); });
+}
+
+await testAsync("note-level entries leave the canvas with no ! and no amber", async () => {
+  viewportW = 1024;
+  seed("admin", ADMIN_CAPS, { graph: NOTE_GRAPH, compiled: { plan: {}, structural: [], issues: [], unmapped: NOTES } });
+  await mount(createElement(FlowCanvasSurface as any, { tier: "tablet" }));
+
+  eq(all('[data-testid="flow-node"]').length, 3,
+    "precondition: the seeded graph never drew, so every assertion below would pass over nothing");
+  eq(all(".nx-flow-node-loss").length, 0,
+    "a note still paints the amber ! - a clean flow reads as a failing build");
+  eq(all('[data-loss="warn"]').length, 0, "a note still paints the amber card outline");
+  eq(all('[data-loss="danger"]').length, 0, "a note is being drawn as a blocking loss");
+
+  const marks = all('[data-testid="flow-node-mark"]');
+  eq(marks.length, 2, "the two stages the compile spoke about carry no badge at all, so the "
+    + "card stops saying where its numbers come from");
+  for (const m of marks) {
+    eq(String(m.textContent), MARK_RIG, "the badge is not the note word");
+    eq(m.getAttribute("data-tone"), "dim", "the note badge is painted at finding weight");
+  }
+});
+
+await testAsync("a real loss keeps the ! , the outline and its own word", async () => {
+  viewportW = 1024;
+  seed("admin", ADMIN_CAPS, {
+    graph: NOTE_GRAPH,
+    compiled: {
+      plan: {}, structural: [], issues: [],
+      unmapped: [
+        { key: "nodes.slew", level: "warn", detail: "the SLEW node's tolerance does not reach the run" },
+        NOTES[1],
+      ],
+    },
+  });
+  await mount(createElement(FlowCanvasSurface as any, { tier: "tablet" }));
+
+  eq(all(".nx-flow-node-loss").length, 1, "the loss lost its at-a-glance mark");
+  eq(all('[data-loss="warn"]').length, 1, "the loss lost its card outline");
+  const marks = all('[data-testid="flow-node-mark"]');
+  eq(marks.length, 2, "one of the two marked stages stopped saying anything");
+  const words = marks.map((m: any) => String(m.textContent)).sort();
+  eq(words.join("|"), [MARK_PARTIAL, MARK_RIG].sort().join("|"),
+    "the loss and the note now read as the same thing on the canvas");
+  const warnMark = marks.find((m: any) => String(m.textContent) === MARK_PARTIAL);
+  eq(warnMark.getAttribute("data-tone"), "warn", "the loss stopped being amber");
+});
+
+await testAsync("only notes leaves the checks pill green and saying GRAPH VALID", async () => {
+  viewportW = 1024;
+  seed("admin", ADMIN_CAPS, {
+    graph: NOTE_GRAPH,
+    compiled: { plan: {}, structural: [], issues: [], unmapped: NOTES },
+  });
+  await mount(createElement(FlowCanvasToolbar as any));
+  eq(tid("flow-checks").textContent, "GRAPH VALID",
+    "a flow whose only findings are notes is a valid graph, and the pill has to say so");
+  eq(tid("flow-checks").getAttribute("data-tone"), "good",
+    "the verdict pill went off green over settings the rig owns");
+});
+
+await testAsync("the verdict pill counts real losses and still ignores notes", async () => {
+  // THE DEFECT, SEEN ON THE PROBE (2026-09-11). The pill graded the doctor's
+  // `issues` and nothing else, so the example campaign - whose compile says
+  // "nothing will bind the dome or close it on an unsafe reading during this
+  // run", a DANGER row two inches below on the same screen - read GRAPH VALID
+  // in green. Green here has always meant "safe to press RUN".
+  //
+  // SABOTAGE CHECKS:
+  //   * take `losses` back out of `checksWord`/`checksTone` -> the amber and
+  //     coral halves of this test go red with GRAPH VALID / good.
+  //   * count notes in `lossCount` -> the last two assertions go red.
+  viewportW = 1024;
+  seed("admin", ADMIN_CAPS, {
+    graph: NOTE_GRAPH,
+    compiled: {
+      plan: {}, structural: [], issues: [],
+      unmapped: [
+        { key: "nodes.slew", level: "warn", detail: "the SLEW node's tolerance does not reach the run" },
+        NOTES[1],
+      ],
+    },
+  });
+  await mount(createElement(FlowCanvasToolbar as any));
+  eq(tid("flow-checks").textContent, `1 ${MARK_LOST}`,
+    "the pill claims a graph is valid while the column beside it lists a loss");
+  eq(tid("flow-checks").getAttribute("data-tone"), "warn", "and the verdict stayed green over it");
+
+  // A structural refusal is a danger: a wire that does not resolve is not advice.
+  seed("admin", ADMIN_CAPS, {
+    graph: NOTE_GRAPH,
+    compiled: {
+      plan: {}, structural: ["TARGET has no wire into CAPTURE LOOP"], issues: [], unmapped: NOTES,
+    },
+  });
+  await mount(createElement(FlowCanvasToolbar as any));
+  eq(tid("flow-checks").textContent, `1 ${MARK_LOST}`, "a structural refusal is not counted");
+  eq(tid("flow-checks").getAttribute("data-tone"), "bad",
+    "a refusal that stops the run reads the same as one that does not");
+
+  // And the notes alone leave it green - the same fixture, minus the loss.
+  seed("admin", ADMIN_CAPS, {
+    graph: NOTE_GRAPH,
+    compiled: { plan: {}, structural: [], issues: [], unmapped: NOTES },
+  });
+  await mount(createElement(FlowCanvasToolbar as any));
+  eq(tid("flow-checks").textContent, "GRAPH VALID", "two notes were counted as losses");
+  eq(tid("flow-checks").getAttribute("data-tone"), "good", "two notes took the verdict off green");
+});
+
+await testAsync("the card names the provider the rig will really use", async () => {
+  viewportW = 1024;
+  seed("admin", ADMIN_CAPS, { graph: NOTE_GRAPH, compiled: { plan: {}, structural: [], issues: [], unmapped: NOTES } });
+  withStatus(RESOLVED);
+  await mount(createElement(FlowCanvasSurface as any, { tier: "tablet" }));
+
+  const rig = all('[data-testid="flow-node-rig"]').map((el: any) => String(el.textContent));
+  eq(rig.length, 2, "neither the GUIDE nor the SLEW card says what the rig will use");
+  assert(rig.includes(`${RIG_VALUE_PREFIX}AstroDeck native`),
+    `the GUIDE card still shows only its stored PHD2, got ${JSON.stringify(rig)}`);
+  assert(rig.includes(`${RIG_VALUE_PREFIX}Simulator`),
+    `the SLEW card still shows only its stored ASTAP, got ${JSON.stringify(rig)}`);
+
+  // And nothing is invented when the rig has not answered.
+  seed("admin", ADMIN_CAPS, { graph: NOTE_GRAPH, compiled: { plan: {}, structural: [], issues: [], unmapped: NOTES } });
+  withStatus({ connected: { camera: { connected: true } } });
+  await mount(createElement(FlowCanvasSurface as any, { tier: "tablet" }));
+  eq(all('[data-testid="flow-node-rig"]').length, 0,
+    "a rig that has published no provider resolution had a value put in its mouth");
+});
+
+await testAsync("the phone stage list uses the same words as the canvas", async () => {
+  viewportW = 390;
+  win.location.hash = "#/session/flows/flowStages?open=flow-m16";
+  resetRouterCacheForTests();
+  seed("admin", ADMIN_CAPS, { graph: NOTE_GRAPH, compiled: { plan: {}, structural: [], issues: [], unmapped: NOTES } });
+  withStatus(RESOLVED);
+  await mount(createElement(FlowStagesPhoneSheet as any, { params: { open: RECORD.id }, depth: 0 }));
+
+  const marks = all('[data-testid="flow-stage-mark"]');
+  eq(marks.length, 2, "the phone list says nothing about the two stages the compile spoke about");
+  for (const m of marks) {
+    eq(String(m.textContent), MARK_RIG,
+      "the phone list and the canvas disagree about what this stage's badge says");
+    eq(m.getAttribute("data-tone"), "dim", "the phone list paints a note at finding weight");
+  }
+  const rig = all('[data-testid="flow-stage-rig"]').map((el: any) => String(el.textContent));
+  assert(rig.includes(`${RIG_VALUE_PREFIX}AstroDeck native`),
+    `the phone row never names the rig's own guider, got ${JSON.stringify(rig)}`);
 });
 
 act(() => { root.unmount(); });

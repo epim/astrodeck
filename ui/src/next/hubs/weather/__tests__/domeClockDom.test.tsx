@@ -102,6 +102,18 @@ const HORIZON: [number, number][] = [[0, 8], [90, 42], [180, 8], [270, 42], [359
  */
 const TARGET = { name: "M27", ra_hours: 19.9934, dec_deg: 22.7211 };
 
+/** Two more objects in the same loaded plan, so the dome has THREE arcs on it
+ *  and not one. They are what the re-tick assertion needs: the running target's
+ *  path re-walking while the rest of the plan sat frozen would be exactly the
+ *  defect this file exists for, one arc further along. Both are on the near
+ *  half of the dome for the whole window from this site (checked against
+ *  `placeTrack`, not assumed - an arc round the back draws nothing and would
+ *  make the count vacuous). */
+const PLAN_ALSO = [
+  { name: "M57", ra_hours: 18.8853, dec_deg: 33.03 },
+  { name: "M11", ra_hours: 18.8517, dec_deg: -6.27 },
+];
+
 const asked: string[] = [];
 function ok(json: any) {
   return {
@@ -168,6 +180,9 @@ async function testAsync(name: string, fn: () => Promise<void>): Promise<void> {
   catch (e) { failed++; failures.push(`x ${name}: ${(e as Error).message}`); }
 }
 function assert(cond: boolean, msg: string): void { if (!cond) throw new Error(msg); }
+function eq<T>(got: T, want: T, msg = ""): void {
+  if (got !== want) throw new Error(`${msg} expected ${String(want)}, got ${String(got)}`);
+}
 
 const settle = async () => {
   await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
@@ -227,7 +242,12 @@ useStore.setState({
   // The dome is about the RUNNING session's target, resolved against the loaded
   // plan for its coordinates (`contextTarget`).
   sequence: { target: TARGET.name },
-  plan: { targets: [{ name: TARGET.name, ra_hours: TARGET.ra_hours, dec_deg: TARGET.dec_deg }] },
+  plan: {
+    targets: [
+      { name: TARGET.name, ra_hours: TARGET.ra_hours, dec_deg: TARGET.dec_deg },
+      ...PLAN_ALSO,
+    ],
+  },
   status: {
     connected: {}, looping: false,
     mount: {
@@ -241,7 +261,22 @@ const root = createRoot(container);
 await act(async () => { root.render(createElement(DomeScreen)); });
 await settle();
 
-await testAsync("precondition: the dome drew the target's path to dawn", async () => {
+/** Every arc's geometry, keyed by the subject it belongs to. One string per
+ *  arc and not one for the whole group: a group-wide comparison passes the
+ *  moment ANY arc moves, which is exactly the state this file was written for -
+ *  the running target re-walking while the rest of the plan sat frozen. */
+const arcPoints = (): Record<string, string> => {
+  const out: Record<string, string> = {};
+  for (const g of Array.from(byId("wx-dome-path")?.querySelectorAll("[data-track]") ?? [])) {
+    const el = g as any;
+    out[String(el.getAttribute("data-track"))] =
+      Array.from(el.querySelectorAll("polyline"))
+        .map((p: any) => p.getAttribute("points")).join("|");
+  }
+  return out;
+};
+
+await testAsync("precondition: the dome drew a path for the target AND the rest of the plan", async () => {
   assert(byId("wx-sky") != null, "the sky screen did not render at all");
   assert(minuteTicks.length > 0,
     "the screen registered NO minute interval, so nothing below could ever re-tick");
@@ -251,21 +286,36 @@ await testAsync("precondition: the dome drew the target's path to dawn", async (
   assert(path.querySelectorAll("polyline").length > 0,
     "the path group is empty, so its 'points' cannot say anything about the clock");
   assert(/M27/.test(skyText()), "the screen does not name the target it is drawing");
+
+  const arcs = Array.from(path.querySelectorAll("[data-track]")) as any[];
+  assert(arcs.length >= 3,
+    `only ${arcs.length} arc(s) on a dome whose plan has three targets - the rest of `
+    + "the night is not being drawn at all");
+  const bright = arcs.filter((a) => a.getAttribute("data-bright") === "1");
+  eq(bright.length, 1, "exactly one arc - the running target's - may be bright:");
+  assert(String(bright[0].getAttribute("data-track")).includes(TARGET.name),
+    `the bright arc is ${bright[0].getAttribute("data-track")}, not the running target`);
+  for (const [id, pts] of Object.entries(arcPoints())) {
+    assert(pts.length > 0, `arc ${id} has no geometry, so the tick test cannot grade it`);
+  }
 });
 
-await testAsync("the path to dawn re-walks from the CURRENT hour angle, not from mount time", async () => {
-  const before = Array.from(byId("wx-dome-path").querySelectorAll("polyline"))
-    .map((p: any) => p.getAttribute("points")).join("|");
-  assert(before.length > 0, "precondition: the path has no geometry to compare");
+await testAsync("EVERY path re-walks from the CURRENT hour angle, not from mount time", async () => {
+  const before = arcPoints();
+  assert(Object.keys(before).length >= 3, "precondition: fewer than three arcs to compare");
 
   await tickTo(T0 + 45 * 60_000);
 
-  const after = Array.from(byId("wx-dome-path").querySelectorAll("polyline"))
-    .map((p: any) => p.getAttribute("points")).join("|");
-  assert(after.length > 0, "the path vanished rather than moving");
-  assert(after !== before,
-    "45 minutes passed and the arc is identical - the walk is frozen at the instant the "
-    + "screen mounted, so it now starts from a position the object has already left");
+  const after = arcPoints();
+  eq(Object.keys(after).length, Object.keys(before).length,
+    "an arc vanished rather than moving:");
+  for (const id of Object.keys(before)) {
+    assert(after[id] !== undefined, `arc ${id} disappeared on the tick`);
+    assert(after[id] !== before[id],
+      `45 minutes passed and ${id}'s arc is identical - that walk is frozen at the `
+      + "instant the screen mounted, so it now starts from a position the object has "
+      + "already left");
+  }
 });
 
 await testAsync("the target's position is re-derived, so the horizon verdict follows it", async () => {

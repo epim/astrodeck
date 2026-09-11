@@ -1,6 +1,17 @@
 // domeOverlay.tsx - what is drawn ON the sky dome (the horizon profile, the
-// +30 min cloud ghosts and the target's path to dawn), plus the wind rose and
+// +30 min cloud ghosts and every target's path to dawn), plus the wind rose and
 // the legend that go around it (plan F.6).
+//
+// IT DRAWS A LIST OF ARCS, NOT ONE. It used to take a single `track` and a
+// single `targetName`, which meant the dome was bare until something had been
+// locked - on a night with a dozen objects up, the picture said nothing about
+// eleven of them. It now takes `DomeTrack[]`: the subject the reader asked
+// about (bright, labelled) and the best of the ranked list (dim, unlabelled),
+// and one of those subjects may be a POINT WITH NO CATALOGUE OBJECT UNDER IT -
+// the reticle aimed at empty sky, labelled with its own coordinates, which is
+// what looking for something nobody has catalogued looks like. The walk itself
+// still belongs to `sky/finder/track.ts` and is shared; only the drawing is
+// here.
 //
 // THE ARGUMENT THIS FILE USED TO MAKE, AND WHAT RETIRED IT. Until D-WX-1 the
 // header here refused to draw any of it, on two facts that were true of the
@@ -46,7 +57,10 @@ import {
   binTiles, ghostTiles, type CloudSample, type CloudTile,
 } from "../../../lib/cloudTiles";
 import { horizonAltAt, type HorizonPoint } from "../../../lib/horizonModel";
-import { TRACK_COLORS, type TrackSample, type TrackState } from "../../sky/finder/track";
+import {
+  FLOOR_DEG, TRACK_COLORS,
+  type DomeTrack, type TrackSample, type TrackState,
+} from "../../sky/finder/track";
 import { Mono } from "../../../ui";
 import type { WeatherNow } from "../../../../types";
 import { drift } from "../conditions/verdict";
@@ -77,6 +91,12 @@ const HORIZON_LINE = "rgba(255,84,112,.7)";
 const HORIZON_DASH = "4 3";
 const GHOST_LINE = "rgba(200,208,228,.55)";
 const GHOST_DASH = "3 3";
+
+/** A stretch of an arc that runs behind the site's own horizon profile. DASHED
+ *  AND NOT JUST RED, because the profile itself is drawn in red too: on a dome
+ *  with six arcs on it, hue alone cannot say whether a red line is the tree
+ *  line or an object behind it. */
+const MASK_DASH = "4 3";
 
 export interface WindSummary {
   /** Compass bearing the cloud is drifting TOWARD, degrees. */
@@ -160,24 +180,49 @@ export function WindArrow({ towardDeg, size = 24 }: {
   );
 }
 
-interface Key {
+export interface Key {
   label: string;
   swatch: "fill" | "hatch" | "ring" | "cross" | "line" | "box";
   color: string;
   dash?: string;
 }
 
-/** Which of the overlay's three marks actually reached the picture. The legend
- *  names a mark ONLY when it is drawn: a legend entry for a horizon profile
- *  that is not on the dome sends the reader looking for a red band that is not
- *  there and lets them conclude the sky is clear of obstructions. */
+/** Which of the overlay's marks actually reached the picture. The legend names
+ *  a mark ONLY when it is drawn: a legend entry for a horizon profile that is
+ *  not on the dome sends the reader looking for a red band that is not there
+ *  and lets them conclude the sky is clear of obstructions.
+ *
+ *  The arcs report at two levels of detail because they need two: HOW MANY
+ *  reached the picture (the legend counts them, and zero means the entry is
+ *  omitted entirely), and WHICH STATES have a drawn run - so "under a forecast
+ *  cloud hold" is named on a night that has one and absent on a night that does
+ *  not, rather than standing there in every legend as decoration. */
 export interface DrawnMarks {
   horizon: boolean;
   ghosts: boolean;
-  path: boolean;
+  /** Arcs with at least one drawn run or a current-position dot. */
+  tracks: number;
+  /** The track states an arc is actually drawn in, in no particular order. */
+  states: Exclude<TrackState, "below">[];
+  /** The aimed point's label, when its arc is on the dome. Null when every arc
+   *  belongs to a catalogued object - which is every night nobody went looking
+   *  for something new. */
+  aimed: string | null;
 }
 
-const NOTHING_DRAWN: DrawnMarks = { horizon: false, ghosts: false, path: false };
+const NOTHING_DRAWN: DrawnMarks = {
+  horizon: false, ghosts: false, tracks: 0, states: [], aimed: null,
+};
+
+/** What each colour along an arc means, in the reader's terms rather than the
+ *  classifier's. `ok` is covered by the "tracks to dawn" entry itself, so it is
+ *  not repeated here. */
+const STATE_KEY: Record<Exclude<TrackState, "below">, { label: string; dash?: string }> = {
+  ok: { label: "clear to dawn" },
+  hold: { label: "under a forecast cloud hold" },
+  mask: { label: "behind your horizon profile", dash: MASK_DASH },
+  floor: { label: `under the ${FLOOR_DEG} degree floor` },
+};
 
 /** The legend describes THE CANVAS THAT IS MOUNTED, not the prototype's.
  *
@@ -188,7 +233,7 @@ const NOTHING_DRAWN: DrawnMarks = { horizon: false, ghosts: false, path: false }
  *  not have is worse than no legend: the reader goes looking for a red patch
  *  that is not there and concludes the sky is clear. Colours below are lifted
  *  from `SkyDome.tsx:196-266` and `lib/domeProjection.ts:205-215`. */
-function keys(hasTarget: boolean, drawn: DrawnMarks): Key[] {
+export function legendKeys(hasTarget: boolean, drawn: DrawnMarks): Key[] {
   const out: Key[] = [
     { label: "clear", swatch: "fill", color: occlusionFill(0.0) },
     { label: "patchy", swatch: "fill", color: occlusionFill(0.3) },
@@ -204,8 +249,28 @@ function keys(hasTarget: boolean, drawn: DrawnMarks): Key[] {
   if (drawn.ghosts) {
     out.push({ label: "cloud in 30 min", swatch: "box", color: GHOST_LINE, dash: GHOST_DASH });
   }
-  if (drawn.path) {
-    out.push({ label: "path to dawn", swatch: "line", color: "var(--accent)" });
+  if (drawn.tracks > 0) {
+    // The COUNT, not the word "tracks". Six arcs and six numbered dots are the
+    // same six objects, and a reader counting arcs on a dome that has culled
+    // one round the back needs to be told how many it meant to draw.
+    out.push({
+      label: `${drawn.tracks} ${drawn.tracks === 1 ? "track" : "tracks"} to dawn`,
+      swatch: "line",
+      color: TRACK_COLORS.ok,
+    });
+    // Only the states an arc is actually drawn in. `ok` is the entry above.
+    for (const st of ["hold", "mask", "floor"] as const) {
+      if (!drawn.states.includes(st)) continue;
+      out.push({
+        label: STATE_KEY[st].label,
+        swatch: "line",
+        color: TRACK_COLORS[st],
+        dash: STATE_KEY[st].dash,
+      });
+    }
+  }
+  if (drawn.aimed) {
+    out.push({ label: `aimed at ${drawn.aimed}`, swatch: "ring", color: TRACK_COLORS.ok });
   }
   return out;
 }
@@ -220,7 +285,7 @@ export function DomeLegend({ hasTarget, wind, drawn = NOTHING_DRAWN }: {
       style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}
       data-testid="wx-dome-legend"
     >
-      {keys(hasTarget, drawn).map((k) => (
+      {legendKeys(hasTarget, drawn).map((k) => (
         <span key={k.label} style={{ display: "flex", alignItems: "center", gap: 5 }}>
           <Swatch k={k} />
           <Mono size={10} tone="dim">{k.label}</Mono>
@@ -464,43 +529,118 @@ export function pathRuns(g: DomeGeometry, track: TrackSample[]): PathPoint[][] {
   return runs.filter((r) => r.length > 0);
 }
 
-function TargetPath({ g, runs, track, targetName }: {
-  g: DomeGeometry;
+/** One arc, already cut into drawable runs and with its two anchor points
+ *  found. Computed before the render so the legend can be told what reached the
+ *  picture rather than what was asked for. */
+export interface PlacedTrack {
+  track: DomeTrack;
   runs: PathPoint[][];
-  track: TrackSample[];
-  targetName: string | null;
-}): JSX.Element {
-  const last = runs.length > 0 ? runs[runs.length - 1] : null;
-  const end = last ? last[last.length - 1] : null;
-  // An hour dot every fourth sample: STEP_HOURS is a quarter of an hour, so
-  // this is the hour ticks and not a bead on every sample.
-  const dots: { x: number; y: number; st: Exclude<TrackState, "below"> }[] = [];
+  /** Where the subject is RIGHT NOW - sample zero - when that point is up and
+   *  on the near half of the dome. Null otherwise, and then there is no dot: a
+   *  dot on the rim for an object that has not risen would claim a position it
+   *  does not have. */
+  now: { x: number; y: number; st: Exclude<TrackState, "below"> } | null;
+  /** Where the label goes: the current position if there is one, else the head
+   *  of the first drawn run, so a not-yet-risen object's arc is still named. */
+  anchor: { x: number; y: number } | null;
+}
+
+/** Place one arc on the dome, or return null when nothing of it is visible.
+ *
+ *  NULL AND NOT AN EMPTY `PlacedTrack`: an arc that is entirely round the back
+ *  or entirely under the ground draws nothing, and the legend counts placed
+ *  arcs, so letting one through would put "6 tracks to dawn" under a dome with
+ *  five on it. */
+export function placeTrack(g: DomeGeometry, t: DomeTrack): PlacedTrack | null {
+  if (t.samples.length === 0) return null;
+  const runs = pathRuns(g, t.samples);
+  const s0 = t.samples[0];
+  let now: PlacedTrack["now"] = null;
+  if (s0.st !== "below") {
+    const p = proj(g, s0.alt, s0.az);
+    if (p.facing) now = { x: p.x, y: p.y, st: s0.st as Exclude<TrackState, "below"> };
+  }
+  if (runs.length === 0 && now === null) return null;
+  const head = runs.length > 0 ? runs[0][0] : null;
+  return {
+    track: t,
+    runs,
+    now,
+    anchor: now ?? (head ? { x: head.x, y: head.y } : null),
+  };
+}
+
+/** The hour ticks on a bright arc. Every fourth sample, because `STEP_HOURS` is
+ *  a quarter of an hour - a bead on every sample would be a dotted line, not a
+ *  clock. Bright arcs only: six arcs' worth of beads is hatching. */
+function hourDots(g: DomeGeometry, track: TrackSample[]): { x: number; y: number; st: Exclude<TrackState, "below"> }[] {
+  const out: { x: number; y: number; st: Exclude<TrackState, "below"> }[] = [];
   track.forEach((s, i) => {
     if (i % 4 !== 0 || s.st === "below") return;
     const p = proj(g, s.alt, s.az);
     if (!p.facing) return;
-    dots.push({ x: p.x, y: p.y, st: s.st as Exclude<TrackState, "below"> });
+    out.push({ x: p.x, y: p.y, st: s.st as Exclude<TrackState, "below"> });
   });
+  return out;
+}
+
+function OneTrack({ g, placed, mute }: {
+  g: DomeGeometry;
+  placed: PlacedTrack;
+  /** A name the CANVAS underneath has already written at this point. */
+  mute: string | null;
+}): JSX.Element {
+  const { track, runs, now, anchor } = placed;
+  const bright = track.bright;
+  const label = track.label === mute ? "" : track.label;
   return (
-    <g data-testid="wx-dome-path">
+    <g
+      data-track={track.id}
+      data-bright={bright ? "1" : "0"}
+      data-aimed={track.point ? "1" : "0"}
+    >
       {runs.map((r, i) => (
         <polyline
           key={i}
           points={r.map((q) => `${q.x.toFixed(1)},${q.y.toFixed(1)}`).join(" ")}
           fill="none"
           stroke={TRACK_COLORS[r[0].st]}
-          strokeWidth="1.6"
+          // The dim arcs are the ranked list, there so the dome is not bare;
+          // the bright one is what the reader asked about. Width AND opacity,
+          // because on a dome that is already painted with cloud, opacity alone
+          // makes a thin line vanish rather than recede.
+          strokeWidth={bright ? 1.8 : 1.1}
+          strokeOpacity={bright ? 1 : 0.5}
+          strokeDasharray={r[0].st === "mask" ? MASK_DASH : undefined}
           strokeLinecap="round"
           strokeLinejoin="round"
         />
       ))}
-      {dots.map((d, i) => (
-        <circle key={i} cx={d.x} cy={d.y} r="1.6" fill={TRACK_COLORS[d.st]} />
+      {bright && hourDots(g, track.samples).map((d, i) => (
+        <circle key={`h${i}`} cx={d.x} cy={d.y} r="1.6" fill={TRACK_COLORS[d.st]} />
       ))}
-      {end && targetName && (
+      {now && (
+        // WHERE IT IS NOW, with a dark ring under it. The dome underneath is
+        // painted cloud, and the one thing this dot has to survive is being on
+        // top of a socked-in cell.
+        <circle
+          cx={now.x}
+          cy={now.y}
+          r={bright ? 3.6 : 2.4}
+          fill={TRACK_COLORS[now.st]}
+          fillOpacity={bright ? 1 : 0.75}
+          stroke="rgba(8,10,16,0.85)"
+          strokeWidth="1"
+        />
+      )}
+      {bright && anchor && label !== "" && (
+        // BELOW the dot, not above it. `SkyDome` writes the locked target's own
+        // name 12 px ABOVE the same point (its `target` marker), so a label
+        // above collided with it character for character - "NGC 6NGC 6633" in
+        // the probe shot that caught this.
         <text
-          x={end.x + 6}
-          y={end.y - 5}
+          x={anchor.x + 7}
+          y={anchor.y + 13}
           fontSize="10"
           fontFamily="IBM Plex Mono, ui-monospace, monospace"
           fill="var(--text-dim)"
@@ -508,9 +648,24 @@ function TargetPath({ g, runs, track, targetName }: {
           strokeWidth="2.6"
           paintOrder="stroke"
         >
-          {`${targetName} to dawn`}
+          {label}
         </text>
       )}
+    </g>
+  );
+}
+
+function DomeTracks({ g, placed, mute }: {
+  g: DomeGeometry;
+  placed: PlacedTrack[];
+  mute: string | null;
+}): JSX.Element {
+  return (
+    // ONE GROUP, and it keeps the `wx-dome-path` id it had when it held a
+    // single arc: the probe route and two DOM tests name it, and the thing it
+    // marks - "the tracks are on the dome" - did not change when the count did.
+    <g data-testid="wx-dome-path">
+      {placed.map((p) => <OneTrack key={p.track.id} g={g} placed={p} mute={mute} />)}
     </g>
   );
 }
@@ -520,10 +675,19 @@ export interface DomeOverlayProps {
   /** The site's ACTIVE horizon polyline, or null when it could not be read. */
   horizon: HorizonPoint[] | null;
   wind: WindSummary | null;
-  /** The target's walk to dawn, or null when the site's coordinates are not
-   *  readable by this role - never a path from a guessed site. */
-  track: TrackSample[] | null;
-  targetName: string | null;
+  /** Every arc to draw, brightest first. Empty when the site's coordinates are
+   *  not readable by this role - never an arc from a guessed site. */
+  tracks: DomeTrack[];
+  /**
+   * A name the CANVAS has already written at that object's position - the
+   * panel's own `target` marker writes the locked target's name 12 px above the
+   * ring. Without this the bright arc's label lands beside it and the dome
+   * carries the same name twice, twenty pixels apart, which the probe shot
+   * caught as "NGC 6NGC 6633" before the offset was fixed and as a plain
+   * duplicate after. Null when the canvas wrote nothing (no target, or one
+   * below the horizon, which the panel does not mark).
+   */
+  labelledOnCanvas?: string | null;
   /** What actually reached the picture, so the legend can name those marks and
    *  no others. Fired only when the answer changes. */
   onDrawn?: (d: DrawnMarks) => void;
@@ -533,40 +697,65 @@ export interface DomeOverlayProps {
  * Everything drawn ON the dome, in the dome's own projection.
  *
  * Three groups, back to front: the horizon profile (the wall the sky rises out
- * of), the +30 min cloud ghosts, then the target's path - the mark the reader
- * came for, and the one that must never sit underneath the other two.
+ * of), the +30 min cloud ghosts, then the tracks - the marks the reader came
+ * for, and the ones that must never sit underneath the other two.
  */
 export function DomeOverlay({
-  args, horizon, wind, track, targetName, onDrawn,
+  args, horizon, wind, tracks, labelledOnCanvas = null, onDrawn,
 }: DomeOverlayProps): JSX.Element {
   const g = args.geom;
   const hz = horizon && horizon.length > 0 ? horizon : null;
   const polys = ghostPolygons(g, ghostsFor(args.grid, args.stale, wind));
-  const runs = track && track.length > 0 ? pathRuns(g, track) : [];
+
+  // PLACED, not merely handed over. An arc whose whole walk is round the back
+  // of the dome or under the ground contributes nothing, and the legend counts
+  // what is here rather than what was asked for.
+  const placed: PlacedTrack[] = [];
+  for (const t of tracks) {
+    const p = placeTrack(g, t);
+    if (p) placed.push(p);
+  }
+
+  const states = new Set<Exclude<TrackState, "below">>();
+  for (const p of placed) {
+    for (const r of p.runs) states.add(r[0].st);
+    if (p.now) states.add(p.now.st);
+  }
+  const aimedTrack = placed.find((p) => p.track.point !== null) ?? null;
 
   const drawn: DrawnMarks = {
     horizon: hz !== null,
     ghosts: polys.length > 0,
-    path: runs.length > 0,
+    tracks: placed.length,
+    states: [...states],
+    aimed: aimedTrack ? aimedTrack.track.label : null,
   };
   // The legend names marks, and it may only name the ones this render actually
   // produced - hence a report of what was drawn rather than a second copy of
-  // the three conditions above, which would drift.
+  // the conditions above, which would drift.
   const seen = useRef<DrawnMarks | null>(null);
   useEffect(() => {
     const p = seen.current;
     if (p && p.horizon === drawn.horizon && p.ghosts === drawn.ghosts
-        && p.path === drawn.path) {
+        && p.tracks === drawn.tracks && p.aimed === drawn.aimed
+        && p.states.slice().sort().join() === drawn.states.slice().sort().join()) {
       return;
     }
     seen.current = drawn;
     onDrawn?.(drawn);
   });
 
+  const bright = placed.filter((p) => p.track.bright).map((p) => p.track.label);
   const named: string[] = [];
   if (drawn.horizon) named.push("the horizon profile");
   if (drawn.ghosts) named.push("where the cloud is in 30 minutes");
-  if (drawn.path) named.push(`the path ${targetName ?? "the target"} takes to dawn`);
+  if (drawn.tracks > 0) {
+    named.push(
+      bright.length > 0
+        ? `${drawn.tracks} paths to dawn, one of them ${bright.join(" and ")}`
+        : `${drawn.tracks} paths to dawn`,
+    );
+  }
 
   return (
     <svg
@@ -581,8 +770,8 @@ export function DomeOverlay({
     >
       {hz && <HorizonFill g={g} horizon={hz} />}
       {polys.length > 0 && <Ghosts polys={polys} />}
-      {runs.length > 0 && track && (
-        <TargetPath g={g} runs={runs} track={track} targetName={targetName} />
+      {placed.length > 0 && (
+        <DomeTracks g={g} placed={placed} mute={labelledOnCanvas} />
       )}
     </svg>
   );

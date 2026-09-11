@@ -19,6 +19,7 @@ import { useStore } from "../../../../../store";
 import { NODE_DEFS } from "../../../../../components/flows/nodeDefs";
 import { ActionButton, Label, LockNote, Mono } from "../../../../ui";
 import { FlowFieldRow, type FlowFieldVariant } from "./FlowFieldRow";
+import { RIG_VALUE_PREFIX, rigValueFor } from "./issues";
 
 export interface FlowNodeEditorProps {
   id: string;
@@ -37,6 +38,13 @@ export function FlowNodeEditor({
   const node = useStore((s) => s.flows.graph.nodes.find((n) => n.id === id));
   const select = useStore((s) => s.flowsSelect);
   const deleteSel = useStore((s) => s.flowsDeleteSel);
+  // The stage's own type is not in scope until `node` resolves, and a hook
+  // cannot be called conditionally - so the selector takes the type off the
+  // store too and returns a string or null, which is exact under Object.is.
+  const rigValue = useStore((s) => {
+    const n = s.flows.graph.nodes.find((x) => x.id === id);
+    return n ? rigValueFor(n.type, s.status) : null;
+  });
 
   if (!node) return null;
   const def = NODE_DEFS[node.type];
@@ -114,6 +122,17 @@ export function FlowNodeEditor({
       {/* The card footer the canvas draws, restated where the parameters are
           edited: it is the one line that says what these numbers add up to. */}
       <Mono size={10} tone="dim">{def.sum(node.params)}</Mono>
+
+      {/* And, for the two stages whose stored params name a PROVIDER the rig
+          overrides (GUIDE ships "PHD2", SLEW ships "ASTAP"), what the rig will
+          really use. Read from the server's own per-capability resolution, so a
+          rig that guides natively stops reading PHD2 off its own canvas. Absent
+          when the rig has not said - the line is never invented. */}
+      {rigValue && (
+        <p className="nx-flowins-rig" data-testid="flow-node-rig">
+          {RIG_VALUE_PREFIX}{rigValue}
+        </p>
+      )}
     </>
   );
 }
