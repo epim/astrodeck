@@ -301,6 +301,46 @@ test("the hub rendered LIVE - the precondition every assertion below rests on", 
   assert(q('[data-testid="monitor-gallery"]') != null, "no GALLERY link");
 });
 
+// --------------------------------------------------------- guiding RMS honesty
+//
+// `rms_total` defaults to 0.0 on the SERVER before the first guide sample
+// (`GuideStats` in `guide/base.py`) - it is never null, and the wire carries
+// no sample count. Handing that straight to `RmsVerdict` printed "0.00" total"
+// with a GOOD check icon over a guider that had not taken one sample: a claim
+// nothing keeps. `recent` (already on the wire) is the signal that tells "no
+// samples" from "measured and it happens to be zero" apart.
+//
+// Sabotage: revert the `guideRecent.length > 0` guard in `LiveScreen.tsx` and
+// the first assertion below goes red on "0.00".
+await testAsync("zero samples: no '0.00' and no GOOD verdict, even with rms_total 0", async () => {
+  await act(async () => {
+    useStore.setState({ guide: { rms_total: 0, rms_ra: 0, rms_dec: 0, recent: [] } } as never);
+  });
+  await settle();
+  const card = q('[data-testid="monitor-guiding"]');
+  assert(card != null, "the guiding card vanished - the assertions below would be vacuous");
+  const t = card.textContent as string;
+  assert(/no RMS yet/.test(t), `the header did not fall back to the honest empty state: "${t}"`);
+  assert(!/0\.00/.test(t), `a zero from no samples was printed as a measurement: "${t}"`);
+  assert(!/good/i.test(t), `a zero from no samples was verdicted GOOD: "${t}"`);
+  assert(q('[data-testid="guide-empty"]') != null, "the empty-samples caption did not render");
+});
+
+await testAsync("with samples, the real RMS number and its verdict come back", async () => {
+  await act(async () => {
+    useStore.setState({
+      guide: { rms_total: 0.91, rms_ra: 0.6, rms_dec: 0.5, recent: [
+        { t: 1, ra: 0.2, dec: -0.1 }, { t: 2, ra: -0.3, dec: 0.2 }, { t: 3, ra: 0.1, dec: 0.05 },
+      ] },
+    } as never);
+  });
+  await settle();
+  const card = q('[data-testid="monitor-guiding"]');
+  const t = card.textContent as string;
+  assert(/0\.91" total/.test(t), `the real RMS figure did not render: "${t}"`);
+  assert(/good/i.test(t), `a genuine sub-1" RMS did not verdict good: "${t}"`);
+});
+
 test("all six vitals tiles are drawn, including the two the design dropped", () => {
   for (const id of ["flip", "sensor", "dew", "disk", "dawn", "next"]) {
     assert(q(`[data-testid="vital-${id}"]`) != null, `the ${id} vitals tile is missing`);
