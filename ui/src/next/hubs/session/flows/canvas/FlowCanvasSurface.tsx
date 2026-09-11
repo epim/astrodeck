@@ -38,10 +38,10 @@ import { clampZoom, type FlowTier, type PortDir } from "../../../../../component
 import type { PortKind } from "../../../../../components/flows/flowsTypes";
 import { useStore } from "../../../../../store";
 import { useBreakpoint } from "../../../../breakpoint";
-import { nav } from "../../../../router";
+import { nav, parseHash } from "../../../../router";
 import { ActionButton } from "../../../../ui";
-import { portKind, resolveWireDrop } from "./canvasModel";
-import { setMountedFlowCanvas } from "./canvasMount";
+import { ADD_STAGE_LABEL, portKind, resolveWireDrop } from "./canvasModel";
+import { clearMountedFlowCanvas, setMountedFlowCanvas } from "./canvasMount";
 import { FlowNodeCard } from "./FlowNode";
 import { FlowWireDelete, FlowWireLayer } from "./FlowWires";
 import { FlowZoomCluster } from "./FlowZoomCluster";
@@ -56,8 +56,11 @@ import "./canvas.css";
 const WHEEL_IN = 1.1;
 const WHEEL_OUT = 0.9;
 
-/** The label the design gives the add control. */
-export const ADD_STAGE_LABEL = "+ ADD STAGE";
+/** The label the design gives the add control. Declared in `canvasModel.ts`
+ *  (the phone stage list renders the same control and may not import this file),
+ *  re-exported here because `canvas/index.ts` and the DOM tests have always
+ *  reached it through the surface. */
+export { ADD_STAGE_LABEL };
 
 // ------------------------------------------------------------------ gestures
 
@@ -134,8 +137,15 @@ export function FlowCanvasSurface({ tier, showAddStage, onAddStage }: FlowCanvas
   zoomRef.current = zoom;
 
   useEffect(() => {
-    setMountedFlowCanvas(boxRef.current);
-    return () => setMountedFlowCanvas(null);
+    const el = boxRef.current;
+    if (!el) return;
+    setMountedFlowCanvas(el);
+    // Unregister THIS element, never "whatever is registered". React mounts the
+    // next tree before it unmounts the old one on a route swap, so a blind
+    // `setMountedFlowCanvas(null)` in a cleanup clears the handle the NEW canvas
+    // has just set, and the palette then drops every stage on the (120,120)
+    // fallback instead of the surface the operator is looking at.
+    return () => clearMountedFlowCanvas(el);
   }, []);
 
   // ---------------------------------------------------------- world maths
@@ -394,7 +404,13 @@ export function FlowCanvasSurface({ tier, showAddStage, onAddStage }: FlowCanvas
       const tag = el?.tagName?.toLowerCase() ?? "";
       if (tag === "input" || tag === "select" || tag === "textarea") return;
       if (el?.isContentEditable) return;
-      if (e.key === "Delete" || e.key === "Backspace") {
+      // NOT WHILE A SHEET IS OPEN. This listener is on the WINDOW, so it stays
+      // live under the stage editor and the palette - and those sheets cover the
+      // canvas, so the stage that vanishes is one the operator cannot see going.
+      // Read at press time rather than subscribed to, so the handler is attached
+      // once and still cannot be stale.
+      const underSheet = parseHash(window.location.hash).sheets.length > 0;
+      if ((e.key === "Delete" || e.key === "Backspace") && !underSheet) {
         // Also stops Backspace navigating back in browsers that still do that.
         e.preventDefault();
         deleteSel();

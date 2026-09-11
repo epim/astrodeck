@@ -1,6 +1,6 @@
 // FlowCanvasToolbar.tsx - the canvas's own 48 px row (wave R7 parity row A1).
 //
-// SIX THINGS, LEFT TO RIGHT, AND NOTHING THE SHELL ALREADY RENDERS. The shell
+// EIGHT THINGS, LEFT TO RIGHT, AND NOTHING THE SHELL ALREADY RENDERS. The shell
 // owns the wordmark, the flows pill with its count, the rig chips, the
 // backend/provider badge (`header-backend`), the role chip and the night toggle
 // at every breakpoint, so this row carries only what is about THIS flow:
@@ -9,8 +9,25 @@
 //   2. PLAN
 //   3. the validation pill, with the checker's own issue list behind it
 //   4. ETA, while a run is live
-//   5. TONIGHT
-//   6. RUN / STOP
+//   5. the save-state pill - SAVED / UNSAVED EDITS / READ ONLY
+//   6. SAVE
+//   7. TONIGHT
+//   8. RUN / STOP
+//
+// SAVE IS HERE BECAUSE THE CANVAS HAD NO SAVE AT ALL (whole-branch review, R5
+// P0). `flowsSave` and `flowsCloseEditor` existed, the store tracked `dirty`,
+// and nothing under `next/**` called either: every edit on this surface was
+// dropped on the floor by BACK, by the FLOWS sub-nav chip and by a reload,
+// silently. The way OUT now saves (`openFlow.ts`), and this is the way to save
+// WITHOUT leaving - which is what an operator wants before pressing RUN, since
+// RUN starts the stored flow.
+//
+// AND THAT IS WHY RUN IS LOCKED WHILE THE GRAPH IS DIRTY. `POST
+// /api/flows/{id}/run` compiles the SAVED record; the validation pill grades the
+// DRAFT (`flowsApi.compileDraft`). Unsaved, those are two different graphs, so
+// the pill would be describing something RUN cannot start. The refusal and the
+// pill's `DRAFT:` prefix are one decision taken in `canvasModel.ts`
+// (`unsavedRunReason`, `checksWord`), so the two controls cannot drift.
 //
 // FOUR LEGACY CONTROLS DO NOT COME ACROSS, each for a stated reason:
 //   * `< LIBRARY` - the Flows screen's own `flows-canvas-back` button and the
@@ -46,8 +63,9 @@ import { nav } from "../../../../router";
 import { ActionButton, Chip, Label, Mono, Pill, Popover, type Tone } from "../../../../ui";
 import { NxIcon } from "../../../../icons";
 import {
-  CHECKS_CLEAN_WHY, CHECKS_UNKNOWN, CHECKS_UNKNOWN_WHY, ETA_UNREPORTED,
-  PLAN_TITLE, checksLabel, formatEta, tonightLockReason,
+  CHECKS_CLEAN_WHY, CHECKS_DRAFT_WHY, CHECKS_UNKNOWN_WHY, ETA_UNREPORTED,
+  PLAN_TITLE, checksTone, checksWord, formatEta, saveLockReason, saveStateTone,
+  saveStateWord, tonightLockReason, unsavedRunReason,
 } from "./canvasModel";
 
 /** A fresh `[]` in a selector defeats `useShallow` on every first render, so the
@@ -58,6 +76,10 @@ const EMPTY_ISSUES: readonly FlowIssue[] = Object.freeze([]);
  *  two-tap arm. STOP is NOT: emergency motion stops stay single-tap, which is
  *  the house rule for STOP / HALT / polar-STOP alike. */
 export const RUN_ARM_LABEL = "CONFIRM RUN";
+
+/** SAVE's own label and its accessible name. A plain word: the pill beside it
+ *  carries the state, so the button does not have to change its own text. */
+export const SAVE_LABEL = "SAVE";
 
 export function FlowCanvasToolbar(): JSX.Element {
   // Primitive selectors, so a pan, a stage-status tick or a log line re-renders
@@ -71,11 +93,23 @@ export function FlowCanvasToolbar(): JSX.Element {
   // would not be on the surface.
   const phase = useStore((s) => s.flows.run.phase);
   const issues = useStore(useShallow((s) => s.flows.compiled?.issues ?? EMPTY_ISSUES));
+  // The two facts SAVE and RUN both read. `dirty` is the store's own edit flag,
+  // written by every graph action in `flowsSlice`; `readonly` is the server's
+  // word on an example flow, which `flowsSave` refuses before the network.
+  const dirty = useStore((s) => s.flows.dirty);
+  const readonly = useStore((s) => s.flows.record?.readonly ?? false);
+  const save = useStore((s) => s.flowsSave);
 
   // RUN/STOP is the shared hook, never transcribed: it owns the abort route
   // (`/api/sequence/abort`, not a flows route), the rule that a timed-out abort
   // is not a failed abort, and the 409 `unmapped` confirm.
-  const { running, reason: runReason, explain, act } = useFlowRunControls();
+  const { running, reason: hookRunReason, explain, act } = useFlowRunControls();
+
+  // Order matters: the rig's own refusals (no capability, no camera, link down)
+  // outrank ours, because a viewer who also has an unsaved edit is refused for
+  // the reason that will still be true after they save. STOP is never blocked by
+  // an unsaved edit - the mount is moving.
+  const runReason = hookRunReason ?? (running ? null : unsavedRunReason(dirty, readonly));
 
   // Tonight is gated on view.site_derived, NOT view.status: an audit of this
   // codebase recovered the observatory to 2.9 km from three viewer-legal
@@ -87,8 +121,10 @@ export function FlowCanvasToolbar(): JSX.Element {
   const checksRef = useRef<HTMLSpanElement | null>(null);
 
   const openChecks = issues.length;
-  const checksText = checked ? checksLabel(openChecks) : CHECKS_UNKNOWN;
-  const checksTone: Tone = !checked ? "dim" : openChecks ? "warn" : "good";
+  const checksText = checksWord(checked, openChecks, dirty);
+  const checksPillTone: Tone = checksTone(checked, openChecks, dirty);
+  const saveReason = saveLockReason(dirty, readonly);
+  const stateWord = saveStateWord(dirty, readonly);
 
   return (
     <div className="nx-flow-toolbar" data-testid="flow-toolbar" data-flows-run={phase}>
@@ -108,7 +144,7 @@ export function FlowCanvasToolbar(): JSX.Element {
       <span ref={checksRef} className="nx-flow-toolbar-checks">
         <Pill
           data-testid="flow-checks"
-          tone={checksTone}
+          tone={checksPillTone}
           ariaLabel={`Graph checks: ${checksText}`}
           onClick={() => setIssuesOpen((v) => !v)}
         >
@@ -121,6 +157,10 @@ export function FlowCanvasToolbar(): JSX.Element {
         onClose={() => setIssuesOpen(false)}
         data-testid="flow-checks-list"
       >
+        {/* The draft sentence rides ABOVE the verdict rather than replacing it:
+            the issues are still the checker's, they just describe a graph the
+            rig has not been given yet. */}
+        {checked && dirty && <p className="nx-flow-issue">{CHECKS_DRAFT_WHY}</p>}
         {!checked ? (
           <p className="nx-flow-issue">{CHECKS_UNKNOWN_WHY}</p>
         ) : openChecks === 0 ? (
@@ -147,6 +187,26 @@ export function FlowCanvasToolbar(): JSX.Element {
           <Mono size={12}>{formatEta(etaS)}</Mono>
         </span>
       )}
+
+      {/* The dirty cue, in a word. It sits beside SAVE so the state and the
+          control that changes it read as one thing. */}
+      <span data-testid="flow-save-state">
+        <Pill tone={saveStateTone(dirty, readonly)} ariaLabel={`This flow: ${stateWord}`}>
+          {stateWord}
+        </Pill>
+      </span>
+
+      <ActionButton
+        kind="secondary"
+        data-testid="flow-save"
+        glyph={<NxIcon name="check" size={15} />}
+        lockedReason={saveReason}
+        onExplain={explain}
+        onPress={() => { void save(); }}
+        ariaLabel={`${SAVE_LABEL} this flow`}
+      >
+        {SAVE_LABEL}
+      </ActionButton>
 
       <ActionButton
         kind="ghost"

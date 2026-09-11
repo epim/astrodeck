@@ -31,16 +31,29 @@
 //
 // THE WAY OUT IS STILL EXPLICIT. BACK to MY FLOWS is a button, not only the
 // sub-nav chip, because a chip does not look like a back button.
+//
+// AND THE WAY OUT NOW SAVES (whole-branch review, R5 P0). It did not: this file
+// wrote `ui.screen` and navigated, and nothing under `next/**` called
+// `flowsSave` or `flowsCloseEditor` at all - so every edit made on the canvas
+// was dropped by BACK, by the FLOWS sub-nav chip and by a reload, with no word
+// of it anywhere. `leaveFlowEditor()` in `../openFlow.ts` is the legacy
+// header's own door ("saves first, then reloads the library",
+// `FlowHeader.tsx:167-177`), and every exit goes through it: this button, the
+// sub-nav chip and the browser Back button (caught by `FlowsScreen`'s own
+// effect), and the phone sheet's BACK.
 
-import { useEffect, type JSX } from "react";
+import { useEffect, useRef, type JSX } from "react";
 
 import { useStore } from "../../../../store";
 import { buildHash, nav, useRoute } from "../../../router";
 import { useBreakpoint } from "../../../breakpoint";
 import { EmptyCard } from "../../../ui";
 import { FlowCanvasSurface, FlowCanvasToolbar } from "./canvas";
-import { FlowInspectorColumn, FlowPaletteRail, useOpenFlowPalette } from "./inspector";
+import {
+  FLOW_NODE_SHEET, FlowInspectorColumn, FlowPaletteRail, useOpenFlowPalette,
+} from "./inspector";
 import { CalibrationMatrixCard } from "./tonight";
+import { leaveFlowEditor } from "./openFlow";
 import "./canvas/canvas.css";
 
 /** The legacy `?open=` value that meant "open the canvas on its library
@@ -103,14 +116,62 @@ export function FlowsCanvasHost({ open }: FlowsCanvasHostProps): JSX.Element {
   // entry) restores it. Guarded on a sheet being open so it cannot fight BACK,
   // which navigates deliberately to the list with no sheets at all.
   const sheetCount = route.sheets.length;
+  /** The stage editor is open as a sheet, which at desktop is the right-hand
+   *  panel beside this column. */
+  const nodeSheetOpen = route.sheets.includes(FLOW_NODE_SHEET);
+
+  // AND WHEN THE LAST SHEET CLOSES, FOR THE SAME REASON. `nav.closeSheet` drops
+  // the params along with the final sheet (`router.ts`: "params: sheets.length ?
+  // r.params : {}"), so the way BACK out of the stage editor clears `?open=`
+  // exactly as the way in did. Without this the canvas would be left on screen
+  // over a URL naming the list again - and the departure effect below would read
+  // that as the operator leaving and close the flow they just finished editing.
+  const sheetsBefore = useRef(sheetCount);
+  const sheetJustClosed = sheetCount === 0 && sheetsBefore.current > 0;
+  useEffect(() => { sheetsBefore.current = sheetCount; }, [sheetCount]);
+
   useEffect(() => {
-    if (!openId || sheetCount === 0) return;
+    if (!openId || (sheetCount === 0 && !sheetJustClosed)) return;
     if (route.params.open === openId) return;
     nav.replace(buildHash({
       hub: route.hub, sub: route.sub, sheets: route.sheets,
       params: { ...route.params, open: openId },
     }));
-  }, [openId, sheetCount, route]);
+  }, [openId, sheetCount, sheetJustClosed, route]);
+
+  // SOMEONE LEFT WITHOUT USING THE DOOR.
+  //
+  // The FLOWS sub-nav chip builds `#/session/flows` with no sheets and no params
+  // at all (`shell/SubNav.tsx:36`), and so does the browser's own Back button off
+  // this route. Neither can call `back()` - the chip is the shell's control and
+  // the Back button is the browser's - so the canvas is still on screen, drawn
+  // from `flows.ui.screen` alone, over a URL that claims the list is showing.
+  // Before this, that was also how an edit was lost: the chip cleared `?open=`,
+  // the operator pressed it to get back to MY FLOWS, and the graph went with it.
+  //
+  // The host is mounted for as long as the editor is up, so it is the one place
+  // that can see this happen. It takes the same exit its own button does.
+  //
+  // READ OFF THE ROUTE, NOT OFF THE `open` PROP. The prop is the screen's
+  // `canvasId`, which falls back to `flows.ui.screen` when the query string
+  // names nothing - which is precisely the state this effect exists to catch, so
+  // asking the prop would answer "a flow is named" every single time and the
+  // effect would never fire. `library` is the legacy bookmark for "no flow", so
+  // it counts as naming none.
+  const routeOpen = route.params.open ?? "";
+  const routeNamesFlow = routeOpen !== "" && routeOpen !== CANVAS_LIBRARY;
+  //
+  // NOT WHEN A SHEET HAS JUST CLOSED. That produces the same route - no sheets,
+  // no params - and it means the opposite thing: the operator pressed BACK out
+  // of the stage editor to return to the graph. The sheet count one render ago
+  // is what tells the two apart, and the restore above puts `?open=` back on
+  // that path so the next render is an ordinary one.
+  const strandedByNav = !routeNamesFlow && sheetCount === 0 && !sheetJustClosed;
+  useEffect(() => {
+    if (!strandedByNav) return;
+    setUi({ screen: "library" });
+    void leaveFlowEditor();
+  }, [strandedByNav, setUi]);
 
   const back = (): void => {
     // The store's own "which face is Flows showing" flag, written by
@@ -119,7 +180,14 @@ export function FlowsCanvasHost({ open }: FlowsCanvasHostProps): JSX.Element {
     // would make the list unreachable: the screen would re-open the canvas the
     // moment this navigation landed.
     setUi({ screen: "library" });
+    // NAVIGATE FIRST, THEN SAVE, and the order is load-bearing both ways.
+    // `leaveFlowEditor` clears `flows.record`, and this host's own effect
+    // re-opens whatever `?open=` still names the moment `openId` goes null - so
+    // saving while the canvas is still mounted would fetch the flow straight
+    // back. Going the other way costs nothing: the close runs on the store, not
+    // on this component, so unmounting it does not cancel the PUT.
     nav.go("/session/flows");
+    void leaveFlowEditor();
   };
 
   return (
@@ -152,8 +220,16 @@ export function FlowsCanvasHost({ open }: FlowsCanvasHostProps): JSX.Element {
           {/* LIBRARY HEALTH rides into the inspector here rather than inside it:
               the inspector area may not import a sibling R7 area, so the calib
               stage's matrix is a slot the cutover fills (see `tonight/index.ts`).
-              `FlowNodeEditor` renders it only for a `calib` node. */}
-          {desktop && (
+              `FlowNodeEditor` renders it only for a `calib` node.
+
+              NOT WHILE THE `flowNode` SHEET IS OPEN. At desktop the sheet is the
+              right-hand panel and renders the SAME inspector, with the same
+              calibration slot inside it - two mounts, two `GET
+              /api/calibration/health` on one press of one pencil, and two copies
+              of one editor on screen disagreeing the moment either is mid-edit.
+              The sheet is the one the operator just asked for, so the docked
+              column stands down for as long as it is up. */}
+          {desktop && !nodeSheetOpen && (
             <FlowInspectorColumn
               variant="column"
               calibSlot={<CalibrationMatrixCard />}

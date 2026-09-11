@@ -16,16 +16,24 @@ import { nodeW, type FlowTier } from "../../../../../components/flows/geometry";
 
 let mounted: HTMLElement | null = null;
 
-/** Called by `FlowCanvasSurface` on mount and with `null` on unmount. */
-export function setMountedFlowCanvas(el: HTMLElement | null): void {
-  if (el === null && mounted === null) return;
+/** Called by `FlowCanvasSurface` on mount. */
+export function setMountedFlowCanvas(el: HTMLElement): void {
   mounted = el;
 }
 
-/** True while a canvas is on screen. The palette uses it to decide whether it
- *  is placing a stage or falling back. */
-export function hasMountedFlowCanvas(): boolean {
-  return mounted !== null;
+/** Called by `FlowCanvasSurface` on unmount, with the element it registered.
+ *
+ *  THE ELEMENT MATTERS. The previous shape took `null` and cleared whatever was
+ *  registered, and React does not unmount in the order that assumes: on a route
+ *  or breakpoint swap it mounts the new tree first and unmounts the old one
+ *  after, so the outgoing canvas's cleanup wiped the handle the incoming one had
+ *  already set. `flowCanvasDropPoint` then answered null with a canvas plainly on
+ *  screen, and every stage added from the palette landed on the (120,120)
+ *  fallback - two of them on top of each other - rather than in the middle of the
+ *  graph the operator was looking at. Clearing only the element that registered
+ *  makes a late cleanup a no-op, which is what it should always have been. */
+export function clearMountedFlowCanvas(el: HTMLElement | null): void {
+  if (mounted === el) mounted = null;
 }
 
 /** Horizontally centred, vertically ABOVE centre (`/2.4`, not `/2`) so a dropped

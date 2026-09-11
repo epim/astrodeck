@@ -22,7 +22,7 @@ import "./create.css";
  *  is what put both sheets in front of first paint (T-R7-21a item 16). */
 export { flowCreateSheets } from "./reg";
 
-export { FlowNewSheet } from "./wizard";
+export { FlowNewSheet, newFlowRoute } from "./wizard";
 export { FlowQuickSheet, ONE_CHANNEL_NOTE, WHEEL_NOTE, NO_FILTER_REASON } from "./quick";
 
 export {

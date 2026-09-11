@@ -16,15 +16,26 @@
 
 import type { SheetRegistry } from "../../../sheets";
 
+/** The two names, as constants, for the surfaces that have to ASK whether one
+ *  of these sheets is on the glass rather than open it.
+ *
+ *  Two of them do: `FlowsCanvasHost` stands its docked inspector down while the
+ *  stage sheet is showing the same editor in the panel beside it, and the phone
+ *  stage list carries `?open=` through both. A literal `"flowNode"` spelled at
+ *  each of those sites is a route check that silently stops matching the day the
+ *  name changes - it does not fail, it just never fires again. */
+export const FLOW_NODE_SHEET = "flowNode";
+export const FLOW_PALETTE_SHEET = "flowPalette";
+
 /** Sheet names are GLOBAL across the app (`hubs/index.ts` throws on a
  *  collision), hence the `flow` prefix. `{ id, load }`, never the component:
  *  the `import()` is what keeps the area out of the entry chunk. */
 export const flowInspectorSheets: SheetRegistry = {
-  flowNode: {
+  [FLOW_NODE_SHEET]: {
     id: "session/flows/inspector/sheets:FlowNodeSheet",
     load: () => import("./sheets").then((m) => ({ default: m.FlowNodeSheet })),
   },
-  flowPalette: {
+  [FLOW_PALETTE_SHEET]: {
     id: "session/flows/inspector/sheets:FlowPaletteSheet",
     load: () => import("./sheets").then((m) => ({ default: m.FlowPaletteSheet })),
   },

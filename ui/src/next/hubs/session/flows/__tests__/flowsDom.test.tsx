@@ -143,6 +143,10 @@ const asked: { url: string; method: string; body: any }[] = [];
 let acceptedOnce = false;
 /** Flipped to make `GET /api/flows` fail, for the RETRY assertion. */
 let libraryFails = false;
+/** Flow ids whose `GET /api/flows/{id}` answers 404, for the RUN-identity test.
+ *  A 404 is the ordinary case (a flow deleted from another browser, a stale
+ *  bookmark) and it is the one that used to run the WRONG flow. */
+const openFails = new Set<string>();
 
 g.fetch = async (url: string, init?: { method?: string; body?: string }) => {
   const method = init?.method ?? "GET";
@@ -180,7 +184,29 @@ g.fetch = async (url: string, init?: { method?: string; body?: string }) => {
       json: async () => UNMAPPED_409,
     };
   }
-  if (/^\/api\/flows\/[^/]+$/.test(url)) return ok(FLOW_RECORD);
+  const one = /^\/api\/flows\/([^/]+)$/.exec(url);
+  if (one) {
+    const id = one[1];
+    // PUT is `flowsApi.save` - the request the whole save path exists to make.
+    // It echoes what it was handed, as the server does.
+    if (method === "PUT") return ok({ ...FLOW_RECORD, ...(body?.flow ?? {}), id });
+    if (openFails.has(id)) {
+      return {
+        ok: false, status: 404, statusText: "Not Found",
+        headers: { get: () => "application/json" },
+        json: async () => ({ detail: "no flow with that id" }),
+      };
+    }
+    // THE RECORD CARRIES THE ID THAT WAS ASKED FOR. A stub that answered with
+    // one fixed record no matter which flow was requested could not tell a
+    // correct open from the defect under test.
+    const card = CARDS.find((c) => c.id === id);
+    return ok({
+      ...FLOW_RECORD, id,
+      name: card?.name ?? FLOW_RECORD.name,
+      readonly: card?.readonly ?? false,
+    });
+  }
   return {
     ok: false, status: 404, statusText: "Not Found",
     headers: { get: () => "application/json" },
@@ -197,7 +223,9 @@ const { createElement, act } = await import("react");
 const { createRoot } = await import("react-dom/client");
 const { useStore } = await import("../../../../../store");
 const { runBlockedReason } = await import("../../../../../components/flows/flowRunControls");
-const { resetRouterCacheForTests } = await import("../../../../router");
+const { buildHash, nav, resetRouterCacheForTests } = await import("../../../../router");
+const { FLOW_OPEN_FAILED } = await import("../openFlow");
+const { RUN_IN_PROGRESS_REASON } = await import("../FlowsScreen");
 const {
   FlowsScreen, CANVAS_PHONE_REASON, FLOWS_FOOTER, NO_MATCH_HINT, FILTER_PLACEHOLDER,
 } = await import("../FlowsScreen");
@@ -578,7 +606,9 @@ await testAsync("a just-saved flow is named in words, not by a ring", async () =
   await act(async () => { useStore.getState().flowsSetUi({ highlightId: "quick-m31" }); });
   await settle();
   const mark = tid("flow-new-quick-m31");
-  assert(mark != null, "flows.ui.highlightId is written by the wizard and read by nothing");
+  assert(mark != null,
+    "flows.ui.highlightId is written by the QUICK FLOW sheet (create/quick.tsx, both the save "
+    + "and the save-and-run path) and read by nothing - the wizard navigates to the flow instead");
   eq(mark.textContent, JUST_SAVED, "the highlight has to carry a word, never a colour alone");
   await act(async () => { useStore.getState().flowsSetUi({ highlightId: null }); });
 });
@@ -663,7 +693,6 @@ await testAsync("opening a stage sheet does not close the canvas", async () => {
   assert(tid("session-flows-canvas") != null, "precondition: the canvas is up");
   eq(useStore.getState().flows.ui.screen, "editor", "precondition: the slice says the editor is showing");
 
-  const { nav } = await import("../../../../router");
   await act(async () => { nav.sheet("flowNode", { node: "n-1" }); });
   await settle();
 
@@ -683,7 +712,185 @@ await testAsync("BACK from the canvas really lands on the list", async () => {
   assert(tid("session-flows-canvas") == null, "the canvas is still up after BACK");
 });
 
+// ============================== 8b. every way out of the editor SAVES first
+
+/** Edit the open flow the way the palette does: one new stage, so the PUT that
+ *  follows carries a graph that is visibly not the one the server sent. */
+async function editOpenFlow(type: string): Promise<void> {
+  await act(async () => {
+    useStore.getState().flowsAddNode(type as never, { x: 40, y: 40 });
+  });
+  await settle();
+  eq(useStore.getState().flows.dirty, true,
+    "precondition: the store did not record the edit, so there is nothing for BACK to save");
+}
+
+await testAsync("BACK saves the edit, and the PUT lands BEFORE the library reload", async () => {
+  // THE P0. Nothing under `next/**` called `flowsSave` or `flowsCloseEditor`:
+  // the canvas had no save path at all, so BACK, the FLOWS chip and a reload
+  // each dropped the graph silently. The ORDER is half the assertion - the
+  // legacy header's own sentence is "saves first, then reloads the library", and
+  // a reload that overtook the save would repaint the list from the flow as it
+  // was before the edit.
+  viewportW = 1024;
+  seed("admin", ADMIN);
+  await mountAt("#/session/flows?open=quick-m31");
+  assert(tid("session-flows-canvas") != null, "precondition: the canvas is not up on the flow");
+  await editOpenFlow("target");
+
+  const from = asked.length;
+  click(tid("flows-canvas-back"));
+  await settle();
+  const after = asked.slice(from);
+
+  const put = after.findIndex((a) => a.method === "PUT" && a.url === "/api/flows/quick-m31");
+  const list = after.findIndex((a) => a.method === "GET" && a.url === "/api/flows");
+  assert(put >= 0,
+    `BACK discarded the edit: no PUT /api/flows/quick-m31 went out, only ${
+      JSON.stringify(after.map((a) => `${a.method} ${a.url}`))}`);
+  assert(list >= 0, "the library was never reloaded, so MY FLOWS still shows the pre-edit card");
+  assert(put < list,
+    "the library reload overtook the save, so the list is drawn from the flow as it was before the edit");
+  eq((after[put].body?.flow?.graph?.nodes ?? []).length, 1,
+    "the PUT went out with the graph the server already had - the edit was not in it");
+  eq(useStore.getState().flows.dirty, false, "the store still calls the flow dirty after a save");
+  assert(tid("session-flows") != null, "BACK did not reach MY FLOWS");
+});
+
+await testAsync("the FLOWS sub-nav chip is a way out too, and it saves on the way", async () => {
+  viewportW = 1024;
+  seed("admin", ADMIN);
+  await mountAt("#/session/flows?open=quick-m31");
+  await editOpenFlow("slew");
+
+  const from = asked.length;
+  // EXACTLY what a chip press builds (`shell/SubNav.tsx:36`): the hub and the
+  // sub, no sheets and no params. The chip lives in the shell, so this screen
+  // cannot intercept the press - it can only notice the route it produced.
+  await act(async () => {
+    nav.replace(buildHash({ hub: "session", sub: "flows", sheets: [], params: {} }));
+  });
+  await settle();
+
+  assert(asked.slice(from).some((a) => a.method === "PUT" && a.url === "/api/flows/quick-m31"),
+    "the FLOWS chip cleared ?open= and threw the graph away - it is a door out of the editor");
+  assert(tid("session-flows") != null,
+    "the chip did not reach the list: the canvas stayed up on flows.ui.screen alone, over a URL "
+    + "that claims the list is showing");
+  eq(useStore.getState().flows.record, null, "the editor is still holding the flow after leaving it");
+});
+
+// ======================== 8b2. the phone has the same way out
+
+await testAsync("a phone that loses its stage sheet to the chip still stores the edit", async () => {
+  // THE PHONE'S HALF OF THE SAME P0. Its editor is the `flowStages` SHEET, and
+  // when a FLOWS chip press or the browser's Back button pops that sheet,
+  // nothing of it is mounted to notice - the canvas host that catches this at
+  // 768 px and up never mounts here. The list is the only thing left on screen,
+  // so the list is what has to save.
+  viewportW = 390;
+  seed("admin", ADMIN);
+  await mountAt("#/session/flows/flowStages?open=quick-m31");
+  await act(async () => { await useStore.getState().flowsOpen("quick-m31"); });
+  await settle();
+
+  const from = asked.length;
+  await act(async () => {
+    useStore.getState().flowsAddNode("slew" as never, { x: 1, y: 1 });
+  });
+  await settle();
+  assert(!asked.slice(from).some((a) => a.method === "PUT"),
+    "the flow was stored mid-edit, while the editor is still open and the operator still typing");
+
+  await mountAt("#/session/flows");
+  assert(asked.slice(from).some((a) => a.method === "PUT" && a.url === "/api/flows/quick-m31"),
+    "the phone was left holding an edited flow with no editor on screen and never stored it");
+  eq(useStore.getState().flows.dirty, false, "and the store still calls it dirty afterwards");
+});
+
+// ============================ 8c. RUN on a row runs the flow on that row
+
+await testAsync("a row whose flow will not open starts NOTHING", async () => {
+  // THE SECOND P0. `flowsOpen` swallows its failure and leaves the previously
+  // loaded record in place, so `await flowsOpen(B); act()` posted
+  // `/api/flows/A/run` - a press on one row starting another flow. Invisible
+  // until the wrong mount moves.
+  viewportW = 390;
+  seed("admin", ADMIN);
+  await mountAt("#/session/flows");
+  await act(async () => { await useStore.getState().flowsOpen("quick-m31"); });
+  await settle();
+  eq(useStore.getState().flows.record?.id, "quick-m31",
+    "precondition: flow A is not the loaded one, so the test cannot see the wrong-flow run");
+
+  openFails.add("example-m16");
+  const before = runs().length;
+  click(tid("flow-verb-example-m16"));
+  await settle();
+  openFails.delete("example-m16");
+
+  eq(runs().length, before,
+    `a press on B started a flow anyway: ${JSON.stringify(runs().map((r) => r.url))}`);
+  eq(useStore.getState().flows.record?.id, "quick-m31",
+    "the failed open left a record that is neither flow");
+  const toast = useStore.getState().toasts.find((t: any) => String(t.title) === FLOW_OPEN_FAILED);
+  assert(toast != null,
+    `a press that does nothing has to say why: ${
+      JSON.stringify(useStore.getState().toasts.map((t: any) => t.title))}`);
+  assert(/no flow with that id/.test(String(toast?.detail)),
+    `the server's own words, got "${String(toast?.detail)}"`);
+});
+
+await testAsync("while a run is live the other rows are refused by name", async () => {
+  seed("admin", ADMIN);
+  await mountAt("#/session/flows");
+  await act(async () => {
+    const f = useStore.getState().flows;
+    useStore.setState({ flows: { ...f, run: { ...f.run, phase: "running" } } } as never);
+  });
+  await settle();
+
+  const verb = tid("flow-verb-example-m16");
+  eq(verb.getAttribute("aria-disabled"), "true",
+    "a second RUN while one is live silently navigated instead of refusing");
+  eq(verb.getAttribute("title"), RUN_IN_PROGRESS_REASON, "and it has to name the blocker");
+  assert(container.textContent.includes(RUN_IN_PROGRESS_REASON),
+    "the reason has to be readable without a hover a touch screen cannot perform");
+
+  const before = runs().length;
+  click(verb);
+  await settle();
+  eq(runs().length, before, "a locked row still reached the run route");
+
+  seed("admin", ADMIN);
+  await settle();
+});
+
 // ================================ 9. the six sheets are actually registered
+
+await testAsync("the docked inspector stands down while its own sheet shows the same editor", async () => {
+  // At desktop the `flowNode` sheet IS the right-hand panel, beside the docked
+  // inspector column - and both render `FlowInspectorColumn` with the same
+  // calibration slot inside it. Two mounts means two `GET
+  // /api/calibration/health` on one press of one pencil, and two copies of one
+  // editor on screen to disagree the moment either is mid-edit.
+  viewportW = 1440;
+  seed("admin", ADMIN);
+  await mountAt("#/session/flows?open=quick-m31");
+  assert(tid("flow-inspector") != null,
+    "precondition: the inspector column is not docked at desktop, so this proves nothing");
+
+  await act(async () => { nav.sheet("flowNode", { open: "quick-m31", node: "n-1" }); });
+  await settle();
+  assert(tid("flow-inspector") == null,
+    "the docked column is still rendering the editor the sheet beside it is already showing");
+  assert(tid("flows-canvas") != null,
+    "the canvas itself has to stay up under the sheet - standing the column down is not closing the graph");
+
+  await act(async () => { nav.closeSheet(); });
+  await settle();
+  assert(tid("flow-inspector") != null, "and the column has to come back when the sheet closes");
+});
 
 test("every sheet the four Flows areas register resolves in the composed registry", () => {
   const mine: Record<string, string> = {};
@@ -870,6 +1077,14 @@ test("FlowsCanvasHost styles its boxes from the area stylesheet", () => {
   assert(specifiers(src).includes("./canvas/canvas.css") || src.includes('import "./canvas/canvas.css"'),
     "FlowsCanvasHost.tsx emits canvas.css classes without importing the sheet");
 });
+
+// Unmount before the tally, the way `canvasDom.test.tsx` does. jsdom was built
+// with `pretendToBeVisual: true`, so a tree left mounted keeps a requestAnimation
+// Frame loop alive and the process never exits - `npx tsx <file>` then prints
+// nothing at all, because the tally below is buffered behind a pipe that never
+// sees EOF. Running this file directly is the documented convention, so it has
+// to end.
+await act(async () => { root.unmount(); });
 
 // ------------------------------------------------------------------- tally
 const total = passed + failed;

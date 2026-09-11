@@ -24,6 +24,15 @@
 // ephemeris" means; the server re-compiles again at `/run`, and the UI only
 // says so.
 //
+// AND WHY IT THEN CHECKS WHAT IT GOT (whole-branch review, R5 P0). `flowsOpen`
+// swallows its own failure (`flowsSlice.ts:221-223`: the catch writes
+// `libraryError` and returns) and leaves the PREVIOUS record in place. So an
+// awaited open that 404s, times out or is refused was followed straight into
+// `act()`, which posted `/api/flows/<the flow that was already loaded>/run`: a
+// press on row B starting flow A, with nothing on screen to say so until the
+// wrong mount moved. `openFlowById` re-reads `flows.record.id` and this screen
+// posts nothing unless it is the id that was pressed.
+//
 // WHAT THE PHONE GAINED. A row tap used to be honest-disabled with "the flows
 // canvas opens on a tablet or desktop" and there was no way to look inside a
 // flow at all. It now opens the `flowStages` sheet - the stage list, the run
@@ -54,6 +63,9 @@ import { useSessionCampaign } from "../crossHub";
 import { PLAN_EDITOR_PHONE_REASON } from "../sheets/planEditor";
 import { FlowRow, type FlowVerb } from "./FlowRow";
 import { FlowsCanvasHost } from "./FlowsCanvasHost";
+import {
+  FLOW_OPEN_FAILED, flowOpenFailure, leaveFlowEditor, libraryErrorNow, openFlowById,
+} from "./openFlow";
 
 /** The proto's footer, verbatim. It is the one place the screen says what RUN
  *  actually does and why some flows are a tablet job. */
@@ -74,6 +86,17 @@ export const CANVAS_PHONE_REASON =
  *  graph with no record behind it could not be saved. */
 export const NO_CANVAS_TARGET =
   "The canvas opens one flow at a time, and there is no flow here to open.";
+
+/** Why a row's RUN cannot act while another flow is already running.
+ *
+ *  It used to act: `start()` saw `runControls.running`, navigated to SESSION /
+ *  NOW and returned, so every row in the library was a live-looking RUN that
+ *  silently did something else. Two presses of "RUN" that do different things
+ *  is the shape of the defect; naming the blocker is the fix. The live row
+ *  itself still says LIVE and still navigates, which is a different word for a
+ *  different action. */
+export const RUN_IN_PROGRESS_REASON =
+  "A run is already in progress - open SESSION / NOW to watch or stop it.";
 
 /** The SKY path, which is a different thing from the QUICK FLOW sheet beside it:
  *  SKY starts from a target with tonight's altitude window already worked out. */
@@ -129,9 +152,9 @@ export function FlowsScreen(): JSX.Element {
   const query = useStore((s) => s.flows.ui.query);
   const folderChip = useStore((s) => s.flows.ui.folderChip);
   const screen = useStore((s) => s.flows.ui.screen);
+  const dirty = useStore((s) => s.flows.dirty);
   const highlightId = useStore((s) => s.flows.ui.highlightId);
   const loadLibrary = useStore((s) => s.flowsLoadLibrary);
-  const flowsOpen = useStore((s) => s.flowsOpen);
   const flowsSetUi = useStore((s) => s.flowsSetUi);
   const enqueueToast = useStore((s) => s.enqueueToast);
 
@@ -155,6 +178,12 @@ export function FlowsScreen(): JSX.Element {
   // The sentence itself still comes from `runBlockedReason` - only the third
   // argument is ours.
   const runReason = runBlockedReason(canControlMount, camera.connected, false);
+
+  // The rig's own refusal outranks ours: a viewer with a run in flight is still
+  // refused for the reason that will be true after the run ends, so they are not
+  // told to go and stop something they could not have started.
+  const listRunReason = runReason
+    ?? (runControls.running ? RUN_IN_PROGRESS_REASON : null);
 
   // `flows.run.phase` is written optimistically by `flowsRun` and by nothing
   // server-side (`inventory-session-monitor.md` section 3.0), so it leads the
@@ -223,22 +252,38 @@ export function FlowsScreen(): JSX.Element {
   const start = useCallback(async (id: string) => {
     // A list row NEVER stops a run. `useFlowRunControls().act()` is a toggle, so
     // pressing RUN on a second row while one is going would abort the first -
-    // and the row that did it would be the one that looked idle.
-    if (runControls.running) { nav.go("/session/now"); return; }
+    // and the row that did it would be the one that looked idle. The row is
+    // honest-disabled for that (`RUN_IN_PROGRESS_REASON`); this is the guard
+    // behind the lock, not the lock.
+    if (runControls.running) { runControls.explain(RUN_IN_PROGRESS_REASON); return; }
     if (runReason) { runControls.explain(runReason); return; }
     setBusyId(id);
+    let landed = false;
+    const before = libraryErrorNow();
     try {
       // The record has to be the open one before `flowsRun` can post against
       // it, and opening it is also the local re-compile the footer promises.
-      await flowsOpen(id);
+      landed = await openFlowById(id);
     } finally {
       setBusyId(null);
     }
+    if (!landed) {
+      // POST NOTHING. The record still loaded belongs to whatever was open
+      // before this press, and running it is the one outcome nobody asked for.
+      enqueueToast({
+        level: "error",
+        title: FLOW_OPEN_FAILED,
+        detail: `${flowOpenFailure(before)} Nothing was started.`,
+      });
+      return;
+    }
     runControls.act();
-  }, [flowsOpen, runControls, runReason]);
+  }, [enqueueToast, runControls, runReason]);
 
   const resume = useCallback(async (sessionId: string) => {
-    if (runReason) { runControls.explain(runReason); return; }
+    // Same gate as RUN: resuming a campaign starts the engine, so a second one
+    // while a run is live is the same collision.
+    if (listRunReason) { runControls.explain(listRunReason); return; }
     setBusyId(sessionId);
     try {
       const r = await resumeSession(sessionId);
@@ -254,7 +299,7 @@ export function FlowsScreen(): JSX.Element {
     } finally {
       setBusyId(null);
     }
-  }, [enqueueToast, runControls, runReason]);
+  }, [enqueueToast, listRunReason, runControls]);
 
   const rows = useMemo(() => visible.map((card) => {
     const isCampaign = camp != null && camp.flowId === card.id;
@@ -307,7 +352,32 @@ export function FlowsScreen(): JSX.Element {
   // loses the canvas to a sheet, the flag alone loses it to a reload.
   const open = route.params.open ?? "";
   const canvasId = open || (screen === "editor" && openRecordId ? openRecordId : "");
-  if (canvasId && !phone) return <FlowsCanvasHost open={canvasId} />;
+
+  // THE PHONE'S OWN WAY OUT OF THE EDITOR, for the exits that are not a button.
+  //
+  // At 768 px and up `FlowsCanvasHost` catches this itself: it is mounted while
+  // the editor is up, so it can see the route stop naming its flow. On a phone
+  // the editor is the `flowStages` SHEET and nothing of it is mounted here, so
+  // a FLOWS sub-nav chip press (or the browser's Back button) out of that sheet
+  // would leave the list showing with an edited record still in the store and
+  // never stored. This is that case, and `leaveFlowEditor` is the same door
+  // (save, clear, reload) the sheet's own BACK uses.
+  //
+  // GATED ON `dirty`, deliberately. `flowsOpen` sets `ui.screen` to "editor" for
+  // every caller, including a RUN pressed on a LIST ROW - which loads the record
+  // purely so `flowsRun` has an id to post against, with the list still on
+  // screen. Closing the editor there would clear that record out from under the
+  // run about to start. A freshly opened record is never dirty, so the gate
+  // separates the two cases exactly, and it is also the only case with anything
+  // to lose.
+  const canvasShowing = canvasId !== "" && !phone;
+  const strandedEdit = !canvasShowing && route.sheets.length === 0
+    && dirty && openRecordId != null;
+  useEffect(() => {
+    if (strandedEdit) void leaveFlowEditor();
+  }, [strandedEdit]);
+
+  if (canvasShowing) return <FlowsCanvasHost open={canvasId} />;
 
   const count = libraryLoaded ? cards.length : null;
   const filtered = count != null && visible.length !== count;
@@ -451,7 +521,11 @@ export function FlowsScreen(): JSX.Element {
               busy={busyId != null && (busyId === r.card.id || busyId === r.sessionId)}
               highlight={r.card.id === highlightId}
               openTarget={phone ? "stages" : "canvas"}
-              runReason={runReason}
+              // While a run is live every OTHER row's RUN is refused by name.
+              // `FlowRow` drops the reason for the LIVE row itself, whose verb
+              // is LIVE and whose press is a navigation, so the one row that
+              // can act still can.
+              runReason={listRunReason}
               openReason={null}
               onRun={() => { void start(r.card.id); }}
               onResume={() => { if (r.sessionId) void resume(r.sessionId); }}
@@ -504,9 +578,11 @@ export function FlowsScreen(): JSX.Element {
         </Chip>
       </div>
 
-      {runReason && (
+      {/* Readable without a hover a touch screen cannot perform - the same
+          sentence the row's own `title` carries, never a second wording. */}
+      {listRunReason && (
         <span data-testid="flows-run-reason">
-          <Mono size={10.5} tone="warn">{runReason}</Mono>
+          <Mono size={10.5} tone="warn">{listRunReason}</Mono>
         </span>
       )}
       {canvasReason && (

@@ -31,6 +31,7 @@ import { useState, type JSX } from "react";
 import { accessPhrase, useCanControlCapture } from "../../../../../lib/caps";
 import { flowsApi } from "../../../../../lib/flowsApi";
 import { useStore } from "../../../../../store";
+import { useBreakpoint } from "../../../../breakpoint";
 import { NxIcon } from "../../../../icons";
 import { nav } from "../../../../router";
 import { explainLock } from "../../../../shell/explain";
@@ -44,10 +45,28 @@ import {
 } from "./wizardModel";
 import "./create.css";
 
+/** Where a freshly created flow opens, as a route.
+ *
+ *  IT HAS TO BE A ROUTE (whole-branch review, R5 P2). Both buttons used to call
+ *  `flowsOpen(id)` and leave the hash on `#/session/flows`: the canvas appeared,
+ *  drawn from `flows.ui.screen` alone, and the address bar claimed the LIST was
+ *  showing. Reload it, share it or press the browser's Back button and the flow
+ *  the operator had just made was gone.
+ *
+ *  The phone gets the stage list rather than the canvas, because that is the
+ *  screen a phone can actually draw and the one a row tap in MY FLOWS produces -
+ *  two doors to one flow that opened different screens would be the defect this
+ *  wave keeps closing. */
+export function newFlowRoute(id: string, phone: boolean): string {
+  const q = `?open=${encodeURIComponent(id)}`;
+  return phone ? `/session/flows/flowStages${q}` : `/session/flows${q}`;
+}
+
 export function FlowNewSheet(): JSX.Element {
   const flowsOpen = useStore((s) => s.flowsOpen);
   const enqueueToast = useStore((s) => s.enqueueToast);
   const canCreate = useCanControlCapture();
+  const phone = useBreakpoint() === "phone";
 
   // The three answers live here, not in the store: nothing outside this sheet
   // reads them, and `FlowsUiState` deliberately carries only `wizardOpen`.
@@ -78,8 +97,12 @@ export function FlowNewSheet(): JSX.Element {
         target: target.trim(),
       })) as { id?: string };
       if (!rec?.id) throw new Error("the server returned a flow with no id");
-      close();
+      // OPEN FIRST, THEN NAVIGATE. The host that renders `?open=` opens the flow
+      // itself when it does not already have it, so arriving with the record
+      // already loaded is what keeps that to ONE `GET /api/flows/<id>` instead
+      // of a race between this call and the host's effect.
       await flowsOpen(rec.id);
+      nav.go(newFlowRoute(rec.id, phone));
     } catch (e) {
       enqueueToast({
         level: "error",
@@ -102,8 +125,8 @@ export function FlowNewSheet(): JSX.Element {
         graph: { nodes: blankNodes(), edges: [] },
       })) as { id?: string };
       if (!rec?.id) throw new Error("the server returned a flow with no id");
-      close();
       await flowsOpen(rec.id);
+      nav.go(newFlowRoute(rec.id, phone));
     } catch (e) {
       enqueueToast({
         level: "error",
