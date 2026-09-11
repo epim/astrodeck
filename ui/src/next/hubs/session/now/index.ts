@@ -16,7 +16,8 @@ export { IntegrationBar } from "./IntegrationBar";
 export { RunControls } from "./RunControls";
 export {
   NowEmpty, TONIGHT_RESOLVE_CAP, RUNNABLE_ROW_CAP, COMPACT_ROW_CAP,
-  TONIGHT_LOCK_NOTE, MORE_IN_FLOWS, resetTonightVerdictsForTests,
+  TONIGHT_LOCK_NOTE, TONIGHT_AND_RUN_LOCK_NOTE, tonightLockNote,
+  MORE_IN_FLOWS, resetTonightVerdictsForTests,
 } from "./NowEmpty";
 
 export { CampaignLedger } from "./CampaignLedger";

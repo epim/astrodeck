@@ -109,9 +109,37 @@ export const COMPACT_ROW_CAP = 3;
 
 /** Said ONCE above the list, not repeated per row: a viewer is missing one
  *  capability, not twelve. It names what still works, because the list and RUN
- *  genuinely do - only the ephemeris is withheld. */
+ *  genuinely do - only the ephemeris is withheld.
+ *
+ *  ONLY TRUE WHEN RUN ACTUALLY STILL WORKS. `view.site_derived` and
+ *  `control.mount` are held by the same two roles (operator, admin) and
+ *  refused to the same two (viewer, syncer) - see `ROLE_CAPS` in
+ *  `lib/caps.ts` - so a principal missing the first is, in the role model,
+ *  always missing the second too. Printing "RUN still works" to that
+ *  principal while every row on the list sits honest-locked is a claim
+ *  nothing keeps. See `TONIGHT_AND_RUN_LOCK_NOTE` for the sentence that
+ *  applies instead, and `tonightLockNote` for the branch. */
 export const TONIGHT_LOCK_NOTE =
   `Tonight's verdict needs ${accessPhrase("view.site_derived")}. The list and RUN still work.`;
+
+/** RUN is ALSO locked for this viewer (`canControlMount` false - the same
+ *  capability `runBlockedReason` gates RUN on), so "RUN still works" is not
+ *  true here. Only the list itself survives. `accessPhrase("control.mount")`
+ *  is the SAME call `runBlockedReason` makes for its own sentence
+ *  (`flowRunControls.tsx`), so this note's role phrase cannot drift from the
+ *  reason already printed on every locked RUN button below it. */
+export const TONIGHT_AND_RUN_LOCK_NOTE =
+  `Tonight's verdict and RUN both need ${accessPhrase("control.mount")}`
+  + " - the list still shows what is saved.";
+
+/** Which of the two notes is true for this principal. `runLocked` is
+ *  `!canControlMount` - the CAPABILITY RUN is gated on, not the compound
+ *  per-row reason (`runBlockedReason` also refuses RUN when no camera is
+ *  connected, which is an equipment fact every role shares and says nothing
+ *  about who may press it). */
+export function tonightLockNote(runLocked: boolean): string {
+  return runLocked ? TONIGHT_AND_RUN_LOCK_NOTE : TONIGHT_LOCK_NOTE;
+}
 
 /** The door out of a capped list. */
 export const MORE_IN_FLOWS = "MORE IN FLOWS ›";
@@ -591,7 +619,7 @@ export function NowEmpty({ compact = false }: { compact?: boolean }): JSX.Elemen
           <Label>{compact ? "RECENT FLOWS" : "TONIGHT'S LIST"}</Label>
           {!compact && !canSeeTonight && (
             <div style={{ marginTop: 4 }}>
-              <Mono size={10} tone="dim">{TONIGHT_LOCK_NOTE}</Mono>
+              <Mono size={10} tone="dim">{tonightLockNote(!canControl)}</Mono>
             </div>
           )}
           {!compact && plans.error && (
