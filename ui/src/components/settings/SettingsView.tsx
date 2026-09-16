@@ -196,6 +196,19 @@ export default function SettingsView(): JSX.Element {
         <h1 className="font-display text-lg tracking-[0.2em] text-ink uppercase">
           Settings
         </h1>
+        {/* The way across to the other root, added when `#/` went back to this
+            one (rootChoice.ts, DEFAULT_ROOT). The new UI has carried the
+            mirror-image link since it shipped - Settings > More, and the About
+            sheet, both `row-classic` - and a door that only opens one way is
+            how a user ends up typing hashes. Additive: a sibling node, nothing
+            here restyled. */}
+        <a
+          href="#/next"
+          data-testid="link-next-ui"
+          className="self-start border border-line2 px-3 py-2 text-xs tracking-[0.15em] text-dim uppercase hover:text-ink"
+        >
+          Open the new six-hub UI
+        </a>
         <TabStrip>
           <Segmented
             options={TABS}

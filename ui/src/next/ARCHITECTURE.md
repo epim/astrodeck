@@ -147,9 +147,35 @@ createRoot(document.getElementById("root")!).render(<StrictMode><Root /></Strict
 `isClassicHash(h)` is true for `#/classic` and `#/classic/...`. When the
 classic root mounts with `#/classic/<view>`, `App` is NOT modified; instead
 `Root` calls `useStore.getState().setView(view)` once before rendering if
-`<view>` is a valid `ViewName` (list in `ui/src/types.ts`). A footer link in the
-new Settings hub ("Open the classic UI") and a header link in nothing else
-(the classic UI already has no link back; add none - the user types `#/`).
+`<view>` is a valid `ViewName` (list in `ui/src/types.ts`).
+
+**THE ROOT IS THE CLASSIC APP (since 2026-09-15).** The sketch above is the
+original shape and is kept for the shape, not the values: which root a bare
+hash opens is now one constant, `DEFAULT_ROOT` in `ui/src/rootChoice.ts`, and
+it ships as `"classic"`. With that setting the bare root (`#/`, `#`, empty) and
+every legacy view name at the root (`#/atlas`, `#/mount`, and the rest of
+`LEGACY_VIEW_ROUTE`'s keys) mount the classic `App` with that view applied,
+exactly as `#/classic/<view>` does; the new UI keeps every one of its own
+routes (`#/sky`, `#/weather`, `#/session`, `#/rig`, `#/monitor`, `#/settings`
+and their sheets) unchanged and gains `#/next` as the alias for its home, which
+`Root` canonicalises onto `#/sky` on arrival. Two names are in both lists -
+`monitor` and `settings` - and the HUB wins, because a live route must not
+break to fix a bookmark; the classic pair stays addressable as
+`#/classic/monitor` and `#/classic/settings`. Flip the constant to `"next"` and
+every one of those falls back to the pre-2026-09-15 behaviour with no other
+edit; `ui/src/__tests__/rootChoice.test.tsx` exercises BOTH settings, which is
+what makes it a switch rather than a comment. The decision lives in
+`rootChoice.ts` rather than in `router.ts` because it needs the hub names AND
+the legacy view names, and `legacyBridge.ts` already imports `router.ts` - the
+other way round would be an import cycle. `Root` itself lives in
+`ui/src/AppRoot.tsx` so a test can mount it; `main.tsx` is now only the
+`createRoot` call.
+
+The door goes both ways and is visible from both sides: the new Settings hub
+has "OPEN THE CLASSIC UI" (`row-classic`, in Settings > General > More and in
+the About sheet) and classic Settings has "OPEN THE NEW SIX-HUB UI"
+(`link-next-ui`, `components/settings/SettingsView.tsx`). Neither root expects
+the user to type a hash.
 
 `NextApp` owns: `connectWs()` on mount (exactly as `App.tsx:343-345` does; the
 legacy root does the same, and only one root is mounted at a time), the auth

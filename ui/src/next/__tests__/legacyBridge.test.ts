@@ -212,6 +212,62 @@ test("both destinations are named constants, not strings typed twice", () => {
   eq(WIZARD_ROUTE, "/settings/general/setup");
 });
 
+// ------------------------------------------------------------ THE DIRECTION
+//
+// On 2026-09-15 the bare root went back to the classic app (`rootChoice.ts`,
+// `DEFAULT_ROOT = "classic"`). That makes one thing about this bridge easy to
+// get wrong in the other direction: the table below maps legacy DESTINATIONS,
+// not legacy URLs. It is a hand-off WITHIN the new root - the new UI is on
+// screen, something reused inside it asked for "the atlas", send it to the new
+// UI's atlas. It is not, and must not become, a redirect that takes a user who
+// typed `#/atlas` and drops them in a UI they did not ask for.
+//
+// Both halves are asserted, because each alone is satisfiable by the bug:
+// deleting the table row would pass the first, and pointing `#/atlas` at the
+// new UI would pass the second.
+//
+// SABOTAGE: set `DEFAULT_ROOT` to "next" and the first test goes red by value;
+// delete `LEGACY_VIEW_ROUTE.atlas`'s `?mode=atlas` and the second does.
+
+const { DEFAULT_ROOT, rootForHash } = await import("../../rootChoice");
+
+test("an old view-name URL is the CLASSIC root's, so this bridge never sees it", () => {
+  eq(DEFAULT_ROOT, "classic", "the shipped setting:");
+  eq(rootForHash("#/atlas"), "classic",
+    "a user who typed #/atlas gets the classic Atlas, not #/sky?mode=atlas:");
+  eq(rootForHash("#/mount"), "classic");
+  eq(rootForHash("#/tonight"), "classic");
+});
+
+test("and the table is unchanged anyway, because it is a within-root hand-off", () => {
+  // `store.openFraming()` writes `view: "atlas"` from inside the NEW UI's own
+  // Mount catalogue. That write must land on the new UI's atlas; it must not
+  // tear the root out from under the user, and it must not be "fixed" to point
+  // at `#/classic/atlas`.
+  eq(LEGACY_VIEW_ROUTE.atlas, "/sky?mode=atlas");
+  act(() => { useStore.getState().setView("monitor"); });
+  eq(win.location.hash, "#/monitor/live", "precondition: somewhere else first");
+  act(() => { useStore.getState().setView("atlas"); });
+  eq(win.location.hash, "#/sky?mode=atlas",
+    "the hand-off still works with the new UI mounted:");
+});
+
+test("mounting the bridge on an old view name navigates NOWHERE", () => {
+  // The mirror image of the "mounting does not navigate" test at the top, aimed
+  // at the hash shape that now belongs to the other root. Fresh container and
+  // fresh root, because the bridge's no-navigate-on-mount rule is a per-mount
+  // fact and the Probe above is long past its first commit.
+  const el = win.document.createElement("div");
+  win.document.body.appendChild(el);
+  const r2 = createRoot(el);
+  win.location.hash = "#/atlas";
+  act(() => { r2.render(createElement(Probe)); });
+  eq(win.location.hash, "#/atlas",
+    "nothing may rewrite an #/atlas arrival into a new-UI route:");
+  act(() => { r2.unmount(); });
+  el.remove();
+});
+
 act(() => { root.unmount(); });
 
 // ------------------------------------------------------------------- tally
