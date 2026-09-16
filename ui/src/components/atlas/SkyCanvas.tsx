@@ -28,7 +28,7 @@
 import {
   useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX,
   type PointerEvent as RPointerEvent,
-  type KeyboardEvent as RKeyboardEvent, type CSSProperties,
+  type KeyboardEvent as RKeyboardEvent, type CSSProperties, type ReactNode,
 } from "react";
 import type { CatalogEntry } from "../../types";
 import { fovFromOptics, deproject, plausibilityHint, type OpticsLike } from "../../lib/framing";
@@ -93,6 +93,9 @@ const SURVEY_SLUGS: Record<string, string> = {
 };
 
 export interface SkyCanvasProps {
+  /** Interactive tools anchored to the actual sky viewport. */
+  overlayControls?: ReactNode;
+  showFraming?: boolean;
   /** Session center (J2000). */
   center: { ra_hours: number; dec_deg: number };
   rotationDeg: number;
@@ -619,6 +622,7 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
     const el = boxRef.current;
     if (!el) return;
     const handler = (e: WheelEvent) => {
+      if (e.target instanceof Element && e.target.closest('[data-atlas-controls]')) return;
       e.preventDefault(); // honored: registered with passive: false
       const factor = e.deltaY > 0 ? 1.12 : 1 / 1.12;
       onZoomRef.current(clampZoom(fovZoomRef.current * factor));
@@ -784,6 +788,7 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
   // Boxes the canvas's own furniture already occupies, so an object label
   // never lands on top of the compass letters, the readouts, or the two
   // labels that name the frames. CSS px.
+  const hasOverlayControls = !!props.overlayControls;
   const reservedBoxes = useMemo<Rect[]>(() => {
     const boxes: Rect[] = [
       { x: boxPx / 2 - 10, y: 0, w: 20, h: 20 },              // N
@@ -791,6 +796,7 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
       { x: 0, y: boxPx - 22, w: 130, h: 22 },                 // px-scale readout
       { x: boxPx - 120, y: boxPx - 22, w: 120, h: 22 },       // scale bar
     ];
+    if (hasOverlayControls) boxes.push({ x: boxPx - 64, y: 8, w: 56, h: 198 });
     if (haveOptics) {
       boxes.push({
         x: Math.max(0, camGuardRight - camMaxW), y: camTop,
@@ -801,7 +807,7 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
       boxes.push({ x: pointingLabel.left - 45, y: pointingLabel.top, w: 90, h: 18 });
     }
     return boxes;
-  }, [boxPx, haveOptics, camGuardRight, camMaxW, camTop, camLabelH, pointingLabel]);
+  }, [boxPx, haveOptics, camGuardRight, camMaxW, camTop, camLabelH, pointingLabel, hasOverlayControls]);
 
   // Anchors chosen last frame, so a label does not flip from one side of its
   // marker to the other while the sky moves a pixel underneath it.
@@ -890,6 +896,7 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
           maxWidth: "min(720px, 85svh)",
         }}
       >
+        {props.overlayControls}
         {/* 1a. WebGL tile engine (spec §5): mounts for survey mode when a slug
               maps and WebGL is available; else the <img> pipeline below. */}
         {useTileEngine && surveySlug && (
@@ -989,7 +996,7 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
           className="absolute inset-0 w-full h-full pointer-events-none"
           aria-hidden
         >
-          <FovOverlay
+          {props.showFraming !== false && <FovOverlay
             view={VIEW}
             cx={cx}
             cy={cy}
@@ -1003,7 +1010,7 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
             objectSemiMajorDeg={semiMajorDeg}
             objectSemiMinorDeg={semiMajorDeg}
             haveOptics={haveOptics}
-          />
+          />}
           {/* catalogue markers — AFTER the planned box (they are backdrop, not
               a claim about this session) and BEFORE the live footprint, for the
               same reason the footprint is drawn last: the truth about where the

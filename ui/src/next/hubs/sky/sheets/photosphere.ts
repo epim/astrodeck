@@ -127,6 +127,7 @@ export class PhotosphereSweep {
   private startedAt = 0;
   private grabTimer: ReturnType<typeof setInterval> | null = null;
   private lastBin = -1;
+  private generation = 0;
   readonly bins: number;
 
   constructor(bins = 30) {
@@ -148,15 +149,22 @@ export class PhotosphereSweep {
   }
 
   async start(video: HTMLVideoElement, canvas: HTMLCanvasElement): Promise<void> {
+    this.stop();
+    const generation = this.generation;
     this.video = video;
     this.canvas = canvas;
     this.startedAt = Date.now();
-    this.stream = await navigator.mediaDevices.getUserMedia({
+    const stream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: { ideal: "environment" } },
       audio: false,
     });
+    // Closing the editor while the browser permission prompt is open must
+    // also release a camera granted after the editor has disappeared.
+    if (generation !== this.generation) { stream.getTracks().forEach(t=>t.stop()); return; }
+    this.stream = stream;
     video.srcObject = this.stream;
     await video.play().catch(() => { /* autoplay can refuse; muted+playsinline covers most browsers */ });
+    if (generation !== this.generation) return;
 
     if (typeof window !== "undefined" && "DeviceOrientationEvent" in window) {
       this.headingHandler = (e: Event) => {
@@ -195,6 +203,7 @@ export class PhotosphereSweep {
   }
 
   stop(): void {
+    this.generation++;
     if (this.grabTimer != null) { clearInterval(this.grabTimer); this.grabTimer = null; }
     if (this.headingHandler && typeof window !== "undefined") {
       window.removeEventListener("deviceorientation", this.headingHandler);

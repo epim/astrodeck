@@ -42,7 +42,7 @@ import {
 
 type Source = "location" | "active";
 
-export function HorizonSheet({ params }: SheetProps): JSX.Element {
+export function HorizonSheet({ params, onClose, onBusyChange }: SheetProps & { onClose?: () => void; onBusyChange?: (busy:boolean) => void }): JSX.Element {
   const loadConfig = useStore((s) => s.loadConfig);
   const enqueueToast = useStore((s) => s.enqueueToast);
   // Branch-aware (this file's header comment): `persist()` below takes one of
@@ -64,6 +64,7 @@ export function HorizonSheet({ params }: SheetProps): JSX.Element {
   const { lockedReason: opticsLocked, onExplain: explainOptics } = useLock({ cap: "config.site_optics" });
 
   const [loading, setLoading] = useState(true);
+  const [loadFailed,setLoadFailed]=useState(false);
   const [siteName, setSiteName] = useState("the active site");
   const [source, setSource] = useState<Source>("active");
   const [sourceLoc, setSourceLoc] = useState<SavedLocation | null>(null);
@@ -73,8 +74,9 @@ export function HorizonSheet({ params }: SheetProps): JSX.Element {
   const [saving, setSaving] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
 
-  const writeLocked = source === "location" ? opticsLocked : safetyLocked;
+  const writeLocked = loading ? "Loading the horizon." : loadFailed ? "Reopen the horizon editor to retry loading before editing." : saving ? "Saving the horizon." : source === "location" ? opticsLocked : safetyLocked;
   const explainWrite = source === "location" ? explainOptics : explainSafety;
+  useEffect(()=>{onBusyChange?.(loading||saving);},[loading,saving,onBusyChange]);
 
   // ------------------------------------------------------------------- load
   useEffect(() => {
@@ -82,6 +84,7 @@ export function HorizonSheet({ params }: SheetProps): JSX.Element {
     const siteParam = params.site;
     (async () => {
       setLoading(true);
+      setLoadFailed(false);
       try {
         if (siteParam && siteParam !== "current") {
           const locs = await listLocations();
@@ -113,6 +116,7 @@ export function HorizonSheet({ params }: SheetProps): JSX.Element {
         setByHand(true);
       } catch (e) {
         if (!dead) {
+          setLoadFailed(true);
           enqueueToast({ level: "error", title: e instanceof Error ? e.message : "Could not load the horizon." });
         }
       } finally {
@@ -223,10 +227,12 @@ export function HorizonSheet({ params }: SheetProps): JSX.Element {
 
   useEffect(() => () => {
     sweepRef.current?.stop();
+    sweepRef.current = null;
     if (tickTimer.current != null) clearInterval(tickTimer.current);
   }, []);
 
   const startCapture = async () => {
+    if (sweepRef.current) return;
     if (!support.supported) {
       enqueueToast({ level: "warning", title: support.reason ?? "Photosphere capture is unavailable here." });
       return;
@@ -238,8 +244,11 @@ export function HorizonSheet({ params }: SheetProps): JSX.Element {
     setCapturing(true);
     try {
       await sweep.start(videoRef.current, canvasRef.current);
+      if (sweepRef.current !== sweep) { sweep.stop(); return; }
       tickTimer.current = setInterval(() => setFrameTick((t) => t + 1), 400);
     } catch (e) {
+      if (sweepRef.current !== sweep) return;
+      sweep.stop();
       setCapturing(false);
       sweepRef.current = null;
       enqueueToast({
@@ -288,7 +297,7 @@ export function HorizonSheet({ params }: SheetProps): JSX.Element {
       title={`HORIZON · ${siteName}`}
       sub={`${summary(points)} · ${byHand ? "by hand" : "from photosphere"}`}
       backLabel="DONE"
-      onBack={() => nav.back()}
+      onBack={onClose ?? (() => nav.back())}
       right={<ActionButton kind="ghost" size="md" ariaLabel="about the horizon" onPress={() => setInfoOpen((v) => !v)}>?</ActionButton>}
       data-testid="horizon-sheet"
     >

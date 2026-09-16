@@ -21,6 +21,7 @@ import { hz, D2R, SIDEREAL_DEG_PER_HOUR, wrapRaHours } from "./equatorial";
 import { isObstructed, type HorizonPoint } from "../../../lib/horizonModel";
 import { fmtClock } from "../../../lib/format";
 import { lstHours } from "../../../../lib/altaz";
+import { trackDirections } from "../../../../lib/trackDirections";
 import type { Projector } from "./projection";
 
 /** The seeing floor, degrees (proto/logic.js:114). Below it the air path is long
@@ -91,6 +92,24 @@ export interface TrackSample {
   st: TrackState;
 }
 
+/** Interpolate at local clock hours, including across the north/360° seam. */
+export function hourlyTrackSamples(samples:TrackSample[], nowMs:number):TrackSample[] {
+  if(samples.length<2)return [];
+  const hour=new Date(nowMs);hour.setMinutes(60,0,0);
+  const first=(hour.getTime()-nowMs)/3600_000;
+  const out:TrackSample[]=[];
+  for(let t=first;t<=samples[samples.length-1].t;t+=1) {
+    const i=samples.findIndex(s=>s.t>=t);
+    if(i<1)continue;
+    const a=samples[i-1],b=samples[i];
+    if(a.st==='below'||b.st==='below')continue;
+    const f=(t-a.t)/(b.t-a.t);
+    const da=((b.az-a.az+540)%360)-180;
+    out.push({t,alt:a.alt+(b.alt-a.alt)*f,az:(a.az+da*f+360)%360,st:a.st});
+  }
+  return out;
+}
+
 /**
  * Step the hour angle to dawn and classify every sample. `haRad0` is the hour
  * angle NOW; the sky advances 15.041 degrees per hour of clock time, not 15 -
@@ -123,7 +142,7 @@ export interface TrackSegment {
   /** "x,y x,y ..." for an SVG polyline. */
   points: string;
   color: string;
-  /** "3 4" under the floor, "none" otherwise. */
+  /** Short dashes for blocked/low segments, longer dashes otherwise. */
   dash: string;
 }
 
@@ -134,6 +153,7 @@ export interface TrackLabel {
 }
 
 export interface TrackRender {
+  arrows?: {x:number;y:number;angle:number;color:string}[];
   segments: TrackSegment[];
   dots: { x: number; y: number }[];
   labels: TrackLabel[];
@@ -150,7 +170,7 @@ function hhmm(ms: number): string {
 }
 
 /**
- * Project the samples into segments, hour dots and the three labels. Segments
+ * Project the samples into dashed segments, arrows, clock-hour dots and labels. Segments
  * carry the PREVIOUS sample as their first point where there is one, so adjacent
  * runs of different colour join rather than leaving a gap (proto/logic.js:487).
  */
@@ -180,12 +200,10 @@ export function buildTrack(
   const segments: TrackSegment[] = runs.map((r) => ({
     points: r.list.map((q) => `${q.x.toFixed(1)},${q.y.toFixed(1)}`).join(" "),
     color: TRACK_COLORS[r.st],
-    dash: r.st === "floor" ? "3 4" : "none",
+    dash: r.st === "floor" || r.st === "mask" ? "2 5" : "7 5",
   }));
 
-  const dots = pts
-    .filter((q, i) => q.st !== "below" && i % 4 === 0)
-    .map((q) => ({ x: q.x, y: q.y }));
+  const dots = hourlyTrackSamples(samples,nowMs).map(q=>p.proj(q.az,q.alt));
 
   const up = pts.filter((q) => q.st !== "below");
   const labels: TrackLabel[] = [{ x: pts[0].x, y: pts[0].y, label: "now" }];
@@ -205,7 +223,14 @@ export function buildTrack(
     });
   }
 
+  for(const s of hourlyTrackSamples(samples,nowMs)) {
+    const q=p.proj(s.az,s.alt);
+    if(s.st==='below'||q.x<24||q.x>p.W-24||q.y<20||q.y>p.H-20)continue;
+    if(labels.some(l=>Math.hypot(l.x-q.x,l.y-q.y)<58))continue;
+    labels.push({...q,label:hhmm(nowMs+s.t*3600_000)});
+  }
   return {
+    arrows:runs.flatMap(r=>trackDirections(r.list).map(a=>({...a,color:TRACK_COLORS[r.st]}))),
     segments: segments.filter((s) => s.points !== ""),
     dots,
     labels: labels.filter((l) => l.x > -40 && l.x < p.W + 40 && l.y > -20 && l.y < p.H + 20),
@@ -276,6 +301,7 @@ export interface DomeTrackContext extends TrackContext {
 }
 
 export interface DomeTrack {
+  startMs?: number;
   id: string;
   /** Drawn beside the arc on the bright ones, and listed under the dome. An
    *  empty string draws no label, which is what an unnamed arc gets. */
@@ -365,6 +391,7 @@ export function buildDomeTracks(
     if (samples.length === 0) continue;
     out.push({
       id: s.id,
+      startMs: ctx.nowMs,
       label: domeTrackLabel(s),
       bright: s.bright === true,
       point: s.name === null ? { ra_hours: s.ra_hours, dec_deg: s.dec_deg } : null,

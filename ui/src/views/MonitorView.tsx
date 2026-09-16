@@ -75,7 +75,7 @@ import {
   THUMB_BRIGHTNESS_NIGHT_DEFAULT,
 } from "../lib/eta";
 import SessionStack from "../components/preview/SessionStack";
-import { SkyDomePanel } from "../components/cloudmap/SkyDomePanel";
+import { ClassicSkyDomePanel } from "../components/cloudmap/ClassicSkyDomePanel";
 import { diagnoseFailure, runFailureLog } from "../lib/troubleshoot";
 import type { MonitorSnapshot, PreviewInfo } from "../types";
 
@@ -1020,7 +1020,7 @@ export default function MonitorView() {
             append-never-reorder and this has not yet earned a destination.
             Advisory only -- a named server test pins that nothing in the
             sequencer consults the model. */}
-        <SkyDomePanel
+      <ClassicSkyDomePanel
           pointing={mount && mount.alt >= 0 ? { alt: mount.alt, az: mount.az } : null}
         />
 

@@ -21,7 +21,7 @@
 // with a boolean.
 
 import { useEffect, useRef } from "react";
-import type { JSX, PointerEvent as RPointerEvent } from "react";
+import type { JSX, PointerEvent as RPointerEvent, ReactNode } from "react";
 import { NxIcon } from "../../../icons";
 import { useWakeLock } from "../../../../lib/useWakeLock";
 import { useSkyGestures } from "./gestures";
@@ -38,6 +38,9 @@ export interface SkyViewProps {
   onOpenLens?: () => void;
   /** The layers button - the hub root owns the popover. */
   onOpenLayers?: () => void;
+  /** The embedding atlas supplies its own shared toolbar. */
+  hideTools?: boolean;
+  overlayControls?: ReactNode;
 }
 
 const MONO = "'IBM Plex Mono', ui-monospace, monospace";
@@ -50,6 +53,8 @@ export function SkyView({
   onLock,
   onOpenLens,
   onOpenLayers,
+  hideTools = false,
+  overlayControls,
 }: SkyViewProps): JSX.Element {
   const boxRef = useRef<HTMLDivElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -330,6 +335,7 @@ export function SkyView({
                 data-track-segment
               />
             ))}
+            {model.track.arrows?.map((a,i)=><path key={`arrow-${i}`} data-track-direction d="M-4 -3.5L0 0L-4 3.5" transform={`translate(${a.x} ${a.y}) rotate(${a.angle})`} fill="none" stroke={a.color} strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round"/>)}
             {model.track.dots.map((d, i) => (
               <circle
                 key={`dot-${i}`}
@@ -348,7 +354,8 @@ export function SkyView({
               style={{
                 position: "absolute", left: l.x, top: l.y,
                 transform: "translate(-50%,-130%)",
-                padding: "1px 5px", borderRadius: 6,
+                padding: "3px 6px", borderRadius: 8,
+                border: "1px solid color-mix(in srgb, var(--accent) 25%, transparent)",
                 background: "color-mix(in srgb, var(--bg) 75%, transparent)",
                 fontFamily: MONO, fontSize: 10, color: "var(--text-dim)",
                 whiteSpace: "nowrap", pointerEvents: "none",
@@ -436,6 +443,7 @@ export function SkyView({
       <button
         type="button"
         data-sky-lens
+        hidden={hideTools}
         aria-label="filter which kinds of target are shown"
         onPointerDown={stop}
         onClick={() => onOpenLens?.()}
@@ -445,7 +453,7 @@ export function SkyView({
           border: `1px solid ${model.lensHiddenCount > 0 ? "var(--warn)" : "var(--accent)"}`,
           background: "color-mix(in srgb, var(--bg) 80%, transparent)",
           color: model.lensHiddenCount > 0 ? "var(--warn)" : "var(--accent)",
-          display: "flex", alignItems: "center", justifyContent: "center",
+          display: hideTools ? "none" : "flex", alignItems: "center", justifyContent: "center",
           cursor: "pointer", boxShadow: "0 0 14px color-mix(in srgb, var(--accent) 18%, transparent)",
         }}
       >
@@ -468,6 +476,7 @@ export function SkyView({
       <button
         type="button"
         data-sky-layers
+        hidden={hideTools}
         aria-label="overlays: cloud, horizon, wind"
         onPointerDown={stop}
         onClick={() => onOpenLayers?.()}
@@ -477,7 +486,7 @@ export function SkyView({
           border: "1px solid var(--line-bright)",
           background: "color-mix(in srgb, var(--bg) 80%, transparent)",
           color: "var(--text-dim)",
-          display: "flex", alignItems: "center", justifyContent: "center",
+          display: hideTools ? "none" : "flex", alignItems: "center", justifyContent: "center",
           cursor: "pointer",
         }}
       >
@@ -507,6 +516,7 @@ export function SkyView({
       >
         {model.lockNote}
       </div>
+      {overlayControls}
     </div>
   );
 }

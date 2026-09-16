@@ -1,6 +1,8 @@
 import { StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./index.css";
+import "./components/cloudmap/classicSkyDome.css";
+import "./components/sky/classicSkyTools.css";
 import App from "./App";
 import NextApp from "./next/NextApp";
 import { classicView, isClassicHash } from "./next/router";

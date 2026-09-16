@@ -23,7 +23,7 @@ export type NxIconName =
   | "back" | "funnel" | "layers" | "info" | "x" | "check"
   | "chevron-right" | "chevron-down" | "lock"
   | "play" | "pause" | "stop" | "download" | "share" | "refresh"
-  | "plus" | "minus" | "search" | "gps"
+  | "plus" | "minus" | "search" | "gps" | "aperture" | "constellation" | "compass-rose"
   // sky and weather
   | "sun" | "moon" | "star" | "galaxy" | "nebula" | "cluster" | "planet"
   | "comet" | "satellite" | "wind" | "gauge"
@@ -53,6 +53,9 @@ const PATHS: Record<NxIconName, string> = {
   dome: "M4 20h16M5.5 20v-6a6.5 6.5 0 0 1 13 0v6M12 20V7.6",
 
   // --- interface ----------------------------------------------------------
+  aperture: "M12 2a10 10 0 1 0 0 20a10 10 0 1 0 0-20M14.8 2.4l-5.6 9.7M21.7 9.2H10.5M18.9 19.2l-5.6-9.7M9.2 21.6l5.6-9.7M2.3 14.8h11.2M5.1 4.8l5.6 9.7",
+  constellation: "M4 6l7 3 7-5-2 12-9 4-3-14M11 9l5 7M4 4.8a1.2 1.2 0 1 0 0 2.4a1.2 1.2 0 1 0 0-2.4M11 7.8a1.2 1.2 0 1 0 0 2.4a1.2 1.2 0 1 0 0-2.4M18 2.8a1.2 1.2 0 1 0 0 2.4a1.2 1.2 0 1 0 0-2.4M16 14.8a1.2 1.2 0 1 0 0 2.4a1.2 1.2 0 1 0 0-2.4M7 18.8a1.2 1.2 0 1 0 0 2.4a1.2 1.2 0 1 0 0-2.4",
+  "compass-rose": "M12 2l2.4 7.6L22 12l-7.6 2.4L12 22l-2.4-7.6L2 12l7.6-2.4zM12 2v20M2 12h20M5 5l3 3M16 16l3 3M19 5l-3 3M8 16l-3 3",
   back: "M15 5l-7 7 7 7",
   funnel: "M4 5h16l-6 7v6l-4 2v-8z",
   layers: "M12 3l9 5-9 5-9-5 9-5zM3 13l9 5 9-5",
