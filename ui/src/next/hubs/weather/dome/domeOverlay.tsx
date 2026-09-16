@@ -58,12 +58,13 @@ import {
 } from "../../../lib/cloudTiles";
 import { horizonAltAt, type HorizonPoint } from "../../../lib/horizonModel";
 import {
-  FLOOR_DEG, TRACK_COLORS,
+  FLOOR_DEG, TRACK_COLORS, hourlyTrackSamples,
   type DomeTrack, type TrackSample, type TrackState,
 } from "../../sky/finder/track";
 import { Mono } from "../../../ui";
 import type { WeatherNow } from "../../../../types";
 import { drift } from "../conditions/verdict";
+import { trackDirections } from "../../../../lib/trackDirections";
 
 /** The prototype's own cloud-base default, used only when the feed carries no
  *  `cloud_base_m` - and said out loud when it is (README "Formulas to lift":
@@ -218,10 +219,10 @@ const NOTHING_DRAWN: DrawnMarks = {
  *  classifier's. `ok` is covered by the "tracks to dawn" entry itself, so it is
  *  not repeated here. */
 const STATE_KEY: Record<Exclude<TrackState, "below">, { label: string; dash?: string }> = {
-  ok: { label: "clear to dawn" },
-  hold: { label: "under a forecast cloud hold" },
+  ok: { label: "clear to dawn", dash: "6 5" },
+  hold: { label: "under a forecast cloud hold", dash: "6 5" },
   mask: { label: "behind your horizon profile", dash: MASK_DASH },
-  floor: { label: `under the ${FLOOR_DEG} degree floor` },
+  floor: { label: `under the ${FLOOR_DEG} degree floor`, dash: "6 5" },
 };
 
 /** The legend describes THE CANVAS THAT IS MOUNTED, not the prototype's.
@@ -573,13 +574,16 @@ export function placeTrack(g: DomeGeometry, t: DomeTrack): PlacedTrack | null {
 /** The hour ticks on a bright arc. Every fourth sample, because `STEP_HOURS` is
  *  a quarter of an hour - a bead on every sample would be a dotted line, not a
  *  clock. Bright arcs only: six arcs' worth of beads is hatching. */
-function hourDots(g: DomeGeometry, track: TrackSample[]): { x: number; y: number; st: Exclude<TrackState, "below"> }[] {
-  const out: { x: number; y: number; st: Exclude<TrackState, "below"> }[] = [];
-  track.forEach((s, i) => {
-    if (i % 4 !== 0 || s.st === "below") return;
+function hourDots(g: DomeGeometry, track: TrackSample[], startMs?:number): { x: number; y: number; label:string; st: Exclude<TrackState, "below"> }[] {
+  const out: { x: number; y: number; label:string; st: Exclude<TrackState, "below"> }[] = [];
+  const samples=startMs === undefined ? track.filter(s=>s.t>0&&Math.abs(s.t-Math.round(s.t))<.001) : hourlyTrackSamples(track,startMs);
+  samples.forEach(s => {
+    if (s.st === "below") return;
     const p = proj(g, s.alt, s.az);
     if (!p.facing) return;
-    out.push({ x: p.x, y: p.y, st: s.st as Exclude<TrackState, "below"> });
+    const at=startMs===undefined?null:new Date(startMs+s.t*3600_000);
+    const label=at?`${String(at.getHours()).padStart(2,'0')}:${String(at.getMinutes()).padStart(2,'0')}`:`+${s.t}h`;
+    out.push({ x: p.x, y: p.y,label, st: s.st as Exclude<TrackState, "below"> });
   });
   return out;
 }
@@ -593,6 +597,13 @@ function OneTrack({ g, placed, mute }: {
   const { track, runs, now, anchor } = placed;
   const bright = track.bright;
   const label = track.label === mute ? "" : track.label;
+  const hours=hourDots(g,track.samples,track.startMs);
+  const labels:typeof hours=[];
+  for(const h of hours) {
+    if(now && Math.hypot(h.x-now.x,h.y-now.y)<42)continue;
+    if(labels.some(l=>Math.hypot(l.x-h.x,l.y-h.y)<48))continue;
+    labels.push(h);
+  }
   return (
     <g
       data-track={track.id}
@@ -611,14 +622,16 @@ function OneTrack({ g, placed, mute }: {
           // makes a thin line vanish rather than recede.
           strokeWidth={bright ? 1.8 : 1.1}
           strokeOpacity={bright ? 1 : 0.5}
-          strokeDasharray={r[0].st === "mask" ? MASK_DASH : undefined}
+          strokeDasharray={r[0].st === "mask" ? MASK_DASH : "6 5"}
           strokeLinecap="round"
           strokeLinejoin="round"
         />
       ))}
-      {bright && hourDots(g, track.samples).map((d, i) => (
+      {runs.flatMap((r,i)=>trackDirections(r,58).map((a,j)=><path key={`dir-${i}-${j}`} data-track-direction d="M-3 -2.5L0 0L-3 2.5" transform={`translate(${a.x} ${a.y}) rotate(${a.angle})`} fill="none" stroke={TRACK_COLORS[r[0].st]} strokeWidth={bright?1.6:1.1} opacity={bright?1:.6}/>))}
+      {bright && hours.map((d, i) => (
         <circle key={`h${i}`} cx={d.x} cy={d.y} r="1.6" fill={TRACK_COLORS[d.st]} />
       ))}
+      {bright && labels.map((h,i)=><g key={`clock-${i}`} data-track-hour transform={`translate(${h.x} ${h.y-13})`}><path d="M0 8V12" stroke={TRACK_COLORS[h.st]} strokeWidth=".8"/><rect x="-20" y="-7" width="40" height="14" rx="7" fill="var(--bg)" fillOpacity=".9" stroke={TRACK_COLORS[h.st]} strokeOpacity=".3"/><text textAnchor="middle" y="3" fontSize="9" fontFamily="ui-monospace,monospace" fill="var(--text)">{h.label}</text></g>)}
       {now && (
         // WHERE IT IS NOW, with a dark ring under it. The dome underneath is
         // painted cloud, and the one thing this dot has to survive is being on

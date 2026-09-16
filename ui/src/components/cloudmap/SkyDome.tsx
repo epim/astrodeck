@@ -188,10 +188,30 @@ export const SkyDome = memo(function SkyDome({
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, cssW, cssH);
 
-    // ---- the far half of the horizon, so the dome reads as a solid volume
-    ctx.strokeStyle = "rgba(150,170,200,0.18)";
+    // A quiet surface separates the coordinate display from the wallpaper.
+    // Its silhouette is the projected hemisphere: a semicircle above the
+    // centre and the near horizon ellipse below it. It encodes no weather.
+    const horizonR = r * Math.sin(DOME_TILT_DEG * Math.PI / 180);
+    const atmosphere = ctx.createLinearGradient(cx, cy - r, cx, cy + horizonR);
+    atmosphere.addColorStop(0, "#111e30");
+    atmosphere.addColorStop(0.58, "#142a36");
+    atmosphere.addColorStop(1, "#102323");
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, Math.PI, Math.PI * 2);
+    ctx.ellipse(cx, cy, r, horizonR, 0, 0, Math.PI);
+    ctx.closePath();
+    ctx.fillStyle = atmosphere;
+    ctx.fill();
+    ctx.strokeStyle = "rgba(147,184,198,0.22)";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // ---- the horizon plane, so the dome reads as a volume
+    ctx.strokeStyle = "rgba(150,189,183,0.20)";
     ctx.lineWidth = 1;
     ringPath(ctx, 0, cx, cy, r, yawDeg);
+    ctx.fillStyle = "rgba(115,168,150,0.035)";
+    ctx.fill();
     ctx.stroke();
 
     // ---- cloud cells, far half first so the near half draws over it
@@ -200,7 +220,7 @@ export const SkyDome = memo(function SkyDome({
       const cells = domeCells(grid);
       const drawn = cells.map((c) => {
         const mid = projectAltAz((c.altLo + c.altHi) / 2, (c.azLo + c.azHi) / 2,
-                                 cx, cy, r);
+                                 cx, cy, r, DOME_TILT_DEG, yawDeg);
         return { c, depth: mid.depth };
       });
       drawn.sort((a, b) => a.depth - b.depth);   // far (negative) first
@@ -235,14 +255,24 @@ export const SkyDome = memo(function SkyDome({
     }
 
     // ---- altitude rings and the horizon, over the cloud
-    ctx.strokeStyle = "rgba(160,180,210,0.22)";
+    ctx.strokeStyle = "rgba(155,185,202,0.19)";
     for (const alt of ALT_RINGS) { ringPath(ctx, alt, cx, cy, r, yawDeg); ctx.stroke(); }
-    ctx.strokeStyle = "rgba(170,190,220,0.45)";
+    ctx.strokeStyle = "rgba(164,201,185,0.38)";
     ringPath(ctx, 0, cx, cy, r, yawDeg);
     ctx.stroke();
 
+    // A restrained near rim adds depth without a blur pass or animation.
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, r, horizonR, 0, 0, Math.PI);
+    ctx.strokeStyle = "rgba(164,208,186,0.07)";
+    ctx.lineWidth = 5;
+    ctx.stroke();
+    ctx.strokeStyle = "rgba(173,209,192,0.56)";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
     // ---- meridian and the prime vertical, for orientation
-    ctx.strokeStyle = "rgba(160,180,210,0.16)";
+    ctx.strokeStyle = "rgba(155,185,202,0.13)";
     for (const az of [0, 90]) {
       ctx.beginPath();
       for (let alt = 0; alt <= 180; alt += 3) {
@@ -284,19 +314,19 @@ export const SkyDome = memo(function SkyDome({
                              DOME_TILT_DEG, yawDeg);
       if (!p.facing) continue;              // round the back of the dome
       ctx.lineWidth = 1;
-      ctx.strokeStyle = up ? "rgba(150,235,190,0.8)" : "rgba(150,235,190,0.35)";
+      ctx.strokeStyle = up ? "rgba(167,220,195,0.9)" : "rgba(167,220,195,0.4)";
       ctx.beginPath(); ctx.arc(p.x, p.y, 4.5, 0, Math.PI * 2);
-      if (up) { ctx.fillStyle = "rgba(150,235,190,0.22)"; ctx.fill(); }
+      if (up) { ctx.fillStyle = "rgba(167,220,195,0.18)"; ctx.fill(); }
       ctx.stroke();
       ctx.font = "600 9px ui-monospace, monospace";
       haloText(ctx, String(i + 1), p.x + 7, p.y - 5,
-               up ? "rgba(170,245,205,0.95)" : "rgba(170,245,205,0.5)");
+               up ? "rgba(193,234,216,0.95)" : "rgba(193,234,216,0.5)");
     }
 
     // ---- the next target, dimmer
     if (target && target.alt >= 0) {
       const p = projectAltAz(target.alt, target.az, cx, cy, r, DOME_TILT_DEG, yawDeg);
-      ctx.strokeStyle = "rgba(140,200,255,0.55)";
+      ctx.strokeStyle = "rgba(168,198,227,0.75)";
       ctx.lineWidth = 1;
       ctx.beginPath(); ctx.arc(p.x, p.y, 5, 0, Math.PI * 2); ctx.stroke();
       if (target.name) {
@@ -323,7 +353,7 @@ export const SkyDome = memo(function SkyDome({
       ctx.strokeStyle = "rgba(8,10,16,0.8)";
       ctx.lineWidth = 4;
       cross();
-      ctx.strokeStyle = "rgba(255,214,102,0.98)";
+      ctx.strokeStyle = "rgba(242,215,161,0.98)";
       ctx.lineWidth = 1.6;
       cross();
     }

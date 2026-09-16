@@ -198,21 +198,36 @@ export function occlusionStyle(p: number | null | undefined): CellStyle {
  * nearly transparent so the dome's own grid and the pointing marker stay
  * readable through it — the operator looks at this to find the BAD patches.
  *
- * The stops are perceptual rather than linear: anything under a few percent is
- * observationally clear and should not draw the eye, and everything past ~60%
- * is "not imaging through that" and need not be distinguished further.
+ * Interpolate a muted blue-grey ramp through the reading bands. Small changes
+ * in probability should not cause a sudden jump in hue or brightness. This is
+ * colour interpolation only: no spatial smoothing or invented cloud samples.
  */
 export function occlusionFill(p: number | null | undefined): string {
   if (!hasReading(p)) {
     return NO_DATA_HATCH.ground;              // see occlusionStyle: this alone is not enough
   }
   const q = Math.min(1, p);
-  if (q < 0.02) return "rgba(90,190,255,0.05)";
-  if (q < 0.10) return `rgba(120,180,230,${(0.10 + q * 1.2).toFixed(3)})`;
-  if (q < 0.35) return `rgba(190,190,205,${(0.24 + q * 0.7).toFixed(3)})`;
-  if (q < 0.60) return `rgba(225,215,205,${(0.40 + q * 0.5).toFixed(3)})`;
-  return `rgba(245,235,225,${Math.min(0.88, 0.55 + q * 0.35).toFixed(3)})`;
+  const stops = CLOUD_STOPS;
+  for (let i = 1; i < stops.length; i++) {
+    const lo = stops[i - 1], hi = stops[i];
+    if (q > hi[0]) continue;
+    const t = (q - lo[0]) / (hi[0] - lo[0]);
+    const mix = (n: number) => lo[n] + (hi[n] - lo[n]) * t;
+    return `rgba(${Math.round(mix(1))},${Math.round(mix(2))},${Math.round(mix(3))},${mix(4).toFixed(3)})`;
+  }
+  return "rgba(211,223,228,0.840)";
 }
+
+// Probability, red, green, blue, opacity. Increasing luminance carries density;
+// the pale silver of heavy cloud remains distinct from clear and thin readings.
+const CLOUD_STOPS = [
+  [0,    100, 158, 182, 0.03],
+  [0.02, 111, 163, 185, 0.08],
+  [0.10, 137, 177, 195, 0.24],
+  [0.35, 169, 196, 210, 0.47],
+  [0.60, 192, 211, 221, 0.65],
+  [1,    211, 223, 228, 0.84],
+] as const;
 
 /** The dome grid the /api/cloudmap/dome payload describes. */
 export interface DomeGrid {

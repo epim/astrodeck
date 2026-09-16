@@ -626,7 +626,7 @@ await testAsync("with a lock, the locked arc is the bright one and it is labelle
   const bright = arcs().filter((g) => g.getAttribute("data-bright") === "1");
   eq(bright.length, 1, "exactly one arc may be bright:");
   eq(bright[0].getAttribute("data-track"), "m31", "the bright arc is not the lock:");
-  const label = bright[0].querySelector("text");
+  const label = bright[0].querySelector(":scope > text");
   assert(label != null, "the bright arc is not labelled on the dome");
   eq(label.textContent, "M31", "the bright arc's label:");
 });
@@ -642,14 +642,16 @@ await testAsync("the arc does not repeat a name the canvas has already written",
   await mountCard({ tracks, lockId: "m31", target: { alt: 42, az: 71, name: "M31" } });
   const bright = arcs().filter((g) => g.getAttribute("data-bright") === "1");
   eq(bright.length, 1, "precondition: one bright arc:");
-  eq(bright[0].querySelector("text"), null,
+  eq(bright[0].querySelector(":scope > text"), null,
     "the overlay repeated a name the canvas underneath had already written:");
+  assert(bright[0].querySelector("[data-track-hour] text") != null,
+    "muting the duplicated object name must preserve the hourly timestamps");
 
   // The muting is by NAME and not "bright arcs never label": a canvas marking
   // some other object must not silence this one.
   await mountCard({ tracks, lockId: "m31", target: { alt: 42, az: 71, name: "M27" } });
   const still = arcs().filter((g) => g.getAttribute("data-bright") === "1");
-  assert(still[0].querySelector("text") != null,
+  assert(still[0].querySelector(":scope > text") != null,
     "a canvas label for a DIFFERENT object silenced the bright arc's own label");
 });
 
@@ -668,7 +670,7 @@ await testAsync("an aimed point carries its coordinates to the Weather hub", asy
   assert(aimedArc != null,
     "the aimed point has no arc on the dome - the one subject this feature exists for");
   eq(aimedArc.getAttribute("data-bright"), "1", "the aimed arc must be the bright one:");
-  const aimedLabel = aimedArc.querySelector("text");
+  const aimedLabel = aimedArc.querySelector(":scope > text");
   assert(aimedLabel != null, "the aimed arc is unlabelled, so the reader cannot tell what it is");
   assert(/^[0-9]{2}h[0-9]{2}m [+-][0-9]{2}/.test(String(aimedLabel.textContent)),
     `the aimed arc is not labelled with its coordinates: "${aimedLabel.textContent}"`);

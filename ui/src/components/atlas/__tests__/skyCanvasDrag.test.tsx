@@ -89,11 +89,13 @@ const OPTICS = {
 let pans = 0;
 let rotates = 0;
 let lastRotation = 0;
+let zooms = 0;
 
 function Harness(): any {
   const [center, setCenter] = useState({ ra_hours: 0.712, dec_deg: 41.27 });
   const [rotationDeg, setRotationDeg] = useState(0);
   return createElement(SkyCanvas, {
+    overlayControls: createElement('div', { 'data-atlas-controls': true }, createElement('button', null, 'Layers')),
     center,
     rotationDeg,
     // "schematic" keeps the survey loader and the WebGL tile engine out of the
@@ -114,7 +116,7 @@ function Harness(): any {
       lastRotation = deg;
       setRotationDeg(deg);
     },
-    onZoom: () => {},
+    onZoom: () => { zooms++; },
   } as any);
 }
 
@@ -331,6 +333,14 @@ test("a right-button press starts no drag at all", () => {
 });
 
 // ------------------------------------------------------------------- report
+test("scrolling an overlay leaves sky zoom unchanged", () => {
+  zooms = 0;
+  const control = container.querySelector('[data-atlas-controls] button');
+  act(() => control.dispatchEvent(new win.WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: 80 })));
+  assert(zooms === 0, 'Scrolling layers zoomed the sky underneath');
+  act(() => box().dispatchEvent(new win.WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: 80 })));
+  assert(zooms === 1, 'Wheel zoom on the sky itself stopped working');
+});
 act(() => { root.unmount(); });
 
 const total = passed + failed;

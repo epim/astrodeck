@@ -770,7 +770,7 @@ function horizonPathOf(
 
 // --------------------------------------------------------------- the hook
 
-export function useSkyModel(boxPx: number): SkyModel {
+export function useSkyModel(boxPx: number, options: { initialMode?: SkyMode } = {}): SkyModel {
   const site = useSite();
   const config = useConfig();
   const status = useStatus();
@@ -787,7 +787,9 @@ export function useSkyModel(boxPx: number): SkyModel {
 
   const [view, setViewState] = useState<{ az: number; alt: number }>({ az: 0, alt: 45 });
   const [trackId, setTrackId] = useState<string | null>(null);
-  const [mode, setModeState] = useState<SkyMode>(() => prefs.getMode(defaultMode()));
+  // Classic embeds start as a map even if this device last used the AR camera.
+  // Opening a monitor or a tool sheet must not request camera access by itself.
+  const [mode, setModeState] = useState<SkyMode>(() => options.initialMode ?? prefs.getMode(defaultMode()));
   const [gyro, setGyroState] = useState(false);
   const [lens, setLensObj] = useState<LensPrefs>(() => prefs.getLens());
   const [layers, setLayersObj] = useState<LayerPrefs>(() => prefs.getLayers());
@@ -814,7 +816,7 @@ export function useSkyModel(boxPx: number): SkyModel {
   const solarRows = useSolarSystem(rankingAllowed);
   const ephemeris = useEphemerisRows(true);
   const { dome, motion } = useCloudDome(weatherAllowed);
-  const appliedHorizon = useAppliedHorizon(siteKey);
+  const appliedHorizon = useAppliedHorizon(`${siteKey}:${JSON.stringify(config?.safety?.horizon ?? null)}`);
 
   // ---- horizon ------------------------------------------------------------
   const horizonPoints: HorizonPoint[] = useMemo(() => {

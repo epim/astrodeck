@@ -1,0 +1,34 @@
+/* Keep the classic Panel chrome and grid. Only the sky uses the new palette. */
+.csd-panel { scroll-margin-top: 64px; min-width: 0; }
+.csd-mode { display: flex; gap: 10px; }
+.csd-mode button { color: var(--text-dim); font-size: 10px; padding: 3px 0; cursor: pointer; }
+.csd-mode button[aria-pressed=true] { color: var(--text); box-shadow: 0 1px 0 var(--text-dim); }
+.csd-map { min-width: 0; }
+.csd-dome { width: 100%; height: 280px; display: block; touch-action: pan-y; user-select: none; cursor: ew-resize; }
+.csd-grid { stroke: #95b7c8; stroke-opacity: .12; stroke-width: .7; fill: none; }
+.csd-time-label { font: 16px "IBM Plex Mono",monospace; }
+.csd-object { cursor: pointer; }
+.csd-object:focus-visible { outline: 2px solid #c1e4d2; outline-offset: 4px; }
+.csd-object text { fill: currentColor; paint-order: stroke; stroke: #0b1924; stroke-width: 3px; stroke-linejoin: round; }
+.csd-object-label { font: 500 22px "IBM Plex Sans",sans-serif; }
+.csd-object-alt { font: 16px "IBM Plex Mono",monospace; }
+.csd-cardinal { fill: #a4bfc6; font: 19px "IBM Plex Mono",monospace; }
+.csd-annotation { fill: #b3cbd1; font: 16px "IBM Plex Sans",sans-serif; paint-order: stroke; stroke: #0c151e; stroke-width: 3px; }
+.csd-map-footer { display: flex; justify-content: center; align-items: center; gap: 12px; color: var(--text-dim); font-size: 10px; }
+.csd-map-footer button { color: var(--text); padding: 4px; cursor: pointer; }
+.csd-selection { display: flex; flex-wrap: wrap; gap: 4px 12px; justify-content: space-between; color: var(--text); font-size: 11px; margin: 8px 0; }
+.csd-selection span { color: var(--text-dim); }
+.csd-controls { color: var(--text-dim); font-size: 10px; }
+.csd-controls summary { cursor: pointer; padding: 4px 0; }
+.csd-layers,.csd-targets { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.csd-layers button,.csd-targets button { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); color: var(--text-dim); padding: 7px 9px; border-radius: 6px; cursor: pointer; }
+.csd-layers button[aria-pressed=true],.csd-targets button[aria-pressed=true] { color: var(--text); border-color: var(--text-dim); }
+.csd-timeline { padding: 8px 0; }
+.csd-timeline>div:first-child { display: flex; justify-content: space-between; gap: 10px; }
+.csd-timeline output { color: var(--text); font-family: "IBM Plex Mono",monospace; }
+.csd-timeline input { width: 100%; display: block; accent-color: var(--accent); cursor: ew-resize; height: 26px; margin: 5px 0; }
+.csd-time-ticks { display: flex; justify-content: space-between; font: 10px "IBM Plex Mono",monospace; }
+.csd-footnote { color: var(--text-dim); font-size: 10px; line-height: 1.5; margin: 6px 0 0; }
+.csd-tools { display:flex; flex-wrap:wrap; gap:12px; margin-top:8px; }
+.csd-tools button { font-size:10px; color:var(--text); padding:4px 0; cursor:pointer; text-decoration:underline; text-underline-offset:3px; }
+:root.night .csd-dome { filter: var(--survey-filter); }

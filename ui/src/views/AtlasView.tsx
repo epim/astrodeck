@@ -72,6 +72,7 @@ import { confirmDialog } from "../components/ConfirmDialog";
 import { accessPhrase, useCanControlMount } from "../lib/caps";
 import { useBusyOrPending } from "../lib/useBusy";
 import { api } from "../api";
+import { ClassicAtlasSky, type AtlasDisplay } from "../components/sky/ClassicAtlasSky";
 
 // Per-image survey brightness (night-adaptation memory, spec §6) persists across
 // sessions. Clamp mirrors store.ts readBright/clampBright (0.08 floor) so a
@@ -163,6 +164,10 @@ function AtlasEmpty({
 }
 
 export default function AtlasView(): JSX.Element {
+  return <ClassicAtlasSky>{display => <AtlasWorkspace display={display}/>}</ClassicAtlasSky>;
+}
+
+function AtlasWorkspace({ display }: { display: AtlasDisplay }): JSX.Element {
   const framing = useFraming();
   const config = useConfig();
   const site = useSite();
@@ -568,6 +573,8 @@ export default function AtlasView(): JSX.Element {
 
   // free-roam entry from the empty state
   const onFreeRoam = useCallback(() => openFraming(undefined), [openFraming]);
+  // The atlas opens directly on the survey. No target or equipment is required.
+  useEffect(() => { if (!framing) onFreeRoam(); }, [framing, onFreeRoam]);
 
   // Stable identities: SkyCanvas's fetch effect depends on these via loadSurvey.
   const onSurveyError = useCallback(() => setSurveyDegraded(true), []);
@@ -591,13 +598,17 @@ export default function AtlasView(): JSX.Element {
   );
   const region = useSkyRegion(regionCenter, framing?.fovZoomDeg ?? 0, !!framing);
   const [selectedObject, setSelectedObject] = useState<SkyRow | null>(null);
+  const visibleRows = region.rows.filter(row => display.objects && display.accepts(row));
+  useEffect(() => {
+    if (selectedObject && (!display.objects || !display.accepts(selectedObject))) setSelectedObject(null);
+  }, [display, selectedObject]);
 
   if (!framing) {
     return <AtlasEmpty onFreeRoam={onFreeRoam} onPick={openFraming} />;
   }
 
   const { center, rotation_deg, survey, stretch, fovZoomDeg, mosaic, target } = framing;
-  const mode: "survey" | "schematic" = survey === "schematic" ? "schematic" : "survey";
+  const mode: "survey" | "schematic" = !display.imagery || survey === "schematic" ? "schematic" : "survey";
 
   // ---- session patchers routed into setFraming ----
   const setCenter = (ra_hours: number, dec_deg: number) =>
@@ -1332,6 +1343,7 @@ export default function AtlasView(): JSX.Element {
             expect; a proper pinned-map affordance can be designed later.) */}
         <div className="min-w-0">
           <SkyCanvas
+            overlayControls={display.controls}
             center={center}
             rotationDeg={rotation_deg}
             survey={survey}
@@ -1355,7 +1367,7 @@ export default function AtlasView(): JSX.Element {
               statusMount ? `${statusMount.ra_str} ${statusMount.dec_str}` : null
             }
             // what is out there, and which of it the card is open on
-            skyRows={region.rows}
+            skyRows={visibleRows}
             selectedObjectId={selectedObject?.id ?? null}
             onPickObject={setSelectedObject}
             onCenterChange={setCenter}
@@ -1376,7 +1388,7 @@ export default function AtlasView(): JSX.Element {
               and on a 390px phone a popover over the map IS the map. */}
           <Panel title={selectedObject ? "This object" : "What's in view"}>
             <div className="flex flex-col gap-2">
-              <ObjectCard
+              {!selectedObject && region.rows.length > 0 && visibleRows.length === 0 ? <p className="text-[12px] text-dim">{display.objects ? 'No objects match your filters in this view.' : 'Object overlays are hidden. Turn them on in Layers.'}</p> : <ObjectCard
                 row={selectedObject}
                 frameFovDeg={frameFovDeg}
                 degraded={region.degraded}
@@ -1387,7 +1399,7 @@ export default function AtlasView(): JSX.Element {
                   setSelectedObject(null);
                 }}
                 onClose={() => setSelectedObject(null)}
-              />
+              />}
               {region.error && (
                 <p className="text-[12px] text-warn leading-snug">{region.error}</p>
               )}
