@@ -127,7 +127,7 @@ Write-Output ("   ATLAS mode in " + $atlas.Name)
 $markers = Get-ChildItem (Join-Path $webui "assets") -Filter "*.js" | Where-Object { Select-String -Path $_.FullName -Pattern 'atlas-markers' -SimpleMatch -Quiet } | Select-Object -First 1
 if (-not $markers) { throw "the built UI carries no target markers on the atlas (atlas-markers missing)" }
 Write-Output ("   targets on the atlas in " + $markers.Name)
-$door = Get-ChildItem (Join-Path $webui "assets") -Filter "*.js" | Where-Object { Select-String -Path $_.FullName -Pattern 'OPEN THE NEW SIX-HUB UI' -SimpleMatch -Quiet } | Select-Object -First 1
+$door = Get-ChildItem (Join-Path $webui "assets") -Filter "*.js" | Where-Object { Select-String -Path $_.FullName -Pattern 'link-next-ui' -SimpleMatch -Quiet } | Select-Object -First 1
 if (-not $door) { throw "the built UI has no door from classic to the new UI (root switch not in this bundle)" }
 Write-Output ("   classic root with the door to #/next in " + $door.Name)
 
