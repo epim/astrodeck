@@ -34,7 +34,27 @@
 // is dismissed per session and not by that key, so the global nudge survives.
 //
 // The reverse direction does not exist. Nothing in the new UI writes `store.view`
-// (ARCHITECTURE.md section 9), except `main.tsx`'s one classic handoff.
+// (ARCHITECTURE.md section 9), except `AppRoot.tsx`'s one classic handoff.
+//
+// THE DIRECTION, SINCE THE ROOT WENT BACK TO CLASSIC (2026-09-15). This bridge
+// is mounted by `NextApp` and by nothing else, so every mapping below reads:
+// "the NEW UI is on screen, a reused component inside it asked for a legacy
+// destination, send it to the new UI's screen for that destination". It is a
+// hand-off WITHIN the new root. It is NOT, and never was, a redirect from an
+// old URL.
+//
+// That distinction matters now that `rootChoice.ts` has `DEFAULT_ROOT =
+// "classic"`. A user who opens `#/atlas` is opening the CLASSIC root, which
+// mounts `App` and not `NextApp`, so this file does not run at all and nothing
+// bounces them to `#/sky?mode=atlas`. `LEGACY_VIEW_ROUTE.atlas` still points
+// there because it still has to: `store.openFraming()` writes `view: "atlas"`
+// from inside the new UI's own Mount catalogue, and that write must land on the
+// new UI's atlas rather than tear the root out from under the user.
+//
+// So the bridge does not read `DEFAULT_ROOT`, and must not: under either
+// setting the correct answer to a `store.view` write made while the new UI is
+// mounted is the same route. Deliberately no import - it would also close a
+// cycle, since `rootChoice.ts` imports the table below.
 
 import { useEffect, useRef } from "react";
 import { useStore } from "../store";
