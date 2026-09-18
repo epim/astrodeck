@@ -29,8 +29,9 @@ function approachThenStop(h:CameraPoseHistory){
 test('A phone that stops moving becomes capturable, with no sensor wiggle required',()=>{
   const h=new CameraPoseHistory();
   const finalBasis=approachThenStop(h);
-  // Every attempt from 500 ms through 2 s of perfect stillness must succeed
-  // once the video confirms the view is steady and the source is alive.
+  // Every attempt after 500 ms of perfect stillness must succeed once the
+  // video confirms the view is steady and the source is alive. This case
+  // samples the first 2 s; there is no ceiling - see the tripod case below.
   for(let now=1000;now<=2000;now+=250){
     assert.equal(h.forFrame(now,undefined,{visuallyStable:true,sourceHealthy:true}),finalBasis,
       `still and steady at ${now} ms was refused`);
@@ -69,6 +70,24 @@ test('A genuine gap DURING the approach is still movement, not a settle',()=>{
   h.add({at:100,basis:lookBasis(8,20),screenAngle:0});
   h.add({at:1000,basis:lookBasis(0,20),screenAngle:0});
   assert.equal(h.forFrame(1100,undefined,{visuallyStable:true,sourceHealthy:true}),null);
+});
+
+test('A phone on a tripod stays capturable for as long as the video vouches for it',()=>{
+  const h=new CameraPoseHistory();
+  const finalBasis=approachThenStop(h);
+  // Clamped or tripod-mounted, the phone can be silent for minutes. Nothing
+  // expires here: the video re-earns the verdict every frame, and while it
+  // says the view has not moved, the last orientation event is still the pose.
+  assert.equal(h.forFrame(30000,undefined,{visuallyStable:true,sourceHealthy:true}),finalBasis,
+    '30 s of vouched-for stillness was refused');
+  assert.equal(h.forFrame(300000,undefined,{visuallyStable:true,sourceHealthy:true}),finalBasis,
+    '5 min of vouched-for stillness was refused');
+});
+
+test('A capture time deep inside a long stillness resolves to the settled pose',()=>{
+  const h=new CameraPoseHistory();
+  const finalBasis=approachThenStop(h);
+  assert.equal(h.forFrame(30000,29000,{visuallyStable:true,sourceHealthy:true}),finalBasis);
 });
 
 console.log(`photosphereStillness.test: ${passed}/${passed+failed} passed`);
