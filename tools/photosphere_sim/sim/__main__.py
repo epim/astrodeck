@@ -22,16 +22,23 @@ def _load_case_def(case_id: str) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _renderer(name: str):
+    """The renderer ``make-case`` was asked for.
+
+    ``sim.render`` is imported only when it is wanted, so that a flat build
+    needs neither Playwright nor a browser on the machine.
+    """
+    if name == "flat":
+        return flat_renderer
+    from .render import CaseRenderer
+
+    # A fresh one per run: it carries the versions the manifest records.
+    return CaseRenderer()
+
+
 def _make_case(args: argparse.Namespace) -> int:
-    if args.renderer != "flat":
-        # The default is "three", Task 4's renderer. Until it lands, this
-        # command must refuse rather than silently render mid-grey frames
-        # under a name that promises something else.
-        print("renderer not available: 'three' is wired up in Task 4; "
-              "pass --renderer flat", file=sys.stderr)
-        return 1
     case_def = _load_case_def(args.case_id)
-    out_dir = build_case(case_def, Path(args.out), flat_renderer)
+    out_dir = build_case(case_def, Path(args.out), _renderer(args.renderer))
     print(f"wrote {out_dir}")
     return 0
 
