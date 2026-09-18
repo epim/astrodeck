@@ -24,7 +24,9 @@ export interface Raster {
   pixels: Uint8ClampedArray;
 }
 
-const SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+/** The eight bytes every PNG starts with. Exported so a test can build a
+ *  container by hand and feed the decoder bytes no encoder here produced. */
+export const PNG_SIGNATURE: readonly number[] = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 
 const CRC_TABLE = (() => {
   const table = new Int32Array(256);
@@ -55,14 +57,22 @@ function asBuffer(bytes: Uint8Array): Buffer {
 /** Decode an 8-bit, non-interlaced RGB or RGBA PNG into RGBA pixels. */
 export function decodePng(bytes: Uint8Array): Raster {
   const data = asBuffer(bytes);
-  if (data.length < 8 || SIGNATURE.some((b, i) => data[i] !== b)) throw new Error('not a PNG: bad signature');
+  if (data.length < 8 || PNG_SIGNATURE.some((b, i) => data[i] !== b)) throw new Error('not a PNG: bad signature');
   let width = 0, height = 0, channels = 0, seenHeader = false;
   const parts: Buffer[] = [];
   let at = 8;
   while (at + 8 <= data.length) {
     const length = data.readUInt32BE(at), type = data.toString('latin1', at + 4, at + 8);
-    const body = data.subarray(at + 8, at + 8 + length);
     if (at + 12 + length > data.length) throw new Error(`PNG chunk ${type} runs past the end of the file`);
+    const body = data.subarray(at + 8, at + 8 + length);
+    // Every chunk carries a CRC of its type and body, and checking it is the
+    // difference between "this file is not what was written" and a plausible
+    // picture built out of corrupt bytes. A replay that scored a torn frame
+    // would report a scanner failure that never happened.
+    const declared = data.readUInt32BE(at + 8 + length);
+    const actual = crc32(data.subarray(at + 4, at + 8 + length));
+    if (declared !== actual)
+      throw new Error(`PNG chunk ${type} fails its CRC (declared ${declared}, computed ${actual})`);
     if (type === 'IHDR') {
       width = body.readUInt32BE(0); height = body.readUInt32BE(4);
       const depth = body[8], colour = body[9], compression = body[10], filter = body[11], interlace = body[12];
@@ -113,7 +123,10 @@ export function decodePng(bytes: Uint8Array): Raster {
   return { width, height, pixels };
 }
 
-function chunk(type: string, body: Uint8Array): Buffer {
+/** One PNG chunk: length, type, body, CRC of type and body. Exported with the
+ *  signature so a test can assemble a container the encoder here would never
+ *  emit - a scanline filtered with Up, Average or Paeth, say. */
+export function pngChunk(type: string, body: Uint8Array): Buffer {
   const out = Buffer.alloc(body.length + 12);
   out.writeUInt32BE(body.length, 0);
   out.write(type, 4, 'latin1');
@@ -135,9 +148,9 @@ export function encodePng(pixels: Uint8Array | Uint8ClampedArray, width: number,
   header.writeUInt32BE(width, 0); header.writeUInt32BE(height, 4);
   header[8] = 8; header[9] = 6; header[10] = 0; header[11] = 0; header[12] = 0;
   return Buffer.concat([
-    Buffer.from(SIGNATURE),
-    chunk('IHDR', header),
-    chunk('IDAT', deflateSync(raw)),
-    chunk('IEND', Buffer.alloc(0)),
+    Buffer.from(PNG_SIGNATURE),
+    pngChunk('IHDR', header),
+    pngChunk('IDAT', deflateSync(raw)),
+    pngChunk('IEND', Buffer.alloc(0)),
   ]);
 }

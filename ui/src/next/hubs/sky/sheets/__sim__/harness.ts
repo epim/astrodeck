@@ -52,10 +52,17 @@ function spans(source: number, target: number): Span[] {
 
 /** Box-filter `rgba` (RGBA, `W` x `H`) down to `w` x `h` by exact area
  *  averaging: an output pixel is the mean of the source rectangle it covers,
- *  weighted by how much of each source pixel falls inside it. This is what a
- *  browser's `drawImage` into a smaller canvas does, and the scanner depends on
- *  it: a nearest-neighbour pick of one source pixel in 15 would make a still
- *  view flicker between neighbouring samples and a 32 x 24 stillness grid built
+ *  weighted by how much of each source pixel falls inside it.
+ *
+ *  This is the idealisation the simulator's contract asks for, NOT a claim
+ *  about any browser. What a real `drawImage` into a smaller canvas does is
+ *  implementation-defined - the filter, whether it is separable, whether it
+ *  happens on the GPU and in what precision, all vary by engine and by scale
+ *  factor - so a replay is a measurement against a stated downscale, and the
+ *  same scanner on a phone will see slightly different pixels. What matters
+ *  for the scan is only that the downscale averages rather than picks: a
+ *  nearest-neighbour choice of one source pixel in 15 would make a still view
+ *  flicker between neighbouring samples, and a 32 x 24 stillness grid built
  *  from single pixels would read sensor noise as movement. */
 export function resample(rgba: Uint8ClampedArray, W: number, H: number, w: number, h: number): Uint8ClampedArray {
   const out = new Uint8ClampedArray(w * h * 4);
@@ -133,15 +140,29 @@ export function createHarness(options: { videoWidth: number; videoHeight: number
   const dom = new JSDOM('<html><body></body></html>', { url: 'https://localhost/', pretendToBeVisual: true });
   const w = dom.window as unknown as Record<string, any>;
   const g = globalThis as unknown as Record<string, any>;
+
+  // Everything this harness puts on a shared object is put back by dispose().
+  // The process outlives the replay - the test file replays twice and then goes
+  // on to assert other things - and a frozen `Date.now` left behind in it is a
+  // trap for whatever runs next, which would fail somewhere far from here.
+  const restores: (() => void)[] = [];
+  const replace = (target: object, key: string, value: unknown) => {
+    const original = Object.getOwnPropertyDescriptor(target, key);
+    restores.push(original
+      ? () => Object.defineProperty(target, key, original)
+      : () => { delete (target as Record<string, unknown>)[key]; });
+    Object.defineProperty(target, key, { value, writable: true, configurable: true });
+  };
+
   for (const key of ['window', 'document', 'navigator', 'HTMLElement', 'HTMLVideoElement', 'HTMLCanvasElement',
     'Element', 'Node', 'Event', 'localStorage', 'requestAnimationFrame', 'cancelAnimationFrame'])
-    Object.defineProperty(g, key, { value: key === 'window' ? w : w[key], writable: true, configurable: true });
+    replace(g, key, key === 'window' ? w : w[key]);
   w.DeviceOrientationEvent = class { };
   Object.defineProperty(w, 'isSecureContext', { value: true, configurable: true });
 
   let clock = 0;
-  Object.defineProperty(performance, 'now', { value: () => clock, configurable: true });
-  Object.defineProperty(Date, 'now', { value: () => clock, configurable: true });
+  replace(performance, 'now', () => clock);
+  replace(Date, 'now', () => clock);
 
   // The picture the camera is showing, and the moment it was taken. Both are
   // replaced whole when the driver loads the next frame; nothing here keeps a
@@ -177,7 +198,11 @@ export function createHarness(options: { videoWidth: number; videoHeight: number
     return {
       drawImage(_image, _x, _y, width, height) { drawnWidth = width; drawnHeight = height; },
       getImageData(_x, _y, width, height) {
-        const outW = drawnWidth || width, outH = drawnHeight || height;
+        // A canvas nothing has been drawn to is transparent black, and reading
+        // the camera out of it would be the stub answering a question the
+        // caller never asked the camera.
+        if (!drawnWidth || !drawnHeight) return { data: new Uint8ClampedArray(width * height * 4) };
+        const outW = drawnWidth, outH = drawnHeight;
         const key = `${outW}x${outH}`;
         let data = resampled.get(key);
         if (!data) {
@@ -239,6 +264,10 @@ export function createHarness(options: { videoWidth: number; videoHeight: number
       fn(clock, metadata);
       return true;
     },
-    dispose() { frameCallback = null; dom.window.close(); },
+    dispose() {
+      frameCallback = null;
+      dom.window.close();
+      for (const restore of restores.reverse()) restore();
+    },
   };
 }
