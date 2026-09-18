@@ -39,8 +39,17 @@ which the Three.js renderer regenerates from the same declarative recipe. Its
 module docstring carries the three conventions the schema leaves open, because
 they have to be implemented twice and agree.
 
-The renderer, the replay driver and the scorer arrive in later tasks, so three
-of the four commands below do not run yet. Run the tests that exist with:
+`renderer/` is the renderer: `texture.js` repaints `background_texture`'s
+recipe in JavaScript, `render.js` builds the scene in Three.js and hands back
+frames, and `index.html` is the page that carries them.
+`sim/render.py` serves this directory over a loopback HTTP server, drives the
+page in a headless Chromium through Playwright, and turns each frame back into
+a numpy array. `sim/cases.py` writes a whole case directory from a case
+definition, a scene, a route and a renderer, and `python -m sim make-case`
+runs it.
+
+The replay driver and the scorer arrive in later tasks, so two of the four
+commands below do not run yet. Run the tests with:
 
     python -m unittest discover -s tools/photosphere_sim/tests -t tools/photosphere_sim -v
 
@@ -50,10 +59,19 @@ From the repository root:
 
     python -m unittest discover -s tools/photosphere_sim/tests -t tools/photosphere_sim -v
 
+Building a case runs for real and renders with Three.js by default; pass
+`--renderer flat` for mid-grey frames that need no browser:
+
+    # inside tools/photosphere_sim
+    python -m sim make-case <case_id>       # about 50 s and 40 MiB per case
+    node renderer/hash.test.mjs             # the pinned lattice integers
+
+`tests/test_render_texture.py` runs that Node script and compares the whole
+JavaScript texture with the Python one, so the Python suite covers both.
+
 The rest, from CONTRACT.md's Commands section (not implemented yet):
 
     # inside tools/photosphere_sim
-    python -m sim make-case <case_id>
     python -m sim score <case_id>          # and: python -m sim corrupt <case_id> <corruption>
 
     # inside ui

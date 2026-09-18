@@ -40,7 +40,7 @@ from pathlib import Path
 
 import numpy as np
 
-__all__ = ["CHROMIUM_ARGS", "CaseRenderer", "ThreeRenderer", "three_renderer"]
+__all__ = ["CHROMIUM_ARGS", "CaseRenderer", "ThreeRenderer"]
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -148,6 +148,7 @@ class ThreeRenderer:
         self._page = None
         self._chromium_version = None
         self._console: list[str] = []
+        self._console_errors: list[str] = []
         self.diagnostics: dict = {}
         try:
             self._start(scene, camera, CHROMIUM_ARGS if args is None else list(args))
@@ -166,9 +167,8 @@ class ThreeRenderer:
         self._chromium_version = self._browser.version
         self._page = self._browser.new_page(viewport={"width": 640, "height": 480})
         self._page.set_default_timeout(LOAD_TIMEOUT_MS)
-        self._page.on("console", lambda message: self._console.append(
-            f"{message.type}: {message.text}"))
-        self._page.on("pageerror", lambda error: self._console.append(f"pageerror: {error}"))
+        self._page.on("console", self._on_console)
+        self._page.on("pageerror", lambda error: self._record(f"pageerror: {error}", True))
         self._page.goto(f"{self._server.origin}/renderer/index.html",
                         wait_until="load", timeout=LOAD_TIMEOUT_MS)
         self._page.wait_for_function(
@@ -180,6 +180,25 @@ class ThreeRenderer:
         self.diagnostics = self._page.evaluate(
             "([s, c]) => window.simRender.load(s, c)",
             [_scene_payload(scene), _camera_payload(camera)])
+
+    def _on_console(self, message) -> None:
+        self._record(f"{message.type}: {message.text}", message.type == "error")
+
+    def _record(self, line: str, is_error: bool) -> None:
+        self._console.append(line)
+        if is_error:
+            self._console_errors.append(line)
+
+    def take_console_errors(self) -> list:
+        """The errors the page has logged since this was last called.
+
+        Three.js reports a lost context, a failed shader compile and a broken
+        framebuffer through ``console.error`` and then keeps going, handing
+        back a buffer of zeros. Reading this after each frame is what turns
+        that into a failure instead of a case directory full of black PNGs.
+        """
+        errors, self._console_errors = self._console_errors, []
+        return errors
 
     def __enter__(self) -> "ThreeRenderer":
         return self
@@ -245,6 +264,15 @@ class CaseRenderer:
     one round trip. It remembers the versions it rendered with so that
     ``build_case`` can put them in the manifest, which is the only reason this
     is an object rather than a plain generator function.
+
+    It also refuses to hand back a frame it cannot vouch for. A thousand
+    frames go past unwatched, and the ways WebGL fails under a software
+    rasteriser -- a lost context, an incomplete framebuffer -- are quiet: the
+    readback succeeds and returns zeros, three logs an error, and the case
+    directory fills with black PNGs whose hash is perfectly stable. So each
+    frame is checked for being a single value, and the page's error log is
+    read after each frame, and either one raises with the frame's id rather
+    than writing the frame.
     """
 
     def __init__(self):
@@ -253,10 +281,15 @@ class CaseRenderer:
     def __call__(self, scene, camera, frames):
         with ThreeRenderer(scene, camera) as renderer:
             self.versions = dict(renderer.version)
+            renderer.take_console_errors()
             for frame in frames:
-                yield renderer.render(frame.position, frame.basis)
-
-
-#: The name Task 4's contract exposes. It keeps the versions of its last run,
-#: so a caller that needs them for two cases at once builds its own.
-three_renderer = CaseRenderer()
+                image = renderer.render(frame.position, frame.basis)
+                errors = renderer.take_console_errors()
+                if errors:
+                    raise RuntimeError(
+                        f"the renderer logged an error while drawing {frame.frame_id}: {errors}")
+                if image.min() == image.max():
+                    raise RuntimeError(
+                        f"{frame.frame_id} came back a single value ({int(image.flat[0])}); "
+                        f"the chart yard has no such view, so the frame is not a picture")
+                yield image
