@@ -25,7 +25,7 @@ export const STILL_DIFF_LIMIT = 0.02;
  *  a pan slow enough to stay under it accumulates without bound while every
  *  single frame reads as still. Measured on a 320x240 treeline scene at 30 fps
  *  and a 60 degree short axis, a 1 px/frame pan (7.6 deg/s) moves the grid by
- *  0.0036 per frame - a fifth of STILL_DIFF_LIMIT - and had swept 15 degrees
+ *  0.0142 per frame - under STILL_DIFF_LIMIT - and had swept 15 degrees
  *  after two seconds of being called "still". Holding the anchor bounds the
  *  TOTAL drift since the settle instead of the per-frame rate, and that pan
  *  now crosses this limit in about 0.3 s, inside SETTLE_MS, so it never reads
@@ -41,7 +41,7 @@ export const ANCHOR_DIFF_LIMIT = 0.04;
  *  Dimensionless, because the grid is divided by its own mean, so this is a
  *  squared coefficient of variation: 0.01 is an RMS deviation of 10 percent of
  *  mean luminance across the frame. Measured at 320x240: a treeline against
- *  sky is 0.48, a smooth overcast sky (base 90, spread 20) is 0.0036 - and
+ *  sky is 0.42, a smooth overcast sky (base 90, spread 20) is 0.0036 - and
  *  that overcast frame is exactly the one that read "still" through a 75 deg/s
  *  pan, because a linear ramp slid sideways is a linear ramp plus a constant
  *  and mean-normalisation removes the constant. No frame comparison can see
@@ -101,32 +101,60 @@ function variance(grid:Float64Array):number {
   return acc/grid.length;
 }
 
-/** Tracks how long the camera view has been unchanged. */
+/** Since WHEN has the view been unchanged, and when was it last not?
+ *  `stillSince` is the frame time the current uninterrupted still run began
+ *  on: the view is KNOWN unchanged from there to the newest frame. A
+ *  continuity only exists once that run has settled (see `stableAt`), because
+ *  an unsettled run vouches for nothing yet.
+ *  `lastBreak` is the most recent interval `[from, to]`, in frame time, in
+ *  which the view moved, could not be judged, or was not observed - `null` if
+ *  none has been seen since the object was cleared. A reading taken before
+ *  `lastBreak.from` is NOT covered by this continuity, however long the run
+ *  since has lasted: something happened between the reading and the run that
+ *  this witness cannot account for. */
+export interface ViewContinuity { stillSince: number; lastBreak: { from: number; to: number } | null }
+
+/** Tracks how long the camera view has been unchanged, and when it last was
+ *  not. */
 export class VisualStability {
   private frame:Float64Array|null=null;
   private anchor:Float64Array|null=null;
   private frameAt=-Infinity;
   private stillSince:number|null=null;
+  private lastBreak:{from:number;to:number}|null=null;
   private textured=false;
-  clear(){this.frame=null;this.anchor=null;this.frameAt=-Infinity;this.stillSince=null;this.textured=false;}
+  clear(){this.frame=null;this.anchor=null;this.frameAt=-Infinity;this.stillSince=null;this.lastBreak=null;this.textured=false;}
 
   /** `luma` is one byte per pixel, row-major, `width` x `height`. */
   observe(at:number,luma:Uint8Array|Uint8ClampedArray,width:number,height:number):void {
     if(!Number.isFinite(at)||at<this.frameAt)return;
     if(!(width>0)||!(height>0)||luma.length<width*height)return;
     const grid=normalise(resample(luma,width,height));
-    const previous=this.frame,gap=at-this.frameAt;
+    const previous=this.frame,previousAt=this.frameAt,gap=at-previousAt;
     this.frame=grid;this.frameAt=at;this.textured=variance(grid)>=TEXTURE_FLOOR;
+    // A frame with nothing in it to judge movement by watched nothing, so the
+    // run cannot reach back across it: it breaks at its own instant.
+    if(!this.textured){this.broken(at,at);return;}
     // Nothing watched the view across an unobserved gap, so nothing can vouch
-    // for it: start the settle over rather than crediting the missing time.
-    if(!previous||gap>STALE_FRAME_MS){this.stillSince=null;this.anchor=null;return;}
-    if(meanAbsDiff(previous,grid)>STILL_DIFF_LIMIT){this.stillSince=null;this.anchor=null;return;}
+    // for it: start the settle over rather than crediting the missing time,
+    // and let the break end HERE, so nothing before this frame is covered.
+    if(!previous||gap>STALE_FRAME_MS){this.broken(at,at);return;}
+    // Motion between these two frames. It may have begun anywhere inside the
+    // pair, which is why the break starts at the earlier frame.
+    if(meanAbsDiff(previous,grid)>STILL_DIFF_LIMIT){this.broken(previousAt,at);return;}
     // The frame the settle began on is kept and re-compared every frame. Without
     // it this is only a speed limit, and a slow pan drifts arbitrarily far while
     // each step stays under it. With it the verdict means what the caller reads
     // it as: the view has not moved since the settle started.
-    if(this.stillSince===null||!this.anchor){this.stillSince=at-gap;this.anchor=previous;return;}
-    if(meanAbsDiff(this.anchor,grid)>ANCHOR_DIFF_LIMIT){this.stillSince=null;this.anchor=null;}
+    if(this.stillSince===null||!this.anchor){this.stillSince=previousAt;this.anchor=previous;return;}
+    // A drift caught against the anchor happened at an unknown moment of the
+    // run, so nothing before now is vouched for.
+    if(meanAbsDiff(this.anchor,grid)>ANCHOR_DIFF_LIMIT)this.broken(at,at);
+  }
+
+  /** Close the current still run and remember the interval that ended it. */
+  private broken(from:number,to:number):void {
+    this.stillSince=null;this.anchor=null;this.lastBreak={from,to};
   }
 
   /** `true` still, `false` moving, `null` unknown (no frame, none recently, or
@@ -136,5 +164,12 @@ export class VisualStability {
     if(!this.textured)return null;
     if(this.stillSince===null)return false;
     return now-this.stillSince>=SETTLE_MS;
+  }
+
+  /** Since when has THIS view been continuous? Null until the run has settled
+   *  (see stableAt), because an unsettled run vouches for nothing yet. */
+  continuity(now:number):ViewContinuity|null {
+    if(this.stableAt(now)!==true||this.stillSince===null)return null;
+    return {stillSince:this.stillSince,lastBreak:this.lastBreak};
   }
 }

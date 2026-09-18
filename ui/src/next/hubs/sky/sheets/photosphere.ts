@@ -1,7 +1,7 @@
 // Camera capture retains a bounded colour panorama and an editable horizon
 // draft. Phone sensor pose and lens angles remain estimates for user review.
 import { DOME_CELLS, SkyPanorama, orientationBasis, dot, skyAngles, cameraLens, transferBasis, type CameraBasis } from './photosphereGeometry';
-import { CameraPoseHistory, ScanPoseSource, poseSeparation, type PoseEvidence } from './photospherePose';
+import { CameraPoseHistory, ScanPoseSource, poseSeparation, viewVouchesFor, type PoseEvidence } from './photospherePose';
 import { registerFrame } from './photosphereRegistration';
 import { VisualStability, GRID_W, GRID_H } from './photosphereStability';
 
@@ -313,7 +313,7 @@ export class PhotosphereSweep {
   private vouched(at: number | null): boolean {
     if (at === null) return false;
     const now = performance.now();
-    return now - at < SENSOR_SILENCE_MS || this.stability.stableAt(now) === true;
+    return now - at < SENSOR_SILENCE_MS || viewVouchesFor(at, this.stability.continuity(now));
   }
   get currentAltitude(): number { return this.altitude; }
   get cameraBasis(): CameraBasis | null {
@@ -495,7 +495,7 @@ export class PhotosphereSweep {
         // The sensor stops talking when the phone stops moving. Ask the video
         // and the page lifecycle instead, and hand both answers to forFrame.
         this.observeStillness(video,now);
-        const evidence:PoseEvidence={visuallyStable:this.stability.stableAt(now),sourceHealthy:this.sourceHealthy};
+        const evidence:PoseEvidence={view:this.stability.continuity(now),sourceHealthy:this.sourceHealthy};
         const basis=this.poses.forFrame(now,metadata.captureTime,evidence);
         if(basis)this.frameBasis={basis,at:now};
         else this.frameBasis=null;
@@ -562,7 +562,7 @@ export class PhotosphereSweep {
       if (manualOverhead) this.issue = "Waiting for a camera image. Keep the rear camera pointing up and try again.";
       return false;
     }
-    const evidence:PoseEvidence={visuallyStable:this.stability.stableAt(now),sourceHealthy:this.sourceHealthy};
+    const evidence:PoseEvidence={view:this.stability.continuity(now),sourceHealthy:this.sourceHealthy};
     const rawBasis=frame ? frame.basis : this.poses.forFrame(now,undefined,evidence);
     let basis=rawBasis?this.correctBasis(rawBasis):null;
     const tilt=frame ? frame.tilt : this.tilts.forFrame(now,undefined,evidence);

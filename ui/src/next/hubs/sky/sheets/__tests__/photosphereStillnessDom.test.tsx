@@ -24,6 +24,13 @@ Object.defineProperty(w,'isSecureContext',{value:true});
 Object.defineProperty(w.HTMLVideoElement.prototype,'videoWidth',{get:()=>640});
 Object.defineProperty(w.HTMLVideoElement.prototype,'videoHeight',{get:()=>480});
 w.HTMLVideoElement.prototype.play=async function(){};
+// The interval fallback consults the element's media state: a paused or
+// frozen element is not delivering frames however often the timer fires.
+let mediaTime=0,paused=false;
+Object.defineProperty(w.HTMLVideoElement.prototype,'currentTime',{get:()=>mediaTime,configurable:true});
+Object.defineProperty(w.HTMLVideoElement.prototype,'paused',{get:()=>paused,configurable:true});
+Object.defineProperty(w.HTMLVideoElement.prototype,'ended',{get:()=>false,configurable:true});
+Object.defineProperty(w.HTMLVideoElement.prototype,'readyState',{get:()=>2,configurable:true});
 
 // A textured scene, so a one-pixel shift is measurable rather than invisible:
 // a 32-step luminance gradient with a bright block, generated at whatever size
@@ -58,7 +65,7 @@ Object.defineProperty(w.document,'visibilityState',{get:()=>hidden?'hidden':'vis
 let intervalFn:(()=>void)|null=null;
 g.setInterval=(fn:()=>void)=>{intervalFn=fn;return 1;};
 g.clearInterval=()=>{intervalFn=null;};
-const track={stop(){},getSettings:()=>({deviceId:'main'}),addEventListener(){}};
+const track={stop(){},getSettings:()=>({deviceId:'main'}),addEventListener(){},readyState:'live',muted:false};
 Object.defineProperty(w.navigator,'mediaDevices',{value:{
   enumerateDevices:async()=>[{kind:'videoinput',deviceId:'main',label:'Back main wide camera'}],
   getUserMedia:async()=>({getTracks:()=>[track],getVideoTracks:()=>[track]}),
@@ -76,12 +83,16 @@ async function test(name:string,fn:()=>Promise<void>){
 }
 
 /** A recording sweep aimed at one dome cell by a 10 degree approach over
- *  0-500 ms, with the video frame callback under the test's control. Returns
- *  the moment the approach ended: silence starts here. With `rvfc:false` the
- *  element has no requestVideoFrameCallback at all - Firefox Android - and the
- *  returned tick drives the 350 ms setInterval fallback instead. */
-async function approachAndHold(rvfc=true){
-  shift=0;hidden=false;blind=false;intervalFn=null;
+ *  0-600 ms, with the camera watching the whole time: one video frame after
+ *  each orientation event, the scene shifting a pixel each time so the video
+ *  sees the motion the sensor reports. Returns the moment the approach ended:
+ *  silence starts here. With `rvfc:false` the element has no
+ *  requestVideoFrameCallback at all - Firefox Android - and the returned tick
+ *  drives the 350 ms setInterval fallback instead, with the media clock
+ *  advancing unless a test freezes it. `step` is the size of the LAST
+ *  orientation step in degrees (2 by default). */
+async function approachAndHold(rvfc=true,step=2){
+  shift=0;hidden=false;blind=false;intervalFn=null;mediaTime=0;paused=false;
   const video=w.document.createElement('video');
   let frame:((now:number,metadata:unknown)=>void)|undefined;
   if(rvfc){
@@ -91,19 +102,27 @@ async function approachAndHold(rvfc=true){
   const sweep=new PhotosphereSweep();
   await sweep.start(video,w.document.createElement('canvas'));
   const cell=sweep.cells.find((c)=>c.alt>20&&c.alt<60)!;
-  for(let i=10;i>=0;i-=2){
+  const tick=rvfc
+    ? ()=>{clock+=100;mediaTime+=0.1;frame!(clock,{captureTime:clock,mediaTime,presentationTime:clock,
+        expectedDisplayTime:clock,width:640,height:480,presentedFrames:1});}
+    : ()=>{clock+=350;if(!paused)mediaTime+=0.35;intervalFn!();};
+  const aim=(offset:number)=>{
     const ev=new w.Event('deviceorientationabsolute');
     clock+=100;Object.defineProperty(ev,'timeStamp',{value:clock});
-    Object.assign(ev,{alpha:(360-(cell.az+i))%360,beta:90+cell.alt,gamma:0,absolute:true});
+    Object.assign(ev,{alpha:(360-(cell.az+offset))%360,beta:90+cell.alt,gamma:0,absolute:true});
     w.dispatchEvent(ev);
-  }
-  sweep.begin();
+  };
+  // begin() gates on compassReady, so the scan can only start once the first
+  // reading has arrived - a sweep begun before it silently never records, and
+  // every case that only asserts "nothing was captured" then passes for the
+  // wrong reason. From there the camera watches a RECORDING sweep, as on a
+  // phone; grabFrame refuses without an accepted pose, so nothing is captured
+  // during the approach.
+  aim(10);sweep.begin();shift++;tick();
+  for(let i=8;i>=step;i-=2){aim(i);shift++;tick();}
+  aim(0);shift++;                      // the last step: `step` degrees in 100 ms
   // From here the browser sends no orientation event ever again.
-  const tick=rvfc
-    ? ()=>{clock+=100;frame!(clock,{captureTime:clock,mediaTime:clock,presentationTime:clock,
-        expectedDisplayTime:clock,width:640,height:480,presentedFrames:1});}
-    : ()=>{clock+=350;intervalFn!();};
-  return {sweep,cell,tick,silentFrom:clock};
+  return {sweep,cell,tick,aim,silentFrom:clock};
 }
 
 await test('A still phone captures within 1.5 s of the hold, with no sensor event at all',async()=>{
