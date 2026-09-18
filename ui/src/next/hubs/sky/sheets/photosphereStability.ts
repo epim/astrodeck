@@ -28,8 +28,9 @@ export const STILL_DIFF_LIMIT = 0.02;
  *  0.0142 per frame - under STILL_DIFF_LIMIT - and had swept 15 degrees
  *  after two seconds of being called "still". Holding the anchor bounds the
  *  TOTAL drift since the settle instead of the per-frame rate, and that pan
- *  now crosses this limit in about 0.3 s, inside SETTLE_MS, so it never reads
- *  as still at all. Twice STILL_DIFF_LIMIT leaves a genuine hold ample room:
+ *  now crosses this limit in 0.10 s (measured: the run opens at 33.3 ms and
+ *  breaks at 100.0 ms, three frames at 30 fps), far inside SETTLE_MS, so it
+ *  never reads as still at all. Twice STILL_DIFF_LIMIT leaves a genuine hold ample room:
  *  normalisation already removes an exposure change (0.002 for 30 percent),
  *  and grid-cell averaging leaves sensor noise near 0.006. */
 export const ANCHOR_DIFF_LIMIT = 0.04;
@@ -111,7 +112,12 @@ function variance(grid:Float64Array):number {
  *  none has been seen since the object was cleared. A reading taken before
  *  `lastBreak.from` is NOT covered by this continuity, however long the run
  *  since has lasted: something happened between the reading and the run that
- *  this witness cannot account for. */
+ *  this witness cannot account for.
+ *  Strictly, though: the consumer compares against `from` plus a margin, not
+ *  against `from`, because frame times and sensor times are not aligned to the
+ *  millisecond - see CONTINUITY_SLOP_MS and `viewVouchesFor` in
+ *  photospherePose.ts, which is where that comparison lives. Nothing in this
+ *  file knows about readings at all. */
 export interface ViewContinuity { stillSince: number; lastBreak: { from: number; to: number } | null }
 
 /** Tracks how long the camera view has been unchanged, and when it last was
@@ -165,7 +171,10 @@ export class VisualStability {
    *  camera with a pipeline delay hands over a frame captured `lag` ms ago;
    *  crediting the run with the time between that capture and the caller's
    *  clock would settle the view on stillness nobody observed, and the longer
-   *  the delay the less watching it would take. */
+   *  the delay the less watching it would take.
+   *  Public, though `continuity()` is what the driver reads: this is the only
+   *  place the tri-state is graded, and its callers are `continuity()` and the
+   *  tests that pin each of the three answers directly. */
   stableAt(now:number):boolean|null {
     if(!this.frame||now-this.frameAt>STALE_FRAME_MS)return null;
     if(!this.textured)return null;
