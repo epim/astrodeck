@@ -218,8 +218,46 @@ test('A frame with no texture is a break, even between two identical textured fr
   const c=s.continuity(1300);
   assert.ok(c);
   assert.equal(c!.stillSince,700);
-  assert.equal(c!.lastBreak!.to,700);
-  assert.ok(c!.lastBreak!.from>=600,`the break began at ${c!.lastBreak!.from}, before the blank frame`);
+  assert.deepEqual(c!.lastBreak,{from:600,to:700},'the break spans the blank frame and the first frame after it');
+});
+
+/** A 32x24 horizontal ramp, base 86, given spread. Its variance is the only
+ *  texture in it, so the spread tunes the frame straight past TEXTURE_FLOOR
+ *  (0.01) while leaving consecutive frames close together. Measured through
+ *  this module's own grid: spread 39 has variance 0.012017 (textured), spread
+ *  33 has 0.009304 (under the floor), and the two differ by 0.011929 - inside
+ *  STILL_DIFF_LIMIT (0.02) and inside ANCHOR_DIFF_LIMIT (0.04), so NOTHING but
+ *  the texture floor separates them. */
+function ramp(spread:number):Uint8Array{
+  const px=new Uint8Array(W*H);
+  for(let y=0;y<H;y++)for(let x=0;x<W;x++)px[y*W+x]=Math.round(86+spread*x/(W-1));
+  return px;
+}
+
+test('A frame too flat to judge breaks the run even though no pair moved',()=>{
+  // The case above cannot fail for the texture rule on its own: the blank frame
+  // is also far from its neighbours, so the motion rule would record a break
+  // there anyway. Here the dip happens with every pair INSIDE the movement
+  // limit - a view losing the last of its contrast, not moving - so the texture
+  // rule is the only thing that can see it. Without it the run reaches back
+  // across the frames nothing could be judged from, and the continuity vouches
+  // for a reading taken before them.
+  // The premise first, pinned so it cannot quietly stop holding.
+  const dim=new VisualStability();
+  for(let t=0;t<=600;t+=100)dim.observe(t,ramp(33),W,H);
+  assert.equal(dim.stableAt(600),null,'the near-floor frame must read as unjudgeable');
+  const lit=new VisualStability();
+  for(let t=0;t<=600;t+=100)lit.observe(t,ramp(39),W,H);
+  assert.equal(lit.stableAt(600),true,'the textured frame must read as still');
+
+  const s=new VisualStability();
+  for(let t=0;t<=800;t+=100)s.observe(t,ramp(39),W,H);
+  s.observe(900,ramp(33),W,H);            // contrast dips under the floor
+  for(let t=1000;t<=1500;t+=100)s.observe(t,ramp(39),W,H);
+  const c=s.continuity(1500);
+  assert.ok(c,'the view is textured and settled again by 1500');
+  assert.equal(c!.stillSince,900,'the run must restart at the frame that could not be judged');
+  assert.deepEqual(c!.lastBreak,{from:900,to:900},'the break is that frame alone, at its own instant');
 });
 
 test('clear() forgets the last break',()=>{

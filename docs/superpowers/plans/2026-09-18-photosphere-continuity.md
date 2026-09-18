@@ -426,63 +426,15 @@ and change line 557 to `if (!frame && video && this.sourceHealthy && this.newMed
 
 4. Update the comment above the fallback (lines 551-556) to say the settle now lands one observed frame later than before only when the media clock is moving, and that a frozen element leaves stability unknown after `STALE_FRAME_MS`.
 
-**Harness changes in `photosphereStillnessDom.test.tsx`:**
+**Harness state in `photosphereStillnessDom.test.tsx` (already applied in Task 1, commit b28026ff and its fix rounds; do not re-apply):**
 
-1. Model a playing element. After line 26 add:
-```ts
-// The interval fallback consults the element's media state: a paused or
-// frozen element is not delivering frames however often the timer fires.
-let mediaTime=0,paused=false;
-Object.defineProperty(w.HTMLVideoElement.prototype,'currentTime',{get:()=>mediaTime,configurable:true});
-Object.defineProperty(w.HTMLVideoElement.prototype,'paused',{get:()=>paused,configurable:true});
-Object.defineProperty(w.HTMLVideoElement.prototype,'ended',{get:()=>false,configurable:true});
-Object.defineProperty(w.HTMLVideoElement.prototype,'readyState',{get:()=>2,configurable:true});
-```
-and the track at line 61 becomes `const track={stop(){},getSettings:()=>({deviceId:'main'}),addEventListener(){},readyState:'live',muted:false};`.
+1. The element models a playing camera: `mediaTime` and `paused` variables back `currentTime`, `paused`, `ended` (false) and `readyState` (2) on `HTMLVideoElement.prototype`; the track stub carries `readyState:'live'` and `muted:false`.
+2. `approachAndHold(rvfc=true, step=2)` watches the approach: the first reading precedes `begin()` (which is gated on `compassReady`), then each reading is followed by `shift++` and one video frame, so the video sees the motion the sensor reports. It returns `{sweep, cell, tick, aim, silentFrom}`. `aim(offset, advanceMs=100)` dispatches one absolute reading at `cell.az + offset` after advancing the clock by `advanceMs`; the final reading is delivered with `aim(0, 0)`, so the last step (`step` degrees) spans exactly the 100 ms of the preceding frame tick. With the default cadence the six readings are 100 ms apart on the stubbed clock only where a tick sits between them; read the harness comments for the true schedule before asserting any timing.
+3. The rVFC tick advances the clock 100 ms and `mediaTime` by 0.1 s; the fallback tick advances 350 ms and `mediaTime` by 0.35 s unless `paused`.
 
-2. `approachAndHold` becomes a camera that WATCHES the approach. Replace lines 83-107 with:
-```ts
-/** A recording sweep aimed at one dome cell by a 10 degree approach over
- *  0-600 ms, with the camera watching the whole time: one video frame after
- *  each orientation event, the scene shifting a pixel each time so the video
- *  sees the motion the sensor reports. Returns the moment the approach ended:
- *  silence starts here. With `rvfc:false` the element has no
- *  requestVideoFrameCallback at all - Firefox Android - and the returned tick
- *  drives the 350 ms setInterval fallback instead, with the media clock
- *  advancing unless a test freezes it. `step` is the size of the LAST
- *  orientation step in degrees (2 by default). */
-async function approachAndHold(rvfc=true,step=2){
-  shift=0;hidden=false;blind=false;intervalFn=null;mediaTime=0;paused=false;
-  const video=w.document.createElement('video');
-  let frame:((now:number,metadata:unknown)=>void)|undefined;
-  if(rvfc){
-    video.requestVideoFrameCallback=(fn:typeof frame)=>{frame=fn;return 1;};
-    video.cancelVideoFrameCallback=()=>{};
-  }
-  const sweep=new PhotosphereSweep();
-  await sweep.start(video,w.document.createElement('canvas'));
-  const cell=sweep.cells.find((c)=>c.alt>20&&c.alt<60)!;
-  const tick=rvfc
-    ? ()=>{clock+=100;mediaTime+=0.1;frame!(clock,{captureTime:clock,mediaTime,presentationTime:clock,
-        expectedDisplayTime:clock,width:640,height:480,presentedFrames:1});}
-    : ()=>{clock+=350;if(!paused)mediaTime+=0.35;intervalFn!();};
-  const aim=(offset:number)=>{
-    const ev=new w.Event('deviceorientationabsolute');
-    clock+=100;Object.defineProperty(ev,'timeStamp',{value:clock});
-    Object.assign(ev,{alpha:(360-(cell.az+offset))%360,beta:90+cell.alt,gamma:0,absolute:true});
-    w.dispatchEvent(ev);
-  };
-  // begin() is gated on compassReady, so the first reading precedes it.
-  aim(10);sweep.begin();shift++;tick();
-  for(let i=8;i>=step;i-=2){aim(i);shift++;tick();}
-  aim(0);shift++;                      // the last step: `step` degrees in 100 ms
-  // From here the browser sends no orientation event ever again.
-  return {sweep,cell,tick,aim,silentFrom:clock};
-}
-```
-Note `begin()` now precedes the approach so the frames during it are frames of a recording sweep, as on a phone; `grabFrame` refuses without an accepted pose, so nothing is captured during the approach. If the existing first case ("captures within 1.5 s") changes its measured latency, that is the one observed frame the fallback gate adds; the acceptance row is 1500 ms and both paths must stay inside it.
+Task 1's fix round 2 (review finding) made the final reading land 100 ms after the previous one; before that, `aim` and `tick` together spaced readings 200 ms apart and no pair this harness produced could reach the jitter branch (`JITTER_GAP_MS` is 150), so the P2 quick-step case below would have passed without entering the rule it is named after. Confirm in the harness, before writing that case, that `approachAndHold(true, 10)` produces two final readings 100 ms and 10 degrees apart.
 
-3. Run the existing ten cases; all must pass with the new harness before any new case is added. If "A still phone captures on the interval fallback" fails on the media gate, the gate is reading a property the harness does not model: fix the harness only if the property is one a real element has.
+Run the existing ten cases before adding any new case; all must pass. If "A still phone captures on the interval fallback" fails on the media gate, the gate is reading a property the harness does not model: fix the harness only if the property is one a real element has. Measured latencies before this task: rVFC 700 ms, fallback 1050 ms; the media gate is expected to add one observed fallback frame (about 1400 ms), inside the 1500 ms row but with little headroom, so re-measure and report the numbers.
 
 4. Append these cases before the final `console.log`:
 ```ts
@@ -552,10 +504,10 @@ await test('P2: a magnetometer outlier as the last event is refuted by the still
 ```
 Check the outlier case against the harness: `aim(20)` advances the clock 100 ms itself, so with `clock+=40` the two readings are 140 ms apart, inside `JITTER_GAP_MS` (150). If the cell is already captured before the outlier arrives (frameCount 1 after the first loop), reduce that loop to two ticks; the assertion is that the cell ends up captured at the pre-outlier direction and the hold is not blocked.
 
-- [ ] **Step 1: Apply the harness changes (1 and 2), run the existing ten cases**
+- [ ] **Step 1: Confirm the harness state (items 1-3 above are already in the tree), run the existing ten cases**
 
 Run from `ui`: `node --import tsx src/next/hubs/sky/sheets/__tests__/photosphereStillnessDom.test.tsx`
-Expected before the driver change: the file fails to compile (`visuallyStable` no longer exists after Task 1) or, if it compiles, the ten cases pass. Record which.
+Expected: 10/10 before any driver change. Record the measured capture latencies printed by cases 1 and 10 if the file prints them; otherwise note them from the assertions' messages when they fail.
 
 - [ ] **Step 2: Apply driver changes 1-4**
 
