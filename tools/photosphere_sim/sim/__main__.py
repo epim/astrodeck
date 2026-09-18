@@ -50,9 +50,16 @@ def _make_case(args: argparse.Namespace) -> int:
 
 
 def _case_dir(args: argparse.Namespace) -> Path:
+    """The case directory, or exit 2.
+
+    Exit 2 is "I could not run", distinct from exit 1, "I ran and the case
+    failed". `SystemExit` with a string exits 1, which would have reported a
+    missing case as a failing one.
+    """
     case_dir = Path(args.cases) / args.case_id
     if not case_dir.is_dir():
-        raise SystemExit(f"no case directory at {case_dir}")
+        print(f"no case directory at {case_dir}", file=sys.stderr)
+        raise SystemExit(2)
     return case_dir
 
 
@@ -74,14 +81,17 @@ def _score(args: argparse.Namespace) -> int:
     if not result_dir.is_dir():
         # Not the same thing as a bad result: say which it is rather than
         # print an all-false report a reader would blame on the scanner.
-        raise SystemExit(f"no result directory at {result_dir}: replay the case first")
+        print(f"no result directory at {result_dir}: replay the case first",
+              file=sys.stderr)
+        raise SystemExit(2)
     scores = score_case(case_dir, result_dir)
 
     landmarks, horizon = scores["landmarks"], scores["horizon"]
     print(f"case      {scores['case_id']}  profile {scores['profile']}")
+    print(f"panorama  {json.dumps(scores['panorama'])}")
     print(f"landmarks expected {landmarks['expected']} found {landmarks['found']} "
           f"omitted {len(landmarks['omitted'])} duplicated {len(landmarks['duplicated'])} "
-          f"spurious {landmarks['spurious']}")
+          f"slivers {landmarks['slivers']} spurious {landmarks['spurious']}")
     print(f"          errors_deg {json.dumps(landmarks['errors_deg'])}")
     print(f"horizon   {horizon['measured_bins']} bins "
           f"({horizon['measured_resolution_deg']} deg) "
@@ -91,6 +101,8 @@ def _score(args: argparse.Namespace) -> int:
           f"unresolved_sr {horizon['unresolved_sr']} "
           f"north_offset_deg {horizon['north_offset_deg']}")
     print(f"          missed_obstructions {json.dumps(horizon['missed_obstructions'])}")
+    for obstacle in horizon["obstacles"]:
+        print(f"          {json.dumps(obstacle)}")
     print(f"overlay   {json.dumps(scores['overlay'])}")
     print(f"capture   {json.dumps(scores['capture'])}")
     print(f"coverage  {json.dumps(scores['coverage'])}")
