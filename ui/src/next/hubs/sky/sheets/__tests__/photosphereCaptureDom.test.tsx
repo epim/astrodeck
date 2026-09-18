@@ -217,7 +217,9 @@ await test('A centred dot reports hold, actual capture, and already captured ins
   const now=Date.now;
   try {
     Date.now=()=>now()+1100;assert.match(sweep.captureCue,/Already captured/);
-    Date.now=()=>now()+3000;assert.match(sweep.captureCue,/Waiting for the compass/);
+    // 3 s of wall-clock silence with the source still healthy is not staleness
+    // (issue #37): the cue must not regress to waiting for the compass.
+    Date.now=()=>now()+3000;assert.match(sweep.captureCue,/Already captured/);
   } finally {Date.now=now;sweep.stop();}
 });
 await test("Permission denial stays on screen with a useful retry explanation", async () => {

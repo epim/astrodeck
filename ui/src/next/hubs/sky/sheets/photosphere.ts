@@ -224,7 +224,6 @@ export class PhotosphereSweep {
   private altitude = 0;
   private tiltAt: number | null = null;
   private hasOrientation = false;
-  private headingAt = 0;
   private basis: CameraBasis | null = null;
   private panorama: SkyPanorama | null = null;
   private coveredCells = new Set<number>();
@@ -282,8 +281,11 @@ export class PhotosphereSweep {
   get cameraChoices(): SweepCamera[] { return this.cameras; }
   get activeCameraId(): string { return this.deviceId; }
   get error(): string | null { return this.issue; }
-  get compassReady(): boolean { return this.hasOrientation && Date.now() - this.headingAt < 2000; }
-  get tiltReady(): boolean { return this.tiltAt !== null && Date.now() - this.tiltAt < 2000; }
+  // Ready iff a reading has ever arrived this session AND the source is
+  // currently alive (see sourceHealthy). No freshness window: on a
+  // change-driven stream, silence is not staleness (issue #37).
+  get compassReady(): boolean { return this.hasOrientation && this.sourceHealthy; }
+  get tiltReady(): boolean { return this.tiltAt !== null && this.sourceHealthy; }
   get currentAltitude(): number { return this.altitude; }
   get cameraBasis(): CameraBasis | null {
     const b=this.compassReady && this.frameBasis && performance.now()-this.frameBasis.at<200?this.frameBasis.basis
@@ -366,7 +368,7 @@ export class PhotosphereSweep {
     this.frames = []; this.issue = null; this.basis = null; this.panorama = null; this.coveredCells.clear(); this.lastCaptureAt=null;
     this.poses.clear();this.tilts.clear();this.poseSource.clear();this.visualAnchor=null;this.lastRegistrationAt=-Infinity;this.frameBasis=null;this.alignmentWait=false;this.overlapWait=false;this.lastSensorReading=null;
     this.stability.clear();this.trackEnded=false;
-    this.hasOrientation = false; this.headingAt = 0; this.tiltAt = null;
+    this.hasOrientation = false; this.tiltAt = null;
     const DOE = window.DeviceOrientationEvent as typeof DeviceOrientationEvent & { requestPermission?: () => Promise<string> };
     // Ask from the click gesture, before awaiting camera discovery (Safari).
     const motionPermission = DOE?.requestPermission?.().catch(() => "denied");
@@ -441,7 +443,7 @@ export class PhotosphereSweep {
           this.basis = accepted.basis;
           if(accepted.changedSource){this.poses.clear();this.frameBasis=null;}
           this.poses.add({at,screenAngle,basis:this.basis});
-          this.headingAt = Date.now(); this.hasOrientation = true;
+          this.hasOrientation = true;
         } else if (elevation !== null && elevation >= 85 && !this.compassReady) {
           // No absolute bearing at the zenith: retain the last azimuth frame
           // for display, but only project the single overhead pixel below.
