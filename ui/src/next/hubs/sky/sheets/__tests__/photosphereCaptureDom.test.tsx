@@ -306,5 +306,64 @@ await test("A grant arriving after cancellation is released", async () => {
   grant({ getTracks: () => [{ stop: () => released++ }] });
   await pending; assert.equal(released, 1); assert.equal(sweep.previewReady, false);
 });
+// The previous test replaces getUserMedia with a mock that resolves only
+// when manually granted, and never restores it - a leak nothing after it
+// ever paid for until now. Restore the ordinary mock before relying on
+// sweep.start() actually completing.
+w.navigator.mediaDevices.getUserMedia = async (constraints: any) => {
+  requested.push(constraints);
+  if (denied) throw new w.DOMException("Permission denied", "NotAllowedError");
+  const track = { stop: () => { stops++; }, getSettings: () => ({ deviceId: constraints.video.deviceId?.exact ?? "ultra" }), addEventListener() {} };
+  return { getTracks: () => [track], getVideoTracks: () => [track] };
+};
+await test('The capture log names a rejection reason before an accepted capture, with basis and cell',async()=>{
+  const sweep=new PhotosphereSweep();
+  await sweep.start(document.createElement('video'),document.createElement('canvas'));
+  const cell=sweep.cells.find(c=>c.alt>20&&c.alt<60)!;
+  heading(cell.az,true,90+cell.alt);
+  sweep.begin();
+  // The compass just locked on: the pose has not yet covered the 500 ms
+  // settle window a capture needs, so this immediate attempt cannot land.
+  await act(async()=>{for(const fn of [...intervals.values()])fn();});
+  await tick();
+  assert.ok(sweep.cells.find(c=>c.id===cell.id)?.captured);
+  const log=sweep.captureLog;
+  assert.ok(log.some(r=>r.outcome==='alignment-wait'));
+  const last=log[log.length-1];
+  assert.equal(last.outcome,'accepted');
+  assert.equal(last.cell,cell.id);
+  assert.ok(last.basis);
+  sweep.stop();
+});
+await test('A session with no accepted pose stays diagnosable; panoramaPixels is null until a real capture lands',async()=>{
+  const sweep=new PhotosphereSweep();
+  await sweep.start(document.createElement('video'),document.createElement('canvas'));
+  // A direction outside every DOME_CELLS target: the pose is perfectly valid
+  // and settled, but nothing here can ever be accepted.
+  let target:{az:number;alt:number}|null=null;
+  for(let az=0;az<360&&!target;az+=3)for(let alt=0;alt<80&&!target;alt+=3){
+    heading(az,true,90+alt);if(!sweep.aimTarget)target={az,alt};
+  }
+  assert.ok(target);
+  sweep.begin();
+  for(let i=0;i<20;i++)await tick();
+  assert.equal(sweep.captureLog.length,20);
+  assert.ok(sweep.captureLog.every(r=>r.outcome!=='accepted'));
+  // Read into a local rather than asserting on sweep.panoramaPixels directly:
+  // TS narrows a getter-backed access through an `asserts` call, and the SAME
+  // property read further down must not inherit that (now stale) narrowing.
+  const beforeCapture=sweep.panoramaPixels;
+  assert.equal(beforeCapture,null);
+  const cell=sweep.cells.find(c=>c.alt>20&&c.alt<60)!;
+  heading(cell.az,true,90+cell.alt);
+  await tick();
+  assert.ok(sweep.cells.find(c=>c.id===cell.id)?.captured);
+  const pixels=sweep.panoramaPixels;
+  assert.ok(pixels);
+  assert.equal(pixels!.width,1080);
+  assert.equal(pixels!.height,300);
+  assert.ok(Array.from(pixels!.pixels).some((v,i)=>i%4===3&&v===255));
+  sweep.stop();
+});
 console.log(`photosphereCaptureDom.test: ${passed}/${passed} passed`);
 export const result = { passed, failed: 0, total: passed };

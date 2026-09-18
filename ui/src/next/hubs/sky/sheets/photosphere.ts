@@ -10,6 +10,36 @@ export interface PhotosphereSupport {
   reason: string | null;
 }
 
+/** Every branch `grabFrame` can return from, named in the order the gates
+ *  appear. This is the minimal diagnostic recorder of doc 14 section 4.3:
+ *  it exists so a session with zero accepted frames is still diagnosable. */
+export type CaptureOutcome =
+  | 'accepted'
+  | 'not-recording'
+  | 'not-ready'
+  | 'unhealthy'
+  | 'no-image'
+  | 'alignment-wait'
+  | 'overlap-wait'
+  | 'no-target'
+  | 'already-captured'
+  | 'too-soon'
+  | 'below-horizon'
+  | 'read-failed';
+
+export interface CaptureRecord {
+  at: number;
+  outcome: CaptureOutcome;
+  cell?: number;
+  basis?: CameraBasis;
+  sensorBasis?: CameraBasis;
+  adjusted?: boolean;
+}
+
+/** The log records; it decides nothing. Bounded so a long-running scan
+ *  cannot grow this without limit. */
+const CAPTURE_LOG_LIMIT = 4096;
+
 /** Secure context + `getUserMedia` - what CAPTURE PHOTOSPHERE needs before it
  *  can even ask for a camera. Same reason string as the AR camera/gyro
  *  fallback (B.10) - one sentence for "this needs HTTPS", not three. */
@@ -278,6 +308,13 @@ export class PhotosphereSweep {
   private frameBasis: {basis:CameraBasis;at:number} | null = null;
   private recording = false;
   private ready = false;
+  // The diagnostic recorder (doc 14 4.3): one record per grabFrame call,
+  // naming the branch it returned from. Records, decides nothing.
+  private captureRecords: CaptureRecord[] = [];
+  // Distinct from `panorama` existing: `begin()` allocates an empty panorama
+  // before any pixel has ever been written to it, and panoramaPixels must
+  // stay null until a capture has actually landed, not merely been started.
+  private hasCapturedFrame = false;
   private issue: string | null = null;
   private cameras: SweepCamera[] = [];
   private deviceId = "";
@@ -307,6 +344,18 @@ export class PhotosphereSweep {
   get cameraChoices(): SweepCamera[] { return this.cameras; }
   get activeCameraId(): string { return this.deviceId; }
   get error(): string | null { return this.issue; }
+  /** The newest 4096 grabFrame outcomes, oldest first. Survives `stop()` -
+   *  a finished scan must still be diagnosable - and is cleared only by a
+   *  fresh `start()`. */
+  get captureLog(): readonly CaptureRecord[] { return this.captureRecords; }
+  /** A copy of the mosaic's own pixels, RGBA, or null before any frame has
+   *  actually been written into it (an empty panorama from `begin()` alone
+   *  does not count). Never the live buffer: the panorama keeps writing to
+   *  it after this copy is taken. */
+  get panoramaPixels(): { width: number; height: number; pixels: Uint8ClampedArray } | null {
+    if (!this.panorama || !this.hasCapturedFrame) return null;
+    return { width: this.panorama.width, height: this.panorama.height, pixels: new Uint8ClampedArray(this.panorama.pixels) };
+  }
   // Ready iff a reading has arrived this session, the source is currently alive
   // (see sourceHealthy) AND that reading is still worth something - recent, or
   // vouched for by a video that says the view has not moved since it arrived.
@@ -389,7 +438,7 @@ export class PhotosphereSweep {
 
   begin(): void {
     if (!this.ready || !this.compassReady) return;
-    this.frames = []; this.panorama = new SkyPanorama(); this.coveredCells.clear(); this.lastCaptureAt=null; this.scanSamples=[]; this.lastDiagnosticAt=-Infinity; this.recording = true;
+    this.frames = []; this.panorama = new SkyPanorama(); this.coveredCells.clear(); this.lastCaptureAt=null; this.scanSamples=[]; this.lastDiagnosticAt=-Infinity; this.hasCapturedFrame = false; this.recording = true;
   }
 
   /** The user explicitly aims the rear camera up. This still reads an actual
@@ -405,6 +454,9 @@ export class PhotosphereSweep {
     this.video = video;
     this.canvas = canvas;
     this.frames = []; this.issue = null; this.basis = null; this.panorama = null; this.coveredCells.clear(); this.lastCaptureAt=null;
+    // A new scan: the diagnostic log from any earlier session is no longer
+    // about this camera session, so it starts over. `stop()` never does this.
+    this.captureRecords = []; this.hasCapturedFrame = false;
     this.poses.clear();this.tilts.clear();this.poseSource.clear();this.visualAnchor=null;this.lastRegistrationAt=-Infinity;this.frameBasis=null;this.alignmentWait=false;this.overlapWait=false;this.lastSensorReading=null;
     this.stability.clear();this.trackEnded=false;this.lastMediaTime=-1;
     this.hasOrientation = false; this.tiltAt = null; this.headingAt = null;
@@ -589,6 +641,14 @@ export class PhotosphereSweep {
     return true;
   }
 
+  /** Append one outcome to the diagnostic log. This records; it never decides
+   *  anything - every gate below still returns its own `false` on its own
+   *  terms, this just names which one fired. */
+  private recordCapture(now: number, outcome: CaptureOutcome, extra?: { cell?: number; basis?: CameraBasis; sensorBasis?: CameraBasis; adjusted?: boolean }): void {
+    this.captureRecords.push({ at: now, outcome, ...extra });
+    if (this.captureRecords.length > CAPTURE_LOG_LIMIT) this.captureRecords.splice(0, this.captureRecords.length - CAPTURE_LOG_LIMIT);
+  }
+
   private grabFrame(manualOverhead = false, frame?:{basis:CameraBasis|null;tilt:CameraBasis|null}): boolean {
     const { video, canvas } = this;
     const now=performance.now();
@@ -618,9 +678,14 @@ export class PhotosphereSweep {
     if (!frame && video && this.sourceHealthy && this.newMediaFrame(video)) this.observeStillness(video, now);
     // One visibility rule, not two. A second copy of the test here could
     // disagree with the sourceHealthy the evidence below is built from.
-    if (!this.recording || !this.ready || !video || !canvas || !this.sourceHealthy) return false;
+    // Split into three named outcomes rather than one combined check, so the
+    // log says WHICH of these was true rather than just "some gate failed".
+    if (!this.recording) { this.recordCapture(now, 'not-recording'); return false; }
+    if (!this.ready || !video || !canvas) { this.recordCapture(now, 'not-ready'); return false; }
+    if (!this.sourceHealthy) { this.recordCapture(now, 'unhealthy'); return false; }
     if (video.videoWidth === 0 || video.videoHeight === 0) {
       if (manualOverhead) this.issue = "Waiting for a camera image. Keep the rear camera pointing up and try again.";
+      this.recordCapture(now, 'no-image');
       return false;
     }
     const evidence:PoseEvidence={view:this.stability.continuity(now),sourceHealthy:this.sourceHealthy};
@@ -629,37 +694,49 @@ export class PhotosphereSweep {
     const tilt=frame ? frame.tilt : this.tilts.forFrame(now,undefined,evidence);
     let measured=basis?skyAngles(basis.forward):tilt?skyAngles(tilt.forward):null;
     const overhead=manualOverhead || (!!measured && bandForAltitude(measured.alt)===OVERHEAD_BAND);
-    if(!manualOverhead && !basis && !(tilt&&overhead)){this.alignmentWait=true;return false;}
+    if(!manualOverhead && !basis && !(tilt&&overhead)){this.alignmentWait=true;this.recordCapture(now,'alignment-wait');return false;}
     // A timestamp does not make a frame taken during motion sharp or account
     // for an entire low-light exposure. Hold still even with frame timestamps.
     const stable=basis?this.poses.forFrame(now,undefined,evidence):this.tilts.forFrame(now,undefined,evidence);
-    if(!manualOverhead && (!stable || poseSeparation(stable,(rawBasis??tilt)!)>1.5)){this.alignmentWait=true;return false;}
+    if(!manualOverhead && (!stable || poseSeparation(stable,(rawBasis??tilt)!)>1.5)){this.alignmentWait=true;this.recordCapture(now,'alignment-wait');return false;}
     this.alignmentWait=false;
     if(!manualOverhead && basis){
       const target=DOME_CELLS.find(c=>dot(c.center,basis!.forward)>=Math.cos((c.alt>89?5:8)*Math.PI/180));
-      if(!target){this.overlapWait=false;return false;}
-      if(now-this.lastRegistrationAt<600)return false;
+      if(!target){this.overlapWait=false;this.recordCapture(now,'no-target');return false;}
+      if(now-this.lastRegistrationAt<600){this.recordCapture(now,'too-soon');return false;}
       this.lastRegistrationAt=now;
     }
     // All pixel positions and metadata use the pose of this frame. Relative
     // tilt must never be combined with a different absolute bearing.
-    if (!manualOverhead && measured!.alt < -10) return false;
+    if (!manualOverhead && measured!.alt < -10) { this.recordCapture(now,'below-horizon'); return false; }
     const ctx = canvas.getContext("2d");
-    if (!ctx) { this.issue = "Could not read the camera image. Close the scan and try again."; this.recording = false; return false; }
+    if (!ctx) { this.issue = "Could not read the camera image. Close the scan and try again."; this.recording = false; this.recordCapture(now,'read-failed'); return false; }
     this.imageAspect = video.videoWidth / video.videoHeight;
     canvas.width = this.imageAspect >= 1 ? 320 : Math.round(320*this.imageAspect);
     canvas.height = this.imageAspect >= 1 ? Math.round(320/this.imageAspect) : 320;
     let data: Uint8ClampedArray;
+    // Filled only on the normal, non-overhead capture path below, for the
+    // 'accepted' record: a manual or tilt-only overhead capture has no single
+    // DOME_CELLS target, so it is logged accepted with none of these set.
+    let capturedCell: number | undefined;
+    let capturedBasis: CameraBasis | undefined;
+    let capturedSensorBasis: CameraBasis | undefined;
+    let capturedAdjusted: boolean | undefined;
     try {
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
       data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
-      if (!this.panorama) return false;
+      // Unreachable while `recording` is true: `begin()` allocates the
+      // panorama in the same statement it sets `recording`, and nothing
+      // clears one without the other. Kept, and logged as `no-image` (the
+      // nearest existing outcome - nothing to add a frame to), as a
+      // defensive TS non-null guard rather than a real behavioural gate.
+      if (!this.panorama) { this.recordCapture(now,'no-image'); return false; }
       const lens=cameraLens(video.videoWidth,video.videoHeight,this.shortAxisFov);
       if (basis && !manualOverhead) {
         const registration=registerFrame(this.panorama,data,canvas.width,canvas.height,basis,lens);
         const overlap=registration.overlap;
         if(registration.adjusted && rawBasis){
-          if(poseSeparation(rawBasis,registration.basis)>10){this.overlapWait=true;return false;}
+          if(poseSeparation(rawBasis,registration.basis)>10){this.overlapWait=true;this.recordCapture(now,'overlap-wait');return false;}
           basis=registration.basis;this.visualAnchor={raw:rawBasis,aligned:basis};
           measured=skyAngles(basis.forward);
         }
@@ -671,17 +748,19 @@ export class PhotosphereSweep {
             sensor:this.lastSensorReading,stillnessReadFailures:this.stillnessFailures,overlap,image:canvas.toDataURL('image/jpeg',.8)});
           if(this.scanSamples.length>16)this.scanSamples.splice(1,1);
         }
-        if(overlap.result==='conflict'){this.overlapWait=true;return false;}
+        if(overlap.result==='conflict'){this.overlapWait=true;this.recordCapture(now,'overlap-wait');return false;}
         this.overlapWait=false;
         const target=DOME_CELLS.find(c=>dot(c.center,basis!.forward)>=Math.cos((c.alt>89?5:8)*Math.PI/180));
-        if(!target || this.coveredCells.has(target.id))return false;
+        if(!target){this.recordCapture(now,'no-target');return false;}
+        if(this.coveredCells.has(target.id)){this.recordCapture(now,'already-captured');return false;}
         this.panorama.add(data,canvas.width,canvas.height,basis,lens);
+        capturedCell=target.id;capturedBasis=basis;capturedSensorBasis=rawBasis??undefined;capturedAdjusted=registration.adjusted;
       } else if (overhead) {
         // Without heading, an entire overhead photograph cannot be oriented.
         // Keep only its centre at the shared zenith; do not invent a sky cap.
         this.panorama.addZenith(data,canvas.width,canvas.height,tilt&&skyAngles(tilt.forward).alt>=85?tilt:null,lens);
       }
-    } catch { this.issue = "Could not read the camera image. Close the scan and try again."; this.recording = false; return false; }
+    } catch { this.issue = "Could not read the camera image. Close the scan and try again."; this.recording = false; this.recordCapture(now,'read-failed'); return false; }
     const column = columnFromImageData(data, canvas.width, canvas.height, 24);
 
     const altitude=manualOverhead?90:measured!.alt;
@@ -700,6 +779,8 @@ export class PhotosphereSweep {
       if(this.panorama?.covered(cell) && (cell.alt < 89 || this.overheadCaptured)) this.coveredCells.add(cell.id);
     }
     if(this.coveredCells.size>previousCoverage)this.lastCaptureAt=Date.now();
+    this.hasCapturedFrame = true;
+    this.recordCapture(now, 'accepted', { cell: capturedCell, basis: capturedBasis, sensorBasis: capturedSensorBasis, adjusted: capturedAdjusted });
     return true;
   }
 
