@@ -29,16 +29,25 @@ def _delta(e1, e2):
 
 class OrientationEvents(unittest.TestCase):
     def test_no_events_during_any_hold(self):
+        # A direct check, not a bracket-gap comparison: the earlier version
+        # compared the nearest event at-or-before a hold's start to the
+        # nearest at-or-after its end, but that gap is >= the hold's length
+        # BY CONSTRUCTION (before[-1] <= from_ms and after[0] >= to_ms, so
+        # after[0] - before[-1] >= to_ms - from_ms always), regardless of
+        # whether an event fired strictly inside the hold -- see fix-round-2
+        # in task-3-report.md for a mutant that proves it. This asks the
+        # actual question instead: is there an emitted event whose own
+        # t_event_ms falls strictly inside some hold's interval?
         traj = build()
         events = sensors.orientation_events(traj)
-        times = sorted(e["t_event_ms"] for e in events)
+        times = [e["t_event_ms"] for e in events]
         for hold in traj.holds:
-            before = [t for t in times if t <= hold.from_ms]
-            self.assertTrue(before, "the mandatory first sample precedes every hold")
-            after = [t for t in times if t >= hold.to_ms]
-            if after:
-                gap = after[0] - before[-1]
-                self.assertGreaterEqual(gap, hold.to_ms - hold.from_ms)
+            offenders = [t for t in times if hold.from_ms < t < hold.to_ms]
+            self.assertEqual(
+                offenders, [],
+                f"event(s) at {offenders} fired strictly inside hold {hold.index} "
+                f"({hold.from_ms}-{hold.to_ms} ms)",
+            )
 
     def test_first_move_emits_at_least_20_events_with_real_change(self):
         traj = build()

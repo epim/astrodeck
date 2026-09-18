@@ -75,6 +75,18 @@ class BuildCase(unittest.TestCase):
         delivery = [r["t_present_ms"] if r["kind"] == "frame" else r["t_receive_ms"] for r in records]
         self.assertEqual(delivery, sorted(delivery))
 
+    def test_frame_records_carry_the_cameras_width_and_height(self):
+        # The PNGs being 480x640 (test_frame_pngs_are_480x640_rgb) says
+        # nothing about what observations.jsonl itself claims: a frame record
+        # could carry the wrong width/height while every PNG on disk is still
+        # the right size. Check the JSON field values directly.
+        frames = [r for r in _read_jsonl(self.out_dir / "input" / "observations.jsonl")
+                 if r["kind"] == "frame"]
+        self.assertTrue(frames)
+        for record in frames:
+            self.assertEqual(record["width"], 480)
+            self.assertEqual(record["height"], 640)
+
     def test_actions_begin_at_0_and_finish_1s_after_the_last_frame(self):
         actions = _read_jsonl(self.out_dir / "input" / "actions.jsonl")
         self.assertEqual(actions[0], {"t_ms": 0, "action": "begin"})
@@ -105,6 +117,7 @@ class Determinism(unittest.TestCase):
             manifest2 = json.loads((out2 / "manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest1["hashes"]["frames"], manifest2["hashes"]["frames"])
         self.assertEqual(manifest1["hashes"]["truth"], manifest2["hashes"]["truth"])
+        self.assertEqual(manifest1["hashes"]["observations"], manifest2["hashes"]["observations"])
 
 
 if __name__ == "__main__":
