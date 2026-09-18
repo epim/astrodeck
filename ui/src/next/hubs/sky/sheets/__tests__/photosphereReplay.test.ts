@@ -9,13 +9,14 @@
 // byte-identical files.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { decodePng, encodePng } from '../__sim__/png';
-import { resample } from '../__sim__/harness';
-import { replayCase } from '../__sim__/replay';
+import { deflateSync } from 'node:zlib';
+import { decodePng, encodePng, pngChunk, PNG_SIGNATURE } from '../__sim__/png';
+import { createHarness, resample } from '../__sim__/harness';
+import { mergeObservations, replayCase, type Observation } from '../__sim__/replay';
 import { DOME_CELLS } from '../photosphereGeometry';
 
 let passed = 0, failed = 0;
@@ -61,6 +62,71 @@ await test('png: a 4 x 4 RGB PNG written by another encoder decodes to the right
   assert.deepEqual(at(3, 3), [255, 255, 255, 255], 'bottom right');
 });
 
+// A PNG container holding scanlines someone else filtered. The rows below are
+// literal bytes, computed once outside this file and pasted, so nothing here
+// re-derives the filter arithmetic the decoder is being graded on: a shared
+// sign error in a test that computed its own input would cancel out and pass.
+// The 3 x 3 source image is FILTER_IMAGE; each row was put through one filter
+// with a short Python script (the report for task 6 carries it verbatim).
+const FILTER_IMAGE = [
+  10, 20, 30, 255, 200, 100, 50, 255, 0, 255, 128, 255,
+  12, 25, 35, 255, 190, 110, 55, 255, 5, 250, 130, 255,
+  250, 5, 60, 255, 30, 40, 50, 255, 100, 100, 100, 255,
+];
+const FILTERED: Record<string, number[][]> = {
+  'Up (2)': [
+    [0, 10, 20, 30, 200, 100, 50, 0, 255, 128],
+    [2, 2, 5, 5, 246, 10, 5, 5, 251, 2],
+    [2, 238, 236, 25, 96, 186, 251, 95, 106, 226],
+  ],
+  'Average (3)': [
+    [3, 10, 20, 30, 195, 90, 35, 156, 205, 103],
+    [3, 7, 15, 20, 84, 48, 13, 166, 68, 39],
+    [3, 244, 249, 43, 66, 239, 249, 83, 211, 10],
+  ],
+  'Paeth (4)': [
+    [4, 10, 20, 30, 190, 80, 20, 56, 155, 78],
+    [4, 2, 5, 5, 246, 10, 5, 5, 251, 2],
+    [4, 238, 236, 25, 36, 186, 246, 95, 106, 226],
+  ],
+};
+
+/** A PNG built from already-filtered scanlines, through the codec's own chunk
+ *  writer. `colourType` 2 is RGB, 6 is RGBA. */
+function containerFor(width: number, height: number, colourType: number, rows: number[][]): Buffer {
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0); header.writeUInt32BE(height, 4);
+  header[8] = 8; header[9] = colourType; header[10] = 0; header[11] = 0; header[12] = 0;
+  return Buffer.concat([
+    Buffer.from(PNG_SIGNATURE),
+    pngChunk('IHDR', header),
+    pngChunk('IDAT', deflateSync(Buffer.from(rows.flat()))),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
+for (const [name, rows] of Object.entries(FILTERED)) {
+  await test('png: filter ' + name + ' decodes to the image it was filtered from', () => {
+    const image = decodePng(containerFor(3, 3, 2, rows));
+    assert.equal(image.width, 3);
+    assert.equal(image.height, 3);
+    assert.deepEqual(Array.from(image.pixels), FILTER_IMAGE);
+  });
+}
+
+await test('png: a chunk whose CRC does not match its bytes is refused', () => {
+  const good = containerFor(3, 3, 2, FILTERED['Up (2)']);
+  // The IHDR CRC sits after 8 signature bytes, 4 of length, 4 of type, 13 body.
+  const torn = Buffer.from(good);
+  torn[8 + 4 + 4 + 13] ^= 0x01;
+  assert.throws(() => decodePng(torn), /IHDR fails its CRC/);
+  // And a body byte the CRC then disagrees with, which is the failure that
+  // actually happens to a file: a torn read, not a torn checksum.
+  const bent = Buffer.from(good);
+  bent[8 + 4 + 4] ^= 0x01;
+  assert.throws(() => decodePng(bent), /IHDR fails its CRC/);
+});
+
 await test('resample: a 4 x 4 checkerboard box-averages to 2 x 2', () => {
   const src = new Uint8ClampedArray(4 * 4 * 4);
   for (let y = 0; y < 4; y++) for (let x = 0; x < 4; x++) {
@@ -86,6 +152,49 @@ await test('resample: a ratio that does not divide splits a source pixel by area
   assert.deepEqual([out[0], out[4], out[8]], [30, 180, 105]);
 });
 
+await test('merge: a reading and a frame in the same millisecond arrive reading first', () => {
+  // A browser drains the task queue, where the orientation event lands, before
+  // the rendering steps, where requestVideoFrameCallback runs. Handing the
+  // frame over first gives forFrame a pose history one sample short of the one
+  // a real page would have had.
+  const reading: Observation = {
+    kind: 'orientation', t_event_ms: 480, t_receive_ms: 500,
+    alpha: 1, beta: 90, gamma: 0, absolute: true,
+  };
+  const frame: Observation = {
+    kind: 'frame', frame_id: 'f000005', t_capture_ms: 440, t_present_ms: 500,
+    width: 4, height: 4, file: 'frames/f000005.png',
+  };
+  assert.deepEqual(mergeObservations([frame, reading]).map(o => o.kind), ['orientation', 'frame']);
+  assert.deepEqual(mergeObservations([reading, frame]).map(o => o.kind), ['orientation', 'frame']);
+});
+
+await test('harness: dispose puts the clocks and the DOM globals back', () => {
+  const before = Date.now();
+  assert.ok(before > 1_700_000_000_000, 'the wall clock was already replaced before this test ran');
+  const harness = createHarness({ videoWidth: 8, videoHeight: 8 });
+  harness.setClock(1234);
+  assert.equal(Date.now(), 1234);
+  assert.equal(performance.now(), 1234);
+  harness.dispose();
+  assert.ok(Date.now() >= before, 'Date.now stayed frozen after dispose');
+  assert.notEqual(performance.now(), 1234, 'performance.now stayed frozen after dispose');
+  assert.equal('window' in globalThis, false, 'a jsdom window was left on globalThis');
+  assert.equal('document' in globalThis, false, 'a jsdom document was left on globalThis');
+});
+
+await test('harness: a canvas nothing has been drawn to reads back transparent black', () => {
+  const harness = createHarness({ videoWidth: 8, videoHeight: 8 });
+  try {
+    const context = harness.canvas.getContext('2d')!;
+    const { data } = context.getImageData(0, 0, 4, 3);
+    assert.equal(data.length, 4 * 3 * 4);
+    assert.ok(Array.from(data).every(v => v === 0), 'an undrawn canvas returned camera pixels');
+  } finally {
+    harness.dispose();
+  }
+});
+
 // A whole case, small enough to build in the test: 30 frames of the gradient
 // and block the DOM harness uses, with the block moving for the first eight and
 // then perfectly still, and eight orientation readings closing on one dome cell
@@ -105,13 +214,15 @@ function sceneFrame(shift: number): Uint8ClampedArray {
   return pixels;
 }
 
-function buildCase(root: string): void {
+function buildCase(root: string, options: { readings?: boolean } = {}): void {
   const input = join(root, 'input'), frames = join(input, 'frames');
   mkdirSync(frames, { recursive: true });
   const observations: string[] = [];
   const cell = DOME_CELLS.find(c => c.alt > 20 && c.alt < 60)!;
   // Eight readings closing on the cell, the last at 720 ms, then silence.
-  for (let k = 0; k < 8; k++) {
+  // `readings: false` builds the same night with a sensor that never speaks,
+  // which is the case where the scan can never start.
+  for (let k = 0; options.readings !== false && k < 8; k++) {
     const offset = 14 - k * 2;
     observations.push(JSON.stringify({
       kind: 'orientation', t_event_ms: k * 100 + 20, t_receive_ms: k * 100 + 40,
@@ -161,6 +272,12 @@ try {
     assert.deepEqual(first, second);
     assert.equal(first.frames_delivered, 30);
     assert.equal(first.events_delivered, 8);
+    // Without this the whole determinism case passes on a replay that recorded
+    // nothing: `not-recording` is a valid outcome, the blank panorama is the
+    // right size, and two blanks are identical. Determinism over an empty
+    // result is not evidence about the scanner.
+    assert.ok(first.frames_accepted > 0, 'the replay accepted no frames at all');
+    assert.ok(first.cells_covered > 0, 'the replay covered no dome cells');
   });
 
   await test('replay: the same case replayed twice produces the same panorama bytes', () => {
@@ -169,6 +286,9 @@ try {
     const image = decodePng(firstPanorama);
     assert.equal(image.width, 1080);
     assert.equal(image.height, 300);
+    let painted = 0;
+    for (let i = 3; i < image.pixels.length; i += 4) if (image.pixels[i] === 255) painted++;
+    assert.ok(painted > 0, 'every pixel of the panorama is transparent: nothing was ever painted');
   });
 
   await test('replay: one events line per delivered frame', () => {
@@ -205,6 +325,24 @@ try {
 } finally {
   rmSync(root, { recursive: true, force: true });
 }
+
+await test('replay: a scan that never started is an error, not a blank result', async () => {
+  // begin() refuses silently when the compass is not ready and returns void, so
+  // a driver that believed the call would write a well-formed, entirely
+  // transparent result and exit zero: a measurement of nothing, filed and
+  // scored beside real ones.
+  const empty = mkdtempSync(join(tmpdir(), 'photosphere-replay-empty-'));
+  try {
+    buildCase(empty, { readings: false });
+    await assert.rejects(replayCase(empty), /the scan never started/);
+    assert.equal(existsSync(join(empty, 'result', 'summary.json')), false,
+      'a result was written for a scan that never started');
+    assert.equal(existsSync(join(empty, 'result', 'panorama.png')), false,
+      'a panorama was written for a scan that never started');
+  } finally {
+    rmSync(empty, { recursive: true, force: true });
+  }
+});
 
 await test('replay: the driver never reads the reference data', () => {
   // The scorer owns the reference; a driver that could see it could agree with

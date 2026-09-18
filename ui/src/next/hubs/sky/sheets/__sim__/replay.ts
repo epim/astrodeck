@@ -16,7 +16,7 @@
 // result could tell.
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { decodePng, encodePng, type Raster } from './png';
 import { createHarness } from './harness';
@@ -31,7 +31,7 @@ export interface Summary {
   app_commit: string | null;
 }
 
-interface FrameObservation {
+export interface FrameObservation {
   kind: 'frame';
   frame_id: string;
   t_capture_ms: number;
@@ -40,7 +40,7 @@ interface FrameObservation {
   height: number;
   file: string;
 }
-interface OrientationObservation {
+export interface OrientationObservation {
   kind: 'orientation';
   t_event_ms: number;
   t_receive_ms: number;
@@ -49,7 +49,7 @@ interface OrientationObservation {
   gamma: number;
   absolute: boolean;
 }
-type Observation = FrameObservation | OrientationObservation;
+export type Observation = FrameObservation | OrientationObservation;
 
 const PANORAMA_W = 1080, PANORAMA_H = 300;
 /** Decoded frames held back from the garbage collector. Sequential delivery
@@ -81,6 +81,26 @@ function deliveredAt(item: Observation): number {
   return item.kind === 'frame' ? item.t_present_ms : item.t_receive_ms;
 }
 
+/** Merge the observations into the order the page would have seen them.
+ *
+ *  A tie goes to the reading. A browser drains its task queue - where a
+ *  `deviceorientationabsolute` event lands - before it runs the rendering
+ *  steps, and `requestVideoFrameCallback` runs with the rendering steps, so a
+ *  reading and a frame stamped with the same delivery millisecond arrive
+ *  reading first. Delivering the frame first instead hands `forFrame` a pose
+ *  history one sample short of the one the browser would have had, and on the
+ *  recorded cases that changes the pose worn by two frames apiece. Equal kinds
+ *  keep file order, so the merge is stable and a replay repeats exactly. */
+export function mergeObservations(observations: Observation[]): Observation[] {
+  const rank = (item: Observation) => (item.kind === 'orientation' ? 0 : 1);
+  return observations
+    .map((item, index) => ({ item, index }))
+    .sort((a, b) => deliveredAt(a.item) - deliveredAt(b.item)
+      || rank(a.item) - rank(b.item)
+      || a.index - b.index)
+    .map(entry => entry.item);
+}
+
 /** The commit the scanner was replayed at. `null` rather than a guess when git
  *  cannot answer: the scorer falls back to the manifest, and a wrong commit on
  *  a score is worse than no commit. */
@@ -102,128 +122,157 @@ export async function replayCase(caseDir: string): Promise<Summary> {
 
   const beginAt = actions.find(a => a.action === 'begin')?.t_ms ?? 0;
   const finishAt = actions.find(a => a.action === 'finish')?.t_ms ?? Infinity;
-  // A stable sort by delivery time: the file is already in that order, and
-  // saying so here means a case that is not still replays the same way twice.
-  const timeline = observations
-    .map((item, index) => ({ item, index }))
-    .sort((a, b) => deliveredAt(a.item) - deliveredAt(b.item) || a.index - b.index)
-    .map(entry => entry.item);
+  const timeline = mergeObservations(observations);
 
   const harness = createHarness({ videoWidth: manifest.camera.width, videoHeight: manifest.camera.height });
-  const { PhotosphereSweep, traceSkyCoverage } = await import('../photosphere');
-  const sweep = new PhotosphereSweep();
-  await sweep.start(harness.video, harness.canvas);
+  // Whatever happens below, the globals this harness replaced go back. A
+  // replay that throws must not leave a frozen `Date.now` behind for the next
+  // thing in the process to trip over.
+  try {
+    const { PhotosphereSweep, traceSkyCoverage } = await import('../photosphere');
+    const sweep = new PhotosphereSweep();
+    await sweep.start(harness.video, harness.canvas);
 
-  const cache = new Map<string, Raster>();
-  const loadFrame = (file: string): Raster => {
-    const hit = cache.get(file);
-    if (hit) { cache.delete(file); cache.set(file, hit); return hit; }
-    const decoded = decodePng(readFileSync(join(input, file)));
-    cache.set(file, decoded);
-    if (cache.size > FRAME_CACHE) cache.delete(cache.keys().next().value as string);
-    return decoded;
-  };
+    const cache = new Map<string, Raster>();
+    const loadFrame = (file: string): Raster => {
+      const hit = cache.get(file);
+      if (hit) { cache.delete(file); cache.set(file, hit); return hit; }
+      // The rule that the driver reads only input/ is enforced here, at the one
+      // point a case file could defeat it: `file` comes out of the case's own
+      // observations, so a path with `..` in it would walk the driver into the
+      // reference data the scorer owns.
+      const path = resolve(input, file);
+      if (!path.startsWith(input + sep))
+        throw new Error(`frame path "${file}" leaves the case's input directory`);
+      const decoded = decodePng(readFileSync(path));
+      cache.set(file, decoded);
+      if (cache.size > FRAME_CACHE) cache.delete(cache.keys().next().value as string);
+      return decoded;
+    };
 
-  // Emptied before the replay, not after it: a run that throws part way must
-  // not leave an older run's files behind for the scorer to read as this one's.
-  const out = join(root, 'result');
-  rmSync(out, { recursive: true, force: true });
-  mkdirSync(out, { recursive: true });
+    // Emptied before the replay, not after it: a run that throws part way must
+    // not leave an older run's files behind for the scorer to read as this one's.
+    // It takes a previous scorer's `scores.json` and `report.html` with it, and
+    // that is intended too - they describe a replay that no longer exists here,
+    // and a stale verdict sitting beside fresh evidence is worse than none.
+    const out = join(root, 'result');
+    rmSync(out, { recursive: true, force: true });
+    mkdirSync(out, { recursive: true });
 
-  const events: unknown[] = [];
-  let framesDelivered = 0, eventsDelivered = 0, elapsed = 0, begun = false;
-  // `begin()` refuses until the scanner has a bearing, and the recorded begin
-  // action is at the very start of the night, before the first reading has
-  // arrived. Dropping it there would leave the whole replay unrecorded behind a
-  // silent no-op, so it is held and re-offered at the first moment it can be
-  // accepted - which is the same gate the Start button is behind in the UI.
-  const tryBegin = (at: number) => {
-    if (begun || at < beginAt || !sweep.compassReady) return;
-    sweep.begin();
-    begun = true;
-  };
+    const events: unknown[] = [];
+    let framesDelivered = 0, eventsDelivered = 0, elapsed = 0, begun = false;
+    // `begin()` refuses until the scanner has a bearing, and the recorded begin
+    // action is at the very start of the night, before the first reading has
+    // arrived. Dropping it there would leave the whole replay unrecorded behind a
+    // silent no-op, so it is held and re-offered at the first moment it can be
+    // accepted - which is the same gate the Start button is behind in the UI.
+    let lastOffered: number | null = null;
+    const tryBegin = (at: number) => {
+      if (begun || at < beginAt || !sweep.compassReady) return;
+      lastOffered = at;
+      sweep.begin();
+      // `begin()` returns void and refuses on `!ready || !compassReady`, so
+      // calling it proves nothing. `isRecording` is the scanner's own answer to
+      // whether the scan started, and it is the only one worth believing: taking
+      // the call as the answer is how a replay that recorded nothing comes to
+      // write a well-formed, entirely blank result and exit zero.
+      begun = sweep.isRecording;
+    };
 
-  for (const item of timeline) {
-    const at = deliveredAt(item);
-    if (at > finishAt) break;
-    elapsed = at;
-    harness.setClock(at);
-    if (item.kind === 'orientation') {
-      eventsDelivered++;
-      harness.dispatchOrientation({
-        timeStamp: item.t_event_ms, alpha: item.alpha, beta: item.beta, gamma: item.gamma,
-        absolute: item.absolute,
-      });
-    } else {
-      framesDelivered++;
-      harness.setFrame(loadFrame(item.file), item.t_capture_ms);
-      // A frame nothing consumed is not a frame the scanner saw. Counting it
-      // delivered anyway would report a camera that ran all night to a scanner
-      // that had stopped listening, and every number below it would be about a
-      // session that did not happen.
-      if (!harness.deliverFrame({
-        captureTime: item.t_capture_ms, mediaTime: item.t_capture_ms / 1000,
-        presentationTime: item.t_present_ms, expectedDisplayTime: item.t_present_ms,
-        width: item.width, height: item.height, presentedFrames: framesDelivered,
-      })) throw new Error(`the scanner had no video-frame callback registered at ${item.frame_id} (${at} ms)`);
-      const basis = sweep.cameraBasis;
-      events.push({
-        t_ms: at,
-        frame_id: item.frame_id,
-        compass_ready: sweep.compassReady,
-        tilt_ready: sweep.tiltReady,
-        aim: sweep.aimTarget?.id ?? null,
-        basis: basis && { right: basis.right, up: basis.up, forward: basis.forward },
-        frame_count: sweep.frameCount,
-        cue: sweep.captureCue,
-      });
+    for (const item of timeline) {
+      const at = deliveredAt(item);
+      if (at > finishAt) break;
+      elapsed = at;
+      harness.setClock(at);
+      if (item.kind === 'orientation') {
+        eventsDelivered++;
+        harness.dispatchOrientation({
+          timeStamp: item.t_event_ms, alpha: item.alpha, beta: item.beta, gamma: item.gamma,
+          absolute: item.absolute,
+        });
+      } else {
+        framesDelivered++;
+        harness.setFrame(loadFrame(item.file), item.t_capture_ms);
+        // A frame nothing consumed is not a frame the scanner saw. Counting it
+        // delivered anyway would report a camera that ran all night to a scanner
+        // that had stopped listening, and every number below it would be about a
+        // session that did not happen.
+        if (!harness.deliverFrame({
+          captureTime: item.t_capture_ms, mediaTime: item.t_capture_ms / 1000,
+          presentationTime: item.t_present_ms, expectedDisplayTime: item.t_present_ms,
+          width: item.width, height: item.height, presentedFrames: framesDelivered,
+        })) throw new Error(`the scanner had no video-frame callback registered at ${item.frame_id} (${at} ms)`);
+        const basis = sweep.cameraBasis;
+        events.push({
+          t_ms: at,
+          frame_id: item.frame_id,
+          compass_ready: sweep.compassReady,
+          tilt_ready: sweep.tiltReady,
+          aim: sweep.aimTarget?.id ?? null,
+          basis: basis && { right: basis.right, up: basis.up, forward: basis.forward },
+          frame_count: sweep.frameCount,
+          cue: sweep.captureCue,
+        });
+      }
+      tryBegin(at);
     }
-    tryBegin(at);
+
+    if (!begun) throw new Error(lastOffered === null
+      ? `the scan never started: begin() was never offered, because the scanner's compass `
+        + `was not ready at any delivery up to ${elapsed} ms`
+      : `the scan never started: begin() was last offered at ${lastOffered} ms and the `
+        + `scanner was still not recording`);
+
+    // The finish action is when the user closes the scan, so the results are
+    // read at that instant rather than at the last frame's.
+    harness.setClock(Number.isFinite(finishAt) ? finishAt : elapsed);
+    const columns = sweep.columns();
+    const trace = traceSkyCoverage(columns);
+    const mosaic = sweep.panoramaPixels;
+    const cells = sweep.cells;
+    const captures = sweep.captureLog.map(record => ({
+      at: record.at,
+      outcome: record.outcome,
+      ...(record.cell === undefined ? {} : { cell: record.cell }),
+      ...(record.basis === undefined ? {} : { basis: record.basis }),
+      ...(record.sensorBasis === undefined ? {} : { sensor_basis: record.sensorBasis }),
+      ...(record.adjusted === undefined ? {} : { adjusted: record.adjusted }),
+    }));
+    const summary: Summary = {
+      frames_delivered: framesDelivered,
+      events_delivered: eventsDelivered,
+      frames_accepted: captures.filter(record => record.outcome === 'accepted').length,
+      cells_total: cells.length,
+      cells_covered: cells.filter(cell => cell.captured).length,
+      elapsed_ms: elapsed,
+      app_commit: appCommit(),
+    };
+
+    // A mosaic of another size would still encode, and the scorer's raster
+    // mapping would then read every direction wrong while the file looked fine.
+    if (mosaic && (mosaic.width !== PANORAMA_W || mosaic.height !== PANORAMA_H))
+      throw new Error(`the scanner's mosaic is ${mosaic.width} x ${mosaic.height}, not the `
+        + `${PANORAMA_W} x ${PANORAMA_H} raster the result contract defines`);
+    writeFileSync(join(out, 'panorama.png'),
+      mosaic
+        ? encodePng(mosaic.pixels, mosaic.width, mosaic.height)
+        : encodePng(new Uint8ClampedArray(PANORAMA_W * PANORAMA_H * 4), PANORAMA_W, PANORAMA_H));
+    writeJson(join(out, 'horizon.json'), {
+      bins: columns.length,
+      points: trace.points,
+      uncertain_bins: trace.uncertainBins,
+    });
+    writeJson(join(out, 'columns.json'),
+      columns.map(column => column.map(value => (Number.isFinite(value) ? value : null))));
+    writeJsonl(join(out, 'events.jsonl'), events);
+    writeJsonl(join(out, 'captures.jsonl'), captures);
+    writeJson(join(out, 'summary.json'), summary);
+
+    sweep.stop();
+    return summary;
+  } finally {
+    harness.dispose();
   }
-
-  // The finish action is when the user closes the scan, so the results are
-  // read at that instant rather than at the last frame's.
-  harness.setClock(Number.isFinite(finishAt) ? finishAt : elapsed);
-  const columns = sweep.columns();
-  const trace = traceSkyCoverage(columns);
-  const mosaic = sweep.panoramaPixels;
-  const cells = sweep.cells;
-  const captures = sweep.captureLog.map(record => ({
-    at: record.at,
-    outcome: record.outcome,
-    ...(record.cell === undefined ? {} : { cell: record.cell }),
-    ...(record.basis === undefined ? {} : { basis: record.basis }),
-    ...(record.sensorBasis === undefined ? {} : { sensor_basis: record.sensorBasis }),
-    ...(record.adjusted === undefined ? {} : { adjusted: record.adjusted }),
-  }));
-  const summary: Summary = {
-    frames_delivered: framesDelivered,
-    events_delivered: eventsDelivered,
-    frames_accepted: captures.filter(record => record.outcome === 'accepted').length,
-    cells_total: cells.length,
-    cells_covered: cells.filter(cell => cell.captured).length,
-    elapsed_ms: elapsed,
-    app_commit: appCommit(),
-  };
-
-  writeFileSync(join(out, 'panorama.png'),
-    mosaic
-      ? encodePng(mosaic.pixels, mosaic.width, mosaic.height)
-      : encodePng(new Uint8ClampedArray(PANORAMA_W * PANORAMA_H * 4), PANORAMA_W, PANORAMA_H));
-  writeJson(join(out, 'horizon.json'), {
-    bins: columns.length,
-    points: trace.points,
-    uncertain_bins: trace.uncertainBins,
-  });
-  writeJson(join(out, 'columns.json'),
-    columns.map(column => column.map(value => (Number.isFinite(value) ? value : null))));
-  writeJsonl(join(out, 'events.jsonl'), events);
-  writeJsonl(join(out, 'captures.jsonl'), captures);
-  writeJson(join(out, 'summary.json'), summary);
-
-  sweep.stop();
-  harness.dispose();
-  return summary;
 }
 
 async function main(): Promise<void> {
