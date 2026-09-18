@@ -131,3 +131,42 @@ from -10 to 90; `-10` means nothing was hit) and `"obstacles":[{"id","az_from","
   after the aims: hold at `(az, alt_from)`, tilt linearly to `alt_to` over
   `duration_s`, hold again.
 - `c_ref` is the camera centre at the first frame.
+
+## Texture conventions (both implementations)
+
+The Python truth (`sim/truth.py`) and the JavaScript renderer paint the
+same background from the scene JSON. The recipe in the Scene schema leaves
+four choices open; both implementations make them this way:
+
+1. An octave's lattice has `columns = cells * 2^o` columns and
+   `rows = columns / 2 + 1` rows, so its cells are square with row 0 at
+   the zenith and row `rows - 1` at the nadir. A direction samples it at
+   `u = az / 360 * columns` (wrapping: the column after the last is column
+   0) and `v = (90 - alt) / 180 * (rows - 1)` (clamped to the last row),
+   with bilinear interpolation between the four surrounding lattice values.
+2. The grey value is truncated, not rounded:
+   `floor(grey[0] + sum / 1.875 * (grey[1] - grey[0]))` where `sum` is the
+   weighted octave sum and 1.875 is `2 - 0.5^(octaves - 1)` for four
+   octaves.
+3. A stripe is the great circle through `(az_k, 0)` with `az_k = k * 360 /
+   count`, tilted by `tilt_deg` from the vertical; its pole is
+   `n = [cos(az_k) cos(tilt), -sin(az_k) cos(tilt), -sin(tilt)]`, and a
+   direction `d` is on the stripe when `|d . n| < sin(width_deg / 2)`.
+   Every stripe leans the same way.
+4. Where two landmark discs overlap, the EARLIER disc in file order wins in
+   the truth; the texture therefore paints discs from the last declared to
+   the first, so the painter's "later covers earlier" agrees with the ray
+   caster. The chart yard's discs do not overlap (a test keeps it so);
+   the rule exists for scenes that do.
+
+The uint32 lattice hash is pinned by integer test values in
+`tests/test_truth.py` (for example `lattice(7, 0, 0, 0) = 2492178918`); a
+port must reproduce those integers, not merely a similar picture, because
+dropping the final shift changes the picture by less than one grey level.
+
+## Manifest hashes
+
+`frames` is defined in the Case directory section. `observations` is the
+SHA-256 of `input/observations.jsonl`'s bytes. `truth` is the SHA-256 of
+the concatenated per-file hex digests of every file under `truth/`, in
+filename order, the same construction as `frames`.
