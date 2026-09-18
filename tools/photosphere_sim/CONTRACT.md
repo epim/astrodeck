@@ -126,7 +126,10 @@ from -10 to 90; `-10` means nothing was hit) and `"obstacles":[{"id","az_from","
   around the body at arm's length and rises as the view tilts up.
 - `aims`: ordered `[az, alt]` targets. Between consecutive aims the view moves
   along the shorter azimuth arc with a smoothstep profile over `move_s`
-  seconds, then holds for `hold_s`. Holds are listed in `holds.json`.
+  seconds, then holds for `hold_s`. Holds are listed in `holds.json`. A move
+  whose great-circle angle exceeds 30 degrees times `move_s` takes `angle /
+  30` seconds instead, at the same smoothstep profile, so no move averages
+  more than 30 degrees per second.
 - `sweeps`: `[{"az","alt_from","alt_to","duration_s","hold_s"}]` appended
   after the aims: hold at `(az, alt_from)`, tilt linearly to `alt_to` over
   `duration_s`, hold again.
