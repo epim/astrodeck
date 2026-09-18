@@ -38,3 +38,5 @@ ui/dist-lib/
 
 # tools/ui_probe scratch: isolated server config/captures + screenshots/reports
 .probe/
+tools/photosphere_sim/cache/
+tools/photosphere_sim/node_modules/
