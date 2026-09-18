@@ -260,8 +260,11 @@ export class PhotosphereSweep {
   private stability = new VisualStability();
   private lumaCanvas: HTMLCanvasElement | null = null;
   private stillnessFailures = 0;
-  /** The media clock of the last frame the interval fallback took as evidence,
-   *  in seconds; -1 before any. */
+  /** The media clock of the last frame a NON-CALLBACK grab took as evidence, in
+   *  seconds; -1 before any. Not the interval fallback alone: `captureOverhead`
+   *  reaches `grabFrame` with no frame of its own, so it runs the same gate on a
+   *  device that has requestVideoFrameCallback. The gate consumes as it answers
+   *  (see `newMediaFrame`), so this field advances on every `true`. */
   private lastMediaTime = -1;
   private luma = new Uint8Array(GRID_W*GRID_H);
   private listening = false;
@@ -502,7 +505,12 @@ export class PhotosphereSweep {
         // pixels with the callback time pushes every still run forward of the
         // reading it has to reach back to. A capture time later than the
         // callback, or older than a stale frame, cannot belong to this frame,
-        // so it is not believed and the callback time stands.
+        // so it is not believed and the callback time stands. Only the STILLNESS
+        // stamp is decided here: the raw captureTime below is validated again
+        // inside CameraPoseHistory.forFrame, by rules of its own that err toward
+        // returning no pose at all. Two validations of one field, deliberately,
+        // because they answer different questions - if either is changed, read
+        // the other (photospherePose.ts, the captureTime branch).
         const capture=metadata.captureTime;
         const seen=capture!==undefined&&Number.isFinite(capture)&&capture<=now&&now-capture<=STALE_FRAME_MS?capture:now;
         this.observeStillness(video,seen);
@@ -529,8 +537,10 @@ export class PhotosphereSweep {
   /** Sample the preview into a 32x24 luminance grid, the video's own answer to
    *  "is this view holding still". A plain detached canvas rather than an
    *  OffscreenCanvas: every browser that reaches this code already has one,
-   *  and 768 pixels per frame is cheap enough for the UI thread. */
-  private observeStillness(video: HTMLVideoElement, now: number): void {
+   *  and 768 pixels per frame is cheap enough for the UI thread.
+   *  `at` is when the CAMERA saw this frame, not when we got round to reading
+   *  it - the same meaning `VisualStability.observe` gives its own `at`. */
+  private observeStillness(video: HTMLVideoElement, at: number): void {
     if (!video.videoWidth || !video.videoHeight) return;
     try {
       if (!this.lumaCanvas) {
@@ -544,7 +554,7 @@ export class PhotosphereSweep {
       ctx.drawImage(video, 0, 0, GRID_W, GRID_H);
       const { data } = ctx.getImageData(0, 0, GRID_W, GRID_H);
       for (let p = 0; p < this.luma.length; p++) this.luma[p] = luminance(data[p*4], data[p*4+1], data[p*4+2]);
-      this.stability.observe(now, this.luma, GRID_W, GRID_H);
+      this.stability.observe(at, this.luma, GRID_W, GRID_H);
       this.stillnessFailures = 0;
     } catch {
       // A lost drawing context tells us nothing, so stability stays unknown -
@@ -583,8 +593,9 @@ export class PhotosphereSweep {
     // firing is not the camera producing a picture. A hold is therefore earned
     // only while the media clock is moving. While frames do keep arriving every
     // tick carries a new one - 350 ms at 24 fps is eight frames - so the gate
-    // refuses nothing and the settle still lands at 700-1050 ms (1050 measured
-    // in photosphereStillnessDom), inside the 1.5 s acceptance budget. A frozen
+    // refuses nothing and the settle still lands inside the window
+    // photosphereStillnessDom pins on this path, at least 500 ms of watched
+    // stillness and no more than the 1.5 s acceptance budget. A frozen
     // or paused element contributes no observation at all, so stability goes
     // UNKNOWN STALE_FRAME_MS after the last real frame and the strict rule
     // takes back over - the honest outcome, and the one a timer on its own
