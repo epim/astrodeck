@@ -5,7 +5,7 @@ out so that a failure names the geometry it disagrees with. Where the plan's
 sketch of an expectation disagreed with the scene's numbers the arithmetic
 wins and a comment says where the sketch went wrong.
 """
-import dataclasses, math, pathlib, time, unittest
+import dataclasses, hashlib, math, pathlib, time, unittest
 
 import numpy as np
 
@@ -424,6 +424,20 @@ class Landmarks(unittest.TestCase):
         for lm_id in ("W1", "W2", "RF1", "RF2", "T1", "H1"):
             self.assertTrue(self.by_id[lm_id]["observable"], lm_id)
 
+    def test_the_observable_set_is_exactly_this(self):
+        # The whole visibility answer in one place, so that any change to the
+        # scene, to c_ref or to the caster has to be looked at rather than
+        # absorbed. Each of the twelve is accounted for above or in
+        # test_the_lowest_ring_clears_the_ground_but_not_the_hill_or_the_wall:
+        # hill (R0K0, R0K6, R0K7), wall (R0K1, R0K2, R1K1), canopy (R2K0),
+        # roof underside (R2K2, R2K3, R3K2, R3K3) and the roof's near vertical
+        # face (R4K2, which clears the underside and then strikes the face
+        # 11 mm below its top edge).
+        hidden = frozenset(lm["id"] for lm in self.lms if not lm["observable"])
+        self.assertEqual(hidden, {"R0K0", "R0K1", "R0K2", "R0K6", "R0K7", "R1K1",
+                                  "R2K0", "R2K2", "R2K3", "R3K2", "R3K3", "R4K2"})
+        self.assertEqual(sum(lm["observable"] for lm in self.lms), 40)
+
 
 class Panorama(unittest.TestCase):
     @classmethod
@@ -467,6 +481,15 @@ class BackgroundTexture(unittest.TestCase):
         b = background_texture(SCENE, 512, 256)
         self.assertEqual(a.shape, (256, 512, 3))
         self.assertTrue((a == b).all())
+        # Two calls in one process agreeing only proves the code is a function.
+        # This digest carries the agreement across processes, machines and
+        # numpy versions, and is what Task 4's renderer can be diffed against
+        # at this size. Produced by:
+        #   hashlib.sha256(background_texture(load("scenes/chartyard.json"),
+        #                                     512, 256).tobytes()).hexdigest()
+        self.assertEqual(
+            hashlib.sha256(a.tobytes()).hexdigest(),
+            "ceb2561a9e08fec3b77d4da2635e7bbb722e281e7199c673e4b876d610fdacc2")
         # Noise maps into grey 70..150 and stripes paint 170, so every pixel
         # outside a landmark disc is a grey in [70, 170]. The discs are painted
         # last in palette colours, which reach 0 and 255 by design.
