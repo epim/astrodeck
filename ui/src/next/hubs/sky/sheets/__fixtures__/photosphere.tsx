@@ -9,7 +9,7 @@ import {createRoot} from 'react-dom/client';
 import '../../../../../index.css';
 import '../../../../next.css';
 import '../../../../../components/sky/classicSkyTools.css';
-import '../photosphere.css';
+import '../sheets.css';
 
 // Camera and sensor fixture. Production React, capture, dome and editor code.
 //

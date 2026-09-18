@@ -1,6 +1,10 @@
 import { useEffect, useRef } from 'react';
 import type { PhotosphereSweep } from './photosphere';
 import { projectRay, skyVector, type V3 } from './photosphereGeometry';
+// The area's stylesheet, by the wave-R7 rule (r7Css.test.ts): every area owns
+// <area>/<area>.css and some always-loaded module of the area imports it.
+// Double quotes on purpose: the rule's test reads only that form (issue #39).
+import "./sheets.css";
 
 /** Canvas lives in the video panel. Pose is read each animation frame instead
  * of making React rebuild the sheet at sensor frequency. */
