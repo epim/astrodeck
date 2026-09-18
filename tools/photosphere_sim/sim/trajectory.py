@@ -11,22 +11,24 @@ given fps, the list of holds, the reference position, and a continuous
 Two conventions the route schema leaves to this module:
 
 - Between aims, both azimuth and altitude are carried by the same smoothstep
-  parameter ``s(u) = 3u^2 - 2u^3``, ``u = t / move_s``: azimuth moves along
+  parameter ``s(u) = 3u^2 - 2u^3``, ``u = t / duration``: azimuth moves along
   ``wrap_deg(az1 - az0)`` (the shorter arc, so it can go through north) and
-  altitude moves along the plain (unwrapped) difference. This is the only
-  reading that keeps every one of the 45 aim-to-aim moves inside the
-  smoothstep-continuity bound the plan asks for: the largest of them, 24
-  degrees, is far short of the 1 degree per 10 ms sample it demands.
-- Reaching a sweep's start point is a hard cut, not a move: the schema defines
-  a move only "between consecutive aims", and the final aim before the first
-  sweep is ``[0, 89.5]`` while stage A's sweep starts at ``(180, 0)``, roughly
-  a 90 degree turn on the sky. Spreading that over the same ``move_s`` used
-  for a 24 degree aim-to-aim step would swing at several degrees per 10 ms
-  sample, breaking the very continuity bound the aims phase is built to
-  satisfy. A cut between two logical phases of a prescribed test route -- the
-  aims scan, then a separate vertical sweep -- has no such obligation, so the
-  aims-phase's last hold is followed immediately by the sweep's own first
-  hold at the new (az, alt), with no move segment between them.
+  altitude moves along the plain (unwrapped) difference.
+- A move's duration is ``move_s``, unless the great-circle angle between its
+  two look directions exceeds ``30 * move_s`` degrees, in which case it takes
+  ``angle / 30`` seconds instead -- CONTRACT.md's Route schema rule, restated
+  here: no move ever averages more than 30 degrees per second. Every one of
+  the 45 aim-to-aim moves is 24 degrees or less, so this leaves them all at
+  exactly ``move_s`` (24 / 30 = 0.8 for the standard step); it is what makes
+  the move from the last aim, ``[0, 89.5]``, into the first sweep's start,
+  ``(180, 0)`` -- a roughly 90 degree turn on the sky, one no real move
+  between adjacent aims ever asks for -- take about 3 seconds instead of a
+  physically impossible 0.8, so that move is built exactly like any other:
+  same smoothstep profile, just longer. The smoothstep's own peak rate is 1.5
+  times its average, so a move built this way never exceeds 45 deg/s, which
+  is 0.45 degrees per 10 ms sample -- comfortably inside the plan's 1 degree
+  smoothstep-continuity bound, for every move in the route, not just the
+  short ones.
 
 Angular rate is computed analytically per segment, not by finite-differencing
 ``pose_at``: a hold's rate is exactly 0 (nothing here reads as "very small"
@@ -43,7 +45,7 @@ from typing import Callable
 
 import numpy as np
 
-from .geometry import Basis, look_basis, wrap_deg
+from .geometry import Basis, angle_between, look_basis, sky_vector, wrap_deg
 
 __all__ = ["FrameTruth", "Hold", "Trajectory", "build"]
 
@@ -96,11 +98,35 @@ def _position(kind, pivot, radius_m, height_m, lift_m, az, alt):
     raise ValueError(f"unknown route kind {kind!r}")
 
 
+def _move_duration_ms(az0, alt0, az1, alt1, move_s):
+    """A move's duration in ms: ``move_s``, or ``angle / 30`` seconds if that
+    is longer -- CONTRACT.md's Route schema rule, so no move ever averages
+    more than 30 degrees per second. ``angle`` is the great-circle angle
+    between the two look directions, not the raw azimuth/altitude deltas, so
+    a move that changes both is measured by the actual distance travelled on
+    the sky.
+    """
+    angle = angle_between(sky_vector(az0, alt0), sky_vector(az1, alt1))
+    duration_s = max(float(move_s), angle / 30.0)
+    return round(duration_s * 1000.0)
+
+
+def _append_move(segments, t, az0, alt0, az1, alt1, move_s):
+    """Append one move segment from ``(az0, alt0)`` to ``(az1, alt1)``
+    starting at ``t``, and return the time it ends."""
+    d_az = float(wrap_deg(az1 - az0))
+    d_alt = alt1 - alt0
+    dur_ms = _move_duration_ms(az0, alt0, az1, alt1, move_s)
+    segments.append({"kind": "move", "t0": t, "t1": t + dur_ms,
+                     "az0": az0, "alt0": alt0, "d_az": d_az, "d_alt": d_alt})
+    return t + dur_ms
+
+
 def _segments_and_holds(route: dict):
     """The route's timeline as a list of hold/move/tilt segments plus the
     holds list, and the total duration in ms. All boundary times are integer
     milliseconds so later comparisons never drift."""
-    move_ms = round(float(route["move_s"]) * 1000.0)
+    move_s = float(route["move_s"])
     hold_ms = round(float(route["hold_s"]) * 1000.0)
     aims = route["aims"]
     if not aims:
@@ -110,22 +136,19 @@ def _segments_and_holds(route: dict):
     holds: list[Hold] = []
     t = 0
 
-    az0, alt0 = (float(v) for v in aims[0])
-    segments.append({"kind": "hold", "t0": t, "t1": t + hold_ms, "az": az0, "alt": alt0})
-    holds.append(Hold(index=len(holds), az=az0, alt=alt0, from_ms=t, to_ms=t + hold_ms))
+    current_az, current_alt = (float(v) for v in aims[0])
+    segments.append({"kind": "hold", "t0": t, "t1": t + hold_ms,
+                     "az": current_az, "alt": current_alt})
+    holds.append(Hold(index=len(holds), az=current_az, alt=current_alt, from_ms=t, to_ms=t + hold_ms))
     t += hold_ms
 
     for i in range(1, len(aims)):
-        az_prev, alt_prev = (float(v) for v in aims[i - 1])
         az_cur, alt_cur = (float(v) for v in aims[i])
-        d_az = float(wrap_deg(az_cur - az_prev))
-        d_alt = alt_cur - alt_prev
-        segments.append({"kind": "move", "t0": t, "t1": t + move_ms,
-                         "az0": az_prev, "alt0": alt_prev, "d_az": d_az, "d_alt": d_alt})
-        t += move_ms
+        t = _append_move(segments, t, current_az, current_alt, az_cur, alt_cur, move_s)
         segments.append({"kind": "hold", "t0": t, "t1": t + hold_ms, "az": az_cur, "alt": alt_cur})
         holds.append(Hold(index=len(holds), az=az_cur, alt=alt_cur, from_ms=t, to_ms=t + hold_ms))
         t += hold_ms
+        current_az, current_alt = az_cur, alt_cur
 
     for sweep in route.get("sweeps", []):
         az = float(sweep["az"])
@@ -134,7 +157,10 @@ def _segments_and_holds(route: dict):
         duration_ms = round(float(sweep["duration_s"]) * 1000.0)
         sweep_hold_ms = round(float(sweep["hold_s"]) * 1000.0)
 
-        # A hard cut into the sweep's own start -- see the module docstring.
+        # The same move rule carries the view from wherever the aims phase
+        # (or a previous sweep) left off into this sweep's start: no move is
+        # ever a hard cut, however far it has to reach.
+        t = _append_move(segments, t, current_az, current_alt, az, alt_from, move_s)
         segments.append({"kind": "hold", "t0": t, "t1": t + sweep_hold_ms, "az": az, "alt": alt_from})
         holds.append(Hold(index=len(holds), az=az, alt=alt_from, from_ms=t, to_ms=t + sweep_hold_ms))
         t += sweep_hold_ms
@@ -146,6 +172,7 @@ def _segments_and_holds(route: dict):
         segments.append({"kind": "hold", "t0": t, "t1": t + sweep_hold_ms, "az": az, "alt": alt_to})
         holds.append(Hold(index=len(holds), az=az, alt=alt_to, from_ms=t, to_ms=t + sweep_hold_ms))
         t += sweep_hold_ms
+        current_az, current_alt = az, alt_to
 
     return segments, holds, t
 
@@ -156,8 +183,8 @@ def _eval(segments, t):
     Segments are contiguous and half-open, ``[t0, t1)``, except the very last,
     which is closed at both ends so the trajectory's final instant resolves.
     A boundary time therefore belongs to the segment that STARTS there, which
-    is what carries a frame at an aim's hold into the next move (or, at the
-    aims-to-sweep cut, into the sweep) with no third case to consider.
+    is what carries a frame at the end of one hold into the next move (or
+    tilt) with no third case to consider.
     """
     last = len(segments) - 1
     t = min(max(t, segments[0]["t0"]), segments[last]["t1"])
@@ -195,10 +222,12 @@ def _eval_segment(seg, t):
 def build(route: dict, fps: int) -> Trajectory:
     """Build a :class:`Trajectory` from a route definition at ``fps``.
 
-    ``frames`` is sampled at ``round(k * 1000 / fps)`` for ``k = 0, 1, ...``
-    up to and including the route's total duration. ``pose_at`` is the same
-    underlying continuous function and can be called at any time in
-    ``[0, duration_ms]``, ms clamped at the ends.
+    ``frames`` is sampled at ``round(k * 1000 / fps)`` for ``k = 0, 1, ...``,
+    stopping at the last capture time that does not exceed the route's total
+    duration (a move's duration is no longer always a whole multiple of the
+    frame period, now that it can be stretched past ``move_s``). ``pose_at``
+    is the same underlying continuous function and can be called at any time
+    in ``[0, duration_ms]``, ms clamped at the ends.
     """
     kind = route["kind"]
     pivot = np.asarray(route["pivot"], dtype=np.float64)
@@ -214,7 +243,7 @@ def build(route: dict, fps: int) -> Trajectory:
         return position, look_basis(az, alt, 0.0)
 
     period_ms = 1000.0 / fps
-    n_frames = int(round(duration_ms / period_ms)) + 1
+    n_frames = int(math.floor(duration_ms / period_ms + 1e-9)) + 1
     frames = []
     for k in range(n_frames):
         t_capture = int(round(k * 1000.0 / fps))

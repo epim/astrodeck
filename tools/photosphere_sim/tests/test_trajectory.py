@@ -9,7 +9,7 @@ import json, math, pathlib, unittest
 import numpy as np
 
 from sim import trajectory
-from sim.geometry import sky_angles, wrap_deg
+from sim.geometry import angle_between, sky_angles, wrap_deg
 
 ROUTES = pathlib.Path(__file__).resolve().parents[1] / "routes"
 
@@ -86,19 +86,34 @@ class Holds(unittest.TestCase):
 
 
 class SmoothstepContinuity(unittest.TestCase):
-    def test_azimuth_never_jumps_more_than_1_degree_between_100hz_samples(self):
-        # Covers the 46-aim scan (holds[45].to_ms is where it ends, just before
-        # the sweep's own, deliberately discontinuous, entry point -- see
-        # trajectory.py's module docstring for why that cut is not a move).
+    def test_look_direction_never_jumps_more_than_1_degree_between_100hz_samples(self):
+        # Covers the WHOLE route, including the aims-to-sweep transition: with
+        # the 30 deg/s move-duration rule (CONTRACT.md's Route schema), a move
+        # takes longer instead of turning faster, so its peak rate -- 1.5x its
+        # average, at the smoothstep's own midpoint -- never exceeds 45 deg/s
+        # regardless of how far it has to reach. That is 0.45 degrees per
+        # 10 ms sample, comfortably inside the 1 degree bound checked here, so
+        # there is no discontinuity left anywhere in the route to carve out.
+        traj = build("arc075")
+        directions = []
+        t = 0
+        while t <= traj.duration_ms:
+            _, basis = traj.pose_at(t)
+            directions.append(basis.forward)
+            t += 10
+        for a, b in zip(directions, directions[1:]):
+            self.assertLessEqual(angle_between(a, b), 1.0 + 1e-9)
+
+    def test_azimuth_never_jumps_more_than_1_degree_during_the_aims_scan(self):
+        # The same bound, restated in azimuth terms (wrap-compared) over just
+        # the 45 aim-to-aim moves, as a second, independent reading of the
+        # same property the great-circle test above checks over the whole
+        # route.
         traj = build("arc075")
         end_of_aims = traj.holds[45].to_ms
         azimuths = []
-        # Deliberately excludes t == end_of_aims itself: that instant belongs
-        # to the sweep's first hold (see trajectory.py's module docstring for
-        # why the cut there is not a move), so this loop stops one 10 ms
-        # sample short of it.
         t = 0
-        while t < end_of_aims:
+        while t <= end_of_aims:
             _, basis = traj.pose_at(t)
             az, _ = sky_angles(basis.forward)
             azimuths.append(az)
@@ -107,23 +122,43 @@ class SmoothstepContinuity(unittest.TestCase):
             self.assertLessEqual(abs(wrap_deg(b - a)), 1.0 + 1e-9)
 
 
+class Transition(unittest.TestCase):
+    def test_aims_to_sweep_transition_takes_about_3_seconds(self):
+        # [0, 89.5] (holds[45], the last aim) to the sweep's start, (180, 0)
+        # (holds[46]): a ~90 degree great-circle turn, so the 30 deg/s rule
+        # gives it roughly 90 / 30 = 3 s instead of the standard move_s (0.8).
+        traj = build("arc075")
+        transition_ms = traj.holds[46].from_ms - traj.holds[45].to_ms
+        self.assertGreaterEqual(transition_ms, 2900)
+        self.assertLessEqual(transition_ms, 3200)
+
+
 class Sweep(unittest.TestCase):
     def test_alt_rises_monotonically_from_0_to_85_over_4_seconds(self):
         traj = build("arc075")
-        # Restricted to the sweep's own time span: az 180 is also one of
-        # band1's aims (alt 35), so filtering on azimuth alone would catch
-        # that unrelated hold too.
-        end_of_aims = traj.holds[45].to_ms
-        az180 = sorted((f for f in traj.frames
-                        if f.az == 180.0 and f.t_capture_ms >= end_of_aims),
-                       key=lambda f: f.t_capture_ms)
-        self.assertGreater(len(az180), 0)
-        for a, b in zip(az180, az180[1:]):
-            self.assertLessEqual(a.alt, b.alt + 1e-9)
-        start = next(f for f in az180 if f.t_capture_ms == 92400)
-        end = next(f for f in az180 if f.t_capture_ms == 96400)
-        self.assertAlmostEqual(start.alt, 0.0, places=6)
-        self.assertAlmostEqual(end.alt, 85.0, places=6)
+        # holds[46] is the sweep's own first hold (az 180, alt 0); holds[47]
+        # is its last (az 180, alt 85). The tilt is the move between them,
+        # always exactly duration_s (4.0 s) long, whatever the transition
+        # into holds[46] cost -- read from pose_at directly rather than from
+        # traj.frames, since the transition's new, non-round duration means
+        # the tilt's own start no longer has to land on a frame at 10 fps.
+        traj_holds = traj.holds
+        tilt_start_ms = traj_holds[46].to_ms
+        tilt_end_ms = traj_holds[47].from_ms
+        self.assertEqual(tilt_end_ms - tilt_start_ms, 4000)
+
+        alts = []
+        t = tilt_start_ms
+        while t <= tilt_end_ms:
+            _, basis = traj.pose_at(t)
+            az, alt = sky_angles(basis.forward)
+            self.assertAlmostEqual(az, 180.0, places=6)
+            alts.append(alt)
+            t += 100
+        for a, b in zip(alts, alts[1:]):
+            self.assertLessEqual(a, b + 1e-9)
+        self.assertAlmostEqual(alts[0], 0.0, places=6)
+        self.assertAlmostEqual(alts[-1], 85.0, places=6)
 
 
 if __name__ == "__main__":
