@@ -1,0 +1,247 @@
+// Replay a recorded case through the real scanner.
+//
+//   node --import tsx src/next/hubs/sky/sheets/__sim__/replay.ts <abs case dir>
+//
+// The point of the whole exercise is that nothing here is a model of the
+// scanner. `PhotosphereSweep` is imported from production and driven through
+// its public surface only, in a browser (harness.ts) whose clock, camera and
+// sensor are the case's own recording. What it writes into `result/` is
+// therefore a measurement of the shipped code, and the scorer that reads those
+// files has never seen this directory.
+//
+// The driver reads `manifest.json`, `input/observations.jsonl`,
+// `input/actions.jsonl` and `input/frames/*.png`, and nothing else. The
+// reference data beside them belongs to the scorer alone: a driver able to see
+// it could reach the right answer for the wrong reason, and no test of the
+// result could tell.
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { decodePng, encodePng, type Raster } from './png';
+import { createHarness } from './harness';
+
+export interface Summary {
+  frames_delivered: number;
+  events_delivered: number;
+  frames_accepted: number;
+  cells_total: number;
+  cells_covered: number;
+  elapsed_ms: number;
+  app_commit: string | null;
+}
+
+interface FrameObservation {
+  kind: 'frame';
+  frame_id: string;
+  t_capture_ms: number;
+  t_present_ms: number;
+  width: number;
+  height: number;
+  file: string;
+}
+interface OrientationObservation {
+  kind: 'orientation';
+  t_event_ms: number;
+  t_receive_ms: number;
+  alpha: number;
+  beta: number;
+  gamma: number;
+  absolute: boolean;
+}
+type Observation = FrameObservation | OrientationObservation;
+
+const PANORAMA_W = 1080, PANORAMA_H = 300;
+/** Decoded frames held back from the garbage collector. Sequential delivery
+ *  reads each frame once, so this is a guard against a case that revisits one,
+ *  not a speed-up - and it is small because a 480 x 640 RGBA raster is 1.2 MB. */
+const FRAME_CACHE = 8;
+
+function readJson<T>(path: string): T {
+  return JSON.parse(readFileSync(path, 'utf8')) as T;
+}
+
+function readJsonl<T>(path: string): T[] {
+  return readFileSync(path, 'utf8').split('\n').filter(line => line.trim().length > 0).map(line => JSON.parse(line) as T);
+}
+
+function writeJson(path: string, value: unknown): void {
+  writeFileSync(path, JSON.stringify(value) + '\n', 'utf8');
+}
+
+function writeJsonl(path: string, rows: unknown[]): void {
+  writeFileSync(path, rows.map(row => JSON.stringify(row)).join('\n') + (rows.length ? '\n' : ''), 'utf8');
+}
+
+/** Delivery time: when the page was handed the thing, not when the world
+ *  produced it. A frame is delivered when it is presented and a reading when it
+ *  is received; the earlier stamps each carries are the scanner's to reason
+ *  about, and it does. */
+function deliveredAt(item: Observation): number {
+  return item.kind === 'frame' ? item.t_present_ms : item.t_receive_ms;
+}
+
+/** The commit the scanner was replayed at. `null` rather than a guess when git
+ *  cannot answer: the scorer falls back to the manifest, and a wrong commit on
+ *  a score is worse than no commit. */
+function appCommit(): string | null {
+  try {
+    return execFileSync('git', ['rev-parse', 'HEAD'],
+      { cwd: dirname(fileURLToPath(import.meta.url)), encoding: 'utf8' }).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+export async function replayCase(caseDir: string): Promise<Summary> {
+  const root = resolve(caseDir);
+  const input = join(root, 'input');
+  const manifest = readJson<{ camera: { width: number; height: number } }>(join(root, 'manifest.json'));
+  const observations = readJsonl<Observation>(join(input, 'observations.jsonl'));
+  const actions = readJsonl<{ t_ms: number; action: string }>(join(input, 'actions.jsonl'));
+
+  const beginAt = actions.find(a => a.action === 'begin')?.t_ms ?? 0;
+  const finishAt = actions.find(a => a.action === 'finish')?.t_ms ?? Infinity;
+  // A stable sort by delivery time: the file is already in that order, and
+  // saying so here means a case that is not still replays the same way twice.
+  const timeline = observations
+    .map((item, index) => ({ item, index }))
+    .sort((a, b) => deliveredAt(a.item) - deliveredAt(b.item) || a.index - b.index)
+    .map(entry => entry.item);
+
+  const harness = createHarness({ videoWidth: manifest.camera.width, videoHeight: manifest.camera.height });
+  const { PhotosphereSweep, traceSkyCoverage } = await import('../photosphere');
+  const sweep = new PhotosphereSweep();
+  await sweep.start(harness.video, harness.canvas);
+
+  const cache = new Map<string, Raster>();
+  const loadFrame = (file: string): Raster => {
+    const hit = cache.get(file);
+    if (hit) { cache.delete(file); cache.set(file, hit); return hit; }
+    const decoded = decodePng(readFileSync(join(input, file)));
+    cache.set(file, decoded);
+    if (cache.size > FRAME_CACHE) cache.delete(cache.keys().next().value as string);
+    return decoded;
+  };
+
+  // Emptied before the replay, not after it: a run that throws part way must
+  // not leave an older run's files behind for the scorer to read as this one's.
+  const out = join(root, 'result');
+  rmSync(out, { recursive: true, force: true });
+  mkdirSync(out, { recursive: true });
+
+  const events: unknown[] = [];
+  let framesDelivered = 0, eventsDelivered = 0, elapsed = 0, begun = false;
+  // `begin()` refuses until the scanner has a bearing, and the recorded begin
+  // action is at the very start of the night, before the first reading has
+  // arrived. Dropping it there would leave the whole replay unrecorded behind a
+  // silent no-op, so it is held and re-offered at the first moment it can be
+  // accepted - which is the same gate the Start button is behind in the UI.
+  const tryBegin = (at: number) => {
+    if (begun || at < beginAt || !sweep.compassReady) return;
+    sweep.begin();
+    begun = true;
+  };
+
+  for (const item of timeline) {
+    const at = deliveredAt(item);
+    if (at > finishAt) break;
+    elapsed = at;
+    harness.setClock(at);
+    if (item.kind === 'orientation') {
+      eventsDelivered++;
+      harness.dispatchOrientation({
+        timeStamp: item.t_event_ms, alpha: item.alpha, beta: item.beta, gamma: item.gamma,
+        absolute: item.absolute,
+      });
+    } else {
+      framesDelivered++;
+      harness.setFrame(loadFrame(item.file), item.t_capture_ms);
+      // A frame nothing consumed is not a frame the scanner saw. Counting it
+      // delivered anyway would report a camera that ran all night to a scanner
+      // that had stopped listening, and every number below it would be about a
+      // session that did not happen.
+      if (!harness.deliverFrame({
+        captureTime: item.t_capture_ms, mediaTime: item.t_capture_ms / 1000,
+        presentationTime: item.t_present_ms, expectedDisplayTime: item.t_present_ms,
+        width: item.width, height: item.height, presentedFrames: framesDelivered,
+      })) throw new Error(`the scanner had no video-frame callback registered at ${item.frame_id} (${at} ms)`);
+      const basis = sweep.cameraBasis;
+      events.push({
+        t_ms: at,
+        frame_id: item.frame_id,
+        compass_ready: sweep.compassReady,
+        tilt_ready: sweep.tiltReady,
+        aim: sweep.aimTarget?.id ?? null,
+        basis: basis && { right: basis.right, up: basis.up, forward: basis.forward },
+        frame_count: sweep.frameCount,
+        cue: sweep.captureCue,
+      });
+    }
+    tryBegin(at);
+  }
+
+  // The finish action is when the user closes the scan, so the results are
+  // read at that instant rather than at the last frame's.
+  harness.setClock(Number.isFinite(finishAt) ? finishAt : elapsed);
+  const columns = sweep.columns();
+  const trace = traceSkyCoverage(columns);
+  const mosaic = sweep.panoramaPixels;
+  const cells = sweep.cells;
+  const captures = sweep.captureLog.map(record => ({
+    at: record.at,
+    outcome: record.outcome,
+    ...(record.cell === undefined ? {} : { cell: record.cell }),
+    ...(record.basis === undefined ? {} : { basis: record.basis }),
+    ...(record.sensorBasis === undefined ? {} : { sensor_basis: record.sensorBasis }),
+    ...(record.adjusted === undefined ? {} : { adjusted: record.adjusted }),
+  }));
+  const summary: Summary = {
+    frames_delivered: framesDelivered,
+    events_delivered: eventsDelivered,
+    frames_accepted: captures.filter(record => record.outcome === 'accepted').length,
+    cells_total: cells.length,
+    cells_covered: cells.filter(cell => cell.captured).length,
+    elapsed_ms: elapsed,
+    app_commit: appCommit(),
+  };
+
+  writeFileSync(join(out, 'panorama.png'),
+    mosaic
+      ? encodePng(mosaic.pixels, mosaic.width, mosaic.height)
+      : encodePng(new Uint8ClampedArray(PANORAMA_W * PANORAMA_H * 4), PANORAMA_W, PANORAMA_H));
+  writeJson(join(out, 'horizon.json'), {
+    bins: columns.length,
+    points: trace.points,
+    uncertain_bins: trace.uncertainBins,
+  });
+  writeJson(join(out, 'columns.json'),
+    columns.map(column => column.map(value => (Number.isFinite(value) ? value : null))));
+  writeJsonl(join(out, 'events.jsonl'), events);
+  writeJsonl(join(out, 'captures.jsonl'), captures);
+  writeJson(join(out, 'summary.json'), summary);
+
+  sweep.stop();
+  harness.dispose();
+  return summary;
+}
+
+async function main(): Promise<void> {
+  const target = process.argv[2];
+  if (!target) {
+    console.error('usage: node --import tsx replay.ts <case directory>');
+    process.exitCode = 1;
+    return;
+  }
+  // `Date.now` and `performance.now` both belong to the harness's virtual
+  // clock for the length of a replay, so neither can time it. `hrtime` is the
+  // one clock the harness does not touch.
+  const started = process.hrtime.bigint();
+  const summary = await replayCase(target);
+  const seconds = Number(process.hrtime.bigint() - started) / 1e9;
+  console.log(JSON.stringify(summary, null, 2));
+  console.log(`wall time: ${seconds.toFixed(1)} s`);
+}
+
+const isMain = import.meta.url === pathToFileURL(process.argv[1] ?? '').href;
+if (isMain) await main();
