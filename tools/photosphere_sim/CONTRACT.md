@@ -85,3 +85,32 @@ from -10 to 90; `-10` means nothing was hit) and `"obstacles":[{"id","az_from","
 - Build a case: `python -m sim make-case <case_id>` (run inside `tools/photosphere_sim`)
 - Replay through the real scanner: `node --import tsx src/next/hubs/sky/sheets/__sim__/replay.ts <abs case dir>` (run inside `ui`)
 - Score: `python -m sim score <case_id>` (inside `tools/photosphere_sim`); corrupt: `python -m sim corrupt <case_id> <corruption>`
+
+## Scene schema (`scenes/<name>.json`)
+
+- `schema` 1, `name`, `seed` (int).
+- `background`: `{"kind":"directional","distance_m":4000,"texture":{"kind":"value-noise","seed":int,"octaves":4,"cells":16,"grey":[70,150],"stripes":{"count":11,"tilt_deg":23,"grey":170,"width_deg":1.5}}}`.
+  Texture recipe, on an equirectangular image of `W x H` (column `x` is
+  azimuth `(x+0.5)/W*360`, row `y` is altitude `90 - (y+0.5)/H*180`):
+  value noise = sum over octave `o` in `0..octaves-1` of `0.5^o` times bilinear
+  interpolation of a lattice of `cells * 2^o` columns (wrapping in azimuth)
+  by `cells * 2^(o-1) + 1` rows (clamped in altitude) whose value at column
+  `i`, row `j` is `lattice(seed, o, i, j)`, an integer hash in `[0, 1)`
+  that Python and JavaScript compute identically in uint32 arithmetic:
+  `h = seed ^ (o * 0x9E3779B1) ^ (i * 0x85EBCA77) ^ (j * 0xC2B2AE3D)`;
+  `h ^= h >> 16; h *= 0x7FEB352D; h ^= h >> 15; h *= 0x846CA68B; h ^= h >> 16`
+  (every product truncated to 32 bits; JavaScript uses `Math.imul` and `>>> 0`);
+  `lattice = h / 4294967296`. The octave sum lies in `[0, 1.875)`; divide by
+  1.875 and map linearly to `grey[0]..grey[1]`. Stripes: `count`
+  great circles through the points `(az = k * 360 / count, alt = 0)` tilted
+  by `tilt_deg` from the vertical; every pixel whose angular distance to a
+  stripe's great circle is below `width_deg / 2` is painted `grey`.
+- `landmarks`: `[{"id","palette":int,"az","alt","radius_deg"}]` discs on the
+  background, colour `PALETTE[palette]`, painted last (over stripes).
+- `objects`: `[{"id","kind":"plane","z","colour":[r,g,b]}` | `{"id","kind":"box","min":[e,n,u],"max":[e,n,u],"colour"}` |
+  `{"id","kind":"cylinder","base":[e,n,u],"radius","height","colour"}` | `{"id","kind":"sphere","centre":[e,n,u],"radius","colour"}]`.
+  Object colours are never palette colours and have channel spread below 60.
+- `surface_landmarks`: `[{"id","palette":int,"object":id,"centre":[e,n,u],"normal":[e,n,u],"radius_m"}]`
+  flat discs lying on an object face, painted in the palette colour.
+- `test_obstacles`: `[{"id","object":id,"min_width_deg"}]` the obstacles the
+  horizon scorer must find individually.

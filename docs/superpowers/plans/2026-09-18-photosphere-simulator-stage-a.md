@@ -16,7 +16,7 @@
 - No telescope motion, no deployment, no change to rig authentication or safety configuration. Nothing here touches `astrotown`.
 - Independence (spec section 4): no file under `tools/photosphere_sim/` may import from `ui/` or reimplement by copying `photosphereGeometry.ts`; the replay driver must not open anything under `truth/`; the process under test receives only `input/` (images, observations, actions). A test in Task 1 greps for these and every later task keeps it green.
 - Determinism: every random choice is seeded from the case seed; the same case definition yields byte-identical `input/` and `truth/` on the same machine (hashes in the manifest).
-- The world is a fictional ENU frame in metres with no geodetic coordinates anywhere. The site's real latitude, longitude and label must never appear in any file. No emojis in code, docs or commit messages. Files are UTF-8 without BOM (write with the Write/Edit tools, not PowerShell `Set-Content`).
+- The world is a fictional ENU frame in metres with no geodetic coordinates anywhere. The site's real latitude, longitude and label must never appear in any file. No emojis in code, docs or commit messages. Files are UTF-8 without BOM and LF line endings (write with the Write/Edit tools, not PowerShell `Set-Content`; in Python, `pathlib.write_text` on Windows silently writes CRLF, so open with `newline="\n"`; issue #40).
 - Cached renders and results live under `tools/photosphere_sim/cache/` (git-ignored in Task 1). Nothing large is committed: case definitions, scenes, routes and code only.
 - Python tests run with: `python -m unittest discover -s tools/photosphere_sim/tests -t tools/photosphere_sim -v` from the repo root. Tests that need Chromium are named `test_render_*` and must skip with an explicit reason if Playwright cannot launch Chromium, never silently pass.
 - UI: `npx tsc -b` from `ui` stays green; `npm.cmd test` from `ui` keeps only the three pre-existing #36 failures (`r7Css` x2, `r7Disabled` x1).
@@ -342,7 +342,7 @@ Write the report to the path in the dispatch. List the files created and the `np
 
 **chartyard.json** (write exactly these numbers; the reference camera centre for both stage-A routes is `[0, 0.75, 1.4]`):
 - background: distance 4000, texture `{"kind":"value-noise","seed":7,"octaves":4,"cells":16,"grey":[70,150],"stripes":{"count":11,"tilt_deg":23,"grey":170,"width_deg":1.5}}`
-- landmarks: six rings at `alt` `-5, 15, 35, 55, 75` and a cap at `87`; ring `r` (0-based) has 8 discs at `az = (k * 45 + r * 17 + (k * k * 7) % 45) % 360` for `k = 0..7`, `radius_deg` 1.0 (1.5 for the cap), `palette` index `(r * 8 + k) % 24`, id `f"R{r}K{k}"`. This gives 48 background landmarks; the cap ring uses `alt` 87 and its az spacing is irregular by construction.
+- landmarks: five rings at `alt` `5, 15, 35, 55, 75`; ring `r` (0-based) has 8 discs at `az = (k * 45 + r * 17 + (k * k * 7) % 45) % 360` for `k = 0..7`, `radius_deg` 1.0, `palette` index `(r * 8 + k) % 24`, id `f"R{r}K{k}"`; plus a cap ring `r = 5` at `alt` 85 with 6 discs at `az = (k * 60 + 17) % 360` for `k = 0..5`, `radius_deg` 1.5, palette `(40 + k) % 24`, id `f"R5K{k}"`. This gives 46 background landmarks. (Earlier text put ring 0 at -5, where the ground plane hides it from a camera 1.4 m up, and eight 1.5 degree discs at alt 87, where the small circle is only 18.85 degrees around and they overlap; issue #45. At alt 85 with 60 degree spacing adjacent cap centres are 5.0 degrees apart on the sphere, so 3 degree discs do not touch.)
 - objects:
   - `ground`: plane `z` 0, colour `[60,55,45]`
   - `wall-east`: box min `[2.5,-1.5,0]` max `[2.8,3.0,2.6]`, colour `[120,100,80]`
@@ -472,7 +472,7 @@ Both stage-A routes: `pivot [0,0,0]`, `radius_m 0.75`, `height_m 1.4`, `move_s 0
 - frame records for 10 fps: `t_capture_ms` of frame 7 is 700, `t_present_ms` 760.
 
 `test_cases.py` (uses the `flat` renderer):
-- `build_case` on `chartyard-still-60` into a temp dir produces every file the contract lists; `manifest.hashes.frames` is stable across two builds; `observations.jsonl` is sorted by delivery time; `actions.jsonl` has `begin` at 0 and `finish` at the last frame's `t_present_ms + 1000`; `truth/landmarks.json` has 54 entries; `truth/reference-horizon.json` has 3600 `alt_max`; frames count equals `len(traj.frames)` and every PNG is 480 x 640 RGB.
+- `build_case` on `chartyard-still-60` into a temp dir produces every file the contract lists; `manifest.hashes.frames` is stable across two builds; `observations.jsonl` is sorted by delivery time; `actions.jsonl` has `begin` at 0 and `finish` at the last frame's `t_present_ms + 1000`; `truth/landmarks.json` has 52 entries (46 background, 6 surface); `truth/reference-horizon.json` has 3600 `alt_max`; frames count equals `len(traj.frames)` and every PNG is 480 x 640 RGB.
 
 - [ ] **Step 2: Run to verify they fail**
 
@@ -679,7 +679,7 @@ Open `cache/cases/chartyard-still-60/result/panorama.png` with the Read tool. Re
 `test_score.py` (build `chartyard-still-60` with the flat renderer into a temp dir, then `make_ideal_result`):
 - scoring the ideal result gives `landmarks.omitted == []`, `duplicated == []`, `errors_deg.p95 < 0.4` (raster quantisation only), `horizon.signed_error_deg.p95 < 0.5`, `missed_obstructions == []`, `overlay.settled.p95_deg < 0.01`, `capture.holds_with_capture == holds`, `coverage.observable_fraction_covered > 0.99`, and `gates.pass` true.
 - scoring an ideal result whose `horizon.json` is re-binned to 30 bins reports `measured_resolution_deg == 12.0` and `gates.horizon_p95_lt_1` false (the format cannot carry the pole), while every landmark gate stays true.
-- the per-landmark list has 54 entries and `expected` equals the number of observable landmarks.
+- the per-landmark list has 52 entries and `expected` equals the number of observable landmarks.
 
 - [ ] **Step 2: Run to verify they fail**
 
