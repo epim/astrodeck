@@ -538,8 +538,15 @@ export class PhotosphereSweep {
    *  "is this view holding still". A plain detached canvas rather than an
    *  OffscreenCanvas: every browser that reaches this code already has one,
    *  and 768 pixels per frame is cheap enough for the UI thread.
-   *  `at` is when the CAMERA saw this frame, not when we got round to reading
-   *  it - the same meaning `VisualStability.observe` gives its own `at`. */
+   *  `at` is when the CAMERA saw this frame, the meaning
+   *  `VisualStability.observe` gives its own `at` - but only one caller can
+   *  honour it. The rVFC path has the frame's `captureTime` and passes that.
+   *  The timer path has no frame metadata at all, so `grabFrame` (and
+   *  `captureOverhead` through it) passes the READ instant, which is the
+   *  capture time plus however long the camera pipeline took. That inflates
+   *  every break's `from` on that path by the delay, and `from` is what the
+   *  150 ms CONTINUITY_SLOP_MS margin is measured against, so a delayed camera
+   *  there can lose a hold it earned (issue #48). */
   private observeStillness(video: HTMLVideoElement, at: number): void {
     if (!video.videoWidth || !video.videoHeight) return;
     try {
@@ -600,6 +607,14 @@ export class PhotosphereSweep {
     // UNKNOWN STALE_FRAME_MS after the last real frame and the strict rule
     // takes back over - the honest outcome, and the one a timer on its own
     // could never reach.
+    // The limit on that window claim, stated because nothing here tests it:
+    // observations on this path carry the READ instant, not a capture time
+    // (see observeStillness), so a camera whose frames arrive late pushes every
+    // break's `from` later by the delay. Past the 150 ms margin that costs
+    // holds - intermittently up to about half a second of delay, and then
+    // always (issue #48). The window above is the window for an element whose
+    // frames are not delayed, which is the only element the harness can model:
+    // its interval tick has no capture time to lag.
     if (!frame && video && this.sourceHealthy && this.newMediaFrame(video)) this.observeStillness(video, now);
     // One visibility rule, not two. A second copy of the test here could
     // disagree with the sourceHealthy the evidence below is built from.

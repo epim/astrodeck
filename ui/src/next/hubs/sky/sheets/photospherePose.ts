@@ -1,5 +1,5 @@
 import { dot, rotateBasis, type CameraBasis } from './photosphereGeometry';
-import type { ViewContinuity } from './photosphereStability';
+import { STALE_FRAME_MS, type ViewContinuity } from './photosphereStability';
 
 /** Anchor the gyro-relative stream to one simultaneous north reading. Do not
  * keep injecting magnetometer corrections into the camera's local sky map. */
@@ -64,21 +64,36 @@ export interface PoseEvidence { view?: ViewContinuity | null; sourceHealthy?: bo
 const SILENT_SETTLE_MS = 500;
 
 /** A single magnetometer outlier delivered as the LAST event before the phone
- * goes quiet would otherwise become the settled pose and be worn by every
- * frame of the hold. Two samples this close together cannot be a real slew, so
- * disagreeing by this much is either a bad reading or a real quick movement -
- * and the video says which. A still run that already covered the pair refutes
- * the newer reading, and the one before it is worn instead; a run that does
- * not cover the pair cannot say the phone held still across it, so the jump
- * is taken as the movement it looks like and kept. Never a flat rejection:
- * that disqualified the final pair for the whole hold and blocked a genuine
- * 100 deg/s approach forever (review 15, P2).
+ * goes quiet would otherwise become the settled pose and be worn by every frame
+ * of the hold. Two readings this close together disagreeing by this much cannot
+ * both describe the phone, so the pair is suspect - and the video is asked.
+ * What the video can say is exactly one thing: whether the phone MOVED across
+ * the pair. A still run that already covered that window says it did not, and
+ * that is all "refuted" means here. It does NOT say which of the two readings
+ * is the bad one. Treating it as if it did is how the older reading came to be
+ * worn even when the older one was the spike and the newer one was the sensor's
+ * own correction back to the truth (issue #47).
+ * So the history arbitrates, and the reading BEFORE the pair is the referee:
+ * whichever member of the pair still agrees with it, within this same
+ * separation, is the phone's direction - the closer one if both do. Where there
+ * is no reading before the pair, or neither member agrees with it, nothing here
+ * knows which reading is bad, and the frame gets no pose at all.
+ * That last outcome is not the old flat rate rejection. It is reached only once
+ * the video AND the history have both spoken and still cannot name the bad
+ * reading, and the next reading of any kind clears it, because the pair moves
+ * on. The flat rejection disqualified the final pair for the whole hold and
+ * blocked a genuine 100 deg/s approach forever (review 15, P2).
+ * A run that does NOT cover the pair cannot say the phone held still across it,
+ * so the jump is taken as the movement it looks like and kept.
  * The limit of the refutation: the video resolves motion no finer than its own
  * frame interval, so a bad reading arriving inside the last MOVING pair of an
- * approach is accepted as a movement. Registration's overlap check and the
- * next reading are the guards there. The gap is wide enough that a normal
- * decelerating approach (degrees per 100 ms, not per 50) never reaches this
- * rule at all. */
+ * approach is accepted as a movement. Registration's overlap check and the next
+ * reading are the guards there.
+ * This rule is reached in ordinary use, not only by bad sensors: any final step
+ * of more than JITTER_SEPARATION_DEG inside JITTER_GAP_MS enters it, and a brisk
+ * final approach produces exactly that (the DOM harness's 10 degrees in 100 ms
+ * does). That is why the outcome here had to become refute-or-keep, arbitrated,
+ * rather than refusal. */
 const JITTER_GAP_MS = 150, JITTER_SEPARATION_DEG = 8;
 
 /** Frame times and sensor times are on the same clock but not aligned to the
@@ -86,8 +101,13 @@ const JITTER_GAP_MS = 150, JITTER_SEPARATION_DEG = 8;
  *  ran, some tens of ms after the camera saw the scene, and an orientation
  *  event carries its own latency. A break that BEGAN within this margin after
  *  a reading is the tail of the approach that produced the reading, not a
- *  movement after it. The cost: a movement starting inside this margin, after
- *  the last reading, with a sensor that has already died, is not caught. */
+ *  movement after it. The cost, measured: a movement beginning inside this
+ *  margin with a sensor that has already died is not caught, and it is seen
+ *  only at the NEXT frame, so about 183 ms of it can pass unchallenged after
+ *  the last reading - 150 ms of margin plus one 33 ms frame at 30 fps, which is
+ *  two frame intervals of continued movement vouched for and three refused.
+ *  That is about 5 degrees of a 30 deg/s pan and about 35 of a 200 deg/s flick.
+ *  On the interval fallback a frame is 350 ms, so the window there is one tick. */
 export const CONTINUITY_SLOP_MS = 150;
 
 /** Does the video vouch that the view has not changed since a reading taken
@@ -96,9 +116,15 @@ export const CONTINUITY_SLOP_MS = 150;
  *  a single instant - an unobserved gap, an unjudgeable frame, a drift caught
  *  late - has `from === to` at its END, so a reading more than the margin
  *  older than that instant is never vouched for: nothing watched the view
- *  between the two. */
+ *  between the two.
+ *  A continuity with NO break at all vouches for nothing either, and that is
+ *  deliberate: it would vouch for a reading of any age whatsoever, and no
+ *  producer emits one. `VisualStability` records a break the first time it sees
+ *  a frame - there is nothing behind it to reach back across - so every real
+ *  continuity carries one, and a fixture without one describes a witness that
+ *  cannot exist. */
 export function viewVouchesFor(readingAt:number,view:ViewContinuity|null|undefined):boolean {
-  return !!view && (view.lastBreak===null || view.lastBreak.from<=readingAt+CONTINUITY_SLOP_MS);
+  return !!view && view.lastBreak!==null && view.lastBreak.from<=readingAt+CONTINUITY_SLOP_MS;
 }
 
 /** Match camera capture times to sensor times, never to a newer phone pose.
@@ -128,14 +154,25 @@ export class CameraPoseHistory {
       const view=evidence.view;
       let pose=latest;
       const previous=this.samples.at(-2);
-      // A jump between the last two readings, closer together than any real slew:
-      // if the video's still run already covered that window, the phone did not
-      // move and the newer reading is a bad one - recover with the reading before
-      // it. If the run does not cover the window, the video cannot say the phone
-      // held still across it, so the jump is treated as a movement.
+      // A jump between the last two readings, closer together than any real
+      // slew. If the still run already covered that window the phone did not
+      // move across it, so one of the two readings is wrong - and the video
+      // cannot say which. The reading before the pair decides: the member that
+      // still agrees with it is the pose, and if neither does (or there is no
+      // such reading) this frame gets none. If the run does NOT cover the
+      // window, the video cannot say the phone held still, so the jump is
+      // treated as the movement it looks like.
       if(previous && latest.at-previous.at<JITTER_GAP_MS
         && poseSeparation(latest.basis,previous.basis)>JITTER_SEPARATION_DEG
-        && view.stillSince<=previous.at)pose=previous;
+        && view.stillSince<=previous.at){
+        const before=this.samples.at(-3);
+        if(!before)return null;
+        const toLatest=poseSeparation(latest.basis,before.basis);
+        const toPrevious=poseSeparation(previous.basis,before.basis);
+        const latestAgrees=toLatest<=JITTER_SEPARATION_DEG,previousAgrees=toPrevious<=JITTER_SEPARATION_DEG;
+        if(!latestAgrees&&!previousAgrees)return null;
+        pose=!previousAgrees||(latestAgrees&&toLatest<toPrevious)?latest:previous;
+      }
       if(viewVouchesFor(pose.at,view)){
         const reference=captureTime===undefined?now:captureTime;
         const silence=reference-pose.at;
@@ -145,7 +182,10 @@ export class CameraPoseHistory {
     }
     if(!latest || now-latest.at>250 || now<latest.at || now-this.orientationSince<500)return null;
     if(captureTime!==undefined){
-      if(!Number.isFinite(captureTime)||captureTime>now||now-captureTime>1000||captureTime<this.orientationSince)return null;
+      // How old a capture time may be and still describe this frame is one
+      // constant, not two: photosphere.ts validates the same field against
+      // STALE_FRAME_MS before stamping the stillness sample with it.
+      if(!Number.isFinite(captureTime)||captureTime>now||now-captureTime>STALE_FRAME_MS||captureTime<this.orientationSince)return null;
       const nearest=this.samples.reduce((a,b)=>Math.abs(a.at-captureTime)<Math.abs(b.at-captureTime)?a:b);
       return Math.abs(nearest.at-captureTime)<=40 ? nearest.basis : null;
     }

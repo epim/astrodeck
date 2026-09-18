@@ -71,7 +71,12 @@ test('A delivered-late event does not move a frame captured before it',()=>{
   // that cannot be newer than the frame. The newest sample - yaw 6 at 200 ms,
   // after the shutter - is never one of them, and "not the newest" alone is a
   // near-vacuous assertion that any refactor returning some third thing passes.
-  const result=h.forFrame(200,150,{view:{stillSince:550,lastBreak:{from:450,to:550}},sourceHealthy:true});
+  // The evidence has to be a continuity a witness could actually hold at this
+  // `now`: frames the video has already seen, not ones from its future. A run
+  // beginning 350 ms after the moment being asked about would be nonsense the
+  // production code has no reason to survive, and a fixture like that grades
+  // nothing.
+  const result=h.forFrame(200,150,{view:{stillSince:-300,lastBreak:{from:-400,to:-300}},sourceHealthy:true});
   assert.ok(result===null||result===poses[1],
     'a late callback must resolve to the older neighbour or refuse, never to the newest phone direction');
 });

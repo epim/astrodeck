@@ -108,8 +108,11 @@ async function test(name:string,fn:()=>Promise<void>){
  *  fallback instead, with the media clock advancing unless a test freezes it.
  *  `step` is the size of the LAST orientation step in degrees (2 by default);
  *  at 10 on the rVFC path that final pair is 100 ms and 10 degrees, inside
- *  JITTER_GAP_MS and past JITTER_SEPARATION_DEG, which is the only way this
- *  harness reaches the jitter branch at all.
+ *  JITTER_GAP_MS and past JITTER_SEPARATION_DEG, so the APPROACH enters the
+ *  jitter branch. It is not the only way in: a case can deliver a pair of its
+ *  own with `aim`, which is what the outlier case below does at the default
+ *  step, and that one reaches the branch through a refuted pair rather than a
+ *  moving one.
  *  `lag` models a camera PIPELINE DELAY, and it is the default for the returned
  *  tick's own optional argument: the frame is presented at `clock`, as before,
  *  but carries `captureTime = clock - lag` - the instant the camera saw the
@@ -149,8 +152,9 @@ async function approachAndHold(rvfc=true,step=2,lag=0){
   aim(10);sweep.begin();shift++;tick();
   for(let i=8;i>=step;i-=2){aim(i);shift++;tick();}
   // No advance of its own, so the last step spans exactly the frame tick above:
-  // `step` degrees in one frame interval, which is the only pair this harness
-  // produces that is close enough together to reach the jitter branch.
+  // `step` degrees in one frame interval, which is the only pair the APPROACH
+  // produces close enough together to reach the jitter branch. A case may make
+  // its own, and the outlier case does.
   aim(0,0);shift++;
   // From here the browser sends no orientation event ever again.
   return {sweep,cell,tick,aim,silentFrom:clock};

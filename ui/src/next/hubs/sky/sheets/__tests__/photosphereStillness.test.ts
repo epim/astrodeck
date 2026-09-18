@@ -113,6 +113,20 @@ test('The tail of the approach straddling the last reading is not a movement aft
   assert.equal(h.forFrame(1500,undefined,{view:{stillSince:edge+101,lastBreak:{from:edge+1,to:edge+101}},sourceHealthy:true}),null);
 });
 
+test('A continuity with no break at all vouches for nothing',()=>{
+  // It would vouch for a reading of ANY age: there is no instant in it before
+  // which the witness stops answering. No producer emits one - the first frame
+  // a witness ever sees is itself a break - so this shape can only arrive from
+  // a hand-made object, and it must not be the one shape that certifies
+  // everything.
+  const h=new CameraPoseHistory();
+  const finalBasis=approachThenStop(h);
+  assert.equal(h.forFrame(1500,undefined,{view:{stillSince:-1000,lastBreak:null},sourceHealthy:true}),null,
+    'a witness with no break behind it certified a reading it cannot have watched');
+  // The same watching, with the break every real witness carries, still works.
+  assert.equal(h.forFrame(1500,undefined,{view:{stillSince:-1000,lastBreak:{from:-1000,to:-1000}},sourceHealthy:true}),finalBasis);
+});
+
 test('P2: a valid quick final movement the camera saw is the pose, for the whole hold',()=>{
   const h=new CameraPoseHistory();
   // Facing 0 degrees through 500 ms, then a real 10 degree turn inside 100 ms.
@@ -133,9 +147,49 @@ test('P2: a magnetometer outlier as the last event is refuted by a still video, 
   h.add({at:550,basis:lookBasis(20,20),screenAngle:0});
   // The camera has watched an unchanged view since long before any reading:
   // the phone did not turn 20 degrees at 550 ms. Recover, do not refuse.
-  const stillAllAlong:PoseEvidence={view:{stillSince:-1000,lastBreak:null},sourceHealthy:true};
+  // The break is real and old: every continuity carries one, because the first
+  // frame a witness ever sees is itself a break (photosphereStability), so a
+  // fixture with none describes a witness that cannot exist.
+  const stillAllAlong:PoseEvidence={view:{stillSince:-1000,lastBreak:{from:-1000,to:-1000}},sourceHealthy:true};
   assert.equal(h.forFrame(1500,undefined,stillAllAlong),steady[5].basis,'the outlier was not refuted, or refusal replaced recovery');
   assert.equal(h.forFrame(30000,undefined,stillAllAlong),steady[5].basis);
+});
+
+test('P2: when the spike comes FIRST and the sensor corrects itself, the correction is worn',()=>{
+  // The case that showed the video cannot arbitrate (issue #47). The phone is
+  // still; the magnetometer throws one reading 20 degrees off and then reports
+  // the truth again 40 ms later. The video says only that the phone did not
+  // move across the pair - which is true, and which does not name the bad
+  // reading. Wearing the older reading because it is older wears the spike.
+  const h=new CameraPoseHistory();
+  const steady=Array.from({length:6},(_,i)=>({at:i*100,basis:lookBasis(0,20),screenAngle:0}));
+  steady.forEach(p=>h.add(p));
+  h.add({at:520,basis:lookBasis(20,20),screenAngle:0});          // the spike
+  const correction={at:560,basis:lookBasis(0,20),screenAngle:0}; // the sensor's own correction
+  h.add(correction);
+  const held:PoseEvidence={view:{stillSince:400,lastBreak:{from:300,to:400}},sourceHealthy:true};
+  for(const now of [1100,2000,10000,60000]){
+    assert.equal(h.forFrame(now,undefined,held),correction.basis,
+      `the spike was worn instead of the correction at ${now} ms`);
+  }
+});
+
+test('P2: a refuted pair with nothing to arbitrate it gets no pose at all',()=>{
+  // Both members of the pair disagree with the reading before it, so the
+  // history cannot name the bad one either. Refusing here is not the old rate
+  // rejection: the video and the history have both spoken, and the next
+  // reading of any kind clears it by moving the pair along.
+  const h=new CameraPoseHistory();
+  h.add({at:0,basis:lookBasis(0,20),screenAngle:0});
+  h.add({at:100,basis:lookBasis(20,20),screenAngle:0});
+  h.add({at:150,basis:lookBasis(40,20),screenAngle:0});
+  const held:PoseEvidence={view:{stillSince:0,lastBreak:{from:-100,to:0}},sourceHealthy:true};
+  assert.equal(h.forFrame(1500,undefined,held),null,'a pair no reading agrees with produced a pose anyway');
+  assert.equal(h.forFrame(30000,undefined,held),null);
+  // And a fresh reading clears it: the pair is now (40, 40), no jump at all.
+  h.add({at:1600,basis:lookBasis(40,20),screenAngle:0});
+  assert.notEqual(h.forFrame(3000,undefined,{view:{stillSince:1500,lastBreak:{from:1400,to:1500}},sourceHealthy:true}),null,
+    'a fresh reading did not clear the refusal');
 });
 
 test('P2: a jump the video did not see held across is a movement, not an outlier',()=>{
