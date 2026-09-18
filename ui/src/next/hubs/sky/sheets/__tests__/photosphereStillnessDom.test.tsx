@@ -136,6 +136,29 @@ await test('Stopped video captures nothing, and a frame after the gap cannot vou
   sweep.stop();
 });
 
+await test('A still phone reads the compass as ready at 3 s of stillness, with no sensor event at all',async()=>{
+  // The same deadlock one layer up (issue #37): the driver already captures by
+  // this point (case 1), but the OLD compassReady read the same silence as
+  // staleness and told a still phone to move, which destroys the hold.
+  const {sweep,tick}=await approachAndHold();
+  for(let i=0;i<30;i++)tick();   // 3 s of vouched-for stillness, no orientation event at all
+  assert.equal(sweep.compassReady,true,'a still phone read the compass as stale');
+  assert.notEqual(sweep.aimTarget,null,'no aim target after 3 s of stillness');
+  assert.doesNotMatch(sweep.captureCue,/Waiting for the compass/,`cue was: "${sweep.captureCue}"`);
+  sweep.stop();
+});
+
+await test('A page hidden mid-hold reads the compass as lost, not ready',async()=>{
+  // hasOrientation stays true forever once a reading has arrived; only a lost
+  // source - not the passage of time - may turn compassReady back to false.
+  const {sweep,tick}=await approachAndHold();
+  for(let i=0;i<30;i++)tick();   // 3 s of vouched-for stillness while visible
+  hidden=true;
+  assert.equal(sweep.compassReady,false,'a lost source still read as ready');
+  hidden=false;
+  sweep.stop();
+});
+
 console.log(`photosphereStillnessDom.test: ${passed}/${passed+failed} passed`);
 export const result={passed,failed,total:passed+failed};
 if(failed)process.exitCode=1;
