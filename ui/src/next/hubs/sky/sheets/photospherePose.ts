@@ -34,16 +34,33 @@ export function poseSeparation(a:CameraBasis,b:CameraBasis):number {
  * degree, so a still phone goes silent and the samples alone cannot tell a
  * steady view from a lost sensor. These are the two independent answers -
  * `visuallyStable` from the video, `sourceHealthy` from the page lifecycle.
+ * `visuallyStable` is a TRI-STATE and `null` is not `false`: the video may
+ * have stopped, or the frame may hold nothing this method can judge motion by.
  * Anything short of `true` on both leaves the strict rule in force. */
-export interface PoseEvidence { visuallyStable?: boolean; sourceHealthy?: boolean }
+export interface PoseEvidence { visuallyStable?: boolean | null; sourceHealthy?: boolean }
 
 /** How long the stream must be silent before silence counts as a settle
  * rather than a lull between two orientation events. There is deliberately no
  * upper bound on that silence: under evidence the VIDEO is the freshness
- * guard, and it re-earns that verdict every frame. While the view is
- * continuously stable the phone has not turned, so the last orientation event
- * is still the pose - at 2 seconds or at half an hour on a tripod. */
+ * guard, and it re-earns that verdict every frame.
+ *
+ * What that verdict actually claims, stated as the module that produces it
+ * implements it (`photosphereStability.ts`): the view has not drifted from the
+ * ANCHOR frame - the frame this settle began on - by more than a fixed
+ * fraction of its own luminance, and has not jumped between any two
+ * consecutive frames either. It is a bound on TOTAL drift since the settle, not
+ * a speed limit, which is why an arbitrarily slow pan cannot creep past it.
+ * And it reports `null`, not `true`, for a view it cannot judge - a stopped
+ * stream, a blank wall, a frame of smooth sky - so silence over an
+ * unjudgeable view falls back to the strict rule below. */
 const SILENT_SETTLE_MS = 500;
+
+/** A single magnetometer outlier delivered as the LAST event before the phone
+ * goes quiet would otherwise become the settled pose and be worn by every
+ * frame of the hold. Two samples this close together cannot be a real slew, so
+ * disagreeing by this much is a bad reading, not a movement. Wide enough that
+ * a normal decelerating approach (degrees per 100 ms, not per 50) is untouched. */
+const JITTER_GAP_MS = 150, JITTER_SEPARATION_DEG = 8;
 
 /** Match camera capture times to sensor times, never to a newer phone pose.
  * When the browser omits captureTime, require a settled orientation covering
@@ -68,6 +85,9 @@ export class CameraPoseHistory {
     // page says the stream is alive. Neither is a timeout: without both, the
     // strict freshness and gap rules below still decide.
     if(latest && evidence?.visuallyStable===true && evidence.sourceHealthy===true){
+      const previous=this.samples.at(-2);
+      if(previous && latest.at-previous.at<JITTER_GAP_MS
+        && poseSeparation(latest.basis,previous.basis)>JITTER_SEPARATION_DEG)return null;
       const reference=captureTime===undefined?now:captureTime;
       const silence=reference-latest.at;
       if((captureTime===undefined||Number.isFinite(captureTime)) && reference<=now

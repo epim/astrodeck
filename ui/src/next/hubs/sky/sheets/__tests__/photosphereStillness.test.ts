@@ -84,6 +84,26 @@ test('A phone on a tripod stays capturable for as long as the video vouches for 
     '5 min of vouched-for stillness was refused');
 });
 
+test('A magnetometer outlier as the last event before the silence is refused',()=>{
+  // The hazard the evidence path opens: whatever arrived LAST becomes the pose
+  // worn by every frame of the hold, however long the hold lasts. A single bad
+  // magnetometer reading delivered 50 ms after a good one is not a 20 degree
+  // slew of a phone that is about to sit still - it is a bad reading, and
+  // believing it points the whole capture 20 degrees wrong with the video
+  // cheerfully vouching for the stillness that follows.
+  const h=new CameraPoseHistory();
+  const poses=Array.from({length:6},(_,i)=>lookBasis(10-i*2,20));
+  poses.forEach((basis,i)=>h.add({at:i*100,basis,screenAngle:0}));
+  h.add({at:550,basis:lookBasis(20,20),screenAngle:0});
+  assert.equal(h.forFrame(1500,undefined,{visuallyStable:true,sourceHealthy:true}),null,
+    'a 20 degree jump 50 ms before the silence was accepted as the settled pose');
+  // And the approach every other case here uses - 100 ms apart, 2 degrees a
+  // step - is untouched by that rule, which is what stops it eating real holds.
+  const clean=new CameraPoseHistory();
+  const final=approachThenStop(clean);
+  assert.equal(clean.forFrame(1500,undefined,{visuallyStable:true,sourceHealthy:true}),final);
+});
+
 test('A capture time deep inside a long stillness resolves to the settled pose',()=>{
   const h=new CameraPoseHistory();
   const finalBasis=approachThenStop(h);
