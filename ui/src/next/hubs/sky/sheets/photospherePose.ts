@@ -29,6 +29,22 @@ export function poseSeparation(a:CameraBasis,b:CameraBasis):number {
     Math.acos(Math.max(-1,Math.min(1,dot(a[axis],b[axis]))))*180/Math.PI));
 }
 
+/** What the caller knows about the sensor stream from OUTSIDE the stream.
+ * Orientation events are change-driven: Chromium emits nothing below 0.1
+ * degree, so a still phone goes silent and the samples alone cannot tell a
+ * steady view from a lost sensor. These are the two independent answers -
+ * `visuallyStable` from the video, `sourceHealthy` from the page lifecycle.
+ * Anything short of `true` on both leaves the strict rule in force. */
+export interface PoseEvidence { visuallyStable?: boolean; sourceHealthy?: boolean }
+
+/** How long the stream must be silent before silence counts as a settle
+ * rather than a lull between two orientation events. There is deliberately no
+ * upper bound on that silence: under evidence the VIDEO is the freshness
+ * guard, and it re-earns that verdict every frame. While the view is
+ * continuously stable the phone has not turned, so the last orientation event
+ * is still the pose - at 2 seconds or at half an hour on a tripod. */
+const SILENT_SETTLE_MS = 500;
+
 /** Match camera capture times to sensor times, never to a newer phone pose.
  * When the browser omits captureTime, require a settled orientation covering
  * 500 ms. This avoids smearing a moving view with an unknown camera delay. */
@@ -43,8 +59,20 @@ export class CameraPoseHistory {
     this.samples.push(sample);
     this.samples=this.samples.filter(p=>sample.at-p.at<=2000).slice(-240);
   }
-  forFrame(now:number,captureTime?:number):CameraBasis|null {
+  forFrame(now:number,captureTime?:number,evidence?:PoseEvidence):CameraBasis|null {
     const latest=this.samples.at(-1);
+    // Declared loss - listener gone, page hidden, camera track ended - is not
+    // stillness, and the correction for stillness must not make it look valid.
+    if(evidence?.sourceHealthy===false)return null;
+    // Silence is trusted only when the video says the view is steady AND the
+    // page says the stream is alive. Neither is a timeout: without both, the
+    // strict freshness and gap rules below still decide.
+    if(latest && evidence?.visuallyStable===true && evidence.sourceHealthy===true){
+      const reference=captureTime===undefined?now:captureTime;
+      const silence=reference-latest.at;
+      if((captureTime===undefined||Number.isFinite(captureTime)) && reference<=now
+        && silence>=SILENT_SETTLE_MS)return latest.basis;
+    }
     if(!latest || now-latest.at>250 || now<latest.at || now-this.orientationSince<500)return null;
     if(captureTime!==undefined){
       if(!Number.isFinite(captureTime)||captureTime>now||now-captureTime>1000||captureTime<this.orientationSince)return null;

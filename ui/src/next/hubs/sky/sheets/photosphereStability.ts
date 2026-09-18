@@ -1,0 +1,87 @@
+// Is the CAMERA VIEW holding still? The orientation sensor cannot answer that:
+// Chromium only emits deviceorientation on a change of 0.1 degree, so a phone
+// held still emits nothing and silence is indistinguishable from a dead sensor.
+// The video stream is a second, independent witness. It reports three states,
+// and the third one matters: still, moving, and unknown. A stopped stream is
+// unknown - it must never be mistaken for a steady view.
+// No DOM here: the caller samples the pixels, this only measures them.
+
+/** How long the view must hold still before stillness is believed. */
+export const SETTLE_MS = 500;
+/** Beyond this age the newest frame vouches for nothing: the video may have
+ *  stopped, the page may be hidden. Stability becomes unknown, not false. */
+export const STALE_FRAME_MS = 1000;
+/** Ceiling for "still": the mean absolute per-pixel difference between two
+ *  consecutive mean-normalised frames, as a fraction of a frame's own mean
+ *  luminance (dimensionless, 0.02 = 2 percent of mean luminance per pixel).
+ *  Measured on the low-contrast 32x24 gradient and bright block used by the
+ *  tests: a one-pixel shift is 0.037, a 30 percent exposure change 0.002. The
+ *  limit sits between them with room for sensor noise, which after averaging
+ *  each grid cell from hundreds of video pixels lands near 0.006 in low light. */
+export const STILL_DIFF_LIMIT = 0.02;
+
+/** The comparison grid. Small on purpose: this runs on the UI thread on a
+ *  phone, once per video frame. */
+export const GRID_W = 32, GRID_H = 24;
+
+/** Box-average `luma` into the fixed comparison grid, so two frames are always
+ *  compared cell for cell even if the video size changes mid-scan. */
+function resample(luma:Uint8Array|Uint8ClampedArray,width:number,height:number):Float64Array {
+  const grid=new Float64Array(GRID_W*GRID_H);
+  for(let gy=0;gy<GRID_H;gy++){
+    const y0=Math.floor(gy*height/GRID_H),y1=Math.min(height,Math.max(y0+1,Math.floor((gy+1)*height/GRID_H)));
+    for(let gx=0;gx<GRID_W;gx++){
+      const x0=Math.floor(gx*width/GRID_W),x1=Math.min(width,Math.max(x0+1,Math.floor((gx+1)*width/GRID_W)));
+      let sum=0,count=0;
+      for(let y=y0;y<y1;y++)for(let x=x0;x<x1;x++){sum+=luma[y*width+x];count++;}
+      grid[gy*GRID_W+gx]=count?sum/count:0;
+    }
+  }
+  return grid;
+}
+
+/** Divide by the frame's own mean, so auto-exposure and a passing cloud change
+ *  every pixel together without reading as movement. A black frame stays zero. */
+function normalise(grid:Float64Array):Float64Array {
+  let sum=0;
+  for(const v of grid)sum+=v;
+  const mean=sum/grid.length;
+  if(!(mean>0))return grid;
+  for(let i=0;i<grid.length;i++)grid[i]/=mean;
+  return grid;
+}
+
+function meanAbsDiff(a:Float64Array,b:Float64Array):number {
+  let sum=0;
+  for(let i=0;i<a.length;i++)sum+=Math.abs(a[i]-b[i]);
+  return sum/a.length;
+}
+
+/** Tracks how long the camera view has been unchanged. */
+export class VisualStability {
+  private frame:Float64Array|null=null;
+  private frameAt=-Infinity;
+  private stillSince:number|null=null;
+  clear(){this.frame=null;this.frameAt=-Infinity;this.stillSince=null;}
+
+  /** `luma` is one byte per pixel, row-major, `width` x `height`. */
+  observe(at:number,luma:Uint8Array|Uint8ClampedArray,width:number,height:number):void {
+    if(!Number.isFinite(at)||at<this.frameAt)return;
+    if(!(width>0)||!(height>0)||luma.length<width*height)return;
+    const grid=normalise(resample(luma,width,height));
+    const previous=this.frame,gap=at-this.frameAt;
+    this.frame=grid;this.frameAt=at;
+    // Nothing watched the view across an unobserved gap, so nothing can vouch
+    // for it: start the settle over rather than crediting the missing time.
+    if(!previous||gap>STALE_FRAME_MS){this.stillSince=null;return;}
+    if(meanAbsDiff(previous,grid)>STILL_DIFF_LIMIT)this.stillSince=null;
+    else if(this.stillSince===null)this.stillSince=at-gap;
+  }
+
+  /** `true` still, `false` moving, `null` unknown (no frame, or none recently). */
+  stableAt(now:number):boolean|null {
+    if(!this.frame||now-this.frameAt>STALE_FRAME_MS)return null;
+    if(this.stillSince===null)return false;
+    return now-this.stillSince>=SETTLE_MS;
+  }
+}

@@ -1,8 +1,9 @@
 // Camera capture retains a bounded colour panorama and an editable horizon
 // draft. Phone sensor pose and lens angles remain estimates for user review.
 import { DOME_CELLS, SkyPanorama, orientationBasis, dot, skyAngles, cameraLens, transferBasis, type CameraBasis } from './photosphereGeometry';
-import { CameraPoseHistory, ScanPoseSource, poseSeparation } from './photospherePose';
+import { CameraPoseHistory, ScanPoseSource, poseSeparation, type PoseEvidence } from './photospherePose';
 import { registerFrame } from './photosphereRegistration';
+import { VisualStability, GRID_W, GRID_H } from './photosphereStability';
 
 export interface PhotosphereSupport {
   supported: boolean;
@@ -238,6 +239,11 @@ export class PhotosphereSweep {
   private visualAnchor:{raw:CameraBasis;aligned:CameraBasis}|null=null;
   private lastRegistrationAt=-Infinity;
   private tilts = new CameraPoseHistory();
+  private stability = new VisualStability();
+  private lumaCanvas: HTMLCanvasElement | null = null;
+  private luma = new Uint8Array(GRID_W*GRID_H);
+  private listening = false;
+  private trackEnded = false;
   private alignmentWait = false;
   private overlapWait = false;
   private scanSamples:unknown[]=[];
@@ -359,6 +365,7 @@ export class PhotosphereSweep {
     this.canvas = canvas;
     this.frames = []; this.issue = null; this.basis = null; this.panorama = null; this.coveredCells.clear(); this.lastCaptureAt=null;
     this.poses.clear();this.tilts.clear();this.poseSource.clear();this.visualAnchor=null;this.lastRegistrationAt=-Infinity;this.frameBasis=null;this.alignmentWait=false;this.overlapWait=false;this.lastSensorReading=null;
+    this.stability.clear();this.trackEnded=false;
     this.hasOrientation = false; this.headingAt = 0; this.tiltAt = null;
     const DOE = window.DeviceOrientationEvent as typeof DeviceOrientationEvent & { requestPermission?: () => Promise<string> };
     // Ask from the click gesture, before awaiting camera discovery (Safari).
@@ -405,7 +412,7 @@ export class PhotosphereSweep {
     stream.getVideoTracks?.().forEach(track => track.addEventListener?.("ended", () => {
       if (generation !== this.generation) return;
       this.issue = "The camera stopped. Close the scan and open it again.";
-      this.ready = false; this.recording = false;
+      this.ready = false; this.recording = false; this.trackEnded = true;
     }));
 
     if (motionPermission && await motionPermission !== "granted") {
@@ -443,20 +450,54 @@ export class PhotosphereSweep {
       };
       window.addEventListener("deviceorientationabsolute", this.headingHandler);
       window.addEventListener("deviceorientation", this.headingHandler);
+      this.listening = true;
     }
 
     if(typeof video.requestVideoFrameCallback==='function'){
       let lastSample=-Infinity;
       const frame:VideoFrameRequestCallback=(now,metadata)=>{
         if(generation!==this.generation)return;
-        const basis=this.poses.forFrame(now,metadata.captureTime);
+        // The sensor stops talking when the phone stops moving. Ask the video
+        // and the page lifecycle instead, and hand both answers to forFrame.
+        this.observeStillness(video,now);
+        const evidence:PoseEvidence={visuallyStable:this.stability.stableAt(now)===true,sourceHealthy:this.sourceHealthy};
+        const basis=this.poses.forFrame(now,metadata.captureTime,evidence);
         if(basis)this.frameBasis={basis,at:now};
         else this.frameBasis=null;
-        if(now-lastSample>=350){lastSample=now;this.grabFrame(false,{basis,tilt:this.tilts.forFrame(now,metadata.captureTime)});}
+        if(now-lastSample>=350){lastSample=now;this.grabFrame(false,{basis,tilt:this.tilts.forFrame(now,metadata.captureTime,evidence)});}
         this.videoFrameHandle=video.requestVideoFrameCallback(frame);
       };
       this.videoFrameHandle=video.requestVideoFrameCallback(frame);
     } else this.grabTimer = setInterval(() => this.grabFrame(), 350);
+  }
+
+  /** Is the pose stream ALIVE? Measured, never inferred from event silence:
+   *  both orientation listeners attached, the page visible, and no camera
+   *  track ended. Read at the moment of use so a visibility change or a
+   *  removed listener takes effect without waiting for an event of its own. */
+  private get sourceHealthy(): boolean {
+    const visibility = typeof document === "undefined" ? undefined : document.visibilityState;
+    return this.listening && !this.trackEnded && (visibility === undefined || visibility === "visible");
+  }
+
+  /** Sample the preview into a 32x24 luminance grid, the video's own answer to
+   *  "is this view holding still". A plain detached canvas rather than an
+   *  OffscreenCanvas: every browser that reaches this code already has one,
+   *  and 768 pixels per frame is cheap enough for the UI thread. */
+  private observeStillness(video: HTMLVideoElement, now: number): void {
+    if (!video.videoWidth || !video.videoHeight) return;
+    try {
+      if (!this.lumaCanvas) {
+        this.lumaCanvas = document.createElement("canvas");
+        this.lumaCanvas.width = GRID_W; this.lumaCanvas.height = GRID_H;
+      }
+      const ctx = this.lumaCanvas.getContext("2d");
+      if (!ctx) return;
+      ctx.drawImage(video, 0, 0, GRID_W, GRID_H);
+      const { data } = ctx.getImageData(0, 0, GRID_W, GRID_H);
+      for (let p = 0; p < this.luma.length; p++) this.luma[p] = luminance(data[p*4], data[p*4+1], data[p*4+2]);
+      this.stability.observe(now, this.luma, GRID_W, GRID_H);
+    } catch { /* A lost drawing context tells us nothing: stability stays unknown. */ }
   }
 
   private grabFrame(manualOverhead = false, frame?:{basis:CameraBasis|null;tilt:CameraBasis|null}): boolean {
@@ -467,15 +508,21 @@ export class PhotosphereSweep {
       return false;
     }
     const now=performance.now();
-    const rawBasis=frame ? frame.basis : this.poses.forFrame(now);
+    // Only the video-frame path has looked at the pixels. The interval
+    // fallback never does, so stability stays unknown there and nothing about
+    // the strict freshness rule is relaxed for it.
+    const evidence:PoseEvidence=frame
+      ? {visuallyStable:this.stability.stableAt(now)===true,sourceHealthy:this.sourceHealthy}
+      : {sourceHealthy:this.sourceHealthy};
+    const rawBasis=frame ? frame.basis : this.poses.forFrame(now,undefined,evidence);
     let basis=rawBasis?this.correctBasis(rawBasis):null;
-    const tilt=frame ? frame.tilt : this.tilts.forFrame(now);
+    const tilt=frame ? frame.tilt : this.tilts.forFrame(now,undefined,evidence);
     let measured=basis?skyAngles(basis.forward):tilt?skyAngles(tilt.forward):null;
     const overhead=manualOverhead || (!!measured && bandForAltitude(measured.alt)===OVERHEAD_BAND);
     if(!manualOverhead && !basis && !(tilt&&overhead)){this.alignmentWait=true;return false;}
     // A timestamp does not make a frame taken during motion sharp or account
     // for an entire low-light exposure. Hold still even with frame timestamps.
-    const stable=basis?this.poses.forFrame(now):this.tilts.forFrame(now);
+    const stable=basis?this.poses.forFrame(now,undefined,evidence):this.tilts.forFrame(now,undefined,evidence);
     if(!manualOverhead && (!stable || poseSeparation(stable,(rawBasis??tilt)!)>1.5)){this.alignmentWait=true;return false;}
     this.alignmentWait=false;
     if(!manualOverhead && basis){
@@ -570,6 +617,9 @@ export class PhotosphereSweep {
       window.removeEventListener("deviceorientationabsolute", this.headingHandler);
     }
     this.headingHandler = null;
+    // No listeners, no pose stream: the source is not healthy until start()
+    // attaches them again, and the old view can vouch for nothing.
+    this.listening = false; this.stability.clear();
     this.stream?.getTracks().forEach((t) => t.stop());
     this.stream = null;
     if (this.video) this.video.srcObject = null;
