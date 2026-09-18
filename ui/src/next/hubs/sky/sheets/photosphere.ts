@@ -1,14 +1,8 @@
-// photosphere.ts - CAPTURE PHOTOSPHERE (plan A.15 / B.14): a getUserMedia
-// video sweep, binned into azimuth columns of per-row luminance, handed to
-// `next/lib/horizonModel.ts`'s `autoTraceSkyline` for the dashed proposal.
-//
-// H.11: the prototype never implements this (it sets a flag and toasts), so
-// everything below is new work with no reference to transcribe. Every RULE
-// that can be checked without a browser and a camera is a pure function
-// (support detection, luminance, percentile, column folding); `PhotosphereSweep`
-// is the thin, deliberately un-clever class that drives them from the real
-// APIs. Unverified against real hardware - flagged in the task report per
-// H.11's own instruction, not silently claimed as tested.
+// Camera capture retains a bounded colour panorama and an editable horizon
+// draft. Phone sensor pose and lens angles remain estimates for user review.
+import { DOME_CELLS, SkyPanorama, orientationBasis, dot, skyAngles, cameraLens, transferBasis, type CameraBasis } from './photosphereGeometry';
+import { CameraPoseHistory, ScanPoseSource, poseSeparation } from './photospherePose';
+import { registerFrame } from './photosphereRegistration';
 
 export interface PhotosphereSupport {
   supported: boolean;
@@ -68,6 +62,80 @@ export function binForHeading(headingDeg: number, bins: number): number {
 export interface SweepFrame {
   bin: number;
   column: number[];
+  altitude?: number;
+  verticalFov?: number;
+  band?: number;
+  manualOverhead?: boolean;
+}
+
+/** Three overlapping elevation rings plus the single shared zenith point.
+ * Coverage is earned by aiming at each ring, never inferred from elapsed time. */
+export const SWEEP_BANDS = [
+  { altitude: 0, label: "Low" },
+  { altitude: 35, label: "Middle" },
+  { altitude: 70, label: "High" },
+] as const;
+export const OVERHEAD_BAND = SWEEP_BANDS.length;
+
+export function bandForAltitude(alt: number): number | null {
+  if (alt >= 85) return OVERHEAD_BAND;
+  const band = SWEEP_BANDS.findIndex(b => Math.abs(alt - b.altitude) <= 12);
+  return band < 0 ? null : band;
+}
+
+/** Project every retained elevation into a common 90..-10 degree column.
+ * NaN is unknown, not open sky. Overlapping frames favor their central rows;
+ * an overhead sample covers only the shared zenith, not an invented sky cap.
+ * Lens field of view is still an estimate and must be reviewed by the user. */
+export function projectSweepColumns(frames: SweepFrame[], bins: number): number[][] {
+  const cols = Array.from({ length: bins }, () => Array<number>(101).fill(NaN));
+  const weights = Array.from({ length: bins }, () => Array<number>(101).fill(Infinity));
+  for (const frame of frames) {
+    if (!frame.column.length) continue;
+    if (frame.band === OVERHEAD_BAND) {
+      const sample = frame.column[Math.floor(frame.column.length / 2)];
+      for (let bin = 0; bin < bins; bin++) { cols[bin][0] = sample; weights[bin][0] = -Infinity; }
+      continue;
+    }
+    if (frame.bin < 0 || frame.bin >= bins) continue;
+    const center = frame.altitude ?? 0, fov = frame.verticalFov ?? 45;
+    for (let row = 0; row <= 100; row++) {
+      const alt = 90 - row, fraction = .5 + (center - alt) / fov;
+      if (fraction < 0 || fraction > 1) continue;
+      const weight = Math.abs(fraction - .5);
+      if (weight >= weights[frame.bin][row]) continue;
+      const sample = frame.column[Math.round(fraction * (frame.column.length - 1))];
+      if (!Number.isFinite(sample)) continue;
+      cols[frame.bin][row] = sample; weights[frame.bin][row] = weight;
+    }
+  }
+  return cols;
+}
+
+export interface SkyTrace {
+  points: { az: number; alt: number }[];
+  uncertainBins: number[];
+}
+
+/** Highest dark sample wins, including canopy above a lower patch of sky.
+ * Missing upper-sky data and an unlit/covered zenith are conservatively blocked.
+ * This produces the existing single-height horizon, not a mask of canopy gaps. */
+export function traceSkyCoverage(columns: number[][]): SkyTrace {
+  const skySamples = columns.flatMap(col => col.slice(0, 26).filter(Number.isFinite));
+  const sky = percentile(skySamples, .8);
+  const uncertainBins: number[] = [];
+  const points = columns.map((column, bin) => {
+    let alt = 0;
+    const unknown = column.length < 101 || column.slice(0, 91).some(v => !Number.isFinite(v));
+    if (unknown || sky < 40) {
+      alt = 90; uncertainBins.push(bin);
+    } else {
+      const firstObstruction = column.findIndex(v => v < sky * .7);
+      if (firstObstruction >= 0) alt = Math.max(0, Math.min(90, 91 - firstObstruction));
+    }
+    return { az: Math.round((bin + .5) / columns.length * 360), alt };
+  });
+  return { points, uncertainBins };
 }
 
 /** Fold captured frames into `autoTraceSkyline`'s `columns[]`: one column per
@@ -79,7 +147,7 @@ export interface SweepFrame {
 export function foldSweepColumns(frames: SweepFrame[], bins: number): number[][] {
   const out: (number[] | undefined)[] = new Array(bins);
   for (const f of frames) out[f.bin] = f.column;
-  return out.map((c) => c ?? []);
+  return Array.from(out, (c) => c ?? []);
 }
 
 /** Per-row luminance for one already-drawn video frame: `rows` samples
@@ -106,16 +174,45 @@ export function columnFromImageData(
   return out;
 }
 
-/**
- * Drives the capture sweep: opens the environment-facing camera, grabs a
- * frame roughly every 350ms, bins each into an azimuth column keyed by the
- * device's compass heading when `deviceorientation` is available, or by
- * elapsed time against an assumed 12s full turn when it is not (the
- * photosphere card's own "assumes a level sweep" disclosure covers that
- * fallback - B.14 step 3). Everything that does not need a live camera is
- * the pure functions above; this class only holds the stream/video/canvas
- * and calls them in order.
- */
+export interface SweepCamera { deviceId: string; label: string }
+
+/** Rear-camera elevation depends on tilt, not compass heading. In particular,
+ * a phone looking straight up can report valid tilt with no absolute bearing. */
+export function cameraElevation(e: { beta: number | null; gamma: number | null }): number | null {
+  if (![e.beta, e.gamma].every(v => typeof v === "number" && Number.isFinite(v))) return null;
+  const rad = Math.PI / 180;
+  return Math.asin(Math.max(-1, Math.min(1, -Math.cos(e.beta! * rad) * Math.cos(e.gamma! * rad)))) / rad;
+}
+
+/** Labels are vendor-dependent. Never infer lens type from device order. */
+export function preferredRearCamera(cameras: SweepCamera[]): string | undefined {
+  const rear = cameras.filter(c => /back|rear|environment/i.test(c.label)
+    && !/ultra|telephoto|front|\b0[.,][56]\b/i.test(c.label));
+  return rear.find(c => /main|wide|standard|\b1x\b/i.test(c.label))?.deviceId
+    ?? (rear.length === 1 ? rear[0].deviceId : undefined);
+}
+
+/** Rear camera's viewing ray in the earth frame (W3C Z-X-Y rotation).
+ * Unlike a flat-phone compass, this works with an upright/landscape camera.
+ * Relative orientation alone must never be treated as geographic north. */
+export function cameraPose(e: { alpha: number | null; beta: number | null;
+  gamma: number | null; absolute?: boolean; webkitCompassHeading?: number }, absoluteEvent = false): { az: number; alt: number } | null {
+  const compass = e.webkitCompassHeading;
+  const hasCompass = typeof compass === "number" && Number.isFinite(compass);
+  if (!absoluteEvent && !e.absolute && !hasCompass) return null;
+  if (![e.alpha, e.beta, e.gamma].every(v => typeof v === "number" && Number.isFinite(v))) return null;
+  const rad = Math.PI / 180, a = e.alpha! * rad, b = e.beta! * rad, g = e.gamma! * rad;
+  const x = -Math.cos(a) * Math.sin(g) - Math.sin(a) * Math.sin(b) * Math.cos(g);
+  const y = -Math.sin(a) * Math.sin(g) + Math.cos(a) * Math.sin(b) * Math.cos(g);
+  const z = -Math.cos(b) * Math.cos(g);
+  const correction = hasCompass ? compass! - (360 - e.alpha!) : 0;
+  // At the zenith azimuth is undefined. The capture treats it as one shared
+  // overhead tile; it never bins that arbitrary bearing as a horizontal view.
+  return { az: Math.hypot(x, y) < 1e-6 ? 0 : ((Math.atan2(x, y) / rad + correction) % 360 + 360) % 360,
+    alt: Math.asin(Math.max(-1, Math.min(1, z))) / rad };
+}
+
+/** Opens a visible preview; recording begins only after begin() is pressed. */
 export class PhotosphereSweep {
   private stream: MediaStream | null = null;
   private video: HTMLVideoElement | null = null;
@@ -123,10 +220,37 @@ export class PhotosphereSweep {
   private frames: SweepFrame[] = [];
   private headingHandler: ((e: Event) => void) | null = null;
   private heading = 0;
+  private altitude = 0;
+  private tiltAt: number | null = null;
   private hasOrientation = false;
-  private startedAt = 0;
+  private headingAt = 0;
+  private basis: CameraBasis | null = null;
+  private panorama: SkyPanorama | null = null;
+  private coveredCells = new Set<number>();
+  private lastAlpha = 0;
+  private imageAspect = 4 / 3;
+  private shortAxisFov=60;
+  private lensCalibrated=false;
+  private lensProfileKey='';
+  private lastCaptureAt: number | null = null;
+  private poses = new CameraPoseHistory();
+  private poseSource=new ScanPoseSource();
+  private visualAnchor:{raw:CameraBasis;aligned:CameraBasis}|null=null;
+  private lastRegistrationAt=-Infinity;
+  private tilts = new CameraPoseHistory();
+  private alignmentWait = false;
+  private overlapWait = false;
+  private scanSamples:unknown[]=[];
+  private lastDiagnosticAt=-Infinity;
+  private lastSensorReading:unknown=null;
+  private videoFrameHandle: number | null = null;
+  private frameBasis: {basis:CameraBasis;at:number} | null = null;
+  private recording = false;
+  private ready = false;
+  private issue: string | null = null;
+  private cameras: SweepCamera[] = [];
+  private deviceId = "";
   private grabTimer: ReturnType<typeof setInterval> | null = null;
-  private lastBin = -1;
   private generation = 0;
   readonly bins: number;
 
@@ -142,71 +266,308 @@ export class PhotosphereSweep {
     return this.heading;
   }
 
-  /** False once a frame has actually been binned by a real heading - drives
-   *  the "no tilt sensor" disclosure on the adopted trace. */
+  /** Whether an absolute camera pose has arrived during this scan. */
   get usedOrientation(): boolean {
     return this.hasOrientation;
   }
 
-  async start(video: HTMLVideoElement, canvas: HTMLCanvasElement): Promise<void> {
+  get previewReady(): boolean { return this.ready; }
+  get isRecording(): boolean { return this.recording; }
+  get cameraChoices(): SweepCamera[] { return this.cameras; }
+  get activeCameraId(): string { return this.deviceId; }
+  get error(): string | null { return this.issue; }
+  get compassReady(): boolean { return this.hasOrientation && Date.now() - this.headingAt < 2000; }
+  get tiltReady(): boolean { return this.tiltAt !== null && Date.now() - this.tiltAt < 2000; }
+  get currentAltitude(): number { return this.altitude; }
+  get cameraBasis(): CameraBasis | null {
+    const b=this.compassReady && this.frameBasis && performance.now()-this.frameBasis.at<200?this.frameBasis.basis
+      :this.compassReady ? this.basis : this.tiltReady && this.altitude >= 85 ? this.basis : null;
+    return b?this.correctBasis(b):null;
+  }
+  private correctBasis(b:CameraBasis):CameraBasis {return this.visualAnchor?transferBasis(b,this.visualAnchor.raw,this.visualAnchor.aligned):b;}
+  get aspectRatio(): number { return this.video?.videoWidth && this.video.videoHeight ? this.video.videoWidth/this.video.videoHeight : this.imageAspect; }
+  get cameraViewAngle():number {return this.shortAxisFov;}
+  get hasLensCalibration():boolean {return this.lensCalibrated;}
+  get lens() {return cameraLens(this.aspectRatio,1,this.shortAxisFov);}
+  setCameraViewAngle(degrees:number):boolean {
+    if(this.recording || !Number.isFinite(degrees) || degrees<35 || degrees>100)return false;
+    this.shortAxisFov=degrees;this.lensCalibrated=true;
+    try {if(this.lensProfileKey)localStorage.setItem(this.lensProfileKey,String(degrees));}catch { /* session-only when storage is blocked */ }
+    return true;
+  }
+  get cells() { return DOME_CELLS.map(c => ({ ...c, captured:this.coveredCells.has(c.id) })); }
+  get aimTarget(): { id: number; captured: boolean } | null {
+    const basis=this.cameraBasis;if(!basis)return null;
+    // Eight degrees leaves every cell comfortably within the captured image,
+    // including portrait framing. The UI and capture use this same forward ray.
+    let nearest: {id:number;captured:boolean}|null=null, similarity=Math.cos(8*Math.PI/180);
+    for(const cell of DOME_CELLS){
+      if(!this.compassReady && cell.alt<89)continue;
+      const alignment=dot(cell.center,basis.forward);
+      if(cell.alt>89 && alignment<Math.cos(5*Math.PI/180))continue;
+      if(alignment>similarity){similarity=alignment;nearest={id:cell.id,captured:this.coveredCells.has(cell.id)};}
+    }
+    return nearest;
+  }
+  get justCaptured(): boolean { return this.lastCaptureAt!==null && Date.now()-this.lastCaptureAt<1000; }
+  get captureCue(): string {
+    if(this.issue)return this.issue;
+    if(!this.recording)return 'Tap Start scan to begin capturing.';
+    if(!this.video?.videoWidth || !this.video?.videoHeight)return 'Waiting for a camera image…';
+    if(!this.cameraBasis)return 'Waiting for the compass. Keep the camera open and move the phone gently.';
+    if(this.alignmentWait)return 'Hold the phone still for a moment so the image and direction line up.';
+    if(this.overlapWait)return 'I can’t match this view yet. Return to a green patch, hold still, then move slowly toward the next blue dot. Keep the camera lens in the same spot.';
+    if(this.justCaptured)return 'Captured. Move to another blue dot.';
+    const target=this.aimTarget;
+    if(target?.captured)return 'Already captured. Aim at a blue dot.';
+    if(target)return 'Hold here… capturing this patch.';
+    return 'Bring a blue dot into the centre ring.';
+  }
+  get coverageRows(): boolean[][] {
+    return SWEEP_BANDS.map((_, band) => Array.from({ length: this.bins }, (_, bin) =>
+      this.frames.some(f => f.band === band && f.bin === bin)));
+  }
+  get overheadCaptured(): boolean { return this.frames.some(f => f.band === OVERHEAD_BAND); }
+  get usedManualOverhead(): boolean { return this.frames.some(f => f.manualOverhead); }
+  get capturedTiles(): number {
+    return this.coveredCells.size;
+  }
+  get totalTiles(): number { return DOME_CELLS.length; }
+  get complete(): boolean { return this.capturedTiles === this.totalTiles; }
+  get currentBand(): number | null { return this.tiltReady ? bandForAltitude(this.altitude) : null; }
+  get nextBand(): number {
+    const missing = this.coverageRows.findIndex(row => row.some(seen => !seen));
+    return missing >= 0 ? missing : OVERHEAD_BAND;
+  }
+
+  begin(): void {
+    if (!this.ready || !this.compassReady) return;
+    this.frames = []; this.panorama = new SkyPanorama(); this.coveredCells.clear(); this.lastCaptureAt=null; this.scanSamples=[]; this.lastDiagnosticAt=-Infinity; this.recording = true;
+  }
+
+  /** The user explicitly aims the rear camera up. This still reads an actual
+   * video frame and cannot stand in for any missing azimuth/elevation ring. */
+  captureOverhead(): boolean {
+    if (this.overheadCaptured) return false;
+    return this.grabFrame(true);
+  }
+
+  async start(video: HTMLVideoElement, canvas: HTMLCanvasElement, deviceId?: string): Promise<void> {
     this.stop();
     const generation = this.generation;
     this.video = video;
     this.canvas = canvas;
-    this.startedAt = Date.now();
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: "environment" } },
-      audio: false,
-    });
+    this.frames = []; this.issue = null; this.basis = null; this.panorama = null; this.coveredCells.clear(); this.lastCaptureAt=null;
+    this.poses.clear();this.tilts.clear();this.poseSource.clear();this.visualAnchor=null;this.lastRegistrationAt=-Infinity;this.frameBasis=null;this.alignmentWait=false;this.overlapWait=false;this.lastSensorReading=null;
+    this.hasOrientation = false; this.headingAt = 0; this.tiltAt = null;
+    const DOE = window.DeviceOrientationEvent as typeof DeviceOrientationEvent & { requestPermission?: () => Promise<string> };
+    // Ask from the click gesture, before awaiting camera discovery (Safari).
+    const motionPermission = DOE?.requestPermission?.().catch(() => "denied");
+    const list = async (): Promise<SweepCamera[]> => {
+      try { return (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === "videoinput")
+        .map((d, i) => ({ deviceId: d.deviceId, label: d.label || `Camera ${i + 1}` })); }
+      catch { return []; }
+    };
+    this.cameras = await list();
+    if (generation !== this.generation) return;
+    const open = (id?: string) => navigator.mediaDevices.getUserMedia({ audio: false, video: {
+      ...(id ? { deviceId: { exact: id } } : { facingMode: { ideal: "environment" } }),
+      width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 24, max: 30 },
+    } });
+    let stream = await open(deviceId ?? preferredRearCamera(this.cameras));
     // Closing the editor while the browser permission prompt is open must
     // also release a camera granted after the editor has disappeared.
     if (generation !== this.generation) { stream.getTracks().forEach(t=>t.stop()); return; }
     this.stream = stream;
-    video.srcObject = this.stream;
-    await video.play().catch(() => { /* autoplay can refuse; muted+playsinline covers most browsers */ });
+    this.cameras = await list();
     if (generation !== this.generation) return;
+    const preferred = deviceId ?? preferredRearCamera(this.cameras);
+    const current = stream.getVideoTracks?.()[0]?.getSettings?.().deviceId;
+    if (preferred && current && preferred !== current) {
+      stream.getTracks().forEach(t => t.stop());
+      stream = await open(preferred);
+      if (generation !== this.generation) { stream.getTracks().forEach(t => t.stop()); return; }
+      this.stream = stream;
+    }
+    this.deviceId = stream.getVideoTracks?.()[0]?.getSettings?.().deviceId ?? preferred ?? "";
+    video.srcObject = this.stream;
+    try { await video.play(); }
+    catch { this.stop(); throw new Error("The camera opened but its preview could not play. Try opening the camera again."); }
+    if (generation !== this.generation) return;
+    this.ready = true;
+    this.imageAspect = video.videoWidth && video.videoHeight ? video.videoWidth/video.videoHeight : 4/3;
+    // Calibration belongs to this lens and crop in this browser. It must not
+    // become a universal constant for another phone, lens or video aspect.
+    const crop=Math.min(this.imageAspect,1/this.imageAspect).toFixed(3);
+    this.lensProfileKey=`astrodeck.photosphere.lens.${this.deviceId || 'default'}.${crop}`;
+    this.shortAxisFov=60;this.lensCalibrated=false;
+    try {const stored=Number(localStorage.getItem(this.lensProfileKey));if(stored>=35&&stored<=100){this.shortAxisFov=stored;this.lensCalibrated=true;}}catch { /* private browsing */ }
+    stream.getVideoTracks?.().forEach(track => track.addEventListener?.("ended", () => {
+      if (generation !== this.generation) return;
+      this.issue = "The camera stopped. Close the scan and open it again.";
+      this.ready = false; this.recording = false;
+    }));
 
+    if (motionPermission && await motionPermission !== "granted") {
+      this.issue = "Motion access was denied. Allow motion sensors to scan, or draw the horizon by hand.";
+    }
+    if (generation !== this.generation) return;
     if (typeof window !== "undefined" && "DeviceOrientationEvent" in window) {
       this.headingHandler = (e: Event) => {
         const oe = e as DeviceOrientationEvent & { webkitCompassHeading?: number };
-        const h = oe.webkitCompassHeading ?? (oe.alpha != null ? 360 - oe.alpha : null);
-        if (h != null) { this.heading = h; this.hasOrientation = true; }
+        const screenAngle = window.screen?.orientation?.angle ?? 0;
+        const received=performance.now();
+        // DOM event timestamps and video captureTime share the performance time
+        // origin. Fall back for older implementations using epoch timestamps.
+        const at=Number.isFinite(e.timeStamp)&&Math.abs(received-e.timeStamp)<2000?e.timeStamp:received;
+        const elevation = cameraElevation(oe);
+        if (elevation !== null) { this.altitude = elevation; this.tiltAt = Date.now();
+          this.tilts.add({at,screenAngle,basis:orientationBasis(0,oe.beta!,oe.gamma!,screenAngle)});
+        }
+        const pose = cameraPose(oe, e.type === "deviceorientationabsolute");
+        const valid=[oe.alpha,oe.beta,oe.gamma].every(v=>typeof v==='number'&&Number.isFinite(v));
+        const correction = typeof oe.webkitCompassHeading === 'number' ? oe.webkitCompassHeading - (360 - oe.alpha!) : 0;
+        const accepted=valid?this.poseSource.accept(orientationBasis(oe.alpha!,oe.beta!,oe.gamma!,screenAngle,correction),!!pose,at):null;
+        if (accepted) { this.heading = skyAngles(accepted.basis.forward).az;
+          this.lastSensorReading={alpha:oe.alpha,beta:oe.beta,gamma:oe.gamma,absolute:oe.absolute,event:e.type,screenAngle,at};
+          this.lastAlpha = oe.alpha!;
+          this.basis = accepted.basis;
+          if(accepted.changedSource){this.poses.clear();this.frameBasis=null;}
+          this.poses.add({at,screenAngle,basis:this.basis});
+          this.headingAt = Date.now(); this.hasOrientation = true;
+        } else if (elevation !== null && elevation >= 85 && !this.compassReady) {
+          // No absolute bearing at the zenith: retain the last azimuth frame
+          // for display, but only project the single overhead pixel below.
+          this.basis = orientationBasis(this.lastAlpha,oe.beta!,oe.gamma!,screenAngle);
+        }
       };
+      window.addEventListener("deviceorientationabsolute", this.headingHandler);
       window.addEventListener("deviceorientation", this.headingHandler);
     }
 
-    this.grabTimer = setInterval(() => this.grabFrame(), 350);
+    if(typeof video.requestVideoFrameCallback==='function'){
+      let lastSample=-Infinity;
+      const frame:VideoFrameRequestCallback=(now,metadata)=>{
+        if(generation!==this.generation)return;
+        const basis=this.poses.forFrame(now,metadata.captureTime);
+        if(basis)this.frameBasis={basis,at:now};
+        else this.frameBasis=null;
+        if(now-lastSample>=350){lastSample=now;this.grabFrame(false,{basis,tilt:this.tilts.forFrame(now,metadata.captureTime)});}
+        this.videoFrameHandle=video.requestVideoFrameCallback(frame);
+      };
+      this.videoFrameHandle=video.requestVideoFrameCallback(frame);
+    } else this.grabTimer = setInterval(() => this.grabFrame(), 350);
   }
 
-  private grabFrame(): void {
+  private grabFrame(manualOverhead = false, frame?:{basis:CameraBasis|null;tilt:CameraBasis|null}): boolean {
     const { video, canvas } = this;
-    if (!video || !canvas || video.videoWidth === 0) return;
+    if (!this.recording || !this.ready || !video || !canvas || document.visibilityState === "hidden") return false;
+    if (video.videoWidth === 0 || video.videoHeight === 0) {
+      if (manualOverhead) this.issue = "Waiting for a camera image. Keep the rear camera pointing up and try again.";
+      return false;
+    }
+    const now=performance.now();
+    const rawBasis=frame ? frame.basis : this.poses.forFrame(now);
+    let basis=rawBasis?this.correctBasis(rawBasis):null;
+    const tilt=frame ? frame.tilt : this.tilts.forFrame(now);
+    let measured=basis?skyAngles(basis.forward):tilt?skyAngles(tilt.forward):null;
+    const overhead=manualOverhead || (!!measured && bandForAltitude(measured.alt)===OVERHEAD_BAND);
+    if(!manualOverhead && !basis && !(tilt&&overhead)){this.alignmentWait=true;return false;}
+    // A timestamp does not make a frame taken during motion sharp or account
+    // for an entire low-light exposure. Hold still even with frame timestamps.
+    const stable=basis?this.poses.forFrame(now):this.tilts.forFrame(now);
+    if(!manualOverhead && (!stable || poseSeparation(stable,(rawBasis??tilt)!)>1.5)){this.alignmentWait=true;return false;}
+    this.alignmentWait=false;
+    if(!manualOverhead && basis){
+      const target=DOME_CELLS.find(c=>dot(c.center,basis!.forward)>=Math.cos((c.alt>89?5:8)*Math.PI/180));
+      if(!target){this.overlapWait=false;return false;}
+      if(now-this.lastRegistrationAt<600)return false;
+      this.lastRegistrationAt=now;
+    }
+    // All pixel positions and metadata use the pose of this frame. Relative
+    // tilt must never be combined with a different absolute bearing.
+    if (!manualOverhead && measured!.alt < -10) return false;
     const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+    if (!ctx) { this.issue = "Could not read the camera image. Close the scan and try again."; this.recording = false; return false; }
+    this.imageAspect = video.videoWidth / video.videoHeight;
+    canvas.width = this.imageAspect >= 1 ? 320 : Math.round(320*this.imageAspect);
+    canvas.height = this.imageAspect >= 1 ? Math.round(320/this.imageAspect) : 320;
+    let data: Uint8ClampedArray;
+    try {
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      if (!this.panorama) return false;
+      const lens=cameraLens(video.videoWidth,video.videoHeight,this.shortAxisFov);
+      if (basis && !manualOverhead) {
+        const registration=registerFrame(this.panorama,data,canvas.width,canvas.height,basis,lens);
+        const overlap=registration.overlap;
+        if(registration.adjusted && rawBasis){
+          if(poseSeparation(rawBasis,registration.basis)>10){this.overlapWait=true;return false;}
+          basis=registration.basis;this.visualAnchor={raw:rawBasis,aligned:basis};
+          measured=skyAngles(basis.forward);
+        }
+        // Keep a small, local reproduction bundle. It is downloaded only when
+        // requested, never uploaded; no site coordinates or device IDs included.
+        if(now-this.lastDiagnosticAt>=1000){
+          this.lastDiagnosticAt=now;
+          this.scanSamples.push({at:now,basis,sensorBasis:rawBasis,relativeMotion:this.poseSource.usesRelative,adjusted:registration.adjusted,lens,videoWidth:video.videoWidth,videoHeight:video.videoHeight,
+            sensor:this.lastSensorReading,overlap,image:canvas.toDataURL('image/jpeg',.8)});
+          if(this.scanSamples.length>16)this.scanSamples.splice(1,1);
+        }
+        if(overlap.result==='conflict'){this.overlapWait=true;return false;}
+        this.overlapWait=false;
+        const target=DOME_CELLS.find(c=>dot(c.center,basis!.forward)>=Math.cos((c.alt>89?5:8)*Math.PI/180));
+        if(!target || this.coveredCells.has(target.id))return false;
+        this.panorama.add(data,canvas.width,canvas.height,basis,lens);
+      } else if (overhead) {
+        // Without heading, an entire overhead photograph cannot be oriented.
+        // Keep only its centre at the shared zenith; do not invent a sky cap.
+        this.panorama.addZenith(data,canvas.width,canvas.height,tilt&&skyAngles(tilt.forward).alt>=85?tilt:null,lens);
+      }
+    } catch { this.issue = "Could not read the camera image. Close the scan and try again."; this.recording = false; return false; }
     const column = columnFromImageData(data, canvas.width, canvas.height, 24);
 
-    const heading = this.hasOrientation
-      ? this.heading
-      : (((Date.now() - this.startedAt) / 12000) * 360) % 360;
-    const bin = binForHeading(heading, this.bins);
-    if (bin === this.lastBin) return; // same column as last grab - nothing new
-    this.lastBin = bin;
-    this.frames.push({ bin, column });
+    const altitude=manualOverhead?90:measured!.alt;
+    const band = overhead ? OVERHEAD_BAND : bandForAltitude(altitude) ?? -1;
+    const bin = band === OVERHEAD_BAND ? 0 : binForHeading(measured!.az, this.bins);
+    const targetAltitude = band === OVERHEAD_BAND ? 90 : Math.round(altitude / 5) * 5;
+    const sameTile = (f:SweepFrame)=>f.bin===bin&&f.band===band&&(band===OVERHEAD_BAND||Math.round((f.altitude??0)/5)*5===targetAltitude);
+
+    this.frames = this.frames.filter(f => !sameTile(f));
+    // Browsers expose no calibrated lens FOV. This remains an editable estimate.
+    this.issue = null;
+    this.frames.push({ bin, band, column, altitude, manualOverhead,
+      verticalFov: video.videoHeight > video.videoWidth ? 60 : 45 });
+    const previousCoverage=this.coveredCells.size;
+    for(const cell of DOME_CELLS) {
+      if(this.panorama?.covered(cell) && (cell.alt < 89 || this.overheadCaptured)) this.coveredCells.add(cell.id);
+    }
+    if(this.coveredCells.size>previousCoverage)this.lastCaptureAt=Date.now();
+    return true;
   }
 
   columns(): number[][] {
-    return foldSweepColumns(this.frames, this.bins);
+    return this.panorama?.columns(this.bins) ?? projectSweepColumns(this.frames, this.bins);
+  }
+
+  panoramaImage(): string {
+    if(!this.panorama) throw new Error('No camera images have been captured yet.');
+    return this.panorama.toDataURL();
+  }
+
+  alignmentReport():string {
+    return JSON.stringify({version:1,description:'Local camera samples for alignment debugging; contains photos of your surroundings.',
+      browser:navigator.userAgent,samples:this.scanSamples},null,2);
   }
 
   stop(): void {
     this.generation++;
+    this.ready = false; this.recording = false;
+    if(this.videoFrameHandle!==null){this.video?.cancelVideoFrameCallback?.(this.videoFrameHandle);this.videoFrameHandle=null;}
     if (this.grabTimer != null) { clearInterval(this.grabTimer); this.grabTimer = null; }
     if (this.headingHandler && typeof window !== "undefined") {
       window.removeEventListener("deviceorientation", this.headingHandler);
+      window.removeEventListener("deviceorientationabsolute", this.headingHandler);
     }
     this.headingHandler = null;
     this.stream?.getTracks().forEach((t) => t.stop());
