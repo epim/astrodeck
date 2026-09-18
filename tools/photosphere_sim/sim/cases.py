@@ -99,7 +99,12 @@ def build_case(case_def: dict, out_root: Path, renderer: Callable) -> Path:
 
     traj = trajectory_module.build(route, fps)
 
-    for frame, image in zip(traj.frames, renderer(scene, camera, traj.frames)):
+    # ``strict`` for two reasons: a renderer that yields the wrong number of
+    # frames is a defect rather than a short case, and it makes zip ask the
+    # renderer for one frame past the last, which is what lets a generator
+    # holding a browser open (``sim.render.CaseRenderer``) run its own
+    # shutdown here instead of whenever the garbage collector gets to it.
+    for frame, image in zip(traj.frames, renderer(scene, camera, traj.frames), strict=True):
         Image.fromarray(image, mode="RGB").save(frames_dir / f"{frame.frame_id}.png")
 
     frame_obs = [
@@ -166,6 +171,12 @@ def build_case(case_def: dict, out_root: Path, renderer: Callable) -> Path:
         "truth": _hash_concatenated_digests(truth_paths),
     }
 
+    # A renderer that knows what drew the frames says so, and the manifest
+    # records it; ``flat_renderer`` does not, and leaves the two nulls.
+    versions = {"three": None, "chromium": None,
+                "python": platform.python_version(), "app_commit": None}
+    versions.update(getattr(renderer, "versions", None) or {})
+
     manifest = {
         "schema": 1,
         "case_id": case_def["case_id"],
@@ -177,8 +188,7 @@ def build_case(case_def: dict, out_root: Path, renderer: Callable) -> Path:
         "fps": fps,
         "expected": case_def["expected"],
         "hashes": hashes,
-        "versions": {"three": None, "chromium": None,
-                    "python": platform.python_version(), "app_commit": None},
+        "versions": versions,
     }
     _write_json(out_dir / "manifest.json", manifest)
 
