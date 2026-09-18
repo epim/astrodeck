@@ -114,3 +114,20 @@ from -10 to 90; `-10` means nothing was hit) and `"obstacles":[{"id","az_from","
   flat discs lying on an object face, painted in the palette colour.
 - `test_obstacles`: `[{"id","object":id,"min_width_deg"}]` the obstacles the
   horizon scorer must find individually.
+
+## Route schema (`routes/<name>.json`)
+
+`{"schema":1,"name","kind":"still"|"arc","pivot":[e,n,u],"radius_m","height_m","lift_m","aims":[...],"move_s","hold_s","sweeps":[...]}`.
+- The camera centre for `still` is `pivot + [0, radius_m, height_m]` for the
+  whole route (the phone is held where the first aim would put it and never
+  translates).
+- For `arc`: `C(t) = pivot + [radius_m sin(az(t)), radius_m cos(az(t)), height_m + lift_m * max(0, alt(t)) / 90]`
+  and the orientation is `look_basis(az(t), alt(t), 0)`: the camera is carried
+  around the body at arm's length and rises as the view tilts up.
+- `aims`: ordered `[az, alt]` targets. Between consecutive aims the view moves
+  along the shorter azimuth arc with a smoothstep profile over `move_s`
+  seconds, then holds for `hold_s`. Holds are listed in `holds.json`.
+- `sweeps`: `[{"az","alt_from","alt_to","duration_s","hold_s"}]` appended
+  after the aims: hold at `(az, alt_from)`, tilt linearly to `alt_to` over
+  `duration_s`, hold again.
+- `c_ref` is the camera centre at the first frame.

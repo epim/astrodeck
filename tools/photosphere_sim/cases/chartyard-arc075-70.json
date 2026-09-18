@@ -1,0 +1,10 @@
+{
+  "case_id": "chartyard-arc075-70",
+  "scene": "chartyard",
+  "route": "arc075",
+  "camera": {"width": 480, "height": 640, "fov_short_deg": 70},
+  "fps": 10,
+  "seed": 1,
+  "expected": "positive",
+  "profile": "chart-noise-free"
+}
