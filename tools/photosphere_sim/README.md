@@ -11,11 +11,35 @@ Design: `docs/ui-rebuild/16-photosphere-calibration-simulator.md`.
 
 ## What exists so far
 
-`sim/geometry.py` only: the coordinate contract in code (sky vectors, camera
-attitude, the pinhole camera, and the W3C device-orientation conversions),
-plus the test that keeps the simulator independent. The scene, the truth
-ray-caster, the renderer, the replay driver and the scorer arrive in later
-tasks, so three of the four commands below do not run yet.
+`sim/geometry.py` is the coordinate contract in code: sky vectors, camera
+attitude, the pinhole camera and the W3C device-orientation conversions, with
+the two camera frames kept deliberately apart (see the last section).
+
+`sim/palette.py` is the 24-colour landmark palette, every channel one of 0, 128
+or 255 with the three greys left out, in a fixed order that scenes address by
+index, plus `nearest`, which measures how far any other colour is from a
+palette colour on its worst single channel.
+
+`sim/scene.py` loads a scene file from `scenes/` into a `Scene` and checks its
+structure: schema version, object kinds, palette indices, and that every id a
+surface landmark or test obstacle names is a real object. `scenes/chartyard.json`
+is the stage-A world: a directional noise-and-stripe background, 46 background
+landmark discs on five rings and a six-disc cap, eight objects from 0.75 to 160
+metres, six landmarks painted on object faces, and five declared test obstacles.
+
+`sim/truth.py` is the oracle: analytic ray casting against those objects
+(`intersect`), the horizon envelope from a reference position (`horizon`), each
+landmark's direction and whether it can be seen from there
+(`landmark_directions`), the panorama a perfect scanner would return
+(`ideal_panorama`), and the background image itself (`background_texture`),
+which the Three.js renderer regenerates from the same declarative recipe. Its
+module docstring carries the three conventions the schema leaves open, because
+they have to be implemented twice and agree.
+
+The renderer, the replay driver and the scorer arrive in later tasks, so three
+of the four commands below do not run yet. Run the tests that exist with:
+
+    python -m unittest discover -s tools/photosphere_sim/tests -t tools/photosphere_sim -v
 
 ## Commands
 
