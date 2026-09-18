@@ -1,7 +1,8 @@
 """``python -m sim <command> ...``, from CONTRACT.md's Commands section.
 
-``corrupt`` and ``report`` are Task 8's, and print a plain message and exit 2
-rather than pretend to run.
+``score`` writes ``report.html`` beside ``scores.json``; ``report`` re-renders
+that page from a ``scores.json`` that is already there, without scoring again;
+``corrupt`` writes a deliberately broken copy of a result directory.
 """
 
 from __future__ import annotations
@@ -11,11 +12,11 @@ import json
 import sys
 from pathlib import Path
 
+from . import report as report_module
 from .cases import CASES_DIR, build_case, flat_renderer
+from .corrupt import CORRUPTIONS, apply as apply_corruption
 from .ideal import make_ideal_result
 from .score import score_case
-
-_NOT_YET_IMPLEMENTED = ("corrupt", "report")
 
 #: Where ``make-case`` writes and where ``score`` and ``ideal`` look, relative
 #: to the working directory, as CONTRACT.md's case layout has it.
@@ -85,6 +86,8 @@ def _score(args: argparse.Namespace) -> int:
               file=sys.stderr)
         raise SystemExit(2)
     scores = score_case(case_dir, result_dir)
+    report_module.render(case_dir, scores, result_dir / "report.html",
+                         result_dir=result_dir)
 
     landmarks, horizon = scores["landmarks"], scores["horizon"]
     print(f"case      {scores['case_id']}  profile {scores['profile']}")
@@ -107,7 +110,63 @@ def _score(args: argparse.Namespace) -> int:
     print(f"capture   {json.dumps(scores['capture'])}")
     print(f"coverage  {json.dumps(scores['coverage'])}")
     print(f"gates     {json.dumps(scores['gates'], indent=2)}")
+    print(f"report    {result_dir / 'report.html'}")
     return 0 if scores["gates"]["pass"] else 1
+
+
+def _parse_params(pairs: list) -> dict:
+    """``--param deg=5`` into ``{"deg": 5}``, JSON first, then a plain string.
+
+    JSON first so that ``offset_m=[1,0,0]`` and ``scale=1.05`` arrive as the
+    list and the float they look like; a value that is not JSON (a bare word)
+    is passed through as text rather than refused.
+    """
+    params = {}
+    for pair in pairs:
+        if "=" not in pair:
+            print(f"--param wants KEY=VALUE, got {pair!r}", file=sys.stderr)
+            raise SystemExit(2)
+        key, _, value = pair.partition("=")
+        try:
+            params[key] = json.loads(value)
+        except json.JSONDecodeError:
+            params[key] = value
+    return params
+
+
+def _corrupt(args: argparse.Namespace) -> int:
+    """Write a corrupted copy of a result directory and say where it went."""
+    case_dir = _case_dir(args)
+    result_dir = Path(args.result) if args.result else case_dir / "result"
+    if not result_dir.is_dir():
+        print(f"no result directory at {result_dir}: replay the case first",
+              file=sys.stderr)
+        raise SystemExit(2)
+    out_dir = Path(args.out) if args.out else case_dir / "corrupt" / args.name
+    try:
+        written = apply_corruption(case_dir, result_dir, args.name, out_dir,
+                                   **_parse_params(args.param))
+    except (TypeError, ValueError) as error:
+        print(str(error), file=sys.stderr)
+        raise SystemExit(2)
+    print(f"wrote {written}")
+    return 0
+
+
+def _report(args: argparse.Namespace) -> int:
+    """Re-render ``report.html`` from a ``scores.json`` that is already there."""
+    case_dir = _case_dir(args)
+    result_dir = Path(args.result) if args.result else case_dir / "result"
+    scores_path = result_dir / "scores.json"
+    if not scores_path.is_file():
+        print(f"no scores.json at {scores_path}: score the case first",
+              file=sys.stderr)
+        raise SystemExit(2)
+    scores = json.loads(scores_path.read_text(encoding="utf-8"))
+    written = report_module.render(case_dir, scores, result_dir / "report.html",
+                                   result_dir=result_dir)
+    print(f"wrote {written}")
+    return 0
 
 
 def main(argv=None) -> int:
@@ -131,9 +190,22 @@ def main(argv=None) -> int:
     ideal.add_argument("--out", default=None,
                        help="where to write the ideal result (default <case>/ideal)")
 
-    for name in _NOT_YET_IMPLEMENTED:
-        stub = subparsers.add_parser(name)
-        stub.add_argument("rest", nargs=argparse.REMAINDER)
+    corrupt = subparsers.add_parser("corrupt")
+    corrupt.add_argument("case_id")
+    corrupt.add_argument("name", choices=sorted(CORRUPTIONS))
+    corrupt.add_argument("--cases", default=DEFAULT_CASE_ROOT)
+    corrupt.add_argument("--result", default=None,
+                         help="the result directory to corrupt (default <case>/result)")
+    corrupt.add_argument("--out", default=None,
+                         help="where to write it (default <case>/corrupt/<name>)")
+    corrupt.add_argument("--param", action="append", default=[], metavar="KEY=VALUE",
+                         help="a corruption parameter, for example deg=5")
+
+    report = subparsers.add_parser("report")
+    report.add_argument("case_id")
+    report.add_argument("--cases", default=DEFAULT_CASE_ROOT)
+    report.add_argument("--result", default=None,
+                        help="the scored result directory (default <case>/result)")
 
     args = parser.parse_args(argv)
 
@@ -143,9 +215,9 @@ def main(argv=None) -> int:
         return _score(args)
     if args.command == "ideal":
         return _ideal(args)
-
-    print(f"{args.command}: not implemented in this task", file=sys.stderr)
-    return 2
+    if args.command == "corrupt":
+        return _corrupt(args)
+    return _report(args)
 
 
 if __name__ == "__main__":

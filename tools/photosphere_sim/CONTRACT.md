@@ -332,3 +332,35 @@ fails the landmark gates, a wholly uncertain boundary fails the horizon gates,
 and no capture log fails `every_hold_captured`. A gate is vacuously true only
 where the route itself produced no such group, which `overlay.samples` and
 `capture.holds` distinguish.
+
+## Corruptions
+
+`python -m sim corrupt <case_id> <name> [--param KEY=VALUE ...]` copies a
+result directory, breaks exactly one thing in the copy, and leaves everything
+else byte for byte, so the difference between the two scores is the
+corruption and nothing else. The copy does not carry `scores.json` or
+`report.html` over: those describe the result that was corrupted. The names
+and their parameters, spec section 10:
+
+| name | parameters | what it does |
+|---|---|---|
+| `yaw` | `deg` | turns raster, boundary and overlay east by `deg` |
+| `north-wrap` | | `yaw` with `deg = 350`, which is 10 degrees west |
+| `focal` | `scale` | every altitude to `atan(scale tan alt)` |
+| `flip-vertical` | | reverses the raster's rows |
+| `mirror` | | reverses the columns, `az -> 360 - az` |
+| `duplicate-section` | `az0`, `width` | copies a wedge over the next one |
+| `remove-section` | `az0`, `width` | unpaints a wedge, its bins uncertain |
+| `wrong-reference` | `offset_m` | re-renders the panorama from `c_ref + offset` |
+| `blur` | `radius_px` | box blur of the colours, alpha untouched |
+| `erase-landmarks` | | paints every palette-coloured pixel grey |
+| `empty` | | alpha 0 everywhere and an empty capture log |
+| `erase-horizon-strip` | `alt_max` | unpaints below `alt_max`, all bins uncertain |
+| `brightness` | `gain` | scales the colours: the geometry-preserving control |
+| `substitute-pose` | `back`, `index` | one event carries an earlier event's basis |
+| `duplicate-frame` | `index` | one `frame_id` on two event lines |
+
+`report.html` is written beside `scores.json` by `sim score`, and
+`python -m sim report <case_id>` re-renders it from a `scores.json` that is
+already there. It is one self-contained file: inline base64 PNGs, inline SVG,
+one style block, no script and nothing to fetch.
