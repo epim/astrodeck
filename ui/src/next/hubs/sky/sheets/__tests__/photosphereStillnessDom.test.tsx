@@ -26,7 +26,13 @@ Object.defineProperty(w.HTMLVideoElement.prototype,'videoHeight',{get:()=>480});
 w.HTMLVideoElement.prototype.play=async function(){};
 // The interval fallback consults the element's media state: a paused or
 // frozen element is not delivering frames however often the timer fires.
-let mediaTime=0,paused=false;
+// `paused` and `stalled` are the two different ways that happens, and they have
+// to be separable: a paused element SAYS it is paused, while a stalled one
+// still reports playing with data and only its clock has stopped - the case
+// review 15 names ("a previously playing element stalled on its last decoded
+// image"). Only `paused` reaches the element's own flags; `stalled` freezes
+// nothing but the media clock.
+let mediaTime=0,paused=false,stalled=false;
 Object.defineProperty(w.HTMLVideoElement.prototype,'currentTime',{get:()=>mediaTime,configurable:true});
 Object.defineProperty(w.HTMLVideoElement.prototype,'paused',{get:()=>paused,configurable:true});
 Object.defineProperty(w.HTMLVideoElement.prototype,'ended',{get:()=>false,configurable:true});
@@ -112,7 +118,7 @@ async function test(name:string,fn:()=>Promise<void>){
  *  At the default 0 every frame is stamped when it is presented and nothing
  *  above this line changes. */
 async function approachAndHold(rvfc=true,step=2,lag=0){
-  shift=0;hidden=false;blind=false;intervalFn=null;mediaTime=0;paused=false;
+  shift=0;hidden=false;blind=false;intervalFn=null;mediaTime=0;paused=false;stalled=false;
   const video=w.document.createElement('video');
   let frame:((now:number,metadata:unknown)=>void)|undefined;
   if(rvfc){
@@ -127,7 +133,7 @@ async function approachAndHold(rvfc=true,step=2,lag=0){
   const tick=rvfc
     ? (lagMs=lag)=>{clock+=100;mediaTime+=0.1;frame!(clock,{captureTime:clock-lagMs,mediaTime,presentationTime:clock,
         expectedDisplayTime:clock,width:640,height:480,presentedFrames:1});}
-    : (_lagMs=lag)=>{clock+=350;if(!paused)mediaTime+=0.35;intervalFn!();};
+    : (_lagMs=lag)=>{clock+=350;if(!paused&&!stalled)mediaTime+=0.35;intervalFn!();};
   const aim=(offset:number,advanceMs=100)=>{
     const ev=new w.Event('deviceorientationabsolute');
     clock+=advanceMs;Object.defineProperty(ev,'timeStamp',{value:clock});
@@ -308,6 +314,24 @@ await test('P1: the interval fallback learns nothing from a frozen frame',async(
   sweep.stop();
 });
 
+await test('P1: the interval fallback learns nothing from a stalled, still-playing element',async()=>{
+  // The other half of the case above, and the one the element's own flags cannot
+  // answer: nothing here is paused, ended or short of data - `paused` is false,
+  // `readyState` is 2, the track is live and unmuted - and the timer keeps
+  // firing. The ONLY thing that says the camera has stopped delivering is that
+  // the media clock has not moved, so this is the case that pins that test. A
+  // stall like this is what a real element does when the camera is preempted or
+  // the decoder wedges: it keeps its last decoded image, which reads as a
+  // perfectly steady view for as long as we keep re-reading it.
+  const {sweep,tick}=await approachAndHold(false);
+  stalled=true;
+  for(let i=0;i<10;i++)tick();                  // 3.5 s of timer ticks on one stale image
+  assert.equal(sweep.frameCount,0,'re-reading one stalled frame earned a hold');
+  assert.equal(sweep.compassReady,false,'a stalled video vouched for the compass');
+  stalled=false;
+  sweep.stop();
+});
+
 await test('P1: a frozen fallback video recovers once frames flow and a fresh reading arrives',async()=>{
   const {sweep,cell,tick,aim}=await approachAndHold(false);
   paused=true;
@@ -364,7 +388,9 @@ await test('P2: a magnetometer outlier as the last event is refuted by the still
   // off still covers this cell, because the image is wider than the cell. The
   // pose the frame was worn at is the only thing that separates a refuted
   // outlier from an accepted one, and the alignment report carries it.
-  const wornAz=skyAngles(JSON.parse(sweep.alignmentReport()).samples.at(-1).sensorBasis.forward).az;
+  const samples=JSON.parse(sweep.alignmentReport()).samples;
+  assert.ok(samples.length,'the capture recorded no diagnostic sample, so the pose it was worn at cannot be read');
+  const wornAz=skyAngles(samples.at(-1).sensorBasis.forward).az;
   const off=Math.abs(((wornAz-cell.az+540)%360)-180);   // wrap-safe, for a cell near due north
   assert.ok(off<1,
     `the photograph was worn at ${wornAz.toFixed(1)} degrees, ${off.toFixed(1)} off the pre-outlier ${cell.az}`);
