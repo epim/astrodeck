@@ -2,8 +2,18 @@ import pathlib, re, unittest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 class Independence(unittest.TestCase):
     def test_simulator_never_imports_production_code(self):
+        scanned = (list(ROOT.glob("sim/**/*.py")) + list(ROOT.glob("renderer/**/*.js"))
+                   + list(ROOT.glob("renderer/**/*.mjs")) + list(ROOT.glob("renderer/**/*.html")))
+        # The globs are a list of suffixes, so a new kind of renderer file
+        # silently escapes the scan. Check the scan covers every script under
+        # renderer/ before trusting what it did not find.
+        renderer_scripts = {p for p in (ROOT / "renderer").rglob("*")
+                            if p.suffix in {".js", ".mjs", ".html"}}
+        self.assertTrue(renderer_scripts, "no renderer scripts found at all")
+        self.assertEqual(renderer_scripts - set(scanned), set(),
+                         "a renderer script is not being scanned")
         bad = []
-        for p in list(ROOT.glob("sim/**/*.py")) + list(ROOT.glob("renderer/**/*.js")) + list(ROOT.glob("renderer/**/*.html")):
+        for p in scanned:
             text = p.read_text(encoding="utf-8")
             if re.search(r"ui[\\/]src|photosphereGeometry|photosphere\.ts|from ['\"]\.\./\.\./ui", text):
                 bad.append(str(p))

@@ -1,17 +1,19 @@
 /**
- * The half of render.js that has to agree with Python bit for bit, checked
- * against the integers tests/test_truth.py pins.
+ * The integers the JavaScript texture has to agree with Python on, checked
+ * against the ones tests/test_truth.py pins.
  *
  *     node renderer/hash.test.mjs      # from tools/photosphere_sim
  *
  * CONTRACT.md says a port must reproduce these integers rather than merely a
  * similar picture, because dropping the final shift of the hash changes the
  * background by less than one grey level. This file exists so a future port
- * of the renderer can rerun that comparison without a browser: it imports
- * render.js directly under Node, which is possible because render.js installs
- * window.simRender only when a window exists.
+ * of the renderer can rerun that comparison without a browser; it imports
+ * renderer/texture.js, which depends on nothing at all.
+ *
+ * tests/test_render_texture.py runs this script, so the Python suite fails
+ * when these integers drift even though no Python test imports JavaScript.
  */
-import { PALETTE, latticeHash, octaveLatticeShape } from './render.js';
+import { PALETTE, latticeHash, octaveLatticeShape } from './texture.js';
 
 let failures = 0;
 

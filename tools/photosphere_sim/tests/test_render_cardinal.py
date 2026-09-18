@@ -34,9 +34,11 @@ from __future__ import annotations
 
 import pathlib
 import unittest
+from unittest import mock
 
 import numpy as np
 
+from sim import render as render_module
 from sim.geometry import Camera, look_basis, sky_vector, to_camera, wrap_deg
 from sim.palette import PALETTE
 from sim.render import ThreeRenderer
@@ -79,6 +81,15 @@ EDGE_MARGIN_PX = 12.0
 #: window cannot confuse one landmark with another or with the background.
 BLOB_TOLERANCE = 40
 
+#: Half-width of the box around a predicted position that a blob is measured
+#: in. The chart yard's 46 discs are drawn from 24 palette colours, so every
+#: colour appears twice, and a centroid taken over the whole frame would
+#: silently average two discs into a point between them wherever a view held
+#: both. The widest blob the six views produce reaches 11.1 pixels from its
+#: predicted centre, so this leaves better than a factor of two before the
+#: window could clip a correctly rendered disc.
+BLOB_WINDOW_PX = 24.0
+
 
 def colour_of(landmark: dict) -> tuple:
     """A landmark's colour, as ``landmarks.json`` carries it."""
@@ -87,19 +98,35 @@ def colour_of(landmark: dict) -> tuple:
     return colour
 
 
-def blob_centroid(img: np.ndarray, colour) -> np.ndarray | None:
-    """The centroid of the pixels within :data:`BLOB_TOLERANCE` of ``colour``.
+def blob_centroid(img: np.ndarray, colour, near) -> tuple:
+    """Where a landmark's colour actually is, near where it was predicted.
 
-    Returned in the contract's pixel coordinates, where pixel ``(i, j)`` has
-    its centre at ``(i + 0.5, j + 0.5)``, so that it is directly comparable
-    with :meth:`Camera.project`. ``None`` when no pixel matches.
+    Returns ``(centroid, strays)``: the centroid of the pixels within
+    :data:`BLOB_TOLERANCE` of ``colour`` and :data:`BLOB_WINDOW_PX` of
+    ``near``, or ``None`` if there are none, and the number of pixels of that
+    colour elsewhere in the frame.
+
+    The centroid is in the contract's pixel coordinates, where pixel
+    ``(i, j)`` has its centre at ``(i + 0.5, j + 0.5)``, so it is directly
+    comparable with :meth:`Camera.project`.
+
+    ``strays`` is one number that covers both ways the window could lie: a
+    second disc of the same colour somewhere else in the view, and this disc
+    spilling outside the window. Either shows up as a non-zero count, so the
+    callers assert it is zero rather than trusting the window.
     """
     diff = np.abs(img.astype(np.int16) - np.asarray(colour, dtype=np.int16))
     mask = diff.max(axis=2) <= BLOB_TOLERANCE
+    rows = np.arange(img.shape[0])[:, None] + 0.5
+    columns = np.arange(img.shape[1])[None, :] + 0.5
+    window = ((np.abs(columns - near[0]) <= BLOB_WINDOW_PX)
+              & (np.abs(rows - near[1]) <= BLOB_WINDOW_PX))
+    strays = int((mask & ~window).sum())
+    mask = mask & window
     if not mask.any():
-        return None
-    rows, columns = np.nonzero(mask)
-    return np.array([columns.mean() + 0.5, rows.mean() + 0.5])
+        return None, strays
+    y, x = np.nonzero(mask)
+    return np.array([x.mean() + 0.5, y.mean() + 0.5]), strays
 
 
 def predicted_pixel(basis, az: float, alt: float) -> np.ndarray:
@@ -148,8 +175,11 @@ class Cardinal(unittest.TestCase):
                 uv = predicted_pixel(basis, lm["az"], lm["alt"])
                 if not _inside(uv):
                     continue
-                centroid = blob_centroid(img, colour_of(lm))
+                centroid, strays = blob_centroid(img, colour_of(lm), uv)
                 self.assertIsNotNone(centroid, f"{lm['id']} missing at view {(az, alt)}")
+                self.assertEqual(strays, 0,
+                                 f"{lm['id']} at view {(az, alt)}: {strays} pixels of its "
+                                 f"colour more than {BLOB_WINDOW_PX} px from {uv}")
                 offset = float(np.hypot(*(centroid - uv)))
                 self.assertLess(offset, 1.5,
                                 f"{lm['id']} at view {(az, alt)}: {centroid} vs {uv}")
@@ -160,7 +190,8 @@ class Cardinal(unittest.TestCase):
                                 f"the six views checked only {total} landmark positions")
 
     def test_top_and_bottom_and_left_and_right_are_not_swapped(self):
-        img = self.renderer.render(C_REF, look_basis(0.0, 0.0))
+        basis = look_basis(0.0, 0.0)
+        img = self.renderer.render(C_REF, basis)
         # A level view has the ground plane's dark grey along the bottom and
         # the background's 70..170 grey along the top.
         self.assertLess(img[600:].mean(), img[:40].mean())
@@ -168,8 +199,11 @@ class Cardinal(unittest.TestCase):
         east_of_north = [lm for lm in self.background()
                          if lm["id"].startswith("R1") and 5.0 < wrap_deg(lm["az"]) < 25.0]
         self.assertTrue(east_of_north, "the chart yard has no ring-1 disc just east of north")
-        centroid = blob_centroid(img, colour_of(east_of_north[0]))
-        self.assertIsNotNone(centroid, east_of_north[0]["id"])
+        lm = east_of_north[0]
+        uv = predicted_pixel(basis, lm["az"], lm["alt"])
+        centroid, strays = blob_centroid(img, colour_of(lm), uv)
+        self.assertIsNotNone(centroid, lm["id"])
+        self.assertEqual(strays, 0, lm["id"])
         self.assertGreater(centroid[0], 240.0)
 
     def test_colours_are_exact(self):
@@ -183,7 +217,8 @@ class Cardinal(unittest.TestCase):
         self.assertTrue([lm for lm in inside if lm["id"].startswith("R0")],
                         "no ring-0 disc is inside the level southward view")
         for lm in inside:
-            centroid = blob_centroid(img, colour_of(lm))
+            uv = predicted_pixel(basis, lm["az"], lm["alt"])
+            centroid, _ = blob_centroid(img, colour_of(lm), uv)
             self.assertIsNotNone(centroid, lm["id"])
             pixel = img[int(centroid[1]), int(centroid[0])].astype(int)
             worst = int(np.abs(pixel - np.asarray(colour_of(lm), dtype=int)).max())
@@ -209,6 +244,86 @@ class Cardinal(unittest.TestCase):
         self.assertIn("chromium", version)
         self.assertTrue(str(version["three"]).startswith("0."), version)
         self.assertTrue(str(version["chromium"])[0].isdigit(), version)
+
+
+class _Frame:
+    """The two fields :class:`sim.render.CaseRenderer` reads off a frame."""
+
+    def __init__(self, frame_id: str):
+        self.frame_id = frame_id
+        self.position = C_REF
+        self.basis = look_basis(0.0, 0.0)
+
+
+class _FakeRenderer:
+    """A ThreeRenderer that hands back whatever the test wants it to."""
+
+    version = {"three": "0.0.0", "chromium": "0.0.0.0"}
+
+    def __init__(self, images, errors):
+        self._images = list(images)
+        self._errors = list(errors)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return None
+
+    def take_console_errors(self):
+        return self._errors.pop(0) if self._errors else []
+
+    def render(self, position, basis):
+        return self._images.pop(0)
+
+
+class Refusals(unittest.TestCase):
+    """What ``CaseRenderer`` refuses to write into a case directory.
+
+    A thousand frames go past unwatched, so the two ways WebGL fails quietly
+    -- a readback of zeros, and an error three logs and carries on from --
+    have to stop the build rather than be hashed into a manifest. These run
+    without a browser, on purpose: a guard that only fires when the graphics
+    stack is already broken is a guard nothing ever exercises.
+    """
+
+    def _build(self, images, errors=()):
+        frames = [_Frame(f"f{i:06d}") for i in range(len(images))]
+        fake = _FakeRenderer(images, errors)
+        with mock.patch.object(render_module, "ThreeRenderer", lambda *a, **k: fake):
+            return list(render_module.CaseRenderer()(None, CAM, frames))
+
+    def _picture(self, value=None):
+        if value is not None:
+            return np.full((CAM.height, CAM.width, 3), value, dtype=np.uint8)
+        rng = np.random.default_rng(1)
+        return rng.integers(0, 256, (CAM.height, CAM.width, 3), dtype=np.uint8)
+
+    def test_a_good_frame_passes_through_unchanged(self):
+        image = self._picture()
+        out = self._build([image])
+        self.assertEqual(len(out), 1)
+        self.assertTrue((out[0] == image).all())
+
+    def test_a_frame_of_one_value_is_refused_by_name(self):
+        for value in (0, 255, 128):
+            with self.subTest(value=value):
+                with self.assertRaises(RuntimeError) as caught:
+                    self._build([self._picture(), self._picture(value)])
+                self.assertIn("f000001", str(caught.exception))
+
+    def test_an_error_the_page_logged_is_refused_by_name(self):
+        with self.assertRaises(RuntimeError) as caught:
+            self._build([self._picture(), self._picture()],
+                        errors=[[], [], ["error: WebGL context lost"]])
+        self.assertIn("f000001", str(caught.exception))
+        self.assertIn("context lost", str(caught.exception))
+
+    def test_an_error_before_the_first_frame_is_not_blamed_on_it(self):
+        # The page logs while it is loading; those are drained, not charged to
+        # frame zero, or every case would refuse to build.
+        out = self._build([self._picture()], errors=[["error: from loading"]])
+        self.assertEqual(len(out), 1)
 
 
 if __name__ == "__main__":
