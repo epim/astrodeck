@@ -167,9 +167,11 @@ export class VisualStability {
   }
 
   /** Since when has THIS view been continuous? Null until the run has settled
-   *  (see stableAt), because an unsettled run vouches for nothing yet. */
+   *  (see stableAt), because an unsettled run vouches for nothing yet. The
+   *  break is copied: a caller holding the answer must not be able to edit the
+   *  witness's own record of it, nor see it change under them. */
   continuity(now:number):ViewContinuity|null {
     if(this.stableAt(now)!==true||this.stillSince===null)return null;
-    return {stillSince:this.stillSince,lastBreak:this.lastBreak};
+    return {stillSince:this.stillSince,lastBreak:this.lastBreak && {...this.lastBreak}};
   }
 }

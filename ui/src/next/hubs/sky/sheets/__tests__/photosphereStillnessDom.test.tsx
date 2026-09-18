@@ -82,15 +82,25 @@ async function test(name:string,fn:()=>Promise<void>){
   catch(e){failed++;console.log(`FAIL ${name}\n     ${(e as Error).message.split('\n')[0]}`);}
 }
 
-/** A recording sweep aimed at one dome cell by a 10 degree approach over
- *  0-600 ms, with the camera watching the whole time: one video frame after
- *  each orientation event, the scene shifting a pixel each time so the video
- *  sees the motion the sensor reports. Returns the moment the approach ended:
- *  silence starts here. With `rvfc:false` the element has no
- *  requestVideoFrameCallback at all - Firefox Android - and the returned tick
- *  drives the 350 ms setInterval fallback instead, with the media clock
- *  advancing unless a test freezes it. `step` is the size of the LAST
- *  orientation step in degrees (2 by default). */
+/** A recording sweep aimed at one dome cell by a 10 degree approach, with the
+ *  camera watching the whole time: one video frame after each orientation
+ *  event, the scene shifting a pixel each time so the video sees the motion
+ *  the sensor reports.
+ *  The schedule, because the assertions below depend on it: six readings, each
+ *  one `aim` advance (100 ms) plus one frame tick after the one before it - so
+ *  200 ms apart on the rVFC path and 450 ms apart on the interval fallback -
+ *  except the LAST, delivered with no advance of its own so that it lands on
+ *  the frame tick before it, `step` degrees in exactly one frame interval
+ *  (100 ms with rVFC, 350 ms on the fallback). The approach therefore spans
+ *  900 ms (rVFC) or 2150 ms (fallback) from the first reading to the last, and
+ *  that last reading is where silence begins: it is the returned `silentFrom`.
+ *  With `rvfc:false` the element has no requestVideoFrameCallback at all -
+ *  Firefox Android - and the returned tick drives the 350 ms setInterval
+ *  fallback instead, with the media clock advancing unless a test freezes it.
+ *  `step` is the size of the LAST orientation step in degrees (2 by default);
+ *  at 10 on the rVFC path that final pair is 100 ms and 10 degrees, inside
+ *  JITTER_GAP_MS and past JITTER_SEPARATION_DEG, which is the only way this
+ *  harness reaches the jitter branch at all. */
 async function approachAndHold(rvfc=true,step=2){
   shift=0;hidden=false;blind=false;intervalFn=null;mediaTime=0;paused=false;
   const video=w.document.createElement('video');
@@ -106,9 +116,9 @@ async function approachAndHold(rvfc=true,step=2){
     ? ()=>{clock+=100;mediaTime+=0.1;frame!(clock,{captureTime:clock,mediaTime,presentationTime:clock,
         expectedDisplayTime:clock,width:640,height:480,presentedFrames:1});}
     : ()=>{clock+=350;if(!paused)mediaTime+=0.35;intervalFn!();};
-  const aim=(offset:number)=>{
+  const aim=(offset:number,advanceMs=100)=>{
     const ev=new w.Event('deviceorientationabsolute');
-    clock+=100;Object.defineProperty(ev,'timeStamp',{value:clock});
+    clock+=advanceMs;Object.defineProperty(ev,'timeStamp',{value:clock});
     Object.assign(ev,{alpha:(360-(cell.az+offset))%360,beta:90+cell.alt,gamma:0,absolute:true});
     w.dispatchEvent(ev);
   };
@@ -120,7 +130,10 @@ async function approachAndHold(rvfc=true,step=2){
   // during the approach.
   aim(10);sweep.begin();shift++;tick();
   for(let i=8;i>=step;i-=2){aim(i);shift++;tick();}
-  aim(0);shift++;                      // the last step: `step` degrees in 100 ms
+  // No advance of its own, so the last step spans exactly the frame tick above:
+  // `step` degrees in one frame interval, which is the only pair this harness
+  // produces that is close enough together to reach the jitter branch.
+  aim(0,0);shift++;
   // From here the browser sends no orientation event ever again.
   return {sweep,cell,tick,aim,silentFrom:clock};
 }

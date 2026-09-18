@@ -54,7 +54,8 @@ export interface PoseEvidence { view?: ViewContinuity | null; sourceHealthy?: bo
  * What the evidence has to claim, stated as the module that produces it
  * implements it (`photosphereStability.ts`): the view has been unchanged since
  * BEFORE the reading being worn arrived - a still run whose last break began
- * no later than that reading - and not merely that the view is unchanged now.
+ * no later than that reading, give or take CONTINUITY_SLOP_MS of clock
+ * alignment - and not merely that the view is unchanged now.
  * Unchanged there is measured against the ANCHOR frame the run began on, not
  * only between consecutive frames, so an arbitrarily slow pan cannot creep
  * past it. A view the witness cannot judge - a stopped stream, a blank wall, a
@@ -93,8 +94,9 @@ export const CONTINUITY_SLOP_MS = 150;
  *  at `readingAt`? True only with a settled continuity whose last break began
  *  no later than the reading (plus the alignment margin). A break recorded at
  *  a single instant - an unobserved gap, an unjudgeable frame, a drift caught
- *  late - has `from === to` at its END, so a reading older than that instant
- *  is never vouched for: nothing watched the view between the two. */
+ *  late - has `from === to` at its END, so a reading more than the margin
+ *  older than that instant is never vouched for: nothing watched the view
+ *  between the two. */
 export function viewVouchesFor(readingAt:number,view:ViewContinuity|null|undefined):boolean {
   return !!view && (view.lastBreak===null || view.lastBreak.from<=readingAt+CONTINUITY_SLOP_MS);
 }
