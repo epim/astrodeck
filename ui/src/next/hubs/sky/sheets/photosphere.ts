@@ -346,8 +346,10 @@ export class PhotosphereSweep {
   get error(): string | null { return this.issue; }
   /** The newest 4096 grabFrame outcomes, oldest first. Survives `stop()` -
    *  a finished scan must still be diagnosable - and is cleared only by a
-   *  fresh `start()`. */
-  get captureLog(): readonly CaptureRecord[] { return this.captureRecords; }
+   *  fresh `start()`. A fresh array each read: `readonly` is erased at
+   *  runtime, and a consumer that memoises by reference would never see a
+   *  record arrive in an array mutated in place. */
+  get captureLog(): readonly CaptureRecord[] { return this.captureRecords.slice(); }
   /** A copy of the mosaic's own pixels, RGBA, or null before any frame has
    *  actually been written into it (an empty panorama from `begin()` alone
    *  does not count). Never the live buffer: the panorama keeps writing to
