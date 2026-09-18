@@ -173,3 +173,116 @@ dropping the final shift changes the picture by less than one grey level.
 SHA-256 of `input/observations.jsonl`'s bytes. `truth` is the SHA-256 of
 the concatenated per-file hex digests of every file under `truth/`, in
 filename order, the same construction as `frames`.
+
+## scores.json
+
+{"schema":1,"case_id","input_hash","app_commit","profile",
+ "landmarks":{"expected","found","omitted":[ids],"duplicated":[ids],"spurious","errors_deg":{"median","p95","p99","max"},
+              "per_landmark":[{"id","truth":{"az","alt"},"measured":{"az","alt"}|null,"error_deg"|null,"status":"found"|"omitted"|"duplicate"}]},
+ "horizon":{"truth_bins":3600,"measured_bins","measured_resolution_deg","signed_error_deg":{"median","p95","max"},
+            "false_open_sr","false_blocked_sr","unresolved_sr","missed_obstructions":[{"id","truth_alt","measured_alt"}],"north_offset_deg"},
+ "overlay":{"samples","missing_fraction","moving":{"median_deg","p95_deg"},"settled":{"median_deg","p95_deg"}},
+ "capture":{"holds","holds_with_capture","latency_ms":{"p95","max"},"accepted_frames"},
+ "coverage":{"panorama_alpha_fraction","observable_fraction_covered","cells_covered_fraction"},
+ "gates":{"landmarks_p95_lt_0_5","landmarks_p99_lt_1","no_omissions","no_duplicates","horizon_p95_lt_1","no_missed_obstructions","no_unresolved_boundary",
+          "overlay_settled_p95_lt_0_5","overlay_moving_p95_lt_1","capture_p95_le_1500","every_hold_captured","coverage_ge_0_95","pass"}}
+
+Angles are degrees, areas are steradians, times are milliseconds. Every
+percentile is `numpy`'s linear interpolation. A statistic with nothing to
+average over is `null`, never 0: an absent measurement and a measurement of
+zero are different claims.
+
+`input_hash` is the SHA-256 of the manifest's `frames` and `observations`
+hex digests concatenated, the same construction as those hashes themselves.
+`app_commit` comes from `result/summary.json`, falling back to the manifest's
+`versions.app_commit`. `profile` comes from the case definition.
+
+### Landmarks
+
+Blobs of each palette colour are decoded from `panorama.png` and turned into
+directions by the raster mapping above. A blob is a landmark's when it is the
+nearest landmark of that colour within 8 degrees; a landmark with one blob is
+`found`, with two or more `duplicate`, with none `omitted`, and a blob that
+is near no landmark of its colour is `spurious`.
+
+- One raster cell spans `cell_az = 0.3333 * cos(alt)` degrees of true angle in
+  azimuth and `cell_alt = 0.3344` in altitude, so a disc of angular radius `r`
+  should cover `pi r^2 / (cell_az * cell_alt)` cells. A blob below 40 per cent
+  of that is ignored as noise. The expected area is taken from the smallest
+  landmark sharing the blob's colour, because the filter runs before the
+  match: it must never be able to discard a landmark it has not identified. A
+  background landmark's area is `pi radius_deg^2`; a surface landmark's is the
+  flat disc's projected solid angle, `pi radius_m^2 |n . d| / D^2`, since
+  leaving the foreshortening out would claim a grazing disc must be several
+  times the size it can possibly be.
+- `per_landmark` carries all 52 landmarks in `landmarks.json` order.
+  `expected`, `found`, `omitted`, `duplicated` and `errors_deg` count only the
+  landmarks `landmarks.json` marks `observable`. A landmark whose centre is
+  occluded can still show a clipped sliver of its disc, whose centroid is not
+  its direction; that sliver is neither credited nor blamed, and it is not
+  `spurious`.
+- Omissions are reported as omissions and never dropped from `expected`.
+
+### Horizon
+
+The truth is `reference-horizon.json`'s `alt_max` clipped to `[0, 90]`, which
+`horizon.note` records: the scanner's floor is 0, and -10 in the truth means
+no ray hit anything. Measured bin `i` of `N` covers
+`[i * 360 / N, (i + 1) * 360 / N)`, addressed by index rather than by its
+`az`, and each truth bin takes the measured bin its centre falls in.
+
+- Bins in `uncertain_bins` are UNRESOLVED. They are excluded from
+  `signed_error_deg`, `false_open_sr` and `false_blocked_sr`; their area is
+  `unresolved_sr`, the cos-weighted solid angle of those azimuths over
+  altitudes 0 to 90; and `no_unresolved_boundary` fails on them. Unknown
+  counts separately and cannot satisfy coverage.
+- `signed_error_deg.median` is the median of the signed errors, so it shows
+  bias; `p95` and `max` are of the absolute error, because that is the
+  quantity the gate is stated in.
+- `false_open_sr` sums `cos(alt) * (0.1 deg)^2` over the 0.1 x 0.1 degree
+  cells that the truth blocks and the measured profile leaves open;
+  `false_blocked_sr` is the converse. Spherical area, not equirectangular
+  pixels.
+- `missed_obstructions` lists only the obstacles that were missed.
+  `measured_alt` is the lowest measured altitude over the obstacle's azimuth
+  span and `truth_alt` the lowest truth altitude over the same span, the
+  height the obstacle guarantees across its whole width; missed when
+  `measured_alt < truth_alt - 1.0` or when no bin in the span is resolved. The
+  obstacle's own `alt_max` is its peak at one azimuth, so comparing a per-span
+  minimum against it would call every obstacle that is not flat-topped missed.
+  An obstacle that is never the first thing hit from `c_ref` is skipped.
+- `north_offset_deg` is the shift in `[-10, 10]` degrees, in 0.1 steps,
+  minimising the mean absolute signed error, positive when the measured
+  profile is turned east. Ties go to the smaller shift.
+
+### Overlay, capture, coverage
+
+- Overlay error is the angle between an `events.jsonl` line's `basis.forward`
+  and that frame's truth `forward`. A frame is `moving` when its truth
+  `angular_rate_deg_s` exceeds 2, else `settled`. `missing_fraction` is the
+  lines with a null basis over all lines.
+- A hold is captured by the first `captures.jsonl` record with
+  `outcome == "accepted"` and `from_ms <= at <= to_ms + 1500`; the latency is
+  `at - from_ms`. `accepted_frames` is every accepted record.
+- `panorama_alpha_fraction` is the cos-weighted fraction of raster cells with
+  alpha 255. `observable_fraction_covered` is the same fraction over the
+  observable region: the cells whose direction from `c_ref` projects inside at
+  least one frame of `trajectory.jsonl` under `camera.json`, ignoring
+  parallax, and not below altitude -10. The observable region comes from the
+  scene and the delivered frames, never from the subset the scanner accepted.
+  `cells_covered_fraction` is `summary.json`'s `cells_covered / cells_total`.
+
+### Gates
+
+Thresholds are the provisional gates of
+`docs/ui-rebuild/16-photosphere-calibration-simulator.md` section 9 and are
+held fixed for comparability: landmarks p95 below 0.5 and p99 below 1.0
+degrees; horizon p95 below 1.0; overlay p95 below 0.5 settled and 1.0 moving;
+capture p95 at most 1500 ms with every hold captured; coverage at least 0.95
+of the observable region. `pass` is the AND of every other gate.
+
+A gate over no evidence fails where evidence was expected: a blank panorama
+fails the landmark gates, a wholly uncertain boundary fails the horizon gates,
+and no capture log fails `every_hold_captured`. A gate is vacuously true only
+where the route itself produced no such group, which `overlay.samples` and
+`capture.holds` distinguish.
