@@ -1,4 +1,5 @@
 import { dot, rotateBasis, type CameraBasis } from './photosphereGeometry';
+import type { ViewContinuity } from './photosphereStability';
 
 /** Anchor the gyro-relative stream to one simultaneous north reading. Do not
  * keep injecting magnetometer corrections into the camera's local sky map. */
@@ -33,34 +34,70 @@ export function poseSeparation(a:CameraBasis,b:CameraBasis):number {
  * Orientation events are change-driven: Chromium emits nothing below 0.1
  * degree, so a still phone goes silent and the samples alone cannot tell a
  * steady view from a lost sensor. These are the two independent answers -
- * `visuallyStable` from the video, `sourceHealthy` from the page lifecycle.
- * `visuallyStable` is a TRI-STATE and `null` is not `false`: the video may
- * have stopped, or the frame may hold nothing this method can judge motion by.
- * Anything short of `true` on both leaves the strict rule in force. */
-export interface PoseEvidence { visuallyStable?: boolean | null; sourceHealthy?: boolean }
+ * `view` from the video, `sourceHealthy` from the page lifecycle.
+ * `view` is the video's CONTINUITY, not a verdict on the present moment:
+ * since when the view has been unchanged, and the last interval in which it
+ * moved, could not be judged, or was not observed. That is what lets a single
+ * READING be vouched for, rather than the view being called still now - a
+ * steady view that began after a movement describes a direction the phone has
+ * left. `null` is the video's "cannot say" - a stopped stream, an unsettled
+ * run, a frame with nothing in it to judge motion by - and it is not `false`.
+ * Without a healthy source and a continuity reaching back to the reading, the
+ * strict rule below stays in force. */
+export interface PoseEvidence { view?: ViewContinuity | null; sourceHealthy?: boolean }
 
 /** How long the stream must be silent before silence counts as a settle
  * rather than a lull between two orientation events. There is deliberately no
  * upper bound on that silence: under evidence the VIDEO is the freshness
  * guard, and it re-earns that verdict every frame.
  *
- * What that verdict actually claims, stated as the module that produces it
- * implements it (`photosphereStability.ts`): the view has not drifted from the
- * ANCHOR frame - the frame this settle began on - by more than a fixed
- * fraction of its own luminance, and has not jumped between any two
- * consecutive frames either. It is a bound on TOTAL drift since the settle, not
- * a speed limit, which is why an arbitrarily slow pan cannot creep past it.
- * And it reports `null`, not `true`, for a view it cannot judge - a stopped
- * stream, a blank wall, a frame of smooth sky - so silence over an
+ * What the evidence has to claim, stated as the module that produces it
+ * implements it (`photosphereStability.ts`): the view has been unchanged since
+ * BEFORE the reading being worn arrived - a still run whose last break began
+ * no later than that reading - and not merely that the view is unchanged now.
+ * Unchanged there is measured against the ANCHOR frame the run began on, not
+ * only between consecutive frames, so an arbitrarily slow pan cannot creep
+ * past it. A view the witness cannot judge - a stopped stream, a blank wall, a
+ * frame of smooth sky - yields no continuity at all, so silence over an
  * unjudgeable view falls back to the strict rule below. */
 const SILENT_SETTLE_MS = 500;
 
 /** A single magnetometer outlier delivered as the LAST event before the phone
  * goes quiet would otherwise become the settled pose and be worn by every
  * frame of the hold. Two samples this close together cannot be a real slew, so
- * disagreeing by this much is a bad reading, not a movement. Wide enough that
- * a normal decelerating approach (degrees per 100 ms, not per 50) is untouched. */
+ * disagreeing by this much is either a bad reading or a real quick movement -
+ * and the video says which. A still run that already covered the pair refutes
+ * the newer reading, and the one before it is worn instead; a run that does
+ * not cover the pair cannot say the phone held still across it, so the jump
+ * is taken as the movement it looks like and kept. Never a flat rejection:
+ * that disqualified the final pair for the whole hold and blocked a genuine
+ * 100 deg/s approach forever (review 15, P2).
+ * The limit of the refutation: the video resolves motion no finer than its own
+ * frame interval, so a bad reading arriving inside the last MOVING pair of an
+ * approach is accepted as a movement. Registration's overlap check and the
+ * next reading are the guards there. The gap is wide enough that a normal
+ * decelerating approach (degrees per 100 ms, not per 50) never reaches this
+ * rule at all. */
 const JITTER_GAP_MS = 150, JITTER_SEPARATION_DEG = 8;
+
+/** Frame times and sensor times are on the same clock but not aligned to the
+ *  millisecond: a frame without a capture time is stamped when the callback
+ *  ran, some tens of ms after the camera saw the scene, and an orientation
+ *  event carries its own latency. A break that BEGAN within this margin after
+ *  a reading is the tail of the approach that produced the reading, not a
+ *  movement after it. The cost: a movement starting inside this margin, after
+ *  the last reading, with a sensor that has already died, is not caught. */
+export const CONTINUITY_SLOP_MS = 150;
+
+/** Does the video vouch that the view has not changed since a reading taken
+ *  at `readingAt`? True only with a settled continuity whose last break began
+ *  no later than the reading (plus the alignment margin). A break recorded at
+ *  a single instant - an unobserved gap, an unjudgeable frame, a drift caught
+ *  late - has `from === to` at its END, so a reading older than that instant
+ *  is never vouched for: nothing watched the view between the two. */
+export function viewVouchesFor(readingAt:number,view:ViewContinuity|null|undefined):boolean {
+  return !!view && (view.lastBreak===null || view.lastBreak.from<=readingAt+CONTINUITY_SLOP_MS);
+}
 
 /** Match camera capture times to sensor times, never to a newer phone pose.
  * When the browser omits captureTime, require a settled orientation covering
@@ -81,17 +118,28 @@ export class CameraPoseHistory {
     // Declared loss - listener gone, page hidden, camera track ended - is not
     // stillness, and the correction for stillness must not make it look valid.
     if(evidence?.sourceHealthy===false)return null;
-    // Silence is trusted only when the video says the view is steady AND the
-    // page says the stream is alive. Neither is a timeout: without both, the
-    // strict freshness and gap rules below still decide.
-    if(latest && evidence?.visuallyStable===true && evidence.sourceHealthy===true){
+    // Silence is trusted only when the video vouches for the READING being
+    // worn - its still run reaching back to that reading - AND the page says
+    // the stream is alive. Neither is a timeout: without both, the strict
+    // freshness and gap rules below still decide.
+    if(latest && evidence?.sourceHealthy===true && evidence.view){
+      const view=evidence.view;
+      let pose=latest;
       const previous=this.samples.at(-2);
+      // A jump between the last two readings, closer together than any real slew:
+      // if the video's still run already covered that window, the phone did not
+      // move and the newer reading is a bad one - recover with the reading before
+      // it. If the run does not cover the window, the video cannot say the phone
+      // held still across it, so the jump is treated as a movement.
       if(previous && latest.at-previous.at<JITTER_GAP_MS
-        && poseSeparation(latest.basis,previous.basis)>JITTER_SEPARATION_DEG)return null;
-      const reference=captureTime===undefined?now:captureTime;
-      const silence=reference-latest.at;
-      if((captureTime===undefined||Number.isFinite(captureTime)) && reference<=now
-        && silence>=SILENT_SETTLE_MS)return latest.basis;
+        && poseSeparation(latest.basis,previous.basis)>JITTER_SEPARATION_DEG
+        && view.stillSince<=previous.at)pose=previous;
+      if(viewVouchesFor(pose.at,view)){
+        const reference=captureTime===undefined?now:captureTime;
+        const silence=reference-pose.at;
+        if((captureTime===undefined||Number.isFinite(captureTime)) && reference<=now
+          && silence>=SILENT_SETTLE_MS)return pose.basis;
+      }
     }
     if(!latest || now-latest.at>250 || now<latest.at || now-this.orientationSince<500)return null;
     if(captureTime!==undefined){

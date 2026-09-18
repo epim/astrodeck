@@ -170,6 +170,66 @@ test('A view with no texture to judge by is unknown, never still',()=>{
   }
 });
 
+test('Continuity names the start of the still run and the last break the video saw',()=>{
+  const s=new VisualStability();
+  // Moving through 300 ms, then the same view held.
+  for(let i=0;i<=3;i++)s.observe(i*100,scene(i),W,H);
+  for(let t=400;t<=1200;t+=100)s.observe(t,scene(3),W,H);
+  const c=s.continuity(1200);
+  assert.ok(c,'a settled view has continuity');
+  assert.equal(c!.stillSince,300,'the still run begins on the first frame of the first still pair');
+  assert.deepEqual(c!.lastBreak,{from:200,to:300},'the last break is the last moving pair');
+});
+
+test('Continuity is null before the settle and null again the moment the view moves',()=>{
+  const s=new VisualStability();
+  for(let t=0;t<=300;t+=100)s.observe(t,scene(0),W,H);
+  assert.equal(s.continuity(300),null,'not settled yet');
+  for(let t=400;t<=600;t+=100)s.observe(t,scene(0),W,H);
+  assert.ok(s.continuity(600),'settled');
+  s.observe(700,scene(5),W,H);
+  assert.equal(s.continuity(700),null,'a moved view has no continuity');
+  for(let t=800;t<=1400;t+=100)s.observe(t,scene(5),W,H);
+  assert.deepEqual(s.continuity(1400)!.lastBreak,{from:600,to:700});
+});
+
+test('An unobserved gap is a break at its end: nothing before the gap can be vouched for',()=>{
+  const s=new VisualStability();
+  for(let t=0;t<=500;t+=100)s.observe(t,scene(0),W,H);
+  // Nothing for 1.5 s (over STALE_FRAME_MS), then the same view again.
+  for(let t=2000;t<=2600;t+=100)s.observe(t,scene(0),W,H);
+  const c=s.continuity(2600);
+  assert.ok(c);
+  assert.equal(c!.stillSince,2000);
+  assert.deepEqual(c!.lastBreak,{from:2000,to:2000});
+});
+
+test('The first frame ever seen is a break at its own time',()=>{
+  const s=new VisualStability();
+  for(let t=1000;t<=1600;t+=100)s.observe(t,scene(0),W,H);
+  assert.deepEqual(s.continuity(1600)!.lastBreak,{from:1000,to:1000});
+});
+
+test('A frame with no texture is a break, even between two identical textured frames',()=>{
+  const s=new VisualStability();
+  for(let t=0;t<=500;t+=100)s.observe(t,scene(0),W,H);
+  s.observe(600,new Uint8Array(W*H).fill(120),W,H);
+  for(let t=700;t<=1300;t+=100)s.observe(t,scene(0),W,H);
+  const c=s.continuity(1300);
+  assert.ok(c);
+  assert.equal(c!.stillSince,700);
+  assert.equal(c!.lastBreak!.to,700);
+  assert.ok(c!.lastBreak!.from>=600,`the break began at ${c!.lastBreak!.from}, before the blank frame`);
+});
+
+test('clear() forgets the last break',()=>{
+  const s=new VisualStability();
+  for(let t=0;t<=300;t+=100)s.observe(t,scene(t/100),W,H);
+  s.clear();
+  for(let t=1000;t<=1600;t+=100)s.observe(t,scene(0),W,H);
+  assert.deepEqual(s.continuity(1600)!.lastBreak,{from:1000,to:1000});
+});
+
 console.log(`photosphereStability.test: ${passed}/${passed+failed} passed`);
 export const result={passed,failed,total:passed+failed};
 if(failed)process.exitCode=1;

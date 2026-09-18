@@ -472,8 +472,9 @@ async function approachAndHold(rvfc=true,step=2){
     Object.assign(ev,{alpha:(360-(cell.az+offset))%360,beta:90+cell.alt,gamma:0,absolute:true});
     w.dispatchEvent(ev);
   };
-  sweep.begin();
-  for(let i=10;i>=step;i-=2){aim(i);shift++;tick();}
+  // begin() is gated on compassReady, so the first reading precedes it.
+  aim(10);sweep.begin();shift++;tick();
+  for(let i=8;i>=step;i-=2){aim(i);shift++;tick();}
   aim(0);shift++;                      // the last step: `step` degrees in 100 ms
   // From here the browser sends no orientation event ever again.
   return {sweep,cell,tick,aim,silentFrom:clock};

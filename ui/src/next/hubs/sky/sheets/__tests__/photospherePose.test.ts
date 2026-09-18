@@ -48,8 +48,8 @@ test('The browser sends nothing while still: with evidence the settled pose is r
   const poses=Array.from({length:6},(_,i)=>lookBasis(10-i*2,20));
   poses.forEach((basis,i)=>h.add({at:i*100,basis,screenAngle:0}));
   const finalBasis=poses[5];
-  assert.equal(h.forFrame(1000,undefined,{visuallyStable:true,sourceHealthy:true}),finalBasis);
-  assert.equal(h.forFrame(2000,undefined,{visuallyStable:true,sourceHealthy:true}),finalBasis);
+  assert.equal(h.forFrame(1000,undefined,{view:{stillSince:550,lastBreak:{from:450,to:550}},sourceHealthy:true}),finalBasis);
+  assert.equal(h.forFrame(2000,undefined,{view:{stillSince:550,lastBreak:{from:450,to:550}},sourceHealthy:true}),finalBasis);
   // Smoke test of the fixture's own dispatch predicate: this is the change
   // threshold that makes the fixture stop sending once the pose above
   // settles, exactly like Chromium's real 0.1 degree deviceorientation gate.
@@ -71,7 +71,7 @@ test('A delivered-late event does not move a frame captured before it',()=>{
   // that cannot be newer than the frame. The newest sample - yaw 6 at 200 ms,
   // after the shutter - is never one of them, and "not the newest" alone is a
   // near-vacuous assertion that any refactor returning some third thing passes.
-  const result=h.forFrame(200,150,{visuallyStable:true,sourceHealthy:true});
+  const result=h.forFrame(200,150,{view:{stillSince:550,lastBreak:{from:450,to:550}},sourceHealthy:true});
   assert.ok(result===null||result===poses[1],
     'a late callback must resolve to the older neighbour or refuse, never to the newest phone direction');
 });
