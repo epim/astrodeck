@@ -75,6 +75,9 @@ Object.defineProperty(performance,'now',{value:()=>clock,configurable:true});
 Object.defineProperty(Date,'now',{value:()=>clock,configurable:true});
 
 const { PhotosphereSweep } = await import('../photosphere');
+// The capture's own azimuth convention, so the pose an outlier case reads back
+// out of the alignment report is measured the way the driver measured it.
+const { skyAngles } = await import('../photosphereGeometry');
 
 let passed=0,failed=0;
 async function test(name:string,fn:()=>Promise<void>){
@@ -100,8 +103,15 @@ async function test(name:string,fn:()=>Promise<void>){
  *  `step` is the size of the LAST orientation step in degrees (2 by default);
  *  at 10 on the rVFC path that final pair is 100 ms and 10 degrees, inside
  *  JITTER_GAP_MS and past JITTER_SEPARATION_DEG, which is the only way this
- *  harness reaches the jitter branch at all. */
-async function approachAndHold(rvfc=true,step=2){
+ *  harness reaches the jitter branch at all.
+ *  `lag` models a camera PIPELINE DELAY, and it is the default for the returned
+ *  tick's own optional argument: the frame is presented at `clock`, as before,
+ *  but carries `captureTime = clock - lag` - the instant the camera saw the
+ *  scene in it. The scene content stays tied to the tick, as it was, so `shift`
+ *  still describes what the camera saw at the moment the frame was captured.
+ *  At the default 0 every frame is stamped when it is presented and nothing
+ *  above this line changes. */
+async function approachAndHold(rvfc=true,step=2,lag=0){
   shift=0;hidden=false;blind=false;intervalFn=null;mediaTime=0;paused=false;
   const video=w.document.createElement('video');
   let frame:((now:number,metadata:unknown)=>void)|undefined;
@@ -112,10 +122,12 @@ async function approachAndHold(rvfc=true,step=2){
   const sweep=new PhotosphereSweep();
   await sweep.start(video,w.document.createElement('canvas'));
   const cell=sweep.cells.find((c)=>c.alt>20&&c.alt<60)!;
+  // The interval fallback is handed no frame metadata at all, so a pipeline
+  // delay is not observable there and its tick ignores the argument.
   const tick=rvfc
-    ? ()=>{clock+=100;mediaTime+=0.1;frame!(clock,{captureTime:clock,mediaTime,presentationTime:clock,
+    ? (lagMs=lag)=>{clock+=100;mediaTime+=0.1;frame!(clock,{captureTime:clock-lagMs,mediaTime,presentationTime:clock,
         expectedDisplayTime:clock,width:640,height:480,presentedFrames:1});}
-    : ()=>{clock+=350;if(!paused)mediaTime+=0.35;intervalFn!();};
+    : (_lagMs=lag)=>{clock+=350;if(!paused)mediaTime+=0.35;intervalFn!();};
   const aim=(offset:number,advanceMs=100)=>{
     const ev=new w.Event('deviceorientationabsolute');
     clock+=advanceMs;Object.defineProperty(ev,'timeStamp',{value:clock});
@@ -268,6 +280,122 @@ await test('A still phone captures on the interval fallback, with no requestVide
     if(sweep.cells.find((c)=>c.id===cell.id)?.captured)capturedAfter=clock-silentFrom;
   }
   assert.notEqual(capturedAfter,null,'DEADLOCK: a still phone never captured on the fallback path');
+  assert.ok(capturedAfter!<=1500,`took ${capturedAfter} ms of stillness, the acceptance row is 1500`);
+  assert.ok(capturedAfter!>=500,`captured after only ${capturedAfter} ms, before the view could settle`);
+  sweep.stop();
+});
+
+await test('P1: a phone that moves after the sensor goes silent is not certified by the stillness that follows',async()=>{
+  const {sweep,tick}=await approachAndHold();
+  for(let i=0;i<30;i++){shift++;tick();}      // 3 s of movement, no orientation event
+  assert.equal(sweep.frameCount,0);
+  for(let i=0;i<12;i++)tick();                 // then a new steady view for 1.2 s
+  assert.equal(sweep.frameCount,0,'a new steady view certified the direction from before the movement');
+  assert.equal(sweep.compassReady,false,'the compass read as ready for a direction the phone has left');
+  assert.equal(sweep.aimTarget,null);
+  assert.match(sweep.captureCue,/Waiting for the compass/,`cue was: "${sweep.captureCue}"`);
+  for(let i=0;i<300;i++)tick();                // and it never expires into acceptance
+  assert.equal(sweep.frameCount,0);
+  sweep.stop();
+});
+
+await test('P1: the interval fallback learns nothing from a frozen frame',async()=>{
+  const {sweep,tick}=await approachAndHold(false);
+  paused=true;                                  // the element keeps its last image; the media clock stops
+  for(let i=0;i<10;i++)tick();                  // 3.5 s of timer ticks
+  assert.equal(sweep.frameCount,0,'repeated reads of one frozen frame earned a hold');
+  assert.equal(sweep.compassReady,false,'a frozen video vouched for the compass');
+  sweep.stop();
+});
+
+await test('P1: a frozen fallback video recovers once frames flow and a fresh reading arrives',async()=>{
+  const {sweep,cell,tick,aim}=await approachAndHold(false);
+  paused=true;
+  for(let i=0;i<10;i++)tick();
+  paused=false;
+  for(let i=0;i<6;i++)tick();                   // frames flow again, 2.1 s, but nothing watched the freeze
+  assert.equal(sweep.frameCount,0,'the old reading was certified across an interval nothing watched');
+  aim(0);                                       // the sensor speaks once more
+  const from=clock;
+  let capturedAfter:number|null=null;
+  for(let i=0;i<6&&capturedAfter===null;i++){
+    tick();
+    if(sweep.cells.find((c)=>c.id===cell.id)?.captured)capturedAfter=clock-from;
+  }
+  assert.notEqual(capturedAfter,null,'no capture after the video recovered and the sensor spoke');
+  assert.ok(capturedAfter!<=1500,`took ${capturedAfter} ms after the fresh reading`);
+  sweep.stop();
+});
+
+await test('P2: a valid 10 degree final step in 100 ms captures like any other approach',async()=>{
+  const {sweep,cell,tick,silentFrom}=await approachAndHold(true,10);
+  let capturedAfter:number|null=null;
+  for(let i=0;i<20&&capturedAfter===null;i++){
+    tick();
+    if(sweep.cells.find((c)=>c.id===cell.id)?.captured)capturedAfter=clock-silentFrom;
+  }
+  assert.notEqual(capturedAfter,null,'a quick final movement was rejected for the whole hold');
+  assert.ok(capturedAfter!<=1500,`took ${capturedAfter} ms of stillness`);
+  sweep.stop();
+});
+
+await test('P2: a magnetometer outlier as the last event is refuted by the still video, and the cell is captured at the reading before it',async()=>{
+  // The refutation is only available where the video can speak for the pair of
+  // readings it judges: `view.stillSince <= previous.at`. The approach above is
+  // still moving right up to its last reading, so a jump there is taken as the
+  // movement it looks like (the documented limit in photospherePose) - the
+  // outlier this case is about is the one that arrives after the phone has come
+  // to rest. So: hold still until the view has settled, let the sensor confirm
+  // the direction once, and only then deliver the bad reading.
+  const {sweep,cell,tick,aim}=await approachAndHold();
+  for(let i=0;i<6;i++)tick();                   // 600 ms: the view has settled, and it settled BEFORE the reading below
+  assert.equal(sweep.frameCount,0,'the cell was captured before the outlier arrived, so nothing here is about the outlier');
+  aim(0);                                       // the phone confirms the direction it is already holding
+  const good=clock;
+  clock+=40;aim(20);                            // one reading 20 degrees off, 140 ms after it, phone unmoved
+  let capturedAfter:number|null=null;
+  for(let i=0;i<20&&capturedAfter===null;i++){
+    tick();
+    if(sweep.cells.find((c)=>c.id===cell.id)?.captured)capturedAfter=clock-good;
+  }
+  assert.notEqual(capturedAfter,null,'the outlier blocked the hold');
+  assert.ok(capturedAfter!<=1500,`took ${capturedAfter} ms after the good reading`);
+  // "Captured" alone cannot tell the two outcomes apart: a frame worn 20 degrees
+  // off still covers this cell, because the image is wider than the cell. The
+  // pose the frame was worn at is the only thing that separates a refuted
+  // outlier from an accepted one, and the alignment report carries it.
+  const wornAz=skyAngles(JSON.parse(sweep.alignmentReport()).samples.at(-1).sensorBasis.forward).az;
+  const off=Math.abs(((wornAz-cell.az+540)%360)-180);   // wrap-safe, for a cell near due north
+  assert.ok(off<1,
+    `the photograph was worn at ${wornAz.toFixed(1)} degrees, ${off.toFixed(1)} off the pre-outlier ${cell.az}`);
+  sweep.stop();
+});
+
+await test('A camera that reports its frames 250 ms late still captures a still phone, because the witness is timed by capture, not by callback',async()=>{
+  // A 250 ms pipeline delay: every frame is PRESENTED a quarter of a second
+  // after the camera saw the scene in it. The phone comes to rest as its last
+  // reading arrives, so the frames that watched it stop are presented 200 and
+  // 300 ms AFTER that reading. Timed by the callback, the break straddling the
+  // reading is stamped 200 ms after it - past CONTINUITY_SLOP_MS, so it reads
+  // as a movement the phone made after the last thing the sensor said, and
+  // nothing can ever vouch for that reading again: the sensor is silent and no
+  // later stillness may reach back across a movement (the P1 case above). The
+  // phone deadlocks with the same symptom as issue #37 - a still phone that can
+  // never capture - from a different cause, and one it has no control over:
+  // how long its own camera takes to hand a frame over. Timed by capture, and
+  // this is the whole of change 1, the same break lands 50 ms BEFORE the
+  // reading, which is where it happened - it is the tail of the approach.
+  const {sweep,cell,tick,silentFrom}=await approachAndHold(true,2,250);
+  // The turn ends with the reading; three of its frames are still in flight,
+  // and the last pair of them straddles the reading in capture time (-50 ms,
+  // +50 ms) while trailing it by 200 ms in callback time.
+  for(let i=0;i<3;i++){shift++;tick();}
+  let capturedAfter:number|null=null;
+  for(let i=0;i<20&&capturedAfter===null;i++){
+    tick();
+    if(sweep.cells.find((c)=>c.id===cell.id)?.captured)capturedAfter=clock-silentFrom;
+  }
+  assert.notEqual(capturedAfter,null,'DEADLOCK: a still phone never captured behind a 250 ms camera pipeline');
   assert.ok(capturedAfter!<=1500,`took ${capturedAfter} ms of stillness, the acceptance row is 1500`);
   assert.ok(capturedAfter!>=500,`captured after only ${capturedAfter} ms, before the view could settle`);
   sweep.stop();
