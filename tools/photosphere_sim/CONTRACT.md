@@ -63,7 +63,15 @@ panorama describes: the camera centre at the first frame.
 with `az`,`alt` the direction from `c_ref`.
 `truth/reference-horizon.json`: `{"bins":3600,"alt_max":[3600 floats]}` (the highest
 altitude at which a ray from `c_ref` hits any object, sampled every 0.05 deg
-from -10 to 90; `-10` means nothing was hit) and `"obstacles":[{"id","az_from","az_to","alt_max","min_width_deg"}]`.
+from -10 to 90; `-10` means nothing was hit) and
+`"obstacles":[{"id","az_from","az_to","alt_max","min_width_deg","profile":[3600 floats]}]`.
+`profile[b]` is the highest altitude at which THAT object is the FIRST thing
+hit in bin `b`, and `-10` where it never is; `alt_max` is its maximum and
+`az_from`/`az_to` the arc it is non-empty over. The per-object profile is what
+makes an obstacle scoreable on its own: the envelope `alt_max` is the highest
+of everything, so an obstacle standing under a taller one (the chart yard's
+trunk under its canopy) never appears in it, and a boundary describing only
+the canopy is indistinguishable from one that also found the trunk.
 `truth/holds.json`: `[{"index","az","alt","from_ms","to_ms"}]`.
 
 ## Result directory (written by the replay, read by the scorer)
@@ -177,11 +185,16 @@ filename order, the same construction as `frames`.
 ## scores.json
 
 {"schema":1,"case_id","input_hash","app_commit","profile",
- "landmarks":{"expected","found","omitted":[ids],"duplicated":[ids],"spurious","errors_deg":{"median","p95","p99","max"},
-              "per_landmark":[{"id","truth":{"az","alt"},"measured":{"az","alt"}|null,"error_deg"|null,"status":"found"|"omitted"|"duplicate"}]},
+ "panorama":{"width","height","mode","note"|null},
+ "landmarks":{"expected","found","omitted":[ids],"duplicated":[ids],"slivers","spurious","errors_deg":{"median","p95","p99","max"},
+              "per_landmark":[{"id","observable","truth":{"az","alt"},"measured":{"az","alt"}|null,"error_deg"|null,"expected_px",
+                               "status":"found"|"omitted"|"duplicate"|"sliver"|"not_observable"}]},
  "horizon":{"truth_bins":3600,"measured_bins","measured_resolution_deg","signed_error_deg":{"median","p95","max"},
-            "false_open_sr","false_blocked_sr","unresolved_sr","missed_obstructions":[{"id","truth_alt","measured_alt"}],"north_offset_deg"},
- "overlay":{"samples","missing_fraction","moving":{"median_deg","p95_deg"},"settled":{"median_deg","p95_deg"}},
+            "false_open_sr","false_blocked_sr","unresolved_sr","note",
+            "obstacles":[{"id","truth_alt_peak","deficit_median","deficit_p95","width_missed_deg","min_width_deg","missed"}],
+            "missed_obstructions":[ids],"north_offset_deg"},
+ "overlay":{"samples","missing_fraction","frames_over_gate",
+            "moving":{"median_deg","p95_deg","max_deg"},"settled":{"median_deg","p95_deg","max_deg"}},
  "capture":{"holds","holds_with_capture","latency_ms":{"p95","max"},"accepted_frames"},
  "coverage":{"panorama_alpha_fraction","observable_fraction_covered","cells_covered_fraction"},
  "gates":{"landmarks_p95_lt_0_5","landmarks_p99_lt_1","no_omissions","no_duplicates","horizon_p95_lt_1","no_missed_obstructions","no_unresolved_boundary",
@@ -215,13 +228,29 @@ is near no landmark of its colour is `spurious`.
   flat disc's projected solid angle, `pi radius_m^2 |n . d| / D^2`, since
   leaving the foreshortening out would claim a grazing disc must be several
   times the size it can possibly be.
-- `per_landmark` carries all 52 landmarks in `landmarks.json` order.
-  `expected`, `found`, `omitted`, `duplicated` and `errors_deg` count only the
-  landmarks `landmarks.json` marks `observable`. A landmark whose centre is
-  occluded can still show a clipped sliver of its disc, whose centroid is not
-  its direction; that sliver is neither credited nor blamed, and it is not
-  `spurious`.
+- A disc on a cylinder or a sphere is clipped again, because the truth paints
+  a surface landmark only where the hit face's normal is within
+  `acos(0.99)` of the declared one: on a host of radius `R` only a band
+  `R sin(acos(0.99))` wide survives, and the expected area is scaled by
+  `min(1, R sin(acos(0.99)) / radius_m)`. Without it the chart yard's `T1`,
+  a 0.08 m disc on a 0.25 m trunk, is measured against a model it can fill
+  only 44 per cent of and clears the filter by seven per cent.
+- `per_landmark` carries all 52 landmarks in `landmarks.json` order, each with
+  its `observable` flag and `expected_px`, the raster cells its disc should
+  cover at its own altitude. Its `status` reconciles with the aggregates
+  exactly: `found`, `omitted` and `duplicate` are the observable landmarks and
+  are counted by `found`, `omitted` and `duplicated`; `sliver` is a
+  non-observable landmark a blob was matched to and is counted by `slivers`;
+  `not_observable` is the rest. `expected`, `found`, `omitted`, `duplicated`
+  and `errors_deg` cover only the observable landmarks.
+- A landmark whose centre is occluded can still show a clipped sliver of its
+  disc, whose centroid is not its direction. That sliver is neither credited
+  nor blamed and it is not `spurious`; `slivers` is how many there were.
 - Omissions are reported as omissions and never dropped from `expected`.
+- `panorama` records what was read. A file that is not a 1080 x 300 raster
+  with an alpha channel is scored as EMPTY and `panorama.note` says which:
+  converting an alpha-less image to RGBA would invent alpha 255 everywhere and
+  hand a scanner that wrote the wrong format a perfect coverage score.
 
 ### Horizon
 
@@ -243,14 +272,23 @@ no ray hit anything. Measured bin `i` of `N` covers
   cells that the truth blocks and the measured profile leaves open;
   `false_blocked_sr` is the converse. Spherical area, not equirectangular
   pixels.
-- `missed_obstructions` lists only the obstacles that were missed.
-  `measured_alt` is the lowest measured altitude over the obstacle's azimuth
-  span and `truth_alt` the lowest truth altitude over the same span, the
-  height the obstacle guarantees across its whole width; missed when
-  `measured_alt < truth_alt - 1.0` or when no bin in the span is resolved. The
-  obstacle's own `alt_max` is its peak at one azimuth, so comparing a per-span
-  minimum against it would call every obstacle that is not flat-topped missed.
-  An obstacle that is never the first thing hit from `c_ref` is skipped.
+- `obstacles` carries every declared test obstacle, scored against its own
+  `profile` and never against the envelope. Over the bins where the object is
+  the first thing hit and the measurement is resolved,
+  `deficit = clip(profile, 0, 90) - measured`; `deficit_median` and
+  `deficit_p95` summarise it, `width_missed_deg` is 0.1 degrees times the
+  number of those bins whose deficit exceeds 1.0, and `min_width_deg` is the
+  width the scene declares the obstacle must be found at. `missed` is
+  `deficit_median > 1.0`, or true for an obstacle that is visible but has no
+  resolved bin at all. The median, not the minimum: a bin at the edge of an
+  obstacle straddles a coarse measured bin and swings either way without the
+  obstacle being lost. `missed_obstructions` is the ids of the missed ones.
+- Scoring an obstacle against the envelope scores whatever is tallest at those
+  azimuths. The chart yard's trunk stands under its canopy, so the envelope
+  over the trunk's span is 45.8 degrees against the trunk's own 21.5: a
+  boundary that reports 21.5 has found the trunk, and the envelope rule calls
+  it missed, while a boundary that reports only the canopy has not found the
+  trunk at all and the envelope rule calls it present.
 - `north_offset_deg` is the shift in `[-10, 10]` degrees, in 0.1 steps,
   minimising the mean absolute signed error, positive when the measured
   profile is turned east. Ties go to the smaller shift.
@@ -260,10 +298,18 @@ no ray hit anything. Measured bin `i` of `N` covers
 - Overlay error is the angle between an `events.jsonl` line's `basis.forward`
   and that frame's truth `forward`. A frame is `moving` when its truth
   `angular_rate_deg_s` exceeds 2, else `settled`. `missing_fraction` is the
-  lines with a null basis over all lines.
-- A hold is captured by the first `captures.jsonl` record with
-  `outcome == "accepted"` and `from_ms <= at <= to_ms + 1500`; the latency is
-  `at - from_ms`. `accepted_frames` is every accepted record.
+  lines that could not be scored over all lines: a null basis, and a
+  `frame_id` the case never delivered, which is a sample with no pose and
+  cannot be dropped from the denominator either. `max_deg` and
+  `frames_over_gate` (samples above their own class's gate, 1.0 moving and 0.5
+  settled) are reported beside the percentiles, because one frame in a
+  thousand pointing three degrees wrong moves no percentile at all.
+- Holds are walked in `from_ms` order and each takes the first
+  `captures.jsonl` record with `outcome == "accepted"` and
+  `from_ms <= at <= to_ms + 1500` that no earlier hold has claimed; the
+  latency is `at - from_ms`. The claim matters: the 1500 ms grace makes
+  consecutive windows overlap by most of a hold, so without it one accepted
+  record answers for two holds. `accepted_frames` is every accepted record.
 - `panorama_alpha_fraction` is the cos-weighted fraction of raster cells with
   alpha 255. `observable_fraction_covered` is the same fraction over the
   observable region: the cells whose direction from `c_ref` projects inside at

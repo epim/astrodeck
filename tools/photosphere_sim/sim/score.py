@@ -39,6 +39,9 @@ from . import blobs as blobs_module
 from .cases import CASES_DIR
 from .geometry import angle_between, sky_vector
 from .palette import PALETTE
+# The face-normal tolerance the truth paints a surface landmark with. Imported
+# rather than copied: the expected-area model has to move with it.
+from .truth import _NORMAL_DOT
 
 __all__ = ["score_case"]
 
@@ -97,17 +100,31 @@ def _read_jsonl(path: Path) -> list:
     return [json.loads(line) for line in text.splitlines() if line]
 
 
-def _load_panorama(path: Path) -> np.ndarray:
-    """The result panorama as ``(H, W, 4)`` uint8.
+def _load_panorama(path: Path):
+    """The result panorama as ``(H, W, 4)`` uint8, and what was wrong with it.
 
-    A panorama that was never written is a fully transparent one of the
-    contract's size: the scanner painted nothing, which is a score, not an
-    error.
+    Anything that is not a 1080 x 300 raster with an alpha channel scores as
+    EMPTY, and `note` says which. Converting an alpha-less image to RGBA would
+    invent alpha 255 for every pixel and hand a scanner that wrote the wrong
+    format a perfect coverage score; a panorama of the wrong size would be
+    read against the wrong azimuths. Neither is a thing to guess at.
     """
+    empty = np.zeros((PANORAMA_HEIGHT, PANORAMA_WIDTH, 4), dtype=np.uint8)
     if not path.is_file():
-        return np.zeros((PANORAMA_HEIGHT, PANORAMA_WIDTH, 4), dtype=np.uint8)
+        return empty, {"width": None, "height": None, "mode": None,
+                       "note": "no panorama.png: nothing was painted"}
     with Image.open(path) as image:
-        return np.array(image.convert("RGBA"))
+        width, height = image.size
+        info = {"width": width, "height": height, "mode": image.mode, "note": None}
+        if "A" not in image.getbands():
+            info["note"] = (f"panorama is {image.mode}, which carries no alpha: "
+                            "scored as empty")
+            return empty, info
+        if (width, height) != (PANORAMA_WIDTH, PANORAMA_HEIGHT):
+            info["note"] = (f"panorama is {width} x {height}, not "
+                            f"{PANORAMA_WIDTH} x {PANORAMA_HEIGHT}: scored as empty")
+            return empty, info
+        return np.array(image.convert("RGBA")), info
 
 
 def _raster_grid(height: int, width: int) -> tuple[np.ndarray, np.ndarray]:
@@ -144,7 +161,19 @@ def _expected_disc_areas(scene: dict, c_ref: np.ndarray) -> dict:
     angle, so it covers ``pi radius_m^2 |n . d| / D^2`` steradians: the
     foreshortening belongs in the expected area, because leaving it out claims
     a grazing disc should be two or three times the size it can possibly be.
+
+    A disc on a curved face is clipped again. ``sim.truth`` paints a surface
+    landmark only where the hit face's normal is within ``acos(_NORMAL_DOT)``
+    of the declared one, so on a cylinder or a sphere of radius ``R`` only a
+    band ``R sin(acos(_NORMAL_DOT))`` wide survives. Where that band is
+    narrower than the disc, the expected area is scaled by the ratio of the
+    two widths: a lower bound on the clipped area, which is the safe direction
+    for a filter that must never discard a landmark. Without it the chart
+    yard's ``T1``, a 0.08 m disc on a 0.25 m trunk, is measured against an
+    unclipped model it can only ever fill 44 per cent of.
     """
+    band = math.sin(math.acos(_NORMAL_DOT))
+    objects = {obj["id"]: obj for obj in scene.get("objects", [])}
     areas: dict[str, tuple[float, int]] = {}
     for landmark in scene.get("landmarks", []):
         radius = float(landmark["radius_deg"])
@@ -156,7 +185,11 @@ def _expected_disc_areas(scene: dict, c_ref: np.ndarray) -> dict:
         normal = normal / np.linalg.norm(normal)
         facing = abs(float((offset / distance) @ normal))
         radius = float(landmark["radius_m"])
-        steradians = math.pi * radius * radius * facing / (distance * distance)
+        host = objects.get(landmark["object"], {})
+        clipped = 1.0
+        if host.get("kind") in ("cylinder", "sphere"):
+            clipped = min(1.0, float(host["radius"]) * band / radius)
+        steradians = math.pi * radius * radius * facing * clipped / (distance * distance)
         areas[landmark["id"]] = (steradians * (180.0 / math.pi) ** 2,
                                  int(landmark["palette"]))
     return areas
@@ -207,38 +240,48 @@ def _score_landmarks(scene: dict, landmarks: list, c_ref: np.ndarray,
 
     per_landmark = []
     errors = []
-    omitted, duplicated, found = [], [], 0
+    omitted, duplicated, found, slivers = [], [], 0, 0
     for landmark in landmarks:
         name = landmark["id"]
+        observable = bool(landmark["observable"])
         hits = sorted(matches[name], key=lambda m: m["error_deg"])
-        status = "found" if len(hits) == 1 else ("duplicate" if hits else "omitted")
+        # A landmark whose centre is occluded may still show a clipped sliver
+        # of its disc. Nothing can be demanded of that sliver and its centroid
+        # is not the landmark's direction, so it is neither credited nor
+        # blamed: "sliver" says which entries those are, and they are the
+        # difference between these 52 rows and the aggregates above.
+        if observable:
+            status = "found" if len(hits) == 1 else ("duplicate" if hits else "omitted")
+        else:
+            status = "sliver" if hits else "not_observable"
         best = hits[0] if hits else None
+        area, _ = areas.get(name, (0.0, -1))
+        cell = cell_az_equator * max(math.cos(math.radians(landmark["alt"])), cos_floor)
         per_landmark.append({
             "id": name,
+            "observable": observable,
             "truth": {"az": landmark["az"], "alt": landmark["alt"]},
             "measured": None if best is None else {"az": best["az"], "alt": best["alt"]},
             "error_deg": None if best is None else best["error_deg"],
+            "expected_px": area / (cell * cell_alt),
             "status": status,
         })
-        # A landmark whose centre is occluded may still show a clipped sliver
-        # of its disc. Nothing can be demanded of that sliver and its centroid
-        # is not the landmark's direction, so it is neither counted nor
-        # blamed: it is excluded here rather than left to inflate the errors.
-        if not landmark["observable"]:
-            continue
         if status == "found":
             found += 1
             errors.append(best["error_deg"])
         elif status == "duplicate":
             duplicated.append(name)
-        else:
+        elif status == "omitted":
             omitted.append(name)
+        elif status == "sliver":
+            slivers += 1
 
     return {
         "expected": sum(1 for lm in landmarks if lm["observable"]),
         "found": found,
         "omitted": omitted,
         "duplicated": duplicated,
+        "slivers": slivers,
         "spurious": spurious,
         "errors_deg": {
             "median": _percentile(errors, 50),
@@ -286,10 +329,62 @@ def _area_below(cos_cumulative: np.ndarray, centres: np.ndarray,
     return cos_cumulative[index]
 
 
-def _span_mask(centres: np.ndarray, az_from: float, az_to: float) -> np.ndarray:
-    if az_from <= az_to:
-        return (centres >= az_from) & (centres < az_to)
-    return (centres >= az_from) | (centres < az_to)
+def _score_obstacles(reference: dict, truth_bins: int, step: float,
+                     alt: np.ndarray, resolved: np.ndarray) -> list:
+    """Every declared test obstacle, scored against its own silhouette.
+
+    The envelope cannot answer this question. The chart yard's trunk stands
+    under its canopy, so the envelope over the trunk's azimuths is the canopy
+    at 45.8 degrees while the trunk's own top is 21.5: a boundary that
+    describes the canopy and nothing else looks identical to one that found
+    both. ``profile`` from ``reference-horizon.json`` is where THAT object is
+    the first thing hit, bin by bin, and the deficit is measured against it.
+
+    ``deficit = profile - measured``, over the bins the object is visible in
+    and the measurement resolved. The verdict is the MEDIAN deficit, not the
+    minimum: a few bins at the edge of an obstacle straddle a coarse measured
+    bin and go deeply negative or positive without the obstacle being missed.
+    ``width_missed_deg`` reports how much of it is below the boundary
+    regardless, next to the width the profile declares it must be found at.
+    """
+    scored = []
+    for obstacle in reference.get("obstacles", []):
+        if "profile" not in obstacle:
+            raise ValueError(
+                f"reference-horizon.json carries no profile for "
+                f"{obstacle['id']}: this case predates the per-obstacle "
+                "silhouette, rebuild it with make-case")
+        profile = np.asarray(obstacle["profile"], dtype=np.float64)
+        if profile.size != truth_bins:
+            raise ValueError(f"{obstacle['id']} profile has {profile.size} bins, "
+                             f"not the truth's {truth_bins}")
+        visible = profile > -10.0
+        measurable = visible & resolved
+        entry = {
+            "id": obstacle["id"],
+            "truth_alt_peak": float(obstacle.get("alt_max", -10.0)),
+            "deficit_median": None,
+            "deficit_p95": None,
+            "width_missed_deg": None,
+            "min_width_deg": obstacle.get("min_width_deg"),
+            # Visible but with nothing resolved over it is a miss: no evidence
+            # where evidence was expected.
+            "missed": bool(visible.any()),
+        }
+        if measurable.any():
+            deficit = np.clip(profile[measurable], 0.0, 90.0) - alt[measurable]
+            median = float(np.median(deficit))
+            entry.update({
+                "deficit_median": median,
+                "deficit_p95": _percentile(deficit, 95),
+                "width_missed_deg": float(
+                    np.count_nonzero(deficit > MISSED_OBSTRUCTION_DEG) * step),
+                "missed": bool(median > MISSED_OBSTRUCTION_DEG),
+            })
+        elif not visible.any():
+            entry["width_missed_deg"] = 0.0
+        scored.append(entry)
+    return scored
 
 
 def _score_horizon(reference: dict, measured: dict | None) -> dict:
@@ -320,24 +415,8 @@ def _score_horizon(reference: dict, measured: dict | None) -> dict:
     false_blocked = float(np.clip(-difference, 0.0, None).sum())
     unresolved = float(np.count_nonzero(~resolved) * column_sr)
 
-    missed = []
-    for obstacle in reference.get("obstacles", []):
-        if obstacle.get("az_from") is None or obstacle.get("az_to") is None:
-            continue  # never the first thing hit from c_ref: nothing to find
-        mask = _span_mask(centres, float(obstacle["az_from"]), float(obstacle["az_to"]))
-        if not mask.any():
-            continue
-        # The obstacle's own alt_max is its peak at one azimuth; what it
-        # guarantees across its whole span is the lowest truth altitude in the
-        # span, and that is what the measured boundary must not fall below.
-        # Comparing a per-span minimum against the peak would call every
-        # obstacle that is not flat-topped missed, in the ideal result too.
-        truth_alt = float(truth[mask].min())
-        seen = mask & resolved
-        measured_alt = float(alt[seen].min()) if seen.any() else None
-        if measured_alt is None or measured_alt < truth_alt - MISSED_OBSTRUCTION_DEG:
-            missed.append({"id": obstacle["id"], "truth_alt": truth_alt,
-                           "measured_alt": measured_alt})
+    obstacles = _score_obstacles(reference, truth_bins, step, alt, resolved)
+    missed = [o["id"] for o in obstacles if o["missed"]]
 
     steps = int(round(NORTH_OFFSET_LIMIT_DEG / step))
     north_offset = None
@@ -363,6 +442,7 @@ def _score_horizon(reference: dict, measured: dict | None) -> dict:
         "false_open_sr": false_open,
         "false_blocked_sr": false_blocked,
         "unresolved_sr": unresolved,
+        "obstacles": obstacles,
         "missed_obstructions": missed,
         "north_offset_deg": north_offset,
         "note": ("truth alt_max clipped to [0, 90]: the scanner's floor is 0, "
@@ -376,40 +456,65 @@ def _score_horizon(reference: dict, measured: dict | None) -> dict:
 
 
 def _score_overlay(events: list, frames: list) -> dict:
+    """Overlay attitude error per delivered frame, moving and settled apart.
+
+    A percentile over a thousand frames cannot see one bad frame, and one
+    frame pointing a degree wrong is exactly the failure the overlay gate is
+    about, so `max_deg` and `frames_over_gate` are reported beside them.
+    """
     truth = {frame["frame_id"]: frame for frame in frames}
     moving, settled = [], []
     missing = 0
     for event in events:
         basis = event.get("basis")
-        if basis is None:
-            missing += 1
-            continue
         frame = truth.get(event.get("frame_id"))
-        if frame is None:
+        # A line naming a frame the case never delivered is a sample with no
+        # pose. It cannot be scored, and it cannot vanish from the
+        # denominator either, so it counts as missing.
+        if basis is None or frame is None:
+            missing += 1
             continue
         error = angle_between(basis["forward"], frame["forward"])
         if float(frame["angular_rate_deg_s"]) > MOVING_RATE_DEG_S:
             moving.append(error)
         else:
             settled.append(error)
+
+    def block(values):
+        return {"median_deg": _percentile(values, 50),
+                "p95_deg": _percentile(values, 95),
+                "max_deg": float(max(values)) if values else None}
+
+    over_gate = (sum(1 for e in moving if e > GATE_OVERLAY_MOVING_P95)
+                 + sum(1 for e in settled if e > GATE_OVERLAY_SETTLED_P95))
     return {
         "samples": len(moving) + len(settled),
         "missing_fraction": (missing / len(events)) if events else None,
-        "moving": {"median_deg": _percentile(moving, 50),
-                   "p95_deg": _percentile(moving, 95)},
-        "settled": {"median_deg": _percentile(settled, 50),
-                    "p95_deg": _percentile(settled, 95)},
+        "frames_over_gate": over_gate,
+        "moving": block(moving),
+        "settled": block(settled),
     }
 
 
 def _score_capture(holds: list, captures: list) -> dict:
+    """Which holds were captured, walking the holds in time order.
+
+    A record is claimed by the first hold whose window contains it and is
+    never counted again. The 1500 ms grace makes consecutive windows overlap
+    by most of a hold, so without the claim a single accepted record answers
+    for two holds and `every_hold_captured` passes on half the evidence.
+    """
     accepted = [c for c in captures if c.get("outcome") == "accepted"]
+    claimed = [False] * len(accepted)
     latencies = []
-    for hold in holds:
+    for hold in sorted(holds, key=lambda h: int(h["from_ms"])):
         opens, closes = int(hold["from_ms"]), int(hold["to_ms"])
-        for capture in accepted:
+        for position, capture in enumerate(accepted):
+            if claimed[position]:
+                continue
             at = int(capture["at"])
             if opens <= at <= closes + CAPTURE_GRACE_MS:
+                claimed[position] = True
                 latencies.append(at - opens)
                 break
     return {
@@ -560,7 +665,7 @@ def score_case(case_dir, result_dir=None) -> dict:
     holds = _read_json(truth_dir / "holds.json", []) or []
     frames = _read_jsonl(truth_dir / "trajectory.jsonl")
 
-    panorama = _load_panorama(result_dir / "panorama.png")
+    panorama, panorama_info = _load_panorama(result_dir / "panorama.png")
     summary = _read_json(result_dir / "summary.json")
 
     landmark_scores = _score_landmarks(scene, landmarks, c_ref, panorama)
@@ -585,6 +690,7 @@ def score_case(case_dir, result_dir=None) -> dict:
         "app_commit": ((summary or {}).get("app_commit")
                        or manifest.get("versions", {}).get("app_commit")),
         "profile": profile,
+        "panorama": panorama_info,
         "landmarks": landmark_scores,
         "horizon": horizon_scores,
         "overlay": overlay_scores,

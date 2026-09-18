@@ -316,6 +316,37 @@ class Horizon(unittest.TestCase):
                                math.degrees(math.atan2(6.0 - 1.4, D_POLE_FAR - 0.05)),
                                delta=0.1)
 
+    def test_each_obstacles_profile_is_its_own_silhouette_not_the_envelope(self):
+        """``profile`` is where THAT object is the first hit, bin by bin.
+
+        The trunk stands under its canopy: the envelope over the trunk's own
+        azimuths is the canopy at 45.8 degrees, while the trunk's silhouette
+        reaches only its top rim. Scoring the trunk against the envelope
+        therefore scores the canopy, which is why the profile exists.
+        """
+        envelope = np.array(self.h["alt_max"])
+        trunk = next(o for o in self.h["obstacles"] if o["id"] == "trunk")
+        profile = np.array(trunk["profile"])
+        self.assertEqual(profile.size, self.h["bins"])
+
+        inside = profile > -10.0
+        self.assertAlmostEqual(float(profile[inside].max()), 21.5, delta=0.1)
+        self.assertAlmostEqual(float(profile[inside].max()), trunk["alt_max"], places=9)
+        self.assertGreater(float(envelope[inside].min()), 45.0)
+        self.assertTrue(np.all(profile[~inside] == -10.0))
+
+        # The bins it is found in are exactly its declared azimuth span.
+        step = 360.0 / self.h["bins"]
+        centres = (np.nonzero(inside)[0] + 0.5) * step
+        self.assertGreaterEqual(float(centres.min()), trunk["az_from"])
+        self.assertLessEqual(float(centres.max()), trunk["az_to"])
+
+        far = next(o for o in self.h["obstacles"] if o["id"] == "pole-far")
+        lit = np.array(far["profile"])
+        lit = lit[lit > -10.0]
+        self.assertEqual(lit.size, 3)  # 0.275 degrees wide, three 0.1 deg bins
+        self.assertTrue(np.all(np.abs(lit - 12.45) < 0.1), lit)
+
     def test_every_declared_test_obstacle_is_found_at_its_minimum_width(self):
         found = {o["id"]: o for o in self.h["obstacles"]}
         self.assertEqual(sorted(found), sorted(o["id"] for o in SCENE.test_obstacles))

@@ -597,9 +597,17 @@ def horizon(scene: Scene, c_ref, bins: int = 3600, alt_step: float = 0.05) -> di
     million rays, so the rays are cast in chunks of whole azimuth bins.
 
     ``obstacles`` carries one entry per declared test obstacle: the azimuth
-    range in which that object is the FIRST thing hit at some altitude, and the
-    highest altitude at which that is true. An obstacle that is never the first
+    range in which that object is the FIRST thing hit at some altitude, the
+    highest altitude at which that is true, and ``profile``, one float per
+    azimuth bin giving the highest altitude at which THAT object is the first
+    hit in that bin, -10 where it never is. An obstacle that is never the first
     hit reports ``az_from``/``az_to`` of ``None`` and ``alt_max`` of -10.
+
+    The per-object ``profile`` is what makes an obstacle scoreable on its own.
+    The envelope ``alt_max`` is the highest of everything, so an obstacle that
+    stands under a taller one (the trunk under its canopy) never appears in it,
+    and a boundary that describes only the canopy is indistinguishable from one
+    that also found the trunk.
     """
     origin = np.asarray(c_ref, dtype=np.float64)
     prepared = _prepare(scene)
@@ -612,8 +620,7 @@ def horizon(scene: Scene, c_ref, bins: int = 3600, alt_step: float = 0.05) -> di
 
     positions = {obj["id"]: position for position, obj in enumerate(prepared)}
     watched = [(o["id"], positions[o["object"]]) for o in scene.test_obstacles]
-    seen = {name: np.zeros(bins, dtype=bool) for name, _ in watched}
-    tops = {name: -10.0 for name, _ in watched}
+    profiles = {name: np.full(bins, -10.0) for name, _ in watched}
 
     chunk = max(1, 200_000 // altitudes.size)
     for start in range(0, bins, chunk):
@@ -635,18 +642,18 @@ def horizon(scene: Scene, c_ref, bins: int = 3600, alt_step: float = 0.05) -> di
         which = index.reshape(stop - start, altitudes.size)
         for name, position in watched:
             mine = solid & (which == position)
-            seen[name][start:stop] = mine.any(axis=1)
-            by_altitude = mine.any(axis=0)
-            if by_altitude.any():
-                top = altitudes[altitudes.size - 1 - np.argmax(by_altitude[::-1])]
-                tops[name] = max(tops[name], float(top))
+            anywhere = mine.any(axis=1)
+            top = altitudes.size - 1 - np.argmax(mine[:, ::-1], axis=1)
+            profiles[name][start:stop] = np.where(anywhere, altitudes[top], -10.0)
 
     obstacles = []
     for declared in scene.test_obstacles:
-        az_from, az_to = _arc(np.nonzero(seen[declared["id"]])[0], bins)
+        profile = profiles[declared["id"]]
+        az_from, az_to = _arc(np.nonzero(profile > -10.0)[0], bins)
         obstacles.append({"id": declared["id"], "az_from": az_from, "az_to": az_to,
-                          "alt_max": tops[declared["id"]],
-                          "min_width_deg": declared["min_width_deg"]})
+                          "alt_max": float(profile.max()),
+                          "min_width_deg": declared["min_width_deg"],
+                          "profile": [float(a) for a in profile]})
     return {"bins": bins, "alt_max": [float(a) for a in alt_max],
             "obstacles": obstacles}
 
