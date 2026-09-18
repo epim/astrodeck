@@ -3,7 +3,7 @@
 import { DOME_CELLS, SkyPanorama, orientationBasis, dot, skyAngles, cameraLens, transferBasis, type CameraBasis } from './photosphereGeometry';
 import { CameraPoseHistory, ScanPoseSource, poseSeparation, viewVouchesFor, type PoseEvidence } from './photospherePose';
 import { registerFrame } from './photosphereRegistration';
-import { VisualStability, GRID_W, GRID_H } from './photosphereStability';
+import { VisualStability, GRID_W, GRID_H, STALE_FRAME_MS } from './photosphereStability';
 
 export interface PhotosphereSupport {
   supported: boolean;
@@ -260,6 +260,9 @@ export class PhotosphereSweep {
   private stability = new VisualStability();
   private lumaCanvas: HTMLCanvasElement | null = null;
   private stillnessFailures = 0;
+  /** The media clock of the last frame the interval fallback took as evidence,
+   *  in seconds; -1 before any. */
+  private lastMediaTime = -1;
   private luma = new Uint8Array(GRID_W*GRID_H);
   private listening = false;
   private trackEnded = false;
@@ -400,7 +403,7 @@ export class PhotosphereSweep {
     this.canvas = canvas;
     this.frames = []; this.issue = null; this.basis = null; this.panorama = null; this.coveredCells.clear(); this.lastCaptureAt=null;
     this.poses.clear();this.tilts.clear();this.poseSource.clear();this.visualAnchor=null;this.lastRegistrationAt=-Infinity;this.frameBasis=null;this.alignmentWait=false;this.overlapWait=false;this.lastSensorReading=null;
-    this.stability.clear();this.trackEnded=false;
+    this.stability.clear();this.trackEnded=false;this.lastMediaTime=-1;
     this.hasOrientation = false; this.tiltAt = null; this.headingAt = null;
     const DOE = window.DeviceOrientationEvent as typeof DeviceOrientationEvent & { requestPermission?: () => Promise<string> };
     // Ask from the click gesture, before awaiting camera discovery (Safari).
@@ -494,7 +497,15 @@ export class PhotosphereSweep {
         if(generation!==this.generation)return;
         // The sensor stops talking when the phone stops moving. Ask the video
         // and the page lifecycle instead, and hand both answers to forFrame.
-        this.observeStillness(video,now);
+        // What the frame shows happened when the CAMERA saw it, not when this
+        // callback ran: captureTime is tens of ms earlier, and stamping the
+        // pixels with the callback time pushes every still run forward of the
+        // reading it has to reach back to. A capture time later than the
+        // callback, or older than a stale frame, cannot belong to this frame,
+        // so it is not believed and the callback time stands.
+        const capture=metadata.captureTime;
+        const seen=capture!==undefined&&Number.isFinite(capture)&&capture<=now&&now-capture<=STALE_FRAME_MS?capture:now;
+        this.observeStillness(video,seen);
         const evidence:PoseEvidence={view:this.stability.continuity(now),sourceHealthy:this.sourceHealthy};
         const basis=this.poses.forFrame(now,metadata.captureTime,evidence);
         if(basis)this.frameBasis={basis,at:now};
@@ -545,6 +556,22 @@ export class PhotosphereSweep {
     }
   }
 
+  /** The interval fallback runs on a TIMER, and a timer proves nothing about
+   *  the camera: a paused or stalled element keeps its last decoded image and
+   *  its dimensions, and re-reading that image every 350 ms would earn a hold
+   *  the camera never witnessed (review 15, P1). A frame counts only when the
+   *  element is playing with data and the media clock has moved since the last
+   *  one, and the track behind it is live and not muted. */
+  private newMediaFrame(video: HTMLVideoElement): boolean {
+    const track = this.stream?.getVideoTracks?.()[0];
+    if (video.paused || video.ended || video.readyState < 2) return false;           // 2 = HAVE_CURRENT_DATA
+    if (track && (track.readyState !== "live" || track.muted)) return false;
+    const t = video.currentTime;
+    if (!(Number.isFinite(t) && t > this.lastMediaTime)) return false;
+    this.lastMediaTime = t;
+    return true;
+  }
+
   private grabFrame(manualOverhead = false, frame?:{basis:CameraBasis|null;tilt:CameraBasis|null}): boolean {
     const { video, canvas } = this;
     const now=performance.now();
@@ -552,9 +579,17 @@ export class PhotosphereSweep {
     // reach the preview's pixels only here, so this path takes its own sample.
     // Without it stability is permanently unknown there, the strict rule never
     // relaxes and a still phone deadlocks exactly as it did before any of this.
-    // The 350 ms cadence is inside STALE_FRAME_MS, so a settle lands at
-    // 700-1050 ms, inside the 1.5 s acceptance budget.
-    if (!frame && video && this.sourceHealthy) this.observeStillness(video, now);
+    // Only a NEWLY DELIVERED frame is evidence (see newMediaFrame): the timer
+    // firing is not the camera producing a picture. A hold is therefore earned
+    // only while the media clock is moving. While frames do keep arriving every
+    // tick carries a new one - 350 ms at 24 fps is eight frames - so the gate
+    // refuses nothing and the settle still lands at 700-1050 ms (1050 measured
+    // in photosphereStillnessDom), inside the 1.5 s acceptance budget. A frozen
+    // or paused element contributes no observation at all, so stability goes
+    // UNKNOWN STALE_FRAME_MS after the last real frame and the strict rule
+    // takes back over - the honest outcome, and the one a timer on its own
+    // could never reach.
+    if (!frame && video && this.sourceHealthy && this.newMediaFrame(video)) this.observeStillness(video, now);
     // One visibility rule, not two. A second copy of the test here could
     // disagree with the sourceHealthy the evidence below is built from.
     if (!this.recording || !this.ready || !video || !canvas || !this.sourceHealthy) return false;
@@ -675,7 +710,7 @@ export class PhotosphereSweep {
     // canvas goes with it - it is lazy, so the next scan rebuilds it, and a
     // closed editor should not hold a canvas backing store open.
     this.listening = false; this.stability.clear();
-    this.lumaCanvas = null; this.stillnessFailures = 0;
+    this.lumaCanvas = null; this.stillnessFailures = 0; this.lastMediaTime = -1;
     this.stream?.getTracks().forEach((t) => t.stop());
     this.stream = null;
     if (this.video) this.video.srcObject = null;

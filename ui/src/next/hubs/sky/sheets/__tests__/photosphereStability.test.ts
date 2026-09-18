@@ -55,6 +55,22 @@ test('An unchanging view reads as still only once it has held for the settle tim
   assert.equal(s.stableAt(600),true);
 });
 
+test("The settle is measured on the frames' clock, so a late-reporting camera cannot shorten it",()=>{
+  // A camera with a pipeline delay hands over a frame the sensor saw some time
+  // ago. The run is as long as the FRAMES say it is: crediting it with the gap
+  // between the newest capture and the caller's clock would mean the longer a
+  // camera's delay, the less stillness it takes to be believed - a 250 ms delay
+  // would settle a 400 ms run, and the phone would be certified on 100 ms of
+  // watching it never did.
+  const s=new VisualStability();
+  feed(s,0,400);
+  assert.equal(s.stableAt(650),false,
+    `a caller 250 ms ahead of the newest frame has still only seen 400 ms of stillness, under ${SETTLE_MS}`);
+  s.observe(500,scene(),W,H);
+  assert.equal(s.stableAt(750),true,'a full settle of observed frames was not believed');
+  assert.equal(s.continuity(750)!.stillSince,0,'the run still begins on the frame it began on');
+});
+
 test('A one-pixel shift of the scene reads as motion',()=>{
   const s=new VisualStability();
   feed(s,0,500);

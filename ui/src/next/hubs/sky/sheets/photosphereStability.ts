@@ -158,12 +158,19 @@ export class VisualStability {
   }
 
   /** `true` still, `false` moving, `null` unknown (no frame, none recently, or
-   *  a frame with nothing in it to judge movement by). */
+   *  a frame with nothing in it to judge movement by).
+   *  `now` decides one thing only: whether the newest frame is fresh enough to
+   *  say anything at all. The LENGTH of the still run is a property of the
+   *  frames, measured between them, because they are what watched the view. A
+   *  camera with a pipeline delay hands over a frame captured `lag` ms ago;
+   *  crediting the run with the time between that capture and the caller's
+   *  clock would settle the view on stillness nobody observed, and the longer
+   *  the delay the less watching it would take. */
   stableAt(now:number):boolean|null {
     if(!this.frame||now-this.frameAt>STALE_FRAME_MS)return null;
     if(!this.textured)return null;
     if(this.stillSince===null)return false;
-    return now-this.stillSince>=SETTLE_MS;
+    return this.frameAt-this.stillSince>=SETTLE_MS;
   }
 
   /** Since when has THIS view been continuous? Null until the run has settled
