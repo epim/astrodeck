@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import { CameraPoseHistory } from '../photospherePose';
 import { lookBasis, orientationBasis } from '../photosphereGeometry';
 // The fixture's dispatch predicate lives in this tracked helper (the fixture
-// itself imports it too) so this test fails if the fixture and the
-// production contract it models ever drift apart.
-import { orientationChanged } from './orientationChange';
+// itself imports it too, from the same directory) so this test fails if the
+// fixture and the production contract it models ever drift apart.
+import { orientationChanged } from '../__fixtures__/orientationChange';
 let passed=0;
 function test(name:string,fn:()=>void){fn();passed++;console.log(`PASS ${name}`);}
 test('A delayed image uses its capture-time direction, not the newest phone direction',()=>{
@@ -65,12 +65,15 @@ test('A delivered-late event does not move a frame captured before it',()=>{
   // samples - outside the existing 40 ms nearest-sample rule - and this
   // three-sample, 200 ms-wide stream is also too short for forFrame's own
   // 500 ms/250 ms freshness gates to ever admit a captureTime lookup here,
-  // so today's code returns null for any `now`. That is an acceptable
-  // answer: the one thing that must never happen is resolving a frame
-  // captured at 150 ms to the newest sample (yaw 6 at 200 ms) just because
-  // the callback that reports it ran late.
+  // so today's code returns null. There are exactly two acceptable answers:
+  // null (the warm-up gate refusing a stream it has not watched for long
+  // enough) or poses[1], the OLDER of the two neighbours, which is the one
+  // that cannot be newer than the frame. The newest sample - yaw 6 at 200 ms,
+  // after the shutter - is never one of them, and "not the newest" alone is a
+  // near-vacuous assertion that any refactor returning some third thing passes.
   const result=h.forFrame(200,150,{visuallyStable:true,sourceHealthy:true});
-  assert.notEqual(result,poses[2],'a late callback must not smear in the newest phone direction');
+  assert.ok(result===null||result===poses[1],
+    'a late callback must resolve to the older neighbour or refuse, never to the newest phone direction');
 });
 console.log(`photospherePose.test: ${passed}/${passed} passed`);
 export const result={passed,failed:0,total:passed};

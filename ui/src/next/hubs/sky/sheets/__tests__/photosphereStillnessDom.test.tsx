@@ -34,7 +34,7 @@ const scenePixel=(x:number,y:number,width:number,height:number)=>{
   const block=col>=10&&col<=17&&y>=Math.floor(height/3)&&y<=Math.floor(2*height/3);
   return block?180:40+Math.round(col*80/31);
 };
-w.HTMLCanvasElement.prototype.getContext=()=>({ drawImage(){},
+const ctxStub={ drawImage(){},
   getImageData:(_x:number,_y:number,width:number,height:number)=>{
     const data=new Uint8ClampedArray(width*height*4);
     for(let y=0;y<height;y++)for(let x=0;x<width;x++){
@@ -43,10 +43,21 @@ w.HTMLCanvasElement.prototype.getContext=()=>({ drawImage(){},
     }
     return {data};
   }, createImageData:(width:number,height:number)=>({data:new Uint8ClampedArray(width*height*4)}), putImageData(){},
-});
+};
+// `blind` fails ONLY the 32x24 stillness canvas. The capture canvas losing its
+// context is a different defect with a cue of its own, and a stub that failed
+// both could not tell the two apart.
+let blind=false;
+w.HTMLCanvasElement.prototype.getContext=function(this:{width:number;height:number}){
+  return blind&&this.width===32&&this.height===24?null:ctxStub;
+};
 w.HTMLCanvasElement.prototype.toDataURL=()=>'data:image/png;base64,';
 Object.defineProperty(w.document,'visibilityState',{get:()=>hidden?'hidden':'visible',configurable:true});
-g.setInterval=()=>0;g.clearInterval=()=>{};
+// The interval fallback is a path under test, not noise to be swallowed: keep
+// the callback so a test without requestVideoFrameCallback can drive it.
+let intervalFn:(()=>void)|null=null;
+g.setInterval=(fn:()=>void)=>{intervalFn=fn;return 1;};
+g.clearInterval=()=>{intervalFn=null;};
 const track={stop(){},getSettings:()=>({deviceId:'main'}),addEventListener(){}};
 Object.defineProperty(w.navigator,'mediaDevices',{value:{
   enumerateDevices:async()=>[{kind:'videoinput',deviceId:'main',label:'Back main wide camera'}],
@@ -66,13 +77,17 @@ async function test(name:string,fn:()=>Promise<void>){
 
 /** A recording sweep aimed at one dome cell by a 10 degree approach over
  *  0-500 ms, with the video frame callback under the test's control. Returns
- *  the moment the approach ended: silence starts here. */
-async function approachAndHold(){
-  shift=0;hidden=false;
+ *  the moment the approach ended: silence starts here. With `rvfc:false` the
+ *  element has no requestVideoFrameCallback at all - Firefox Android - and the
+ *  returned tick drives the 350 ms setInterval fallback instead. */
+async function approachAndHold(rvfc=true){
+  shift=0;hidden=false;blind=false;intervalFn=null;
   const video=w.document.createElement('video');
   let frame:((now:number,metadata:unknown)=>void)|undefined;
-  video.requestVideoFrameCallback=(fn:typeof frame)=>{frame=fn;return 1;};
-  video.cancelVideoFrameCallback=()=>{};
+  if(rvfc){
+    video.requestVideoFrameCallback=(fn:typeof frame)=>{frame=fn;return 1;};
+    video.cancelVideoFrameCallback=()=>{};
+  }
   const sweep=new PhotosphereSweep();
   await sweep.start(video,w.document.createElement('canvas'));
   const cell=sweep.cells.find((c)=>c.alt>20&&c.alt<60)!;
@@ -84,8 +99,10 @@ async function approachAndHold(){
   }
   sweep.begin();
   // From here the browser sends no orientation event ever again.
-  const tick=()=>{clock+=100;frame!(clock,{captureTime:clock,mediaTime:clock,presentationTime:clock,
-    expectedDisplayTime:clock,width:640,height:480,presentedFrames:1});};
+  const tick=rvfc
+    ? ()=>{clock+=100;frame!(clock,{captureTime:clock,mediaTime:clock,presentationTime:clock,
+        expectedDisplayTime:clock,width:640,height:480,presentedFrames:1});}
+    : ()=>{clock+=350;intervalFn!();};
   return {sweep,cell,tick,silentFrom:clock};
 }
 
@@ -156,6 +173,71 @@ await test('A page hidden mid-hold reads the compass as lost, not ready',async()
   hidden=true;
   assert.equal(sweep.compassReady,false,'a lost source still read as ready');
   hidden=false;
+  sweep.stop();
+});
+
+await test('A moving view reads the compass as LOST after 3 s of sensor silence',async()=>{
+  // The other half of case 5, and the reason compassReady cannot be lifecycle
+  // alone. A magnetometer that simply stops - wedged, permission revoked with
+  // no lifecycle event, a stuck Chromium pump - fires no event and ends no
+  // track, so every lifecycle flag stays true. Only the video can tell that
+  // the world kept moving while the readings stopped, and if nothing does,
+  // the dome and the aim dot ride a cached direction indefinitely.
+  const {sweep,tick}=await approachAndHold();
+  for(let i=0;i<30;i++){shift++;tick();}   // one pixel per frame, 3 s, no orientation event
+  assert.equal(sweep.compassReady,false,'a dead sensor over a moving view still read as ready');
+  assert.equal(sweep.aimTarget,null,'the aim dot survived a lost heading');
+  assert.match(sweep.captureCue,/Waiting for the compass/,`cue was: "${sweep.captureCue}"`);
+  sweep.stop();
+});
+
+await test('A stopped video cannot vouch for the compass either: unknown is not ready',async()=>{
+  // Same silence, but now nothing is watching at all - the frame callback has
+  // stopped. Stability is UNKNOWN here, not false, and unknown must not read
+  // as a vouch any more than a lost source does.
+  const {sweep,tick}=await approachAndHold();
+  for(let i=0;i<5;i++)tick();              // half a second of vouched stillness
+  assert.equal(sweep.compassReady,true,'the hold should be believed while the video is watching');
+  clock+=3000;                             // the stream stops; no frame callback at all
+  assert.equal(sweep.compassReady,false,'a stopped video vouched for a 3 s silence it never saw');
+  assert.match(sweep.captureCue,/Waiting for the compass/,`cue was: "${sweep.captureCue}"`);
+  sweep.stop();
+});
+
+await test('A camera image that cannot be read for stillness says so, and is counted',async()=>{
+  // Unknown stability means the strict rule means a still phone can never
+  // capture. Swallowing the read failure leaves the user holding the phone
+  // still against a rule that holding still cannot satisfy, with nothing
+  // anywhere recording why (spec 4.3).
+  const {sweep,tick}=await approachAndHold();
+  blind=true;
+  for(let i=0;i<10;i++)tick();
+  assert.equal(sweep.frameCount,0,'a blind driver captured anyway');
+  assert.doesNotMatch(sweep.captureCue,/Hold the phone still/,'the user was told to do the one thing that cannot work');
+  assert.match(sweep.captureCue,/can’t read the camera image/,`cue was: "${sweep.captureCue}"`);
+  assert.match(sweep.captureCue,/Move the phone/,`cue was: "${sweep.captureCue}"`);
+  const diagnostic=JSON.parse(sweep.alignmentReport());
+  assert.ok(diagnostic.stillnessReadFailures>=5,
+    `the alignment report recorded ${diagnostic.stillnessReadFailures} read failures`);
+  blind=false;
+  sweep.stop();
+});
+
+await test('A still phone captures on the interval fallback, with no requestVideoFrameCallback',async()=>{
+  // Firefox Android has no requestVideoFrameCallback, so the whole rVFC path
+  // above never runs there. The fallback used to pass NO stability at all,
+  // which left the strict rule in force and the original deadlock intact on
+  // every browser without that API.
+  const {sweep,cell,tick,silentFrom}=await approachAndHold(false);
+  assert.ok(intervalFn,'the interval fallback was never started');
+  let capturedAfter:number|null=null;
+  for(let i=0;i<5&&capturedAfter===null;i++){
+    tick();
+    if(sweep.cells.find((c)=>c.id===cell.id)?.captured)capturedAfter=clock-silentFrom;
+  }
+  assert.notEqual(capturedAfter,null,'DEADLOCK: a still phone never captured on the fallback path');
+  assert.ok(capturedAfter!<=1500,`took ${capturedAfter} ms of stillness, the acceptance row is 1500`);
+  assert.ok(capturedAfter!>=500,`captured after only ${capturedAfter} ms, before the view could settle`);
   sweep.stop();
 });
 

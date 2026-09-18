@@ -213,6 +213,22 @@ export function cameraPose(e: { alpha: number | null; beta: number | null;
     alt: Math.asin(Math.max(-1, Math.min(1, z))) / rad };
 }
 
+/** How long a heading or tilt reading stands on its own before the video has
+ *  to vouch for it. Not a staleness timeout on a change-driven stream: a still
+ *  phone sends nothing and that silence is not staleness (issue #37). But
+ *  `sourceHealthy` measures LIFECYCLE only, and a magnetometer that simply
+ *  stops - wedged sensor, permission revoked with no lifecycle event, a stuck
+ *  Chromium pump - leaves every one of those flags true. Past this window the
+ *  reading is believed only while the video says the view has not moved since
+ *  it arrived, so a dead sensor over a moving view is caught within 2 s. */
+const SENSOR_SILENCE_MS = 2000;
+/** Consecutive failures to read the preview's pixels before the cue says so.
+ *  Unknown stability means the strict rule applies, which means a still phone
+ *  cannot capture at all - so this failing silently is the original deadlock
+ *  with no diagnosis. Five frames is a sixth of a second on the video-frame
+ *  path and under two seconds on the interval fallback. */
+const STILLNESS_BLIND_AFTER = 5;
+
 /** Opens a visible preview; recording begins only after begin() is pressed. */
 export class PhotosphereSweep {
   private stream: MediaStream | null = null;
@@ -222,7 +238,10 @@ export class PhotosphereSweep {
   private headingHandler: ((e: Event) => void) | null = null;
   private heading = 0;
   private altitude = 0;
+  // Both on the PERFORMANCE clock, the one orientation timestamps and video
+  // frame times share. A wall-clock reading here cannot be compared with either.
   private tiltAt: number | null = null;
+  private headingAt: number | null = null;
   private hasOrientation = false;
   private basis: CameraBasis | null = null;
   private panorama: SkyPanorama | null = null;
@@ -240,6 +259,7 @@ export class PhotosphereSweep {
   private tilts = new CameraPoseHistory();
   private stability = new VisualStability();
   private lumaCanvas: HTMLCanvasElement | null = null;
+  private stillnessFailures = 0;
   private luma = new Uint8Array(GRID_W*GRID_H);
   private listening = false;
   private trackEnded = false;
@@ -281,11 +301,20 @@ export class PhotosphereSweep {
   get cameraChoices(): SweepCamera[] { return this.cameras; }
   get activeCameraId(): string { return this.deviceId; }
   get error(): string | null { return this.issue; }
-  // Ready iff a reading has ever arrived this session AND the source is
-  // currently alive (see sourceHealthy). No freshness window: on a
-  // change-driven stream, silence is not staleness (issue #37).
-  get compassReady(): boolean { return this.hasOrientation && this.sourceHealthy; }
-  get tiltReady(): boolean { return this.tiltAt !== null && this.sourceHealthy; }
+  // Ready iff a reading has arrived this session, the source is currently alive
+  // (see sourceHealthy) AND that reading is still worth something - recent, or
+  // vouched for by a video that says the view has not moved since it arrived.
+  // No bare freshness window, which is what deadlocked a still phone (issue
+  // #37); no lifecycle-only test either, which cannot see a sensor that stops.
+  get compassReady(): boolean { return this.hasOrientation && this.sourceHealthy && this.vouched(this.headingAt); }
+  get tiltReady(): boolean { return this.tiltAt !== null && this.sourceHealthy && this.vouched(this.tiltAt); }
+  /** Is a reading taken at `at` still the phone's direction? Recent enough to
+   *  stand alone, or the video vouches that nothing has moved since. */
+  private vouched(at: number | null): boolean {
+    if (at === null) return false;
+    const now = performance.now();
+    return now - at < SENSOR_SILENCE_MS || this.stability.stableAt(now) === true;
+  }
   get currentAltitude(): number { return this.altitude; }
   get cameraBasis(): CameraBasis | null {
     const b=this.compassReady && this.frameBasis && performance.now()-this.frameBasis.at<200?this.frameBasis.basis
@@ -322,6 +351,10 @@ export class PhotosphereSweep {
     if(this.issue)return this.issue;
     if(!this.recording)return 'Tap Start scan to begin capturing.';
     if(!this.video?.videoWidth || !this.video?.videoHeight)return 'Waiting for a camera image…';
+    // Not "hold still": holding still is exactly what cannot be confirmed here,
+    // so asking for it would leave the user doing the one thing that can never
+    // satisfy the rule. Moving produces a sensor event, which does.
+    if(this.stillnessFailures>=STILLNESS_BLIND_AFTER)return 'I can’t read the camera image to tell whether the phone is holding still. Move the phone slightly to register a direction.';
     if(!this.cameraBasis)return 'Waiting for the compass. Keep the camera open and move the phone gently.';
     if(this.alignmentWait)return 'Hold the phone still for a moment so the image and direction line up.';
     if(this.overlapWait)return 'I can’t match this view yet. Return to a green patch, hold still, then move slowly toward the next blue dot. Keep the camera lens in the same spot.';
@@ -368,7 +401,7 @@ export class PhotosphereSweep {
     this.frames = []; this.issue = null; this.basis = null; this.panorama = null; this.coveredCells.clear(); this.lastCaptureAt=null;
     this.poses.clear();this.tilts.clear();this.poseSource.clear();this.visualAnchor=null;this.lastRegistrationAt=-Infinity;this.frameBasis=null;this.alignmentWait=false;this.overlapWait=false;this.lastSensorReading=null;
     this.stability.clear();this.trackEnded=false;
-    this.hasOrientation = false; this.tiltAt = null;
+    this.hasOrientation = false; this.tiltAt = null; this.headingAt = null;
     const DOE = window.DeviceOrientationEvent as typeof DeviceOrientationEvent & { requestPermission?: () => Promise<string> };
     // Ask from the click gesture, before awaiting camera discovery (Safari).
     const motionPermission = DOE?.requestPermission?.().catch(() => "denied");
@@ -430,7 +463,7 @@ export class PhotosphereSweep {
         // origin. Fall back for older implementations using epoch timestamps.
         const at=Number.isFinite(e.timeStamp)&&Math.abs(received-e.timeStamp)<2000?e.timeStamp:received;
         const elevation = cameraElevation(oe);
-        if (elevation !== null) { this.altitude = elevation; this.tiltAt = Date.now();
+        if (elevation !== null) { this.altitude = elevation; this.tiltAt = at;
           this.tilts.add({at,screenAngle,basis:orientationBasis(0,oe.beta!,oe.gamma!,screenAngle)});
         }
         const pose = cameraPose(oe, e.type === "deviceorientationabsolute");
@@ -443,7 +476,7 @@ export class PhotosphereSweep {
           this.basis = accepted.basis;
           if(accepted.changedSource){this.poses.clear();this.frameBasis=null;}
           this.poses.add({at,screenAngle,basis:this.basis});
-          this.hasOrientation = true;
+          this.hasOrientation = true; this.headingAt = at;
         } else if (elevation !== null && elevation >= 85 && !this.compassReady) {
           // No absolute bearing at the zenith: retain the last azimuth frame
           // for display, but only project the single overhead pixel below.
@@ -462,7 +495,7 @@ export class PhotosphereSweep {
         // The sensor stops talking when the phone stops moving. Ask the video
         // and the page lifecycle instead, and hand both answers to forFrame.
         this.observeStillness(video,now);
-        const evidence:PoseEvidence={visuallyStable:this.stability.stableAt(now)===true,sourceHealthy:this.sourceHealthy};
+        const evidence:PoseEvidence={visuallyStable:this.stability.stableAt(now),sourceHealthy:this.sourceHealthy};
         const basis=this.poses.forFrame(now,metadata.captureTime,evidence);
         if(basis)this.frameBasis={basis,at:now};
         else this.frameBasis=null;
@@ -493,29 +526,43 @@ export class PhotosphereSweep {
         this.lumaCanvas = document.createElement("canvas");
         this.lumaCanvas.width = GRID_W; this.lumaCanvas.height = GRID_H;
       }
-      const ctx = this.lumaCanvas.getContext("2d");
-      if (!ctx) return;
+      // This reads its own pixels back every single frame, which is the one
+      // access pattern a GPU-backed canvas is worst at.
+      const ctx = this.lumaCanvas.getContext("2d", { willReadFrequently: true });
+      if (!ctx) throw new Error("no 2d context for the stillness sample");
       ctx.drawImage(video, 0, 0, GRID_W, GRID_H);
       const { data } = ctx.getImageData(0, 0, GRID_W, GRID_H);
       for (let p = 0; p < this.luma.length; p++) this.luma[p] = luminance(data[p*4], data[p*4+1], data[p*4+2]);
       this.stability.observe(now, this.luma, GRID_W, GRID_H);
-    } catch { /* A lost drawing context tells us nothing: stability stays unknown. */ }
+      this.stillnessFailures = 0;
+    } catch {
+      // A lost drawing context tells us nothing, so stability stays unknown -
+      // and unknown means the strict rule, which means a STILL phone can never
+      // capture, forever, behind a cue telling it to hold still. Swallowing
+      // this reinstates the whole defect with nothing anywhere recording why,
+      // so it is counted, said in the cue and carried in the alignment report.
+      this.stillnessFailures++;
+    }
   }
 
   private grabFrame(manualOverhead = false, frame?:{basis:CameraBasis|null;tilt:CameraBasis|null}): boolean {
     const { video, canvas } = this;
-    if (!this.recording || !this.ready || !video || !canvas || document.visibilityState === "hidden") return false;
+    const now=performance.now();
+    // Browsers without requestVideoFrameCallback - Firefox Android, notably -
+    // reach the preview's pixels only here, so this path takes its own sample.
+    // Without it stability is permanently unknown there, the strict rule never
+    // relaxes and a still phone deadlocks exactly as it did before any of this.
+    // The 350 ms cadence is inside STALE_FRAME_MS, so a settle lands at
+    // 700-1050 ms, inside the 1.5 s acceptance budget.
+    if (!frame && video && this.sourceHealthy) this.observeStillness(video, now);
+    // One visibility rule, not two. A second copy of the test here could
+    // disagree with the sourceHealthy the evidence below is built from.
+    if (!this.recording || !this.ready || !video || !canvas || !this.sourceHealthy) return false;
     if (video.videoWidth === 0 || video.videoHeight === 0) {
       if (manualOverhead) this.issue = "Waiting for a camera image. Keep the rear camera pointing up and try again.";
       return false;
     }
-    const now=performance.now();
-    // Only the video-frame path has looked at the pixels. The interval
-    // fallback never does, so stability stays unknown there and nothing about
-    // the strict freshness rule is relaxed for it.
-    const evidence:PoseEvidence=frame
-      ? {visuallyStable:this.stability.stableAt(now)===true,sourceHealthy:this.sourceHealthy}
-      : {sourceHealthy:this.sourceHealthy};
+    const evidence:PoseEvidence={visuallyStable:this.stability.stableAt(now),sourceHealthy:this.sourceHealthy};
     const rawBasis=frame ? frame.basis : this.poses.forFrame(now,undefined,evidence);
     let basis=rawBasis?this.correctBasis(rawBasis):null;
     const tilt=frame ? frame.tilt : this.tilts.forFrame(now,undefined,evidence);
@@ -560,7 +607,7 @@ export class PhotosphereSweep {
         if(now-this.lastDiagnosticAt>=1000){
           this.lastDiagnosticAt=now;
           this.scanSamples.push({at:now,basis,sensorBasis:rawBasis,relativeMotion:this.poseSource.usesRelative,adjusted:registration.adjusted,lens,videoWidth:video.videoWidth,videoHeight:video.videoHeight,
-            sensor:this.lastSensorReading,overlap,image:canvas.toDataURL('image/jpeg',.8)});
+            sensor:this.lastSensorReading,stillnessReadFailures:this.stillnessFailures,overlap,image:canvas.toDataURL('image/jpeg',.8)});
           if(this.scanSamples.length>16)this.scanSamples.splice(1,1);
         }
         if(overlap.result==='conflict'){this.overlapWait=true;return false;}
@@ -605,8 +652,12 @@ export class PhotosphereSweep {
   }
 
   alignmentReport():string {
+    // `stillnessReadFailures` sits in the ENVELOPE as well as in each sample,
+    // because the run this field exists to explain is the one with no samples
+    // at all: blind to the pixels means the strict rule means nothing was ever
+    // accepted. Spec 4.3 - a session with zero accepted frames is diagnosable.
     return JSON.stringify({version:1,description:'Local camera samples for alignment debugging; contains photos of your surroundings.',
-      browser:navigator.userAgent,samples:this.scanSamples},null,2);
+      browser:navigator.userAgent,stillnessReadFailures:this.stillnessFailures,samples:this.scanSamples},null,2);
   }
 
   stop(): void {
@@ -620,8 +671,11 @@ export class PhotosphereSweep {
     }
     this.headingHandler = null;
     // No listeners, no pose stream: the source is not healthy until start()
-    // attaches them again, and the old view can vouch for nothing.
+    // attaches them again, and the old view can vouch for nothing. The luma
+    // canvas goes with it - it is lazy, so the next scan rebuilds it, and a
+    // closed editor should not hold a canvas backing store open.
     this.listening = false; this.stability.clear();
+    this.lumaCanvas = null; this.stillnessFailures = 0;
     this.stream?.getTracks().forEach((t) => t.stop());
     this.stream = null;
     if (this.video) this.video.srcObject = null;
