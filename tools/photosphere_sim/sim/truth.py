@@ -223,13 +223,16 @@ def background_texture(scene: Scene, width: int, height: int) -> np.ndarray:
     the same JSON, which is why every step is written down in the module
     docstring rather than left to the code.
 
-    Discs can overlap: the chart yard's cap ring puts eight discs of radius
-    1.5 degrees on a circle only 3 degrees from the pole, whose circumference
-    is 18.85 degrees where the discs need 24, so six pairs of them intersect.
-    Where two overlap the EARLIER disc in file order wins, the same way
-    :func:`intersect` and the object tie rule resolve a tie, which is why the
-    discs are painted from the last declared to the first: the painter's
-    "later covers earlier" would otherwise disagree with the truth evaluator.
+    No two discs in the chart yard overlap: its closest pair, two neighbours on
+    the cap ring, clears the sum of its radii by 1.995 degrees, and
+    ``test_no_two_background_discs_touch`` keeps every scene that way. The tie
+    rule below is for a scene that does overlap anyway. Where two discs do
+    overlap the EARLIER one in file order wins, the same way :func:`intersect`
+    and the object tie rule resolve a tie, which is why the discs are painted
+    from the last declared to the first: a painter's "later covers earlier"
+    would otherwise disagree with the truth evaluator, and the renderer's image
+    would not match the truth colour there. A synthetic two-disc scene in
+    ``test_overlapping_discs_resolve_the_same_way_in_both_products`` pins it.
     """
     texture = scene.background["texture"]
     grey0, grey1 = (float(g) for g in texture["grey"])

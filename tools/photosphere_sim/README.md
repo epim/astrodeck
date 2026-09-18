@@ -24,8 +24,11 @@ palette colour on its worst single channel.
 structure: schema version, object kinds, palette indices, and that every id a
 surface landmark or test obstacle names is a real object. `scenes/chartyard.json`
 is the stage-A world: a directional noise-and-stripe background, 46 background
-landmark discs on five rings and a six-disc cap, eight objects from 0.75 to 160
-metres, six landmarks painted on object faces, and five declared test obstacles.
+landmark discs on five rings and a six-disc cap, and eight objects whose
+surfaces run from 1.6 m from the reference position (the near pole, and the
+roof edge overhead) out to a hill ridge 119 m north and 300 m wide, over an
+infinite ground plane. Six more landmarks are painted on object faces, and five
+objects are declared test obstacles the horizon scorer must find individually.
 
 `sim/truth.py` is the oracle: analytic ray casting against those objects
 (`intersect`), the horizon envelope from a reference position (`horizon`), each
