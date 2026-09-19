@@ -68,7 +68,7 @@ const { createRoot } = await import("react-dom/client");
 const { useStore } = await import("../../../../../store");
 const { HorizonSheet } = await import("../horizon");
 const { cameraPose, foldSweepColumns, preferredRearCamera, PhotosphereSweep } = await import("../photosphere");
-const { DOME_CELLS } = await import('../photosphereGeometry');
+const { DOME_CELLS, SkyPanorama } = await import('../photosphereGeometry');
 useStore.setState({ principal: { role: "admin", caps: ["config.safety", "config.site_optics"] }, wsPhase: "up",
   equipConnected: true, status: { mode: "sim", connected: {}, busy_lanes: [] }, config: { safety: { horizon: [] } },
 } as never);
@@ -389,6 +389,38 @@ await test('A session with no accepted pose stays diagnosable; panoramaPixels is
   assert.equal(pixels!.height,300);
   assert.ok(Array.from(pixels!.pixels).some((v,i)=>i%4===3&&v===255));
   sweep.stop();
+});
+await test('A browser with no DeviceOrientationEvent can still capture the overhead by hand (issue #42 item 3)', async () => {
+  const originalDOE = w.DeviceOrientationEvent;
+  delete w.DeviceOrientationEvent;
+  try {
+    const sweep = new PhotosphereSweep();
+    await sweep.start(document.createElement('video'), document.createElement('canvas'));
+    assert.equal(sweep.usedOrientation, false, 'a compass reading arrived with no constructor to have delivered it');
+    // begin() itself requires compassReady, i.e. hasOrientation - a reading
+    // this browser structurally can never produce, so it can never be pressed
+    // in the real app (filed as its own finding: begin()'s gate keeps this
+    // fix unreachable through the UI on such a browser). What is under test
+    // here is narrower and does not depend on that: whether grabFrame, given
+    // a session already recording, treats a browser with no pose stream as
+    // healthy rather than stalled. recording/panorama are the two fields
+    // begin() sets that start() does not, so they are set directly to reach
+    // that state without a compass reading that cannot exist.
+    (sweep as unknown as { recording: boolean }).recording = true;
+    (sweep as unknown as { panorama: unknown }).panorama = new SkyPanorama();
+    for (let i = 0; i < 3; i++) await tick();
+    // Mutation (issue #42 item 4): drop the `|| !this.orientationSupported`
+    // term from sourceHealthy. `listening` then stays false for the whole
+    // test (no constructor ever attached it), sourceHealthy is false, and
+    // grabFrame refuses this call as 'unhealthy' - captureOverhead() returns
+    // false and overheadCaptured stays false. Observed red under that
+    // mutation and on pre-fix HEAD alike, both being the same code.
+    assert.equal(sweep.captureOverhead(), true, 'a manual overhead press was refused with no pose stream to be unhealthy about');
+    assert.equal(sweep.overheadCaptured, true);
+    sweep.stop();
+  } finally {
+    w.DeviceOrientationEvent = originalDOE;
+  }
 });
 await test('The mocks are the ordinary ones again', async () => {
   // Must stay last. This pins issue #51: "A grant arriving after
