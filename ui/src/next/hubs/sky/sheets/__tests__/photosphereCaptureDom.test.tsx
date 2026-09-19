@@ -550,6 +550,118 @@ await test('An oriented hold below the overhead band still completes the zenith 
   // frameCount reaches 2. Observed red.
   sweep.stop();
 });
+await test('A browser with no DeviceOrientationEvent is not a healthy source once the scan is stopped (#42 item 3)', async () => {
+  // The other side of the escape above. `orientationSupported` is recorded once
+  // in start() and never cleared - rightly, since clearing it would make
+  // `!orientationSupported` true for a browser that HAS the constructor and
+  // hand every stopped sweep a healthy source instead of none - so on a browser
+  // that never had it, `(listening || !orientationSupported)` is true forever
+  // and stop() left the getter answering healthy: no stream, no listeners, no
+  // element, and a healthy source. The liveness term is what closes it.
+  // Read through the instance because nothing public can see this state:
+  // `compassReady` and `tiltReady` are false here for want of a reading such a
+  // browser cannot produce, and every grabFrame after stop() returns at
+  // 'not-recording' before the health test. That is why the defect was latent,
+  // and it is also why a case that went through a public getter would be
+  // grading something else.
+  // Mutation: drop `this.stream !== null &&` from sourceHealthy. Observed red:
+  // "a stopped sweep still reported a healthy source".
+  const originalDOE = w.DeviceOrientationEvent;
+  delete w.DeviceOrientationEvent;
+  try {
+    const sweep = new PhotosphereSweep();
+    await sweep.start(document.createElement('video'), document.createElement('canvas'));
+    const probe = sweep as unknown as { sourceHealthy: boolean };
+    assert.equal(probe.sourceHealthy, true,
+      'a live sweep on this browser is already unhealthy, so stopping it below shows nothing');
+    sweep.stop();
+    assert.equal(probe.sourceHealthy, false, 'a stopped sweep still reported a healthy source');
+  } finally {
+    w.DeviceOrientationEvent = originalDOE;
+  }
+});
+await test('A second begin() opens on the ordinary cue, not on the last scan’s refusal', async () => {
+  // begin() already clears the RUN of overlap refusals, on the argument that
+  // "unreachable by luck" is how a second begin() comes to open with a lens
+  // sentence. The two booleans one precedence level down carry the same
+  // argument and were left standing, so a second begin() opened with "Hold the
+  // phone still for a moment..." or "I can't match this view yet...", both
+  // about a scan that had just ended.
+  // The three fields are set directly for the reason the #52 case gives: this
+  // harness's uniform-grey camera can never make checkOverlap return
+  // 'conflict', and what is graded here is begin(), not the refusal path.
+  // Mutation: drop `this.overlapWait = false; this.alignmentWait = false;` from
+  // begin(). Observed red: "a second begin() opened on the last scan's
+  // refusal".
+  const sweep = new PhotosphereSweep();
+  await sweep.start(document.createElement('video'), document.createElement('canvas'));
+  const cell = sweep.cells.find(c => c.alt > 20 && c.alt < 60)!;
+  heading(cell.az, true, 90 + cell.alt);
+  sweep.begin();
+  await tick();
+  const state = sweep as unknown as { overlapWait: boolean; alignmentWait: boolean; overlapWaitRun: number };
+  state.overlapWait = true; state.alignmentWait = true; state.overlapWaitRun = LENS_DOUBT_AFTER;
+  assert.match(sweep.captureCue, /^Hold the phone still for a moment/,
+    `the refusal state never reached the cue (it said "${sweep.captureCue}"), so clearing it below proves nothing`);
+  sweep.begin();
+  assert.equal(state.alignmentWait, false, 'begin() left the last scan’s alignment wait standing');
+  assert.equal(state.overlapWait, false, 'begin() left the last scan’s overlap wait standing');
+  assert.equal(state.overlapWaitRun, 0, 'begin() left the last scan’s run of refusals standing');
+  assert.equal(sweep.captureCue, 'Hold here… capturing this patch.',
+    `a second begin() opened on the last scan's refusal: "${sweep.captureCue}"`);
+  sweep.stop();
+});
+await test('Pointed at the ground, the cue says to raise the phone and never blames the lens (#52, #57)', async () => {
+  // Two findings in one state, because it is one state. `no-target` and
+  // `below-horizon` are NEUTRAL outcomes - they do not end a run of overlap
+  // refusals - so a user refused six times who then lowers the phone to read
+  // the cue, which is exactly what they do, was told "I still can't match this
+  // view. The camera view angle may be set wrong for this lens" while grabFrame
+  // was not attempting to match anything at all. And the line they reach
+  // instead used to be "Bring a blue dot into the centre ring", which since
+  // issue #57 gave every direction above the horizon a target is reachable
+  // ONLY from below it - where there is no blue dot anywhere near the ring and
+  // the instruction cannot be followed.
+  // beta 70 is 20 degrees below the horizon, past the -10 capture gate and
+  // outside every cell's 11 degree cone. The run is set directly for the reason
+  // the #52 case gives (a uniform-grey camera cannot produce a real conflict),
+  // and it is set BEFORE the tick so the case also shows the run surviving the
+  // neutral outcome - which is what puts the lens branch in reach here at all.
+  // Two mutations, one per finding. Drop `&& this.aimTargetAt(now)` from the
+  // lens branch: observed red on both cue assertions, the cue being "I still
+  // can't match this view. The camera view angle may be set wrong for this
+  // lens. End the scan, then set the camera view angle before you scan again."
+  // Put back "Bring a blue dot into the centre ring." as the final line:
+  // observed red on the last assertion alone.
+  // Cases above persist a measured view angle per camera, and the branch this
+  // one is about only exists while the lens is still a guess. The saved angles
+  // go rather than the whole store: nothing else here keeps state in it, but a
+  // blanket clear would be a fixture reaching further than its own case.
+  for (let i = w.localStorage.length - 1; i >= 0; i--) {
+    const key = w.localStorage.key(i) as string;
+    if (key.startsWith('astrodeck.photosphere.lens.')) w.localStorage.removeItem(key);
+  }
+  const sweep = new PhotosphereSweep();
+  await sweep.start(document.createElement('video'), document.createElement('canvas'));
+  const state = sweep as unknown as { overlapWait: boolean; overlapWaitRun: number };
+  heading(180, true, 70);
+  sweep.begin();
+  assert.equal(sweep.isRecording, true, 'the scan never started, so the cue below is the not-recording one');
+  state.overlapWait = true; state.overlapWaitRun = LENS_DOUBT_AFTER;
+  await tick();
+  const last = sweep.captureLog[sweep.captureLog.length - 1];
+  assert.equal(last.outcome, 'no-target',
+    `the phone is not aimed below every cell: the grab recorded ${last.outcome}`);
+  assert.equal(sweep.aimTarget, null, 'there is a target down here, so neither half of this case is under test');
+  assert.ok(state.overlapWaitRun >= LENS_DOUBT_AFTER,
+    `the run fell to ${state.overlapWaitRun}, so the lens branch is out of reach for a reason this case is not about`);
+  assert.equal(sweep.hasLensCalibration, false, 'the lens was calibrated, which is the other way out of that branch');
+  assert.doesNotMatch(sweep.captureCue, /camera view angle/,
+    `the lens was blamed while nothing was being matched: "${sweep.captureCue}"`);
+  assert.equal(sweep.captureCue, 'The phone is pointing below the horizon. Raise it until a blue dot is in the centre ring.',
+    `cue was: "${sweep.captureCue}"`);
+  sweep.stop();
+});
 await test('The mocks are the ordinary ones again', async () => {
   // Must stay last. This pins issue #51: "A grant arriving after
   // cancellation is released" used to replace getUserMedia with a mock that

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { VisualStability, SETTLE_MS, STALE_FRAME_MS, GRID_W, GRID_H } from '../photosphereStability';
+import { VisualStability, SETTLE_MS, STALE_FRAME_MS, GRID_W, GRID_H, gradient, GRADIENT_FLOOR, GRADIENT_HYSTERESIS } from '../photosphereStability';
 
 // The video is the only witness to a still phone: the orientation sensor goes
 // silent when nothing moves, so silence proves nothing on its own. These cases
@@ -290,18 +290,18 @@ test('A NOISE-FREE thin treeline under a smooth sky reads UNKNOWN while panning,
   // the 1 px one, which fires first.
 });
 
-test('The same pan with a real camera on it is ADMITTED, and still never reads still (issue #38)',()=>{
+test('The same pan with a real camera on it never reads still either (issue #38)',()=>{
   // The case above is true of synthetic frames. A camera adds noise, noise adds
   // gradient, and this scene has the emptiest horizontal pairs of anything in
   // this file, so the noise has the field to itself there: measured, sigma 3
   // lifts its min-gradient from 0.0109 to 0.0123-0.0137, which straddles
-  // GRADIENT_FLOOR. The frame is admitted as a witness with almost nothing to
-  // witness with, and the whole weight then falls on the bounds.
-  // They hold. Measured over this pan at sigma 1, 2, 3 and 4 the verdicts are
-  // {null}, {null, false}, {false, null} and {false} - never `true` at any of
-  // them, which is the claim issue #38 is actually about. Held rather than
-  // panned, the same noisy scene settles to `true` at sigma 3, as it should:
-  // it IS still then.
+  // GRADIENT_FLOOR - the frame crossing the floor on its own noise, which is
+  // the scene issue #75 is about one layer up.
+  // Since the band (GRADIENT_HYSTERESIS) the lift no longer reaches the exit at
+  // 0.016, so this pan reads {null} at sigma 1, 2, 3 and 4 alike (measured);
+  // before the band it was admitted and the verdicts were {null}, {null,false},
+  // {false,null} and {false}. Either way never `true`, which is the claim issue
+  // #38 is actually about and the only thing this case asserts.
   const s=new VisualStability();
   let vouched=false;
   for(let i=0;i*FRAME_MS<=2000;i++){
@@ -310,10 +310,11 @@ test('The same pan with a real camera on it is ADMITTED, and still never reads s
   }
   assert.equal(vouched,false,'a 1 px/frame pan of a noisy low-gradient view read as still at some point');
   // Mutation that reddens this: GRADIENT_FLOOR = 0 together with
-  // ANCHOR_CELLS = 1e9. The floor is not what holds here - the noise already
-  // carries the scene over it - so the mutation that matters is the one that
-  // removes the bound, and the floor goes with it only to keep the frames
-  // admitted at every sigma.
+  // ANCHOR_CELLS = 1e9 (a zero floor takes the hysteresis exit with it, since
+  // the exit is a multiple of the floor). The floor alone is no longer the only
+  // thing holding here and the bound alone is not either, so both have to go:
+  // the zero floor admits the frames at every sigma and the removed bound then
+  // lets the pan read as a hold.
 });
 
 test('A view with structure in one direction only cannot vouch for a pan across it',()=>{
@@ -472,15 +473,24 @@ test('A frame with no texture is a break, even between two identical textured fr
  *  loses far more gradient than frame. A checkerboard puts every pair of
  *  adjacent cells on opposite sides of the base, in both directions at once, so
  *  Gh and Gv are both 2 x levels / 120 while a change of amplitude moves the
- *  frame by only the change itself. Measured: fading 0.88 to 0.68 takes the
- *  gradient from 0.014667 to 0.011333, across GRADIENT_FLOOR (0.0128) by 15
- *  percent above and 11 percent below, while the pair differs by 0.001667 -
- *  inside the dimmer frame's own movement bound of 0.003287 and inside the
- *  brighter frame's 0.004253, so NOTHING but the gradient floor separates them.
- *  Note the variance of the lit frame: 5.4e-5, a two-hundredth of the variance
- *  floor this rule replaces. It reads as a usable witness and the two flat
- *  halves above, with a thousand times its variance, do not. That inversion is
- *  the whole of issue #38. */
+ *  frame by only the change itself.
+ *  Three amplitudes are used below, and each is on a different side of a
+ *  threshold (all measured through this module at 320x240):
+ *    0.72  G = 0.012000, six percent UNDER GRADIENT_FLOOR (0.0128): cannot
+ *          witness at all.
+ *    0.84  G = 0.014000, nine percent over the floor but INSIDE the hysteresis
+ *          band (exit 0.016): over the floor and still not enough to end a
+ *          featureless state (issue #75).
+ *    1.05  G = 0.017500, nine percent clear of the exit: a witness again from
+ *          any state.
+ *  The pairs stay inside the movement bound, which is what leaves the gradient
+ *  rule as the only thing separating them: 0.72/0.84 differ by 0.001000 against
+ *  the dimmer frame's bound of 0.003480, and 0.72/1.05 by 0.002750 against the
+ *  same 0.003480. Neither pair is movement to the rate test.
+ *  Note the variance of the 1.05 frame: 7.7e-5, a hundred and thirtieth of the
+ *  variance floor this rule replaces. It reads as a usable witness and the two
+ *  flat halves above, with eight hundred times its variance, do not. That
+ *  inversion is the whole of issue #38. */
 function fineTexture(levels:number):Uint8Array{
   const px=new Uint8Array(PW*PH);
   const cw=PW/GRID_W,ch=PH/GRID_H;
@@ -490,6 +500,17 @@ function fineTexture(levels:number):Uint8Array{
     px[y*PW+x]=120+sign*(whole+((y%ch)*cw+(x%cw)<bumped?1:0));
   }
   return px;
+}
+
+/** The normalised grid `fineTexture(levels)` produces, so a case can state its
+ *  gradient premise against the exported `gradient` rather than against a
+ *  number in a comment. Exact, and that is why it can be written down: the
+ *  checkerboard is balanced over 32x24, so the frame mean is exactly 120 and
+ *  every cell lands on 1 +- levels/120 after normalisation. */
+function fineGrid(levels:number):Float64Array{
+  const g=new Float64Array(GRID_W*GRID_H);
+  for(let y=0;y<GRID_H;y++)for(let x=0;x<GRID_W;x++)g[y*GRID_W+x]=1+((x+y)%2?-1:1)*levels/120;
+  return g;
 }
 
 test('A frame too smooth to judge breaks the run even though no pair moved',()=>{
@@ -502,16 +523,16 @@ test('A frame too smooth to judge breaks the run even though no pair moved',()=>
   // continuity vouches for a reading taken before them.
   // The premise first, pinned so it cannot quietly stop holding.
   const dim=new VisualStability();
-  for(let t=0;t<=600;t+=100)dim.observe(t,fineTexture(0.68),PW,PH);
+  for(let t=0;t<=600;t+=100)dim.observe(t,fineTexture(0.72),PW,PH);
   assert.equal(dim.stableAt(600),null,'the near-floor frame must read as unjudgeable');
   const lit=new VisualStability();
-  for(let t=0;t<=600;t+=100)lit.observe(t,fineTexture(0.88),PW,PH);
+  for(let t=0;t<=600;t+=100)lit.observe(t,fineTexture(1.05),PW,PH);
   assert.equal(lit.stableAt(600),true,'the textured frame must read as still');
 
   const s=new VisualStability();
-  for(let t=0;t<=800;t+=100)s.observe(t,fineTexture(0.88),PW,PH);
-  s.observe(900,fineTexture(0.68),PW,PH);   // the fine detail dips under the floor
-  for(let t=1000;t<=1500;t+=100)s.observe(t,fineTexture(0.88),PW,PH);
+  for(let t=0;t<=800;t+=100)s.observe(t,fineTexture(1.05),PW,PH);
+  s.observe(900,fineTexture(0.72),PW,PH);   // the fine detail dips under the floor
+  for(let t=1000;t<=1500;t+=100)s.observe(t,fineTexture(1.05),PW,PH);
   const c=s.continuity(1500);
   assert.ok(c,'the view is textured and settled again by 1500');
   // 1000 and not 900: the frame at 1000 is the first textured one, but the
@@ -526,6 +547,13 @@ test('A frame too smooth to judge breaks the run even though no pair moved',()=>
   // near-floor frame read still instead of unjudgeable, and observed red is the
   // first premise. (That mutation reddens seven cases in this file, so the floor
   // is not the thing short of mutants.)
+  // The amplitudes are 1.05 and 0.72 and not 0.88 and 0.68: the dip has to come
+  // back out of the featureless state, and since issue #75 that takes a frame
+  // clear of the hysteresis exit (0.016) rather than merely over the floor.
+  // 0.88 sits inside the band, which is the state the case below this one is
+  // about. The pair is still inside the movement bound either way (0.002750
+  // against 0.003480), so the gradient rule is still the only thing that sees
+  // the dip.
   // The BODY - the run restarting at 1000 and the break at {1000, 1000} - is
   // graded by the one rule in `observe` that refuses a pair unless BOTH its
   // frames could witness, which is where the floor's verdict is actually spent.
@@ -539,8 +567,8 @@ test('A textured pair after an untextured frame opens the run at ITSELF, not at 
   // so it witnessed nothing while it was the newest frame - and yet the pair
   // 0/100 read as a hold and opened the run at 0, crediting the settle with one
   // frame interval nothing watched. The pair is inside the movement bound by
-  // construction (`fineTexture` above: the two frames differ by 0.001667
-  // against the lit frame's bound of 0.004253), which is why the motion test
+  // construction (`fineTexture` above: the two frames differ by 0.002750
+  // against the lit frame's bound of 0.005075), which is why the motion test
   // cannot catch this and a rule of its own has to.
   // The instants: untextured at 0, textured at 100, 200, ... 600.
   //   with the fix    the run opens on the pair 100/200, stillSince = 100, and
@@ -549,11 +577,11 @@ test('A textured pair after an untextured frame opens the run at ITSELF, not at 
   // 550 is strictly inside that difference and is read with the newest frame at
   // 500, 50 ms old against STALE_FRAME_MS, so freshness decides nothing here.
   const s=new VisualStability();
-  s.observe(0,fineTexture(0.68),PW,PH);
-  for(let t=100;t<=500;t+=100)s.observe(t,fineTexture(0.88),PW,PH);
+  s.observe(0,fineTexture(0.72),PW,PH);
+  for(let t=100;t<=500;t+=100)s.observe(t,fineTexture(1.05),PW,PH);
   assert.equal(s.stableAt(550),false,
     'the settle was credited the interval after a frame that could not witness anything');
-  s.observe(600,fineTexture(0.88),PW,PH);
+  s.observe(600,fineTexture(1.05),PW,PH);
   assert.equal(s.stableAt(600),true,'a run opened at 100 must settle at 600');
   const c=s.continuity(600);
   assert.equal(c!.stillSince,100,'the run did not open on the first pair of judgeable frames');
@@ -565,13 +593,60 @@ test('A textured pair after an untextured frame opens the run at ITSELF, not at 
   // the run legitimately opens at 0 and 550 is past the settle. So the only
   // thing 550 is measuring above is the interval the untextured frame cost.
   const control=new VisualStability();
-  for(let t=0;t<=500;t+=100)control.observe(t,fineTexture(0.88),PW,PH);
+  for(let t=0;t<=500;t+=100)control.observe(t,fineTexture(1.05),PW,PH);
   assert.equal(control.stableAt(550),true,'the control never settled, so the case above proves nothing');
   // Mutation: delete `if(!this.canWitness||!previousWitnessed)` in `observe` -
   // one branch, because a frame that cannot witness and the frame after it are
   // one rule. Observed red: "the settle was credited the interval after a frame
   // that could not witness anything", with the two cases above red on their own
   // messages (20/23).
+});
+
+test('A view whose gradient wanders across the floor reads featureless throughout, never moving (issue #75)',()=>{
+  // The Major the whole-branch review found, and it is composed rather than
+  // local: the floor was a bare threshold on the current frame (#38); a pair
+  // whose predecessor could not witness breaks at its own instant (#49); and
+  // the driver holds a reading only while the witness says 'featureless' (#41).
+  // Each is right on its own. Together, a view sitting on the floor answered
+  // featureless, moving, featureless, moving, ... frame by frame - measured on
+  // the shipped module before the band, exactly that sequence over eleven
+  // frames - and compassReady, tiltReady, cameraBasis, aimTarget, the Start
+  // scan gate and the cue alternated with it, half the frames landing on "move
+  // the phone gently" over a phone that was holding still.
+  // Not a theoretical scene: GRADIENT_FLOOR's own comment measures a thin
+  // treeline at 0.0103-0.0116 clean and 0.0123-0.0137 under sigma-3 noise,
+  // straddling the floor by itself.
+  const dim=fineTexture(0.72),lit=fineTexture(0.84);
+  // The premise, because a fixture that had quietly fallen under the floor at
+  // BOTH amplitudes would pass the assertion below for nothing.
+  const gDim=gradient(fineGrid(0.72)),gLit=gradient(fineGrid(0.84));
+  assert.ok(gDim<GRADIENT_FLOOR,`the dim frame's gradient is ${gDim}, not under the floor ${GRADIENT_FLOOR}`);
+  assert.ok(gLit>GRADIENT_FLOOR,`the lit frame's gradient is ${gLit}, not over the floor ${GRADIENT_FLOOR}`);
+  assert.ok(gLit<GRADIENT_FLOOR*(1+GRADIENT_HYSTERESIS),
+    `the lit frame's gradient is ${gLit}, already past the hysteresis exit, so this case is not about the band`);
+  // And the pair is not movement: 0.001000 against the dim frame's bound of
+  // 0.003480, so only the floor can separate these two frames.
+  const s=new VisualStability();
+  const verdicts=new Set<string>();
+  for(let i=0;i<=30;i++){const at=i*100;s.observe(at,i%2?lit:dim,PW,PH);verdicts.add(s.witness(at));}
+  assert.deepEqual([...verdicts],['featureless'],
+    'a view wandering across the floor changed its verdict, so the driver flips with it (issue #75)');
+  // The control, and it is what stops the assertion above from being satisfied
+  // by a fixture that simply cannot witness at either amplitude: the same
+  // alternation with the brighter frame CLEAR of the exit does leave the
+  // featureless state, exactly once per crossing.
+  const clear=fineTexture(1.05);
+  const control=new VisualStability();
+  const controlVerdicts=new Set<string>();
+  for(let i=0;i<=30;i++){const at=i*100;control.observe(at,i%2?clear:dim,PW,PH);controlVerdicts.add(control.witness(at));}
+  assert.ok(controlVerdicts.has('moving'),
+    'a frame clear of the hysteresis exit did not end the featureless state, so the band admits nothing at all');
+  // Mutation: take the band out of `observe` - the bare threshold this
+  // replaces, `this.canWitness = g >= GRADIENT_FLOOR`. Not GRADIENT_HYSTERESIS
+  // = 0, which reddens the premise above before the body is reached and so
+  // grades the constant rather than the rule. Observed red: "a view wandering
+  // across the floor changed its verdict, so the driver flips with it (issue
+  // #75)" - the verdict set becomes ['featureless', 'moving'].
 });
 
 test('clear() forgets the last break',()=>{

@@ -55,8 +55,17 @@ Object.defineProperty(w.HTMLVideoElement.prototype,'readyState',{get:()=>starved
 // far under GRADIENT_FLOOR, and the witness can say nothing about a shift -
 // `stableAt` is null and `witness` is 'featureless' (issue #41). It overrides
 // `shift`, because a scene with no structure in it cannot show one.
-let shift=0,hidden=false,flat=false;
+// `faint` is the third camera: a one-cell checkerboard of plus or minus one
+// luma level on the base it is set to. The stillness grid is GRID_W x GRID_H
+// and the driver draws the preview at exactly that size, so a grid cell is one
+// pixel of this and the normalised gradient is exactly 2/base in both
+// directions - which makes the base a dial on G. It is how a case puts the
+// view ON GRADIENT_FLOOR rather than far under it the way `flat` does, and the
+// point is what happens when it wanders across (issue #75). Like `flat` it
+// overrides `shift`: a change of base is a change of exposure, not of aim.
+let shift=0,hidden=false,flat=false,faint:number|null=null;
 const scenePixel=(x:number,y:number,width:number,height:number)=>{
+  if(faint!==null)return faint+((x+y)%2?-1:1);
   if(flat)return 128;
   const col=Math.round(((x+shift)%width)*31/Math.max(1,width-1));
   const block=col>=10&&col<=17&&y>=Math.floor(height/3)&&y<=Math.floor(2*height/3);
@@ -105,6 +114,9 @@ const { PhotosphereSweep, OVERHEAD_BAND } = await import('../photosphere');
 // The capture's own azimuth convention, so the pose an outlier case reads back
 // out of the alignment report is measured the way the driver measured it.
 const { skyAngles } = await import('../photosphereGeometry');
+// The witness's own scale, so a case can state where its fixture sits against
+// the floor instead of asserting a number copied into a comment.
+const { gradient, GRADIENT_FLOOR, GRADIENT_HYSTERESIS, GRID_W, GRID_H } = await import('../photosphereStability');
 
 let passed=0,failed=0;
 async function test(name:string,fn:()=>Promise<void>){
@@ -163,7 +175,7 @@ async function test(name:string,fn:()=>Promise<void>){
  *  At the default 0 every frame is stamped when it is presented, the newest
  *  sample is the tick's own, and nothing above this line changes. */
 async function approachAndHold(rvfc=true,step=2,lag=0){
-  shift=0;hidden=false;blind=false;flat=false;intervalFn=null;mediaTime=0;paused=false;stalled=false;ended=starved=trackLost=trackMuted=false;
+  shift=0;hidden=false;blind=false;flat=false;faint=null;intervalFn=null;mediaTime=0;paused=false;stalled=false;ended=starved=trackLost=trackMuted=false;
   const video=w.document.createElement('video');
   let frame:((now:number,metadata:unknown)=>void)|undefined;
   if(rvfc){
@@ -518,7 +530,7 @@ await test('A lost compass over a featureless view names the sky, not the compas
  *  opens at t0 and settles 500 ms later, and from there the video vouches for
  *  the reading itself. */
 async function overheadHold(){
-  shift=0;hidden=false;blind=false;flat=false;intervalFn=null;mediaTime=0;paused=false;stalled=false;ended=starved=trackLost=trackMuted=false;
+  shift=0;hidden=false;blind=false;flat=false;faint=null;intervalFn=null;mediaTime=0;paused=false;stalled=false;ended=starved=trackLost=trackMuted=false;
   const video=w.document.createElement('video');
   let frame:((now:number,metadata:unknown)=>void)|undefined;
   video.requestVideoFrameCallback=(fn:typeof frame)=>{frame=fn;return 1;};
@@ -564,6 +576,66 @@ await test('The overhead cell keeps its tilt reading over a featureless view (is
   assert.equal(sweep.currentBand,OVERHEAD_BAND,`the band readout went to ${sweep.currentBand}`);
   assert.notEqual(sweep.cameraBasis,null,'cameraBasis rides tiltReady at the zenith, and it went null');
   flat=false;
+  sweep.stop();
+});
+
+await test('A view sitting on GRADIENT_FLOOR holds the compass steady instead of flipping it frame by frame (issue #75)',async()=>{
+  // The Major of the whole-branch review, one layer above the stability case
+  // that pins the witness. Three correct changes composed into this: the floor
+  // was a bare threshold on the current frame (#38); a pair whose predecessor
+  // could not witness breaks at its own instant (#49); a reading is held while
+  // the witness says 'featureless' (#41). So over a view sitting on the floor
+  // the witness answered featureless, moving, featureless, moving, and this
+  // getter answered with it - true on the featureless frames, where the memory
+  // stands, false on the moving ones, where a break drops it. Everything
+  // downstream flipped too: the dome, the aim dot, the Start scan gate, and a
+  // cue that landed on "Waiting for the compass ... move the phone gently"
+  // every other frame over a phone that was holding perfectly still.
+  // The fixture is `faint`, a one-cell checkerboard on a base the case
+  // alternates between 167 and 143. On the 32x24 stillness grid that is a
+  // gradient of exactly 2/base: 0.011976 and 0.013986, one either side of
+  // GRADIENT_FLOOR (0.0128) and both under the hysteresis exit (0.016). The
+  // two frames differ by 0.001005 against a movement bound of 0.003473, so
+  // this is a view changing brightness rather than a view moving, and the
+  // floor is the only thing that can separate the frames. It is not a
+  // contrived scene: GRADIENT_FLOOR's own comment measures a thin treeline
+  // under a smooth sky crossing the floor on nothing but its sensor noise.
+  // Instants: 25 textured ticks to s+2500 (past SENSOR_SILENCE_MS = 2000, so
+  // the video and not freshness is what holds the reading), then 30 ticks on
+  // the alternating view to s+5500.
+  // Mutation: take the band out of `VisualStability.observe` - one threshold
+  // again, `this.canWitness = g >= GRADIENT_FLOOR` - rather than setting
+  // GRADIENT_HYSTERESIS to 0, which would redden the premise above before the
+  // body was ever reached. Observed red: "compassReady flipped across 3 s of a
+  // view sitting on the floor: 101010101010101010101010101010".
+  const grid=(base:number)=>{
+    const g=new Float64Array(GRID_W*GRID_H);
+    for(let y=0;y<GRID_H;y++)for(let x=0;x<GRID_W;x++)g[y*GRID_W+x]=(base+((x+y)%2?-1:1))/base;
+    return g;
+  };
+  // The premise, graded by the same `gradient` the driver uses: the two frames
+  // really do straddle the floor, and the brighter one really is inside the
+  // band rather than past it. Without this the case could pass on a fixture
+  // that had quietly fallen under the floor at both bases, which is the state
+  // the case above already covers.
+  const low=gradient(grid(167)),high=gradient(grid(143));
+  assert.ok(low<GRADIENT_FLOOR,`the dim frame's gradient is ${low}, not under the floor ${GRADIENT_FLOOR}`);
+  assert.ok(high>GRADIENT_FLOOR,`the bright frame's gradient is ${high}, not over the floor ${GRADIENT_FLOOR}`);
+  assert.ok(high<GRADIENT_FLOOR*(1+GRADIENT_HYSTERESIS),
+    `the bright frame's gradient is ${high}, already past the hysteresis exit, so the view never sits on the floor`);
+  const {sweep,tick,silentFrom}=await approachAndHold();
+  for(let i=0;i<25;i++)tick();
+  assert.equal(clock-silentFrom,2500,'the textured hold did not last the 2500 ms the instants below are measured from');
+  assert.equal(sweep.compassReady,true,'the hold was not ready before the view reached the floor, so nothing below is about the view');
+  const readings:boolean[]=[];
+  for(let i=0;i<30;i++){faint=i%2?143:167;tick();readings.push(sweep.compassReady);}
+  faint=null;
+  assert.equal(clock-silentFrom,5500);
+  assert.deepEqual([...new Set(readings)],[true],
+    `compassReady flipped across 3 s of a view sitting on the floor: ${readings.map((r)=>r?'1':'0').join('')}`);
+  assert.notEqual(sweep.aimTarget,null,'the aim dot blanked on a view that is merely unjudgeable');
+  assert.match(sweep.captureCue,/nothing to track/,`cue was: "${sweep.captureCue}"`);
+  assert.doesNotMatch(sweep.captureCue,/move the phone/i,`cue was: "${sweep.captureCue}"`);
   sweep.stop();
 });
 
@@ -788,17 +860,19 @@ await test('After a run of refused ticks the cue names the camera image, not the
   // scan anyway: every tick so far returned at `not-recording`, so no capture
   // was ever attempted and `imageGate` has never been set. The refusal counter
   // is the only thing that knows the camera has stopped, and this is the cue it
-  // produces. (Once the first tick of the scan lands, the stale-image cue takes
-  // over and says the same thing about the same camera.)
+  // produces.
   // Instants: the preview is frozen from the moment it opens, so six ticks at
   // 350 ms carry the clock to +2100 ms and are MEDIA_GATE_BLIND_AFTER refusals
   // exactly. The reading 100 ms after that is fresh (SENSOR_SILENCE_MS is
   // 2000), so `begin()` passes its compassReady gate, and the cue is read
   // before the seventh tick.
+  // 2.1 seconds in the sentence is that same arithmetic, read back out: six
+  // refused ticks of a 350 ms timer. The number is the reason this cue and the
+  // stale-image one are no longer near-duplicates of each other.
   // Mutations: MEDIA_GATE_BLIND_AFTER = 1e9, and separately deleting the
   // increment. Observed red under both: the cue was "Hold here… capturing this
   // patch."
-  shift=0;hidden=false;blind=false;flat=false;intervalFn=null;mediaTime=0;paused=false;stalled=false;ended=starved=trackLost=trackMuted=false;
+  shift=0;hidden=false;blind=false;flat=false;faint=null;intervalFn=null;mediaTime=0;paused=false;stalled=false;ended=starved=trackLost=trackMuted=false;
   const video=w.document.createElement('video');   // no requestVideoFrameCallback: the fallback path
   const sweep=new PhotosphereSweep();
   await sweep.start(video,w.document.createElement('canvas'));
@@ -818,7 +892,7 @@ await test('After a run of refused ticks the cue names the camera image, not the
   sweep.begin();
   assert.equal(sweep.isRecording,true,'the scan never started, so the cue below is the not-recording one');
   assert.equal(sweep.captureCue,
-    'No new camera image has arrived for a couple of seconds. Close the scan and open the camera again.',
+    'No new camera image has arrived for 2.1 seconds. Close the scan and open the camera again.',
     `cue was: "${sweep.captureCue}"`);
   assert.doesNotMatch(sweep.captureCue,/compass/i,'the cue blamed the compass for a camera that has stopped');
   assert.doesNotMatch(sweep.captureCue,/move the phone/i,'the cue asked for movement, which cannot make a stopped camera deliver');
@@ -1101,7 +1175,20 @@ await test('P1: a frozen media clock is not captured, however fresh and steady t
   assert.equal(sweep.frameCount,0,'retained pixels were captured under the direction the phone points now');
   const tail=sweep.captureLog.slice(-5).map((r)=>r.outcome);
   assert.deepEqual([...new Set(tail)],['stale-image'],`the last outcomes were ${JSON.stringify(tail)}`);
-  assert.match(sweep.captureCue,/not updating/,`cue was: "${sweep.captureCue}"`);
+  // Every one of those twenty ticks was refused by the media gate as well as
+  // recorded at the image gate, so both sentences about this camera are live
+  // and the cue has to pick one. It picks the counter's, which is the review's
+  // M1 ruling: a RUN of refusals is stronger evidence than one attempt's
+  // record, and the counter is the only one of the two that can say how long -
+  // twenty ticks of a 350 ms timer, 7.0 seconds. The stale-image sentence it
+  // displaces is still reached and still pinned, by the overhead case below,
+  // where a manual press never asks the media gate and the run stays 0.
+  // Mutation: put the media-gate branch back below the two `imageGate` lines.
+  // Observed red: cue was "The camera image is not updating. Close the scan and
+  // open the camera again."
+  assert.equal(sweep.captureCue,
+    'No new camera image has arrived for 7.0 seconds. Close the scan and open the camera again.',
+    `cue was: "${sweep.captureCue}"`);
   stalled=false;
   sweep.stop();
 });

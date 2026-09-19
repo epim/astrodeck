@@ -115,6 +115,11 @@ try {
   );
 
   // ---- path 1: whatever this Node does by default (registerHooks, here) ----
+  // Only if the ambient environment has not already forced the other one. Set
+  // outside, both halves of this file would drive the async path, both would
+  // still pass, and the file would report two greens for one branch.
+  assert(process.env[FORCE_ASYNC_ENV] === undefined,
+    `${FORCE_ASYNC_ENV} is set in this environment, so path 1 below is the async path and the two halves grade the same branch`);
   const defaultOutcome = await runOne(testFile);
   test("default path: a file that imports .css is scored, not crashed", () => {
     assert(defaultOutcome.ok === true,
