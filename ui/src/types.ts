@@ -439,6 +439,8 @@ export interface GuideStats {
   // label) unless the server explicitly says false.
   is_arcsec?: boolean;
   image_scale?: number;
+  calibration_image_scale?: number | null;
+  image_scale_known?: boolean;
   // NOV-7: plain-language narration phase ("idle" | "finding" |
   // "calibrating" | "settling" | "guiding" | "lost"), or "" / absent when
   // unknown (the PHD2/NINA bridge guider leaves it unset — the narration
@@ -790,6 +792,11 @@ export interface SequenceState {
     reason: string;
     text: string;
     holding: boolean;
+    latest_frame?: {
+      cloudy: boolean | null;
+      score: number | null;
+      reason: string;
+    };
   };
 }
 
