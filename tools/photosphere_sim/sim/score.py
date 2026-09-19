@@ -43,9 +43,13 @@ from .palette import PALETTE
 # rather than copied: the expected-area model has to move with it.
 from .truth import _NORMAL_DOT
 
-__all__ = ["score_case"]
+__all__ = ["first_line_per_frame", "score_case"]
 
-#: The result panorama's shape, from CONTRACT.md's "Result directory".
+#: The result panorama's shape, from CONTRACT.md's "Result directory". These
+#: four are the one definition of the raster mapping in this package:
+#: ``sim.report`` and ``sim.corrupt`` import them rather than restate them, so
+#: a raster that changed shape could not be read one way by the scorer and
+#: another way by the page that draws its answer.
 PANORAMA_WIDTH = 1080
 PANORAMA_HEIGHT = 300
 PANORAMA_ALT_TOP = 90.0
@@ -485,6 +489,31 @@ def _score_horizon(reference: dict, measured: dict | None) -> dict:
 # --------------------------------------------------------------------------
 
 
+def first_line_per_frame(events: list) -> list:
+    """The event lines that count, in delivery order: the FIRST per frame id.
+
+    A `frame_id` on more than one line was delivered more than once. The later
+    lines are not samples and are not considered at all, so anything that
+    reads `events.jsonl` has to drop them the same way -- the scorer here and
+    the timeline `sim.report` draws. Two copies of this rule are two chances
+    for a report to plot a point no percentile beside it can account for,
+    which is why there is one.
+
+    A line with no `frame_id` is kept: it names no frame, so it cannot be a
+    repeat of one.
+    """
+    seen = set()
+    kept = []
+    for event in events:
+        frame_id = event.get("frame_id")
+        if frame_id is not None:
+            if frame_id in seen:
+                continue
+            seen.add(frame_id)
+        kept.append(event)
+    return kept
+
+
 def _score_overlay(events: list, frames: list) -> dict:
     """Overlay attitude error per delivered frame, moving and settled apart.
 
@@ -511,13 +540,8 @@ def _score_overlay(events: list, frames: list) -> dict:
     moving, settled = [], []
     missing = 0
     considered = 0
-    seen = set()
-    for event in events:
+    for event in first_line_per_frame(events):
         frame_id = event.get("frame_id")
-        if frame_id is not None:
-            if frame_id in seen:
-                continue
-            seen.add(frame_id)
         considered += 1
         basis = event.get("basis")
         frame = truth.get(frame_id)
@@ -763,6 +787,11 @@ def score_case(case_dir, result_dir=None) -> dict:
 
     case_id = manifest.get("case_id", case_dir.name)
     hashes = manifest.get("hashes", {})
+    # The profile belongs to the case directory, which is the thing being
+    # scored. Reaching into this checkout's ``cases/`` is the fallback for a
+    # directory built before the manifest carried it, and it is a fallback
+    # rather than the rule because the definition on this machine need not be
+    # the definition the case was built from.
     profile = manifest.get("profile")
     if profile is None:
         definition = _read_json(CASES_DIR / f"{case_id}.json", {}) or {}

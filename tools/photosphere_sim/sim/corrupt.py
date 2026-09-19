@@ -43,8 +43,11 @@ from .geometry import sky_angles, sky_vector
 from .palette import PALETTE
 from .scene import load as load_scene
 # The decoder's own colour tolerance: erasing less than the decoder can see
-# would be an erasure that leaves the landmarks findable.
-from .score import COLOUR_TOLERANCE
+# would be an erasure that leaves the landmarks findable. And the raster
+# mapping the scorer reads a result by: a corruption of a known size has to be
+# expressed in the same mapping the size will be measured in.
+from .score import (COLOUR_TOLERANCE, PANORAMA_ALT_SPAN, PANORAMA_ALT_TOP,
+                    PANORAMA_HEIGHT, PANORAMA_WIDTH)
 
 __all__ = ["CORRUPTIONS", "apply"]
 
@@ -100,7 +103,7 @@ def _column_azimuths(width: int) -> np.ndarray:
 
 
 def _row_altitudes(height: int) -> np.ndarray:
-    return 90.0 - np.arange(height) / max(height - 1, 1) * 100.0
+    return PANORAMA_ALT_TOP - np.arange(height) / max(height - 1, 1) * PANORAMA_ALT_SPAN
 
 
 def _horizon_altitudes(horizon: dict) -> np.ndarray:
@@ -229,7 +232,8 @@ def _focal(case_dir: Path, out_dir: Path, scale: float = 1.05) -> None:
         # is a corruption, and interpolation would blur it as well as move it.
         wanted = _row_altitudes(height)
         source_alt = _unwarp_altitude(wanted, scale)
-        rows = np.clip(np.rint((90.0 - source_alt) / 100.0 * max(height - 1, 1)),
+        rows = np.clip(np.rint((PANORAMA_ALT_TOP - source_alt) / PANORAMA_ALT_SPAN
+                               * max(height - 1, 1)),
                        0, height - 1).astype(np.int64)
         _write_panorama(out_dir, image[rows])
 
@@ -359,7 +363,8 @@ def _wrong_reference(case_dir: Path, out_dir: Path, offset_m=(1.0, 0.0, 0.0)) ->
     scene = load_scene(truth_dir / "scene.json")
     c_ref = np.asarray(_read_json(truth_dir / "reference.json")["c_ref"], dtype=np.float64)
     existing = _read_panorama(out_dir)
-    height, width = (existing.shape[0], existing.shape[1]) if existing is not None else (300, 1080)
+    height, width = ((existing.shape[0], existing.shape[1]) if existing is not None
+                     else (PANORAMA_HEIGHT, PANORAMA_WIDTH))
     panorama = truth_module.ideal_panorama(scene, c_ref + offset, width=width, height=height)
     _write_panorama(out_dir, panorama)
 

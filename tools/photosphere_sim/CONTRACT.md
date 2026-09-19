@@ -42,16 +42,45 @@ cache/cases/<case_id>/
     landmarks.json  reference-horizon.json  holds.json
   result/                       written by the replay; scores.json and
                                 report.html written by the scorer
+  ideal/                        optional; `sim ideal` writes the result a
+                                perfect scanner would have produced, ray cast
+                                from this case's own truth, in the same shape
+                                as `result/`
+  corrupt/<name>/               optional; one per corruption applied, each a
+                                copy of a result directory with exactly one
+                                thing broken
 ```
 
-`manifest.json`: `{"schema":1,"case_id","seed","scene","route","camera":{width,height,fov_short_deg},"fps","expected":"positive"|"control","hashes":{"frames","observations","truth"},"versions":{"three","chromium","python","app_commit"}}`.
+`ideal/` and `corrupt/<name>/` are scored the same way `result/` is, by
+pointing `sim score --result` at them; neither is an input to anything.
+
+`manifest.json`: `{"schema":1,"case_id","seed","scene","route","camera":{width,height,fov_short_deg},"fps","expected":"positive"|"control","profile","hashes":{"frames","observations","truth"},"versions":{"three","chromium","webgl_renderer","python","numpy","pillow","app_commit"}}`.
 Hashes are hex SHA-256; `frames` is the SHA-256 of the concatenated per-file
-SHA-256 hex digests in filename order.
+SHA-256 hex digests in filename order. `profile` is the case definition's own,
+carried here so a result names the profile of the case directory it sits in
+rather than of whatever `cases/` holds on the machine doing the scoring.
+`versions` names every library on the path from a pose to a PNG:
+`webgl_renderer` is the `GL_RENDERER` string the rendering page itself
+reports, which is the only one of them no package manifest records, and it is
+`null` for the flat renderer, as `three` and `chromium` are.
 
 `observations.jsonl`, one object per line, sorted by delivery time:
 - `{"kind":"frame","frame_id":"f000123","t_capture_ms":12300,"t_present_ms":12360,"width":480,"height":640,"file":"frames/f000123.png"}`
 - `{"kind":"orientation","t_event_ms":12280,"t_receive_ms":12300,"alpha":..,"beta":..,"gamma":..,"absolute":true}`
 Delivery time is `t_present_ms` for frames and `t_receive_ms` for events.
+
+At an equal delivery time the two files disagree on purpose, and both are
+right. The generator's sort is stable over the frame records followed by the
+event records, so `observations.jsonl` lists the FRAME first; it is a file
+ordering, and the recording is not claiming an arrival order it did not
+measure. The replay dispatches the READING first, because that is what a
+browser does: an orientation event lands in the task queue, which is drained
+before the rendering steps, and `requestVideoFrameCallback` runs with the
+rendering steps. A replay that took the file's order instead would hand the
+scanner a pose history one sample short of the one a page would have had. So
+a reader of `observations.jsonl` must not infer the delivery order within a
+millisecond from the line order, and a driver must sort the merged stream with
+readings ahead of frames at equal delivery times.
 
 `actions.jsonl`: `{"t_ms":0,"action":"begin"}` and `{"t_ms":<end>,"action":"finish"}`.
 
@@ -86,13 +115,49 @@ the canopy is indistinguishable from one that also found the trunk.
 - `result/captures.jsonl`: the scanner's capture log, one line per attempt:
   `{"at","outcome","cell"?, "basis"?, "sensor_basis"?, "adjusted"?}`.
 - `result/summary.json`: `{"frames_delivered","events_delivered","frames_accepted","cells_total","cells_covered","elapsed_ms","app_commit"}`.
+  `app_commit` is the replaying tree's `git rev-parse HEAD`, with `-dirty`
+  appended when `git status --porcelain` is not empty, and `null` when git
+  cannot answer. The suffix is not decoration: a bare hash on a score taken
+  from an edited tree names code that was never replayed, and that is the one
+  error a reader cannot catch, because the hash resolves and the diff is gone.
+
+## Resampling
+
+The scanner draws the video into a canvas smaller than the frame, and the
+replay's canvas stub resamples the frame to whatever size it is asked for by
+exact area averaging: each destination pixel is the mean of the source
+pixels under it, weighted by how much of each one falls inside it.
+
+This is the simulator's idealisation and not a claim about any browser. What
+a real `drawImage` into a smaller canvas does is implementation-defined --
+the filter, whether it is separable, whether it runs on the GPU and in what
+precision, all vary by engine and by scale factor -- so a replay measures the
+scanner against a stated downscale, and the same scanner on a phone will see
+slightly different pixels. The property that matters is that the downscale
+AVERAGES rather than PICKS: a nearest-neighbour choice of one source pixel in
+fifteen would make a still view flicker between neighbouring samples, and a
+stillness grid built from single pixels would read sensor noise as movement.
+A browser that picked would break the scanner; one that averages differently
+moves the numbers a little.
 
 ## Commands (from the repo root unless stated)
 
+Every `python -m sim` command runs inside `tools/photosphere_sim`.
+
 - Python tests: `python -m unittest discover -s tools/photosphere_sim/tests -t tools/photosphere_sim -v`
-- Build a case: `python -m sim make-case <case_id>` (run inside `tools/photosphere_sim`)
+- Build a case: `python -m sim make-case <case_id>`
 - Replay through the real scanner: `node --import tsx src/next/hubs/sky/sheets/__sim__/replay.ts <abs case dir>` (run inside `ui`)
-- Score: `python -m sim score <case_id>` (inside `tools/photosphere_sim`); corrupt: `python -m sim corrupt <case_id> <corruption>`
+- Score: `python -m sim score <case_id>`, which also writes `report.html`
+- The instrument's own floor: `python -m sim ideal <case_id>` writes `ideal/`,
+  scored with `python -m sim score <case_id> --result <case dir>/ideal`
+- Corrupt: `python -m sim corrupt <case_id> <corruption> [--param KEY=VALUE ...]`
+- Re-render a page from a `scores.json` already on disk, without scoring
+  again: `python -m sim report <case_id>`
+
+`score` exits 0 when `pass` is true, 1 when it is false, and 2 for "I could
+not run" -- a missing case, a missing result, or a truth the scorer cannot
+read. A failing case and a broken invocation must not look alike on the way
+out.
 
 ## Scene schema (`scenes/<name>.json`)
 
@@ -150,7 +215,13 @@ the canopy is indistinguishable from one that also found the trunk.
   `move_s`, unless `theta = sqrt(swing_deg^2 + twist_deg^2)` exceeds `30 *
   move_s` degrees, in which case it takes `theta / 30` seconds instead, at
   the same smoothstep profile, so the combined rotation -- forward and roll
-  together -- never averages more than 30 degrees per second.
+  together -- never averages more than 30 degrees per second. That duration
+  is rounded UP to a whole millisecond, never to the nearest one: rounding
+  down would shorten the move below what `theta` needs and put the route a
+  fraction over its own rate budget. `hold_s` and a sweep's `duration_s` and
+  `hold_s` round to the nearest millisecond, having no budget to breach.
+  Every segment boundary is therefore an integer millisecond, which is what
+  lets a later comparison of times be exact.
 - `sweeps`: `[{"az","alt_from","alt_to","duration_s","hold_s"}]` appended
   after the aims: hold at `(az, alt_from)`, tilt linearly to `alt_to` over
   `duration_s`, hold again.
@@ -383,6 +454,40 @@ fails the landmark gates, a wholly uncertain boundary fails the horizon gates,
 and no capture log fails `every_hold_captured`. A gate is vacuously true only
 where the route itself produced no such group, which `overlay.samples` and
 `capture.holds` distinguish.
+
+**What stage A does not evaluate.** `pass` is the AND of the fourteen gates
+above and means the stage A gates only. It is not the spec's section 9, and
+these rows of that table are not evaluated here at all:
+
+- *Noise-free, well-observed calibration chart* (FoV error at most 0.25
+  degrees, p95 ray error at most 0.1 degree). Stage A produces no calibration
+  at all: the scanner runs on its assumed lens, nothing estimates a field of
+  view, and there is no per-ray residual to take a percentile of. This is the
+  row `chartyard-arc075-70` would be measured against, and all that case can
+  say today is what an uncorrected ten-degree error costs downstream.
+- *Qualified noisy handheld scene*. The chart yard is noise free and
+  undistorted and there is no noisy profile to run.
+- *Calibration confidence qualification*. A corpus gate: at least 100
+  independently seeded held-out scans with an interval-coverage figure.
+  Stage A has three cases and no intervals.
+- The loop-mismatch clause of *Loop closure and qualified horizon*. The
+  horizon half of that row is gated (`horizon_p95_lt_1`,
+  `no_missed_obstructions`, `no_unresolved_boundary`); loop mismatch is not
+  measured.
+- The "no fabricated orientation heartbeat" clause of *Capture after a valid
+  hold*. The latency half is gated (`capture_p95_le_1500`); nothing here
+  checks that a capture was not certified by a reading the scanner invented.
+- *Safety-relevant confidence* is covered only in part. `false_open_sr` is
+  computed and reported and NOT gated; what stands in for that row is the
+  width term of an obstacle's `missed`, which fails a positive case when a
+  declared test obstacle is lost over at least its own `min_width_deg`. A
+  false-open area that falls on no declared obstacle passes every gate here
+  while being reported.
+
+A green `pass` on a stage A case therefore says the mathematics is right on
+that recording, against those fourteen thresholds. It says nothing about
+calibration, noise, loop closure, heartbeat honesty, or false-open area away
+from a declared obstacle.
 
 ## Corruptions
 

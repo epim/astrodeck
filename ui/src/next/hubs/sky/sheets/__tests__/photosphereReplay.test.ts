@@ -214,7 +214,7 @@ function sceneFrame(shift: number): Uint8ClampedArray {
   return pixels;
 }
 
-function buildCase(root: string, options: { readings?: boolean } = {}): void {
+function buildCase(root: string, options: { readings?: boolean; manifestCamera?: { width: number; height: number } } = {}): void {
   const input = join(root, 'input'), frames = join(input, 'frames');
   mkdirSync(frames, { recursive: true });
   const observations: string[] = [];
@@ -245,10 +245,14 @@ function buildCase(root: string, options: { readings?: boolean } = {}): void {
   writeFileSync(join(input, 'observations.jsonl'), observations.join('\n') + '\n');
   writeFileSync(join(input, 'actions.jsonl'),
     JSON.stringify({ t_ms: 0, action: 'begin' }) + '\n' + JSON.stringify({ t_ms: 4000, action: 'finish' }) + '\n');
+  // A real case directory has one, so this one does too - but the driver does
+  // not read it. `manifestCamera` is how the test below says so: a manifest
+  // that disagrees with the frames must not reach the harness.
+  const camera = options.manifestCamera ?? { width: SCENE_W, height: SCENE_H };
   writeFileSync(join(root, 'manifest.json'), JSON.stringify({
     schema: 1, case_id: 'synthetic', seed: 1, scene: 'synthetic', route: 'synthetic',
-    camera: { width: SCENE_W, height: SCENE_H, fov_short_deg: 60 }, fps: 10, expected: 'positive',
-    hashes: {}, versions: {},
+    camera: { ...camera, fov_short_deg: 60 }, fps: 10, expected: 'positive',
+    profile: 'synthetic', hashes: {}, versions: {},
   }));
 }
 
@@ -256,13 +260,21 @@ const OUTCOMES = new Set(['accepted', 'not-recording', 'not-ready', 'unhealthy',
   'alignment-wait', 'overlap-wait', 'no-target', 'already-captured', 'too-soon',
   'below-horizon', 'read-failed']);
 
+/** The `app_commit` the driver stamped on the determinism run below, read by
+ *  the dirty-tree test after it, and that run's panorama bytes, which the
+ *  manifest-independence test compares a second build against. */
+let replayedCommit: string | null = null;
+let referencePanorama: Buffer | null = null;
+
 const root = mkdtempSync(join(tmpdir(), 'photosphere-replay-'));
 try {
   buildCase(root);
   const first = await replayCase(root);
+  replayedCommit = first.app_commit;
   const result = join(root, 'result');
   const firstSummary = readFileSync(join(result, 'summary.json'), 'utf8');
   const firstPanorama = readFileSync(join(result, 'panorama.png'));
+  referencePanorama = firstPanorama;
   const second = await replayCase(root);
   const secondSummary = readFileSync(join(result, 'summary.json'), 'utf8');
   const secondPanorama = readFileSync(join(result, 'panorama.png'));
@@ -342,6 +354,36 @@ await test('replay: a scan that never started is an error, not a blank result', 
   } finally {
     rmSync(empty, { recursive: true, force: true });
   }
+});
+
+await test('replay: a manifest that disagrees with the frames changes nothing', async () => {
+  // The driver takes the video size from the frame observations, so a manifest
+  // declaring the camera 8 x 8 is simply not consulted. The claim is not that
+  // the replay survives it but that the result is the SAME result, byte for
+  // byte, as the run above whose manifest was right: an 8 x 8 video would
+  // reach the scanner as a square lens and paint the mosaic somewhere else.
+  const wrong = mkdtempSync(join(tmpdir(), 'photosphere-replay-manifest-'));
+  try {
+    buildCase(wrong, { manifestCamera: { width: 8, height: 8 } });
+    const summary = await replayCase(wrong);
+    assert.equal(summary.frames_delivered, 30);
+    assert.ok(summary.frames_accepted > 0, 'the replay accepted no frames at all');
+    const panorama = readFileSync(join(wrong, 'result', 'panorama.png'));
+    assert.ok(referencePanorama && panorama.equals(referencePanorama),
+      'the manifest camera block reached the replay: the panorama moved');
+  } finally {
+    rmSync(wrong, { recursive: true, force: true });
+  }
+});
+
+await test('replay: app_commit says when the tree it ran from was dirty', () => {
+  // The summary's commit is the identity of the code that was replayed. On a
+  // clean tree it is the bare hash; on an edited one it has to say so, or a
+  // score carries the name of code that never ran and the diff that made the
+  // difference is gone.
+  const head = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+  const dirty = execFileSync('git', ['status', '--porcelain'], { encoding: 'utf8' }).trim().length > 0;
+  assert.equal(replayedCommit, dirty ? `${head}-dirty` : head);
 });
 
 await test('replay: the driver never reads the reference data', () => {

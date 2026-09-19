@@ -9,11 +9,12 @@
 // therefore a measurement of the shipped code, and the scorer that reads those
 // files has never seen this directory.
 //
-// The driver reads `manifest.json`, `input/observations.jsonl`,
-// `input/actions.jsonl` and `input/frames/*.png`, and nothing else. The
-// reference data beside them belongs to the scorer alone: a driver able to see
-// it could reach the right answer for the wrong reason, and no test of the
-// result could tell.
+// The driver reads `input/observations.jsonl`, `input/actions.jsonl` and
+// `input/frames/*.png`, and nothing else - not even `manifest.json`, whose
+// camera block would only repeat the width and height every frame observation
+// already carries. The reference data beside them belongs to the scorer alone:
+// a driver able to see it could reach the right answer for the wrong reason,
+// and no test of the result could tell.
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
@@ -57,10 +58,6 @@ const PANORAMA_W = 1080, PANORAMA_H = 300;
  *  not a speed-up - and it is small because a 480 x 640 RGBA raster is 1.2 MB. */
 const FRAME_CACHE = 8;
 
-function readJson<T>(path: string): T {
-  return JSON.parse(readFileSync(path, 'utf8')) as T;
-}
-
 function readJsonl<T>(path: string): T[] {
   return readFileSync(path, 'utf8').split('\n').filter(line => line.trim().length > 0).map(line => JSON.parse(line) as T);
 }
@@ -101,13 +98,25 @@ export function mergeObservations(observations: Observation[]): Observation[] {
     .map(entry => entry.item);
 }
 
-/** The commit the scanner was replayed at. `null` rather than a guess when git
- *  cannot answer: the scorer falls back to the manifest, and a wrong commit on
- *  a score is worse than no commit. */
+/** The commit the scanner was replayed at, with `-dirty` appended when the
+ *  working tree carries uncommitted changes. `null` rather than a guess when
+ *  git cannot answer: the scorer falls back to the manifest, and a wrong
+ *  commit on a score is worse than no commit.
+ *
+ *  The suffix is the point of the function. A replay is a measurement of the
+ *  code that ran, and a bare commit hash on a score taken from an edited tree
+ *  names code that was never replayed - which is the one error a reader has no
+ *  way to catch, because the hash resolves and the diff is gone. A dirty tree
+ *  is normal during development; silently calling it by the last commit's name
+ *  is not. `--porcelain` is empty exactly when nothing is modified, staged or
+ *  untracked. */
 function appCommit(): string | null {
+  const cwd = dirname(fileURLToPath(import.meta.url));
   try {
-    return execFileSync('git', ['rev-parse', 'HEAD'],
-      { cwd: dirname(fileURLToPath(import.meta.url)), encoding: 'utf8' }).trim() || null;
+    const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd, encoding: 'utf8' }).trim();
+    if (!head) return null;
+    const status = execFileSync('git', ['status', '--porcelain'], { cwd, encoding: 'utf8' });
+    return status.trim().length > 0 ? `${head}-dirty` : head;
   } catch {
     return null;
   }
@@ -116,7 +125,6 @@ function appCommit(): string | null {
 export async function replayCase(caseDir: string): Promise<Summary> {
   const root = resolve(caseDir);
   const input = join(root, 'input');
-  const manifest = readJson<{ camera: { width: number; height: number } }>(join(root, 'manifest.json'));
   const observations = readJsonl<Observation>(join(input, 'observations.jsonl'));
   const actions = readJsonl<{ t_ms: number; action: string }>(join(input, 'actions.jsonl'));
 
@@ -124,7 +132,14 @@ export async function replayCase(caseDir: string): Promise<Summary> {
   const finishAt = actions.find(a => a.action === 'finish')?.t_ms ?? Infinity;
   const timeline = mergeObservations(observations);
 
-  const harness = createHarness({ videoWidth: manifest.camera.width, videoHeight: manifest.camera.height });
+  // The video's size comes from the first frame the case delivers, not from
+  // the manifest. Both say the same thing, and taking it from the observation
+  // stream is what makes the driver's independence from the manifest
+  // structural rather than a promise: there is no manifest read left to drift.
+  const firstFrame = timeline.find((item): item is FrameObservation => item.kind === 'frame');
+  if (!firstFrame)
+    throw new Error(`${root} delivers no frames: there is nothing to replay`);
+  const harness = createHarness({ videoWidth: firstFrame.width, videoHeight: firstFrame.height });
   // Whatever happens below, the globals this harness replaced go back. A
   // replay that throws must not leave a frozen `Date.now` behind for the next
   // thing in the process to trip over.

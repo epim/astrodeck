@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 import numpy as np
+import PIL
 from PIL import Image
 
 from . import scene as scene_module
@@ -171,10 +172,20 @@ def build_case(case_def: dict, out_root: Path, renderer: Callable) -> Path:
         "truth": _hash_concatenated_digests(truth_paths),
     }
 
-    # A renderer that knows what drew the frames says so, and the manifest
-    # records it; ``flat_renderer`` does not, and leaves the two nulls.
-    versions = {"three": None, "chromium": None,
-                "python": platform.python_version(), "app_commit": None}
+    # Every library whose output is hashed into this case, so that a case
+    # directory says what produced it. ``numpy`` and ``Pillow`` are in the
+    # list because they are on the path from a pose to a PNG on disk: the
+    # truth arrays are numpy's arithmetic and every frame is Pillow's encoder,
+    # so two case directories whose hashes differ can be told apart by this
+    # block rather than by guesswork. ``webgl_renderer`` is the string the
+    # page itself reports for the GL implementation that drew the frames
+    # (SwiftShader under the headless Chromium), which is the one version
+    # here that no package manifest records. A renderer that knows those
+    # three says so; ``flat_renderer`` does not, and leaves them null.
+    versions = {"three": None, "chromium": None, "webgl_renderer": None,
+                "python": platform.python_version(),
+                "numpy": np.__version__, "pillow": PIL.__version__,
+                "app_commit": None}
     versions.update(getattr(renderer, "versions", None) or {})
 
     manifest = {
@@ -187,6 +198,11 @@ def build_case(case_def: dict, out_root: Path, renderer: Callable) -> Path:
                    "fov_short_deg": camera.fov_short_deg},
         "fps": fps,
         "expected": case_def["expected"],
+        # The profile the case declares, carried here so a scored result
+        # names it from the case directory it was scored in rather than from
+        # whatever ``cases/`` happens to hold on the machine doing the
+        # scoring.
+        "profile": case_def.get("profile"),
         "hashes": hashes,
         "versions": versions,
     }

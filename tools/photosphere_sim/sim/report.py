@@ -41,14 +41,14 @@ from PIL import Image, ImageDraw
 from . import truth as truth_module
 from .geometry import angle_between
 from .scene import load as load_scene
+# The panorama mapping and the first-line rule, from the scorer. Imported
+# rather than restated: this page draws the answer the scorer computed, and a
+# second copy of either would let the picture and the table disagree while
+# both looked right.
+from .score import (PANORAMA_ALT_SPAN, PANORAMA_ALT_TOP, PANORAMA_HEIGHT,
+                    PANORAMA_WIDTH, first_line_per_frame)
 
 __all__ = ["render"]
-
-#: The panorama mapping, from CONTRACT.md's "Result directory".
-PANORAMA_WIDTH = 1080
-PANORAMA_HEIGHT = 300
-PANORAMA_ALT_TOP = 90.0
-PANORAMA_ALT_SPAN = 100.0
 
 #: What an unpainted raster cell is drawn as. Not black: a scanner that paints
 #: black and one that paints nothing are different claims, and the report
@@ -306,20 +306,15 @@ def _overlay_series(case_dir: Path, result_dir: Path):
     """(t_ms, error_deg, moving) per event line that can be scored.
 
     A frame id that arrives more than once is plotted once, from its first
-    line, the same rule the scorer scores by. A timeline that drew a sample
-    the scorer did not score would put a point on the page that no percentile
-    and no gate in the tables beside it can account for.
+    line, through the scorer's own `first_line_per_frame`. A timeline that
+    drew a sample the scorer did not score would put a point on the page that
+    no percentile and no gate in the tables beside it can account for.
     """
     frames = {frame["frame_id"]: frame for frame
               in _read_jsonl(Path(case_dir) / "truth" / "trajectory.jsonl")}
     series = []
-    seen = set()
-    for event in _read_jsonl(Path(result_dir) / "events.jsonl"):
+    for event in first_line_per_frame(_read_jsonl(Path(result_dir) / "events.jsonl")):
         frame_id = event.get("frame_id")
-        if frame_id is not None:
-            if frame_id in seen:
-                continue
-            seen.add(frame_id)
         basis = event.get("basis")
         frame = frames.get(frame_id)
         if basis is None or frame is None:
