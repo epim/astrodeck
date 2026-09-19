@@ -26,6 +26,7 @@ export type CaptureOutcome =
   | 'too-soon'
   | 'below-horizon'
   | 'stale-image'
+  | 'frame-already-captured'
   | 'read-failed';
 
 export interface CaptureRecord {
@@ -296,7 +297,12 @@ export class PhotosphereSweep {
    *  reaches `grabFrame` with no frame of its own, so it runs the same gate on a
    *  device that has requestVideoFrameCallback. The gate consumes as it answers
    *  (see `newMediaFrame`), so this field advances on every `true`. */
-  private lastMediaTime = -1;
+  /** `null` until a first reading has been taken: a media clock is only
+   *  evidence by MOVING, so the first reading of a sweep establishes the
+   *  baseline and claims nothing. A sentinel below every real clock value
+   *  (-1) let the first tick claim a delivery for free, and a timer fired by
+   *  hand could then capture the element's retained picture. */
+  private lastMediaTime: number | null = null;
   /** FRESHNESS and IDENTITY of the delivered image, which are not the same
    *  question as the witness's consume-on-read above. `newMediaFrame` may hand
    *  a given frame to the stillness witness once and only once; capture asks
@@ -309,7 +315,11 @@ export class PhotosphereSweep {
   private lastMediaAdvanceAt = -Infinity;
   private presentedFrameId: number | null = null;
   private lastCapturedFrameId: number | null = null;
-  private staleImage = false;
+  /** Which image gate last refused, for the cue. Two different facts, and the
+   *  user can act on only one of them: a camera that has stopped delivering is
+   *  broken and worth saying so, while a picture already captured is a normal
+   *  moment between frames and must not be dressed up as a fault. */
+  private imageGate: null | 'stale-image' | 'frame-already-captured' = null;
   private luma = new Uint8Array(GRID_W*GRID_H);
   private listening = false;
   private trackEnded = false;
@@ -424,7 +434,8 @@ export class PhotosphereSweep {
     if(!this.video?.videoWidth || !this.video?.videoHeight)return 'Waiting for a camera image…';
     // A frozen preview keeps its last picture, so there is something on screen
     // to look at and nothing to say it is old. Only this cue can tell the user.
-    if(this.staleImage)return 'The camera image is not updating. Close the scan and open the camera again.';
+    if(this.imageGate==='stale-image')return 'The camera image is not updating. Close the scan and open the camera again.';
+    if(this.imageGate==='frame-already-captured')return 'That picture is already captured. The next camera frame is a moment away.';
     // Not "hold still": holding still is exactly what cannot be confirmed here,
     // so asking for it would leave the user doing the one thing that can never
     // satisfy the rule. Moving produces a sensor event, which does.
@@ -478,7 +489,7 @@ export class PhotosphereSweep {
     this.captureRecords = []; this.hasCapturedFrame = false;
     this.poses.clear();this.tilts.clear();this.poseSource.clear();this.visualAnchor=null;this.lastRegistrationAt=-Infinity;this.frameBasis=null;this.alignmentWait=false;this.overlapWait=false;this.lastSensorReading=null;
     this.stability.clear();this.trackEnded=false;
-    this.lastMediaTime=-1;this.lastMediaAdvanceAt=-Infinity;this.presentedFrameId=null;this.lastCapturedFrameId=null;this.staleImage=false;
+    this.lastMediaTime=null;this.lastMediaAdvanceAt=-Infinity;this.presentedFrameId=null;this.lastCapturedFrameId=null;this.imageGate=null;
     this.hasOrientation = false; this.tiltAt = null; this.headingAt = null;
     const DOE = window.DeviceOrientationEvent as typeof DeviceOrientationEvent & { requestPermission?: () => Promise<string> };
     // Ask from the click gesture, before awaiting camera discovery (Safari).
@@ -515,6 +526,12 @@ export class PhotosphereSweep {
     catch { this.stop(); throw new Error("The camera opened but its preview could not play. Try opening the camera again."); }
     if (generation !== this.generation) return;
     this.ready = true;
+    // The baseline reading, taken now that the element is playing: the timer
+    // path needs TWO readings to see a clock move, and this is the first one.
+    // Taking it here rather than on the first tick costs no frame - the
+    // preview has been running for the whole 350 ms before that tick - while
+    // an element whose clock never moves still fails every comparison.
+    this.lastMediaTime = Number.isFinite(video.currentTime) ? video.currentTime : null;
     this.imageAspect = video.videoWidth && video.videoHeight ? video.videoWidth/video.videoHeight : 4/3;
     // Calibration belongs to this lens and crop in this browser. It must not
     // become a universal constant for another phone, lens or video aspect.
@@ -586,7 +603,11 @@ export class PhotosphereSweep {
         // This callback runs only for a frame the browser actually presented,
         // so it is itself the delivery evidence for this path - and the frame
         // carries its own identity, which is what a capture is tied to.
-        this.presentedFrameId=Number.isFinite(metadata.mediaTime)?metadata.mediaTime:metadata.presentedFrames;
+        // Normalised to null, never undefined: an id of `undefined` would be
+        // stored by the first capture and then equal every later one, refusing
+        // the rest of the scan.
+        this.presentedFrameId=Number.isFinite(metadata.mediaTime)?metadata.mediaTime
+          :Number.isFinite(metadata.presentedFrames)?metadata.presentedFrames:null;
         this.lastMediaAdvanceAt=now;
         const capture=metadata.captureTime;
         const seen=capture!==undefined&&Number.isFinite(capture)&&capture<=now&&now-capture<=STALE_FRAME_MS?capture:now;
@@ -661,7 +682,11 @@ export class PhotosphereSweep {
     if (video.paused || video.ended || video.readyState < 2) return false;           // 2 = HAVE_CURRENT_DATA
     if (track && (track.readyState !== "live" || track.muted)) return false;
     const t = video.currentTime;
-    if (!(Number.isFinite(t) && t > this.lastMediaTime)) return false;
+    if (!Number.isFinite(t)) return false;
+    // One reading is a number, not a delivery. The first one only says where
+    // the clock stands; it takes a second, larger one to show it is running.
+    if (this.lastMediaTime === null) { this.lastMediaTime = t; return false; }
+    if (!(t > this.lastMediaTime)) return false;
     // The witness consumes the frame; the delivery it proves is remembered
     // separately, because capture needs the delivery and not the consumption.
     this.lastMediaTime = t; this.lastMediaAdvanceAt = now;
@@ -750,13 +775,25 @@ export class PhotosphereSweep {
     const deliveredNow = frame ? true
       : manualOverhead ? now - this.lastMediaAdvanceAt <= STALE_FRAME_MS
       : delivered;
-    if (!deliveredNow || frameId === null || frameId === this.lastCapturedFrameId) {
-      this.staleImage = true;
+    // Two refusals, not one. No delivery means the camera has stopped and the
+    // user needs to hear that; an unidentifiable frame is the same story, since
+    // nothing can be said about a picture that cannot be named.
+    if (!deliveredNow || frameId === null) {
+      this.imageGate = 'stale-image';
       if (manualOverhead) this.issue = "The camera image is not updating. Close the scan, open the camera again, then try the overhead shot.";
       this.recordCapture(now, 'stale-image');
       return false;
     }
-    this.staleImage = false;
+    // A picture that has already been captured, on a camera that is working
+    // perfectly well: the next frame is milliseconds away, so this is a wait,
+    // not a fault, and saying "not updating" here would be a lie.
+    if (frameId === this.lastCapturedFrameId) {
+      this.imageGate = 'frame-already-captured';
+      if (manualOverhead) this.issue = "That picture is already captured. The next camera frame is a moment away - try again.";
+      this.recordCapture(now, 'frame-already-captured');
+      return false;
+    }
+    this.imageGate = null;
     const evidence:PoseEvidence={view:this.stability.continuity(now),sourceHealthy:this.sourceHealthy};
     const rawBasis=frame ? frame.basis : this.poses.forFrame(now,undefined,evidence);
     let basis=rawBasis?this.correctBasis(rawBasis):null;
@@ -850,7 +887,14 @@ export class PhotosphereSweep {
     if(this.coveredCells.size>previousCoverage)this.lastCaptureAt=Date.now();
     this.hasCapturedFrame = true;
     // This capture is now associated with the frame it was taken from, so the
-    // same delivered picture cannot be captured twice.
+    // same delivered picture cannot be captured twice BY THE SAME PATH. There
+    // are two identity spaces and they do not meet: the frame callback names a
+    // frame by its metadata (`mediaTime`, or `presentedFrames`), while the
+    // timer and the manual press name it by `video.currentTime`. A press
+    // landing right after the callback path captured the frame it is showing
+    // is therefore accepted. That is a judged trade, not an oversight: the
+    // artefact is one duplicate zenith the user asked for by pressing, and the
+    // alternative is refusing a deliberate press for a reason it cannot see.
     this.lastCapturedFrameId = frameId;
     this.recordCapture(now, 'accepted', { cell: capturedCell, basis: capturedBasis, sensorBasis: capturedSensorBasis, adjusted: capturedAdjusted });
     return true;
@@ -890,7 +934,7 @@ export class PhotosphereSweep {
     // closed editor should not hold a canvas backing store open.
     this.listening = false; this.stability.clear();
     this.lumaCanvas = null; this.stillnessFailures = 0;
-    this.lastMediaTime = -1; this.lastMediaAdvanceAt = -Infinity; this.presentedFrameId = null; this.lastCapturedFrameId = null; this.staleImage = false;
+    this.lastMediaTime = null; this.lastMediaAdvanceAt = -Infinity; this.presentedFrameId = null; this.lastCapturedFrameId = null; this.imageGate = null;
     this.stream?.getTracks().forEach((t) => t.stop());
     this.stream = null;
     if (this.video) this.video.srcObject = null;
