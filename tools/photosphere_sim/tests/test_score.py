@@ -412,14 +412,22 @@ class IdealResult(unittest.TestCase):
     def test_a_hold_on_a_cell_already_photographed_is_satisfied(self):
         """Issue #54: the route revisits directions, and declining is correct.
 
-        Holds 0, 1 and 2 open at 0, 2000 and 4000 and their windows run to
-        to_ms + 1500, so hold 0 reaches 2700 and hold 1 reaches 4700. One
+        Holds 0, 1 and 2 open at 0 and approximately 2000 and 4000 (a move's
+        duration is rounded UP to the millisecond -- see trajectory.py's
+        swing-twist fix -- so consecutive same-band moves can each land a
+        sub-millisecond floating-point residual over the nominal 800 ms,
+        drifting a hold's exact open time by a couple of ms without changing
+        which window anything falls in) and their windows run to
+        to_ms + 1500, so hold 0 reaches about 2700 and hold 1 about 4700. One
         `already-captured` at 700 satisfies hold 0 without a photograph; one
         `accepted` at 4000 is inside hold 1's window and hold 2's, and hold 1
         claims it; a `rejected` at 6000 inside hold 2's window satisfies
         nothing.
         """
-        self.assertEqual([h["from_ms"] for h in self.holds[:3]], [0, 2000, 4000])
+        hold_starts = [h["from_ms"] for h in self.holds[:3]]
+        self.assertEqual(hold_starts[0], 0)
+        self.assertAlmostEqual(hold_starts[1], 2000, delta=5)
+        self.assertAlmostEqual(hold_starts[2], 4000, delta=5)
         scores = self._with_captures("revisit", [
             {"at": 700, "outcome": "already-captured", "cell": 0},
             {"at": 4000, "outcome": "accepted", "cell": 1},
@@ -432,8 +440,9 @@ class IdealResult(unittest.TestCase):
         self.assertEqual(capture["holds_with_capture"], 2)
         self.assertEqual(capture["accepted_frames"], 1)
         # Latency is measured to the satisfying record whatever its outcome:
-        # 700 for hold 0 and 4000 - 2000 for hold 1.
-        self.assertEqual(capture["latency_ms"]["max"], 2000)
+        # 700 for hold 0 and 4000 - hold_starts[1] for hold 1 (~2000, not
+        # exactly, per the note above).
+        self.assertEqual(capture["latency_ms"]["max"], max(700, 4000 - hold_starts[1]))
         # Two of 48 holds ended in something; the rest did not.
         self.assertFalse(scores["gates"]["every_hold_captured"])
 

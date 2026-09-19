@@ -99,6 +99,36 @@ class ArcRoute(unittest.TestCase):
         expected_z = 1.4 + 0.25 * 89.5 / 90.0
         self.assertAlmostEqual(float(p[2]), expected_z, delta=1e-3)
 
+    def test_position_never_jumps_between_frames_or_100hz_samples(self):
+        # Regression test for a bug the swing-twist fix introduced: feeding
+        # the forward-derived (atan2-based) azimuth into the arc's sin/cos
+        # position formula let the zenith-to-sweep-start move's near-pole
+        # great circle flip that azimuth by 180 degrees in one 100 ms frame,
+        # swinging the horizontal position through a diameter (measured on
+        # the shipped route: 1.5 m between f000924 and f000925, against a
+        # next-largest inter-frame step of 0.14 m). Position now uses its
+        # own always-continuous "carry azimuth" (see trajectory.py's
+        # "Position's carry azimuth" section); these bounds catch any
+        # regression back to feeding it a discontinuous one.
+        traj = build("arc075")
+
+        worst_frame_step = 0.0
+        for a, b in zip(traj.frames, traj.frames[1:]):
+            worst_frame_step = max(worst_frame_step,
+                                   float(np.linalg.norm(b.position - a.position)))
+        self.assertLess(worst_frame_step, 0.2)
+
+        worst_100hz_step = 0.0
+        t = 0
+        previous, _ = traj.pose_at(0)
+        while t < traj.duration_ms:
+            t = min(t + 10, traj.duration_ms)
+            current, _ = traj.pose_at(t)
+            worst_100hz_step = max(worst_100hz_step,
+                                   float(np.linalg.norm(current - previous)))
+            previous = current
+        self.assertLess(worst_100hz_step, 0.02)
+
 
 class Holds(unittest.TestCase):
     def test_count_is_46_aims_plus_2_sweep_holds(self):
@@ -182,22 +212,28 @@ class FullAttitudeRateBudget(unittest.TestCase):
                          for i in range(len(bases) - 1)]
                 dts = np.diff(ts) / 1000.0
                 rates = np.asarray(deltas) / dts
-                # A ~100 Hz secant is a finite-difference estimate of the
-                # continuous rate, which peaks exactly at 45 deg/s (an exact
-                # closed form, not an approximation -- see trajectory.py); the
-                # measured secant can overshoot that by a hair (worst case
-                # observed: 45.008, 0.02%) purely from sampling a smooth
-                # parabola-shaped rate curve at a finite step near its own
-                # peak, so the tolerance below is a few times that margin,
-                # not a loosened physical budget.
+                # A move's duration is rounded UP (math.ceil, not round) to
+                # the millisecond, so it is never shorter than theta / 30
+                # actually needs: the continuous rate genuinely peaks at or
+                # below 45 deg/s and averages at or below 30, by construction,
+                # not approximately. A ~100 Hz secant is then a
+                # finite-difference estimate of that continuous rate curve
+                # (a downward parabola in time), and a secant UNDERESTIMATES
+                # a concave curve's peak (the average over any interval
+                # containing the peak is below the peak itself) -- so the
+                # measured value should land AT OR BELOW the already-safe
+                # continuous bound, never above it. The small margin below is
+                # for floating-point noise only (observed worst case:
+                # 44.9977 peak, 30.0000000004 average), not a loosened
+                # physical budget.
                 self.assertLessEqual(
-                    float(rates.max()), 45.05,
+                    float(rates.max()), 45.0 + 1e-4,
                     f"{name} {kind} segment {index}: peak {rates.max():.4f} deg/s exceeds 45",
                 )
                 if kind == "move":
                     average = sum(deltas) / duration_s
                     self.assertLessEqual(
-                        average, 30.05,
+                        average, 30.0 + 1e-4,
                         f"{name} move segment {index}: average {average:.4f} deg/s exceeds 30",
                     )
 
@@ -247,6 +283,23 @@ class Transition(unittest.TestCase):
         transition_ms = traj.holds[46].from_ms - traj.holds[45].to_ms
         self.assertGreaterEqual(transition_ms, 6600)
         self.assertLessEqual(transition_ms, 6800)
+
+
+class SwingTwistRobustness(unittest.TestCase):
+    def test_antipodal_aims_raise_a_named_value_error(self):
+        # forward_a x forward_b vanishes for two exactly opposite directions,
+        # the same way it does for two identical ones (already handled by
+        # the phi < 1e-9 branch) -- but dividing by that vanishing norm
+        # would hand back NaN silently rather than refusing. No aim pair in
+        # the shipped routes is antipodal; this exercises the guard directly.
+        from sim.geometry import look_basis
+        basis_a = look_basis(0.0, 0.0, 0.0)
+        basis_b = look_basis(180.0, 0.0, 0.0)
+        with self.assertRaises(ValueError) as ctx:
+            trajectory._swing_twist(basis_a, basis_b, 0.0, 0.0, 180.0, 0.0)
+        message = str(ctx.exception)
+        self.assertIn("(0.0, 0.0)", message)
+        self.assertIn("(180.0, 0.0)", message)
 
 
 class Sweep(unittest.TestCase):
