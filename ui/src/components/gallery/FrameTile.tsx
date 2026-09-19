@@ -285,7 +285,7 @@ export default function FrameTile(props: {
   const { frame } = props;
   const dpr = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
   const width = thumbWidthFor(TILE_CSS_WIDTH_HINT, dpr);
-  const src = `${BASE}${thumbPath(frame.path, width, frame.mtime)}`
+  const src = `${BASE}${thumbPath(frame.path, width, frame.file_version ?? frame.mtime)}`
     + (attempt ? `&r=${attempt}` : "")
     + (rateRetry ? `&q=${rateRetry}` : "");
 
@@ -296,7 +296,7 @@ export default function FrameTile(props: {
     setStatus(undefined);
     setAttempt(0);
     setRateRetry(0);
-  }, [frame.path, frame.mtime]);
+  }, [frame.path, frame.mtime, frame.file_version]);
 
   // Take a queue slot once the tile is in view, and give it back on unmount so
   // a fast scroll past a hundred tiles cannot leak the whole cap away.

@@ -33,7 +33,7 @@ import { useCallback, useEffect, useMemo, useState, type CSSProperties, type JSX
 import { ApiError } from "../../../../api";
 import CaptureGroups from "../../../../components/gallery/CaptureGroups";
 import type { GalleryFramesPage } from "../../../../types";
-import { listFrames, listNights } from "../../../../api/gallery";
+import { listFrames, listNights, validateSelection } from "../../../../api/gallery";
 import { getSession, listSessions, patchFrame } from "../../../../api/sessions";
 import { getBundlePreview, listReports, materializeBundle } from "../../../../api/reports";
 import { getRemoteStatus } from "../../../../api/backends";
@@ -416,8 +416,11 @@ export function FilesSheet({ params }: SheetProps): JSX.Element {
 
   // -------------------------------------------------------------- selection
   const selection = useMemo(
-    () => buildSelection(rows, tick, scope, manual),
-    [rows, tick, scope, manual],
+    () => {
+      const selected = buildSelection(rows, tick, scope, manual);
+      return lib?.snapshot ? { ...selected, ...scope, snapshot: lib.snapshot } : selected;
+    },
+    [rows, tick, scope, manual, lib?.snapshot],
   );
   const cost = useMemo(() => selectionCost(rows, tick), [rows, tick]);
   const plan = downloadPlan(selection, cost.count);
@@ -484,7 +487,16 @@ export function FilesSheet({ params }: SheetProps): JSX.Element {
 
   const href = plan.ok ? u(plan.href) : u(`/api/gallery/download.zip${selectionQuery(selection)}`);
 
-  const onDownload = () => {
+  const onDownload = (event: { preventDefault(): void }) => {
+    if (selection.snapshot) {
+      event.preventDefault();
+      void validateSelection(selection).then(() => {
+        if (sessionId) noteDownloaded(sessionId, cost.count);
+        window.location.assign(href);
+      }).catch((e) => toast("error", "Download needs a refreshed selection",
+        e instanceof ApiError ? e.message : "Reopen Files and select the frames again."));
+      return;
+    }
     if (sessionId) noteDownloaded(sessionId, cost.count);
   };
 
