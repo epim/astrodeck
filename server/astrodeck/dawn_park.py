@@ -445,27 +445,28 @@ class DawnPark:
 
         THE NET UNDER A PROMISE MADE ELSEWHERE. Since 2026-09-08 the sequence
         wind-down SKIPS its warm ramp when another session is armed and
-        tonight's window is still open, so the resumed run does not have to
-        wait for the TEC to walk back down (measured: NGC 604 sat waiting for
-        -7 to reach -10). That is right whenever the resume happens. When it
-        does not — a weather veto that lasts the rest of the night, a rig
-        nobody comes back to — the cooler is left holding a setpoint with
-        nothing on the horizon that would ever release it, and on a 40 C day
-        a sensor held at -10 inside a warm enclosure is a condensation risk,
-        not just wasted power.
+        tonight's window is still open, so a run that ends mid-night does not
+        make the next one wait for the TEC to walk back down (measured: NGC
+        604 sat waiting for -7 to reach -10). That skip is for a resume
+        minutes away. When the night is over the same reasoning does not
+        hold: the resume is fourteen hours off and may never come, and on a
+        40 C day a sensor held at -10 inside a warm enclosure is a
+        condensation risk, not just wasted power (issue #35: 15.5 hours of
+        TEC runtime to save a 4 minute cool-down).
 
-        So the same tick that decides "the night ended and nobody is using
-        this rig" releases the cooler as well as parking the mount. Reached
-        only after the hands-off checks above, and it uses the ordinary warm
-        path, so the operator's SETPOINT survives (warming stops the cooler;
-        it does not change what temperature this rig images at) and the ramp
-        config is honoured.
+        So the same tick that decides "the night ended" releases the cooler
+        as well as parking the mount, armed session or not. Reached only
+        after the hands-off checks above, and it uses the ordinary warm path,
+        so the operator's SETPOINT survives (warming stops the cooler; it does
+        not change what temperature this rig images at) and the ramp config
+        is honoured.
 
         Never raises. This runs at the end of a watchdog whose whole value is
         that it cannot fail loudly enough to matter: a rig with no camera, no
         cooler, or a camera that will not answer must leave the parked mount
         parked and the log honest, not raise into the tick.
         """
+        armed = None
         try:
             cam = self.hub.devices.get("camera")
             if cam is None or not getattr(cam, "connected", False):
@@ -474,18 +475,22 @@ class DawnPark:
                 return
             armed = self._armed_session()
             if armed is not None:
-                # MEASURED ON THE FIRST LIVE TICK, 2026-09-08 16:59. The rig
-                # restarted for a deploy with the Sun up, this warmed the
-                # camera "because no run is going to use it tonight" -- and
-                # NGC 604 was armed to resume at dusk, so that run would have
-                # spent its first quarter hour walking the TEC back down. An
-                # armed session is a run that is going to use this camera; the
-                # cooler it wants is the one it already has.
-                bus.log("info", f"dawn: leaving the cooler at its setpoint: "
-                                f"'{getattr(armed, 'name', '?')}' is armed to "
-                                f"resume tonight and will want the camera cold",
-                        "safety")
-                return
+                # ISSUE #35. Until 2026-09-18 an armed session kept the cooler
+                # at its setpoint here, so the resumed run would not wait for
+                # the TEC. Measured on 2026-09-17: that held -10 C from 06:26
+                # to 21:54, 15.5 hours parked and idle against daytime
+                # ambient, to save a cool-down measured twice at 4 minutes
+                # that happens inside the dusk arming window anyway. The
+                # resume it waits for may never come (a disarm, cloud, a
+                # retarget), and this rig has had a TEC failure from fouled
+                # heat rejection and two host resets in the sun. So the
+                # camera warms regardless, and the line names the session
+                # so the operator knows why it will cool again at dusk.
+                bus.log("info", f"dawn: '{getattr(armed, 'name', '?')}' is "
+                                f"armed to resume tonight; warming the camera "
+                                f"anyway, its cooling stage will cool it again "
+                                f"at dusk (issue #35: a held setpoint cost "
+                                f"15 hours of TEC to save 4 minutes)", "safety")
             state = await self.hub.warm_camera(source="dawn")
         except Exception as e:      # noqa: BLE001 - see the docstring
             bus.log("warning", f"dawn: could not release the cooler ({e}); it "
@@ -498,7 +503,7 @@ class DawnPark:
             # and saying so beats a line claiming a warm that did not start.
             bus.log("info", f"dawn: the cooler needed no action ({note})",
                     "safety")
-        else:
+        elif armed is None:
             bus.log("info", f"dawn: the Sun is at {alt:+.1f}° and nothing is "
                             f"armed to use this camera tonight — warming it "
                             f"rather than leaving the cooler holding its "
@@ -506,9 +511,9 @@ class DawnPark:
 
     @staticmethod
     def _armed_session():
-        """The session armed to resume, or None. Never raises: the answer
-        decides whether a cooler is left cold, and a bookkeeping failure must
-        read as "nothing armed", which is the behaviour before 2026-09-08."""
+        """The session armed to resume, or None. Never raises: since issue
+        #35 the answer only decides what the dawn log line says, and a
+        bookkeeping failure must not cost the warm."""
         try:
             from .sequence.session import session_store
             return session_store.armed()
