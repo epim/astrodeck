@@ -195,7 +195,8 @@ filename order, the same construction as `frames`.
             "missed_obstructions":[ids],"north_offset_deg"},
  "overlay":{"samples","missing_fraction","frames_over_gate","duplicate_frame_ids",
             "moving":{"median_deg","p95_deg","max_deg"},"settled":{"median_deg","p95_deg","max_deg"}},
- "capture":{"holds","holds_with_capture","latency_ms":{"p95","max"},"accepted_frames"},
+ "capture":{"holds","holds_satisfied","holds_captured","holds_already_covered","holds_with_capture",
+            "latency_ms":{"p95","max"},"accepted_frames"},
  "coverage":{"panorama_alpha_fraction","observable_fraction_covered","cells_covered_fraction"},
  "gates":{"landmarks_p95_lt_0_5","landmarks_p99_lt_1","no_omissions","no_duplicates","horizon_p95_lt_1","no_missed_obstructions","no_unresolved_boundary",
           "overlay_settled_p95_lt_0_5","overlay_moving_p95_lt_1","overlay_max_lt_10","no_duplicate_frames",
@@ -326,11 +327,22 @@ no ray hit anything. Measured bin `i` of `N` covers
   scoring the later line would let a second answer overwrite the answer
   already given for that frame.
 - Holds are walked in `from_ms` order and each takes the first
-  `captures.jsonl` record with `outcome == "accepted"` and
-  `from_ms <= at <= to_ms + 1500` that no earlier hold has claimed; the
-  latency is `at - from_ms`. The claim matters: the 1500 ms grace makes
-  consecutive windows overlap by most of a hold, so without it one accepted
-  record answers for two holds. `accepted_frames` is every accepted record.
+  `captures.jsonl` record with `from_ms <= at <= to_ms + 1500` that no earlier
+  hold has claimed and whose `outcome` is `accepted` OR `already-captured`;
+  the latency is `at - from_ms`, to the satisfying record whatever its
+  outcome. The claim matters: the 1500 ms grace makes consecutive windows
+  overlap by most of a hold, so without it one record answers for two holds.
+  `holds_captured` and `holds_already_covered` split the satisfied holds by
+  which outcome satisfied them, `holds_satisfied` is their sum, and
+  `holds_with_capture` is that same sum under its original name, which is
+  what the gate reads. `accepted_frames` is every accepted record in the log.
+- `already-captured` satisfies a hold because the route revisits directions.
+  An aim can land on a dome cell an earlier aim already photographed, and a
+  scanner that declines to photograph it a second time is behaving correctly.
+  The gate `every_hold_captured` therefore asks that every hold ended in a
+  photograph or in a cell already photographed, not that every hold produced
+  a new frame. Counting only `accepted` failed 26 of the real still case's
+  holds for correct behaviour (issue #54).
 - `panorama_alpha_fraction` is the cos-weighted fraction of raster cells with
   alpha 255. `observable_fraction_covered` is the same fraction over the
   observable region: the cells whose direction from `c_ref` projects inside at
