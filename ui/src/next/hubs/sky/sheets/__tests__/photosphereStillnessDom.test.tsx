@@ -120,12 +120,33 @@ async function test(name:string,fn:()=>Promise<void>){
  *  step, and that one reaches the branch through a refuted pair rather than a
  *  moving one.
  *  `lag` models a camera PIPELINE DELAY, and it is the default for the returned
- *  tick's own optional argument: the frame is presented at `clock`, as before,
- *  but carries `captureTime = clock - lag` - the instant the camera saw the
- *  scene in it. The scene content stays tied to the tick, as it was, so `shift`
- *  still describes what the camera saw at the moment the frame was captured.
- *  At the default 0 every frame is stamped when it is presented and nothing
- *  above this line changes. */
+ *  tick's own optional argument. The two paths express the same delay with the
+ *  two different things each of them has:
+ *   - rVFC: the frame is presented at `clock`, as before, but carries
+ *     `captureTime = clock - lag` - the instant the camera saw the scene in it.
+ *     The scene content stays tied to the tick, so `shift` still describes what
+ *     the camera saw at the moment the frame was captured.
+ *   - the interval fallback: there is no frame metadata to carry a capture time,
+ *     so the delay shows in the CONTENT instead. The tick presents the scene as
+ *     it stood `lag` ms before it fired - the picture the camera took then, now
+ *     arriving - while the driver still stamps the observation with the read
+ *     instant, which is the whole of issue #48. The harness can do this because
+ *     `shift` is its own state: `scene` below samples it at every tick, so the
+ *     reconstruction is piecewise constant between ticks and a delay presents
+ *     the scene as of the last tick at or before the capture instant, i.e.
+ *     `ceil(lag / 350)` ticks back through the 350 ms hold. The override lasts
+ *     only for the duration of the tick, so `beat` and anything else that drives
+ *     `intervalFn` directly sees the live scene.
+ *     The consequence, because the cases below are read as arithmetic: this has
+ *     NO sub-interval resolution. It rounds every delay UP to a whole number of
+ *     intervals - 1 ms and 350 ms are the same fixture, 351 ms is the next one
+ *     - so a case here can sit on a band's edge but can never exhibit a band's
+ *     interior, and the number in a case's name is a plausible phone rather
+ *     than the quantity under test. Modelling a delay finer than this would
+ *     mean timestamping `shift` itself, which is a `let` several cases mutate
+ *     directly.
+ *  At the default 0 every frame is stamped when it is presented, the newest
+ *  sample is the tick's own, and nothing above this line changes. */
 async function approachAndHold(rvfc=true,step=2,lag=0){
   shift=0;hidden=false;blind=false;flat=false;intervalFn=null;mediaTime=0;paused=false;stalled=false;
   const video=w.document.createElement('video');
@@ -137,12 +158,19 @@ async function approachAndHold(rvfc=true,step=2,lag=0){
   const sweep=new PhotosphereSweep();
   await sweep.start(video,w.document.createElement('canvas'));
   const cell=sweep.cells.find((c)=>c.alt>20&&c.alt<60)!;
-  // The interval fallback is handed no frame metadata at all, so a pipeline
-  // delay is not observable there and its tick ignores the argument.
+  // What the scene was when, seeded before the first tick so a delay reaching
+  // back past the start of the fixture has something to present.
+  const scene:{at:number;shift:number}[]=[{at:clock,shift}];
   const tick=rvfc
     ? (lagMs=lag)=>{clock+=100;mediaTime+=0.1;frame!(clock,{captureTime:clock-lagMs,mediaTime,presentationTime:clock,
         expectedDisplayTime:clock,width:640,height:480,presentedFrames:1});}
-    : (_lagMs=lag)=>{clock+=350;if(!paused&&!stalled)mediaTime+=0.35;intervalFn!();};
+    : (lagMs=lag)=>{
+        clock+=350;if(!paused&&!stalled)mediaTime+=0.35;
+        scene.push({at:clock,shift});
+        const shown=[...scene].reverse().find((s)=>s.at<=clock-lagMs)??scene[0];
+        const live=shift;shift=shown.shift;
+        try{intervalFn!();}finally{shift=live;}
+      };
   /** Present the SAME frame to the callback again: the wall clock moves on, so
    *  the 350 ms grab cadence lets a second grab through, but the media clock
    *  does not - the driver is handed a picture it has already been handed.
@@ -786,6 +814,139 @@ await test('A camera that reports its frames 250 ms late still captures a still 
   assert.notEqual(capturedAfter,null,'DEADLOCK: a still phone never captured behind a 250 ms camera pipeline');
   assert.ok(capturedAfter!<=1500,`took ${capturedAfter} ms of stillness, the acceptance row is 1500`);
   assert.ok(capturedAfter!>=500,`captured after only ${capturedAfter} ms, before the view could settle`);
+  sweep.stop();
+});
+
+await test('The interval fallback still captures behind a 300 ms camera pipeline delay (issue #48)',async()=>{
+  // The same delay on the path that has no capture time to stamp with. Every
+  // observation here carries the READ instant, so a delayed camera does not
+  // move the stamp - it moves the CONTENT, which puts the break that ended the
+  // approach a whole tick after the reading it has to reach back across.
+  // Instants from the last reading s, which shares its instant with the last
+  // approach tick (the phone comes to rest as the reading arrives: the scene is
+  // shifted once more immediately after that tick and never again):
+  //  - ticks land at s+350, s+700, s+1050, s+1400, ... and each presents the
+  //    scene as of the last tick at or before 300 ms earlier, which through the
+  //    350 ms hold is the tick before it. So s+350 shows the scene as it stood
+  //    at s - still the moving approach - and s+700 shows the scene at s+350,
+  //    at rest, as does every tick after it.
+  //    The quantity under test is therefore ONE INTERVAL of delay and not
+  //    300 ms: the harness samples the scene only at ticks, so any lag from 1
+  //    to 350 presents the tick before and behaves identically here, and 351
+  //    presents the tick before that and flips the verdict. The name says
+  //    300 ms because that is a plausible phone; the arithmetic below is the
+  //    arithmetic of a delay of one interval, and there is no sub-interval
+  //    resolution anywhere in this fixture (see `approachAndHold`).
+  //  - the pair (s+350, s+700) is therefore the last one that moves:
+  //    lastBreak = {from: s+350, to: s+700}, a full interval later than s.
+  //  - the still run opens at s+700 and settles SETTLE_MS = 500 ms later, so
+  //    the tick at s+1400 is the first with a settled view (at s+1050 the run
+  //    is only 350 ms old), and the grab on that tick is the one that captures,
+  //    1400 ms into the hold, inside the 1500 ms acceptance budget.
+  // Vouching asks lastBreak.from <= s + slop. At CONTINUITY_SLOP_MS = 150 that
+  // is s+350 <= s+150 - false then and false forever, because a still run never
+  // rewrites its break: the deadlock of issue #48. At the fallback's own
+  // Math.max(CONTINUITY_SLOP_MS, GRAB_INTERVAL_MS) = 350 it is s+350 <= s+350,
+  // the exact boundary of the widened margin, which is what this case pins.
+  // The dome has to agree with the mosaic, which is the second assertion: at
+  // s+3150 the reading is 3150 ms old, so `vouched`'s freshness disjunct
+  // (SENSOR_SILENCE_MS = 2000) is long spent and only the witness can answer.
+  // A driver that captured under a reading while telling the user the compass
+  // was lost would be two answers to one question - it is the same margin or
+  // it is not one decision.
+  // Mutations, both observed red on this case:
+  //  - the timer path passing the default slop (`this.vouchSlopMs =
+  //    CONTINUITY_SLOP_MS` in the timer branch of `start()`): "DEADLOCK: a
+  //    still phone never captured behind a 300 ms camera pipeline on the
+  //    fallback path".
+  //  - the session margin dropped from `vouched` alone
+  //    (`viewVouchesFor(at, this.stability.continuity(now))` at the one call
+  //    site there, leaving capture widened): "the dome said the heading was
+  //    lost while a frame went into the mosaic".
+  const {sweep,tick,silentFrom}=await approachAndHold(false,2,300);
+  for(let i=0;i<9;i++)tick();                    // 3150 ms of hold, well past the s+1400 capture
+  assert.equal(clock-silentFrom,3150,'the hold did not last the 3 s the instants above are measured over');
+  assert.equal(sweep.frameCount,1,
+    'DEADLOCK: a still phone never captured behind a 300 ms camera pipeline on the fallback path');
+  assert.ok(sweep.compassReady,'the dome said the heading was lost while a frame went into the mosaic');
+  assert.ok(sweep.tiltReady,'the dome said the tilt was lost while a frame went into the mosaic');
+  sweep.stop();
+});
+
+await test('The interval fallback margin is ONE interval: two intervals of camera delay do not vouch (issue #48)',async()=>{
+  // The upper edge, and with the case above it is the pin on the SIZE of the
+  // widened margin rather than on its existence. The pair brackets the margin:
+  // the 300 ms case reddens for any slop below 350, this one for any slop of
+  // 700 or more, so together they hold 350 <= slop < 700 - one interval, and
+  // not the two, three or blanket margins a single case admits.
+  // 400 ms of delay, which the harness models as TWO intervals (a lag of 351
+  // to 700 presents the tick before the tick before): the delay is past the
+  // 350 ms the fix buys and the hold must therefore never capture.
+  // Instants from s, each tick showing the scene as of the last tick at or
+  // before 400 ms earlier - two ticks back through the 350 ms hold:
+  //  - the tick at s and the tick at s+350 both show the scene as of s-450,
+  //    the same mid-approach picture; s+700 shows the scene at s; s+1050 shows
+  //    the scene at s+350, at rest, as does every tick after it.
+  //  - so the two pairs that move are (s+350, s+700) and (s+700, s+1050), and
+  //    the last break is {from: s+700, to: s+1050} - two intervals after the
+  //    reading at s. (The identical pair at s+350 opens a run at s, but that
+  //    run is 350 ms old at s+350, the only moment it is ever asked, and the
+  //    observation at s+700 breaks it long before SETTLE_MS, so it vouches for
+  //    nothing on its way past.)
+  //  - the run that opens at s+1050 settles 700 ms later, at s+1750, and from
+  //    there the view is settled for the rest of the hold.
+  //  - vouching asks s+700 <= s + 350, which is false, and the break of a run
+  //    that is never interrupted again never moves. Nothing captures.
+  // Mutations, both observed red on this case:
+  //  - `this.vouchSlopMs = 700` in the timer branch of `start()` - two
+  //    intervals, the smallest margin that would vouch here; it captures at
+  //    s+1750. This is the mutation the case exists for: at 700 the whole file
+  //    was green before this case was written this way.
+  //  - `this.vouchSlopMs = 1e9`, a margin that vouches for a reading of any
+  //    age. Both give: "two intervals of camera delay were vouched for across
+  //    an interval of unwatched view". 1e9 also reddens "P1: a frozen fallback
+  //    video recovers once frames flow and a fresh reading arrives", which is
+  //    the point: a blanket margin is not a wider margin, it is no margin, and
+  //    it re-opens a P1 this file already guards.
+  const {sweep,tick,silentFrom}=await approachAndHold(false,2,400);
+  for(let i=0;i<9;i++)tick();                    // 3150 ms of hold, past the s+1750 a two-interval margin captures at
+  assert.equal(clock-silentFrom,3150,'the hold did not last the 3 s the instants above are measured over');
+  assert.equal(sweep.frameCount,0,
+    'two intervals of camera delay were vouched for across an interval of unwatched view');
+  sweep.stop();
+});
+
+await test('A lagged fallback hold that goes featureless keeps the heading the wider margin earned it (issue #48)',async()=>{
+  // The memory in `noteReadingsStand` is the third site that takes the session
+  // margin, and this is what holds it: the memory is written on the VIDEO
+  // vouching, so on a lagged fallback it is written only if it is written on
+  // the same widened margin that the dome and the capture use. Written on the
+  // default margin it is never written at all here, and the moment the view
+  // stops being judgeable the reading it was holding is gone - the issue #41
+  // behaviour, lost on exactly the phones issue #48 is about.
+  // Instants: the 300 ms fixture again, so the hold is settled from s+1400 and
+  // every observation from there writes the memory. 9 textured ticks to
+  // s+3150, then the phone is pointed at smooth sky: 9 featureless ticks to
+  // s+6300, where the frames keep arriving (so the witness reads 'featureless'
+  // and not 'stale'), no continuity exists, and the reading is 6300 ms old,
+  // far past SENSOR_SILENCE_MS = 2000. Nothing but the memory can answer.
+  // Mutations, both observed red here:
+  //  - the margin dropped from the two `noteReadingsStand` lines: the memory
+  //    is never written during the lagged hold, so the second assertion fails
+  //    with "a featureless view lost the heading the widened margin had been
+  //    vouching for".
+  //  - the margin dropped from `vouched`: the first assertion fails, because
+  //    at s+3150 freshness is spent and only the witness can answer.
+  const {sweep,tick,silentFrom}=await approachAndHold(false,2,300);
+  for(let i=0;i<9;i++)tick();
+  assert.equal(clock-silentFrom,3150);
+  assert.ok(sweep.compassReady,'the lagged hold was already lost before the view went blank, so nothing below is about the memory');
+  flat=true;
+  for(let i=0;i<9;i++)tick();
+  assert.equal(clock-silentFrom,6300);
+  assert.ok(sweep.compassReady,'a featureless view lost the heading the widened margin had been vouching for');
+  assert.notEqual(sweep.aimTarget,null,'the dome blanked on a view that was merely unjudgeable');
+  flat=false;
   sweep.stop();
 });
 

@@ -1,7 +1,7 @@
 // Camera capture retains a bounded colour panorama and an editable horizon
 // draft. Phone sensor pose and lens angles remain estimates for user review.
 import { DOME_CELLS, SkyPanorama, orientationBasis, dot, skyAngles, cameraLens, transferBasis, type CameraBasis } from './photosphereGeometry';
-import { CameraPoseHistory, ScanPoseSource, poseSeparation, viewVouchesFor, type PoseEvidence } from './photospherePose';
+import { CameraPoseHistory, ScanPoseSource, poseSeparation, viewVouchesFor, CONTINUITY_SLOP_MS, type PoseEvidence } from './photospherePose';
 import { registerFrame } from './photosphereRegistration';
 import { VisualStability, GRID_W, GRID_H, STALE_FRAME_MS } from './photosphereStability';
 
@@ -269,6 +269,14 @@ const STILLNESS_BLIND_AFTER = 5;
  *  only for a frame the browser presented, so there the callback IS the
  *  delivery and the gate is never asked. */
 const MEDIA_GATE_BLIND_AFTER = 6;
+/** How often the interval fallback grabs, and the cadence the frame-callback
+ *  path throttles its own grabs to, so the two paths capture at one rate. It is
+ *  also the RESOLUTION OF THE WITNESS on the fallback: that path observes only
+ *  when this timer fires and stamps each observation with the read instant, so
+ *  it cannot place a break, or a settle, finer than this. `vouchSlopMs` is
+ *  where that second meaning is spent (issue #48), which is why the number is
+ *  named rather than written three times. */
+const GRAB_INTERVAL_MS = 350;
 
 /** Opens a visible preview; recording begins only after begin() is pressed. */
 export class PhotosphereSweep {
@@ -305,6 +313,20 @@ export class PhotosphereSweep {
   private lastRegistrationAt=-Infinity;
   private tilts = new CameraPoseHistory();
   private stability = new VisualStability();
+  /** The margin every `viewVouchesFor` in this session is asked for, chosen in
+   *  `start()` by which witness the browser gave us and used by all three
+   *  callers - `vouched`, `noteReadingsStand` and the evidence handed to
+   *  `forFrame` - so the dome, the memory and the capture cannot disagree about
+   *  whether a reading is covered. On the frame-callback path an observation
+   *  carries the instant the CAMERA saw the frame, so the default clock
+   *  alignment is the whole of it. On the interval fallback it carries the READ
+   *  instant, which is that instant plus however long the camera pipeline took,
+   *  so the margin there is the witness's own resolution (issue #48). Not a
+   *  constant, because it is a fact about this session's witness; not read off
+   *  `grabTimer`, because `stop()` clears that and the two would drift. It is
+   *  reset with the rest of the session state in `stop()`, so a sweep restarted
+   *  on another element never begins on the margin the last one earned. */
+  private vouchSlopMs = CONTINUITY_SLOP_MS;
   private lumaCanvas: HTMLCanvasElement | null = null;
   private stillnessFailures = 0;
   /** Interval-fallback ticks the media gate refused: the running total for this
@@ -430,7 +452,7 @@ export class PhotosphereSweep {
    *  grade the two halves of its answer at two different moments. */
   private vouched(at: number | null, now = performance.now()): boolean {
     if (at === null) return false;
-    return now - at < SENSOR_SILENCE_MS || viewVouchesFor(at, this.stability.continuity(now));
+    return now - at < SENSOR_SILENCE_MS || viewVouchesFor(at, this.stability.continuity(now), this.vouchSlopMs);
   }
   /** Does the reading taken at `at` still describe where the phone points?
    *  `vouched` is the evidence test and it decides on its own wherever the view
@@ -455,7 +477,12 @@ export class PhotosphereSweep {
    *  reading, including one recorded by a frame observed just before the event
    *  arrived. That is deliberate: frame times and sensor times are on one clock
    *  but not aligned to the millisecond, which is the whole reason
-   *  CONTINUITY_SLOP_MS exists one file over. */
+   *  CONTINUITY_SLOP_MS exists one file over.
+   *  The margin `vouched` applies below is `vouchSlopMs`, this session's, and
+   *  not the constant: on the interval fallback a reading has to stand under
+   *  the same widened margin that lets that path capture under it, or the dome
+   *  would say the heading is lost while frames are going into the mosaic
+   *  behind it - two answers to one question (issue #48). */
   private readingStands(kind: 'heading' | 'tilt'): boolean {
     const at = kind === 'heading' ? this.headingAt : this.tiltAt;
     if (at === null) return false;
@@ -489,8 +516,11 @@ export class PhotosphereSweep {
     const now = performance.now();
     const view = this.stability.continuity(now);
     if (!view) return;
-    if (this.headingAt !== null && viewVouchesFor(this.headingAt, view)) this.headingStoodAt = now;
-    if (this.tiltAt !== null && viewVouchesFor(this.tiltAt, view)) this.tiltStoodAt = now;
+    // The session's own margin, the same one `vouched` and capture use: a
+    // memory written on a stricter test than the one that reads it would expire
+    // a reading the rest of the driver is still standing on.
+    if (this.headingAt !== null && viewVouchesFor(this.headingAt, view, this.vouchSlopMs)) this.headingStoodAt = now;
+    if (this.tiltAt !== null && viewVouchesFor(this.tiltAt, view, this.vouchSlopMs)) this.tiltStoodAt = now;
   }
   /** No orientation sample recent enough for the STRICT pose rule to use: it
    *  refuses a newest reading older than 250 ms (CameraPoseHistory.forFrame).
@@ -728,6 +758,10 @@ export class PhotosphereSweep {
     }
 
     if(typeof video.requestVideoFrameCallback==='function'){
+      // This path stamps each observation with the frame's own capture time
+      // (see the `seen` line below), so what separates an observation from the
+      // reading it covers is clock alignment and nothing else.
+      this.vouchSlopMs=CONTINUITY_SLOP_MS;
       let lastSample=-Infinity;
       const frame:VideoFrameRequestCallback=(now,metadata)=>{
         if(generation!==this.generation)return;
@@ -756,15 +790,25 @@ export class PhotosphereSweep {
         const capture=metadata.captureTime;
         const seen=capture!==undefined&&Number.isFinite(capture)&&capture<=now&&now-capture<=STALE_FRAME_MS?capture:now;
         this.observeStillness(video,seen);
-        const evidence:PoseEvidence={view:this.stability.continuity(now),sourceHealthy:this.sourceHealthy};
+        const evidence:PoseEvidence={view:this.stability.continuity(now),sourceHealthy:this.sourceHealthy,slopMs:this.vouchSlopMs};
         const basis=this.poses.forFrame(now,metadata.captureTime,evidence);
         if(basis)this.frameBasis={basis,at:now};
         else this.frameBasis=null;
-        if(now-lastSample>=350){lastSample=now;this.grabFrame(false,{basis,tilt:this.tilts.forFrame(now,metadata.captureTime,evidence)});}
+        if(now-lastSample>=GRAB_INTERVAL_MS){lastSample=now;this.grabFrame(false,{basis,tilt:this.tilts.forFrame(now,metadata.captureTime,evidence)});}
         this.videoFrameHandle=video.requestVideoFrameCallback(frame);
       };
       this.videoFrameHandle=video.requestVideoFrameCallback(frame);
-    } else this.grabTimer = setInterval(() => this.grabFrame(), 350);
+    } else {
+      // No frame metadata on this path, so every observation is stamped when it
+      // was READ, and a camera pipeline delay therefore stamps the break that
+      // ends an approach later than the reading it has to cover (see the bands
+      // in `grabFrame`). The witness here resolves nothing finer than its own
+      // interval, so that interval IS the margin - with CONTINUITY_SLOP_MS kept
+      // as the floor, because clock alignment does not stop mattering just
+      // because something bigger has been added to it.
+      this.vouchSlopMs=Math.max(CONTINUITY_SLOP_MS,GRAB_INTERVAL_MS);
+      this.grabTimer = setInterval(() => this.grabFrame(), GRAB_INTERVAL_MS);
+    }
   }
 
   /** Is the pose stream ALIVE? Measured, never inferred from event silence:
@@ -799,8 +843,12 @@ export class PhotosphereSweep {
    *  `captureOverhead` through it) passes the READ instant, which is the
    *  capture time plus however long the camera pipeline took. That inflates
    *  every break's `from` on that path by the delay, and `from` is what the
-   *  150 ms CONTINUITY_SLOP_MS margin is measured against, so a delayed camera
-   *  there can lose a hold it earned (issue #48). */
+   *  vouching margin is measured against - so the margin on that path is the
+   *  witness's own interval rather than CONTINUITY_SLOP_MS (see `vouchSlopMs`
+   *  and the bands in `grabFrame`), which is what keeps a delayed camera from
+   *  losing a hold it earned (issue #48). The stamp itself is not fixable here:
+   *  there is no capture time to stamp with, and a guess would be a delay
+   *  measurement this code cannot make. */
   private observeStillness(video: HTMLVideoElement, at: number): void {
     if (!video.videoWidth || !video.videoHeight) return;
     try {
@@ -878,14 +926,31 @@ export class PhotosphereSweep {
     // UNKNOWN STALE_FRAME_MS after the last real frame and the strict rule
     // takes back over - the honest outcome, and the one a timer on its own
     // could never reach.
-    // The limit on that window claim, stated because nothing here tests it:
-    // observations on this path carry the READ instant, not a capture time
-    // (see observeStillness), so a camera whose frames arrive late pushes every
-    // break's `from` later by the delay. Past the 150 ms margin that costs
-    // holds - intermittently up to about half a second of delay, and then
-    // always (issue #48). The window above is the window for an element whose
-    // frames are not delayed, which is the only element the harness can model:
-    // its interval tick has no capture time to lag.
+    // What a camera PIPELINE DELAY costs here, and why the margin this path
+    // vouches on is its own interval (`vouchSlopMs`) and not CONTINUITY_SLOP_MS.
+    // Observations on this path carry the READ instant, not a capture time (see
+    // observeStillness), so a delay L pushes the content of every observation
+    // back by L while its stamp stays where it is: with the phone coming to
+    // rest at M, the last observation whose content still moves lands in
+    // (M + L - I, M + L] for an interval I of 350 ms, and THAT stamp is the
+    // break's `from` the reading at M has to be reached across. With the margin
+    // at I the bands are:
+    //   L <= 350 ms       always vouched, whatever the sampling phase;
+    //   350 < L <= 700    vouched or not depending on where the phase falls -
+    //                     an intermittent deadlock, different hold to hold;
+    //   L > 700           never vouched, and the hold can never capture.
+    // They were 150 and 500 on the clock-alignment margin alone, which is the
+    // Firefox Android deadlock of issue #48 - the fallback is the only path
+    // that browser has. The trade, stated because it is a real cost and not a
+    // free fix: the P1 window in which a movement after the last reading goes
+    // unchallenged widens here by one interval, from 500 ms to about 700 ms
+    // (see CONTINUITY_SLOP_MS for the same sum on the other path). The
+    // alternative was an intermittent deadlock on the browsers this path exists
+    // for, and a deadlock is the worse failure: it has no recovery the user can
+    // find, while the widened window is bounded, still measured against the
+    // VIEW, and still ends at the first frame that shows movement.
+    // photosphereStillnessDom pins both edges of the band on this path: a
+    // 300 ms delay captures and an 800 ms delay does not.
     // The witness CONSUMES the frame it reads, so a manual press never runs
     // this: the user pressing the button must not be charged for a frame, nor
     // refused one because the witness got there first (review 17, P1).
@@ -966,7 +1031,7 @@ export class PhotosphereSweep {
       return false;
     }
     this.imageGate = null;
-    const evidence:PoseEvidence={view:this.stability.continuity(now),sourceHealthy:this.sourceHealthy};
+    const evidence:PoseEvidence={view:this.stability.continuity(now),sourceHealthy:this.sourceHealthy,slopMs:this.vouchSlopMs};
     const rawBasis=frame ? frame.basis : this.poses.forFrame(now,undefined,evidence);
     let basis=rawBasis?this.correctBasis(rawBasis):null;
     const tilt=frame ? frame.tilt : this.tilts.forFrame(now,undefined,evidence);
@@ -1116,6 +1181,13 @@ export class PhotosphereSweep {
     // it: a new scan must not inherit one, and there is no view left to keep it.
     this.listening = false; this.stability.clear();
     this.headingStoodAt = null; this.tiltStoodAt = null;
+    // The margin belongs to the witness this session had, so it ends with it.
+    // Nothing is left to vouch with once `stability` is cleared, so this
+    // changes no verdict today; it is here because the alternative is a field
+    // that survives its own session and is right only for as long as the next
+    // `start()` reaches the path choice - which an early return (a generation
+    // change) or the `play()` failure that calls `stop()` and throws does not.
+    this.vouchSlopMs = CONTINUITY_SLOP_MS;
     this.lumaCanvas = null; this.stillnessFailures = 0;
     // Counted per camera session, and this ends one.
     this.mediaGateRefusals = 0; this.mediaGateRefusalRun = 0;
