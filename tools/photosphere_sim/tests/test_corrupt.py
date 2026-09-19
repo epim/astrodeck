@@ -35,7 +35,7 @@ import unittest
 import numpy as np
 
 from sim import cases, corrupt, ideal, report, score
-from sim.geometry import angle_between, wrap_deg
+from sim.geometry import angle_between, sky_vector, wrap_deg
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
@@ -135,6 +135,24 @@ class Corruptions(unittest.TestCase):
                                5.0, delta=0.1)
         self.assertFalse(scores["gates"]["pass"])
 
+        # The overlay carries the same yaw, and its own numbers must show it.
+        # Turning a basis about the vertical by 5 degrees moves a forward
+        # vector at altitude `a` by `2 asin(sin(2.5 deg) cos a)`, so the
+        # largest possible overlay error is exactly 5, at the horizontal. The
+        # still route holds 15 aims at altitude 0, which is well over 5 per
+        # cent of the settled frames, so the settled p95 sits at that maximum
+        # too: both are pinned at 5.0 here rather than a range, because the
+        # closed form gives one number and the route puts the tail on it.
+        overlay = scores["overlay"]
+        self.assertAlmostEqual(overlay["settled"]["max_deg"], 5.0, delta=0.01)
+        self.assertAlmostEqual(overlay["settled"]["p95_deg"], 5.0, delta=0.1)
+        self.assertAlmostEqual(overlay["moving"]["max_deg"], 5.0, delta=0.01)
+        self.assertFalse(scores["gates"]["overlay_settled_p95_lt_0_5"])
+        self.assertFalse(scores["gates"]["overlay_moving_p95_lt_1"])
+        # Five degrees is under the 10 degree maximum gate, so that one holds:
+        # the yaw is a systematic error, not a flick.
+        self.assertTrue(scores["gates"]["overlay_max_lt_10"])
+
     def test_a_north_wrap_is_ten_degrees_the_other_way_never_three_hundred(self):
         scores = self.corrupted("north-wrap", "north-wrap")
         self.assertAlmostEqual(self.median(self.azimuth_offsets(scores)),
@@ -170,6 +188,16 @@ class Corruptions(unittest.TestCase):
         self.assertFalse(scores["gates"]["horizon_p95_lt_1"])
         self.assertFalse(scores["gates"]["pass"])
 
+        # The same warp is on the overlay's forward vectors. Its worst value
+        # is at 45 degrees, `atan(1.05 tan 45) - 45 = 1.40`, and the route's
+        # aims reach 35 and 70 degrees, so the settled maximum is well past
+        # the 0.5 degree settled gate. A landmark-only assertion here would
+        # pass with the overlay left untouched.
+        overlay = scores["overlay"]
+        self.assertGreater(overlay["settled"]["max_deg"], 0.5)
+        self.assertLess(overlay["settled"]["max_deg"], 1.41)
+        self.assertFalse(scores["gates"]["overlay_settled_p95_lt_0_5"])
+
     # -- flip, mirror ------------------------------------------------------
 
     def test_a_vertical_flip_loses_at_least_half_the_landmarks(self):
@@ -188,6 +216,14 @@ class Corruptions(unittest.TestCase):
             scores["landmarks"]["errors_deg"])
         self.assertFalse(scores["gates"]["pass"])
 
+        # Reflecting the basis about the north-south plane turns a forward
+        # vector aimed east into one aimed west, so the overlay error reaches
+        # most of a half turn. Anything under 90 here would mean the overlay
+        # was not mirrored at all.
+        overlay = scores["overlay"]
+        self.assertGreater(overlay["settled"]["max_deg"], 90.0)
+        self.assertFalse(scores["gates"]["overlay_max_lt_10"])
+
     # -- sections ----------------------------------------------------------
 
     def test_a_duplicated_section_is_reported_as_a_duplicate(self):
@@ -199,18 +235,41 @@ class Corruptions(unittest.TestCase):
         one. Lower down the copies land too far away to be matched and are
         reported as spurious instead, which is the honest answer for them.
         """
+        az0, width = 60.0, 40.0
         scores = self.corrupted("duplicate-section", "duplicate-section",
-                                az0=60.0, width=40.0)
-        self.assertTrue(scores["landmarks"]["duplicated"], scores["landmarks"])
+                                az0=az0, width=width)
+        # The closed form: an observable landmark in the copied range whose
+        # copy, `width` degrees east of it at its own altitude, lands inside
+        # the matching radius. `2 asin(sin(width / 2) cos alt) <= 8` is true
+        # only above altitude 78.5, so of the four landmarks in [60, 100) it
+        # is the one at 85 and no other.
+        expected_duplicates = sorted(
+            entry["id"] for entry in scores["landmarks"]["per_landmark"]
+            if entry["observable"]
+            and ((entry["truth"]["az"] - az0) % 360.0) < width
+            and angle_between(
+                sky_vector(entry["truth"]["az"], entry["truth"]["alt"]),
+                sky_vector(entry["truth"]["az"] + width, entry["truth"]["alt"])
+            ) <= score.MATCH_RADIUS_DEG)
+        self.assertTrue(expected_duplicates)
+        self.assertEqual(sorted(scores["landmarks"]["duplicated"]),
+                         expected_duplicates)
         self.assertFalse(scores["gates"]["no_duplicates"])
         self.assertFalse(scores["gates"]["pass"])
 
     def test_a_removed_section_is_omission_and_unresolved_area(self):
+        width = 40.0
         scores = self.corrupted("remove-section", "remove-section",
-                                az0=100.0, width=40.0)
+                                az0=100.0, width=width)
         self.assertTrue(scores["landmarks"]["omitted"])
         self.assertLess(scores["coverage"]["observable_fraction_covered"], 0.95)
-        self.assertGreater(scores["horizon"]["unresolved_sr"], 0.0)
+        # The closed form: an azimuth wedge of `width` degrees, from the
+        # horizontal to the zenith, is `width / 360 * 2 pi` steradians.
+        # Reporting it in solid angle is the point -- counting the raster's
+        # equirectangular cells equally would inflate a wedge at the pole.
+        wedge = width / 360.0 * HEMISPHERE_SR
+        self.assertAlmostEqual(scores["horizon"]["unresolved_sr"] / wedge,
+                               1.0, delta=0.02)
         self.assertFalse(scores["gates"]["no_unresolved_boundary"])
         self.assertFalse(scores["gates"]["pass"])
 
@@ -303,9 +362,9 @@ class Corruptions(unittest.TestCase):
     def test_erasing_the_horizon_strip_keeps_the_area_and_loses_the_boundary(self):
         """Total area cannot hide a missing boundary.
 
-        Blanking the sky below 10 degrees leaves 74 per cent of the
-        cos-weighted raster painted and every landmark above 15 degrees exactly
-        where it was, while the whole boundary is unresolved. A report that
+        Blanking the sky below 10 degrees leaves 0.704 of the cos-weighted
+        raster painted and every landmark above 15 degrees exactly where it
+        was, while the whole boundary is unresolved. A report that
         looked only at painted area and at the landmarks it could still see
         would call this a pass.
 
@@ -409,6 +468,33 @@ class Corruptions(unittest.TestCase):
             corrupt.apply(self.case_dir, self.ideal_dir, "no-such-corruption",
                           self.base / "refused")
 
+    def test_an_unknown_parameter_is_refused(self):
+        """A corruption that did not happen would be scored as a clean result.
+
+        A misspelled parameter is the quiet version of that: the corruption
+        runs with its default, the scores come back as expected, and the run
+        reads as a scorer that cannot fail.
+        """
+        with self.assertRaises(TypeError):
+            corrupt.apply(self.case_dir, self.ideal_dir, "yaw",
+                          self.base / "refused-param", degrees=5.0)
+
+    def test_corrupting_a_result_directory_in_place_is_refused(self):
+        """The uncorrupted result is the baseline; it is not the output.
+
+        Corrupting in place would destroy the only thing every one of these
+        tests is measured against, and it would do it silently.
+        """
+        before = {path.name: path.read_bytes()
+                  for path in sorted(self.ideal_dir.iterdir()) if path.is_file()}
+        with self.assertRaises(ValueError):
+            corrupt.apply(self.case_dir, self.ideal_dir, "brightness",
+                          self.ideal_dir, gain=1.2)
+        after = {path.name: path.read_bytes()
+                 for path in sorted(self.ideal_dir.iterdir()) if path.is_file()}
+        self.assertEqual(before, after)
+        self.assertIn("panorama.png", before)
+
     # -- the report --------------------------------------------------------
 
     def test_the_report_is_one_self_contained_file(self):
@@ -443,6 +529,49 @@ class Corruptions(unittest.TestCase):
         self.assertIn("trunk", html)
         self.assertIn("R0K0", html)
         self.assertIn("W1", html)
+
+    def test_the_boundary_plot_never_draws_a_disclaimed_altitude_as_measured(self):
+        """An uncertain bin is not a measurement, and must not be drawn as one.
+
+        `remove-section` writes altitude 90 into the bins it marks uncertain.
+        Plotted as one unbroken stroke, that reads as a boundary the scanner
+        claimed reaches the zenith; plotted as a gap with a dashed grey line
+        through it, it reads as what it is. The measured stroke must contain
+        no point inside the uncertain run.
+        """
+        out_dir = self.base / "svg-uncertain"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        bins = 30
+        (out_dir / "horizon.json").write_text(json.dumps({
+            "bins": bins,
+            "points": [{"az": (i + 0.5) * 360.0 / bins,
+                        "alt": 90.0 if 8 <= i <= 11 else 5.0}
+                       for i in range(bins)],
+            "uncertain_bins": [8, 9, 10, 11],
+        }), encoding="utf-8", newline="\n")
+
+        svg = report._horizon_svg(self.case_dir, out_dir)
+        measured = re.findall(r'<polyline[^>]*stroke="#ff8a3d"[^>]*points="([^"]*)"', svg)
+        dashed = re.findall(
+            r'<polyline[^>]*stroke-dasharray="[^"]*"[^>]*points="([^"]*)"', svg)
+        self.assertEqual(len(measured), 2)   # one run either side of the gap
+        self.assertEqual(len(dashed), 1)
+
+        left, plot_width = 46.0, 1080.0 - 46.0 - 12.0
+
+        def x_of(index):
+            return left + (index + 0.5) / bins * plot_width
+
+        def xs(points):
+            return [float(pair.split(",")[0]) for pair in points.split()]
+
+        drawn = [x for run in measured for x in xs(run)]
+        self.assertEqual(len(drawn), bins - 4)
+        for index in (8, 9, 10, 11):
+            for x in drawn:
+                self.assertNotAlmostEqual(x, x_of(index), places=1)
+        self.assertEqual([round(x, 1) for x in xs(dashed[0])],
+                         [round(x_of(index), 1) for index in (8, 9, 10, 11)])
 
     def test_a_failing_report_says_fail_in_words(self):
         scores = self.corrupted("empty", "empty")
