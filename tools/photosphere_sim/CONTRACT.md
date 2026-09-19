@@ -275,7 +275,8 @@ filename order, the same construction as `frames`.
                                "status":"found"|"omitted"|"duplicate"|"sliver"|"not_observable"}]},
  "horizon":{"truth_bins":3600,"measured_bins","measured_resolution_deg","signed_error_deg":{"median","p95","max"},
             "false_open_sr","false_blocked_sr","unresolved_sr","note",
-            "obstacles":[{"id","truth_alt_peak","deficit_median","deficit_p95","width_missed_deg","min_width_deg","missed"}],
+            "obstacles":[{"id","truth_alt_peak","deficit_median","deficit_p95","width_missed_deg","min_width_deg",
+                         "visible_width_deg","resolvable","resolvable_width_deg","missed"}],
             "missed_obstructions":[ids],"north_offset_deg"},
  "overlay":{"samples","missing_fraction","frames_over_gate","duplicate_frame_ids",
             "moving":{"median_deg","p95_deg","max_deg"},"settled":{"median_deg","p95_deg","max_deg"}},
@@ -366,19 +367,49 @@ no ray hit anything. Measured bin `i` of `N` covers
   `deficit = clip(profile, 0, 90) - measured`; `deficit_median` and
   `deficit_p95` summarise it, `width_missed_deg` is 0.1 degrees times the
   number of those bins whose deficit exceeds 1.0, and `min_width_deg` is the
-  width the scene declares the obstacle must be found at. `missed` is
-  `deficit_median > 1.0 or (width_missed_deg is not None and min_width_deg > 0
-  and width_missed_deg >= min_width_deg)`, and true for an obstacle that is
-  visible but has no resolved bin at all. The median rather than the minimum,
-  because a bin at the edge of an obstacle straddles a coarse measured bin and
-  swings either way without the obstacle being lost; and the width beside it,
-  because the median cannot see a notch. The chart yard's roof spans 146
-  degrees, so cutting the declared 10 degree minimum width out of it leaves
-  1366 of 1466 bins right and the median at zero. An obstacle is found when it
-  is found, not when most of it is. The width term costs a correct boundary
-  nothing: a measured profile at or above the envelope has every deficit at or
-  below zero, so `width_missed_deg` is 0.0 at every resolution.
-  `missed_obstructions` is the ids of the missed ones.
+  width the scene declares the obstacle must be found at. The median rather
+  than the minimum, because a bin at the edge of an obstacle straddles a
+  coarse measured bin and swings either way without the obstacle being lost;
+  and the width beside it, because the median cannot see a notch. The chart
+  yard's roof spans 146 degrees, so cutting the declared 10 degree minimum
+  width out of it leaves 1366 of 1466 bins right and the median at zero. An
+  obstacle is found when it is found, not when most of it is. The width term
+  costs a correct boundary nothing: a measured profile at or above the
+  envelope has every deficit at or below zero, so `width_missed_deg` is 0.0 at
+  every resolution. `missed_obstructions` is the ids of the missed ones.
+- Issue #53: an obstacle narrower than one product bin is a width the product
+  cannot represent at all, whatever the scanner does -- the scanner reports
+  the horizon in a fixed number of azimuth bins (`PhotosphereSweep`'s own
+  `bins`, 30 by default, 12 degrees each) and the planner interpolates that
+  same resolution, so the measured profile at that azimuth describes the
+  whole bin, not the obstacle's own narrow stretch of it. What decides this
+  is the obstacle's own VISIBLE extent, `visible_width_deg` (the count of
+  truth bins the object is the first thing hit in, times the truth's own
+  step), never its declared `min_width_deg`: the chart yard's roof-south and
+  wall-east both declare 10 while spanning 146.6 and 84.0 degrees, so gating
+  on the label would call two wide, genuinely scoreable obstacles
+  unresolvable. `product_bins` is the number of points in THIS result's own
+  `result/horizon.json` (whatever the scanner that produced it used, not a
+  constant); `resolvable` is `visible_width_deg >= 360 / product_bins`.
+  `resolvable_width_deg` is `max(min_width_deg, 360 / product_bins)`, reported
+  on every row regardless of `resolvable`, and it still sets the verdict's
+  width threshold once an obstacle IS resolvable: the declared value can
+  still hold a wide obstacle to a wider minimum than one bin, it just cannot
+  be the thing that makes an otherwise-wide obstacle unresolvable. `missed`
+  is `resolvable and (deficit_median > 1.0 or width_missed_deg >=
+  resolvable_width_deg)`, and, for a resolvable obstacle, true also when it
+  is visible but has no resolved bin at all. An obstacle that is NOT
+  resolvable is always `missed: false`: `deficit_median`, `deficit_p95` and
+  `width_missed_deg` are still computed and reported, but stay informational,
+  because they describe a comparison the product's own resolution makes
+  meaningless, not a fault in the scanner. On the chart yard the two poles
+  and the trunk (visible widths 2.2, 0.3 and 3.0 degrees) are never
+  resolvable at the product's 12 degree bin; the roof and the east wall are,
+  regardless of their declared 10. Issue #58: on `chartyard-still-60` the
+  wall's measured bin centred at azimuth 78 (covering 72 to 84) reports open
+  sky against a wall the truth puts at about 25 degrees there, so `wall-east` is a
+  real, resolvable miss (`width_missed_deg` 12.0 at `resolvable_width_deg`
+  12.0) and `no_missed_obstructions` is correctly false on that case.
 - Scoring an obstacle against the envelope scores whatever is tallest at those
   azimuths. The chart yard's trunk stands under its canopy, so the envelope
   over the trunk's span is 45.8 degrees against the trunk's own 21.5: a
@@ -480,9 +511,13 @@ these rows of that table are not evaluated here at all:
 - *Safety-relevant confidence* is covered only in part. `false_open_sr` is
   computed and reported and NOT gated; what stands in for that row is the
   width term of an obstacle's `missed`, which fails a positive case when a
-  declared test obstacle is lost over at least its own `min_width_deg`. A
-  false-open area that falls on no declared obstacle passes every gate here
-  while being reported.
+  RESOLVABLE declared test obstacle is lost over at least its own
+  `resolvable_width_deg`. A false-open area that falls on no declared
+  obstacle passes every gate here while being reported, and so does one that
+  falls only on an obstacle whose own visible silhouette never reaches one
+  product bin (issue #53): on the chart yard that is the two poles and the
+  trunk, not the roof or the east wall, which are wide enough to be graded
+  regardless of their declared width.
 
 A green `pass` on a stage A case therefore says the mathematics is right on
 that recording, against those fourteen thresholds. It says nothing about

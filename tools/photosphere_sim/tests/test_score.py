@@ -217,6 +217,23 @@ class IdealResult(unittest.TestCase):
         self.assertEqual(horizon["missed_obstructions"], [])
         for obstacle in horizon["obstacles"]:
             self.assertLessEqual(obstacle["deficit_median"], 1.0, obstacle["id"])
+        # Issue #53: resolvability is the obstacle's own visible silhouette
+        # against one product bin (12 degrees), never its declared label.
+        # The two poles and the trunk are genuinely narrower than one bin
+        # (2.2, 0.3 and 3.0 degrees) and stay unresolved at this resolution
+        # whatever the scanner does; the roof and the east wall are wide
+        # (146.6 and 84.0 degrees) despite both declaring only 10, and are
+        # resolvable here even though their own bin is coarse. All five pass
+        # `no_missed_obstructions` on this coarse-but-accurate rebin (a 12
+        # degree bin holding its maximum loses no obstacle), which is real
+        # evidence for the two resolvable ones and merely uninformative for
+        # the three that are not.
+        resolvable_here = {"pole-near": False, "pole-far": False,
+                           "roof-south": True, "wall-east": True, "trunk": False}
+        for obstacle in horizon["obstacles"]:
+            self.assertEqual(obstacle["resolvable"], resolvable_here[obstacle["id"]],
+                             obstacle["id"])
+            self.assertEqual(obstacle["resolvable_width_deg"], 12.0, obstacle["id"])
 
     def test_thirty_bins_keep_the_landmark_numbers(self):
         self.assertEqual(self.coarse["landmarks"], self.scores["landmarks"])
@@ -708,6 +725,150 @@ class IdealResult(unittest.TestCase):
         self.assertFalse(scores["gates"]["no_omissions"])
         self.assertFalse(scores["gates"]["coverage_ge_0_95"])
         self.assertFalse(scores["gates"]["pass"])
+
+
+class ResolvableWidth(unittest.TestCase):
+    """Issue #53: an obstacle narrower than one product bin grades the
+    fixture, not the scanner -- and "narrower" means the obstacle's own
+    visible silhouette, never its declared ``min_width_deg`` label.
+
+    Fix round 1 keyed ``resolvable`` on the declared width, which was wrong:
+    on the real chart yard, roof-south and wall-east both declare 10 while
+    spanning 146 and 84 degrees, so gating on the label would have made two
+    wide, genuinely-scoreable obstacles invisible to the gate. ``_score_obstacles``
+    is called directly here with a synthetic obstacle, rather than through the
+    expensive ``IdealResult`` case build, because the claim under test needs
+    nothing from a real scene.
+    """
+
+    TRUTH_BINS = 3600
+    STEP = 360.0 / TRUTH_BINS  # 0.1 degree, CONTRACT.md's HORIZON_CELL_DEG
+    PRODUCT_BINS = 30  # PhotosphereSweep's own default, 12 degrees per bin
+
+    @classmethod
+    def _obstacle(cls, width_deg, min_width_deg, notch_width_deg=None, deficit=5.0):
+        """A ``width_deg``-wide, fully visible, fully resolved obstacle.
+
+        Under-reported by ``deficit`` degrees everywhere (``notch_width_deg``
+        omitted), or over a ``notch_width_deg``-wide stretch at the start of
+        it and matched exactly everywhere else -- the shape a correct
+        boundary with one notch cut out of it has, the same shape
+        ``test_a_narrow_notch_in_the_roof_is_missed_by_width_alone`` exercises
+        on the real chart yard's roof.
+        """
+        width_bins = round(width_deg / cls.STEP)
+        start = 100
+        profile = np.full(cls.TRUTH_BINS, -10.0)
+        profile[start:start + width_bins] = 30.0
+        alt = profile.copy()
+        under = slice(start, start + width_bins) if notch_width_deg is None \
+            else slice(start, start + round(notch_width_deg / cls.STEP))
+        alt[under] = 30.0 - deficit
+        resolved = np.ones(cls.TRUTH_BINS, dtype=bool)
+        reference = {"obstacles": [{"id": "synthetic", "alt_max": 30.0,
+                                    "min_width_deg": min_width_deg,
+                                    "profile": profile.tolist()}]}
+        scored = score._score_obstacles(reference, cls.TRUTH_BINS, cls.STEP,
+                                        alt, resolved, cls.PRODUCT_BINS)
+        return scored[0]
+
+    def test_a_narrow_obstacle_is_not_resolvable_or_missed(self):
+        """2 degrees of actual silhouette, one product bin is 12: below the
+        floor, whatever the scene happens to declare its width as.
+
+        The obstacle IS under-reported by 5 degrees everywhere it is visible
+        (a real deficit, informational), but the product could never have
+        told this 2 degree obstacle apart from its surroundings at 12 degree
+        resolution, so grading it "missed" would be grading a fixture the
+        product cannot represent. This is the case the median term alone
+        would get wrong: 5 degrees is well past MISSED_OBSTRUCTION_DEG, so
+        without the resolvable gate suppressing the whole verdict (not just
+        the width term) this row would still come out missed.
+        """
+        entry = self._obstacle(2.0, min_width_deg=2.0)
+        self.assertEqual(entry["visible_width_deg"], 2.0)
+        self.assertEqual(entry["deficit_median"], 5.0)  # the deficit is real...
+        self.assertFalse(entry["resolvable"])
+        self.assertEqual(entry["resolvable_width_deg"], 12.0)
+        self.assertFalse(entry["missed"])  # ...but uninterpretable at this resolution
+
+    def test_a_wide_obstacle_with_a_bin_wide_notch_is_missed(self):
+        """25 degrees of silhouette, a 12 degree stretch under by 5: IS a
+        miss with 30 product bins -- the real wall-east/roof-south shape.
+
+        25 degrees is well above the 12 degree floor, so this row is
+        resolvable and graded normally. The notch is only 120 of 250 visible
+        bins, so the MEDIAN deficit is 0.0 (the majority is matched exactly)
+        and cannot see it; the WIDTH term catches it instead, at exactly its
+        own threshold (``width_missed_deg`` 12.0 >= ``resolvable_width_deg``
+        12.0, the floor, since the declared 10 is smaller than one bin).
+        """
+        entry = self._obstacle(25.0, min_width_deg=10.0, notch_width_deg=12.0)
+        self.assertEqual(entry["visible_width_deg"], 25.0)
+        self.assertTrue(entry["resolvable"])
+        self.assertEqual(entry["resolvable_width_deg"], 12.0)
+        self.assertAlmostEqual(entry["deficit_median"], 0.0, places=9)
+        self.assertAlmostEqual(entry["width_missed_deg"], 12.0, places=9)
+        self.assertTrue(entry["missed"])
+
+    def test_a_small_declared_width_does_not_make_a_wide_obstacle_unresolvable(self):
+        """The fix round 1 bug, pinned directly: declared width must not
+        decide resolvability, only the obstacle's own visible extent does.
+
+        Same 25 degree, 12 degree notch obstacle as above, only the scene's
+        declared label changes (10 -> 2): resolvability and the miss verdict
+        are unchanged, because both are read from ``visible_width_deg``, not
+        from ``min_width_deg``. ``resolvable_width_deg`` still floors at one
+        product bin (12), so the verdict itself does not move either.
+        """
+        entry = self._obstacle(25.0, min_width_deg=2.0, notch_width_deg=12.0)
+        self.assertTrue(entry["resolvable"])
+        self.assertEqual(entry["resolvable_width_deg"], 12.0)
+        self.assertTrue(entry["missed"])
+
+    def test_a_wide_declared_width_still_raises_the_threshold_for_a_resolvable_obstacle(self):
+        """``resolvable_width_deg`` is still ``max(declared, bin width)``.
+
+        Declared 20 exceeds the 12 degree bin floor, so a resolvable
+        obstacle's own 12 degree notch (width_missed_deg 12.0) no longer
+        reaches the threshold (20), and the median is 0.0, so this one is NOT
+        missed -- the declared width, when it is the wider of the two, still
+        protects a resolvable obstacle exactly as it did before #53.
+        """
+        entry = self._obstacle(25.0, min_width_deg=20.0, notch_width_deg=12.0)
+        self.assertTrue(entry["resolvable"])
+        self.assertEqual(entry["resolvable_width_deg"], 20.0)
+        self.assertAlmostEqual(entry["width_missed_deg"], 12.0, places=9)
+        self.assertFalse(entry["missed"])
+
+    def test_a_resolvable_obstacle_with_no_declared_width_is_still_missed(self):
+        """Review round 2, Major 1: the width term must not require a
+        declared ``min_width_deg`` at all.
+
+        ``resolvable_width_deg`` is already well-defined with nothing
+        declared -- it falls back to the bin floor (12) -- so a resolvable
+        obstacle (25 degrees visible) with NO declared width and a 12 degree
+        stretch under-reported by 5 degrees must still be caught by the
+        width term, exactly as one that does declare a width. Mutation: a
+        `has_min_width` guard on the width term (requiring a positive
+        declared value before it can fire at all) reddens this, since here
+        there is none.
+        """
+        entry = self._obstacle(25.0, min_width_deg=None, notch_width_deg=12.0)
+        self.assertTrue(entry["resolvable"])
+        self.assertEqual(entry["resolvable_width_deg"], 12.0)
+        self.assertAlmostEqual(entry["width_missed_deg"], 12.0, places=9)
+        self.assertTrue(entry["missed"])
+
+    # Mutation check (verified by hand, not pinned as a source-level test):
+    # replacing `resolvable = visible_width_deg >= bin_width_deg` with
+    # `resolvable = False` reddens test_a_narrow_obstacle_is_not_resolvable_or_missed's
+    # sibling (nothing would be gradable) and both of the wide-obstacle tests
+    # above (a real 12 degree miss would go unreported); replacing it with
+    # `resolvable = True` reddens test_a_narrow_obstacle_is_not_resolvable_or_missed
+    # itself (a 2 degree fixture would be graded as if the product could see
+    # it). Both directions were run against this class and reverted; see
+    # task-10-report.md, "Fix round 1".
 
 
 class ObservableRegion(unittest.TestCase):

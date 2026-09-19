@@ -349,7 +349,8 @@ def _area_below(cos_cumulative: np.ndarray, centres: np.ndarray,
 
 
 def _score_obstacles(reference: dict, truth_bins: int, step: float,
-                     alt: np.ndarray, resolved: np.ndarray) -> list:
+                     alt: np.ndarray, resolved: np.ndarray,
+                     product_bins: int) -> list:
     """Every declared test obstacle, scored against its own silhouette.
 
     The envelope cannot answer this question. The chart yard's trunk stands
@@ -366,17 +367,46 @@ def _score_obstacles(reference: dict, truth_bins: int, step: float,
     - the MEDIAN deficit above ``MISSED_OBSTRUCTION_DEG``, not the minimum: a
       few bins at the edge of an obstacle straddle a coarse measured bin and
       go deeply negative or positive without the obstacle being lost;
-    - ``width_missed_deg`` at or above the width the scene declares the
-      obstacle must be found at. The median cannot see this one. The chart
-      yard's roof spans 146 degrees, so a 10 degree notch cut out of it leaves
-      1366 of 1466 bins right and the median at zero, while the whole of the
-      declared minimum width is gone. An obstacle is found when it is found,
-      not when most of it is.
+    - ``width_missed_deg`` at or above ``resolvable_width_deg``, the wider of
+      the scene's declared ``min_width_deg`` and one product bin
+      (``360 / product_bins``, ``product_bins`` being the number of points
+      the scanner's own boundary carries in this result). The median cannot
+      see this one. The chart yard's roof spans 146 degrees, so a 10 degree
+      notch cut out of it leaves 1366 of 1466 bins right and the median at
+      zero, while the whole of the declared minimum width is gone. An
+      obstacle is found when it is found, not when most of it is.
 
-    The width term costs a correct boundary nothing: the ideal's measured
-    profile is at or above the envelope everywhere, so every deficit is at or
-    below zero and every missed width is 0.0, at 3600 bins and at 30.
+    Issue #53: the scanner reports 30 azimuth bins, 12 degrees each, and the
+    planner interpolates that same resolution, so a stretch of an obstacle
+    narrower than one product bin cannot be represented by the product at
+    all, whatever the scanner does. Fix round 1 keyed ``resolvable`` on the
+    scene's DECLARED ``min_width_deg``, which was wrong: several chart-yard
+    obstacles declare a small width as a label (roof-south and wall-east both
+    say 10) while their own silhouette is far wider than one bin, and an
+    obstacle that is actually wide enough for the product to see is
+    resolvable regardless of what number the scene happens to have written
+    next to it. What decides resolvability is the obstacle's own visible
+    extent -- ``visible_width_deg``, the count of truth bins where it is the
+    first thing hit, times the truth's own step -- not the declared value:
+    ``resolvable = visible_width_deg >= 360 / product_bins``. The declared
+    value still sets the verdict's WIDTH THRESHOLD once an obstacle is
+    resolvable (``resolvable_width_deg = max(min_width_deg, 360 /
+    product_bins)``), because a resolvable obstacle can still be held to a
+    wider minimum than one bin if the scene asks for it; it just cannot be
+    the thing that makes an otherwise-wide obstacle unresolvable. An
+    obstacle whose own silhouette never reaches one product bin (the chart
+    yard's two poles and its trunk, all under 3.2 degrees wide against a 12
+    degree bin) is ``resolvable: false``: both verdict terms are suppressed
+    for it and its deficit numbers -- and ``visible_width_deg`` and
+    ``resolvable_width_deg`` themselves -- are reported for information
+    only, never folded into ``missed`` or ``missed_obstructions``.
+
+    The width term, and the wider resolvable-width floor, cost a correct
+    boundary nothing: the ideal's measured profile is at or above the
+    envelope everywhere, so every deficit is at or below zero and every
+    missed width is 0.0, at 3600 bins and at 30.
     """
+    bin_width_deg = (360.0 / product_bins) if product_bins else None
     scored = []
     for obstacle in reference.get("obstacles", []):
         if "profile" not in obstacle:
@@ -390,30 +420,61 @@ def _score_obstacles(reference: dict, truth_bins: int, step: float,
                              f"not the truth's {truth_bins}")
         visible = profile > -10.0
         measurable = visible & resolved
+        visible_width_deg = float(np.count_nonzero(visible)) * step
+
+        declared = obstacle.get("min_width_deg")
+        declared_val = float(declared) if declared is not None else None
+        has_min_width = declared_val is not None and declared_val > 0.0
+
+        if bin_width_deg is not None:
+            # The obstacle's OWN silhouette decides resolvability, never the
+            # declared label: a wide obstacle the scene under-labels (the
+            # chart yard's roof and wall both declare 10 while spanning
+            # 146 and 84 degrees) is exactly as resolvable as one correctly
+            # labelled. Dropping this comparison (treating every obstacle as
+            # unresolvable, or every obstacle as resolvable) is the named
+            # mutation `tests/test_score.py`'s `ResolvableWidth` class pins.
+            resolvable = visible_width_deg >= bin_width_deg
+            resolvable_width_deg = max(declared_val, bin_width_deg) if has_min_width else bin_width_deg
+        else:
+            resolvable = True
+            resolvable_width_deg = declared_val
+
         entry = {
             "id": obstacle["id"],
             "truth_alt_peak": float(obstacle.get("alt_max", -10.0)),
             "deficit_median": None,
             "deficit_p95": None,
             "width_missed_deg": None,
-            "min_width_deg": obstacle.get("min_width_deg"),
+            "min_width_deg": declared,
+            "visible_width_deg": visible_width_deg,
+            "resolvable": resolvable,
+            "resolvable_width_deg": resolvable_width_deg,
             # Visible but with nothing resolved over it is a miss: no evidence
-            # where evidence was expected.
-            "missed": bool(visible.any()),
+            # where evidence was expected. Suppressed the same way when the
+            # obstacle's own silhouette is narrower than the product can ever
+            # resolve.
+            "missed": bool(resolvable and visible.any()),
         }
         if measurable.any():
             deficit = np.clip(profile[measurable], 0.0, 90.0) - alt[measurable]
             median = float(np.median(deficit))
             width_missed = float(
                 np.count_nonzero(deficit > MISSED_OBSTRUCTION_DEG) * step)
-            declared = obstacle.get("min_width_deg")
-            too_narrow = (declared is not None and float(declared) > 0.0
-                          and width_missed >= float(declared))
+            # No `has_min_width` guard here: CONTRACT.md's documented formula
+            # is `resolvable and width_missed_deg >= resolvable_width_deg`,
+            # full stop. `resolvable_width_deg` is already well-defined with
+            # no declared `min_width_deg` at all (it falls back to
+            # `bin_width_deg` above), so a resolvable obstacle with nothing
+            # declared can still be caught by the width term at one product
+            # bin -- an extra guard here would silently exempt it instead.
+            too_narrow = (resolvable and resolvable_width_deg is not None
+                          and width_missed >= resolvable_width_deg)
             entry.update({
                 "deficit_median": median,
                 "deficit_p95": _percentile(deficit, 95),
                 "width_missed_deg": width_missed,
-                "missed": bool(median > MISSED_OBSTRUCTION_DEG or too_narrow),
+                "missed": bool(resolvable and (median > MISSED_OBSTRUCTION_DEG or too_narrow)),
             })
         elif not visible.any():
             entry["width_missed_deg"] = 0.0
@@ -449,7 +510,12 @@ def _score_horizon(reference: dict, measured: dict | None) -> dict:
     false_blocked = float(np.clip(-difference, 0.0, None).sum())
     unresolved = float(np.count_nonzero(~resolved) * column_sr)
 
-    obstacles = _score_obstacles(reference, truth_bins, step, alt, resolved)
+    # `bins` is `_measured_profile`'s own count of points in the result's
+    # horizon.json -- the number of azimuth columns THIS result actually
+    # carries, whatever the scanner that produced it used. That is
+    # `product_bins`: the resolution the obstacle rule's width term must
+    # respect, not the case's or the truth's own bin count.
+    obstacles = _score_obstacles(reference, truth_bins, step, alt, resolved, bins)
     missed = [o["id"] for o in obstacles if o["missed"]]
 
     steps = int(round(NORTH_OFFSET_LIMIT_DEG / step))
