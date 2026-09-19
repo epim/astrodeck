@@ -270,15 +270,26 @@ await test('Timestamped video frames taken during movement are rejected; settled
   assert.ok(sweep.cells.find(c=>c.id===b.id)?.captured,'Settled frame failed to capture');
   sweep.stop();assert.equal(cancelled,requestId);
 });
-await test('Frames between dots and repeated completed patches do not enter the mosaic',async()=>{
+await test('Frames with no target and repeated completed patches do not enter the mosaic',async()=>{
   const sweep=new PhotosphereSweep();await sweep.start(document.createElement('video'),document.createElement('canvas'));
-  // Find a visible direction outside every 8-degree target, rather than relying
-  // on the source ordering of the geodesic cells.
+  // Every direction ABOVE the horizon now has a target within the aim cone
+  // (issue #57), so the aim with nothing to capture is one below it - and it
+  // has to be INSIDE the `measured.alt < -10` below-horizon gate, or that gate
+  // refuses the frame on its own and this case passes with the no-target
+  // refusal deleted. Between -10 and 0 the dome has run out of cells and the
+  // horizon gate has not fired: the search finds azimuth 9, altitude -9, in
+  // the gap between two cells of the altitude-0 ring. Found by search rather
+  // than by relying on the geodesic cells' order.
   let target:{az:number;alt:number}|null=null;
-  for(let az=0;az<360&&!target;az+=3)for(let alt=0;alt<80&&!target;alt+=3){
+  for(let az=0;az<360&&!target;az+=3)for(let alt=-9;alt<0&&!target;alt+=3){
     heading(az,true,90+alt);if(!sweep.aimTarget)target={az,alt};
   }
   assert.ok(target);sweep.begin();await tick();assert.equal(sweep.frameCount,0);
+  // The COUNT alone cannot tell this refusal from any other, so the reason is
+  // asserted. Mutation: delete the two no-target refusals from grabFrame.
+  assert.ok(sweep.captureLog.some(r=>r.outcome==='no-target'),
+    `nothing was refused for want of a target at azimuth ${target!.az}, altitude ${target!.alt}: `
+    + sweep.captureLog.map(r=>r.outcome).join(', '));
   const cell=sweep.cells.find(c=>c.alt>20&&c.alt<60)!;
   heading(cell.az,true,90+cell.alt);await tick();assert.equal(sweep.frameCount,1);
   await tick();assert.equal(sweep.frameCount,1);sweep.stop();
@@ -363,10 +374,14 @@ await test('The capture log names a rejection reason before an accepted capture,
 await test('A session with no accepted pose stays diagnosable; panoramaPixels is null until a real capture lands',async()=>{
   const sweep=new PhotosphereSweep();
   await sweep.start(document.createElement('video'),document.createElement('canvas'));
-  // A direction outside every DOME_CELLS target: the pose is perfectly valid
-  // and settled, but nothing here can ever be accepted.
+  // A direction outside every dome cell's aim cone: the pose is perfectly
+  // valid and settled, but nothing here can ever be accepted. Since issue #57
+  // that means a direction below the horizon, and it must be one INSIDE the
+  // `measured.alt < -10` gate, or that gate does the refusing and this case
+  // would pass with the no-target refusals deleted. Same search as the mosaic
+  // case above, and the same answer: azimuth 9, altitude -9.
   let target:{az:number;alt:number}|null=null;
-  for(let az=0;az<360&&!target;az+=3)for(let alt=0;alt<80&&!target;alt+=3){
+  for(let az=0;az<360&&!target;az+=3)for(let alt=-9;alt<0&&!target;alt+=3){
     heading(az,true,90+alt);if(!sweep.aimTarget)target={az,alt};
   }
   assert.ok(target);
@@ -374,6 +389,11 @@ await test('A session with no accepted pose stays diagnosable; panoramaPixels is
   for(let i=0;i<20;i++)await tick();
   assert.equal(sweep.captureLog.length,20);
   assert.ok(sweep.captureLog.every(r=>r.outcome!=='accepted'));
+  // And refused for the reason this direction was chosen for. Mutation: delete
+  // the two no-target refusals from grabFrame.
+  assert.ok(sweep.captureLog.some(r=>r.outcome==='no-target'),
+    'twenty frames were refused and not one of them for want of a target: '
+    + sweep.captureLog.map(r=>r.outcome).join(', '));
   // Read into a local rather than asserting on sweep.panoramaPixels directly:
   // TS narrows a getter-backed access through an `asserts` call, and the SAME
   // property read further down must not inherit that (now stale) narrowing.
@@ -471,6 +491,64 @@ await test('A long run of refusals names the view angle only while the lens is s
   assert.doesNotMatch(measured.captureCue, /camera view angle may be set wrong/);
   assert.match(measured.captureCue, /^I can’t match this view yet\. Return to a green patch/);
   measured.stop();
+});
+await test('A hold at altitude 85 captures the zenith cell (#57)',async()=>{
+  // Where the still route's vertical sweep ends, and where it used to log
+  // nothing but no-target for the whole 1.2 s hold: this direction is 5.00
+  // degrees from the pole, whose cone was 5 degrees, and 12.17 degrees from
+  // the nearest cell of the ring below it, whose cone was 8. One 11 degree
+  // cone for every cell puts the pole back in reach, and one lookup gives the
+  // aim dot and the capture the same answer about which patch that is.
+  const sweep=new PhotosphereSweep();
+  await sweep.start(document.createElement('video'),document.createElement('canvas'));
+  const pole=sweep.cells.find(c=>c.alt>89.99)!;
+  heading(180,true,175);
+  assert.equal(sweep.aimTarget?.id,pole.id,'the aim dot named no cell at altitude 85');
+  sweep.begin();
+  await tick();
+  assert.equal(sweep.frameCount,1,'a settled hold at altitude 85 captured nothing');
+  const last=sweep.captureLog[sweep.captureLog.length-1];
+  assert.equal(last.outcome,'accepted');
+  assert.equal(last.cell,pole.id,'the capture took a cell other than the one the aim dot showed');
+  assert.ok(sweep.cells.find(c=>c.id===pole.id)?.captured);
+  // Mutation: give the pole its own 5 degree cone back (`cell.alt>89?5:11` in
+  // targetCell). aimTarget is null here, grabFrame records no-target, and the
+  // first three assertions fail. Observed red.
+  sweep.stop();
+});
+await test('An oriented hold below the overhead band still completes the zenith cap (#57)',async()=>{
+  // The other side of the widened cone. The cap shares the 11 degree cone with
+  // every other cell, so it is the nearest cell from about altitude 80 upward -
+  // well below the overhead band, which starts at 85. Coverage used to require
+  // a frame IN that band before the cap could count, so a hold at 82 was
+  // accepted over and over, named the cap every time, and never turned the dot
+  // green: the user holds on a blue dot being told it is being captured.
+  const sweep=new PhotosphereSweep();
+  await sweep.start(document.createElement('video'),document.createElement('canvas'));
+  const pole=sweep.cells.find(c=>c.alt>89.99)!;
+  heading(180,true,172);
+  assert.equal(sweep.aimTarget?.id,pole.id,'altitude 82 does not aim at the cap, so this case grades nothing');
+  sweep.begin();
+  await tick();
+  const accepted=sweep.captureLog[sweep.captureLog.length-1];
+  assert.equal(accepted.outcome,'accepted');
+  assert.equal(accepted.cell,pole.id);
+  // A full basis, heading and tilt: this frame is oriented, so its pixels are
+  // placed as well as any other cell's and the cap counts on the same rule.
+  assert.ok(accepted.basis);
+  assert.equal(sweep.overheadCaptured,false,'altitude 82 reached the overhead band, so the old rule was never under test');
+  assert.ok(sweep.cells.find(c=>c.id===pole.id)?.captured,'the cap was captured and stayed blue');
+  assert.match(sweep.captureCue,/^Captured/);
+  // Held there, the second attempt is a refusal and not a second capture.
+  await tick();
+  const second=sweep.captureLog[sweep.captureLog.length-1];
+  assert.equal(second.outcome,'already-captured',
+    `a second frame on the same completed patch was recorded as ${second.outcome}`);
+  assert.equal(sweep.frameCount,1);
+  // Mutation: the old coverage rule, `cell.alt < 89 || this.overheadCaptured`.
+  // The cap never greens, the second attempt is 'accepted' again, and
+  // frameCount reaches 2. Observed red.
+  sweep.stop();
 });
 await test('The mocks are the ordinary ones again', async () => {
   // Must stay last. This pins issue #51: "A grant arriving after

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { DEG, DOME_CELLS, SkyPanorama, cameraLens, dot, lookBasis, orientationBasis, projectRay, skyAngles, skyVector, unit, type CameraBasis, type V3 } from '../photosphereGeometry';
+import { AIM_CONE_DEG, DEG, DOME_CELLS, SkyPanorama, cameraLens, dot, lookBasis, orientationBasis, projectRay, skyAngles, skyVector, targetCell, unit, type CameraBasis, type DomeCell, type V3 } from '../photosphereGeometry';
 import { traceSkyCoverage } from '../photosphere';
 let passed=0;
 function test(name:string,fn:()=>void){fn();passed++;console.log(`PASS ${name}`);}
@@ -64,6 +64,85 @@ test('A dot centred in the reticle captures its entire cell in portrait and land
       assert.ok(panorama.covered(cell),`Centred cell ${cell.id} failed at ${width}x${height}`);
     }
   }
+});
+const separation=(a:V3,b:V3)=>Math.acos(Math.max(-1,Math.min(1,dot(a,b))))/DEG;
+test('Every direction above the horizon has a target within the aim cone',()=>{
+  // A one degree azimuth-altitude grid over everything the user can point at.
+  // This is the SAMPLER: it drives `targetCell` end to end over the directions
+  // a user can actually hold, and its worst aim (10.72) is below the true
+  // bound, so a cone between the two would pass here. The case below is the
+  // exact bound and the one that decides whether the cone is wide enough; this
+  // one decides whether the lookup built on it works.
+  const missed:string[]=[];let worst=0;
+  for(let az=0;az<360;az++)for(let alt=0;alt<=90;alt++){
+    const ray=skyVector(az,alt),cell=targetCell(ray);
+    if(!cell){if(missed.length<8)missed.push(`az ${az} alt ${alt}`);continue;}
+    const off=separation(ray,cell.center);
+    worst=Math.max(worst,off);
+    assert.ok(off<=AIM_CONE_DEG,`az ${az} alt ${alt} was given a target ${off.toFixed(2)} degrees away`);
+  }
+  assert.equal(missed.length,0,`directions with no target: ${missed.join(', ')}`);
+  assert.ok(worst>10.5&&worst<AIM_CONE_DEG,`the worst aim in the grid was ${worst.toFixed(3)} degrees, so this grid no longer probes the cone's edge`);
+  // Issue #57's own direction, which the old cones refused: exactly 5.00
+  // degrees from the pole, against a 5 degree pole cone, and 12.17 from the
+  // nearest cell of the first ring below it.
+  const hold=skyVector(180,85),pole=DOME_CELLS.find(c=>c.alt>89.99)!;
+  near(separation(hold,pole.center),5,.01);
+  assert.equal(targetCell(hold)?.id,pole.id);
+  // Mutation: AIM_CONE_DEG = 8 with the pole at 5, i.e. the cones this
+  // replaced. 7713 of the 32760 grid directions (23.5 percent) lose their
+  // target, the zenith hold among them. Observed red.
+  // Below the horizon there is still nothing to aim at, which is what leaves
+  // the 'Bring a blue dot into the centre ring' cue a job to do.
+  for(const alt of [-12,-45,-90])assert.equal(targetCell(skyVector(0,alt)),null,`a target was offered at altitude ${alt}`);
+});
+test('The aim cone is wider than the farthest corner of any cell',()=>{
+  // The closed form behind the grid above, and the reason 11 is the number.
+  // The dome is a dual tiling: a cell's `vertices` ARE the points where three
+  // cells meet, they are the farthest points of that cell from its own centre,
+  // and no direction on the sphere is farther from the nearest centre than the
+  // farthest such corner is from its own. So this single maximum is the exact
+  // worst case a cone has to cover, with no grid spacing to sample past it.
+  const separation=(a:V3,b:V3)=>Math.acos(Math.max(-1,Math.min(1,dot(a,b))))/DEG;
+  let worst=0,worstCell=-1;
+  for(const cell of DOME_CELLS)for(const corner of cell.vertices){
+    const off=separation(cell.center,corner);
+    if(off>worst){worst=off;worstCell=cell.id;}
+  }
+  // 10.8123 on this dome, attained at ten symmetric directions - azimuth 36,
+  // 108, 180, 252 and 324 at altitude 52.62 AND at altitude 10.81.
+  near(worst,10.81,.005);
+  assert.ok(worst<AIM_CONE_DEG,
+    `cell ${worstCell} reaches ${worst.toFixed(4)} degrees from its centre, outside the ${AIM_CONE_DEG} degree aim cone: `
+    + 'directions inside that cell would have no target');
+  // Mutation: AIM_CONE_DEG = 10. Red here (10.8123 is not below 10), and the
+  // grid case above goes red with it. Observed red.
+});
+test('The target is the nearest cell, not the first in the list',()=>{
+  // A direction inside two cells' cones at once, where DOME_CELLS order puts
+  // the FARTHER of the two first. That is the case a first-match lookup gets
+  // wrong, and the aim dot and the capture used to make this choice with two
+  // different rules, so they could name two different patches.
+  let probe:{ray:V3;nearer:DomeCell;farther:DomeCell}|null=null;
+  for(let i=0;i<DOME_CELLS.length&&!probe;i++)for(let j=i+1;j<DOME_CELLS.length&&!probe;j++){
+    const first=DOME_CELLS[i],second=DOME_CELLS[j];
+    const ray=unit(first.center.map((v,k)=>v*.4+second.center[k]*.6) as V3);
+    const a=separation(ray,first.center),b=separation(ray,second.center);
+    if(a>=AIM_CONE_DEG||b>=a)continue;
+    // The farther cell must also be the FIRST one in list order whose cone
+    // contains the ray, or a first-match lookup would not have chosen it and
+    // the mutation below would pass.
+    if(DOME_CELLS.findIndex(c=>separation(ray,c.center)<AIM_CONE_DEG)===i)probe={ray,nearer:second,farther:first};
+  }
+  assert.ok(probe,'no direction lies in two cones with the farther cell earlier in the list');
+  const {ray,nearer,farther}=probe!;
+  assert.ok(separation(ray,nearer.center)<separation(ray,farther.center));
+  assert.ok(separation(ray,farther.center)<AIM_CONE_DEG,'the farther cell is out of reach, so nothing is being chosen between');
+  assert.equal(targetCell(ray)?.id,nearer.id,
+    `the ray took cell ${targetCell(ray)?.id} at ${separation(ray,DOME_CELLS.find(c=>c.id===targetCell(ray)?.id)!.center).toFixed(2)} degrees `
+    + `over cell ${nearer.id} at ${separation(ray,nearer.center).toFixed(2)}`);
+  // Mutation: return the first cell within the cone instead of the nearest
+  // (the DOME_CELLS.find this replaced). Red on the assertion above.
 });
 test('Earth-fixed references move with phone yaw, pitch and roll',()=>{
   const north=skyVector(0,0),base=orientationBasis(0,90,0);

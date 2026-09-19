@@ -1,6 +1,6 @@
 // Camera capture retains a bounded colour panorama and an editable horizon
 // draft. Phone sensor pose and lens angles remain estimates for user review.
-import { DOME_CELLS, SkyPanorama, orientationBasis, dot, skyAngles, cameraLens, transferBasis, type CameraBasis } from './photosphereGeometry';
+import { DOME_CELLS, SkyPanorama, orientationBasis, skyAngles, cameraLens, targetCell, transferBasis, type CameraBasis } from './photosphereGeometry';
 import { CameraPoseHistory, ScanPoseSource, poseSeparation, viewVouchesFor, CONTINUITY_SLOP_MS, type PoseEvidence } from './photospherePose';
 import { registerFrame } from './photosphereRegistration';
 import { VisualStability, GRID_W, GRID_H, STALE_FRAME_MS } from './photosphereStability';
@@ -382,6 +382,14 @@ export class PhotosphereSweep {
   private basis: CameraBasis | null = null;
   private panorama: SkyPanorama | null = null;
   private coveredCells = new Set<number>();
+  /** Whether an ORIENTED frame - one placed with a full basis, heading and
+   *  tilt, through `panorama.add` - has been accepted with the zenith cap as
+   *  its target. Since the cap shares the 11 degree aim cone with every other
+   *  cell it is the nearest cell from roughly altitude 80 upward, which is
+   *  below the overhead band, and `overheadCaptured` alone would then refuse
+   *  the cap forever while the driver kept accepting frames for it (issue
+   *  #57 again, from the other side). */
+  private aimedZenith = false;
   private lastAlpha = 0;
   private imageAspect = 4 / 3;
   private shortAxisFov=60;
@@ -639,16 +647,20 @@ export class PhotosphereSweep {
   get cells() { return DOME_CELLS.map(c => ({ ...c, captured:this.coveredCells.has(c.id) })); }
   get aimTarget(): { id: number; captured: boolean } | null {
     const basis=this.cameraBasis;if(!basis)return null;
-    // Eight degrees leaves every cell comfortably within the captured image,
-    // including portrait framing. The UI and capture use this same forward ray.
-    let nearest: {id:number;captured:boolean}|null=null, similarity=Math.cos(8*Math.PI/180);
-    for(const cell of DOME_CELLS){
-      if(!this.compassReady && cell.alt<89)continue;
-      const alignment=dot(cell.center,basis.forward);
-      if(cell.alt>89 && alignment<Math.cos(5*Math.PI/180))continue;
-      if(alignment>similarity){similarity=alignment;nearest={id:cell.id,captured:this.coveredCells.has(cell.id)};}
-    }
-    return nearest;
+    // The dot the user aims and the cell `grabFrame` captures are now the same
+    // choice, made by one function on one forward ray (issue #57).
+    const cell=targetCell(basis.forward);
+    if(!cell)return null;
+    // Without a heading the basis has no real azimuth, so only the zenith cap
+    // can be named. A tilt-only basis exists only above a RAW tilt of 85, and
+    // while the visual anchor is identity that puts the pole within 5 degrees
+    // and always nearest, so this withholds nothing. With an anchor set earlier
+    // in the scan (bounded at 10 degrees, `correctBasis`) the corrected forward
+    // can sit lower than the raw reading and the guard does fire - which is the
+    // conservative direction: it withholds a dot rather than naming a cell off
+    // a bearing this basis does not have.
+    if(!this.compassReady && cell.alt<89)return null;
+    return {id:cell.id,captured:this.coveredCells.has(cell.id)};
   }
   get justCaptured(): boolean { return this.lastCaptureAt!==null && Date.now()-this.lastCaptureAt<1000; }
   get captureCue(): string {
@@ -757,7 +769,7 @@ export class PhotosphereSweep {
     // but "unreachable by luck" is how a second `begin()` on a live sweep comes
     // to open with a lens sentence before a single refusal.
     this.overlapWaitRun = 0;
-    this.frames = []; this.panorama = new SkyPanorama(); this.coveredCells.clear(); this.lastCaptureAt=null; this.scanSamples=[]; this.lastDiagnosticAt=-Infinity; this.hasCapturedFrame = false; this.recording = true;
+    this.frames = []; this.panorama = new SkyPanorama(); this.coveredCells.clear(); this.aimedZenith=false; this.lastCaptureAt=null; this.scanSamples=[]; this.lastDiagnosticAt=-Infinity; this.hasCapturedFrame = false; this.recording = true;
   }
 
   /** The user explicitly aims the rear camera up. This still reads an actual
@@ -772,7 +784,7 @@ export class PhotosphereSweep {
     const generation = this.generation;
     this.video = video;
     this.canvas = canvas;
-    this.frames = []; this.issue = null; this.basis = null; this.panorama = null; this.coveredCells.clear(); this.lastCaptureAt=null;
+    this.frames = []; this.issue = null; this.basis = null; this.panorama = null; this.coveredCells.clear(); this.aimedZenith=false; this.lastCaptureAt=null;
     // A new scan: the diagnostic log from any earlier session is no longer
     // about this camera session, so it starts over. `stop()` never does this.
     this.captureRecords = []; this.hasCapturedFrame = false;
@@ -1182,7 +1194,7 @@ export class PhotosphereSweep {
     if(!manualOverhead && (!stable || poseSeparation(stable,(rawBasis??tilt)!)>1.5)){this.alignmentWait=true;this.recordCapture(now,'alignment-wait');return false;}
     this.alignmentWait=false;
     if(!manualOverhead && basis){
-      const target=DOME_CELLS.find(c=>dot(c.center,basis!.forward)>=Math.cos((c.alt>89?5:8)*Math.PI/180));
+      const target=targetCell(basis!.forward);
       if(!target){this.overlapWait=false;this.recordCapture(now,'no-target');return false;}
       if(now-this.lastRegistrationAt<600){this.recordCapture(now,'too-soon');return false;}
       this.lastRegistrationAt=now;
@@ -1231,11 +1243,14 @@ export class PhotosphereSweep {
         }
         if(overlap.result==='conflict'){this.overlapWait=true;this.recordCapture(now,'overlap-wait');return false;}
         this.overlapWait=false;
-        const target=DOME_CELLS.find(c=>dot(c.center,basis!.forward)>=Math.cos((c.alt>89?5:8)*Math.PI/180));
+        const target=targetCell(basis!.forward);
         if(!target){this.recordCapture(now,'no-target');return false;}
         if(this.coveredCells.has(target.id)){this.recordCapture(now,'already-captured');return false;}
         this.panorama.add(data,canvas.width,canvas.height,basis,lens);
         capturedCell=target.id;capturedBasis=basis;capturedSensorBasis=rawBasis??undefined;capturedAdjusted=registration.adjusted;
+        // This frame was placed with a full basis, so if the cap is what it was
+        // aimed at, the cap's pixels are as well oriented as any other cell's.
+        if(target.alt>89)this.aimedZenith=true;
       } else if (overhead) {
         // Without heading, an entire overhead photograph cannot be oriented.
         // Keep only its centre at the shared zenith; do not invent a sky cap.
@@ -1256,8 +1271,18 @@ export class PhotosphereSweep {
     this.frames.push({ bin, band, column, altitude, manualOverhead,
       verticalFov: video.videoHeight > video.videoWidth ? 60 : 45 });
     const previousCoverage=this.coveredCells.size;
+    // The zenith cap is the one cell that can be painted by frames nobody
+    // pointed at it: a side frame's vertical field of view reaches the pole
+    // from well down the sky, and the tilt-only overhead paint (`addZenith`)
+    // has no heading and so can only claim the single zenith point. So the cap
+    // needs a frame that MEANT it - either the overhead band, or an oriented
+    // frame accepted with the cap as its target. Before the aim cone was
+    // widened those were the same thing, because the cap could only be targeted
+    // from altitude 85 up; now it can be targeted from about 80, and requiring
+    // the band alone left the user holding on a dot that was being captured
+    // over and over and never turned green.
     for(const cell of DOME_CELLS) {
-      if(this.panorama?.covered(cell) && (cell.alt < 89 || this.overheadCaptured)) this.coveredCells.add(cell.id);
+      if(this.panorama?.covered(cell) && (cell.alt < 89 || this.overheadCaptured || this.aimedZenith)) this.coveredCells.add(cell.id);
     }
     if(this.coveredCells.size>previousCoverage)this.lastCaptureAt=Date.now();
     this.hasCapturedFrame = true;

@@ -83,6 +83,60 @@ export function makeDome(): DomeCell[] {
 }
 export const DOME_CELLS=makeDome();
 
+/** How far a cell's centre may sit from the camera's forward ray and still be
+ *  the patch this aim is capturing. ONE cone for every cell, the zenith cap
+ *  included, and one number for the aim dot and for the capture.
+ *
+ *  Measured on the dome above (2026-09-18, and re-derived against this file):
+ *  91 cells, on rings at altitude 90, 74.1, 63.4, 58.3, 46.4, 42.4 and lower;
+ *  the first ring below the zenith cap is five cells at azimuth 0, 72, 144,
+ *  216 and 288 and altitude 74.1. That leaves a gap the old cones could not
+ *  reach across: a hold at azimuth 180, altitude 85 is 5.00 degrees from the
+ *  pole - equality against the pole's old 5 degree cone, so refused - and
+ *  12.17 degrees from the nearest ring-1 cell, which is why such a hold could
+ *  never capture (issue #57). It was not one unlucky direction. On a 0.5
+ *  degree azimuth-altitude grid over the visible hemisphere (not area
+ *  weighted, so high altitudes count for more than their share of sky), the
+ *  fraction of directions with no cell in reach was 23.5 percent at the old 8
+ *  degree cone with the pole at 5, 20.1 percent at 8 everywhere, 5.8 percent
+ *  at 9, 0.4 percent at 10, and 0 at 11.
+ *
+ *  Eleven is not a round number chosen for comfort: the largest distance from
+ *  any direction above the horizon to its NEAREST cell centre is 10.8123
+ *  degrees, at the corners where three cells meet. It is attained at ten
+ *  points, at azimuth 36, 108, 180, 252 and 324 and at BOTH altitude 52.62 and
+ *  altitude 10.81, so the low rings are as exposed as the mid-altitude
+ *  hexagons; a 0.5 degree grid samples that peak as 10.75 and a 0.1 degree
+ *  grid as 10.80, which is why it is refined rather than sampled. The zenith
+ *  cap is not the worst case at all - its pentagon's corners are only 8.60
+ *  degrees from its centre - it was only the worst case for the OLD cones,
+ *  which gave the smallest cell the smallest reach. So 11 degrees leaves no
+ *  direction above the horizon without a target, with 0.19 degrees to spare,
+ *  and a smaller cone does not.
+ *
+ *  It still fits the picture. A cell's far corner is at most 10.81 degrees
+ *  from its centre, so a cell accepted at the edge of this cone lies within
+ *  21.8 degrees of the image centre, against the 30 degrees of half-width the
+ *  60 degree short-axis estimate gives. It is not a guarantee for every lens,
+ *  and it never was: the 35 degree minimum `setCameraViewAngle` accepts has
+ *  17.5 degrees of half-width, which the old 8 degree cone already spilled
+ *  cells past (8 + 10.81 = 18.8). */
+export const AIM_CONE_DEG=11;
+/** The cell this direction is aiming at: the NEAREST cell centre within the
+ *  aim cone, or null when the direction has no target (below the horizon, or
+ *  pointing away from the dome). Nearest and not first-in-list, because
+ *  `DOME_CELLS` is in subdivision order and the first cell whose cone contains
+ *  a ray is frequently not the one the aim dot draws - the dot and the capture
+ *  used to be able to disagree about which patch was being captured. */
+export function targetCell(forward: V3): DomeCell | null {
+  let best: DomeCell|null=null, similarity=Math.cos(AIM_CONE_DEG*DEG);
+  for(const cell of DOME_CELLS){
+    const alignment=dot(cell.center,forward);
+    if(alignment>similarity){similarity=alignment;best=cell;}
+  }
+  return best;
+}
+
 export interface OverlapCheck { result:'agree'|'conflict'|'unknown'; samples:number; correlation:number|null; featureCorrelation?:number|null }
 
 /** A bounded colour mosaic; frames are projected then discarded. No growing
