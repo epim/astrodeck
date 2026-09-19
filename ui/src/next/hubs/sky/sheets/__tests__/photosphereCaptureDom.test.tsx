@@ -316,25 +316,21 @@ await test('A setup link offers the fitted angle but applies it only after a tap
   await act(async()=>previewRoot.unmount());
 });
 await test("A grant arriving after cancellation is released", async () => {
+  const ordinaryGetUserMedia = w.navigator.mediaDevices.getUserMedia;
   let grant: ((stream: any) => void) | undefined;
   w.navigator.mediaDevices.getUserMedia = () => new Promise(resolve => { grant = resolve; });
-  const sweep = new PhotosphereSweep();
-  const pending = sweep.start(document.createElement("video"), document.createElement("canvas"));
-  while (!grant) await Promise.resolve();
-  sweep.stop(); let released = 0;
-  grant({ getTracks: () => [{ stop: () => released++ }] });
-  await pending; assert.equal(released, 1); assert.equal(sweep.previewReady, false);
+  try {
+    const sweep = new PhotosphereSweep();
+    const pending = sweep.start(document.createElement("video"), document.createElement("canvas"));
+    while (!grant) await Promise.resolve();
+    sweep.stop(); let released = 0;
+    grant({ getTracks: () => [{ stop: () => released++ }] });
+    await pending; assert.equal(released, 1); assert.equal(sweep.previewReady, false);
+  } finally {
+    // Restore the mock this test replaced (issue #51: everything after it hung).
+    w.navigator.mediaDevices.getUserMedia = ordinaryGetUserMedia;
+  }
 });
-// The previous test replaces getUserMedia with a mock that resolves only
-// when manually granted, and never restores it - a leak nothing after it
-// ever paid for until now. Restore the ordinary mock before relying on
-// sweep.start() actually completing.
-w.navigator.mediaDevices.getUserMedia = async (constraints: any) => {
-  requested.push(constraints);
-  if (denied) throw new w.DOMException("Permission denied", "NotAllowedError");
-  const track = { stop: () => { stops++; }, getSettings: () => ({ deviceId: constraints.video.deviceId?.exact ?? "ultra" }), addEventListener() {}, readyState: "live", muted: false };
-  return { getTracks: () => [track], getVideoTracks: () => [track] };
-};
 await test('The capture log names a rejection reason before an accepted capture, with basis and cell',async()=>{
   const sweep=new PhotosphereSweep();
   await sweep.start(document.createElement('video'),document.createElement('canvas'));
@@ -392,6 +388,19 @@ await test('A session with no accepted pose stays diagnosable; panoramaPixels is
   assert.equal(pixels!.width,1080);
   assert.equal(pixels!.height,300);
   assert.ok(Array.from(pixels!.pixels).some((v,i)=>i%4===3&&v===255));
+  sweep.stop();
+});
+await test('The mocks are the ordinary ones again', async () => {
+  // Must stay last. This pins issue #51: "A grant arriving after
+  // cancellation is released" used to replace getUserMedia with a mock that
+  // only resolved by hand and never restored it, so sweep.start() below
+  // would hang forever rather than fail an assertion (Node exits 13 on an
+  // unsettled top-level await). Any future test between here and that one
+  // that leaks its own getUserMedia mock the same way is caught right here,
+  // not blamed on whatever unrelated test happens to run after it.
+  const sweep = new PhotosphereSweep();
+  await sweep.start(document.createElement('video'), document.createElement('canvas'));
+  assert.equal(sweep.previewReady, true);
   sweep.stop();
 });
 console.log(`photosphereCaptureDom.test: ${passed}/${passed} passed`);
