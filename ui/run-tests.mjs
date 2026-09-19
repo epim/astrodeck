@@ -38,6 +38,12 @@ const ROOT = fileURLToPath(new URL(".", import.meta.url));
 //: enough to keep the box busy without oversubscribing a CI runner
 const CONCURRENCY = 8;
 const TIMEOUT_MS = 60_000;
+// Loaded into every child BEFORE tsx (see runOne's execFile args below), so
+// any test file whose render tree imports a `.css` specifier (wave R7's
+// every-area-owns-its-stylesheet rule) does not crash the whole file with
+// ERR_UNKNOWN_FILE_EXTENSION before a single test runs. See issue #50 and
+// ./test-css-stub.mjs.
+const CSS_STUB_URL = pathToFileURL(join(ROOT, "test-css-stub.mjs")).href;
 
 function findTests(dir, out = []) {
   for (const name of readdirSync(dir)) {
@@ -109,7 +115,7 @@ export function computeOk({ counts, byExit, err, timedOut }) {
   return (counts !== null && counts.failed === 0) || byExit;
 }
 
-function runOne(file) {
+export function runOne(file) {
   // The child imports the file, which runs its assertions, then reports the
   // file's own exported `result` when it has one.
   const url = pathToFileURL(file).href;
@@ -125,7 +131,7 @@ function runOne(file) {
   return new Promise((resolve) => {
     execFile(
       process.execPath,
-      ["--import", "tsx", "--input-type=module", "--eval", code],
+      ["--import", CSS_STUB_URL, "--import", "tsx", "--input-type=module", "--eval", code],
       { cwd: ROOT, timeout: TIMEOUT_MS, maxBuffer: 8 << 20 },
       (err, stdout, stderr) => {
         const output = [stdout, (stderr || "").replace(/__COUNTS__.*\n?/, "")]
