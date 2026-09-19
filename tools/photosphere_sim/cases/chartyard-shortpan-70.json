@@ -1,0 +1,10 @@
+{
+  "case_id": "chartyard-shortpan-70",
+  "scene": "chartyard",
+  "route": "shortpan",
+  "camera": {"width": 240, "height": 320, "fov_short_deg": 70},
+  "fps": 5,
+  "seed": 1,
+  "expected": "positive",
+  "profile": "chart-noise-free"
+}

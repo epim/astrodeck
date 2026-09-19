@@ -54,6 +54,16 @@ cache/cases/<case_id>/
 `ideal/` and `corrupt/<name>/` are scored the same way `result/` is, by
 pointing `sim score --result` at them; neither is an input to anything.
 
+`cache/` is git-ignored: a full-length case is about 42 MB, almost all of it
+frame PNGs. A case directory of the same shape may also live in `fixtures/`,
+which IS committed, and `--out fixtures` is how `make-case` writes one there.
+A fixture case is short and small enough to carry in the repository so that a
+replay-backed test runs on a clean checkout and in CI (issue #68);
+`fixtures/README.md` says what the committed pair is and how it was sized.
+Nothing writes a `result/` into a committed case: a replay copies `input/` to
+a temporary directory and writes there, because `replayCase` empties and
+rewrites the `result/` of whatever directory it is given.
+
 `manifest.json`: `{"schema":1,"case_id","seed","scene","route","camera":{width,height,fov_short_deg},"fps","expected":"positive"|"control","profile","hashes":{"frames","observations","truth"},"versions":{"three","chromium","webgl_renderer","python","numpy","pillow","app_commit"}}`.
 Hashes are hex SHA-256; `frames` is the SHA-256 of the concatenated per-file
 SHA-256 hex digests in filename order. `profile` is the case definition's own,
@@ -279,7 +289,8 @@ filename order, the same construction as `frames`.
                                "status":"found"|"omitted"|"duplicate"|"sliver"|"not_observable"}]},
  "horizon":{"truth_bins":3600,"measured_bins","measured_resolution_deg","signed_error_deg":{"median","p95","max"},
             "false_open_sr","false_blocked_sr","unresolved_sr","note",
-            "obstacles":[{"id","truth_alt_peak","deficit_median","deficit_p95","width_missed_deg","min_width_deg",
+            "obstacles":[{"id","truth_alt_peak","deficit_median","deficit_p95",
+                         "width_missed_deg","width_missed_total_deg","min_width_deg",
                          "visible_width_deg","resolvable","resolvable_width_deg","missed"}],
             "missed_obstructions":[ids],"north_offset_deg"},
  "overlay":{"samples","missing_fraction","frames_over_gate","duplicate_frame_ids",
@@ -370,18 +381,34 @@ no ray hit anything. Measured bin `i` of `N` covers
   `profile` and never against the envelope. Over the bins where the object is
   the first thing hit and the measurement is resolved,
   `deficit = clip(profile, 0, 90) - measured`; `deficit_median` and
-  `deficit_p95` summarise it, `width_missed_deg` is 0.1 degrees times the
-  number of those bins whose deficit exceeds 1.0, and `min_width_deg` is the
-  width the scene declares the obstacle must be found at. The median rather
-  than the minimum, because a bin at the edge of an obstacle straddles a
-  coarse measured bin and swings either way without the obstacle being lost;
-  and the width beside it, because the median cannot see a notch. The chart
-  yard's roof spans 146 degrees, so cutting the declared 10 degree minimum
-  width out of it leaves 1366 of 1466 bins right and the median at zero. An
-  obstacle is found when it is found, not when most of it is. The width term
-  costs a correct boundary nothing: a measured profile at or above the
-  envelope has every deficit at or below zero, so `width_missed_deg` is 0.0 at
-  every resolution. `missed_obstructions` is the ids of the missed ones.
+  `deficit_p95` summarise it, and `min_width_deg` is the width the scene
+  declares the obstacle must be found at. A bin is UNDER-REPORTED when its
+  deficit exceeds 1.0, and the two width figures are both counts of those
+  bins, 0.1 degrees each: `width_missed_deg` is the longest CONTIGUOUS RUN of
+  them and `width_missed_total_deg` is all of them wherever they fall. The
+  median rather than the minimum, because a bin at the edge of an obstacle
+  straddles a coarse measured bin and swings either way without the obstacle
+  being lost; and the width beside it, because the median cannot see a notch.
+  The chart yard's roof spans 146 degrees, so cutting the declared 10 degree
+  minimum width out of it leaves 1366 of 1466 bins right and the median at
+  zero. An obstacle is found when it is found, not when most of it is. The
+  width term costs a correct boundary nothing: a measured profile at or above
+  the envelope has every deficit at or below zero, so both width figures are
+  0.0 at every resolution. `missed_obstructions` is the ids of the missed ones.
+- Issue #64: the verdict reads the RUN and never the total. "A stretch at
+  least this wide" is what the rule has always said, and a stretch is what the
+  product would hand a planner: the profile is interpolated between
+  neighbouring azimuth bins, so a contiguous under-reported stretch is a
+  false-open a route would be planned through, while a scatter of
+  tenth-degree bins along a silhouette is edge jitter -- a different defect,
+  which must not be able to add up into the first one's verdict. Azimuth
+  wraps, so a run through north is one run; a bin that is not under-reported
+  breaks a run, and so does a bin with no resolved measurement over it, since
+  an unresolved bin is not evidence of a miss. `width_missed_total_deg` is
+  reported beside the run so the jitter is still in the score, and
+  `chartyard-arc075-60`'s roof-south is what the two figures look like when
+  they differ: 41.8 degrees of total in runs of 13.3, 10.2, 7.2, 5.7 and 5.4,
+  MISSED on the longest run alone against a 12 degree threshold.
 - Issue #53: an obstacle narrower than one product bin is a width the product
   cannot represent at all, whatever the scanner does -- the scanner reports
   the horizon in a fixed number of azimuth bins (`PhotosphereSweep`'s own
@@ -405,16 +432,32 @@ no ray hit anything. Measured bin `i` of `N` covers
   resolvable_width_deg)`, and, for a resolvable obstacle, true also when it
   is visible but has no resolved bin at all. An obstacle that is NOT
   resolvable is always `missed: false`: `deficit_median`, `deficit_p95` and
-  `width_missed_deg` are still computed and reported, but stay informational,
+  both width figures are still computed and reported, but stay informational,
   because they describe a comparison the product's own resolution makes
   meaningless, not a fault in the scanner. On the chart yard the two poles
   and the trunk (visible widths 2.2, 0.3 and 3.0 degrees) are never
   resolvable at the product's 12 degree bin; the roof and the east wall are,
-  regardless of their declared 10. Issue #58: on `chartyard-still-60` the
-  wall's measured bin centred at azimuth 78 (covering 72 to 84) reports open
-  sky against a wall the truth puts at about 25 degrees there, so `wall-east` is a
-  real, resolvable miss (`width_missed_deg` 12.0 at `resolvable_width_deg`
-  12.0) and `no_missed_obstructions` is correctly false on that case.
+  regardless of their declared 10. Issue #58 was one instance of the width
+  term firing on a resolvable obstacle: on `chartyard-still-60` the wall's
+  measured bin centred at azimuth 78 (covering 72 to 84) reported open sky
+  against a wall the truth puts at about 25 degrees there, a whole product
+  bin lost in one contiguous run (`width_missed_deg` 12.0 at
+  `resolvable_width_deg` 12.0), and `no_missed_obstructions` was correctly
+  false on that case. The tracer fix `3fbd2039` closed it: `wall-east` is
+  found on all three cases today, with both width figures 0.0 on that case,
+  and the paragraph is kept as the worked example of a real width miss.
+- A result with NO boundary at all -- no `result/horizon.json`, or one whose
+  `points` array is empty -- has `product_bins` 0, and there is then no
+  product resolution to defer to. Nothing is excused: `measured_bins` is 0,
+  `measured_resolution_deg` is `null`, every obstacle is `resolvable: true`,
+  `resolvable_width_deg` falls back to the scene's declared `min_width_deg`
+  (`null` where the scene declares none), no bin is resolved so a visible
+  obstacle's two deficit and two width figures are all `null`, and every
+  VISIBLE obstacle is `missed` (an obstacle visible in no bin at all keeps
+  its 0.0 widths and is not missed, exactly as at any other resolution).
+  A scanner that reported no boundary has not found the obstacles,
+  and suppressing the verdict for want of a bin width would let a silent
+  scanner score better than a wrong one.
 - Scoring an obstacle against the envelope scores whatever is tallest at those
   azimuths. The chart yard's trunk stands under its canopy, so the envelope
   over the trunk's span is 45.8 degrees against the trunk's own 21.5: a
@@ -523,8 +566,10 @@ these rows of that table are not evaluated here at all:
 - *Safety-relevant confidence* is covered only in part. `false_open_sr` is
   computed and reported and NOT gated; what stands in for that row is the
   width term of an obstacle's `missed`, which fails a positive case when a
-  RESOLVABLE declared test obstacle is lost over at least its own
-  `resolvable_width_deg`. A false-open area that falls on no declared
+  RESOLVABLE declared test obstacle is lost over one CONTIGUOUS stretch of at
+  least its own `resolvable_width_deg` (issue #64; scattered under-reported
+  bins are reported in `width_missed_total_deg` and gate nothing). A
+  false-open area that falls on no declared
   obstacle passes every gate here while being reported, and so does one that
   falls only on an obstacle whose own visible silhouette never reaches one
   product bin (issue #53): on the chart yard that is the two poles and the

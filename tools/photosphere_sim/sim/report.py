@@ -416,11 +416,16 @@ def _obstacles_table(horizon: dict) -> str:
             (_num(obstacle["deficit_median"], 2), ""),
             (_num(obstacle["deficit_p95"], 2), ""),
             (_num(obstacle["width_missed_deg"], 2), ""),
+            # Issue #64: the run is what the verdict reads and the total is
+            # the scatter beside it. A page showing one number under the
+            # heading "width missed" would not say which of the two it is.
+            (_num(obstacle.get("width_missed_total_deg"), 2), ""),
             (_num(obstacle["min_width_deg"], 2), ""),
             (verdict, "fail" if obstacle["missed"] else "pass"),
         ])
     return _table(["obstacle", "truth peak alt", "deficit median", "deficit p95",
-                   "width missed (deg)", "min width (deg)", "verdict"], rows)
+                   "width missed: longest run (deg)", "width missed: total (deg)",
+                   "min width (deg)", "verdict"], rows)
 
 
 def _landmarks_table(landmarks: dict) -> str:
