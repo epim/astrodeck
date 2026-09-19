@@ -551,32 +551,53 @@ def _score_overlay(events: list, frames: list) -> dict:
 
 
 def _score_capture(holds: list, captures: list) -> dict:
-    """Which holds were captured, walking the holds in time order.
+    """How each hold ended, walking the holds in time order.
 
-    A record is claimed by the first hold whose window contains it and is
-    never counted again. The 1500 ms grace makes consecutive windows overlap
-    by most of a hold, so without the claim a single accepted record answers
-    for two holds and `every_hold_captured` passes on half the evidence.
+    A hold is SATISFIED by the first unclaimed record inside its window whose
+    outcome is `accepted` or `already-captured`, and a record is claimed once
+    and never counted again. The 1500 ms grace makes consecutive windows
+    overlap by most of a hold, so without the claim a single record answers
+    for two holds.
+
+    `already-captured` counts because the route revisits directions: an aim
+    can land on a dome cell an earlier aim already photographed, and a scanner
+    that declines to photograph it twice is right. Issue #54: counting only
+    `accepted` failed 26 of the real still case's holds for correct behaviour.
+    What the gate asks is that no hold ended in nothing, not that every hold
+    produced a new frame, so the two outcomes are reported apart
+    (`holds_captured`, `holds_already_covered`) and gated together.
     """
-    accepted = [c for c in captures if c.get("outcome") == "accepted"]
-    claimed = [False] * len(accepted)
+    accepted_total = sum(1 for c in captures if c.get("outcome") == "accepted")
+    satisfying = [c for c in captures
+                  if c.get("outcome") in ("accepted", "already-captured")]
+    claimed = [False] * len(satisfying)
     latencies = []
+    captured = already_covered = 0
     for hold in sorted(holds, key=lambda h: int(h["from_ms"])):
         opens, closes = int(hold["from_ms"]), int(hold["to_ms"])
-        for position, capture in enumerate(accepted):
+        for position, capture in enumerate(satisfying):
             if claimed[position]:
                 continue
             at = int(capture["at"])
             if opens <= at <= closes + CAPTURE_GRACE_MS:
                 claimed[position] = True
                 latencies.append(at - opens)
+                if capture.get("outcome") == "accepted":
+                    captured += 1
+                else:
+                    already_covered += 1
                 break
     return {
         "holds": len(holds),
+        "holds_satisfied": len(latencies),
+        "holds_captured": captured,
+        "holds_already_covered": already_covered,
+        # The gate reads this one; it is the satisfied count, kept under its
+        # original name so a scores.json from either round is comparable.
         "holds_with_capture": len(latencies),
         "latency_ms": {"p95": _percentile(latencies, 95),
                        "max": int(max(latencies)) if latencies else None},
-        "accepted_frames": len(accepted),
+        "accepted_frames": accepted_total,
     }
 
 

@@ -123,6 +123,12 @@ class IdealResult(unittest.TestCase):
         self.assertEqual(capture["holds"], len(self.holds))
         self.assertEqual(capture["holds_with_capture"], capture["holds"])
         self.assertEqual(capture["latency_ms"]["max"], 700)
+        # The ideal photographs every hold, so nothing is satisfied by a cell
+        # that was already covered.
+        self.assertEqual(capture["holds_satisfied"], capture["holds"])
+        self.assertEqual(capture["holds_captured"], capture["holds"])
+        self.assertEqual(capture["holds_already_covered"], 0)
+        self.assertEqual(capture["accepted_frames"], capture["holds"])
 
     def test_coverage_is_complete(self):
         coverage = self.scores["coverage"]
@@ -378,15 +384,68 @@ class IdealResult(unittest.TestCase):
         """
         self.assertLessEqual(self.holds[1]["from_ms"],
                              self.holds[0]["to_ms"] + 1500)
-        shared = pathlib.Path(self.tmp.name) / "one-capture"
-        shutil.copytree(self.result_dir, shared)
-        (shared / "captures.jsonl").write_text(
-            json.dumps({"at": 2000, "outcome": "accepted", "cell": 0}) + "\n",
-            encoding="utf-8", newline="\n")
-        scores = score.score_case(self.case_dir, shared)
+        scores = self._with_captures(
+            "one-capture", [{"at": 2000, "outcome": "accepted", "cell": 0}])
         self.assertEqual(scores["capture"]["accepted_frames"], 1)
         self.assertEqual(scores["capture"]["holds_with_capture"], 1)
         self.assertEqual(scores["capture"]["latency_ms"]["max"], 2000)
+        # And the same across the two satisfying outcomes: one
+        # already-captured record cannot answer for two holds either.
+        mixed = self._with_captures(
+            "one-revisit", [{"at": 2000, "outcome": "already-captured", "cell": 0}])
+        self.assertEqual(mixed["capture"]["holds_satisfied"], 1)
+        self.assertEqual(mixed["capture"]["holds_already_covered"], 1)
+
+    def _with_captures(self, name, records):
+        target = pathlib.Path(self.tmp.name) / name
+        shutil.copytree(self.result_dir, target)
+        (target / "captures.jsonl").write_text(
+            "".join(json.dumps(r) + "\n" for r in records),
+            encoding="utf-8", newline="\n")
+        return score.score_case(self.case_dir, target)
+
+    def test_a_hold_on_a_cell_already_photographed_is_satisfied(self):
+        """Issue #54: the route revisits directions, and declining is correct.
+
+        Holds 0, 1 and 2 open at 0, 2000 and 4000 and their windows run to
+        to_ms + 1500, so hold 0 reaches 2700 and hold 1 reaches 4700. One
+        `already-captured` at 700 satisfies hold 0 without a photograph; one
+        `accepted` at 4000 is inside hold 1's window and hold 2's, and hold 1
+        claims it; a `rejected` at 6000 inside hold 2's window satisfies
+        nothing.
+        """
+        self.assertEqual([h["from_ms"] for h in self.holds[:3]], [0, 2000, 4000])
+        scores = self._with_captures("revisit", [
+            {"at": 700, "outcome": "already-captured", "cell": 0},
+            {"at": 4000, "outcome": "accepted", "cell": 1},
+            {"at": 6000, "outcome": "rejected", "reason": "moving"},
+        ])
+        capture = scores["capture"]
+        self.assertEqual(capture["holds_satisfied"], 2)
+        self.assertEqual(capture["holds_captured"], 1)
+        self.assertEqual(capture["holds_already_covered"], 1)
+        self.assertEqual(capture["holds_with_capture"], 2)
+        self.assertEqual(capture["accepted_frames"], 1)
+        # Latency is measured to the satisfying record whatever its outcome:
+        # 700 for hold 0 and 4000 - 2000 for hold 1.
+        self.assertEqual(capture["latency_ms"]["max"], 2000)
+        # Two of 48 holds ended in something; the rest did not.
+        self.assertFalse(scores["gates"]["every_hold_captured"])
+
+    def test_every_hold_satisfied_by_an_already_captured_cell_passes_the_gate(self):
+        scores = self._with_captures("all-revisits", [
+            {"at": int(hold["from_ms"]) + 700, "outcome": "already-captured",
+             "cell": int(hold["index"])}
+            for hold in self.holds
+        ])
+        capture = scores["capture"]
+        self.assertEqual(capture["holds_satisfied"], len(self.holds))
+        self.assertEqual(capture["holds_captured"], 0)
+        self.assertEqual(capture["holds_already_covered"], len(self.holds))
+        self.assertEqual(capture["accepted_frames"], 0)
+        self.assertEqual(capture["latency_ms"]["max"], 700)
+        self.assertTrue(scores["gates"]["every_hold_captured"])
+        self.assertTrue(scores["gates"]["capture_p95_le_1500"])
 
     def test_one_wrong_overlay_frame_shows_in_max_and_over_gate(self):
         turned = pathlib.Path(self.tmp.name) / "one-turned"
@@ -527,6 +586,9 @@ class IdealResult(unittest.TestCase):
         scores = score.score_case(self.case_dir, bare)
         self.assertEqual(scores["capture"]["holds"], len(self.holds))
         self.assertEqual(scores["capture"]["holds_with_capture"], 0)
+        self.assertEqual(scores["capture"]["holds_satisfied"], 0)
+        self.assertEqual(scores["capture"]["holds_captured"], 0)
+        self.assertEqual(scores["capture"]["holds_already_covered"], 0)
         self.assertEqual(scores["capture"]["accepted_frames"], 0)
         self.assertFalse(scores["gates"]["every_hold_captured"])
         self.assertFalse(scores["gates"]["pass"])
