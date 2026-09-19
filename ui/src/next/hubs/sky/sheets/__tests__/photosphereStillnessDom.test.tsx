@@ -607,6 +607,107 @@ await test('P1: a frozen fallback video recovers once frames flow and a fresh re
   sweep.stop();
 });
 
+await test('A frozen fallback preview is counted in the alignment report (issue #46)',async()=>{
+  // The gate above is right to refuse these frames, but refusing was all it
+  // did: `observeStillness` is never reached, so `stillnessReadFailures` stays
+  // 0 and this session - which captured nothing whatsoever - reported exactly
+  // the envelope a healthy one reports (issue #46).
+  // Instants, from the last reading: the element is paused before the first
+  // tick, so each of the 10 ticks that follow, at +350 ms through +3500 ms,
+  // finds the media clock exactly where the tick before it left it. Ten
+  // refusals, the sixth of them - MEDIA_GATE_BLIND_AFTER - at +2100 ms.
+  // Mutation: delete the `this.mediaGateRefusals++; this.mediaGateRefusalRun++;`
+  // arm in grabFrame (counter never incremented). Observed red: "the report
+  // recorded 0 media-gate refusals over 10 refused ticks".
+  const {sweep,tick}=await approachAndHold(false);
+  paused=true;
+  for(let i=0;i<10;i++)tick();
+  assert.equal(sweep.frameCount,0,'a frozen preview captured, so this is no longer the blind session under test');
+  const diagnostic=JSON.parse(sweep.alignmentReport());
+  assert.equal(diagnostic.stillnessReadFailures,0,
+    'the pixels were readable throughout, so the other counter must not be the one carrying this');
+  assert.equal(diagnostic.mediaGateRefusals,10,
+    `the report recorded ${diagnostic.mediaGateRefusals} media-gate refusals over 10 refused ticks`);
+  assert.ok(diagnostic.mediaGateRefusalRun>=6,
+    `the consecutive run was ${diagnostic.mediaGateRefusalRun}, short of the 6 the cue needs`);
+  paused=false;
+  sweep.stop();
+});
+
+await test('After a run of refused ticks the cue names the camera image, not the compass (issue #46)',async()=>{
+  // The state a user reaches by opening the camera on a browser with no
+  // requestVideoFrameCallback, finding the preview frozen, and pressing Start
+  // scan anyway: every tick so far returned at `not-recording`, so no capture
+  // was ever attempted and `imageGate` has never been set. The refusal counter
+  // is the only thing that knows the camera has stopped, and this is the cue it
+  // produces. (Once the first tick of the scan lands, the stale-image cue takes
+  // over and says the same thing about the same camera.)
+  // Instants: the preview is frozen from the moment it opens, so six ticks at
+  // 350 ms carry the clock to +2100 ms and are MEDIA_GATE_BLIND_AFTER refusals
+  // exactly. The reading 100 ms after that is fresh (SENSOR_SILENCE_MS is
+  // 2000), so `begin()` passes its compassReady gate, and the cue is read
+  // before the seventh tick.
+  // Mutations: MEDIA_GATE_BLIND_AFTER = 1e9, and separately deleting the
+  // increment. Observed red under both: the cue was "Hold here… capturing this
+  // patch."
+  shift=0;hidden=false;blind=false;flat=false;intervalFn=null;mediaTime=0;paused=false;stalled=false;
+  const video=w.document.createElement('video');   // no requestVideoFrameCallback: the fallback path
+  const sweep=new PhotosphereSweep();
+  await sweep.start(video,w.document.createElement('canvas'));
+  // The fallback's own 350 ms timer, with no media clock advance: the element
+  // is paused, so every tick reads back the picture the one before it read.
+  const tick=()=>{clock+=350;intervalFn!();};
+  assert.ok(intervalFn,'the interval fallback was never started');
+  const cell=sweep.cells.find((c)=>c.alt>20&&c.alt<60)!;
+  paused=true;                                     // frozen before the first tick fires
+  for(let i=0;i<6;i++)tick();
+  assert.equal(sweep.captureLog.at(-1)?.outcome,'not-recording',
+    `the grab reached the image gate (${sweep.captureLog.at(-1)?.outcome}), so imageGate and not the counter would be speaking`);
+  const ev=new w.Event('deviceorientationabsolute');
+  clock+=100;Object.defineProperty(ev,'timeStamp',{value:clock});
+  Object.assign(ev,{alpha:(360-cell.az)%360,beta:90+cell.alt,gamma:0,absolute:true});
+  w.dispatchEvent(ev);
+  sweep.begin();
+  assert.equal(sweep.isRecording,true,'the scan never started, so the cue below is the not-recording one');
+  assert.equal(sweep.captureCue,
+    'No new camera image has arrived for a couple of seconds. Close the scan and open the camera again.',
+    `cue was: "${sweep.captureCue}"`);
+  assert.doesNotMatch(sweep.captureCue,/compass/i,'the cue blamed the compass for a camera that has stopped');
+  assert.doesNotMatch(sweep.captureCue,/move the phone/i,'the cue asked for movement, which cannot make a stopped camera deliver');
+  paused=false;
+  sweep.stop();
+});
+
+await test('Frames flowing again end the refusal run, and the total remembers it (issue #46)',async()=>{
+  // A counter, not a latch: one delivered frame ends the run and the cue with
+  // it, while the total keeps the session's record - a scan that stuttered once
+  // must stay distinguishable from one whose camera stopped.
+  // Instants, from the last reading: 10 paused ticks to +3500 ms (10 refusals,
+  // run 10), then one tick at +3850 ms with the media clock moving again, which
+  // the gate accepts. Nothing is captured on it - the reading is 3.85 s old and
+  // no continuity reaches back across the freeze - so the cue is the ordinary
+  // compass one, which is the point: the camera is no longer what is wrong.
+  // Mutation: delete `this.mediaGateRefusalRun = 0;` on the accepted frame
+  // (counter not reset on recovery). Observed red: "a delivered frame did not
+  // end the run" (and, with that assertion removed, the cue assertion too - the
+  // recovered camera goes on being blamed).
+  const {sweep,tick}=await approachAndHold(false);
+  paused=true;
+  for(let i=0;i<10;i++)tick();
+  assert.equal(JSON.parse(sweep.alignmentReport()).mediaGateRefusalRun,10,
+    'the freeze was not counted, so there is no run here to clear');
+  paused=false;
+  tick();                                          // one delivered frame
+  const diagnostic=JSON.parse(sweep.alignmentReport());
+  assert.equal(diagnostic.mediaGateRefusalRun,0,'a delivered frame did not end the run');
+  assert.equal(diagnostic.mediaGateRefusals,10,
+    `the running total forgot the freeze (${diagnostic.mediaGateRefusals})`);
+  assert.doesNotMatch(sweep.captureCue,/camera image/,
+    `the camera is delivering again and the cue still said: "${sweep.captureCue}"`);
+  assert.match(sweep.captureCue,/Waiting for the compass/,`cue was: "${sweep.captureCue}"`);
+  sweep.stop();
+});
+
 await test('P2: a valid 10 degree final step in 100 ms captures like any other approach',async()=>{
   const {sweep,cell,tick,silentFrom}=await approachAndHold(true,10);
   let capturedAfter:number|null=null;

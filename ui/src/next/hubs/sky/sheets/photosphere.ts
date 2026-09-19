@@ -260,6 +260,15 @@ const SENSOR_SILENCE_MS = 2000;
  *  with no diagnosis. Five frames is a sixth of a second on the video-frame
  *  path and under two seconds on the interval fallback. */
 const STILLNESS_BLIND_AFTER = 5;
+/** Consecutive interval-fallback ticks whose media gate found no newly
+ *  delivered frame, before the cue says so. Six ticks is 2.1 s of the 350 ms
+ *  timer: one interval past the 1.5 s acceptance budget a still phone is given,
+ *  so a healthy camera that merely stuttered for a tick or two never reaches
+ *  it, while a preview that has genuinely stopped does within about two
+ *  seconds. Only the timer path can ever reach it - the frame callback runs
+ *  only for a frame the browser presented, so there the callback IS the
+ *  delivery and the gate is never asked. */
+const MEDIA_GATE_BLIND_AFTER = 6;
 
 /** Opens a visible preview; recording begins only after begin() is pressed. */
 export class PhotosphereSweep {
@@ -298,6 +307,18 @@ export class PhotosphereSweep {
   private stability = new VisualStability();
   private lumaCanvas: HTMLCanvasElement | null = null;
   private stillnessFailures = 0;
+  /** Interval-fallback ticks the media gate refused: the running total for this
+   *  camera session, and the length of the run in progress. The gate is right
+   *  to refuse a frame the camera never delivered, but it returns before
+   *  `observeStillness`, so `stillnessFailures` stayed 0 and a session that
+   *  captured nothing because its preview was frozen reported exactly the
+   *  envelope of a healthy one (issue #46). The RUN is what the cue reads, and
+   *  it resets on the first accepted frame; the TOTAL is what the report
+   *  carries, and it stands for the whole session, so a scan that stuttered
+   *  once and recovered stays distinguishable from a scan that never stuttered.
+   *  Advanced only on the timer path - see `grabFrame`. */
+  private mediaGateRefusals = 0;
+  private mediaGateRefusalRun = 0;
   /** The media clock, in seconds, of the last reading the interval path took
    *  (see `newMediaFrame`, which consumes as it answers and advances this on
    *  every `true`). `null` until the first reading, taken in `start()` once
@@ -521,6 +542,18 @@ export class PhotosphereSweep {
     // to look at and nothing to say it is old. Only this cue can tell the user.
     if(this.imageGate==='stale-image')return 'The camera image is not updating. Close the scan and open the camera again.';
     if(this.imageGate==='frame-already-captured')return 'That picture is already captured. The next camera frame is a moment away.';
+    // The same fact as the stale-image line above, reached from the other side:
+    // that one is set by a capture ATTEMPT that got as far as the image gate,
+    // this one by a run of ticks the media gate refused, which is counted
+    // whether or not a capture was attempted - a preview frozen before Start
+    // scan is pressed never reaches the image gate at all (issue #46). Both
+    // name the camera image and both give the one action that clears it, so
+    // whichever of the two speaks, the user is told the same thing about the
+    // same camera. Below the stale-image line because a refusal recorded by an
+    // attempt is the more recent evidence of the two. No compass here, and no
+    // request to move the phone: moving cannot make a stopped camera deliver.
+    if(this.mediaGateRefusalRun>=MEDIA_GATE_BLIND_AFTER)
+      return 'No new camera image has arrived for a couple of seconds. Close the scan and open the camera again.';
     // Not "hold still": holding still is exactly what cannot be confirmed here,
     // so asking for it would leave the user doing the one thing that can never
     // satisfy the rule. Moving produces a sensor event, which does.
@@ -856,8 +889,21 @@ export class PhotosphereSweep {
     // The witness CONSUMES the frame it reads, so a manual press never runs
     // this: the user pressing the button must not be charged for a frame, nor
     // refused one because the witness got there first (review 17, P1).
-    const delivered = !!video && !frame && !manualOverhead && this.sourceHealthy
-      && this.newMediaFrame(video, now);
+    // A refusal leaves no other trace: the gate returns before
+    // `observeStillness`, so `stillnessFailures` stays 0 and a session frozen
+    // end to end reported the envelope of a healthy one (issue #46). So it is
+    // counted - but only where the gate was actually ASKED, which is the timer
+    // path with an element and a live session. A hidden page or an ended track
+    // is not the camera declining to deliver; that has its own outcome
+    // ('unhealthy') below and is not charged here. The count runs whether or
+    // not the scan is recording, because a preview frozen before Start scan is
+    // pressed is the same broken camera and the report should say so.
+    const mediaGateAsked = !!video && !frame && !manualOverhead && this.sourceHealthy;
+    const delivered = mediaGateAsked && this.newMediaFrame(video!, now);
+    if (mediaGateAsked) {
+      if (delivered) this.mediaGateRefusalRun = 0;
+      else { this.mediaGateRefusals++; this.mediaGateRefusalRun++; }
+    }
     if (delivered) this.observeStillness(video!, now);
     // One visibility rule, not two. A second copy of the test here could
     // disagree with the sourceHealthy the evidence below is built from.
@@ -1040,8 +1086,16 @@ export class PhotosphereSweep {
     // because the run this field exists to explain is the one with no samples
     // at all: blind to the pixels means the strict rule means nothing was ever
     // accepted. Spec 4.3 - a session with zero accepted frames is diagnosable.
+    // `mediaGateRefusals` is the other half of that same question and had no
+    // field at all: the interval fallback refuses a tick the camera delivered
+    // no frame for, and that refusal happens BEFORE `observeStillness`, so a
+    // frozen preview reported `stillnessReadFailures: 0`, which is exactly what
+    // a healthy session reports (issue #46). Total and current run both, since
+    // a scan that stuttered once is not a scan whose camera has stopped.
     return JSON.stringify({version:1,description:'Local camera samples for alignment debugging; contains photos of your surroundings.',
-      browser:navigator.userAgent,stillnessReadFailures:this.stillnessFailures,samples:this.scanSamples},null,2);
+      browser:navigator.userAgent,stillnessReadFailures:this.stillnessFailures,
+      mediaGateRefusals:this.mediaGateRefusals,mediaGateRefusalRun:this.mediaGateRefusalRun,
+      samples:this.scanSamples},null,2);
   }
 
   stop(): void {
@@ -1063,6 +1117,8 @@ export class PhotosphereSweep {
     this.listening = false; this.stability.clear();
     this.headingStoodAt = null; this.tiltStoodAt = null;
     this.lumaCanvas = null; this.stillnessFailures = 0;
+    // Counted per camera session, and this ends one.
+    this.mediaGateRefusals = 0; this.mediaGateRefusalRun = 0;
     this.lastMediaTime = null; this.lastMediaAdvanceAt = -Infinity; this.presentedFrameId = null; this.lastCapturedFrameId = null; this.imageGate = null;
     this.stream?.getTracks().forEach((t) => t.stop());
     this.stream = null;
