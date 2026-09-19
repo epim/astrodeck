@@ -276,28 +276,52 @@ def _horizon_svg(case_dir: Path, result_dir: Path) -> str:
             [(x_of((index + 0.5) * step), y_of(value)) for index, value in enumerate(truth)],
             "#7aa2ff", 1.2))
     if measured and measured.get("points"):
+        # One stroke per RESOLVED run, and the unresolved runs dashed and
+        # grey. Drawing the whole boundary as one line would paint the
+        # altitude in a bin the scanner disclaimed in the same ink as a
+        # measurement: `remove-section` writes 90 in the bins it marks
+        # uncertain, and an unbroken line renders that as a full height spike
+        # the scanner never claimed. The shading says which azimuths are
+        # unresolved; this says the line is not there.
         bins = len(measured["points"])
         step = 360.0 / bins
-        parts.append(_polyline(
-            [(x_of((index + 0.5) * step), y_of(point["alt"]))
-             for index, point in enumerate(measured["points"])],
-            "#ff8a3d", 1.2))
+        uncertain = set(int(i) for i in measured.get("uncertain_bins") or [])
+        points = [(x_of((index + 0.5) * step), y_of(point["alt"]))
+                  for index, point in enumerate(measured["points"])]
+        resolved = [index not in uncertain for index in range(bins)]
+        for start, stop in _runs(resolved):
+            parts.append(_polyline(points[start:stop], "#ff8a3d", 1.2))
+        for start, stop in _runs([not flag for flag in resolved]):
+            parts.append(_polyline(points[start:stop], "#6b7080", 1.0, dash="3 3"))
 
     parts.append(f'<text x="{left}" y="{top - 2}" class="tick">'
                  'altitude (deg) against azimuth (deg): truth in blue, '
-                 'measured in orange, unresolved azimuths shaded</text>')
+                 'measured in orange, unresolved azimuths shaded and their '
+                 'disclaimed altitudes dashed grey</text>')
     parts.append("</svg>")
     return "".join(parts)
 
 
 def _overlay_series(case_dir: Path, result_dir: Path):
-    """(t_ms, error_deg, moving) per event line that can be scored."""
+    """(t_ms, error_deg, moving) per event line that can be scored.
+
+    A frame id that arrives more than once is plotted once, from its first
+    line, the same rule the scorer scores by. A timeline that drew a sample
+    the scorer did not score would put a point on the page that no percentile
+    and no gate in the tables beside it can account for.
+    """
     frames = {frame["frame_id"]: frame for frame
               in _read_jsonl(Path(case_dir) / "truth" / "trajectory.jsonl")}
     series = []
+    seen = set()
     for event in _read_jsonl(Path(result_dir) / "events.jsonl"):
+        frame_id = event.get("frame_id")
+        if frame_id is not None:
+            if frame_id in seen:
+                continue
+            seen.add(frame_id)
         basis = event.get("basis")
-        frame = frames.get(event.get("frame_id"))
+        frame = frames.get(frame_id)
         if basis is None or frame is None:
             continue
         series.append((float(event.get("t_ms", 0)),
