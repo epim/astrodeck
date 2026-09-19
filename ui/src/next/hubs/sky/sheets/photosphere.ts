@@ -292,16 +292,15 @@ export class PhotosphereSweep {
   private stability = new VisualStability();
   private lumaCanvas: HTMLCanvasElement | null = null;
   private stillnessFailures = 0;
-  /** The media clock of the last frame a NON-CALLBACK grab took as evidence, in
-   *  seconds; -1 before any. Not the interval fallback alone: `captureOverhead`
-   *  reaches `grabFrame` with no frame of its own, so it runs the same gate on a
-   *  device that has requestVideoFrameCallback. The gate consumes as it answers
-   *  (see `newMediaFrame`), so this field advances on every `true`. */
-  /** `null` until a first reading has been taken: a media clock is only
-   *  evidence by MOVING, so the first reading of a sweep establishes the
-   *  baseline and claims nothing. A sentinel below every real clock value
-   *  (-1) let the first tick claim a delivery for free, and a timer fired by
-   *  hand could then capture the element's retained picture. */
+  /** The media clock, in seconds, of the last reading the interval path took
+   *  (see `newMediaFrame`, which consumes as it answers and advances this on
+   *  every `true`). `null` until the first reading, taken in `start()` once
+   *  the preview plays: a media clock is evidence only by MOVING, so that
+   *  first reading establishes the baseline and claims nothing. A sentinel
+   *  below every real clock value let the first tick claim a delivery for
+   *  free, and a timer fired by hand could then capture the element's
+   *  retained picture. The manual press never reads this: it asks only for a
+   *  delivery within STALE_FRAME_MS (see `lastMediaAdvanceAt`). */
   private lastMediaTime: number | null = null;
   /** FRESHNESS and IDENTITY of the delivered image, which are not the same
    *  question as the witness's consume-on-read above. `newMediaFrame` may hand
