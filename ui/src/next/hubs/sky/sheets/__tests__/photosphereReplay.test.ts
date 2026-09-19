@@ -9,7 +9,7 @@
 // byte-identical files.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,13 +18,20 @@ import { decodePng, encodePng, pngChunk, PNG_SIGNATURE } from '../__sim__/png';
 import { createHarness, resample } from '../__sim__/harness';
 import { mergeObservations, replayCase, type Observation } from '../__sim__/replay';
 import { DOME_CELLS } from '../photosphereGeometry';
+import { endsOverlapRun, LENS_DOUBT_AFTER, type CaptureOutcome } from '../photosphere';
 
-let passed = 0, failed = 0;
+let passed = 0, failed = 0, skipped = 0;
 function test(name: string, fn: () => void | Promise<void>): Promise<void> {
   return Promise.resolve().then(fn).then(
     () => { passed++; console.log(`PASS ${name}`); },
     (e: Error) => { failed++; console.log(`FAIL ${name}\n     ${e.message.split('\n')[0]}`); },
   );
+}
+/** Not a pass. A case whose recording is not on this machine was NOT measured,
+ *  and the tally below must not imply it was. */
+function skip(name: string, why: string): void {
+  skipped++;
+  console.log(`SKIP ${name}\n     ${why}`);
 }
 
 await test('png: a 5 x 3 RGBA gradient survives encode and decode byte for byte', () => {
@@ -256,9 +263,43 @@ function buildCase(root: string, options: { readings?: boolean; manifestCamera?:
   }));
 }
 
-const OUTCOMES = new Set(['accepted', 'not-recording', 'not-ready', 'unhealthy', 'no-image',
-  'alignment-wait', 'overlap-wait', 'no-target', 'already-captured', 'too-soon',
-  'below-horizon', 'read-failed']);
+/** Every outcome `grabFrame` can return, and whether it ENDS a run of overlap
+ *  refusals (issue #52; `endsOverlapRun` is the rule, this is the table that
+ *  grades it). One table with two jobs: the KEYS are what a replay's capture
+ *  records are checked against below, and the VALUES are what `endsOverlapRun`
+ *  is checked against at the bottom of the file.
+ *
+ *  A `Record<CaptureOutcome, boolean>` and not a bare list, so tsc refuses this
+ *  file when the union grows and the new outcome is not named here: a fifteenth
+ *  gate cannot join `grabFrame` and quietly pass both cases. It WAS a bare
+ *  `Set`, and it was two short - `stale-image` and `frame-already-captured`
+ *  were missing, so a recording that produced either would have been reported
+ *  as an outcome the scanner cannot return. Nothing could have noticed. */
+const OUTCOME_ENDS_RUN: Record<CaptureOutcome, boolean> = {
+  'accepted': true,
+  'not-recording': true,
+  'not-ready': true,
+  'unhealthy': true,
+  'no-image': true,
+  // The run itself, and the four outcomes that end a grab BEFORE the overlap
+  // test is reached: the pose has not settled, the 600 ms registration rate
+  // limit fired (immediately after most refusals, because the refused attempt
+  // set `lastRegistrationAt` on its way in), the aim is between dome cells, or
+  // the phone is pointed at the ground. None is evidence that the view now
+  // matches. Counting `alignment-wait` or `too-soon` as a reset caps every run
+  // at one and the lens cue is dead code; counting `no-target` as one delays
+  // it on the wrong-lens recording from the 9th refusal to the 24th of 25.
+  'overlap-wait': false,
+  'alignment-wait': false,
+  'too-soon': false,
+  'no-target': false,
+  'below-horizon': false,
+  'already-captured': true,
+  'stale-image': true,
+  'frame-already-captured': true,
+  'read-failed': true,
+};
+const OUTCOMES = new Set(Object.keys(OUTCOME_ENDS_RUN));
 
 /** The `app_commit` the driver stamped on the determinism run below, read by
  *  the dirty-tree test after it, and that run's panorama bytes, which the
@@ -399,6 +440,161 @@ await test('replay: git is reachable, so app_commit is a real commit', () => {
   assert.match(head, /^[0-9a-f]{40}$/);
 });
 
-console.log(`photosphereReplay.test: ${passed}/${passed + failed} passed`);
+// --------------------------------------------------- issue #52: the lens cue
+// Two recordings that differ in exactly one field - the camera's short-axis
+// field of view, 70 degrees against 60 - replayed through the same scanner,
+// which assumes 60 and starts with no saved calibration. A wrong lens SCALE is
+// not something the small rigid rotation `registerFrame` fits can absorb, so
+// `checkOverlap` returns `conflict` and the 70 case is refused over and over -
+// and the cue used to answer every one of those refusals with an instruction
+// about the user's aim, never naming the control that would fix it.
+//
+// This is pinned through the replay rather than the capture DOM harness
+// because that harness cannot produce a conflict to pin it on: its camera
+// returns a uniform grey, and `SkyPanorama.checkOverlap` reads a variance
+// below 100 as 'unknown' and never as 'conflict'. Faking one would be a test
+// of the fake.
+//
+// The recordings are made by the simulator and are NOT in the repository
+// (`tools/photosphere_sim/cache/` is git-ignored), so the three cases below
+// SKIP where they are absent. The table case after them runs everywhere.
+const CASES = fileURLToPath(new URL('../../../../../../../tools/photosphere_sim/cache/cases/', import.meta.url));
+const NO_RECORDING = 'the simulator recording is not on this machine (tools/photosphere_sim/cache is git-ignored)';
+
+interface Replayed {
+  summary: Awaited<ReturnType<typeof replayCase>>;
+  captures: { at: number; outcome: CaptureOutcome }[];
+  events: { t_ms: number; cue: string }[];
+}
+
+/** Replay a recorded case WITHOUT writing into it. `replayCase` empties and
+ *  rewrites `<case>/result/`, and for these two cases that directory is the
+ *  measurement issue #52 was filed from - so the input is copied to a
+ *  temporary directory and the driver writes there. The copy is about 42 MB
+ *  and a quarter of a second. A junction would be free, and would put a
+ *  recursive delete one Node version away from walking into the recording. */
+async function replayRecorded(caseId: string): Promise<Replayed | null> {
+  const input = join(CASES, caseId, 'input');
+  if (!existsSync(input)) return null;
+  const root = mkdtempSync(join(tmpdir(), `photosphere-${caseId}-`));
+  try {
+    cpSync(input, join(root, 'input'), { recursive: true });
+    const summary = await replayCase(root);
+    const lines = (name: string) => readFileSync(join(root, 'result', name), 'utf8')
+      .trim().split('\n').map(line => JSON.parse(line));
+    return { summary, captures: lines('captures.jsonl'), events: lines('events.jsonl') };
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+/** The longest run of overlap refusals in a capture log, counted by the
+ *  scanner's own rule for what ends one rather than a second copy of it. */
+function longestOverlapRun(captures: { outcome: CaptureOutcome }[]): number {
+  let run = 0, longest = 0;
+  for (const record of captures) {
+    if (record.outcome === 'overlap-wait') { run++; longest = Math.max(longest, run); }
+    else if (endsOverlapRun(record.outcome)) run = 0;
+  }
+  return longest;
+}
+
+// The distinctive halves of the cue under test and of the one it displaces,
+// matched as phrases rather than imported as constants: a case that compares
+// the sentence with itself grades nothing.
+const NAMES_THE_LENS = /camera view angle may be set wrong for this lens/;
+// The setting, by the words it must be called. It is deliberately NOT a UI
+// label: no committed component calls `setCameraViewAngle` at b8581949, so a
+// quoted label would be a quote of something unlanded.
+const NAMES_THE_SETTING = /camera view angle/;
+const BLAMES_THE_AIM = /Return to a green patch/;
+
+const wrongLens = await replayRecorded('chartyard-arc075-70');
+const rightLens = await replayRecorded('chartyard-arc075-60');
+
+const NAMED = 'replay: a 70-degree lens scanned at 60 is refused until the cue names the view angle (#52)';
+if (!wrongLens) skip(NAMED, NO_RECORDING);
+else await test(NAMED, () => {
+  // A THRESHOLD and never a count. A later task changes targeting, which moves
+  // how many refusals this route earns; what this case needs is only that the
+  // branch it grades is still reachable on the recording.
+  const run = longestOverlapRun(wrongLens.captures);
+  assert.ok(run >= LENS_DOUBT_AFTER,
+    `the worst run of overlap refusals was ${run}, short of the ${LENS_DOUBT_AFTER} the cue waits for: `
+    + 'this recording can no longer reach the branch this case grades');
+  const named = wrongLens.events.filter(event => NAMES_THE_LENS.test(event.cue));
+  assert.ok(named.length > 0,
+    'the scan was refused past the threshold with no lens calibration and the cue never mentioned the lens');
+  for (const event of named) {
+    assert.match(event.cue, NAMES_THE_SETTING);
+    // It REPLACES the aim instruction. Two remedies in one sentence is the
+    // user trying the wrong one first, which is the whole of issue #52.
+    assert.doesNotMatch(event.cue, BLAMES_THE_AIM);
+  }
+  // Mutation: LENS_DOUBT_AFTER = 1e9. The run assertion fails first ("was 8,
+  // short of the 1000000000"), and the cue never appears either. Observed red.
+});
+
+const QUIET = 'replay: the same scan with the lens the scanner assumes never mentions the view angle (#52)';
+if (!rightLens) skip(QUIET, NO_RECORDING);
+else await test(QUIET, () => {
+  // The negative is evidence only because this scan WORKED: same seed, scene,
+  // route, resolution and driver, differing in the recorded lens alone.
+  assert.ok(rightLens.summary.frames_accepted > 0,
+    'the control scan captured nothing, so its silence says nothing about the cue');
+  const run = longestOverlapRun(rightLens.captures);
+  assert.ok(run < LENS_DOUBT_AFTER,
+    `the control scan's worst run of overlap refusals was ${run}, at or past the ${LENS_DOUBT_AFTER} threshold: `
+    + 'the two cases no longer separate the wrong lens from the right one');
+  assert.equal(rightLens.events.filter(event => NAMES_THE_LENS.test(event.cue)).length, 0,
+    'a scan with the lens the scanner assumes was told its lens may be set wrong');
+  // Mutation: LENS_DOUBT_AFTER = 1. This case reddens on both assertions.
+  // Observed red.
+});
+
+const RESET = 'replay: an outcome other than a refusal puts the ordinary cue back (#52)';
+if (!wrongLens) skip(RESET, NO_RECORDING);
+else await test(RESET, () => {
+  let run = 0, reached: number | null = null, cleared: number | null = null;
+  for (const record of wrongLens.captures) {
+    if (record.outcome === 'overlap-wait') {
+      run++;
+      if (run >= LENS_DOUBT_AFTER && reached === null) reached = record.at;
+    } else if (endsOverlapRun(record.outcome)) {
+      run = 0;
+      if (reached !== null && cleared === null) cleared = record.at;
+    }
+  }
+  assert.ok(reached !== null, 'the recording never reached the threshold');
+  assert.ok(cleared !== null,
+    'nothing but refusals followed the threshold in this recording, so it cannot show a run being broken');
+  // The driver reads the cue straight after the frame that drove the grab, and
+  // stamps both with the same virtual millisecond, so these are the cues
+  // immediately after the refusal that reached the threshold and after the
+  // first outcome that ended the run.
+  const cueAt = (t: number): string => {
+    const event = wrongLens.events.find(candidate => candidate.t_ms === t);
+    assert.ok(event, `no events line at ${t} ms`);
+    return event.cue;
+  };
+  assert.match(cueAt(reached), NAMES_THE_LENS);
+  assert.doesNotMatch(cueAt(cleared), NAMES_THE_LENS);
+  // Mutation: make `endsOverlapRun` return false for every outcome. The run is
+  // then never broken, the cue stays the lens sentence, and the second
+  // assertion here fails. Observed red.
+});
+
+await test('capture outcomes: only the waits before the overlap test keep a refusal run alive (#52)', () => {
+  // OUTCOME_ENDS_RUN is exhaustive over `CaptureOutcome` by its type, so this
+  // grades every outcome the scanner has and tsc reddens when it grows one.
+  for (const [outcome, expected] of Object.entries(OUTCOME_ENDS_RUN))
+    assert.equal(endsOverlapRun(outcome as CaptureOutcome), expected, `${outcome} is classified wrongly`);
+  // Mutation: drop `&& outcome !== 'too-soon'` from `endsOverlapRun`. Red here
+  // on that key, and red on the two replay cases above, whose longest runs
+  // both fall to 1. Observed red.
+});
+
+console.log(`photosphereReplay.test: ${passed}/${passed + failed} passed`
+  + (skipped ? ` (${skipped} skipped: ${NO_RECORDING})` : ''));
 export const result = { passed, failed, total: passed + failed };
 if (failed) process.exitCode = 1;
