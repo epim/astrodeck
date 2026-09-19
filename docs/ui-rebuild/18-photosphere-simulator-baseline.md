@@ -226,13 +226,19 @@ except the capture outcome histogram, which is a count over
 | `no_missed_obstructions` | FAIL | FAIL | FAIL | PASS |
 | `no_unresolved_boundary` | PASS | PASS | FAIL | PASS |
 | `overlay_settled_p95_lt_0_5` | PASS | PASS | FAIL | PASS |
-| `overlay_moving_p95_lt_1` | PASS | PASS | FAIL | PASS |
+| `overlay_moving_p95_lt_1` | PASS [P] | PASS [P] | FAIL | PASS |
 | `overlay_max_lt_10` | PASS | PASS | PASS | PASS |
 | `no_duplicate_frames` | PASS | PASS | PASS | PASS |
 | `capture_p95_le_1500` | PASS | PASS | PASS | PASS |
 | `every_hold_captured` | FAIL | FAIL | FAIL | PASS |
 | `coverage_ge_0_95` | PASS | PASS | FAIL | PASS |
 | `pass` | FAIL | FAIL | FAIL | PASS |
+
+[P] Phase-locked, not measured: 443 of the 460 moving samples on those two
+cases are exactly zero, because the sensor emitted a reading at the frame's own
+capture instant and the scanner's interpolation was never exercised (section
+3.4). The cell says PASS; it does not say the scanner tracked a moving view to
+within a degree.
 
 | case | gates failing, of the fourteen that `pass` is the AND of |
 |---|---|
@@ -348,6 +354,8 @@ azimuths the envelope is the canopy standing above it.
 | missing fraction | 0.000 | 0.000 | 0.000 | 0.000 |
 | duplicate frame ids | 0 | 0 | 0 | 0 |
 | frames over their class gate | 0 | 0 | 994 | 0 |
+| moving samples | 460 | 460 | 460 | 460 |
+| moving samples exactly zero (below 1e-9) | 443 (96.3%) | 443 (96.3%) | 7 (1.5%) | 460 (100%) |
 | moving median (deg) | 0.000 | 0.000 | 5.382 | 0.000 |
 | moving p95 (deg) | 0.000 | 0.000 | 7.842 | 0.000 |
 | moving max (deg) | 0.095 | 0.095 | 8.369 | 0.000 |
@@ -358,13 +366,23 @@ azimuths the envelope is the canopy standing above it.
 The two 60 degree cases report the same overlay figures because the overlay
 pose is built from the orientation stream, which is identical across the three
 recordings; only chartyard-arc075-70's wrong lens moves it. Their moving
-medians and p95s are not zero but smaller than a thousandth of a degree: at
-those instants the last orientation reading the scanner received was emitted at
-the frame's own capture time, so its reconstructed pose equals the truth pose
-to floating-point precision. The figure is therefore a property of where the
-sensor's emission instants fall relative to the 100 ms frame grid, and it has
-moved between route revisions with no change to the scanner. Read the maxima,
-not the medians, on those two rows.
+medians and p95s are not zero but smaller than a thousandth of a degree, and
+the row above says why: 443 of the 460 moving samples on each of those two
+cases are exactly zero, below 1e-9 degrees. The orientation sampler runs on a
+10 ms grid and the frames arrive on a 100 ms one, so during a move a reading
+is emitted at the frame's own capture instant; the scanner is then handed the
+truth pose and returns it, and the interpolation between two readings -- the
+thing this gate is supposed to grade -- is never exercised at all. That is a
+property of where the sensor's emission instants fall relative to the frame
+grid, not of the scanner, and it has already moved between route revisions
+with no change to the scanner. The `overlay_moving_p95_lt_1` cells for those
+two cases in section 3.1 are marked accordingly. Read the maxima, not the
+medians, on those two rows.
+
+The 17 moving samples that are not exactly zero carry the whole moving
+maximum, 0.095 degrees. The counts above were recomputed from
+`result/events.jsonl` against `truth/trajectory.jsonl` for this document; they
+are not `scores.json` fields.
 
 ### 3.5 Capture
 
@@ -426,14 +444,25 @@ row.
 | cells covered fraction | 0.9890 | 0.9670 | 0.5714 | 1.0000 |
 | cells covered / cells total | 90 / 91 | 88 / 91 | 52 / 91 | 1 / 1 |
 
+The first two rows are equal on every case for a structural reason, not a
+coincidence: on these three routes the observable region is the WHOLE raster.
+Both routes sweep the dome, so every one of the 1080 x 300 cells projects
+inside at least one delivered frame, and `observable_fraction_covered` and
+`panorama_alpha_fraction` are then the same fraction over the same set of
+cells. Nothing in these numbers can therefore fail on the observable region
+being computed wrongly, which is why the mask is graded directly by a test
+(`tests/test_score.py`, `ObservableRegion`) on a trajectory that looks in one
+direction only.
+
 The ideal's `cells_covered_fraction` is not comparable with the other three:
 its `summary.json` declares a single cell, because the ideal panorama is ray
 cast rather than assembled from dome cells.
 
 ## 4. What the numbers say
 
-Six mechanisms account for every failing gate. Each is stated only as far as
-the evidence in the case directories supports it.
+Seven mechanisms, in the six sections below, account for every failing gate.
+(Section 4.2 carries two: a tracer threshold met from both sides.) Each is
+stated only as far as the evidence in the case directories supports it.
 
 ### 4.1 The boundary is thirty bins wide, the truth is thirty-six hundred
 
@@ -459,7 +488,7 @@ obstacle table is the height of the pole above what the bin reports, and its
 missed width is the width of the pole itself. This is the failure section 9 of
 the spec asks the chart profile to expose, and the instrument exposes it.
 
-### 4.2 Three bins near north report a canopy where the truth has a low ridge
+### 4.2 One threshold, no contrast sign: dark sky reads as canopy, a bright wall as sky
 
 The largest single contribution to the horizon percentiles is not the binning.
 `traceSkyCoverage` works on one luminance value per raster row, calls the
@@ -473,7 +502,12 @@ them:
 | sky level the tracer computed | 122.0 |
 | the tracer's obstruction threshold | 85.4 |
 | background value-noise grey range in the scene | 70 to 150 |
-| palette colours whose luminance is below the threshold | 8 of 24 |
+| palette colours whose luminance is below the threshold | 7 of 24 |
+
+The seven are palette indices 0, 1, 2, 8, 9, 10 and 16, computed from
+`sim/palette.py` under the scanner's own `luminance`. The nearest colour above
+the threshold is index 3, `(0, 128, 128)`, at 89.73, four degrees of grey
+clear of it.
 
 The consequence, in the bins that report a boundary higher than the tallest
 thing their own azimuths contain:
@@ -515,8 +549,10 @@ recorded here as an instrument limitation rather than filed against the
 scanner. A luminance-only tracer cannot tell a dark cloud from a canopy, and
 the scene hands it dark sky and dark discs above the horizon. The fix belongs
 to the scene, in stage B: restrict the palette above altitude 60 to colours
-brighter than the tracer's threshold, and lift the background grey floor above
-it. The effect on the numbers is visible in the table:
+brighter than the tracer's threshold, lift the background grey floor above it,
+and, for the converse below, require every object colour to sit a stated
+margin BELOW the sky level, so that a surface the tracer is supposed to find
+cannot read as sky. The effect on the numbers is visible in the table:
 
 | chartyard-still-60 horizon error, recomputed from the two files | median (deg) | p95 (deg) | max (deg) |
 |---|---|---|---|
@@ -526,27 +562,82 @@ it. The effect on the numbers is visible in the table:
 Removing them does not rescue the gate. It moves the failure from one cause to
 another, which is the point of separating them.
 
-### 4.3 The roof and the wall are missed on width, not on height
+**The converse, and this one is the scanner's.** `wall-east` is MISSED for the
+same reason with the sign reversed, and it is not a chart artefact. Its 12.0
+degrees of `width_missed_deg` on chartyard-still-60 is not an accumulation of
+edges: it is one whole INTERIOR bin, bin 6, azimuth 72 to 84, while the wall
+spans azimuth 48.0 to 132.0. There `result/horizon.json` reports altitude 0.0
+against a truth profile of 24.5 to 25.5 degrees. The reason is in
+`result/columns.json`: the wall's colour is `(120, 100, 80)`, luminance 103.7,
+which is ABOVE the tracer's threshold of 85.4, and it fills the column to the
+bottom of the frame -- the last 36 of the column's 101 samples are exactly
+103.7. The whole column's minimum is 87.0, at index 45, in the sky above the
+wall; no sample in it is below the threshold at all. `traceSkyCoverage`
+therefore finds no drop and returns open sky over a solid wall.
 
-`roof-south` and `wall-east` both have a deficit median below zero in the two
-60 degree cases, and both are MISSED, on the width term alone:
+The tracer has no contrast sign. It looks for a DARKENING, so any surface
+brighter than seven tenths of the sky level is not an obstruction to it,
+whichever way round the scene is lit. That is the converse of the dark-disc
+artefact above: the same threshold, the same missing sign, once with the sky
+too dark and once with the obstacle too bright. A scanner that reports open
+sky over a wall it can see is wrong about the sky, not about the chart, so
+this one is filed against the scanner: issue #58. Restricting the scene's
+object colours (the stage B item above) removes it from these cases; it does
+not remove it from a white wall in daylight.
+
+chartyard-arc075-60 loses a different single bin to the same mechanism, bin 4,
+azimuth 48 to 60, where its column's minimum is 103.7 exactly -- the wall's own
+luminance, with nothing darker anywhere in the column.
+
+### 4.3 The roof is missed on width, not on height
+
+`roof-south` has a deficit median below zero in both 60 degree cases and is
+MISSED in both, on the width term alone. (`wall-east` is MISSED on the width
+term too, but for the different reason section 4.2 sets out: one interior bin
+where the tracer reads the wall as sky.)
 
 | case | obstacle | deficit median (deg) | width missed (deg) | min width (deg) |
 |---|---|---|---|---|
 | still-60 | roof-south | -0.85 | 16.6 | 10 |
-| still-60 | wall-east | -34.35 | 12.0 | 10 |
 | arc075-60 | roof-south | -5.00 | 40.8 | 10 |
-| arc075-60 | wall-east | -55.40 | 12.0 | 10 |
 
 A negative median means the measured boundary is above the obstacle's own
 silhouette over most of its span, which a thirty-bin boundary produces by
 holding each bin's maximum. The width term counts the tenth-of-a-degree bins
-where the measured boundary falls more than one degree below the obstacle, and
-those bins are at the obstacle's edges, where a coarse bin straddles the
-boundary. A roof spanning most of a quadrant can lose a chunk wider than its
-declared minimum width and still have a median of about zero, which is exactly
-what the two rows for `roof-south` show. An obstacle is found when it is found,
-not when most of it is.
+where the measured boundary falls more than one degree below the obstacle.
+Those bins come in runs, and every run on chartyard-still-60 sits against a
+measured bin boundary -- an azimuth that is a multiple of 12 -- because that
+is where a single-valued bin is furthest from a boundary that slopes across
+it. Computed from `truth/reference-horizon.json` and `result/horizon.json`
+(these are not `scores.json` fields):
+
+| run | azimuth (deg) | width (deg) | measured bin | the bin reports (deg) | the roof's own silhouette there (deg) | worst deficit (deg) |
+|---|---|---|---|---|---|---|
+| 1 | 116.2 to 120.0 | 3.8 | 9 | 58.0 | 59.05 to 62.05 | 4.05 |
+| 2 | 128.7 to 132.0 | 3.3 | 10 | 66.0 | 67.05 to 68.35 | 2.35 |
+| 3 | 228.0 to 231.3 | 3.3 | 19 | 66.0 | 67.05 to 68.35 | 2.35 |
+| 4 | 240.0 to 244.9 | 4.9 | 20 | 57.0 | 58.05 to 62.05 | 5.05 |
+| 5 | 252.0 to 253.3 | 1.3 | 21 | 13.0 | 47.40 to 49.30 | 36.30 |
+
+The five sum to the 16.6 degrees in the table above. Four of them are
+straddles in the ordinary sense: over three to five degrees at one end of a
+bin (the far end for runs 1 and 2, the near end for runs 3 and 4) the roof's
+own silhouette stands above the one number the bin holds for all twelve
+degrees, and the measurement falls two to five degrees short. The fifth is a different
+animal wearing the same label. The roof ends at azimuth 253.3, which is 1.3
+degrees inside bin 21 (252 to 264); the rest of that bin is open sky, the bin
+reports 13.0, and over that 1.3 degrees the measurement is 34.4 to 36.3
+degrees below the roof. That is the coarse-bin failure of section 4.1 landing
+on an obstacle's own edge rather than a pole's.
+
+chartyard-arc075-60 loses 40.8 degrees to three runs instead of five (23.2,
+10.3 and 7.3 degrees wide, worst deficits 2.85, 3.85 and 4.35), with no run
+resembling the fifth above: there the runs are wide and shallow, which is the
+arc's parallax moving the whole boundary rather than a bin edge cutting it.
+
+A roof spanning most of a quadrant can lose a chunk wider than its declared
+minimum width and still have a median of about zero, which is exactly what
+both rows show. An obstacle is found when it is found, not when most of it is.
 
 ### 4.4 The arc moves the camera, and only the near things move with it
 
@@ -647,9 +738,18 @@ chartyard-arc075-70.
 
 | case | unsatisfied holds | what they are |
 |---|---|---|
-| still-60 | 1 | the last hold of the route, the top of the upward sweep, where no dome cell lies within the aim cone, so the scanner reports `no-target` for the whole hold (issue #57) |
+| still-60 | 1 | the last hold of the route, the top of the upward sweep, where no dome cell lies within the aim cone (issue #57) |
 | arc075-60 | 7 | five `alignment-wait` and two `overlap-wait`, the near-field mismatch of section 4.4 reaching the registration step |
 | arc075-70 | 37 | the lens error of section 4.5 |
+
+That last hold is hold 47, azimuth 180 altitude 85, open from 104066 to 105266
+ms, and its window holds three capture records: `alignment-wait` at 104460,
+then `no-target` at 104860 and at 105260. The hold does not read `no-target`
+throughout -- the first attempt inside it is still waiting on alignment, and
+only once the aim has settled does the scanner discover there is nothing at
+altitude 85 to aim at. The distinction matters for issue #57, because it is
+the settled attempts that prove the cone is empty rather than merely unaimed.
+The table above classifies the hold by that outcome.
 
 Only the still case's single remaining failure is about the geometry of the
 dome rather than about the scan.
@@ -662,12 +762,14 @@ These bound what any number above can mean.
 |---|---|
 | The chart yard is noise free, evenly lit and has no lens distortion. | Feature localisation is easier here than on any real frame. A p95 measured here is a floor for the same algorithm on a phone, never a prediction of it. |
 | Frames arrive on a virtual clock at exactly 10 fps, none dropped, none late. | Capture faults, clock injection and provider faults are stage B. Nothing here exercises them. |
+| The harness clock does not advance inside a frame callback. | The replay sets the virtual clock to a frame's delivery time and then runs the callback, so registration, mosaic painting and column extraction all cost zero milliseconds. Every timing figure in this document is measured on that clock: the 350 ms sample gate, the 600 ms registration gate and every capture latency in section 3.5. A scanner taking 300 ms per frame on a phone would produce numerically identical figures here. These are the instrument's timings, not the scanner's cost. |
+| `pass` is the stage A gate set, not the spec's section 9. | `tools/photosphere_sim/CONTRACT.md`, "What stage A does not evaluate", names the rows of section 9 this instrument does not grade: the noise-free calibration row (FoV error, ray error), the qualified-noisy row, the calibration-confidence corpus, the loop-mismatch clause, and the no-fabricated-heartbeat clause of the capture row. `false_open_sr` is reported and not gated, so the safety-relevant row is covered only by the width term of an obstacle's `missed`. A green `pass` above is a claim about fourteen thresholds and nothing else. |
 | The grab gate samples at 350 ms against a 10 fps stream, so it lands on every fourth frame. | The effective sampling interval is 400 ms, which is why each case logs 264 grab attempts over a timeline of about 105 s. Capture latency is quantised by that grid rather than by anything in the scanner's decision. |
 | The replay drives the `requestVideoFrameCallback` path. | The interval fallback, the only path Firefox Android takes, is never executed by any case here, so neither the new `stale-image` refusal on that path nor issue #48's stillness timestamping is measured. A browser whose MediaStream `currentTime` does not advance now loses capture there, not only the stillness witness. |
 | The overlay error on the two 60 degree cases is set by sampling phase. | Section 3.4. Where a reading was emitted at a frame's own capture time the reconstructed pose matches truth exactly, so the moving median and p95 collapse to floating-point noise and have moved between route revisions with no scanner change. The maxima are the informative figures on those rows. |
 | The raster is 1080 x 300 and both the result and the ideal are read from it. | The ideal column of section 3.2 is the quantisation floor: a perfect scanner scores p95 0.084 and max 0.266 degrees on this raster, so a difference below that is the raster, not the algorithm. |
 | The `min_width_deg` values were chosen when they only labelled a row. | The width term of `missed` was added afterwards, and those declared widths are now the difference between found and missed on the narrow obstacles. They have not been re-derived since they became load bearing (issue #53). |
-| The horizon tracer meets a dark sky and dark discs. | Section 4.2. A scene change belongs in stage B; until then the horizon percentiles on the chart yard carry an artefact the scanner is not responsible for. |
+| The horizon tracer meets a dark sky and dark discs. | Section 4.2. A scene change belongs in stage B; until then the horizon percentiles on the chart yard carry an artefact the scanner is not responsible for. The other half of that section, a bright wall read as open sky, is not an instrument limit: it is issue #58 against the scanner, and a scene change only hides it here. |
 | `begin` is offered repeatedly until the scanner accepts it. | The recorded `begin` action is an earliest time, not the instant the scan starts: `PhotosphereSweep.begin()` refuses silently until the compass is ready, and the production Start button is behind the same gate. |
 | Determinism is established on this machine, not across machines. | Section 2.2: two independent builds of the still case agree byte for byte through the renderer, the recorder, the truth, the replay and the scorer. Spec section 8 asks for documented numerical tolerances rather than bit-identical rendering across GPUs, and no second GPU has been tried. |
 
@@ -694,19 +796,21 @@ simulator cases, as section 10 of the spec requires:
    change-driven silence. A valid quick approach must recover rather than stay
    permanently rejected because of an old jump.
 
-Two scanner findings came out of these runs and are open against the scanner,
-not against the simulator:
+Three scanner findings came out of these runs and are open against the
+scanner, not against the simulator:
 
 | issue | what it is | where it came from |
 |---|---|---|
 | #57 | No dome cell lies within the aim cone at altitude 85, so a hold there can never capture: the zenith cap's cone is narrower than the gap to the next ring, the aim dot shows no target, and every frame is declined with no cue that says why. Widen the cap's cone or add a ring so every altitude has a target, and say in the cue when a direction has none. | Section 4.6 |
 | #52 | The assumed lens. A short-axis field of view ten degrees from the truth costs most of the dome, and the cue on the refusal path tells the user to fix their aim instead of naming the camera view angle control. Read the refusal history that is already in the capture log. | Section 4.5 |
+| #58 | `traceSkyCoverage` reports open sky over a wall brighter than seven tenths of the sky level. The tracer looks for a darkening and has no contrast sign, so a bright surface filling the frame to its bottom edge is read as nothing at all. | Section 4.2 |
 
 Also carried into stage B from this baseline:
 
 | item | where it came from |
 |---|---|
-| A scene change so the horizon tracer is not handed dark sky and dark discs above altitude 60, and a background grey floor above the tracer's threshold. | Section 4.2 |
+| A scene change so the horizon tracer is not handed dark sky and dark discs above altitude 60, and a background grey floor above the tracer's threshold; and, for the converse, object colours held a stated margin below the sky level so a surface the tracer must find cannot read as sky. | Section 4.2 |
+| Advance the virtual clock by each frame callback's measured cost, so that the sample gate, the registration gate and the capture latencies are timed against work that took time. Without it the instrument cannot tell a scanner that fits in a frame budget from one that does not. | Section 5 |
 | Re-derive the declared `min_width_deg` values now that they gate (issue #53). | Section 5 |
 | Exercise the interval fallback path, and answer the device questions in issue #48: the camera pipeline delay on Firefox Android, and whether `video.currentTime` advances with frame delivery for a MediaStream-backed element there. That question is now a release gate, because capture itself depends on it and not only the stillness witness. | Section 5 |
 | Decouple the overlay measurement from the sampling phase, so the moving percentiles measure the scanner rather than where the emission instants fall. | Section 3.4 |

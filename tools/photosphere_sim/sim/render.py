@@ -225,8 +225,17 @@ class ThreeRenderer:
 
     @property
     def version(self) -> dict:
-        """What the manifest records: the Three.js and Chromium versions."""
-        return {"three": _three_version(), "chromium": self._chromium_version}
+        """What the manifest records about the browser that drew the frames.
+
+        ``webgl_renderer`` is the page's own ``GL_RENDERER`` string, read
+        during :meth:`_start`. It is the only one of the three that names the
+        rasteriser rather than a package: the same Three.js and the same
+        Chromium draw differently on SwiftShader and on a real driver, and
+        that difference is exactly what the contract's cross-machine
+        tolerance question is about. ``None`` if the page did not report one.
+        """
+        return {"three": _three_version(), "chromium": self._chromium_version,
+                "webgl_renderer": self.diagnostics.get("renderer")}
 
     @property
     def console(self) -> list:

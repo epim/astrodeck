@@ -20,7 +20,7 @@ from PIL import Image
 
 from sim import cases, ideal, score
 from sim.__main__ import main as cli_main
-from sim.geometry import sky_vector
+from sim.geometry import Camera, look_basis, sky_vector
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
@@ -708,6 +708,88 @@ class IdealResult(unittest.TestCase):
         self.assertFalse(scores["gates"]["no_omissions"])
         self.assertFalse(scores["gates"]["coverage_ge_0_95"])
         self.assertFalse(scores["gates"]["pass"])
+
+
+class ObservableRegion(unittest.TestCase):
+    """``score._observable_mask`` on a route that does NOT see the whole sky.
+
+    On all three shipped cases the mask is True for every cell of the raster
+    (the routes sweep the dome), so `observable_fraction_covered` and
+    `panorama_alpha_fraction` agree by construction there and nothing in those
+    numbers can fail on the mask being wrong. A mask stuck at True would score
+    exactly the same on them as the real one. So the mask is graded here
+    instead, on a trajectory that looks in one direction only, where True
+    everywhere is a visibly wrong answer.
+    """
+
+    HEIGHT, WIDTH = 300, 1080
+
+    @classmethod
+    def setUpClass(cls):
+        camera = Camera(480, 640, 60.0)
+        cls.camera = {"width": camera.width, "height": camera.height,
+                      "fx": camera.fx, "fy": camera.fy,
+                      "cx": camera.cx, "cy": camera.cy}
+        # Four frames aimed north, a degree apart, at altitude 20: the phone
+        # held still on one bearing. The short axis is 480 px wide, so the
+        # frustum is 60 degrees across and 2 * atan(320 / fy) = 75.2 degrees
+        # tall, and the union of these four covers barely a fifteenth of the
+        # sphere.
+        cls.frames = []
+        for index, az in enumerate((358.5, 359.5, 0.5, 1.5)):
+            basis = look_basis(az, 20.0)
+            cls.frames.append({
+                "frame_id": f"f{index:06d}",
+                "right": [float(v) for v in basis.right],
+                "up": [float(v) for v in basis.up],
+                "forward": [float(v) for v in basis.forward],
+            })
+        cls.mask = score._observable_mask((cls.HEIGHT, cls.WIDTH, 4),
+                                          cls.camera, cls.frames)
+
+    def at(self, az, alt):
+        """The mask cell holding direction ``(az, alt)``, in the raster mapping."""
+        column = int(round(az / 360.0 * self.WIDTH - 0.5)) % self.WIDTH
+        row = int(round((score.PANORAMA_ALT_TOP - alt) / score.PANORAMA_ALT_SPAN
+                        * (self.HEIGHT - 1)))
+        self.assertTrue(0 <= row < self.HEIGHT, f"altitude {alt} is off the raster")
+        return bool(self.mask[row, column])
+
+    def test_the_direction_the_camera_points_is_observable(self):
+        self.assertTrue(self.at(0.0, 20.0))
+
+    def test_the_opposite_direction_is_not_observable(self):
+        # Behind the lens. A mask that answers True here is answering True
+        # everywhere, which is the failure this class exists for.
+        self.assertFalse(self.at(180.0, 20.0))
+
+    def test_directions_well_outside_the_frustum_are_not_observable(self):
+        # Beyond the 30 degree half-width in azimuth, beyond the 37.6 degree
+        # half-height in altitude, and overhead.
+        for az, alt in ((90.0, 20.0), (270.0, 20.0), (120.0, 20.0),
+                        (0.0, 62.0), (0.0, 85.0), (180.0, 85.0)):
+            with self.subTest(az=az, alt=alt):
+                self.assertFalse(self.at(az, alt))
+
+    def test_the_frustum_reaches_below_the_bottom_of_the_raster(self):
+        # Altitude 20 less the 37.6 degree half-height is -17.6, which is past
+        # the raster's lowest row at -10, so the bottom row on this bearing is
+        # inside the frustum. Without this the class could pass on a mask that
+        # only ever read azimuth.
+        self.assertTrue(self.at(0.0, -10.0))
+
+    def test_the_mask_is_a_small_part_of_the_sphere(self):
+        # 60 x 75.2 degrees out of the whole sky, four nearly identical poses:
+        # anything approaching the whole raster means the test above passed on
+        # an accident. Bounds rather than a pinned number, because the count
+        # is a raster quantisation of a frustum.
+        fraction = float(self.mask.mean())
+        self.assertGreater(fraction, 0.02)
+        self.assertLess(fraction, 0.20)
+
+    def test_no_frames_means_nothing_was_observable(self):
+        empty = score._observable_mask((self.HEIGHT, self.WIDTH, 4), self.camera, [])
+        self.assertFalse(empty.any())
 
 
 if __name__ == "__main__":
