@@ -4,7 +4,10 @@
 // The video stream is a second, independent witness. It reports three states,
 // and the third one matters: still, moving, and unknown. A stopped stream is
 // unknown - it must never be mistaken for a steady view, and neither must a
-// view with too little spatial gradient in it for a shift to show.
+// view with too little spatial gradient in it for a shift to show. Those two
+// unknowns are not the same situation, so `witness` names which one this is:
+// a caller may keep believing a sensor reading through a blank view and must
+// not through a stopped one (issue #41).
 // No DOM here: the caller samples the pixels, this only measures them.
 
 /** How long the view must hold still before stillness is believed. */
@@ -237,6 +240,30 @@ export class VisualStability {
     this.stillSince=null;this.anchor=null;this.lastBreak={from,to};
   }
 
+  /** WHY the view says what it says, in one word, for a caller that has to tell
+   *  the two unknowns apart. `stableAt` grades these same facts into a
+   *  tri-state and loses that distinction - 'featureless' and 'stale' are both
+   *  `null` there - yet they are opposite situations: one is a camera working
+   *  perfectly, delivering frames, pointed at a patch of sky with nothing in it
+   *  a shift would move; the other is a camera that has stopped and may be
+   *  showing anything at all. A caller holding a sensor reading may keep
+   *  believing it through the first and must not through the second (issue
+   *  #41).
+   *  'stale' is tested FIRST and that order is the whole guarantee: a stopped
+   *  stream whose last frame happened to be featureless is stale, not
+   *  featureless, so the softer answer can never swallow the harder one.
+   *  'moving' covers an unsettled run as well as a broken one, exactly as
+   *  `stableAt`'s `false` does: a settle in progress is not evidence of a hold.
+   *  This is the ONLY place the facts are graded. `stableAt` is a projection of
+   *  it rather than a second copy, so the two cannot drift apart or disagree
+   *  about a boundary. */
+  witness(now:number):'still'|'moving'|'featureless'|'stale' {
+    if(!this.frame||now-this.frameAt>STALE_FRAME_MS)return 'stale';
+    if(!this.canWitness)return 'featureless';
+    if(this.stillSince===null)return 'moving';
+    return this.frameAt-this.stillSince>=SETTLE_MS?'still':'moving';
+  }
+
   /** `true` still, `false` moving, `null` unknown (no frame, none recently, or
    *  a frame with nothing in it to judge movement by).
    *  `now` decides one thing only: whether the newest frame is fresh enough to
@@ -246,14 +273,11 @@ export class VisualStability {
    *  crediting the run with the time between that capture and the caller's
    *  clock would settle the view on stillness nobody observed, and the longer
    *  the delay the less watching it would take.
-   *  Public, though `continuity()` is what the driver reads: this is the only
-   *  place the tri-state is graded, and its callers are `continuity()` and the
-   *  tests that pin each of the three answers directly. */
+   *  Public, though `continuity()` is what the driver reads: its callers are
+   *  `continuity()` and the tests that pin each of the three answers directly. */
   stableAt(now:number):boolean|null {
-    if(!this.frame||now-this.frameAt>STALE_FRAME_MS)return null;
-    if(!this.canWitness)return null;
-    if(this.stillSince===null)return false;
-    return this.frameAt-this.stillSince>=SETTLE_MS;
+    const verdict=this.witness(now);
+    return verdict==='still'?true:verdict==='moving'?false:null;
   }
 
   /** Since when has THIS view been continuous? Null until the run has settled
