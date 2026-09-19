@@ -113,6 +113,7 @@ from .. import hub as hub_module
 from .. import config as config_module
 from .. import factory_reset as factory_reset_module
 from .. import gallery as gallery_module
+from .. import capture_geometry
 from ..sync import manifest as sync_manifest_mod
 from ..sync.runner import runner as sync_push_runner
 from ..hub import CAPTURE_DIR, TOUCH_MAX_RATE_DEG_S, PromoteRefused, hub
@@ -4612,7 +4613,7 @@ def create_app(*, bind_host: str | None = None,
             return bool(getattr(cam, "can_cool", False))
         return bool(config_store.cfg().camera_can_cool_seen)
 
-    def _compile_payload(graph: FlowGraph, name: str) -> dict:
+    async def _compile_payload(graph: FlowGraph, name: str) -> dict:
         """``{plan, structural, issues, unmapped}``.
 
         FOUR lists, not one, because four different things can be wrong with a
@@ -4633,6 +4634,7 @@ def create_app(*, bind_host: str | None = None,
         structural = graph.validation_errors()
         compiled = compile_plan(graph, name)
         unmapped: list[dict] = []
+        geometry_issues: list[dict] = []
         try:
             # SAME ARGUMENTS AS THE RUN. A preview compiled differently from the
             # run is a preview of a different night — the defect the park/warm
@@ -4644,6 +4646,11 @@ def create_app(*, bind_host: str | None = None,
                 camera_can_cool=_camera_can_cool(),
                 closes_on_unsafe=bool(
                     config_store.cfg().safety.close_dome_on_unsafe))
+            groups, note = await capture_geometry.inventory()
+            geometry_issues = [{"text": text, "level": "warn"} for text in
+                               capture_geometry.plan_warnings(_plan, groups)]
+            if note:
+                geometry_issues.append({"text": note, "level": "warn"})
         except GraphNotRunnable as e:
             # Not an error response: a half-built graph is the NORMAL state of
             # an editor, and the canvas asks for a compile on every edit. The
@@ -4660,7 +4667,7 @@ def create_app(*, bind_host: str | None = None,
                 "issues": [i.to_json() for i in
                            flow_doctor(graph,
                                        standards=config_store.cfg().standards,
-                                       mount=hub.devices.get("telescope"))],
+                                       mount=hub.devices.get("telescope"))] + geometry_issues,
                 "unmapped": unmapped}
 
     @app.get("/api/flows", dependencies=[Depends(require(CAP_VIEW_STATUS))])
@@ -4856,7 +4863,7 @@ def create_app(*, bind_host: str | None = None,
         Also static-before-parameterised, though only for symmetry — there is no
         POST /api/flows/{flow_id} for it to collide with today, and relying on
         that absence is how the next route added here breaks this one."""
-        return _compile_payload(body.graph or FlowGraph(), body.name or "")
+        return await _compile_payload(body.graph or FlowGraph(), body.name or "")
 
     @app.get("/api/flows/{flow_id}", dependencies=[Depends(require(CAP_VIEW_STATUS))])
     @declare(CAP_VIEW_STATUS)
@@ -4905,7 +4912,7 @@ def create_app(*, bind_host: str | None = None,
             rec = await asyncio.to_thread(flow_store.get, flow_id)
         except KeyError:
             raise HTTPException(404, detail={"code": "not_found"})
-        return _compile_payload(rec.graph, rec.name)
+        return await _compile_payload(rec.graph, rec.name)
 
     @app.get("/api/flows/{flow_id}/tonight",
              dependencies=[Depends(require(CAP_VIEW_SITE_DERIVED))])
@@ -7924,8 +7931,11 @@ def create_app(*, bind_host: str | None = None,
         t0 = time.monotonic()
         rows, _failed, truncated = await _gallery_rows(q, night_from, night_to)
         totals = gallery_module.summarize(rows)
+        groups = await asyncio.to_thread(capture_geometry.geometry_groups, rows)
         return {
             "frames": rows[offset:offset + limit],
+            "geometry_groups": groups[:1000],
+            "geometry_truncated": len(groups) > 1000,
             "total": totals["count"],
             "bytes": totals["bytes"],
             "offset": offset,

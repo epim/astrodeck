@@ -315,8 +315,9 @@ def _read_header_meta(path: Path) -> dict:
     header. Total: any read or parse failure returns empty fields, so a corrupt
     or half-written frame still appears in the grid (with its filename, size and
     mtime) instead of vanishing from the user's library."""
+    from .capture_geometry import positive_number
     meta = {"target": "", "filter": "", "frame_type": "", "exposure_s": None,
-            "ts": None}
+            "ts": None, "width": None, "height": None, "bin_x": None, "bin_y": None}
     try:
         from astropy.io import fits          # lazy: same as hub/calibration
         hdr = fits.getheader(path)
@@ -326,8 +327,10 @@ def _read_header_meta(path: Path) -> dict:
         meta["target"] = str(hdr.get("OBJECT", "") or "").strip()
         meta["filter"] = str(hdr.get("FILTER", "") or "").strip()
         meta["frame_type"] = str(hdr.get("IMAGETYP", "") or "").strip()
-        exp = hdr.get("EXPTIME")
-        meta["exposure_s"] = float(exp) if exp is not None else None
+        meta["exposure_s"] = positive_number(hdr.get("EXPTIME"), allow_zero=True)
+        for field, card in (("width", "NAXIS1"), ("height", "NAXIS2"),
+                            ("bin_x", "XBINNING"), ("bin_y", "YBINNING")):
+            meta[field] = positive_number(hdr.get(card), integer=True)
         meta["ts"] = _parse_date_obs(hdr.get("DATE-OBS"))
     except (TypeError, ValueError):
         pass
@@ -461,6 +464,7 @@ def _row(root: Path, rel: str, st: os.stat_result) -> dict:
         "filter": meta.get("filter") or "",
         "frame_type": meta.get("frame_type") or "",
         "exposure_s": meta.get("exposure_s"),
+        **{field: meta.get(field) for field in ("width", "height", "bin_x", "bin_y")},
         "bytes": st.st_size,
         "mtime": st.st_mtime,
     }

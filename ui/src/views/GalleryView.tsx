@@ -47,6 +47,7 @@ import {
 } from "../components/ui";
 import FrameTile from "../components/gallery/FrameTile";
 import FrameViewer from "../components/gallery/FrameViewer";
+import CaptureGroups from "../components/gallery/CaptureGroups";
 import TrashPanel from "../components/gallery/TrashPanel";
 import {
   TRASH_BATCH_CAP, downloadPlan, fmtBytes, fmtCount, fmtFrameCost,
@@ -619,6 +620,9 @@ export default function GalleryView(): JSX.Element {
           </Panel>
 
           {/* ============================================================= grid */}
+          {!loading && !!page?.geometry_groups?.length && (
+            <Panel><CaptureGroups groups={page.geometry_groups} incomplete={page.truncated || page.geometry_truncated} /></Panel>
+          )}
           {loading && rows.length === 0 ? (
             <Panel><p className="text-xs text-dim">Reading the capture library…</p></Panel>
           ) : rows.length === 0 ? (
