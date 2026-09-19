@@ -6,7 +6,10 @@ builds the case and the ideal result once; the variants (a coarse horizon, a
 rotated horizon, a missing capture log, a blank panorama) are cheap copies of
 that one result, so the expensive truth is computed a single time.
 """
+import contextlib
+import io
 import json
+import math
 import pathlib
 import shutil
 import tempfile
@@ -16,6 +19,7 @@ import numpy as np
 from PIL import Image
 
 from sim import cases, ideal, score
+from sim.__main__ import main as cli_main
 from sim.geometry import sky_vector
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -23,6 +27,11 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 def read_json(path):
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def read_jsonl(path):
+    return [json.loads(line) for line
+            in path.read_text(encoding="utf-8").splitlines() if line]
 
 
 def write_json(path, data):
@@ -106,6 +115,8 @@ class IdealResult(unittest.TestCase):
         self.assertEqual(overlay["missing_fraction"], 0.0)
         self.assertLess(overlay["settled"]["p95_deg"], 0.01)
         self.assertLess(overlay["moving"]["p95_deg"], 0.01)
+        self.assertEqual(overlay["duplicate_frame_ids"], 0)
+        self.assertEqual(overlay["frames_over_gate"], 0)
 
     def test_every_hold_is_captured_700_ms_in(self):
         capture = self.scores["capture"]
@@ -298,6 +309,56 @@ class IdealResult(unittest.TestCase):
         for name in ("pole-near", "pole-far", "roof-south", "wall-east"):
             self.assertFalse(by_id[name]["missed"], name)
 
+    def test_the_ideal_leaves_no_width_missed_at_either_resolution(self):
+        """The width term cannot fire on a boundary that is never below truth.
+
+        Both ideal boundaries hold each bin's maximum of the envelope, and the
+        envelope is at least each obstacle's own silhouette, so every deficit
+        is at or below zero and every missed width is exactly 0.0. This is
+        what makes the width term safe to add: it costs the ideal nothing.
+        """
+        for label, scores in (("3600 bins", self.scores), ("30 bins", self.coarse)):
+            for obstacle in scores["horizon"]["obstacles"]:
+                self.assertEqual(obstacle["width_missed_deg"], 0.0,
+                                 f'{label} {obstacle["id"]}')
+            self.assertEqual(scores["horizon"]["missed_obstructions"], [], label)
+
+    def test_a_narrow_notch_in_the_roof_is_missed_by_width_alone(self):
+        """Ten degrees of the roof's 146 is below the boundary; its median is not.
+
+        The roof is the widest obstacle in the yard, so a notch cut in it
+        moves the median deficit hardly at all: over 1466 bins, 100 of them
+        deeply wrong leaves the median at zero. The obstacle is nonetheless
+        missed, because the scene declares it must be found at 10 degrees of
+        width and 10 degrees of it are gone. Without the width term this is
+        the shape of failure the median hides.
+        """
+        reference = read_json(self.case_dir / "truth" / "reference-horizon.json")
+        roof = next(o for o in reference["obstacles"] if o["id"] == "roof-south")
+        profile = np.array(roof["profile"], dtype=float)
+        # Well above the 1 degree deficit threshold, so every zeroed bin
+        # counts toward the missed width and none of it is edge quantisation;
+        # and past azimuth 140, where the roof no longer shares its azimuths
+        # with the east wall, so the notch belongs to one obstacle only.
+        azimuths = (np.arange(profile.size) + 0.5) * (360.0 / profile.size)
+        high = np.nonzero((profile > 5.0) & (azimuths > 140.0))[0]
+        notch = high[:100]
+        self.assertEqual(int(notch[-1] - notch[0]), 99)  # contiguous, 10.0 deg
+
+        scores = self._measured_over("roof-notch", notch, 0.0)
+        by_id = {o["id"]: o for o in scores["horizon"]["obstacles"]}
+        entry = by_id["roof-south"]
+        self.assertEqual(entry["min_width_deg"], 10)
+        self.assertAlmostEqual(entry["width_missed_deg"], 10.0, places=9)
+        self.assertLess(entry["deficit_median"], 1.0)
+        self.assertTrue(entry["missed"])
+        self.assertEqual(scores["horizon"]["missed_obstructions"], ["roof-south"])
+        self.assertFalse(scores["gates"]["no_missed_obstructions"])
+        self.assertFalse(scores["gates"]["pass"])
+        # Nothing else moved: the notch is 100 bins of 3600.
+        for name in ("pole-near", "pole-far", "wall-east", "trunk"):
+            self.assertFalse(by_id[name]["missed"], name)
+
     def test_zeroing_the_whole_canopy_span_also_loses_the_trunk(self):
         """The canopy is not a declared obstacle; the trunk beneath it is."""
         step = 360.0 / 3600
@@ -353,6 +414,68 @@ class IdealResult(unittest.TestCase):
         # One frame in a thousand cannot move a percentile, which is why the
         # percentiles alone could not see this.
         self.assertLess(overlay["settled"]["p95_deg"], 0.5)
+        # Three degrees is under the maximum gate, so this result still
+        # passes: `frames_over_gate` is informational, and the threshold the
+        # gate does hold is 10 degrees, not one frame over its class's p95.
+        self.assertTrue(scores["gates"]["overlay_max_lt_10"])
+        self.assertTrue(scores["gates"]["pass"], scores["gates"])
+
+    def test_a_frame_delivered_twice_is_counted_once_and_named(self):
+        """A repeat delivery is not a second sample and not a second chance.
+
+        The first line for a frame id is the one scored; a later line with the
+        same id is a duplicate, counted in `duplicate_frame_ids` and nowhere
+        else. Otherwise a scanner could raise its own sample count by
+        reprocessing the same frame, and a second line carrying a better basis
+        for a frame it has already answered for would quietly overwrite the
+        answer it gave.
+        """
+        twice = pathlib.Path(self.tmp.name) / "twice"
+        shutil.copytree(self.result_dir, twice)
+        path = twice / "events.jsonl"
+        events = [json.loads(line) for line in
+                  path.read_text(encoding="utf-8").splitlines() if line]
+        repeat = json.loads(json.dumps(events[500]))
+        # A different basis on the repeat, three degrees out: if the second
+        # line were the one scored, the maximum would show it.
+        frame = next(f for f in read_jsonl(self.case_dir / "truth" / "trajectory.jsonl")
+                     if f["frame_id"] == repeat["frame_id"])
+        repeat["basis"]["forward"] = list(sky_vector(frame["az"], frame["alt"] + 3.0))
+        events.insert(501, repeat)
+        path.write_text("".join(json.dumps(e) + "\n" for e in events),
+                        encoding="utf-8", newline="\n")
+
+        scores = score.score_case(self.case_dir, twice)
+        overlay = scores["overlay"]
+        self.assertEqual(overlay["duplicate_frame_ids"], 1)
+        self.assertEqual(overlay["samples"], self.scores["overlay"]["samples"])
+        self.assertEqual(overlay["missing_fraction"], 0.0)
+        self.assertEqual(overlay["settled"]["max_deg"],
+                         self.scores["overlay"]["settled"]["max_deg"])
+        self.assertFalse(scores["gates"]["no_duplicate_frames"])
+        self.assertFalse(scores["gates"]["pass"])
+
+    def test_a_single_frame_ten_degrees_out_fails_the_maximum_gate(self):
+        """The gate the percentiles cannot reach, pinned at its threshold."""
+        turned = pathlib.Path(self.tmp.name) / "ten-out"
+        shutil.copytree(self.result_dir, turned)
+        path = turned / "events.jsonl"
+        events = [json.loads(line) for line in
+                  path.read_text(encoding="utf-8").splitlines() if line]
+        frames = {f["frame_id"]: f for f
+                  in read_jsonl(self.case_dir / "truth" / "trajectory.jsonl")}
+        target = next(e for e in events
+                      if frames[e["frame_id"]]["angular_rate_deg_s"] <= 2.0)
+        frame = frames[target["frame_id"]]
+        target["basis"]["forward"] = list(sky_vector(frame["az"], frame["alt"] + 10.5))
+        path.write_text("".join(json.dumps(e) + "\n" for e in events),
+                        encoding="utf-8", newline="\n")
+
+        scores = score.score_case(self.case_dir, turned)
+        self.assertAlmostEqual(scores["overlay"]["settled"]["max_deg"], 10.5, places=6)
+        self.assertLess(scores["overlay"]["settled"]["p95_deg"], 0.5)
+        self.assertFalse(scores["gates"]["overlay_max_lt_10"])
+        self.assertFalse(scores["gates"]["pass"])
 
     def test_an_event_naming_an_undelivered_frame_counts_as_missing(self):
         stray = pathlib.Path(self.tmp.name) / "stray-frame"
@@ -407,6 +530,91 @@ class IdealResult(unittest.TestCase):
         self.assertEqual(scores["capture"]["accepted_frames"], 0)
         self.assertFalse(scores["gates"]["every_hold_captured"])
         self.assertFalse(scores["gates"]["pass"])
+
+    # -- a disc on a curved face ------------------------------------------
+
+    def test_a_disc_on_a_sphere_is_clipped_in_two_dimensions(self):
+        """A cylinder clips the expected area once; a sphere clips it twice.
+
+        `sim.truth` paints a surface landmark only where the hit face's normal
+        is within `acos(0.99)` of the declared one. On a cylinder that is a
+        band `R sin(acos(0.99))` wide across one axis and the full disc along
+        the axis of the cylinder, so the area is scaled by the width ratio. On
+        a sphere the same limit applies in both directions at once, so the
+        factor is that ratio squared. The chart yard has no sphere-hosted
+        landmark, so the formula is pinned here directly rather than through a
+        scene that does not exercise it.
+        """
+        band = math.sin(math.acos(score._NORMAL_DOT))
+        host_radius, disc_radius = 2.5, 0.5
+        ratio = host_radius * band / disc_radius
+        self.assertLess(ratio, 1.0)  # otherwise there is nothing to clip
+
+        c_ref = np.array([0.0, 0.75, 1.4])
+        centre = np.array([4.6625, 6.3840, 6.1400])
+        normal = centre - np.array([6.0, 8.0, 7.5])
+        normal = normal / np.linalg.norm(normal)
+        scene = {
+            "objects": [
+                {"id": "ball", "kind": "sphere", "centre": [6.0, 8.0, 7.5],
+                 "radius": host_radius, "colour": [50, 90, 40]},
+                {"id": "post", "kind": "cylinder", "base": [6.0, 8.0, 0.0],
+                 "radius": host_radius, "height": 9.0, "colour": [80, 60, 40]},
+            ],
+            "landmarks": [],
+            "surface_landmarks": [
+                {"id": "ON-SPHERE", "palette": 0, "object": "ball",
+                 "centre": list(centre), "normal": list(normal),
+                 "radius_m": disc_radius},
+                {"id": "ON-CYLINDER", "palette": 1, "object": "post",
+                 "centre": list(centre), "normal": list(normal),
+                 "radius_m": disc_radius},
+            ],
+        }
+        areas = score._expected_disc_areas(scene, c_ref)
+        sphere_area, _ = areas["ON-SPHERE"]
+        cylinder_area, _ = areas["ON-CYLINDER"]
+
+        offset = centre - c_ref
+        distance = float(np.linalg.norm(offset))
+        facing = abs(float((offset / distance) @ normal))
+        unclipped = (math.pi * disc_radius ** 2 * facing / distance ** 2
+                     * (180.0 / math.pi) ** 2)
+        self.assertAlmostEqual(cylinder_area, unclipped * ratio, places=9)
+        self.assertAlmostEqual(sphere_area, unclipped * ratio * ratio, places=9)
+        # The discriminating claim: the sphere is clipped by the ratio again.
+        self.assertAlmostEqual(sphere_area / cylinder_area, ratio, places=9)
+
+    # -- a case the scorer cannot score ------------------------------------
+
+    def test_a_case_without_obstacle_profiles_cannot_be_scored(self):
+        """"I could not run" is exit 2, and it is not a traceback.
+
+        A case built before the per-obstacle silhouette has no `profile` to
+        score an obstacle against. That is a case that must be rebuilt, not a
+        result that failed, and the two must not look alike on the way out.
+        """
+        root = pathlib.Path(self.tmp.name) / "no-profiles"
+        stripped = root / self.case_dir.name
+        shutil.copytree(self.case_dir, stripped,
+                        ignore=shutil.ignore_patterns("input", "ideal"))
+        path = stripped / "truth" / "reference-horizon.json"
+        reference = read_json(path)
+        for obstacle in reference["obstacles"]:
+            obstacle.pop("profile")
+        write_json(path, reference)
+        # The copy carries this class's own scores.json; clear it so that the
+        # assertion below is about what the failing run wrote, not about it.
+        (stripped / "result" / "scores.json").unlink()
+
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            with self.assertRaises(SystemExit) as raised:
+                cli_main(["score", self.case_dir.name, "--cases", str(root)])
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("profile", err.getvalue())
+        self.assertIn("rebuild it with make-case", err.getvalue())
+        self.assertFalse((stripped / "result" / "scores.json").exists())
 
     def test_a_blank_panorama_is_scored_as_empty(self):
         blank = pathlib.Path(self.tmp.name) / "blank"

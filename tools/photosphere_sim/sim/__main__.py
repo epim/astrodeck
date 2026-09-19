@@ -85,7 +85,16 @@ def _score(args: argparse.Namespace) -> int:
         print(f"no result directory at {result_dir}: replay the case first",
               file=sys.stderr)
         raise SystemExit(2)
-    scores = score_case(case_dir, result_dir)
+    try:
+        scores = score_case(case_dir, result_dir)
+    except ValueError as error:
+        # A case the scorer cannot score is "I could not run", not "the case
+        # failed": a truth built before the per-obstacle silhouette has no
+        # profile to score an obstacle against and must be rebuilt. Exit 2
+        # with the message, not exit 1 with a traceback, because exit 1 is
+        # what a failing result looks like.
+        print(str(error), file=sys.stderr)
+        raise SystemExit(2)
     report_module.render(case_dir, scores, result_dir / "report.html",
                          result_dir=result_dir)
 

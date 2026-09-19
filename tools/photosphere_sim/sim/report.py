@@ -465,6 +465,14 @@ def _summary_table(scores: dict) -> str:
          f'max {_num(overlay["settled"]["max_deg"])}, '
          f'moving p95 {_num(overlay["moving"]["p95_deg"])} '
          f'max {_num(overlay["moving"]["max_deg"])}'),
+        # Its own row rather than a word at the end of the overlay one: it is
+        # what `no_duplicate_frames` fails on, and a gate whose evidence is
+        # not on the page is a verdict the reader has to take on trust. A
+        # dash is a `scores.json` written before the field existed, which is
+        # not the same claim as a zero.
+        ("duplicate frames",
+         f'{_num(overlay.get("duplicate_frame_ids"), 0)} frame ids arrived '
+         f'more than once (each scored on its first line only)'),
         ("capture",
          f'holds {capture["holds"]}, with capture {capture["holds_with_capture"]}, '
          f'latency p95 {_num(capture["latency_ms"]["p95"], 0)} ms, '

@@ -369,18 +369,28 @@ class Corruptions(unittest.TestCase):
                                self.ideal_scores["overlay"]["settled"]["p95_deg"],
                                delta=0.05)
         self.assertEqual(overlay["samples"], self.ideal_scores["overlay"]["samples"])
+        # And the gate that reads the maximum rather than a percentile fails,
+        # so a flick of the aim dot across a cell is a failing result and not
+        # a footnote under a green one.
+        self.assertGreater(worst, 10.0)
+        self.assertFalse(scores["gates"]["overlay_max_lt_10"])
+        self.assertFalse(scores["gates"]["pass"])
 
-    def test_a_duplicated_frame_inflates_the_overlay_sample_count(self):
-        """`samples` is the metric that answers, and it answers by one.
+    def test_a_duplicated_frame_is_named_and_not_counted_twice(self):
+        """`duplicate_frame_ids` is the metric that answers, and it fails a gate.
 
-        The scorer counts event lines, not distinct frames, so a frame
-        delivered twice is one extra scored sample and no missing one. Nothing
-        in `scores.json` says a frame_id arrived twice; see the report.
+        The repeat is not a second sample: the sample count is the ideal's,
+        the first line's values are the ones scored, and the duplication shows
+        up as the one number it is. A scanner cannot raise its own sample
+        count by reprocessing a frame.
         """
         scores = self.corrupted("duplicate-frame", "duplicate-frame")
-        self.assertEqual(scores["overlay"]["samples"],
-                         self.ideal_scores["overlay"]["samples"] + 1)
-        self.assertEqual(scores["overlay"]["missing_fraction"], 0.0)
+        overlay = scores["overlay"]
+        self.assertEqual(overlay["duplicate_frame_ids"], 1)
+        self.assertEqual(overlay["samples"], self.ideal_scores["overlay"]["samples"])
+        self.assertEqual(overlay["missing_fraction"], 0.0)
+        self.assertFalse(scores["gates"]["no_duplicate_frames"])
+        self.assertFalse(scores["gates"]["pass"])
 
     # -- untouched files ---------------------------------------------------
 

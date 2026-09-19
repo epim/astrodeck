@@ -73,6 +73,10 @@ GATE_LANDMARK_P99 = 1.0
 GATE_HORIZON_P95 = 1.0
 GATE_OVERLAY_SETTLED_P95 = 0.5
 GATE_OVERLAY_MOVING_P95 = 1.0
+#: No overlay sample, moving or settled, may be this far out. A percentile
+#: cannot see one frame, and one frame that flicks the aim dot across a cell
+#: is a fault the user sees.
+GATE_OVERLAY_MAX = 10.0
 GATE_CAPTURE_P95_MS = 1500
 GATE_COVERAGE = 0.95
 
@@ -164,13 +168,22 @@ def _expected_disc_areas(scene: dict, c_ref: np.ndarray) -> dict:
 
     A disc on a curved face is clipped again. ``sim.truth`` paints a surface
     landmark only where the hit face's normal is within ``acos(_NORMAL_DOT)``
-    of the declared one, so on a cylinder or a sphere of radius ``R`` only a
-    band ``R sin(acos(_NORMAL_DOT))`` wide survives. Where that band is
-    narrower than the disc, the expected area is scaled by the ratio of the
-    two widths: a lower bound on the clipped area, which is the safe direction
-    for a filter that must never discard a landmark. Without it the chart
-    yard's ``T1``, a 0.08 m disc on a 0.25 m trunk, is measured against an
-    unclipped model it can only ever fill 44 per cent of.
+    of the declared one, so on a host of radius ``R`` only a band
+    ``R sin(acos(_NORMAL_DOT))`` wide survives. Where that band is narrower
+    than the disc, the expected area is scaled by the ratio of the two widths:
+    a lower bound on the clipped area, which is the safe direction for a
+    filter that must never discard a landmark. Without it the chart yard's
+    ``T1``, a 0.08 m disc on a 0.25 m trunk, is measured against an unclipped
+    model it can only ever fill 44 per cent of.
+
+    How many times that ratio applies is the difference between the two curved
+    hosts. A cylinder curves in one direction only: the band limits the disc
+    across the cylinder and the disc keeps its full extent along the axis, so
+    the factor is the ratio. A sphere curves in both, so the same limit
+    applies twice and the factor is the ratio squared. Using the linear factor
+    for a sphere would expect a cap several times the area it can possibly
+    have, and the 40 per cent filter would then discard the landmark it had
+    not yet identified.
     """
     band = math.sin(math.acos(_NORMAL_DOT))
     objects = {obj["id"]: obj for obj in scene.get("objects", [])}
@@ -187,8 +200,10 @@ def _expected_disc_areas(scene: dict, c_ref: np.ndarray) -> dict:
         radius = float(landmark["radius_m"])
         host = objects.get(landmark["object"], {})
         clipped = 1.0
-        if host.get("kind") in ("cylinder", "sphere"):
+        if host.get("kind") == "cylinder":
             clipped = min(1.0, float(host["radius"]) * band / radius)
+        elif host.get("kind") == "sphere":
+            clipped = min(1.0, (float(host["radius"]) * band / radius) ** 2)
         steradians = math.pi * radius * radius * facing * clipped / (distance * distance)
         areas[landmark["id"]] = (steradians * (180.0 / math.pi) ** 2,
                                  int(landmark["palette"]))
@@ -341,11 +356,22 @@ def _score_obstacles(reference: dict, truth_bins: int, step: float,
     the first thing hit, bin by bin, and the deficit is measured against it.
 
     ``deficit = profile - measured``, over the bins the object is visible in
-    and the measurement resolved. The verdict is the MEDIAN deficit, not the
-    minimum: a few bins at the edge of an obstacle straddle a coarse measured
-    bin and go deeply negative or positive without the obstacle being missed.
-    ``width_missed_deg`` reports how much of it is below the boundary
-    regardless, next to the width the profile declares it must be found at.
+    and the measurement resolved. The verdict has two terms, and either one
+    misses the obstacle:
+
+    - the MEDIAN deficit above ``MISSED_OBSTRUCTION_DEG``, not the minimum: a
+      few bins at the edge of an obstacle straddle a coarse measured bin and
+      go deeply negative or positive without the obstacle being lost;
+    - ``width_missed_deg`` at or above the width the scene declares the
+      obstacle must be found at. The median cannot see this one. The chart
+      yard's roof spans 146 degrees, so a 10 degree notch cut out of it leaves
+      1366 of 1466 bins right and the median at zero, while the whole of the
+      declared minimum width is gone. An obstacle is found when it is found,
+      not when most of it is.
+
+    The width term costs a correct boundary nothing: the ideal's measured
+    profile is at or above the envelope everywhere, so every deficit is at or
+    below zero and every missed width is 0.0, at 3600 bins and at 30.
     """
     scored = []
     for obstacle in reference.get("obstacles", []):
@@ -374,12 +400,16 @@ def _score_obstacles(reference: dict, truth_bins: int, step: float,
         if measurable.any():
             deficit = np.clip(profile[measurable], 0.0, 90.0) - alt[measurable]
             median = float(np.median(deficit))
+            width_missed = float(
+                np.count_nonzero(deficit > MISSED_OBSTRUCTION_DEG) * step)
+            declared = obstacle.get("min_width_deg")
+            too_narrow = (declared is not None and float(declared) > 0.0
+                          and width_missed >= float(declared))
             entry.update({
                 "deficit_median": median,
                 "deficit_p95": _percentile(deficit, 95),
-                "width_missed_deg": float(
-                    np.count_nonzero(deficit > MISSED_OBSTRUCTION_DEG) * step),
-                "missed": bool(median > MISSED_OBSTRUCTION_DEG),
+                "width_missed_deg": width_missed,
+                "missed": bool(median > MISSED_OBSTRUCTION_DEG or too_narrow),
             })
         elif not visible.any():
             entry["width_missed_deg"] = 0.0
@@ -460,14 +490,37 @@ def _score_overlay(events: list, frames: list) -> dict:
 
     A percentile over a thousand frames cannot see one bad frame, and one
     frame pointing a degree wrong is exactly the failure the overlay gate is
-    about, so `max_deg` and `frames_over_gate` are reported beside them.
+    about, so `max_deg` and `frames_over_gate` are reported beside them, and
+    the maximum has a gate of its own.
+
+    A frame id that arrives more than once is scored once, on its FIRST line.
+    Counting a repeat as a second sample would let a scanner raise its own
+    sample count by reprocessing a frame, and taking the later line would let
+    a second answer overwrite the answer it already gave for that frame.
+    `duplicate_frame_ids` is how many ids arrived more than once, and a gate
+    reads it: a repeat delivery is a fault, not a free retry.
     """
     truth = {frame["frame_id"]: frame for frame in frames}
+    repeats = {}
+    for event in events:
+        frame_id = event.get("frame_id")
+        if frame_id is not None:
+            repeats[frame_id] = repeats.get(frame_id, 0) + 1
+    duplicate_ids = sum(1 for count in repeats.values() if count > 1)
+
     moving, settled = [], []
     missing = 0
+    considered = 0
+    seen = set()
     for event in events:
+        frame_id = event.get("frame_id")
+        if frame_id is not None:
+            if frame_id in seen:
+                continue
+            seen.add(frame_id)
+        considered += 1
         basis = event.get("basis")
-        frame = truth.get(event.get("frame_id"))
+        frame = truth.get(frame_id)
         # A line naming a frame the case never delivered is a sample with no
         # pose. It cannot be scored, and it cannot vanish from the
         # denominator either, so it counts as missing.
@@ -489,8 +542,9 @@ def _score_overlay(events: list, frames: list) -> dict:
                  + sum(1 for e in settled if e > GATE_OVERLAY_SETTLED_P95))
     return {
         "samples": len(moving) + len(settled),
-        "missing_fraction": (missing / len(events)) if events else None,
+        "missing_fraction": (missing / considered) if considered else None,
         "frames_over_gate": over_gate,
+        "duplicate_frame_ids": duplicate_ids,
         "moving": block(moving),
         "settled": block(settled),
     }
@@ -611,6 +665,9 @@ def _gates(landmarks: dict, horizon: dict, overlay: dict, capture: dict,
     # gate is vacuously true. `samples == 0` tells the two apart.
     expected_landmarks = landmarks["expected"] > 0
     errors = landmarks["errors_deg"]
+    worst_overlay = max((value for value in (overlay["settled"]["max_deg"],
+                                             overlay["moving"]["max_deg"])
+                         if value is not None), default=None)
     gates = {
         "landmarks_p95_lt_0_5": (_below(errors["p95"], GATE_LANDMARK_P95)
                                  if expected_landmarks else True),
@@ -629,6 +686,14 @@ def _gates(landmarks: dict, horizon: dict, overlay: dict, capture: dict,
             overlay["samples"] > 0
             and (overlay["moving"]["p95_deg"] is None
                  or overlay["moving"]["p95_deg"] < GATE_OVERLAY_MOVING_P95)),
+        # The one gate no percentile can reach. `frames_over_gate` stays
+        # informational: it counts samples over their own class's p95
+        # threshold, which is a diagnostic, while this is the limit past which
+        # a single frame is a failing result.
+        "overlay_max_lt_10": (overlay["samples"] > 0
+                              and worst_overlay is not None
+                              and worst_overlay < GATE_OVERLAY_MAX),
+        "no_duplicate_frames": overlay["duplicate_frame_ids"] == 0,
         "capture_p95_le_1500": (
             capture["latency_ms"]["p95"] is not None
             and capture["latency_ms"]["p95"] <= GATE_CAPTURE_P95_MS
