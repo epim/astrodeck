@@ -205,7 +205,7 @@ export class VisualStability {
     if(!Number.isFinite(at)||at<this.frameAt)return;
     if(!(width>0)||!(height>0)||luma.length<width*height)return;
     const grid=normalise(resample(luma,width,height));
-    const previous=this.frame,previousAt=this.frameAt,gap=at-previousAt;
+    const previous=this.frame,previousAt=this.frameAt,gap=at-previousAt,previousWitnessed=this.canWitness;
     // The bounds below are multiples of the CURRENT frame's gradient. The
     // anchor's would do very nearly as well and nothing here can tell the two
     // apart: on a still scene they are the same structure, and swapping this
@@ -215,13 +215,29 @@ export class VisualStability {
     // no anchor yet - not because a case demands it.
     const g=gradient(grid);
     this.frame=grid;this.frameAt=at;this.canWitness=g>=GRADIENT_FLOOR;
-    // A frame with nothing in it to judge movement by watched nothing, so the
-    // run cannot reach back across it: it breaks at its own instant.
-    if(!this.canWitness){this.broken(at,at);return;}
     // Nothing watched the view across an unobserved gap, so nothing can vouch
     // for it: start the settle over rather than crediting the missing time,
     // and let the break end HERE, so nothing before this frame is covered.
     if(!previous||gap>STALE_FRAME_MS){this.broken(at,at);return;}
+    // A pair can only witness the interval between them if BOTH frames had
+    // something in them to judge movement by: a frame with too little gradient
+    // watched nothing while it was the newest, so it breaks at its own instant,
+    // and so does the frame after it, whose pair spans an interval nobody
+    // watched. One rule and not two, because the second half makes the first
+    // unobservable: while `canWitness` is false `witness` answers 'featureless'
+    // before it ever reads `stillSince`, so the state the untextured frame
+    // clears cannot be seen at that frame, and the next frame that can witness
+    // clears it again here. Written as two statements the earlier one had no
+    // mutant left - deleting it was invisible to every suite - which is a guard
+    // that reads as load-bearing and is graded by nothing.
+    // The second half is what issue #49 item 1 asked for: without it the run
+    // opened at the untextured frame's own instant and the settle was credited
+    // one frame interval that watched nothing. It is not the motion test below
+    // in disguise - a view merely losing the last of its fine detail moves by
+    // far less than its own movement bound (see the `fineTexture` fixture in
+    // photosphereStability.test.ts), so that test passes the pair and only this
+    // one refuses it.
+    if(!this.canWitness||!previousWitnessed){this.broken(at,at);return;}
     // Motion between these two frames. It may have begun anywhere inside the
     // pair, which is why the break starts at the earlier frame.
     if(meanAbsDiff(previous,grid)>STILL_CELLS*g){this.broken(previousAt,at);return;}

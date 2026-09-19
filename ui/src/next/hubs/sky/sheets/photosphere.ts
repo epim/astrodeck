@@ -839,16 +839,28 @@ export class PhotosphereSweep {
    *  `at` is when the CAMERA saw this frame, the meaning
    *  `VisualStability.observe` gives its own `at` - but only one caller can
    *  honour it. The rVFC path has the frame's `captureTime` and passes that.
-   *  The timer path has no frame metadata at all, so `grabFrame` (and
-   *  `captureOverhead` through it) passes the READ instant, which is the
-   *  capture time plus however long the camera pipeline took. That inflates
-   *  every break's `from` on that path by the delay, and `from` is what the
-   *  vouching margin is measured against - so the margin on that path is the
-   *  witness's own interval rather than CONTINUITY_SLOP_MS (see `vouchSlopMs`
-   *  and the bands in `grabFrame`), which is what keeps a delayed camera from
-   *  losing a hold it earned (issue #48). The stamp itself is not fixable here:
-   *  there is no capture time to stamp with, and a guess would be a delay
-   *  measurement this code cannot make. */
+   *  The timer path has no frame metadata at all, so `grabFrame` passes the
+   *  READ instant, which is the capture time plus however long the camera
+   *  pipeline took. That inflates every break's `from` on that path by the
+   *  delay, and `from` is what the vouching margin is measured against - so the
+   *  margin on that path is the witness's own interval rather than
+   *  CONTINUITY_SLOP_MS (see `vouchSlopMs` and the bands in `grabFrame`), which
+   *  is what keeps a delayed camera from losing a hold it earned (issue #48).
+   *  The stamp itself is not fixable here: there is no capture time to stamp
+   *  with, and a guess would be a delay measurement this code cannot make.
+   *  A MANUAL overhead press never observes stillness, on either path. It does
+   *  reach `grabFrame` - `captureOverhead` calls `grabFrame(true)` - but
+   *  `mediaGateAsked` there excludes `manualOverhead`, so `delivered` is false,
+   *  and the one call to this method inside `grabFrame` is behind `delivered`.
+   *  Nor does a press enter the rVFC frame callback, which is where that path
+   *  observes. So it has not observed since review 17 P1 gave the press its own
+   *  freshness test (`lastMediaAdvanceAt`), not the witness's consume-on-read.
+   *  That also closes issue #49 item 2, which was written against the older
+   *  shape: a press on an rVFC device cannot stamp an observation with the
+   *  press instant into a stream of capture-stamped frames, so it cannot trip
+   *  `observe`'s `at < frameAt` guard and silently drop the frames behind it.
+   *  No change here; the note stays because the two facts that make it safe
+   *  sit fifty lines apart inside `grabFrame` and neither says this alone. */
   private observeStillness(video: HTMLVideoElement, at: number): void {
     if (!video.videoWidth || !video.videoHeight) return;
     try {
