@@ -55,6 +55,19 @@ export function projectRay(ray: V3, basis: CameraBasis, width: number, height: n
   return { x:(.5+dot(ray,basis.right)/(2*z*tanX))*width, y:(.5-dot(ray,basis.up)/(2*z*tanY))*height };
 }
 
+/** Rec. 601 luma from an 8-bit RGB triple. */
+export const pixelLuminance=(r:number,g:number,b:number)=>.299*r+.587*g+.114*b;
+/** How far the blue channel sits from that same pixel's luma: exactly 0 for
+ *  any grey, positive for a blue sky, negative for the warm surfaces most
+ *  buildings, soil and bark are. It is what separates a wall from a sky of the
+ *  SAME brightness (issue #58), which no luma can.
+ *
+ *  It is not exposure invariant - the same colour photographed darker reads
+ *  smaller - so it is never read as an absolute colour. The tracer reads it
+ *  against the sky's OWN blueness, with a tolerance, the same way it reads
+ *  luminance against the sky's own level. */
+export const pixelBlueness=(r:number,g:number,b:number)=>b-pixelLuminance(r,g,b);
+
 export interface DomeCell { id: number; center: V3; vertices: V3[]; az: number; alt: number }
 /** Dual of a subdivided icosahedron: hexagons with the necessary pentagons.
  * Their positions never depend on the phone pose. */
@@ -238,13 +251,26 @@ export class SkyPanorama {
   covered(cell: DomeCell): boolean {
     return this.has(cell.center) && cell.vertices.every(v=>this.has(v));
   }
-  columns(bins: number): number[][] {
+  /** One pixel column per bin, read at the bin's CENTRE azimuth, sampled at
+   *  101 rows from the zenith down: row 0 is altitude 90, row 90 the horizon
+   *  and row 100 the raster's floor at -10, so one row is one degree of
+   *  altitude whatever the raster's height. An unpainted pixel is NaN, which
+   *  is unknown and never open sky.
+   *
+   *  `channel` is the only difference between `columns` and `blueColumns`, so
+   *  there is ONE definition of where a row is read from: a second copy of
+   *  this mapping is a second chance for the two channels of the same row to
+   *  come from different pixels. */
+  private sampled(bins: number, channel:(r:number,g:number,b:number)=>number): number[][] {
     return Array.from({length:bins},(_,bin)=>Array.from({length:101},(_,row)=>{
       const x=Math.min(this.width-1,Math.floor((bin+.5)/bins*this.width));
       const y=Math.round(row/100*(this.height-1)),i=(y*this.width+x)*4;
-      return this.pixels[i+3] ? .299*this.pixels[i]+.587*this.pixels[i+1]+.114*this.pixels[i+2] : NaN;
+      return this.pixels[i+3] ? channel(this.pixels[i],this.pixels[i+1],this.pixels[i+2]) : NaN;
     }));
   }
+  columns(bins: number): number[][] { return this.sampled(bins,pixelLuminance); }
+  /** The same rows' blueness, for a boundary a luminance cannot see. */
+  blueColumns(bins: number): number[][] { return this.sampled(bins,pixelBlueness); }
   toDataURL(): string {
     const canvas=document.createElement('canvas');canvas.width=this.width;canvas.height=this.height;
     const ctx=canvas.getContext('2d');if(!ctx)throw new Error('Could not prepare the panorama.');

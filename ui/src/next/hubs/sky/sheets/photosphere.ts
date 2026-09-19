@@ -1,6 +1,6 @@
 // Camera capture retains a bounded colour panorama and an editable horizon
 // draft. Phone sensor pose and lens angles remain estimates for user review.
-import { DOME_CELLS, SkyPanorama, orientationBasis, skyAngles, cameraLens, targetCell, transferBasis, type CameraBasis } from './photosphereGeometry';
+import { DOME_CELLS, SkyPanorama, orientationBasis, pixelBlueness, pixelLuminance, skyAngles, cameraLens, targetCell, transferBasis, type CameraBasis } from './photosphereGeometry';
 import { CameraPoseHistory, ScanPoseSource, poseSeparation, viewVouchesFor, CONTINUITY_SLOP_MS, type PoseEvidence } from './photospherePose';
 import { registerFrame } from './photosphereRegistration';
 import { VisualStability, GRID_W, GRID_H, STALE_FRAME_MS } from './photosphereStability';
@@ -96,10 +96,11 @@ export function checkPhotosphereSupport(): PhotosphereSupport {
   return { supported: true, reason: null };
 }
 
-/** Rec. 601 luma from an 8-bit RGB triple. */
-export function luminance(r: number, g: number, b: number): number {
-  return 0.299 * r + 0.587 * g + 0.114 * b;
-}
+/** Rec. 601 luma from an 8-bit RGB triple, and the blueness beside it. Both
+ *  are the panorama's own definitions rather than a second copy of the
+ *  coefficients: a pixel must not read one way here and another way there. */
+export const luminance = pixelLuminance;
+export const blueness = pixelBlueness;
 
 /** The value at percentile `p` (0..1), nearest-rank. Empty input is 0 - a
  *  column with nothing sampled must never read as a bright sky. */
@@ -108,6 +109,16 @@ export function percentile(values: number[], p: number): number {
   const sorted = [...values].sort((a, b) => a - b);
   const idx = Math.min(sorted.length - 1, Math.max(0, Math.floor(p * (sorted.length - 1))));
   return sorted[idx];
+}
+
+/** A robust spread: the median absolute deviation, scaled so that on normal
+ *  noise it reads as a standard deviation. Robust because the pool it is asked
+ *  about is not pure sky - a roof, a disc or a chart marking in the top rows
+ *  must widen the sky's tolerance by nothing at all. */
+export function robustSpread(values: number[]): number {
+  if (values.length === 0) return 0;
+  const middle = percentile(values, .5);
+  return 1.4826 * percentile(values.map(v => Math.abs(v - middle)), .5);
 }
 
 /** `skyLum` for `autoTraceSkyline`: the 80th percentile luminance of the top
@@ -132,6 +143,10 @@ export function binForHeading(headingDeg: number, bins: number): number {
 export interface SweepFrame {
   bin: number;
   column: number[];
+  /** The same rows' blueness, where the frame was read in colour. Optional
+   *  because a frame fabricated by a test carries brightness only, and the
+   *  tracer has to work from brightness alone when that is all there is. */
+  blue?: number[];
   altitude?: number;
   verticalFov?: number;
   band?: number;
@@ -157,13 +172,19 @@ export function bandForAltitude(alt: number): number | null {
  * NaN is unknown, not open sky. Overlapping frames favor their central rows;
  * an overhead sample covers only the shared zenith, not an invented sky cap.
  * Lens field of view is still an estimate and must be reviewed by the user. */
-export function projectSweepColumns(frames: SweepFrame[], bins: number): number[][] {
+export function projectSweepColumns(frames: SweepFrame[], bins: number,
+  channel: 'column' | 'blue' = 'column'): number[][] {
   const cols = Array.from({ length: bins }, () => Array<number>(101).fill(NaN));
   const weights = Array.from({ length: bins }, () => Array<number>(101).fill(Infinity));
   for (const frame of frames) {
-    if (!frame.column.length) continue;
+    // One projection, either channel, so a row's colour and its brightness can
+    // never be projected from two different places in the frame. A frame with
+    // no colour sample projects to NaN, which the tracer reads as "no colour
+    // evidence here" - not as grey.
+    const source = channel === 'blue' ? frame.blue : frame.column;
+    if (!source?.length) continue;
     if (frame.band === OVERHEAD_BAND) {
-      const sample = frame.column[Math.floor(frame.column.length / 2)];
+      const sample = source[Math.floor(source.length / 2)];
       for (let bin = 0; bin < bins; bin++) { cols[bin][0] = sample; weights[bin][0] = -Infinity; }
       continue;
     }
@@ -174,7 +195,7 @@ export function projectSweepColumns(frames: SweepFrame[], bins: number): number[
       if (fraction < 0 || fraction > 1) continue;
       const weight = Math.abs(fraction - .5);
       if (weight >= weights[frame.bin][row]) continue;
-      const sample = frame.column[Math.round(fraction * (frame.column.length - 1))];
+      const sample = source[Math.round(fraction * (source.length - 1))];
       if (!Number.isFinite(sample)) continue;
       cols[frame.bin][row] = sample; weights[frame.bin][row] = weight;
     }
@@ -187,23 +208,332 @@ export interface SkyTrace {
   uncertainBins: number[];
 }
 
-/** Highest dark sample wins, including canopy above a lower patch of sky.
- * Missing upper-sky data and an unlit/covered zenith are conservatively blocked.
- * This produces the existing single-height horizon, not a mask of canopy gaps. */
-export function traceSkyCoverage(columns: number[][]): SkyTrace {
-  const skySamples = columns.flatMap(col => col.slice(0, 26).filter(Number.isFinite));
-  const sky = percentile(skySamples, .8);
-  const uncertainBins: number[] = [];
-  const points = columns.map((column, bin) => {
-    let alt = 0;
-    const unknown = column.length < 101 || column.slice(0, 91).some(v => !Number.isFinite(v));
-    if (unknown || sky < 40) {
-      alt = 90; uncertainBins.push(bin);
-    } else {
-      const firstObstruction = column.findIndex(v => v < sky * .7);
-      if (firstObstruction >= 0) alt = Math.max(0, Math.min(90, 91 - firstObstruction));
+/** One sampled column of sky: per-row luminance, and the blueness of the same
+ *  rows where the source was read in colour. `blue` may be shorter than `lum`
+ *  or all NaN - that is "no colour evidence", never "grey". */
+export interface SkyColumn { lum: number[]; blue: number[] }
+/** What one azimuth bin offers the tracer: the columns sampled ACROSS it, the
+ *  bin's CENTRE column first. A bin is 12 degrees wide at the shipped 30 and
+ *  the product publishes one number for all of it, so the honest number is the
+ *  bin's worst case, which one ray through its centre cannot see. */
+export type SkyBin = SkyColumn[];
+
+/** Columns sampled across each azimuth bin. Five, so the samples sit 2.4
+ *  degrees apart at 30 bins: finer than anything the product can resolve (the
+ *  scorer calls an obstacle narrower than one bin unresolvable), so nothing
+ *  the answer is graded on can hide between two samples. Odd, so one sample
+ *  lands exactly on the bin centre - the column `centreColumns` publishes and
+ *  the uncertainty rule reads, unchanged. */
+export const BIN_SAMPLES = 5;
+/** The rows of accepted sky a row is tested against - the sky model is the
+ *  median of the last twelve, per channel, so it FOLLOWS the column instead of
+ *  standing still. A real sky is not flat: airlight brightens it toward the
+ *  horizon and whitens it, and the sweep re-exposes between elevation bands.
+ *  Against one global level, each of those is a departure that lasts all the
+ *  way down, and a sky with nothing in it publishes a horizon (issue #73: a
+ *  brightening from 100 to 180 published 45 degrees, an ordinary clear sky
+ *  with its chroma gradient 51, both with no bin marked uncertain).
+ *
+ *  Twelve rows lag the trend by about six, so a gradient costs six rows of
+ *  slope: 5 luminance units on the steepest sky above, against a tolerance
+ *  that starts at 32 of them. Below `SKY_WINDOW_MIN` accepted rows - the top
+ *  of the column - the pooled top-rows statistics stand in, which is where
+ *  they came from. */
+const SKY_WINDOW = 12, SKY_WINDOW_MIN = 4;
+/** How far a row may sit from the sky model and still be sky: this fraction of
+ *  the model's own level, or three robust deviations of the model's spread,
+ *  whichever is larger.
+ *
+ *  The fraction is an EXPOSURE allowance, and it is bracketed by two facts
+ *  that one test each pins. Above 0.30, because the phone re-exposes between
+ *  elevation bands and a 30 per cent step at a band seam is ordinary, not a
+ *  wall. At or below 0.35, because the dim wall the old 0.7 rule did see - 130
+ *  against a sky of 200 - is 0.35 away and must stay seen. Nothing in the
+ *  simulator pins it: the chart yard's own numbers are identical at 0.28 and
+ *  at 0.36. A grey wall between 30 and 32 per cent darker than the sky is
+ *  therefore indistinguishable from an exposure step by this rule (measured:
+ *  found at 32.5 per cent, lost at 32.0), and no per-column rule can separate
+ *  them - they are the same signal. The evidence that would is cross-column: a
+ *  seam is one row across the whole mosaic at one ratio, a wall is local in
+ *  azimuth. That is not built, and it is the surviving half of issue #74
+ *  together with an edge softer than about ten rows (see `PERSIST_ROWS` and
+ *  `columnBoundary`). */
+const EXPOSURE_TOLERANCE = .32, SKY_SIGMAS = 3;
+/** The same for blueness, in 8-bit channel units, with a floor: chroma
+ *  subsampling and sensor noise move it a few units on their own, and a grey
+ *  sky's blueness has no spread to scale by. The exposure allowance applies
+ *  here too, because a brightness change scales the colour offset with it. */
+const SKY_BLUE_FLOOR = 8;
+/** How far a departure must persist, in rows, to be a structure rather than
+ *  something the sky is carrying. A column row is one degree of altitude, so
+ *  this is 12 degrees. Below it, a departure with sky under it is read as a
+ *  cloud, a bird or a marking on the chart - the chart yard's discs are 2 to 3
+ *  degrees tall and the dark one near the zenith is what the old rule reported
+ *  as an 87 degree horizon over most of the compass. Above it, a floating
+ *  obstruction is kept: the chart's roof stands 14 to 15 degrees tall with
+ *  clear sky beneath it and IS an obstruction. A departure that reaches the
+ *  bottom of the column needs no such length - the ground is under it. */
+const PERSIST_ROWS = 12;
+
+/** The tracer's input, whatever shape it arrived in. A plain `number[]` is a
+ *  luminance-only column with no sub-samples: the frame-fold fallback and the
+ *  older tests. */
+function asSkyBin(entry: number[] | SkyBin): SkyBin {
+  return entry.length === 0 || typeof entry[0] === 'number'
+    ? [{ lum: entry as number[], blue: [] }]
+    : entry as SkyBin;
+}
+
+/** Is `value` between the sky and the surface below the boundary, give or
+ *  take the channel's tolerance? The transition itself is - a blended edge
+ *  pixel is part sky and part wall - while a bright chart stripe that happens
+ *  to abut the wall is not, and neither is anything else that overshoots past
+ *  both. */
+function betweenSkyAnd(value: number, sky: number, body: number, tolerance: number): boolean {
+  return !Number.isFinite(value) || !Number.isFinite(body)
+    || (value >= Math.min(sky, body) - tolerance && value <= Math.max(sky, body) + tolerance);
+}
+
+/** The pooled top-of-sky statistics, which seed every column's model. */
+interface SkySeed { lum: number; blue: number; lumSpread: number; blueSpread: number }
+/** The sky as it is at ONE row of one column: its level in both channels, how
+ *  far from it still counts as sky (the exposure allowance), and how far its
+ *  own samples scatter (the noise, which is what says whether a row has really
+ *  left it). */
+interface SkyHere {
+  lum: number; blue: number;
+  lumTol: number; blueTol: number;
+  lumNoise: number; blueNoise: number;
+}
+
+/** The boundary in ONE column: the altitude of the highest row where the sky
+ *  gives way to something that stays. 0 is open to the horizon.
+ *
+ *  The walk down the column carries the sky with it. Every row is measured
+ *  against the median of the last `SKY_WINDOW` rows ACCEPTED AS SKY, in both
+ *  channels, so a gradient or an exposure seam is absorbed - the model moves
+ *  with it - while a departure is what the trend does not explain. Rows inside
+ *  a departure never enter the window, so a wall with a hard edge cannot teach
+ *  the model to accept itself, and a passing feature (a disc, a stripe, a
+ *  bird) is stepped over without polluting it either.
+ *
+ *  A following model has one blind spot, and it is issue #74: an edge SOFT
+ *  enough that every row of it is within tolerance walks the model down into
+ *  the obstruction one row at a time, and the whole wall then reads as open
+ *  sky. A six-row edge on a wall 35 per cent below its sky - an ordinary
+ *  distant tree line, a ridge in haze, a blurred handheld frame - did exactly
+ *  that. So the model is watched as well as used: when the model has itself
+ *  drifted from the sky it had `SKY_WINDOW` rows above, and everything from
+ *  here down stays away from that older sky, the column has walked into
+ *  something, and the boundary is traced back to the row where it left. */
+function columnBoundary(column: SkyColumn, seed: SkySeed): number {
+  const { lum, blue } = column;
+  let last = -1;
+  for (let row = 0; row < lum.length; row++) if (Number.isFinite(lum[row])) last = row;
+  if (last < 0) return 0;
+  const windowLum: number[] = [], windowBlue: number[] = [];
+  // The model as it stood at every row, so a row can be compared with the sky
+  // as it was `SKY_WINDOW` rows above it. Indexed BY ROW, skipped runs
+  // included: a gap here would measure the lag in rows visited rather than in
+  // degrees of altitude.
+  const history: SkyHere[] = [];
+  const skyHere = (): SkyHere => {
+    const settled = windowLum.length >= SKY_WINDOW_MIN;
+    const level = settled ? percentile(windowLum, .5) : seed.lum;
+    const levelBlue = settled && windowBlue.length ? percentile(windowBlue, .5) : seed.blue;
+    const spread = settled ? robustSpread(windowLum) : seed.lumSpread;
+    const spreadBlue = settled && windowBlue.length ? robustSpread(windowBlue) : seed.blueSpread;
+    return {
+      lum: level, blue: levelBlue,
+      lumTol: Math.max(EXPOSURE_TOLERANCE * Math.abs(level), SKY_SIGMAS * spread),
+      blueTol: Math.max(SKY_BLUE_FLOOR, SKY_SIGMAS * spreadBlue,
+        Number.isFinite(levelBlue) ? EXPOSURE_TOLERANCE * Math.abs(levelBlue) : 0),
+      lumNoise: SKY_SIGMAS * spread, blueNoise: SKY_SIGMAS * spreadBlue,
+    };
+  };
+  // Sign agnostic, and either channel on its own is enough: a wall can be
+  // darker than the sky, brighter than it, or - the case issue #58 is about -
+  // the same brightness and a different colour.
+  const off = (row: number, sky: SkyHere): boolean => {
+    if (!Number.isFinite(lum[row])) return false;
+    if (Math.abs(lum[row] - sky.lum) > sky.lumTol) return true;
+    return Number.isFinite(blue[row]) && Number.isFinite(sky.blue)
+      && Math.abs(blue[row] - sky.blue) > sky.blueTol;
+  };
+  /** Has the model been walked away from the sky it had a window ago? */
+  const walked = (here: SkyHere, then: SkyHere): boolean =>
+    Math.abs(here.lum - then.lum) > then.lumTol
+    || (Number.isFinite(here.blue) && Number.isFinite(then.blue)
+      && Math.abs(here.blue - then.blue) > then.blueTol);
+  /** Is this row still the sky the transition started from? Either it sits
+   *  inside that sky's own noise, or the model AT this row has not been walked
+   *  away from it and the row matches THAT within the same noise. The second
+   *  clause is what stops the trace-back from climbing an ordinary sky
+   *  gradient: there the model follows and every row matches it. On a soft
+   *  edge the model has been walked, so it cannot vouch for the rows that
+   *  walked it. Both noises come from the frozen sky, because a model already
+   *  inside the transition has a spread that would excuse anything. */
+  const backAtSky = (row: number, frozen: SkyHere): boolean => {
+    const matches = (level: number, levelBlue: number) =>
+      Math.abs(lum[row] - level) <= frozen.lumNoise
+      && (!Number.isFinite(blue[row]) || !Number.isFinite(levelBlue)
+        || Math.abs(blue[row] - levelBlue) <= frozen.blueNoise);
+    if (matches(frozen.lum, frozen.blue)) return true;
+    const near = history[Math.min(row, history.length - 1)];
+    return !walked(near, frozen) && matches(near.lum, near.blue);
+  };
+  /** From a detected departure, step UP to the row where the column left the
+   *  sky - the first row of the transition, not the row where the tolerance
+   *  was finally exceeded. Bounded at two windows, which is as far back as a
+   *  lagged reference can see. */
+  const walkBack = (from: number, frozen: SkyHere, bodyLum: number, bodyBlue: number): number => {
+    let top = from;
+    const limit = Math.max(0, from - 2 * SKY_WINDOW);
+    while (top > limit) {
+      const row = top - 1;
+      if (!Number.isFinite(lum[row])) break;
+      if (!betweenSkyAnd(lum[row], frozen.lum, bodyLum, 0)) break;
+      if (!betweenSkyAnd(blue[row], frozen.blue, bodyBlue, 0)) break;
+      if (backAtSky(row, frozen)) break;
+      top = row;
     }
-    return { az: Math.round((bin + .5) / columns.length * 360), alt };
+    return top;
+  };
+  for (let start = 0; start <= last; start++) {
+    const here = skyHere();
+    while (history.length <= start) history.push(here);
+    history[start] = here;
+    const lagged = history[Math.max(0, start - SKY_WINDOW)];
+    if (off(start, here)) {
+      // The zenith is one shared point painted across every bin, so a covered
+      // or unlit one is blocked outright. DARK only, which is the sense the
+      // old rule had: `projectSweepColumns` writes the overhead sample into
+      // row 0 of every bin, so a sign-agnostic test here let one blown-out
+      // overhead frame publish a fully blocked sky, 90 degrees in all 30 bins,
+      // flagged certain (issue #73). A bright row 0 takes the ordinary path
+      // below, where one row cannot persist.
+      if (start === 0 && lum[0] < here.lum - here.lumTol) return 90;
+      let end = start;
+      while (end < last && off(end + 1, here)) end++;
+      // Persistence: it reaches the bottom, or it is tall enough to be a thing.
+      if (end < last && end - start + 1 < PERSIST_ROWS) {
+        for (let skipped = start; skipped <= end; skipped++) {
+          while (history.length <= skipped) history.push(here);
+          history[skipped] = here;
+        }
+        start = end; continue;
+      }
+      const body = Math.min(end, start + PERSIST_ROWS - 1);
+      const bodyLum = percentile(lum.slice(start, body + 1).filter(Number.isFinite), .5);
+      const bodyBlues = blue.slice(start, body + 1).filter(Number.isFinite);
+      const bodyBlue = bodyBlues.length ? percentile(bodyBlues, .5) : NaN;
+      let top = walkBack(start, lagged, bodyLum, bodyBlue);
+      // Where the surface actually starts, coming the other way. The rows
+      // above it inside the run departed from the sky in some other direction
+      // entirely - a bright chart stripe over the chart yard's wall put the
+      // boundary 4 degrees too high - and a row that matches neither the sky
+      // nor the surface is not where one becomes the other. The bound this
+      // costs is pinned by a test: a glint on top of a dark roof is skipped
+      // the same way, so the boundary can sit as far below the true top as the
+      // glint is tall.
+      while (top < end && !(betweenSkyAnd(lum[top], here.lum, bodyLum, here.lumTol)
+        && betweenSkyAnd(blue[top], here.blue, bodyBlue, here.blueTol))) top++;
+      return Math.max(0, Math.min(90, 91 - top));
+    }
+    if (walked(here, lagged)) {
+      // The model has drifted. That is only a boundary if what is below stays
+      // away from the older sky - a sky that wandered and came back has not
+      // walked anywhere.
+      let stays = true;
+      for (let row = start; row <= Math.min(start + PERSIST_ROWS - 1, last); row++) {
+        if (!off(row, lagged)) { stays = false; break; }
+      }
+      if (stays) return Math.max(0, Math.min(90, 91 - walkBack(start, lagged, here.lum, here.blue)));
+    }
+    windowLum.push(lum[start]);
+    if (windowLum.length > SKY_WINDOW) windowLum.shift();
+    if (Number.isFinite(blue[start])) {
+      windowBlue.push(blue[start]);
+      if (windowBlue.length > SKY_WINDOW) windowBlue.shift();
+    }
+  }
+  return 0;
+}
+
+/** A boundary is a TRANSITION away from the sky AS IT IS HERE that PERSISTS
+ * downward, in either direction and in either channel - not a luminance below
+ * a fixed fraction of one sky level.
+ *
+ * The fixed fraction was the original defect: the chart yard's wall is
+ * luminance 104 against a sky level of 122 and never crossed it, so 12 degrees
+ * of a 25 degree wall were published as open sky, while the sky's own dark
+ * noise DID cross it and published a horizon at 87 degrees over most of the
+ * compass (issue #58). Real buildings are routinely brighter than an overcast
+ * sky, and reporting one as open is the false open the planner would slew
+ * into.
+ *
+ * ONE level for the whole column was the second defect (issue #73), and it is
+ * the reason the sky model here is local. A real sky brightens toward the
+ * horizon, whitens as it does, and carries an exposure seam wherever the
+ * phone re-exposed between elevation bands; every one of those departs from a
+ * single top-of-sky level and keeps departing all the way to the bottom, so an
+ * empty sky published a horizon of 45 degrees and worse, with no bin marked
+ * uncertain. The chart yard cannot see this - its sky is flat and grey - which
+ * is exactly why it had to be measured on synthetic columns and pinned there.
+ *
+ * So: the top 26 rows of every sampled column seed a sky model, which each
+ * column then carries down itself as the median of the last `SKY_WINDOW` rows
+ * accepted as sky, in luminance and in blueness. A row is off-sky when it
+ * departs from the model of EITHER channel by more than that channel's
+ * tolerance - an exposure allowance on the level, or three robust deviations
+ * of the model's own spread. A slow ramp of any amplitude is sky, because the
+ * model follows it; only a change the trend does not explain can depart from
+ * it. A departure is the boundary where it reaches the bottom of the column or
+ * stands `PERSIST_ROWS` tall, with the boundary placed at the first row that
+ * looks like the surface below rather than at whatever the run started with.
+ *
+ * Highest qualifying departure wins, including a canopy above a lower patch of
+ * sky. Missing upper-sky data and a DARK zenith are conservatively blocked.
+ * Each bin answers for the whole of its own width, so it reports the highest
+ * boundary of the columns sampled across it. This produces the existing
+ * single-height horizon, not a mask of canopy gaps. */
+export function traceSkyCoverage(columns: readonly (number[] | SkyBin)[]): SkyTrace {
+  const bins = columns.map(asSkyBin);
+  const lumPool: number[] = [], bluePool: number[] = [];
+  for (const bin of bins) for (const column of bin) {
+    for (let row = 0; row < 26 && row < column.lum.length; row++) {
+      if (Number.isFinite(column.lum[row])) lumPool.push(column.lum[row]);
+      if (Number.isFinite(column.blue[row])) bluePool.push(column.blue[row]);
+    }
+  }
+  const sky = percentile(lumPool, .8);
+  const seed: SkySeed = {
+    lum: percentile(lumPool, .5),
+    blue: bluePool.length ? percentile(bluePool, .5) : NaN,
+    lumSpread: robustSpread(lumPool),
+    blueSpread: robustSpread(bluePool),
+  };
+  const uncertainBins: number[] = [];
+  const points = bins.map((bin, index) => {
+    let alt = 0;
+    // Unchanged, and read off the bin's CENTRE column, which is the column
+    // this rule has always been read off: a short column, a gap anywhere in
+    // the top 91 rows, or a sky too dark to have been measured at all.
+    const complete = (column: SkyColumn) =>
+      column.lum.length >= 101 && column.lum.slice(0, 91).every(Number.isFinite);
+    if (!bin.length || !complete(bin[0]) || sky < 40) {
+      alt = 90; uncertainBins.push(index);
+    } else for (const column of bin) {
+      // A sub-column with a gap in it is dropped rather than allowed to lower
+      // the answer, and deliberately does NOT make the bin uncertain: the
+      // uncertainty rule is the centre column's, unchanged, so a bin can be
+      // certain while some of the columns beside its centre went unmeasured.
+      // The cost is under-reported uncertainty relative to what is sampled;
+      // the alternative would mark bins uncertain that the shipped rule calls
+      // measured.
+      if (complete(column)) alt = Math.max(alt, columnBoundary(column, seed));
+    }
+    return { az: Math.round((index + .5) / columns.length * 360), alt };
   });
   return { points, uncertainBins };
 }
@@ -220,16 +550,22 @@ export function foldSweepColumns(frames: SweepFrame[], bins: number): number[][]
   return Array.from(out, (c) => c ?? []);
 }
 
-/** Per-row luminance for one already-drawn video frame: `rows` samples
+/** Per-row samples for one already-drawn video frame: `rows` samples
  *  spaced evenly down the frame, each a full-width average so a single hot
  *  pixel cannot fake a sky-to-ground transition. Pure function of the pixel
  *  buffer, so it is testable with a fabricated `Uint8ClampedArray` and no
- *  live video element. */
+ *  live video element.
+ *
+ *  `sample` is the channel: `luminance` by default, `blueness` for the colour
+ *  the tracer needs beside it. A second call is a second pass over the frame -
+ *  `rows` x `width` reads of a 320 px preview, once per accepted capture -
+ *  which is the price of carrying colour down the frame-fold path at all. */
 export function columnFromImageData(
   data: Uint8ClampedArray,
   width: number,
   height: number,
   rows: number,
+  sample: (r: number, g: number, b: number) => number = luminance,
 ): number[] {
   const out: number[] = [];
   for (let r = 0; r < rows; r++) {
@@ -237,7 +573,7 @@ export function columnFromImageData(
     let sum = 0;
     for (let x = 0; x < width; x++) {
       const i = (y * width + x) * 4;
-      sum += luminance(data[i], data[i + 1], data[i + 2]);
+      sum += sample(data[i], data[i + 1], data[i + 2]);
     }
     out.push(sum / Math.max(1, width));
   }
@@ -1258,6 +1594,7 @@ export class PhotosphereSweep {
       }
     } catch { this.issue = "Could not read the camera image. Close the scan and try again."; this.recording = false; this.recordCapture(now,'read-failed'); return false; }
     const column = columnFromImageData(data, canvas.width, canvas.height, 24);
+    const blue = columnFromImageData(data, canvas.width, canvas.height, 24, blueness);
 
     const altitude=manualOverhead?90:measured!.alt;
     const band = overhead ? OVERHEAD_BAND : bandForAltitude(altitude) ?? -1;
@@ -1268,7 +1605,7 @@ export class PhotosphereSweep {
     this.frames = this.frames.filter(f => !sameTile(f));
     // Browsers expose no calibrated lens FOV. This remains an editable estimate.
     this.issue = null;
-    this.frames.push({ bin, band, column, altitude, manualOverhead,
+    this.frames.push({ bin, band, column, blue, altitude, manualOverhead,
       verticalFov: video.videoHeight > video.videoWidth ? 60 : 45 });
     const previousCoverage=this.coveredCells.size;
     // The zenith cap is the one cell that can be painted by frames nobody
@@ -1300,7 +1637,28 @@ export class PhotosphereSweep {
     return true;
   }
 
-  columns(): number[][] {
+  /** What the tracer reads: `BIN_SAMPLES` columns across each azimuth bin, in
+   *  both channels, the bin's centre column FIRST so the uncertainty rule
+   *  still reads the column it has always read. The frame-fold fallback has no
+   *  panorama to sample across, so it offers the one column it has. */
+  columns(): SkyBin[] {
+    const panorama = this.panorama;
+    if (panorama) {
+      const fine = this.bins * BIN_SAMPLES, centre = (BIN_SAMPLES - 1) >> 1;
+      const lum = panorama.columns(fine), blue = panorama.blueColumns(fine);
+      const order = [centre, ...Array.from({ length: BIN_SAMPLES }, (_, k) => k).filter(k => k !== centre)];
+      return Array.from({ length: this.bins }, (_, bin) =>
+        order.map(k => ({ lum: lum[bin * BIN_SAMPLES + k], blue: blue[bin * BIN_SAMPLES + k] })));
+    }
+    const lum = projectSweepColumns(this.frames, this.bins);
+    const blue = projectSweepColumns(this.frames, this.bins, 'blue');
+    return lum.map((column, bin) => [{ lum: column, blue: blue[bin] }]);
+  }
+
+  /** The bin-centre luminance column per bin - the array the simulator's
+   *  `columns.json` records and issue #58 cites, unchanged by the sub-sampling
+   *  above so a recorded column still means what it meant. */
+  centreColumns(): number[][] {
     return this.panorama?.columns(this.bins) ?? projectSweepColumns(this.frames, this.bins);
   }
 

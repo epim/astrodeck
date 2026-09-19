@@ -277,8 +277,12 @@ export async function replayCase(caseDir: string): Promise<Summary> {
       points: trace.points,
       uncertain_bins: trace.uncertainBins,
     });
+    // The contract's `columns.json` is the bin-centre luminance column, one
+    // row per degree - the array issue #58 quotes. The tracer now reads five
+    // columns across each bin, in two channels; recording that instead would
+    // silently change what every cached column in the cache means.
     writeJson(join(out, 'columns.json'),
-      columns.map(column => column.map(value => (Number.isFinite(value) ? value : null))));
+      sweep.centreColumns().map(column => column.map(value => (Number.isFinite(value) ? value : null))));
     writeJsonl(join(out, 'events.jsonl'), events);
     writeJsonl(join(out, 'captures.jsonl'), captures);
     writeJson(join(out, 'summary.json'), summary);
