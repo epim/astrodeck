@@ -4,6 +4,8 @@ Date: 2026-09-18
 Audience: Claude implementing AstroDeck's phone photosphere scanner  
 Status: Implementation plan; application code was not changed when this document was written.
 
+Update, 2026-09-18: [Automatic calibration and simulator specification](16-photosphere-calibration-simulator.md) extends this plan. Normal handheld camera translation must be supported, automatic FoV needs measured confidence, and independent 3D simulation must provide quantitative acceptance evidence. Its requirements supersede the earlier fixed-lens-pivot assumption.
+
 ## 1. Assignment
 
 Replace the unreliable photosphere capture core while preserving the Classic UI, Guided setup wizard, and the scanning experience described below. Deliver a scanner whose captures can be replayed, corrected, stitched, and reviewed. Establish accuracy with real camera evidence before describing it as production ready.
@@ -84,7 +86,7 @@ Required correction: retain separate sky, obstruction, and unknown classificatio
 
 A rotation-only panorama assumes approximately one camera position. A 5 cm sideways translation beside an object 1 metre away changes its bearing by about 2.9 degrees. One rotation cannot simultaneously fix nearby and distant scenery. Blending may conceal a join while leaving the horizon geometrically wrong.
 
-The camera should pivot around its lens near the telescope's intended position and height. Detect excessive parallax and provide useful guidance. Low light and featureless sky can also make tracking or boundary detection unobservable; preserve uncertainty in those cases.
+Normal scanning moves the camera around the person, including when looking upward. Model camera translation and finite scene depth where necessary, and define a reference observing position for the final horizon. Fixed-lens rotation is a control case, not the required user technique. Low light, featureless sky, and unobservable geometry must retain uncertainty. See specification 16 for automatic calibration, reference-position rendering, and positive tests with 0.5–1 metre camera radii.
 
 ## 3. Source map and local evidence
 
@@ -196,7 +198,7 @@ Internally distinguish `unseen`, `photographed`, `aligned`, and `needs-review`. 
 
 Use a tested computer-vision library, with a reproducible dependency and build path. An OpenCV-based host processor is the preferred initial implementation for final stitching; inspect current packaging before adding it. Ensure the selected components can be packaged on Windows and Linux/ARM, or feature-detect an unavailable processor and retain manual/import paths. Do not require public cloud processing or an internet connection at the observing site.
 
-Implement feature extraction, robust correspondence filtering, connected overlap selection, rotational pose estimation, and joint camera/pose refinement. Use several views with useful yaw and pitch diversity. Validate on held-out views. Treat sensor orientation as a prior whose reliability is measured, not an unquestioned fixed rotation.
+Implement feature extraction, robust correspondence filtering, connected overlap selection, model selection between distant rotation and finite-depth motion, and joint camera/pose/scene refinement. Use several views with useful yaw and pitch diversity. Validate on held-out views and test whether the FoV is actually identifiable. Treat sensor orientation as a prior whose reliability is measured, not an unquestioned fixed rotation. A standard rotational stitcher alone does not satisfy the handheld translation requirement in specification 16.
 
 Constrain the camera model to what the data supports. Fit additional distortion or principal-point parameters only with adequate calibration evidence. Avoid an unconstrained fit that absorbs parallax into fictitious lens distortion.
 
@@ -204,7 +206,7 @@ Version calibration against provider, lens, crop, image dimensions, and relevant
 
 Close loops when the scan returns to a known view and distribute correction across retained frames. A disconnected image set remains provisional until connected or explicitly reviewed. Expose large residuals or excessive parallax instead of forcing an apparently plausible fit.
 
-Render the final sphere from original retained images after refinement. Add exposure compensation, seam selection, and suitable blending. Produce coverage and uncertainty alongside the color image. Preserve the calibrated angular map; local cosmetic warps must not silently alter a roof edge used for planning.
+Render the final sphere from original retained images after refinement, at the declared observing position. Near-object reprojection needs supported depth and occlusion handling; sparse feature points alone are insufficient for a complete silhouette. Add exposure compensation, seam selection, and suitable blending. Produce coverage and uncertainty alongside the color image. Preserve the calibrated angular map; local cosmetic warps must not silently alter a roof edge used for planning.
 
 Maintain local photographic coordinates separately from earth azimuth/elevation. Use gravity for level and a separately verified north transform. Account for the actual heading reference, including magnetic versus true north where applicable. Record how north was established and the remaining uncertainty.
 
@@ -260,7 +262,7 @@ Preserve the blue/green dome language. Show a subtle pending state for retained 
 
 Guide a connected route with overlap through the lower scene, upward obstructions, and zenith. Adapt targets to the calibrated field of view; a narrower lens needs more overlap. Do not make every empty sky region require a textured image match. Uncertainty may grow through blank sky and should trigger reobservation of visible terrain or explicit review.
 
-Provide a short animation showing the camera lens staying in one place while the phone rotates. Scanning position matters near a house or tree. Treat excessive translation as a diagnosable condition, not a generic refusal.
+Explain how to establish the intended observing position, then guide a natural handheld sweep with connected overlap. Do not require the user to rotate precisely around the lens. If the available motion or scene does not constrain calibration or depth, request one specific additional view and preserve existing work.
 
 Controls must remain reachable on portrait phones, landscape phones, and tablets. Reserve layout space for status text; never draw a toast or changing message over Capture, Finish, Save, Next, or Continue. Support text scaling, reduced motion, readable contrast, and touch targets of at least 44 CSS pixels. Permit partial review and pause without discarding progress.
 
@@ -293,7 +295,7 @@ Exit: a failed session is replayable; a steady real phone can capture; timing an
 ### Phase 2 — Tracking and connected acquisition
 
 - Implement visual tracking, coherent pose association, and recovery independent of dot gates.
-- Add target selection that preserves overlap and camera-pivot guidance.
+- Add target selection that preserves overlap during normal handheld motion and requests useful calibration views when necessary.
 - Track separate photographed/aligned/review states and permit better replacement frames.
 - Persist pause/resume state and handle permission, visibility, source, orientation, and crop transitions.
 - Measure actual phone frame times and memory; move expensive work off the UI thread.
@@ -335,26 +337,28 @@ Numerical values below are proposed initial engineering targets, not claims abou
 
 | Test | Expected evidence |
 |---|---|
-| Move, then hold still with unchanged events suppressed | A sharp, tracked view becomes capturable within 1.5 seconds of a steady hold; no sensor wiggle is required. |
+| Move, then hold still with unchanged events suppressed | A sharp, tracked view becomes capturable within 1.5 seconds of a steady hold; no sensor wiggle is required. 2026-09-19: the stillness witness now grades apparent motion in raster cells rather than luminance (issue #38, commit `1df2b18f`); issue #62 and [the simulator baseline](18-photosphere-simulator-baseline.md) section 5 record what still limits it. |
 | Genuine sensor/video loss | The app identifies loss without indefinitely accepting a cached direction or frozen image. |
 | Absolute-only, relative-only, both streams, delayed anchor, dropped stream | Coherent poses, explicit geographic-reference status, and controlled recovery without rotating past captures silently. |
-| Timestamp/latency replay | Missing or delayed timestamps remain distinguishable; an image is never assigned a newer pose merely because its callback ran later. |
+| Timestamp/latency replay | Missing or delayed timestamps remain distinguishable; an image is never assigned a newer pose merely because its callback ran later. 2026-09-19: the interval fallback's vouching margin is now pinned at one observation interval rather than left unbounded (issue #48, commit `512d1478`); the real device's own camera-pipeline and `video.currentTime` timing is still unmeasured. |
 | Portrait, landscape, inverted display, pitch, roll, zenith | Known image landmarks project to the correct rays; transition frames cannot contaminate the scan. |
 | Recovery between dots and on green cells | Recognizable overlap recovers tracking; existing coverage can improve without duplicate progress. |
 | Camera calibration | Several diverse views constrain a stable camera model; held-out feature residuals are measured and reported at a stated image resolution. |
 | Live overlay | Initial target: 95th-percentile angular displacement below 1 degree during a controlled slow pan, below 0.5 degree after settling. Measure against image landmarks. |
 | Full loop | A real 360 degree multi-elevation scan returns to the initial landmark; initial target is less than 1 degree loop mismatch after refinement, with per-overlap residuals reported. |
 | Wrong initial FOV/pose | The solver corrects recoverable estimates or rejects the solution clearly; it can rebuild from original images. |
-| Near roof and distant trees | Parallax is measured; unacceptable geometry produces a useful correction request or review state. |
-| Thin pole/high canopy/clear zenith | Dense terrain evidence preserves small obstructions and handles high elevations. |
-| Dark sky and lit house, clouds, moving foliage, blur | Confidence reflects limitations. Unknown never becomes a claimed measured boundary. |
-| Surveyed horizon | Initial target: 95th-percentile boundary error below 1 degree on qualified static daylight scenes; also report missed-obstruction cases and north error separately. |
+| Near roof and distant trees | Observable 0.5–1 metre handheld arcs pass reference-position accuracy and coverage tests together. Unobservable geometry produces a specific recovery request or review state. |
+| Thin pole/high canopy/clear zenith | Dense terrain evidence preserves small obstructions and handles high elevations. 2026-09-19: every direction above the horizon, including straight overhead, now has a dome cell within the aim cone, closing the case where a hold at the zenith could never capture (issue #57, commit `b1e629f1`). |
+| Dark sky and lit house, clouds, moving foliage, blur | Confidence reflects limitations. Unknown never becomes a claimed measured boundary. 2026-09-19: a featureless hold (blank sky, no orientation events) now keeps a vouched reading and states why instead of reading the compass as lost (issue #41, commit `a720226d`); the device pipeline delay question of issue #48 remains unverified. |
+| Surveyed horizon | Initial target: 95th-percentile boundary error below 1 degree on qualified static daylight scenes; also report missed-obstruction cases and north error separately. 2026-09-19: the tracer now finds the sky boundary by its transition rather than a luminance threshold, closing the case where a bright wall read as open sky (issue #58, commit `3fbd2039`); measured p95 on the simulator's noise-free chart yard fell from 75.9 to 20.6 degrees but is still far above the 1 degree target -- see [the simulator baseline](18-photosphere-simulator-baseline.md) section 3.3. |
 | Pause, reload, interrupted upload, retry, cancel | Selected photographs survive; processing is idempotent and cancellable; the active horizon remains unchanged until Save. |
 | Site switch and late job completion | No result can overwrite another site's draft or newer user edits. |
 | Mobile layout | Portrait and landscape S25 plus tablet checks; text scaling and long errors cannot cover action buttons. |
 | Resource use | Report phone frame-time distribution, decoded memory, storage, and processing duration; host jobs do not stall normal API responsiveness. |
 
 Use several independently recorded scenes and complete scans. Synthetic tests should include distortion, translation, timing gaps, exposure changes, and repeated textures. Tests rendered with the same projection model as the implementation establish consistency, not physical calibration.
+
+Implement the independent 3D renderer, hidden truth, production replay, mechanical scorer, and corrupted-output checks defined in [specification 16](16-photosphere-calibration-simulator.md). Include the three permanent regressions in [review 15](15-photosphere-stillness-review.md). Complete the first scoring milestone before relying on new synthetic pass counts.
 
 For real test fixtures, preserve a small private corpus locally and use purpose-made or consented imagery for shared fixtures. Produce replay summaries with build/algorithm version, accepted/rejected counts, residual distributions, loop mismatch, coverage, and unresolved sectors.
 
