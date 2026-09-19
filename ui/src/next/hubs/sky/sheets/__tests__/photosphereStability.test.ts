@@ -448,7 +448,12 @@ test('A frame with no texture is a break, even between two identical textured fr
   const c=s.continuity(1300);
   assert.ok(c);
   assert.equal(c!.stillSince,700);
-  assert.deepEqual(c!.lastBreak,{from:600,to:700},'the break spans the blank frame and the first frame after it');
+  // The frame at 700 breaks twice over - it is far from the blank frame before
+  // it AND that frame witnessed nothing - and the pair rule runs before the
+  // motion test, so the break is at 700 alone rather than spanning {600,700}.
+  // Either way nothing at or before the blank frame is covered, which is the
+  // guarantee this case is about.
+  assert.deepEqual(c!.lastBreak,{from:700,to:700},'the break must end at the first frame after the blank one');
 });
 
 /** Fine texture on a flat base, at the real input size: a checkerboard on the
@@ -509,12 +514,64 @@ test('A frame too smooth to judge breaks the run even though no pair moved',()=>
   for(let t=1000;t<=1500;t+=100)s.observe(t,fineTexture(0.88),PW,PH);
   const c=s.continuity(1500);
   assert.ok(c,'the view is textured and settled again by 1500');
-  assert.equal(c!.stillSince,900,'the run must restart at the frame that could not be judged');
-  assert.deepEqual(c!.lastBreak,{from:900,to:900},'the break is that frame alone, at its own instant');
-  // Mutation that reddens this: GRADIENT_FLOOR = 0. Observed red on the first
-  // premise - the near-floor frame reads still instead of unjudgeable. With the
-  // floor gone nothing here breaks at all, because every pair is inside the
-  // movement bound, so the run reaches back across the dip that follows.
+  // 1000 and not 900: the frame at 1000 is the first textured one, but the
+  // frame BEFORE it watched nothing, so the pair 900/1000 cannot open a run
+  // either and the run opens on 1000/1100 (issue #49 item 1, and the case
+  // below, which is about that one interval and nothing else).
+  assert.equal(c!.stillSince,1000,'the run must restart at the first pair of frames that could both witness');
+  assert.deepEqual(c!.lastBreak,{from:1000,to:1000},'the break runs to the first frame with a judgeable frame behind it');
+  // Two mutations, one per half of this case, because the two halves are graded
+  // by different code.
+  // The PREMISES are graded by the floor: GRADIENT_FLOOR = 0 makes the
+  // near-floor frame read still instead of unjudgeable, and observed red is the
+  // first premise. (That mutation reddens seven cases in this file, so the floor
+  // is not the thing short of mutants.)
+  // The BODY - the run restarting at 1000 and the break at {1000, 1000} - is
+  // graded by the one rule in `observe` that refuses a pair unless BOTH its
+  // frames could witness, which is where the floor's verdict is actually spent.
+  // Mutation: delete `if(!this.canWitness||!previousWitnessed)`. Observed red:
+  // "the run must restart at the first pair of frames that could both witness",
+  // together with the two other cases that pin that rule.
+});
+
+test('A textured pair after an untextured frame opens the run at ITSELF, not at the frame that watched nothing',()=>{
+  // Issue #49 item 1. The frame at 0 has too little gradient to see a shift by,
+  // so it witnessed nothing while it was the newest frame - and yet the pair
+  // 0/100 read as a hold and opened the run at 0, crediting the settle with one
+  // frame interval nothing watched. The pair is inside the movement bound by
+  // construction (`fineTexture` above: the two frames differ by 0.001667
+  // against the lit frame's bound of 0.004253), which is why the motion test
+  // cannot catch this and a rule of its own has to.
+  // The instants: untextured at 0, textured at 100, 200, ... 600.
+  //   with the fix    the run opens on the pair 100/200, stillSince = 100, and
+  //                   settles SETTLE_MS = 500 later, at the frame at 600;
+  //   without it      stillSince = 0 and it settles at the frame at 500.
+  // 550 is strictly inside that difference and is read with the newest frame at
+  // 500, 50 ms old against STALE_FRAME_MS, so freshness decides nothing here.
+  const s=new VisualStability();
+  s.observe(0,fineTexture(0.68),PW,PH);
+  for(let t=100;t<=500;t+=100)s.observe(t,fineTexture(0.88),PW,PH);
+  assert.equal(s.stableAt(550),false,
+    'the settle was credited the interval after a frame that could not witness anything');
+  s.observe(600,fineTexture(0.88),PW,PH);
+  assert.equal(s.stableAt(600),true,'a run opened at 100 must settle at 600');
+  const c=s.continuity(600);
+  assert.equal(c!.stillSince,100,'the run did not open on the first pair of judgeable frames');
+  // {100,100} and not {0,100}: the frame at 100 is refused for what the frame
+  // before it could see, not for how far the two differ, so this also says the
+  // motion branch is not what produced the break.
+  assert.deepEqual(c!.lastBreak,{from:100,to:100},'the break did not end at the first judgeable frame');
+  // The control, which is the same timeline with a textured frame at 0: there
+  // the run legitimately opens at 0 and 550 is past the settle. So the only
+  // thing 550 is measuring above is the interval the untextured frame cost.
+  const control=new VisualStability();
+  for(let t=0;t<=500;t+=100)control.observe(t,fineTexture(0.88),PW,PH);
+  assert.equal(control.stableAt(550),true,'the control never settled, so the case above proves nothing');
+  // Mutation: delete `if(!this.canWitness||!previousWitnessed)` in `observe` -
+  // one branch, because a frame that cannot witness and the frame after it are
+  // one rule. Observed red: "the settle was credited the interval after a frame
+  // that could not witness anything", with the two cases above red on their own
+  // messages (20/23).
 });
 
 test('clear() forgets the last break',()=>{

@@ -32,11 +32,20 @@ w.HTMLVideoElement.prototype.play=async function(){};
 // review 15 names ("a previously playing element stalled on its last decoded
 // image"). Only `paused` reaches the element's own flags; `stalled` freezes
 // nothing but the media clock.
-let mediaTime=0,paused=false,stalled=false;
+// The gate has four more conditions, and each is a different way for a running
+// media clock to be worth nothing: `ended` is the stream at its end (an element
+// at its end keeps its last picture and its clock keeps reading the duration),
+// `starved` is an element that has metadata but no decoded frame to show
+// (readyState 1, HAVE_METADATA), and `trackLost` and `trackMuted` are the TRACK
+// behind the element rather than the element - ended, or muted because the OS
+// handed the camera to something else. They are separate flags from `paused`
+// and `stalled` on purpose: each one is set with the media clock STILL RUNNING,
+// so the condition under test is the only thing that can refuse the tick.
+let mediaTime=0,paused=false,stalled=false,ended=false,starved=false,trackLost=false,trackMuted=false;
 Object.defineProperty(w.HTMLVideoElement.prototype,'currentTime',{get:()=>mediaTime,configurable:true});
 Object.defineProperty(w.HTMLVideoElement.prototype,'paused',{get:()=>paused,configurable:true});
-Object.defineProperty(w.HTMLVideoElement.prototype,'ended',{get:()=>false,configurable:true});
-Object.defineProperty(w.HTMLVideoElement.prototype,'readyState',{get:()=>2,configurable:true});
+Object.defineProperty(w.HTMLVideoElement.prototype,'ended',{get:()=>ended,configurable:true});
+Object.defineProperty(w.HTMLVideoElement.prototype,'readyState',{get:()=>starved?1:2,configurable:true});
 
 // A textured scene, so a one-pixel shift is measurable rather than invisible:
 // a 32-step luminance gradient with a bright block, generated at whatever size
@@ -77,7 +86,13 @@ Object.defineProperty(w.document,'visibilityState',{get:()=>hidden?'hidden':'vis
 let intervalFn:(()=>void)|null=null;
 g.setInterval=(fn:()=>void)=>{intervalFn=fn;return 1;};
 g.clearInterval=()=>{intervalFn=null;};
-const track={stop(){},getSettings:()=>({deviceId:'main'}),addEventListener(){},readyState:'live',muted:false};
+// Getters, not fields: the two track states are driven by the flags above, and
+// `addEventListener` stays a no-op, so a track that has ENDED here fires no
+// 'ended' event and `sourceHealthy` never learns of it. That is the point - it
+// isolates the media gate's own track test from the lifecycle flag, which has
+// cases of its own.
+const track={stop(){},getSettings:()=>({deviceId:'main'}),addEventListener(){},
+  get readyState(){return trackLost?'ended':'live';},get muted(){return trackMuted;}};
 Object.defineProperty(w.navigator,'mediaDevices',{value:{
   enumerateDevices:async()=>[{kind:'videoinput',deviceId:'main',label:'Back main wide camera'}],
   getUserMedia:async()=>({getTracks:()=>[track],getVideoTracks:()=>[track]}),
@@ -148,7 +163,7 @@ async function test(name:string,fn:()=>Promise<void>){
  *  At the default 0 every frame is stamped when it is presented, the newest
  *  sample is the tick's own, and nothing above this line changes. */
 async function approachAndHold(rvfc=true,step=2,lag=0){
-  shift=0;hidden=false;blind=false;flat=false;intervalFn=null;mediaTime=0;paused=false;stalled=false;
+  shift=0;hidden=false;blind=false;flat=false;intervalFn=null;mediaTime=0;paused=false;stalled=false;ended=starved=trackLost=trackMuted=false;
   const video=w.document.createElement('video');
   let frame:((now:number,metadata:unknown)=>void)|undefined;
   if(rvfc){
@@ -290,10 +305,24 @@ await test('A stopped video cannot vouch for the compass either: unknown is not 
   // Same silence, but now nothing is watching at all - the frame callback has
   // stopped. Stability is UNKNOWN here, not false, and unknown must not read
   // as a vouch any more than a lost source does.
-  const {sweep,tick}=await approachAndHold();
-  for(let i=0;i<5;i++)tick();              // half a second of vouched stillness
+  // 25 ticks and not 5: at 5 the reading was 500 ms old and SENSOR_SILENCE_MS
+  // made it ready on freshness alone, whatever the video said, so the starting
+  // state was not the vouched hold this case claims to stop from (issue #49
+  // item 4). Instants are the timeline the three cases below spell out: frames
+  // at s+100, s+200, ..., the still run opens at s+100 and settles at the frame
+  // at s+600, and the break {from: s, to: s+100} reaches the reading at s
+  // inside CONTINUITY_SLOP_MS = 150. So at s+2500 the reading is 2500 ms old,
+  // past SENSOR_SILENCE_MS = 2000, and the video is the only thing that can
+  // still be holding it. Then 3000 ms with no frame at all: the newest frame is
+  // 3000 ms old against STALE_FRAME_MS = 1000 and the witness reads 'stale'.
+  // Mutation: make `viewVouchesFor` return false. Observed red on the FIRST
+  // assertion: "the hold should be believed while the video is watching".
+  const {sweep,tick,silentFrom}=await approachAndHold();
+  for(let i=0;i<25;i++)tick();
+  assert.equal(clock-silentFrom,2500,'the vouched hold did not last past SENSOR_SILENCE_MS, so freshness could be holding the reading');
   assert.equal(sweep.compassReady,true,'the hold should be believed while the video is watching');
   clock+=3000;                             // the stream stops; no frame callback at all
+  assert.equal(clock-silentFrom,5500);
   assert.equal(sweep.compassReady,false,'a stopped video vouched for a 3 s silence it never saw');
   assert.match(sweep.captureCue,/Waiting for the compass/,`cue was: "${sweep.captureCue}"`);
   sweep.stop();
@@ -489,7 +518,7 @@ await test('A lost compass over a featureless view names the sky, not the compas
  *  opens at t0 and settles 500 ms later, and from there the video vouches for
  *  the reading itself. */
 async function overheadHold(){
-  shift=0;hidden=false;blind=false;flat=false;intervalFn=null;mediaTime=0;paused=false;stalled=false;
+  shift=0;hidden=false;blind=false;flat=false;intervalFn=null;mediaTime=0;paused=false;stalled=false;ended=starved=trackLost=trackMuted=false;
   const video=w.document.createElement('video');
   let frame:((now:number,metadata:unknown)=>void)|undefined;
   video.requestVideoFrameCallback=(fn:typeof frame)=>{frame=fn;return 1;};
@@ -635,6 +664,97 @@ await test('P1: a frozen fallback video recovers once frames flow and a fresh re
   sweep.stop();
 });
 
+/** The media gate has six conditions and two of them had a case: `paused`, and
+ *  a media clock that has stopped. The other four - the element ENDED, the
+ *  element with no decoded frame to show, the TRACK ended, the track MUTED -
+ *  were exercised by nothing, so deleting any one of them was invisible to the
+ *  suite (issue #49 item 3). Each gets the same two-part case, because each
+ *  makes the same two claims, and the parts are worth naming:
+ *   - while the condition holds the gate refuses every tick EVEN THOUGH the
+ *     media clock is running. That is what makes the case about this condition
+ *     rather than about the clock test, and it is why the clock is asserted to
+ *     have moved rather than merely left alone;
+ *   - clearing it lets the camera capture again, which is what makes the
+ *     condition a gate and not a wall.
+ *  Instants, from `silentFrom` (the approach's last reading, call it s): ten
+ *  fallback ticks of 350 ms carry the clock to s+3500 with the condition set,
+ *  and the media clock 3.5 s further on, all ten refused. The condition then
+ *  clears and 6 ticks reach s+5600: frames are delivered again and nothing is
+ *  captured on them, because the reading at s is 5.6 s old and no continuity
+ *  reaches back across the interval nothing watched. `aim(0)` then speaks at
+ *  s+5700 and up to 6 further ticks - 2.1 s, room for a 500 ms settle inside
+ *  the 1.5 s acceptance budget - capture the cell.
+ *  The condition is cleared in a `finally`, so a case that fails part way
+ *  through cannot leave the flag standing for the cases after it. */
+async function mediaGateCase(set:()=>void,clear:()=>void){
+  const {sweep,cell,tick,aim,silentFrom}=await approachAndHold(false);
+  const mediaAt=mediaTime;
+  try{
+    set();
+    for(let i=0;i<10;i++)tick();
+    assert.equal(clock-silentFrom,3500,'the refused phase did not last the 3.5 s the instants assume');
+    assert.ok(mediaTime-mediaAt>3.4,
+      `the media clock stopped as well (${(mediaTime-mediaAt).toFixed(2)} s), so the clock test could be what refused these ticks`);
+    assert.equal(sweep.frameCount,0,'a tick the camera delivered no frame for was captured');
+    assert.equal(sweep.compassReady,false,'the refused ticks vouched for the compass');
+    clear();
+    for(let i=0;i<6;i++)tick();
+    assert.equal(sweep.frameCount,0,'the old reading was certified across an interval nothing watched');
+    aim(0);
+    const from=clock;
+    let capturedAfter:number|null=null;
+    for(let i=0;i<6&&capturedAfter===null;i++){
+      tick();
+      if(sweep.cells.find((c)=>c.id===cell.id)?.captured)capturedAfter=clock-from;
+    }
+    assert.notEqual(capturedAfter,null,'the condition cleared and nothing was ever captured again');
+    assert.ok(capturedAfter!<=1500,`took ${capturedAfter} ms after the condition cleared and the sensor spoke`);
+  } finally { clear(); sweep.stop(); }
+}
+
+await test('P1: the interval fallback learns nothing from an ENDED element (issue #49)',async()=>{
+  // An element at the end of its stream keeps its last picture and goes on
+  // reporting a currentTime, so the clock test alone would let the timer
+  // re-read that picture for as long as the user held the phone.
+  // Mutation: delete `video.ended ||` from `newMediaFrame`. Observed red: "a
+  // tick the camera delivered no frame for was captured".
+  await mediaGateCase(()=>{ended=true;},()=>{ended=false;});
+});
+
+await test('P1: the interval fallback learns nothing from an element with no decoded frame (issue #49)',async()=>{
+  // readyState 1, HAVE_METADATA: the element knows the shape of the stream and
+  // has nothing to draw. `videoWidth` and `videoHeight` come from the metadata
+  // and are set, so `grabFrame`'s own no-image test cannot see this - which is
+  // exactly why the gate tests readyState and not the dimensions.
+  // Mutation: delete `video.readyState < 2` from `newMediaFrame`. Observed red:
+  // "a tick the camera delivered no frame for was captured".
+  await mediaGateCase(()=>{starved=true;},()=>{starved=false;});
+});
+
+await test('P1: the interval fallback learns nothing from an ENDED TRACK (issue #49)',async()=>{
+  // The track behind the element, not the element: the camera is gone, and the
+  // element is still playing whatever it last decoded. The harness's track
+  // fires no 'ended' event, so `sourceHealthy` stays true and this is the media
+  // gate's own test answering, not the lifecycle flag - which is the state a
+  // browser leaves behind when the track dies without an event to say so.
+  // Mutation: delete `track.readyState !== "live"` from `newMediaFrame`.
+  // Observed red: "a tick the camera delivered no frame for was captured".
+  await mediaGateCase(()=>{trackLost=true;},()=>{trackLost=false;});
+});
+
+await test('P1: the interval fallback learns nothing from a MUTED track (issue #49)',async()=>{
+  // `muted` on a video track is the OS saying the camera is producing no
+  // frames right now - another app took it, or the privacy shutter closed -
+  // while the track stays live and the element keeps its last picture. It is
+  // also the condition that would carry stall detection on a browser where
+  // `video.currentTime` turns out to be a graph clock that keeps running
+  // through a stall (issue #48, Firefox Android), so it is the one of the four
+  // that has a second job.
+  // Mutation: delete `track.muted` from `newMediaFrame`. Observed red: "a tick
+  // the camera delivered no frame for was captured".
+  await mediaGateCase(()=>{trackMuted=true;},()=>{trackMuted=false;});
+});
+
 await test('A frozen fallback preview is counted in the alignment report (issue #46)',async()=>{
   // The gate above is right to refuse these frames, but refusing was all it
   // did: `observeStillness` is never reached, so `stillnessReadFailures` stays
@@ -678,7 +798,7 @@ await test('After a run of refused ticks the cue names the camera image, not the
   // Mutations: MEDIA_GATE_BLIND_AFTER = 1e9, and separately deleting the
   // increment. Observed red under both: the cue was "Hold here… capturing this
   // patch."
-  shift=0;hidden=false;blind=false;flat=false;intervalFn=null;mediaTime=0;paused=false;stalled=false;
+  shift=0;hidden=false;blind=false;flat=false;intervalFn=null;mediaTime=0;paused=false;stalled=false;ended=starved=trackLost=trackMuted=false;
   const video=w.document.createElement('video');   // no requestVideoFrameCallback: the fallback path
   const sweep=new PhotosphereSweep();
   await sweep.start(video,w.document.createElement('canvas'));
