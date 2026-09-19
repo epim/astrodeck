@@ -1,23 +1,32 @@
 import assert from 'node:assert/strict';
-import { VisualStability, SETTLE_MS, STALE_FRAME_MS } from '../photosphereStability';
+import { VisualStability, SETTLE_MS, STALE_FRAME_MS, GRID_W, GRID_H } from '../photosphereStability';
 
 // The video is the only witness to a still phone: the orientation sensor goes
 // silent when nothing moves, so silence proves nothing on its own. These cases
 // pin what the witness may and may not say. Brightness drift is not motion; a
 // one-pixel shift is; and a stopped stream is UNKNOWN, never still.
 //
-// The last four cases pin the two things a frame-to-frame comparison alone
-// gets WRONG, both measured against this module at the real input size:
+// The cases at the real input size pin the things a frame-to-frame comparison
+// alone gets WRONG, all measured against this module at that size:
 //
 //   * it is a RATE test. A pan slow enough to stay under the per-frame limit
 //     accumulates without bound while every single frame reads as still - a
 //     320x240 treeline panning one pixel a frame is 7.5 deg/s and moved 0.0142
-//     per frame against a 0.02 limit, so two seconds of that read "steady" and
-//     the phone had swept 15 degrees. The anchor - the frame the settle began
-//     on, kept and re-compared - is what turns a speed limit into a bound on
-//     total drift.
+//     per frame against a bound of 0.0202, so two seconds of that read "steady"
+//     and the phone had swept 15 degrees. The anchor - the frame the settle
+//     began on, kept and re-compared - is what turns a speed limit into a bound
+//     on total drift.
 //   * it answers about the SCENE, not the phone. A view with nothing in it
 //     cannot witness anything, and "unchanged" there is not evidence of a hold.
+//     Both bounds are therefore in CELLS OF APPARENT MOTION - a multiple of the
+//     frame's own spatial gradient G - and a frame whose G is under
+//     GRADIENT_FLOOR witnesses nothing at all. What decides is the gradient and
+//     not the variance: a frame can vary enormously and still have nowhere for
+//     a shift to show (issue #38).
+//   * the two directions are separate questions. G is min(Gh, Gv), because a
+//     frame can only witness a shift along an axis it has structure on: a
+//     vertical ramp has all the gradient anyone could want and still cannot see
+//     a sideways pan at all.
 let passed=0,failed=0;
 function test(name:string,fn:()=>void){
   try{fn();passed++;console.log(`PASS ${name}`);}
@@ -127,6 +136,81 @@ function overcast(shift=0):Uint8Array{
   for(let y=0;y<PH;y++)for(let x=0;x<PW;x++)px[y*PW+x]=Math.round(90+20*((x+shift)/PW)-4*(y/PH));
   return px;
 }
+/** Smooth graded sky (base 150, spread 20 down the frame) over the top seven
+ *  eighths, with the `treeline` canopy squeezed into the bottom eighth: the
+ *  scene issue #38 was written about. A large smooth remainder keeps the
+ *  frame's VARIANCE respectable - 0.030, three times the 0.01 variance floor
+ *  that used to guard this - while only about one row of the 24-row grid ever
+ *  changes. Measured through this module's own grid at 320x240: Gv is 0.0411,
+ *  almost all of it the sky's own vertical grade, and Gh is 0.0109, so
+ *  min(Gh, Gv) is 0.0109 and over a 1 px/frame pan it stays between 0.0103 and
+ *  0.0116 - under GRADIENT_FLOOR throughout. Its anchor diff saturates near
+ *  0.022 and never reaches the 0.04 the old fixed bound asked for. */
+const SKY_TOP=Math.round(PH*7/8);
+function thinTreeline(shift=0):Uint8Array{
+  const px=new Uint8Array(PW*PH);
+  for(let x=0;x<PW;x++){
+    const sx=x+shift;
+    const canopy=120+Math.round(26*Math.sin(sx/11)+14*Math.sin(sx/3.3)+8*Math.sin(sx/1.7));
+    const top=SKY_TOP+Math.round(canopy*(PH-SKY_TOP)/PH);
+    for(let y=0;y<PH;y++)px[y*PW+x]=y<top?150+Math.round(20*y/PH):(Math.floor(sx/17)%3===0?65:28);
+  }
+  return px;
+}
+/** Two flat halves, 75 and 125. Variance 0.0625 - six times the variance floor
+ *  that used to decide whether a frame could witness anything - against a
+ *  gradient of exactly 0: Gh is 0.0161, from the one edge down the middle, and
+ *  Gv is 0, because no row differs from the row above it. Nothing about this
+ *  frame changes when it slides up or down, so it cannot witness, and the
+ *  min(Gh, Gv) rule says so without needing a floor to catch it. Measured. */
+function halves():Uint8Array{
+  const px=new Uint8Array(PW*PH);
+  for(let y=0;y<PH;y++)for(let x=0;x<PW;x++)px[y*PW+x]=x<PW/2?75:125;
+  return px;
+}
+/** A vertical ramp, 60 at the top to 180 at the bottom. Gv is 0.0417 and Gh is
+ *  exactly 0: it has structure, plenty of it, but all of it is across rows, so
+ *  sliding it sideways does not change one count of it. The frame CANNOT
+ *  witness a horizontal pan, and a rule that averaged the two directions would
+ *  hand it a gradient of 0.0207, admit it as a witness, and let it vouch for a
+ *  sideways pan of any speed for as long as it lasted. Measured. */
+function verticalRamp():Uint8Array{
+  const px=new Uint8Array(PW*PH);
+  for(let y=0;y<PH;y++)for(let x=0;x<PW;x++)px[y*PW+x]=60+Math.round(120*y/(PH-1));
+  return px;
+}
+/** A deterministic 32-bit xorshift. Each pixel of each frame gets its own draw
+ *  from it, so the noise below is per-pixel independent - which a linear
+ *  function of the pixel index is not: it cycles through its residues inside
+ *  every block and cancels in the average, leaving a tenth of the noise its
+ *  amplitude claims. */
+function xorshift32(seed:number):()=>number{
+  let x=seed|0;
+  if(x===0)x=0x9e3779b9;
+  return()=>{x^=x<<13;x|=0;x^=x>>>17;x^=x<<5;x|=0;return (x>>>0)/4294967296;};
+}
+/** Put per-pixel sensor noise of `sigma` luma levels on a frame, in place. The
+ *  default is sigma 3, the noise GRADIENT_FLOOR is derived from and the
+ *  convention the brief's own arithmetic uses. Twelve summed uniforms is the
+ *  standard unit-variance approximation of a gaussian; times sigma gives sigma.
+ *  Deterministic in the frame number, so nothing here passes or fails by luck.
+ *  Measured through this module's grid at sigma 3: it moves a HELD frame by
+ *  0.00348 on average and 0.00369 at worst over 30 pairs, and it lifts the
+ *  frame's gradient by up to 0.0036 - most where the frame's pairs are flat,
+ *  almost nothing where they already exceed the noise. That lift is why the
+ *  noisy case below exists: it is enough to carry the thin treeline over
+ *  GRADIENT_FLOOR. */
+function withNoise(px:Uint8Array,frame:number,sigma=3):Uint8Array{
+  const next=xorshift32(Math.imul(frame+1,2654435761));
+  for(let i=0;i<px.length;i++){
+    let sum=0;
+    for(let k=0;k<12;k++)sum+=next();
+    px[i]=Math.max(0,Math.min(255,Math.round(px[i]+sigma*(sum-6))));
+  }
+  return px;
+}
+/** A held treeline with that noise on it. */
+const noisyTreeline=(frame:number):Uint8Array=>withNoise(treeline(0),frame);
 
 test('One pixel of pan is under the frame-to-frame limit: only the anchor sees it',()=>{
   // The premise of the case below, pinned so it cannot quietly stop holding.
@@ -137,6 +221,8 @@ test('One pixel of pan is under the frame-to-frame limit: only the anchor sees i
   assert.equal(s.stableAt(600),true,'the setup frames should have settled');
   s.observe(700,treeline(1),PW,PH);
   assert.equal(s.stableAt(700),true,'one pixel in one frame is below the rate limit, as measured');
+  // Mutation that reddens this (issue #42 item 4): STILL_CELLS = 0.145, which
+  // halves the per-frame bound to 0.010116 against the measured 0.014206.
 });
 
 test('A textured view panning one pixel a frame is motion, not a very slow hold',()=>{
@@ -151,6 +237,103 @@ test('A textured view panning one pixel a frame is motion, not a very slow hold'
   // Not just at 2000: a verdict that flickers true every second cycle would
   // still hand a capture the wrong pose, it would only do it less often.
   assert.equal(stillAt,null,`the pan first read as still at ${stillAt} ms`);
+  // Mutation that reddens this (issue #42 item 4): ANCHOR_CELLS = 1e9, which
+  // leaves only the per-frame rate test, and 0.0142 a frame is under it.
+});
+
+test('A NOISE-FREE thin treeline under a smooth sky reads UNKNOWN while panning, never still (issue #38)',()=>{
+  // The scene a bound in IMAGE units cannot see: its anchor diff saturates near
+  // 0.022, so against a fixed 0.04 this view read "still" throughout a
+  // 1 px/frame pan and throughout a 4 px/frame one (30 deg/s).
+  // The verdict on clean frames, and which of the two acceptable answers it is:
+  // UNKNOWN. Its horizontal gradient is 0.0103 to 0.0116 across the pan, under
+  // GRADIENT_FLOOR, so the frame has nothing to see a sideways shift with and
+  // says so. Clean frames only: with a real camera's noise on them this scene
+  // crosses the floor and is admitted - that is the case below, and it is the
+  // one closer to the phone.
+  // What happens when it IS admitted, measured over origins 0 to 49 of the pan
+  // at the shipped constants, because the bound depends on which gradient
+  // admitted it:
+  //   * with min(Gh, Gv) the bound is 0.58 x 0.0109 = 0.0063 and the longest
+  //     unbroken run from any origin is 5 frames, 167 ms - well inside the 15
+  //     frames a settle needs, so the anchor bound refuses the hold by itself.
+  //   * with the two directions POOLED, as they were before that rule, the
+  //     smooth sky's vertical grade inflates G to 0.0259 and the bound to
+  //     0.0150, and the longest run is 16 frames, 533 ms - just OUTSIDE a
+  //     settle. There the anchor bound is NOT sufficient on its own, and what
+  //     keeps this particular pan from vouching is where the breaks happen to
+  //     fall. Observed, not argued: the pooled-mean mutation reddens the
+  //     unknown-throughout assertion below and leaves the never-still one
+  //     green. Pooling inflates the bound worst on exactly the scene issue #38
+  //     is about, which is half the argument for taking the smaller axis.
+  const s=new VisualStability();
+  let vouched=false;
+  const verdicts=new Set<string>();
+  for(let i=0;i*FRAME_MS<=2000;i++){s.observe(i*FRAME_MS,thinTreeline(i),PW,PH);const v=s.stableAt(i*FRAME_MS);verdicts.add(String(v));if(v===true)vouched=true;}
+  assert.equal(vouched,false,'a 1 px/frame pan of a low-gradient view read as still at some point');
+  assert.deepEqual([...verdicts],['null'],'the 1 px/frame pan should be unjudgeable throughout, not merely not-still');
+  const fast=new VisualStability();
+  let vouchedFast=false;
+  for(let i=0;i*FRAME_MS<=2000;i++){fast.observe(i*FRAME_MS,thinTreeline(i*4),PW,PH);if(fast.stableAt(i*FRAME_MS)===true)vouchedFast=true;}
+  assert.equal(vouchedFast,false,'a 4 px/frame pan (30 deg/s) of a low-gradient view read as still at some point');
+  // Two mutations redden this, one per assertion. GRADIENT_FLOOR = 0 admits the
+  // scene as a witness and the verdicts become `false`, so the second assertion
+  // fails. GRADIENT_FLOOR = 0 together with ANCHOR_CELLS = 1e9 removes the
+  // second defence as well and the 1 px pan reads `true`, which is the defect
+  // itself. ANCHOR_CELLS = 1e9 alone does NOT redden this any more: the floor
+  // stops the scene before the bound is ever consulted.
+  // The 4 px assertion is a second instance of the same claim and not an
+  // independently reddenable one: with the floor and the anchor both removed it
+  // is still caught by the per-frame RATE test, because 4 px a frame moves the
+  // grid by 0.005870 at worst against a bound of 0.002978 (measured). No single
+  // constant isolates it, and the assertion the two mutations above reach is
+  // the 1 px one, which fires first.
+});
+
+test('The same pan with a real camera on it is ADMITTED, and still never reads still (issue #38)',()=>{
+  // The case above is true of synthetic frames. A camera adds noise, noise adds
+  // gradient, and this scene has the emptiest horizontal pairs of anything in
+  // this file, so the noise has the field to itself there: measured, sigma 3
+  // lifts its min-gradient from 0.0109 to 0.0123-0.0137, which straddles
+  // GRADIENT_FLOOR. The frame is admitted as a witness with almost nothing to
+  // witness with, and the whole weight then falls on the bounds.
+  // They hold. Measured over this pan at sigma 1, 2, 3 and 4 the verdicts are
+  // {null}, {null, false}, {false, null} and {false} - never `true` at any of
+  // them, which is the claim issue #38 is actually about. Held rather than
+  // panned, the same noisy scene settles to `true` at sigma 3, as it should:
+  // it IS still then.
+  const s=new VisualStability();
+  let vouched=false;
+  for(let i=0;i*FRAME_MS<=2000;i++){
+    s.observe(i*FRAME_MS,withNoise(thinTreeline(i),i),PW,PH);
+    if(s.stableAt(i*FRAME_MS)===true)vouched=true;
+  }
+  assert.equal(vouched,false,'a 1 px/frame pan of a noisy low-gradient view read as still at some point');
+  // Mutation that reddens this: GRADIENT_FLOOR = 0 together with
+  // ANCHOR_CELLS = 1e9. The floor is not what holds here - the noise already
+  // carries the scene over it - so the mutation that matters is the one that
+  // removes the bound, and the floor goes with it only to keep the frames
+  // admitted at every sigma.
+});
+
+test('A view with structure in one direction only cannot vouch for a pan across it',()=>{
+  // The residual issue #38 leaves if the two directions are averaged: a
+  // vertical ramp has Gv 0.0417 and Gh 0, and a horizontal pan of it produces a
+  // diff of exactly zero. Averaged, its gradient is 0.0207 - clear of any floor
+  // here - so it would be admitted as a witness and would vouch for a pan of
+  // any speed, for as long as the pan lasted. Taking the weaker axis, its
+  // gradient is 0 and the honest answer is that it cannot be judged.
+  const s=new VisualStability();
+  for(let i=0;i*FRAME_MS<=2000;i++){
+    const at=i*FRAME_MS;
+    s.observe(at,verticalRamp(),PW,PH);
+    assert.notEqual(s.stableAt(at),true,`a view with nothing across it vouched for a sideways pan at ${Math.round(at)} ms`);
+  }
+  assert.equal(s.stableAt(2000),null,'and the verdict is unknown, not moving: there is nothing here to see a pan with');
+  // Mutation that reddens this: `gradient` returning the mean of the two
+  // directions instead of the smaller - which is what it did before this case
+  // existed. The frame then clears the floor and 2 s of identical frames
+  // settles into `true`.
 });
 
 test('A still textured view survives a 30 percent exposure change against the anchor',()=>{
@@ -184,6 +367,37 @@ test('A view with no texture to judge by is unknown, never still',()=>{
     sky.observe(at,overcast(i*10),PW,PH);
     assert.notEqual(sky.stableAt(at),true,`a featureless sky vouched for a 75 deg/s pan at ${Math.round(at)} ms`);
   }
+});
+
+test('A frame with no gradient to see a shift by is unknown, never still, whatever its variance',()=>{
+  // Variance says how much the frame VARIES; gradient says whether a shift
+  // would be visible, and only the second is the question. Two flat halves
+  // answer them opposite ways: variance 0.0625, six times the floor that used
+  // to decide this, against a gradient of exactly 0 - one edge across, nothing
+  // at all down. Measured.
+  const s=new VisualStability();
+  for(let at=0;at<=700;at+=100)s.observe(at,halves(),PW,PH);
+  assert.equal(s.stableAt(700),null,'a frame whose only structure is one edge vouched for a hold it cannot witness');
+  // Mutation that reddens this: GRADIENT_FLOOR = 0, which lets 700 ms of
+  // identical frames settle and answer true.
+});
+
+test('A held treeline with per-pixel sensor noise still reads still',()=>{
+  // The other side of the same bound: it has to absorb what a real camera does
+  // to a frame that did not move, because that noise is what GRADIENT_FLOOR is
+  // sized from. Per-pixel gaussian noise of sigma 3 luma levels, after the
+  // 10x10 block average behind one grid cell, moves the grid by 0.00348 a frame
+  // on average and 0.00369 at worst over 30 frames (measured) against a bound
+  // of STILL_CELLS x 0.0698 = 0.0202 here, and against STILL_CELLS x
+  // GRADIENT_FLOOR = 0.00371 for a frame sitting on the floor - which is the
+  // tight end, and the reason the floor is where it is. A bound that cannot
+  // absorb this would refuse every real hold.
+  const s=new VisualStability();
+  let last=0;
+  for(let i=0;i*FRAME_MS<=800;i++){last=i*FRAME_MS;s.observe(last,noisyTreeline(i),PW,PH);}
+  assert.equal(s.stableAt(last),true,'a held view with ordinary sensor noise on it read as moving');
+  // Mutation that reddens this: STILL_CELLS = 0. The noise is what makes that
+  // mutation bite - identical frames would differ by exactly 0 and survive it.
 });
 
 test('Continuity names the start of the still run and the last break the video saw',()=>{
@@ -237,43 +451,70 @@ test('A frame with no texture is a break, even between two identical textured fr
   assert.deepEqual(c!.lastBreak,{from:600,to:700},'the break spans the blank frame and the first frame after it');
 });
 
-/** A 32x24 horizontal ramp, base 86, given spread. Its variance is the only
- *  texture in it, so the spread tunes the frame straight past TEXTURE_FLOOR
- *  (0.01) while leaving consecutive frames close together. Measured through
- *  this module's own grid: spread 39 has variance 0.012017 (textured), spread
- *  33 has 0.009304 (under the floor), and the two differ by 0.011929 - inside
- *  STILL_DIFF_LIMIT (0.02) and inside ANCHOR_DIFF_LIMIT (0.04), so NOTHING but
- *  the texture floor separates them. */
-function ramp(spread:number):Uint8Array{
-  const px=new Uint8Array(W*H);
-  for(let y=0;y<H;y++)for(let x=0;x<W;x++)px[y*W+x]=Math.round(86+spread*x/(W-1));
+/** Fine texture on a flat base, at the real input size: a checkerboard on the
+ *  scale of one grid cell, `levels` luma levels either side of 120. Every pixel
+ *  of a 10x10 block - the block `resample` averages into one cell - moves by
+ *  the whole part of `levels`, and that proportion of the block moves by one
+ *  more, so the cell means land on exactly plus or minus `levels` for ANY
+ *  amplitude. An earlier version bumped a proportion of the block by one level
+ *  and nothing more, which silently saturated at one level: every amplitude
+ *  above 1.0 produced the same frame, gradient 0.016667, and the fixture would
+ *  have capped just under a floor rather than failing.
+ *  A checkerboard is the one shape that can isolate the gradient rule, and the
+ *  reason is worth stating: near GRADIENT_FLOOR the movement bound is small BY
+ *  CONSTRUCTION, being STILL_CELLS times a gradient that is nearly the floor,
+ *  so a frame can only lose its gradient without reading as movement if it
+ *  loses far more gradient than frame. A checkerboard puts every pair of
+ *  adjacent cells on opposite sides of the base, in both directions at once, so
+ *  Gh and Gv are both 2 x levels / 120 while a change of amplitude moves the
+ *  frame by only the change itself. Measured: fading 0.88 to 0.68 takes the
+ *  gradient from 0.014667 to 0.011333, across GRADIENT_FLOOR (0.0128) by 15
+ *  percent above and 11 percent below, while the pair differs by 0.001667 -
+ *  inside the dimmer frame's own movement bound of 0.003287 and inside the
+ *  brighter frame's 0.004253, so NOTHING but the gradient floor separates them.
+ *  Note the variance of the lit frame: 5.4e-5, a two-hundredth of the variance
+ *  floor this rule replaces. It reads as a usable witness and the two flat
+ *  halves above, with a thousand times its variance, do not. That inversion is
+ *  the whole of issue #38. */
+function fineTexture(levels:number):Uint8Array{
+  const px=new Uint8Array(PW*PH);
+  const cw=PW/GRID_W,ch=PH/GRID_H;
+  const whole=Math.floor(levels),bumped=Math.round((levels-whole)*cw*ch);
+  for(let y=0;y<PH;y++)for(let x=0;x<PW;x++){
+    const sign=(Math.floor(x/cw)+Math.floor(y/ch))%2?-1:1;
+    px[y*PW+x]=120+sign*(whole+((y%ch)*cw+(x%cw)<bumped?1:0));
+  }
   return px;
 }
 
-test('A frame too flat to judge breaks the run even though no pair moved',()=>{
-  // The case above cannot fail for the texture rule on its own: the blank frame
-  // is also far from its neighbours, so the motion rule would record a break
-  // there anyway. Here the dip happens with every pair INSIDE the movement
-  // limit - a view losing the last of its contrast, not moving - so the texture
-  // rule is the only thing that can see it. Without it the run reaches back
-  // across the frames nothing could be judged from, and the continuity vouches
-  // for a reading taken before them.
+test('A frame too smooth to judge breaks the run even though no pair moved',()=>{
+  // The case above cannot fail for the gradient rule on its own: the blank
+  // frame is also far from its neighbours, so the motion rule would record a
+  // break there anyway. Here the dip happens with every pair INSIDE the
+  // movement limit - a view losing the last of its fine detail, not moving - so
+  // the gradient rule is the only thing that can see it. Without it the run
+  // reaches back across the frames nothing could be judged from, and the
+  // continuity vouches for a reading taken before them.
   // The premise first, pinned so it cannot quietly stop holding.
   const dim=new VisualStability();
-  for(let t=0;t<=600;t+=100)dim.observe(t,ramp(33),W,H);
+  for(let t=0;t<=600;t+=100)dim.observe(t,fineTexture(0.68),PW,PH);
   assert.equal(dim.stableAt(600),null,'the near-floor frame must read as unjudgeable');
   const lit=new VisualStability();
-  for(let t=0;t<=600;t+=100)lit.observe(t,ramp(39),W,H);
+  for(let t=0;t<=600;t+=100)lit.observe(t,fineTexture(0.88),PW,PH);
   assert.equal(lit.stableAt(600),true,'the textured frame must read as still');
 
   const s=new VisualStability();
-  for(let t=0;t<=800;t+=100)s.observe(t,ramp(39),W,H);
-  s.observe(900,ramp(33),W,H);            // contrast dips under the floor
-  for(let t=1000;t<=1500;t+=100)s.observe(t,ramp(39),W,H);
+  for(let t=0;t<=800;t+=100)s.observe(t,fineTexture(0.88),PW,PH);
+  s.observe(900,fineTexture(0.68),PW,PH);   // the fine detail dips under the floor
+  for(let t=1000;t<=1500;t+=100)s.observe(t,fineTexture(0.88),PW,PH);
   const c=s.continuity(1500);
   assert.ok(c,'the view is textured and settled again by 1500');
   assert.equal(c!.stillSince,900,'the run must restart at the frame that could not be judged');
   assert.deepEqual(c!.lastBreak,{from:900,to:900},'the break is that frame alone, at its own instant');
+  // Mutation that reddens this: GRADIENT_FLOOR = 0. Observed red on the first
+  // premise - the near-floor frame reads still instead of unjudgeable. With the
+  // floor gone nothing here breaks at all, because every pair is inside the
+  // movement bound, so the run reaches back across the dip that follows.
 });
 
 test('clear() forgets the last break',()=>{

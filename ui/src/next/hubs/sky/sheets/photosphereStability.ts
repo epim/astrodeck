@@ -4,7 +4,7 @@
 // The video stream is a second, independent witness. It reports three states,
 // and the third one matters: still, moving, and unknown. A stopped stream is
 // unknown - it must never be mistaken for a steady view, and neither must a
-// view with no texture in it to judge movement by.
+// view with too little spatial gradient in it for a shift to show.
 // No DOM here: the caller samples the pixels, this only measures them.
 
 /** How long the view must hold still before stillness is believed. */
@@ -12,42 +12,94 @@ export const SETTLE_MS = 500;
 /** Beyond this age the newest frame vouches for nothing: the video may have
  *  stopped, the page may be hidden. Stability becomes unknown, not false. */
 export const STALE_FRAME_MS = 1000;
-/** Ceiling for "still": the mean absolute per-pixel difference between two
- *  consecutive mean-normalised frames, as a fraction of a frame's own mean
- *  luminance (dimensionless, 0.02 = 2 percent of mean luminance per pixel).
- *  Measured on the low-contrast 32x24 gradient and bright block used by the
- *  tests: a one-pixel shift is 0.037, a 30 percent exposure change 0.002. The
- *  limit sits between them with room for sensor noise, which after averaging
- *  each grid cell from hundreds of video pixels lands near 0.006 in low light. */
-export const STILL_DIFF_LIMIT = 0.02;
+/** Ceiling for "still", in CELLS OF APPARENT MOTION rather than in luminance:
+ *  the mean absolute difference between two consecutive mean-normalised frames
+ *  must stay under this many times the frame's own spatial gradient `G` (see
+ *  `gradient`). How much ROTATION a given diff stands for depends entirely on
+ *  how much structure the frame has, which is issue #38, and G is the scale
+ *  that takes most of that dependence out: a bound of `STILL_CELLS * G` means
+ *  roughly the same amount of real movement on a treeline and on a thin
+ *  treeline under a smooth sky, where a fixed luminance bound differed by 7x.
+ *  Roughly, and no more than roughly. What one cell of real shift costs in the
+ *  diff, divided by G, is measured at 2.0 on the treeline, 1.4 on the 32x24
+ *  `scene` fixture and 1.2 on the thin treeline - a factor of 1.7 across the
+ *  three, so this is a per-scene SCALE and not an invariant, and it must not be
+ *  read as an angle.
+ *  The value: the treeline scene has G = 0.069766 measured at 320x240, and the
+ *  multiple that reproduces the 0.02 this replaces is 0.2867; 0.29 rounds that
+ *  to two figures and lands 1.2 percent above, at 0.020232. On that scene a
+ *  1 px/frame pan (7.5 deg/s at 30 fps over a 60 degree short axis) moves the
+ *  grid by 0.014206 a frame, 70 percent of the bound, so one pixel a frame
+ *  still reads as a hold and two do not (0.028825).
+ *  The other end is sensor noise, and it is what GRADIENT_FLOOR is derived
+ *  from: per-pixel gaussian noise of sigma 3 luma levels moves a HELD frame's
+ *  grid by 0.00348 on average and 0.00369 at worst over 30 frames, measured. */
+export const STILL_CELLS = 0.29;
 /** Ceiling for the diff against the ANCHOR - the frame the current settle
- *  began on. The consecutive-frame test above is a RATE test and nothing more:
- *  a pan slow enough to stay under it accumulates without bound while every
- *  single frame reads as still. Measured on a 320x240 treeline scene at 30 fps
- *  and a 60 degree short axis, a 1 px/frame pan (7.6 deg/s) moves the grid by
- *  0.0142 per frame - under STILL_DIFF_LIMIT - and had swept 15 degrees
- *  after two seconds of being called "still". Holding the anchor bounds the
- *  TOTAL drift since the settle instead of the per-frame rate, and that pan
- *  now crosses this limit in 0.10 s (measured: the run opens at 33.3 ms and
- *  breaks at 100.0 ms, three frames at 30 fps), far inside SETTLE_MS, so it
- *  never reads as still at all. Twice STILL_DIFF_LIMIT leaves a genuine hold ample room:
- *  normalisation already removes an exposure change (0.002 for 30 percent),
- *  and grid-cell averaging leaves sensor noise near 0.006. */
-export const ANCHOR_DIFF_LIMIT = 0.04;
-/** Floor on the variance of the NORMALISED grid, below which the frame has no
- *  texture to judge movement by - a blank wall, a fogged lens, a dark dome, a
- *  frame of nothing but smooth sky. Panning such a view barely changes a pixel,
- *  so "unchanged" would be a statement about the SCENE and not about the phone.
+ *  began on - in the same cells of apparent motion. The consecutive-frame test
+ *  above is a RATE test and nothing more: a pan slow enough to stay under it
+ *  accumulates without bound while every single frame reads as still. Holding
+ *  the anchor bounds the TOTAL drift since the settle instead of the rate.
+ *  Twice STILL_CELLS, which on the treeline is 0.040464 against the 0.04 it
+ *  replaces: the 1 px/frame pan crosses it at 3 frames, 0.10 s (measured: 2
+ *  frames 0.028825 is inside, 3 frames 0.042692 is outside; the run opens at
+ *  33.3 ms and breaks at 100.0 ms), far inside SETTLE_MS, so it never reads as
+ *  still at all. A genuine hold has room: normalisation already removes an
+ *  exposure change (a 30 percent step on that scene is 0.001073, measured), and
+ *  sensor noise at sigma 3 moves a held frame 0.00363 from its anchor at worst
+ *  over 30 frames, which is the quantity this bound sees. */
+export const ANCHOR_CELLS = 0.58;
+/** Floor on the frame's own spatial gradient, below which the frame cannot
+ *  witness motion AT ALL: a shift of the scene would not change it enough to
+ *  see, so "unchanged" is a statement about the SCENE and not about the phone.
  *  Stability is unknown there, never still (spec 2.6: preserve uncertainty).
- *  Dimensionless, because the grid is divided by its own mean, so this is a
- *  squared coefficient of variation: 0.01 is an RMS deviation of 10 percent of
- *  mean luminance across the frame. Measured at 320x240: a treeline against
- *  sky is 0.42, a smooth overcast sky (base 90, spread 20) is 0.0036 - and
- *  that overcast frame is exactly the one that read "still" through a 75 deg/s
- *  pan, because a linear ramp slid sideways is a linear ramp plus a constant
- *  and mean-normalisation removes the constant. No frame comparison can see
- *  that motion, so the honest verdict is that it cannot be judged. */
-export const TEXTURE_FLOOR = 0.01;
+ *  The value is the one that makes the per-frame bound self-consistent with the
+ *  noise it has to absorb, and it is derived as exactly that:
+ *
+ *      GRADIENT_FLOOR = noise diff / STILL_CELLS = 0.0037 / 0.29 = 0.01276
+ *
+ *  rounded up to 0.0128. The noise diff is measured, not assumed: per-pixel
+ *  gaussian noise of sigma 3 luma levels, averaged over the 10x10 block behind
+ *  one grid cell, moves a held treeline's grid by 0.00348 on average and
+ *  0.00369 at worst over 30 frames. Any lower floor and `STILL_CELLS * G` for a
+ *  frame sitting on the floor would be under that, so a phone that was actually
+ *  still would read as MOVING on its own sensor noise, and the cue shown - hold
+ *  still - would be the one thing that could not clear it.
+ *  That self-consistency is 99 in 100, not always, and the margin is worth
+ *  stating because the 0.0037 above is a worst-of-30 sample. Over 300 held
+ *  pairs the same noise averages 0.003496 and reaches 0.003831, and 3 of the
+ *  300 exceed the 0.003712 bound - so a frame sitting EXACTLY on the floor
+ *  loses about one settle in seven, and the user waits and holds again. The
+ *  direction is safe (a broken settle is a refusal, never a wrong pose) and the
+ *  band is narrow: at 1.1 times the floor the bound is 0.00408 and nothing in
+ *  300 pairs reaches it.
+ *  This replaces a floor on the grid's VARIANCE, which answers a different
+ *  question - how much the frame varies - and gets exactly the case in issue
+ *  #38 wrong: two flat halves have variance 0.0625, six times the old 0.01
+ *  floor, and a gradient of 0, because a horizontal pan moves one edge and a
+ *  vertical one moves nothing. Variance says how much there is; gradient says
+ *  whether a shift would be visible, and only the second is the question.
+ *  Measured at 320x240, min(Gh, Gv), on NOISE-FREE fixtures: treeline against
+ *  sky 0.0698; a thin treeline under a smooth sky 0.0103 to 0.0116 over a pan,
+ *  under the floor - that is the scene issue #38 was written about; smooth
+ *  overcast (base 90, spread 20) 0.0017; two flat halves 0; a vertical ramp 0;
+ *  a blank wall 0.
+ *  A real camera changes that picture and the file should not pretend
+ *  otherwise. Noise has a gradient of its own, and the lift it adds is an upper
+ *  bound rather than a constant offset: up to 0.0036 where the frame's pairs
+ *  are flat and the noise has the field to itself (two flat halves 0 -> 0.0036,
+ *  a vertical ramp 0 -> 0.0030, both still far under the floor and still
+ *  unknown at sigma 6), about 0.0022 where the structure is patchy (the thin
+ *  treeline 0.0109 -> 0.0130, which CROSSES), and nil where every pair already
+ *  exceeds the noise (the fine-texture fixture, 0.000015).
+ *  So the thin treeline is under the floor clean and just over it on a real
+ *  camera. It is not that such a frame cannot witness; it is that it is
+ *  admitted with almost nothing to witness with, and then the bounds are what
+ *  refuse the pan, on a bound of 0.58 x 0.0123 = 0.0071 rather than the 0.0150
+ *  the two directions pooled would have given it. Measured over that scene's
+ *  1 px/frame pan with noise on it: the verdicts are unknown at sigma 1, unknown
+ *  and moving at sigma 2 and 3, moving at sigma 4, and still at no sigma. */
+export const GRADIENT_FLOOR = 0.0128;
 
 /** The comparison grid. Small on purpose: this runs on the UI thread on a
  *  phone, once per video frame. */
@@ -90,16 +142,29 @@ function meanAbsDiff(a:Float64Array,b:Float64Array):number {
   return sum/a.length;
 }
 
-/** How much the frame varies across itself. A normalised grid has mean 1, but
- *  a black frame keeps its zeros (see `normalise`), so the mean is measured
- *  rather than assumed. */
-function variance(grid:Float64Array):number {
-  let sum=0;
-  for(const v of grid)sum+=v;
-  const mean=sum/grid.length;
-  let acc=0;
-  for(const v of grid)acc+=(v-mean)*(v-mean);
-  return acc/grid.length;
+/** How visible a shift would be in this frame: the SMALLER of the mean absolute
+ *  difference between horizontally adjacent cells of the NORMALISED grid and
+ *  the same between vertically adjacent cells. Dimensionless, like the grid.
+ *  The smaller, not the average of the two, because the phone can pan along
+ *  either axis and a frame can only witness a shift along an axis it has
+ *  structure on. A vertical ramp is the clean case: Gv = 0.0417, Gh = 0, and
+ *  slid sideways it does not change by one count. Averaged, its G is 0.0207,
+ *  which clears the floor, so it would be admitted as a witness and would then
+ *  vouch for a sideways pan of any speed for as long as it lasted - which is
+ *  the sentence issue #38 opens with, one axis over. The weaker axis is what
+ *  the frame can honestly say. Two flat halves are the same case (Gv = 0) and
+ *  come out right for the right reason rather than by squeaking under a
+ *  combined floor.
+ *  This is a per-scene SCALE and not an invariant: see STILL_CELLS for how far
+ *  the cost of one cell of real shift wanders from it (a factor of 1.7 across
+ *  the three fixtures it is measured on).
+ *  Two passes over 768 cells per frame, negligible beside the `getImageData`
+ *  the caller already does. */
+export function gradient(grid:Float64Array):number {
+  let h=0,hPairs=0,v=0,vPairs=0;
+  for(let y=0;y<GRID_H;y++)for(let x=1;x<GRID_W;x++){h+=Math.abs(grid[y*GRID_W+x]-grid[y*GRID_W+x-1]);hPairs++;}
+  for(let y=1;y<GRID_H;y++)for(let x=0;x<GRID_W;x++){v+=Math.abs(grid[y*GRID_W+x]-grid[(y-1)*GRID_W+x]);vPairs++;}
+  return Math.min(hPairs?h/hPairs:0,vPairs?v/vPairs:0);
 }
 
 /** Since WHEN has the view been unchanged, and when was it last not?
@@ -128,8 +193,9 @@ export class VisualStability {
   private frameAt=-Infinity;
   private stillSince:number|null=null;
   private lastBreak:{from:number;to:number}|null=null;
-  private textured=false;
-  clear(){this.frame=null;this.anchor=null;this.frameAt=-Infinity;this.stillSince=null;this.lastBreak=null;this.textured=false;}
+  /** Whether the newest frame has enough spatial gradient to see a shift by. */
+  private canWitness=false;
+  clear(){this.frame=null;this.anchor=null;this.frameAt=-Infinity;this.stillSince=null;this.lastBreak=null;this.canWitness=false;}
 
   /** `luma` is one byte per pixel, row-major, `width` x `height`. */
   observe(at:number,luma:Uint8Array|Uint8ClampedArray,width:number,height:number):void {
@@ -137,17 +203,25 @@ export class VisualStability {
     if(!(width>0)||!(height>0)||luma.length<width*height)return;
     const grid=normalise(resample(luma,width,height));
     const previous=this.frame,previousAt=this.frameAt,gap=at-previousAt;
-    this.frame=grid;this.frameAt=at;this.textured=variance(grid)>=TEXTURE_FLOOR;
+    // The bounds below are multiples of the CURRENT frame's gradient. The
+    // anchor's would do very nearly as well and nothing here can tell the two
+    // apart: on a still scene they are the same structure, and swapping this
+    // for `gradient(this.anchor)` leaves every case in the suite green. The
+    // current frame's is taken because it is the frame whose shift is being
+    // judged and the one that exists in every branch - the first still pair has
+    // no anchor yet - not because a case demands it.
+    const g=gradient(grid);
+    this.frame=grid;this.frameAt=at;this.canWitness=g>=GRADIENT_FLOOR;
     // A frame with nothing in it to judge movement by watched nothing, so the
     // run cannot reach back across it: it breaks at its own instant.
-    if(!this.textured){this.broken(at,at);return;}
+    if(!this.canWitness){this.broken(at,at);return;}
     // Nothing watched the view across an unobserved gap, so nothing can vouch
     // for it: start the settle over rather than crediting the missing time,
     // and let the break end HERE, so nothing before this frame is covered.
     if(!previous||gap>STALE_FRAME_MS){this.broken(at,at);return;}
     // Motion between these two frames. It may have begun anywhere inside the
     // pair, which is why the break starts at the earlier frame.
-    if(meanAbsDiff(previous,grid)>STILL_DIFF_LIMIT){this.broken(previousAt,at);return;}
+    if(meanAbsDiff(previous,grid)>STILL_CELLS*g){this.broken(previousAt,at);return;}
     // The frame the settle began on is kept and re-compared every frame. Without
     // it this is only a speed limit, and a slow pan drifts arbitrarily far while
     // each step stays under it. With it the verdict means what the caller reads
@@ -155,7 +229,7 @@ export class VisualStability {
     if(this.stillSince===null||!this.anchor){this.stillSince=previousAt;this.anchor=previous;return;}
     // A drift caught against the anchor happened at an unknown moment of the
     // run, so nothing before now is vouched for.
-    if(meanAbsDiff(this.anchor,grid)>ANCHOR_DIFF_LIMIT)this.broken(at,at);
+    if(meanAbsDiff(this.anchor,grid)>ANCHOR_CELLS*g)this.broken(at,at);
   }
 
   /** Close the current still run and remember the interval that ended it. */
@@ -177,7 +251,7 @@ export class VisualStability {
    *  tests that pin each of the three answers directly. */
   stableAt(now:number):boolean|null {
     if(!this.frame||now-this.frameAt>STALE_FRAME_MS)return null;
-    if(!this.textured)return null;
+    if(!this.canWitness)return null;
     if(this.stillSince===null)return false;
     return this.frameAt-this.stillSince>=SETTLE_MS;
   }
