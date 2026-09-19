@@ -67,7 +67,7 @@ const { createElement, act } = await import("react");
 const { createRoot } = await import("react-dom/client");
 const { useStore } = await import("../../../../../store");
 const { HorizonSheet } = await import("../horizon");
-const { cameraPose, foldSweepColumns, preferredRearCamera, PhotosphereSweep } = await import("../photosphere");
+const { cameraPose, foldSweepColumns, preferredRearCamera, PhotosphereSweep, LENS_DOUBT_AFTER } = await import("../photosphere");
 const { DOME_CELLS, SkyPanorama } = await import('../photosphereGeometry');
 useStore.setState({ principal: { role: "admin", caps: ["config.safety", "config.site_optics"] }, wsPhase: "up",
   equipConnected: true, status: { mode: "sim", connected: {}, busy_lanes: [] }, config: { safety: { horizon: [] } },
@@ -421,6 +421,56 @@ await test('A browser with no DeviceOrientationEvent can still capture the overh
   } finally {
     w.DeviceOrientationEvent = originalDOE;
   }
+});
+await test('A long run of refusals names the view angle only while the lens is still a guess (#52)', async () => {
+  // The REFUSAL PATH is graded end to end by the replay cases in
+  // photosphereReplay.test.ts: this harness's camera returns a uniform grey,
+  // SkyPanorama.checkOverlap reads a variance that low as 'unknown' and can
+  // never return 'conflict', and a conflict invented here would only be a test
+  // of the invention. What is graded HERE is the guard in front of the run -
+  // WHICH of the two sentences a scan gets once the run is long - so the two
+  // fields a refusal leaves behind are set directly, and the calibration that
+  // decides between them is set through the public control the cue names.
+  const refused = (sweep: InstanceType<typeof PhotosphereSweep>) => {
+    const state = sweep as unknown as { overlapWait: boolean; overlapWaitRun: number };
+    state.overlapWait = true; state.overlapWaitRun = LENS_DOUBT_AFTER;
+  };
+  const scan = async (deviceId: string, viewAngle?: number) => {
+    const sweep = new PhotosphereSweep();
+    await sweep.start(document.createElement('video'), document.createElement('canvas'), deviceId);
+    // Before begin(): setCameraViewAngle refuses mid-scan, by design.
+    if (viewAngle !== undefined) assert.equal(sweep.setCameraViewAngle(viewAngle), true);
+    const cell = sweep.cells.find(c => c.alt > 20 && c.alt < 60)!;
+    heading(cell.az, true, 90 + cell.alt);
+    sweep.begin();
+    await tick();
+    // Every gate above the overlap line is behind us, so the next two cues
+    // differ in the lens and in nothing else.
+    assert.match(sweep.captureCue, /^Captured/);
+    return sweep;
+  };
+  const guessing = await scan('ultra');
+  assert.equal(guessing.hasLensCalibration, false);
+  refused(guessing);
+  assert.match(guessing.captureCue, /The camera view angle may be set wrong for this lens/);
+  // The SETTING, by the words it must be called - not a UI label. No committed
+  // component calls setCameraViewAngle at b8581949; the field is in an unlanded
+  // rewrite of horizon.tsx, so a case quoting its label would pin a string this
+  // product does not ship. Whatever lands should contain these words.
+  assert.match(guessing.captureCue, /camera view angle/);
+  // It REPLACES the aim instruction rather than adding to it: two remedies in
+  // one sentence is the user trying the wrong one first (issue #52).
+  assert.doesNotMatch(guessing.captureCue, /Return to a green patch/);
+  guessing.stop();
+  // Mutation: drop `&& !this.lensCalibrated` from the cue. The measured lens
+  // below is then told its lens may be wrong, and the last assertion here
+  // fails. Observed red.
+  const measured = await scan('other', 70);
+  assert.equal(measured.hasLensCalibration, true);
+  refused(measured);
+  assert.doesNotMatch(measured.captureCue, /camera view angle may be set wrong/);
+  assert.match(measured.captureCue, /^I can’t match this view yet\. Return to a green patch/);
+  measured.stop();
 });
 await test('The mocks are the ordinary ones again', async () => {
   // Must stay last. This pins issue #51: "A grant arriving after

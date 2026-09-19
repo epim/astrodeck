@@ -38,6 +38,43 @@ export interface CaptureRecord {
   adjusted?: boolean;
 }
 
+/** Does this outcome end a run of `overlap-wait` refusals (see
+ *  `LENS_DOUBT_AFTER`)? Everything does EXCEPT the four that end a grab BEFORE
+ *  the overlap test is ever reached, none of which is evidence that the view
+ *  now matches:
+ *
+ *    `alignment-wait`  the pose has not settled - most of a sweep's attempts;
+ *    `too-soon`        the 600 ms rate limit on registration;
+ *    `no-target`       the aim is between dome cells, which on a sweep is most
+ *                      of the time (18 of 264 records on the wrong-lens
+ *                      recording);
+ *    `below-horizon`   the phone is pointed at the ground.
+ *
+ *  Only what the overlap test itself decides ends a run: `accepted` (the view
+ *  matched), `already-captured` (it matched and the patch was already held),
+ *  and the whole-session outcomes above the pose tests, which say the scan or
+ *  the camera has changed state.
+ *
+ *  Being strict here is not a stricter rule, it is a dead branch, and how dead
+ *  depends on how many of the four are counted. `too-soon` is recorded
+ *  immediately AFTER most overlap-waits - the refused attempt set
+ *  `lastRegistrationAt` on its way in, so the next grab inside 600 ms is
+ *  rate-limited - and four `alignment-wait` records sit between successive
+ *  registration attempts on a moving phone. So: reset by literally every other
+ *  outcome, a run never exceeds ONE on either recording, and no threshold above
+ *  one can fire at all. Resetting on `no-target` as well as the rest, the
+ *  wrong-lens recording reaches six only at 89.6 s of a 105.2 s scan, on its
+ *  24th refusal out of 25 - the cue arrives fifteen seconds before the end,
+ *  having stayed silent through twenty-three refusals, which is the complaint
+ *  issue #52 was filed about. With all four neutral it arrives on the ninth.
+ *
+ *  Exported so the replay test can count runs by this rule rather than keep a
+ *  second copy of it that could quietly disagree with this one. */
+export function endsOverlapRun(outcome: CaptureOutcome): boolean {
+  return outcome !== 'overlap-wait' && outcome !== 'alignment-wait'
+    && outcome !== 'too-soon' && outcome !== 'no-target' && outcome !== 'below-horizon';
+}
+
 /** The log records; it decides nothing. Bounded so a long-running scan
  *  cannot grow this without limit. */
 const CAPTURE_LOG_LIMIT = 4096;
@@ -269,6 +306,50 @@ const STILLNESS_BLIND_AFTER = 5;
  *  only for a frame the browser presented, so there the callback IS the
  *  delivery and the gate is never asked. */
 const MEDIA_GATE_BLIND_AFTER = 6;
+/** Consecutive `overlap-wait` refusals, in a scan with no saved lens
+ *  calibration, before the cue stops repeating the aim instruction and names
+ *  the camera view angle instead (issue #52). `registerFrame` fits a small
+ *  rigid rotation against the mosaic, a wrong lens SCALE cannot be absorbed by
+ *  a rotation, so `checkOverlap` returns `conflict` and every attempt at a
+ *  patch is refused - for as long as the user is willing to keep trying, while
+ *  the one control that would fix it is never mentioned.
+ *
+ *  Six is measured rather than chosen. The two recorded cases that differ in
+ *  exactly one field - the camera's short-axis field of view, 70 degrees
+ *  against the 60 the scanner assumes - over 264 grab attempts each. The
+ *  numbers below are read off the cached artifact,
+ *  `tools/photosphere_sim/cache/cases/<case>/result/captures.jsonl`, so a
+ *  reader can check them against the file on disk; replaying that case's
+ *  `input/` at b8581949, which is what the test does, reproduces every one of
+ *  them exactly.
+ *
+ *    chartyard-arc075-70: 25 overlap-wait outcomes, runs of 1,1,1,11,11 -
+ *                         reaching six 14.4 s into the first long one, at
+ *                         43.3 s of a 105.3 s scan, on the 9th refusal of 25,
+ *                         with 12 of the 25 carrying the cue; 9 accepted,
+ *                         52/91 cells;
+ *    chartyard-arc075-60:  2 overlap-wait outcomes, one run of 2, never within
+ *                         reach of six; 20 accepted, 88/91 cells.
+ *
+ *  So six is three times the worst the RIGHT lens produces and the wrong lens
+ *  clears it by five, and it puts the cue in front of the user less than halfway
+ *  through the scan rather than fifteen seconds before the end. It is still a
+ *  property of one recorded route, so the replay case asserts a threshold and
+ *  never a count.
+ *
+ *  In wall time it is at least 3.0 s of trying: successive registration
+ *  attempts are 600 ms apart at best (the rate limit that records `too-soon`),
+ *  and on the recorded sweep above the six took 14.4 s. The issue quotes 29
+ *  overlap-waits for the 70 case, measured at 230788d9; it is 25 today and the
+ *  finding is unchanged.
+ *
+ *  What counts as consecutive is `endsOverlapRun`, and that is where the
+ *  interesting part of this number lives - read it before changing either.
+ *
+ *  Exported, unlike its neighbours, so the replay case grades the threshold
+ *  this file actually ships: raising it to 1e9 has to redden that case, and it
+ *  cannot if the test carries its own 6. */
+export const LENS_DOUBT_AFTER = 6;
 /** How often the interval fallback grabs, and the cadence the frame-callback
  *  path throttles its own grabs to, so the two paths capture at one rate. It is
  *  also the RESOLUTION OF THE WITNESS on the fallback: that path observes only
@@ -341,6 +422,12 @@ export class PhotosphereSweep {
    *  Advanced only on the timer path - see `grabFrame`. */
   private mediaGateRefusals = 0;
   private mediaGateRefusalRun = 0;
+  /** The run of `overlap-wait` refusals in progress, counted over the attempts
+   *  that reached the overlap test (`endsOverlapRun`). Written only by
+   *  `recordCapture`, which is the one funnel every outcome passes through;
+   *  read only by `captureCue`; cleared with the rest of the session in
+   *  `stop()`, and so by `start()`, which calls it. */
+  private overlapWaitRun = 0;
   /** The media clock, in seconds, of the last reading the interval path took
    *  (see `newMediaFrame`, which consumes as it answers and advances this on
    *  every `true`). `null` until the first reading, taken in `start()` once
@@ -614,6 +701,30 @@ export class PhotosphereSweep {
       return 'The compass has gone quiet and the sky here has nothing to track, so nothing can vouch for the last direction. Bring some terrain or a building edge into the view.';
     if(!basis)return 'Waiting for the compass. Keep the camera open and move the phone gently.';
     if(this.alignmentWait)return 'Hold the phone still for a moment so the image and direction line up.';
+    // The scanner has refused to match this view over and over, and the lens is
+    // still the 60-degree estimate nobody has corrected. The line below asks the
+    // user to change their aim, which is not what is wrong; this names the one
+    // control that is (issue #52). It sits ABOVE the overlap line rather than
+    // replacing it, because the first few refusals really are the ordinary
+    // "come back to a green patch" moment - it is the REPETITION that makes the
+    // lens the likelier story. And it does not repeat the aim instruction: two
+    // remedies in one sentence is the user trying the wrong one first.
+    // Once a view angle has been measured and saved, `hasLensCalibration` is
+    // true and the ordinary line comes back - against a lens the user has
+    // actually given us, a refusal means again what it used to mean.
+    // It names the SETTING and quotes no control label. `setCameraViewAngle`
+    // has no caller in any committed component at b8581949 - the field is in a
+    // sibling session's unlanded rewrite of horizon.tsx - so a sentence
+    // quoting that field's label would be pointing at something this product
+    // does not have, and nothing here could keep the quote true through a
+    // rename (see the issue filed against the missing control). "camera view
+    // angle" is the phrase the capture-DOM case pins, and whatever lands
+    // should use those words.
+    // Ending a scan tears the capture panel down, so the setting is not where
+    // the user is standing when this fires: the route back to it is named
+    // rather than assumed.
+    if(this.overlapWaitRun>=LENS_DOUBT_AFTER && !this.lensCalibrated)
+      return 'I still can’t match this view. The camera view angle may be set wrong for this lens. End the scan, open the camera again, then set the camera view angle before you scan again.';
     if(this.overlapWait)return 'I can’t match this view yet. Return to a green patch, hold still, then move slowly toward the next blue dot. Keep the camera lens in the same spot.';
     if(this.justCaptured)return 'Captured. Move to another blue dot.';
     const target=this.aimTarget;
@@ -640,6 +751,12 @@ export class PhotosphereSweep {
 
   begin(): void {
     if (!this.ready || !this.compassReady) return;
+    // The run of overlap refusals belongs to a scan, not to a camera session,
+    // and this starts one. Unreachable today - the only path that clears
+    // `recording` without `stop()` records `read-failed`, which ends a run -
+    // but "unreachable by luck" is how a second `begin()` on a live sweep comes
+    // to open with a lens sentence before a single refusal.
+    this.overlapWaitRun = 0;
     this.frames = []; this.panorama = new SkyPanorama(); this.coveredCells.clear(); this.lastCaptureAt=null; this.scanSamples=[]; this.lastDiagnosticAt=-Infinity; this.hasCapturedFrame = false; this.recording = true;
   }
 
@@ -916,6 +1033,15 @@ export class PhotosphereSweep {
    *  anything - every gate below still returns its own `false` on its own
    *  terms, this just names which one fired. */
   private recordCapture(now: number, outcome: CaptureOutcome, extra?: { cell?: number; basis?: CameraBasis; sensorBasis?: CameraBasis; adjusted?: boolean }): void {
+    // The exception to "records, never decides", and here deliberately: this is
+    // the single point every outcome passes through, so the run of overlap
+    // refusals the cue reads cannot miss one. Counting it at the two
+    // `overlap-wait` return sites instead would leave a third site, added
+    // later, silently uncounted - and the reset would have to be repeated at
+    // every other `return` in `grabFrame`. It still decides nothing about THIS
+    // call: the gate below has already returned on its own terms.
+    if (outcome === 'overlap-wait') this.overlapWaitRun++;
+    else if (endsOverlapRun(outcome)) this.overlapWaitRun = 0;
     this.captureRecords.push({ at: now, outcome, ...extra });
     if (this.captureRecords.length > CAPTURE_LOG_LIMIT) this.captureRecords.splice(0, this.captureRecords.length - CAPTURE_LOG_LIMIT);
   }
@@ -1201,8 +1327,10 @@ export class PhotosphereSweep {
     // change) or the `play()` failure that calls `stop()` and throws does not.
     this.vouchSlopMs = CONTINUITY_SLOP_MS;
     this.lumaCanvas = null; this.stillnessFailures = 0;
-    // Counted per camera session, and this ends one.
-    this.mediaGateRefusals = 0; this.mediaGateRefusalRun = 0;
+    // Counted per camera session, and this ends one. The run of overlap
+    // refusals goes with them: a scan that ends mid-refusal must not hand the
+    // next one a cue about a lens the next one has not yet been refused over.
+    this.mediaGateRefusals = 0; this.mediaGateRefusalRun = 0; this.overlapWaitRun = 0;
     this.lastMediaTime = null; this.lastMediaAdvanceAt = -Infinity; this.presentedFrameId = null; this.lastCapturedFrameId = null; this.imageGate = null;
     this.stream?.getTracks().forEach((t) => t.stop());
     this.stream = null;
