@@ -193,12 +193,13 @@ filename order, the same construction as `frames`.
             "false_open_sr","false_blocked_sr","unresolved_sr","note",
             "obstacles":[{"id","truth_alt_peak","deficit_median","deficit_p95","width_missed_deg","min_width_deg","missed"}],
             "missed_obstructions":[ids],"north_offset_deg"},
- "overlay":{"samples","missing_fraction","frames_over_gate",
+ "overlay":{"samples","missing_fraction","frames_over_gate","duplicate_frame_ids",
             "moving":{"median_deg","p95_deg","max_deg"},"settled":{"median_deg","p95_deg","max_deg"}},
  "capture":{"holds","holds_with_capture","latency_ms":{"p95","max"},"accepted_frames"},
  "coverage":{"panorama_alpha_fraction","observable_fraction_covered","cells_covered_fraction"},
  "gates":{"landmarks_p95_lt_0_5","landmarks_p99_lt_1","no_omissions","no_duplicates","horizon_p95_lt_1","no_missed_obstructions","no_unresolved_boundary",
-          "overlay_settled_p95_lt_0_5","overlay_moving_p95_lt_1","capture_p95_le_1500","every_hold_captured","coverage_ge_0_95","pass"}}
+          "overlay_settled_p95_lt_0_5","overlay_moving_p95_lt_1","overlay_max_lt_10","no_duplicate_frames",
+          "capture_p95_le_1500","every_hold_captured","coverage_ge_0_95","pass"}}
 
 Angles are degrees, areas are steradians, times are milliseconds. Every
 percentile is `numpy`'s linear interpolation. A statistic with nothing to
@@ -231,10 +232,12 @@ is near no landmark of its colour is `spurious`.
 - A disc on a cylinder or a sphere is clipped again, because the truth paints
   a surface landmark only where the hit face's normal is within
   `acos(0.99)` of the declared one: on a host of radius `R` only a band
-  `R sin(acos(0.99))` wide survives, and the expected area is scaled by
-  `min(1, R sin(acos(0.99)) / radius_m)`. Without it the chart yard's `T1`,
-  a 0.08 m disc on a 0.25 m trunk, is measured against a model it can fill
-  only 44 per cent of and clears the filter by seven per cent.
+  `R sin(acos(0.99))` wide survives. A cylinder curves in one direction, so
+  the expected area is scaled by `min(1, R sin(acos(0.99)) / radius_m)`; a
+  sphere curves in both, so the same limit applies twice and the factor is
+  `min(1, (R sin(acos(0.99)) / radius_m)^2)`. Without the clip the chart
+  yard's `T1`, a 0.08 m disc on a 0.25 m trunk, is measured against a model
+  it can fill only 44 per cent of and clears the filter by seven per cent.
 - `per_landmark` carries all 52 landmarks in `landmarks.json` order, each with
   its `observable` flag and `expected_px`, the raster cells its disc should
   cover at its own altitude. Its `status` reconciles with the aggregates
@@ -279,10 +282,18 @@ no ray hit anything. Measured bin `i` of `N` covers
   `deficit_p95` summarise it, `width_missed_deg` is 0.1 degrees times the
   number of those bins whose deficit exceeds 1.0, and `min_width_deg` is the
   width the scene declares the obstacle must be found at. `missed` is
-  `deficit_median > 1.0`, or true for an obstacle that is visible but has no
-  resolved bin at all. The median, not the minimum: a bin at the edge of an
-  obstacle straddles a coarse measured bin and swings either way without the
-  obstacle being lost. `missed_obstructions` is the ids of the missed ones.
+  `deficit_median > 1.0 or (width_missed_deg is not None and min_width_deg > 0
+  and width_missed_deg >= min_width_deg)`, and true for an obstacle that is
+  visible but has no resolved bin at all. The median rather than the minimum,
+  because a bin at the edge of an obstacle straddles a coarse measured bin and
+  swings either way without the obstacle being lost; and the width beside it,
+  because the median cannot see a notch. The chart yard's roof spans 146
+  degrees, so cutting the declared 10 degree minimum width out of it leaves
+  1366 of 1466 bins right and the median at zero. An obstacle is found when it
+  is found, not when most of it is. The width term costs a correct boundary
+  nothing: a measured profile at or above the envelope has every deficit at or
+  below zero, so `width_missed_deg` is 0.0 at every resolution.
+  `missed_obstructions` is the ids of the missed ones.
 - Scoring an obstacle against the envelope scores whatever is tallest at those
   azimuths. The chart yard's trunk stands under its canopy, so the envelope
   over the trunk's span is 45.8 degrees against the trunk's own 21.5: a
@@ -298,12 +309,22 @@ no ray hit anything. Measured bin `i` of `N` covers
 - Overlay error is the angle between an `events.jsonl` line's `basis.forward`
   and that frame's truth `forward`. A frame is `moving` when its truth
   `angular_rate_deg_s` exceeds 2, else `settled`. `missing_fraction` is the
-  lines that could not be scored over all lines: a null basis, and a
-  `frame_id` the case never delivered, which is a sample with no pose and
+  lines that could not be scored over the lines considered: a null basis, and
+  a `frame_id` the case never delivered, which is a sample with no pose and
   cannot be dropped from the denominator either. `max_deg` and
   `frames_over_gate` (samples above their own class's gate, 1.0 moving and 0.5
   settled) are reported beside the percentiles, because one frame in a
   thousand pointing three degrees wrong moves no percentile at all.
+  `frames_over_gate` is informational; the gate over a single sample is
+  `overlay_max_lt_10`.
+- A `frame_id` on more than one line is delivered more than once. The FIRST
+  line for an id is the one scored and the later ones are not considered at
+  all: they are not samples, and they are not in `missing_fraction`'s
+  denominator. `duplicate_frame_ids` is how many ids appeared more than once,
+  and `no_duplicate_frames` reads it. Counting a repeat as another sample
+  would let a scanner raise its own sample count by reprocessing a frame, and
+  scoring the later line would let a second answer overwrite the answer
+  already given for that frame.
 - Holds are walked in `from_ms` order and each takes the first
   `captures.jsonl` record with `outcome == "accepted"` and
   `from_ms <= at <= to_ms + 1500` that no earlier hold has claimed; the
@@ -325,7 +346,12 @@ Thresholds are the provisional gates of
 held fixed for comparability: landmarks p95 below 0.5 and p99 below 1.0
 degrees; horizon p95 below 1.0; overlay p95 below 0.5 settled and 1.0 moving;
 capture p95 at most 1500 ms with every hold captured; coverage at least 0.95
-of the observable region. `pass` is the AND of every other gate.
+of the observable region. Two gates are this simulator's own rather than
+section 9's, because section 10 requires the corruptions they catch to
+produce a failing result: no overlay sample 10 degrees or more out
+(`overlay_max_lt_10`, which no percentile can reach) and no frame delivered
+twice (`no_duplicate_frames`). `pass` is the AND of every other gate; there
+are fifteen names in all.
 
 A gate over no evidence fails where evidence was expected: a blank panorama
 fails the landmark gates, a wholly uncertain boundary fails the horizon gates,
