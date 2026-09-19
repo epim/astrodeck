@@ -24,8 +24,15 @@ Three rules the whole module keeps.
 What the corrupted basis vectors mean is worth stating, because two of these
 deliberately produce a basis no real device could export: ``mirror`` reflects
 the basis, which is improper, and ``focal`` warps ``forward`` alone, which
-leaves it no longer perpendicular to ``right`` and ``up``. The scorer reads
-``forward`` and nothing else, and these are faults, not device models.
+leaves it no longer perpendicular to ``right`` and ``up``. These are faults,
+not device models. Issue #59: the scorer reads ``right`` and ``up`` as well
+as ``forward`` now, so ``focal``'s untouched ``right``/``up`` still read as
+zero per-axis error while the whole warp lands on ``forward``, and
+``mirror``'s reflected ``right``/``up`` carry their own large error beside
+it. ``roll`` is the odd one out: it rotates ``right`` and ``up`` about their
+own ``forward`` and leaves that forward untouched, which IS a basis a real
+device can hold -- it is the fault the fix exists to catch, not another
+impossible one.
 """
 
 from __future__ import annotations
@@ -189,6 +196,56 @@ def _yaw(case_dir: Path, out_dir: Path, deg: float = 1.0) -> None:
                 continue
             for key in ("right", "up", "forward"):
                 basis[key] = _rotate_about_up(basis[key], deg)
+
+    _edit_events(out_dir, turn)
+
+
+def _rotate_about_axis(vector, axis, deg: float) -> list:
+    """Rotate ``vector`` by ``deg`` degrees about the unit ``axis``.
+
+    Rodrigues' formula, ``v cos(d) + (axis x v) sin(d) + axis (axis . v) (1 -
+    cos(d))``. ``axis`` is renormalised so the caller may pass a basis vector
+    straight through even if it carries rounding error.
+    """
+    radians = math.radians(deg)
+    cos, sin = math.cos(radians), math.sin(radians)
+    v = np.asarray([float(x) for x in vector], dtype=np.float64)
+    a = np.asarray([float(x) for x in axis], dtype=np.float64)
+    a = a / np.linalg.norm(a)
+    rotated = v * cos + np.cross(a, v) * sin + a * float(np.dot(a, v)) * (1.0 - cos)
+    return [float(x) for x in rotated]
+
+
+def _roll(case_dir: Path, out_dir: Path, deg: float = 3.0) -> None:
+    """Turn every event's ``right`` and ``up`` about its OWN ``forward`` by ``deg``.
+
+    Issue #59: the overlay metric used to read `forward` alone, so a roll --
+    `right` and `up` rotated about the aim while `forward` itself holds still
+    -- was invisible to it end to end. This is the corruption that proves the
+    fix: `forward` is untouched here on purpose, and only a metric that also
+    reads `right` and `up` can see anything moved.
+
+    Only the overlay carries roll. The raster and the boundary are built from
+    `forward` alone (CONTRACT.md's raster mapping has no notion of the image's
+    own up), so this corruption never touches `panorama.png` or
+    `horizon.json`, unlike `yaw`, `focal` and `mirror`.
+
+    Rotating `right` and `up` by the same angle about `forward` keeps the
+    basis orthonormal: `forward` is untouched, ``right`` and ``up`` are each
+    rotated in the plane perpendicular to it (they are already perpendicular
+    to `forward` in a real basis), so lengths and the three pairwise dot
+    products are preserved to floating-point precision.
+    """
+    deg = float(deg)
+
+    def turn(events):
+        for event in events:
+            basis = _basis_vectors(event)
+            if basis is None:
+                continue
+            axis = basis["forward"]
+            for key in ("right", "up"):
+                basis[key] = _rotate_about_axis(basis[key], axis, deg)
 
     _edit_events(out_dir, turn)
 
@@ -517,6 +574,7 @@ def _duplicate_frame(case_dir: Path, out_dir: Path, index: int | None = None) ->
 #: Every corruption by the name the CLI and the tests use.
 CORRUPTIONS = {
     "yaw": _yaw,
+    "roll": _roll,
     "north-wrap": _north_wrap,
     "focal": _focal,
     "flip-vertical": _flip_vertical,

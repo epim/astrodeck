@@ -279,7 +279,8 @@ filename order, the same construction as `frames`.
                          "visible_width_deg","resolvable","resolvable_width_deg","missed"}],
             "missed_obstructions":[ids],"north_offset_deg"},
  "overlay":{"samples","missing_fraction","frames_over_gate","duplicate_frame_ids",
-            "moving":{"median_deg","p95_deg","max_deg"},"settled":{"median_deg","p95_deg","max_deg"}},
+            "moving":{"median_deg","p95_deg","max_deg","max_forward_deg","max_right_deg","max_up_deg"},
+            "settled":{"median_deg","p95_deg","max_deg","max_forward_deg","max_right_deg","max_up_deg"}},
  "capture":{"holds","holds_satisfied","holds_captured","holds_already_covered","holds_with_capture",
             "latency_ms":{"p95","max"},"accepted_frames"},
  "coverage":{"panorama_alpha_fraction","observable_fraction_covered","cells_covered_fraction"},
@@ -422,17 +423,24 @@ no ray hit anything. Measured bin `i` of `N` covers
 
 ### Overlay, capture, coverage
 
-- Overlay error is the angle between an `events.jsonl` line's `basis.forward`
-  and that frame's truth `forward`. A frame is `moving` when its truth
-  `angular_rate_deg_s` exceeds 2, else `settled`. `missing_fraction` is the
-  lines that could not be scored over the lines considered: a null basis, and
-  a `frame_id` the case never delivered, which is a sample with no pose and
-  cannot be dropped from the denominator either. `max_deg` and
-  `frames_over_gate` (samples above their own class's gate, 1.0 moving and 0.5
-  settled) are reported beside the percentiles, because one frame in a
-  thousand pointing three degrees wrong moves no percentile at all.
-  `frames_over_gate` is informational; the gate over a single sample is
-  `overlay_max_lt_10`.
+- Overlay error is the MAXIMUM of the three angles between an `events.jsonl`
+  line's `basis.forward`/`right`/`up` and that frame's truth
+  `forward`/`right`/`up`. Issue #59: `forward` alone cannot see roll -- a
+  basis whose `right` and `up` are rotated about `forward` by any amount,
+  with `forward` itself untouched, is a perfect match under a forward-only
+  metric, which is exactly what `sim.corrupt`'s `roll` produces and the
+  production registration never fits. `max_forward_deg`, `max_right_deg` and
+  `max_up_deg` report each axis's own worst angle beside the combined
+  maximum, because the combined figure alone does not say which axis moved.
+  A frame is `moving` when its truth `angular_rate_deg_s` exceeds 2, else
+  `settled`. `missing_fraction` is the lines that could not be scored over the
+  lines considered: a null basis, and a `frame_id` the case never delivered,
+  which is a sample with no pose and cannot be dropped from the denominator
+  either. `max_deg` and `frames_over_gate` (samples above their own class's
+  gate, 1.0 moving and 0.5 settled, read on the combined maximum) are
+  reported beside the percentiles, because one frame in a thousand pointing
+  three degrees wrong moves no percentile at all. `frames_over_gate` is
+  informational; the gate over a single sample is `overlay_max_lt_10`.
 - A `frame_id` on more than one line is delivered more than once. The FIRST
   line for an id is the one scored and the later ones are not considered at
   all: they are not samples, and they are not in `missing_fraction`'s
@@ -536,6 +544,7 @@ and their parameters, spec section 10:
 | name | parameters | what it does |
 |---|---|---|
 | `yaw` | `deg` | turns raster, boundary and overlay east by `deg` |
+| `roll` | `deg` | rotates every event's `right`/`up` about its own `forward` by `deg`, `forward` untouched |
 | `north-wrap` | | `yaw` with `deg = 350`, which is 10 degrees west |
 | `focal` | `scale` | every altitude to `atan(scale tan alt)` |
 | `flip-vertical` | | reverses the raster's rows |
