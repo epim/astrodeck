@@ -133,11 +133,16 @@ the canopy is indistinguishable from one that also found the trunk.
   and the orientation is `look_basis(az(t), alt(t), 0)`: the camera is carried
   around the body at arm's length and rises as the view tilts up.
 - `aims`: ordered `[az, alt]` targets. Between consecutive aims the view moves
-  along the shorter azimuth arc with a smoothstep profile over `move_s`
-  seconds, then holds for `hold_s`. Holds are listed in `holds.json`. A move
-  whose great-circle angle exceeds 30 degrees times `move_s` takes `angle /
-  30` seconds instead, at the same smoothstep profile, so no move averages
-  more than 30 degrees per second.
+  as one rotation from the start's `look_basis(az, alt, 0)` to the end's,
+  decomposed into a swing (the minimal rotation carrying the start's forward
+  direction to the end's along their great circle) and a twist (the roll,
+  about the resulting forward, needed to reach the end's exact right/up),
+  both driven by the same smoothstep profile over the move's duration, then
+  holds for `hold_s`. Holds are listed in `holds.json`. A move's duration is
+  `move_s`, unless `theta = sqrt(swing_deg^2 + twist_deg^2)` exceeds `30 *
+  move_s` degrees, in which case it takes `theta / 30` seconds instead, at
+  the same smoothstep profile, so the combined rotation -- forward and roll
+  together -- never averages more than 30 degrees per second.
 - `sweeps`: `[{"az","alt_from","alt_to","duration_s","hold_s"}]` appended
   after the aims: hold at `(az, alt_from)`, tilt linearly to `alt_to` over
   `duration_s`, hold again.
