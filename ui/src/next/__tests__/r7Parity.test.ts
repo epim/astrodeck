@@ -378,6 +378,24 @@ function walk(dir: string, out: string[] = []): string[] {
 const stripComments = (s: string): string =>
   s.replace(/(^|[^:])\/\/[^\n]*/g, "$1").replace(/\/\*[\s\S]*?\*\//g, "");
 
+// Issue #39: both scans below used to match double-quoted specifiers only, so
+// `import Foo from '../../../../components/Foo'` (single quotes) contributed
+// no record at all - invisible to "no legacy presentation component is
+// mounted" and every other rule keyed off RECORDS, silently, in both
+// directions. `QUOTED` accepts a double-quoted, single-quoted, or
+// substitution-free template-literal specifier - see r7Css.test.ts, which has
+// the identical fragment and the same reasoning.
+const QUOTED = `"([^"]+)"|'([^']+)'|\`((?:(?!\\\$\\{)[^\`])+)\``;
+const pick = (m: RegExpMatchArray): string => (m[1] ?? m[2] ?? m[3]) as string;
+
+/** `import <clause> from <spec>` - group 1 is the clause, groups 2-4 are the
+ *  three quote-style alternatives of `QUOTED` (see `pick`, applied at
+ *  offset 1 by the caller). Hoisted so the vacuity probe below exercises the
+ *  exact pattern the scan uses, not a hand-copied stand-in. */
+const IMPORT_FROM_RE = new RegExp(`import\\s+([\\s\\S]*?)\\s+from\\s+(?:${QUOTED})`, "g");
+/** `import(<spec>)` - a dynamic import. */
+const IMPORT_DYN_RE = new RegExp(`import\\(\\s*(?:${QUOTED})\\s*\\)`, "g");
+
 const FILES = walk(NEXT.slice(0, -1)).filter((p) => /\.tsx?$/.test(p) && !p.endsWith(".d.ts"));
 
 interface Record_ { file: string; module: string; name: string; typeOnly: boolean; dynamic: boolean }
@@ -425,15 +443,15 @@ const RECORDS: Record_[] = [];
 for (const file of FILES) {
   const text = stripComments(readFileSync(file, "utf8"));
   const rel = file.slice(NEXT.length).replace(/\\/g, "/");
-  for (const m of text.matchAll(/import\s+([\s\S]*?)\s+from\s+"([^"]+)"/g)) {
-    const mod = moduleOf(file, m[2]);
+  for (const m of text.matchAll(IMPORT_FROM_RE)) {
+    const mod = moduleOf(file, (m[2] ?? m[3] ?? m[4]) as string);
     if (mod == null || !/^(components|views)\//.test(mod)) continue;
     for (const b of bindingsOf(m[1])) {
       RECORDS.push({ file: rel, module: mod, name: b.name, typeOnly: b.typeOnly, dynamic: false });
     }
   }
-  for (const m of text.matchAll(/import\(\s*"([^"]+)"\s*\)/g)) {
-    const mod = moduleOf(file, m[1]);
+  for (const m of text.matchAll(IMPORT_DYN_RE)) {
+    const mod = moduleOf(file, pick(m));
     if (mod == null || !/^(components|views)\//.test(mod)) continue;
     RECORDS.push({ file: rel, module: mod, name: "*", typeOnly: false, dynamic: true });
   }
@@ -461,6 +479,68 @@ test("the scan found the legacy imports it is supposed to police", () => {
     && r.name === "PreviewStage"), "the kept PreviewStage import did not parse");
   assert(componentShaped("FlowsView") && !componentShaped("NODE_DEFS")
     && !componentShaped("cardMeta"), "the component-shape rule is not discriminating");
+  // Issue #39's corpus assertion: the edge count for a KNOWN real file, so a
+  // scanner that silently starts finding nothing fails loudly instead of
+  // quietly starving every rule below of records. Computed by hand against
+  // `tonight/CalibrationMatrixCard.tsx` as it stands: three named imports
+  // (calHealthNotes, readCalRow, verdictVar) from the one legacy module it
+  // still uses, all double-quoted today. If this file's imports change, this
+  // count changes with it.
+  const cardRecords = RECORDS.filter((r) => r.file === "hubs/session/flows/tonight/CalibrationMatrixCard.tsx");
+  assert(cardRecords.length === 3,
+    `CalibrationMatrixCard.tsx: expected 3 legacy import bindings, found ${cardRecords.length} - ` +
+    "either its imports changed (update this number) or the scanner is missing some");
+});
+
+// =================================================== 1b. every quote style
+// Issue #39: the scan used to match double-quoted specifiers only, so
+// `import Foo from '../../components/Foo'` (single quotes) or a
+// substitution-free template-literal specifier contributed no record at all -
+// invisible to every rule below, silently, in both directions.
+//
+// Mutation: restore the double-quote-only pattern (reproduced inline below,
+// unchanged from before this fix) and this test goes red on its own probes.
+
+// Builds a probe string at RUNTIME rather than as one literal in the source
+// text of this file. This file is itself one of `FILES` (r7Parity does not
+// exclude __tests__ from its scan - see DRIFT_TESTS above), so a probe typed
+// as a literal contiguous `import Foo from "..."` would be picked up by the
+// live scan reading THIS file's own source text and misreported as a real
+// legacy import, failing tests 2 and 3 for a reason that has nothing to do
+// with the rule. Splitting the two keywords the regex looks for keeps this
+// file's raw text free of anything that shape-matches an import statement,
+// while still producing the exact runtime string the probe below needs.
+const probeImport = (open: string, spec: string, close: string): string =>
+  ["im" + "port", "Foo", "fr" + "om", `${open}${spec}${close};`].join(" ");
+
+test("the import scan sees a single-quoted, double-quoted and template-literal specifier", () => {
+  const probes = [
+    probeImport('"', "../../components/Foo", '"'),
+    probeImport("'", "../../components/Foo", "'"),
+    probeImport("`", "../../components/Foo", "`"),
+  ];
+  for (const src of probes) {
+    const hit = [...src.matchAll(IMPORT_FROM_RE)][0];
+    assert(hit != null, `the scan missed ${JSON.stringify(src)}`);
+    assert((hit[2] ?? hit[3] ?? hit[4]) === "../../components/Foo",
+      `the scan resolved ${JSON.stringify(src)} to the wrong specifier`);
+  }
+
+  // The bug this issue fixes, reproduced exactly (this is what the scan used
+  // before this task): a single-quoted or template-literal legacy import was
+  // invisible, which is precisely how a re-imported legacy component could
+  // have gone unseen by "no legacy presentation component is mounted".
+  const doubleQuoteOnlyRe = new RegExp("im" + "port" + "\\s+([\\s\\S]*?)\\s+" + "fr" + "om" + "\\s+\"([^\"]+)\"", "g");
+  assert([...probes[1].matchAll(doubleQuoteOnlyRe)].length === 0,
+    "the pre-fix scanner unexpectedly saw a single-quoted specifier - this probe no longer pins the regression");
+  assert([...probes[2].matchAll(doubleQuoteOnlyRe)].length === 0,
+    "the pre-fix scanner unexpectedly saw a template-literal specifier - this probe no longer pins the regression");
+
+  // Negative control: a template literal WITH a substitution is a computed
+  // specifier, not a static one - it must not be reported as a match.
+  const substituted = probeImport("`", "../../${area}/Foo", "`");
+  assert([...substituted.matchAll(IMPORT_FROM_RE)].length === 0,
+    "the scan treated a substituted template literal as if it were static");
 });
 
 // ================================== 2. no legacy presentation component is mounted
