@@ -1,6 +1,6 @@
 # Photosphere simulator: the stage A baseline
 
-Date: 2026-09-18
+Date: 2026-09-18. Refreshed: 2026-09-19.
 Status: measured baseline. This is the exit evidence for stage A of
 [the simulator specification](16-photosphere-calibration-simulator.md)
 (section 11.A). It records what the shipped photosphere scanner does on three
@@ -17,6 +17,45 @@ their hashes or numbers carry over: the reading at `1a98a8d8`, taken before a
 move became a swing-twist of the full attitude, and the reading at `52df7eb3`,
 whose two arc cases carried the 1.5 m camera teleport at the zenith crossing
 that issue #56 describes.
+
+**2026-09-19 refresh.** The
+[photosphere issue pass](../../.superpowers/sdd/2026-09-18-photosphere-issue-pass/progress.md)
+landed thirteen commits between `d4b3fe91` and `3fbd2039` (`git log --oneline
+d4b3fe91..HEAD`), six of which touch what this instrument measures: `1df2b18f`
+(#38, stillness bounds, no score change here), `08cc613b` (#53, the obstacle
+miss rule now grades what the product can resolve), `0bcb62ca` (#59, the
+overlay error is the max of three axes, not `forward` alone), `88551099` (#52,
+the lens-doubt cue names the view angle, no score change), `b1e629f1` (#57,
+every direction above the horizon has an aim-cone target), and `3fbd2039`
+(#58, the horizon tracer finds the sky boundary by its transition rather than
+a luminance threshold). The three cases were replayed and scored again at that
+HEAD, unchanged inputs (same hashes, confirmed in section 2.2), and every
+table below carries the 2026-09-18 numbers beside today's so a reader can see
+what each commit moved. Section 4 keeps the first baseline's forensic prose
+where it still describes the shipped code, marks a "what the first baseline
+said" note where a mechanism has since been fixed, and section 4.6 and the
+roof run-breakdown in section 4.3 are replaced with what is true now.
+
+The whole-branch review's fix wave, `9a7f4f88` (#75, hysteresis on the
+gradient floor, and six minors), landed after the tables in this document
+were taken; the three cases were replayed and scored again at that HEAD and
+every number was unchanged from the reading below, so it changed no number
+here, only the tested build's hash.
+
+The replaying tree carried one uncommitted change not part of this pass: the
+other session's in-progress edits to `ui/src/next/hubs/sky/sheets/horizon.tsx`,
+`horizonStrip.ts` and `__tests__/horizonDom.test.tsx` (`git status --porcelain`
+at the time of this refresh showed exactly those three files and nothing else
+under `ui/src/next/hubs/sky/sheets` or `tools/photosphere_sim`). None of the
+three files the diff touches is read by `PhotosphereSweep`, the replay driver,
+or the scorer -- `horizon.tsx` is the editor screen the finished panorama is
+reviewed on, not the scanning path -- but `result/summary.json`'s `app_commit`
+still reports `9a7f4f88d5a78d811fbcd432d0cf8a00d6c5b440-dirty` for that reason,
+per `CONTRACT.md`'s rule that a bare hash on a score taken from an edited tree
+would name code that was never replayed. Every number in this refresh is
+therefore stamped `-dirty` against a diff that does not touch the measured
+code, which is recorded here rather than left for a reader to have to
+re-derive.
 
 ## 1. Purpose
 
@@ -103,11 +142,22 @@ intrinsics differ.
 | chartyard-arc075-60 | `74e8a4610b713aeae99342bdb2117b3f0fa4e8f569c433b18d41c0af6719185e` |
 | chartyard-arc075-70 | `e7185b24f4454dde46d9305d793c539f4f800dcf61f0cdbc7d7723268f239d4d` |
 
-The tested build is `app_commit` `9e3097fb2e1c7308eb36e7bdfe1ddcb3eb837683` on
-branch `feat/photosphere-production`, read from `result/summary.json`, which the
+The tested build for the 2026-09-18 reading was `app_commit`
+`9e3097fb2e1c7308eb36e7bdfe1ddcb3eb837683` on branch
+`feat/photosphere-production`, read from `result/summary.json`, which the
 replay driver stamps from the working tree. The manifest's own
 `versions.app_commit` is `null`: a case is built by the simulator and does not
 belong to an application build.
+
+**2026-09-19 refresh.** All three cases were replayed and scored again without
+rebuilding them -- the manifest and `input_hash` values above are unchanged,
+confirmed byte for byte against this reading -- at `app_commit`
+`9a7f4f88d5a78d811fbcd432d0cf8a00d6c5b440-dirty` (the `-dirty` suffix and why
+it is present despite no measured file being edited are explained in the
+refresh note at the top of this document). This is the pass's final HEAD,
+after the whole-branch review's fix wave (`9a7f4f88`); replaying and scoring
+at that HEAD changed no number from the reading recorded below, which was
+taken one commit earlier at `3fbd2039`.
 
 **Determinism.** After the three cases were built, replayed and scored,
 `chartyard-still-60` was built, replayed and scored a second time into a
@@ -138,6 +188,25 @@ python -m sim score chartyard-still-60 --cases cache/scratch-determinism
 The only difference anywhere in the two runs is the path `sim score` prints for
 the report it wrote. Renderer, recorder, truth, jsdom replay and scorer are
 therefore reproducible end to end on this machine.
+
+**2026-09-19 refresh.** Determinism was re-checked at the pass's HEAD at the
+time (`3fbd2039`, one commit before the fix wave described above), on the
+replay and scoring half of the pipeline (this refresh did not rebuild any case
+with `make-case`, since the corpus is unchanged and re-hashed as such above):
+`chartyard-still-60`'s `input/` and `truth/` were copied to a second, separate
+directory with no `result/` of their own, replayed independently, and
+compared against the result already on record.
+
+| compared between the two independent replays | result |
+|---|---|
+| `result/summary.json` | byte identical |
+| `result/panorama.png` | byte identical |
+
+Both carry `app_commit` `3fbd2039053ed3709574af8661602aff55cbed33-dirty`. The
+replay and scoring pipeline is therefore still reproducible on this machine at
+this HEAD; the renderer half of determinism (make-case-to-make-case) was
+established at the 2026-09-18 reading above and was not re-run, since nothing
+in this pass touches `sim/render.py`, `sim/truth.py` or `sim/scene.py`.
 
 ### 2.3 The commands
 
@@ -216,190 +285,310 @@ except the capture outcome histogram, which is a count over
 
 ### 3.1 Gates
 
-| gate | still-60 | arc075-60 | arc075-70 | ideal (still-60) |
-|---|---|---|---|---|
-| `landmarks_p95_lt_0_5` | PASS | PASS | FAIL | PASS |
-| `landmarks_p99_lt_1` | PASS | FAIL | FAIL | PASS |
-| `no_omissions` | PASS | FAIL | FAIL | PASS |
-| `no_duplicates` | PASS | PASS | FAIL | PASS |
-| `horizon_p95_lt_1` | FAIL | FAIL | FAIL | PASS |
-| `no_missed_obstructions` | FAIL | FAIL | FAIL | PASS |
-| `no_unresolved_boundary` | PASS | PASS | FAIL | PASS |
-| `overlay_settled_p95_lt_0_5` | PASS | PASS | FAIL | PASS |
-| `overlay_moving_p95_lt_1` | PASS [P] | PASS [P] | FAIL | PASS |
-| `overlay_max_lt_10` | PASS | PASS | PASS | PASS |
-| `no_duplicate_frames` | PASS | PASS | PASS | PASS |
-| `capture_p95_le_1500` | PASS | PASS | PASS | PASS |
-| `every_hold_captured` | FAIL | FAIL | FAIL | PASS |
-| `coverage_ge_0_95` | PASS | PASS | FAIL | PASS |
-| `pass` | FAIL | FAIL | FAIL | PASS |
+Each cell below is `before this pass (2026-09-18) -> after (2026-09-19)`. A
+gate with no arrow did not change on that case; the task/commit column names
+what changed it where one did.
 
-[P] Phase-locked, not measured: 443 of the 460 moving samples on those two
-cases are exactly zero, because the sensor emitted a reading at the frame's own
-capture instant and the scanner's interpolation was never exercised (section
-3.4). The cell says PASS; it does not say the scanner tracked a moving view to
-within a degree.
+| gate | still-60 | arc075-60 | arc075-70 | ideal (still-60) | changed by |
+|---|---|---|---|---|---|
+| `landmarks_p95_lt_0_5` | PASS | PASS | FAIL | PASS | -- |
+| `landmarks_p99_lt_1` | PASS | FAIL | FAIL | PASS | -- |
+| `no_omissions` | PASS | FAIL | FAIL | PASS | -- |
+| `no_duplicates` | PASS | PASS | FAIL | PASS | -- |
+| `horizon_p95_lt_1` | FAIL | FAIL | FAIL | PASS | -- (numbers moved a lot, verdict did not: task 12, #58, `3fbd2039`) |
+| `no_missed_obstructions` | FAIL -> PASS | FAIL | FAIL -> PASS | PASS | task 10 (#53, `08cc613b`) + task 12 (#58, `3fbd2039`) together; task 11 (#57, `b1e629f1`) changed which frames arc075-70 captures |
+| `no_unresolved_boundary` | PASS | PASS | FAIL | PASS | -- |
+| `overlay_settled_p95_lt_0_5` | PASS | PASS | FAIL | PASS | -- |
+| `overlay_moving_p95_lt_1` | PASS [P] | PASS [P] | FAIL | PASS | -- |
+| `overlay_max_lt_10` | PASS | PASS | PASS -> FAIL | PASS | task 13 (#59, `0bcb62ca`) changed the metric to the max of three axes; task 11 (#57) changed arc075-70's targeting enough to push the combined maximum from 8.369 to 10.038 (issue #70) |
+| `no_duplicate_frames` | PASS | PASS | PASS | PASS | -- |
+| `capture_p95_le_1500` | PASS | PASS | PASS | PASS | -- |
+| `every_hold_captured` | FAIL -> PASS | FAIL | FAIL | PASS | task 11 (#57, `b1e629f1`): the zenith aim cone now covers every direction above the horizon |
+| `coverage_ge_0_95` | PASS | PASS | FAIL | PASS | -- |
+| `pass` | FAIL | FAIL | FAIL | PASS | still FAIL on all three; still-60 now fails on exactly one gate |
 
-| case | gates failing, of the fourteen that `pass` is the AND of |
-|---|---|
-| chartyard-still-60 | 3 |
-| chartyard-arc075-60 | 5 |
-| chartyard-arc075-70 | 11 |
-| ideal (still-60) | 0 |
+[P] Phase-locked, not measured: the moving median is still of order 1e-14
+degrees on both 60 degree cases, because the sensor emitted a reading at the
+frame's own capture instant and the scanner's interpolation was never
+exercised (section 3.4). This did not change in the pass. The cell says PASS;
+it does not say the scanner tracked a moving view to within a degree.
+
+| case | gates failing, of the fourteen that `pass` is the AND of | before this pass | after |
+|---|---|---|---|
+| chartyard-still-60 | now | 3 | **1** |
+| chartyard-arc075-60 | now | 5 | 5 (same set: task 12's re-review confirmed "arc075-60 gates unchanged") |
+| chartyard-arc075-70 | now | 11 | 11 (same count, different set: `no_missed_obstructions` joined the passing side, `overlay_max_lt_10` left it) |
+| ideal (still-60) | now | 0 | 0 |
+
+`chartyard-still-60` now fails only `horizon_p95_lt_1` (p95 20.56 degrees,
+section 3.3): the two gates issues #57 and #58 targeted are both fixed on this
+case, and the remaining failure is the coarse-bin mechanism section 4.1
+describes, now the dominant one instead of the smallest of three.
 
 The ideal column is the same case's `ideal/` directory: the result a perfect
 scanner would have written, built from the case's own truth by ray casting. It
 is in the table so that every other column can be read against the instrument's
-own floor rather than against zero.
+own floor rather than against zero. It was rebuilt and rescored for this
+refresh; every figure below is identical to 2026-09-18's, as expected, since
+`sim/ideal.py` is untouched by this pass.
 
 ### 3.2 Landmarks
+
+No task in this pass changes landmark scoring or the camera model, so
+`chartyard-still-60` and `chartyard-arc075-60` are unchanged to three decimal
+places. `chartyard-arc075-70`'s figures moved, because tasks 11 and 12 changed
+which frames the scanner captures and how the mosaic is painted, which changes
+the panorama the landmark blobs are read from, even though no landmark code
+was touched. Each cell is `before this pass -> after`; no arrow means
+unchanged.
 
 | | still-60 | arc075-60 | arc075-70 | ideal |
 |---|---|---|---|---|
 | expected (observable) | 40 | 40 | 40 | 40 |
-| found | 40 | 34 | 28 | 40 |
-| omitted | 0 | 6 | 10 | 0 |
-| duplicated | 0 | 0 | 2 | 0 |
-| slivers | 0 | 0 | 2 | 2 |
-| spurious | 0 | 3 | 8 | 0 |
-| error median (deg) | 0.059 | 0.051 | 4.099 | 0.030 |
-| error p95 (deg) | 0.150 | 0.148 | 7.700 | 0.084 |
-| error p99 (deg) | 0.225 | 2.508 | 7.929 | 0.209 |
-| error max (deg) | 0.264 | 3.663 | 7.986 | 0.266 |
+| found | 40 | 34 | 28 -> 26 | 40 |
+| omitted | 0 | 6 | 10 -> 11 | 0 |
+| duplicated | 0 | 0 | 2 -> 3 | 0 |
+| slivers | 0 | 0 | 2 -> 1 | 2 |
+| spurious | 0 | 3 | 8 -> 10 | 0 |
+| error median (deg) | 0.059 | 0.051 | 4.099 -> 4.980 | 0.030 |
+| error p95 (deg) | 0.150 | 0.148 | 7.700 -> 7.390 | 0.084 |
+| error p99 (deg) | 0.225 | 2.508 | 7.929 -> 7.805 | 0.209 |
+| error max (deg) | 0.264 | 3.663 | 7.986 -> 7.933 | 0.266 |
+
+The ideal's landmark figures are unchanged (`sim/ideal.py` is untouched by
+this pass); its 2 slivers are the same ones the 2026-09-18 reading found.
 
 `per_landmark` carries all 52 entries of `landmarks.json`; the twelve that are
 not observable from `c_ref` are outside `expected` and outside the percentiles.
 
-Omitted and duplicated landmarks, with their direction from `c_ref`:
+Omitted and duplicated landmarks, with their direction from `c_ref`. The
+still-60 and arc075-60 sets are unchanged from 2026-09-18. chartyard-arc075-70's
+set is different in both membership and count from the 2026-09-18 reading,
+which is included alongside it because no task explicitly targeted this case's
+landmark set and the change is otherwise easy to mistake for noise:
 
-| id | az (deg) | alt (deg) | host | status |
-|---|---|---|---|---|
-| W1 | 95.7 | 9.0 | wall-east | omitted in arc075-60 and arc075-70 |
-| W2 | 59.9 | -9.8 | wall-east | omitted in arc075-60 and arc075-70 |
-| RF1 | 161.1 | 39.0 | roof-south | omitted in arc075-60 and arc075-70 |
-| RF2 | 195.0 | 23.4 | roof-south | omitted in arc075-60 and arc075-70 |
-| R3K1 | 103.0 | 55.0 | background | omitted in arc075-60 and arc075-70 |
-| R4K1 | 120.0 | 75.0 | background | omitted in arc075-60 |
-| T1 | 39.6 | 3.7 | trunk | omitted in arc075-70 |
-| R1K4 | 219.0 | 15.0 | background | omitted in arc075-70 |
-| R1K5 | 282.0 | 15.0 | background | omitted in arc075-70 |
-| R2K4 | 236.0 | 35.0 | background | omitted in arc075-70 |
-| R3K4 | 253.0 | 55.0 | background | omitted in arc075-70 |
-| R2K1 | 86.0 | 35.0 | background | duplicated in arc075-70 |
-| R2K6 | 331.0 | 35.0 | background | duplicated in arc075-70 |
+| id | az (deg) | alt (deg) | host | status, 2026-09-18 | status, 2026-09-19 |
+|---|---|---|---|---|---|
+| W1 | 95.7 | 9.0 | wall-east | omitted in arc075-60 and arc075-70 | omitted in arc075-60 and arc075-70 |
+| W2 | 59.9 | -9.8 | wall-east | omitted in arc075-60 and arc075-70 | omitted in arc075-60 and arc075-70 |
+| RF1 | 161.1 | 39.0 | roof-south | omitted in arc075-60 and arc075-70 | omitted in arc075-60 and arc075-70 |
+| RF2 | 195.0 | 23.4 | roof-south | omitted in arc075-60 and arc075-70 | omitted in arc075-60 and arc075-70 |
+| R3K1 | 103.0 | 55.0 | background | omitted in arc075-60 and arc075-70 | omitted in arc075-60 and arc075-70 |
+| R4K1 | 120.0 | 75.0 | background | omitted in arc075-60 | omitted in arc075-60 |
+| T1 | 39.6 | 3.7 | trunk | omitted in arc075-70 | found in arc075-70 |
+| R1K4 | 219.0 | 15.0 | background | omitted in arc075-70 | found in arc075-70 |
+| R1K5 | 282.0 | 15.0 | background | omitted in arc075-70 | found in arc075-70 |
+| R2K4 | 236.0 | 35.0 | background | omitted in arc075-70 | omitted in arc075-70 |
+| R3K4 | 253.0 | 55.0 | background | omitted in arc075-70 | omitted in arc075-70 |
+| R2K1 | 86.0 | 35.0 | background | duplicated in arc075-70 | omitted in arc075-70 |
+| R2K6 | 331.0 | 35.0 | background | duplicated in arc075-70 | duplicated in arc075-70 |
+| R1K2 | 135.0 | 15.0 | background | found in arc075-70 | omitted in arc075-70 |
+| R1K6 | 314.0 | 15.0 | background | found in arc075-70 | omitted in arc075-70 |
+| R2K5 | 299.0 | 35.0 | background | found in arc075-70 | omitted in arc075-70 |
+| R2K7 | 17.0 | 35.0 | background | found in arc075-70 | duplicated in arc075-70 |
+| R3K0 | 51.0 | 55.0 | background | found in arc075-70 | duplicated in arc075-70 |
 
-The two duplicates are chartyard-arc075-70's alone, and they are the reason it
-fails `no_duplicates` where the other two cases pass: a wrong lens scale puts
-two copies of the same disc in the panorama far enough apart that both clear
-the blob filter and both fall inside the match radius.
+The two duplicates on 2026-09-18 and the three on 2026-09-19 are
+chartyard-arc075-70's alone, and they are the reason it fails `no_duplicates`
+where the other two cases pass: a wrong lens scale puts two copies of the same
+disc in the panorama far enough apart that both clear the blob filter and both
+fall inside the match radius. Which discs are duplicated moved along with
+everything else in this table; the mechanism (the wrong assumed lens, section
+4.5) did not.
 
 ### 3.3 Horizon
+
+The measured bin count and resolution are unaffected by this pass (still 30
+bins, still 12.0 degrees each): none of the five commits changes `bins` on
+`PhotosphereSweep`. Every other row below moved, on every case, because task
+12's tracer rewrite (#58, `3fbd2039`) changed how `traceSkyCoverage` finds the
+boundary on every column, not just the ones its own fix targeted. Cells read
+`before this pass -> after`.
 
 | | still-60 | arc075-60 | arc075-70 | ideal |
 |---|---|---|---|---|
 | truth bins | 3600 | 3600 | 3600 | 3600 |
 | measured bins | 30 | 30 | 30 | 3600 |
 | measured resolution (deg) | 12.0 | 12.0 | 12.0 | 0.1 |
-| signed error median (deg) | +0.95 | +7.47 | +35.35 | 0.00 |
-| absolute error p95 (deg) | 75.90 | 75.90 | 72.95 | 0.00 |
-| absolute error max (deg) | 76.75 | 76.75 | 73.05 | 0.00 |
-| false open (sr) | 0.1419 | 0.1544 | 0.0058 | 0.0000 |
-| false blocked (sr) | 0.8208 | 1.5277 | 0.4391 | 0.0000 |
-| unresolved (sr) | 0.0000 | 0.0000 | 5.2360 | 0.0000 |
-| unresolved bins | 0 | 0 | 25 | 0 |
-| north offset (deg) | -1.3 | -7.0 | -10.0 | 0.0 |
+| signed error median (deg) | +0.95 -> +1.60 | +7.47 -> +2.95 | +35.35 -> +4.40 | 0.00 |
+| absolute error p95 (deg) | 75.90 -> 20.56 | 75.90 -> 56.50 | 72.95 -> 40.75 | 0.00 |
+| absolute error max (deg) | 76.75 -> 58.35 | 76.75 -> 62.05 | 73.05 -> 41.35 | 0.00 |
+| false open (sr) | 0.1419 -> 0.0261 | 0.1544 -> 0.2487 | 0.0058 -> 0.0395 | 0.0000 |
+| false blocked (sr) | 0.8208 -> 0.3791 | 1.5277 -> 0.7098 | 0.4391 -> 0.2936 | 0.0000 |
+| unresolved (sr) | 0.0000 | 0.0000 | 5.2360 -> 3.9794 | 0.0000 |
+| unresolved bins | 0 | 0 | 25 -> 19 | 0 |
+| north offset (deg) | -1.3 -> -0.9 | -7.0 -> -10.0 | -10.0 | 0.0 |
 
 `north_offset_deg` is searched over the range -10 to +10 in steps of 0.1, so
-the value for chartyard-arc075-70 is the edge of the search and a lower bound
-on the true shift, not a measurement of it.
+the value for chartyard-arc075-70 (both readings) and now chartyard-arc075-60
+as well is the edge of the search and a lower bound on the true shift, not a
+measurement of it: the new tracer moved arc075-60's fitted shift to the same
+search boundary arc075-70 was already pinned against.
+
+`false_open_sr` fell by 4/5 to 5/6 on `still-60` and `arc075-70` -- the two
+cases where task 12's fix removed dark sky and dark discs reading as an
+obstruction (section 4.2) -- and *rose* on `arc075-60`, which is issue #71:
+a genuinely open patch of roof now reads as blocked there under the new
+tracer's persistence rule, and it was carried forward rather than silently
+absorbed.
 
 Obstacles, each scored against its own first-hit silhouette and never against
-the envelope:
+the envelope. Task 10 (#53, `08cc613b`) added the `resolvable` /
+`visible_width_deg` / `resolvable_width_deg` fields between the two readings:
+an obstacle narrower than one product bin (30 bins, 12 degrees each) cannot be
+represented by the product at all, and is no longer graded as missed for that
+reason alone (`CONTRACT.md`, "Issue #53"). The two poles and the trunk are
+never resolvable at this product's resolution (visible widths 2.2, 0.3 and 3.0
+degrees); the roof and the east wall are, at their declared 10 degrees
+notwithstanding, because their true visible extent is 146.6 and 84.0 degrees.
+`verdict` below is `missed` read back as `MISSED`/`found`; an obstacle that is
+not resolvable is always `found` by construction, whatever its deficit says,
+which is why the poles and the trunk read `found` throughout even where the
+deficit is large.
 
-| obstacle | truth peak (deg) | min width (deg) | | still-60 | arc075-60 | arc075-70 | ideal |
-|---|---|---|---|---|---|---|---|
-| pole-near | 63.20 | 2.0 | deficit median (deg) | 56.15 | 56.15 | null | 0.00 |
-| | | | deficit p95 (deg) | 56.20 | 56.20 | null | 0.00 |
-| | | | width missed (deg) | 2.2 | 2.2 | null | 0.0 |
-| | | | verdict | MISSED | MISSED | MISSED | found |
-| pole-far | 12.45 | 0.25 | deficit median (deg) | -74.55 | -74.55 | -33.55 | 0.00 |
-| | | | deficit p95 (deg) | -74.55 | -74.55 | -33.55 | 0.00 |
-| | | | width missed (deg) | 0.0 | 0.0 | 0.0 | 0.0 |
-| | | | verdict | found | found | found | found |
-| roof-south | 75.15 | 10 | deficit median (deg) | -0.85 | -5.00 | null | 0.00 |
-| | | | deficit p95 (deg) | 2.35 | 2.95 | null | 0.00 |
-| | | | width missed (deg) | 16.6 | 40.8 | null | 0.0 |
-| | | | verdict | MISSED | MISSED | MISSED | found |
-| wall-east | 25.60 | 10 | deficit median (deg) | -34.35 | -55.40 | null | 0.00 |
-| | | | deficit p95 (deg) | 25.25 | 21.60 | null | 0.00 |
-| | | | width missed (deg) | 12.0 | 12.0 | null | 0.0 |
-| | | | verdict | MISSED | MISSED | MISSED | found |
-| trunk | 21.50 | 1.0 | deficit median (deg) | -24.55 | -23.55 | null | -24.35 |
-| | | | deficit p95 (deg) | -24.50 | -23.50 | null | -24.30 |
-| | | | width missed (deg) | 0.0 | 0.0 | null | 0.0 |
-| | | | verdict | found | found | MISSED | found |
+| obstacle | truth peak (deg) | min width (deg) | resolvable | | still-60 (2026-09-18 -> 09-19) | arc075-60 (09-18 -> 09-19) | arc075-70 (09-18 -> 09-19) | ideal |
+|---|---|---|---|---|---|---|---|---|
+| pole-near | 63.20 | 2.0 | no | deficit median (deg) | 56.15 -> -0.85 | 56.15 -> 54.15 | null -> null | 0.00 |
+| | | | | deficit p95 (deg) | 56.20 -> 37.95 | 56.20 -> 54.20 | null -> null | 0.00 |
+| | | | | width missed (deg) | 2.2 -> 0.3 | 2.2 -> 2.2 | null -> null | 0.0 |
+| | | | | verdict | MISSED -> found | MISSED -> found | MISSED -> found | found |
+| pole-far | 12.45 | 0.25 | no | deficit median (deg) | -74.55 -> -1.55 | -74.55 -> -1.55 | -33.55 -> -34.55 | 0.00 |
+| | | | | deficit p95 (deg) | -74.55 -> -1.55 | -74.55 -> -1.55 | -33.55 -> -34.55 | 0.00 |
+| | | | | width missed (deg) | 0.0 | 0.0 | 0.0 | 0.0 |
+| | | | | verdict | found | found | found | found |
+| roof-south | 75.15 | 10 | yes | deficit median (deg) | -0.85 -> -1.50 | -5.00 -> -4.50 | null -> -17.60 | 0.00 |
+| | | | | deficit p95 (deg) | 2.35 -> -0.25 | 2.95 -> 55.43 | null -> -16.79 | 0.00 |
+| | | | | width missed (deg) | 16.6 -> 2.6 | 40.8 -> 41.8 | null -> 0.0 | 0.0 |
+| | | | | verdict | MISSED -> **found** | MISSED (unchanged) | MISSED -> **found** | found |
+| wall-east | 25.60 | 10 | yes | deficit median (deg) | -34.35 -> -2.05 | -55.40 -> -56.40 | null -> -5.43 | 0.00 |
+| | | | | deficit p95 (deg) | 25.25 -> -0.40 | 21.60 -> -5.40 | null -> -4.40 | 0.00 |
+| | | | | width missed (deg) | 12.0 -> 0.0 | 12.0 -> 0.0 | null -> 0.0 | 0.0 |
+| | | | | verdict | MISSED -> **found** | MISSED -> **found** | MISSED -> **found** | found |
+| trunk | 21.50 | 1.0 | no | deficit median (deg) | -24.55 -> -25.55 | -23.55 -> -25.55 | null -> -20.55 | -24.35 |
+| | | | | deficit p95 (deg) | -24.50 -> -25.50 | -23.50 -> -25.50 | null -> -20.50 | -24.30 |
+| | | | | width missed (deg) | 0.0 | 0.0 | null -> 0.0 | 0.0 |
+| | | | | verdict | found | found | MISSED -> found | found |
 
-A `null` deficit means the obstacle is visible and has no resolved measured bin
-at all, which `missed` reads as missed; four of chartyard-arc075-70's five
-obstacles are missed that way, because its boundary is unresolved over most of
-the azimuths they occupy. The ideal's negative deficit on the trunk is the
-instrument, not a fault: the ideal writes the envelope, and over the trunk's
-azimuths the envelope is the canopy standing above it.
+`missed_obstructions`: still-60 `[]` (was implicitly `pole-near, roof-south,
+wall-east` under the pre-#53 envelope rule); arc075-60 `["roof-south"]`
+(unchanged); arc075-70 `[]` (was `pole-near, pole-far` under the same old
+rule, both of which the resolvability fix alone would have already cleared).
+`no_missed_obstructions` is therefore PASS on still-60 and arc075-70 and FAIL
+only on arc075-60, where the roof is genuinely, resolvably missed by 41.8 of
+its 146.6 degrees.
+
+`wall-east` is the header result of issue #58: it is **found on every case**
+now, where it was MISSED on every case in the 2026-09-18 reading. That is the
+specific defect section 4.2 files against the scanner (a tracer with no
+contrast sign reading a bright wall as open sky) and it is closed.
+
+A `null` deficit meant the obstacle was visible and had no resolved measured
+bin at all in the 2026-09-18 reading; four of chartyard-arc075-70's five
+obstacles were `null` that way, because its boundary was unresolved over most
+of the azimuths they occupy. Only `pole-near` is still `null` today, because
+it sits inside the 19 bins (down from 25) that remain unresolved on that case
+(section 4.5). The ideal's negative deficit on the trunk is the instrument,
+not a fault: the ideal writes the envelope, and over the trunk's azimuths the
+envelope is the canopy standing above it.
 
 ### 3.4 Overlay
+
+Task 13 (#59, `0bcb62ca`) changed what the overlay error IS: the maximum of
+the three angles between the reported and truth `forward`/`right`/`up`, not
+`forward` alone (a `right`/`up` rotated about an untouched `forward` -- a pure
+roll error -- was invisible to the old metric). `CONTRACT.md`'s `scores.json`
+schema grew three fields as a result: `max_forward_deg`, `max_right_deg`,
+`max_up_deg`, reported beside the combined maximum on both the moving and the
+settled block, because the combined figure alone does not say which axis
+moved. Cells read `before this pass -> after`.
 
 | | still-60 | arc075-60 | arc075-70 | ideal |
 |---|---|---|---|---|
 | samples | 1053 | 1053 | 1053 | 1053 |
 | missing fraction | 0.000 | 0.000 | 0.000 | 0.000 |
 | duplicate frame ids | 0 | 0 | 0 | 0 |
-| frames over their class gate | 0 | 0 | 994 | 0 |
+| frames over their class gate | 0 | 0 | 994 -> 1025 | 0 |
 | moving samples | 460 | 460 | 460 | 460 |
-| moving samples exactly zero (below 1e-9) | 443 (96.3%) | 443 (96.3%) | 7 (1.5%) | 460 (100%) |
-| moving median (deg) | 0.000 | 0.000 | 5.382 | 0.000 |
-| moving p95 (deg) | 0.000 | 0.000 | 7.842 | 0.000 |
-| moving max (deg) | 0.095 | 0.095 | 8.369 | 0.000 |
-| settled median (deg) | 0.029 | 0.029 | 3.840 | 0.000 |
-| settled p95 (deg) | 0.075 | 0.075 | 7.328 | 0.000 |
-| settled max (deg) | 0.174 | 0.174 | 8.372 | 0.000 |
+| moving median (deg) | 0.000 (unchanged to the printed precision) | 0.000 (unchanged) | 5.382 -> 9.539 | 0.000 |
+| moving p95 (deg) | 0.000 | 0.000 | 7.842 -> 10.032 | 0.000 |
+| moving max (deg) | 0.095 -> 0.116 | 0.095 -> 0.116 | 8.369 -> 10.038 | 0.000 |
+| moving max, forward axis (deg) | field added by task 13 -> 0.095 | -> 0.095 | -> 10.038 | -> 0.000 |
+| moving max, right axis (deg) | -> 0.116 | -> 0.116 | -> 10.038 | -> 0.000 |
+| moving max, up axis (deg) | -> 0.114 | -> 0.114 | -> 10.037 | -> 0.000 |
+| settled median (deg) | 0.029 -> 0.063 | 0.029 -> 0.063 | 3.840 -> 9.612 | 0.000 |
+| settled p95 (deg) | 0.075 -> 0.092 | 0.075 -> 0.092 | 7.328 -> 10.102 | 0.000 |
+| settled max (deg) | 0.174 (unchanged to the printed precision) | 0.174 (unchanged) | 8.372 -> 10.118 | 0.000 |
+| settled max, forward/right/up (deg) | field added by task 13 -> 0.174 / 0.174 / 0.093 | -> 0.174 / 0.174 / 0.093 | -> 10.108 / 10.118 / 10.102 | -> 0.000 / 0.000 / 0.000 |
 
-The two 60 degree cases report the same overlay figures because the overlay
-pose is built from the orientation stream, which is identical across the three
-recordings; only chartyard-arc075-70's wrong lens moves it. Their moving
-medians and p95s are not zero but smaller than a thousandth of a degree, and
-the row above says why: 443 of the 460 moving samples on each of those two
-cases are exactly zero, below 1e-9 degrees. The orientation sampler runs on a
-10 ms grid and the frames arrive on a 100 ms one, so during a move a reading
-is emitted at the frame's own capture instant; the scanner is then handed the
-truth pose and returns it, and the interpolation between two readings -- the
-thing this gate is supposed to grade -- is never exercised at all. That is a
-property of where the sensor's emission instants fall relative to the frame
-grid, not of the scanner, and it has already moved between route revisions
-with no change to the scanner. The `overlay_moving_p95_lt_1` cells for those
-two cases in section 3.1 are marked accordingly. Read the maxima, not the
-medians, on those two rows.
+The two 60 degree cases still report the same overlay figures as each other,
+for the same structural reason as before: the overlay pose is built from the
+orientation stream, which is identical across the three recordings, and only
+chartyard-arc075-70's wrong lens (interacting with task 11's targeting change,
+section 4.5) moves the numbers on that case. What moved on the two 60 degree
+cases is the metric itself, not the scanner: the old moving maximum (0.095)
+is exactly today's `max_forward_deg`, and the new combined maximum (0.116) is
+carried entirely by the `right` axis, which the old metric never looked at.
+Likewise the settled median rose from 0.029 to 0.063 and the settled p95 from
+0.075 to 0.092 purely because a genuine, small roll contribution that the old
+forward-only metric could not see is now counted
+(section 4.4's parallax discussion is about a different, larger effect and is
+unaffected). `chartyard-arc075-70`'s moving and settled statistics all now sit
+at or above 9.5 degrees, against a gate of 1.0/0.5: task 11's targeting change
+(#57) altered which frames that case captures, and combined with the
+already-wrong assumed lens (section 4.5) the registered pose now disagrees
+with truth by nearly the full `overlay_max_lt_10` budget. That gate, which no
+percentile can reach, is now the one this case fails that it did not fail
+before (issue #70).
 
-The 17 moving samples that are not exactly zero carry the whole moving
-maximum, 0.095 degrees. The counts above were recomputed from
-`result/events.jsonl` against `truth/trajectory.jsonl` for this document; they
-are not `scores.json` fields.
+The still-60 and arc075-60 moving median and p95 are still far smaller than a
+thousandth of a degree, for the same reason as the 2026-09-18 reading: the
+orientation sampler runs on a 10 ms grid and the frames arrive on a 100 ms
+one, so during a move a reading is emitted at the frame's own capture instant,
+the scanner is then handed the truth pose and returns it, and the
+interpolation between two readings -- the thing this gate is supposed to grade
+-- is never exercised at all. That is a property of where the sensor's
+emission instants fall relative to the frame grid, not of the scanner. The
+`overlay_moving_p95_lt_1` cells for those two cases in section 3.1 are marked
+accordingly. Read the maxima, not the medians, on those two rows.
+
+The 2026-09-18 reading recomputed, outside `scores.json`, how many of the 460
+moving samples on each 60 degree case were exactly zero (443, 96.3%) using a
+`forward`-only dot-product-arccos over `result/events.jsonl` and
+`truth/trajectory.jsonl`. That computation is numerically unstable near
+`cos(angle) = 1` (the derivative of `arccos` diverges there), and a
+same-shaped attempt for this refresh, extended to all three axes, produced an
+internally inconsistent median (about 1e-6 degrees, against `scores.json`'s
+own reported 3e-14) that does not survive its own sanity check. Rather than
+publish a number known to be wrong, this refresh does not restate an
+exactly-zero count: `scores.json`'s `moving.median_deg` (about 3e-14 degrees
+on both cases, effectively floating-point noise) is the evidence that the
+phase-locking mechanism is unchanged, and a corrected recount is left for
+whoever next touches this section rather than guessed at here.
 
 ### 3.5 Capture
 
 A hold is satisfied by the first unclaimed record in its window whose outcome
 is `accepted` or `already-captured`. The split is reported so that a hold the
 scanner declined because it already held that dome cell is visible as what it
-is (issue #54).
+is (issue #54). Task 11 (#57, `b1e629f1`) is the only commit of the five that
+touches capture eligibility -- it widened the zenith aim cone and added
+nearest-cell targeting -- and its effect shows only on `still-60`'s and
+`arc075-70`'s rows below; `arc075-60`'s capture numbers are unchanged. Cells
+read `before this pass -> after`.
 
 | | still-60 | arc075-60 | arc075-70 | ideal |
 |---|---|---|---|---|
 | holds | 48 | 48 | 48 | 48 |
-| holds satisfied | 47 | 41 | 11 | 48 |
-| of which captured | 21 | 20 | 9 | 48 |
-| of which already covered | 26 | 21 | 2 | 0 |
-| latency p95 (ms) | 859.0 | 859.0 | 859.5 | 700.0 |
+| holds satisfied | 47 -> 48 | 41 | 11 -> 12 | 48 |
+| of which captured | 21 | 20 | 9 -> 10 | 48 |
+| of which already covered | 26 -> 27 | 21 | 2 | 0 |
+| latency p95 (ms) | 859.0 | 859.0 | 859.5 (unchanged to the printed precision) | 700.0 |
 | latency max (ms) | 860 | 860 | 860 | 700 |
-| accepted frames | 21 | 20 | 9 | 48 |
+| accepted frames | 21 | 20 | 9 -> 10 | 48 |
+
+`still-60` now satisfies all 48 holds, up from 47: the last hold of the route,
+at azimuth 180 altitude 85, is the one issue #57 named directly (section 4.6),
+and it is now answered.
 
 Latency is measured to the satisfying record whatever its outcome, and every
 satisfied hold is answered well inside its own window:
@@ -407,42 +596,63 @@ satisfied hold is answered well inside its own window:
 | | still-60 | arc075-60 | arc075-70 |
 |---|---|---|---|
 | hold length (ms) | 1200 | 1200 | 1200 |
-| lowest satisfying latency (ms) | 710 | 710 | 808 |
-| satisfying records below 840 ms | 32 | 28 | 2 |
+| lowest satisfying latency (ms) | 710 | 710 | 808 -> 795 |
+| satisfying records below 840 ms | 32 -> 33 | 28 | 2 -> 3 |
 | satisfying records at 840 ms or above | 15 | 13 | 9 |
 
-Outcome histogram over `result/captures.jsonl`:
+Outcome histogram over `result/captures.jsonl`. Cells read
+`before this pass -> after`; no arrow means unchanged.
 
 | outcome | still-60 | arc075-60 | arc075-70 | ideal |
 |---|---|---|---|---|
-| alignment-wait | 183 | 191 | 187 | 0 |
-| too-soon | 32 | 30 | 23 | 0 |
-| already-captured | 26 | 21 | 2 | 0 |
-| accepted | 21 | 20 | 9 | 48 |
-| no-target | 2 | 0 | 18 | 0 |
-| overlap-wait | 0 | 2 | 25 | 0 |
+| alignment-wait | 183 | 191 | 187 -> 189 | 0 |
+| too-soon | 32 -> 33 | 30 | 23 -> 30 | 0 |
+| already-captured | 26 -> 27 | 21 | 2 | 0 |
+| accepted | 21 | 20 | 9 -> 10 | 48 |
+| no-target | 2 -> 0 | 0 | 18 -> 0 | 0 |
+| overlap-wait | 0 | 2 | 25 -> 33 | 0 |
 | stale-image | 0 | 0 | 0 | 0 |
 | frame-already-captured | 0 | 0 | 0 | 0 |
 | total records | 264 | 264 | 264 | 48 |
-| records with `adjusted` true | 0 | 0 | 1 | 0 |
+| records with `adjusted` true | 0 | 0 | 1 -> 2 | 0 |
+
+The clean result of task 11 is the `no-target` row: it drops to **zero on
+every case**, from 2 (still-60) and 18 (arc075-70). Every direction above the
+horizon now has a dome cell within the aim cone, so no capture attempt is ever
+refused for having nothing to aim at; the outcome that replaces it is mostly
+`overlap-wait` on arc075-70 (25 -> 33) and, to a lesser extent, `too-soon`
+(23 -> 30), because an attempt that used to be refused instantly for
+`no-target` now gets far enough to attempt registration and finds the mosaic
+does not yet overlap, or that it is not yet due another attempt.
 
 `stale-image` and `frame-already-captured` are the two refusals the
 implementation review's P1 finding added: a capture now needs a delivered image
 on every path, and one delivered frame is captured once. Neither fires on any
-of these cases, which is the expected result. The replay drives the frame
-callback, where each callback is its own delivery, so the new requirement is
-satisfied by construction; the outcomes are listed with their zeros so that a
-future run which does trip them is visible as a change rather than as a new
-row.
+of these cases, which is the expected result and unchanged by this pass. The
+replay drives the frame callback, where each callback is its own delivery, so
+the new requirement is satisfied by construction; the outcomes are listed with
+their zeros so that a future run which does trip them is visible as a change
+rather than as a new row.
 
 ### 3.6 Coverage
 
+Task 11's targeting change (#57) is the only one of the five commits that
+touches how frames are accepted into the panorama, so `still-60` and
+`arc075-60` -- where that change had no headline effect -- are unchanged here,
+and `arc075-70` improves because more of its aim attempts now land on a real
+target instead of being refused outright (section 4.5). Cells read
+`before this pass -> after`.
+
 | | still-60 | arc075-60 | arc075-70 | ideal |
 |---|---|---|---|---|
-| panorama alpha fraction | 0.9941 | 0.9882 | 0.7698 | 1.0000 |
-| observable fraction covered | 0.9941 | 0.9882 | 0.7698 | 1.0000 |
-| cells covered fraction | 0.9890 | 0.9670 | 0.5714 | 1.0000 |
-| cells covered / cells total | 90 / 91 | 88 / 91 | 52 / 91 | 1 / 1 |
+| panorama alpha fraction | 0.9941 | 0.9882 | 0.7698 -> 0.8008 | 1.0000 |
+| observable fraction covered | 0.9941 | 0.9882 | 0.7698 -> 0.8008 | 1.0000 |
+| cells covered fraction | 0.9890 | 0.9670 | 0.5714 -> 0.6374 | 1.0000 |
+| cells covered / cells total | 90 / 91 | 88 / 91 | 52 / 91 -> 58 / 91 | 1 / 1 |
+
+`chartyard-arc075-70` still fails `coverage_ge_0_95` by a wide margin (0.80
+against 0.95): the improvement from task 11 narrows the gap the wrong lens
+opens (section 4.5) without closing it.
 
 The first two rows are equal on every case for a structural reason, not a
 coincidence: on these three routes the observable region is the WHOLE raster.
@@ -460,9 +670,26 @@ cast rather than assembled from dome cells.
 
 ## 4. What the numbers say
 
-Seven mechanisms, in the six sections below, account for every failing gate.
-(Section 4.2 carries two: a tracer threshold met from both sides.) Each is
-stated only as far as the evidence in the case directories supports it.
+Seven mechanisms, in the six sections below, account for every failing gate at
+the first baseline (1a98a8d8, then re-measured unchanged at 9e3097fb on
+2026-09-18). (Section 4.2 carries two: a tracer threshold met from both
+sides.) Each is stated only as far as the evidence in the case directories
+supports it.
+
+**2026-09-19 refresh.** Task 12 (#58, `3fbd2039`) rewrote `traceSkyCoverage`
+from a luminance-threshold tracer to one that finds the sky boundary by its
+transition, which removes both of section 4.2's mechanisms outright -- they
+described a component that no longer exists in the shipped code. Section 4.2
+is kept below as a "what the first baseline said" record, because it explains
+why the 2026-09-18 numbers were what they were, followed by the current
+status. Section 4.1's mechanism (coarse binning) is untouched by this pass and
+is, if anything, more load-bearing now: with 4.2's artefact gone, bin 25's
+single-valued read of the near pole is the single largest contributor to
+`still-60`'s remaining horizon error (section 3.3). Section 4.3's roof
+narrative is partly superseded -- `still-60`'s roof is no longer missed -- and
+its worked "coarse-bin failure" example is replaced with today's numbers.
+Sections 4.4 and 4.5 are updated where the pass changed their evidence.
+Section 4.6 is replaced in full.
 
 ### 4.1 The boundary is thirty bins wide, the truth is thirty-six hundred
 
@@ -488,7 +715,44 @@ obstacle table is the height of the pole above what the bin reports, and its
 missed width is the width of the pole itself. This is the failure section 9 of
 the spec asks the chart profile to expose, and the instrument exposes it.
 
+**What the first baseline found, and what the same six bins say now
+(2026-09-19, after task 12's tracer rewrite, `3fbd2039`).** The mechanism --
+one number per 12 degree bin cannot describe a boundary that moves inside the
+bin -- is untouched by this pass; only the tracer's per-column reading
+changed, so four of these six bins now land close to their truth maxima:
+
+| bin | azimuth range (deg) | truth max in bin (deg) | measured, 2026-09-18 (deg) | measured, 2026-09-19 (deg) |
+|---|---|---|---|---|
+| 4 | 48 to 60 | 44.00 | 38.0 | 44 |
+| 6 | 72 to 84 | 25.50 | 0.0 | 26 |
+| 8 | 96 to 108 | 49.30 | 57.0 | 27 |
+| 21 | 252 to 264 | 49.30 | 13.0 | 0 |
+| 25 | 300 to 312 | 63.20 | 7.0 | 64 |
+| 26 | 312 to 324 | 63.00 | 9.0 | 25 |
+
+Bin 25 went from badly *undershooting* the pole (7.0 against a 63.20 degree
+peak) to reading it almost exactly (64), which is the coarse-bin failure this
+section describes in its purest form: the new tracer correctly finds the top
+of the pole, and because the bin holds one value for its whole 12 degrees,
+that one accurate reading is now reported as the boundary for the five to six
+degrees of open sky the pole does not occupy. This single bin is the largest
+contributor to `chartyard-still-60`'s remaining horizon error (its deficit
+against the true open-sky altitude nearby carries the case's 58.35 degree
+absolute-error maximum, section 3.3). Bin 21 moved the other way, from an
+already-wrong 13.0 to 0: that bin and its neighbour are where section 4.3's
+roof edge now sits, addressed there. Bins 4, 6 and 8 improved because the
+tracer no longer needs to cross a fixed luminance line partway up a gradual
+sky (section 4.2).
+
 ### 4.2 One threshold, no contrast sign: dark sky reads as canopy, a bright wall as sky
+
+**What the first baseline said (1a98a8d8 / 9e3097fb, 2026-09-18).** This
+section is kept in full below because it is the record of the defect and the
+evidence that led to fixing it. Task 12 (#58, `3fbd2039`) replaced the
+threshold tracer this section describes with one that finds the boundary by
+its transition; neither mechanism below exists in the shipped code any more,
+which the current-status paragraph at the end of this section confirms with
+today's numbers.
 
 The largest single contribution to the horizon percentiles is not the binning.
 `traceSkyCoverage` works on one luminance value per raster row, calls the
@@ -589,55 +853,96 @@ chartyard-arc075-60 loses a different single bin to the same mechanism, bin 4,
 azimuth 48 to 60, where its column's minimum is 103.7 exactly -- the wall's own
 luminance, with nothing darker anywhere in the column.
 
+**Current status (2026-09-19, after `3fbd2039`).** Both mechanisms above are
+gone. Re-reading the same five dark-disc bins against the new tracer's output
+on `chartyard-still-60`:
+
+| bin | truth max in bin (deg) | truth mean in bin (deg) | measured, 2026-09-18 (deg) | measured, 2026-09-19 (deg) |
+|---|---|---|---|---|
+| 0 | 11.15 | 11.09 | 87.0 | 12 |
+| 1 | 12.45 | 10.67 | 87.0 | 14 |
+| 2 | 45.50 | 42.12 | 86.0 | 46 |
+| 5 | 24.50 | 23.61 | 76.0 | 25 |
+| 7 | 25.60 | 25.57 | 72.0 | 26 |
+
+Every one of the five now lands within about a degree of its truth mean,
+where before it overshot by 45 to 76 degrees: the new tracer does not read the
+zenith cap and R4 rings as a 90 degree obstruction. The converse is closed
+too: `wall-east` is `found` (not `MISSED`) on all three cases in section 3.3's
+obstacle table, where it was `MISSED` on all three at this reading's start.
+Issue #58 is closed. What section 4.1 already flagged as the coarse-binning
+mechanism -- now visible without the threshold artefact sitting on top of it
+-- is the largest remaining source of horizon error on the cases that still
+fail `horizon_p95_lt_1`.
+
 ### 4.3 The roof is missed on width, not on height
 
-`roof-south` has a deficit median below zero in both 60 degree cases and is
-MISSED in both, on the width term alone. (`wall-east` is MISSED on the width
-term too, but for the different reason section 4.2 sets out: one interior bin
-where the tracer reads the wall as sky.)
+**What the first baseline said (1a98a8d8 / 9e3097fb, 2026-09-18).**
+`roof-south` had a deficit median below zero in both 60 degree cases and was
+MISSED in both, on the width term alone. (`wall-east` was MISSED on the width
+term too, but for the different reason section 4.2 set out: one interior bin
+where the tracer read the wall as sky.)
 
 | case | obstacle | deficit median (deg) | width missed (deg) | min width (deg) |
 |---|---|---|---|---|
 | still-60 | roof-south | -0.85 | 16.6 | 10 |
 | arc075-60 | roof-south | -5.00 | 40.8 | 10 |
 
-A negative median means the measured boundary is above the obstacle's own
+A negative median means the measured boundary was above the obstacle's own
 silhouette over most of its span, which a thirty-bin boundary produces by
 holding each bin's maximum. The width term counts the tenth-of-a-degree bins
 where the measured boundary falls more than one degree below the obstacle.
-Those bins come in runs, and every run on chartyard-still-60 sits against a
+Those bins come in runs, and every run on chartyard-still-60 sat against a
 measured bin boundary -- an azimuth that is a multiple of 12 -- because that
 is where a single-valued bin is furthest from a boundary that slopes across
-it. Computed from `truth/reference-horizon.json` and `result/horizon.json`
-(these are not `scores.json` fields):
+it. The five runs summed to the 16.6 degrees above, four of them ordinary
+straddles of three to five degrees at one end of a bin, and a fifth --
+azimuth 252.0 to 253.3, the last 1.3 degrees of the roof falling inside bin 21
+where the rest of the bin was open sky and the bin reported 13.0 against a
+34.4 to 36.3 degree deficit -- called out as "the coarse-bin failure of
+section 4.1 landing on an obstacle's own edge rather than a pole's."
+`chartyard-arc075-60` lost 40.8 degrees to three wider, shallower runs
+instead, which the parallax of the arc route rather than a bin edge produced.
+
+**Current status (2026-09-19, after task 12's tracer rewrite, `3fbd2039`).**
+`chartyard-still-60`'s roof is no longer missed: `width_missed_deg` fell from
+16.6 to 2.6, under the 12 degree `resolvable_width_deg` threshold. Four of the
+five old runs are gone -- the new tracer's transition detection reads the
+roof's own edge at most azimuths instead of overshooting or undershooting it
+by several degrees -- and one new, narrower one appeared where the old
+mechanism did not have a run at all:
 
 | run | azimuth (deg) | width (deg) | measured bin | the bin reports (deg) | the roof's own silhouette there (deg) | worst deficit (deg) |
 |---|---|---|---|---|---|---|
-| 1 | 116.2 to 120.0 | 3.8 | 9 | 58.0 | 59.05 to 62.05 | 4.05 |
-| 2 | 128.7 to 132.0 | 3.3 | 10 | 66.0 | 67.05 to 68.35 | 2.35 |
-| 3 | 228.0 to 231.3 | 3.3 | 19 | 66.0 | 67.05 to 68.35 | 2.35 |
-| 4 | 240.0 to 244.9 | 4.9 | 20 | 57.0 | 58.05 to 62.05 | 5.05 |
-| 5 | 252.0 to 253.3 | 1.3 | 21 | 13.0 | 47.40 to 49.30 | 36.30 |
+| 1 | 106.7 to 108.0 | 1.3 | 8 | 27.0 | 47.40 to 49.30 | 22.3 |
+| 2 | 252.0 to 253.3 | 1.3 | 21 | 0.0 | 47.40 to 49.30 | 49.3 |
 
-The five sum to the 16.6 degrees in the table above. Four of them are
-straddles in the ordinary sense: over three to five degrees at one end of a
-bin (the far end for runs 1 and 2, the near end for runs 3 and 4) the roof's
-own silhouette stands above the one number the bin holds for all twelve
-degrees, and the measurement falls two to five degrees short. The fifth is a different
-animal wearing the same label. The roof ends at azimuth 253.3, which is 1.3
-degrees inside bin 21 (252 to 264); the rest of that bin is open sky, the bin
-reports 13.0, and over that 1.3 degrees the measurement is 34.4 to 36.3
-degrees below the roof. That is the coarse-bin failure of section 4.1 landing
-on an obstacle's own edge rather than a pole's.
+Run 2 is the same edge as the old baseline's fifth run, at the same azimuth
+(252.0 to 253.3, the last 1.3 degrees of the roof inside bin 21): the coarse-bin
+failure of section 4.1 landing on this obstacle's own edge is still exactly
+there, and its worst deficit is now larger (49.3 against 36.3), because bin 21
+itself moved from 13.0 to 0 under the new tracer (section 4.1's addendum).
+Run 1 is new: bin 8 (96 to 108) now reads 27, close to the bin's own truth
+mean, but 22.3 degrees short of the roof's silhouette in the 1.3 degrees where
+the roof itself reaches into that bin. Both runs are the same shape --
+1.3 degrees at a bin edge where the roof's silhouette and the bin's single
+value disagree -- and together they cost 2.6 degrees, comfortably under the
+resolvable width, which is why the obstacle now reads found.
 
-chartyard-arc075-60 loses 40.8 degrees to three runs instead of five (23.2,
-10.3 and 7.3 degrees wide, worst deficits 2.85, 3.85 and 4.35), with no run
-resembling the fifth above: there the runs are wide and shallow, which is the
-arc's parallax moving the whole boundary rather than a bin edge cutting it.
-
-A roof spanning most of a quadrant can lose a chunk wider than its declared
-minimum width and still have a median of about zero, which is exactly what
-both rows show. An obstacle is found when it is found, not when most of it is.
+`chartyard-arc075-60`'s roof is still missed, at a similar total cost (41.8
+against the previous 40.8 degrees), but in a different shape: five runs now
+instead of three, four of them narrow straddles at consecutive bin boundaries
+(azimuth 192.0 to 233.4, bins 16 through 19, worst deficits 1.85 to 3.35
+degrees) and a fifth that spans two whole bins, 20 and 21 (azimuth 240.0 to
+253.3), where both bins report 0 against a silhouette of 47.4 to 62.05 --
+the roof's own edge together with the same 252.0-to-253.3 sliver `still-60`
+also loses, but here the bin immediately before it is wrong too, which the
+arc's parallax rather than a single edge produces. The mechanism this section
+is named for -- an obstacle can lose a chunk wider than its declared minimum
+width and still keep a near-zero median, because an obstacle is found when it
+is found and not when most of it is -- is unchanged: `arc075-60`'s deficit
+median is -4.50, close to zero, while it fails `no_missed_obstructions` on the
+width term alone.
 
 ### 4.4 The arc moves the camera, and only the near things move with it
 
@@ -688,41 +993,53 @@ that are not observable, and exactly one red ring, at the trunk landmark's
 truth direction, with the green disc it should contain sitting clearly to the
 west of it, together with the whole trunk.
 
+No task in this pass touches the camera model or landmark scoring, and this
+section's numbers are unchanged in the 2026-09-19 refresh (section 3.2, 3.4):
+translation parallax is a still-open item, not one this pass addressed.
+
 ### 4.5 The assumed lens on chartyard-arc075-70
 
 The scanner starts with a short-axis field of view of 60 degrees and no stored
 calibration, and `chartyard-arc075-70` differs from `chartyard-arc075-60` in
 that field alone. The registration step fits a rigid rotation against the
 existing mosaic, and a scale error is not something a rotation can absorb, so
-the frames are refused rather than misplaced:
+the frames are refused rather than misplaced. Task 9 (#52, `88551099`) named
+the view angle in the refusal cue without changing any of these numbers; task
+11 (#57, `b1e629f1`) changed which frames get through at all by widening the
+aim cone, which moves most of the rows below. Cells read
+`before this pass -> after`.
 
 | | arc075-60 | arc075-70 |
 |---|---|---|
-| overlap-wait outcomes | 2 | 25 |
-| no-target outcomes | 0 | 18 |
-| accepted captures | 20 | 9 |
-| dome cells covered | 88 | 52 |
-| panorama alpha fraction | 0.9882 | 0.7698 |
-| unresolved horizon bins | 0 | 25 |
-| unresolved solid angle (sr) | 0.0000 | 5.2360 |
-| landmarks found | 34 | 28 |
-| landmarks duplicated | 0 | 2 |
-| overlay settled p95 (deg) | 0.075 | 7.328 |
-| gates failing | 5 | 11 |
+| overlap-wait outcomes | 2 (unchanged) | 25 -> 33 |
+| no-target outcomes | 0 (unchanged) | 18 -> 0 |
+| accepted captures | 20 (unchanged) | 9 -> 10 |
+| dome cells covered | 88 (unchanged) | 52 -> 58 |
+| panorama alpha fraction | 0.9882 (unchanged) | 0.7698 -> 0.8008 |
+| unresolved horizon bins | 0 (unchanged) | 25 -> 19 |
+| unresolved solid angle (sr) | 0.0000 (unchanged) | 5.2360 -> 3.9794 |
+| landmarks found | 34 (unchanged) | 28 -> 26 |
+| landmarks duplicated | 0 (unchanged) | 2 -> 3 |
+| overlay settled p95 (deg) | 0.075 -> 0.092 | 7.328 -> 10.102 |
+| gates failing | 5 (unchanged) | 11 (unchanged count; `no_missed_obstructions` now passes, `overlay_max_lt_10` now fails, issue #70) |
 
-This is issue #52. The part of it that matters is not the accuracy cost but the
-cue: the overlap-wait path tells the user to fix their aim and never names the
-camera view angle control that would fix the actual problem. The scanner
-records which gate fired on every refusal, in the same log this table is
-counted from.
+This is issue #52, and its cue half is closed. The remaining accuracy cost is
+smaller than it was but still large: eliminating every `no-target` refusal
+(section 3.5) let 6 more dome cells get covered and pulled panorama alpha
+fraction up three points, but `chartyard-arc075-70` still fails 11 of 14
+gates and still fails `coverage_ge_0_95` by 0.15. The wrong assumed lens is
+the reason a scale error is not something the registration step's rigid
+rotation can absorb; widening the aim cone changes which frames are attempted,
+not whether a mismatched scale lets them register.
 
 ### 4.6 Holds without a capture or a cell
 
-`every_hold_captured` fails on all three cases, and the latency gate passes on
-all three. Captures, when they happen, happen promptly (section 3.5). Since
-issue #54 was fixed the gate no longer blames the scanner for declining to
-photograph a cell it already holds, so what remains is genuine. Classifying
-each hold by the best outcome recorded inside its own window:
+**What the first baseline said (1a98a8d8 / 9e3097fb, 2026-09-18).**
+`every_hold_captured` failed on all three cases, and the latency gate passed
+on all three. Classifying each hold by the best outcome recorded inside its
+own window (accepted or already-captured if either satisfied it, otherwise
+overlap-wait ahead of no-target ahead of alignment-wait, the most diagnostic
+refusal present):
 
 | what happened during the hold | still-60 | arc075-60 | arc075-70 |
 |---|---|---|---|
@@ -732,27 +1049,58 @@ each hold by the best outcome recorded inside its own window:
 | refused: no-target | 1 | 0 | 10 |
 | refused: alignment-wait | 0 | 5 | 2 |
 
-The first two rows are the satisfied holds. What is left is one hold on
-chartyard-still-60, seven on chartyard-arc075-60 and thirty-seven on
-chartyard-arc075-70.
+The first two rows were the satisfied holds. What was left was one hold on
+`chartyard-still-60`, seven on `chartyard-arc075-60` and thirty-seven on
+`chartyard-arc075-70`. `chartyard-still-60`'s single unsatisfied hold was hold
+47, azimuth 180 altitude 85, the last hold of the route at the top of the
+upward sweep, open from 104066 to 105266 ms: its window held `alignment-wait`
+at 104460, then `no-target` at 104860 and 105260. The hold did not read
+`no-target` throughout -- the first attempt was still waiting on alignment,
+and only once the aim settled did the scanner discover there was nothing at
+altitude 85 to aim at -- which mattered for issue #57, because it was the
+settled attempts that proved the cone was empty rather than merely unaimed.
 
-| case | unsatisfied holds | what they are |
-|---|---|---|
-| still-60 | 1 | the last hold of the route, the top of the upward sweep, where no dome cell lies within the aim cone (issue #57) |
-| arc075-60 | 7 | five `alignment-wait` and two `overlap-wait`, the near-field mismatch of section 4.4 reaching the registration step |
-| arc075-70 | 37 | the lens error of section 4.5 |
+**Current status (2026-09-19, after task 11's aim-cone fix, `b1e629f1`).**
+`every_hold_captured` now passes on `chartyard-still-60` and still fails on
+the other two. Re-classifying every hold the same way:
 
-That last hold is hold 47, azimuth 180 altitude 85, open from 104066 to 105266
-ms, and its window holds three capture records: `alignment-wait` at 104460,
-then `no-target` at 104860 and at 105260. The hold does not read `no-target`
-throughout -- the first attempt inside it is still waiting on alignment, and
-only once the aim has settled does the scanner discover there is nothing at
-altitude 85 to aim at. The distinction matters for issue #57, because it is
-the settled attempts that prove the cone is empty rather than merely unaimed.
-The table above classifies the hold by that outcome.
+| what happened during the hold | still-60 | arc075-60 | arc075-70 |
+|---|---|---|---|
+| a capture was accepted | 21 | 20 | 9 -> 10 |
+| refused: the cell was already captured | 26 -> 27 | 21 | 2 |
+| refused: overlap-wait | 0 | 2 (unchanged) | 25 -> 33 |
+| refused: no-target | 1 -> 0 | 0 | 10 -> 0 |
+| refused: alignment-wait | 0 | 5 (unchanged) | 2 -> 3 |
 
-Only the still case's single remaining failure is about the geometry of the
-dome rather than about the scan.
+`chartyard-still-60` now has zero unsatisfied holds, down from one: hold 47
+(azimuth 180, altitude 85) is now satisfied by `already-captured` at 104860
+ms, inside the same window as before. The zenith cell it targets was already
+photographed by an earlier aim once the widened cone and nearest-cell
+targeting gave that hold a real target to check against, where before the
+cone held nothing at all and every attempt fell straight to `no-target`.
+`chartyard-arc075-60`'s seven unsatisfied holds are the *same* seven holds
+(3, 4, 36, 37, 38, 39 and 47) with the *same* classification (five
+`alignment-wait`, two `overlap-wait`) as the first baseline -- task 11's fix
+does not touch this case's failure mode, which section 4.4's parallax
+discussion already explains. `chartyard-arc075-70`'s thirty-six unsatisfied
+holds (down from thirty-seven) lose their `no-target` outcomes entirely, same
+as `still-60`; the vacated attempts mostly become `overlap-wait` (25 to 33)
+because the mismatched lens (section 4.5) still keeps registration from
+completing once an attempt has something to aim at.
+
+`chartyard-arc075-60` and `chartyard-arc075-70` share one holdout hold 47
+itself: unlike `still-60`, both arc cases' hold 47 windows are
+`alignment-wait` on all three of their capture attempts, at the same instants
+(104460, 104860, 105260 ms) as the first baseline. The aim never settles
+during that hold on either arc case, so the scanner never reaches the point
+of checking whether a target exists there at all; the aim-cone fix cannot help
+a hold that alignment itself never clears. That is a different failure from
+the one issue #57 named and is not yet filed as its own issue; it is
+consistent with, and may be the same mechanism as, the near-field parallax
+section 4.4 describes reaching the registration step on these two routes.
+
+Only `chartyard-still-60`'s (now closed) failure was about the geometry of
+the dome rather than about the scan.
 
 ## 5. Known limits of the instrument
 
@@ -765,13 +1113,15 @@ These bound what any number above can mean.
 | The harness clock does not advance inside a frame callback. | The replay sets the virtual clock to a frame's delivery time and then runs the callback, so registration, mosaic painting and column extraction all cost zero milliseconds. Every timing figure in this document is measured on that clock: the 350 ms sample gate, the 600 ms registration gate and every capture latency in section 3.5. A scanner taking 300 ms per frame on a phone would produce numerically identical figures here. These are the instrument's timings, not the scanner's cost. |
 | `pass` is the stage A gate set, not the spec's section 9. | `tools/photosphere_sim/CONTRACT.md`, "What stage A does not evaluate", names the rows of section 9 this instrument does not grade: the noise-free calibration row (FoV error, ray error), the qualified-noisy row, the calibration-confidence corpus, the loop-mismatch clause, and the no-fabricated-heartbeat clause of the capture row. `false_open_sr` is reported and not gated, so the safety-relevant row is covered only by the width term of an obstacle's `missed`. A green `pass` above is a claim about fourteen thresholds and nothing else. |
 | The grab gate samples at 350 ms against a 10 fps stream, so it lands on every fourth frame. | The effective sampling interval is 400 ms, which is why each case logs 264 grab attempts over a timeline of about 105 s. Capture latency is quantised by that grid rather than by anything in the scanner's decision. |
-| The replay drives the `requestVideoFrameCallback` path. | The interval fallback, the only path Firefox Android takes, is never executed by any case here, so neither the new `stale-image` refusal on that path nor issue #48's stillness timestamping is measured. A browser whose MediaStream `currentTime` does not advance now loses capture there, not only the stillness witness. |
-| The overlay error on the two 60 degree cases is set by sampling phase. | Section 3.4. Where a reading was emitted at a frame's own capture time the reconstructed pose matches truth exactly, so the moving median and p95 collapse to floating-point noise and have moved between route revisions with no scanner change. The maxima are the informative figures on those rows. |
-| The raster is 1080 x 300 and both the result and the ideal are read from it. | The ideal column of section 3.2 is the quantisation floor: a perfect scanner scores p95 0.084 and max 0.266 degrees on this raster, so a difference below that is the raster, not the algorithm. |
-| The `min_width_deg` values were chosen when they only labelled a row. | The width term of `missed` was added afterwards, and those declared widths are now the difference between found and missed on the narrow obstacles. They have not been re-derived since they became load bearing (issue #53). |
-| The horizon tracer meets a dark sky and dark discs. | Section 4.2. A scene change belongs in stage B; until then the horizon percentiles on the chart yard carry an artefact the scanner is not responsible for. The other half of that section, a bright wall read as open sky, is not an instrument limit: it is issue #58 against the scanner, and a scene change only hides it here. |
+| The replay drives the `requestVideoFrameCallback` path. | The interval fallback, the only path Firefox Android takes, is never executed by any case here, so neither the new `stale-image` refusal on that path nor issue #48's stillness timestamping is measured. A browser whose MediaStream `currentTime` does not advance now loses capture there, not only the stillness witness. Still open after the 2026-09-19 refresh (issue #48's device item; task 5, `512d1478`, closed everything else #48 asked for). |
+| The overlay error on the two 60 degree cases is set by sampling phase. | Section 3.4. Where a reading was emitted at a frame's own capture time the reconstructed pose matches truth exactly, so the moving median and p95 collapse to floating-point noise and have moved between route revisions with no scanner change. The maxima are the informative figures on those rows. Unaffected by this pass, though task 13 (#59) changed what "the reconstructed pose matches truth exactly" is checked against, from `forward` alone to all three axes (section 3.4). |
+| The raster is 1080 x 300 and both the result and the ideal are read from it. | The ideal column of section 3.2 is the quantisation floor: a perfect scanner scores p95 0.084 and max 0.266 degrees on this raster, so a difference below that is the raster, not the algorithm. Unchanged by this pass; the ideal was rebuilt for the 2026-09-19 refresh and reports the same figures. |
+| The `min_width_deg` values were chosen when they only labelled a row. | The width term of `missed` was added afterwards, and those declared widths are now the difference between found and missed on the narrow obstacles. Task 10 (#53, `08cc613b`) closed the first half of this -- an obstacle is now graded by its actual visible width against the product's own resolution, not by its declared `min_width_deg`, which is why the two poles and the trunk read `resolvable: false` and can no longer be marked missed at all (section 3.3) -- but the declared values themselves have still not been re-derived from anything (issue #53, part 2, open). |
+| The horizon tracer meets a dark sky and dark discs. | Section 4.2. **Closed by task 12 (#58, `3fbd2039`).** The tracer rewrite that fixed the bright-wall-as-sky defect also removed the dark-sky-and-dark-discs artefact this row described: section 4.2's current-status note shows the same five bins now landing within about a degree of truth. A stage B scene change is no longer needed to remove this specific artefact from the chart yard, though issue #71 shows the new tracer's own persistence rule can still misread a genuinely open patch as blocked on `arc075-60`, which is a new and different limit, not a survival of this one. |
 | `begin` is offered repeatedly until the scanner accepts it. | The recorded `begin` action is an earliest time, not the instant the scan starts: `PhotosphereSweep.begin()` refuses silently until the compass is ready, and the production Start button is behind the same gate. |
-| Determinism is established on this machine, not across machines. | Section 2.2: two independent builds of the still case agree byte for byte through the renderer, the recorder, the truth, the replay and the scorer. Spec section 8 asks for documented numerical tolerances rather than bit-identical rendering across GPUs, and no second GPU has been tried. |
+| Determinism is established on this machine, not across machines. | Section 2.2: two independent builds of the still case agree byte for byte through the renderer, the recorder, the truth, the replay and the scorer. Spec section 8 asks for documented numerical tolerances rather than bit-identical rendering across GPUs, and no second GPU has been tried. Re-confirmed for the replay and scoring half of the pipeline at `3fbd2039` on 2026-09-19; the renderer half was not re-run, since nothing in this pass touches it. |
+| The new tracer's persistence rule can read a genuinely open patch as blocked. | Issue #71 (task 12 fix round 1, section 3.3): `arc075-60`'s `false_open_sr` rose from 0.1544 to 0.2487 sr even though the same commit removed the dark-sky artefact on the other two cases. This is a limit of the 2026-09-19 tracer, not of the chart yard, and it is open. |
+| A soft sky-to-obstruction edge over about ten rows can still walk the tracer's local sky model into the obstruction. | Issue #74 (task 12 fix round 2): a lagged reference against the model's own past catches most soft edges, but a sufficiently gradual one is not yet discriminated from a genuine gradient sky. Open. |
 
 ## 6. Stage B entry point
 
@@ -796,21 +1146,40 @@ simulator cases, as section 10 of the spec requires:
    change-driven silence. A valid quick approach must recover rather than stay
    permanently rejected because of an old jump.
 
-Three scanner findings came out of these runs and are open against the
-scanner, not against the simulator:
+Three scanner findings came out of these runs and were, at the 2026-09-18
+reading, open against the scanner, not against the simulator. All three are
+now **closed**, by the [photosphere issue pass](../../.superpowers/sdd/2026-09-18-photosphere-issue-pass/progress.md)
+whose commits this refresh measures:
 
-| issue | what it is | where it came from |
+| issue | what it was | where it came from | status, 2026-09-19 |
+|---|---|---|---|
+| #57 | No dome cell lies within the aim cone at altitude 85, so a hold there can never capture: the zenith cap's cone is narrower than the gap to the next ring, the aim dot shows no target, and every frame is declined with no cue that says why. Widen the cap's cone or add a ring so every altitude has a target, and say in the cue when a direction has none. | Section 4.6 | **Closed**, commit `b1e629f1`. Every direction above the horizon now has a target; `chartyard-still-60` satisfies all 48 holds (section 3.5, 4.6). |
+| #52 | The assumed lens. A short-axis field of view ten degrees from the truth costs most of the dome, and the cue on the refusal path tells the user to fix their aim instead of naming the camera view angle control. Read the refusal history that is already in the capture log. | Section 4.5 | **Closed** (cue half), commit `88551099`. The accuracy cost of the wrong lens itself is unchanged and is not what the issue asked for (section 4.5); the committed UI's own view-angle control exposure was filed separately (issue #69). |
+| #58 | `traceSkyCoverage` reports open sky over a wall brighter than seven tenths of the sky level. The tracer looks for a darkening and has no contrast sign, so a bright surface filling the frame to its bottom edge is read as nothing at all. | Section 4.2 | **Closed**, commit `3fbd2039`. `wall-east` is `found` on every case (section 3.3); the tracer rewrite that fixed this also removed the dark-sky/dark-disc artefact section 4.2 filed as an instrument limit, not a scanner bug. |
+
+Also carried into stage B from the 2026-09-18 baseline, with what this pass
+did and did not do about each:
+
+| item | where it came from | status, 2026-09-19 |
 |---|---|---|
-| #57 | No dome cell lies within the aim cone at altitude 85, so a hold there can never capture: the zenith cap's cone is narrower than the gap to the next ring, the aim dot shows no target, and every frame is declined with no cue that says why. Widen the cap's cone or add a ring so every altitude has a target, and say in the cue when a direction has none. | Section 4.6 |
-| #52 | The assumed lens. A short-axis field of view ten degrees from the truth costs most of the dome, and the cue on the refusal path tells the user to fix their aim instead of naming the camera view angle control. Read the refusal history that is already in the capture log. | Section 4.5 |
-| #58 | `traceSkyCoverage` reports open sky over a wall brighter than seven tenths of the sky level. The tracer looks for a darkening and has no contrast sign, so a bright surface filling the frame to its bottom edge is read as nothing at all. | Section 4.2 |
+| A scene change so the horizon tracer is not handed dark sky and dark discs above altitude 60, and a background grey floor above the tracer's threshold; and, for the converse, object colours held a stated margin below the sky level so a surface the tracer must find cannot read as sky. | Section 4.2 | Superseded for the dark-sky half: #58's tracer rewrite removed that artefact from the chart yard without a scene change (section 4.2's current-status note). Still open in spirit as a general scene-robustness item, and issue #71 shows the new tracer has its own, different false-open failure mode on a floating obstruction under 12 degrees tall. |
+| Advance the virtual clock by each frame callback's measured cost, so that the sample gate, the registration gate and the capture latencies are timed against work that took time. Without it the instrument cannot tell a scanner that fits in a frame budget from one that does not. | Section 5 | Open. No task in this pass touches the harness clock. |
+| Re-derive the declared `min_width_deg` values now that they gate (issue #53). | Section 5 | Half closed: task 10 (#53, `08cc613b`) made resolvability depend on an obstacle's actual visible width rather than its declared `min_width_deg`, which is why the two poles and the trunk are `resolvable: false` and can no longer be marked missed regardless of that declared value (section 3.3). The declared values themselves are still not re-derived from anything -- issue #53 part 2, open. |
+| Exercise the interval fallback path, and answer the device questions in issue #48: the camera pipeline delay on Firefox Android, and whether `video.currentTime` advances with frame delivery for a MediaStream-backed element there. That question is now a release gate, because capture itself depends on it and not only the stillness witness. | Section 5 | Half closed: task 5 (#48, `512d1478`) fixed the vouching margin to one observation interval on the fallback path in the scanner's own logic. The device question itself -- what a real Firefox Android phone's camera pipeline and `video.currentTime` actually do -- was not and cannot be answered by this simulator; issue #48's device item stays open, and this instrument still never exercises the interval fallback path at all (section 5). |
+| Decouple the overlay measurement from the sampling phase, so the moving percentiles measure the scanner rather than where the emission instants fall. | Section 3.4 | Open. Task 13 (#59, `0bcb62ca`) changed what is measured (the max of three axes, not `forward` alone) but not when it is sampled; the phase-locking mechanism itself is unchanged (section 3.4). |
 
-Also carried into stage B from this baseline:
+**Open residuals from this pass** (issue numbers, filed as findings surfaced
+during implementation and review, per this project's rule that every defect
+found gets an issue at the time it is found):
 
-| item | where it came from |
-|---|---|
-| A scene change so the horizon tracer is not handed dark sky and dark discs above altitude 60, and a background grey floor above the tracer's threshold; and, for the converse, object colours held a stated margin below the sky level so a surface the tracer must find cannot read as sky. | Section 4.2 |
-| Advance the virtual clock by each frame callback's measured cost, so that the sample gate, the registration gate and the capture latencies are timed against work that took time. Without it the instrument cannot tell a scanner that fits in a frame budget from one that does not. | Section 5 |
-| Re-derive the declared `min_width_deg` values now that they gate (issue #53). | Section 5 |
-| Exercise the interval fallback path, and answer the device questions in issue #48: the camera pipeline delay on Firefox Android, and whether `video.currentTime` advances with frame delivery for a MediaStream-backed element there. That question is now a release gate, because capture itself depends on it and not only the stillness witness. | Section 5 |
-| Decouple the overlay measurement from the sampling phase, so the moving percentiles measure the scanner rather than where the emission instants fall. | Section 3.4 |
+| issue | what it is | where it surfaces here |
+|---|---|---|
+| #62 | Sensor noise lifts the measured stillness gradient, so a frame just under `GRADIENT_FLOOR` is admitted with a looser bound than 0.29 cells names, and a frame exactly on the floor breaks a settle about one time in seven on noise alone. | Not measured by this instrument (noise-free chart yard, section 5); a real-device item. |
+| #63 | The featureless-hold witness keeps only a reading the video already vouched for, so a phone that comes to rest on blank sky still reads the compass as lost at 2 seconds. | Not exercised by any of the three cases (none holds on blank sky long enough to trigger it). |
+| #64 | The obstacle width term counts scattered tenth-degree bins rather than requiring them to form a stretch, which decides `roof-south`'s verdict on close calls. | Section 3.3's roof-south rows, section 4.3's run tables: several of the runs counted there are a handful of scattered bins near a threshold, exactly the shape this issue is about. |
+| #68 | The recorded cases are git-ignored, so every replay-backed test (including the ones this document's own replay/score commands exercise) skips in CI. | This whole document's evidence is produced by commands that, per #68, do not run in CI; it runs only where the cache is present, as it is on this machine. |
+| #70 | The carried visual anchor is clamped at the overlay gate's own 10 degrees, so a mis-set lens sits against the clamp and the whole overlay goes with it. | Section 3.1 and 3.4: `chartyard-arc075-70` newly fails `overlay_max_lt_10` (8.369 to 10.038) for exactly this reason. |
+| #71 | A floating obstruction under 12 degrees tall with clear sky beneath it reads as open sky under the new tracer's persistence floor -- the residual false-open failure mode task 12's fix leaves behind. | Section 3.3: `chartyard-arc075-60`'s `false_open_sr` rose (0.1544 to 0.2487) even as the other two cases' fell. |
+| #74 | A soft sky-to-obstruction edge over about ten rows can still walk the tracer's local sky model into the wall, reading a grey obstruction with a 6-degree edge as open sky. | Section 5's known-limits table; not isolated to a specific bin on these three cases, but the mechanism the tracer rewrite has not yet closed. |
+| #53 part 2 | The declared `min_width_deg` values have never been re-derived from anything now that they are load bearing; task 10 fixed only which obstacles they can decide (resolvability), not what the numbers themselves should be. | Section 3.3, section 5. |
+| #48 device item | Whether a real Firefox Android phone's camera pipeline delay and `video.currentTime` advance the way the interval fallback path assumes. | Section 5: this instrument has no device and cannot answer it; task 5 closed everything else #48 asked for in the scanner's own logic. |
