@@ -71,6 +71,11 @@ class IdealResult(unittest.TestCase):
         cls.case_dir = cases.build_case(case_def, base / "cases", cases.flat_renderer)
         cls.result_dir = ideal.make_ideal_result(cls.case_dir, cls.case_dir / "result")
         cls.scores = score.score_case(cls.case_dir)
+        # The frame count follows from the route's own timing (CONTRACT.md's
+        # move-duration rule), not a number pinned in this file: read it back
+        # from the built case rather than hardcoding it, so a route timing
+        # change changes this test's expectation along with the case.
+        cls.frame_count = len(read_jsonl(cls.case_dir / "truth" / "trajectory.jsonl"))
 
         cls.truth_landmarks = read_json(cls.case_dir / "truth" / "landmarks.json")
         cls.holds = read_json(cls.case_dir / "truth" / "holds.json")
@@ -467,7 +472,7 @@ class IdealResult(unittest.TestCase):
 
         scores = score.score_case(self.case_dir, turned)
         overlay = scores["overlay"]
-        self.assertEqual(overlay["samples"], 1015)
+        self.assertEqual(overlay["samples"], self.frame_count)
         self.assertAlmostEqual(overlay["settled"]["max_deg"], 3.0, places=9)
         self.assertEqual(overlay["frames_over_gate"], 1)
         # One frame in a thousand cannot move a percentile, which is why the
@@ -548,8 +553,9 @@ class IdealResult(unittest.TestCase):
         path.write_text(text + json.dumps(ghost) + "\n",
                         encoding="utf-8", newline="\n")
         scores = score.score_case(self.case_dir, stray)
-        self.assertEqual(scores["overlay"]["samples"], 1015)
-        self.assertAlmostEqual(scores["overlay"]["missing_fraction"], 1 / 1016)
+        self.assertEqual(scores["overlay"]["samples"], self.frame_count)
+        self.assertAlmostEqual(scores["overlay"]["missing_fraction"],
+                               1 / (self.frame_count + 1))
 
     # -- a panorama that is not the contract's is empty --------------------
 

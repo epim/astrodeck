@@ -8,33 +8,99 @@ given fps, the list of holds, the reference position, and a continuous
 ``pose_at`` usable at any sampling rate (the sensor generator in
 :mod:`sim.sensors` calls it at 100 Hz).
 
-Two conventions the route schema leaves to this module:
+A move interpolates the FULL camera attitude as a rotation, not azimuth and
+altitude as two independent numbers -- see "Why a rotation, not two angles"
+below for why that distinction is load-bearing. Two conventions the route
+schema leaves to this module:
 
-- Between aims, both azimuth and altitude are carried by the same smoothstep
-  parameter ``s(u) = 3u^2 - 2u^3``, ``u = t / duration``: azimuth moves along
-  ``wrap_deg(az1 - az0)`` (the shorter arc, so it can go through north) and
-  altitude moves along the plain (unwrapped) difference.
-- A move's duration is ``move_s``, unless the great-circle angle between its
-  two look directions exceeds ``30 * move_s`` degrees, in which case it takes
-  ``angle / 30`` seconds instead -- CONTRACT.md's Route schema rule, restated
-  here: no move ever averages more than 30 degrees per second. Every one of
-  the 45 aim-to-aim moves is 24 degrees or less, so this leaves them all at
-  exactly ``move_s`` (24 / 30 = 0.8 for the standard step); it is what makes
-  the move from the last aim, ``[0, 89.5]``, into the first sweep's start,
-  ``(180, 0)`` -- a roughly 90 degree turn on the sky, one no real move
-  between adjacent aims ever asks for -- take about 3 seconds instead of a
-  physically impossible 0.8, so that move is built exactly like any other:
-  same smoothstep profile, just longer. The smoothstep's own peak rate is 1.5
-  times its average, so a move built this way never exceeds 45 deg/s, which
-  is 0.45 degrees per 10 ms sample -- comfortably inside the plan's 1 degree
-  smoothstep-continuity bound, for every move in the route, not just the
-  short ones.
+- A move from attitude A to attitude B (both ``look_basis(az, alt, 0)``) is a
+  **swing-twist decomposition**, the standard way to interpolate one 3D
+  orientation into another while pinning down what the "forward" axis does
+  along the way:
 
-Angular rate is computed analytically per segment, not by finite-differencing
-``pose_at``: a hold's rate is exactly 0 (nothing here reads as "very small"
-instead), and a move's or a sweep tilt's rate is the closed-form derivative of
-the unit view direction, using the sphere's own metric
-``sqrt(cos(alt)^2 * (d az/dt)^2 + (d alt/dt)^2)``.
+  - The **swing** is the minimal rotation carrying ``A.forward`` to
+    ``B.forward``: axis ``n = normalize(A.forward x B.forward)`` (perpendicular
+    to both), angle ``phi = angle_between(A.forward, B.forward)``. Applying
+    ``s * phi`` of this swing to ``A`` for ``s`` in ``[0, 1]`` is mathematically
+    identical to spherically interpolating ``A.forward`` and ``B.forward``
+    directly, because ``n`` is perpendicular to every point on that arc: this
+    is what keeps forward on the great circle EXACTLY, not approximately, at
+    every ``s``, including every altitude-changing move, not just the
+    same-altitude ones.
+  - The **twist** is the residual roll about the now-current forward axis
+    needed to turn the swung right/up into ``B``'s own right/up exactly.
+    Applying ``s * psi`` of this twist (about the swing's OWN result at
+    fraction ``s``, not a fixed axis) spreads that roll smoothly across the
+    whole move rather than snapping it on at the end.
+  - Both use the same smoothstep parameter ``s(u) = 3u^2 - 2u^3``,
+    ``u = t / duration``, and the same duration, so they complete together.
+
+- A move's duration is ``move_s``, unless ``theta = sqrt(phi^2 + psi^2)``
+  exceeds ``30 * move_s`` degrees, in which case it takes ``theta / 30``
+  seconds instead -- CONTRACT.md's Route schema rule, restated here: no move
+  ever averages more than 30 degrees per second, where "no move" now means
+  the FULL attitude, swing and twist combined, not forward alone. ``phi`` and
+  ``psi`` act along mutually perpendicular instantaneous axes throughout the
+  move (``n`` is perpendicular to forward at every ``s``, and the twist axis
+  IS forward), so the combined instantaneous rate is exactly
+  ``ds/dt * sqrt(phi^2 + psi^2)`` -- a single closed form, not an
+  approximation, which is what makes ``theta/30`` an exact (not merely safe)
+  bound on the average, with the usual smoothstep peak-over-average ratio of
+  1.5 bounding the peak at ``45 deg/s`` whenever duration is set by ``theta``.
+
+## Why a rotation, not two angles (and not a single whole-attitude slerp either)
+
+An earlier version of this module (see git history, "no move averages more
+than 30 degrees per second") interpolated azimuth and altitude independently
+under one shared smoothstep parameter, and measured a move's duration from
+``angle_between`` of the two ``forward`` vectors alone. Review
+docs/ui-rebuild/17-photosphere-implementation-review.md P2 found that this
+times one path (the forward-only great-circle angle) while moving the camera
+along a DIFFERENT one (independent az/alt interpolation, which need not
+follow that great circle), so the declared 30/45 deg/s budget was not
+actually the bound honoured by the frames produced; the zenith-to-horizon
+transition in the shipped ``arc075`` route measured 50 deg/s average and 85
+deg/s peak against the declared 30/45. It also asked that ROLL be counted:
+``look_basis``'s ``right = sky_vector(az + 90, 0)`` is defined from azimuth
+alone, ignoring altitude entirely, so it can swing independently of how much
+``forward`` actually moves -- most visibly near the pole, where a large
+azimuth change can correspond to almost no physical motion of forward, or
+(as below) the reverse.
+
+The obvious fix -- represent each endpoint attitude as a single rotation and
+SLERP the whole thing along the one shortest path connecting them in SO(3) --
+turns out not to keep forward on the great circle either, except when the
+relative rotation's axis happens to be perpendicular to forward (true for a
+same-altitude, pure-yaw move, false in general). This is not a rounding
+error: measured directly for this route's shipped last-aim-to-sweep
+transition, ``(az=0, alt=89.5) -> (az=180, alt=0)``, a single whole-attitude
+slerp carries forward up to 45.25 degrees off the direct great-circle arc
+between the two endpoints (and 0.3-0.77 degrees off it for the three ordinary
+cross-band moves, which also change altitude) -- because the relative
+rotation that exactly maps one FULL basis onto the other is not, in general,
+the same rotation that minimally carries forward alone from one direction to
+the other. The swing-twist decomposition above is the standard resolution:
+it deliberately separates "get forward to the right place, on the great
+circle, using the perpendicular-axis rotation that is guaranteed to trace
+it" from "then apply whatever roll is still needed", rather than asking one
+single rotation to do both jobs along a path that need not respect either
+requirement on its own.
+
+One consequence worth stating plainly, because it looks surprising: the
+``(0, 89.5) -> (180, 0)`` transition's swing is only ``phi = 90.5`` degrees
+(matching the intuitive "pitch down about the east axis"), but its twist is
+``psi = -180`` degrees, because ``look_basis``'s azimuth-only ``right``
+convention hands this move a full reversal (east becomes west) on top of the
+pitch. ``theta = sqrt(90.5^2 + 180^2)`` = about 201.5 degrees, not the ~90
+the swing alone might suggest, and the transition's shipped duration follows
+from that larger number. That the fix makes this move slower, not the same
+length, is the point: it is roll near the zenith that this fix is for.
+
+Angular rate for a hold or a sweep tilt is still the closed-form derivative
+of the unit view direction (a hold's rate is exactly 0; a tilt's is
+``|d alt/dt|``, since it moves altitude alone at a fixed azimuth and roll,
+which is already a pure single-axis rotation with no swing/twist split
+needed).
 """
 
 from __future__ import annotations
@@ -45,7 +111,7 @@ from typing import Callable
 
 import numpy as np
 
-from .geometry import Basis, angle_between, look_basis, sky_vector, wrap_deg
+from .geometry import Basis, angle_between, look_basis, sky_angles
 
 __all__ = ["FrameTruth", "Hold", "Trajectory", "build"]
 
@@ -98,27 +164,74 @@ def _position(kind, pivot, radius_m, height_m, lift_m, az, alt):
     raise ValueError(f"unknown route kind {kind!r}")
 
 
-def _move_duration_ms(az0, alt0, az1, alt1, move_s):
-    """A move's duration in ms: ``move_s``, or ``angle / 30`` seconds if that
-    is longer -- CONTRACT.md's Route schema rule, so no move ever averages
-    more than 30 degrees per second. ``angle`` is the great-circle angle
-    between the two look directions, not the raw azimuth/altitude deltas, so
-    a move that changes both is measured by the actual distance travelled on
-    the sky.
+def _rotate_vector(v, axis, angle_deg):
+    """Rodrigues' formula: rotate ``v`` by ``angle_deg`` about unit ``axis``.
+
+    Well-conditioned for any angle, including exactly +-180 degrees: unlike
+    extracting an axis FROM a rotation matrix (singular at 180, since the
+    antisymmetric part vanishes there), applying a GIVEN axis has no such
+    singularity.
     """
-    angle = angle_between(sky_vector(az0, alt0), sky_vector(az1, alt1))
-    duration_s = max(float(move_s), angle / 30.0)
-    return round(duration_s * 1000.0)
+    theta = math.radians(angle_deg)
+    c, s = math.cos(theta), math.sin(theta)
+    return v * c + np.cross(axis, v) * s + axis * float(np.dot(axis, v)) * (1.0 - c)
+
+
+def _rotate_basis(basis: Basis, axis, angle_deg) -> Basis:
+    return Basis(
+        right=_rotate_vector(basis.right, axis, angle_deg),
+        up=_rotate_vector(basis.up, axis, angle_deg),
+        forward=_rotate_vector(basis.forward, axis, angle_deg),
+    )
+
+
+def _unit_perp(v, n):
+    """``v`` projected perpendicular to unit ``n``, renormalised to unit length."""
+    p = v - float(np.dot(v, n)) * n
+    return p / np.linalg.norm(p)
+
+
+def _swing_twist(basis_a: Basis, basis_b: Basis):
+    """Decompose the rotation from ``basis_a`` to ``basis_b`` into a swing
+    (the minimal rotation carrying ``forward_a`` to ``forward_b`` along their
+    great circle) and a twist (the roll, about the resulting forward, that
+    reconciles the swung right/up with ``basis_b``'s own). Returns
+    ``(axis, phi_deg, psi_deg)``; ``psi`` is signed via the right-hand rule
+    about ``basis_b.forward``.
+    """
+    fwd_a, fwd_b = basis_a.forward, basis_b.forward
+    phi = angle_between(fwd_a, fwd_b)
+    if phi < 1e-9:
+        axis = basis_a.right  # forward does not move; the axis is moot
+    else:
+        axis = np.cross(fwd_a, fwd_b)
+        axis = axis / np.linalg.norm(axis)
+    swung_right = _rotate_vector(basis_a.right, axis, phi)
+    r_swung = _unit_perp(swung_right, fwd_b)
+    r_b = _unit_perp(basis_b.right, fwd_b)
+    cos_psi = float(np.clip(np.dot(r_swung, r_b), -1.0, 1.0))
+    sin_psi = float(np.dot(np.cross(r_swung, r_b), fwd_b))
+    psi = math.degrees(math.atan2(sin_psi, cos_psi))
+    return axis, phi, psi
 
 
 def _append_move(segments, t, az0, alt0, az1, alt1, move_s):
     """Append one move segment from ``(az0, alt0)`` to ``(az1, alt1)``
-    starting at ``t``, and return the time it ends."""
-    d_az = float(wrap_deg(az1 - az0))
-    d_alt = alt1 - alt0
-    dur_ms = _move_duration_ms(az0, alt0, az1, alt1, move_s)
+    starting at ``t``, and return the time it ends.
+
+    Duration: ``move_s``, or ``theta / 30`` seconds if that is longer, where
+    ``theta = sqrt(phi^2 + psi^2)`` combines the swing and twist -- see the
+    module docstring for why the full attitude, not forward alone, is what
+    must stay inside the 30 deg/s average / 45 deg/s peak budget.
+    """
+    basis_a = look_basis(az0, alt0, 0.0)
+    basis_b = look_basis(az1, alt1, 0.0)
+    axis, phi, psi = _swing_twist(basis_a, basis_b)
+    theta = math.hypot(phi, psi)
+    dur_ms = round(max(float(move_s), theta / 30.0) * 1000.0)
     segments.append({"kind": "move", "t0": t, "t1": t + dur_ms,
-                     "az0": az0, "alt0": alt0, "d_az": d_az, "d_alt": d_alt})
+                     "basis_a": basis_a, "axis": axis, "phi": phi, "psi": psi,
+                     "theta": theta})
     return t + dur_ms
 
 
@@ -178,13 +291,15 @@ def _segments_and_holds(route: dict):
 
 
 def _eval(segments, t):
-    """``(az, alt, angular_rate_deg_s)`` at time ``t`` (ms).
+    """``(az, alt, angular_rate_deg_s, basis)`` at time ``t`` (ms).
 
     Segments are contiguous and half-open, ``[t0, t1)``, except the very last,
     which is closed at both ends so the trajectory's final instant resolves.
     A boundary time therefore belongs to the segment that STARTS there, which
     is what carries a frame at the end of one hold into the next move (or
-    tilt) with no third case to consider.
+    tilt) with no third case to consider. ``basis`` is returned directly
+    (rather than reconstructed by the caller via ``look_basis(az, alt, 0)``)
+    because a move's basis carries roll ``look_basis`` alone would discard.
     """
     last = len(segments) - 1
     t = min(max(t, segments[0]["t0"]), segments[last]["t1"])
@@ -197,25 +312,24 @@ def _eval(segments, t):
 def _eval_segment(seg, t):
     kind = seg["kind"]
     if kind == "hold":
-        return seg["az"], seg["alt"], 0.0
+        return seg["az"], seg["alt"], 0.0, look_basis(seg["az"], seg["alt"], 0.0)
     if kind == "move":
         dur_ms = seg["t1"] - seg["t0"]
         u = 0.0 if dur_ms <= 0 else min(max((t - seg["t0"]) / dur_ms, 0.0), 1.0)
         s = 3.0 * u * u - 2.0 * u * u * u
-        az = seg["az0"] + seg["d_az"] * s
-        alt = seg["alt0"] + seg["d_alt"] * s
         duds = 6.0 * u * (1.0 - u)
         ds_dt = 0.0 if dur_ms <= 0 else duds / (dur_ms / 1000.0)
-        daz_dt = seg["d_az"] * ds_dt
-        dalt_dt = seg["d_alt"] * ds_dt
-        rate = math.hypot(daz_dt * math.cos(math.radians(alt)), dalt_dt)
-        return az, alt, rate
+        swung = _rotate_basis(seg["basis_a"], seg["axis"], s * seg["phi"])
+        basis = _rotate_basis(swung, swung.forward, s * seg["psi"])
+        az, alt = sky_angles(basis.forward)
+        rate = ds_dt * seg["theta"]
+        return az, alt, rate, basis
     if kind == "tilt":
         dur_ms = seg["t1"] - seg["t0"]
         u = 0.0 if dur_ms <= 0 else min(max((t - seg["t0"]) / dur_ms, 0.0), 1.0)
         alt = seg["alt0"] + (seg["alt1"] - seg["alt0"]) * u
         dalt_dt = 0.0 if dur_ms <= 0 else (seg["alt1"] - seg["alt0"]) / (dur_ms / 1000.0)
-        return seg["az"], alt, abs(dalt_dt)
+        return seg["az"], alt, abs(dalt_dt), look_basis(seg["az"], alt, 0.0)
     raise ValueError(f"unknown segment kind {kind!r}")  # pragma: no cover
 
 
@@ -238,18 +352,17 @@ def build(route: dict, fps: int) -> Trajectory:
     segments, holds, duration_ms = _segments_and_holds(route)
 
     def pose_at(t_ms):
-        az, alt, _ = _eval(segments, float(t_ms))
+        az, alt, _, basis = _eval(segments, float(t_ms))
         position = _position(kind, pivot, radius_m, height_m, lift_m, az, alt)
-        return position, look_basis(az, alt, 0.0)
+        return position, basis
 
     period_ms = 1000.0 / fps
     n_frames = int(math.floor(duration_ms / period_ms + 1e-9)) + 1
     frames = []
     for k in range(n_frames):
         t_capture = int(round(k * 1000.0 / fps))
-        az, alt, rate = _eval(segments, t_capture)
+        az, alt, rate, basis = _eval(segments, t_capture)
         position = _position(kind, pivot, radius_m, height_m, lift_m, az, alt)
-        basis = look_basis(az, alt, 0.0)
         frames.append(FrameTruth(frame_id=f"f{k:06d}", t_capture_ms=t_capture,
                                  position=position, basis=basis, az=az, alt=alt,
                                  angular_rate_deg_s=rate))

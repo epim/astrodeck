@@ -19,20 +19,41 @@ def orientation_events(traj, threshold_deg: float = 0.1, sample_hz: float = 100,
                        latency_ms: int = 20) -> list:
     """Change-driven ``orientation`` observation records.
 
-    ``pose_at`` is sampled every ``1000 / sample_hz`` ms from 0 to the
-    trajectory's duration. The first sample is always emitted; every later
-    sample is emitted only if ``alpha``, ``beta`` or ``gamma`` has moved by at
-    least ``threshold_deg`` from the LAST EMITTED sample (alpha's distance
+    Sampled on the fixed ``1000 / sample_hz`` ms grid from 0 to the
+    trajectory's duration, PLUS every segment boundary instant: every hold's
+    ``from_ms`` and ``to_ms``, which is the same set of instants as every
+    move's start and end, since a move is always exactly the gap between two
+    holds. The boundary samples matter because a move's duration need not be
+    a whole multiple of the sampling period (CONTRACT.md's Route schema
+    move-duration rule uses a real angular quantity): without them, an
+    orientation change still accumulating at the tail of a move could first
+    cross the emission threshold on the grid tick immediately AFTER a hold
+    has already begun, reporting an event a few ms inside a hold that should
+    have been silent (see https://github.com/epim/astrodeck/issues/55).
+    Sampling exactly at ``from_ms`` uses that instant's own pose -- the
+    hold's, per the usual half-open segment convention (a boundary belongs
+    to the segment that starts there; see ``trajectory._eval``) -- so the
+    same accumulated change is instead seen, and if warranted emitted, AT
+    the hold's first instant, never strictly inside it.
+
+    The first sample overall is always emitted; every later sample is
+    emitted only if ``alpha``, ``beta`` or ``gamma`` has moved by at least
+    ``threshold_deg`` from the LAST EMITTED sample (alpha's distance
     computed through the wrap at 360). During a hold every sample is
     bit-identical to the last, so nothing is emitted there: a hold at least
-    ``hold_s`` seconds long produces a silent gap of at least that length.
+    ``hold_s`` seconds long still produces a silent gap of at least that
+    length.
     """
     period_ms = 1000.0 / sample_hz
     n_samples = int(round(traj.duration_ms / period_ms))
+    times = {k * period_ms for k in range(n_samples + 1)}
+    for hold in traj.holds:
+        times.add(float(hold.from_ms))
+        times.add(float(hold.to_ms))
+
     events = []
     last = None
-    for k in range(n_samples + 1):
-        t = k * period_ms
+    for t in sorted(times):
         _, basis = traj.pose_at(t)
         alpha, beta, gamma = device_orientation(basis)
         if last is None or _changed(alpha, beta, gamma, last, threshold_deg):
