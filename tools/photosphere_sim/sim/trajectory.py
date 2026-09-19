@@ -101,6 +101,39 @@ of the unit view direction (a hold's rate is exactly 0; a tilt's is
 ``|d alt/dt|``, since it moves altitude alone at a fixed azimuth and roll,
 which is already a pure single-axis rotation with no swing/twist split
 needed).
+
+## Position's carry azimuth (a regression the swing-twist fix introduced, since fixed)
+
+The ``arc`` route's position formula, ``C(t) = pivot + [radius sin(az(t)),
+radius cos(az(t)), height + lift * max(0, alt(t)) / 90]``, needs its own
+azimuth number to feed to ``sin``/``cos``. The first version of the
+swing-twist fix reused ``az`` from ``sky_angles(basis.forward)`` -- correct
+for reporting where the camera is actually looking, but wrong here: that
+azimuth is computed with ``atan2``, which is only well-conditioned away from
+the poles. The zenith-to-sweep-start move's great circle passes close to the
+pole partway through, where ``atan2`` can flip its answer by 180 degrees
+between two adjacent 100 ms frames even though the physical direction barely
+moved -- and unlike a truth record (which only reports the number), feeding
+that flip into ``sin``/``cos`` swings the ARC position formula's horizontal
+component through a diameter: measured on the shipped route, frames
+``f000924`` and ``f000925`` jumped 1.5 m, against a next-largest inter-frame
+step of 0.14 m.
+
+The fix keeps the azimuth flip for truth (it is what the camera is really
+looking at, and `sky_angles(basis.forward)` is still what `FrameTruth.az`
+and `truth/trajectory.jsonl` carry during a move) but gives POSITION its own,
+always-continuous "carry azimuth": the same shorter-arc, smoothstep-scaled
+interpolation between the two endpoint azimuths the route used before the
+swing-twist fix (``az0 + wrap_deg(az1 - az0) * s``). This never calls
+``atan2`` and so cannot flip; it agrees with the reported ``az`` exactly at
+both endpoints of every move (mod 360), and in between it draws the same
+smooth arc through the horizontal plane the pre-swing-twist implementation
+always did, independent of whatever the orientation's great circle is doing
+near a pole. The altitude fed into the lift term is NOT given the same
+treatment: ``alt`` from ``sky_angles(basis.forward)`` has no equivalent
+coordinate singularity (``asin`` is continuous throughout the range), so
+reusing it is safe and keeps the lift tied to where the camera is actually
+tilted.
 """
 
 from __future__ import annotations
@@ -111,7 +144,7 @@ from typing import Callable
 
 import numpy as np
 
-from .geometry import Basis, angle_between, look_basis, sky_angles
+from .geometry import Basis, angle_between, look_basis, sky_angles, wrap_deg
 
 __all__ = ["FrameTruth", "Hold", "Trajectory", "build"]
 
@@ -152,12 +185,25 @@ class Trajectory:
     duration_ms: float
 
 
-def _position(kind, pivot, radius_m, height_m, lift_m, az, alt):
-    """The camera centre for ``kind`` at aim ``(az, alt)``, per CONTRACT.md."""
+def _position(kind, pivot, radius_m, height_m, lift_m, carry_az, alt):
+    """The camera centre for ``kind``, per CONTRACT.md.
+
+    ``carry_az`` is the arc's own continuous azimuth parameter (see
+    ``_eval_segment``'s "move" branch): during a hold or a tilt it is the
+    same value as the reported ``az``, but during a move it is NOT the
+    forward-derived azimuth (``sky_angles(basis.forward)``) -- that one can
+    legitimately flip by 180 degrees in a single sample when the swing's
+    great circle passes near a pole, which is fine for truth (it is what
+    the camera is really looking at) but would swing the arc position
+    through more than a metre between two adjacent frames if fed into
+    ``sin``/``cos`` directly. ``alt`` is still the forward-derived altitude:
+    unlike azimuth, altitude has no such coordinate singularity (``asin`` is
+    continuous throughout), so reusing it for the lift is safe.
+    """
     if kind == "still":
         return pivot + np.array([0.0, radius_m, height_m])
     if kind == "arc":
-        az_r = math.radians(az)
+        az_r = math.radians(carry_az)
         lift = lift_m * max(0.0, alt) / 90.0
         return pivot + np.array([radius_m * math.sin(az_r), radius_m * math.cos(az_r),
                                  height_m + lift])
@@ -191,18 +237,29 @@ def _unit_perp(v, n):
     return p / np.linalg.norm(p)
 
 
-def _swing_twist(basis_a: Basis, basis_b: Basis):
+def _swing_twist(basis_a: Basis, basis_b: Basis, az0, alt0, az1, alt1):
     """Decompose the rotation from ``basis_a`` to ``basis_b`` into a swing
     (the minimal rotation carrying ``forward_a`` to ``forward_b`` along their
     great circle) and a twist (the roll, about the resulting forward, that
     reconciles the swung right/up with ``basis_b``'s own). Returns
     ``(axis, phi_deg, psi_deg)``; ``psi`` is signed via the right-hand rule
-    about ``basis_b.forward``.
+    about ``basis_b.forward``. ``az0``/``alt0``/``az1``/``alt1`` are the
+    aims the two bases came from, used only to name them if the swing axis
+    is undefined.
     """
     fwd_a, fwd_b = basis_a.forward, basis_b.forward
     phi = angle_between(fwd_a, fwd_b)
     if phi < 1e-9:
         axis = basis_a.right  # forward does not move; the axis is moot
+    elif phi > 180.0 - 1e-6:
+        # forward_a x forward_b vanishes here too (antiparallel vectors have
+        # no well-defined perpendicular), which would otherwise divide by
+        # ~0 and hand back NaN silently.
+        raise ValueError(
+            f"aim ({az0}, {alt0}) and aim ({az1}, {alt1}) look in exactly "
+            "opposite directions: the swing axis (forward_a x forward_b) "
+            "is undefined for an antipodal pair"
+        )
     else:
         axis = np.cross(fwd_a, fwd_b)
         axis = axis / np.linalg.norm(axis)
@@ -222,16 +279,27 @@ def _append_move(segments, t, az0, alt0, az1, alt1, move_s):
     Duration: ``move_s``, or ``theta / 30`` seconds if that is longer, where
     ``theta = sqrt(phi^2 + psi^2)`` combines the swing and twist -- see the
     module docstring for why the full attitude, not forward alone, is what
-    must stay inside the 30 deg/s average / 45 deg/s peak budget.
+    must stay inside the 30 deg/s average / 45 deg/s peak budget. Rounded up
+    (``math.ceil``, not ``round``), so the declared budget is never exceeded
+    by a duration that rounded down to the nearest millisecond short of what
+    ``theta`` actually needs.
+
+    Also stores ``az0`` and ``d_az`` (the shorter-arc azimuth delta): the
+    ORIENTATION follows the swing-twist basis, but the ARC route's POSITION
+    needs its own continuous "carry azimuth" -- see ``_eval_segment`` and the
+    module docstring's "Position's carry azimuth" section for why reusing
+    the orientation's own (forward-derived) azimuth for position is wrong
+    near the pole.
     """
     basis_a = look_basis(az0, alt0, 0.0)
     basis_b = look_basis(az1, alt1, 0.0)
-    axis, phi, psi = _swing_twist(basis_a, basis_b)
+    axis, phi, psi = _swing_twist(basis_a, basis_b, az0, alt0, az1, alt1)
     theta = math.hypot(phi, psi)
-    dur_ms = round(max(float(move_s), theta / 30.0) * 1000.0)
+    dur_ms = math.ceil(max(float(move_s), theta / 30.0) * 1000.0)
+    d_az = float(wrap_deg(az1 - az0))
     segments.append({"kind": "move", "t0": t, "t1": t + dur_ms,
                      "basis_a": basis_a, "axis": axis, "phi": phi, "psi": psi,
-                     "theta": theta})
+                     "theta": theta, "az0": az0, "d_az": d_az})
     return t + dur_ms
 
 
@@ -291,7 +359,7 @@ def _segments_and_holds(route: dict):
 
 
 def _eval(segments, t):
-    """``(az, alt, angular_rate_deg_s, basis)`` at time ``t`` (ms).
+    """``(az, alt, angular_rate_deg_s, basis, carry_az)`` at time ``t`` (ms).
 
     Segments are contiguous and half-open, ``[t0, t1)``, except the very last,
     which is closed at both ends so the trajectory's final instant resolves.
@@ -300,6 +368,9 @@ def _eval(segments, t):
     tilt) with no third case to consider. ``basis`` is returned directly
     (rather than reconstructed by the caller via ``look_basis(az, alt, 0)``)
     because a move's basis carries roll ``look_basis`` alone would discard.
+    ``carry_az`` is ``az`` outside a move, and a separate, always-continuous
+    azimuth during one -- see ``_eval_segment``'s "move" branch and
+    ``_position``.
     """
     last = len(segments) - 1
     t = min(max(t, segments[0]["t0"]), segments[last]["t1"])
@@ -312,7 +383,8 @@ def _eval(segments, t):
 def _eval_segment(seg, t):
     kind = seg["kind"]
     if kind == "hold":
-        return seg["az"], seg["alt"], 0.0, look_basis(seg["az"], seg["alt"], 0.0)
+        basis = look_basis(seg["az"], seg["alt"], 0.0)
+        return seg["az"], seg["alt"], 0.0, basis, seg["az"]
     if kind == "move":
         dur_ms = seg["t1"] - seg["t0"]
         u = 0.0 if dur_ms <= 0 else min(max((t - seg["t0"]) / dur_ms, 0.0), 1.0)
@@ -323,13 +395,20 @@ def _eval_segment(seg, t):
         basis = _rotate_basis(swung, swung.forward, s * seg["psi"])
         az, alt = sky_angles(basis.forward)
         rate = ds_dt * seg["theta"]
-        return az, alt, rate, basis
+        # The position's own continuous parameter: NOT az above (see
+        # _position's docstring for why sky_angles(basis.forward) is wrong
+        # to feed into sin/cos here), but the same shorter-arc smoothstep
+        # interpolation the whole route used before the swing-twist fix --
+        # unaffected by it, because it never touches an atan2 near a pole.
+        carry_az = seg["az0"] + seg["d_az"] * s
+        return az, alt, rate, basis, carry_az
     if kind == "tilt":
         dur_ms = seg["t1"] - seg["t0"]
         u = 0.0 if dur_ms <= 0 else min(max((t - seg["t0"]) / dur_ms, 0.0), 1.0)
         alt = seg["alt0"] + (seg["alt1"] - seg["alt0"]) * u
         dalt_dt = 0.0 if dur_ms <= 0 else (seg["alt1"] - seg["alt0"]) / (dur_ms / 1000.0)
-        return seg["az"], alt, abs(dalt_dt), look_basis(seg["az"], alt, 0.0)
+        basis = look_basis(seg["az"], alt, 0.0)
+        return seg["az"], alt, abs(dalt_dt), basis, seg["az"]
     raise ValueError(f"unknown segment kind {kind!r}")  # pragma: no cover
 
 
@@ -352,8 +431,8 @@ def build(route: dict, fps: int) -> Trajectory:
     segments, holds, duration_ms = _segments_and_holds(route)
 
     def pose_at(t_ms):
-        az, alt, _, basis = _eval(segments, float(t_ms))
-        position = _position(kind, pivot, radius_m, height_m, lift_m, az, alt)
+        az, alt, _, basis, carry_az = _eval(segments, float(t_ms))
+        position = _position(kind, pivot, radius_m, height_m, lift_m, carry_az, alt)
         return position, basis
 
     period_ms = 1000.0 / fps
@@ -361,8 +440,8 @@ def build(route: dict, fps: int) -> Trajectory:
     frames = []
     for k in range(n_frames):
         t_capture = int(round(k * 1000.0 / fps))
-        az, alt, rate, basis = _eval(segments, t_capture)
-        position = _position(kind, pivot, radius_m, height_m, lift_m, az, alt)
+        az, alt, rate, basis, carry_az = _eval(segments, t_capture)
+        position = _position(kind, pivot, radius_m, height_m, lift_m, carry_az, alt)
         frames.append(FrameTruth(frame_id=f"f{k:06d}", t_capture_ms=t_capture,
                                  position=position, basis=basis, az=az, alt=alt,
                                  angular_rate_deg_s=rate))

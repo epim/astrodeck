@@ -129,9 +129,17 @@ the canopy is indistinguishable from one that also found the trunk.
 - The camera centre for `still` is `pivot + [0, radius_m, height_m]` for the
   whole route (the phone is held where the first aim would put it and never
   translates).
-- For `arc`: `C(t) = pivot + [radius_m sin(az(t)), radius_m cos(az(t)), height_m + lift_m * max(0, alt(t)) / 90]`
-  and the orientation is `look_basis(az(t), alt(t), 0)`: the camera is carried
-  around the body at arm's length and rises as the view tilts up.
+- For `arc`: `C(t) = pivot + [radius_m sin(az(t)), radius_m cos(az(t)), height_m + lift_m * max(0, alt(t)) / 90]`;
+  the camera is carried around the body at arm's length and rises as the
+  view tilts up. At a hold or during a sweep's tilt, `az(t)`/`alt(t)` and the
+  orientation are both simply the aim's own values, `look_basis(az, alt, 0)`.
+  During a move between aims, the orientation follows the swing-twist
+  rotation the `aims` bullet below describes (not `look_basis` applied to a
+  moving `az(t)`/`alt(t)`), while `az(t)` for THIS formula's `sin`/`cos` is a
+  separate, always-continuous azimuth that interpolates the two endpoint
+  azimuths along the shorter arc under the same smoothstep fraction; `alt(t)`
+  for the lift term is the orientation's own (forward-derived) altitude,
+  which has no equivalent discontinuity to avoid.
 - `aims`: ordered `[az, alt]` targets. Between consecutive aims the view moves
   as one rotation from the start's `look_basis(az, alt, 0)` to the end's,
   decomposed into a swing (the minimal rotation carrying the start's forward
