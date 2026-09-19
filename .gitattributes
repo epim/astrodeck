@@ -4,3 +4,14 @@
 *.so binary
 *.dylib binary
 *.lib binary
+
+# The photosphere simulator's committed fixture cases are hashed bytes, not
+# text: `manifest.json` carries a SHA-256 over every frame PNG and over
+# `observations.jsonl`, and `scores.json` copies that digest into `input_hash`
+# rather than recomputing it. This repository runs with `core.autocrlf=true`,
+# so without this line a fresh Windows clone would check the JSON and JSONL
+# out with CRLF, and every one of those hashes would name bytes that are no
+# longer on disk. Nothing would go red: the replay parses the files either
+# way. The integrity claim would simply become false, which is worse.
+# `-text` rather than `binary` so the README and the JSON still diff.
+tools/photosphere_sim/fixtures/** -text

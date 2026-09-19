@@ -450,24 +450,47 @@ deficit is large.
 |---|---|---|---|---|---|---|---|---|
 | pole-near | 63.20 | 2.0 | no | deficit median (deg) | 56.15 -> -0.85 | 56.15 -> 54.15 | null -> null | 0.00 |
 | | | | | deficit p95 (deg) | 56.20 -> 37.95 | 56.20 -> 54.20 | null -> null | 0.00 |
-| | | | | width missed (deg) | 2.2 -> 0.3 | 2.2 -> 2.2 | null -> null | 0.0 |
+| | | | | width missed: total (deg) | 2.2 -> 0.3 | 2.2 -> 2.2 | null -> null | 0.0 |
+| | | | | width missed: longest run (deg) | -- -> 0.3 | -- -> 2.2 | -- -> null | 0.0 |
 | | | | | verdict | MISSED -> found | MISSED -> found | MISSED -> found | found |
 | pole-far | 12.45 | 0.25 | no | deficit median (deg) | -74.55 -> -1.55 | -74.55 -> -1.55 | -33.55 -> -34.55 | 0.00 |
 | | | | | deficit p95 (deg) | -74.55 -> -1.55 | -74.55 -> -1.55 | -33.55 -> -34.55 | 0.00 |
-| | | | | width missed (deg) | 0.0 | 0.0 | 0.0 | 0.0 |
+| | | | | width missed: total (deg) | 0.0 | 0.0 | 0.0 | 0.0 |
+| | | | | width missed: longest run (deg) | -- -> 0.0 | -- -> 0.0 | -- -> 0.0 | 0.0 |
 | | | | | verdict | found | found | found | found |
 | roof-south | 75.15 | 10 | yes | deficit median (deg) | -0.85 -> -1.50 | -5.00 -> -4.50 | null -> -17.60 | 0.00 |
 | | | | | deficit p95 (deg) | 2.35 -> -0.25 | 2.95 -> 55.43 | null -> -16.79 | 0.00 |
-| | | | | width missed (deg) | 16.6 -> 2.6 | 40.8 -> 41.8 | null -> 0.0 | 0.0 |
+| | | | | width missed: total (deg) | 16.6 -> 2.6 | 40.8 -> 41.8 | null -> 0.0 | 0.0 |
+| | | | | width missed: longest run (deg) | -- -> **1.3** | -- -> **13.3** | -- -> 0.0 | 0.0 |
 | | | | | verdict | MISSED -> **found** | MISSED (unchanged) | MISSED -> **found** | found |
 | wall-east | 25.60 | 10 | yes | deficit median (deg) | -34.35 -> -2.05 | -55.40 -> -56.40 | null -> -5.43 | 0.00 |
 | | | | | deficit p95 (deg) | 25.25 -> -0.40 | 21.60 -> -5.40 | null -> -4.40 | 0.00 |
-| | | | | width missed (deg) | 12.0 -> 0.0 | 12.0 -> 0.0 | null -> 0.0 | 0.0 |
+| | | | | width missed: total (deg) | 12.0 -> 0.0 | 12.0 -> 0.0 | null -> 0.0 | 0.0 |
+| | | | | width missed: longest run (deg) | -- -> 0.0 | -- -> 0.0 | -- -> 0.0 | 0.0 |
 | | | | | verdict | MISSED -> **found** | MISSED -> **found** | MISSED -> **found** | found |
 | trunk | 21.50 | 1.0 | no | deficit median (deg) | -24.55 -> -25.55 | -23.55 -> -25.55 | null -> -20.55 | -24.35 |
 | | | | | deficit p95 (deg) | -24.50 -> -25.50 | -23.50 -> -25.50 | null -> -20.50 | -24.30 |
-| | | | | width missed (deg) | 0.0 | 0.0 | null -> 0.0 | 0.0 |
+| | | | | width missed: total (deg) | 0.0 | 0.0 | null -> 0.0 | 0.0 |
+| | | | | width missed: longest run (deg) | -- -> 0.0 | -- -> 0.0 | -- -> 0.0 | 0.0 |
 | | | | | verdict | found | found | MISSED -> found | found |
+
+The two width rows are issue #64, closed on 2026-09-19 after the readings
+above were taken. The scorer reported one width figure until then, the TOTAL
+of every under-reported tenth-degree bin, under the name `width_missed_deg`;
+the contract's rule had always been "a stretch at least this wide". The figure
+of that name is now the longest CONTIGUOUS under-reported run and the total
+keeps its own name, `width_missed_total_deg`. A `--` above is a field that did
+not exist at the earlier reading; the `ideal` column's runs are 0.0 by
+construction, since a run cannot exceed a total and every ideal total is 0.0.
+
+**The split changed no verdict and no gate on any of the three cases.** It
+changes two numbers: the roof's figure on `still-60` (2.6 total, longest run
+1.3) and on `arc075-60` (41.8 total, longest run 13.3). Section 4.3 has the
+runs behind both. `arc075-60` stays MISSED because its longest run alone
+clears the 12.0 degree `resolvable_width_deg`, and the review that measured it
+found that run to be the whole of product bin 20 (azimuth 240 to 252) plus a
+1.3 degree spill into bin 21: one entirely lost product bin, which is the
+quantity the threshold is defined as.
 
 `missed_obstructions`: still-60 `[]` (was implicitly `pole-near, roof-south,
 wall-east` under the pre-#53 envelope rule); arc075-60 `["roof-south"]`
@@ -828,8 +851,9 @@ another, which is the point of separating them.
 
 **The converse, and this one is the scanner's.** `wall-east` is MISSED for the
 same reason with the sign reversed, and it is not a chart artefact. Its 12.0
-degrees of `width_missed_deg` on chartyard-still-60 is not an accumulation of
-edges: it is one whole INTERIOR bin, bin 6, azimuth 72 to 84, while the wall
+degrees of missed width on chartyard-still-60 is not an accumulation of
+edges: it is one whole INTERIOR bin, bin 6, azimuth 72 to 84 -- one contiguous
+run, so the same 12.0 under either reading of issue #64 -- while the wall
 spans azimuth 48.0 to 132.0. There `result/horizon.json` reports altitude 0.0
 against a truth profile of 24.5 to 25.5 degrees. The reason is in
 `result/columns.json`: the wall's colour is `(120, 100, 80)`, luminance 103.7,
@@ -883,10 +907,14 @@ MISSED in both, on the width term alone. (`wall-east` was MISSED on the width
 term too, but for the different reason section 4.2 set out: one interior bin
 where the tracer read the wall as sky.)
 
-| case | obstacle | deficit median (deg) | width missed (deg) | min width (deg) |
+| case | obstacle | deficit median (deg) | width missed: total (deg) | min width (deg) |
 |---|---|---|---|---|
 | still-60 | roof-south | -0.85 | 16.6 | 10 |
 | arc075-60 | roof-south | -5.00 | 40.8 | 10 |
+
+Both figures in that column are totals. The scorer had no longest-run figure
+at that reading; issue #64 added one afterwards, and the runs behind these
+totals are enumerated below.
 
 A negative median means the measured boundary was above the obstacle's own
 silhouette over most of its span, which a thirty-bin boundary produces by
@@ -905,8 +933,10 @@ section 4.1 landing on an obstacle's own edge rather than a pole's."
 instead, which the parallax of the arc route rather than a bin edge produced.
 
 **Current status (2026-09-19, after task 12's tracer rewrite, `3fbd2039`).**
-`chartyard-still-60`'s roof is no longer missed: `width_missed_deg` fell from
-16.6 to 2.6, under the 12 degree `resolvable_width_deg` threshold. Four of the
+`chartyard-still-60`'s roof is no longer missed: the total fell from 16.6 to
+2.6, under the 12 degree `resolvable_width_deg` threshold, and the longest run
+-- which is what `width_missed_deg` names since issue #64 -- is 1.3, so the
+row is found under either reading. Four of the
 five old runs are gone -- the new tracer's transition detection reads the
 roof's own edge at most azimuths instead of overshooting or undershooting it
 by several degrees -- and one new, narrower one appeared where the old
@@ -937,7 +967,10 @@ degrees) and a fifth that spans two whole bins, 20 and 21 (azimuth 240.0 to
 253.3), where both bins report 0 against a silhouette of 47.4 to 62.05 --
 the roof's own edge together with the same 252.0-to-253.3 sliver `still-60`
 also loses, but here the bin immediately before it is wrong too, which the
-arc's parallax rather than a single edge produces. The mechanism this section
+arc's parallax rather than a single edge produces. That fifth run is 13.3
+degrees, and it is what carries the verdict under issue #64: the five runs are
+13.3, 10.2, 7.2, 5.7 and 5.4, so the longest on its own clears the 12.0 degree
+threshold and the row stays MISSED without the other four. The mechanism this section
 is named for -- an obstacle can lose a chunk wider than its declared minimum
 width and still keep a near-zero median, because an obstacle is found when it
 is found and not when most of it is -- is unchanged: `arc075-60`'s deficit
@@ -1176,8 +1209,8 @@ found gets an issue at the time it is found):
 |---|---|---|
 | #62 | Sensor noise lifts the measured stillness gradient, so a frame just under `GRADIENT_FLOOR` is admitted with a looser bound than 0.29 cells names, and a frame exactly on the floor breaks a settle about one time in seven on noise alone. | Not measured by this instrument (noise-free chart yard, section 5); a real-device item. |
 | #63 | The featureless-hold witness keeps only a reading the video already vouched for, so a phone that comes to rest on blank sky still reads the compass as lost at 2 seconds. | Not exercised by any of the three cases (none holds on blank sky long enough to trigger it). |
-| #64 | The obstacle width term counts scattered tenth-degree bins rather than requiring them to form a stretch, which decides `roof-south`'s verdict on close calls. | Section 3.3's roof-south rows, section 4.3's run tables: several of the runs counted there are a handful of scattered bins near a threshold, exactly the shape this issue is about. |
-| #68 | The recorded cases are git-ignored, so every replay-backed test (including the ones this document's own replay/score commands exercise) skips in CI. | This whole document's evidence is produced by commands that, per #68, do not run in CI; it runs only where the cache is present, as it is on this machine. |
+| #64 | The obstacle width term counts scattered tenth-degree bins rather than requiring them to form a stretch, which decides `roof-south`'s verdict on close calls. | **Closed** 2026-09-19. `width_missed_deg` is now the longest contiguous under-reported run and `width_missed_total_deg` the total, and the verdict reads the run (`CONTRACT.md`, "Issue #64"). Section 3.3's two width rows and section 4.3 carry both figures. No verdict and no gate moved on these three cases: the roof on `arc075-60` is MISSED on a single 13.3 degree run, and the row the issue was filed against (`still-60`, 16.6 over five runs) had already been carried to 2.6 by the tracer rewrite `3fbd2039` before the split landed. |
+| #68 | The recorded cases are git-ignored, so every replay-backed test (including the ones this document's own replay/score commands exercise) skips in CI. | **Half closed** 2026-09-19. A committed fixture pair (`tools/photosphere_sim/fixtures/`, 3.1 MB, the same scene and the same two lenses on a six-aim route) now carries four cases that run on a clean checkout, and issue #52's cue is graded in CI in both directions. Nothing SCORES the fixture, so every accuracy figure in this document -- landmarks, horizon, obstacles, overlay, coverage -- is still produced only where the cache is present, as it is on this machine. |
 | #70 | The carried visual anchor is clamped at the overlay gate's own 10 degrees, so a mis-set lens sits against the clamp and the whole overlay goes with it. | Section 3.1 and 3.4: `chartyard-arc075-70` newly fails `overlay_max_lt_10` (8.369 to 10.038) for exactly this reason. |
 | #71 | A floating obstruction under 12 degrees tall with clear sky beneath it reads as open sky under the new tracer's persistence floor -- the residual false-open failure mode task 12's fix leaves behind. | Section 3.3: `chartyard-arc075-60`'s `false_open_sr` rose (0.1544 to 0.2487) even as the other two cases' fell. |
 | #74 | A soft sky-to-obstruction edge over about ten rows can still walk the tracer's local sky model into the wall, reading a grey obstruction with a 6-degree edge as open sky. | Section 5's known-limits table; not isolated to a specific bin on these three cases, but the mechanism the tracer rewrite has not yet closed. |

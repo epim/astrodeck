@@ -355,7 +355,48 @@ class IdealResult(unittest.TestCase):
             for obstacle in scores["horizon"]["obstacles"]:
                 self.assertEqual(obstacle["width_missed_deg"], 0.0,
                                  f'{label} {obstacle["id"]}')
+                # Issue #64: the run and the total are both zero here, which
+                # is the only reading on which they have to agree.
+                self.assertEqual(obstacle["width_missed_total_deg"], 0.0,
+                                 f'{label} {obstacle["id"]}')
             self.assertEqual(scores["horizon"]["missed_obstructions"], [], label)
+
+    def test_scattered_bins_along_the_roof_do_not_add_up_to_a_stretch(self):
+        """Issue #64: ten separated one-degree gaps are not a 10 degree miss.
+
+        Ten separated stretches of 10 bins each are cut out of the roof, 50
+        bins apart, so 10.0 degrees of the roof is under-reported in total
+        while the widest run is 1.0 degree. The scene declares the roof must
+        be found at 10 degrees of width, and the product's bin here is 0.1,
+        so `resolvable_width_deg` is 10.0: on the old total-count reading
+        this obstacle was MISSED at exactly its threshold, and on the run
+        reading it is found, because nothing 10 degrees wide is gone. The
+        deficit median stays far below 1.0 either way, so the width term is
+        the only term that can decide this row.
+
+        Named mutation: key `too_narrow` on `width_missed_total` instead of
+        the run (the pre-#64 behaviour). `width_missed_total_deg` is 10.0
+        against a 10.0 threshold, the row goes MISSED, and the last three
+        assertions here redden. Run and reverted; see task-2-report.md.
+        """
+        reference = read_json(self.case_dir / "truth" / "reference-horizon.json")
+        roof = next(o for o in reference["obstacles"] if o["id"] == "roof-south")
+        profile = np.array(roof["profile"], dtype=float)
+        azimuths = (np.arange(profile.size) + 0.5) * (360.0 / profile.size)
+        high = np.nonzero((profile > 5.0) & (azimuths > 140.0))[0]
+        scattered = np.concatenate([high[start:start + 10]
+                                    for start in range(0, 500, 50)])
+        self.assertEqual(scattered.size, 100)  # 10.0 degrees in all
+
+        scores = self._measured_over("roof-scattered", scattered, 0.0)
+        entry = next(o for o in scores["horizon"]["obstacles"]
+                     if o["id"] == "roof-south")
+        self.assertEqual(entry["resolvable_width_deg"], 10.0)
+        self.assertLess(entry["deficit_median"], 1.0)
+        self.assertAlmostEqual(entry["width_missed_total_deg"], 10.0, places=9)
+        self.assertAlmostEqual(entry["width_missed_deg"], 1.0, places=9)
+        self.assertFalse(entry["missed"])
+        self.assertEqual(scores["horizon"]["missed_obstructions"], [])
 
     def test_a_narrow_notch_in_the_roof_is_missed_by_width_alone(self):
         """Ten degrees of the roof's 146 is below the boundary; its median is not.
@@ -384,6 +425,10 @@ class IdealResult(unittest.TestCase):
         entry = by_id["roof-south"]
         self.assertEqual(entry["min_width_deg"], 10)
         self.assertAlmostEqual(entry["width_missed_deg"], 10.0, places=9)
+        # One stretch, so the run and the total are the same 10.0 here. The
+        # case that separates them is
+        # `test_scattered_bins_along_the_roof_do_not_add_up_to_a_stretch`.
+        self.assertAlmostEqual(entry["width_missed_total_deg"], 10.0, places=9)
         self.assertLess(entry["deficit_median"], 1.0)
         self.assertTrue(entry["missed"])
         self.assertEqual(scores["horizon"]["missed_obstructions"], ["roof-south"])
@@ -392,6 +437,80 @@ class IdealResult(unittest.TestCase):
         # Nothing else moved: the notch is 100 bins of 3600.
         for name in ("pole-near", "pole-far", "wall-east", "trunk"):
             self.assertFalse(by_id[name]["missed"], name)
+
+    # -- a result with no boundary at all ----------------------------------
+
+    def _without_boundary(self, name, horizon=None):
+        """The ideal result with `horizon.json` removed, or replaced."""
+        target = pathlib.Path(self.tmp.name) / name
+        shutil.copytree(self.result_dir, target)
+        if horizon is None:
+            (target / "horizon.json").unlink()
+        else:
+            write_json(target / "horizon.json", horizon)
+        return score.score_case(self.case_dir, target)
+
+    def test_a_result_with_no_horizon_file_misses_every_visible_obstacle(self):
+        """Issue #64: the `product_bins` fallback, pinned.
+
+        No `result/horizon.json` is a scanner that reported no boundary, not
+        a scanner excused from reporting one. There is no product resolution
+        to defer to, so `resolvable` cannot be read off one: every obstacle
+        is resolvable, `resolvable_width_deg` falls back to the scene's
+        declared width, nothing is resolved so the deficit and width figures
+        are `null`, and every visible obstacle is missed.
+
+        Named mutation: make the fallback `resolvable = False` when
+        `bin_width_deg is None` (the reading that treats "no bins" as "the
+        product could not have resolved anything"). `missed_obstructions`
+        comes back empty, `no_missed_obstructions` passes, and a scanner that
+        emitted no boundary at all scores better than one that emitted a
+        wrong one. Run and reverted; see task-2-report.md.
+        """
+        scores = self._without_boundary("no-horizon")
+        horizon = scores["horizon"]
+        self.assertEqual(horizon["measured_bins"], 0)
+        self.assertIsNone(horizon["measured_resolution_deg"])
+        self.assertEqual(horizon["signed_error_deg"]["p95"], None)
+        for obstacle in horizon["obstacles"]:
+            with self.subTest(obstacle=obstacle["id"]):
+                self.assertTrue(obstacle["resolvable"])
+                self.assertEqual(obstacle["resolvable_width_deg"],
+                                 obstacle["min_width_deg"])
+                self.assertIsNone(obstacle["deficit_median"])
+                self.assertIsNone(obstacle["deficit_p95"])
+                self.assertIsNone(obstacle["width_missed_deg"])
+                self.assertIsNone(obstacle["width_missed_total_deg"])
+                self.assertTrue(obstacle["missed"])
+        self.assertEqual(horizon["missed_obstructions"],
+                         [o["id"] for o in horizon["obstacles"]])
+        self.assertFalse(scores["gates"]["no_missed_obstructions"])
+        self.assertFalse(scores["gates"]["horizon_p95_lt_1"])
+        self.assertFalse(scores["gates"]["pass"])
+
+    def test_an_empty_boundary_is_the_same_as_no_boundary(self):
+        """A file carrying no points says exactly as much as no file.
+
+        Silence is not a flat horizon, and a well-formed file with an empty
+        `points` array is silence in an envelope. The two must score alike,
+        or a scanner could buy a better score by writing an empty file.
+
+        Named mutation: drop ``or not measured.get("points")`` from
+        ``_measured_profile``'s guard, so an empty ``points`` array goes down
+        the live path instead of the no-boundary one. The measured bin count
+        is then 0 and the resample divides ``360.0 / bins``: this case dies
+        with ``ZeroDivisionError``, while the sibling above stays green
+        (``not measured`` still catches a missing file). Note the mutation of
+        the ``resolvable`` fallback that reddens that sibling does NOT redden
+        this one and cannot: this is a differential case, and a fallback
+        change moves both of its sides together. Run and reverted; see
+        task-2-report.md.
+        """
+        empty = self._without_boundary(
+            "empty-horizon", {"bins": 0, "points": [], "uncertain_bins": []})
+        missing = self._without_boundary("no-horizon-again")
+        self.assertEqual(empty["horizon"], missing["horizon"])
+        self.assertEqual(empty["gates"], missing["gates"])
 
     def test_zeroing_the_whole_canopy_span_also_loses_the_trunk(self):
         """The canopy is not a declared obstacle; the trunk beneath it is."""
@@ -870,6 +989,9 @@ class ResolvableWidth(unittest.TestCase):
         self.assertEqual(entry["resolvable_width_deg"], 12.0)
         self.assertAlmostEqual(entry["deficit_median"], 0.0, places=9)
         self.assertAlmostEqual(entry["width_missed_deg"], 12.0, places=9)
+        # The notch is one stretch, so issue #64's two figures agree; the
+        # `ContiguousWidth` class below is where they come apart.
+        self.assertAlmostEqual(entry["width_missed_total_deg"], 12.0, places=9)
         self.assertTrue(entry["missed"])
 
     def test_a_small_declared_width_does_not_make_a_wide_obstacle_unresolvable(self):
@@ -930,6 +1052,101 @@ class ResolvableWidth(unittest.TestCase):
     # itself (a 2 degree fixture would be graded as if the product could see
     # it). Both directions were run against this class and reverted; see
     # task-10-report.md, "Fix round 1".
+
+
+class ContiguousWidth(unittest.TestCase):
+    """Issue #64: what counts as ONE under-reported stretch.
+
+    ``_score_obstacles`` is called directly with a synthetic obstacle, as
+    ``ResolvableWidth`` does: the claims here are about the azimuth axis
+    itself -- that it wraps, and that a stretch is broken by a bin carrying
+    no measurement -- and neither needs a rendered scene.
+    """
+
+    TRUTH_BINS = 3600
+    STEP = 360.0 / TRUTH_BINS
+    PRODUCT_BINS = 3600  # 0.1 degree bins, so the declared width sets the floor
+
+    def _score(self, profile, alt, resolved, min_width_deg=10.0):
+        reference = {"obstacles": [{"id": "synthetic", "alt_max": 30.0,
+                                    "min_width_deg": min_width_deg,
+                                    "profile": profile.tolist()}]}
+        return score._score_obstacles(reference, self.TRUTH_BINS, self.STEP,
+                                      alt, resolved, self.PRODUCT_BINS)[0]
+
+    def _straddling_north(self, missing_bins):
+        """An obstacle over azimuth 0, under-reported across the wrap.
+
+        Visible over the last 300 bins and the first 300 (60 degrees in all),
+        with ``missing_bins`` of it lost, half on each side of north.
+        """
+        profile = np.full(self.TRUTH_BINS, -10.0)
+        profile[-300:] = 30.0
+        profile[:300] = 30.0
+        alt = profile.copy()
+        half = missing_bins // 2
+        alt[-half:] = 0.0
+        alt[:half] = 0.0
+        return profile, alt, np.ones(self.TRUTH_BINS, dtype=bool)
+
+    def test_a_stretch_across_north_is_one_stretch(self):
+        """120 bins over the wrap are 12 degrees, not two runs of 6.
+
+        Named mutation: drop the rotation in ``_longest_run_deg`` and scan
+        the array linearly. The run comes back 6.0, under the declared 10,
+        and the obstacle reads found although 12 contiguous degrees of it are
+        gone -- a verdict decided by where azimuth 0 happens to fall in the
+        array. Run and reverted; see task-2-report.md.
+        """
+        entry = self._score(*self._straddling_north(120))
+        self.assertEqual(entry["visible_width_deg"], 60.0)
+        self.assertAlmostEqual(entry["width_missed_total_deg"], 12.0, places=9)
+        self.assertAlmostEqual(entry["width_missed_deg"], 12.0, places=9)
+        self.assertTrue(entry["missed"])
+
+    def test_the_wrap_is_not_a_licence_to_join_two_far_apart_stretches(self):
+        """The same obstacle, the same total, the two halves NOT adjacent.
+
+        60 bins at each far END of the silhouette rather than at the wrap:
+        the total is the same 12.0 degrees and the longest run is 6.0, so
+        this one is found. Without this case a `_longest_run_deg` that simply
+        returned the total would pass the wrap test above.
+        """
+        profile = np.full(self.TRUTH_BINS, -10.0)
+        profile[-300:] = 30.0
+        profile[:300] = 30.0
+        alt = profile.copy()
+        alt[-300:-240] = 0.0
+        alt[240:300] = 0.0
+        entry = self._score(profile, alt, np.ones(self.TRUTH_BINS, dtype=bool))
+        self.assertAlmostEqual(entry["width_missed_total_deg"], 12.0, places=9)
+        self.assertAlmostEqual(entry["width_missed_deg"], 6.0, places=9)
+        self.assertFalse(entry["missed"])
+
+    def test_an_unresolved_bin_breaks_a_run(self):
+        """A bin with no measurement is not evidence of a miss.
+
+        120 contiguous bins are under-reported and the one in the middle is
+        unresolved, so the widest MEASURED stretch is 59 bins, not 120. A run
+        that stepped over the gap would claim 12 degrees on the strength of a
+        bin nothing measured, which is the wrong direction for a term that
+        fails a case.
+        """
+        profile = np.full(self.TRUTH_BINS, -10.0)
+        profile[100:700] = 30.0
+        alt = profile.copy()
+        alt[200:320] = 0.0
+        resolved = np.ones(self.TRUTH_BINS, dtype=bool)
+        resolved[260] = False
+        entry = self._score(profile, alt, resolved)
+        self.assertAlmostEqual(entry["width_missed_total_deg"], 11.9, places=9)
+        self.assertAlmostEqual(entry["width_missed_deg"], 6.0, places=9)
+        self.assertFalse(entry["missed"])
+        # And with that one bin resolved the same obstacle IS missed, so the
+        # case above is about the gap and not about the 120 bins.
+        whole = self._score(profile, alt, np.ones(self.TRUTH_BINS, dtype=bool))
+        self.assertAlmostEqual(whole["width_missed_deg"], 12.0, places=9)
+        self.assertTrue(whole["missed"])
 
 
 class ObservableRegion(unittest.TestCase):

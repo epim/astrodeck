@@ -348,6 +348,36 @@ def _area_below(cos_cumulative: np.ndarray, centres: np.ndarray,
     return cos_cumulative[index]
 
 
+def _longest_run_deg(under: np.ndarray, step: float) -> float:
+    """The widest CONTIGUOUS stretch of azimuth ``under`` is true over.
+
+    Azimuth wraps, so a stretch running through north is ONE stretch and not
+    two: an obstacle spanning 350 to 10 degrees that is lost over all 20 of
+    them has lost a 20 degree stretch, and reporting two runs of 10 would let
+    the obstacle's own position in the array decide its verdict.
+
+    A bin that is not under-reported breaks the run, and so does a bin with no
+    resolved measurement over it (``under`` is already false there): an
+    unresolved bin is not evidence of a miss, and joining two stretches across
+    one would claim a width nothing measured. That is the conservative
+    direction for a term that fails a case.
+    """
+    if not under.any():
+        return 0.0
+    if under.all():
+        return float(under.size) * step
+    # Rotating the array so that it begins at a gap turns the circular
+    # problem into a linear one: every run is then interior and none is split
+    # across the ends.
+    rolled = np.roll(under, -int(np.argmin(under)))
+    best = run = 0
+    for value in rolled:
+        run = run + 1 if value else 0
+        if run > best:
+            best = run
+    return float(best) * step
+
+
 def _score_obstacles(reference: dict, truth_bins: int, step: float,
                      alt: np.ndarray, resolved: np.ndarray,
                      product_bins: int) -> list:
@@ -375,6 +405,22 @@ def _score_obstacles(reference: dict, truth_bins: int, step: float,
       notch cut out of it leaves 1366 of 1466 bins right and the median at
       zero, while the whole of the declared minimum width is gone. An
       obstacle is found when it is found, not when most of it is.
+
+    Issue #64: the width term is keyed on the longest contiguous
+    under-reported RUN, not on the total of every under-reported bin.
+    CONTRACT.md has always stated the rule as "a stretch at least this wide",
+    and a stretch is what the planner would meet: the product's profile is
+    interpolated between neighbouring azimuth bins, so a stretch wide enough
+    to cross is a false-open the planner would slew into, while a scatter of
+    tenth-degree bins along a roof edge is jitter at the silhouette, a
+    different defect that must not be able to masquerade as the first. The
+    two are reported apart -- ``width_missed_deg`` is the longest run and
+    ``width_missed_total_deg`` the sum of every under-reported bin -- so the
+    jitter is still visible in the score, it just does not decide the
+    verdict. Measured on the cached cases at `322e374d`: chartyard-arc075-60's
+    roof-south is 41.8 degrees of total over runs of 13.3, 10.2, 7.2, 5.7 and
+    5.4, and stays MISSED on its longest run alone; chartyard-still-60's is
+    2.6 of total in two runs of 1.3, and was already found.
 
     Issue #53: the scanner reports 30 azimuth bins, 12 degrees each, and the
     planner interpolates that same resolution, so a stretch of an obstacle
@@ -405,6 +451,16 @@ def _score_obstacles(reference: dict, truth_bins: int, step: float,
     boundary nothing: the ideal's measured profile is at or above the
     envelope everywhere, so every deficit is at or below zero and every
     missed width is 0.0, at 3600 bins and at 30.
+
+    ``product_bins`` is 0 when the result carries no boundary at all -- no
+    ``result/horizon.json``, or one with an empty ``points`` array. There is
+    then no product resolution to defer to, so nothing is excused: every
+    obstacle is ``resolvable``, ``resolvable_width_deg`` falls back to the
+    scene's declared ``min_width_deg`` (``None`` where the scene declares
+    none), and every VISIBLE obstacle is ``missed`` because nothing was
+    resolved over it. A scanner that reported no boundary has not found the
+    obstacles; suppressing the verdict for want of a bin width would let a
+    silent scanner score better than a wrong one.
     """
     bin_width_deg = (360.0 / product_bins) if product_bins else None
     scored = []
@@ -446,6 +502,7 @@ def _score_obstacles(reference: dict, truth_bins: int, step: float,
             "deficit_median": None,
             "deficit_p95": None,
             "width_missed_deg": None,
+            "width_missed_total_deg": None,
             "min_width_deg": declared,
             "visible_width_deg": visible_width_deg,
             "resolvable": resolvable,
@@ -459,8 +516,13 @@ def _score_obstacles(reference: dict, truth_bins: int, step: float,
         if measurable.any():
             deficit = np.clip(profile[measurable], 0.0, 90.0) - alt[measurable]
             median = float(np.median(deficit))
-            width_missed = float(
-                np.count_nonzero(deficit > MISSED_OBSTRUCTION_DEG) * step)
+            # Back on the truth's own azimuth axis, because a RUN is a fact
+            # about neighbouring azimuths and the compressed `deficit` array
+            # has already closed every gap the obstacle has.
+            under = np.zeros(truth_bins, dtype=bool)
+            under[measurable] = deficit > MISSED_OBSTRUCTION_DEG
+            width_missed_total = float(np.count_nonzero(under) * step)
+            width_missed = _longest_run_deg(under, step)
             # No `has_min_width` guard here: CONTRACT.md's documented formula
             # is `resolvable and width_missed_deg >= resolvable_width_deg`,
             # full stop. `resolvable_width_deg` is already well-defined with
@@ -468,16 +530,20 @@ def _score_obstacles(reference: dict, truth_bins: int, step: float,
             # `bin_width_deg` above), so a resolvable obstacle with nothing
             # declared can still be caught by the width term at one product
             # bin -- an extra guard here would silently exempt it instead.
+            # Issue #64: the comparison is against the longest RUN and never
+            # against `width_missed_total`, which is reported beside it.
             too_narrow = (resolvable and resolvable_width_deg is not None
                           and width_missed >= resolvable_width_deg)
             entry.update({
                 "deficit_median": median,
                 "deficit_p95": _percentile(deficit, 95),
                 "width_missed_deg": width_missed,
+                "width_missed_total_deg": width_missed_total,
                 "missed": bool(resolvable and (median > MISSED_OBSTRUCTION_DEG or too_narrow)),
             })
         elif not visible.any():
             entry["width_missed_deg"] = 0.0
+            entry["width_missed_total_deg"] = 0.0
         scored.append(entry)
     return scored
 

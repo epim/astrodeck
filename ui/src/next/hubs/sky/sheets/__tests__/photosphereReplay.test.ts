@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { deflateSync } from 'node:zlib';
 import { decodePng, encodePng, pngChunk, PNG_SIGNATURE } from '../__sim__/png';
@@ -301,14 +301,44 @@ const OUTCOME_ENDS_RUN: Record<CaptureOutcome, boolean> = {
 };
 const OUTCOMES = new Set(Object.keys(OUTCOME_ENDS_RUN));
 
+/** `rmSync(path, { recursive: true })`, and the one place in this file that
+ *  is allowed to say it. A case directory here is always a directory this
+ *  file made under the system temporary directory, and this refuses to delete
+ *  anything else.
+ *
+ *  Issue #88: that was an assumption rather than a rule, and it cost two
+ *  42 MB recordings. An experiment edited the replay helper to run a case in
+ *  place instead of on a copy - a one-line change, and the shape of change
+ *  anyone debugging this file might make - and the `finally` that had always
+ *  swept a temporary directory swept `cache/cases/chartyard-arc075-60` and
+ *  `-70` instead. The guard cannot fire while every caller goes through
+ *  `withTempCase`; it fires on the edit that stops one of them doing so. */
+function rmTemp(path: string): void {
+  if (path === tmpdir() || !path.startsWith(tmpdir() + sep))
+    throw new Error(`refusing a recursive delete of ${path}: it is not a directory under ${tmpdir()}`);
+  rmSync(path, { recursive: true, force: true });
+}
+
+/** A fresh temporary case directory for `run`, deleted afterwards whatever
+ *  `run` does. The `mkdtempSync` and the delete are in one function on
+ *  purpose: a caller never holds a root it could repoint at a real case, so
+ *  there is nothing at a call site for an edit to get wrong. */
+async function withTempCase<T>(prefix: string, run: (root: string) => Promise<T> | T): Promise<T> {
+  const root = mkdtempSync(join(tmpdir(), prefix));
+  try {
+    return await run(root);
+  } finally {
+    rmTemp(root);
+  }
+}
+
 /** The `app_commit` the driver stamped on the determinism run below, read by
  *  the dirty-tree test after it, and that run's panorama bytes, which the
  *  manifest-independence test compares a second build against. */
 let replayedCommit: string | null = null;
 let referencePanorama: Buffer | null = null;
 
-const root = mkdtempSync(join(tmpdir(), 'photosphere-replay-'));
-try {
+await withTempCase('photosphere-replay-', async root => {
   buildCase(root);
   const first = await replayCase(root);
   replayedCommit = first.app_commit;
@@ -375,26 +405,21 @@ try {
     assert.ok(columns.flat().every((v: unknown) => v === null || typeof v === 'number'),
       'columns.json must carry NaN as null');
   });
-} finally {
-  rmSync(root, { recursive: true, force: true });
-}
+});
 
 await test('replay: a scan that never started is an error, not a blank result', async () => {
   // begin() refuses silently when the compass is not ready and returns void, so
   // a driver that believed the call would write a well-formed, entirely
   // transparent result and exit zero: a measurement of nothing, filed and
   // scored beside real ones.
-  const empty = mkdtempSync(join(tmpdir(), 'photosphere-replay-empty-'));
-  try {
+  await withTempCase('photosphere-replay-empty-', async empty => {
     buildCase(empty, { readings: false });
     await assert.rejects(replayCase(empty), /the scan never started/);
     assert.equal(existsSync(join(empty, 'result', 'summary.json')), false,
       'a result was written for a scan that never started');
     assert.equal(existsSync(join(empty, 'result', 'panorama.png')), false,
       'a panorama was written for a scan that never started');
-  } finally {
-    rmSync(empty, { recursive: true, force: true });
-  }
+  });
 });
 
 await test('replay: a manifest that disagrees with the frames changes nothing', async () => {
@@ -403,8 +428,7 @@ await test('replay: a manifest that disagrees with the frames changes nothing', 
   // the replay survives it but that the result is the SAME result, byte for
   // byte, as the run above whose manifest was right: an 8 x 8 video would
   // reach the scanner as a square lens and paint the mosaic somewhere else.
-  const wrong = mkdtempSync(join(tmpdir(), 'photosphere-replay-manifest-'));
-  try {
+  await withTempCase('photosphere-replay-manifest-', async wrong => {
     buildCase(wrong, { manifestCamera: { width: 8, height: 8 } });
     const summary = await replayCase(wrong);
     assert.equal(summary.frames_delivered, 30);
@@ -412,9 +436,7 @@ await test('replay: a manifest that disagrees with the frames changes nothing', 
     const panorama = readFileSync(join(wrong, 'result', 'panorama.png'));
     assert.ok(referencePanorama && panorama.equals(referencePanorama),
       'the manifest camera block reached the replay: the panorama moved');
-  } finally {
-    rmSync(wrong, { recursive: true, force: true });
-  }
+  });
 });
 
 await test('replay: app_commit says when the tree it ran from was dirty', () => {
@@ -455,38 +477,55 @@ await test('replay: git is reachable, so app_commit is a real commit', () => {
 // below 100 as 'unknown' and never as 'conflict'. Faking one would be a test
 // of the fake.
 //
-// The recordings are made by the simulator and are NOT in the repository
-// (`tools/photosphere_sim/cache/` is git-ignored), so the three cases below
-// SKIP where they are absent. The table case after them runs everywhere.
+// The full-length recordings are made by the simulator and are NOT in the
+// repository (`tools/photosphere_sim/cache/` is git-ignored), so the three
+// cases below SKIP where they are absent. The table case after them runs
+// everywhere, and so does the COMMITTED fixture pair at the bottom of this
+// file (issue #68), which is the same experiment on a short route at a
+// reduced resolution: the cue itself is graded in CI there.
 const CASES = fileURLToPath(new URL('../../../../../../../tools/photosphere_sim/cache/cases/', import.meta.url));
 const NO_RECORDING = 'the simulator recording is not on this machine (tools/photosphere_sim/cache is git-ignored)';
 
 interface Replayed {
   summary: Awaited<ReturnType<typeof replayCase>>;
   captures: { at: number; outcome: CaptureOutcome }[];
-  events: { t_ms: number; cue: string }[];
+  events: { t_ms: number; cue: string; basis: unknown }[];
+  horizon: { bins: number; points: { az: number; alt: number }[]; uncertain_bins: number[] };
+  /** Raster cells of the finished panorama with alpha 255. */
+  painted: number;
 }
 
-/** Replay a recorded case WITHOUT writing into it. `replayCase` empties and
- *  rewrites `<case>/result/`, and for these two cases that directory is the
+/** Replay a case directory WITHOUT writing into it. `replayCase` empties and
+ *  rewrites `<case>/result/`, and for the recorded cases that directory is the
  *  measurement issue #52 was filed from - so the input is copied to a
  *  temporary directory and the driver writes there. The copy is about 42 MB
- *  and a quarter of a second. A junction would be free, and would put a
- *  recursive delete one Node version away from walking into the recording. */
-async function replayRecorded(caseId: string): Promise<Replayed | null> {
-  const input = join(CASES, caseId, 'input');
+ *  and a quarter of a second for a recording, and 1.5 MB for a fixture. A
+ *  junction would be free, and would put a recursive delete one Node version
+ *  away from walking into the recording. The committed fixture needs the same
+ *  care for a second reason: a test run that wrote into the repository would
+ *  leave the working tree dirty and, sooner or later, commit a `result/`. */
+async function replayFrom(caseDir: string): Promise<Replayed | null> {
+  const input = join(caseDir, 'input');
   if (!existsSync(input)) return null;
-  const root = mkdtempSync(join(tmpdir(), `photosphere-${caseId}-`));
-  try {
+  return withTempCase('photosphere-replay-case-', async root => {
     cpSync(input, join(root, 'input'), { recursive: true });
     const summary = await replayCase(root);
-    const lines = (name: string) => readFileSync(join(root, 'result', name), 'utf8')
-      .trim().split('\n').map(line => JSON.parse(line));
-    return { summary, captures: lines('captures.jsonl'), events: lines('events.jsonl') };
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
+    const read = (name: string) => readFileSync(join(root, 'result', name), 'utf8');
+    const lines = (name: string) => read(name).trim().split('\n').map(line => JSON.parse(line));
+    const image = decodePng(readFileSync(join(root, 'result', 'panorama.png')));
+    let painted = 0;
+    for (let i = 3; i < image.pixels.length; i += 4) if (image.pixels[i] === 255) painted++;
+    return {
+      summary,
+      captures: lines('captures.jsonl'),
+      events: lines('events.jsonl'),
+      horizon: JSON.parse(read('horizon.json')),
+      painted,
+    };
+  });
 }
+
+const replayRecorded = (caseId: string) => replayFrom(join(CASES, caseId));
 
 /** The longest run of overlap refusals in a capture log, counted by the
  *  scanner's own rule for what ends one rather than a second copy of it. */
@@ -592,6 +631,127 @@ await test('capture outcomes: only the waits before the overlap test keep a refu
   // Mutation: drop `&& outcome !== 'too-soon'` from `endsOverlapRun`. Red here
   // on that key, and red on the two replay cases above, whose longest runs
   // both fall to 1. Observed red.
+});
+
+// ------------------------------------------ issue #68: the committed fixture
+// The three cases above skip wherever the recordings are not on the machine,
+// which is everywhere but the one that recorded them, CI included. The pair
+// below is the same experiment, committed: the same chart-yard scene and the
+// same two lenses, over a six-aim route at 240 x 320 and 5 fps - 95 frames a
+// side, 3.1 MB for the pair, `tools/photosphere_sim/fixtures/`. It runs on a
+// clean checkout with no cache at all, so the cue issue #52 shipped is graded
+// where a CI run can see it, and the full-length recordings keep the rest
+// (the reset case below them, and the scoring the baseline document quotes).
+//
+// The frames are the real Three.js renderer's and not a stub: the scanner
+// sees the chart yard, registers against it and paints a mosaic. 240 x 320 is
+// exactly the scanner's own analysis canvas for a 3:4 frame, so the
+// resampler neither shrinks nor magnifies on this pair - the two `resample`
+// cases at the top of this file grade that path on their own.
+const FIXTURES = fileURLToPath(new URL('../../../../../../../tools/photosphere_sim/fixtures/', import.meta.url));
+const FIXTURE_RIGHT_LENS = 'chartyard-shortpan-60';
+const FIXTURE_WRONG_LENS = 'chartyard-shortpan-70';
+
+const fixtureRight = await replayFrom(join(FIXTURES, FIXTURE_RIGHT_LENS));
+const fixtureWrong = await replayFrom(join(FIXTURES, FIXTURE_WRONG_LENS));
+
+/** A fixture is in the repository, so a missing one is a broken checkout and
+ *  never a skip. The recorded cases skip because their input is git-ignored;
+ *  nothing about these two is. */
+function present(replayed: Replayed | null, caseId: string): Replayed {
+  assert.ok(replayed, `${caseId} is committed under tools/photosphere_sim/fixtures/ `
+    + 'and is not in this checkout: the fixture cases cannot run');
+  return replayed;
+}
+
+await test('replay: the committed fixture case runs end to end with no local cache (#68)', () => {
+  const replayed = present(fixtureRight, FIXTURE_RIGHT_LENS);
+  // The recording's own numbers, which no scanner decision can move: this
+  // case delivers 95 frames and 407 readings, and the driver has to deliver
+  // every one of them.
+  assert.equal(replayed.summary.frames_delivered, 95);
+  assert.equal(replayed.summary.events_delivered, 407);
+  assert.equal(replayed.events.length, 95, 'one events line per delivered frame');
+  for (const key of ['t_ms', 'frame_id', 'compass_ready', 'tilt_ready', 'aim', 'basis', 'frame_count', 'cue'])
+    assert.ok(key in replayed.events[0], `events.jsonl is missing ${key}`);
+  assert.ok(replayed.events.every(event => event.basis !== null),
+    'a delivered frame was recorded with no camera basis');
+  // Everything the scanner DECIDED is a threshold and never a count, the same
+  // rule the recorded cases follow: a later task that changes targeting moves
+  // how many cells this route earns, and that must not redden a case about
+  // whether the chain runs at all.
+  assert.ok(replayed.captures.length > 0, 'no capture records at all');
+  for (const record of replayed.captures) {
+    assert.ok(OUTCOMES.has(record.outcome), `unknown outcome ${record.outcome}`);
+    assert.equal(typeof record.at, 'number');
+    assert.equal('sensorBasis' in record, false, 'captures.jsonl must use the contract spelling');
+  }
+  assert.ok(replayed.captures.some(record => record.outcome === 'accepted'),
+    'the scanner accepted no frame of the fixture at all, so nothing below was measured on a scan');
+  assert.ok(replayed.summary.frames_accepted > 0, 'the summary counted no accepted frame');
+  assert.ok(replayed.summary.cells_covered > 0, 'the replay covered no dome cell');
+  assert.ok(replayed.painted > 0, 'the panorama is entirely transparent: nothing was ever painted');
+  assert.equal(replayed.horizon.points.length, replayed.horizon.bins);
+  // Mutation: `GRAB_INTERVAL_MS = 1e9` in photosphere.ts, so the frame
+  // callback never reaches its next sample. The scan runs, the log fills with
+  // refusals and nothing is ever captured: this case reddens on "the scanner
+  // accepted no frame of the fixture at all". Run and reverted; see
+  // task-2-report.md.
+});
+
+await test('replay: replaying a committed fixture writes nothing into the repository (#68)', () => {
+  // Both fixtures have been replayed by the time this runs. `replayCase`
+  // empties and rewrites `<case>/result/`, so a driver pointed at the
+  // committed directory would leave a result behind in the working tree and
+  // somebody would eventually commit it.
+  for (const caseId of [FIXTURE_RIGHT_LENS, FIXTURE_WRONG_LENS]) {
+    assert.ok(existsSync(join(FIXTURES, caseId, 'input', 'observations.jsonl')),
+      `${caseId} is not in this checkout`);
+    assert.equal(existsSync(join(FIXTURES, caseId, 'result')), false,
+      `a replay wrote result/ into the committed fixture ${caseId}`);
+  }
+  // Mutation: replay `join(FIXTURES, caseId)` itself instead of a temporary
+  // copy of its `input/`. `result/` appears inside the fixture and this case
+  // reddens. Run and reverted; see task-2-report.md.
+});
+
+await test('replay: on the fixture too, a 70-degree lens scanned at 60 reaches the view-angle cue (#52, #68)', () => {
+  const replayed = present(fixtureWrong, FIXTURE_WRONG_LENS);
+  const run = longestOverlapRun(replayed.captures);
+  assert.ok(run >= LENS_DOUBT_AFTER,
+    `the worst run of overlap refusals on the fixture was ${run}, short of the ${LENS_DOUBT_AFTER} the cue `
+    + 'waits for: the short route can no longer reach the branch this case grades');
+  const named = replayed.events.filter(event => NAMES_THE_LENS.test(event.cue));
+  assert.ok(named.length > 0,
+    'the fixture scan was refused past the threshold with no lens calibration and the cue never mentioned the lens');
+  for (const event of named) {
+    assert.match(event.cue, NAMES_THE_SETTING);
+    assert.doesNotMatch(event.cue, BLAMES_THE_AIM);
+  }
+  // Mutation: LENS_DOUBT_AFTER = 1e9. The run assertion fails first ("was 9,
+  // short of the 1000000000") and no cue names the lens either. Run and
+  // reverted; see task-2-report.md.
+});
+
+await test('replay: on the fixture too, the lens the scanner assumes is never told its lens is wrong (#52, #68)', () => {
+  const replayed = present(fixtureRight, FIXTURE_RIGHT_LENS);
+  // The negative is evidence only because this scan WORKED: the same scene,
+  // route, resolution, seed and driver, differing in the recorded lens alone.
+  assert.ok(replayed.summary.frames_accepted > 0,
+    'the control scan captured nothing, so its silence says nothing about the cue');
+  const run = longestOverlapRun(replayed.captures);
+  assert.ok(run < LENS_DOUBT_AFTER,
+    `the control fixture's worst run of overlap refusals was ${run}, at or past the ${LENS_DOUBT_AFTER} `
+    + 'threshold: the two fixtures no longer separate the wrong lens from the right one');
+  assert.equal(replayed.events.filter(event => NAMES_THE_LENS.test(event.cue)).length, 0,
+    'a scan with the lens the scanner assumes was told its lens may be set wrong');
+  // Mutation: `correlation<.35` -> `correlation<.99` in
+  // `SkyPanorama.checkOverlap`, which is the conflict threshold this case's
+  // whole claim rests on. The right lens then conflicts too: the control's
+  // longest run goes to 10 and this case reddens on the run bound. (The
+  // threshold LENS_DOUBT_AFTER = 1 does NOT redden it, because the control's
+  // run is 0: the fixture's control never refuses at all.) Run and reverted;
+  // see task-2-report.md.
 });
 
 console.log(`photosphereReplay.test: ${passed}/${passed + failed} passed`
