@@ -160,11 +160,23 @@ async def test_native_camera_reports_its_cooler_state_for_the_frame_header():
         "the header writer reaches this by getattr; absent means no SET-TEMP"
 
     await cam.set_cooler(True, target_c=-10.0)
-    assert await cam.get_cooler() == {"on": True, "target_c": -10.0, "power": 42}
+    assert await cam.get_cooler() == {"on": True, "target_c": -10.0, "power": 42,
+                                     "can_report_power": True}
 
     await cam.set_cooler(False)
     off = await cam.get_cooler()
     assert off["on"] is False and off["power"] == 0
+    assert off["can_report_power"] is True, "zero power is still a measured value"
+
+
+async def test_missing_cooler_power_is_not_advertised_as_available():
+    class NoPower(CoolAdapter):
+        def get_cooler_power(self): return None
+    cam = NativeCamera(NoPower())
+    await cam.connect()
+    status = await cam.get_cooler()
+    assert status["power"] is None
+    assert status["can_report_power"] is False
 
 
 async def test_a_camera_with_no_cooler_reports_none_rather_than_a_shape():

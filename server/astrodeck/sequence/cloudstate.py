@@ -58,6 +58,7 @@ class CloudState:
     #: Kept for the log line and the status payload, so a human can see WHY.
     last_reason: str = field(default="", repr=False)
     last_score: float | None = field(default=None, repr=False)
+    last_cloudy: bool | None = field(default=None, repr=False)
 
     # ------------------------------------------------------------------ write
 
@@ -71,6 +72,7 @@ class CloudState:
         """
         self._last_obs_ts = ts
         self.last_score = score
+        self.last_cloudy = cloudy
         self.last_reason = reason
         if cloudy == self._state:
             # Already there. Clear any half-formed vote for the other side, so a

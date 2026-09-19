@@ -271,7 +271,8 @@ class NativeCamera(Camera):
         on = await asyncio.to_thread(self._a.get_cooler_on)
         target = await asyncio.to_thread(self._a.get_target_temp)
         power = await asyncio.to_thread(self._a.get_cooler_power)
-        return {"on": on, "target_c": target, "power": power}
+        return {"on": on, "target_c": target, "power": power,
+                "can_report_power": power is not None}
 
     async def set_dew_heater(self, power: int) -> None:
         if not self._caps or not self._caps.has_dew_heater:

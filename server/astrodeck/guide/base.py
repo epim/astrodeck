@@ -32,6 +32,9 @@ class GuideStats:
     #: The arcsec/pixel image scale used to convert the engine's pixel errors,
     #: or 0.0 when unknown (see ``is_arcsec``). Purely informational for the UI.
     image_scale: float = 0.0
+    #: Scale actually used to size calibration pulses, including an assumption.
+    calibration_image_scale: float | None = None
+    image_scale_known: bool = False
     #: Plain-language narration phase (NOV-7 design doc §1.3):
     #: ``"idle" | "finding" | "calibrating" | "settling" | "guiding" | "lost"``,
     #: or ``""`` when unknown. Only ``NativeGuider`` fills this richly; the

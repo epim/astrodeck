@@ -1076,9 +1076,12 @@ class ZwoAm5Telescope(Telescope):
         now = time.monotonic()
         if now - _cap_warn_last >= _PULSE_CAP_WARN_S:
             _cap_warn_last = now
+            rate = (_PULSE_DEC_RATE_DEG_S if direction.lower().startswith(("n", "s"))
+                    else _PULSE_RA_RATE_DEG_S)
+            arcsec = rate * 3600 * _PULSE_MAX_MS / 1000
             bus.log("warning",
                     f"{self.name}: pulse {direction} {ms} ms capped to "
-                    f"{_PULSE_MAX_MS} ms (one move may not exceed ~15 arcsec)",
+                    f"{_PULSE_MAX_MS} ms (~{arcsec:.1f} arcsec at this axis's guide rate)",
                     "mount")
         return _PULSE_MAX_MS
 
