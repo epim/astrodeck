@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { VisualStability, SETTLE_MS, STALE_FRAME_MS, GRID_W, GRID_H, gradient, GRADIENT_FLOOR, GRADIENT_HYSTERESIS } from '../photosphereStability';
+import { VisualStability, SETTLE_MS, STALE_FRAME_MS, GRID_W, GRID_H, gradient, noiseGradient, GRADIENT_FLOOR, GRADIENT_HYSTERESIS } from '../photosphereStability';
 
 // The video is the only witness to a still phone: the orientation sensor goes
 // silent when nothing moves, so silence proves nothing on its own. These cases
@@ -27,6 +27,12 @@ import { VisualStability, SETTLE_MS, STALE_FRAME_MS, GRID_W, GRID_H, gradient, G
 //     frame can only witness a shift along an axis it has structure on: a
 //     vertical ramp has all the gradient anyone could want and still cannot see
 //     a sideways pan at all.
+//   * a camera's own noise counts as structure to a grid and is not. Two
+//     adjacent cells hold independent draws of it, so it LIFTS the measured
+//     gradient, never cancelling - a thin treeline with 0.0109 of scene in it
+//     measures 0.0129 at sigma 3 and clears a floor it should not (issue #62).
+//     `noiseGradient` estimates that lift from the frame's own high-pass
+//     residual and `observe` subtracts it, so G means the scene.
 let passed=0,failed=0;
 function test(name:string,fn:()=>void){
   try{fn();passed++;console.log(`PASS ${name}`);}
@@ -196,10 +202,12 @@ function xorshift32(seed:number):()=>number{
  *  Deterministic in the frame number, so nothing here passes or fails by luck.
  *  Measured through this module's grid at sigma 3: it moves a HELD frame by
  *  0.00348 on average and 0.00369 at worst over 30 pairs, and it lifts the
- *  frame's gradient by up to 0.0036 - most where the frame's pairs are flat,
- *  almost nothing where they already exceed the noise. That lift is why the
- *  noisy case below exists: it is enough to carry the thin treeline over
- *  GRADIENT_FLOOR. */
+ *  frame's MEASURED gradient by up to 0.0034 - most where the frame's pairs are
+ *  flat, almost nothing where they already exceed the noise. That lift is why
+ *  the noisy cases below exist: it is enough to carry the thin treeline over
+ *  GRADIENT_FLOOR, and since #62 `noiseGradient` takes it off again before the
+ *  floor is consulted, so the cases come in pairs - one that the lift is there
+ *  and one that it no longer decides anything. */
 function withNoise(px:Uint8Array,frame:number,sigma=3):Uint8Array{
   const next=xorshift32(Math.imul(frame+1,2654435761));
   for(let i=0;i<px.length;i++){
@@ -297,9 +305,15 @@ test('The same pan with a real camera on it never reads still either (issue #38)
   // lifts its min-gradient from 0.0109 to 0.0123-0.0137, which straddles
   // GRADIENT_FLOOR - the frame crossing the floor on its own noise, which is
   // the scene issue #75 is about one layer up.
-  // Since the band (GRADIENT_HYSTERESIS) the lift no longer reaches the exit at
-  // 0.016, so this pan reads {null} at sigma 1, 2, 3 and 4 alike (measured);
-  // before the band it was admitted and the verdicts were {null}, {null,false},
+  // Two things now stop that, and the order matters because only the second is
+  // about this scene's own noise. Since #62 the lift is SUBTRACTED before the
+  // floor is consulted at all, so the pan's gradient is 0.0099-0.0115 corrected
+  // at sigma 1, 2, 3 and 4 against 0.0103-0.0116 clean - under the floor at
+  // every one of them, and the straddle is gone rather than absorbed. Behind
+  // that, the band (GRADIENT_HYSTERESIS) still holds a frame entering from
+  // nothing to the exit at 0.016, which the lift never reached either.
+  // So this pan reads {null} at sigma 1, 2, 3 and 4 alike (measured); before the
+  // band it was admitted and the verdicts were {null}, {null,false},
   // {false,null} and {false}. Either way never `true`, which is the claim issue
   // #38 is actually about and the only thing this case asserts.
   const s=new VisualStability();
@@ -311,10 +325,22 @@ test('The same pan with a real camera on it never reads still either (issue #38)
   assert.equal(vouched,false,'a 1 px/frame pan of a noisy low-gradient view read as still at some point');
   // Mutation that reddens this: GRADIENT_FLOOR = 0 together with
   // ANCHOR_CELLS = 1e9 (a zero floor takes the hysteresis exit with it, since
-  // the exit is a multiple of the floor). The floor alone is no longer the only
-  // thing holding here and the bound alone is not either, so both have to go:
-  // the zero floor admits the frames at every sigma and the removed bound then
-  // lets the pan read as a hold.
+  // the exit is a multiple of the floor) AND the subtraction dropped in
+  // `observe`. Three, and the third is new with #62.
+  // Two used to be enough. With the floor and the anchor bound gone, what was
+  // left was the per-frame RATE test, and the noise-inflated gradient bought
+  // its way past it: G measured 0.0130, the bound was 0.29 x 0.0130 = 0.00376,
+  // and the pair diff of two consecutive noisy frames is about 0.0034, just
+  // inside. Since the subtraction the same frames are judged at 0.0108, the
+  // bound is 0.00312, and all 20 pairs of the pan now exceed it (measured), so
+  // the rate test alone refuses the hold and the two old mutations leave this
+  // case green. That is worth being precise about, because it is the noise
+  // paying for its own bound: correcting G shrinks the bound the frame's own
+  // noise diff has to fit inside. It bites only under the zero-floor mutation -
+  // in the shipped module a frame down there is featureless and the rate test
+  // is never reached - and at the floor itself the bound is 0.00371 against a
+  // worst held-frame diff of 0.00369, which is exactly the margin
+  // GRADIENT_FLOOR is derived to leave and the subtraction does not move.
 });
 
 test('A view with structure in one direction only cannot vouch for a pan across it',()=>{
@@ -399,6 +425,138 @@ test('A held treeline with per-pixel sensor noise still reads still',()=>{
   assert.equal(s.stableAt(last),true,'a held view with ordinary sensor noise on it read as moving');
   // Mutation that reddens this: STILL_CELLS = 0. The noise is what makes that
   // mutation bite - identical frames would differ by exactly 0 and survive it.
+});
+
+/** The gradient that per-pixel noise of `sigma` luma levels leaves behind in the
+ *  grid, from first principles rather than from the module: the 10x10 block
+ *  behind one cell divides the noise by sqrt(100), two adjacent cells hold
+ *  independent draws of what is left, the mean absolute difference of two such
+ *  draws is 2/sqrt(pi) of their common sd, and `normalise` divides by the frame
+ *  mean. This is what `noiseGradient` has to reproduce, and computing it here
+ *  rather than quoting a number means the case below grades the estimator
+ *  against physics and not against its own output. */
+const noiseFloorOf=(sigma:number,mean:number)=>
+  (2/Math.sqrt(Math.PI))*(sigma/Math.sqrt((PW*PH)/(GRID_W*GRID_H)))/mean;
+
+test('The noise estimate is zero on a noise-free frame, however textured (issue #62)',()=>{
+  // The first thing an estimate that gets SUBTRACTED from every frame has to be
+  // is silent when there is nothing to subtract. It is not automatic: the
+  // Immerkaer Laplacian annihilates a planar patch but not an edge, so its MEAN
+  // absolute response on a real frame is the frame's own detail, and taking the
+  // mean would quietly shave a constant off every clean frame in the file -
+  // the same shape of defect as the one #62 is about, in the other direction.
+  // Taking the MEDIAN reads the quiet majority of the frame instead. Measured,
+  // by the mean the clean treeline yields 0.001048 and the thin treeline
+  // 0.000306; by the median both are exactly 0.
+  for(const [name,px] of [['treeline',treeline(0)],['thin treeline',thinTreeline(0)],
+    ['overcast',overcast(0)],['two flat halves',halves()],['a vertical ramp',verticalRamp()],
+    ['fine texture 1.05',fineTexture(1.05)],['fine texture 0.72',fineTexture(0.72)]] as [string,Uint8Array][])
+    assert.equal(noiseGradient(px,PW,PH),0,`${name} has no noise on it, and the estimate says it has`);
+  // Mutation that reddens this: take the MEAN absolute Laplacian response in
+  // `noiseGradient` rather than the median - `sqrt(pi/2) * mean / LAPLACIAN_GAIN`
+  // in place of `median / (LAPLACIAN_GAIN * NORMAL_MEDIAN)`. Observed red:
+  // "treeline has no noise on it, and the estimate says it has".
+});
+
+test('The noise estimate matches the noise that is actually there (issue #62)',()=>{
+  // The other half: silent is not enough, it has to be RIGHT, because it is
+  // subtracted and an estimate that is half the noise fixes half the defect.
+  // A blank frame is where the check is clean - every pair of cells under it is
+  // identical, so the whole of the frame's measured gradient IS the noise - and
+  // `noiseFloorOf` says what that should be without consulting the module.
+  for(const sigma of [1,2,3,4]){
+    for(let f=0;f<4;f++){
+      const px=new Uint8Array(PW*PH).fill(128);
+      const got=noiseGradient(withNoise(px,f,sigma),PW,PH),want=noiseFloorOf(sigma,128);
+      assert.ok(Math.abs(got-want)<0.06*want,
+        `at sigma ${sigma} frame ${f} the estimate is ${got}, over 6 percent off the ${want} the noise puts there`);
+    }
+  }
+  // Measured, the closest and furthest of the sixteen: sigma 3 reads 0.002614
+  // against 0.002645 (1.2 percent low), sigma 4 reads 0.003485 to 0.003703
+  // against 0.003526. The residual is the quantisation of a median taken over
+  // integer luma: one step of it is 0.00023 here, which is 1.8 percent of
+  // GRADIENT_FLOOR and is the reason the tolerance is 6 percent and not 1.
+  // Mutation that reddens this: drop the `/Math.sqrt(perCell)` from
+  // `noiseGradient`, which is the step that says noise averages down inside a
+  // cell and scene structure does not. The estimate becomes ten times the noise
+  // and would subtract every frame in this file to zero. Observed red:
+  // "at sigma 1 frame 0 the estimate is 0.008714, over 6 percent off ...".
+});
+
+test('At one sample per cell there is nothing to estimate, and nothing is subtracted (issue #62)',()=>{
+  // The estimator's defined-to-be-zero fallback, and the shape the driver must
+  // never go back to.
+  // THE LIVE CALLER IS NOT THIS. `photosphere.ts` draws the preview at
+  // CELL_SAMPLES samples across each grid cell - 96x72 - and hands that over, so
+  // the correction is live in production and production is the path these cases
+  // exercise. It used to draw straight to GRID_W x GRID_H, which made the whole
+  // of #62 a no-op on every real phone, and round 1 of that issue moved it.
+  // What this case pins is what happens to any OTHER caller that passes a
+  // grid-sized buffer: one sample per cell, where noise and cell-scale scene
+  // structure are the same thing to any spatial statistic, so the estimate is
+  // defined to be 0 rather than guessed - the noise in such a buffer is whatever
+  // the downscale that produced it left, and this module cannot see how much.
+  // Returning 0 there is what keeps a wrong guess out; `photosphereStillnessDom`
+  // is what keeps the driver on the right side of it.
+  const noisy=withNoise(scene(),0,3);
+  assert.equal(noiseGradient(noisy,W,H),0,'a 32x24 frame was given a noise estimate it cannot support');
+  assert.equal(noiseGradient(withNoise(scene(),0,6),W,H),0,'and the same at twice the noise');
+  // And it is not that this frame happens to look quiet: measured, the same
+  // estimator with the one-sample-per-cell guard removed reads 0.037661 of
+  // "noise" on it, against the frame's whole gradient of 0.061679 - it would
+  // subtract 61 percent of a perfectly good witness. That is the mutation:
+  // delete the `!(perCell>1)` term from `noiseGradient`'s guard. Observed red:
+  // "a 32x24 frame was given a noise estimate it cannot support".
+  // The same mutation measured at grid scale on the 320x240 fixtures, which is
+  // the other way this could have been built: `fineTexture(1.05)` - a static,
+  // perfectly witnessing checkerboard - reads 0.037176 of noise against a true
+  // gradient of 0.017500 and corrects to exactly 0.
+});
+
+test('Sensor noise does not keep a frame witnessing after its scene has run out (issue #62)',()=>{
+  // The defect, and it is on the RETENTION side of the floor, which is why the
+  // hysteresis band of #75 does not already cover it. A frame that could not
+  // witness must clear 0.016 to start again, and the noise lift never reaches
+  // that - so a low-gradient view ENTERED from nothing stays unknown, which is
+  // the case two above. But a frame that IS witnessing goes on witnessing all
+  // the way down to GRADIENT_FLOOR, and that is the comparison the noise
+  // corrupted: the thin treeline has 0.0109 of structure and measures 0.0129
+  // under sigma-3 noise, so a scan panning off a treeline and up onto a
+  // mostly-sky band - the case issue #62 names - kept its witness on a frame
+  // that could not see a shift, and then read the held view as STILL, vouching
+  // with a bound of 0.29 x 0.0129 for a frame whose real bound is 0.29 x 0.0109.
+  // Measured on this module before the subtraction: {moving, still} at sigma 3
+  // and at sigma 4, settling to still and staying there.
+  // The premise, because a subtraction of zero would pass the body for nothing:
+  for(const [sigma,lo,hi] of [[1,0.00070,0.00076],[2,0.00142,0.00150],
+    [3,0.00215,0.00240],[4,0.00288,0.00315]] as [number,number,number][]){
+    const gn=noiseGradient(withNoise(thinTreeline(0),0,sigma),PW,PH);
+    assert.ok(gn>=lo&&gn<=hi,`at sigma ${sigma} the estimate is ${gn}, outside the measured ${lo}..${hi}`);
+  }
+  // 20 frames of a noisy treeline first, so the witness is unambiguously OPEN
+  // (G 0.0669 corrected, five times the floor) and the frames that follow are
+  // judged against GRADIENT_FLOOR and not against the hysteresis exit. Then the
+  // same view held, on a scene with nothing across it.
+  for(const sigma of [0,1,2,3,4]){
+    const s=new VisualStability();
+    let i=0;
+    for(;i<20;i++)s.observe(i*FRAME_MS,sigma?withNoise(treeline(0),i,sigma):treeline(0),PW,PH);
+    const verdicts=new Set<string>();
+    for(let k=0;k<40;k++,i++){
+      const at=i*FRAME_MS;
+      s.observe(at,sigma?withNoise(thinTreeline(0),i,sigma):thinTreeline(0),PW,PH);
+      verdicts.add(s.witness(at));
+    }
+    assert.deepEqual([...verdicts],['featureless'],
+      `at sigma ${sigma} a view with 0.0109 of structure went on witnessing on its own sensor noise`);
+  }
+  // sigma 0 and the low sigmas are the control: the same timeline with too
+  // little noise to lift anything already read featureless, so what the case
+  // measures is the two that did not.
+  // Mutation that reddens this: drop the subtraction in `observe` - the
+  // `const g = gradient(grid)` this replaces. Observed red at sigma 3 and
+  // sigma 4: the verdict set becomes ['featureless', 'moving', 'still'].
 });
 
 test('Continuity names the start of the still run and the last break the video saw',()=>{

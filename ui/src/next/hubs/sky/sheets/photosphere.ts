@@ -3,7 +3,14 @@
 import { DOME_CELLS, SkyPanorama, orientationBasis, pixelBlueness, pixelLuminance, skyAngles, cameraLens, targetCell, transferBasis, type CameraBasis } from './photosphereGeometry';
 import { CameraPoseHistory, ScanPoseSource, poseSeparation, viewVouchesFor, CONTINUITY_SLOP_MS, type PoseEvidence } from './photospherePose';
 import { registerFrame } from './photosphereRegistration';
-import { VisualStability, GRID_W, GRID_H, STALE_FRAME_MS } from './photosphereStability';
+import { VisualStability, GRID_W, GRID_H, CELL_SAMPLES, STALE_FRAME_MS } from './photosphereStability';
+
+/** The size the stillness sample is drawn at: an integer multiple of the
+ *  comparison grid, so every cell has `CELL_SAMPLES` squared samples behind it.
+ *  Drawing it AT the grid was the whole of issue #62's round-1 finding - it left
+ *  the noise correction with nothing to measure and made it a no-op on every
+ *  real phone. `resample` box-averages this down to the grid. */
+const LUMA_W = GRID_W*CELL_SAMPLES, LUMA_H = GRID_H*CELL_SAMPLES;
 
 export interface PhotosphereSupport {
   supported: boolean;
@@ -805,7 +812,7 @@ export class PhotosphereSweep {
    *  broken and worth saying so, while a picture already captured is a normal
    *  moment between frames and must not be dressed up as a fault. */
   private imageGate: null | 'stale-image' | 'frame-already-captured' = null;
-  private luma = new Uint8Array(GRID_W*GRID_H);
+  private luma = new Uint8Array(LUMA_W*LUMA_H);
   private listening = false;
   /** Recorded once in `start()`, from `"DeviceOrientationEvent" in window`.
    *  Distinct from `listening`: a browser that HAS the constructor but has not
@@ -1385,10 +1392,20 @@ export class PhotosphereSweep {
       && (visibility === undefined || visibility === "visible");
   }
 
-  /** Sample the preview into a 32x24 luminance grid, the video's own answer to
+  /** Sample the preview into a luminance buffer, the video's own answer to
    *  "is this view holding still". A plain detached canvas rather than an
-   *  OffscreenCanvas: every browser that reaches this code already has one,
-   *  and 768 pixels per frame is cheap enough for the UI thread.
+   *  OffscreenCanvas: every browser that reaches this code already has one.
+   *  The buffer is LUMA_W x LUMA_H - CELL_SAMPLES samples across each cell of
+   *  the 32x24 comparison grid, 6912 pixels - and NOT the grid itself, which is
+   *  what it used to be. `VisualStability` box-averages it down, and the samples
+   *  inside a cell are what lets it tell the camera's noise from the scene
+   *  (issue #62; `CELL_SAMPLES` carries the derivation and the measured cost).
+   *  6912 pixels per frame is still cheap on the UI thread by the arithmetic -
+   *  measured, the readback loop plus `observe` is 0.054 ms a frame against
+   *  0.017 ms at grid size - but the `getImageData` under it is a GPU stall
+   *  whose cost is the device's, and it now moves 27648 bytes rather than 3072.
+   *  If a phone ever shows this in a frame budget, CELL_SAMPLES is the dial, and
+   *  2 is not a valid setting for it.
    *  `at` is when the CAMERA saw this frame, the meaning
    *  `VisualStability.observe` gives its own `at` - but only one caller can
    *  honour it. The rVFC path has the frame's `captureTime` and passes that.
@@ -1419,16 +1436,16 @@ export class PhotosphereSweep {
     try {
       if (!this.lumaCanvas) {
         this.lumaCanvas = document.createElement("canvas");
-        this.lumaCanvas.width = GRID_W; this.lumaCanvas.height = GRID_H;
+        this.lumaCanvas.width = LUMA_W; this.lumaCanvas.height = LUMA_H;
       }
       // This reads its own pixels back every single frame, which is the one
       // access pattern a GPU-backed canvas is worst at.
       const ctx = this.lumaCanvas.getContext("2d", { willReadFrequently: true });
       if (!ctx) throw new Error("no 2d context for the stillness sample");
-      ctx.drawImage(video, 0, 0, GRID_W, GRID_H);
-      const { data } = ctx.getImageData(0, 0, GRID_W, GRID_H);
+      ctx.drawImage(video, 0, 0, LUMA_W, LUMA_H);
+      const { data } = ctx.getImageData(0, 0, LUMA_W, LUMA_H);
       for (let p = 0; p < this.luma.length; p++) this.luma[p] = luminance(data[p*4], data[p*4+1], data[p*4+2]);
-      this.stability.observe(at, this.luma, GRID_W, GRID_H);
+      this.stability.observe(at, this.luma, LUMA_W, LUMA_H);
       this.stillnessFailures = 0;
       // Immediately after the observation, so the verdict this reads is the one
       // the frame just delivered rather than the previous frame's.
