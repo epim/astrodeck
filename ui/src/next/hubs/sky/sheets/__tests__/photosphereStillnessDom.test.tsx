@@ -56,23 +56,71 @@ Object.defineProperty(w.HTMLVideoElement.prototype,'readyState',{get:()=>starved
 // `stableAt` is null and `witness` is 'featureless' (issue #41). It overrides
 // `shift`, because a scene with no structure in it cannot show one.
 // `faint` is the third camera: a one-cell checkerboard of plus or minus one
-// luma level on the base it is set to. The stillness grid is GRID_W x GRID_H
-// and the driver draws the preview at exactly that size, so a grid cell is one
-// pixel of this and the normalised gradient is exactly 2/base in both
-// directions - which makes the base a dial on G. It is how a case puts the
-// view ON GRADIENT_FLOOR rather than far under it the way `flat` does, and the
-// point is what happens when it wanders across (issue #75). Like `flat` it
-// overrides `shift`: a change of base is a change of exposure, not of aim.
-let shift=0,hidden=false,flat=false,faint:number|null=null;
-const scenePixel=(x:number,y:number,width:number,height:number)=>{
-  if(faint!==null)return faint+((x+y)%2?-1:1);
-  if(flat)return 128;
-  const col=Math.round(((x+shift)%width)*31/Math.max(1,width-1));
-  const block=col>=10&&col<=17&&y>=Math.floor(height/3)&&y<=Math.floor(2*height/3);
-  return block?180:40+Math.round(col*80/31);
+// luma level on the base it is set to, so the normalised gradient is exactly
+// 2/base in both directions - which makes the base a dial on G. It is how a
+// case puts the view ON GRADIENT_FLOOR rather than far under it the way `flat`
+// does, and the point is what happens when it wanders across (issue #75). Like
+// `flat` it overrides `shift`: a change of base is a change of exposure, not of
+// aim.
+// `thin` is the fourth: a flat sky over the top seven eighths with a
+// three-column canopy pattern in the bottom eighth, the shape of a mostly-sky
+// upper band. Its horizontal pairs are ZERO on 21 of the 24 rows, which is what
+// makes it the scene sensor noise lifts (issue #62) - unlike `faint`, whose
+// pairs are all the same size and which noise therefore does not lift at all.
+// Measured through the module: G = 0.011688, under GRADIENT_FLOOR.
+//
+// EVERY MODE IS DEFINED ON THE CELL, not on the pixel. The driver draws the
+// preview at CELL_SAMPLES samples across each grid cell (issue #62 round 1), so
+// a scene written in pixels would mean a different scene at a different buffer
+// size - `shift` would slide by a third of a cell and `faint` would average its
+// own checkerboard away nine to one. Written on the cell, the STILLNESS grid
+// this produces is bit-identical at 32x24 and at 96x72, which is what lets the
+// driver's sampling change without moving a single case in this file.
+// That identity is about the stillness grid and NOTHING ELSE. The same function
+// also paints the 320x240 CAPTURE canvas, and there the new pixels are not the
+// old ones: `col` went from `round(x*31/319)` to `floor(x/10)` and the bright
+// block's lower edge moved from y 160 to y 169, so at shift 5 about 96 percent
+// of the buffer differs, by 30 luma levels on average and 127 at worst. That
+// buffer feeds `registerFrame`, the overlap gate and `panorama.add`. Measured
+// through those functions, the overlap RESULT is the same on every frame tried
+// and the search path differs on one of four (71 evaluations against 1), and
+// the 24-row horizon column differs by up to 23 levels in one row. No assertion
+// in this file or in photosphereCaptureDom depends on which of the two it is -
+// checked by running both suites with the capture canvas put back on its old
+// pixels: 41/41 and 26/26 either way. The evidence on the capture side is that
+// experiment, not the identity argument above.
+let shift=0,hidden=false,flat=false,faint:number|null=null,thin=false;
+// The noise a real sensor leaves, in luma levels AT THE CELL - after the box
+// average, which is the only scale at which "how much noise" is a property of
+// the camera rather than of the buffer size the driver happened to pick. The
+// per-sample amplitude is scaled up by the sampling factor to match, so a given
+// `cellNoise` is the same camera whatever the driver asks for; that is what
+// makes the one-sample-per-cell comparison at the bottom a fair one.
+// Deterministic in (frame, x, y), so nothing here passes or fails by luck.
+let cellNoise=0,noiseFrame=0;
+const noiseAt=(x:number,y:number,width:number)=>{
+  if(!cellNoise)return 0;
+  let h=Math.imul((noiseFrame*73856093)^(x*19349663)^(y*83492791),2654435761);
+  let sum=0;
+  for(let k=0;k<12;k++){h^=h<<13;h|=0;h^=h>>>17;h^=h<<5;h|=0;sum+=(h>>>0)/4294967296;}
+  return cellNoise*(width/GRID_W)*(sum-6);
 };
+const scenePixel=(x:number,y:number,width:number,height:number)=>{
+  const cx=Math.floor(x*GRID_W/width),cy=Math.floor(y*GRID_H/height);
+  const base=faint!==null?faint+((cx+cy)%2?-1:1)
+    :flat?128
+    :thin?(cy<Math.round(GRID_H*7/8)?150:(cx%3===0?96:116))
+    :(()=>{const col=(cx+shift)%GRID_W;
+       return col>=10&&col<=17&&cy>=Math.floor(GRID_H/3)&&cy<=Math.floor(2*GRID_H/3)?180:40+Math.round(col*80/31);})();
+  return Math.max(0,Math.min(255,Math.round(base+noiseAt(x,y,width))));
+};
+// What size the driver last asked the stillness canvas for. A case at the
+// bottom reads this: the whole of issue #62 turns on the buffer being finer
+// than the grid, and nothing else in this file would notice if it stopped being.
+let lastSample:{width:number;height:number}|null=null;
 const ctxStub={ drawImage(){},
   getImageData:(_x:number,_y:number,width:number,height:number)=>{
+    if(width!==320&&height!==320)lastSample={width,height};
     const data=new Uint8ClampedArray(width*height*4);
     for(let y=0;y<height;y++)for(let x=0;x<width;x++){
       const v=scenePixel(x,y,width,height),i=(y*width+x)*4;
@@ -81,12 +129,18 @@ const ctxStub={ drawImage(){},
     return {data};
   }, createImageData:(width:number,height:number)=>({data:new Uint8ClampedArray(width*height*4)}), putImageData(){},
 };
-// `blind` fails ONLY the 32x24 stillness canvas. The capture canvas losing its
+// `blind` fails ONLY the stillness canvas. The capture canvas losing its
 // context is a different defect with a cue of its own, and a stub that failed
-// both could not tell the two apart.
+// both could not tell the two apart. It is told apart by SIZE, so this tracks
+// whatever size the driver draws the stillness sample at (issue #62 round 1
+// moved it off the grid). The capture canvas is 320x240, so the two are the
+// same size at CELL_SAMPLES exactly 10 and telling them apart this way holds
+// only below that - the assertion below says so out loud rather than letting a
+// raised CELL_SAMPLES silently blind both canvases at once (the check itself
+// sits with the LUMA_W/LUMA_H declaration below, which is where those exist).
 let blind=false;
 w.HTMLCanvasElement.prototype.getContext=function(this:{width:number;height:number}){
-  return blind&&this.width===32&&this.height===24?null:ctxStub;
+  return blind&&this.width===LUMA_W&&this.height===LUMA_H?null:ctxStub;
 };
 w.HTMLCanvasElement.prototype.toDataURL=()=>'data:image/png;base64,';
 Object.defineProperty(w.document,'visibilityState',{get:()=>hidden?'hidden':'visible',configurable:true});
@@ -116,7 +170,37 @@ const { PhotosphereSweep, OVERHEAD_BAND } = await import('../photosphere');
 const { skyAngles } = await import('../photosphereGeometry');
 // The witness's own scale, so a case can state where its fixture sits against
 // the floor instead of asserting a number copied into a comment.
-const { gradient, GRADIENT_FLOOR, GRADIENT_HYSTERESIS, GRID_W, GRID_H } = await import('../photosphereStability');
+const { VisualStability, gradient, noiseGradient, GRADIENT_FLOOR, GRADIENT_HYSTERESIS, GRID_W, GRID_H, CELL_SAMPLES }
+  = await import('../photosphereStability');
+/** The size the driver draws the stillness sample at, derived the same way the
+ *  driver derives it, so this file cannot drift from it silently. */
+const LUMA_W=GRID_W*CELL_SAMPLES, LUMA_H=GRID_H*CELL_SAMPLES;
+// `blind` tells the stillness canvas from the 320x240 capture canvas by size,
+// and at CELL_SAMPLES 10 they are the same size. Fail loudly here rather than
+// silently blinding both at once in one case and neither in another.
+if(LUMA_W===320&&LUMA_H===240)throw new Error(
+  `CELL_SAMPLES ${CELL_SAMPLES} makes the stillness canvas ${LUMA_W}x${LUMA_H}, the same size as the `
+  +'capture canvas, and `blind` can no longer tell them apart by size');
+
+/** The dimensions the WITNESS was last handed, which is a different fact from
+ *  the size the canvas was drawn at and the one that actually decides whether
+ *  `noiseGradient` can do anything. A driver that drew at 96x72 and then called
+ *  `observe(at, luma, GRID_W, GRID_H)` would make the correction inert again
+ *  while every canvas-side assertion stayed green - `observe`'s own guard is
+ *  `luma.length < width*height`, and 6912 >= 768 passes it. So the case below
+ *  asserts both ends: what the driver asked the canvas for, and what it told the
+ *  module the buffer was. */
+let lastObserved:{width:number;height:number}|null=null;
+/** Read through a call, so narrowing the module-level `let` to null at the top
+ *  of a case does not make every later use of it unreachable to the checker. */
+const observedSize=()=>lastObserved;
+const sampledSize=()=>lastSample;
+const realObserve=VisualStability.prototype.observe;
+VisualStability.prototype.observe=function(this:InstanceType<typeof VisualStability>,
+    at:number,luma:Uint8Array|Uint8ClampedArray,width:number,height:number):void{
+  lastObserved={width,height};
+  realObserve.call(this,at,luma,width,height);
+};
 
 let passed=0,failed=0;
 async function test(name:string,fn:()=>Promise<void>){
@@ -175,7 +259,7 @@ async function test(name:string,fn:()=>Promise<void>){
  *  At the default 0 every frame is stamped when it is presented, the newest
  *  sample is the tick's own, and nothing above this line changes. */
 async function approachAndHold(rvfc=true,step=2,lag=0){
-  shift=0;hidden=false;blind=false;flat=false;faint=null;intervalFn=null;mediaTime=0;paused=false;stalled=false;ended=starved=trackLost=trackMuted=false;
+  shift=0;hidden=false;blind=false;flat=false;faint=null;thin=false;cellNoise=0;noiseFrame=0;intervalFn=null;mediaTime=0;paused=false;stalled=false;ended=starved=trackLost=trackMuted=false;
   const video=w.document.createElement('video');
   let frame:((now:number,metadata:unknown)=>void)|undefined;
   if(rvfc){
@@ -530,7 +614,7 @@ await test('A lost compass over a featureless view names the sky, not the compas
  *  opens at t0 and settles 500 ms later, and from there the video vouches for
  *  the reading itself. */
 async function overheadHold(){
-  shift=0;hidden=false;blind=false;flat=false;faint=null;intervalFn=null;mediaTime=0;paused=false;stalled=false;ended=starved=trackLost=trackMuted=false;
+  shift=0;hidden=false;blind=false;flat=false;faint=null;thin=false;cellNoise=0;noiseFrame=0;intervalFn=null;mediaTime=0;paused=false;stalled=false;ended=starved=trackLost=trackMuted=false;
   const video=w.document.createElement('video');
   let frame:((now:number,metadata:unknown)=>void)|undefined;
   video.requestVideoFrameCallback=(fn:typeof frame)=>{frame=fn;return 1;};
@@ -872,7 +956,7 @@ await test('After a run of refused ticks the cue names the camera image, not the
   // Mutations: MEDIA_GATE_BLIND_AFTER = 1e9, and separately deleting the
   // increment. Observed red under both: the cue was "Hold here… capturing this
   // patch."
-  shift=0;hidden=false;blind=false;flat=false;faint=null;intervalFn=null;mediaTime=0;paused=false;stalled=false;ended=starved=trackLost=trackMuted=false;
+  shift=0;hidden=false;blind=false;flat=false;faint=null;thin=false;cellNoise=0;noiseFrame=0;intervalFn=null;mediaTime=0;paused=false;stalled=false;ended=starved=trackLost=trackMuted=false;
   const video=w.document.createElement('video');   // no requestVideoFrameCallback: the fallback path
   const sweep=new PhotosphereSweep();
   await sweep.start(video,w.document.createElement('canvas'));
@@ -1257,6 +1341,132 @@ await test('One delivered frame is captured once, however many times the grab ru
     `the second grab on one frame recorded ${sweep.captureLog.at(-1)?.outcome}`);
   assert.equal(sweep.frameCount,frames,'one delivered frame entered the mosaic twice');
   sweep.stop();
+});
+
+await test('The driver samples the preview finer than the grid, or the noise correction is dead code (issue #62)',async()=>{
+  // Round 1 of #62. `noiseGradient` can only separate sensor noise from
+  // cell-scale scene structure by the fact that a box average divides one by
+  // sqrt(samples per cell) and leaves the other alone. The driver used to draw
+  // the preview at exactly GRID_W x GRID_H, one sample per cell, where that
+  // ratio does not exist - so the correction returned 0 on every real phone
+  // while the unit tests, which hand the module 320x240, exercised a path
+  // nothing took. A correction that is structurally 0 in production is a claim
+  // nothing keeps, and nothing else in this file would notice it coming back.
+  lastSample=null;lastObserved=null;
+  const {sweep,tick}=await approachAndHold();
+  for(let i=0;i<4;i++)tick();
+  // What the canvas was drawn and read at. Necessary - the buffer's CONTENTS
+  // have to carry sub-cell detail - but not sufficient on its own.
+  assert.ok(sampledSize(),'the driver never sampled the preview at all');
+  assert.equal(sampledSize()!.width,LUMA_W,'the stillness sample is not the width the module asks for');
+  assert.equal(sampledSize()!.height,LUMA_H,'the stillness sample is not the height the module asks for');
+  assert.ok(CELL_SAMPLES>1,`CELL_SAMPLES is ${CELL_SAMPLES}: at one sample per cell noiseGradient is 0 by construction`);
+  assert.equal(sampledSize()!.width%GRID_W,0,'the sample width is not a whole number of samples per cell');
+  assert.equal(sampledSize()!.height%GRID_H,0,'the sample height is not a whole number of samples per cell');
+  // And what the WITNESS was handed, which is the fact `noiseGradient` acts on.
+  // `perCell` is computed from these two numbers and nothing else, so a driver
+  // that drew finely and then described the buffer as grid-sized would put the
+  // correction back to sleep with every assertion above still green.
+  assert.ok(observedSize(),'the witness was never handed a frame at all');
+  assert.equal(observedSize()!.width,LUMA_W,'the witness was told the buffer was a different width than it is');
+  assert.equal(observedSize()!.height,LUMA_H,'the witness was told the buffer was a different height than it is');
+  assert.ok((observedSize()!.width*observedSize()!.height)/(GRID_W*GRID_H)>1,
+    'the witness was handed one sample per cell, where noiseGradient is 0 by construction');
+  // And the factor has to be big enough to be honest, which is a separate
+  // claim from being bigger than 1. The Laplacian behind `noiseGradient` spans
+  // 3 samples, so at 2 per cell it can never sit inside a cell and every
+  // response it makes is a cell edge - it then reports STRUCTURE as noise and
+  // subtracts it. A one-cell checkerboard with no noise on it whatsoever is
+  // where that shows worst, and it is not hypothetical: `faint` is that
+  // checkerboard and three cases above use it to sit on GRADIENT_FLOOR.
+  // Measured: 0 at CELL_SAMPLES 3, and 0.003718 at 2 - a quarter of the floor,
+  // invented, which would drop `faint` at base 143 from 0.01399 to 0.01029 and
+  // take it under a floor it is supposed to be sitting on.
+  faint=150;
+  const board=new Uint8Array(LUMA_W*LUMA_H);
+  for(let y=0;y<LUMA_H;y++)for(let x=0;x<LUMA_W;x++)board[y*LUMA_W+x]=scenePixel(x,y,LUMA_W,LUMA_H);
+  faint=null;
+  assert.equal(noiseGradient(board,LUMA_W,LUMA_H),0,
+    `at ${CELL_SAMPLES} samples per cell the estimator invents noise on a frame that has none, and subtracts it`);
+  sweep.stop();
+  // Three mutations, all observed, and the third is the one the canvas-side
+  // assertions alone would have missed:
+  //   * `const LUMA_W = GRID_W, LUMA_H = GRID_H` in photosphere.ts - the shape
+  //     the driver must never go back to. Red: "the stillness sample is not the
+  //     width the module asks for".
+  //   * `CELL_SAMPLES = 2`. Red: "at 2 samples per cell the estimator invents
+  //     noise on a frame that has none, and subtracts it".
+  //   * draw and read at LUMA_W x LUMA_H but call
+  //     `observe(at, this.luma, GRID_W, GRID_H)`. Every canvas-side assertion
+  //     above stays green and the correction is inert again. Red: "the witness
+  //     was told the buffer was a different width than it is".
+  // What this case does NOT prove on its own: that the finer buffer CHANGES a
+  // verdict. That is the case below, and the two are separate because this one
+  // is about the driver and that one is about the module.
+});
+
+await test('The same scene, the same camera: one sample per cell vouches for a view the real driver refuses (issue #62)',async()=>{
+  // The counterfactual the case above cannot state, and the reason it is here
+  // rather than in photosphereStability.test.ts: it is about the SAMPLING the
+  // driver chooses, so it has to be written against the driver's own scene.
+  // `thin` is a mostly-sky upper band - horizontal pairs of exactly zero on 21
+  // of 24 rows - which is the shape sensor noise lifts. Clean it measures
+  // 0.011688, under GRADIENT_FLOOR: it cannot witness, and must not pretend to.
+  // `cellNoise` is 0.5 luma levels reaching each cell. That is a noisier camera
+  // than the sigma-3-at-320x240 the rest of the record uses (which is 0.30 at
+  // the cell), and deliberately so: at 0.30 the lift is 0.0012 and a fixture
+  // would have to straddle the floor inside that, where the hysteresis band
+  // latches it featureless and the case would be about issue #75 instead. At
+  // 0.5 there is room for a margin on both sides. A phone at dusk with its gain
+  // up is the camera this models, which is when this app is used.
+  const render=(width:number,height:number,frame:number)=>{
+    noiseFrame=frame;
+    const px=new Uint8Array(width*height);
+    for(let y=0;y<height;y++)for(let x=0;x<width;x++)px[y*width+x]=scenePixel(x,y,width,height);
+    return px;
+  };
+  const verdicts=(width:number,height:number)=>{
+    // Entered from the ordinary textured scene, because the floor is a BAND: a
+    // frame entering from nothing is held to the exit at 0.016 and neither
+    // sampling would admit this one. The hole #62 leaves is on the RETENTION
+    // side, where a witness already open goes on witnessing down to the floor.
+    const s=new VisualStability();
+    let i=0;
+    thin=false;
+    for(;i<20;i++)s.observe(i*100,render(width,height,i),width,height);
+    thin=true;
+    const seen=new Set<string>();
+    for(let k=0;k<30;k++,i++){const at=i*100;s.observe(at,render(width,height,i),width,height);seen.add(s.witness(at));}
+    thin=false;
+    return seen;
+  };
+  // The premise: clean, the scene cannot witness, and both samplings agree.
+  // `finally`, because these are module-level flags the whole file shares and a
+  // thrown assertion would otherwise leave the next case looking at this scene.
+  let coarse:Set<string>,fine:Set<string>;
+  try{
+    cellNoise=0;
+    assert.deepEqual([...verdicts(GRID_W,GRID_H)],['featureless'],'the clean scene should not witness at one sample per cell');
+    assert.deepEqual([...verdicts(LUMA_W,LUMA_H)],['featureless'],'the clean scene should not witness at the real sampling');
+    // The body: the same scene and the same camera, sampled two ways.
+    cellNoise=0.5;
+    coarse=verdicts(GRID_W,GRID_H);fine=verdicts(LUMA_W,LUMA_H);
+  } finally { thin=false;cellNoise=0;noiseFrame=0; }
+  assert.ok(coarse.has('still'),
+    `one sample per cell should vouch for this view on its own noise, and read {${[...coarse]}} instead - `
+    +'if this ever goes green the fixture has stopped exhibiting the defect and the assertion below proves nothing');
+  assert.deepEqual([...fine],['featureless'],
+    `the real sampling should refuse a view with 0.0117 of structure, and read {${[...fine]}}`);
+  // Measured, corrected, over 40 frames: at one sample per cell 0.014815 to
+  // 0.015733, all of it over the 0.0128 floor and none of it real; at
+  // CELL_SAMPLES 0.010557 to 0.011765, all of it under, against a noise-free
+  // 0.011688. So the correction recovers the scene to within 0.0012.
+  // Mutation that reddens this: drop the subtraction in `observe`
+  // (`const g = gradient(grid)`). Observed red: "the real sampling should refuse
+  // a view with 0.0117 of structure, and read {moving,still}". The mutation in
+  // the case above - putting the driver back on the grid - does NOT redden this
+  // one, because this case builds its own buffers; that is the division of
+  // labour between the two and the reason neither replaces the other.
 });
 
 console.log(`photosphereStillnessDom.test: ${passed}/${passed+failed} passed`);
