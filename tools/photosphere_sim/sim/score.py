@@ -583,6 +583,15 @@ def first_line_per_frame(events: list) -> list:
 def _score_overlay(events: list, frames: list) -> dict:
     """Overlay attitude error per delivered frame, moving and settled apart.
 
+    Issue #59: the error is the MAXIMUM of the three angles between measured
+    and true `forward`, `right` and `up`, not `forward` alone. `forward`
+    alone is blind to roll: a basis whose `right` and `up` are rotated about
+    `forward` by any amount, with `forward` itself left untouched, is a
+    perfect match under a forward-only metric and is exactly the corruption
+    `sim.corrupt`'s `roll` demonstrates. `max_forward_deg`, `max_right_deg`
+    and `max_up_deg` report each axis's own worst angle beside the combined
+    figure, because the combined maximum alone does not say which axis moved.
+
     A percentile over a thousand frames cannot see one bad frame, and one
     frame pointing a degree wrong is exactly the failure the overlay gate is
     about, so `max_deg` and `frames_over_gate` are reported beside them, and
@@ -617,19 +626,33 @@ def _score_overlay(events: list, frames: list) -> dict:
         if basis is None or frame is None:
             missing += 1
             continue
-        error = angle_between(basis["forward"], frame["forward"])
+        forward_error = angle_between(basis["forward"], frame["forward"])
+        right_error = angle_between(basis["right"], frame["right"])
+        up_error = angle_between(basis["up"], frame["up"])
+        sample = {
+            "error": max(forward_error, right_error, up_error),
+            "forward": forward_error,
+            "right": right_error,
+            "up": up_error,
+        }
         if float(frame["angular_rate_deg_s"]) > MOVING_RATE_DEG_S:
-            moving.append(error)
+            moving.append(sample)
         else:
-            settled.append(error)
+            settled.append(sample)
 
-    def block(values):
-        return {"median_deg": _percentile(values, 50),
-                "p95_deg": _percentile(values, 95),
-                "max_deg": float(max(values)) if values else None}
+    def block(samples):
+        errors = [s["error"] for s in samples]
+        return {
+            "median_deg": _percentile(errors, 50),
+            "p95_deg": _percentile(errors, 95),
+            "max_deg": float(max(errors)) if errors else None,
+            "max_forward_deg": float(max(s["forward"] for s in samples)) if samples else None,
+            "max_right_deg": float(max(s["right"] for s in samples)) if samples else None,
+            "max_up_deg": float(max(s["up"] for s in samples)) if samples else None,
+        }
 
-    over_gate = (sum(1 for e in moving if e > GATE_OVERLAY_MOVING_P95)
-                 + sum(1 for e in settled if e > GATE_OVERLAY_SETTLED_P95))
+    over_gate = (sum(1 for s in moving if s["error"] > GATE_OVERLAY_MOVING_P95)
+                 + sum(1 for s in settled if s["error"] > GATE_OVERLAY_SETTLED_P95))
     return {
         "samples": len(moving) + len(settled),
         "missing_fraction": (missing / considered) if considered else None,

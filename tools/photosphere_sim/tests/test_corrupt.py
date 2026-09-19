@@ -166,6 +166,85 @@ class Corruptions(unittest.TestCase):
         self.assertGreater(len(scores["landmarks"]["omitted"]), 0)
         self.assertFalse(scores["gates"]["pass"])
 
+    # -- roll ----------------------------------------------------------------
+
+    def test_a_roll_rotates_right_and_up_about_forward_and_keeps_the_basis_orthonormal(self):
+        """Issue #59: the corruption itself, read straight off events.jsonl.
+
+        `forward` is bit-identical to the source; `right` and `up` are each
+        exactly `deg` degrees from their own source vector; and the resulting
+        basis is still orthonormal to 1e-9, because a roll about `forward` is
+        an attitude a real device can hold, unlike `mirror`'s reflected one.
+
+        Named mutation, verified by hand and reverted (not left in the
+        tree): a roll that rotates `right` and forgets `up` reddens the
+        `up`-angle assertion below (it reports 0.0, not 3.0, since `up` never
+        moved) and reddens orthonormality too, because a rotated `right`
+        paired with an untouched `up` is no longer perpendicular to it. See
+        task-13-report.md.
+        """
+        deg = 3.0
+        out_dir = corrupt.apply(self.case_dir, self.ideal_dir, "roll",
+                                self.base / "roll-basis", deg=deg)
+        source = [json.loads(line) for line in
+                  (self.ideal_dir / "events.jsonl").read_text(encoding="utf-8")
+                  .splitlines() if line]
+        rolled = [json.loads(line) for line in
+                  (out_dir / "events.jsonl").read_text(encoding="utf-8")
+                  .splitlines() if line]
+        self.assertEqual(len(source), len(rolled))
+        checked = 0
+        for before, after in zip(source, rolled):
+            if before.get("basis") is None:
+                continue
+            checked += 1
+            b_before, b_after = before["basis"], after["basis"]
+            self.assertEqual(b_after["forward"], b_before["forward"])
+            for key in ("right", "up"):
+                angle = angle_between(b_after[key], b_before[key])
+                self.assertAlmostEqual(angle, deg, delta=1e-6, msg=key)
+            right = np.asarray(b_after["right"], dtype=np.float64)
+            up = np.asarray(b_after["up"], dtype=np.float64)
+            forward = np.asarray(b_after["forward"], dtype=np.float64)
+            self.assertAlmostEqual(float(np.linalg.norm(right)), 1.0, delta=1e-9)
+            self.assertAlmostEqual(float(np.linalg.norm(up)), 1.0, delta=1e-9)
+            self.assertAlmostEqual(float(np.linalg.norm(forward)), 1.0, delta=1e-9)
+            self.assertAlmostEqual(float(np.dot(right, up)), 0.0, delta=1e-9)
+            self.assertAlmostEqual(float(np.dot(right, forward)), 0.0, delta=1e-9)
+            self.assertAlmostEqual(float(np.dot(up, forward)), 0.0, delta=1e-9)
+        self.assertGreater(checked, 0)
+
+    def test_a_roll_moves_the_overlay_and_leaves_the_landmarks_and_horizon_alone(self):
+        """The raster and the boundary carry no roll of their own (CONTRACT.md):
+        only `overlay` may move; `landmarks` and `horizon` are exactly the
+        ideal's.
+
+        Named mutation: reverting `_score_overlay`'s error to `forward_error`
+        alone reddens the `max_deg`/`frames_over_gate`/`pass` assertions here
+        back to the ideal's own numbers, because `roll` never touches
+        `forward` -- the same failure `test_score.py`'s
+        `test_a_wrong_right_and_up_show_in_the_overlay_though_forward_is_untouched`
+        pins directly against the metric.
+        """
+        deg = 3.0
+        scores = self.corrupted("roll", "roll", deg=deg)
+        self.assertEqual(scores["landmarks"], self.ideal_scores["landmarks"])
+        self.assertEqual(scores["horizon"], self.ideal_scores["horizon"])
+
+        overlay = scores["overlay"]
+        self.assertGreaterEqual(overlay["settled"]["max_deg"], deg - 1e-6)
+        self.assertGreaterEqual(overlay["moving"]["max_deg"], deg - 1e-6)
+        self.assertAlmostEqual(overlay["settled"]["max_forward_deg"], 0.0, places=7)
+        self.assertAlmostEqual(overlay["moving"]["max_forward_deg"], 0.0, places=7)
+        self.assertAlmostEqual(overlay["settled"]["max_right_deg"], deg, delta=0.01)
+        self.assertAlmostEqual(overlay["settled"]["max_up_deg"], deg, delta=0.01)
+        self.assertAlmostEqual(overlay["moving"]["max_right_deg"], deg, delta=0.01)
+        self.assertAlmostEqual(overlay["moving"]["max_up_deg"], deg, delta=0.01)
+        self.assertGreater(overlay["frames_over_gate"], 0)
+        self.assertFalse(scores["gates"]["overlay_settled_p95_lt_0_5"])
+        self.assertFalse(scores["gates"]["overlay_moving_p95_lt_1"])
+        self.assertFalse(scores["gates"]["pass"])
+
     # -- focal -------------------------------------------------------------
 
     def test_a_five_percent_focal_error_grows_away_from_the_horizontal(self):

@@ -122,6 +122,12 @@ class IdealResult(unittest.TestCase):
         self.assertLess(overlay["moving"]["p95_deg"], 0.01)
         self.assertEqual(overlay["duplicate_frame_ids"], 0)
         self.assertEqual(overlay["frames_over_gate"], 0)
+        # Issue #59: the per-axis maxima are quantisation only on the ideal,
+        # same as the combined max_deg they sit beside.
+        for block in ("settled", "moving"):
+            self.assertLess(overlay[block]["max_forward_deg"], 0.01, block)
+            self.assertLess(overlay[block]["max_right_deg"], 0.01, block)
+            self.assertLess(overlay[block]["max_up_deg"], 0.01, block)
 
     def test_every_hold_is_captured_700_ms_in(self):
         capture = self.scores["capture"]
@@ -507,6 +513,61 @@ class IdealResult(unittest.TestCase):
         # Three degrees is under the maximum gate, so this result still
         # passes: `frames_over_gate` is informational, and the threshold the
         # gate does hold is 10 degrees, not one frame over its class's p95.
+        self.assertTrue(scores["gates"]["overlay_max_lt_10"])
+        self.assertTrue(scores["gates"]["pass"], scores["gates"])
+
+    def test_a_wrong_right_and_up_show_in_the_overlay_though_forward_is_untouched(self):
+        """Issue #59: a half-applied yaw (or a roll) leaves `forward` alone.
+
+        `right` and `up` are rotated 5 degrees about the truth `forward`;
+        `forward` itself is written back bit-identical to the truth. A
+        forward-only metric would call this event a perfect match.
+
+        Named mutation, verified by hand and reverted (not left in the tree):
+        replacing `_score_overlay`'s `max(forward_error, right_error,
+        up_error)` with `forward_error` alone reddens this test, because
+        `forward` here is exactly the truth and that metric reports settled
+        `max_deg` 0.0 instead of ~5.0 -- the failure is
+        `0.0 != 5.0 within 7 places` on the `max_deg` assertion below, and
+        `max_forward_deg`/`max_right_deg`/`max_up_deg` do not exist under
+        that metric at all (AssertionError / KeyError). See task-13-report.md.
+        """
+        turned = pathlib.Path(self.tmp.name) / "wrong-right-up"
+        shutil.copytree(self.result_dir, turned)
+        path = turned / "events.jsonl"
+        events = [json.loads(line) for line in
+                  path.read_text(encoding="utf-8").splitlines() if line]
+        frames = {f["frame_id"]: f for f in
+                  (json.loads(line) for line in
+                   (self.case_dir / "truth" / "trajectory.jsonl")
+                   .read_text(encoding="utf-8").splitlines() if line)}
+        target = next(e for e in events
+                      if frames[e["frame_id"]]["angular_rate_deg_s"] <= 2.0)
+        frame = frames[target["frame_id"]]
+        forward = np.asarray(frame["forward"], dtype=np.float64)
+        forward = forward / np.linalg.norm(forward)
+        radians = math.radians(5.0)
+        cos, sin = math.cos(radians), math.sin(radians)
+        for key in ("right", "up"):
+            v = np.asarray(frame[key], dtype=np.float64)
+            rotated = v * cos + np.cross(forward, v) * sin
+            target["basis"][key] = [float(x) for x in rotated]
+        target["basis"]["forward"] = list(frame["forward"])
+        path.write_text("".join(json.dumps(e) + "\n" for e in events),
+                        encoding="utf-8", newline="\n")
+
+        scores = score.score_case(self.case_dir, turned)
+        overlay = scores["overlay"]
+        self.assertEqual(overlay["samples"], self.frame_count)
+        self.assertAlmostEqual(overlay["settled"]["max_forward_deg"], 0.0, places=7)
+        self.assertAlmostEqual(overlay["settled"]["max_right_deg"], 5.0, delta=0.01)
+        self.assertAlmostEqual(overlay["settled"]["max_up_deg"], 5.0, delta=0.01)
+        self.assertAlmostEqual(overlay["settled"]["max_deg"], 5.0, delta=0.01)
+        self.assertEqual(overlay["frames_over_gate"], 1)
+        # One frame in a thousand cannot move a percentile (same as the
+        # forward-only case above), and 5 degrees is under the 10 degree
+        # maximum gate, so this result still passes.
+        self.assertLess(overlay["settled"]["p95_deg"], 0.5)
         self.assertTrue(scores["gates"]["overlay_max_lt_10"])
         self.assertTrue(scores["gates"]["pass"], scores["gates"])
 
