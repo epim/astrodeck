@@ -2545,6 +2545,7 @@ export interface GalleryFrame {
   height?: number | null;
   bin_x?: number | null;
   bin_y?: number | null;
+  file_version?: string;
   bytes: number;
   mtime: number;
 }
@@ -2564,6 +2565,8 @@ export interface GalleryGeometryGroup {
 
 export interface GalleryFramesPage {
   frames: GalleryFrame[];
+  snapshot?: string;
+  next_cursor?: string | null;
   /** Counts across the full filter, including frames on later pages. */
   geometry_groups?: GalleryGeometryGroup[];
   geometry_truncated?: boolean;

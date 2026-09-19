@@ -48,10 +48,12 @@ function frame(i: number, night: string): any {
   };
 }
 function page(night: string, offset: number, count: number, total: number): any {
+  const snapshot = night.replaceAll("-", "").repeat(4);
   return {
     frames: Array.from({ length: count }, (_, i) => frame(offset + i, night)),
     total, bytes: total * 50_000_000, offset, limit: 200,
     truncated: false, scan_ms: 4,
+    snapshot, next_cursor: offset + count < total ? `${snapshot}:${offset + count}` : null,
   };
 }
 
@@ -164,6 +166,9 @@ test("the Load more request is in flight", () => {
   assert(inFlight("offset=200"),
     `no offset=200 request in flight after the click: ${pending.map((p) => p.url).join(", ")}`);
 });
+test("load more uses the displayed listing's cursor", () => {
+  assert(inFlight(`cursor=${NIGHT_A.replaceAll("-", "").repeat(4)}%3A200`), "missing stable cursor");
+});
 
 // 2. change the filter while that request is still open
 const tonightBtn = byText(/Tonight/);
@@ -205,6 +210,32 @@ test("and it does not clobber the totals the actions are priced from", () => {
   const dl = byText(/Download/);
   assert(dl != null && !/400/.test(dl.textContent || ""),
     `the download button is priced from the stale page: "${dl?.textContent}"`);
+});
+
+click(byText(/Refresh/i));
+await flush();
+respond(TONIGHT, page(TONIGHT, 0, 200, 201));
+await flush();
+click(byText(/Load .* more/));
+await flush();
+const duplicatePage = page(TONIGHT, 200, 1, 201);
+duplicatePage.frames.unshift(frame(199, TONIGHT));
+respond("offset=200", duplicatePage);
+await flush();
+test("appending defensively deduplicates paths", () => {
+  assert(tiles() === 201, `expected 201 distinct tiles, got ${tiles()}`);
+});
+click(byText(/Select all/));
+await flush();
+test("bulk download names the same frozen selection", () => {
+  const href = byText(/Download/)?.getAttribute("href") ?? "";
+  assert(href.includes(`snapshot=${duplicatePage.snapshot}`), "download lost the snapshot");
+  assert(href.includes(`night_from=${TONIGHT}`), "download lost its filter scope");
+});
+click(byText(/Move to trash/));
+await flush();
+test("select-all deletion starts enumeration from the same snapshot", () => {
+  assert(inFlight(`cursor=${duplicatePage.snapshot}%3A0`), "delete enumerated a fresh changing collection");
 });
 }
 

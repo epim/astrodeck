@@ -35,7 +35,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { JSX } from "react";
 import { ApiError } from "../api";
 import {
-  backfillThumbs, getTrashCount, listFrames, listNights, trashFrames,
+  backfillThumbs, getTrashCount, listFrames, listNights, trashFrames, validateSelection,
 } from "../api/gallery";
 import { useStore } from "../store";
 import { BASE } from "../lib/base";
@@ -178,6 +178,7 @@ export default function GalleryView(): JSX.Element {
     let alive = true;
     listReq.current += 1;
     setLoading(true);
+    setLoadingMore(false);
     setErr(null);
     // A changed filter is a changed set, so both selections stop meaning what
     // they meant. Carrying them over is how "delete everything I ticked" ends
@@ -232,9 +233,9 @@ export default function GalleryView(): JSX.Element {
   // ---- selection -----------------------------------------------------------
   const selection: GallerySelection = useMemo(
     () => (allInFilter
-      ? { mode: "filter", q, nightFrom, nightTo }
-      : { mode: "picked", paths: [...picked] }),
-    [allInFilter, q, nightFrom, nightTo, picked],
+      ? { mode: "filter", q, nightFrom, nightTo, snapshot: page?.snapshot }
+      : { mode: "picked", paths: [...picked], q, nightFrom, nightTo, snapshot: page?.snapshot }),
+    [allInFilter, q, nightFrom, nightTo, picked, page?.snapshot],
   );
   const selCount = allInFilter ? (page?.total ?? 0) : picked.size;
   const selBytes = allInFilter
@@ -266,12 +267,15 @@ export default function GalleryView(): JSX.Element {
     if (!allInFilter) return [...picked];
     const out: string[] = [];
     const total = page?.total ?? 0;
+    let cursor = page?.snapshot ? `${page.snapshot}:0` : undefined;
     for (let off = 0; off < total && out.length < TRASH_BATCH_CAP; off += 500) {
-      const p = await listFrames({ q, nightFrom, nightTo, offset: off, limit: 500 });
+      const p = await listFrames({ q, nightFrom, nightTo, offset: off, limit: 500, cursor });
       if (!p.frames.length) break;
       for (const f of p.frames) out.push(f.path);
+      if (p.snapshot && !p.next_cursor) break;
+      cursor = p.next_cursor ?? undefined;
     }
-    return out;
+    return [...new Set(out)];
   }
 
   async function onDelete(): Promise<void> {
@@ -288,7 +292,7 @@ export default function GalleryView(): JSX.Element {
         confirmLabel: "Move to trash",
       });
       if (!go) return;
-      const r = await trashFrames(paths);
+      const r = await trashFrames(paths, { snapshot: page?.snapshot, q, nightFrom, nightTo });
       enqueueToast({
         level: r.failed.length ? "warning" : "success",
         title: `Moved ${fmtCount(r.trashed.length)} ${r.trashed.length === 1 ? "frame" : "frames"} to the trash`,
@@ -308,15 +312,19 @@ export default function GalleryView(): JSX.Element {
   }
 
   async function onLoadMore(): Promise<void> {
+    if (page?.snapshot && !page.next_cursor) return;
     // The page this click is asking for belongs to the filter that is on screen
     // NOW; if that moves while the request is in flight the answer is about a
     // set nobody is looking at any more (see `listReq`).
     const req = listReq.current;
     setLoadingMore(true);
     try {
-      const p = await listFrames({ q, nightFrom, nightTo, offset: rows.length, limit: PAGE });
+      const p = await listFrames({ q, nightFrom, nightTo, offset: rows.length, limit: PAGE, cursor: page?.next_cursor ?? undefined });
       if (req !== listReq.current) return;
-      setRows((r) => [...r, ...p.frames]);
+      setRows((r) => {
+        const seen = new Set(r.map((f) => f.path));
+        return [...r, ...p.frames.filter((f) => { if (seen.has(f.path)) return false; seen.add(f.path); return true; })];
+      });
       setPage(p);
     } catch (e) {
       if (req !== listReq.current) return;
@@ -326,7 +334,7 @@ export default function GalleryView(): JSX.Element {
         detail: e instanceof ApiError ? e.message : undefined,
       });
     } finally {
-      setLoadingMore(false);
+      if (req === listReq.current) setLoadingMore(false);
     }
   }
 
@@ -570,6 +578,15 @@ export default function GalleryView(): JSX.Element {
                   className={`btn btn-accent ${actionBtn}`}
                   // A navigation, not a fetch — see this file's header (3).
                   href={`${BASE}${plan.ok ? plan.href : ""}`}
+                  onClick={(event) => {
+                    if (!selection.snapshot || !plan.ok) return;
+                    event.preventDefault();
+                    const href = `${BASE}${plan.href}`;
+                    void validateSelection(selection).then(() => window.location.assign(href)).catch((e) => {
+                      enqueueToast({ level: "error", title: "Download needs a refreshed selection",
+                        detail: e instanceof ApiError ? e.message : "Refresh the gallery and select the frames again." });
+                    });
+                  }}
                   download
                   title="Streamed as one .zip; the folder structure is preserved"
                 >
