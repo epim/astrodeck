@@ -2,7 +2,7 @@
 // draft. Phone sensor pose and lens angles remain estimates for user review.
 import { DOME_CELLS, SkyPanorama, orientationBasis, pixelBlueness, pixelLuminance, skyAngles, cameraLens, targetCell, transferBasis, type CameraBasis } from './photosphereGeometry';
 import { CameraPoseHistory, ScanPoseSource, poseSeparation, viewVouchesFor, CONTINUITY_SLOP_MS, type PoseEvidence } from './photospherePose';
-import { registerFrame } from './photosphereRegistration';
+import { registerFrame, SEARCH_CEILING_DEG } from './photosphereRegistration';
 import { VisualStability, GRID_W, GRID_H, CELL_SAMPLES, STALE_FRAME_MS } from './photosphereStability';
 
 /** The size the stillness sample is drawn at: an integer multiple of the
@@ -693,6 +693,13 @@ const MEDIA_GATE_BLIND_AFTER = 6;
  *  this file actually ships: raising it to 1e9 has to redden that case, and it
  *  cannot if the test carries its own 6. */
 export const LENS_DOUBT_AFTER = 6;
+/** The fraction of the frame's radial SCALE that a rotation-only fit may absorb
+ *  before the correction it is making is better explained by the lens than by
+ *  the pose. It is the one free number in `carriedCorrectionMax`'s uncalibrated
+ *  regime; everything else there is geometry. See that getter for the
+ *  derivation, the arithmetic and where the linearisation it rests on parts
+ *  company with the exact relation. */
+const LENS_SCALE_TOLERANCE = .1;
 /** How often the interval fallback grabs, and the cadence the frame-callback
  *  path throttles its own grabs to, so the two paths capture at one rate. It is
  *  also the RESOLUTION OF THE WITNESS on the fallback: that path observes only
@@ -707,6 +714,32 @@ const GRAB_INTERVAL_MS = 350;
  *  and two copies of one sentence in one getter is one copy that will be
  *  reworded and one that will not. */
 const NO_BEARING_CUE = 'Waiting for the compass. Keep the camera open and move the phone gently.';
+/** What the user is told on a browser with no `DeviceOrientationEvent` at all.
+ *
+ *  Every reading this driver has comes from one listener, attached only where
+ *  that constructor exists, so on such a browser there is no heading AND no
+ *  tilt: `hasOrientation` and `tiltAt` both stay at their initial values
+ *  forever. `begin()` therefore never starts a scan there, and it should not -
+ *  the overhead cell is the only thing a scan with no bearing could honestly
+ *  capture, and without tilt even that cannot be aimed (`addZenith` falls back
+ *  to the middle of the picture, which is an assumption that the phone is
+ *  pointing straight up and nothing can check it).
+ *
+ *  What was wrong was not the refusal but the silence around it (issue #65).
+ *  The Start control locked with "Waiting for compass" and the panel asked the
+ *  user to move the phone gently and check motion-sensor permissions - an
+ *  instruction that cannot succeed, on a browser where no permission and no
+ *  amount of movement will ever produce a reading. So the scan is refused in
+ *  as many words, with the thing that does work in the same sentence. It
+ *  travels as `issue`, which is the top of `captureCue`'s precedence and the
+ *  first thing the capture panel's hint reads, so it displaces both.
+ *
+ *  It names the route back rather than assuming it, for the reason the lens cue
+ *  below argues at length: the user is standing in the capture panel with the
+ *  camera open, and the hand-drawn line is behind Cancel scan. The sentence it
+ *  replaces did name it ("or cancel and draw the horizon") and this one must
+ *  not lose that. */
+const NO_POSE_STREAM_CUE = 'This browser does not report which way the phone is pointing, so a scan cannot place what it sees. Cancel the scan and draw the horizon by hand instead.';
 
 /** Opens a visible preview; recording begins only after begin() is pressed. */
 export class PhotosphereSweep {
@@ -1001,6 +1034,108 @@ export class PhotosphereSweep {
     return b?this.correctBasis(b):null;
   }
   private correctBasis(b:CameraBasis):CameraBasis {return this.visualAnchor?transferBasis(b,this.visualAnchor.raw,this.visualAnchor.aligned):b;}
+  /** How far the CARRIED visual correction may take a pose from the sensor's
+   *  own reading, in degrees of max-axis separation.
+   *
+   *  The guard this is read in compares the RAW SENSOR basis with the FINAL
+   *  fitted pose, so it bounds the whole transfer `visualAnchor` stores and not
+   *  one increment of it; `correctBasis` then wears that transfer on every later
+   *  pose, which is the pose the dome overlay and the aim dot are drawn from. So
+   *  this is the bound on how far the picture the user aims by may sit from the
+   *  sky, and it is also what stops the anchor RATCHETING: before it, each new
+   *  fit could add its own budget on top of the last one's, which is how the
+   *  recorded wrong-lens scan went 6.81 then 9.94.
+   *
+   *  It used to be a flat 10, which is `GATE_OVERLAY_MAX` in the simulator's
+   *  scorer - the number the delivered overlay has to come in UNDER. A clamp set
+   *  at the limit the result must satisfy cannot keep anything honest:
+   *  everything it admits is, at the limit, already a failing overlay, and on
+   *  the recorded wrong-lens case the anchor sat against it for essentially the
+   *  whole scan (issue #70).
+   *
+   *  A fitted rotation has TWO legitimate sources and they are not both present
+   *  at once, so there are two regimes and each is derived from its own.
+   *
+   *  1. THE LENS IS STILL A GUESS. `registerFrame` fits a rigid rotation and
+   *  never rescales the frame, so a wrong field of view arrives at the fit as a
+   *  rotation and dominates everything else. With the short-axis field assumed
+   *  at F and truly F', a feature at angle th from the image centre is placed at
+   *  th' with tan th' = tan th * tan(F/2)/tan(F'/2): a radial scale by
+   *  s = tan(F/2)/tan(F'/2). Across an overlap patch whose centroid sits r
+   *  degrees off centre that stretch is indistinguishable from a rigid shift of
+   *  (1-s)*r and the fit takes it as one; the largest r a frame offers is its
+   *  half-width h = F/2. So a fitted rotation of A degrees is explained by a
+   *  lens error of (1-s)*h = A, and admitting a scale error of
+   *  LENS_SCALE_TOLERANCE makes the bound
+   *
+   *      LENS_SCALE_TOLERANCE * shortAxisFov / 2
+   *
+   *  which is 1.75 at 35, 3.0 at the 60 degree default and 5.0 at 100 - the ends
+   *  of what `setCameraViewAngle` accepts. Written as the formula and not as the
+   *  3.0 it takes today, because 3.0 is the value at one field: `shortAxisFov`
+   *  is 60 whenever `lensCalibrated` is false in the shipped code, so this
+   *  evaluates to 3.0 on every path there is, and the day the default moves the
+   *  bound has to move with it rather than be rediscovered.
+   *
+   *  At F = 60 that reads:
+   *
+   *      A = 10  ->  s = 0.667, tan(F'/2) = 0.866, F' = 81.8 degrees
+   *      A =  3  ->  s = 0.900, tan(F'/2) = 0.642, F' = 65.4 degrees
+   *      F' = 70 ->  s = tan30/tan35 = 0.8245, A = 5.26 degrees
+   *
+   *  The old flat clamp therefore absorbed a lens 22 degrees wrong and handed
+   *  the result to the overlay. Three absorbs one about 5 degrees wrong and no
+   *  more. The 70 degree recording needs 5.26 and is refused: on
+   *  `chartyard-arc075-70` its two fitted corrections measured 6.81 and 9.94.
+   *
+   *  Where the linearisation parts company with the exact relation, since the
+   *  formula has to hold across 35 to 100. Exactly, the edge displacement is
+   *  F'/2 - F/2, so the same bound is a lens error of exactly F'/F = 1.1.
+   *  Against the linearised F' = 2*atan(tan(F/2)/0.9), as a ratio of the two
+   *  implied errors:
+   *
+   *      F     35     40     50     60     70     80     90    100
+   *      lin 1.033  1.010  0.956  0.893  0.824  0.749  0.670  0.588
+   *
+   *  So they agree to within 3 per cent up to about 45, cross there, and the
+   *  linearisation is increasingly CONSERVATIVE above it - at 100 it refuses at
+   *  a lens error of 5.9 degrees where the exact relation would allow 10.
+   *  Conservative is the safe direction (an earlier refusal the user can see,
+   *  never a silent wrong overlay), and the regime that matters runs at 60,
+   *  where the gap is 11 per cent.
+   *
+   *  2. THE LENS HAS BEEN CALIBRATED. The lens term is gone, so what is left is
+   *  sensor pose error, which is what registration exists to correct, and the
+   *  number above has no derivation at all for this user. What governs instead
+   *  is what the fitter can legitimately produce, taken from the fitter's own
+   *  search bounds so the two layers cannot drift apart: `SEARCH_CEILING_DEG`,
+   *  which is 7.4833 degrees and moves if `SEARCH_LIMITS` does. Read its comment
+   *  before changing either - it records where the search box can express more
+   *  than that (a large roll) and why the bound is not that maximum.
+   *
+   *  Against the repo's own statement of what a fit must recover: the canonical
+   *  offsets in `photosphereRegistration.test.ts` are 3.000 and 3.689 degrees of
+   *  max-axis separation, both comfortably inside 7.4833 and the second outside
+   *  the uncalibrated 3.0 - which is the regime split doing its job rather than
+   *  a coincidence, and is pinned by a case each.
+   *
+   *  A refusal under either regime is the answer and not a loss. It records
+   *  `overlap-wait` like any other failure to match, so a correction too large
+   *  to absorb drives `overlapWaitRun` to `LENS_DOUBT_AFTER` and the user is
+   *  told which setting to look at - the conversation issue #52 started, reached
+   *  from the other side - instead of the scan quietly wearing the error into
+   *  every later pose.
+   *
+   *  What neither regime bounds exactly: the separation is measured on the frame
+   *  that SETS the anchor, and the same transfer applied to a later pose reads a
+   *  little differently. Measured at the old 10 degree clamp, an anchor admitted
+   *  at 9.9435 read 10.0368 several cells later - 0.9 per cent of itself - and
+   *  that ratio is assumed to scale, so at three degrees the slop is under 0.03
+   *  of one. It is a measurement of the bound this code no longer has, kept
+   *  because it is the only one taken. */
+  private get carriedCorrectionMax(): number {
+    return this.lensCalibrated ? SEARCH_CEILING_DEG : LENS_SCALE_TOLERANCE*this.shortAxisFov/2;
+  }
   get aspectRatio(): number { return this.video?.videoWidth && this.video.videoHeight ? this.video.videoWidth/this.video.videoHeight : this.imageAspect; }
   get cameraViewAngle():number {return this.shortAxisFov;}
   get hasLensCalibration():boolean {return this.lensCalibrated;}
@@ -1023,7 +1158,7 @@ export class PhotosphereSweep {
     // can be named. A tilt-only basis exists only above a RAW tilt of 85, and
     // while the visual anchor is identity that puts the pole within 5 degrees
     // and always nearest, so this withholds nothing. With an anchor set earlier
-    // in the scan (bounded at 10 degrees, `correctBasis`) the corrected forward
+    // in the scan (bounded by `carriedCorrectionMax`) the corrected forward
     // can sit lower than the raw reading and the guard does fire - which is the
     // conservative direction: it withholds a dot rather than naming a cell off
     // a bearing this basis does not have.
@@ -1117,6 +1252,14 @@ export class PhotosphereSweep {
     // Once a view angle has been measured and saved, `hasLensCalibration` is
     // true and the ordinary line comes back - against a lens the user has
     // actually given us, a refusal means again what it used to mean.
+    // That assumption is weaker than when it was written, and the gap is issue
+    // #95: since `carriedCorrectionMax` a refusal can ALSO mean the fit would
+    // have taken the carried correction past the ceiling, which is about the
+    // pose and not about the aim, and a calibrated user meeting it is handed
+    // the aim line below. Telling the two apart needs a `CaptureOutcome` of its
+    // own - a change across files this pass does not own - so it is filed
+    // rather than patched here. It is rarer than it was: the bound this branch
+    // was written against applied to everyone at 3.0.
     // It names the SETTING and quotes no control label. `setCameraViewAngle`
     // has no caller in any committed component at b8581949 - the field is in a
     // sibling session's unlanded rewrite of horizon.tsx - so a sentence
@@ -1177,6 +1320,12 @@ export class PhotosphereSweep {
     return missing >= 0 ? missing : OVERHEAD_BAND;
   }
 
+  /** Start recording. Refused without a bearing, and that refusal is kept
+   *  (issue #65): a scan with no heading can place nothing, and on the browser
+   *  that can never produce one there is no tilt either - both come from the
+   *  one listener `start()` attaches - so not even the overhead cell could be
+   *  honestly aimed. What the user is told instead of a locked control with no
+   *  reachable remedy is `NO_POSE_STREAM_CUE`, set in `start()`. */
   begin(): void {
     if (!this.ready || !this.compassReady) return;
     // The run of overlap refusals belongs to a scan, not to a camera session,
@@ -1272,7 +1421,10 @@ export class PhotosphereSweep {
       this.issue = "Motion access was denied. Allow motion sensors to scan, or draw the horizon by hand.";
     }
     if (generation !== this.generation) return;
-    if (typeof window !== "undefined" && "DeviceOrientationEvent" in window) {
+    // `orientationSupported` rather than a second copy of the same test: the
+    // else below turns on exactly the fact that flag records, and two spellings
+    // of one condition is one that will be changed and one that will not.
+    if (this.orientationSupported) {
       this.headingHandler = (e: Event) => {
         const oe = e as DeviceOrientationEvent & { webkitCompassHeading?: number };
         const screenAngle = window.screen?.orientation?.angle ?? 0;
@@ -1304,6 +1456,13 @@ export class PhotosphereSweep {
       window.addEventListener("deviceorientationabsolute", this.headingHandler);
       window.addEventListener("deviceorientation", this.headingHandler);
       this.listening = true;
+    } else {
+      // Below the motion-permission branch above, deliberately. Both are about
+      // the pose stream and only one can be true - a browser with no
+      // constructor has no `requestPermission` to have refused - but the order
+      // says which story wins if that ever stops holding: a stream that could
+      // be allowed beats one that does not exist.
+      this.issue = NO_POSE_STREAM_CUE;
     }
 
     if(typeof video.requestVideoFrameCallback==='function'){
@@ -1374,7 +1533,17 @@ export class PhotosphereSweep {
    *  press on it - the one path a missing compass does not need (issue #42
    *  item 3; it worked before 730a59b9). Automatic capture is untouched by
    *  this: it still needs an actual reading (`hasOrientation`), which such a
-   *  browser can never produce, so only the manual press is reopened.
+   *  browser can never produce.
+   *  What the escape does NOT do, and was once said to: reopen the manual press
+   *  to a user. `begin()` still refuses without a bearing, and that refusal is
+   *  now deliberate (issue #65, `NO_POSE_STREAM_CUE`), so on that browser
+   *  `recording` never becomes true and no press reaches this getter. What is
+   *  left reading it there is `mediaGateAsked`, which decides whether a timer
+   *  tick that delivered no frame counts as the camera declining - a question
+   *  that is live before Start scan is ever pressed, which is the whole of
+   *  issue #46. So the escape is what keeps the alignment report honest on that
+   *  browser; the press it was once credited with reopening is reachable only
+   *  from a scan, and there are none there.
    *  `this.stream !== null` is the LIVENESS half, and it is what the escape
    *  above costs if it is left out: on that same browser
    *  `!this.orientationSupported` is true forever, so after `stop()` - no
@@ -1670,7 +1839,14 @@ export class PhotosphereSweep {
         const registration=registerFrame(this.panorama,data,canvas.width,canvas.height,basis,lens);
         const overlap=registration.overlap;
         if(registration.adjusted && rawBasis){
-          if(poseSeparation(rawBasis,registration.basis)>10){this.overlapWait=true;this.recordCapture(now,'overlap-wait');return false;}
+          // `rawBasis` is the SENSOR pose and `registration.basis` the FINAL
+          // one, so this bounds the whole correction the anchor below will
+          // carry, not the step this frame added to it. Past the bound the
+          // frame is refused rather than worn: see `carriedCorrectionMax` for
+          // its two derivations, for why neither is GATE_OVERLAY_MAX's number,
+          // and for why a run of these refusals is the right way to tell the
+          // user about a lens.
+          if(poseSeparation(rawBasis,registration.basis)>this.carriedCorrectionMax){this.overlapWait=true;this.recordCapture(now,'overlap-wait');return false;}
           basis=registration.basis;this.visualAnchor={raw:rawBasis,aligned:basis};
           measured=skyAngles(basis.forward);
         }
