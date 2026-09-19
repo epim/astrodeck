@@ -75,7 +75,7 @@ from ..imaging.video_routes import recorder as video_recorder
 from ..imaging.video_routes import router as video_router
 from ..config import (FRAME_SCOPES, REDACTED_SINK_FIELDS, AlertSink, AuthConfig,
                       CalibrationConfig, CloudmapConfig,
-                      ConfigVersionConflict, CoolingConfig, DewConfig,
+                      ConfigVersionConflict, CoolingConfig, DewConfig, DuskConfig,
                       EscalationConfig, FocusConfig, GuideConfig,
                       NamingConfig, Optics,
                       ProvidersConfig, RotatorConfig, SafetyConfig, Site,
@@ -94,6 +94,7 @@ from .. import __version__
 from ..update.state import update_state
 from ..update.service import UpdateError, get_service as get_update_service
 from ..dawn_park import DawnPark
+from ..dusk_arm import DuskArm
 from ..sun_watch import SunWatch
 # A MODULE SINGLETON rather than a constructor: the orbital-element cache is
 # one set of files on this box, so a second store would be a second writer
@@ -206,6 +207,10 @@ _SYNC_HASH_CACHE: dict = sync_manifest_mod.SHARED_HASH_CACHE
 # question is whether a run is in progress, because the engine owns wind-down
 # then and racing it is worse than not acting.
 dawn_park = DawnPark(hub, engine)
+dusk_arm = DuskArm(hub, engine, weather=weather_service,
+                   connection_busy=lambda: (_connect_task is not None and not _connect_task.done())
+                   or video_recorder.active)
+hub.dusk_arm = dusk_arm
 
 # Sun watch (task #150). The complement to ``Hub._check_solar``, which is a
 # PRE-SLEW gate and can only ever refuse a destination: this one samples where
@@ -435,6 +440,7 @@ async def _lifespan(app: "FastAPI"):
     # re-reads the site and the Sun, so it costs one trig evaluation on a rig
     # that never needs it and is armed the moment one does.
     dawn_park.start()
+    dusk_arm.start()
     # Orbital elements (#D-SKY-1) - its own asyncio loop that keeps the
     # satellite and comet element files fresh. Started UNCONDITIONALLY for
     # the same reason as the parks above: a tick with nothing stale is one
@@ -513,6 +519,7 @@ async def _lifespan(app: "FastAPI"):
         await cloudmap_service.stop()
         await resume_arm.stop()
         await trash_keeper.stop()
+        await dusk_arm.stop()
         await dawn_park.stop()
         await ephemeris_store.stop()
         await sun_watch.stop()
@@ -649,6 +656,8 @@ def _lane_conflict(name: str) -> str | None:
 
     DERIVED from ``_LANE_SUPERSEDES`` rather than written out a second time, so
     the refuse direction can never disagree with the supersede direction."""
+    if dusk_arm.connecting and name not in ("park", "abort", "dome"):
+        return "dusk preparation"
     for winner, losers in _LANE_SUPERSEDES.items():
         if name in losers:
             t = hub._busy.get(winner)
@@ -724,6 +733,9 @@ def _refuse_if_camera_owned() -> None:
     it is one function now so the next route that exposes gets the guard by
     calling it rather than by remembering the sentence.
     """
+    if dusk_arm.connecting:
+        raise HTTPException(409, detail={"detail": "Dusk preparation is connecting equipment. Try again when it finishes.",
+                                         "code": "dusk_connecting"})
     if video_recorder.active:
         raise HTTPException(409, detail={"detail": _VIDEO_OWNS_CAMERA,
                                          "code": "video_owns_camera"})
@@ -812,7 +824,7 @@ def _spawn_connect(coro) -> dict:
     see ProfileList's poll). ``test_busy_lanes_routes.py`` pins both halves.
     """
     global _connect_task
-    busy = _connect_task is not None and not _connect_task.done()
+    busy = dusk_arm.connecting or (_connect_task is not None and not _connect_task.done())
     if not busy and (t := hub._busy.get("profile")) and not t.done():
         busy = True
     if busy:
@@ -1615,6 +1627,7 @@ class ConfigPatchBody(BaseModel):
     # words: "park, then warm the camera at a safe ramp". The knob belongs next
     # to the sentence that promises it.
     cooling: CoolingConfig | None = None
+    dusk: DuskConfig | None = None
     # The rig's imaging standards (#239 stage A). Gated on config.safety rather
     # than site_optics: these are the thresholds that decide whether a frame is
     # kept and when the night gives up, which is the same family of
@@ -3394,6 +3407,8 @@ def create_app(*, bind_host: str | None = None,
             config_store.set_escalation(body.escalation)
         if body.cooling is not None:
             config_store.set_cooling(body.cooling)
+        if body.dusk is not None:
+            config_store.set_dusk(body.dusk)
         if body.standards is not None:
             config_store.set_standards(body.standards)
         if body.focus is not None:
@@ -3452,6 +3467,7 @@ def create_app(*, bind_host: str | None = None,
           site.horizon_min_deg -> ALSO config.safety (a safety floor)
           safety               -> config.safety
           cooling              -> config.safety   (warm-down ramp = hardware protection)
+          dusk                 -> config.backend AND config.safety
           standards            -> config.safety   (frame-quality + give-up thresholds)
           focus                -> config.safety   (how the focuser is DRIVEN)
           dew                  -> config.safety   (heater policy on the optics)
@@ -3461,6 +3477,9 @@ def create_app(*, bind_host: str | None = None,
           clear_deadman_url    -> config.alerts   (same field, destructive half)
         """
         present = body.model_fields_set
+        if "dusk" in present and not principal.has(CAP_CONFIG_SAFETY):
+            raise HTTPException(403, detail={"detail": "config.safety required to change dusk cooling",
+                                            "code": "forbidden"})
         # Known, mapped blocks only. Any field on the body outside this map is a
         # programming error (a new block added without a cap) -> fail closed.
         block_caps = {
@@ -3472,6 +3491,7 @@ def create_app(*, bind_host: str | None = None,
             "cloudmap": CAP_CONFIG_SITE_OPTICS,
             "safety": CAP_CONFIG_SAFETY,
             "cooling": CAP_CONFIG_SAFETY,
+            "dusk": CAP_CONFIG_BACKEND,
             "standards": CAP_CONFIG_SAFETY,
             # Both wave-2 blocks ride config.safety rather than site_optics:
             # a temp-comp coefficient with the wrong sign drives the focuser
@@ -3526,9 +3546,14 @@ def create_app(*, bind_host: str | None = None,
     async def get_config(principal: Principal = Depends(require(CAP_VIEW_STATUS))):
         return _config_payload(principal)
 
+    @app.get("/api/dusk/state")
+    @declare(CAP_VIEW_STATUS)
+    async def get_dusk_state(principal: Principal = Depends(require(CAP_VIEW_STATUS))):
+        return dusk_arm.snapshot()
+
     @app.post("/api/config")
     @declare(CAP_VIEW_STATUS, CAP_CONFIG_SITE_OPTICS, CAP_CONFIG_SAFETY,
-             CAP_CONFIG_ALERTS)
+             CAP_CONFIG_ALERTS, CAP_CONFIG_BACKEND)
     async def post_config(body: ConfigPatchBody,
                           principal: Principal = Depends(require(CAP_VIEW_STATUS))):
         """Partial-merge persist of any subset of the automation config (§1.10).

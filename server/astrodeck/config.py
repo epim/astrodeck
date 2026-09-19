@@ -764,6 +764,15 @@ class CalibrationConfig(BaseModel):
     max_stack_frames: int = Field(100, ge=1, le=1000)
 
 
+class DuskConfig(BaseModel):
+    """Prepare an idle, saved rig once per observing night; off by default."""
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    enabled: bool = False
+    profile_id: str | None = Field(None, min_length=1, max_length=128)
+    # Never overlap the dawn park's civil-twilight safety boundary.
+    sun_alt_deg: float = Field(-12.0, ge=-18, le=-6)
+
+
 class CoolingConfig(BaseModel):
     """Camera cooler warm-down policy (2026-08-04 warm-ramp fix; appended — old
     configs load fine and get the protective defaults).
@@ -1339,6 +1348,7 @@ class AppConfig(BaseModel):
     #     inherit the ramp, which is the whole point: the rigs that need it most
     #     are the ones nobody is going to go and enable it on) ---
     cooling: CoolingConfig = Field(default_factory=CoolingConfig)
+    dusk: DuskConfig = Field(default_factory=DuskConfig)
     #: Could the camera this rig LAST CONNECTED cool? Server-owned and derived,
     #: never operator-edited — which is why it sits out here rather than inside
     #: CoolingConfig, whose whole block is wholesale-replaced by the settings
@@ -2229,6 +2239,10 @@ class ConfigStore:
         """
         cfg = self.cfg()
         cfg.planning = planning
+        return self.bump_and_save()
+
+    def set_dusk(self, dusk: DuskConfig) -> AppConfig:
+        self.cfg().dusk = dusk
         return self.bump_and_save()
 
     def set_cooling(self, cooling: "CoolingConfig") -> AppConfig:

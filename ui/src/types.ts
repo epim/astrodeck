@@ -1215,6 +1215,7 @@ export interface AppConfig {
   safety: SafetyConfig;
   // Optional for the WS-bootstrap reason above — never assume it is present.
   cooling?: CoolingConfig;
+  dusk?: DuskConfig;
   escalation: EscalationConfig;
   alerts: AlertSink[];
   // Master-library matching + stacking tolerances (PRO-1). Optional for the same
@@ -1774,6 +1775,13 @@ export interface SafetyConfig {
   sky_fallback_hold?: boolean;
 }
 
+/** Opt-in preparation of a saved profile at dusk (server: config.DuskConfig). */
+export interface DuskConfig {
+  enabled: boolean;
+  profile_id: string | null;
+  sun_alt_deg: number;
+}
+
 /** Cooler warm-down policy (server: config.CoolingConfig). Lives beside the
  *  safety block and is gated on the SAME capability (config.safety), because
  *  the sentence it makes true — "park, then warm the camera at a safe ramp" —
@@ -1781,6 +1789,7 @@ export interface SafetyConfig {
  *  and any older server omit it, and every consumer must degrade to "the
  *  default 2 °C/min ramp is on" rather than blanking the control. */
 export interface CoolingConfig {
+  setpoint_c?: number | null;
   // #239 stage A: how long to wait for the setpoint before escalation decides.
   cool_timeout_s?: number;
   warm_ramp: boolean;            // false = cut the TEC dead (the pre-2026-08-04 bug, opt-in)
