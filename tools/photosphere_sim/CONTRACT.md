@@ -109,7 +109,11 @@ the canopy is indistinguishable from one that also found the trunk.
   row `y` is altitude `90 - y / 299 * 100`; alpha 255 where the scanner
   painted, 0 elsewhere.
 - `result/horizon.json`: `{"bins":N,"points":[{"az","alt"}],"uncertain_bins":[..]}` (`alt` 0..90; the scanner's own output).
-- `result/columns.json`: the scanner's `columns()` (array of arrays, NaN as `null`).
+- `result/columns.json`: the scanner's centre-ray columns, `centreColumns()`
+  (array of arrays, NaN as `null`) - one 101-row column per azimuth bin, read
+  at the bin's centre, unchanged in content from before issue #58's fix. The
+  tracer itself now reads more than this file holds: `BIN_SAMPLES` columns
+  across each bin, from the same panorama, the centre one first.
 - `result/events.jsonl`: one line per delivered frame:
   `{"t_ms","frame_id","compass_ready","tilt_ready","aim":<cell id|null>,"basis":{"right","up","forward"}|null,"frame_count","cue"}`.
 - `result/captures.jsonl`: the scanner's capture log, one line per attempt:
