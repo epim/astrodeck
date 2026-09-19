@@ -239,7 +239,7 @@ export function foldRows(
     rows.push({
       filter: g.filter,
       subs: g.count,
-      exposureS: g.exposure_s || medianOf(lib?.exposures ?? []),
+      exposureS: new Set(lib?.exposures).size > 1 ? null : g.exposure_s || medianOf(lib?.exposures ?? []),
       bytes: lib?.bytes || g.bytes,
       integrationS: g.integration_s,
       paths: lib?.paths ?? [],
@@ -252,13 +252,13 @@ export function foldRows(
   for (const key of galleryOrder) {
     if (seen.has(key)) continue;
     const lib = byFilter.get(key) as { paths: string[]; bytes: number; count: number; exposures: number[] };
-    const exposure = medianOf(lib.exposures);
+    const exposure = new Set(lib.exposures).size > 1 ? null : medianOf(lib.exposures);
     rows.push({
       filter: key,
       subs: lib.count,
       exposureS: exposure,
       bytes: lib.bytes,
-      integrationS: exposure != null ? exposure * lib.count : 0,
+      integrationS: lib.exposures.reduce((sum, seconds) => sum + seconds, 0),
       paths: lib.paths,
       accepted: null,
       rejected: null,

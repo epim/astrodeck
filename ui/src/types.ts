@@ -2541,12 +2541,32 @@ export interface GalleryFrame {
   filter: string;                // "" when the header was unreadable
   frame_type: string;            // "Light" | "Flat" | … ; "" when unknown
   exposure_s: number | null;     // null when the header did not say
+  width?: number | null;
+  height?: number | null;
+  bin_x?: number | null;
+  bin_y?: number | null;
   bytes: number;
   mtime: number;
 }
 
+export interface GalleryGeometryGroup {
+  target: string;
+  filter: string;
+  frame_type: string;
+  width: number | null;
+  height: number | null;
+  bin_x: number | null;
+  bin_y: number | null;
+  exposure_s: number | null;
+  count: number;
+  bytes: number;
+}
+
 export interface GalleryFramesPage {
   frames: GalleryFrame[];
+  /** Counts across the full filter, including frames on later pages. */
+  geometry_groups?: GalleryGeometryGroup[];
+  geometry_truncated?: boolean;
   /** The WHOLE filtered set, not this page — so a download's size can be shown
    *  without a second round trip. Same resolver the summary route uses. */
   total: number;

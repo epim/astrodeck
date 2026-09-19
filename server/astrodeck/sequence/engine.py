@@ -34,6 +34,7 @@ from statistics import median
 from typing import Any
 
 from ..config import config_store, frames_payload
+from .. import capture_geometry
 from ..devices.base import DeviceError, DomeShutterState, PierSide
 from ..events import bus
 from ..focus import run_autofocus
@@ -1359,6 +1360,13 @@ class SequenceEngine:
             bus.log("info", f"sequence '{plan.name}' started: {plan.total_frames()} frames, "
                             f"{plan.light_seconds() / 60:.0f} min integration", "sequence")
             self._warn_if_the_run_has_no_temperature(plan)
+            self._geometry_seen = set()
+            self._geometry_groups, geometry_note = await capture_geometry.inventory(timeout=3.0)
+            self._geometry_pending = geometry_note == capture_geometry.PENDING_NOTE
+            for warning in capture_geometry.plan_warnings(plan, self._geometry_groups):
+                bus.log("warning", warning, "sequence")
+            if geometry_note:
+                bus.log("warning", geometry_note, "sequence")
             self._start_watchdog()
 
             # WHY THIS IS ONE DECISION AND NOT TWO. "The cooler never reached
@@ -2369,10 +2377,31 @@ class SequenceEngine:
         exposure); None keeps the step's fixed exposure (every existing path)."""
         exp = float(exposure_s if exposure_s is not None else step.exposure_s)
         budget = exp + CAPTURE_MARGIN_S
-        return await _bounded(
+        info = await _bounded(
             self.hub.capture(exp, step.gain, step.offset, step.binning,
                              save=True, target=target.name, frame_type=step.frame_type),
             budget, f"capture {exp:g}s")
+        if getattr(self, "_geometry_pending", False):
+            # A cold library may outlast the startup budget. Reuse that same
+            # scan at a frame boundary; never start another scan per exposure.
+            groups, note = await capture_geometry.inventory(timeout=0.01, refresh=False)
+            if note != capture_geometry.PENDING_NOTE:
+                self._geometry_pending = False
+                self._geometry_groups = groups
+                for warning in capture_geometry.plan_warnings(self.plan, groups):
+                    bus.log("warning", warning, "sequence")
+                if note:
+                    bus.log("warning", note, "sequence")
+        key = (target.name, step.filter, step.binning, exp,
+               info.get("data_width"), info.get("data_height"))
+        seen = getattr(self, "_geometry_seen", set())
+        if key not in seen:
+            seen.add(key)
+            warning = capture_geometry.frame_warning(
+                getattr(self, "_geometry_groups", []), target, step, info)
+            if warning:
+                bus.log("warning", warning, "sequence")
+        return info
 
     async def _solve_flat_exposure(self, step, target: Target,
                                    start_exposure_s: float | None = None

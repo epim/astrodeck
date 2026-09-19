@@ -156,9 +156,9 @@ export function TileSurface({
       <div className="relative aspect-square bg-black/40 overflow-hidden" title={title}>
         {/* Placeholder underneath: visible through an <img> that has no bytes
             yet, and the whole picture for a tile that never gets any. */}
-        <span className="absolute inset-0 flex items-center justify-center text-faint" aria-hidden>
+        {!failed && <span className="absolute inset-0 flex items-center justify-center text-faint" aria-hidden>
           <Icon name="gallery" size={28} strokeWidth={1} />
-        </span>
+        </span>}
         {thumbSrc && !failed && (
           <img
             src={thumbSrc}
