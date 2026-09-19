@@ -41,8 +41,14 @@ Object.defineProperty(w.HTMLVideoElement.prototype,'readyState',{get:()=>2,confi
 // A textured scene, so a one-pixel shift is measurable rather than invisible:
 // a 32-step luminance gradient with a bright block, generated at whatever size
 // the caller asks for. `shift` slides it; `hidden` drives the page lifecycle.
-let shift=0,hidden=false;
+// `flat` is the same camera, working perfectly, pointed at a patch of smooth
+// sky: one constant luminance, so the comparison grid's spatial gradient is 0,
+// far under GRADIENT_FLOOR, and the witness can say nothing about a shift -
+// `stableAt` is null and `witness` is 'featureless' (issue #41). It overrides
+// `shift`, because a scene with no structure in it cannot show one.
+let shift=0,hidden=false,flat=false;
 const scenePixel=(x:number,y:number,width:number,height:number)=>{
+  if(flat)return 128;
   const col=Math.round(((x+shift)%width)*31/Math.max(1,width-1));
   const block=col>=10&&col<=17&&y>=Math.floor(height/3)&&y<=Math.floor(2*height/3);
   return block?180:40+Math.round(col*80/31);
@@ -80,7 +86,7 @@ let clock=10000;
 Object.defineProperty(performance,'now',{value:()=>clock,configurable:true});
 Object.defineProperty(Date,'now',{value:()=>clock,configurable:true});
 
-const { PhotosphereSweep } = await import('../photosphere');
+const { PhotosphereSweep, OVERHEAD_BAND } = await import('../photosphere');
 // The capture's own azimuth convention, so the pose an outlier case reads back
 // out of the alignment report is measured the way the driver measured it.
 const { skyAngles } = await import('../photosphereGeometry');
@@ -121,7 +127,7 @@ async function test(name:string,fn:()=>Promise<void>){
  *  At the default 0 every frame is stamped when it is presented and nothing
  *  above this line changes. */
 async function approachAndHold(rvfc=true,step=2,lag=0){
-  shift=0;hidden=false;blind=false;intervalFn=null;mediaTime=0;paused=false;stalled=false;
+  shift=0;hidden=false;blind=false;flat=false;intervalFn=null;mediaTime=0;paused=false;stalled=false;
   const video=w.document.createElement('video');
   let frame:((now:number,metadata:unknown)=>void)|undefined;
   if(rvfc){
@@ -262,6 +268,245 @@ await test('A stopped video cannot vouch for the compass either: unknown is not 
   clock+=3000;                             // the stream stops; no frame callback at all
   assert.equal(sweep.compassReady,false,'a stopped video vouched for a 3 s silence it never saw');
   assert.match(sweep.captureCue,/Waiting for the compass/,`cue was: "${sweep.captureCue}"`);
+  sweep.stop();
+});
+
+/** The three cases below share one timeline, so it is computed once here.
+ *  `silentFrom` (call it s) is the last orientation event of the approach, and
+ *  it shares its instant with the frame tick before it. The harness's rVFC tick
+ *  advances 100 ms and delivers one frame, so frames land at s+100, s+200, ...
+ *  The scene is shifted once more after that last reading, so the frame at
+ *  s+100 is the last MOVING one; the still run opens there and every frame
+ *  after it is identical. The witness settles SETTLE_MS = 500 ms later, at the
+ *  frame at s+600, and the break it keeps is {from: s, to: s+100}, which
+ *  reaches back to the reading at s inside CONTINUITY_SLOP_MS = 150 - so from
+ *  s+600 the video vouches for the reading itself and not merely for now.
+ *  25 ticks therefore land at s+2500 with the cell captured (the grab at s+800
+ *  is the first one with a settled view; `capturedAfter` in the first case of
+ *  this file measures the same 800 ms) and with the silence at 2500 ms, past
+ *  SENSOR_SILENCE_MS = 2000 - so `compassReady` there is the video vouching,
+ *  never freshness, which is what makes it a usable starting state for a case
+ *  about what happens when the video stops being able to say anything. */
+await test('A silent hold on featureless sky keeps the compass ready and says the view has nothing to track (issue #41)',async()=>{
+  // 25 textured ticks to s+2500, then 30 featureless ticks to s+5500: the
+  // camera is still delivering (each tick is a frame) and every frame has a
+  // gradient of 0, so the witness reads 'featureless' rather than 'stale'.
+  // Mutation: reverting `compassReady`/`tiltReady` to `this.vouched(...)` alone
+  // - the gate before this change - makes `compassReady` false at s+5500.
+  // Observed red: "a featureless view read as a lost compass (issue #41)".
+  const {sweep,tick,silentFrom}=await approachAndHold();
+  for(let i=0;i<25;i++)tick();
+  assert.equal(clock-silentFrom,2500,'the textured hold did not last the 2500 ms every instant below is measured from');
+  assert.equal(sweep.compassReady,true,'the hold was not ready before the view went blank, so nothing below is about the view');
+  const captured=sweep.frameCount;
+  assert.ok(captured>0,'the textured hold captured nothing, so the flat phase below cannot show capture stopping');
+  flat=true;
+  for(let i=0;i<30;i++)tick();
+  assert.equal(clock-silentFrom,5500);
+  assert.equal(sweep.compassReady,true,'a featureless view read as a lost compass (issue #41)');
+  assert.notEqual(sweep.aimTarget,null,'the dome blanked on a view that was merely unjudgeable');
+  assert.match(sweep.captureCue,/nothing to track/,`cue was: "${sweep.captureCue}"`);
+  assert.doesNotMatch(sweep.captureCue,/move the phone/i,`cue was: "${sweep.captureCue}"`);
+  // Capture is NOT relaxed by any of this, and this is the assertion that says
+  // so: the relaxed rule needs a continuity, which a featureless frame never
+  // produces, and the strict rule needs a sample within 250 ms, which a 5.5 s
+  // silence does not have. The dome and the cue changed; the mosaic did not.
+  assert.equal(sweep.frameCount,captured,'a featureless view was captured under a reading nothing witnessed');
+  flat=false;
+  sweep.stop();
+});
+
+await test('Stopped video during silence still reads the compass as lost, however featureless its last frame was',async()=>{
+  // The featureless branch must not swallow the stale one. `stalled` is the
+  // harness's frozen media clock and the rVFC path never consults it - there
+  // the callback IS the delivery - so a stopped stream is modelled here the way
+  // the browser stops it: the callback no longer fires.
+  // Instants: 25 textured ticks to s+2500, then 5 featureless ticks to s+3000
+  // so the newest frame is one the witness cannot judge, then 3000 ms with no
+  // frame at all. At s+6000 the newest frame is 3000 ms old against
+  // STALE_FRAME_MS = 1000, so the witness reads 'stale'.
+  // Mutation: swapping the first two lines of `VisualStability.witness` so the
+  // featureless test runs before the staleness test. Observed red: "a stopped
+  // video vouched for a silence it never saw, behind the featureless branch".
+  const {sweep,tick,silentFrom}=await approachAndHold();
+  for(let i=0;i<25;i++)tick();
+  flat=true;
+  for(let i=0;i<5;i++)tick();
+  assert.equal(sweep.compassReady,true,'the featureless hold was already lost, so stopping the video below proves nothing');
+  clock+=3000;
+  assert.equal(clock-silentFrom,6000);
+  assert.equal(sweep.compassReady,false,'a stopped video vouched for a silence it never saw, behind the featureless branch');
+  assert.equal(sweep.aimTarget,null,'the aim dot survived a camera that had stopped');
+  assert.match(sweep.captureCue,/Waiting for the compass/,`cue was: "${sweep.captureCue}"`);
+  flat=false;
+  sweep.stop();
+});
+
+await test('A reading delivered over a featureless view is not held by it: the compass still reads lost',async()=>{
+  // A pan over blank sky is invisible to the video, so the movement here is
+  // reported by the SENSOR: the phone turns 10 degrees, says so once, and goes
+  // quiet again over the same blank sky. What the featureless branch stands on
+  // is a memory of ONE reading - the one that was still standing at the last
+  // moment the view could be judged - and this new reading arrived after that
+  // moment, so nothing ever witnessed it and it expires like any other.
+  // Instants: 25 textured ticks to s+2500 (the last judgeable frame, and so the
+  // only instant the memory can hold), 5 featureless ticks to s+3000, `aim`
+  // advances 100 ms and delivers the reading at s+3100, then 25 featureless
+  // ticks to s+5600 - 2500 ms of silence, past SENSOR_SILENCE_MS = 2000, with
+  // the memory standing at s+2500, which is before the reading at s+3100.
+  // This case passes before the change too; it is what stops the change
+  // over-reaching. Mutation: dropping `stoodAt >= at` from `readingStands`, so
+  // any old memory holds any reading. Observed red: "a featureless view held a
+  // reading it never witnessed".
+  const {sweep,tick,aim,silentFrom}=await approachAndHold();
+  for(let i=0;i<25;i++)tick();
+  flat=true;
+  for(let i=0;i<5;i++)tick();
+  aim(10);
+  const turnedAt=clock;
+  assert.equal(turnedAt-silentFrom,3100,'the turn did not land where the instants below assume');
+  for(let i=0;i<25;i++)tick();
+  assert.equal(clock-turnedAt,2500);
+  assert.equal(sweep.compassReady,false,'a featureless view held a reading it never witnessed');
+  assert.equal(sweep.aimTarget,null,'the aim dot rode a direction nothing can vouch for');
+  // What the cue says in this state is the subject of its own case below.
+  flat=false;
+  sweep.stop();
+});
+
+await test('A reading the video last saw MOVING is not held by the blank sky that follows',async()=>{
+  // Review A1. The memory `readingStands` reaches back to has to be a memory of
+  // the VIDEO vouching. Written on `vouched` instead, its first disjunct is
+  // bare freshness, so a reading needed only to be under SENSOR_SILENCE_MS old
+  // at some judgeable frame - whatever that frame said about the view - and a
+  // reading the video had just measured as MOVING was then held for as long as
+  // the blank sky lasted. The field shape is the one SENSOR_SILENCE_MS's own
+  // comment names: a wedged magnetometer while the user pans up out of the
+  // treeline into smooth sky.
+  // Instants: 10 ticks to s+1000, settled (the run opens at s+100 and settles
+  // at s+600), so the video vouches for the reading at s and the memory stands
+  // at s+1000. `aim` then advances 100 ms and delivers a reading at s+1100, and
+  // ONE textured frame at s+1200 with the scene moved 4 px makes the witness
+  // read 'moving' at the only judgeable frame that reading will ever see. Then
+  // 30 featureless ticks to s+4200: 3100 ms of silence, past
+  // SENSOR_SILENCE_MS = 2000, with the memory still standing at s+1000, which
+  // is before the reading at s+1100.
+  // Mutation: write the memory on `this.vouched(this.headingAt)` /
+  // `this.vouched(this.tiltAt)` again, as it was before this round. Observed
+  // red: "a reading the video measured as moving was held by the blank sky".
+  const {sweep,tick,aim,silentFrom}=await approachAndHold();
+  for(let i=0;i<10;i++)tick();
+  assert.equal(sweep.compassReady,true,'the approach never settled, so there is no memory for the rest to be about');
+  aim(10);
+  shift+=4;tick();
+  assert.equal(clock-silentFrom,1200,'the moving frame did not land where the instants below assume');
+  flat=true;
+  for(let i=0;i<30;i++)tick();
+  assert.equal(clock-silentFrom,4200);
+  assert.equal(sweep.compassReady,false,'a reading the video measured as moving was held by the blank sky');
+  assert.equal(sweep.aimTarget,null,'the aim dot rode a heading nothing ever vouched for');
+  flat=false;
+  sweep.stop();
+});
+
+await test('A lost compass over a featureless view names the sky, not the compass (issue #63)',async()=>{
+  // The state the case above leaves behind, read from the other end: the dome
+  // is blank because the reading is genuinely lost, and the reason it is lost
+  // is that the view cannot witness anything. 'Waiting for the compass. Keep
+  // the camera open and move the phone gently' is wrong twice over here - it
+  // names only half of what is known, and over blank sky the movement it asks
+  // for buys 2 s of freshness and then loses the reading again, because the
+  // view still cannot vouch for whatever the phone reports next.
+  // Same instants as the case above: the reading lands at s+3100 over an
+  // already-featureless view and the cue is read at s+5600, 2500 ms of silence
+  // later, with frames still arriving every 100 ms (so the witness reads
+  // 'featureless' and not 'stale') and no sample inside `sensorQuiet`'s 250 ms.
+  // Mutation: restore the `this.cameraBasis &&` precondition to the single
+  // featureless cue branch, so a lost reading falls through to the compass
+  // line. Observed red: the assertion that the cue names the sky.
+  const {sweep,tick,aim}=await approachAndHold();
+  for(let i=0;i<25;i++)tick();
+  flat=true;
+  for(let i=0;i<5;i++)tick();
+  aim(10);
+  for(let i=0;i<25;i++)tick();
+  assert.equal(sweep.compassReady,false,'the reading was held, so this is not the state the case is about');
+  assert.match(sweep.captureCue,/nothing to track/,`cue was: "${sweep.captureCue}"`);
+  assert.match(sweep.captureCue,/compass has gone quiet/,`cue was: "${sweep.captureCue}"`);
+  assert.doesNotMatch(sweep.captureCue,/move the phone/i,`cue was: "${sweep.captureCue}"`);
+  flat=false;
+  sweep.stop();
+});
+
+/** A sweep with NO absolute bearing at all, pointed straight up: the shape of
+ *  the overhead cell, which is one of the low-texture views issue #41 names and
+ *  the one place `cameraBasis` hangs off `tiltReady` alone (photosphere.ts:
+ *  `this.tiltReady && this.altitude >= 85 ? this.basis : null`).
+ *  One RELATIVE event and then frames. `deviceorientation` with
+ *  `absolute: false` and no webkitCompassHeading makes `cameraPose` return null
+ *  and `ScanPoseSource.accept` refuse it - there is no absolute reading for the
+ *  yaw to anchor to - so `hasOrientation` stays false and `compassReady` with
+ *  it, for the whole fixture. `cameraElevation` still reads beta 180, gamma 0
+ *  as asin(-cos 180) = 90 degrees up, which is the zenith branch of the heading
+ *  handler, and that is what sets `basis` and `altitude` here.
+ *  Nothing calls `begin()`: that gate is `compassReady`, and nothing in this
+ *  fixture needs it - the dome, the bearing readout and `currentBand` all hang
+ *  off `tiltReady` before a single frame is recorded, and the frame callback
+ *  watches the view whether or not the sweep is recording.
+ *  The reading is delivered with no advance of its own, so it lands on the
+ *  frame tick before it exactly as `approachAndHold`'s last reading does: that
+ *  first frame is the one that records the break the continuity has to reach
+ *  back across (a frame with nothing before it breaks at its own instant), and
+ *  the reading sits at that same instant. So with the scene held still the run
+ *  opens at t0 and settles 500 ms later, and from there the video vouches for
+ *  the reading itself. */
+async function overheadHold(){
+  shift=0;hidden=false;blind=false;flat=false;intervalFn=null;mediaTime=0;paused=false;stalled=false;
+  const video=w.document.createElement('video');
+  let frame:((now:number,metadata:unknown)=>void)|undefined;
+  video.requestVideoFrameCallback=(fn:typeof frame)=>{frame=fn;return 1;};
+  video.cancelVideoFrameCallback=()=>{};
+  const sweep=new PhotosphereSweep();
+  await sweep.start(video,w.document.createElement('canvas'));
+  const tick=()=>{clock+=100;mediaTime+=0.1;frame!(clock,{captureTime:clock,mediaTime,presentationTime:clock,
+    expectedDisplayTime:clock,width:640,height:480,presentedFrames:1});};
+  const tilt=(advanceMs=100)=>{
+    const ev=new w.Event('deviceorientation');
+    clock+=advanceMs;Object.defineProperty(ev,'timeStamp',{value:clock});
+    Object.assign(ev,{alpha:0,beta:180,gamma:0,absolute:false});
+    w.dispatchEvent(ev);
+  };
+  tick();tilt(0);
+  return {sweep,tick,tilt,silentFrom:clock};
+}
+
+await test('The overhead cell keeps its tilt reading over a featureless view (issue #41)',async()=>{
+  // Review A2: `tiltReady` carries the same rule as `compassReady` and nothing
+  // pinned it - reverting it alone left all 111 photosphere cases green. This
+  // is the view it matters on: straight up, where the sky fills the frame and
+  // there is no bearing at all, so `cameraBasis` and `currentBand` ride
+  // `tiltReady` by itself.
+  // Instants, from `silentFrom` = t0 (the frame tick the reading lands on):
+  // frames at t0+100, t0+200, ... identical, so the still run opens at t0 and
+  // settles at t0+500, and the break {from: t0, to: t0} reaches the reading.
+  // 25 ticks -> t0+2500, 2500 ms of silence, past SENSOR_SILENCE_MS = 2000, so
+  // the video is what is holding the reading there. Then `flat` and 30 ticks ->
+  // t0+5500, every frame delivered and featureless, 5500 ms of silence.
+  // Mutation: revert `tiltReady` alone to `this.vouched(this.tiltAt)`. Observed
+  // red: "the overhead cell lost its tilt over a view that was merely
+  // unjudgeable".
+  const {sweep,tick,silentFrom}=await overheadHold();
+  for(let i=0;i<25;i++)tick();
+  assert.equal(clock-silentFrom,2500);
+  assert.equal(sweep.compassReady,false,'a bearing arrived, so this case is no longer about tiltReady alone');
+  assert.equal(sweep.tiltReady,true,'the tilt reading was not being held before the view went blank');
+  flat=true;
+  for(let i=0;i<30;i++)tick();
+  assert.equal(clock-silentFrom,5500);
+  assert.equal(sweep.tiltReady,true,'the overhead cell lost its tilt over a view that was merely unjudgeable');
+  assert.equal(sweep.currentBand,OVERHEAD_BAND,`the band readout went to ${sweep.currentBand}`);
+  assert.notEqual(sweep.cameraBasis,null,'cameraBasis rides tiltReady at the zenith, and it went null');
+  flat=false;
   sweep.stop();
 });
 

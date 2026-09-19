@@ -274,6 +274,12 @@ export class PhotosphereSweep {
   // frame times share. A wall-clock reading here cannot be compared with either.
   private tiltAt: number | null = null;
   private headingAt: number | null = null;
+  /** The newest instant at which the heading (resp. tilt) reading then current
+   *  was still believed WHILE THE VIEW COULD BE JUDGED. Written only by
+   *  `noteReadingsStand`, read only by `readingStands`, and on the same
+   *  performance clock as the two above. `null` until the first such moment. */
+  private headingStoodAt: number | null = null;
+  private tiltStoodAt: number | null = null;
   private hasOrientation = false;
   private basis: CameraBasis | null = null;
   private panorama: SkyPanorama | null = null;
@@ -382,18 +388,91 @@ export class PhotosphereSweep {
     return { width: this.panorama.width, height: this.panorama.height, pixels: new Uint8ClampedArray(this.panorama.pixels) };
   }
   // Ready iff a reading has arrived this session, the source is currently alive
-  // (see sourceHealthy) AND that reading is still worth something - recent, or
-  // vouched for by a video that says the view has not moved since it arrived.
+  // (see sourceHealthy) AND that reading still stands - recent, vouched for by
+  // a video that says the view has not moved since it arrived, or standing from
+  // the last moment the view could be judged at all (see readingStands).
   // No bare freshness window, which is what deadlocked a still phone (issue
   // #37); no lifecycle-only test either, which cannot see a sensor that stops.
-  get compassReady(): boolean { return this.hasOrientation && this.sourceHealthy && this.vouched(this.headingAt); }
-  get tiltReady(): boolean { return this.tiltAt !== null && this.sourceHealthy && this.vouched(this.tiltAt); }
+  get compassReady(): boolean { return this.hasOrientation && this.sourceHealthy && this.readingStands('heading'); }
+  get tiltReady(): boolean { return this.tiltAt !== null && this.sourceHealthy && this.readingStands('tilt'); }
   /** Is a reading taken at `at` still the phone's direction? Recent enough to
-   *  stand alone, or the video vouches that nothing has moved since. */
-  private vouched(at: number | null): boolean {
+   *  stand alone, or the video vouches that nothing has moved since.
+   *  `now` is a parameter so one decision can be taken at one instant: a caller
+   *  that also has to consult the witness must not read the clock twice and
+   *  grade the two halves of its answer at two different moments. */
+  private vouched(at: number | null, now = performance.now()): boolean {
+    if (at === null) return false;
+    return now - at < SENSOR_SILENCE_MS || viewVouchesFor(at, this.stability.continuity(now));
+  }
+  /** Does the reading taken at `at` still describe where the phone points?
+   *  `vouched` is the evidence test and it decides on its own wherever the view
+   *  can say anything at all. This adds the one case where it CANNOT: a frame
+   *  of smooth sky, from a camera working perfectly and delivering frames, with
+   *  nothing in it a shift would move (GRADIENT_FLOOR). The witness answers
+   *  'featureless' there, and reading that as staleness blanked the dome and
+   *  told the user to move the phone - over a view where moving is the one
+   *  thing that loses the hold, and where nothing had gone wrong at all
+   *  (issue #41). So a reading that was standing when the view could last be
+   *  judged goes on standing for as long as the view stays featureless.
+   *  `stoodAt >= at` is what makes that a memory of THIS reading rather than a
+   *  blanket licence: a reading delivered after the view went blank was never
+   *  witnessed by anything, and it expires like any other.
+   *  The other two unknowns are untouched, and both still read as lost within
+   *  SENSOR_SILENCE_MS. A STOPPED video ('stale') may be showing anything by
+   *  now; a MOVING view is a measurement that the reading is out of date.
+   *  Named by kind rather than handed the two halves as a pair of numbers: the
+   *  fields cross silently otherwise, and there is no type between a heading
+   *  instant and a tilt instant to notice it.
+   *  `stoodAt >= at` admits a memory stamped in the same millisecond as the
+   *  reading, including one recorded by a frame observed just before the event
+   *  arrived. That is deliberate: frame times and sensor times are on one clock
+   *  but not aligned to the millisecond, which is the whole reason
+   *  CONTINUITY_SLOP_MS exists one file over. */
+  private readingStands(kind: 'heading' | 'tilt'): boolean {
+    const at = kind === 'heading' ? this.headingAt : this.tiltAt;
     if (at === null) return false;
     const now = performance.now();
-    return now - at < SENSOR_SILENCE_MS || viewVouchesFor(at, this.stability.continuity(now));
+    if (this.vouched(at, now)) return true;
+    const stoodAt = kind === 'heading' ? this.headingStoodAt : this.tiltStoodAt;
+    return stoodAt !== null && stoodAt >= at && this.stability.witness(now) === 'featureless';
+  }
+  /** Record, for each reading kind, the instant at which THE VIDEO last vouched
+   *  for it - which is the instant `readingStands` reaches back to once the
+   *  view goes blank.
+   *  It must be the video and not `vouched`, whose first disjunct is bare
+   *  freshness. Under `vouched` a reading needed only to be less than
+   *  SENSOR_SILENCE_MS old at some judgeable frame, whatever that frame said
+   *  about the view - so a reading the video had just measured as MOVING was
+   *  remembered, and then held for as long as the blank sky lasted. That is the
+   *  reading spending its own freshness to certify itself, which is the one
+   *  thing this memory exists to prevent (review A1), and it contradicted both
+   *  SENSOR_SILENCE_MS's own rule that a dead sensor over a moving view is
+   *  caught within 2 s and the brief for issue #41.
+   *  A continuity exists only for a settled run on a fresh, judgeable frame, so
+   *  'moving', 'featureless' and 'stale' are excluded here by construction and
+   *  need no test of their own; `viewVouchesFor` then adds the part that makes
+   *  it about THIS reading - the run reaching back to before the reading
+   *  arrived, rather than merely being under way now.
+   *  Called once per observed frame, so this memory runs on the camera's clock:
+   *  keeping it in the getters instead would make the dome depend on how often
+   *  something reads them, and a phone whose UI skipped a render during the
+   *  fresh window would lose a hold for it. */
+  private noteReadingsStand(): void {
+    const now = performance.now();
+    const view = this.stability.continuity(now);
+    if (!view) return;
+    if (this.headingAt !== null && viewVouchesFor(this.headingAt, view)) this.headingStoodAt = now;
+    if (this.tiltAt !== null && viewVouchesFor(this.tiltAt, view)) this.tiltStoodAt = now;
+  }
+  /** No orientation sample recent enough for the STRICT pose rule to use: it
+   *  refuses a newest reading older than 250 ms (CameraPoseHistory.forFrame).
+   *  Inside that window a view the witness cannot judge is an ordinary moment
+   *  between frames - capture can still happen on the sensor alone - and not a
+   *  state the user needs explained. */
+  private get sensorQuiet(): boolean {
+    const now = performance.now();
+    return !((this.headingAt !== null && now - this.headingAt <= 250)
+      || (this.tiltAt !== null && now - this.tiltAt <= 250));
   }
   get currentAltitude(): number { return this.altitude; }
   get cameraBasis(): CameraBasis | null {
@@ -439,7 +518,31 @@ export class PhotosphereSweep {
     // so asking for it would leave the user doing the one thing that can never
     // satisfy the rule. Moving produces a sensor event, which does.
     if(this.stillnessFailures>=STILLNESS_BLIND_AFTER)return 'I can’t read the camera image to tell whether the phone is holding still. Move the phone slightly to register a direction.';
-    if(!this.cameraBasis)return 'Waiting for the compass. Keep the camera open and move the phone gently.';
+    // A view with nothing in it to judge a shift by is not a lost compass
+    // (issue #41), and it is worth saying whether or not the reading survived
+    // it. Above the compass line for that reason, and below the blind line
+    // because a canvas we cannot read at all is a different and worse state.
+    // Capture is NOT relaxed here and neither sentence may imply that it is.
+    // A frame the witness cannot judge yields no continuity, so nothing can
+    // vouch for a silent reading and the strict rule still decides; the strict
+    // rule wants a sample within 250 ms, which is exactly `sensorQuiet`. While
+    // a sample IS that fresh, capture can proceed on the sensor alone and this
+    // is an ordinary moment with nothing to explain.
+    const blankView=this.stability.witness(performance.now())==='featureless' && this.sensorQuiet;
+    const basis=this.cameraBasis;
+    // The reading STANDS (see readingStands), so the dome and the aim dot are
+    // up and the compass line would contradict them as well as handing the user
+    // the one instruction that destroys a hold.
+    if(blankView && basis)
+      return 'The sky here has nothing to track, so the camera cannot tell whether the phone is holding still. Bring some terrain or a building edge into the view.';
+    // The reading did NOT stand - it arrived after the view went blank, so
+    // nothing ever witnessed it (issue #63). The compass really is lost, and
+    // that is said; but the action below it is still terrain and not movement,
+    // because over a view with nothing in it a fresh reading would be lost
+    // again the moment the phone stopped.
+    if(blankView)
+      return 'The compass has gone quiet and the sky here has nothing to track, so nothing can vouch for the last direction. Bring some terrain or a building edge into the view.';
+    if(!basis)return 'Waiting for the compass. Keep the camera open and move the phone gently.';
     if(this.alignmentWait)return 'Hold the phone still for a moment so the image and direction line up.';
     if(this.overlapWait)return 'I can’t match this view yet. Return to a green patch, hold still, then move slowly toward the next blue dot. Keep the camera lens in the same spot.';
     if(this.justCaptured)return 'Captured. Move to another blue dot.';
@@ -490,6 +593,7 @@ export class PhotosphereSweep {
     this.stability.clear();this.trackEnded=false;
     this.lastMediaTime=null;this.lastMediaAdvanceAt=-Infinity;this.presentedFrameId=null;this.lastCapturedFrameId=null;this.imageGate=null;
     this.hasOrientation = false; this.tiltAt = null; this.headingAt = null;
+    this.headingStoodAt = null; this.tiltStoodAt = null;
     const DOE = window.DeviceOrientationEvent as typeof DeviceOrientationEvent & { requestPermission?: () => Promise<string> };
     // Ask from the click gesture, before awaiting camera discovery (Safari).
     const motionPermission = DOE?.requestPermission?.().catch(() => "denied");
@@ -660,6 +764,9 @@ export class PhotosphereSweep {
       for (let p = 0; p < this.luma.length; p++) this.luma[p] = luminance(data[p*4], data[p*4+1], data[p*4+2]);
       this.stability.observe(at, this.luma, GRID_W, GRID_H);
       this.stillnessFailures = 0;
+      // Immediately after the observation, so the verdict this reads is the one
+      // the frame just delivered rather than the previous frame's.
+      this.noteReadingsStand();
     } catch {
       // A lost drawing context tells us nothing, so stability stays unknown -
       // and unknown means the strict rule, which means a STILL phone can never
@@ -931,7 +1038,10 @@ export class PhotosphereSweep {
     // attaches them again, and the old view can vouch for nothing. The luma
     // canvas goes with it - it is lazy, so the next scan rebuilds it, and a
     // closed editor should not hold a canvas backing store open.
+    // The memory of a reading that once stood goes with the witness that made
+    // it: a new scan must not inherit one, and there is no view left to keep it.
     this.listening = false; this.stability.clear();
+    this.headingStoodAt = null; this.tiltStoodAt = null;
     this.lumaCanvas = null; this.stillnessFailures = 0;
     this.lastMediaTime = null; this.lastMediaAdvanceAt = -Infinity; this.presentedFrameId = null; this.lastCapturedFrameId = null; this.imageGate = null;
     this.stream?.getTracks().forEach((t) => t.stop());
