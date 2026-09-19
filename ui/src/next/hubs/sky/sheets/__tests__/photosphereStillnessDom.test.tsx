@@ -431,6 +431,90 @@ await test('A camera that reports its frames 250 ms late still captures a still 
   sweep.stop();
 });
 
+/** The timer firing on an element that is still PLAYING, while the sensor
+ *  chatters a couple of tenths of a degree. Two readings 125 ms apart and then
+ *  the timer callback, so the newest reading is exactly as old as the grab -
+ *  which is what the strict pose path wants (readings no more than 250 ms
+ *  apart covering 500 ms, all within 1.5 degrees). `tick()` cannot express
+ *  this: it advances 350 ms and only then fires, so the newest reading would
+ *  always be 350 ms stale and the pose would be refused for a reason that has
+ *  nothing to do with the image. The media clock advances with the beat unless
+ *  the element is stalled, exactly as the tick does. */
+const beat=(aim:(offset:number,advanceMs?:number)=>void)=>{
+  aim(0.2,125);aim(0,125);
+  if(!paused&&!stalled)mediaTime+=0.25;
+  intervalFn!();
+};
+
+await test('P1: a frozen media clock is not captured, however fresh and steady the sensor is',async()=>{
+  // Review 17, P1. The media gate protected the stillness WITNESS and nothing
+  // else: with the element playing, the track live and the clock frozen, a
+  // sensor reporting a steady direction satisfied the strict pose path all by
+  // itself, and the retained pixels were stored under the phone's current
+  // direction. The witness was never consulted because it had nothing to say.
+  const {sweep,aim}=await approachAndHold(false);
+  stalled=true;                                 // playing, live, last picture retained
+  for(let i=0;i<20;i++)beat(aim);
+  // The pose is good - this is the whole point. If it were not, the case would
+  // pass without an image gate at all.
+  assert.ok(sweep.aimTarget,'no pose: this case would pass even with no image gate');
+  assert.equal(sweep.compassReady,true,'the sensor was not being believed, so nothing here is about the image');
+  assert.equal(sweep.frameCount,0,'retained pixels were captured under the direction the phone points now');
+  const tail=sweep.captureLog.slice(-5).map((r)=>r.outcome);
+  assert.deepEqual([...new Set(tail)],['stale-image'],`the last outcomes were ${JSON.stringify(tail)}`);
+  assert.match(sweep.captureCue,/not updating/,`cue was: "${sweep.captureCue}"`);
+  stalled=false;
+  sweep.stop();
+});
+
+await test('P1: a paused preview is not captured by the overhead button either',async()=>{
+  // The manual path skips every pose and stability test by design - the user is
+  // pointing the camera up and saying so - which left it the one path with no
+  // requirement at all on the picture it was storing.
+  const {sweep}=await approachAndHold(false);
+  paused=true;
+  clock+=3000;
+  assert.equal(sweep.captureOverhead(),false,'a paused preview was captured as an overhead photograph');
+  assert.equal(sweep.frameCount,0);
+  assert.equal(sweep.overheadCaptured,false);
+  assert.match(sweep.captureCue,/not updating/,`cue was: "${sweep.captureCue}"`);
+  paused=false;
+  sweep.stop();
+});
+
+await test('P1: once the camera delivers again, the same chattering sensor captures',async()=>{
+  // The gate has to be a gate, not a wall: the recovery is what says the fix
+  // refuses a frozen camera rather than refusing the fallback path.
+  const {sweep,cell,aim}=await approachAndHold(false);
+  stalled=true;
+  for(let i=0;i<10;i++)beat(aim);
+  assert.equal(sweep.frameCount,0,'the frozen element captured');
+  stalled=false;                                // frames flow again
+  const from=clock;
+  let capturedAfter:number|null=null;
+  for(let i=0;i<12&&capturedAfter===null;i++){
+    beat(aim);
+    if(sweep.cells.find((c)=>c.id===cell.id)?.captured)capturedAfter=clock-from;
+  }
+  assert.notEqual(capturedAfter,null,'the camera recovered and nothing was ever captured again');
+  assert.ok(capturedAfter!<=1500,`took ${capturedAfter} ms after the camera resumed`);
+  sweep.stop();
+});
+
+await test('A manual press is not refused because the stillness witness already read that frame',async()=>{
+  // Freshness is not consumption. The witness reads each delivered frame once;
+  // the user pressing the button moments later is capturing the picture on the
+  // screen, and must not be told the camera has stopped because something else
+  // looked at it first.
+  const {sweep,tick}=await approachAndHold();    // rVFC: the witness reads every presented frame
+  for(let i=0;i<6;i++)tick();
+  clock+=100;                                    // the press lands between frames, on the one just read
+  assert.equal(sweep.captureOverhead(),true,'the press was refused for a frame the witness had seen');
+  assert.equal(sweep.captureLog.at(-1)?.outcome,'accepted');
+  assert.equal(sweep.overheadCaptured,true);
+  sweep.stop();
+});
+
 console.log(`photosphereStillnessDom.test: ${passed}/${passed+failed} passed`);
 export const result={passed,failed,total:passed+failed};
 if(failed)process.exitCode=1;
