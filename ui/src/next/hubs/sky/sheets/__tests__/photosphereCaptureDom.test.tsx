@@ -210,9 +210,9 @@ await test("Manual capture cannot fabricate a zenith frame when the camera read 
   const original = w.HTMLCanvasElement.prototype.getContext;
   w.HTMLCanvasElement.prototype.getContext = () => ({ drawImage() { throw new Error("Camera failed"); } });
   // The camera delivers one more frame and the user presses on it. Without
-  // that the press lands on the picture the sweep above already captured, and
-  // is refused for THAT reason before it can reach the failing read - which is
-  // correct behaviour but a different case from this one.
+  // that the press lands on the picture the sweep above already captured and
+  // is refused as `frame-already-captured` - a wait for the next frame, not a
+  // fault, and a different case from the failing read this one is about.
   mediaTime += 0.1;
   assert.equal(sweep.captureOverhead(), false);
   assert.equal(sweep.overheadCaptured, false);
@@ -341,8 +341,18 @@ await test('The capture log names a rejection reason before an accepted capture,
   const cell=sweep.cells.find(c=>c.alt>20&&c.alt<60)!;
   heading(cell.az,true,90+cell.alt);
   sweep.begin();
-  // The compass just locked on: the pose has not yet covered the 500 ms
-  // settle window a capture needs, so this immediate attempt cannot land.
+  // A bare timer fire with no camera frame behind it. The media clock has not
+  // moved since the baseline taken when the preview started playing, so this
+  // is refused on the IMAGE now, before any pose test runs - a timer firing is
+  // not a camera delivering (review 17, P1). It used to reach the pose and
+  // record alignment-wait.
+  await act(async()=>{for(const fn of [...intervals.values()])fn();});
+  assert.ok(sweep.captureLog.some(r=>r.outcome==='stale-image'),
+    'a timer fire with no delivered frame reached the pose tests');
+  // Now a frame arrives, so the pose gets its turn - and the compass only just
+  // locked on, so the pose has not yet covered the 500 ms settle a capture
+  // needs. That is the rejection this case is about.
+  mediaTime+=0.1;
   await act(async()=>{for(const fn of [...intervals.values()])fn();});
   await tick();
   assert.ok(sweep.cells.find(c=>c.id===cell.id)?.captured);

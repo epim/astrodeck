@@ -137,6 +137,13 @@ async function approachAndHold(rvfc=true,step=2,lag=0){
     ? (lagMs=lag)=>{clock+=100;mediaTime+=0.1;frame!(clock,{captureTime:clock-lagMs,mediaTime,presentationTime:clock,
         expectedDisplayTime:clock,width:640,height:480,presentedFrames:1});}
     : (_lagMs=lag)=>{clock+=350;if(!paused&&!stalled)mediaTime+=0.35;intervalFn!();};
+  /** Present the SAME frame to the callback again: the wall clock moves on, so
+   *  the 350 ms grab cadence lets a second grab through, but the media clock
+   *  does not - the driver is handed a picture it has already been handed.
+   *  700 ms, so the second grab clears the 600 ms registration throttle too and
+   *  the only thing left standing between it and the mosaic is frame identity. */
+  const represent=rvfc?()=>{clock+=700;frame!(clock,{captureTime:clock,mediaTime,presentationTime:clock,
+      expectedDisplayTime:clock,width:640,height:480,presentedFrames:1});}:()=>{};
   const aim=(offset:number,advanceMs=100)=>{
     const ev=new w.Event('deviceorientationabsolute');
     clock+=advanceMs;Object.defineProperty(ev,'timeStamp',{value:clock});
@@ -157,7 +164,7 @@ async function approachAndHold(rvfc=true,step=2,lag=0){
   // its own, and the outlier case does.
   aim(0,0);shift++;
   // From here the browser sends no orientation event ever again.
-  return {sweep,cell,tick,aim,silentFrom:clock};
+  return {sweep,cell,tick,aim,represent,silentFrom:clock};
 }
 
 await test('A still phone captures within 1.5 s of the hold, with no sensor event at all',async()=>{
@@ -512,6 +519,24 @@ await test('A manual press is not refused because the stillness witness already 
   assert.equal(sweep.captureOverhead(),true,'the press was refused for a frame the witness had seen');
   assert.equal(sweep.captureLog.at(-1)?.outcome,'accepted');
   assert.equal(sweep.overheadCaptured,true);
+  sweep.stop();
+});
+
+await test('One delivered frame is captured once, however many times the grab runs on it',async()=>{
+  // Freshness alone cannot see this: the frame IS recent, the camera IS
+  // delivering, and the callback path is the one that knows the frame's own
+  // identity. Without the identity clause the same picture goes into the
+  // mosaic twice - a duplicate the panorama would weight as two observations.
+  const {sweep,cell,tick,represent}=await approachAndHold();
+  let captured=false;
+  for(let i=0;i<20&&!captured;i++){tick();captured=!!sweep.cells.find((c)=>c.id===cell.id)?.captured;}
+  assert.ok(captured,'nothing was captured, so there is no second grab to judge');
+  assert.equal(sweep.captureLog.at(-1)?.outcome,'accepted');
+  const frames=sweep.frameCount;
+  represent();                                   // the very same frame, 700 ms later
+  assert.equal(sweep.captureLog.at(-1)?.outcome,'frame-already-captured',
+    `the second grab on one frame recorded ${sweep.captureLog.at(-1)?.outcome}`);
+  assert.equal(sweep.frameCount,frames,'one delivered frame entered the mosaic twice');
   sweep.stop();
 });
 
