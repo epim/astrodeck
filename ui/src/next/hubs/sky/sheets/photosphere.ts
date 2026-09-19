@@ -327,6 +327,13 @@ export class PhotosphereSweep {
   private imageGate: null | 'stale-image' | 'frame-already-captured' = null;
   private luma = new Uint8Array(GRID_W*GRID_H);
   private listening = false;
+  /** Recorded once in `start()`, from `"DeviceOrientationEvent" in window`.
+   *  Distinct from `listening`: a browser that HAS the constructor but has not
+   *  yet delivered an event is unhealthy (a stalled stream, worth reporting);
+   *  a browser that never HAD the constructor has no pose stream to begin
+   *  with, so there is nothing here to be healthy or unhealthy about (issue
+   *  #42 item 3). See `sourceHealthy`. */
+  private orientationSupported = false;
   private trackEnded = false;
   private alignmentWait = false;
   private overlapWait = false;
@@ -594,6 +601,7 @@ export class PhotosphereSweep {
     this.lastMediaTime=null;this.lastMediaAdvanceAt=-Infinity;this.presentedFrameId=null;this.lastCapturedFrameId=null;this.imageGate=null;
     this.hasOrientation = false; this.tiltAt = null; this.headingAt = null;
     this.headingStoodAt = null; this.tiltStoodAt = null;
+    this.orientationSupported = typeof window !== "undefined" && "DeviceOrientationEvent" in window;
     const DOE = window.DeviceOrientationEvent as typeof DeviceOrientationEvent & { requestPermission?: () => Promise<string> };
     // Ask from the click gesture, before awaiting camera discovery (Safari).
     const motionPermission = DOE?.requestPermission?.().catch(() => "denied");
@@ -729,10 +737,22 @@ export class PhotosphereSweep {
   /** Is the pose stream ALIVE? Measured, never inferred from event silence:
    *  both orientation listeners attached, the page visible, and no camera
    *  track ended. Read at the moment of use so a visibility change or a
-   *  removed listener takes effect without waiting for an event of its own. */
+   *  removed listener takes effect without waiting for an event of its own.
+   *  `this.listening` is false on two different browsers, and only one of
+   *  them is unhealthy: one HAS `DeviceOrientationEvent` and simply has not
+   *  attached yet or has lost its listener, which is a real fault worth the
+   *  name; the other never HAD the constructor, so it has no pose stream to
+   *  judge at all - nothing is stalled, there is just nothing there. Without
+   *  `!this.orientationSupported` as an escape, that second browser reads as
+   *  permanently unhealthy, and `grabFrame` refused even a manual overhead
+   *  press on it - the one path a missing compass does not need (issue #42
+   *  item 3; it worked before 730a59b9). Automatic capture is untouched by
+   *  this: it still needs an actual reading (`hasOrientation`), which such a
+   *  browser can never produce, so only the manual press is reopened. */
   private get sourceHealthy(): boolean {
     const visibility = typeof document === "undefined" ? undefined : document.visibilityState;
-    return this.listening && !this.trackEnded && (visibility === undefined || visibility === "visible");
+    return (this.listening || !this.orientationSupported) && !this.trackEnded
+      && (visibility === undefined || visibility === "visible");
   }
 
   /** Sample the preview into a 32x24 luminance grid, the video's own answer to

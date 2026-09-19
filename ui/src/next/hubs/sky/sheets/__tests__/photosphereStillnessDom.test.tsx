@@ -648,6 +648,11 @@ await test('P2: a magnetometer outlier as the last event is refuted by the still
   assert.ok(samples.length,'the capture recorded no diagnostic sample, so the pose it was worn at cannot be read');
   const wornAz=skyAngles(samples.at(-1).sensorBasis.forward).az;
   const off=Math.abs(((wornAz-cell.az+540)%360)-180);   // wrap-safe, for a cell near due north
+  // Mutation that reddens this (issue #42 item 4): remove the refutation
+  // branch in photospherePose.forFrame (the `if(previous && ... )` block that
+  // arbitrates the jittery pair against the reading before it), leaving
+  // `pose` as the unconditional `latest`. Observed red: "the photograph was
+  // worn at 164.0 degrees, 20.0 off the pre-outlier 144".
   assert.ok(off<1,
     `the photograph was worn at ${wornAz.toFixed(1)} degrees, ${off.toFixed(1)} off the pre-outlier ${cell.az}`);
   sweep.stop();
