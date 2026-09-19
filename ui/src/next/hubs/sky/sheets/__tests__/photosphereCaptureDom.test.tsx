@@ -15,6 +15,17 @@ Object.defineProperty(w, "isSecureContext", { value: true });
 Object.defineProperty(w.HTMLVideoElement.prototype, "videoWidth", { get: () => 640 });
 Object.defineProperty(w.HTMLVideoElement.prototype, "videoHeight", { get: () => 480 });
 w.HTMLVideoElement.prototype.play = async function () {};
+// A camera that is actually DELIVERING pictures, which every workflow case here
+// has always assumed and none of them said. A bare jsdom video is paused, at
+// readyState 0, with a media clock frozen at 0 - in production terms an element
+// that has never shown a frame - and capture now requires a delivered image on
+// every path (review 17, P1), as it always should have. `mediaTime` advances
+// with the frame tick below; a case that needs a stalled camera freezes it.
+let mediaTime = 0;
+Object.defineProperty(w.HTMLVideoElement.prototype, "currentTime", { get: () => mediaTime, configurable: true });
+Object.defineProperty(w.HTMLVideoElement.prototype, "paused", { get: () => false, configurable: true });
+Object.defineProperty(w.HTMLVideoElement.prototype, "ended", { get: () => false, configurable: true });
+Object.defineProperty(w.HTMLVideoElement.prototype, "readyState", { get: () => 2, configurable: true });
 const pixels = new Uint8ClampedArray(32 * 120 * 4);
 for (let i = 0; i < pixels.length; i += 4) pixels[i] = pixels[i + 1] = pixels[i + 2] = i < pixels.length / 2 ? 240 : 30;
 w.HTMLCanvasElement.prototype.getContext = () => ({ drawImage() {},
@@ -42,7 +53,7 @@ Object.defineProperty(w.navigator, "mediaDevices", { value: {
   getUserMedia: async (constraints: any) => {
     requested.push(constraints);
     if (denied) throw new w.DOMException("Permission denied", "NotAllowedError");
-    const track = { stop: () => { stops++; }, getSettings: () => ({ deviceId: constraints.video.deviceId?.exact ?? "ultra" }), addEventListener() {} };
+    const track = { stop: () => { stops++; }, getSettings: () => ({ deviceId: constraints.video.deviceId?.exact ?? "ultra" }), addEventListener() {}, readyState: "live", muted: false };
     return { getTracks: () => [track], getVideoTracks: () => [track] };
   },
 }, configurable: true });
@@ -76,6 +87,9 @@ const tick = async () => { await act(async () => {
     sensorNow+=100;
     if(lastSensor){const {type,...pose}=lastSensor;const event=new w.Event(type);Object.assign(event,pose);Object.defineProperty(event,'timeStamp',{value:sensorNow});w.dispatchEvent(event);}
   }
+  // 600 ms of camera at the same time as 600 ms of sensor: the frames a real
+  // preview delivered while those events arrived.
+  mediaTime += 0.6;
   for (const fn of [...intervals.values()]) fn();
 }); };
 const heading = (az: number, absolute = true, beta = 90) => {
@@ -195,6 +209,11 @@ await test("Manual capture cannot fabricate a zenith frame when the camera read 
   for (const altitude of [0, 35, 70]) { heading(6, true, 90 + altitude); await tick(); }
   const original = w.HTMLCanvasElement.prototype.getContext;
   w.HTMLCanvasElement.prototype.getContext = () => ({ drawImage() { throw new Error("Camera failed"); } });
+  // The camera delivers one more frame and the user presses on it. Without
+  // that the press lands on the picture the sweep above already captured, and
+  // is refused for THAT reason before it can reach the failing read - which is
+  // correct behaviour but a different case from this one.
+  mediaTime += 0.1;
   assert.equal(sweep.captureOverhead(), false);
   assert.equal(sweep.overheadCaptured, false);
   assert.equal(sweep.complete, false);
@@ -313,7 +332,7 @@ await test("A grant arriving after cancellation is released", async () => {
 w.navigator.mediaDevices.getUserMedia = async (constraints: any) => {
   requested.push(constraints);
   if (denied) throw new w.DOMException("Permission denied", "NotAllowedError");
-  const track = { stop: () => { stops++; }, getSettings: () => ({ deviceId: constraints.video.deviceId?.exact ?? "ultra" }), addEventListener() {} };
+  const track = { stop: () => { stops++; }, getSettings: () => ({ deviceId: constraints.video.deviceId?.exact ?? "ultra" }), addEventListener() {}, readyState: "live", muted: false };
   return { getTracks: () => [track], getVideoTracks: () => [track] };
 };
 await test('The capture log names a rejection reason before an accepted capture, with basis and cell',async()=>{
