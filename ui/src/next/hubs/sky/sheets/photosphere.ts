@@ -694,6 +694,12 @@ export const LENS_DOUBT_AFTER = 6;
  *  where that second meaning is spent (issue #48), which is why the number is
  *  named rather than written three times. */
 const GRAB_INTERVAL_MS = 350;
+/** What the cue says when nothing can give the camera a bearing. Named because
+ *  `captureCue` reaches this state down two different branches - no basis at
+ *  all, and a tilt-only basis whose cell cannot be placed without a heading -
+ *  and two copies of one sentence in one getter is one copy that will be
+ *  reworded and one that will not. */
+const NO_BEARING_CUE = 'Waiting for the compass. Keep the camera open and move the phone gently.';
 
 /** Opens a visible preview; recording begins only after begin() is pressed. */
 export class PhotosphereSweep {
@@ -874,8 +880,15 @@ export class PhotosphereSweep {
   // the last moment the view could be judged at all (see readingStands).
   // No bare freshness window, which is what deadlocked a still phone (issue
   // #37); no lifecycle-only test either, which cannot see a sensor that stops.
-  get compassReady(): boolean { return this.hasOrientation && this.sourceHealthy && this.readingStands('heading'); }
-  get tiltReady(): boolean { return this.tiltAt !== null && this.sourceHealthy && this.readingStands('tilt'); }
+  get compassReady(): boolean { return this.compassReadyAt(performance.now()); }
+  get tiltReady(): boolean { return this.tiltReadyAt(performance.now()); }
+  /** The same two answers at a stated instant. Every getter below that has to
+   *  consult more than one of them takes `now` once and threads it, for the
+   *  reason `vouched`'s own `now` exists: one decision graded at one moment.
+   *  `captureCue` is the caller that needed it - it reached the witness three
+   *  times over on three separate clock reads. */
+  private compassReadyAt(now: number): boolean { return this.hasOrientation && this.sourceHealthy && this.readingStands('heading', now); }
+  private tiltReadyAt(now: number): boolean { return this.tiltAt !== null && this.sourceHealthy && this.readingStands('tilt', now); }
   /** Is a reading taken at `at` still the phone's direction? Recent enough to
    *  stand alone, or the video vouches that nothing has moved since.
    *  `now` is a parameter so one decision can be taken at one instant: a caller
@@ -900,7 +913,18 @@ export class PhotosphereSweep {
    *  witnessed by anything, and it expires like any other.
    *  The other two unknowns are untouched, and both still read as lost within
    *  SENSOR_SILENCE_MS. A STOPPED video ('stale') may be showing anything by
-   *  now; a MOVING view is a measurement that the reading is out of date.
+   *  now; a MOVING view is a BREAK in the run, which since issue #49 item 1 is
+   *  two different things and not one. Either the frames were MEASURED apart -
+   *  the pair differs by more than its bound - or the pair could not be judged
+   *  at all, because one of its two frames had too little gradient to see a
+   *  shift by, and an interval nobody watched cannot be credited to a hold.
+   *  Both are reasons the run does not reach back to the reading, so both drop
+   *  the memory; only the first is a measurement that anything moved. The
+   *  second used to arrive one frame in two on a view sitting on
+   *  GRADIENT_FLOOR, which flipped this getter and everything downstream of it
+   *  at frame rate (issue #75); the hysteresis band on the floor is what stops
+   *  that, and it leaves the capability break where it belongs - on a real
+   *  change of scene, once.
    *  Named by kind rather than handed the two halves as a pair of numbers: the
    *  fields cross silently otherwise, and there is no type between a heading
    *  instant and a tilt instant to notice it.
@@ -914,10 +938,9 @@ export class PhotosphereSweep {
    *  the same widened margin that lets that path capture under it, or the dome
    *  would say the heading is lost while frames are going into the mosaic
    *  behind it - two answers to one question (issue #48). */
-  private readingStands(kind: 'heading' | 'tilt'): boolean {
+  private readingStands(kind: 'heading' | 'tilt', now: number): boolean {
     const at = kind === 'heading' ? this.headingAt : this.tiltAt;
     if (at === null) return false;
-    const now = performance.now();
     if (this.vouched(at, now)) return true;
     const stoodAt = kind === 'heading' ? this.headingStoodAt : this.tiltStoodAt;
     return stoodAt !== null && stoodAt >= at && this.stability.witness(now) === 'featureless';
@@ -958,15 +981,16 @@ export class PhotosphereSweep {
    *  Inside that window a view the witness cannot judge is an ordinary moment
    *  between frames - capture can still happen on the sensor alone - and not a
    *  state the user needs explained. */
-  private get sensorQuiet(): boolean {
-    const now = performance.now();
+  private sensorQuietAt(now: number): boolean {
     return !((this.headingAt !== null && now - this.headingAt <= 250)
       || (this.tiltAt !== null && now - this.tiltAt <= 250));
   }
   get currentAltitude(): number { return this.altitude; }
-  get cameraBasis(): CameraBasis | null {
-    const b=this.compassReady && this.frameBasis && performance.now()-this.frameBasis.at<200?this.frameBasis.basis
-      :this.compassReady ? this.basis : this.tiltReady && this.altitude >= 85 ? this.basis : null;
+  get cameraBasis(): CameraBasis | null { return this.basisAt(performance.now()); }
+  private basisAt(now: number): CameraBasis | null {
+    const compass=this.compassReadyAt(now);
+    const b=compass && this.frameBasis && now-this.frameBasis.at<200?this.frameBasis.basis
+      :compass ? this.basis : this.tiltReadyAt(now) && this.altitude >= 85 ? this.basis : null;
     return b?this.correctBasis(b):null;
   }
   private correctBasis(b:CameraBasis):CameraBasis {return this.visualAnchor?transferBasis(b,this.visualAnchor.raw,this.visualAnchor.aligned):b;}
@@ -981,8 +1005,9 @@ export class PhotosphereSweep {
     return true;
   }
   get cells() { return DOME_CELLS.map(c => ({ ...c, captured:this.coveredCells.has(c.id) })); }
-  get aimTarget(): { id: number; captured: boolean } | null {
-    const basis=this.cameraBasis;if(!basis)return null;
+  get aimTarget(): { id: number; captured: boolean } | null { return this.aimTargetAt(performance.now()); }
+  private aimTargetAt(now: number): { id: number; captured: boolean } | null {
+    const basis=this.basisAt(now);if(!basis)return null;
     // The dot the user aims and the cell `grabFrame` captures are now the same
     // choice, made by one function on one forward ray (issue #57).
     const cell=targetCell(basis.forward);
@@ -995,30 +1020,46 @@ export class PhotosphereSweep {
     // can sit lower than the raw reading and the guard does fire - which is the
     // conservative direction: it withholds a dot rather than naming a cell off
     // a bearing this basis does not have.
-    if(!this.compassReady && cell.alt<89)return null;
+    if(!this.compassReadyAt(now) && cell.alt<89)return null;
     return {id:cell.id,captured:this.coveredCells.has(cell.id)};
   }
   get justCaptured(): boolean { return this.lastCaptureAt!==null && Date.now()-this.lastCaptureAt<1000; }
   get captureCue(): string {
+    // ONE clock read for the whole decision. Several of the tests below consult
+    // the witness, and a getter that read `performance.now()` at each of them
+    // graded the halves of one answer at three different instants - the drift
+    // is sub-millisecond and the shape is still wrong, and it is the shape
+    // `vouched`'s own `now` parameter was added to prevent.
+    const now=performance.now();
     if(this.issue)return this.issue;
     if(!this.recording)return 'Tap Start scan to begin capturing.';
     if(!this.video?.videoWidth || !this.video?.videoHeight)return 'Waiting for a camera image…';
-    // A frozen preview keeps its last picture, so there is something on screen
-    // to look at and nothing to say it is old. Only this cue can tell the user.
-    if(this.imageGate==='stale-image')return 'The camera image is not updating. Close the scan and open the camera again.';
-    if(this.imageGate==='frame-already-captured')return 'That picture is already captured. The next camera frame is a moment away.';
-    // The same fact as the stale-image line above, reached from the other side:
+    // The same fact as the stale-image line below, reached from the other side:
     // that one is set by a capture ATTEMPT that got as far as the image gate,
     // this one by a run of ticks the media gate refused, which is counted
     // whether or not a capture was attempted - a preview frozen before Start
     // scan is pressed never reaches the image gate at all (issue #46). Both
     // name the camera image and both give the one action that clears it, so
-    // whichever of the two speaks, the user is told the same thing about the
-    // same camera. Below the stale-image line because a refusal recorded by an
-    // attempt is the more recent evidence of the two. No compass here, and no
-    // request to move the phone: moving cannot make a stopped camera deliver.
+    // whichever speaks, the user is told the same thing about the same camera.
+    // ABOVE the stale-image line, and the review that moved it here gives two
+    // reasons. A RUN of refusals is stronger evidence about a camera than one
+    // attempt's record of the same refusal. And this is the only one of the two
+    // that knows HOW LONG: the counter has been counting, so it can say, while
+    // `imageGate` is a flag with no duration in it. Below it instead, every
+    // tick that incremented the run also reached the image gate and set
+    // 'stale-image', so this branch could only speak in the 350 ms between
+    // `begin()` and the first tick of the new scan - the more informative
+    // sentence, live for one tick a scan.
+    // The number is the run times the grab interval, which is what the run
+    // measures: these are consecutive refused ticks of a fixed timer. No
+    // compass here, and no request to move the phone: moving cannot make a
+    // stopped camera deliver.
     if(this.mediaGateRefusalRun>=MEDIA_GATE_BLIND_AFTER)
-      return 'No new camera image has arrived for a couple of seconds. Close the scan and open the camera again.';
+      return `No new camera image has arrived for ${(this.mediaGateRefusalRun*GRAB_INTERVAL_MS/1000).toFixed(1)} seconds. Close the scan and open the camera again.`;
+    // A frozen preview keeps its last picture, so there is something on screen
+    // to look at and nothing to say it is old. Only this cue can tell the user.
+    if(this.imageGate==='stale-image')return 'The camera image is not updating. Close the scan and open the camera again.';
+    if(this.imageGate==='frame-already-captured')return 'That picture is already captured. The next camera frame is a moment away.';
     // Not "hold still": holding still is exactly what cannot be confirmed here,
     // so asking for it would leave the user doing the one thing that can never
     // satisfy the rule. Moving produces a sensor event, which does.
@@ -1030,24 +1071,33 @@ export class PhotosphereSweep {
     // Capture is NOT relaxed here and neither sentence may imply that it is.
     // A frame the witness cannot judge yields no continuity, so nothing can
     // vouch for a silent reading and the strict rule still decides; the strict
-    // rule wants a sample within 250 ms, which is exactly `sensorQuiet`. While
+    // rule wants a sample within 250 ms, which is exactly `sensorQuietAt`. While
     // a sample IS that fresh, capture can proceed on the sensor alone and this
     // is an ordinary moment with nothing to explain.
-    const blankView=this.stability.witness(performance.now())==='featureless' && this.sensorQuiet;
-    const basis=this.cameraBasis;
+    const blankView=this.stability.witness(now)==='featureless' && this.sensorQuietAt(now);
+    const basis=this.basisAt(now);
     // The reading STANDS (see readingStands), so the dome and the aim dot are
     // up and the compass line would contradict them as well as handing the user
     // the one instruction that destroys a hold.
+    // The middle clause is the CONSEQUENCE and not the mechanism: what the user
+    // is waiting for is a capture, and while this state lasts there is none.
+    // Which is exactly true here - `blankView` requires that no sample is fresh
+    // enough for the strict rule, and a featureless frame yields no continuity
+    // for the relaxed one, so neither rule can accept a frame.
     if(blankView && basis)
-      return 'The sky here has nothing to track, so the camera cannot tell whether the phone is holding still. Bring some terrain or a building edge into the view.';
+      return 'The sky here has nothing to track, so nothing is being captured. Bring some terrain or a building edge into the view.';
     // The reading did NOT stand - it arrived after the view went blank, so
     // nothing ever witnessed it (issue #63). The compass really is lost, and
     // that is said; but the action below it is still terrain and not movement,
     // because over a view with nothing in it a fresh reading would be lost
     // again the moment the phone stopped.
+    // Two facts and the action, and no third clause: the clause that used to
+    // end this sentence ("nothing can vouch for the last direction") said in
+    // this file's vocabulary what the two before it had already said in the
+    // user's.
     if(blankView)
-      return 'The compass has gone quiet and the sky here has nothing to track, so nothing can vouch for the last direction. Bring some terrain or a building edge into the view.';
-    if(!basis)return 'Waiting for the compass. Keep the camera open and move the phone gently.';
+      return 'The compass has gone quiet and the sky here has nothing to track. Bring some terrain or a building edge into the view.';
+    if(!basis)return NO_BEARING_CUE;
     if(this.alignmentWait)return 'Hold the phone still for a moment so the image and direction line up.';
     // The scanner has refused to match this view over and over, and the lens is
     // still the 60-degree estimate nobody has corrected. The line below asks the
@@ -1070,15 +1120,38 @@ export class PhotosphereSweep {
     // should use those words.
     // Ending a scan tears the capture panel down, so the setting is not where
     // the user is standing when this fires: the route back to it is named
-    // rather than assumed.
-    if(this.overlapWaitRun>=LENS_DOUBT_AFTER && !this.lensCalibrated)
-      return 'I still can’t match this view. The camera view angle may be set wrong for this lens. End the scan, open the camera again, then set the camera view angle before you scan again.';
+    // rather than assumed. Named in ONE step and not three - "end the scan,
+    // open the camera again, then set the angle" is a procedure, and the same
+    // argument that keeps two remedies out of this sentence keeps a three-step
+    // recipe out of it. Ending the scan is the prerequisite (setCameraViewAngle
+    // refuses mid-scan, by design); what happens to the camera in between is
+    // the app's business and not the user's instruction.
+    // `aimTargetAt` is required because `no-target` and `below-horizon` are
+    // NEUTRAL outcomes - they do not end the run (`endsOverlapRun`) - so a user
+    // who has been refused six times and then lowers the phone to read the cue
+    // was told the lens may be wrong while `grabFrame` was not attempting to
+    // match anything at all. The remedy named is still the right one; the
+    // opening clause, "I still can't match this view", was false about the
+    // present. With a target the scanner really is trying and really is failing.
+    if(this.overlapWaitRun>=LENS_DOUBT_AFTER && !this.lensCalibrated && this.aimTargetAt(now))
+      return 'I still can’t match this view. The camera view angle may be set wrong for this lens. End the scan, then set the camera view angle before you scan again.';
     if(this.overlapWait)return 'I can’t match this view yet. Return to a green patch, hold still, then move slowly toward the next blue dot. Keep the camera lens in the same spot.';
     if(this.justCaptured)return 'Captured. Move to another blue dot.';
-    const target=this.aimTarget;
+    const target=this.aimTargetAt(now);
     if(target?.captured)return 'Already captured. Aim at a blue dot.';
     if(target)return 'Hold here… capturing this patch.';
-    return 'Bring a blue dot into the centre ring.';
+    // No target, and since issue #57 that is no longer "aim better". Every
+    // direction above the horizon is inside some cell's 11 degree cone, so
+    // `targetCell` returns null only below it, and "bring a blue dot into the
+    // centre ring" named an action the user could not take: there is no blue
+    // dot anywhere near the ring when the phone is pointed at the ground.
+    // The other way to get here keeps its own sentence: a TILT-ONLY basis names
+    // a cell (so `targetCell` is not null) that `aimTarget` then withholds,
+    // because without a heading the basis has no real azimuth to place it by.
+    // That is the compass again and not the horizon, and it is the same state
+    // and the same sentence as the no-basis line above.
+    if(targetCell(basis.forward))return NO_BEARING_CUE;
+    return 'The phone is pointing below the horizon. Raise it until a blue dot is in the centre ring.';
   }
   get coverageRows(): boolean[][] {
     return SWEEP_BANDS.map((_, band) => Array.from({ length: this.bins }, (_, bin) =>
@@ -1104,7 +1177,11 @@ export class PhotosphereSweep {
     // `recording` without `stop()` records `read-failed`, which ends a run -
     // but "unreachable by luck" is how a second `begin()` on a live sweep comes
     // to open with a lens sentence before a single refusal.
-    this.overlapWaitRun = 0;
+    // The two booleans one precedence level down are the same statement: left
+    // standing, a second `begin()` opens with "Hold the phone still for a
+    // moment..." or "I can't match this view yet...", both about a scan that
+    // has just ended.
+    this.overlapWaitRun = 0; this.overlapWait = false; this.alignmentWait = false;
     this.frames = []; this.panorama = new SkyPanorama(); this.coveredCells.clear(); this.aimedZenith=false; this.lastCaptureAt=null; this.scanSamples=[]; this.lastDiagnosticAt=-Infinity; this.hasCapturedFrame = false; this.recording = true;
   }
 
@@ -1290,10 +1367,21 @@ export class PhotosphereSweep {
    *  press on it - the one path a missing compass does not need (issue #42
    *  item 3; it worked before 730a59b9). Automatic capture is untouched by
    *  this: it still needs an actual reading (`hasOrientation`), which such a
-   *  browser can never produce, so only the manual press is reopened. */
+   *  browser can never produce, so only the manual press is reopened.
+   *  `this.stream !== null` is the LIVENESS half, and it is what the escape
+   *  above costs if it is left out: on that same browser
+   *  `!this.orientationSupported` is true forever, so after `stop()` - no
+   *  stream, no listeners, no element - this getter still answered healthy,
+   *  contradicting `stop()`'s own comment. Nothing consumed it in that state
+   *  (every grab returns at `not-recording` first and both callbacks are
+   *  cancelled), so it was latent rather than a live fault. The liveness term
+   *  goes here rather than in a reset of `orientationSupported`, which would
+   *  invert the fix: clearing that flag makes `!orientationSupported` true for
+   *  a browser that HAS the constructor, and the getter would read healthy for
+   *  everyone after `stop()` instead of for nobody. */
   private get sourceHealthy(): boolean {
     const visibility = typeof document === "undefined" ? undefined : document.visibilityState;
-    return (this.listening || !this.orientationSupported) && !this.trackEnded
+    return this.stream !== null && (this.listening || !this.orientationSupported) && !this.trackEnded
       && (visibility === undefined || visibility === "visible");
   }
 

@@ -96,13 +96,50 @@ export const ANCHOR_CELLS = 0.58;
  *  treeline 0.0109 -> 0.0130, which CROSSES), and nil where every pair already
  *  exceeds the noise (the fine-texture fixture, 0.000015).
  *  So the thin treeline is under the floor clean and just over it on a real
- *  camera. It is not that such a frame cannot witness; it is that it is
- *  admitted with almost nothing to witness with, and then the bounds are what
- *  refuse the pan, on a bound of 0.58 x 0.0123 = 0.0071 rather than the 0.0150
- *  the two directions pooled would have given it. Measured over that scene's
- *  1 px/frame pan with noise on it: the verdicts are unknown at sigma 1, unknown
- *  and moving at sigma 2 and 3, moving at sigma 4, and still at no sigma. */
+ *  camera - and that crossing is what GRADIENT_HYSTERESIS below now absorbs.
+ *  A frame that could not witness has to clear 0.016 to start again, and the
+ *  noise lift does not reach it, so the scene reads unknown at sigma 1, 2, 3
+ *  and 4 alike (measured over its 1 px/frame pan), rather than being admitted
+ *  with almost nothing to witness with and leaving the whole weight on the
+ *  bounds. Held rather than panned it reads unknown too: on that scene the
+ *  video vouches for nothing either way, the reading stands on the driver's
+ *  featureless memory (issue #41) instead, and the cue names the view. */
 export const GRADIENT_FLOOR = 0.0128;
+/** The width of the hysteresis band on that floor, as a fraction of it: a frame
+ *  ENTERS the featureless state at `GRADIENT_FLOOR` and LEAVES it only at
+ *  `GRADIENT_FLOOR * (1 + GRADIENT_HYSTERESIS)` = 0.016.
+ *  A bare threshold made the floor a switch that a view sitting on it flips
+ *  frame by frame, and the whole driver flips with it (issue #75). The rule
+ *  that refuses a pair unless BOTH frames could witness means the first frame
+ *  back over the floor answers 'moving' - its predecessor watched nothing - so
+ *  a view wandering across the floor reads featureless, moving, featureless,
+ *  moving, and the dome, the aim dot, the Start scan gate and the cue alternate
+ *  with it at frame rate, half of them landing on "move the phone gently" over
+ *  a phone that is holding still. That is a worse failure than either steady
+ *  answer: a wrong steady answer can be reasoned about, an alternating one
+ *  cannot be acted on at all.
+ *  The size is derived from the noise, exactly as the floor itself is. Noise
+ *  has a gradient of its own, and on a frame whose own pairs are nearly flat -
+ *  which is every frame near this floor - sigma 3 per-pixel noise puts up to
+ *  0.0027 of gradient there (measured; it is an upper bound, not an offset, and
+ *  it is the figure the #38/#62 record carries). For noise alone never to lift
+ *  a featureless frame back over the exit, the band has to be at least that:
+ *
+ *      GRADIENT_HYSTERESIS >= 0.0027 / GRADIENT_FLOOR = 0.2109
+ *
+ *  rounded up to 0.25, which puts the exit at 0.016 - 0.0032 above the floor,
+ *  the measured lift plus 19 percent.
+ *  What it does NOT promise: a scene whose TRUE gradient swings by more than a
+ *  quarter still crosses both edges, and then the verdict still changes. It
+ *  should: that is the view changing, not the witness dithering. And the first
+ *  frame of a run that does clear the exit still answers 'moving' once, for the
+ *  pair rule above - one frame on a real change of scene, not a standing
+ *  alternation.
+ *  A witness that has seen no judgeable frame yet starts in the featureless
+ *  state, so the first frame is held to the exit rather than the floor. One
+ *  rule and no special case, and it errs the safe way: a marginal opening frame
+ *  is unknown for a moment rather than a witness. */
+export const GRADIENT_HYSTERESIS = 0.25;
 
 /** The comparison grid. Small on purpose: this runs on the UI thread on a
  *  phone, once per video frame. */
@@ -196,7 +233,10 @@ export class VisualStability {
   private frameAt=-Infinity;
   private stillSince:number|null=null;
   private lastBreak:{from:number;to:number}|null=null;
-  /** Whether the newest frame has enough spatial gradient to see a shift by. */
+  /** Whether the newest frame has enough spatial gradient to see a shift by.
+   *  Also the hysteresis state: which of the two thresholds the NEXT frame is
+   *  held to (see GRADIENT_HYSTERESIS). False to start, so a witness that has
+   *  seen nothing yet is in the featureless state. */
   private canWitness=false;
   clear(){this.frame=null;this.anchor=null;this.frameAt=-Infinity;this.stillSince=null;this.lastBreak=null;this.canWitness=false;}
 
@@ -214,7 +254,13 @@ export class VisualStability {
     // judged and the one that exists in every branch - the first still pair has
     // no anchor yet - not because a case demands it.
     const g=gradient(grid);
-    this.frame=grid;this.frameAt=at;this.canWitness=g>=GRADIENT_FLOOR;
+    // The floor is a BAND and not a switch (GRADIENT_HYSTERESIS, issue #75):
+    // a frame that could witness goes on witnessing down to GRADIENT_FLOOR, and
+    // one that could not has to clear the floor by a quarter to start again.
+    // The threshold is chosen by the PREVIOUS frame's state, which is what
+    // `previousWitnessed` still holds at this point.
+    this.frame=grid;this.frameAt=at;
+    this.canWitness=g>=(previousWitnessed?GRADIENT_FLOOR:GRADIENT_FLOOR*(1+GRADIENT_HYSTERESIS));
     // Nothing watched the view across an unobserved gap, so nothing can vouch
     // for it: start the settle over rather than crediting the missing time,
     // and let the break end HERE, so nothing before this frame is covered.
