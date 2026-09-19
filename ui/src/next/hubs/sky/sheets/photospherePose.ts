@@ -43,8 +43,16 @@ export function poseSeparation(a:CameraBasis,b:CameraBasis):number {
  * left. `null` is the video's "cannot say" - a stopped stream, an unsettled
  * run, a frame with nothing in it to judge motion by - and it is not `false`.
  * Without a healthy source and a continuity reaching back to the reading, the
- * strict rule below stays in force. */
-export interface PoseEvidence { view?: ViewContinuity | null; sourceHealthy?: boolean }
+ * strict rule below stays in force.
+ * `slopMs` is the margin the caller's own witness earns (see
+ * CONTINUITY_SLOP_MS and `viewVouchesFor`): the driver knows which path
+ * produced `view` and this is how it says so, because the answer differs by
+ * path and nothing here can tell them apart. Omitted is the default margin, so
+ * a caller that has a capture time - or a test with no path at all - is
+ * unaffected. It belongs beside `view` rather than in a parameter of its own:
+ * it describes the witness that produced that continuity, and the two must
+ * never be handed over separately. */
+export interface PoseEvidence { view?: ViewContinuity | null; sourceHealthy?: boolean; slopMs?: number }
 
 /** How long the stream must be silent before silence counts as a settle
  * rather than a lull between two orientation events. There is deliberately no
@@ -107,7 +115,15 @@ const JITTER_GAP_MS = 150, JITTER_SEPARATION_DEG = 8;
  *  the last reading - 150 ms of margin plus one 33 ms frame at 30 fps, which is
  *  two frame intervals of continued movement vouched for and three refused.
  *  That is about 5 degrees of a 30 deg/s pan and about 35 of a 200 deg/s flick.
- *  On the interval fallback a frame is 350 ms, so the window there is one tick. */
+ *  This is the margin for a witness that can stamp a frame with the instant the
+ *  CAMERA saw it. A witness that cannot needs more, and how much more is a
+ *  property of that witness rather than of the clocks: the interval fallback
+ *  observes every 350 ms and stamps the read instant, so it cannot place a
+ *  break finer than one of its own intervals, and the caller on that path says
+ *  so by passing `slopMs` (issue #48). The cost is paid in the same coin as
+ *  above: 350 ms of margin plus one 350 ms interval is about 700 ms of movement
+ *  after the last reading that a dead sensor could hide there - about 21
+ *  degrees of a 30 deg/s pan - against the 500 ms this margin alone gave it. */
 export const CONTINUITY_SLOP_MS = 150;
 
 /** Does the video vouch that the view has not changed since a reading taken
@@ -122,9 +138,17 @@ export const CONTINUITY_SLOP_MS = 150;
  *  producer emits one. `VisualStability` records a break the first time it sees
  *  a frame - there is nothing behind it to reach back across - so every real
  *  continuity carries one, and a fixture without one describes a witness that
- *  cannot exist. */
-export function viewVouchesFor(readingAt:number,view:ViewContinuity|null|undefined):boolean {
-  return !!view && view.lastBreak!==null && view.lastBreak.from<=readingAt+CONTINUITY_SLOP_MS;
+ *  cannot exist.
+ *  `slopMs` is that margin, defaulting to CONTINUITY_SLOP_MS, which is the
+ *  clock-alignment margin and nothing more. A caller whose witness stamps its
+ *  observations with the instant it READ them, rather than with the instant the
+ *  camera saw them, has to add its own resolution to that - see the constant
+ *  and the interval fallback in photosphere.ts (issue #48). Passing a margin
+ *  here widens what this vouches for, so it is the caller's to justify: it is
+ *  the size of the window in which a movement after the reading would not be
+ *  challenged. */
+export function viewVouchesFor(readingAt:number,view:ViewContinuity|null|undefined,slopMs:number=CONTINUITY_SLOP_MS):boolean {
+  return !!view && view.lastBreak!==null && view.lastBreak.from<=readingAt+slopMs;
 }
 
 /** Match camera capture times to sensor times, never to a newer phone pose.
@@ -162,6 +186,24 @@ export class CameraPoseHistory {
       // such reading) this frame gets none. If the run does NOT cover the
       // window, the video cannot say the phone held still, so the jump is
       // treated as the movement it looks like.
+      // `stillSince` is compared WITHOUT `slopMs`, deliberately, and the cost
+      // is real rather than nil. A read-instant witness inflates `stillSince`
+      // by the pipeline delay exactly as it inflates `lastBreak.from`, so on a
+      // lagged fallback this gate goes false in the region the widened margin
+      // now admits a pose in, and a final-pair outlier that the same fixture
+      // refutes at zero lag is worn there instead (the exposure is new, because
+      // that region used to produce no pose at all).
+      // It is left strict because widening it does not merely relax a refusal:
+      // it changes WHICH reading is worn. The gate's false branch keeps the
+      // jump as the movement it looks like; its true branch hands the pair to
+      // the arbitration below, which may return no pose at all. Asserting
+      // coverage the witness has not demonstrated therefore risks arbitrating
+      // away a genuine brisk final approach - the review 15 P2 failure this
+      // whole rule was rewritten to avoid - to buy protection against an
+      // outlier that registration's overlap check and the next reading already
+      // bound. That trade needs a case that pins the arbitration on a lagged
+      // fallback before it is made, and it is outside the margin question
+      // issue #48 rules on; it is recorded there rather than guessed here.
       if(previous && latest.at-previous.at<JITTER_GAP_MS
         && poseSeparation(latest.basis,previous.basis)>JITTER_SEPARATION_DEG
         && view.stillSince<=previous.at){
@@ -173,7 +215,11 @@ export class CameraPoseHistory {
         if(!latestAgrees&&!previousAgrees)return null;
         pose=!previousAgrees||(latestAgrees&&toLatest<toPrevious)?latest:previous;
       }
-      if(viewVouchesFor(pose.at,view)){
+      // On the caller's own margin: the reading is being worn under a witness
+      // the caller chose, and the same path's margin has to decide here as
+      // decides in the driver, or a phone could be told its heading stands
+      // while every frame of the hold is refused a pose (issue #48).
+      if(viewVouchesFor(pose.at,view,evidence.slopMs)){
         const reference=captureTime===undefined?now:captureTime;
         const silence=reference-pose.at;
         if((captureTime===undefined||Number.isFinite(captureTime)) && reference<=now
