@@ -78,7 +78,14 @@ for (const k of [
 g.IS_REACT_ACT_ENVIRONMENT = true;
 
 // ------------------------------------------------------------------ the clock
-const T0 = new Date(2026, 8, 10, 21, 0, 0).getTime();
+// Date.UTC, not the local-time constructor. `new Date(2026, 8, 10, 21, 0, 0)`
+// pins the wall clock but NOT the instant: it meant 04:00Z on the author's
+// machine at UTC-7 and 21:00Z on a CI runner, seven hours of sidereal rotation
+// apart, which puts M27 in a different part of the sky. Below the horizon its
+// arc clips to the same geometry before and after the 45 minute tick, and the
+// re-walk assertion fails on the runner while passing for the author. This is
+// the same absolute instant the test has always exercised here.
+const T0 = Date.UTC(2026, 8, 11, 4, 0, 0);
 let clockMs = T0;
 const realNow = Date.now;
 Date.now = () => clockMs;
