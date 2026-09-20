@@ -675,6 +675,8 @@ class SequenceEngine:
         because resume is a new run."""
         if self.running:
             raise DeviceError("a sequence is already running")
+        if getattr(getattr(self.hub, "dusk_arm", None), "connecting", False):
+            raise DeviceError("dusk preparation is connecting equipment; wait before starting a sequence")
         self.plan = plan
         resume = session is not None
         if session is None:

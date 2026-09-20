@@ -373,6 +373,10 @@ class ResumeArm:
         # So: no devices yet means come back on the NEXT 60s tick, with no
         # backoff and no alarming log line. It is not a condition the operator
         # needs to know about; it is the boot finishing.
+        dusk = getattr(self.hub, "dusk_arm", None)
+        if dusk is not None and (reason := dusk.resume_veto()):
+            self._set_hold(armed, reason)
+            return
         if not self._devices_ready():
             return
 
