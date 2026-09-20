@@ -430,8 +430,15 @@ no ray hit anything. Measured bin `i` of `N` covers
   an unresolved bin is not evidence of a miss. `width_missed_total_deg` is
   reported beside the run so the jitter is still in the score, and
   `chartyard-arc075-60`'s roof-south is what the two figures look like when
-  they differ: 41.8 degrees of total in runs of 13.3, 10.2, 7.2, 5.7 and 5.4,
-  MISSED on the longest run alone against a 12 degree threshold.
+  they differ. When this rule landed it read 41.8 degrees of total in runs of
+  13.3, 10.2, 7.2, 5.7 and 5.4, and was MISSED on the longest run alone
+  against a 12 degree threshold. Three commits later the tracer changed what
+  it finds there (issues #71 and #74), and the same obstacle now reads 29.8
+  degrees of total with a longest run of 10.2, which is under the threshold,
+  so it is NOT missed and the case's `no_missed_obstructions` passes. Both
+  changes are needed for that: the rule reading a stretch, and the tracer
+  finding more of the roof. A worked example dated to the commit that wrote
+  it is how #89 happened; this one carries both readings on purpose.
 - Issue #53: an obstacle narrower than one product bin is a width the product
   cannot represent at all, whatever the scanner does -- the scanner reports
   the horizon in a fixed number of azimuth bins (`PhotosphereSweep`'s own
