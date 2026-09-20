@@ -92,6 +92,17 @@ a reader of `observations.jsonl` must not infer the delivery order within a
 millisecond from the line order, and a driver must sort the merged stream with
 readings ahead of frames at equal delivery times.
 
+There is no `devicemotion` record, and no case can produce one. The scanner
+gained a gyroscope witness for the view the camera cannot judge (issue #63):
+on a featureless sky the video vouches for nothing, so a reading is held by a
+`rotationRate` that stays quiet. Every recording predates that channel and
+carries only frames and orientation, so in a replay the gyroscope is always
+absent and always refuses. A hold that the recordings score as missed for
+want of a pose may therefore be a hold a real phone would have captured, and
+`every_hold_captured` cannot settle it either way until a recording carries
+motion (issue #105). Issue #76's zenith holds on the arc routes are exactly
+that case.
+
 `actions.jsonl`: `{"t_ms":0,"action":"begin"}` and `{"t_ms":<end>,"action":"finish"}`.
 
 `truth/camera.json`: `{"width","height","fov_short_deg","fx","fy","cx","cy","distortion":null}`.
@@ -127,7 +138,19 @@ the canopy is indistinguishable from one that also found the trunk.
 - `result/events.jsonl`: one line per delivered frame:
   `{"t_ms","frame_id","compass_ready","tilt_ready","aim":<cell id|null>,"basis":{"right","up","forward"}|null,"frame_count","cue"}`.
 - `result/captures.jsonl`: the scanner's capture log, one line per attempt:
-  `{"at","outcome","cell"?, "basis"?, "sensor_basis"?, "adjusted"?}`.
+  `{"at","outcome","cell"?, "basis"?, "sensor_basis"?, "adjusted"?, "wait"?,
+  "separation"?, "anchor"?}`. The last three belong to `alignment-wait` and
+  were added for issue #76, because one outcome name covered three different
+  refusals and a log of them said only that a hold did not capture. `wait` is
+  `no-pose` (nothing could place the frame at all), `unsettled` (a pose was
+  worn but the settle test found none) or `separation` (both poses exist and
+  differ by more than 1.5 degrees); `separation` carries the degrees that last
+  term measured, and `anchor` carries the size of the carried visual
+  correction - the max-axis separation of the anchor PAIR itself, the raw sensor
+  basis it was set from against the fitted basis it was set to, 0 where there is
+  none. It is not the separation that transfer produces on this frame's pose,
+  which is close but not equal. Every field is written only where the
+  scanner set it, so a record that measured nothing claims nothing.
 - `result/summary.json`: `{"frames_delivered","events_delivered","frames_accepted","cells_total","cells_covered","elapsed_ms","app_commit"}`.
   `app_commit` is the replaying tree's `git rev-parse HEAD`, with `-dirty`
   appended when `git status --porcelain` is not empty, and `null` when git

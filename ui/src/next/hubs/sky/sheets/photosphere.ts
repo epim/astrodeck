@@ -1,7 +1,7 @@
 // Camera capture retains a bounded colour panorama and an editable horizon
 // draft. Phone sensor pose and lens angles remain estimates for user review.
 import { DOME_CELLS, SkyPanorama, orientationBasis, pixelBlueness, pixelLuminance, skyAngles, cameraLens, targetCell, transferBasis, type CameraBasis } from './photosphereGeometry';
-import { CameraPoseHistory, ScanPoseSource, poseSeparation, viewVouchesFor, CONTINUITY_SLOP_MS, type PoseEvidence } from './photospherePose';
+import { CameraPoseHistory, MotionStability, ScanPoseSource, poseSeparation, viewVouchesFor, CONTINUITY_SLOP_MS, type PoseEvidence } from './photospherePose';
 import { registerFrame, SEARCH_CEILING_DEG } from './photosphereRegistration';
 import { VisualStability, GRID_W, GRID_H, CELL_SAMPLES, STALE_FRAME_MS } from './photosphereStability';
 
@@ -36,6 +36,35 @@ export type CaptureOutcome =
   | 'frame-already-captured'
   | 'read-failed';
 
+/** Which of the three terms behind `alignment-wait` refused. The outcome is one
+ *  name for three different states and they want different fixes, so a log of
+ *  `alignment-wait` records said only that a hold did not capture:
+ *
+ *    `no-pose`     nothing could place this frame at all - no settled sensor
+ *                  pose, and no tilt-only overhead either. Reached when the
+ *                  sensor has gone quiet and the video cannot vouch for its
+ *                  last reading, which over a featureless view is every frame.
+ *    `unsettled`   a pose was worn but the settle test found none now.
+ *    `separation`  both poses exist and differ by more than 1.5 degrees.
+ *
+ *  Only the third measures anything, so only the third carries `separation`.
+ *
+ *  What the instrument found, since it is the reason the type exists. On both
+ *  recorded arc routes the zenith hold of issue #76 records `no-pose` for every
+ *  frame of its window, with the anchor at 0 on `chartyard-arc075-60` and 1.73
+ *  degrees on `-70`; across both whole scans the `separation` term is reached
+ *  ZERO times, so the azimuth-near-the-pole mechanism that issue proposed is
+ *  not what refuses there. Every hold either case misses spends most of its
+ *  window reading `featureless`, which is the gap issue #63 describes, reaching
+ *  capture.
+ *
+ *  `separation` is therefore a branch no suite and no recording reaches: the
+ *  two `forFrame` calls it compares are handed the same evidence at the same
+ *  instant and differ only in a capture time, and every path that returns a
+ *  pose for both returns poses already inside the 1.5 degrees. It is filed
+ *  rather than dressed up with a fixture here. */
+export type AlignmentWait = 'no-pose' | 'unsettled' | 'separation';
+
 export interface CaptureRecord {
   at: number;
   outcome: CaptureOutcome;
@@ -43,6 +72,24 @@ export interface CaptureRecord {
   basis?: CameraBasis;
   sensorBasis?: CameraBasis;
   adjusted?: boolean;
+  /** `alignment-wait` only: which term refused (issue #76). */
+  wait?: AlignmentWait;
+  /** `alignment-wait` with `wait: 'separation'` only: the max-axis degrees
+   *  between the settled pose and the pose the frame was worn at - the number
+   *  the 1.5 degree gate compared. Absent where nothing was measured. */
+  separation?: number;
+  /** `alignment-wait` only: the size of the CARRIED visual anchor, in max-axis
+   *  degrees - the separation of the anchor PAIR itself, `poseSeparation` of the
+   *  raw sensor basis the anchor was set from and the fitted basis it was set
+   *  to, and 0 where no anchor has been set. Not the separation the same
+   *  transfer produces when applied to this frame's pose, which is close but not
+   *  equal: `transferBasis` applies one rotation, and max-axis separation is not
+   *  invariant under it (measured once at the old 10 degree clamp, an anchor
+   *  admitted at 9.9435 read 10.0368 several cells later). Recorded on all
+   *  three terms because the anchor is the other half of the hypothesis a
+   *  refusal has to be read against (issue #76), and because it is the one
+   *  quantity in the refusal that the previous frames set rather than this one. */
+  anchor?: number;
 }
 
 /** Does this outcome end a run of `overlap-wait` refusals (see
@@ -1069,6 +1116,11 @@ export class PhotosphereSweep {
   private lastRegistrationAt=-Infinity;
   private tilts = new CameraPoseHistory();
   private stability = new VisualStability();
+  /** The second witness (issue #63, #76). It speaks only where the first one
+   *  cannot - see `motionVouchesFor` - and it is fed by its own listener, which
+   *  `start()` attaches and `stop()` removes with the rest. */
+  private motion = new MotionStability();
+  private motionHandler: ((e: Event) => void) | null = null;
   /** The margin every `viewVouchesFor` in this session is asked for, chosen in
    *  `start()` by which witness the browser gave us and used by all three
    *  callers - `vouched`, `noteReadingsStand` and the evidence handed to
@@ -1221,7 +1273,54 @@ export class PhotosphereSweep {
    *  grade the two halves of its answer at two different moments. */
   private vouched(at: number | null, now = performance.now()): boolean {
     if (at === null) return false;
-    return now - at < SENSOR_SILENCE_MS || viewVouchesFor(at, this.stability.continuity(now), this.vouchSlopMs);
+    return now - at < SENSOR_SILENCE_MS || viewVouchesFor(at, this.stability.continuity(now), this.vouchSlopMs)
+      || this.motionVouchesFor(at, now);
+  }
+  /** The GYRO's answer to the same question, and only where the video has none
+   *  to give (issues #63 and #76).
+   *
+   *  The video is the primary witness and this never overrides it. The one
+   *  state it speaks in is 'featureless' - a camera working perfectly,
+   *  delivering frames, pointed at a patch of sky with nothing in it a shift
+   *  would move - which is the one state where the video is not silent by
+   *  accident but is telling us it cannot judge. 'moving' is excluded although
+   *  it also yields no continuity, and that exclusion is the point: 'moving' is
+   *  a MEASUREMENT that the scene changed, which a gyro reporting no rotation
+   *  must not be allowed to talk over (a translating phone, or something moving
+   *  in the frame, moves the picture without turning). 'stale' is excluded
+   *  because a stopped camera is a worse state with a cue and a refusal of its
+   *  own, and `readingStands` already declines to hold a reading through it.
+   *
+   *  The margin is CONTINUITY_SLOP_MS and never `vouchSlopMs`. That field is
+   *  the widened margin the interval FALLBACK earns because its observations
+   *  carry the read instant rather than the capture instant (issue #48); a
+   *  `devicemotion` event carries its own timestamp on the same clock as an
+   *  orientation event, with no camera pipeline behind it, so clock alignment
+   *  is the whole of what this witness needs. Using the smaller of the two is
+   *  also the stricter choice, which is the right direction for a witness whose
+   *  two constants have not yet been measured on a device. */
+  private motionVouchesFor(at: number, now: number): boolean {
+    return this.stability.witness(now) === 'featureless'
+      && viewVouchesFor(at, this.motion.continuity(now), CONTINUITY_SLOP_MS);
+  }
+  /** Is the gyro vouching for whichever reading the driver is standing on? Read
+   *  by `captureCue`, which has to know whether the blank-sky sentences are
+   *  still true - while this is so, frames are going into the mosaic and
+   *  "nothing is being captured" would be a lie. */
+  private motionHolds(now: number): boolean {
+    return (this.headingAt !== null && this.motionVouchesFor(this.headingAt, now))
+      || (this.tiltAt !== null && this.motionVouchesFor(this.tiltAt, now));
+  }
+  /** The evidence handed to every `forFrame` call in this session: the video's
+   *  continuity, or the gyro's in the one state the video cannot judge, each
+   *  with the margin that belongs to the witness that produced it. One method
+   *  and not two copies at the two call sites, for the reason `vouchSlopMs`
+   *  exists: the dome, the memory and the capture must not be able to disagree
+   *  about whether a reading is covered. */
+  private poseEvidence(now: number): PoseEvidence {
+    if (this.stability.witness(now) === 'featureless')
+      return { view: this.motion.continuity(now), sourceHealthy: this.sourceHealthy, slopMs: CONTINUITY_SLOP_MS };
+    return { view: this.stability.continuity(now), sourceHealthy: this.sourceHealthy, slopMs: this.vouchSlopMs };
   }
   /** Does the reading taken at `at` still describe where the phone points?
    *  `vouched` is the evidence test and it decides on its own wherever the view
@@ -1501,7 +1600,23 @@ export class PhotosphereSweep {
     // rule wants a sample within 250 ms, which is exactly `sensorQuietAt`. While
     // a sample IS that fresh, capture can proceed on the sensor alone and this
     // is an ordinary moment with nothing to explain.
-    const blankView=this.stability.witness(now)==='featureless' && this.sensorQuietAt(now);
+    // The third clause is the gyro (issue #63). While it vouches, the last
+    // reading STANDS - that is what `motionHolds` asks and all it asks - so both
+    // sentences below are false about the compass, which is the half each of
+    // them turns on: the first ends "so nothing is being captured" and the
+    // second opens "the compass has gone quiet", and neither state obtains.
+    // Deliberately NOT a claim that a capture is happening. `motionHolds` is
+    // true from 250 ms of sensor silence (`sensorQuietAt`) while `forFrame`'s
+    // vouched path needs 500 ms, so there is a window where the reading stands
+    // and no capture is yet possible; and past it, `already-captured`,
+    // `too-soon`, `no-target` and an overlap conflict all leave this true with
+    // nothing entering the mosaic. In every one of those the ordinary target
+    // cues below say what is actually happening, which is why the suppression is
+    // not gated on the 500 ms as well - a user whose heading is held does not
+    // need to be told the sky is blank, they need the cue for the state they are
+    // in.
+    const blankView=this.stability.witness(now)==='featureless' && this.sensorQuietAt(now)
+      && !this.motionHolds(now);
     const basis=this.basisAt(now);
     // The reading STANDS (see readingStands), so the dome and the aim dot are
     // up and the compass line would contradict them as well as handing the user
@@ -1643,7 +1758,7 @@ export class PhotosphereSweep {
     // about this camera session, so it starts over. `stop()` never does this.
     this.captureRecords = []; this.hasCapturedFrame = false;
     this.poses.clear();this.tilts.clear();this.poseSource.clear();this.visualAnchor=null;this.lastRegistrationAt=-Infinity;this.frameBasis=null;this.alignmentWait=false;this.overlapWait=false;this.lastSensorReading=null;
-    this.stability.clear();this.trackEnded=false;
+    this.stability.clear();this.motion.clear();this.trackEnded=false;
     this.lastMediaTime=null;this.lastMediaAdvanceAt=-Infinity;this.presentedFrameId=null;this.lastCapturedFrameId=null;this.imageGate=null;
     this.hasOrientation = false; this.tiltAt = null; this.headingAt = null;
     this.headingStoodAt = null; this.tiltStoodAt = null;
@@ -1750,6 +1865,26 @@ export class PhotosphereSweep {
       this.issue = NO_POSE_STREAM_CUE;
     }
 
+    // The gyro, on its own listener and its own constructor test, because
+    // `devicemotion` and `deviceorientation` are two different streams and a
+    // browser can have either without the other. Attached unconditionally
+    // rather than behind a permission or a feature flag: a browser that never
+    // fires it leaves `this.motion` with no samples at all, which reads 'stale'
+    // and vouches for nothing, and that is exactly the outcome a missing gyro
+    // should have. iOS gates motion behind `DeviceMotionEvent.requestPermission`
+    // and the gesture above asks the ORIENTATION permission; if motion is not
+    // granted there, no event arrives and the witness stays stale - a refusal,
+    // never a wrong vouch.
+    // The timestamp is read the same way the heading handler reads its own, so
+    // the two streams land on one clock and a continuity from one can be
+    // measured against a reading from the other.
+    this.motionHandler = (e: Event) => {
+      const received = performance.now();
+      const at = Number.isFinite(e.timeStamp) && Math.abs(received - e.timeStamp) < 2000 ? e.timeStamp : received;
+      this.motion.observe(at, (e as DeviceMotionEvent).rotationRate);
+    };
+    window.addEventListener("devicemotion", this.motionHandler);
+
     if(typeof video.requestVideoFrameCallback==='function'){
       // This path stamps each observation with the frame's own capture time
       // (see the `seen` line below), so what separates an observation from the
@@ -1783,7 +1918,7 @@ export class PhotosphereSweep {
         const capture=metadata.captureTime;
         const seen=capture!==undefined&&Number.isFinite(capture)&&capture<=now&&now-capture<=STALE_FRAME_MS?capture:now;
         this.observeStillness(video,seen);
-        const evidence:PoseEvidence={view:this.stability.continuity(now),sourceHealthy:this.sourceHealthy,slopMs:this.vouchSlopMs};
+        const evidence:PoseEvidence=this.poseEvidence(now);
         const basis=this.poses.forFrame(now,metadata.captureTime,evidence);
         if(basis)this.frameBasis={basis,at:now};
         else this.frameBasis=null;
@@ -1939,7 +2074,7 @@ export class PhotosphereSweep {
   /** Append one outcome to the diagnostic log. This records; it never decides
    *  anything - every gate below still returns its own `false` on its own
    *  terms, this just names which one fired. */
-  private recordCapture(now: number, outcome: CaptureOutcome, extra?: { cell?: number; basis?: CameraBasis; sensorBasis?: CameraBasis; adjusted?: boolean }): void {
+  private recordCapture(now: number, outcome: CaptureOutcome, extra?: { cell?: number; basis?: CameraBasis; sensorBasis?: CameraBasis; adjusted?: boolean; wait?: AlignmentWait; separation?: number; anchor?: number }): void {
     // The exception to "records, never decides", and here deliberately: this is
     // the single point every outcome passes through, so the run of overlap
     // refusals the cue reads cannot miss one. Counting it at the two
@@ -2076,17 +2211,30 @@ export class PhotosphereSweep {
       return false;
     }
     this.imageGate = null;
-    const evidence:PoseEvidence={view:this.stability.continuity(now),sourceHealthy:this.sourceHealthy,slopMs:this.vouchSlopMs};
+    const evidence:PoseEvidence=this.poseEvidence(now);
     const rawBasis=frame ? frame.basis : this.poses.forFrame(now,undefined,evidence);
     let basis=rawBasis?this.correctBasis(rawBasis):null;
     const tilt=frame ? frame.tilt : this.tilts.forFrame(now,undefined,evidence);
     let measured=basis?skyAngles(basis.forward):tilt?skyAngles(tilt.forward):null;
     const overhead=manualOverhead || (!!measured && bandForAltitude(measured.alt)===OVERHEAD_BAND);
-    if(!manualOverhead && !basis && !(tilt&&overhead)){this.alignmentWait=true;this.recordCapture(now,'alignment-wait');return false;}
+    // What the carried correction would do to this frame's pose, measured on
+    // the anchor itself rather than on the pose, so a refusal that never formed
+    // a pose still says how large the anchor it was carrying was (issue #76).
+    const anchor=this.visualAnchor?poseSeparation(this.visualAnchor.raw,this.visualAnchor.aligned):0;
+    if(!manualOverhead && !basis && !(tilt&&overhead)){this.alignmentWait=true;this.recordCapture(now,'alignment-wait',{wait:'no-pose',anchor});return false;}
     // A timestamp does not make a frame taken during motion sharp or account
     // for an entire low-light exposure. Hold still even with frame timestamps.
     const stable=basis?this.poses.forFrame(now,undefined,evidence):this.tilts.forFrame(now,undefined,evidence);
-    if(!manualOverhead && (!stable || poseSeparation(stable,(rawBasis??tilt)!)>1.5)){this.alignmentWait=true;this.recordCapture(now,'alignment-wait');return false;}
+    // One condition split into its two terms, so the record names which one
+    // fired and carries the number the second one decided on. Both still refuse
+    // exactly where the single test did, and neither is reached by a manual
+    // overhead press - which is why they sit inside one `!manualOverhead`
+    // rather than repeating it.
+    if(!manualOverhead){
+      if(!stable){this.alignmentWait=true;this.recordCapture(now,'alignment-wait',{wait:'unsettled',anchor});return false;}
+      const separation=poseSeparation(stable,(rawBasis??tilt)!);
+      if(separation>1.5){this.alignmentWait=true;this.recordCapture(now,'alignment-wait',{wait:'separation',separation,anchor});return false;}
+    }
     this.alignmentWait=false;
     if(!manualOverhead && basis){
       const target=targetCell(basis!.forward);
@@ -2260,13 +2408,19 @@ export class PhotosphereSweep {
       window.removeEventListener("deviceorientationabsolute", this.headingHandler);
     }
     this.headingHandler = null;
+    if (this.motionHandler && typeof window !== "undefined")
+      window.removeEventListener("devicemotion", this.motionHandler);
+    this.motionHandler = null;
     // No listeners, no pose stream: the source is not healthy until start()
     // attaches them again, and the old view can vouch for nothing. The luma
     // canvas goes with it - it is lazy, so the next scan rebuilds it, and a
     // closed editor should not hold a canvas backing store open.
     // The memory of a reading that once stood goes with the witness that made
     // it: a new scan must not inherit one, and there is no view left to keep it.
-    this.listening = false; this.stability.clear();
+    // The gyro's run ends with its listener for the same reason the view's
+    // does: a quiet run that survived the session would let the next scan's
+    // first reading be vouched for by samples taken before that scan existed.
+    this.listening = false; this.stability.clear(); this.motion.clear();
     this.headingStoodAt = null; this.tiltStoodAt = null;
     // The margin belongs to the witness this session had, so it ends with it.
     // Nothing is left to vouch with once `stability` is cleared, so this
