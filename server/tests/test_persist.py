@@ -392,7 +392,13 @@ def test_a_slow_fingerprint_write_announces_itself_to_the_loop(
     # Handed over once; the loop must not republish it on every poll.
     assert fingerprint.take_slow_write_notice() is None
 
-    # A write inside the budget is silent.
+    # A write inside the budget is silent. The budget is raised well clear of
+    # any real write first: left at 0.02s this asserted that the HOST could
+    # finish an ACL harden, two fsyncs and an atomic replace in 20 ms, which is
+    # true of a developer's NVMe (measured 3.5 ms) and false of a CI runner
+    # with Defender and twelve parallel workers. The subject here is the
+    # branch, not the disk.
+    monkeypatch.setattr(fingerprint, "FINGERPRINT_SLOW_WRITE_S", 60.0)
     monkeypatch.setattr(fingerprint, "write_json_atomic", real_write)
     fingerprint.reset_for_tests()
     fingerprint.record(focuser_position=11219, filter_slot=1, ra_hours=1.0,

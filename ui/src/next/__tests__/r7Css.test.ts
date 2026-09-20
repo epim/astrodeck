@@ -47,6 +47,7 @@
 
 const { readFileSync, readdirSync, statSync, existsSync } = await import("node:fs");
 const { fileURLToPath } = await import("node:url");
+const { dirname: pdirname, resolve: presolve } = await import("node:path");
 
 /** `ui/src/next/`, with a trailing separator, in native path form. */
 const NEXT = fileURLToPath(new URL("../", import.meta.url));
@@ -208,14 +209,15 @@ const EMITS = new Map<string, Emission>(MODULES.map((p) => [p, emissionsOf(p)]))
  *  every stylesheet is inside `next/`. */
 function resolveSpec(from: string, spec: string): string | null {
   if (!spec.startsWith(".")) return null;
-  const parts = from.split(SEP).slice(0, -1).concat(spec.split(/[\\/]/));
-  const stack: string[] = [];
-  for (const part of parts) {
-    if (part === "." || part === "") continue;
-    if (part === "..") stack.pop();
-    else stack.push(part);
-  }
-  const base = stack.join(SEP);
+  // node:path, not hand-rolled splitting. Splitting an ABSOLUTE POSIX path on
+  // "/" yields a leading "" that encodes the root, and skipping empty parts
+  // threw it away: every resolution came back relative ("home/runner/..."),
+  // every existsSync missed, and the import graph was EMPTY on Linux. On
+  // Windows the first element is the drive letter, which is not empty, so the
+  // whole class was invisible here and only ever failed on CI. That is how
+  // "hubs/monitor/alerts/alerts.css is imported by no module in its own area"
+  // could be reported about a file whose neighbour plainly imports it.
+  const base = presolve(pdirname(from), spec);
   if (base.endsWith(".css")) return existsSync(base) ? base : null;
   for (const cand of [`${base}.ts`, `${base}.tsx`, join(base, "index.ts"), join(base, "index.tsx"), base]) {
     if (existsSync(cand) && statSync(cand).isFile()) return cand;
