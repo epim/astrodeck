@@ -205,6 +205,14 @@ const HELPER_ONLY: Record<string, { names: string[]; why: string }> = {
  *  vocabulary for, rendering no Panel/.btn/.field inside the new UI. These are
  *  the ONLY legacy components the new UI may mount. */
 const KEEP_AS_IS: Record<string, { names: string[]; why: string }> = {
+  "components/gallery/CaptureGroups": {
+    names: ["CaptureGroups"],
+    why: "2.3 - a token-driven table of capture-geometry groups with no chrome of its " +
+      "own, rendered identically by the legacy GalleryView and the new session files " +
+      "sheet. Copying it would leave two groupings of the same frames that must agree " +
+      "about target, filter, type, dimensions, binning and exposure, and silently " +
+      "disagree the day one is changed.",
+  },
   "components/preview/PreviewStage": {
     names: ["PreviewStage", "StageControls"],
     why: "2.3 - the pixel pipeline: double-buffered <img> swap, .preview-transform " +

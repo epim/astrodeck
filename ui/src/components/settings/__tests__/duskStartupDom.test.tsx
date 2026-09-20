@@ -1,5 +1,31 @@
 // Run directly; no background service or physical equipment is involved.
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
+
+// A counting shim over the three assertions this file uses. Bare asserts threw
+// on the first failure, so the run ended there and printed no tally at all -
+// which the runner scores as "cannot be scored", not as a pass. Counting gives
+// the runner its "N/M passed" line AND reports every failure rather than only
+// the earliest one.
+// Explicit signatures rather than a generic wrapper: node's assertions are
+// declared as assertion functions, and their narrowing cannot be forwarded
+// through a generic rest parameter without making `message` mandatory.
+let passed = 0;
+const failures: string[] = [];
+const record = (label: string, run: () => void): void => {
+  try { run(); passed++; } catch (e) {
+    failures.push(`${label}: ${e instanceof Error ? e.message : String(e)}`);
+  }
+};
+// The message is passed only when present: node's overloads accept either no
+// message or a required one, never `string | undefined`.
+const assert = {
+  equal: (a: unknown, b: unknown, m?: string): void =>
+    record(m ?? "equal", () => m === undefined ? nodeAssert.equal(a, b) : nodeAssert.equal(a, b, m)),
+  deepEqual: (a: unknown, b: unknown, m?: string): void =>
+    record(m ?? "deepEqual", () => m === undefined ? nodeAssert.deepEqual(a, b) : nodeAssert.deepEqual(a, b, m)),
+  match: (s: string, re: RegExp, m?: string): void =>
+    record(m ?? `match ${re}`, () => m === undefined ? nodeAssert.match(s, re) : nodeAssert.match(s, re, m)),
+};
 const { JSDOM } = await import("jsdom");
 const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: "http://local/", pretendToBeVisual: true });
 // Test globals must precede the store/UI imports.
@@ -68,4 +94,7 @@ assert.equal((host.querySelector("fieldset") as HTMLFieldSetElement).disabled, t
 assert.match(host.textContent!, /administrator/);
 await act(async () => { root.unmount(); });
 dom.window.close();
-console.log("Dusk settings: save, preservation, error recovery, status and permissions passed.");
+console.log(`dusk startup: ${passed}/${passed + failures.length} passed`);
+for (const failure of failures) console.log(failure);
+export const result = { passed, failed: failures.length, total: passed + failures.length };
+if (failures.length) process.exitCode = 1;
