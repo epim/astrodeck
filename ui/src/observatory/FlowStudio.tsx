@@ -86,7 +86,7 @@ export default function FlowStudio({ target, frames, exposure }: { target: strin
         {!Object.values(BLOCKS).some(d => `${d.title} ${d.detail}`.toLowerCase().includes(search.toLowerCase())) && <p className="obs-muted">No matching blocks.</p>}
         <div className="fs-library-tip"><span>◇</span><strong>Let the night decide.</strong><p>Logic blocks have named exits. Follow each wire to see what happens next.</p></div>
       </aside>
-      <div className="fs-canvas-column"><div className="fs-canvas-heading"><span><i/> {flow.nodes.length} blocks · {flow.edges.length} connections</span><button aria-expanded={showChecks} onClick={() => setShowChecks(!showChecks)}>{issues.length ? `${issues.length} to connect / check` : '✓ Ready to trace'}</button></div>
+      <div className="fs-canvas-column"><div className="fs-canvas-heading"><span><i/> {flow.nodes.length} blocks · {flow.edges.length} connections</span><button aria-expanded={showChecks} onClick={() => setShowChecks(!showChecks)}>{issues.length ? `${issues.length} to connect / check` : 'Ready to trace'}</button></div>
         <div className={`fs-viewport ${pending ? 'fs-wiring' : ''}`} ref={viewport} tabIndex={0} aria-label="Flow canvas. Drag blocks to move. Drag empty space to pan." onPointerDown={e => { if (e.target === e.currentTarget || (e.target as HTMLElement).classList.contains('fs-world') || (e.target as HTMLElement).classList.contains('fs-wires')) { setSelection(null); begin(e, { mode: 'pan', x: e.clientX, y: e.clientY, left: viewport.current!.scrollLeft, top: viewport.current!.scrollTop }); } }}>
           <div style={{ width: worldWidth * zoom, height: worldHeight * zoom }}><div className="fs-world" style={{ width: worldWidth, height: worldHeight, transform: `scale(${zoom})` }}>
             <div className="fs-canvas-label" style={{ left: 55, top: 35 }}>THE PLAN <span>One block at a time. Every path has a purpose.</span></div>
@@ -102,7 +102,7 @@ export default function FlowStudio({ target, frames, exposure }: { target: strin
             </article>)}
           </div></div>
         </div>
-        <div className="fs-canvas-bottom"><span>{pending ? '● Choose an input to connect · Esc cancels' : 'Drag to arrange · Pull ports to connect · Drag space to pan'}</span><div><button aria-label="Zoom out" onClick={() => setZoom(z => Math.max(.3, z - .1))}>−</button><span>{Math.round(zoom * 100)}%</span><button aria-label="Zoom in" onClick={() => setZoom(z => Math.min(1.6, z + .1))}>+</button><button onClick={fit}>Fit</button></div></div>
+        <div className="fs-canvas-bottom"><span>{pending ? 'Choose an input to connect · Esc cancels' : 'Drag to arrange · Pull ports to connect · Drag space to pan'}</span><div><button aria-label="Zoom out" onClick={() => setZoom(z => Math.max(.3, z - .1))}>−</button><span>{Math.round(zoom * 100)}%</span><button aria-label="Zoom in" onClick={() => setZoom(z => Math.min(1.6, z + .1))}>+</button><button onClick={fit}>Fit</button></div></div>
         {showChecks && <div className="fs-checks"><strong>{issues.length ? 'Finish the wiring' : 'All branches are connected.'}</strong>{issues.length ? <ul>{issues.map((issue, i) => <li key={i}>{issue}</li>)}</ul> : <p>The diagram is ready for a local trace. Equipment readiness and server execution are not checked.</p>}</div>}
         {preview >= 0 && <div className="fs-preview" aria-live="polite"><span className="fs-glyph">▷</span><div><small>TRACE · {preview + 1} / {route.length}</small><strong>{flow.nodes.find(n => n.id === route[preview])?.label}</strong><p>{blockDetail(flow.nodes.find(n => n.id === route[preview])!)}{flow.nodes.find(n => n.id === route[preview])?.kind === 'capture' ? ' · All iterations represented by this step.' : ''}</p></div><button onClick={() => setPreview(p => p + 1 < route.length ? p + 1 : -1)}>{preview + 1 === route.length ? 'Finish trace' : 'Next step →'}</button><button aria-label="Close trace" onClick={() => setPreview(-1)}>×</button></div>}
       </div>
@@ -112,7 +112,7 @@ export default function FlowStudio({ target, frames, exposure }: { target: strin
       </aside>
     </div>
     <div className="fs-status"><span role="status">{notice}</span><span>{saved}</span></div>
-    <p className="fs-prototype-note">Interactive design draft · Wiring and traces work locally; this graph does not run equipment. <a href="#/session/flows">Open the current execution editor ↗</a></p>
+    <p className="fs-prototype-note">Interactive design draft · Wiring and traces work locally; this graph does not run equipment. <a href="#/session/flows">Open the current execution editor</a></p>
     {gesture?.mode === 'add' && gesture.moved && <div className="fs-drag-ghost" style={{ left: gesture.x + 12, top: gesture.y + 12 }}>{BLOCKS[gesture.kind].glyph} {BLOCKS[gesture.kind].title}</div>}
   </section>;
 }
