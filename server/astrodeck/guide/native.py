@@ -180,6 +180,30 @@ _UNKNOWN_DECLINATION = 997.0
 _MAX_CAL_ORTHO_ERROR_DEG = 12.5
 
 
+#: How far the RA rate may drift with declination before a persisted
+#: calibration stops meaning anything (#18). Mirrored from the engine's
+#: CAL_ALERT_AXISRATES_TOLERANCE (calibration.rs:101, PHD2's scope.cpp:60),
+#: which is already the fraction at which this codebase calls two guide rates
+#: unexpectedly different. Using degrees instead would be the wrong shape:
+#: cos falls away sharply near the pole, so six degrees is nothing at +34 and
+#: decisive at +66.
+_MAX_CAL_RA_RATE_DRIFT = 0.20
+
+
+def _ra_rate_ratio(cal_dec_rad: float, now_dec_rad: float) -> float | None:
+    """How much of the calibrated RA rate survives at ``now_dec_rad``.
+
+    An RA pulse moves the star by cos(dec), so the ratio is
+    cos(now)/cos(then). None when the calibration declination is so close to
+    the pole that cos is ~0 and the ratio is meaningless -- there the rate was
+    never usable, and dividing by it would manufacture a number.
+    """
+    denom = math.cos(cal_dec_rad)
+    if abs(denom) < 1e-6:
+        return None
+    return math.cos(now_dec_rad) / denom
+
+
 def _folded_ortho_deg(cal: dict) -> float:
     """A calibration's orthogonality deviation in degrees, Dec-parity folded.
 
@@ -668,7 +692,17 @@ class NativeGuider(Guider):
                         and await self._pier_changed_since(persisted)):
                     persisted = None
                 reused = False
-                if persisted is not None and self._cal_reusable(persisted):
+                # The live declination, read here because _cal_reusable is sync
+                # and the cos(dec) arm below needs it (#18). A failed read
+                # leaves None, which SKIPS that arm -- the same posture
+                # _apply_scope_pointing takes with its UNKNOWN_DECLINATION
+                # sentinel, because a dec we cannot read is not evidence that
+                # the calibration has gone stale.
+                current_dec_rad: float | None = None
+                with contextlib.suppress(Exception):
+                    _ra_now, _dec_now = await self.tel.get_position()
+                    current_dec_rad = math.radians(float(_dec_now))
+                if persisted is not None and self._cal_reusable(persisted, current_dec_rad):
                     try:
                         # STAR-EXISTENCE PRECONDITION (fix round #2): mirror
                         # _calibrate's one-frame guide_star_find gate. Without
@@ -2279,7 +2313,7 @@ class NativeGuider(Guider):
                     f"native guider: could not restore PPEC model ({e}); "
                     f"starting fresh", "guide")
 
-    def _cal_reusable(self, cal: dict) -> bool:
+    def _cal_reusable(self, cal: dict, current_dec_rad: float | None = None) -> bool:
         """P2 reuse-compatibility gate (dossier §8.4 calibration data model +
         §9 items 3/4/6 "calibration adjustments at guide start"): a persisted
         calibration is safe to hand straight to
@@ -2341,6 +2375,32 @@ class NativeGuider(Guider):
         #    bad calibration straight back. Refusing here drives a fresh
         #    calibration walk instead, which is what the caller already does
         #    for every other arm of this gate.
+        # 7. was walked at a declination where the RA rate still means what it
+        #    meant (#18). An RA pulse moves the star by cos(dec), so a
+        #    calibration walked at one declination under- or over-corrects at
+        #    another by cos(now)/cos(then). On 2026-09-14 the guider reused a
+        #    +34.4 calibration at +66.1, which is 49 per cent of the rate: it
+        #    asked for a 1742 ms RA pulse against the 1000 ms cap and 88 to 98
+        #    per cent of stars trailed.
+        #
+        #    The test is on the RATE RATIO, not on degrees. A fixed degree
+        #    threshold is the wrong shape, as the issue notes: cos falls away
+        #    sharply near the pole, so six degrees is nothing at +34 and
+        #    everything at +66. The ratio says that by construction.
+        if current_dec_rad is not None:
+            cal_dec = cal.get("declination")
+            if cal_dec is not None and float(cal_dec) != _UNKNOWN_DECLINATION:
+                ratio = _ra_rate_ratio(float(cal_dec), current_dec_rad)
+                if ratio is None or abs(ratio - 1.0) > _MAX_CAL_RA_RATE_DRIFT:
+                    bus.log("warning",
+                            f"native guider: refusing a persisted calibration "
+                            f"walked at declination "
+                            f"{math.degrees(float(cal_dec)):.1f} deg for a "
+                            f"target at {math.degrees(current_dec_rad):.1f} deg "
+                            f"- the RA rate there is "
+                            f"{'unusable' if ratio is None else f'{ratio:.0%}'} "
+                            f"of what was measured - calibrating afresh", "guide")
+                    return False
         ortho = _folded_ortho_deg(cal)
         if ortho > _MAX_CAL_ORTHO_ERROR_DEG:
             bus.log("warning",
