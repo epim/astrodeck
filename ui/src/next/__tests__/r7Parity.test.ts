@@ -405,7 +405,28 @@ const IMPORT_FROM_RE = new RegExp(`import\\s+([\\s\\S]*?)\\s+from\\s+(?:${QUOTED
 /** `import(<spec>)` - a dynamic import. */
 const IMPORT_DYN_RE = new RegExp(`import\\(\\s*(?:${QUOTED})\\s*\\)`, "g");
 
-const FILES = walk(NEXT.slice(0, -1)).filter((p) => /\.tsx?$/.test(p) && !p.endsWith(".d.ts"));
+/** A path under a `__tests__` directory, in native form. */
+const isTestFile = (p: string): boolean => p.includes(`${SEP}__tests__${SEP}`);
+
+// #85: test files are scanned only when DRIFT_TESTS names them.
+//
+// The walk used to take every .tsx? under next/, which included this file, and
+// the scan below is a regex over raw source with no concept of a string
+// boundary. A test that writes an illustrative `import X from "..."` as part
+// of its own logic -- not a comment, so comment-stripping does not help -- was
+// read as a real legacy import and failed two rules for a reason unrelated to
+// either. It happened while fixing #39 and was worked around by splitting the
+// keywords across a concatenation, which is memory, not a guarantee.
+//
+// Stripping string contents is not the fix: an import's specifier IS a string
+// literal, so blanking strings blinds the scanner to every path it exists to
+// read. Excluding tests is, because this rule's subject is the SHIPPED new UI
+// and a test file is not shipped. The deliberate exceptions are already
+// enumerated: DRIFT_TESTS is the list of tests that import a legacy module on
+// purpose to pin a copy against it, and those stay scanned.
+const FILES = walk(NEXT.slice(0, -1)).filter((p) =>
+  /\.tsx?$/.test(p) && !p.endsWith(".d.ts")
+  && (!isTestFile(p) || DRIFT_TESTS[p.slice(NEXT.length).replace(/\\/g, "/")] !== undefined));
 
 interface Record_ { file: string; module: string; name: string; typeOnly: boolean; dynamic: boolean }
 
@@ -500,6 +521,37 @@ test("the scan found the legacy imports it is supposed to police", () => {
   assert(cardRecords.length === 3,
     `CalibrationMatrixCard.tsx: expected 3 legacy import bindings, found ${cardRecords.length} - ` +
     "either its imports changed (update this number) or the scanner is missing some");
+});
+
+test("the scan reads test files only where DRIFT_TESTS names them", () => {
+  // #85. The scan is a regex over raw source with no concept of a string
+  // boundary, and it used to include every test file -- including this one.
+  // An illustrative `import X from "..."` written as part of a test's own
+  // logic (not a comment, so comment-stripping misses it) was recorded as a
+  // real legacy import and failed two unrelated rules. The workaround was to
+  // split the keywords across a concatenation, which relies on the next
+  // author remembering.
+  //
+  // MUTATION: drop the `!isTestFile(p) ||` clause from FILES. Observed under
+  // it: this file is scanned as production source again, and the first
+  // assertion below names it.
+  const scannedTests = FILES
+    .filter(isTestFile)
+    .map((p) => p.slice(NEXT.length).replace(/\\/g, "/"));
+  const unexpected = scannedTests.filter((p) => DRIFT_TESTS[p] === undefined);
+  assert(unexpected.length === 0,
+    "test files are being scanned as production source, so their illustrative "
+    + `strings can be read as real imports: ${unexpected.join(", ")}`);
+
+  // The exceptions are still scanned: they are the drift pins, and the whole
+  // reason the copies they guard are allowed to exist.
+  assert(scannedTests.length === Object.keys(DRIFT_TESTS).length,
+    `${scannedTests.length} drift tests scanned but DRIFT_TESTS names `
+    + `${Object.keys(DRIFT_TESTS).length} - a pin is being skipped, so the copy `
+    + "it guards is now unwatched");
+
+  // And the exclusion did not gut the corpus: production modules dominate.
+  assert(FILES.length >= 200, `only ${FILES.length} modules left after the filter`);
 });
 
 // =================================================== 1b. every quote style
