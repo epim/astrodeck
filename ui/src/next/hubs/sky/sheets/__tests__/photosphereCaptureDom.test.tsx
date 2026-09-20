@@ -828,7 +828,7 @@ await test('While the lens is a guess, a correction the size of a wrong lens is 
     const wrongLens = await offerFrom(5.5);
     assert.ok(wrongLens.carried < 1e-6,
       `a correction was worn into the reported pose: it sits ${wrongLens.carried.toFixed(3)} degrees from the sensor's`);
-    assert.equal(wrongLens.outcome, 'overlap-wait',
+    assert.equal(wrongLens.outcome, 'carry-too-large',
       `a wrong-lens-sized correction was not refused: the grab recorded ${wrongLens.outcome}`);
     // And the refusals say so. A lens too wrong to absorb produces nothing but
     // these, so the run reaches LENS_DOUBT_AFTER and the user is pointed at the
@@ -840,7 +840,7 @@ await test('While the lens is a guess, a correction the size of a wrong lens is 
     // not switched off. Nothing was carried above, so this fit starts from the
     // sensor pose exactly as the first one did.
     const inside = await offerFrom(3);
-    assert.notEqual(inside.outcome, 'overlap-wait', 'a correction inside the bound was refused');
+    assert.notEqual(inside.outcome, 'carry-too-large', 'a correction inside the bound was refused');
     assert.ok(inside.carried > 2.5 && inside.carried < 3,
       `a correction inside the bound was not carried: the reported pose sits ${inside.carried.toFixed(3)} degrees from the sensor's`);
     sweep.stop();
@@ -873,7 +873,8 @@ await test('With the lens calibrated, the bound is the fitter’s own reach and 
   // unconditionally (`return LENS_SCALE_TOLERANCE*this.shortAxisFov/2`). The
   // 3.50 fit is then refused and the anchor is never set, so the first outcome
   // assertion reddens - "a correction the registration suite calls recoverable
-  // was refused on a calibrated lens", outcome 'overlap-wait'. Observed red.
+  // was refused on a calibrated lens", outcome 'carry-too-large'. Observed
+  // red.
   // Mutation B: leave the lens regime alone and make the calibrated branch
   // unbounded (`return this.lensCalibrated ? 1e9 : ...`), which is issue #70's
   // own defect reinstated for exactly the users who fixed their lens. The third
@@ -882,14 +883,14 @@ await test('With the lens calibrated, the bound is the fitter’s own reach and 
   await withTexturedCamera(async () => {
     const { sweep, offerFrom } = await scanWithOnePatch(60);
     const recoverable = await offerFrom(3.689);
-    assert.notEqual(recoverable.outcome, 'overlap-wait',
+    assert.notEqual(recoverable.outcome, 'carry-too-large',
       'a correction the registration suite calls recoverable was refused on a calibrated lens');
     assert.ok(recoverable.carried > 3 && recoverable.carried < SEARCH_CEILING_DEG,
       `the recoverable correction was not carried: the reported pose sits ${recoverable.carried.toFixed(3)} degrees from the sensor's`);
     // Further round again: this fit is admitted too, and the carry grows,
     // because the total is still inside the ceiling.
     const grown = await offerFrom(6.689);
-    assert.notEqual(grown.outcome, 'overlap-wait', 'the second fit was refused, so nothing accumulated');
+    assert.notEqual(grown.outcome, 'carry-too-large', 'the second fit was refused, so nothing accumulated');
     assert.ok(grown.carried > recoverable.carried + 1,
       `the carried correction did not grow (${recoverable.carried.toFixed(3)} then ${grown.carried.toFixed(3)}), `
       + 'so the offer below cannot reach the ceiling and this case grades nothing');
@@ -897,7 +898,7 @@ await test('With the lens calibrated, the bound is the fitter’s own reach and 
       `the carry passed the ceiling before the offer that is supposed to test it: ${grown.carried.toFixed(3)}`);
     // And one more, which the search could fit but the carry cannot hold.
     const past = await offerFrom(9.689);
-    assert.equal(past.outcome, 'overlap-wait',
+    assert.equal(past.outcome, 'carry-too-large',
       `a fit that would take the carried correction past ${SEARCH_CEILING_DEG.toFixed(4)} degrees was admitted: `
       + `the grab recorded ${past.outcome} and the pose now sits ${past.carried.toFixed(3)} degrees from the sensor's`);
     // The refusal left the anchor alone. Not exact equality: the same transfer
@@ -905,6 +906,80 @@ await test('With the lens calibrated, the bound is the fitter’s own reach and 
     // (see `carriedCorrectionMax`), and these two are read 3 degrees apart.
     assert.ok(Math.abs(past.carried - grown.carried) < .05,
       `a refused fit moved the carried correction, from ${grown.carried.toFixed(4)} to ${past.carried.toFixed(4)}`);
+    sweep.stop();
+  });
+});
+await test('A carried-bound refusal on a calibrated lens is named as the pose, not the aim and not the lens (#95)', async () => {
+  // Issue #95. Both bounds used to record `overlap-wait`, so the cue could only
+  // say the one thing `overlap-wait` means: "Return to a green patch, hold
+  // still, then move slowly toward the next blue dot." On a calibrated lens
+  // that is the wrong instruction and following it changes nothing - the aim
+  // was never the problem, the carried correction was - and `captures.jsonl`
+  // could not tell a reader which of the two had fired either.
+  // The geometry is the calibrated #70 case's: three offers, the third past
+  // SEARCH_CEILING_DEG by accumulation. This case grades what the user is told
+  // and what the log says; that one grades the bound.
+  // This file aborts on the first failed assertion (an uncaught throw, not a
+  // per-case catch), so a mutation that reddens an EARLIER case is observed
+  // there and never reaches this one. Both are recorded as seen.
+  // Mutation A: record `overlap-wait` at the carried-bound site again (leaving
+  // the union, the table and the cue arm in place). Observed red, at the #70
+  // uncalibrated case above: "a wrong-lens-sized correction was not refused:
+  // the grab recorded overlap-wait". Same assertion, one case earlier.
+  // Mutation B: drop `&& this.lensCalibrated` from the cue arm. Observed red
+  // HERE, on the uncalibrated half below: "an uncalibrated user was given the
+  // calibrated pose sentence".
+  // Mutation C: disable the cue arm (`if(false && ...)`). Observed red HERE:
+  // "a calibrated user meeting the carried bound was told: I can't match this
+  // view yet. Return to a green patch..." - which is the defect #95 is about,
+  // reproduced exactly.
+  // Mutation D: drop the `{separation:carried}` extra from the record.
+  // Observed red HERE: "the record does not carry the correction that was
+  // refused (separation undefined)".
+  // Mutation E: drop `carry-too-large` from the run counter in
+  // `recordCapture`. Observed red at the #70 uncalibrated case above, "a run
+  // of refused corrections never reached the lens cue", which is the same
+  // claim the last assertion below makes.
+  // NOT graded: the `carryTooLarge = false` on the CONFLICT arm. Reaching it
+  // needs a view that fits inside the carried bound and then fails the overlap
+  // test, which this fixture cannot offer; named so the gap is on the record.
+  await withTexturedCamera(async () => {
+    const { sweep, offerFrom } = await scanWithOnePatch(60);
+    await offerFrom(3.689);
+    await offerFrom(6.689);
+    const past = await offerFrom(9.689);
+    assert.equal(past.outcome, 'carry-too-large',
+      `the refusal was logged as ${past.outcome}, which is the outcome a view that did not match records`);
+    const record = sweep.captureLog[sweep.captureLog.length - 1];
+    assert.ok(typeof record.separation === 'number' && record.separation > SEARCH_CEILING_DEG,
+      `the record does not carry the correction that was refused (separation ${String(record.separation)}), `
+      + `so a reader cannot see how far past ${SEARCH_CEILING_DEG.toFixed(4)} it was`);
+    assert.match(sweep.captureCue, /direction this phone reports has drifted/,
+      `a calibrated user meeting the carried bound was told: "${sweep.captureCue}"`);
+    assert.doesNotMatch(sweep.captureCue, /toward the next blue dot/,
+      'the aim instruction is still being given for a refusal the aim cannot fix');
+    assert.doesNotMatch(sweep.captureCue, /camera view angle/,
+      'the lens sentence is being given for a lens the user has already measured');
+    sweep.stop();
+  });
+  // The other regime, on the same geometry: the lens is still the 60-degree
+  // guess, the same refusal fires, and the user keeps the aim line. The pose
+  // sentence would be a worse answer there - a wrong lens IS the likelier
+  // story, which is what the run and the lens cue above are for.
+  await withTexturedCamera(async () => {
+    const { sweep, offerFrom } = await scanWithOnePatch();
+    const wrongLens = await offerFrom(5.5);
+    assert.equal(wrongLens.outcome, 'carry-too-large', 'the uncalibrated bound did not fire');
+    assert.doesNotMatch(sweep.captureCue, /direction this phone reports has drifted/,
+      `an uncalibrated user was given the calibrated pose sentence: "${sweep.captureCue}"`);
+    assert.match(sweep.captureCue, /toward the next blue dot/,
+      `the first uncalibrated refusal lost its aim line: "${sweep.captureCue}"`);
+    // And the run still climbs on this outcome, which is the reason it is not
+    // a run-ending one. Deleting `carry-too-large` from the counter in
+    // `recordCapture` leaves this at the aim line forever.
+    for (let i = 1; i < LENS_DOUBT_AFTER; i++) await tick();
+    assert.match(sweep.captureCue, /The camera view angle may be set wrong for this lens/,
+      `a run of carried-bound refusals never reached the lens cue: "${sweep.captureCue}"`);
     sweep.stop();
   });
 });

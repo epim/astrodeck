@@ -28,6 +28,7 @@ export type CaptureOutcome =
   | 'no-image'
   | 'alignment-wait'
   | 'overlap-wait'
+  | 'carry-too-large'
   | 'no-target'
   | 'already-captured'
   | 'too-soon'
@@ -122,11 +123,33 @@ export interface CaptureRecord {
  *  having stayed silent through twenty-three refusals, which is the complaint
  *  issue #52 was filed about. With all four neutral it arrives on the ninth.
  *
+ *  `carry-too-large` is the sixth non-ending outcome and the only one that is
+ *  not a "before the test was reached" case: it IS a refusal to match, split
+ *  off from `overlap-wait` by issue #95 so the cue and the log can name what
+ *  was refused. It extends a run for the same reason `overlap-wait` does -
+ *  treating it as a reset would break the run at exactly the refusal that is
+ *  strongest evidence of a wrong lens, which is the path `carriedCorrectionMax`
+ *  documents and the #70 uncalibrated case grades.
+ *
  *  Exported so the replay test can count runs by this rule rather than keep a
  *  second copy of it that could quietly disagree with this one. */
 export function endsOverlapRun(outcome: CaptureOutcome): boolean {
-  return outcome !== 'overlap-wait' && outcome !== 'alignment-wait'
+  return !extendsOverlapRun(outcome) && outcome !== 'alignment-wait'
     && outcome !== 'too-soon' && outcome !== 'no-target' && outcome !== 'below-horizon';
+}
+
+/** The other half of the same rule: which outcomes LENGTHEN a run. Every
+ *  outcome is exactly one of extends / ends / neutral, and `recordCapture` is
+ *  the only place that needs all three.
+ *
+ *  It exists because issue #95 made the answer two names instead of one, and
+ *  `photosphereReplay.test.ts` counts runs off a recording's capture log. That
+ *  test held `outcome === 'overlap-wait'` inline, and a second name would have
+ *  left it counting a shorter run than the scanner did while still passing -
+ *  the same "second copy of the rule" `endsOverlapRun` is exported to avoid,
+ *  one predicate over. */
+export function extendsOverlapRun(outcome: CaptureOutcome): boolean {
+  return outcome === 'overlap-wait' || outcome === 'carry-too-large';
 }
 
 /** The log records; it decides nothing. Bounded so a long-running scan
@@ -1194,6 +1217,11 @@ export class PhotosphereSweep {
   private trackEnded = false;
   private alignmentWait = false;
   private overlapWait = false;
+  /** The last grab was refused by `carriedCorrectionMax` and not by the
+   *  overlap test (issue #95). Set beside `overlapWait` rather than instead of
+   *  it, so an uncalibrated user keeps the aim line they have always had and
+   *  only the calibrated cue changes; cleared wherever `overlapWait` is. */
+  private carryTooLarge = false;
   private scanSamples:unknown[]=[];
   private lastDiagnosticAt=-Infinity;
   private lastSensorReading:unknown=null;
@@ -1503,12 +1531,16 @@ export class PhotosphereSweep {
    *  the uncalibrated 3.0 - which is the regime split doing its job rather than
    *  a coincidence, and is pinned by a case each.
    *
-   *  A refusal under either regime is the answer and not a loss. It records
-   *  `overlap-wait` like any other failure to match, so a correction too large
-   *  to absorb drives `overlapWaitRun` to `LENS_DOUBT_AFTER` and the user is
-   *  told which setting to look at - the conversation issue #52 started, reached
+   *  A refusal under either regime is the answer and not a loss, and it records
+   *  `carry-too-large` - its own outcome since issue #95, not `overlap-wait`,
+   *  because the two want different sentences and a log that cannot separate
+   *  them cannot say which bound fired. It still EXTENDS the refusal run
+   *  (`endsOverlapRun`), so under regime 1 a correction too large to absorb
+   *  still drives `overlapWaitRun` to `LENS_DOUBT_AFTER` and the user is told
+   *  which setting to look at - the conversation issue #52 started, reached
    *  from the other side - instead of the scan quietly wearing the error into
-   *  every later pose.
+   *  every later pose. Under regime 2 there is no setting to name, and the cue
+   *  says so: see the `carryTooLarge` arm of `captureCue`.
    *
    *  What neither regime bounds exactly: the separation is measured on the frame
    *  that SETS the anchor, and the same transfer applied to a later pose reads a
@@ -1650,16 +1682,9 @@ export class PhotosphereSweep {
     // lens the likelier story. And it does not repeat the aim instruction: two
     // remedies in one sentence is the user trying the wrong one first.
     // Once a view angle has been measured and saved, `hasLensCalibration` is
-    // true and the ordinary line comes back - against a lens the user has
-    // actually given us, a refusal means again what it used to mean.
-    // That assumption is weaker than when it was written, and the gap is issue
-    // #95: since `carriedCorrectionMax` a refusal can ALSO mean the fit would
-    // have taken the carried correction past the ceiling, which is about the
-    // pose and not about the aim, and a calibrated user meeting it is handed
-    // the aim line below. Telling the two apart needs a `CaptureOutcome` of its
-    // own - a change across files this pass does not own - so it is filed
-    // rather than patched here. It is rarer than it was: the bound this branch
-    // was written against applied to everyone at 3.0.
+    // true and this line is not the story - against a lens the user has
+    // actually given us, the refusal is about the pose instead, and the
+    // sentence for it is the next one down (issue #95).
     // It names the SETTING and quotes no control label. `setCameraViewAngle`
     // has no caller in any committed component at b8581949 - the field is in a
     // sibling session's unlanded rewrite of horizon.tsx - so a sentence
@@ -1685,6 +1710,24 @@ export class PhotosphereSweep {
     // present. With a target the scanner really is trying and really is failing.
     if(this.overlapWaitRun>=LENS_DOUBT_AFTER && !this.lensCalibrated && this.aimTargetAt(now))
       return 'I still can’t match this view. The camera view angle may be set wrong for this lens. End the scan, then set the camera view angle before you scan again.';
+    // The third sentence, and the one issue #95 is about. On a CALIBRATED lens
+    // the carried-correction bound is the fitter's own reach, so meeting it
+    // says the direction this phone reports has walked further from the picture
+    // than one fit may legitimately recover. That is about the pose, and the
+    // two sentences around it are about the other two things it is not: the aim
+    // (below) and the lens (above). Handing a calibrated user the aim line was
+    // the defect - the aim is fine, and following it changes nothing.
+    // Calibrated ONLY: while the lens is still the 60-degree guess, a
+    // correction this size is exactly what a wrong lens produces, the run above
+    // is the right destination, and until it gets there the ordinary aim line
+    // is the honest thing to say. `carriedCorrectionMax` derives both regimes.
+    // The remedy is one, not two, for the reason the lens line gives: returning
+    // to captured ground is where a fit in the OTHER direction can be made, and
+    // a fit in the other direction is the only thing in a live scan that brings
+    // the carry back down. Ending the scan would also clear it, and clears the
+    // captured patches with it (`begin`), so it is not offered here.
+    if(this.carryTooLarge && this.lensCalibrated)
+      return 'The direction this phone reports has drifted too far from the picture for me to correct. Return to a green patch and hold still there. Keep the camera lens in the same spot.';
     if(this.overlapWait)return 'I can’t match this view yet. Return to a green patch, hold still, then move slowly toward the next blue dot. Keep the camera lens in the same spot.';
     if(this.justCaptured)return 'Captured. Move to another blue dot.';
     const target=this.aimTargetAt(now);
@@ -1737,7 +1780,7 @@ export class PhotosphereSweep {
     // standing, a second `begin()` opens with "Hold the phone still for a
     // moment..." or "I can't match this view yet...", both about a scan that
     // has just ended.
-    this.overlapWaitRun = 0; this.overlapWait = false; this.alignmentWait = false;
+    this.overlapWaitRun = 0; this.overlapWait = false; this.carryTooLarge = false; this.alignmentWait = false;
     this.frames = []; this.panorama = new SkyPanorama(); this.coveredCells.clear(); this.aimedZenith=false; this.lastCaptureAt=null; this.scanSamples=[]; this.lastDiagnosticAt=-Infinity; this.hasCapturedFrame = false; this.recording = true;
   }
 
@@ -1757,7 +1800,7 @@ export class PhotosphereSweep {
     // A new scan: the diagnostic log from any earlier session is no longer
     // about this camera session, so it starts over. `stop()` never does this.
     this.captureRecords = []; this.hasCapturedFrame = false;
-    this.poses.clear();this.tilts.clear();this.poseSource.clear();this.visualAnchor=null;this.lastRegistrationAt=-Infinity;this.frameBasis=null;this.alignmentWait=false;this.overlapWait=false;this.lastSensorReading=null;
+    this.poses.clear();this.tilts.clear();this.poseSource.clear();this.visualAnchor=null;this.lastRegistrationAt=-Infinity;this.frameBasis=null;this.alignmentWait=false;this.overlapWait=false;this.carryTooLarge=false;this.lastSensorReading=null;
     this.stability.clear();this.motion.clear();this.trackEnded=false;
     this.lastMediaTime=null;this.lastMediaAdvanceAt=-Infinity;this.presentedFrameId=null;this.lastCapturedFrameId=null;this.imageGate=null;
     this.hasOrientation = false; this.tiltAt = null; this.headingAt = null;
@@ -2082,7 +2125,12 @@ export class PhotosphereSweep {
     // later, silently uncounted - and the reset would have to be repeated at
     // every other `return` in `grabFrame`. It still decides nothing about THIS
     // call: the gate below has already returned on its own terms.
-    if (outcome === 'overlap-wait') this.overlapWaitRun++;
+    // `carry-too-large` counts here too. It was `overlap-wait` until issue #95
+    // split it off, and on an UNCALIBRATED lens it is the refusal the lens cue
+    // exists for: a lens the user has not corrected produces a correction too
+    // large to absorb, over and over. Counting it as neutral would leave that
+    // path reaching LENS_DOUBT_AFTER only through the other refusals.
+    if (extendsOverlapRun(outcome)) this.overlapWaitRun++;
     else if (endsOverlapRun(outcome)) this.overlapWaitRun = 0;
     this.captureRecords.push({ at: now, outcome, ...extra });
     if (this.captureRecords.length > CAPTURE_LOG_LIMIT) this.captureRecords.splice(0, this.captureRecords.length - CAPTURE_LOG_LIMIT);
@@ -2279,7 +2327,8 @@ export class PhotosphereSweep {
           // its two derivations, for why neither is GATE_OVERLAY_MAX's number,
           // and for why a run of these refusals is the right way to tell the
           // user about a lens.
-          if(poseSeparation(rawBasis,registration.basis)>this.carriedCorrectionMax){this.overlapWait=true;this.recordCapture(now,'overlap-wait');return false;}
+          const carried=poseSeparation(rawBasis,registration.basis);
+          if(carried>this.carriedCorrectionMax){this.overlapWait=true;this.carryTooLarge=true;this.recordCapture(now,'carry-too-large',{separation:carried});return false;}
           basis=registration.basis;this.visualAnchor={raw:rawBasis,aligned:basis};
           measured=skyAngles(basis.forward);
         }
@@ -2291,8 +2340,11 @@ export class PhotosphereSweep {
             sensor:this.lastSensorReading,stillnessReadFailures:this.stillnessFailures,overlap,image:canvas.toDataURL('image/jpeg',.8)});
           if(this.scanSamples.length>16)this.scanSamples.splice(1,1);
         }
-        if(overlap.result==='conflict'){this.overlapWait=true;this.recordCapture(now,'overlap-wait');return false;}
-        this.overlapWait=false;
+        // `carryTooLarge` is cleared on BOTH arms, not only the passing one:
+        // this frame reached the overlap test, so whatever the carried bound
+        // said about an earlier frame is no longer what refused.
+        if(overlap.result==='conflict'){this.overlapWait=true;this.carryTooLarge=false;this.recordCapture(now,'overlap-wait');return false;}
+        this.overlapWait=false;this.carryTooLarge=false;
         const target=targetCell(basis!.forward);
         if(!target){this.recordCapture(now,'no-target');return false;}
         if(this.coveredCells.has(target.id)){this.recordCapture(now,'already-captured');return false;}

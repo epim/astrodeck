@@ -139,9 +139,12 @@ the canopy is indistinguishable from one that also found the trunk.
   `{"t_ms","frame_id","compass_ready","tilt_ready","aim":<cell id|null>,"basis":{"right","up","forward"}|null,"frame_count","cue"}`.
 - `result/captures.jsonl`: the scanner's capture log, one line per attempt:
   `{"at","outcome","cell"?, "basis"?, "sensor_basis"?, "adjusted"?, "wait"?,
-  "separation"?, "anchor"?}`. The last three belong to `alignment-wait` and
-  were added for issue #76, because one outcome name covered three different
-  refusals and a log of them said only that a hold did not capture. `wait` is
+  "separation"?, "anchor"?}`. `wait`, `separation` and `anchor` belong to
+  `alignment-wait` and were added for issue #76, because one outcome name
+  covered three different refusals and a log of them said only that a hold did
+  not capture. `separation` is written on one other outcome:
+  `carry-too-large`, where it carries the size of the carried correction the
+  bound refused, measured on the refusing frame (issue #95). `wait` is
   `no-pose` (nothing could place the frame at all), `unsettled` (a pose was
   worn but the settle test found none) or `separation` (both poses exist and
   differ by more than 1.5 degrees); `separation` carries the degrees that last
