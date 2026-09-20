@@ -19,6 +19,7 @@ separate "it stacked some files" from "it stacked the right files exactly once":
     reads as a hang.
 """
 import math
+import os
 import threading
 import inspect
 import time
@@ -391,9 +392,19 @@ def test_a_frame_offered_twice_inside_add_is_stacked_once(tmp_path):
     data = field(seed=7)
     assert s.add(data, "R", 60.0, target="M42", key="/x/a.fits") == "R"
     assert s.add(data, "R", 60.0, target="M42", key="/x/a.fits") is None
-    # ...including a differently-spelled path for the same file.
-    assert s.add(data, "R", 60.0, target="M42", key="/x\\a.FITS") is None
-    assert s.status()["frames"] == 1
+    # ...including a differently-spelled path for the same file, where the OS
+    # agrees that it IS the same file. The identity runs through
+    # os.path.normcase, which is the right tool precisely because the answer is
+    # platform-specific: on Windows the separator and the case are both
+    # insignificant, while on POSIX a backslash is an ordinary filename
+    # character and FITS is not fits. Asserting the Windows answer everywhere
+    # made this test demand that Linux conflate two genuinely different files.
+    if os.name == "nt":
+        assert s.add(data, "R", 60.0, target="M42", key="/x\\a.FITS") is None
+        assert s.status()["frames"] == 1
+    else:
+        assert s.add(data, "R", 60.0, target="M42", key="/x\\a.FITS") == "R"
+        assert s.status()["frames"] == 2
 
 
 def test_a_frame_with_no_identity_is_still_stacked(tmp_path):
