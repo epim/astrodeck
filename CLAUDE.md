@@ -60,6 +60,12 @@ scripts mint sessions locally and keep cookies in memory.
 
 No emojis in code, docs, commit messages or issue bodies.
 
+Keep source files UTF-8 without a BOM. On Windows PowerShell 5.1, do not
+round-trip source through `Get-Content` / `Set-Content`: the former can decode
+UTF-8 as ANSI and the latter writes a BOM. Prefer the file-editing tools, or
+`[System.IO.File]::ReadAllText` and `WriteAllText` with `UTF8Encoding($false)`.
+Write control characters as source escapes, never as literal NUL bytes.
+
 ## The rig
 
 `astrotown`, Windows, `C:\Users\James\AstroDeck`, venv at `venv\` (not

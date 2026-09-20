@@ -69,13 +69,17 @@ export interface DomeOverlayArgs {
 }
 
 export function SkyDomePanel({ pointing, target, overlay, height = 280, onGeometry,
-                              chrome = "panel" }: {
+                              chrome = "panel", showSessionTargets = true, compact = false }: {
   pointing?: { alt: number; az: number } | null;
   target?: { alt: number; az: number; name?: string } | null;
   /** Drawn over the dome canvas, in its own projection. Absent = the panel is
    *  exactly what it was before this prop existed. */
   overlay?: (o: DomeOverlayArgs) => ReactNode;
   height?: number;
+  /** A setup view can show its own field without unrelated imaging targets. */
+  showSessionTargets?: boolean;
+  /** Keep cloud provenance and limits available without crowding a setup step. */
+  compact?: boolean;
   onGeometry?: (g: DomeGeometry) => void;
   /** Who draws the frame around all this.
    *
@@ -123,6 +127,7 @@ export function SkyDomePanel({ pointing, target, overlay, height = 280, onGeomet
 
   useEffect(() => {
     let alive2 = true;
+    if (!showSessionTargets) { setPlanTargets([]); return; }
     void (async () => {
       try {
         let id = sessionId;
@@ -146,7 +151,7 @@ export function SkyDomePanel({ pointing, target, overlay, height = 280, onGeomet
       }
     })();
     return () => { alive2 = false; };
-  }, [sessionId]);
+  }, [sessionId, showSessionTargets]);
 
   // Alt/az is a function of the CLOCK, so this recomputes on the panel's own
   // tick rather than being stored -- a target frozen where it was an hour ago
@@ -234,6 +239,7 @@ export function SkyDomePanel({ pointing, target, overlay, height = 280, onGeomet
   const beamRatio = cellM && beamM && beamM > 0 ? cellM / beamM : null;
 
 
+  const CloudDetails = compact ? "details" : "div";
   const body = (
     <>
       <SkyDome
@@ -289,7 +295,8 @@ export function SkyDomePanel({ pointing, target, overlay, height = 280, onGeomet
         </div>
       )}
 
-      <div className="mt-2 flex flex-col gap-1 text-[11px]">
+      <CloudDetails className="mt-2 text-[11px]">
+        {compact && <summary className="cursor-pointer text-dim py-2">{off ? "Cloud model off" : dead ? "Cloud feed unavailable" : !gridUsable || gapFrac>=.999 ? "Cloud readings unavailable" : "Modelled cloud cover"} · details</summary>}
         {off && (
           <p className="text-dim">
             Switch it on under Settings &gt; Connect &gt; Cloud model. It pulls
@@ -394,7 +401,7 @@ export function SkyDomePanel({ pointing, target, overlay, height = 280, onGeomet
           Modelled from {status?.credit?.source ?? "NOAA GOES"}. Advisory only -
           nothing in the sequencer reads it.
         </p>
-      </div>
+      </CloudDetails>
     </>
   );
 

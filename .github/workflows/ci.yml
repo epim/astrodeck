@@ -186,9 +186,19 @@ jobs:
         working-directory: ui
     steps:
       - uses: actions/checkout@v4
+      # Pinned to Node 22.15+ (see issue #61): `npm test` spawns test files that
+      # call `node:module`'s `registerHooks()` (added in v22.15.0/v23.5.0) to
+      # stub out `.css` imports for jsdom, both the ~53 per-file inline stubs
+      # and the runner-level `test-css-stub.mjs`. Node 20 (the previous pin)
+      # has no `registerHooks` at all, so every one of those files crashed with
+      # "registerHooks is not a function" before a single test in them ran.
+      # '24' matches the version already used for local development (see
+      # test-css-stub.mjs's header comment), so CI and dev now share one
+      # tested code path instead of a fix being verified only on a developer's
+      # machine and never on the Node CI actually runs.
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           cache: npm
           cache-dependency-path: ui/package-lock.json
       - run: npm ci

@@ -137,7 +137,7 @@ const circlesA = () => Array.from(stripA().querySelectorAll("circle")) as any[];
 
 await test("precondition: the strip rendered with the tap/drag/delete hint", () => {
   assert(stripA() != null, "no <svg data-testid=horizon-strip> - the fixture is wrong, not the component");
-  assert(/tap to add · drag to move · tap a point to delete/.test(containerA.textContent),
+  assert(/tap to add · drag to move · tap a point to delete/i.test(containerA.textContent),
     "the hint chip text is missing or does not match verbatim");
   eq(circlesA().length, 2, "the two seeded points did not render as circles");
 });
@@ -192,7 +192,7 @@ const clickB = (el: any) => act(() => { el.dispatchEvent(new win.MouseEvent("cli
 
 await test("CLEAR opens a confirm and writes NOTHING until it is confirmed", async () => {
   const before = putBodies.length;
-  clickB(buttonB(/CLEAR THE HORIZON/));
+  clickB(buttonB(/Clear horizon/));
   await settle();
   // The confirm card portals to a body-level host - check the whole document.
   assert(/Clear the horizon at/.test(win.document.body.textContent), "the confirm card never appeared");
@@ -249,8 +249,8 @@ const buttonD = (re: RegExp): any =>
 
 await test("without config.safety the strip still renders and both buttons name the lock", () => {
   assert(stripD() != null, "the strip vanished for a role without config.safety - it must stay drawn, read-only");
-  const clearBtn = buttonD(/CLEAR THE HORIZON/);
-  const captureBtn = buttonD(/CAPTURE PHOTOSPHERE|RE-CAPTURE/);
+  const clearBtn = buttonD(/Clear horizon/);
+  const captureBtn = buttonD(/Scan surroundings|Re-scan/);
   assert(clearBtn != null && captureBtn != null, "the buttons themselves vanished instead of locking");
   eq(clearBtn.getAttribute("aria-disabled"), "true", "CLEAR is not marked locked");
   eq(captureBtn.getAttribute("aria-disabled"), "true", "CAPTURE PHOTOSPHERE is not marked locked");
@@ -297,7 +297,7 @@ const buttonE = (re: RegExp): any =>
 await test("config.safety without config.site_optics: a SAVED LOCATION's write locks with "
   + "'needs admin access', and writes nothing", async () => {
   assert(stripE() != null, "the strip vanished instead of rendering read-only");
-  const clearBtn = buttonE(/CLEAR THE HORIZON/);
+  const clearBtn = buttonE(/Clear horizon/);
   assert(clearBtn != null, "the CLEAR button vanished instead of locking");
   eq(clearBtn.getAttribute("aria-disabled"), "true",
     "a config.safety holder without config.site_optics must see a saved location's write locked:");
@@ -331,7 +331,7 @@ const buttonF = (re: RegExp): any =>
   Array.from(containerF.querySelectorAll("button")).find((b: any) => re.test(b.textContent || ""));
 
 await test("the SAME caps, on the ACTIVE site, unlock: config.safety is what this branch needs", async () => {
-  const clearBtn = buttonF(/CLEAR THE HORIZON/);
+  const clearBtn = buttonF(/Clear horizon/);
   assert(clearBtn != null, "the CLEAR button did not render");
   eq(clearBtn.getAttribute("aria-disabled"), null,
     "a config.safety holder must see the ACTIVE site's write unlocked:");
@@ -349,6 +349,27 @@ await test("the SAME caps, on the ACTIVE site, unlock: config.safety is what thi
 await act(async () => { rootF.unmount(); });
 
 // ------------------------------------------------------------------- report
+seed();
+const containerG = win.document.createElement("div"); win.document.body.append(containerG);
+const rootG = createRoot(containerG);
+let savedGuided = 0, dirtyGuided = 0;
+await act(async()=>{rootG.render(createElement(HorizonSheet,{params:{site:"loc1"},depth:0,guided:true,onSaved:()=>savedGuided++,onDirty:()=>dirtyGuided++}));});
+await settle();
+await test("Guided horizon stages edits, then saves the named site and applies its line",async()=>{
+  const before=asked.length;
+  const strip=containerG.querySelector('[data-testid="horizon-strip"]') as any;
+  act(()=>{strip.dispatchEvent(ptr("pointerdown",HX(120),HY(30)));strip.dispatchEvent(ptr("pointerup",HX(120),HY(30)));});
+  await settle();
+  eq(asked.length,before,"drawing wrote to server before Save");
+  eq(dirtyGuided,1,"drawing did not invalidate readiness");
+  const save=[...containerG.querySelectorAll("button")].find((b:any)=>b.textContent.includes("Save horizon")) as any;
+  await act(async()=>{save.click();}); await settle();
+  assert(asked.slice(before).includes("PUT /api/locations/loc1"),"saved library horizon missing");
+  assert(asked.slice(before).includes("POST /api/locations/loc1/apply"),"saved horizon not activated");
+  eq(savedGuided,1,"save not confirmed");
+  assert(![...containerG.querySelectorAll("button")].some((b:any)=>b.textContent.trim()==="DONE"),"Guided showed an escape to Atlas");
+});
+await act(async()=>rootG.unmount());
 const total = passed + failed;
 console.log(`horizonDom.test: ${passed}/${total} passed`);
 for (const f of failures) console.log("  " + f);

@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "name": "shortpan",
+  "kind": "still",
+  "pivot": [0, 0, 0],
+  "radius_m": 0.75,
+  "height_m": 1.4,
+  "lift_m": 0,
+  "aims": [
+    [0, 0], [24, 0], [48, 0],
+    [60, 35], [36, 35], [12, 35]
+  ],
+  "move_s": 0.8,
+  "hold_s": 2.4,
+  "sweeps": []
+}

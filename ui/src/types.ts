@@ -439,6 +439,8 @@ export interface GuideStats {
   // label) unless the server explicitly says false.
   is_arcsec?: boolean;
   image_scale?: number;
+  calibration_image_scale?: number | null;
+  image_scale_known?: boolean;
   // NOV-7: plain-language narration phase ("idle" | "finding" |
   // "calibrating" | "settling" | "guiding" | "lost"), or "" / absent when
   // unknown (the PHD2/NINA bridge guider leaves it unset — the narration
@@ -548,6 +550,8 @@ export interface BahtinovInfo {
 }
 
 export interface PreviewInfo {
+  capture_request_id?: string;
+  capture_saved?: boolean;
   id: number;
   stats: {
     min: number; max: number; mean: number; median: number; std: number;
@@ -790,6 +794,11 @@ export interface SequenceState {
     reason: string;
     text: string;
     holding: boolean;
+    latest_frame?: {
+      cloudy: boolean | null;
+      score: number | null;
+      reason: string;
+    };
   };
 }
 
@@ -1215,6 +1224,7 @@ export interface AppConfig {
   safety: SafetyConfig;
   // Optional for the WS-bootstrap reason above — never assume it is present.
   cooling?: CoolingConfig;
+  dusk?: DuskConfig;
   escalation: EscalationConfig;
   alerts: AlertSink[];
   // Master-library matching + stacking tolerances (PRO-1). Optional for the same
@@ -1774,6 +1784,13 @@ export interface SafetyConfig {
   sky_fallback_hold?: boolean;
 }
 
+/** Opt-in preparation of a saved profile at dusk (server: config.DuskConfig). */
+export interface DuskConfig {
+  enabled: boolean;
+  profile_id: string | null;
+  sun_alt_deg: number;
+}
+
 /** Cooler warm-down policy (server: config.CoolingConfig). Lives beside the
  *  safety block and is gated on the SAME capability (config.safety), because
  *  the sentence it makes true — "park, then warm the camera at a safe ramp" —
@@ -1781,6 +1798,7 @@ export interface SafetyConfig {
  *  and any older server omit it, and every consumer must degrade to "the
  *  default 2 °C/min ramp is on" rather than blanking the control. */
 export interface CoolingConfig {
+  setpoint_c?: number | null;
   // #239 stage A: how long to wait for the setpoint before escalation decides.
   cool_timeout_s?: number;
   warm_ramp: boolean;            // false = cut the TEC dead (the pre-2026-08-04 bug, opt-in)
@@ -2541,12 +2559,35 @@ export interface GalleryFrame {
   filter: string;                // "" when the header was unreadable
   frame_type: string;            // "Light" | "Flat" | … ; "" when unknown
   exposure_s: number | null;     // null when the header did not say
+  width?: number | null;
+  height?: number | null;
+  bin_x?: number | null;
+  bin_y?: number | null;
+  file_version?: string;
   bytes: number;
   mtime: number;
 }
 
+export interface GalleryGeometryGroup {
+  target: string;
+  filter: string;
+  frame_type: string;
+  width: number | null;
+  height: number | null;
+  bin_x: number | null;
+  bin_y: number | null;
+  exposure_s: number | null;
+  count: number;
+  bytes: number;
+}
+
 export interface GalleryFramesPage {
   frames: GalleryFrame[];
+  snapshot?: string;
+  next_cursor?: string | null;
+  /** Counts across the full filter, including frames on later pages. */
+  geometry_groups?: GalleryGeometryGroup[];
+  geometry_truncated?: boolean;
   /** The WHOLE filtered set, not this page — so a download's size can be shown
    *  without a second round trip. Same resolver the summary route uses. */
   total: number;

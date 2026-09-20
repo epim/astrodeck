@@ -240,8 +240,9 @@ def build_native_guider(guide_camera, telescope, *,
         return None
     # A real image_scale_arcsec from the configured guide-scope focal length and
     # the guide camera's pixel size, so on-sky RMS is reported in true arcsec.
-    # Falls back to 1.0 (guiding correctness unaffected — calibration measures
-    # px/ms empirically) when either input is missing. The guide loop runs bin 1.
+    # Falls back to an explicitly reported assumption of 1.0 when either input
+    # is missing. This affects calibration pulse sizing, not just display units.
+    # The guide loop runs bin 1.
     image_scale, image_scale_known = 1.0, False
     try:
         # PROFILE > GLOBAL, the same rule every other optics consumer applies
@@ -1521,6 +1522,11 @@ class NativeGuider(Guider):
         a sane number of pulses). Any of these may be pinned by the caller's
         config; unset engine tunables take the dossier §15 defaults."""
         cfg = self.config
+        bus.log("info" if self._image_scale_known else "warning",
+                f"native guider: calibration image scale {self._image_scale:g} "
+                "arcsec/px " + ("from configured optics" if self._image_scale_known
+                else "assumed; set the guide focal length and camera pixel size "
+                     "for reliable calibration pulse sizing"), "guide")
         engine_cfg: dict = {
             "image_scale_arcsec": self._image_scale,
             "ra_algorithm": cfg.get("ra_algorithm", "hysteresis"),
@@ -1544,12 +1550,17 @@ class NativeGuider(Guider):
                 engine_cfg[k] = cfg[k]
 
         if "calibration_duration_ms" not in engine_cfg and rates:
-            ra_deg_s = abs(float(rates[0]))
+            # One duration serves both axes. Size it for the slower axis;
+            # otherwise an asymmetric mount spends twice as many Dec pulses.
+            speeds = [abs(float(rate)) for rate in rates
+                      if math.isfinite(float(rate)) and float(rate) != 0]
+            slow_deg_s = min(speeds) if speeds else 0.0
             scale = self._image_scale if self._image_scale > 0 else 1.0
-            px_s = ra_deg_s * 3600.0 / scale
+            px_s = slow_deg_s * 3600.0 / scale
             # Mirror the engine's default_calibration_distance floor so the step
             # count target is consistent with the distance the legs must cross.
-            cal_dist = max(25.0, math.ceil(20.0 / scale))
+            cal_dist = float(engine_cfg.get(
+                "calibration_distance", max(25.0, math.ceil(20.0 / scale))))
             if px_s > 0:
                 ms = cal_dist / px_s / _CAL_TARGET_STEPS * 1000.0
                 engine_cfg["calibration_duration_ms"] = int(
@@ -1946,6 +1957,8 @@ class NativeGuider(Guider):
         ``bus.publish("guide", **stats().__dict__)`` calls for free."""
         if self._engine is None:
             return GuideStats(guiding=False, phase=self._current_phase(),
+                              calibration_image_scale=self._image_scale,
+                              image_scale_known=self._image_scale_known,
                               **self._relock_fields())
         try:
             s = self._engine.stats()
@@ -1969,6 +1982,8 @@ class NativeGuider(Guider):
             recent=recent[-120:],
             is_arcsec=arcsec,
             image_scale=round(self._image_scale, 3) if arcsec else 0.0,
+            calibration_image_scale=self._image_scale,
+            image_scale_known=self._image_scale_known,
             phase=self._current_phase(s),
             **self._relock_fields(),
         )

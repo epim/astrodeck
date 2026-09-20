@@ -75,7 +75,7 @@ from ..imaging.video_routes import recorder as video_recorder
 from ..imaging.video_routes import router as video_router
 from ..config import (FRAME_SCOPES, REDACTED_SINK_FIELDS, AlertSink, AuthConfig,
                       CalibrationConfig, CloudmapConfig,
-                      ConfigVersionConflict, CoolingConfig, DewConfig,
+                      ConfigVersionConflict, CoolingConfig, DewConfig, DuskConfig,
                       EscalationConfig, FocusConfig, GuideConfig,
                       NamingConfig, Optics,
                       ProvidersConfig, RotatorConfig, SafetyConfig, Site,
@@ -94,6 +94,7 @@ from .. import __version__
 from ..update.state import update_state
 from ..update.service import UpdateError, get_service as get_update_service
 from ..dawn_park import DawnPark
+from ..dusk_arm import DuskArm
 from ..sun_watch import SunWatch
 # A MODULE SINGLETON rather than a constructor: the orbital-element cache is
 # one set of files on this box, so a second store would be a second writer
@@ -113,6 +114,8 @@ from .. import hub as hub_module
 from .. import config as config_module
 from .. import factory_reset as factory_reset_module
 from .. import gallery as gallery_module
+from .. import capture_geometry
+from .. import gallery_listing
 from ..sync import manifest as sync_manifest_mod
 from ..sync.runner import runner as sync_push_runner
 from ..hub import CAPTURE_DIR, TOUCH_MAX_RATE_DEG_S, PromoteRefused, hub
@@ -206,6 +209,10 @@ _SYNC_HASH_CACHE: dict = sync_manifest_mod.SHARED_HASH_CACHE
 # question is whether a run is in progress, because the engine owns wind-down
 # then and racing it is worse than not acting.
 dawn_park = DawnPark(hub, engine)
+dusk_arm = DuskArm(hub, engine, weather=weather_service,
+                   connection_busy=lambda: (_connect_task is not None and not _connect_task.done())
+                   or video_recorder.active)
+hub.dusk_arm = dusk_arm
 
 # Sun watch (task #150). The complement to ``Hub._check_solar``, which is a
 # PRE-SLEW gate and can only ever refuse a destination: this one samples where
@@ -435,6 +442,7 @@ async def _lifespan(app: "FastAPI"):
     # re-reads the site and the Sun, so it costs one trig evaluation on a rig
     # that never needs it and is armed the moment one does.
     dawn_park.start()
+    dusk_arm.start()
     # Orbital elements (#D-SKY-1) - its own asyncio loop that keeps the
     # satellite and comet element files fresh. Started UNCONDITIONALLY for
     # the same reason as the parks above: a tick with nothing stale is one
@@ -513,6 +521,7 @@ async def _lifespan(app: "FastAPI"):
         await cloudmap_service.stop()
         await resume_arm.stop()
         await trash_keeper.stop()
+        await dusk_arm.stop()
         await dawn_park.stop()
         await ephemeris_store.stop()
         await sun_watch.stop()
@@ -649,6 +658,8 @@ def _lane_conflict(name: str) -> str | None:
 
     DERIVED from ``_LANE_SUPERSEDES`` rather than written out a second time, so
     the refuse direction can never disagree with the supersede direction."""
+    if dusk_arm.connecting and name not in ("park", "abort", "dome"):
+        return "dusk preparation"
     for winner, losers in _LANE_SUPERSEDES.items():
         if name in losers:
             t = hub._busy.get(winner)
@@ -724,6 +735,9 @@ def _refuse_if_camera_owned() -> None:
     it is one function now so the next route that exposes gets the guard by
     calling it rather than by remembering the sentence.
     """
+    if dusk_arm.connecting:
+        raise HTTPException(409, detail={"detail": "Dusk preparation is connecting equipment. Try again when it finishes.",
+                                         "code": "dusk_connecting"})
     if video_recorder.active:
         raise HTTPException(409, detail={"detail": _VIDEO_OWNS_CAMERA,
                                          "code": "video_owns_camera"})
@@ -812,7 +826,7 @@ def _spawn_connect(coro) -> dict:
     see ProfileList's poll). ``test_busy_lanes_routes.py`` pins both halves.
     """
     global _connect_task
-    busy = _connect_task is not None and not _connect_task.done()
+    busy = dusk_arm.connecting or (_connect_task is not None and not _connect_task.done())
     if not busy and (t := hub._busy.get("profile")) and not t.done():
         busy = True
     if busy:
@@ -986,6 +1000,7 @@ class AlpacaConnectBody(BaseModel):
 
 
 class CaptureBody(BaseModel):
+    request_id: str | None = Field(default=None, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
     exposure_s: float = 1.0
     gain: int = 100
     offset: int = 30
@@ -1105,6 +1120,13 @@ class AutofocusBody(BaseModel):
     steps_each_side: int = 4
     binning: int = 2
     filter: int | None = None  # UX-25: slot to move to before the sweep (per-filter AF)
+
+
+class GuidedCheckpointBody(BaseModel):
+    context: str = Field(min_length=64, max_length=64)
+    revision: int = Field(ge=0)
+    fact: Literal["location", "horizon", "focus", "alignment"]
+    action: Literal["complete", "invalidate"]
 
 class CoarseFocusBody(BaseModel):
     """Coarse focus: find a position with stars, then hand off to autofocus.
@@ -1615,6 +1637,7 @@ class ConfigPatchBody(BaseModel):
     # words: "park, then warm the camera at a safe ramp". The knob belongs next
     # to the sentence that promises it.
     cooling: CoolingConfig | None = None
+    dusk: DuskConfig | None = None
     # The rig's imaging standards (#239 stage A). Gated on config.safety rather
     # than site_optics: these are the thresholds that decide whether a frame is
     # kept and when the night gives up, which is the same family of
@@ -1717,6 +1740,10 @@ class GalleryPathsBody(BaseModel):
     ``max_length`` is a denial-of-service bound, not a product limit: the whole
     293-frame reference library is three orders of magnitude below it."""
     paths: list[str] = Field(default_factory=list, max_length=50_000)
+    snapshot: str = ""
+    q: str = ""
+    night_from: str = ""
+    night_to: str = ""
 
 
 class GalleryPurgeBody(GalleryPathsBody):
@@ -3394,6 +3421,8 @@ def create_app(*, bind_host: str | None = None,
             config_store.set_escalation(body.escalation)
         if body.cooling is not None:
             config_store.set_cooling(body.cooling)
+        if body.dusk is not None:
+            config_store.set_dusk(body.dusk)
         if body.standards is not None:
             config_store.set_standards(body.standards)
         if body.focus is not None:
@@ -3452,6 +3481,7 @@ def create_app(*, bind_host: str | None = None,
           site.horizon_min_deg -> ALSO config.safety (a safety floor)
           safety               -> config.safety
           cooling              -> config.safety   (warm-down ramp = hardware protection)
+          dusk                 -> config.backend AND config.safety
           standards            -> config.safety   (frame-quality + give-up thresholds)
           focus                -> config.safety   (how the focuser is DRIVEN)
           dew                  -> config.safety   (heater policy on the optics)
@@ -3461,6 +3491,9 @@ def create_app(*, bind_host: str | None = None,
           clear_deadman_url    -> config.alerts   (same field, destructive half)
         """
         present = body.model_fields_set
+        if "dusk" in present and not principal.has(CAP_CONFIG_SAFETY):
+            raise HTTPException(403, detail={"detail": "config.safety required to change dusk cooling",
+                                            "code": "forbidden"})
         # Known, mapped blocks only. Any field on the body outside this map is a
         # programming error (a new block added without a cap) -> fail closed.
         block_caps = {
@@ -3472,6 +3505,7 @@ def create_app(*, bind_host: str | None = None,
             "cloudmap": CAP_CONFIG_SITE_OPTICS,
             "safety": CAP_CONFIG_SAFETY,
             "cooling": CAP_CONFIG_SAFETY,
+            "dusk": CAP_CONFIG_BACKEND,
             "standards": CAP_CONFIG_SAFETY,
             # Both wave-2 blocks ride config.safety rather than site_optics:
             # a temp-comp coefficient with the wrong sign drives the focuser
@@ -3526,9 +3560,14 @@ def create_app(*, bind_host: str | None = None,
     async def get_config(principal: Principal = Depends(require(CAP_VIEW_STATUS))):
         return _config_payload(principal)
 
+    @app.get("/api/dusk/state")
+    @declare(CAP_VIEW_STATUS)
+    async def get_dusk_state(principal: Principal = Depends(require(CAP_VIEW_STATUS))):
+        return dusk_arm.snapshot()
+
     @app.post("/api/config")
     @declare(CAP_VIEW_STATUS, CAP_CONFIG_SITE_OPTICS, CAP_CONFIG_SAFETY,
-             CAP_CONFIG_ALERTS)
+             CAP_CONFIG_ALERTS, CAP_CONFIG_BACKEND)
     async def post_config(body: ConfigPatchBody,
                           principal: Principal = Depends(require(CAP_VIEW_STATUS))):
         """Partial-merge persist of any subset of the automation config (§1.10).
@@ -3674,16 +3713,27 @@ def create_app(*, bind_host: str | None = None,
     @app.get("/api/site/mount-gps")
     @declare(CAP_CONFIG_SITE_OPTICS)
     async def site_mount_gps(
+            detected_only: bool = False,
             principal: Principal = Depends(require(CAP_CONFIG_SITE_OPTICS))):
         """Best-effort read-back of the connected mount's GPS fix. config.site_optics
         (the cap that may WRITE the site). Always 200; the body's ``available``
         flag + ``detail`` carry unavailability. ASSIST ONLY — the UI fills the
         draft; the user saves explicitly via PUT /api/site."""
         read = getattr(hub, "read_site_from_mount", None)
-        if not callable(read):
-            return {"available": False,
-                    "detail": "Mount GPS read-back unavailable"}
-        return await read()
+        # Alpaca site coordinates can be entered by hand. They are not proof
+        # of a GPS receiver; Guided only offers a verified receiver source.
+        telescope = getattr(hub, "devices", {}).get("telescope")
+        mount_gps_known = getattr(telescope, "gps_available", False) is True
+        if callable(read) and (not detected_only or mount_gps_known):
+            result = await read()
+            if result.get("available"):
+                return {**result, "source": "mount", "detected": mount_gps_known}
+            if not detected_only:
+                return result
+        if not detected_only:
+            return {"available": False, "detail": "Mount GPS read-back is unavailable"}
+        from ..site_gps import read_usb_gps
+        return await asyncio.to_thread(read_usb_gps)
 
     # ------------------------------------------------------- saved locations
     # A named-location library (spec §4), INDEPENDENT of rig profiles and NOT
@@ -4612,7 +4662,7 @@ def create_app(*, bind_host: str | None = None,
             return bool(getattr(cam, "can_cool", False))
         return bool(config_store.cfg().camera_can_cool_seen)
 
-    def _compile_payload(graph: FlowGraph, name: str) -> dict:
+    async def _compile_payload(graph: FlowGraph, name: str) -> dict:
         """``{plan, structural, issues, unmapped}``.
 
         FOUR lists, not one, because four different things can be wrong with a
@@ -4633,6 +4683,7 @@ def create_app(*, bind_host: str | None = None,
         structural = graph.validation_errors()
         compiled = compile_plan(graph, name)
         unmapped: list[dict] = []
+        geometry_issues: list[dict] = []
         try:
             # SAME ARGUMENTS AS THE RUN. A preview compiled differently from the
             # run is a preview of a different night — the defect the park/warm
@@ -4644,6 +4695,11 @@ def create_app(*, bind_host: str | None = None,
                 camera_can_cool=_camera_can_cool(),
                 closes_on_unsafe=bool(
                     config_store.cfg().safety.close_dome_on_unsafe))
+            groups, note = await capture_geometry.inventory()
+            geometry_issues = [{"text": text, "level": "warn"} for text in
+                               capture_geometry.plan_warnings(_plan, groups)]
+            if note:
+                geometry_issues.append({"text": note, "level": "warn"})
         except GraphNotRunnable as e:
             # Not an error response: a half-built graph is the NORMAL state of
             # an editor, and the canvas asks for a compile on every edit. The
@@ -4660,7 +4716,7 @@ def create_app(*, bind_host: str | None = None,
                 "issues": [i.to_json() for i in
                            flow_doctor(graph,
                                        standards=config_store.cfg().standards,
-                                       mount=hub.devices.get("telescope"))],
+                                       mount=hub.devices.get("telescope"))] + geometry_issues,
                 "unmapped": unmapped}
 
     @app.get("/api/flows", dependencies=[Depends(require(CAP_VIEW_STATUS))])
@@ -4856,7 +4912,7 @@ def create_app(*, bind_host: str | None = None,
         Also static-before-parameterised, though only for symmetry — there is no
         POST /api/flows/{flow_id} for it to collide with today, and relying on
         that absence is how the next route added here breaks this one."""
-        return _compile_payload(body.graph or FlowGraph(), body.name or "")
+        return await _compile_payload(body.graph or FlowGraph(), body.name or "")
 
     @app.get("/api/flows/{flow_id}", dependencies=[Depends(require(CAP_VIEW_STATUS))])
     @declare(CAP_VIEW_STATUS)
@@ -4905,7 +4961,7 @@ def create_app(*, bind_host: str | None = None,
             rec = await asyncio.to_thread(flow_store.get, flow_id)
         except KeyError:
             raise HTTPException(404, detail={"code": "not_found"})
-        return _compile_payload(rec.graph, rec.name)
+        return await _compile_payload(rec.graph, rec.name)
 
     @app.get("/api/flows/{flow_id}/tonight",
              dependencies=[Depends(require(CAP_VIEW_SITE_DERIVED))])
@@ -5412,7 +5468,8 @@ def create_app(*, bind_host: str | None = None,
             raise _err(e)
         return _spawn("capture", hub.capture(
             body.exposure_s, body.gain, body.offset, body.binning,
-            save=body.save, target=body.target, frame_type=body.frame_type))
+            save=body.save, target=body.target, frame_type=body.frame_type,
+            **({"request_id": body.request_id} if body.request_id else {})))
 
     @app.get("/api/capture/last",
              dependencies=[Depends(require(CAP_VIEW_STATUS))])
@@ -7519,6 +7576,80 @@ def create_app(*, bind_host: str | None = None,
 
     # -------------------------------------------------------------- polar align
 
+    from ..guided_recovery import GuidedCheckpoint
+    guided_checkpoint = GuidedCheckpoint()
+
+    async def _guided_checkpoint_state():
+        from ..events import night_key
+        cfg = config_store.cfg()
+        status = await hub.poll_status()
+        focus = bus.operation_snapshots.get("focus")
+        polar = dict(hub.polar.state)
+        busy = hub.busy_lanes()
+        if focus and focus.get("state") == "running" and not any(lane in busy for lane in ("autofocus", "filter_offsets")):
+            focus = {**focus, "state": "failed", "best": None,
+                     "message": "The focus operation has stopped. Check the stars before trying again."}
+        identity = {"night": night_key(), "site": cfg.site.model_dump(),
+                    "horizon": cfg.safety.horizon, "providers": cfg.providers.model_dump(),
+                    "profile": cfg.active_profile_id, "optics": hub.effective_optics(),
+                    "devices": {role: {"instance": id(device), "description": device.describe()}
+                                for role, device in hub.devices.items()},
+                    "links": {link.get("role"): bool(link.get("connected")) for link in status.get("backend_links", [])},
+                    "mode": hub.mode}
+        position = (status.get("focuser") or {}).get("position")
+        guided_checkpoint.observe(identity, focus, polar, focuser_position=position)
+        return status, focus, polar, busy, position
+
+    @app.get("/api/guided/checkpoint", dependencies=[Depends(require(CAP_VIEW_SITE_DERIVED))])
+    @declare(CAP_VIEW_SITE_DERIVED)
+    async def guided_checkpoint_get():
+        _, focus, polar, busy, _ = await _guided_checkpoint_state()
+        return {**guided_checkpoint.snapshot(), "focus": focus, "polar": polar, "busy": busy,
+                "filter_offsets": bus.operation_snapshots.get("filter_offsets")}
+
+    @app.post("/api/guided/checkpoint", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
+    @declare(CAP_CONTROL_MOUNT)
+    async def guided_checkpoint_update(body: GuidedCheckpointBody):
+        status, focus, polar, busy, position = await _guided_checkpoint_state()
+        if body.context != guided_checkpoint.context or body.revision != guided_checkpoint.revision:
+            raise HTTPException(409, "The setup changed. Review this step again before saving its check.")
+        if body.action == "invalidate":
+            guided_checkpoint.invalidate(body.fact)
+        else:
+            if body.fact in ("focus", "alignment") and any(lane in busy for lane in ("autofocus", "filter_offsets", "polar", "focuser")):
+                raise HTTPException(409, "Wait for the current operation to finish before confirming this check.")
+            from ..guided import simulated_equipment
+            try:
+                guided_checkpoint.complete(body.fact, focus, polar, focuser_position=position,
+                    mount_slewing=bool((status.get("mount") or {}).get("slewing")),
+                    simulated=simulated_equipment(hub))
+            except ValueError as exc:
+                raise HTTPException(409, str(exc)) from exc
+        return guided_checkpoint.snapshot()
+
+    @app.get("/api/guided/polar-field", dependencies=[Depends(require(CAP_VIEW_SITE_DERIVED))])
+    @declare(CAP_VIEW_SITE_DERIVED)
+    async def guided_polar_field():
+        from ..guided import polar_field, simulated_equipment
+        from ..providers import resolve, _rig_has_real_motion
+        cfg = config_store.cfg()
+        provider = resolve("polar_align", hub)
+        if provider.kind == "sim" and _rig_has_real_motion(hub):
+            return {"field": None, "reason": "A simulated alignment cannot check this mount. Configure a real polar-alignment provider before continuing.", "config_version": cfg.version}
+        if provider.kind not in ("astrodeck", "sim"):
+            return {"field": None, "reason": "Guided field selection currently supports AstroDeck's polar alignment. Use Pro for this provider's setup.", "config_version": cfg.version}
+        simulation = simulated_equipment(hub)
+        result = await asyncio.to_thread(polar_field, dict(hub.site), cfg.safety, simulation=simulation)
+        return {**result, "config_version": cfg.version, "simulation": simulation}
+
+    @app.get("/api/guided/first-targets", dependencies=[Depends(require(CAP_VIEW_SITE_DERIVED))])
+    @declare(CAP_VIEW_SITE_DERIVED)
+    async def guided_first_targets():
+        from ..guided import first_targets, simulated_equipment
+        simulation = simulated_equipment(hub)
+        result = await asyncio.to_thread(first_targets, dict(hub.site), config_store.cfg().safety, simulation=simulation)
+        return {**result, "simulation": simulation}
+
     def _publish_polar_lane() -> None:
         """Put the polar session's OWN task in ``hub._busy`` under "polar".
 
@@ -7877,7 +8008,8 @@ def create_app(*, bind_host: str | None = None,
                     422, f"night must be YYYY-MM-DD (got {v!r})")
 
     async def _gallery_rows(q: str, night_from: str, night_to: str,
-                            paths: list[str] | None = None):
+                            paths: list[str] | None = None, snapshot: str = "", *,
+                            path_limit: int = _GALLERY_SELECTION_MAX):
         """The frame set a request refers to, plus per-path refusals.
 
         Two ways to name a set, one resolver: an explicit ``path`` list (the user
@@ -7889,13 +8021,19 @@ def create_app(*, bind_host: str | None = None,
         # accepted because some other parameter happened to win is a 422 the
         # caller will not get next time either.
         _gallery_nights_ok(night_from, night_to)
+        if paths and len(paths) > path_limit:
+            raise HTTPException(422, f"too many paths in one request ({len(paths)} > {path_limit}) — "
+                                "name the set with the search and night filter instead")
+        if snapshot:
+            try:
+                rows, truncated = await asyncio.to_thread(
+                    gallery_listing.selected, snapshot, q, night_from, night_to, paths)
+                return rows, [], truncated
+            except gallery_listing.ListingExpired as e:
+                raise HTTPException(409, str(e))
+            except ValueError as e:
+                raise HTTPException(422, str(e))
         if paths:
-            if len(paths) > _GALLERY_SELECTION_MAX:
-                raise HTTPException(
-                    422, f"too many paths in one request "
-                         f"({len(paths)} > {_GALLERY_SELECTION_MAX}) — name the "
-                         f"set with the search and night filter instead, which "
-                         f"has no size limit")
             rows, failed = await asyncio.to_thread(
                 gallery_module.resolve_selection, paths)
             return rows, failed, False
@@ -7907,7 +8045,7 @@ def create_app(*, bind_host: str | None = None,
     @app.get("/api/gallery/frames", dependencies=[Depends(require(CAP_VIEW_PREVIEW))])
     @declare(CAP_VIEW_PREVIEW)
     async def gallery_frames(q: str = "", night_from: str = "", night_to: str = "",
-                             offset: int = 0, limit: int = 200):
+                             offset: int = 0, limit: int = 200, cursor: str = ""):
         """One page of the capture library, newest capture first.
 
         ``night_from``/``night_to`` are INCLUSIVE noon-to-noon night keys, not
@@ -7922,20 +8060,17 @@ def create_app(*, bind_host: str | None = None,
         offset = max(0, int(offset))
         limit = max(1, min(int(limit), _GALLERY_PAGE_MAX))
         t0 = time.monotonic()
-        rows, _failed, truncated = await _gallery_rows(q, night_from, night_to)
-        totals = gallery_module.summarize(rows)
-        return {
-            "frames": rows[offset:offset + limit],
-            "total": totals["count"],
-            "bytes": totals["bytes"],
-            "offset": offset,
-            "limit": limit,
-            # True only when the walk hit its ceiling: the library is bigger than
-            # a walk should serve and the UI must say so rather than present a
-            # prefix as the whole thing.
-            "truncated": truncated,
-            "scan_ms": round((time.monotonic() - t0) * 1000, 1),
-        }
+        _gallery_nights_ok(night_from, night_to)
+        try:
+            result = await asyncio.to_thread(gallery_listing.page, q=q, night_from=night_from,
+                                             night_to=night_to, offset=offset, limit=limit, cursor=cursor)
+        except gallery_listing.ListingExpired as e:
+            raise HTTPException(409, str(e))
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+        except OSError:
+            raise HTTPException(503, "Could not prepare the gallery listing. Check available temporary storage and try again.")
+        return {**result, "scan_ms": round((time.monotonic() - t0) * 1000, 1)}
 
     @app.get("/api/gallery/nights", dependencies=[Depends(require(CAP_VIEW_PREVIEW))])
     @declare(CAP_VIEW_PREVIEW)
@@ -7952,7 +8087,7 @@ def create_app(*, bind_host: str | None = None,
     @app.get("/api/gallery/summary", dependencies=[Depends(require(CAP_VIEW_PREVIEW))])
     @declare(CAP_VIEW_PREVIEW)
     async def gallery_summary(q: str = "", night_from: str = "",
-                              night_to: str = "",
+                              night_to: str = "", snapshot: str = "",
                               path: list[str] = Query(default=[])):
         """What a download of this exact selection would be: ``{count, bytes}``.
 
@@ -7967,7 +8102,7 @@ def create_app(*, bind_host: str | None = None,
         for the same two numbers. This route is for the callers that have no
         listing — a script or a CLI that wants the size before committing to a
         multi-GB stream."""
-        rows, failed, _ = await _gallery_rows(q, night_from, night_to, path)
+        rows, failed, _ = await _gallery_rows(q, night_from, night_to, path, snapshot)
         return {**gallery_module.summarize(rows), "failed": failed}
 
     @app.get("/api/gallery/thumb", dependencies=[Depends(require(CAP_VIEW_PREVIEW))])
@@ -7979,7 +8114,9 @@ def create_app(*, bind_host: str | None = None,
         draw a "no preview" tile that still lets the user download the frame —
         a frame we cannot render is not a frame that is missing."""
         try:
-            jpeg = await asyncio.to_thread(gallery_module.thumbnail, path, width=w)
+            jpeg = await gallery_module.thumbnail_async(path, width=w)
+        except gallery_module.RenderBusy as e:
+            raise HTTPException(503, str(e), headers={"Retry-After": "1"})
         except KeyError:
             raise HTTPException(404, "frame not found")
         except FileNotFoundError:
@@ -8006,7 +8143,10 @@ def create_app(*, bind_host: str | None = None,
         desktop window being dragged, lands on a handful of cache keys instead of
         re-rendering 26 megapixels per pixel of resize."""
         try:
-            jpeg = await asyncio.to_thread(gallery_module.view, path, width=w)
+            jpeg = await gallery_module.thumbnail_async(
+                path, width=gallery_module.view_width_for(w), ceiling=gallery_module.VIEW_MAX_WIDTH)
+        except gallery_module.RenderBusy as e:
+            raise HTTPException(503, str(e), headers={"Retry-After": "1"})
         except KeyError:
             raise HTTPException(404, "frame not found")
         except FileNotFoundError:
@@ -8082,7 +8222,7 @@ def create_app(*, bind_host: str | None = None,
              dependencies=[Depends(require(CAP_VIEW_MEDIA))])
     @declare(CAP_VIEW_MEDIA)
     async def gallery_download(q: str = "", night_from: str = "",
-                               night_to: str = "",
+                               night_to: str = "", snapshot: str = "",
                                path: list[str] = Query(default=[])):
         """Bulk download as a STREAMED zip. Same parameters as the summary.
 
@@ -8099,7 +8239,7 @@ def create_app(*, bind_host: str | None = None,
         ``X-Gallery-Frames``/``X-Gallery-Bytes`` carry the payload size the
         summary route reported: there is no Content-Length on a streamed zip, so
         without them a client has no way to draw a progress bar."""
-        rows, failed, _ = await _gallery_rows(q, night_from, night_to, path)
+        rows, failed, _ = await _gallery_rows(q, night_from, night_to, path, snapshot)
         if not rows:
             # 404, not an empty zip: an archive with nothing in it is a download
             # that looks like it worked.
@@ -8139,6 +8279,9 @@ def create_app(*, bind_host: str | None = None,
         broken link, and fixing the ledger is a separate item."""
         if not body.paths:
             raise HTTPException(422, "no paths given")
+        if body.snapshot:
+            await _gallery_rows(body.q, body.night_from, body.night_to, body.paths, body.snapshot,
+                                path_limit=50_000)
         return await asyncio.to_thread(gallery_module.trash_frames, body.paths)
 
     @app.get("/api/gallery/trash",

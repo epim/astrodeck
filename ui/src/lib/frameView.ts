@@ -42,6 +42,6 @@ export function shouldRefetch(currentWidth: number | null, needWidth: number): b
   return currentWidth === null || needWidth > currentWidth;
 }
 
-export const viewPath = (path: string, width: number, v?: number): string =>
+export const viewPath = (path: string, width: number, v?: number | string): string =>
   `/api/gallery/view?path=${encodeURIComponent(path)}&w=${width}`
-  + (v ? `&v=${Math.round(v)}` : "");
+  + (v != null && (typeof v === "string" || Number.isFinite(v)) ? `&v=${encodeURIComponent(v)}` : "");

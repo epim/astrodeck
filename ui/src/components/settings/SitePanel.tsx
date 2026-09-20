@@ -542,6 +542,48 @@ export default function SitePanel(): JSX.Element {
           Active site: <span className="text-ink">{activeName}</span> · {activeSource}
         </p>
 
+        {canEdit && (
+          <section aria-label="Fill observing location" className="rounded-xl border border-line2 bg-raise px-4 py-3 flex flex-col gap-3">
+            <div>
+              <h3 className="text-sm font-medium text-ink">Are you beside the telescope?</h3>
+              <p className="text-xs text-dim mt-1 leading-relaxed">
+                Choose Use my location to fill the coordinates from this device.
+                If the telescope is somewhere else, use its mount GPS or a saved location.
+                Check the fields below, then choose Set site.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {geoAvailable ? (
+                <button
+                  type="button"
+                  className="btn btn-accent min-h-11"
+                  disabled={busy}
+                  aria-busy={busyWhat === "geo" || undefined}
+                  onClick={() => void useMyLocation()}
+                >
+                  {busyWhat === "geo" ? "Locating…" : "Use my location"}
+                </button>
+              ) : (
+                <p className="text-xs text-dim self-center">
+                  This browser can't provide a location on this connection.
+                  Enter the coordinates below or use mount GPS. Browser location
+                  needs HTTPS or localhost and a browser that supports it.
+                </p>
+              )}
+              <button
+                type="button"
+                className="btn min-h-11"
+                disabled={busy}
+                aria-busy={busyWhat === "gps" || undefined}
+                onClick={() => void useMountGps()}
+              >
+                {busyWhat === "gps" ? "Asking the mount…" : "Use mount GPS"}
+              </button>
+            </div>
+            {geoAvailable && <p className="text-xs text-dim">Your browser may ask for location permission. You can also enter the coordinates by hand.</p>}
+          </section>
+        )}
+
         {config?.site?.is_default && (
           <p className="text-[12px] text-warn inline-flex items-start gap-1.5">
             <Icon name="alert" size={14} className="shrink-0 mt-0.5" />
@@ -683,31 +725,6 @@ export default function SitePanel(): JSX.Element {
               onClick={() => void onSave()}
             >
               Set site
-            </button>
-            {geoAvailable ? (
-              <button
-                type="button"
-                className="btn"
-                disabled={busy}
-                aria-busy={busyWhat === "geo" || undefined}
-                onClick={() => void useMyLocation()}
-              >
-                {busyWhat === "geo" ? "Locating…" : "Use my location"}
-              </button>
-            ) : (
-              <p className="text-[11px] text-dim self-center">
-                Browser location needs HTTPS or localhost — enter manually or use
-                mount GPS.
-              </p>
-            )}
-            <button
-              type="button"
-              className="btn"
-              disabled={busy}
-              aria-busy={busyWhat === "gps" || undefined}
-              onClick={() => void useMountGps()}
-            >
-              {busyWhat === "gps" ? "Asking the mount…" : "Use mount GPS"}
             </button>
           </div>
         )}

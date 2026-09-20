@@ -62,6 +62,8 @@ somewhere the code under test is not looking.
 from __future__ import annotations
 
 import hashlib
+import asyncio
+from concurrent.futures import Future, ThreadPoolExecutor
 import itertools
 import json
 import os
@@ -75,6 +77,7 @@ from typing import Iterable, Iterator
 
 from .events import bus, night_key
 from .persist import safe_subpath
+from .gallery_index import MetadataIndex, signature, DIRECTORY as INDEX_DIRECTORY
 from .remote.protocol import DEFAULT_MAX_PAYLOAD
 
 # --------------------------------------------------------------------- layout
@@ -121,7 +124,7 @@ FRAME_SUFFIXES = frozenset({".fits", ".fit", ".fts", ".xisf"})
 #:                   every byte in the "38.2 GB" summary
 #:   _survey/_survey_pack/_weather_tiles/logs/sessions/reports  caches + ledgers
 SKIP_TOP_DIRS = frozenset({
-    TRASH_DIRNAME, THUMBS_DIRNAME, "_masters", "_solve", "exports",
+    TRASH_DIRNAME, THUMBS_DIRNAME, INDEX_DIRECTORY, "_masters", "_solve", "exports",
     "_survey", "_survey_pack", "_weather_tiles", "logs", "sessions", "reports",
 })
 
@@ -276,11 +279,9 @@ def thumbs_root() -> Path:
 
 # ------------------------------------------------------- frame metadata cache
 
-#: ``resolved path str -> (mtime, size, meta dict)``. The walk gives path/size/
-#: mtime for free; target/filter/frame-type/exposure/DATE-OBS cost a FITS header
-#: read, so they are cached and re-read only when mtime or size changes (a frame
-#: is written once and never edited, so this is exact rather than heuristic).
-_META_CACHE: dict[str, tuple[float, int, dict]] = {}
+#: Process cache backed by a disposable SQLite index. The walk supplies the
+#: nanosecond timestamps, size and file identity used to validate each entry.
+_META_CACHE: dict[str, tuple[str, dict]] = {}
 
 #: Hard cap. This process runs for weeks on a rig that keeps capturing, so an
 #: unbounded dict is a slow leak. Clearing wholesale (rather than evicting an
@@ -315,40 +316,56 @@ def _read_header_meta(path: Path) -> dict:
     header. Total: any read or parse failure returns empty fields, so a corrupt
     or half-written frame still appears in the grid (with its filename, size and
     mtime) instead of vanishing from the user's library."""
+    from .capture_geometry import positive_number
     meta = {"target": "", "filter": "", "frame_type": "", "exposure_s": None,
-            "ts": None}
+            "ts": None, "width": None, "height": None, "bin_x": None, "bin_y": None,
+            "_header_ok": False}
     try:
         from astropy.io import fits          # lazy: same as hub/calibration
         hdr = fits.getheader(path)
+        meta["_header_ok"] = True
     except Exception:                        # noqa: BLE001 — see docstring
         return meta
     try:
         meta["target"] = str(hdr.get("OBJECT", "") or "").strip()
         meta["filter"] = str(hdr.get("FILTER", "") or "").strip()
         meta["frame_type"] = str(hdr.get("IMAGETYP", "") or "").strip()
-        exp = hdr.get("EXPTIME")
-        meta["exposure_s"] = float(exp) if exp is not None else None
+        meta["exposure_s"] = positive_number(hdr.get("EXPTIME"), allow_zero=True)
+        for field, card in (("width", "NAXIS1"), ("height", "NAXIS2"),
+                            ("bin_x", "XBINNING"), ("bin_y", "YBINNING")):
+            meta[field] = positive_number(hdr.get(card), integer=True)
         meta["ts"] = _parse_date_obs(hdr.get("DATE-OBS"))
     except (TypeError, ValueError):
         pass
     return meta
 
 
-def _meta_for(path: Path, mtime: float, size: int) -> dict:
+def _meta_for(path: Path, st: os.stat_result, index=None, rel="") -> dict:
     key = str(path)
+    stamp = signature(st)
+    if index is not None:
+        index.seen.add(rel)
     hit = _META_CACHE.get(key)
-    if hit is not None and hit[0] == mtime and hit[1] == size:
-        return hit[2]
-    meta = _read_header_meta(path)
+    if hit is not None and hit[0] == stamp:
+        meta = hit[1]
+        if index is not None and index.entries.get(rel, (None,))[0] != stamp:
+            index.put(rel, stamp, meta)
+        return meta
+    meta = index.get(rel, stamp) if index is not None else None
+    if meta is None:
+        meta = _read_header_meta(path)
+        if not meta.get("_header_ok"):
+            return meta  # A locked/incomplete file must be retried, not persisted.
+        if index is not None:
+            index.put(rel, stamp, meta)
     if len(_META_CACHE) >= _META_CACHE_MAX:
         _META_CACHE.clear()
-    _META_CACHE[key] = (mtime, size, meta)
+    _META_CACHE[key] = (stamp, meta)
     return meta
 
 
 def clear_meta_cache() -> None:
-    """Drop the header cache. For tests, and for anything that rewrites frames
-    under a path it already listed within the same mtime granularity."""
+    """Drop process memory, retaining the disk index (as after a restart)."""
     _META_CACHE.clear()
 
 
@@ -428,7 +445,7 @@ def _walk_frames(root: Path) -> Iterator[tuple[str, os.stat_result]]:
             yield "/".join(prefix + (entry.name,)), st
 
 
-def _row(root: Path, rel: str, st: os.stat_result) -> dict:
+def _row(root: Path, rel: str, st: os.stat_result, index=None) -> dict:
     """One grid row. ``ts`` is the capture instant the night is derived from and
     is returned to the client on purpose: a user who wonders why a 00:10 frame
     is filed under yesterday can see the timestamp that decided it.
@@ -444,7 +461,7 @@ def _row(root: Path, rel: str, st: os.stat_result) -> dict:
     become its biggest source. So both dates leave here already in the rig's
     clock, one line from the night that was derived from the same ``localtime``.
     """
-    meta = _meta_for(root.joinpath(*rel.split("/")), st.st_mtime, st.st_size)
+    meta = _meta_for(root.joinpath(*rel.split("/")), st, index, rel)
     ts = meta.get("ts") or st.st_mtime
     local = time.localtime(ts)
     folder, _, name = rel.rpartition("/")
@@ -461,8 +478,10 @@ def _row(root: Path, rel: str, st: os.stat_result) -> dict:
         "filter": meta.get("filter") or "",
         "frame_type": meta.get("frame_type") or "",
         "exposure_s": meta.get("exposure_s"),
+        **{field: meta.get(field) for field in ("width", "height", "bin_x", "bin_y")},
         "bytes": st.st_size,
         "mtime": st.st_mtime,
+        "file_version": signature(st),
     }
 
 
@@ -480,32 +499,29 @@ def scan(root: Path | None = None, *, limit: int = SCAN_MAX_FILES
 
     Returns ``(rows, truncated)``.
 
-    MEASURED 2026-08-03 on a synthetic copy of the rig's real library shape (293
-    frames across three target folders, Windows, warm page cache):
-
-        cold (every FITS header read once)   1381 ms   ≈ 4.7 ms / frame
-        warm (mtime+size unchanged)             4 ms
-
-    Recorded rather than guessed because the design's instruction was explicit:
-    start with a walk plus an mtime-keyed cache, and reach for a real index only
-    when measurement says to — but MEASURE, so the decision is evidence and not a
-    deferral. What the numbers say: 1.4 s once after a restart is fine at 293
-    frames, and the cost is linear in the header reads, so a 50k-frame library
-    would pay roughly four minutes on the first request. That is the trigger. The
-    fix when it arrives is a persisted version of ``_META_CACHE`` (the warm path
-    is already 350x cheaper), not SQLite for its own sake."""
+    Reconcile filesystem stamps with the process cache and persistent metadata
+    index. Only new/changed frames need FITS header reads. Listing pagination
+    uses gallery_listing snapshots and does not call this again per page.
+    See tools/gallery_benchmark.py for a synthetic restart/pagination benchmark.
+    """
     root = capture_root() if root is None else root
     rows: list[dict] = []
     truncated = False
     if not root.is_dir():
         return rows, truncated
     with _SCAN_LOCK:
-        for rel, st in _walk_frames(root):
-            if len(rows) >= limit:
-                truncated = True
-                break
-            rows.append(_row(root, rel, st))
-    rows.sort(key=lambda r: r["ts"], reverse=True)
+        index = MetadataIndex(root)
+        complete = False
+        try:
+            for rel, st in _walk_frames(root):
+                if len(rows) >= limit:
+                    truncated = True
+                    break
+                rows.append(_row(root, rel, st, index))
+            complete = not truncated
+        finally:
+            index.close(complete=complete)
+    rows.sort(key=lambda r: (r["ts"], r["path"]), reverse=True)
     return rows, truncated
 
 
@@ -745,14 +761,20 @@ def _thumb_prune_due() -> bool:
     return next(_thumb_render_seq) % THUMB_PRUNE_EVERY == 0
 
 
-def _thumb_cache_path(rel: str, mtime: float, width: int) -> Path:
-    """Cache key = path + mtime + width, hashed. Hashing gives a guaranteed-safe
+def _thumb_cache_path(rel: str, mtime: float, width: int, *, root=None, version=None) -> Path:
+    """Cache key = path + full file version + width. Hashing gives a safe
     flat filename (hex only) for a relative path that contains separators and
-    user-chosen target names, and folding mtime into the NAME rather than
-    comparing it later means a re-captured frame at the same path can never serve
-    the old thumbnail."""
-    digest = hashlib.sha1(rel.encode("utf-8")).hexdigest()
-    return thumbs_root() / f"{digest}_{int(mtime)}_{int(width)}.jpg"
+    user-chosen target name. Subsecond changes and ordinary replacements
+    invalidate both the thumbnail and viewer cache. The mtime argument remains
+    a fallback for callers computing a key after a file has disappeared."""
+    root = capture_root() if root is None else root
+    if version is None:
+        try:
+            version = signature(safe_subpath(root, rel).stat())
+        except (OSError, KeyError):
+            version = repr(mtime)
+    digest = hashlib.sha1(f"{rel}:{version}".encode("utf-8")).hexdigest()
+    return root / THUMBS_DIRNAME / f"{digest}_{int(width)}.jpg"
 
 
 def _prune_thumb_cache(directory: Path) -> None:
@@ -798,8 +820,84 @@ def _prune_thumb_cache(directory: Path) -> None:
         pass
 
 
-def thumbnail(rel: str, *, width: int = 256,
-              ceiling: int | None = None) -> bytes:
+_RENDER_LOCK = threading.RLock()
+_FLIGHT_LOCK = threading.RLock()
+_render_flights = {}
+_render_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gallery-render")
+_async_flights = {}
+MAX_PENDING_RENDERS = 16
+
+
+class RenderBusy(Exception):
+    pass
+
+
+def _peek_thumb(rel, width, ceiling, root):
+    rel = (rel or "").replace("\\", "/")
+    path = safe_subpath(root, rel)
+    if rel.split("/")[0] in SKIP_TOP_DIRS or path.suffix.lower() not in FRAME_SUFFIXES:
+        raise KeyError(rel)
+    st = path.stat()
+    width = max(32, min(int(width), ceiling or THUMB_MAX_WIDTH))
+    cached = _thumb_cache_path(rel, st.st_mtime, width, root=root, version=signature(st))
+    try:
+        return cached, cached.read_bytes()
+    except OSError:
+        return cached, None
+
+
+def thumbnail(rel: str, *, width: int = 256, ceiling: int | None = None, _root=None) -> bytes:
+    root = capture_root() if _root is None else _root
+    key, hit = _peek_thumb(rel, width, ceiling, root)
+    if hit is not None:
+        return hit
+    with _FLIGHT_LOCK:
+        pending = _render_flights.get(key)
+        owner = pending is None
+        if owner:
+            pending = Future()
+            _render_flights[key] = pending
+    if not owner:
+        return pending.result()
+    try:
+        # Includes precompute/backfill. Only one full image in this renderer at
+        # a time, while warm hits bypass the lock. Waiters share bytes even if
+        # the disk cache is read-only, and share failures without deadlocking.
+        with _RENDER_LOCK:
+            result = _thumbnail_render(rel, width=width, ceiling=ceiling, root=root)
+        pending.set_result(result)
+        return result
+    except BaseException as exc:
+        pending.set_exception(exc)
+        raise
+    finally:
+        with _FLIGHT_LOCK:
+            _render_flights.pop(key, None)
+
+
+async def thumbnail_async(rel, *, width=256, ceiling=None):
+    root = capture_root()
+    key, hit = await asyncio.to_thread(_peek_thumb, rel, width, ceiling, root)
+    if hit is not None:
+        return hit
+    with _FLIGHT_LOCK:
+        future = _async_flights.get(key)
+        if future is None:
+            if len(_async_flights) >= MAX_PENDING_RENDERS:
+                raise RenderBusy("Gallery previews are busy. Try again shortly.")
+            future = _render_pool.submit(thumbnail, rel, width=width, ceiling=ceiling, _root=root)
+            _async_flights[key] = future
+            def finished(done):
+                with _FLIGHT_LOCK:
+                    _async_flights.pop(key, None)
+            future.add_done_callback(finished)
+    wrapped = asyncio.wrap_future(future)
+    wrapped.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+    return await asyncio.shield(wrapped)
+
+
+def _thumbnail_render(rel: str, *, width: int = 256,
+                      ceiling: int | None = None, root=None) -> bytes:
     """JPEG thumbnail for one frame, rendered on first view and cached on disk.
 
     Neither existing thumbnail store is reusable, which is why this exists: the
@@ -814,7 +912,7 @@ def thumbnail(rel: str, *, width: int = 256,
     when the frame is gone; the route maps both to 404. Raises ``ValueError``
     when the file is not renderable (e.g. an ``.xisf`` we can list but cannot
     decode) so the grid can show a "no preview" tile instead of a broken image."""
-    root = capture_root()
+    root = capture_root() if root is None else root
     # Normalize the separator FIRST. ``safe_subpath`` treats a backslash as a
     # separator wherever the server runs, so ``_trash\x.fits`` resolves into the
     # trash — while a naive ``rel.split("/")[0]`` on that same string yields the
@@ -827,7 +925,7 @@ def thumbnail(rel: str, *, width: int = 256,
         raise KeyError(rel)
     st = path.stat()                         # FileNotFoundError -> 404
     width = max(32, min(int(width), ceiling or THUMB_MAX_WIDTH))
-    cached = _thumb_cache_path(rel, st.st_mtime, width)
+    cached = _thumb_cache_path(rel, st.st_mtime, width, root=root, version=signature(st))
     try:
         return cached.read_bytes()
     except OSError:
@@ -897,6 +995,11 @@ def thumb_is_cached(rel: str, width: int) -> bool:
 
 
 def precompute(rel: str, widths: "tuple[int, ...] | None" = None) -> int:
+    with _RENDER_LOCK:
+        return _precompute(rel, widths)
+
+
+def _precompute(rel: str, widths: "tuple[int, ...] | None" = None) -> int:
     """Render and cache ``rel``'s thumbnails ahead of anyone asking. Returns how
     many were actually rendered (0 when they were all already cached).
 
@@ -943,7 +1046,7 @@ def precompute(rel: str, widths: "tuple[int, ...] | None" = None) -> int:
             jpeg = _encode(img01, max_width=w, fmt="JPEG", quality=THUMB_QUALITY)[0]
             if not jpeg:
                 continue
-            cached = _thumb_cache_path(rel_n, st.st_mtime, w)
+            cached = _thumb_cache_path(rel_n, st.st_mtime, w, root=root, version=signature(st))
             cached.parent.mkdir(parents=True, exist_ok=True)
             tmp = cached.with_suffix(f".{w}.tmp")
             tmp.write_bytes(jpeg)

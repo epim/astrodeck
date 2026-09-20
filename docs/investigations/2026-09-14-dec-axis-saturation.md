@@ -1,233 +1,146 @@
 # Dec axis saturation on the AM5N: evidence pack
 
-Status: OPEN, not diagnosed. Written 2026-09-14 for whoever picks this up.
+Status: **LARGELY EXPLAINED IN SOFTWARE, 2026-09-16.** The original framing
+(2026-09-14) was wrong in every load-bearing claim. Read the corrections
+before the evidence.
 
 Rig: ZWO AM5N (strain-wave), firmware 1.8.8, native serial backend
 (`server/astrodeck/devices/backends/zwo_am5.py`), Meade LX200 ASCII over USB
-CDC-ACM. Native guider (not PHD2). Profile `53dbed90-1469-4659-8c38-73be34311bde`.
+CDC-ACM. Native guider (`server/astrodeck/guide/native.py`) over the Rust
+engine (`native/crates/astro-guide/`). Profile `Rig1`.
 
-## The short version
+## What v1 of this document claimed, and what survived
 
-The declination axis is chronically failing to deliver the motion the guider
-asks of it. The guider compensates by demanding longer and longer pulses until
-it hits the mount's 1000 ms ceiling, which it then hits over and over. On
-2026-09-13/14 this was survivable while imaging NGC 7331 (103 of 105 frames
-accepted, 2.0 to 2.5 arcsec guiding) but it broke calibration outright on
-NGC 7129, which ended the night's second target.
+| v1 claim | verdict |
+|---|---|
+| The Dec axis delivers ~12x less motion than commanded | **WRONG.** Dec runs at exactly 0.5x RA by design; it is measured hardware. |
+| 127 pulses moved the star only 13.9 px, a ~9.5x shortfall | **MEANINGLESS COMPARISON.** GO_SOUTH is a recenter leg with no distance target. |
+| The 2727 ms demand ceiling is an unexplained second clamp | It is ordinary `_CAL_MS_MAX` / `_ENGINE_MAX_DURATION_MS` = 2500 territory. |
+| H3: control-loop wind-up against the 1000 ms cap | **DISPROVED.** `native.py:1587` already extends the step budget for truncation. |
+| H1: mechanical Dec backlash is the leading hypothesis | **DEMOTED TO LAST.** Nothing observed requires it. |
 
-The guider's own calibration routine diagnosed it twice, unprompted:
+## Verified facts
 
-    Advisory: Calibration completed but RA/Dec axis angles are questionable
-    and guiding may be impaired
+**1. The Dec pulse rate is half the RA rate, and that is the hardware.**
+`zwo_am5.py`: `_PULSE_RA_RATE_DEG_S = 0.004178` (1.0x sidereal),
+`_PULSE_DEC_RATE_DEG_S = 0.002089` (0.5x). The driver says why: "west = R2 +
+Mw: measured EXACTLY -1x sid during tracking; north/south = R1 + Mn/Ms:
++/-0.5x sid (dec has no tracking to fight)". `guide_rates()` reports both
+rates honestly.
+
+**2. THE BUG.** `native.py:1546-1556` derives a single
+`calibration_duration_ms` from `rates[0]` (RA) and applies it to both axes.
+`rates[1]` is never read:
+
+```python
+if "calibration_duration_ms" not in engine_cfg and rates:
+    ra_deg_s = abs(float(rates[0]))
+    px_s = ra_deg_s * 3600.0 / scale
+    cal_dist = max(25.0, math.ceil(20.0 / scale))
+    ms = cal_dist / px_s / _CAL_TARGET_STEPS * 1000.0
+```
+
+On this mount every Dec calibration step is therefore sized for twice the sky
+it can actually cross.
+
+**3. It reproduces against the rig's own measurements.** At 5.5 arcsec/px (rig
+log, `native.py:102`) the derived step is ~716 ms, giving RA 2.08 px/step (12
+steps to cross the 25 px target, matching `_CAL_TARGET_STEPS = 12`) and Dec
+~1.04 px/step (~24 steps). The rig log of 2026-08-08 recorded
+`go_north 25 steps -> +27.5 px`, which is **1.1 px/step**. Predicted 1.04,
+measured 1.1.
+
+**4. GO_SOUTH is a RECENTER leg**, confirmed in `calibration.rs:512-526`:
+GO_NORTH sets `recenter_pulses_left = self.dec_steps`, then GO_SOUTH counts it
+down, emitting one pulse per call with **no distance target and no per-step
+success test**. So an inflated GO_NORTH count is paid for twice.
+
+**5. The 600 s timeout is the backstop, not a stall.** Calibration ran
+03:21:22 to 03:31:22 on 2026-09-14 — exactly `_CAL_TIMEOUT_S = 600.0`.
+
+**6. No step-budget extension ran.** The 2026-09-13 night log contains no
+"calibration step ... clamped to the mount ... pulse cap" line, so the derived
+step stayed under the 1000 ms cap and `native.py:1577-1592` never fired.
+`max_steps` stayed at its default 60.
+
+**7. The 1000 ms pulse cap is applied in TIME**, so it allows ~15 arcsec on RA
+and only ~7.5 arcsec on Dec. The message in `zwo_am5.py._capped_ms` — "one
+move may not exceed ~15 arcsec" — is correct for one axis only.
+
+## The mechanism, end to end
+
+`calibration_duration_ms` sized from the RA rate, so Dec steps are undersized
+2x. GO_NORTH therefore needs ~24 pulses instead of 12. GO_SOUTH inherits that
+count as its recenter countdown. Add CLEAR_BACKLASH and NUDGE_SOUTH and the
+walk runs past the 600 s backstop, which reports the timeout against whichever
+leg was running — the long tail, GO_SOUTH. "127 pulse(s) on the go_south leg"
+needs no mechanical fault to explain.
+
+## The most interesting open question
+
+The advisory that started this investigation may be an artefact of the same
+bug:
 
     Advisory: Calibration completed but RA and Dec rates vary by an
     unexpected amount (often caused by large Dec backlash)
 
-## Correction to the earlier working theory
+The RA and Dec rates **do** vary by 2x here, because the hardware rates differ
+by 2x. The advisory may be measuring correctly and attributing it to backlash
+when the cause is the mount's genuine rate asymmetry. If so there is no
+backlash problem at all, and the advisory must know the per-axis guide rates
+before it is allowed to draw that conclusion. **UNVERIFIED** — read what the
+advisory actually compares.
 
-The first read of this fault, mine, was "the Dec axis is 12x slow at
-declination +66, which is why NGC 7129 could not guide while NGC 7331 at
-declination +34 was fine." That framing is wrong twice over and should not be
-carried forward:
+## Also open
 
-1. **Dec-axis motion is not geometrically dependent on declination.** Only RA
-   is, by cos(dec). A Dec pulse moves the star the same angular distance at
-   +66 as at +34. Any declination dependence here would be mechanical (load,
-   balance, cable drag), not geometric.
+**The image scale, and it is the highest-value remaining unknown.** The guider
+derives `image_scale` from the profile's `guide_focal_length_mm` (confirmed
+150.0) **and** `guide_camera.pixel_size_um`. If either is missing it falls back
+to 1.0, and the comment at `native.py:243` claims that is harmless because
+"calibration measures px/ms empirically" — but `native.py:1548` feeds the scale
+into both `cal_dist` and the step duration, so it is **not** harmless. At scale
+1.0 the derived step computes to ~138 ms and clamps up to the
+`_CAL_MS_MIN = 300` floor, which would compound the Dec problem by a further
+~2.4x.
 
-2. **The Dec problem was present on NGC 7331 too.** It is visible throughout
-   the 7331 block at declination +34.4, with Dec pulse demands saturating at
-   2700 ms. 7331 merely tolerated it; 7129 did not, because calibration has a
-   tighter success criterion than a guiding loop that can keep limping.
+This is unresolved, and note what does **not** answer it: the guider status
+`image_scale` publishes the **Rust engine's** stats scale
+(`guide/base.py:90`), not the Python `_image_scale`. Both read 0.0 / unknown
+live (2026-09-16) and neither is evidence about the calibration sizing.
+Settling it needs a log line or a debug endpoint, because the live device
+object lives in the server process and a separate process would construct a
+new hub rather than inspect the running one.
 
-So: one chronic Dec fault, present at both declinations, not a 7129-specific
-problem. Treat the 7129 calibration timeout as the most legible symptom, not
-as the fault itself.
+Also open: whether NUDGE_SOUTH adds materially to the walk length.
 
-## Primary evidence
+## Fix, in order
 
-Source: `C:\Users\James\AstroDeck\captures\logs\2026-09-13.jsonl` on the rig
-(`astrotown`). This is the durable night log. The 200-entry in-memory ring at
-`/api/logs` rolled over long ago and will not have this.
+1. **Size `calibration_duration_ms` from the slower axis**, or add a per-axis
+   duration to the engine. There is currently no per-axis calibration duration
+   key: the engine takes one `calibration_duration_ms` (`calibration.rs`
+   `CalConfig`), and per-axis keys exist only for the caps
+   (`max_ra_duration_ms`, `max_dec_duration_ms`). Sizing from the slower axis
+   fails safe: on this mount it gives ~1524 ms, which exceeds the 1000 ms cap,
+   so the existing clamp engages and the step-budget extension lengthens the
+   walk instead of failing it.
+2. **Log the resolved image scale and whether it is known**, so the 1.0
+   fallback stops being silent.
+3. **Teach the rate-variance advisory the per-axis guide rates** before it
+   blames backlash.
+4. Correct the `_capped_ms` message to state the per-axis arcsec figure.
+5. **Only then** look for mechanical backlash.
 
-Extraction script used: `C:\Users\James\AstroDeck\pull_drift_evidence.py`.
+## Method note, worth more than the finding
 
-### 1. The pulse cap, and what it implies about guide rate
+Six hypotheses were formed and discarded in one session, and every wrong turn
+came from computing what a value should be instead of reading what it was:
 
-Every over-length pulse logs as:
+- the pixel scale was taken from a source comment, not from the rig;
+- the "9.5x shortfall" compared a recenter leg against a distance target that
+  leg does not have;
+- a "wiring gap" in the camera pixel size was guessed at, then found to be
+  correctly wired (`cameras/engine.py:72`);
+- the guider status `image_scale` was read as though it were the Python scale.
 
-    mount: ZWO AM5 (native serial): pulse north 2683 ms capped to 1000 ms
-    (one move may not exceed ~15 arcsec)
-
-1000 ms mapping to about 15 arcsec implies the mount's guide rate is set near
-**1.0x sidereal** (sidereal is 15.041 arcsec/s). Most rigs guide at 0.5x.
-**Verify this on the mount before anything else** - if the configured rate and
-the actual rate disagree, every number downstream is wrong, and a rate
-mismatch alone could produce the entire symptom set.
-
-### 2. Dec demand is roughly double RA demand, and it saturates
-
-Only pulses that *exceeded* 1000 ms get logged, so this is the tail of the
-distribution, not the distribution. That caveat matters: you cannot compute a
-mean demand from this data. What you can read is the ceiling.
-
-Night of 2026-09-13/14, NGC 7331, declination +34.4:
-
-| Phase | Axis | Logged exceedances (ms) |
-|---|---|---|
-| Pre-flip | RA (E/W) | 1179, 1195, 1132, 1080, 1179, 1192 |
-| Pre-flip | Dec (N/S) | 1176, 1229, 1468, 1485, 1710, 1786, 1814, 1896, 1919, 1953 |
-| Post-flip | RA (E/W) | 1066, 1246, 1257, 1292, 1316, 1411, 1423 |
-| Post-flip | Dec (N/S) | 1973, 2086, 2429, 2533, 2548, 2606, 2662, 2683, 2719, 2727, 2727 |
-
-Three things to notice:
-
-- RA exceedances stay in a tight 1066 to 1423 ms band all night. RA is
-  basically fine.
-- Dec runs about 2x RA, and **gets worse after the meridian flip**, moving
-  from a 1176 to 1953 band to a 1973 to 2727 band.
-- The post-flip Dec values pile up against 2727 (2727, 2727, 2719). That looks
-  like a second ceiling, above the mount's. Find out whether the guider clamps
-  its own demand before sending, and at what value. If it does, the loop may
-  be winding up against its own limit, which is a software fault, not a
-  mechanical one.
-
-At 15 arcsec/s, a 2727 ms demand is about **41 arcsec of commanded Dec
-correction**, delivered as at most 15 arcsec. The loop cannot converge.
-
-### 3. The calibration that actually failed
-
-2026-09-14 03:31:22 PDT (epoch 1789381882), on NGC 7129:
-
-    guiding recovery failed: native guider: calibration timed out - 127
-    pulse(s) on the go_south/south leg, the star walked 13.9px from where it
-    started, and the last 0 frame(s) found no star
-
-Read that carefully:
-
-- **127 pulses.** At the 1000 ms cap that is up to 1905 arcsec of commanded
-  travel, about 32 arcmin.
-- **The star walked 13.9 px.** Convert with the guide camera's pixel scale
-  (see Missing data) but no plausible scale makes 13.9 px agree with 32 arcmin
-  of commanded motion.
-- **"the last 0 frame(s) found no star".** The star was tracked the entire
-  time. This is emphatically not a star-detection or SNR failure. The mount
-  was commanded to move and did not move.
-- **It is the `go_south` leg.** Calibration walks north then reverses to
-  south. A failure that appears specifically on the reversal is the classic
-  signature of backlash or stiction.
-
-### 4. Timeline of the 7129 attempt
-
-| Local (PDT) | Epoch | Event |
-|---|---|---|
-| 09-14 00:02:11 | 1789369331 | Meridian flip attempt: mount still reports pier west, nothing flipped, calibration kept |
-| 09-14 00:12:32 | 1789369952 | Flip detected: calibration + PPEC cleared, will recalibrate |
-| 09-14 00:22:14 | 1789370534 | Recalibration completes with the **"large Dec backlash"** advisory |
-| 09-14 02:59:45 | 1789379985 | NGC 7129 starts; autofocus ran 2.9 min unguided, re-centring first |
-| 09-14 03:00:20 | 1789380020 | Guider **reuses persisted calibration** (walked on 7331 at dec +34.4) |
-| 09-14 03:09:47 | 1789380587 | Reuses persisted calibration again |
-| 09-14 03:13:33 | 1789380813 | `pulse west 1742 ms capped to 1000 ms` |
-| 09-14 03:21:04 | 1789381264 | Persisted calibration + PPEC cleared (manual intervention) |
-| 09-14 03:21:22 | 1789381282 | Fresh calibration starts |
-| 09-14 03:31:22 | 1789381882 | **Calibration times out on the go_south leg** |
-
-### 5. A separate, already-mitigated finding: 15 arcsec/min unguided drift
-
-Logged three times on 2026-09-13:
-
-    NGC 7331: the initial autofocus ran 2.9 min unguided - re-centring before
-    guiding starts, because this rig was measured drifting about 15 arcsec/min
-    with nothing holding the field
-
-This is known and already handled by the re-centring path. Note it only so it
-is not mistaken for the Dec fault. It may share a root cause (polar alignment,
-balance) so it is worth keeping in view, but it is not currently costing
-frames.
-
-### 6. Unrelated failure mode in the same logs, do not conflate
-
-2026-09-12 and early 2026-09-13 show repeated:
-
-    guiding failed to start: native guider: no guide star found - cannot calibrate
-
-That is the known guide-scope sensitivity problem (the guide scope only
-reaches bright fields). Different fault. Ignore it for this investigation.
-
-## Hypotheses, roughly in order of my confidence
-
-**H1. Dec backlash or stiction in the strain-wave drive.** Supported by: the
-guider's own advisory naming it; the failure landing on the direction reversal
-leg; the step change after the flip, where Dec reverses sense and may sit on
-the other side of the gap. Against: harmonic drives are marketed as near
-zero-backlash, so a large gap would suggest a mechanical defect rather than
-normal behaviour.
-
-**H2. Guide rate mismatch.** If the mount's actual Dec guide rate is well
-below what the guider assumes, every pulse under-delivers and demand inflates
-until it caps. Would explain the sustained 2x ratio cleanly. Cheap to test
-first, so test it first even though H1 ranks higher.
-
-**H3. Control-loop wind-up against the cap.** The guider knows about the cap
-(it logs "per-axis correction cap clamped to the mount's 1000 ms pulse cap")
-but if it does not account for the truncation when computing the next
-correction, error accumulates and demand runs away. The repeated 2727 ceiling
-hints at a clamp somewhere in our own code. This is a software fault we would
-own, and it can coexist with H1 or H2, amplifying either.
-
-**H4. Dec load imbalance.** The AM5 has no brake, so an unbalanced payload
-loads one Dec direction against gravity. Weakly supported: north demand runs
-slightly above south pre-flip, but post-flip both are high, so this is not a
-clean directional asymmetry. Worth a balance check since it is free.
-
-## What to do, in order
-
-1. **Read the mount's actual guide rate** over the serial link and compare it
-   to what the guider assumes. `:Ggr#` or the equivalent in the LX200 dialect
-   the AM5N speaks; see `zwo_am5.py`. Settles H2 in minutes.
-
-2. **Measure delivered motion per pulse, per axis, in daylight.** Point at
-   anything with a trackable feature, or use a star at dusk. Command a known
-   pulse train on one axis, plate solve or read the guide camera centroid
-   before and after, and compute arcsec delivered per second commanded.
-   Compare RA against Dec. RA is the control: it is behaving, so it calibrates
-   your method.
-
-3. **Measure the backlash gap directly.** Pulse north until motion is steady,
-   then reverse and count how many south pulses elapse before the centroid
-   starts moving. That count times the per-pulse travel is the gap. Repeat on
-   RA as a control. This is the measurement that confirms or kills H1, and
-   nothing in the existing logs substitutes for it.
-
-4. **Read our own clamp chain.** Trace a correction from the guider's computed
-   error through to the serial write and find every place it is limited. Look
-   specifically for a limit near 2727 ms, and for whether the post-clamp
-   truncation feeds back into the next iteration's error term. That is H3.
-
-5. **Check Dec balance** with the clutches released, both sides of the flip.
-
-6. Only after the above: retry an NGC 7129 calibration and see whether the
-   go_south leg completes.
-
-## Missing data you will need
-
-- **Guide camera pixel scale** (arcsec/px). Without it the 13.9 px figure
-  cannot be converted. It is derivable from the guide scope focal length and
-  the guide camera pixel size, both in the profile.
-- **The mount's configured and actual guide rate.** See step 1.
-- **The full pulse demand distribution.** The logs only record exceedances
-  above 1000 ms. The guider publishes a `{t, ra, dec}` sample series over the
-  API while guiding; capturing that during a run would give the real
-  distribution. Note for whoever writes that capture: a previous watcher
-  reported n=0 samples while 87 existed, because it could not parse that
-  series. Verify your parser against live data before trusting a zero.
-- **Whether the AM5N exposes a Dec backlash compensation setting** we are not
-  currently using.
-
-## A note on method
-
-Three wrong diagnoses have already come out of this rig by reasoning from
-summary statistics instead of measuring the thing directly. The 12x-slow story
-at the top of this document was one of them. The logs above are enough to
-locate the fault but not enough to identify it. Steps 2 and 3 are direct
-measurements and they are what will actually settle this.
+Get the number, then reason. Where the number is not reachable, say so and
+stop, rather than substituting arithmetic for it.

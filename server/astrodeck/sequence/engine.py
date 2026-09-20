@@ -34,6 +34,7 @@ from statistics import median
 from typing import Any
 
 from ..config import config_store, frames_payload
+from .. import capture_geometry
 from ..devices.base import DeviceError, DomeShutterState, PierSide
 from ..events import bus
 from ..focus import run_autofocus
@@ -100,10 +101,8 @@ SAFETY_PAUSE_POLL_S = 5.0       # re-read cadence while paused-for-safety
 # short enough that a clearing sky is noticed within a couple of minutes, long
 # enough that a two-hour hold costs sixty exposures rather than a thousand.
 CLOUD_PROBE_EVERY_S = 120.0
-# The probe exposure. Short on purpose - the cloud verdict comes from bright
-# stars and contrast, both of which a 10 s sub shows plainly, and a held run
-# should not be quietly taking science-length exposures nobody asked for.
-CLOUD_PROBE_EXPOSURE_S = 10.0
+# Probes use the interrupted science exposure so cloud measurements remain
+# comparable. They are unsaved and do not advance science frame numbering.
 # Consecutive CLEAR probes before the run goes back to work. The frame-level
 # debounce in CloudState already suppresses a single lucky gap; this is the
 # second, slower gate - it is the difference between resuming on a hole in the
@@ -676,6 +675,8 @@ class SequenceEngine:
         because resume is a new run."""
         if self.running:
             raise DeviceError("a sequence is already running")
+        if getattr(getattr(self.hub, "dusk_arm", None), "connecting", False):
+            raise DeviceError("dusk preparation is connecting equipment; wait before starting a sequence")
         self.plan = plan
         resume = session is not None
         if session is None:
@@ -791,6 +792,9 @@ class SequenceEngine:
         self._pending_skips = set()
         self._dawn_cutoff = False
         self._window_closed = False
+        # Drop the prior run synchronously: Stop can arrive before the task's
+        # first turn. _run publishes running once execution actually begins.
+        self.state = {"state": "idle"}
         self._task = asyncio.create_task(self._run())
 
     def pause(self) -> None:
@@ -1034,8 +1038,13 @@ class SequenceEngine:
             # those two being reachable.
             self._paused.set()
             self._pause_started_at = None
-            self._set_state(state="aborted", detail="sequence aborted",
-                            schedule=None, session=None)
+            if self.state.get("state") not in _TERMINAL_STATES:
+                # A task cancelled before its first turn never enters _run's
+                # cancellation handler. Finalization is idempotent and must
+                # still disarm the operator-stopped session in that case.
+                self._finalize_report("aborted")
+                self._set_state(state="aborted", detail="sequence aborted",
+                                end_reason="aborted", schedule=None, session=None)
         finally:
             # Cleared only after the TERMINAL state is on the wire, so the window
             # the flag names is exactly the window the clients see "aborting" in.
@@ -1133,7 +1142,10 @@ class SequenceEngine:
             "age_s": (round(a) if (a := self._clouds.age_s(now)) is not None
                       else None),
             "score": self._clouds.last_score,
-            "reason": self._clouds.last_reason,
+            "reason": self._clouds.describe(now),
+            "latest_frame": {"cloudy": self._clouds.last_cloudy,
+                             "score": self._clouds.last_score,
+                             "reason": self._clouds.last_reason},
             "text": self._clouds.describe(now),
             "holding": self._holding_for_clear,
         }
@@ -1214,6 +1226,12 @@ class SequenceEngine:
         if "schedule" in kw and kw["schedule"] is None:
             kw = {k: v for k, v in kw.items() if k != "schedule"}
             self.state.pop("schedule", None)
+        # A cause belongs to one terminal transition, never to the next run.
+        state = kw.get("state")
+        if state and state not in _TERMINAL_STATES:
+            self.state.pop("end_reason", None)
+        elif state in _TERMINAL_STATES:
+            kw.setdefault("end_reason", state)
         self.state = {**self.state, **kw}
         payload = dict(self.state)
         if first_running:
@@ -1359,6 +1377,13 @@ class SequenceEngine:
             bus.log("info", f"sequence '{plan.name}' started: {plan.total_frames()} frames, "
                             f"{plan.light_seconds() / 60:.0f} min integration", "sequence")
             self._warn_if_the_run_has_no_temperature(plan)
+            self._geometry_seen = set()
+            self._geometry_groups, geometry_note = await capture_geometry.inventory(timeout=3.0)
+            self._geometry_pending = geometry_note == capture_geometry.PENDING_NOTE
+            for warning in capture_geometry.plan_warnings(plan, self._geometry_groups):
+                bus.log("warning", warning, "sequence")
+            if geometry_note:
+                bus.log("warning", geometry_note, "sequence")
             self._start_watchdog()
 
             # WHY THIS IS ONE DECISION AND NOT TWO. "The cooler never reached
@@ -2359,7 +2384,8 @@ class SequenceEngine:
         self._last_frame_at = time.time()
         self._progress_expected = True
 
-    async def _capture(self, step, target: Target, *, exposure_s=None) -> dict:
+    async def _capture(self, step, target: Target | None, *, exposure_s=None,
+                       save: bool = True) -> dict:
         """Bounded ``hub.capture`` (P0-2). The timeout is exposure-relative: the
         exposure itself plus a generous fixed margin for download/save/detect, so
         a wedged camera/transport can never hang on an unbounded await — it
@@ -2369,10 +2395,34 @@ class SequenceEngine:
         exposure); None keeps the step's fixed exposure (every existing path)."""
         exp = float(exposure_s if exposure_s is not None else step.exposure_s)
         budget = exp + CAPTURE_MARGIN_S
-        return await _bounded(
+        info = await _bounded(
             self.hub.capture(exp, step.gain, step.offset, step.binning,
-                             save=True, target=target.name, frame_type=step.frame_type),
+                             save=save, target=target.name if target else "",
+                             frame_type=step.frame_type),
             budget, f"capture {exp:g}s")
+        if not save or target is None:
+            return info
+        if getattr(self, "_geometry_pending", False):
+            # A cold library may outlast the startup budget. Reuse that same
+            # scan at a frame boundary; never start another scan per exposure.
+            groups, note = await capture_geometry.inventory(timeout=0.01, refresh=False)
+            if note != capture_geometry.PENDING_NOTE:
+                self._geometry_pending = False
+                self._geometry_groups = groups
+                for warning in capture_geometry.plan_warnings(self.plan, groups):
+                    bus.log("warning", warning, "sequence")
+                if note:
+                    bus.log("warning", note, "sequence")
+        key = (target.name, step.filter, step.binning, exp,
+               info.get("data_width"), info.get("data_height"))
+        seen = getattr(self, "_geometry_seen", set())
+        if key not in seen:
+            seen.add(key)
+            warning = capture_geometry.frame_warning(
+                getattr(self, "_geometry_groups", []), target, step, info)
+            if warning:
+                bus.log("warning", warning, "sequence")
+        return info
 
     async def _solve_flat_exposure(self, step, target: Target,
                                    start_exposure_s: float | None = None
@@ -3731,8 +3781,9 @@ class SequenceEngine:
           ``_safety_gate`` still parks the rig if conditions turn genuinely
           unsafe, so "keep tracking" is not "keep tracking no matter what".
 
-        HOW IT SEES THE SKY. It takes a short probe frame every
-        ``CLOUD_PROBE_EVERY_S``. That is not an optimisation, it is the whole
+        HOW IT SEES THE SKY. It takes an unsaved frame at the interrupted
+        science settings, then waits ``CLOUD_PROBE_EVERY_S`` between probes.
+        That is not an optimisation, it is the whole
         mechanism: the cloud verdict comes from frames, and a hold that took
         none would age its last reading out to "unknown" and then hold forever
         on no evidence at all.
@@ -3764,8 +3815,9 @@ class SequenceEngine:
             bus.log("warning", f"holding for clear sky: {reason}", "sequence")
             self._set_state(
                 state="holding", hold="clouds",
-                detail=(f"held for cloud - {reason}. Probing every "
-                        f"{CLOUD_PROBE_EVERY_S / 60:.0f} min; parks after "
+                detail=(f"held for cloud - {reason}. Checking at the science "
+                        f"exposure, with up to {CLOUD_PROBE_EVERY_S / 60:.0f} min "
+                        f"between checks; parks after "
                         f"{max_hold_s / 60:.0f} min"))
             while True:
                 # THE THREE THINGS A PAUSE WOULD HAVE DISARMED, kept armed.
@@ -4132,7 +4184,7 @@ class SequenceEngine:
             pass
 
     async def _cloud_probe(self, target: Target | None) -> bool | None:
-        """One short exposure, judged. Returns cloudy / clear / unknown.
+        """One unsaved science-length exposure, judged. Returns cloudy / clear / unknown.
 
         A failure returns None rather than raising: a probe that could not be
         taken is not a clear sky, and a hold that aborted because one exposure
@@ -4142,8 +4194,10 @@ class SequenceEngine:
         if step is None:
             return None
         try:
-            info = await self._capture(step, target,
-                                       exposure_s=CLOUD_PROBE_EXPOSURE_S)
+            # Match the interrupted light's exposure, gain, binning and filter.
+            # A short probe loses faint stars even when the sky has cleared.
+            # It is a measurement, not another science frame in the library.
+            info = await self._capture(step, target, save=False)
         except Exception as e:                    # noqa: BLE001 - reported
             bus.log("warning", f"cloud probe failed ({e}) - still holding",
                     "sequence")
