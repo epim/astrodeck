@@ -57,6 +57,12 @@ import {
   retireAfterMs, type FocuserCommand,
 } from "../lib/focusMove";
 import { useBusy } from "../lib/useBusy";
+import { useExperience } from "../guided/experience";
+import { atPosition, useGuidedSetup } from "../guided/setup";
+import { GuidedFocusPrep } from "../guided/GuidedFocusPrep";
+import { FocusTutorial } from "../guided/FocusTutorial";
+import { FilterSlotsEditor } from "./EquipmentView";
+import { Overlay } from "../components/Overlay";
 
 /** The magnitudes the dial offers. 1 for a final twiddle, 1000 to cross the
  *  whole critical zone on a 30k-step EAF. */
@@ -143,8 +149,39 @@ function StepRow({
 }
 
 export default function FocusView() {
+  const guided = useExperience(s => s.mode === "guided" && !s.home && s.wizard === "focus");
+  const field = useGuidedSetup(s => s.field);
+  const setupPending = useGuidedSetup(s => s.recovering || s.savingChecks);
+  const [guidedLesson, setGuidedLesson] = useState(true);
+  const [guidedRun, setGuidedRun] = useState(false);
+  const [filterOffer, setFilterOffer] = useState(false);
+  const [filterLearning, setFilterLearning] = useState(false);
+  const focusBeganHere = useRef(false);
+  const completionAttempt = useRef(0);
+  const fieldFrame = useRef<number | null>(null);
+  useEffect(() => { completionAttempt.current++;fieldFrame.current = useStore.getState().livePreviewId; focusBeganHere.current = false; setGuidedRun(false); setFilterOffer(false); setFilterLearning(false); }, [field]);
+  useEffect(()=>()=>{completionAttempt.current++;},[]);
   const status = useStatus();
   const focus = useFocus();
+  const filterCalibration = useStore(s=>s.filterOffsetsLearn);
+  useEffect(() => {
+    if (!guided || !field) return;
+    if (focus?.state === "running") { completionAttempt.current++;focusBeganHere.current = true; setGuidedRun(true); setGuidedLesson(false); }
+    if (focusBeganHere.current && focus?.state === "done" && focus.best?.hfr != null && Number.isFinite(focus.best.hfr) && focus.best.hfr > 0 && useStore.getState().wsPhase === "up" && !useStore.getState().telemetryStale && !status?.mount?.slewing && !status?.focuser?.moving && filterCalibration?.state !== "running" && !status?.busy_lanes?.includes("filter_offsets") && atPosition(status?.mount, field)) {
+      focusBeganHere.current = false;
+      const attempt=++completionAttempt.current;
+      void useGuidedSetup.getState().complete("focus").then(accepted=>{
+        const current=useStore.getState(),setup=useGuidedSetup.getState();
+        if(!accepted||attempt!==completionAttempt.current||setup.field!==field||!setup.focus
+          ||current.wsPhase!=="up"||current.telemetryStale||current.status?.mount?.slewing
+          ||!atPosition(current.status?.mount,field)||current.focus?.state!=="done"
+          ||current.focus.best?.position!==focus.best?.position||current.focus.best?.hfr!==focus.best?.hfr
+          ||current.filterOffsetsLearn?.state==="running"||current.status?.busy_lanes?.includes("filter_offsets"))return;
+        const wheel=current.status?.filterwheel;
+        if(wheel&&wheel.names.filter((name,i)=>name.trim()&&!wheel.opaque?.[i]).length>1&&!filterLearning)setFilterOffer(true);
+      });
+    }
+  }, [focus, field, guided, status, filterLearning, filterCalibration]);
   // Canonical latest-completed-run record (F5: R2-FOC-01/DOC-FOC-01) — lives in
   // the store (not local state), so it rehydrates on mount and survives
   // navigating away and back; only a NEW run's own terminal event replaces it.
@@ -254,7 +291,11 @@ export default function FocusView() {
   // (Called unconditionally, then OR-ed: `running || useBusy(...)` would skip
   // the hook whenever a sweep IS running and change the hook order mid-run.)
   const afLaneBusy = useBusy("autofocus");
-  const sweeping = running || afLaneBusy;
+  const offsetLaneBusy = useBusy("filter_offsets");
+  const measuringFilters = filterCalibration?.state === "running" || offsetLaneBusy;
+  const sweeping = running || afLaneBusy || measuringFilters;
+  useEffect(()=>{if(guided&&measuringFilters){setFilterLearning(true);setGuidedRun(true);setGuidedLesson(false);setFilterOffer(false);}},[guided,measuringFilters,field]);
+  useEffect(()=>{if(guided)document.getElementById("main-content")?.scrollTo?.({top:0});},[guided,guidedRun,guidedLesson,sweeping,field]);
   // NOV-12 Bahtinov aid armed state (server truth via poll_status).
   const bahtOn = status?.bahtinov_active ?? false;
   // UX-25: filter/binning for the autofocus sweep.
@@ -801,19 +842,21 @@ export default function FocusView() {
   // their own request body — that is how a shortcut becomes "a second control
   // with its own behaviour", which this file already deleted once. One state
   // object, one handler, two places to press it.
+  const fieldReason = guided && setupPending ? "Wait while the controller checks the setup." : guided && (!field || !atPosition(status?.mount, field) || status?.mount?.slewing) ? "Point the telescope at the alignment field first." : null;
+  const guidedFrameReason = guided && (!shown || shown.id === fieldFrame.current) ? "Take a star image here first. Start with 2 seconds, then check whether stars are visible." : null;
   const afButton = focusButtonState({
     // `sweeping`, not `running`: a second sweep is a 409 off the `autofocus`
     // lane, and a tab opened mid-run has no `focus` event to know that.
-    canFocus, hasFocuser: !!foc, running: sweeping, sweepBlock: afReady.block,
+    canFocus, hasFocuser: !!foc, running: sweeping, sweepBlock: fieldReason ?? guidedFrameReason ?? afReady.block,
   });
   // The pin rides along whether or not the settings panel is open. It used to
   // be gated on `afAdvanced`, so a filter picked from the dial over the preview
   // — which did not open the panel — was a pin nothing ever sent. A pick is a
   // decision; the only honest question is whether the request carries it.
-  const runAutofocus = () => act(() => api.post("/api/focuser/autofocus", {
+  const runAutofocus = () => { if (fieldReason || guidedFrameReason) {showToast("warning", (fieldReason ?? guidedFrameReason)!); return;} if(guided) useGuidedSetup.getState().invalidate("focus"); return act(() => api.post("/api/focuser/autofocus", {
     ...afParams,
     ...(afFilter !== "" ? { filter: Number(afFilter) } : {}),
-  }));
+  })); };
 
   // ------------------------------------------------ #180: SETTINGS LEFT
   // ONE camera-settings control on this screen, and this is it. It edits the
@@ -925,9 +968,21 @@ export default function FocusView() {
           </p>
         </div>
       )}
-    <div className="grid gap-4 md:grid-cols-[1fr_300px]">
+    {guided && !field && !sweeping && <GuidedFocusPrep/>}
+    {guided && field && guidedLesson && !sweeping && <FocusTutorial disabled={!canFocus || looping} onDefaults={()=>setFocusFrame({exposure_s:2,binning:1})} onComplete={()=>setGuidedLesson(false)}/>}
+    <div hidden={guided && !sweeping && (!field || guidedLesson)} className={`guided-focus-workspace grid gap-4 ${guided ? "" : "md:grid-cols-[1fr_300px]"}`}>
       <div className="flex flex-col gap-4">
+        {guided && (guidedRun || sweeping) && <section className="guided-choice-card guided-focus-run" aria-label="Autofocus progress">
+          <div className="guided-work-heading"><h2>{sweeping ? "Finding the sharpest focus" : focus?.state === "done" ? "Autofocus finished" : "Autofocus stopped"}</h2>
+          {sweeping && <button className="btn btn-danger" disabled={!canFocus} onClick={()=>void act(async()=>{await api.post(measuringFilters?"/api/filterwheel/learn-offsets/cancel":"/api/focuser/halt");useGuidedSetup.getState().invalidate("focus");})}>{measuringFilters?"Stop filter measurements":"Stop autofocus"}</button>}</div>
+          <p>{sweeping ? "Autofocus is changing the focus position and measuring star size in pixels. It fits a curve through those measurements, then moves to the position where the stars should be smallest." : focus?.state === "done" && focus.best?.hfr != null && focus.best.hfr > 0 ? "The focuser has returned to the best position found in this run." : focus?.advice || focus?.message || "Review the star image and try again when you're ready."}</p>
+          <VCurve points={focus?.points ?? []} best={focus?.best ?? null} fit={focusFit} running={running}/>
+          <p role="status">{focus?.points?.length ? `${focus.points.length} positions measured` : "Waiting for the first measurement"}{focus?.best?.hfr != null ? ` · Best star radius ${focus.best.hfr.toFixed(2)} px` : ""}. Lower points mean smaller stars. HFR is the radius containing half a star's light.</p>
+          {!sweeping && focus?.state==="done" && focus.advice && <p>{focus.advice}</p>}
+          {!sweeping && <button className="btn" onClick={()=>setGuidedRun(false)}>Return to the star image</button>}
+        </section>}
         {/* live preview so manual focus is not blind (spec §10) */}
+        <div hidden={guided && (guidedRun || sweeping)} className="guided-focus-camera">
         <Panel title="Live Preview" right={<FocusVerdict preview={shown} prev={prevFrame} hfrGood={hfrGood} hfrWarn={hfrWarn} />}>
           <div className="flex flex-col gap-2">
             {/* #125. The pod is a SIBLING of the stage, held together by this
@@ -1060,12 +1115,13 @@ export default function FocusView() {
                 <button
                   type="button"
                   aria-pressed={loupe.on}
+                  aria-label="Magnifier"
                   title="Magnifier — real sensor pixels at the centre of the view (the true focus check; 1:1)"
                   onClick={() => focusControls.current?.setLoupeOn(!loupe.on)}
                   className={`btn !px-2.5 min-h-11 inline-flex items-center gap-1 !text-[11px] ${loupe.on ? "btn-accent" : ""}`}
                 >
-                  <Icon name={loupe.on ? "check" : "focus"} size={12} />
-                  Magnifier
+                  <Icon name="magnify" size={22} />
+                  <span className="sr-only">Magnifier</span>
                 </button>
               ) : (
                 <LockedChip
@@ -1076,7 +1132,7 @@ export default function FocusView() {
                     "The magnifier") ?? "The magnifier is unavailable"}
                   className="btn !px-2.5 !text-[11px]"
                 >
-                  Magnifier
+                  <Icon name="magnify" size={22}/><span className="sr-only">Magnifier</span>
                 </LockedChip>
               )}
             </div>
@@ -1092,10 +1148,24 @@ export default function FocusView() {
                 {sweepNote}
               </p>
             )}
-            {shown && <FrameStats preview={shown} hfrGood={hfrGood} hfrWarn={hfrWarn} compact />}
+            {shown && !guided && <FrameStats preview={shown} hfrGood={hfrGood} hfrWarn={hfrWarn} compact />}
           </div>
         </Panel>
+        </div>
 
+        {guided && !guidedRun && !sweeping && <section className="guided-focus-action">
+          <button className={`btn ${guidedFrameReason ? "btn-accent" : ""}`} disabled={!!fieldReason || !!singleReason || !!capPending || exposing} title={fieldReason ?? singleReason ?? undefined} onClick={()=>void shoot("single","/api/capture")}><Icon name="capture" size={22}/>{capPending || exposing ? "Taking a star image…" : "Take a star image"}</button>
+          {foc ? <><button className="btn btn-accent" disabled={!!afButton.reason || sweeping} title={afButton.reason ?? undefined} onClick={runAutofocus}><Icon name="focus" size={26}/>{sweeping ? "Focusing…" : "Focus telescope"}</button><p>{afButton.reason ?? "Autofocus measures several positions, then returns to the sharpest one."}</p></>
+            : <><p>Turn the telescope's focus knob a little, then take another image. Try the magnifier to compare the stars.</p><button className="btn btn-accent" disabled={!canFocus || !!fieldReason || linkDown || !shown || shown.id === fieldFrame.current} onClick={()=>useGuidedSetup.getState().complete("focus", "manual")}>The stars look sharp</button></>}
+          <button className="guided-text-button" onClick={()=>setGuidedLesson(true)}>Explain the camera dials</button>
+          <button className="guided-text-button" onClick={()=>useGuidedSetup.getState().setField(null)}>Choose a different alignment field</button>
+          {foc && <button className="btn btn-danger" disabled={!canFocus} onClick={()=>void act(async()=>{await api.post("/api/focuser/halt");useGuidedSetup.getState().invalidate("focus");})}><Icon name="stop" size={18}/>Stop focuser</button>}
+        </section>}
+        {guided && filterLearning && status?.filterwheel && <section className="guided-choice-card"><h3>Measure filter focus offsets</h3><p>Review the settings before starting. Successful measurements are saved automatically. Review the results when the run finishes.</p><FilterSlotsEditor {...status.filterwheel} offsets={status.filterwheel.offsets ?? []} hasFocuser={!!foc} disabled={!canFocus || !!fieldReason || sweeping} initiallyOpen learningFirst buttonLabel="Learn filter focus offsets…"/></section>}
+        {guided && <Overlay open={filterOffer && !sweeping} label="Focus is ready. Check the other filters?" onClose={()=>setFilterOffer(false)} variant="center" surfaceClassName="sm:max-w-[480px]" bodyClassName="p-5" foot={<div className="guided-button-row p-4"><button className="btn" onClick={()=>setFilterOffer(false)}>Not now</button><button className="btn btn-accent" disabled={!canFocus || !!fieldReason || !foc} onClick={()=>{setFilterOffer(false);setFilterLearning(true);}}>Review filter calibration</button></div>}>
+          <h2 className="text-xl mb-3">Focus is ready. Check the other filters?</h2><p>Your filter wheel has {afSweepSlots.length} filters configured. Each filter can bring the stars into focus at a slightly different position. Would you like to measure those focus offsets now?</p><p className="text-dim mt-3">This runs autofocus for each usable filter and can take several minutes. You'll review the settings before it starts.</p>
+        </Overlay>}
+        {!guided && <div className="guided-focus-details flex flex-col gap-4">
         {/* NOV-12 Bahtinov focus aid — arm/disarm + the live signed offset and a
             go/stop verdict, sitting under the live preview it reads from. */}
         <Panel title="Bahtinov Focus" right={!canFocus && <ReadOnlyBadge />}>
@@ -1137,6 +1207,7 @@ export default function FocusView() {
           right={running && <span className="text-accent text-[11px] blink tracking-widest uppercase">measuring…</span>}>
           <VCurve points={focus?.points ?? []} best={focus?.best ?? null} fit={focusFit} running={running} />
         </Panel>
+        </div>}
       </div>
 
       {/* ORDERED BY WHAT YOU TOUCH WHILE WATCHING THE IMAGE, not by narrative.
@@ -1149,7 +1220,7 @@ export default function FocusView() {
           Result read-out follow, because those you consult rather than drive.
           Done with flex `order` so the reading order in this file still matches
           the F5 design reference. */}
-      <div className="flex flex-col gap-4">
+      {!guided && <div className="guided-focus-details flex flex-col gap-4">
         <Panel title="Result" className="order-4" right={<ProviderBadge cap="autofocus" />}>
           {running ? (
             <div className="text-accent text-sm blink">Measuring…</div>
@@ -1738,7 +1809,7 @@ export default function FocusView() {
             </div>
           )}
         </Panel>
-      </div>
+      </div>}
     </div>
     </>
   );

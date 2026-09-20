@@ -13,6 +13,11 @@ import CameraDial from "../components/ui/CameraDial";
 import { cameraDialCategories } from "../components/ui/CameraPickers";
 import type { PolarState } from "../types";
 import { useEffect, useState } from "react";
+import { useExperience } from "../guided/experience";
+import { useGuidedSetup, stepBlocker } from "../guided/setup";
+import { AlignmentLesson } from "../guided/AlignmentLesson";
+import { AlignmentFinish } from "../guided/AlignmentFinish";
+import { AlignmentCoach } from "../guided/AlignmentCoach";
 
 /* Fields the native TPPA engine (server/astrodeck/polar/native.py) adds to the
    canonical `polar` payload beyond PolarState. The store forwards the whole
@@ -28,6 +33,7 @@ type NativePolar = Omit<PolarState, "state"> & {
   state: PolarState["state"] | "pausing";
   phase?: "measuring" | "adjusting";
   point_index?: number;
+  reading_ts?: number;
   az_direction?: KnobDir | null;
   alt_direction?: KnobDir | null;
   flags?: string[];
@@ -48,6 +54,11 @@ type NativePolar = Omit<PolarState, "state"> & {
 };
 
 export default function PolarView() {
+  const guided = useExperience(s=>s.mode==="guided" && !s.home && s.wizard==="alignment");
+  const [lesson, setLesson] = useState(true);
+  useEffect(()=>{if(guided)document.getElementById("main-content")?.scrollTo?.({top:0});},[guided,lesson]);
+  useGuidedSetup();
+  const guidedBlock = guided ? stepBlocker("alignment") : null;
   const polar = usePolar() as NativePolar;
   const showToast = useStore((s) => s.showToast);
   const canMount = useCanControlMount(); // polar alignment slews the mount
@@ -88,6 +99,7 @@ export default function PolarView() {
   // Everything that must treat the alignment as LIVE — Start locked out, Stop
   // armed, the reticle panel not claiming "not started".
   const live = running || starting;
+  useEffect(()=>{if(live)setLesson(false);},[live]);
 
   const az = polar.az_error, alt = polar.alt_error, total = polar.total_error;
   const src = polar.source as string | null;
@@ -101,7 +113,7 @@ export default function PolarView() {
   // `hasReading` deliberately admits a terminal "done" with no number so the
   // readout stops saying "waiting"; a CLAIM about the alignment needs the
   // stronger test — a session that ended before any fit has nothing to report.
-  const measuredTotal = Number.isFinite(total) && total > 0;
+  const measuredTotal = Number.isFinite(total) && (total > 0 || (total === 0 && (polar.reading_ts ?? 0) > 0));
 
   // Measure→Adjust progress. point_index advances 0..2 as each solve lands;
   // adjusting (or any streamed reading) means all three are in.
@@ -198,12 +210,15 @@ export default function PolarView() {
       : !live ? "No alignment is running — nothing to stop."
         : null;
 
+  if (guided && lesson && !live) return <AlignmentLesson onContinue={()=>setLesson(false)}/>;
+
   return (
-    <div className="flex flex-col gap-4">
+    <div className={`flex flex-col gap-4 ${guided ? "guided-polar-work" : ""}`}>
+      {guided && <div className="guided-work-heading"><div><small>Live alignment</small><p>{live ? "Follow the measurements below. Stop the session before moving the tripod." : "Start when you're ready. The mount will move to measure its polar axis."}</p></div><button className="btn" disabled={live} onClick={()=>setLesson(true)}>How alignment works</button></div>}
       {/* Always-visible status: activity + the error number + the solve-frame
           settings fold. The three things this screen made you scroll for
           (operator feedback 2026-08-07); renders nothing while idle. */}
-      <PolarQuickBar polar={polar} />
+      {!guided && <PolarQuickBar polar={polar} />}
 
       {/* Tier-2 (doc 04 §6): a solve/geometry failure is sticky and unmissable —
           shape (square Led) + word, not color alone, so it survives night. */}
@@ -276,6 +291,8 @@ export default function PolarView() {
             )}
           </div>
           <p className="text-center text-xs text-dim mt-2 min-h-4">{polar.message || " "}</p>
+          {guided && hasReading && Number.isFinite(total) && total>2 && <AlignmentCoach total={total} az={az} alt={alt} south={(useStore.getState().site?.latitude??0)<0} running={polar.state==="running"} blocked={staleUpdates>0||paSpreadLarge} />}
+          {guided && <AlignmentFinish/>}
         </Panel>
 
         <div className="flex flex-col gap-4">
@@ -422,12 +439,12 @@ export default function PolarView() {
             </Panel>
           )}
 
-          <Panel title="Control" right={!canMount && <ReadOnlyBadge />}>
-            <p className="text-xs text-dim mb-3 leading-relaxed">
+          <Panel title="Control" className={guided ? "guided-polar-controls" : undefined} right={!canMount && <ReadOnlyBadge />}>
+            {!guided && <p className="text-xs text-dim mb-3 leading-relaxed">
               Runs three-point polar alignment: rotate in RA, plate-solve, and stream the
               live error here as you turn the mount's altitude / azimuth bolts. The engine in
               use is shown in the header.
-            </p>
+            </p>}
             {isSimProvider && (
               <p className="text-xs text-warn mb-3 leading-relaxed border border-warn/40 bg-warn/5 px-2.5 py-2">
                 Simulator provider — alignment values are fabricated, not measured from your sky.
@@ -449,9 +466,11 @@ export default function PolarView() {
               </p>
             )}
             <div className="flex flex-col gap-2">
-              <button className="btn btn-accent" disabled={!canMount || live || busy}
+              <button className="btn btn-accent" disabled={!canMount || live || busy || !!guidedBlock} title={guidedBlock ?? undefined}
                 aria-busy={starting || undefined}
                 onClick={() => {
+                  if(guidedBlock)return;
+                  if(guided)useGuidedSetup.getState().invalidate("alignment");
                   setStarting(true);
                   void act(async () => {
                     // A refused start (409 "already running", 403) never becomes
@@ -547,7 +566,7 @@ export default function PolarView() {
           </Panel>
 
           {/* Guide view so the user can watch the field during alignment. */}
-          <GuideFramePreview compact />
+          {!guided && <GuideFramePreview compact />}
         </div>
       </div>
     </div>

@@ -8,6 +8,8 @@ import type { AppConfig, SavedLocation, Site } from "../types";
  *  Always resolves 200; `available:false` carries a human `detail`. */
 export interface MountGps {
   available: boolean;
+  source?: "mount" | "usb";
+  detected?: boolean;
   latitude?: number;
   longitude?: number;
   elevation_m?: number;
@@ -46,8 +48,8 @@ export const saveSite = (
 };
 
 /** GET /api/site/mount-gps. config.site_optics. */
-export const getMountGps = (): Promise<MountGps> =>
-  api.get<MountGps>("/api/site/mount-gps");
+export const getMountGps = (detectedOnly = false): Promise<MountGps> =>
+  api.get<MountGps>(`/api/site/mount-gps${detectedOnly ? "?detected_only=true" : ""}`);
 
 /** GET /api/locations -> full list. config.site_optics. */
 export const listLocations = (): Promise<SavedLocation[]> =>

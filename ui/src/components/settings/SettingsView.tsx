@@ -15,7 +15,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type JSX } from "react";
 import { Segmented } from "../Segmented";
 import { Panel } from "../ui";
 import { Icon } from "../icons";
-import { useBackendLinks, useBootConnectFailed, useConfig, useUpdate } from "../../store";
+import { useBackendLinks, useBootConnectFailed, useConfig, useStatus, useUpdate } from "../../store";
 import {
   accessPhrase,
   useCan,
@@ -50,6 +50,7 @@ import UpdatePanel from "./UpdatePanel";
 import FactoryResetPanel from "./FactoryResetPanel";
 import CreditsPanel from "./CreditsPanel";
 import RestrictedAssetsPanel from "./RestrictedAssetsPanel";
+import { settingsPanelFromHash, type SettingsPanel } from "../../lib/settingsNavigation";
 
 type Tab =
   | "connect"
@@ -124,7 +125,18 @@ function TabStrip({ children }: { children: JSX.Element }): JSX.Element {
 
 export default function SettingsView(): JSX.Element {
   const [tab, setTab] = useState<Tab>("connect");
+  const [pendingPanel, setPendingPanel] = useState<SettingsPanel | null>(() => settingsPanelFromHash(window.location.hash));
+  const settingsRoot = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const reveal = () => {
+      const panel = settingsPanelFromHash(window.location.hash);
+      if (panel) { setTab("connect"); setPendingPanel(panel); }
+    };
+    window.addEventListener("hashchange", reveal);
+    return () => window.removeEventListener("hashchange", reveal);
+  }, []);
   const links = useBackendLinks();
+  const status = useStatus();
   const bootFailed = useBootConnectFailed();
   const canConfig = useCanConfigBackend();
   const canAdminUsers = useCanAdminUsers();
@@ -186,8 +198,17 @@ export default function SettingsView(): JSX.Element {
       ? "connect"
       : tab;
 
+  useEffect(() => {
+    if (activeTab !== "connect" || !pendingPanel) return;
+    const target = settingsRoot.current?.querySelector<HTMLElement>(`[data-settings-panel="${pendingPanel}"]`);
+    if (!target) return;
+    target.scrollIntoView?.({ block: "start" });
+    target.focus({ preventScroll: true });
+    setPendingPanel(null);
+  }, [activeTab, pendingPanel]);
+
   return (
-    <div className="flex flex-col gap-4 w-full">
+    <div ref={settingsRoot} className="flex flex-col gap-4 w-full">
       {/* ----------------------------------------------------------- header
           #42: the strip gets its OWN row rather than sharing one with the title
           — on the 820px tablet that alone recovers the ~90px the heading was
@@ -308,8 +329,8 @@ export default function SettingsView(): JSX.Element {
                 that poisons twilight times, meridian timing, horizon gating
                 and every delivered FITS header was the last thing a first-run
                 user would ever find. It is now the first panel on the tab. */}
-            <SitePanel />
-            <OpticsPanel />
+            <div data-settings-panel="site" tabIndex={-1} aria-label="Observing site settings"><SitePanel /></div>
+            <div data-settings-panel="optics" tabIndex={-1} aria-label="Imaging train settings"><OpticsPanel /></div>
             <DriversPanel />
             {canSeePrecise && <WeatherPanel />}
             {/* Directly under Weather because it answers the neighbouring
@@ -324,7 +345,7 @@ export default function SettingsView(): JSX.Element {
           </div>
           <div className="order-2 flex flex-col gap-4">
             <Panel title="Connection Status">
-              <BackendLinkGrid links={links} />
+              <BackendLinkGrid links={links} connected={status?.connected} />
             </Panel>
           </div>
         </div>
@@ -374,7 +395,7 @@ export default function SettingsView(): JSX.Element {
           </div>
           <div className="order-1 lg:order-2">
             <Panel title="Connection Status">
-              <BackendLinkGrid links={links} />
+              <BackendLinkGrid links={links} connected={status?.connected} />
             </Panel>
           </div>
         </div>

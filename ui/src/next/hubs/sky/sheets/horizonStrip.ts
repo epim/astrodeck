@@ -41,12 +41,12 @@ export function azFromX(x: number): number {
   return ((az % 360) + 360) % 360;
 }
 
-/** y (viewBox units) -> altitude, clamped -8..88 - `horizonModel.movePoint`'s
+/** y (viewBox units) -> altitude, clamped -8..90 - `horizonModel.movePoint`'s
  *  own range, matched here so a tap and a drag can never disagree about what
  *  altitude a given height on the strip means. */
 export function altFromY(y: number): number {
   const alt = ((GROUND_Y - y) * 90) / (GROUND_Y - SKY_Y);
-  return Math.max(-8, Math.min(88, alt));
+  return Math.max(-8, Math.min(90, alt));
 }
 
 /** The index of the point nearest (x, y) within HIT_RADIUS, or -1 when none

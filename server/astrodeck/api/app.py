@@ -986,6 +986,7 @@ class AlpacaConnectBody(BaseModel):
 
 
 class CaptureBody(BaseModel):
+    request_id: str | None = Field(default=None, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
     exposure_s: float = 1.0
     gain: int = 100
     offset: int = 30
@@ -1105,6 +1106,13 @@ class AutofocusBody(BaseModel):
     steps_each_side: int = 4
     binning: int = 2
     filter: int | None = None  # UX-25: slot to move to before the sweep (per-filter AF)
+
+
+class GuidedCheckpointBody(BaseModel):
+    context: str = Field(min_length=64, max_length=64)
+    revision: int = Field(ge=0)
+    fact: Literal["location", "horizon", "focus", "alignment"]
+    action: Literal["complete", "invalidate"]
 
 class CoarseFocusBody(BaseModel):
     """Coarse focus: find a position with stars, then hand off to autofocus.
@@ -3674,16 +3682,27 @@ def create_app(*, bind_host: str | None = None,
     @app.get("/api/site/mount-gps")
     @declare(CAP_CONFIG_SITE_OPTICS)
     async def site_mount_gps(
+            detected_only: bool = False,
             principal: Principal = Depends(require(CAP_CONFIG_SITE_OPTICS))):
         """Best-effort read-back of the connected mount's GPS fix. config.site_optics
         (the cap that may WRITE the site). Always 200; the body's ``available``
         flag + ``detail`` carry unavailability. ASSIST ONLY — the UI fills the
         draft; the user saves explicitly via PUT /api/site."""
         read = getattr(hub, "read_site_from_mount", None)
-        if not callable(read):
-            return {"available": False,
-                    "detail": "Mount GPS read-back unavailable"}
-        return await read()
+        # Alpaca site coordinates can be entered by hand. They are not proof
+        # of a GPS receiver; Guided only offers a verified receiver source.
+        telescope = getattr(hub, "devices", {}).get("telescope")
+        mount_gps_known = getattr(telescope, "gps_available", False) is True
+        if callable(read) and (not detected_only or mount_gps_known):
+            result = await read()
+            if result.get("available"):
+                return {**result, "source": "mount", "detected": mount_gps_known}
+            if not detected_only:
+                return result
+        if not detected_only:
+            return {"available": False, "detail": "Mount GPS read-back is unavailable"}
+        from ..site_gps import read_usb_gps
+        return await asyncio.to_thread(read_usb_gps)
 
     # ------------------------------------------------------- saved locations
     # A named-location library (spec §4), INDEPENDENT of rig profiles and NOT
@@ -5412,7 +5431,8 @@ def create_app(*, bind_host: str | None = None,
             raise _err(e)
         return _spawn("capture", hub.capture(
             body.exposure_s, body.gain, body.offset, body.binning,
-            save=body.save, target=body.target, frame_type=body.frame_type))
+            save=body.save, target=body.target, frame_type=body.frame_type,
+            **({"request_id": body.request_id} if body.request_id else {})))
 
     @app.get("/api/capture/last",
              dependencies=[Depends(require(CAP_VIEW_STATUS))])
@@ -7518,6 +7538,80 @@ def create_app(*, bind_host: str | None = None,
                 "frames_remaining": sum(s.remaining().values())}
 
     # -------------------------------------------------------------- polar align
+
+    from ..guided_recovery import GuidedCheckpoint
+    guided_checkpoint = GuidedCheckpoint()
+
+    async def _guided_checkpoint_state():
+        from ..events import night_key
+        cfg = config_store.cfg()
+        status = await hub.poll_status()
+        focus = bus.operation_snapshots.get("focus")
+        polar = dict(hub.polar.state)
+        busy = hub.busy_lanes()
+        if focus and focus.get("state") == "running" and not any(lane in busy for lane in ("autofocus", "filter_offsets")):
+            focus = {**focus, "state": "failed", "best": None,
+                     "message": "The focus operation has stopped. Check the stars before trying again."}
+        identity = {"night": night_key(), "site": cfg.site.model_dump(),
+                    "horizon": cfg.safety.horizon, "providers": cfg.providers.model_dump(),
+                    "profile": cfg.active_profile_id, "optics": hub.effective_optics(),
+                    "devices": {role: {"instance": id(device), "description": device.describe()}
+                                for role, device in hub.devices.items()},
+                    "links": {link.get("role"): bool(link.get("connected")) for link in status.get("backend_links", [])},
+                    "mode": hub.mode}
+        position = (status.get("focuser") or {}).get("position")
+        guided_checkpoint.observe(identity, focus, polar, focuser_position=position)
+        return status, focus, polar, busy, position
+
+    @app.get("/api/guided/checkpoint", dependencies=[Depends(require(CAP_VIEW_SITE_DERIVED))])
+    @declare(CAP_VIEW_SITE_DERIVED)
+    async def guided_checkpoint_get():
+        _, focus, polar, busy, _ = await _guided_checkpoint_state()
+        return {**guided_checkpoint.snapshot(), "focus": focus, "polar": polar, "busy": busy,
+                "filter_offsets": bus.operation_snapshots.get("filter_offsets")}
+
+    @app.post("/api/guided/checkpoint", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
+    @declare(CAP_CONTROL_MOUNT)
+    async def guided_checkpoint_update(body: GuidedCheckpointBody):
+        status, focus, polar, busy, position = await _guided_checkpoint_state()
+        if body.context != guided_checkpoint.context or body.revision != guided_checkpoint.revision:
+            raise HTTPException(409, "The setup changed. Review this step again before saving its check.")
+        if body.action == "invalidate":
+            guided_checkpoint.invalidate(body.fact)
+        else:
+            if body.fact in ("focus", "alignment") and any(lane in busy for lane in ("autofocus", "filter_offsets", "polar", "focuser")):
+                raise HTTPException(409, "Wait for the current operation to finish before confirming this check.")
+            from ..guided import simulated_equipment
+            try:
+                guided_checkpoint.complete(body.fact, focus, polar, focuser_position=position,
+                    mount_slewing=bool((status.get("mount") or {}).get("slewing")),
+                    simulated=simulated_equipment(hub))
+            except ValueError as exc:
+                raise HTTPException(409, str(exc)) from exc
+        return guided_checkpoint.snapshot()
+
+    @app.get("/api/guided/polar-field", dependencies=[Depends(require(CAP_VIEW_SITE_DERIVED))])
+    @declare(CAP_VIEW_SITE_DERIVED)
+    async def guided_polar_field():
+        from ..guided import polar_field, simulated_equipment
+        from ..providers import resolve, _rig_has_real_motion
+        cfg = config_store.cfg()
+        provider = resolve("polar_align", hub)
+        if provider.kind == "sim" and _rig_has_real_motion(hub):
+            return {"field": None, "reason": "A simulated alignment cannot check this mount. Configure a real polar-alignment provider before continuing.", "config_version": cfg.version}
+        if provider.kind not in ("astrodeck", "sim"):
+            return {"field": None, "reason": "Guided field selection currently supports AstroDeck's polar alignment. Use Pro for this provider's setup.", "config_version": cfg.version}
+        simulation = simulated_equipment(hub)
+        result = await asyncio.to_thread(polar_field, dict(hub.site), cfg.safety, simulation=simulation)
+        return {**result, "config_version": cfg.version, "simulation": simulation}
+
+    @app.get("/api/guided/first-targets", dependencies=[Depends(require(CAP_VIEW_SITE_DERIVED))])
+    @declare(CAP_VIEW_SITE_DERIVED)
+    async def guided_first_targets():
+        from ..guided import first_targets, simulated_equipment
+        simulation = simulated_equipment(hub)
+        result = await asyncio.to_thread(first_targets, dict(hub.site), config_store.cfg().safety, simulation=simulation)
+        return {**result, "simulation": simulation}
 
     def _publish_polar_lane() -> None:
         """Put the polar session's OWN task in ``hub._busy`` under "polar".

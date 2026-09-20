@@ -63,11 +63,11 @@ test("insertPoint keeps the array az-sorted", () => {
   eq(next[1].alt, 13);
 });
 
-test("movePoint clamps az strictly between its neighbours and alt to -8..88", () => {
+test("movePoint clamps az strictly between its neighbours and permits overhead obstructions at 90", () => {
   const pts = [{ az: 10, alt: 5 }, { az: 50, alt: 10 }, { az: 100, alt: 8 }];
   const movedHigh = movePoint(pts, 1, 999, 999);
   eq(movedHigh[1].az, 99, "clamped below the next point (100-1)");
-  eq(movedHigh[1].alt, 88, "clamped at the 88 ceiling");
+  eq(movedHigh[1].alt, 90, "clamped at the overhead ceiling");
   const movedLow = movePoint(pts, 1, -999, -999);
   eq(movedLow[1].az, 11, "clamped above the previous point (10+1)");
   eq(movedLow[1].alt, -8, "clamped at the -8 floor");

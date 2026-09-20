@@ -1,0 +1,30 @@
+.guided-focus-prep-layout{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(260px,1fr);gap:24px;align-items:start}
+.guided-focus-prep-actions{display:flex;flex-direction:column;align-items:flex-start;gap:14px;min-width:0}
+.guided-focus-prep-actions .guided-field-plan{display:flex;flex-direction:column;gap:14px;align-items:flex-start}
+.guided-focus-prep-actions label{display:flex;align-items:flex-start;gap:10px;line-height:1.5}
+.guided-focus-prep-actions input[type=checkbox]{flex-shrink:0;margin-top:5px}
+.guided-focus-sky{--focus-field:#a6dcd2;margin:0;min-width:0;border:1px solid var(--line);border-radius:16px;padding:14px;background:linear-gradient(150deg,rgba(104,154,175,.08),rgba(12,20,30,.25))}
+.guided-focus-sky figcaption{display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:8px}
+.guided-focus-sky figcaption span{font-size:12px;color:var(--text-dim)}
+.guided-focus-sky figcaption span{overflow-wrap:anywhere;min-width:0}
+:root.night .guided-focus-sky{--focus-field:var(--accent);background:var(--bg-raise)}
+:root.light .guided-focus-sky-key .field{color:#286c60}
+:root.light .guided-focus-sky-key .pointing{color:#846023}
+:root.light .guided-focus-sky-key .horizon{color:#be3150}
+:root.night .guided-focus-sky-key .horizon,:root.night .guided-focus-sky-key .pointing{color:var(--text-dim)}
+.guided-focus-sky-overlay{position:absolute;inset:0;pointer-events:none;overflow:visible}
+.guided-focus-sky-key{display:flex;flex-wrap:wrap;gap:8px 16px;font-size:12px;margin:14px 0 8px}
+.guided-focus-sky-key span{display:inline-flex;align-items:center;gap:6px}
+.guided-focus-sky-key i{width:10px;height:10px;border-radius:50%;border:2px solid currentColor}
+.guided-focus-sky-key .field{color:var(--focus-field)}
+.guided-focus-sky-key .horizon{color:#ff5470;border-radius:0;height:3px}
+.guided-focus-sky-key .pointing{color:#f2d7a1}
+.guided-focus-sky>p{font-size:12px;line-height:1.6;color:var(--text-dim);margin:8px 0 0}
+@media(max-width:760px){.guided-focus-prep-layout{grid-template-columns:minmax(0,1fr);gap:18px}.guided-focus-sky{padding:10px}.guided-focus-prep-actions .btn{min-height:44px;white-space:normal}.guided-focus-prep-actions{gap:12px}}
+@media(max-width:760px){
+  /* Keep the first action discoverable before the tall sky illustration. */
+  .guided-focus-prep-actions{display:contents}
+  .guided-focus-prep-actions>.btn:first-of-type{grid-row:1;justify-self:start}
+  .guided-focus-sky{grid-row:2}
+  .guided-focus-prep-actions>.btn{justify-self:start}
+}

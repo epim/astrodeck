@@ -303,6 +303,23 @@ await test("what is typed is what is saved, and blank stays unpinned", async () 
     `an untouched slot was sent as a pin: ${JSON.stringify([exposures?.[0], gains?.[0]])}`);
 });
 
+await test("the learning plan shows every filter, not just the reference",()=>{
+  render(null);openLearn();
+  const plan=container.querySelector('[aria-label="Filter measurement plan"]');
+  assert(!!plan&&plan.querySelectorAll("li").length===4,"missing filter cards");
+  assert(plan.textContent.includes("L · reference")&&plan.textContent.includes("R")&&plan.textContent.includes("G")&&plan.textContent.includes("B"),"plan lost a filter");
+});
+await test("progress distinguishes measured, active, and failed filters",async()=>{
+  await act(async()=>useStore.setState({filterOffsetsLearn:{state:"running",slot:1,name:"R",done_slots:[0]}}));
+  const plan=container.querySelector('[aria-label="Filter measurement plan"]');
+  assert(plan.querySelector('[aria-current="step"]').textContent.includes("R"),"active filter incorrect");
+  assert(plan.textContent.includes("Measured"),"completed filter invisible");
+  assert(container.querySelector('[aria-label="Reference filter"]').disabled,"reference can change during a sweep");
+  assert(!!container.querySelector('footer button')?.textContent?.includes("Stop"),"Stop is outside the fixed footer");
+  await act(async()=>useStore.setState({filterOffsetsLearn:{state:"done",done_slots:[0,1,3],kept:[2],offsets:[0,12,-4,7]}}));
+  assert(plan.textContent.includes("12 steps")&&plan.textContent.includes("prior offset kept"),"results hide the failed filter or measured offset");
+  assert(container.textContent.includes("saved to your equipment"),"autosave not explained");
+});
 // ------------------------------------------------------------------ report
 act(() => { root.unmount(); });
 const total = passed + failed;

@@ -42,8 +42,9 @@ export const STANDARDS_NUMBER_FIELDS: StandardsNumberField[] = [
         + "Not the same setting as the WCS star floor under Connect." },
   { key: "max_guide_rms", label: "Reject above", unit: "″ RMS",
     hint: "Guide error while the frame was open. 0 turns it off." },
-  { key: "max_eccentricity", label: "Reject rounder than", unit: "ecc",
-    hint: "Median star eccentricity, 0 to 1. A frame is also rejected when "
+  { key: "max_eccentricity", label: "Maximum star elongation", unit: "ecc",
+    hint: "Eccentricity runs from 0 (round) toward 1 (elongated). Reject a frame "
+        + "when its median is above this limit. A frame is also rejected when "
         + "more than a quarter of its stars sit 0.15 above this, which is "
         + "what a staircase trail looks like. Clean nights read 0.5 to 0.56; "
         + "0.65 is the default. 0 turns it off." },

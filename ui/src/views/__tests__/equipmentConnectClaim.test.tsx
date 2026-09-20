@@ -475,6 +475,59 @@ test("a simulator pick is contradicted by a REAL device in that role", () => {
   );
 });
 
+// A booted or externally connected rig has live devices even when this browser
+// has no assignments and the server has no RigSpec attempt report.
+await remountWith({});
+act(() => {
+  seedRig({ camera: simDev("camera", "camera", "Sim Camera 533MM") });
+  useStore.setState({ status: { ...useStore.getState().status, backend_links: [] } } as never);
+});
+test("externally connected equipment is not presented as a missing rig", () => {
+  const text = container.textContent;
+  assert(!text.includes("No equipment yet"), "live device was described as no equipment");
+  assert(!text.includes("No connection status available"), "live telemetry was ignored");
+  assert(text.includes("1 equipment role is connected"), "rig actions must describe the live rig");
+  assert(container.querySelector('[aria-label="Camera: connected"]') != null,
+    "Link Status must use device telemetry when attempt metadata is absent");
+});
+const postsBeforeStatusChange = posted.length;
+act(() => {
+  useStore.setState({ status: {
+    ...useStore.getState().status,
+    connected: { camera: { ...simDev("camera", "camera", "Sim Camera 533MM"), connected: false } },
+  } } as never);
+});
+test("device-only status follows a disconnect without reconnecting equipment", () => {
+  assert(container.querySelector('[aria-label="Camera: disconnected"]') != null,
+    "Link Status must clear its connected state when device telemetry goes down");
+  assert(container.textContent.includes("No equipment yet"), "disconnected rig must offer setup again");
+  assert(posted.length === postsBeforeStatusChange, "status updates must never reconnect hardware");
+});
+act(() => {
+  useStore.setState({ status: {
+    ...useStore.getState().status,
+    backend_links: [{ role: "camera", attempted: true, ok: false, connected: false, error: "Camera unplugged" },
+      { role: "guider", attempted: true, ok: true, connected: true, error: null }],
+  } } as never);
+});
+test("attempt errors and engine-only roles survive the device fallback", () => {
+  assert(container.textContent.includes("Camera unplugged"), "connection error was lost");
+  assert(container.querySelectorAll('[aria-label="Camera: failed"]').length === 1,
+    "device fallback must not duplicate a role with an attempt report");
+  assert(container.querySelector('[aria-label="Guiding: connected"]') != null,
+    "guider engine has no device record but still needs a status row");
+});
+
+const {useExperience}=await import("../../guided/experience");
+act(()=>useExperience.setState({mode:"guided",home:false,wizard:"equipment"}));
+test("Guided equipment keeps optional connections and advanced providers behind disclosures",()=>{
+  const disclosures=[...container.querySelectorAll("details")];
+  assert(disclosures.some((d:any)=>d.querySelector("summary")?.textContent.includes("More equipment")&&!d.open),"optional accessories are not collapsed");
+  const advanced=disclosures.find((d:any)=>d.querySelector("summary")?.textContent.includes("Advanced equipment")) as HTMLDetailsElement;
+  assert(!!advanced&&!advanced.open&&advanced.textContent?.includes("Link Status")===true,"advanced connection details are not behind a disclosure");
+  assert(container.textContent.includes("Autodetect equipment"),"primary autodetection action missing");
+  assert(!container.textContent.includes("▶ Detect hardware rig"),"duplicate detection action still shown");
+});
 act(() => { root.unmount(); });
 
 console.log(`equipmentConnectClaim: ${passed}/${passed + failed} passed`);

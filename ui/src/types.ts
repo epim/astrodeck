@@ -548,6 +548,8 @@ export interface BahtinovInfo {
 }
 
 export interface PreviewInfo {
+  capture_request_id?: string;
+  capture_saved?: boolean;
   id: number;
   stats: {
     min: number; max: number; mean: number; median: number; std: number;

@@ -612,7 +612,7 @@ interface AppState extends FlowsActions {
     | null;
   filterOffsetsLearn:
     | { state: string; slot?: number | null; of?: number; name?: string;
-        ref_slot?: number; offsets?: number[]; kept?: number[]; error?: string }
+        ref_slot?: number; offsets?: number[]; kept?: number[]; done_slots?: number[]; error?: string }
     | null;
   // Same-night per-provider RMS windows (P5-T1, spec §6 P5): the LAST
   // guide-stats tick seen while a given provider KIND ("astrodeck"/"backend"/
