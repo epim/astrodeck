@@ -220,6 +220,192 @@ test("A warm wall with a soft edge is found at its top too", () => {
   const alt = traceSkyCoverage([[wall]]).points[0].alt;
   assert.ok(Math.abs(alt - 27) <= 1, `the warm wall published ${alt}, not 27`);
 });
+// A whole mosaic: 30 bins of one sampled column each, so a case can say what
+// the NEIGHBOURING azimuths are doing. That is the evidence a single column
+// does not have, and the four cases below are the things that look alike
+// without it (issues #71 and #74). Thirty is what the product scans.
+const mosaic = (column: (bin: number) => SkyColumn) =>
+  Array.from({ length: 30 }, (_, bin) => [column(bin)]);
+const openSky = sample(() => 122);
+test("A floating departure is a roof, a marking or a disc by its height and its neighbours", () => {
+  // Issue #71. Four of these columns carry a dark departure with clear sky
+  // underneath it, and NOTHING INSIDE ANY OF THEM separates them: the
+  // persistence floor reads all four as open, which is 0.174 sr of false open
+  // on chartyard-arc075-60, where a misregistered mosaic compresses the roof to
+  // nine rows. What separates them is beside them.
+  //
+  //   bin 13  nine rows, and the wall it runs out of reaches the ground one bin
+  //           along - a roof, and published;
+  //   bin  7  three rows, at the very row the wall's top is next door - the
+  //           neighbours vouch for it exactly as they do for the roof, and what
+  //           refuses it is that the mosaic lowers the persistence floor
+  //           without abolishing it: three degrees of departure with sky under
+  //           it is a wire, a bird or a marking, and no amount of azimuth
+  //           evidence says which;
+  //   bin 20  nine rows, anchored the same way, but BRIGHTER than the mosaic at
+  //           those rows - a cloud, a glint or one of the chart yard's own
+  //           170-bright bands. Refused, and this is the one place the tracer
+  //           is not sign agnostic. It costs a floating obstruction brighter
+  //           than its sky, which the persistence floor was losing anyway;
+  //   bin 25  ten rows, flanked by open sky - a disc, and still open.
+  //
+  // Mutation: drop the anchor test and promote on contrast alone - the disc
+  // reports 61.
+  // Mutation: drop the azimuth pass entirely - the roof reports 0.
+  // Mutation: lower the floating floor to one row - the marking reports 64.
+  // Mutation: judge a floating departure in either direction - the bright band
+  // reports 61.
+  // Mutation: let a bin vouch for itself only, never a neighbour - the roof
+  // reports 0.
+  const wall = sample(row => (row < 30 ? 122 : 40));
+  const roof = sample(row => (row >= 30 && row < 39 ? 40 : 122));
+  const marking = sample(row => (row >= 27 && row < 30 ? 40 : 122));
+  const glare = sample(row => (row >= 30 && row < 39 ? 220 : 122));
+  const disc = sample(row => (row >= 30 && row < 40 ? 40 : 122));
+  const trace = traceSkyCoverage(mosaic(bin =>
+    (bin >= 8 && bin <= 12) || (bin >= 17 && bin <= 19) ? wall
+      : bin === 13 ? roof : bin === 7 ? marking : bin === 20 ? glare
+        : bin === 25 ? disc : openSky));
+  assert.deepEqual(trace.uncertainBins, []);
+  assert.equal(trace.points[12].alt, 61);
+  assert.equal(trace.points[13].alt, 61);
+  assert.equal(trace.points[7].alt, 0);
+  assert.equal(trace.points[20].alt, 0);
+  assert.equal(trace.points[25].alt, 0);
+  assert.equal(trace.points[2].alt, 0);
+  // And a mosaic too narrow to have neighbours gets the single-column answer,
+  // unchanged: five bins are 72 degrees each, a structure in one of them is a
+  // fifth of the compass, and the median of that row is as likely to be the
+  // structure as the sky. The wall still stands; the roof beside it stays open.
+  // Mutation: let any number of bins vote and the roof reports 61 here too.
+  const narrow = traceSkyCoverage(Array.from({ length: 5 }, (_, bin) =>
+    [bin === 1 ? wall : bin === 2 ? roof : openSky]));
+  assert.deepEqual(narrow.points.map(p => p.alt), [0, 61, 0, 0, 0]);
+});
+test("A wall behind an edge too soft for one column is found across the mosaic", () => {
+  // Issue #74's surviving half. A fifteen-row edge walks the local model down
+  // into the wall before the lagged reference can notice, so the column
+  // publishes 0 for an obstruction 36 degrees high; an eleven or twelve-row
+  // edge publishes 16 against a true 32, which is worse, because it is a
+  // plausible number rather than an obvious absence. The narrower allowance
+  // sees the edge; the mosaic says it is a wall and not a re-expose.
+  // Mutation: widen the narrow allowance to the wide one - one allowance for
+  // both passes - and every one of these reports 0.
+  const plain = sample(() => 200);
+  for (const [edge, top] of [[11, 32], [13, 34], [15, 36], [16, 37]]) {
+    const wall = sample(edged(200, 130, edge, 70));
+    const trace = traceSkyCoverage(mosaic(bin => (bin < 5 ? wall : plain)));
+    assert.equal(trace.points[2].alt, top, `a ${edge}-row edge published ${trace.points[2].alt}, not ${top}`);
+    assert.equal(trace.points[20].alt, 0);
+  }
+  // Where it runs out, pinned rather than rounded away: at seventeen rows the
+  // narrow allowance has been walked too and the GREY wall is lost entirely.
+  // The cliff issue #74 measured is still a cliff; the mosaic moves it from 13
+  // rows to 17.
+  const soft = sample(edged(200, 130, 17, 70));
+  assert.equal(traceSkyCoverage(mosaic(bin => (bin < 5 ? soft : plain))).points[2].alt, 0);
+  // A WARM wall has chroma to walk as well, and it never falls off that cliff:
+  // past sixteen rows it is under-reported and it stays under-reported, by
+  // about the edge's own height. An earlier round of this comment said it
+  // "holds to 20", which was neither asserted nor true - 20 reads 28 against a
+  // true 41. The honest claim is the one below, and it is asserted.
+  const warmly = sample(() => 122);
+  for (const [edge, top] of [[16, 37], [18, 27], [20, 28], [22, 30], [30, 35]]) {
+    const wall = sample(edged(122, 104, edge, 70), edged(0, -24, edge, 70));
+    const alt = traceSkyCoverage(mosaic(bin => (bin < 5 ? wall : warmly))).points[2].alt;
+    assert.equal(alt, top, `a warm ${edge}-row edge published ${alt}, not ${top} (true top ${21 + edge})`);
+  }
+});
+test("A grey wall 32 per cent darker than its sky is found across the mosaic", () => {
+  // The other surviving half of #74. One column cannot tell a 32 per cent wall
+  // from a 32 per cent re-expose - they are the same signal, which is why
+  // EXPOSURE_TOLERANCE sits where it does - and 136 against 200 is exactly the
+  // band that was lost (measured: found at 32.5 per cent, lost at 32.0). The
+  // mosaic can, because this step is in five bins and not in the other
+  // twenty-five - but only just, and only because 32 is over the line rather
+  // than under it. This is the smaller half of what the mosaic buys.
+  // Mutation: widen the narrow allowance to the wide one and this reports 0.
+  const plain = sample(() => 200);
+  const at = (darker: number) => {
+    const wall = sample(row => (row < 70 ? 200 : 200 * (1 - darker)));
+    const trace = traceSkyCoverage(mosaic(bin => (bin < 5 ? wall : plain)));
+    assert.deepEqual(trace.uncertainBins, []);
+    assert.equal(trace.points[20].alt, 0);
+    return trace.points[2].alt;
+  };
+  assert.equal(at(.32), 21);
+  // The other end of `AZ_DEPARTURE`, and it is the same assertion as the seam
+  // case below read from the other side: a 30 per cent step over part of the
+  // compass is a re-expose, so a 30 per cent WALL over part of the compass
+  // cannot be told from one and is left open. That is what is left of #74's
+  // amplitude half, and it is one point wide.
+  assert.equal(at(.30), 0);
+  assert.equal(at(.25), 0);
+});
+test("An arc of the compass exposed dimmer than the rest is open sky, not a dome", () => {
+  // Issue #98, the first half. Until a column has accepted four rows of its own
+  // sky the model IS the pooled seed - the median of the top rows of EVERY
+  // column - so at the narrow allowance a column whose own sky sits further
+  // from that pooled level than the allowance never accepts a row at all. The
+  // whole column read as one departure from row 1, reaching the bottom, which
+  // qualifies, anchors itself and "stands out" by construction: five bins of
+  // ordinary open sky 14 per cent dimmer than the rest published ALTITUDE 90,
+  // with no bin marked uncertain. Every frame is auto-exposed at its own
+  // heading, so an arc at a different level is what a stitched mosaic is.
+  // Mutation: promote a run that began before its column's model had settled,
+  // and the dim bins report 90.
+  // Mutation: compare levels instead of departures, and they report 90.
+  // 14, 18 and 26 per cent below the rest of the compass. Past the WIDE
+  // allowance - a bin more than 32 per cent below the mosaic's pooled median at
+  // the zenith - the zenith rule blocks the bin outright, and it did so at
+  // 2b964638 as well (measured against that commit's own tracer). That is a
+  // different rule with the same pooled-seed shape, it is not this task's, and
+  // it is filed rather than pinned here.
+  for (const dim of [105, 100, 90]) {
+    const trace = traceSkyCoverage(mosaic(bin =>
+      sample(row => (bin < 5 ? dim : 122) * (row <= 90 ? 1 : .4))));
+    assert.deepEqual(trace.uncertainBins, []);
+    assert.ok(trace.points.every(p => p.alt === 0),
+      `a mosaic dimmer by ${Math.round((1 - dim / 122) * 100)} per cent over five bins published ${trace.points[0].alt}`);
+  }
+});
+test("An exposure seam over PART of the compass is not a horizon either", () => {
+  // Issue #98, the second half, and the case the two seam cases above cannot
+  // fail on: they hold the ratio identical in every bin, and the mechanism that
+  // makes seams does not. Every frame is auto-exposed at its own heading, so
+  // between two elevation bands the ROW is shared around the compass and the
+  // ratio is a different number at every azimuth. A cosine taper over four bins
+  // and over twenty, so that nothing here is a synthetic cliff, at every depth
+  // up to the 30 per cent a band re-expose is allowed to be.
+  // Mutation: compare levels instead of departures, and a 12 per cent taper
+  // publishes 46 in the bins it covers.
+  for (const width of [4, 20]) for (const depth of [.12, .20, .30]) {
+    const trace = traceSkyCoverage(mosaic(bin => {
+      const away = Math.min(Math.abs(bin - 5), 30 - Math.abs(bin - 5));
+      const step = away <= width / 2 ? depth * (1 + Math.cos(Math.PI * away / (width / 2))) / 2 : 0;
+      return sample(row => (row < 45 ? 122 : 122 * (1 - step)));
+    }));
+    assert.deepEqual(trace.uncertainBins, []);
+    assert.ok(trace.points.every(p => p.alt === 0),
+      `a ${depth * 100} per cent seam over ${width * 12} degrees published ${trace.points[5].alt}`);
+  }
+});
+test("An exposure seam in every bin is still not a horizon at the narrow allowance", () => {
+  // The reason the narrow allowance cannot decide anything on its own. This
+  // seam is a 30 per cent step reaching the bottom of every column, which is
+  // both tall enough and grounded enough to qualify; the bins differ in level,
+  // so nothing here is the degenerate mosaic of identical columns. What refuses
+  // it is that it is what the WHOLE MOSAIC is doing at that row - no column
+  // stands out from the others there.
+  // Mutation: promote a supported candidate without asking whether it stands
+  // out from the mosaic, and every bin publishes 46.
+  const trace = traceSkyCoverage(mosaic(bin => {
+    const level = 122 + (bin % 5) * 4;
+    return sample(row => (row < 45 ? level : level * .7));
+  }));
+  assert.deepEqual(trace.uncertainBins, []);
+  assert.ok(trace.points.every(p => p.alt === 0), `a mosaic-wide seam published ${trace.points[0].alt}`);
+});
 test("A bin answers for its whole width, not for the ray through its centre", () => {
   // The product publishes one altitude per 12 degree bin, so the honest number
   // is the bin's worst case. The centre column here is wide open.
