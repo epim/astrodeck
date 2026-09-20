@@ -40,6 +40,17 @@ def client(tmp_path, monkeypatch):
     # and a carried-over singleton makes one test pass for the previous test's
     # reasons.
     monkeypatch.setattr(config_mod, "CONFIG_DIR", tmp_path)
+    # CAPTURE_DIR too (#114). The doctor's capture-geometry check scans it LIVE,
+    # so unpinned these twelve compile calls walk the DEVELOPER'S real capture
+    # library. Measured here: 7.9 s pinned against 28 s unpinned on a checkout
+    # holding 5310 frames.
+    #
+    # No test in this file asserts on the warning that scan can raise, so this
+    # is hygiene rather than a fix -- unpinned it was slow, not red. That is
+    # worth stating plainly: the sibling pin in test_flows_quick.py DOES hold a
+    # failure shut, and conflating the two would leave the next reader thinking
+    # this file had been broken.
+    monkeypatch.setattr(hub_mod, "CAPTURE_DIR", tmp_path)
     monkeypatch.setattr(app_module, "flow_store", FlowStore(tmp_path / "flows"))
 
     app = app_module.create_app()
