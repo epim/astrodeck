@@ -18,7 +18,7 @@ import { decodePng, encodePng, pngChunk, PNG_SIGNATURE } from '../__sim__/png';
 import { createHarness, resample } from '../__sim__/harness';
 import { mergeObservations, replayCase, type Observation } from '../__sim__/replay';
 import { DOME_CELLS } from '../photosphereGeometry';
-import { endsOverlapRun, LENS_DOUBT_AFTER, type CaptureOutcome } from '../photosphere';
+import { endsOverlapRun, extendsOverlapRun, LENS_DOUBT_AFTER, type CaptureOutcome } from '../photosphere';
 
 let passed = 0, failed = 0, skipped = 0;
 function test(name: string, fn: () => void | Promise<void>): Promise<void> {
@@ -290,6 +290,12 @@ const OUTCOME_ENDS_RUN: Record<CaptureOutcome, boolean> = {
   // at one and the lens cue is dead code; counting `no-target` as one delays
   // it on the wrong-lens recording from the 9th refusal to the 24th of 25.
   'overlap-wait': false,
+  // Issue #95 split the carried-correction refusal off `overlap-wait`. It is a
+  // refusal to match like the run itself, not a grab that ended before the
+  // test, so it EXTENDS a run: on an uncalibrated lens it is the refusal a
+  // wrong lens produces, and resetting on it would break the run at its
+  // strongest evidence.
+  'carry-too-large': false,
   'alignment-wait': false,
   'too-soon': false,
   'no-target': false,
@@ -532,7 +538,7 @@ const replayRecorded = (caseId: string) => replayFrom(join(CASES, caseId));
 function longestOverlapRun(captures: { outcome: CaptureOutcome }[]): number {
   let run = 0, longest = 0;
   for (const record of captures) {
-    if (record.outcome === 'overlap-wait') { run++; longest = Math.max(longest, run); }
+    if (extendsOverlapRun(record.outcome)) { run++; longest = Math.max(longest, run); }
     else if (endsOverlapRun(record.outcome)) run = 0;
   }
   return longest;
@@ -596,7 +602,7 @@ if (!wrongLens) skip(RESET, NO_RECORDING);
 else await test(RESET, () => {
   let run = 0, reached: number | null = null, cleared: number | null = null;
   for (const record of wrongLens.captures) {
-    if (record.outcome === 'overlap-wait') {
+    if (extendsOverlapRun(record.outcome)) {
       run++;
       if (run >= LENS_DOUBT_AFTER && reached === null) reached = record.at;
     } else if (endsOverlapRun(record.outcome)) {
@@ -631,6 +637,28 @@ await test('capture outcomes: only the waits before the overlap test keep a refu
   // Mutation: drop `&& outcome !== 'too-soon'` from `endsOverlapRun`. Red here
   // on that key, and red on the two replay cases above, whose longest runs
   // both fall to 1. Observed red.
+  // Every outcome is exactly one of extends / ends / neutral, and the counting
+  // in `recordCapture` reads the first two in that order. An outcome that both
+  // extends and ends would be counted as extending and never reset, which is
+  // the run that can only grow; one that does neither is neutral, which is a
+  // real category (`alignment-wait` and the three below it) and not an error.
+  // Issue #95 added the second extending outcome, so this stops being a
+  // statement about one name.
+  const extending = (Object.keys(OUTCOME_ENDS_RUN) as CaptureOutcome[])
+    .filter(o => extendsOverlapRun(o));
+  assert.deepEqual(extending.sort(), ['carry-too-large', 'overlap-wait'],
+    'the outcomes that lengthen a refusal run are not the two refusals to match');
+  for (const outcome of extending)
+    assert.equal(OUTCOME_ENDS_RUN[outcome], false,
+      `${outcome} both lengthens a run and ends one, so the run it starts can never be reset`);
+  // Mutation: `extendsOverlapRun` returns true for `alignment-wait` as well.
+  // Observed red on three cases: this one (the list comes back with three
+  // names), "the same scan with the lens the scanner assumes never mentions
+  // the view angle", and "an outcome other than a refusal puts the ordinary
+  // cue back" - the two whose runs grow on a scan that should have none.
+  // Mutation: revert `endsOverlapRun` to test `outcome !== 'overlap-wait'`
+  // inline instead of delegating. `carry-too-large` then ends a run it also
+  // lengthens; observed red on the exhaustive loop at the top of this case.
 });
 
 // ------------------------------------------ issue #68: the committed fixture
