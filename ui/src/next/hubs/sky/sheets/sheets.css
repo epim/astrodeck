@@ -1,0 +1,39 @@
+.photosphere-capture { border: 1px solid #476b74; background: #101b25; border-radius: 16px; padding: 12px; min-width: 0; scroll-margin-top: 16px; }
+.photosphere-capture[hidden] { display: none; }
+.photosphere-preview { position: relative; overflow: hidden; border-radius: 10px; background: #05090d; }
+.photosphere-preview video { display: block; width: 100%; height: min(48svh, 360px); min-height: 190px; object-fit: contain; }
+.photosphere-capture[data-scanning="true"] .photosphere-preview video { height: clamp(220px, 40svh, 420px); min-height: 220px; }
+.photosphere-dome { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.photosphere-progress-track { height: 6px; background: #304756; border-radius: 6px; overflow: hidden; }
+.photosphere-progress-track span { display: block; height: 100%; background: #78edb9; transition: width .3s ease; }
+.photosphere-review-heading { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; color: #e7f2f4; }
+.photosphere-review-heading strong { font: 600 18px system-ui, sans-serif; }
+.photosphere-review-heading p { margin: 6px 0; max-width: 55ch; font: 14px/1.5 system-ui, sans-serif; color: #bdd0d7; }
+.photosphere-review-heading label { display: flex; align-items: center; gap: 10px; min-height: 44px; font: 13px system-ui, sans-serif; }
+.photosphere-review-heading input { width: 110px; accent-color: #9addcb; }
+.photosphere-editor-scroll { overflow-x: auto; scrollbar-color: #99c9c0 #233542; scrollbar-width: auto; border: 1px solid #44606c; border-radius: 10px; background: #101b25; }
+.photosphere-pan { display: flex; align-items: center; gap: 14px; min-height: 48px; color: #dfebed; font: 14px system-ui,sans-serif; }
+.photosphere-pan input { flex: 1; min-width: 0; min-height: 44px; accent-color: #9addcb; }
+.photosphere-download { color: #b4e6d7; display: inline-flex; align-items: center; min-height: 44px; padding: 8px 2px; font: 14px system-ui, sans-serif; }
+@media (prefers-reduced-motion: reduce) { .photosphere-progress-track span { transition: none; } }
+.photosphere-aim { position: absolute; top: 50%; left: 12%; width: 76%; border-top: 1px dashed #d8ffea; pointer-events: none; }
+.photosphere-aim span { position: absolute; left: 0; bottom: 6px; font: 12px system-ui, sans-serif; color: white; background: #08131bcc; border-radius: 4px; padding: 2px 7px; }
+.photosphere-bearing { position: absolute; top: 10px; left: 10px; border-radius: 20px; padding: 5px 10px; background: #08131be8; color: #cff8e7; font: 13px system-ui, sans-serif; }
+.photosphere-opening { position: absolute; inset: 0; display: grid; place-content: center; background: #08131bd9; color: white; }
+.photosphere-hint, .photosphere-detail { margin: 12px 0; color: #dfebed; font: 15px/1.5 system-ui, sans-serif; overflow-wrap: anywhere; }
+.photosphere-detail { font-size: 12px; color: #b8cbd0; }
+.photosphere-coverage { display: grid; grid-template-columns: repeat(30, minmax(0, 1fr)); gap: 3px; }
+.photosphere-coverage span { height: 15px; background: #354953; border-radius: 3px; }
+.photosphere-coverage span[data-covered="true"] { background: #98dcc6; }
+.photosphere-coverage span[data-current="true"], .photosphere-overhead[data-current="true"] { outline: 2px solid #fff; outline-offset: 1px; }
+.photosphere-sky-coverage { display: flex; flex-direction: column; gap: 9px; padding: 10px 2px; }
+.photosphere-elevation-row { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 8px; align-items: center; color: #b8cbd0; font: 11px system-ui, sans-serif; }
+.photosphere-overhead { border-radius: 12px 12px 4px 4px; text-align: center; padding: 6px; background: #354953; color: #e3eef0; }
+.photosphere-overhead[data-covered="true"] { background: #98dcc6; color: #102923; }
+.photosphere-cardinals { display: flex; justify-content: space-between; color: #b8cbd0; font: 11px system-ui, sans-serif; margin: 4px 0 0 40px; }
+.photosphere-camera-choice { display: grid; gap: 7px; color: #dfebed; font: 14px system-ui, sans-serif; }
+.photosphere-camera-choice select { min-width: 0; max-width: 100%; width: 100%; min-height: 44px; padding: 8px; background: #1c2c38; color: white; border: 1px solid #64808c; border-radius: 8px; font: inherit; }
+.photosphere-camera-choice small { color: #b8cbd0; line-height: 1.4; }
+.photosphere-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+.photosphere-actions > * { flex: 1 1 150px; }
+.photosphere-error { border-left: 3px solid #edbd80; padding: 12px; color: #ffe1b2; background: #362b1e; font: 14px/1.5 system-ui, sans-serif; }

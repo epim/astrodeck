@@ -62,9 +62,36 @@ export default function Root() {
   const [classic, setClassic] = useState(() => resolveRoot(window.location.hash) === "classic");
 
   useEffect(() => {
-    const on = () => { setClassic(resolveRoot(window.location.hash) === "classic"); };
+    // Give a bare classic entry its own destination before the first click,
+    // so Back can restore it. Existing deep links (including query flags) stay
+    // intact until the operator actually chooses another view.
+    const nameClassicEntry = () => {
+      const hash = window.location.hash;
+      const path = hash.split("?")[0];
+      const bare = ["", "#", "#/", "#/classic", "#/classic/"].includes(path);
+      if (bare && rootForHash(hash) === "classic") {
+        window.history.replaceState(window.history.state, "", `#/classic/${useStore.getState().view}${hash.slice(path.length)}`);
+      }
+    };
+    const on = () => {
+      setClassic(resolveRoot(window.location.hash) === "classic");
+      nameClassicEntry();
+    };
+    nameClassicEntry();
+    const unsubscribe = useStore.subscribe((state, previous) => {
+      if (state.view === previous.view || rootForHash(window.location.hash) !== "classic") return;
+      // A hash-driven store update is already at its destination. Do not add
+      // another history entry when following a bookmark or pressing Back.
+      if (classicViewForHash(window.location.hash) === state.view) return;
+      const experience = new URLSearchParams(window.location.hash.split("?")[1]).get("experience");
+      const presentation = experience === "guided" || experience === "pro" ? `?experience=${experience}` : "";
+      window.location.hash = `/classic/${state.view}${presentation}`;
+    });
     window.addEventListener("hashchange", on);
-    return () => window.removeEventListener("hashchange", on);
+    return () => {
+      unsubscribe();
+      window.removeEventListener("hashchange", on);
+    };
   }, []);
 
   return classic ? <App /> : <NextApp />;

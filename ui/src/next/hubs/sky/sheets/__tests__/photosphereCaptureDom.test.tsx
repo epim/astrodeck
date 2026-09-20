@@ -1,0 +1,925 @@
+// Real component and capture driver, with camera/sensor fixtures only.
+import assert from "node:assert/strict";
+import { JSDOM } from "jsdom";
+const dom = new JSDOM('<html><body><div id="root"></div></body></html>', { url: "https://localhost/", pretendToBeVisual: true });
+const w = dom.window as any, g = globalThis as any;
+for (const k of ["window", "document", "navigator", "HTMLElement", "HTMLVideoElement", "Element", "Node", "Event", "CustomEvent", "MouseEvent", "localStorage", "sessionStorage", "getComputedStyle", "requestAnimationFrame", "cancelAnimationFrame"]) {
+  Object.defineProperty(g, k, { value: k === "window" ? w : w[k], writable: true, configurable: true });
+}
+g.IS_REACT_ACT_ENVIRONMENT = true;
+w.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+g.matchMedia = w.matchMedia;
+g.WebSocket = w.WebSocket = class { close() {} addEventListener() {} send() {} };
+w.DeviceOrientationEvent = class {};
+Object.defineProperty(w, "isSecureContext", { value: true });
+Object.defineProperty(w.HTMLVideoElement.prototype, "videoWidth", { get: () => 640 });
+Object.defineProperty(w.HTMLVideoElement.prototype, "videoHeight", { get: () => 480 });
+w.HTMLVideoElement.prototype.play = async function () {};
+// A camera that is actually DELIVERING pictures, which every workflow case here
+// has always assumed and none of them said. A bare jsdom video is paused, at
+// readyState 0, with a media clock frozen at 0 - in production terms an element
+// that has never shown a frame - and capture now requires a delivered image on
+// every path (review 17, P1), as it always should have. `mediaTime` advances
+// with the frame tick below; a case that needs a stalled camera freezes it.
+let mediaTime = 0;
+Object.defineProperty(w.HTMLVideoElement.prototype, "currentTime", { get: () => mediaTime, configurable: true });
+Object.defineProperty(w.HTMLVideoElement.prototype, "paused", { get: () => false, configurable: true });
+Object.defineProperty(w.HTMLVideoElement.prototype, "ended", { get: () => false, configurable: true });
+Object.defineProperty(w.HTMLVideoElement.prototype, "readyState", { get: () => 2, configurable: true });
+const pixels = new Uint8ClampedArray(32 * 120 * 4);
+for (let i = 0; i < pixels.length; i += 4) pixels[i] = pixels[i + 1] = pixels[i + 2] = i < pixels.length / 2 ? 240 : 30;
+w.HTMLCanvasElement.prototype.getContext = () => ({ drawImage() {},
+  getImageData: (_x: number,_y: number,width: number,height: number) => {
+    const data=new Uint8ClampedArray(width*height*4);
+    // These workflow tests use a textureless camera. Image registration has
+    // separate landmark/overlap tests with actual projected world scenes.
+    for(let i=0;i<data.length;i+=4){data[i]=data[i+1]=data[i+2]=120;data[i+3]=255;}
+    return {data};
+  }, createImageData: (width:number,height:number)=>({data:new Uint8ClampedArray(width*height*4)}), putImageData() {},
+});
+w.HTMLCanvasElement.prototype.toDataURL = () => 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=';
+const intervals = new Map<number, () => void>(); let intervalId = 0;
+g.setInterval = (fn: () => void) => { intervals.set(++intervalId, fn); return intervalId; };
+g.clearInterval = (id: number) => intervals.delete(id);
+const cameras = [
+  { kind: "videoinput", deviceId: "ultra", label: "Back ultra wide camera" },
+  { kind: "videoinput", deviceId: "main", label: "Back main wide camera" },
+  { kind: "videoinput", deviceId: "other", label: "Back camera 2" },
+];
+let denied = false, stops = 0;
+const requested: any[] = [];
+Object.defineProperty(w.navigator, "mediaDevices", { value: {
+  enumerateDevices: async () => cameras,
+  getUserMedia: async (constraints: any) => {
+    requested.push(constraints);
+    if (denied) throw new w.DOMException("Permission denied", "NotAllowedError");
+    const track = { stop: () => { stops++; }, getSettings: () => ({ deviceId: constraints.video.deviceId?.exact ?? "ultra" }), addEventListener() {}, readyState: "live", muted: false };
+    return { getTracks: () => [track], getVideoTracks: () => [track] };
+  },
+}, configurable: true });
+const ok = (data: unknown) => ({ ok: true, status: 200, json: async () => data });
+const writes: string[]=[];
+g.fetch = async (url: string,options?:{method?:string}) => {
+  if(options?.method && options.method!=='GET')writes.push(String(url));
+  return String(url).includes("/api/site") ? ok({ site: { name: "Phone test", horizon_points: [] } }) : ok({});
+};
+const { createElement, act } = await import("react");
+const { createRoot } = await import("react-dom/client");
+const { useStore } = await import("../../../../../store");
+const { HorizonSheet } = await import("../horizon");
+const { cameraPose, foldSweepColumns, preferredRearCamera, PhotosphereSweep, LENS_DOUBT_AFTER } = await import("../photosphere");
+const { DOME_CELLS, SkyPanorama, orientationBasis } = await import('../photosphereGeometry');
+const { poseSeparation } = await import('../photospherePose');
+const { SEARCH_CEILING_DEG } = await import('../photosphereRegistration');
+useStore.setState({ principal: { role: "admin", caps: ["config.safety", "config.site_optics"] }, wsPhase: "up",
+  equipConnected: true, status: { mode: "sim", connected: {}, busy_lanes: [] }, config: { safety: { horizon: [] } },
+} as never);
+const root = createRoot(document.getElementById("root")!);
+const settle = async () => { await act(async () => { await Promise.resolve(); await Promise.resolve(); }); };
+const byTest = (id: string) => document.querySelector<HTMLElement>(`[data-testid="${id}"]`)!;
+const click = async (el: HTMLElement) => { assert.ok(el); await act(async () => el.click()); await settle(); };
+let sensorNow=10000;
+Object.defineProperty(performance,'now',{value:()=>sensorNow,configurable:true});
+let lastSensor:{type:string;alpha:number|null;beta:number|null;gamma:number|null;absolute:boolean}|null=null;
+for(const type of ['deviceorientation','deviceorientationabsolute'])w.addEventListener(type,(e:any)=>{lastSensor={type,alpha:e.alpha,beta:e.beta,gamma:e.gamma,absolute:e.absolute};});
+const tick = async () => { await act(async () => {
+  // A real camera frame after 600 ms of sensor observations, not instantaneous
+  // sensor teleportation followed by a fabricated simultaneous video frame.
+  for(let i=0;i<6;i++){
+    sensorNow+=100;
+    if(lastSensor){const {type,...pose}=lastSensor;const event=new w.Event(type);Object.assign(event,pose);Object.defineProperty(event,'timeStamp',{value:sensorNow});w.dispatchEvent(event);}
+  }
+  // 600 ms of camera at the same time as 600 ms of sensor: the frames a real
+  // preview delivered while those events arrived.
+  mediaTime += 0.6;
+  for (const fn of [...intervals.values()]) fn();
+}); };
+const heading = (az: number, absolute = true, beta = 90) => {
+  const ev = new w.Event(absolute ? "deviceorientationabsolute" : "deviceorientation");
+  sensorNow+=50;Object.defineProperty(ev,'timeStamp',{value:sensorNow});
+  Object.assign(ev, { alpha: (360 - az) % 360, beta, gamma: 0, absolute }); w.dispatchEvent(ev);
+};
+let passed = 0;
+async function test(name: string, fn: () => void | Promise<void>) { await fn(); passed++; console.log(`PASS ${name}`); }
+
+await test("Camera selection avoids a named ultrawide; unknown lens order is not guessed", () => {
+  assert.equal(preferredRearCamera(cameras), "main");
+  assert.equal(preferredRearCamera([{ deviceId: "a", label: "camera 0" }, { deviceId: "b", label: "camera 1" }]), undefined);
+  assert.equal(cameraPose({ alpha: 0, beta: 90, gamma: 0, absolute: false }), null);
+  assert.ok(Math.abs(cameraPose({ alpha: 270, beta: 90, gamma: 0, absolute: true })!.az - 90) < .001);
+  assert.ok(Math.abs(cameraPose({ alpha: 270, beta: 0, gamma: 90, absolute: true })!.az) < .001);
+  assert.deepEqual(foldSweepColumns([{ bin: 1, column: [1] }], 3), [[], [1], []]);
+});
+await act(async () => root.render(createElement(HorizonSheet, { depth: 0, params: { site: "current" }, guided: true })));
+await settle();
+await test("Camera permission opens a visible preview, guidance, and camera picker", async () => {
+  await click(byTest("capture-photosphere"));
+  assert.equal(byTest("photosphere-capturing").hidden, false);
+  assert.equal(byTest("photosphere-video").style.display, "");
+  assert.ok((byTest("photosphere-video") as HTMLVideoElement).srcObject);
+  assert.ok(document.querySelector('[aria-label="Camera for horizon scan"]'));
+  assert.match(byTest("photosphere-capturing").textContent!, /Waiting for the compass/);
+  assert.equal(requested[0].video.deviceId.exact, "main");
+});
+await test("No compass or relative-only events cannot invent sweep progress", async () => {
+  heading(80, false); await tick(); await click(byTest("start-horizon-scan"));
+  for (let i = 0; i < 35; i++) await tick();
+  assert.equal(document.querySelector('[role="progressbar"]')?.getAttribute("aria-valuenow"), "0");
+  assert.equal(byTest("start-horizon-scan").getAttribute("aria-disabled"), "true");
+});
+await test("A chosen lens is requested explicitly and the old camera is released", async () => {
+  const select = document.querySelector<HTMLSelectElement>("select")!;
+  await act(async () => { select.value = "other"; select.dispatchEvent(new w.Event("change", { bubbles: true })); }); await settle();
+  assert.equal(requested.at(-1).video.deviceId.exact, "other");
+  assert.equal(stops, 1);
+});
+await test("A level sweep is incomplete; vertical scans and overhead unlock Review", async () => {
+  heading(6); await tick(); await click(byTest("start-horizon-scan")); await tick();
+  assert.equal(byTest("stop-and-trace").getAttribute("aria-disabled"), null);
+  const firstProgress=Number(document.querySelector('[role="progressbar"]')?.getAttribute('aria-valuenow'));
+  for (let i = 0; i < 35; i++) await tick();
+  assert.equal(Number(document.querySelector('[role="progressbar"]')?.getAttribute("aria-valuenow")), firstProgress);
+  for (let i = 1; i < 30; i++) { heading(i * 12 + 6); await tick(); }
+  assert.ok(Number(document.querySelector('[role="progressbar"]')?.getAttribute("aria-valuenow"))<100);
+  assert.equal(byTest("stop-and-trace").getAttribute("aria-disabled"), null);
+  assert.match(byTest("photosphere-capturing").textContent!, /blue dot/);
+  // Revisit precisely the same bearings higher up. Low frames must survive.
+  for (const cell of DOME_CELLS.filter(c=>c.alt<89)) { heading(cell.az,true,90+cell.alt);await tick(); }
+  assert.equal(document.querySelector('[role="progressbar"]')?.getAttribute("aria-valuenow"), "98");
+  assert.equal(byTest("stop-and-trace").getAttribute("aria-disabled"), null);
+  assert.match(byTest("photosphere-capturing").textContent!, /Point the rear camera straight up/);
+  assert.ok(byTest("capture-overhead"));
+  const now = Date.now;
+  Date.now = () => now() + 3000; // The absolute compass has stopped updating.
+  const tilt = new w.Event("deviceorientation");
+  Object.assign(tilt, { alpha: null, beta: -176, gamma: 0, absolute: false });
+  w.dispatchEvent(tilt); await tick(); await tick();
+  assert.equal(document.querySelector('[role="progressbar"]')?.getAttribute("aria-valuenow"), "100");
+  assert.equal(byTest("stop-and-trace").getAttribute("aria-disabled"), null);
+  assert.match(document.querySelector(".photosphere-bearing")!.textContent!, /86° up · Overhead/);
+  assert.match(document.querySelector(".photosphere-hint")!.textContent!, /Overhead captured/);
+  Date.now = now;
+  await click(byTest("stop-and-trace"));
+  assert.ok(byTest("photosphere-card")); assert.equal(stops, 2);
+  assert.match(byTest("photosphere-card").textContent!, /estimated heights/);
+  assert.match(byTest('horizon-panorama').getAttribute('href')!, /^data:image\/png/);
+  assert.ok(byTest('editable-horizon-line').getAttribute('d'));
+  const report=document.querySelector<HTMLAnchorElement>('a[download="astrodeck-scan-alignment.json"]')!;
+  const diagnostic=JSON.parse(decodeURIComponent(report.getAttribute('href')!.split(',')[1]));
+  assert.ok(diagnostic.samples.length>0 && diagnostic.samples.length<=16);
+  assert.ok(diagnostic.samples.every((s:any)=>s.image && s.basis && s.sensor));
+  assert.equal(JSON.stringify(diagnostic).includes('deviceId'),false);
+  assert.equal(document.querySelectorAll('[data-testid="horizon-edit-point"]').length,30);
+  assert.equal(byTest('horizon-strip').parentElement!.style.width,'1040px');
+  assert.equal(byTest('horizon-strip').style.height,'300px');
+  assert.ok(document.querySelector('[aria-label="Panorama position"]'));
+  assert.equal(writes.length,0,'Review applied an unconfirmed horizon to the rig');
+});
+await test('The detected points can be dragged over the photograph before saving',async()=>{
+  const strip=byTest('horizon-strip'),photo=byTest('horizon-panorama').getAttribute('href');
+  strip.getBoundingClientRect=()=>({left:0,top:0,width:340,height:150,right:340,bottom:150,x:0,y:0,toJSON(){}});
+  const point=document.querySelector('[data-testid="horizon-edit-point"]')!;
+  const x=Number(point.getAttribute('cx')),y=Number(point.getAttribute('cy'));
+  const original=byTest('editable-horizon-line').getAttribute('d');
+  const pointer=async(type:string,yy:number)=>{await act(async()=>strip.dispatchEvent(new w.MouseEvent(type,{bubbles:true,clientX:x,clientY:yy})));};
+  await pointer('pointerdown',y);await pointer('pointermove',y+8);await pointer('pointerup',y+8);
+  assert.notEqual(byTest('editable-horizon-line').getAttribute('d'),original);
+  assert.equal(byTest('horizon-panorama').getAttribute('href'),photo);
+  assert.equal(writes.length,0,'Dragging saved before Save horizon');
+});
+await test("Manual overhead captures a real frame even with unavailable tilt and heading", async () => {
+  await click(byTest("capture-photosphere"));
+  heading(6); await tick(); await click(byTest("start-horizon-scan"));
+  assert.equal(byTest("capture-overhead"), null);
+  for (const cell of DOME_CELLS.filter(c=>c.alt<89)) { heading(cell.az,true,90+cell.alt);await tick(); }
+  const now = Date.now; Date.now = () => now() + 3000;
+  lastSensor=null;
+  await tick();
+  assert.match(document.querySelector(".photosphere-hint")!.textContent!, /tap Capture overhead/);
+  await click(byTest("capture-overhead"));
+  assert.equal(document.querySelector('[role="progressbar"]')?.getAttribute("aria-valuenow"), "100");
+  assert.equal(byTest("capture-overhead"), null);
+  await click(byTest("stop-and-trace"));
+  assert.match(byTest("photosphere-card").textContent!, /captured overhead by hand/);
+  Date.now = now;
+});
+await test("Manual capture cannot fabricate a zenith frame when the camera read fails", async () => {
+  const sweep = new PhotosphereSweep(1);
+  await sweep.start(document.createElement("video"), document.createElement("canvas"));
+  assert.equal(sweep.captureOverhead(), false); // Preview alone cannot capture.
+  heading(6); sweep.begin();
+  for (const altitude of [0, 35, 70]) { heading(6, true, 90 + altitude); await tick(); }
+  const original = w.HTMLCanvasElement.prototype.getContext;
+  w.HTMLCanvasElement.prototype.getContext = () => ({ drawImage() { throw new Error("Camera failed"); } });
+  // The camera delivers one more frame and the user presses on it. Without
+  // that the press lands on the picture the sweep above already captured and
+  // is refused as `frame-already-captured` - a wait for the next frame, not a
+  // fault, and a different case from the failing read this one is about.
+  mediaTime += 0.1;
+  assert.equal(sweep.captureOverhead(), false);
+  assert.equal(sweep.overheadCaptured, false);
+  assert.equal(sweep.complete, false);
+  assert.match(sweep.error!, /Could not read/);
+  w.HTMLCanvasElement.prototype.getContext = original;
+  sweep.stop();
+  assert.equal(sweep.captureOverhead(), false);
+});
+await test('A centred dot reports hold, actual capture, and already captured instead of silence',async()=>{
+  const sweep=new PhotosphereSweep();
+  await sweep.start(document.createElement('video'),document.createElement('canvas'));
+  const cell=sweep.cells.find(c=>c.alt>20&&c.alt<60)!;
+  heading(cell.az,true,90+cell.alt);
+  assert.match(sweep.captureCue,/Tap Start scan/);assert.equal(sweep.frameCount,0);
+  sweep.begin();
+  assert.equal(sweep.aimTarget?.id,cell.id);assert.match(sweep.captureCue,/Hold here/);
+  await tick();
+  assert.ok(sweep.cells.find(c=>c.id===cell.id)?.captured);
+  assert.match(sweep.captureCue,/^Captured/);
+  const now=Date.now;
+  try {
+    Date.now=()=>now()+1100;assert.match(sweep.captureCue,/Already captured/);
+    // 3 s of wall-clock silence with the source still healthy is not staleness
+    // (issue #37): the cue must not regress to waiting for the compass.
+    Date.now=()=>now()+3000;assert.match(sweep.captureCue,/Already captured/);
+  } finally {Date.now=now;sweep.stop();}
+});
+await test("Permission denial stays on screen with a useful retry explanation", async () => {
+  denied = true; await click(byTest("capture-photosphere"));
+  assert.match(document.querySelector('[role="alert"]')!.textContent!, /Camera access was blocked/);
+  assert.equal(byTest("photosphere-capturing").hidden, true);
+});
+await test('Timestamped video frames taken during movement are rejected; settled frames then capture',async()=>{
+  denied=false;
+  const video=document.createElement('video');
+  let callback:VideoFrameRequestCallback|undefined,requestId=0,cancelled=0;
+  video.requestVideoFrameCallback=(fn)=>{callback=fn;return ++requestId;};
+  video.cancelVideoFrameCallback=(id)=>{cancelled=id;};
+  const sweep=new PhotosphereSweep();await sweep.start(video,document.createElement('canvas'));
+  const a=sweep.cells.find(c=>c.alt>20&&c.alt<60)!;
+  const b=sweep.cells.find(c=>c.alt>20&&c.alt<60&&Math.abs(c.az-a.az)>120)!;
+  let capturedAt=0;
+  for(let i=0;i<=10;i++){
+    const cell=i<6?a:b;heading(cell.az,true,90+cell.alt);
+    if(i===5)capturedAt=sensorNow;
+  }
+  sweep.begin();assert.ok(callback);
+  callback(sensorNow,{captureTime:capturedAt,mediaTime:1,presentationTime:sensorNow,expectedDisplayTime:sensorNow,width:640,height:480,presentedFrames:1});
+  assert.equal(sweep.frameCount,0,'A timestamp bypassed the steady-hold requirement');
+  assert.equal(sweep.cells.find(c=>c.id===b.id)?.captured,false,'Newer phone pose misplaced an older frame');
+  assert.equal(sweep.aimTarget?.id,a.id,'Overlay drifted ahead of the displayed frame');
+  for(let i=0;i<13;i++)heading(b.az,true,90+b.alt);
+  callback!(sensorNow,{captureTime:sensorNow,mediaTime:2,presentationTime:sensorNow,expectedDisplayTime:sensorNow,width:640,height:480,presentedFrames:2});
+  assert.ok(sweep.cells.find(c=>c.id===b.id)?.captured,'Settled frame failed to capture');
+  sweep.stop();assert.equal(cancelled,requestId);
+});
+await test('Frames with no target and repeated completed patches do not enter the mosaic',async()=>{
+  const sweep=new PhotosphereSweep();await sweep.start(document.createElement('video'),document.createElement('canvas'));
+  // Every direction ABOVE the horizon now has a target within the aim cone
+  // (issue #57), so the aim with nothing to capture is one below it - and it
+  // has to be INSIDE the `measured.alt < -10` below-horizon gate, or that gate
+  // refuses the frame on its own and this case passes with the no-target
+  // refusal deleted. Between -10 and 0 the dome has run out of cells and the
+  // horizon gate has not fired: the search finds azimuth 9, altitude -9, in
+  // the gap between two cells of the altitude-0 ring. Found by search rather
+  // than by relying on the geodesic cells' order.
+  let target:{az:number;alt:number}|null=null;
+  for(let az=0;az<360&&!target;az+=3)for(let alt=-9;alt<0&&!target;alt+=3){
+    heading(az,true,90+alt);if(!sweep.aimTarget)target={az,alt};
+  }
+  assert.ok(target);sweep.begin();await tick();assert.equal(sweep.frameCount,0);
+  // The COUNT alone cannot tell this refusal from any other, so the reason is
+  // asserted. Mutation: delete the two no-target refusals from grabFrame.
+  assert.ok(sweep.captureLog.some(r=>r.outcome==='no-target'),
+    `nothing was refused for want of a target at azimuth ${target!.az}, altitude ${target!.alt}: `
+    + sweep.captureLog.map(r=>r.outcome).join(', '));
+  const cell=sweep.cells.find(c=>c.alt>20&&c.alt<60)!;
+  heading(cell.az,true,90+cell.alt);await tick();assert.equal(sweep.frameCount,1);
+  await tick();assert.equal(sweep.frameCount,1);sweep.stop();
+});
+await test('The capture driver anchors relative motion and ignores subsequent absolute compass jumps',async()=>{
+  const sweep=new PhotosphereSweep();await sweep.start(document.createElement('video'),document.createElement('canvas'));
+  heading(100,true);heading(30,false);
+  assert.ok(Math.abs(sweep.currentHeading-100)<.001);
+  heading(150,true);assert.ok(Math.abs(sweep.currentHeading-100)<.001);
+  heading(31,false);assert.ok(Math.abs(sweep.currentHeading-101)<.001);
+  sweep.stop();
+});
+await test('View-angle correction persists only for the chosen camera and cannot change mid-scan',async()=>{
+  const sweep=new PhotosphereSweep(),video=document.createElement('video'),canvas=document.createElement('canvas');
+  await sweep.start(video,canvas,'main');assert.equal(sweep.cameraViewAngle,60);
+  assert.equal(sweep.setCameraViewAngle(41.1),true);
+  assert.equal(sweep.setCameraViewAngle(NaN),false);assert.equal(sweep.setCameraViewAngle(0),false);
+  assert.equal(sweep.hasLensCalibration,true);
+  heading(6);sweep.begin();assert.equal(sweep.setCameraViewAngle(45),false);sweep.stop();
+  await sweep.start(video,canvas,'main');assert.equal(sweep.cameraViewAngle,41.1);
+  await sweep.start(video,canvas,'other');assert.equal(sweep.cameraViewAngle,60);assert.equal(sweep.hasLensCalibration,false);
+  sweep.stop();
+});
+await act(async () => root.unmount());
+await test('A setup link offers the fitted angle but applies it only after a tap',async()=>{
+  w.location.hash='#/classic/tonight?experience=guided&cameraFov=41.1';
+  const previewRoot=createRoot(document.getElementById('root')!);
+  await act(async()=>previewRoot.render(createElement(HorizonSheet,{depth:0,params:{site:'current'},guided:true})));
+  await settle();await click(byTest('capture-photosphere'));
+  const input=document.querySelector<HTMLInputElement>('[aria-label="Camera view angle in degrees"]')!;
+  assert.equal(input.value,'60','URL silently changed lens geometry');
+  const apply=[...document.querySelectorAll('button')].find(b=>b.textContent?.includes('Try scan angle'))!;
+  assert.ok(apply);await click(apply);assert.equal(input.value,'41.1');
+  assert.match(byTest('photosphere-capturing').textContent!,/saved view angle/);
+  await act(async()=>previewRoot.unmount());
+});
+await test("A grant arriving after cancellation is released", async () => {
+  const ordinaryGetUserMedia = w.navigator.mediaDevices.getUserMedia;
+  let grant: ((stream: any) => void) | undefined;
+  w.navigator.mediaDevices.getUserMedia = () => new Promise(resolve => { grant = resolve; });
+  try {
+    const sweep = new PhotosphereSweep();
+    const pending = sweep.start(document.createElement("video"), document.createElement("canvas"));
+    while (!grant) await Promise.resolve();
+    sweep.stop(); let released = 0;
+    grant({ getTracks: () => [{ stop: () => released++ }] });
+    await pending; assert.equal(released, 1); assert.equal(sweep.previewReady, false);
+  } finally {
+    // Restore the mock this test replaced (issue #51: everything after it hung).
+    w.navigator.mediaDevices.getUserMedia = ordinaryGetUserMedia;
+  }
+});
+await test('The capture log names a rejection reason before an accepted capture, with basis and cell',async()=>{
+  const sweep=new PhotosphereSweep();
+  await sweep.start(document.createElement('video'),document.createElement('canvas'));
+  const cell=sweep.cells.find(c=>c.alt>20&&c.alt<60)!;
+  heading(cell.az,true,90+cell.alt);
+  sweep.begin();
+  // A bare timer fire with no camera frame behind it. The media clock has not
+  // moved since the baseline taken when the preview started playing, so this
+  // is refused on the IMAGE now, before any pose test runs - a timer firing is
+  // not a camera delivering (review 17, P1). It used to reach the pose and
+  // record alignment-wait.
+  await act(async()=>{for(const fn of [...intervals.values()])fn();});
+  assert.ok(sweep.captureLog.some(r=>r.outcome==='stale-image'),
+    'a timer fire with no delivered frame reached the pose tests');
+  // Now a frame arrives, so the pose gets its turn - and the compass only just
+  // locked on, so the pose has not yet covered the 500 ms settle a capture
+  // needs. That is the rejection this case is about.
+  mediaTime+=0.1;
+  await act(async()=>{for(const fn of [...intervals.values()])fn();});
+  await tick();
+  assert.ok(sweep.cells.find(c=>c.id===cell.id)?.captured);
+  const log=sweep.captureLog;
+  assert.ok(log.some(r=>r.outcome==='alignment-wait'));
+  const last=log[log.length-1];
+  assert.equal(last.outcome,'accepted');
+  assert.equal(last.cell,cell.id);
+  assert.ok(last.basis);
+  sweep.stop();
+});
+await test('A session with no accepted pose stays diagnosable; panoramaPixels is null until a real capture lands',async()=>{
+  const sweep=new PhotosphereSweep();
+  await sweep.start(document.createElement('video'),document.createElement('canvas'));
+  // A direction outside every dome cell's aim cone: the pose is perfectly
+  // valid and settled, but nothing here can ever be accepted. Since issue #57
+  // that means a direction below the horizon, and it must be one INSIDE the
+  // `measured.alt < -10` gate, or that gate does the refusing and this case
+  // would pass with the no-target refusals deleted. Same search as the mosaic
+  // case above, and the same answer: azimuth 9, altitude -9.
+  let target:{az:number;alt:number}|null=null;
+  for(let az=0;az<360&&!target;az+=3)for(let alt=-9;alt<0&&!target;alt+=3){
+    heading(az,true,90+alt);if(!sweep.aimTarget)target={az,alt};
+  }
+  assert.ok(target);
+  sweep.begin();
+  for(let i=0;i<20;i++)await tick();
+  assert.equal(sweep.captureLog.length,20);
+  assert.ok(sweep.captureLog.every(r=>r.outcome!=='accepted'));
+  // And refused for the reason this direction was chosen for. Mutation: delete
+  // the two no-target refusals from grabFrame.
+  assert.ok(sweep.captureLog.some(r=>r.outcome==='no-target'),
+    'twenty frames were refused and not one of them for want of a target: '
+    + sweep.captureLog.map(r=>r.outcome).join(', '));
+  // Read into a local rather than asserting on sweep.panoramaPixels directly:
+  // TS narrows a getter-backed access through an `asserts` call, and the SAME
+  // property read further down must not inherit that (now stale) narrowing.
+  const beforeCapture=sweep.panoramaPixels;
+  assert.equal(beforeCapture,null);
+  const cell=sweep.cells.find(c=>c.alt>20&&c.alt<60)!;
+  heading(cell.az,true,90+cell.alt);
+  await tick();
+  assert.ok(sweep.cells.find(c=>c.id===cell.id)?.captured);
+  const pixels=sweep.panoramaPixels;
+  assert.ok(pixels);
+  assert.equal(pixels!.width,1080);
+  assert.equal(pixels!.height,300);
+  assert.ok(Array.from(pixels!.pixels).some((v,i)=>i%4===3&&v===255));
+  sweep.stop();
+});
+await test('A browser with no DeviceOrientationEvent can still capture the overhead by hand (issue #42 item 3)', async () => {
+  const originalDOE = w.DeviceOrientationEvent;
+  delete w.DeviceOrientationEvent;
+  try {
+    const sweep = new PhotosphereSweep();
+    await sweep.start(document.createElement('video'), document.createElement('canvas'));
+    assert.equal(sweep.usedOrientation, false, 'a compass reading arrived with no constructor to have delivered it');
+    // begin() itself requires compassReady, i.e. hasOrientation - a reading
+    // this browser structurally can never produce - and issue #65 has now
+    // RULED on that gate rather than merely noting it: the refusal stays,
+    // because there is no tilt on this browser either and an overhead frame
+    // with no tilt cannot be aimed, and the user is told so (the #65 case
+    // below). So the state this case reaches is one the app never reaches,
+    // and what it grades is narrower than a user-facing capability: whether
+    // grabFrame, given a session already recording, treats a browser with no
+    // pose stream as healthy rather than stalled. That answer is still load
+    // bearing off this path - `mediaGateAsked` reads the same getter before a
+    // scan ever starts, which is what keeps the alignment report honest here
+    // (issue #46). recording/panorama are the two fields begin() sets that
+    // start() does not, so they are set directly to reach a state no route
+    // reaches.
+    (sweep as unknown as { recording: boolean }).recording = true;
+    (sweep as unknown as { panorama: unknown }).panorama = new SkyPanorama();
+    for (let i = 0; i < 3; i++) await tick();
+    // Mutation (issue #42 item 4): drop the `|| !this.orientationSupported`
+    // term from sourceHealthy. `listening` then stays false for the whole
+    // test (no constructor ever attached it), sourceHealthy is false, and
+    // grabFrame refuses this call as 'unhealthy' - captureOverhead() returns
+    // false and overheadCaptured stays false. Observed red under that
+    // mutation and on pre-fix HEAD alike, both being the same code.
+    assert.equal(sweep.captureOverhead(), true, 'a manual overhead press was refused with no pose stream to be unhealthy about');
+    assert.equal(sweep.overheadCaptured, true);
+    sweep.stop();
+  } finally {
+    w.DeviceOrientationEvent = originalDOE;
+  }
+});
+await test('A long run of refusals names the view angle only while the lens is still a guess (#52)', async () => {
+  // The REFUSAL PATH is graded end to end by the replay cases in
+  // photosphereReplay.test.ts: this harness's camera returns a uniform grey,
+  // SkyPanorama.checkOverlap reads a variance that low as 'unknown' and can
+  // never return 'conflict', and a conflict invented here would only be a test
+  // of the invention. What is graded HERE is the guard in front of the run -
+  // WHICH of the two sentences a scan gets once the run is long - so the two
+  // fields a refusal leaves behind are set directly, and the calibration that
+  // decides between them is set through the public control the cue names.
+  const refused = (sweep: InstanceType<typeof PhotosphereSweep>) => {
+    const state = sweep as unknown as { overlapWait: boolean; overlapWaitRun: number };
+    state.overlapWait = true; state.overlapWaitRun = LENS_DOUBT_AFTER;
+  };
+  const scan = async (deviceId: string, viewAngle?: number) => {
+    const sweep = new PhotosphereSweep();
+    await sweep.start(document.createElement('video'), document.createElement('canvas'), deviceId);
+    // Before begin(): setCameraViewAngle refuses mid-scan, by design.
+    if (viewAngle !== undefined) assert.equal(sweep.setCameraViewAngle(viewAngle), true);
+    const cell = sweep.cells.find(c => c.alt > 20 && c.alt < 60)!;
+    heading(cell.az, true, 90 + cell.alt);
+    sweep.begin();
+    await tick();
+    // Every gate above the overlap line is behind us, so the next two cues
+    // differ in the lens and in nothing else.
+    assert.match(sweep.captureCue, /^Captured/);
+    return sweep;
+  };
+  const guessing = await scan('ultra');
+  assert.equal(guessing.hasLensCalibration, false);
+  refused(guessing);
+  assert.match(guessing.captureCue, /The camera view angle may be set wrong for this lens/);
+  // The SETTING, by the words it must be called - not a UI label. No committed
+  // component calls setCameraViewAngle at b8581949; the field is in an unlanded
+  // rewrite of horizon.tsx, so a case quoting its label would pin a string this
+  // product does not ship. Whatever lands should contain these words.
+  assert.match(guessing.captureCue, /camera view angle/);
+  // It REPLACES the aim instruction rather than adding to it: two remedies in
+  // one sentence is the user trying the wrong one first (issue #52).
+  assert.doesNotMatch(guessing.captureCue, /Return to a green patch/);
+  guessing.stop();
+  // Mutation: drop `&& !this.lensCalibrated` from the cue. The measured lens
+  // below is then told its lens may be wrong, and the last assertion here
+  // fails. Observed red.
+  const measured = await scan('other', 70);
+  assert.equal(measured.hasLensCalibration, true);
+  refused(measured);
+  assert.doesNotMatch(measured.captureCue, /camera view angle may be set wrong/);
+  assert.match(measured.captureCue, /^I can’t match this view yet\. Return to a green patch/);
+  measured.stop();
+});
+await test('A hold at altitude 85 captures the zenith cell (#57)',async()=>{
+  // Where the still route's vertical sweep ends, and where it used to log
+  // nothing but no-target for the whole 1.2 s hold: this direction is 5.00
+  // degrees from the pole, whose cone was 5 degrees, and 12.17 degrees from
+  // the nearest cell of the ring below it, whose cone was 8. One 11 degree
+  // cone for every cell puts the pole back in reach, and one lookup gives the
+  // aim dot and the capture the same answer about which patch that is.
+  const sweep=new PhotosphereSweep();
+  await sweep.start(document.createElement('video'),document.createElement('canvas'));
+  const pole=sweep.cells.find(c=>c.alt>89.99)!;
+  heading(180,true,175);
+  assert.equal(sweep.aimTarget?.id,pole.id,'the aim dot named no cell at altitude 85');
+  sweep.begin();
+  await tick();
+  assert.equal(sweep.frameCount,1,'a settled hold at altitude 85 captured nothing');
+  const last=sweep.captureLog[sweep.captureLog.length-1];
+  assert.equal(last.outcome,'accepted');
+  assert.equal(last.cell,pole.id,'the capture took a cell other than the one the aim dot showed');
+  assert.ok(sweep.cells.find(c=>c.id===pole.id)?.captured);
+  // Mutation: give the pole its own 5 degree cone back (`cell.alt>89?5:11` in
+  // targetCell). aimTarget is null here, grabFrame records no-target, and the
+  // first three assertions fail. Observed red.
+  sweep.stop();
+});
+await test('An oriented hold below the overhead band still completes the zenith cap (#57)',async()=>{
+  // The other side of the widened cone. The cap shares the 11 degree cone with
+  // every other cell, so it is the nearest cell from about altitude 80 upward -
+  // well below the overhead band, which starts at 85. Coverage used to require
+  // a frame IN that band before the cap could count, so a hold at 82 was
+  // accepted over and over, named the cap every time, and never turned the dot
+  // green: the user holds on a blue dot being told it is being captured.
+  const sweep=new PhotosphereSweep();
+  await sweep.start(document.createElement('video'),document.createElement('canvas'));
+  const pole=sweep.cells.find(c=>c.alt>89.99)!;
+  heading(180,true,172);
+  assert.equal(sweep.aimTarget?.id,pole.id,'altitude 82 does not aim at the cap, so this case grades nothing');
+  sweep.begin();
+  await tick();
+  const accepted=sweep.captureLog[sweep.captureLog.length-1];
+  assert.equal(accepted.outcome,'accepted');
+  assert.equal(accepted.cell,pole.id);
+  // A full basis, heading and tilt: this frame is oriented, so its pixels are
+  // placed as well as any other cell's and the cap counts on the same rule.
+  assert.ok(accepted.basis);
+  assert.equal(sweep.overheadCaptured,false,'altitude 82 reached the overhead band, so the old rule was never under test');
+  assert.ok(sweep.cells.find(c=>c.id===pole.id)?.captured,'the cap was captured and stayed blue');
+  assert.match(sweep.captureCue,/^Captured/);
+  // Held there, the second attempt is a refusal and not a second capture.
+  await tick();
+  const second=sweep.captureLog[sweep.captureLog.length-1];
+  assert.equal(second.outcome,'already-captured',
+    `a second frame on the same completed patch was recorded as ${second.outcome}`);
+  assert.equal(sweep.frameCount,1);
+  // Mutation: the old coverage rule, `cell.alt < 89 || this.overheadCaptured`.
+  // The cap never greens, the second attempt is 'accepted' again, and
+  // frameCount reaches 2. Observed red.
+  sweep.stop();
+});
+await test('A browser with no DeviceOrientationEvent is not a healthy source once the scan is stopped (#42 item 3)', async () => {
+  // The other side of the escape above. `orientationSupported` is recorded once
+  // in start() and never cleared - rightly, since clearing it would make
+  // `!orientationSupported` true for a browser that HAS the constructor and
+  // hand every stopped sweep a healthy source instead of none - so on a browser
+  // that never had it, `(listening || !orientationSupported)` is true forever
+  // and stop() left the getter answering healthy: no stream, no listeners, no
+  // element, and a healthy source. The liveness term is what closes it.
+  // Read through the instance because nothing public can see this state:
+  // `compassReady` and `tiltReady` are false here for want of a reading such a
+  // browser cannot produce, and every grabFrame after stop() returns at
+  // 'not-recording' before the health test. That is why the defect was latent,
+  // and it is also why a case that went through a public getter would be
+  // grading something else.
+  // Mutation: drop `this.stream !== null &&` from sourceHealthy. Observed red:
+  // "a stopped sweep still reported a healthy source".
+  const originalDOE = w.DeviceOrientationEvent;
+  delete w.DeviceOrientationEvent;
+  try {
+    const sweep = new PhotosphereSweep();
+    await sweep.start(document.createElement('video'), document.createElement('canvas'));
+    const probe = sweep as unknown as { sourceHealthy: boolean };
+    assert.equal(probe.sourceHealthy, true,
+      'a live sweep on this browser is already unhealthy, so stopping it below shows nothing');
+    sweep.stop();
+    assert.equal(probe.sourceHealthy, false, 'a stopped sweep still reported a healthy source');
+  } finally {
+    w.DeviceOrientationEvent = originalDOE;
+  }
+});
+await test('A second begin() opens on the ordinary cue, not on the last scan’s refusal', async () => {
+  // begin() already clears the RUN of overlap refusals, on the argument that
+  // "unreachable by luck" is how a second begin() comes to open with a lens
+  // sentence. The two booleans one precedence level down carry the same
+  // argument and were left standing, so a second begin() opened with "Hold the
+  // phone still for a moment..." or "I can't match this view yet...", both
+  // about a scan that had just ended.
+  // The three fields are set directly for the reason the #52 case gives: this
+  // harness's uniform-grey camera can never make checkOverlap return
+  // 'conflict', and what is graded here is begin(), not the refusal path.
+  // Mutation: drop `this.overlapWait = false; this.alignmentWait = false;` from
+  // begin(). Observed red: "a second begin() opened on the last scan's
+  // refusal".
+  const sweep = new PhotosphereSweep();
+  await sweep.start(document.createElement('video'), document.createElement('canvas'));
+  const cell = sweep.cells.find(c => c.alt > 20 && c.alt < 60)!;
+  heading(cell.az, true, 90 + cell.alt);
+  sweep.begin();
+  await tick();
+  const state = sweep as unknown as { overlapWait: boolean; alignmentWait: boolean; overlapWaitRun: number };
+  state.overlapWait = true; state.alignmentWait = true; state.overlapWaitRun = LENS_DOUBT_AFTER;
+  assert.match(sweep.captureCue, /^Hold the phone still for a moment/,
+    `the refusal state never reached the cue (it said "${sweep.captureCue}"), so clearing it below proves nothing`);
+  sweep.begin();
+  assert.equal(state.alignmentWait, false, 'begin() left the last scan’s alignment wait standing');
+  assert.equal(state.overlapWait, false, 'begin() left the last scan’s overlap wait standing');
+  assert.equal(state.overlapWaitRun, 0, 'begin() left the last scan’s run of refusals standing');
+  assert.equal(sweep.captureCue, 'Hold here… capturing this patch.',
+    `a second begin() opened on the last scan's refusal: "${sweep.captureCue}"`);
+  sweep.stop();
+});
+await test('Pointed at the ground, the cue says to raise the phone and never blames the lens (#52, #57)', async () => {
+  // Two findings in one state, because it is one state. `no-target` and
+  // `below-horizon` are NEUTRAL outcomes - they do not end a run of overlap
+  // refusals - so a user refused six times who then lowers the phone to read
+  // the cue, which is exactly what they do, was told "I still can't match this
+  // view. The camera view angle may be set wrong for this lens" while grabFrame
+  // was not attempting to match anything at all. And the line they reach
+  // instead used to be "Bring a blue dot into the centre ring", which since
+  // issue #57 gave every direction above the horizon a target is reachable
+  // ONLY from below it - where there is no blue dot anywhere near the ring and
+  // the instruction cannot be followed.
+  // beta 70 is 20 degrees below the horizon, past the -10 capture gate and
+  // outside every cell's 11 degree cone. The run is set directly for the reason
+  // the #52 case gives (a uniform-grey camera cannot produce a real conflict),
+  // and it is set BEFORE the tick so the case also shows the run surviving the
+  // neutral outcome - which is what puts the lens branch in reach here at all.
+  // Two mutations, one per finding. Drop `&& this.aimTargetAt(now)` from the
+  // lens branch: observed red on both cue assertions, the cue being "I still
+  // can't match this view. The camera view angle may be set wrong for this
+  // lens. End the scan, then set the camera view angle before you scan again."
+  // Put back "Bring a blue dot into the centre ring." as the final line:
+  // observed red on the last assertion alone.
+  // Cases above persist a measured view angle per camera, and the branch this
+  // one is about only exists while the lens is still a guess. The saved angles
+  // go rather than the whole store: nothing else here keeps state in it, but a
+  // blanket clear would be a fixture reaching further than its own case.
+  for (let i = w.localStorage.length - 1; i >= 0; i--) {
+    const key = w.localStorage.key(i) as string;
+    if (key.startsWith('astrodeck.photosphere.lens.')) w.localStorage.removeItem(key);
+  }
+  const sweep = new PhotosphereSweep();
+  await sweep.start(document.createElement('video'), document.createElement('canvas'));
+  const state = sweep as unknown as { overlapWait: boolean; overlapWaitRun: number };
+  heading(180, true, 70);
+  sweep.begin();
+  assert.equal(sweep.isRecording, true, 'the scan never started, so the cue below is the not-recording one');
+  state.overlapWait = true; state.overlapWaitRun = LENS_DOUBT_AFTER;
+  await tick();
+  const last = sweep.captureLog[sweep.captureLog.length - 1];
+  assert.equal(last.outcome, 'no-target',
+    `the phone is not aimed below every cell: the grab recorded ${last.outcome}`);
+  assert.equal(sweep.aimTarget, null, 'there is a target down here, so neither half of this case is under test');
+  assert.ok(state.overlapWaitRun >= LENS_DOUBT_AFTER,
+    `the run fell to ${state.overlapWaitRun}, so the lens branch is out of reach for a reason this case is not about`);
+  assert.equal(sweep.hasLensCalibration, false, 'the lens was calibrated, which is the other way out of that branch');
+  assert.doesNotMatch(sweep.captureCue, /camera view angle/,
+    `the lens was blamed while nothing was being matched: "${sweep.captureCue}"`);
+  assert.equal(sweep.captureCue, 'The phone is pointing below the horizon. Raise it until a blue dot is in the centre ring.',
+    `cue was: "${sweep.captureCue}"`);
+  sweep.stop();
+});
+await test('A browser with no DeviceOrientationEvent is told what to do instead of being asked to move the phone (#65)', async () => {
+  // The other half of the case above, and the one a user can reach. Every
+  // reading this driver has comes from the listener `start()` attaches inside
+  // `"DeviceOrientationEvent" in window`, so on a browser without the
+  // constructor there is no heading and no tilt: `compassReady` is false
+  // forever, `begin()` always no-ops, and `recording` never becomes true. The
+  // refusal is right - nothing can be placed without a bearing, and without
+  // tilt not even the overhead cell can be aimed - but what the panel SAID was
+  // "Waiting for the compass. Move the phone gently. If this persists, check
+  // motion sensor access in your browser's site settings", an instruction that
+  // cannot succeed there at any amount of gentleness (issue #65).
+  // Through the real component and the real button, not by reaching into the
+  // driver: the sentence has to arrive where the user is standing, and
+  // `sweep.error` is the only channel into that hint the capture panel reads
+  // above its compass line.
+  // Mutation: drop the `else { this.issue = NO_POSE_STREAM_CUE; }` from
+  // `start()`. The hint falls back to the compass sentence and both the match
+  // and the doesNotMatch below redden. Observed red.
+  const originalDOE = w.DeviceOrientationEvent;
+  delete w.DeviceOrientationEvent;
+  const noPoseRoot = createRoot(document.getElementById('root')!);
+  try {
+    await act(async () => noPoseRoot.render(createElement(HorizonSheet, { depth: 0, params: { site: 'current' }, guided: true })));
+    await settle();
+    await click(byTest('capture-photosphere'));
+    const panel = byTest('photosphere-capturing');
+    assert.equal(panel.hidden, false);
+    assert.match(panel.textContent!, /does not report which way the phone is pointing/,
+      `the panel never said the browser has no pose stream: "${panel.textContent}"`);
+    assert.match(panel.textContent!, /Cancel the scan and draw the horizon by hand/,
+      'the refusal named nothing the user could do instead, or did not name the control that gets them there');
+    assert.doesNotMatch(panel.textContent!, /Waiting for the compass\. Move the phone gently/,
+      'the panel still asks for a compass that this browser can never deliver');
+    // The Start control stays locked, which is honest here, and pressing it
+    // starts nothing: the explanation is what changed, not the gate.
+    const start = byTest('start-horizon-scan');
+    assert.equal(start.getAttribute('aria-disabled'), 'true');
+    await click(start);
+    assert.equal(byTest('photosphere-capturing').getAttribute('data-scanning'), 'false',
+      'a scan started on a browser with no pose stream at all');
+    assert.equal(document.querySelector('[data-testid="capture-overhead"]'), null);
+  } finally {
+    await act(async () => noPoseRoot.unmount());
+    w.DeviceOrientationEvent = originalDOE;
+  }
+  // And the driver's own answer to the call that button makes, so the refusal
+  // is graded at the seam as well as through the hint.
+  delete w.DeviceOrientationEvent;
+  try {
+    const sweep = new PhotosphereSweep();
+    await sweep.start(document.createElement('video'), document.createElement('canvas'));
+    sweep.begin();
+    assert.equal(sweep.isRecording, false, 'begin() started a scan with no pose stream behind it');
+    assert.equal(sweep.captureCue, sweep.error);
+    assert.match(sweep.captureCue, /Cancel the scan and draw the horizon by hand/);
+    sweep.stop();
+  } finally {
+    w.DeviceOrientationEvent = originalDOE;
+  }
+});
+/** A camera image with structure in it, at whatever size it is asked for: three
+ *  sinusoids of different periods and one diagonal, so the pattern is the same
+ *  picture at the stillness canvas's size and at the capture canvas's, and so a
+ *  rotation of a few degrees has exactly one best fit rather than a periodic
+ *  row of them. The workflow cases above use a uniform grey, which
+ *  `SkyPanorama.checkOverlap` reads as 'unknown' - registration never runs on
+ *  it, let alone adjusts - so the case below brings its own camera. */
+const registrationTexture = (width: number, height: number): Uint8ClampedArray => {
+  const data = new Uint8ClampedArray(width * height * 4);
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+    const sx = x / Math.max(1, width - 1), sy = y / Math.max(1, height - 1);
+    const value = 128 + 50 * Math.sin(2 * Math.PI * 3 * sx) + 40 * Math.sin(2 * Math.PI * 2 * sy)
+      + 30 * Math.sin(2 * Math.PI * 2.5 * (sx + sy));
+    const i = (y * width + x) * 4;
+    data[i] = data[i + 1] = data[i + 2] = Math.max(0, Math.min(255, value));
+    data[i + 3] = 255;
+  }
+  return data;
+};
+/** Run `body` with a camera that returns the texture above, and put the
+ *  ordinary mock back whatever happens. */
+const withTexturedCamera = async (body: () => Promise<void>): Promise<void> => {
+  const original = w.HTMLCanvasElement.prototype.getContext;
+  w.HTMLCanvasElement.prototype.getContext = () => ({ drawImage() {},
+    getImageData: (_x: number, _y: number, width: number, height: number) => ({ data: registrationTexture(width, height) }),
+    createImageData: (width: number, height: number) => ({ data: new Uint8ClampedArray(width * height * 4) }), putImageData() {},
+  });
+  try { await body(); } finally { w.HTMLCanvasElement.prototype.getContext = original; }
+};
+/** A scan that has painted one patch of the texture into its mosaic and can
+ *  then be offered the SAME picture from a pose rotated `offset` degrees round
+ *  the world's up axis. The fixture moves alpha only, so that rotation is a
+ *  pure yaw and the rotation-only fit can recover the whole of it - which is
+ *  what makes the separation reported below the correction itself and not a
+ *  residual of something the fit could not express.
+ *
+ *  `viewAngle` decides the regime: passing one calls the same public control
+ *  the lens cue names, so `lensCalibrated` is true and
+ *  `carriedCorrectionMax` takes its calibrated branch. Saved angles are
+ *  forgotten first, so neither case inherits the other's regime through
+ *  `localStorage`. 60 is passed rather than another number so the two regimes
+ *  differ in `lensCalibrated` and in nothing else - same geometry, same
+ *  frames, same fits. */
+const scanWithOnePatch = async (viewAngle?: number) => {
+  for (let i = w.localStorage.length - 1; i >= 0; i--) {
+    const key = w.localStorage.key(i) as string;
+    if (key.startsWith('astrodeck.photosphere.lens.')) w.localStorage.removeItem(key);
+  }
+  const sweep = new PhotosphereSweep();
+  await sweep.start(document.createElement('video'), document.createElement('canvas'));
+  if (viewAngle !== undefined) assert.equal(sweep.setCameraViewAngle(viewAngle), true);
+  assert.equal(sweep.hasLensCalibration, viewAngle !== undefined, 'the case is not in the regime it means to grade');
+  const cell = sweep.cells.find(c => c.alt > 20 && c.alt < 60)!;
+  heading(cell.az, true, 90 + cell.alt);
+  sweep.begin();
+  await tick();
+  assert.equal(sweep.captureLog[sweep.captureLog.length - 1].outcome, 'accepted',
+    'nothing was painted into the mosaic, so there is no overlap for a registration to fit against');
+  const offerFrom = async (offset: number) => {
+    heading(cell.az + offset, true, 90 + cell.alt);
+    await tick();
+    const sensor = orientationBasis((360 - (cell.az + offset)) % 360, 90 + cell.alt, 0, 0);
+    return {
+      // How far the pose the user is SHOWN has moved from the sensor's own
+      // reading: the carried correction, read through the public getter the
+      // dome and the aim dot are drawn from.
+      carried: poseSeparation(sweep.cameraBasis!, sensor),
+      outcome: sweep.captureLog[sweep.captureLog.length - 1].outcome,
+    };
+  };
+  return { sweep, offerFrom };
+};
+await test('While the lens is a guess, a correction the size of a wrong lens is refused and a smaller one is still carried (#70)', async () => {
+  // `visualAnchor` is set latest-wins from the fitted pose and `correctBasis`
+  // applies it to EVERY later pose, which is the pose the dome overlay and the
+  // aim dot are drawn from. The only bound was 10 degrees - `GATE_OVERLAY_MAX`
+  // in the scorer, the number the delivered overlay has to come in under - so
+  // anything the clamp admitted was, at the limit, already a failing overlay,
+  // and on the recorded wrong-lens case the anchor sat against it for the whole
+  // scan (issue #70).
+  // With the lens still a guess the bound is the LENS term,
+  // `LENS_SCALE_TOLERANCE * shortAxisFov / 2`, which is 3.0 at the 60 degree
+  // default. 5.5 degrees of azimuth is fitted at 5.25, the size the recorded 70
+  // degree lens produces against the assumed 60 (5.26 by the derivation), so it
+  // is the wrong-lens case reproduced at the seam; 3 degrees is fitted at 2.75
+  // and is inside the bound, so it is still admitted and worn. Both halves
+  // matter: the refusal alone would pass just as well with the bound at 0,
+  // which is indistinguishable from deleting registration.
+  // Mutation A: give `carriedCorrectionMax` the calibrated branch
+  // unconditionally (`return SEARCH_CEILING_DEG`). 5.25 is then inside 7.4833,
+  // the anchor is set, and the first assertion reddens - "a correction was worn
+  // into the reported pose: it sits 5.250 degrees from the sensor's". Observed
+  // red.
+  // Mutation B: the old flat `10`. Same failure, at 5.250. Observed red.
+  await withTexturedCamera(async () => {
+    const { sweep, offerFrom } = await scanWithOnePatch();
+    const wrongLens = await offerFrom(5.5);
+    assert.ok(wrongLens.carried < 1e-6,
+      `a correction was worn into the reported pose: it sits ${wrongLens.carried.toFixed(3)} degrees from the sensor's`);
+    assert.equal(wrongLens.outcome, 'overlap-wait',
+      `a wrong-lens-sized correction was not refused: the grab recorded ${wrongLens.outcome}`);
+    // And the refusals say so. A lens too wrong to absorb produces nothing but
+    // these, so the run reaches LENS_DOUBT_AFTER and the user is pointed at the
+    // one setting that would fix it (issue #52) rather than at their own aim.
+    for (let i = 1; i < LENS_DOUBT_AFTER; i++) await tick();
+    assert.match(sweep.captureCue, /The camera view angle may be set wrong for this lens/,
+      `a run of refused corrections never reached the lens cue: "${sweep.captureCue}"`);
+    // The other side of the bound, on the same scan: registration is working,
+    // not switched off. Nothing was carried above, so this fit starts from the
+    // sensor pose exactly as the first one did.
+    const inside = await offerFrom(3);
+    assert.notEqual(inside.outcome, 'overlap-wait', 'a correction inside the bound was refused');
+    assert.ok(inside.carried > 2.5 && inside.carried < 3,
+      `a correction inside the bound was not carried: the reported pose sits ${inside.carried.toFixed(3)} degrees from the sensor's`);
+    sweep.stop();
+  });
+});
+await test('With the lens calibrated, the bound is the fitter’s own reach and a pose correction it must recover is kept (#70)', async () => {
+  // The regime the lens term does not cover. Once `lensCalibrated` is true a
+  // fitted rotation is sensor pose error, which is what registration exists to
+  // correct, and 3.0 has no derivation for it at all - so the bound becomes
+  // what one fit can legitimately produce, taken from the fitter's own
+  // `SEARCH_LIMITS` (7.4833 degrees, `SEARCH_CEILING_DEG`).
+  // 3.689 degrees is not an arbitrary offset: it is the max-axis separation of
+  // `[-3,-1,1]`, one of the two errors `photosphereRegistration.test.ts` calls
+  // the corrections a fit must recover. Under the uncalibrated 3.0 the fit for
+  // it (3.50) would be thrown away, which is the defect this regime exists to
+  // avoid.
+  // No SINGLE fit at these attitudes can exceed 7.4833 - the search box cannot
+  // express that much - so the ceiling is reached the only way it can be, by
+  // ACCUMULATION: the anchor is set from the raw sensor pose to the final one,
+  // so each fit starts from the last one's corrected basis and the total grows.
+  // Three offers walk it there, and the third is the one that grades the
+  // ceiling, because the fit it refuses is one the search could perfectly well
+  // have made.
+  // That third offer also grades the anti-ratchet claim the getter's comment
+  // makes and that nothing else tests: a REFUSED fit must leave the carried
+  // correction where it was. Before this bound existed, each fit could add its
+  // own budget to the last, which is how the recorded wrong-lens scan went 6.81
+  // then 9.94.
+  // Mutation A: give `carriedCorrectionMax` the uncalibrated branch
+  // unconditionally (`return LENS_SCALE_TOLERANCE*this.shortAxisFov/2`). The
+  // 3.50 fit is then refused and the anchor is never set, so the first outcome
+  // assertion reddens - "a correction the registration suite calls recoverable
+  // was refused on a calibrated lens", outcome 'overlap-wait'. Observed red.
+  // Mutation B: leave the lens regime alone and make the calibrated branch
+  // unbounded (`return this.lensCalibrated ? 1e9 : ...`), which is issue #70's
+  // own defect reinstated for exactly the users who fixed their lens. The third
+  // offer is then admitted and the carry ratchets past the ceiling, reddening
+  // the two assertions on it. Observed red.
+  await withTexturedCamera(async () => {
+    const { sweep, offerFrom } = await scanWithOnePatch(60);
+    const recoverable = await offerFrom(3.689);
+    assert.notEqual(recoverable.outcome, 'overlap-wait',
+      'a correction the registration suite calls recoverable was refused on a calibrated lens');
+    assert.ok(recoverable.carried > 3 && recoverable.carried < SEARCH_CEILING_DEG,
+      `the recoverable correction was not carried: the reported pose sits ${recoverable.carried.toFixed(3)} degrees from the sensor's`);
+    // Further round again: this fit is admitted too, and the carry grows,
+    // because the total is still inside the ceiling.
+    const grown = await offerFrom(6.689);
+    assert.notEqual(grown.outcome, 'overlap-wait', 'the second fit was refused, so nothing accumulated');
+    assert.ok(grown.carried > recoverable.carried + 1,
+      `the carried correction did not grow (${recoverable.carried.toFixed(3)} then ${grown.carried.toFixed(3)}), `
+      + 'so the offer below cannot reach the ceiling and this case grades nothing');
+    assert.ok(grown.carried < SEARCH_CEILING_DEG,
+      `the carry passed the ceiling before the offer that is supposed to test it: ${grown.carried.toFixed(3)}`);
+    // And one more, which the search could fit but the carry cannot hold.
+    const past = await offerFrom(9.689);
+    assert.equal(past.outcome, 'overlap-wait',
+      `a fit that would take the carried correction past ${SEARCH_CEILING_DEG.toFixed(4)} degrees was admitted: `
+      + `the grab recorded ${past.outcome} and the pose now sits ${past.carried.toFixed(3)} degrees from the sensor's`);
+    // The refusal left the anchor alone. Not exact equality: the same transfer
+    // read against a different raw pose differs by about a per cent of itself
+    // (see `carriedCorrectionMax`), and these two are read 3 degrees apart.
+    assert.ok(Math.abs(past.carried - grown.carried) < .05,
+      `a refused fit moved the carried correction, from ${grown.carried.toFixed(4)} to ${past.carried.toFixed(4)}`);
+    sweep.stop();
+  });
+});
+await test('The mocks are the ordinary ones again', async () => {
+  // Must stay last. This pins issue #51: "A grant arriving after
+  // cancellation is released" used to replace getUserMedia with a mock that
+  // only resolved by hand and never restored it, so sweep.start() below
+  // would hang forever rather than fail an assertion (Node exits 13 on an
+  // unsettled top-level await). Any future test between here and that one
+  // that leaks its own getUserMedia mock the same way is caught right here,
+  // not blamed on whatever unrelated test happens to run after it.
+  const sweep = new PhotosphereSweep();
+  await sweep.start(document.createElement('video'), document.createElement('canvas'));
+  assert.equal(sweep.previewReady, true);
+  sweep.stop();
+});
+console.log(`photosphereCaptureDom.test: ${passed}/${passed} passed`);
+export const result = { passed, failed: 0, total: passed };

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import type { JSX } from "react";
 import {
   useStore, useBrightness, useAuthMethods, useAuthGate, useWeatherAlertKey,
@@ -33,6 +33,18 @@ import Login from "./views/Login";
 import EquipmentView from "./views/EquipmentView";
 import ViewBoundary from "./components/ViewBoundary";
 import { preloadAllViews, preloadView } from "./lib/lazyViews";
+import { useExperience } from "./guided/experience";
+import { ExperienceSwitch } from "./guided/ExperienceSwitch";
+import { RetainedTool } from "./guided/GuidedWorkspace";
+import { WizardHeader, WizardFooter, WizardIntro, WizardPanels } from "./guided/GuidedWizard";
+import { wizardStep, wizardAcceptsView, type WizardStep } from "./guided/wizard";
+import { stepBlocker, useGuidedSetup } from "./guided/setup";
+import { startGuidedRecovery } from "./guided/recovery";
+import "./guided/guided.css";
+import { openSettingsPanel } from "./lib/settingsNavigation";
+import { effectiveProviders } from "./lib/effective";
+
+const GuidedHome = lazy(() => import("./guided/GuidedHome"));
 
 // IA reorder (master-plan Risk-10 canonical 8-entry order, Align before Mount) +
 // header/nav entries for Settings (placeholder) and Monitor (real this batch).
@@ -258,6 +270,58 @@ export default function App() {
   // whole tree. Chrome components self-subscribe to their own slices.
   const view = useStore((s) => s.view);
   const setView = useStore((s) => s.setView);
+  const experience = useExperience((s) => s.mode);
+  const guidedHome = useExperience((s) => s.home);
+  const currentWizard = useExperience((s) => s.wizard);
+  const isGuided = experience === "guided";
+  const recoveryMessage = useGuidedSetup(s => s.recoveryMessage);
+  useEffect(() => isGuided ? startGuidedRecovery() : undefined, [isGuided]);
+  const showOverview = isGuided && guidedHome;
+  const wizardActive = isGuided && !guidedHome && currentWizard !== null;
+  const wizardPanel = wizardActive && (currentWizard === "location" || currentWizard === "horizon" || currentWizard === "image");
+  const [guidedVisited, setGuidedVisited] = useState(isGuided);
+  useEffect(() => { if (isGuided) setGuidedVisited(true); }, [isGuided]);
+  // Links and server-driven navigation still reveal their destination in
+  // Guided. Switching presentation itself never changes store.view.
+  useEffect(() => useStore.subscribe((state, previous) => {
+    const setup = useGuidedSetup.getState();
+    if (setup.location && JSON.stringify(state.config?.site) !== setup.locationKey) setup.invalidate("location");
+    else if (setup.horizon && JSON.stringify(state.config?.safety?.horizon) !== setup.horizonKey) setup.invalidate("horizon");
+    if (previous.status && state.status && JSON.stringify(previous.status.connected) !== JSON.stringify(state.status.connected)) setup.setField(null);
+    // The WINNER, not the global block: an active profile's provider override
+    // beats config.providers, so comparing the raw block misses exactly the
+    // change the user just made and leaves a completed step standing against a
+    // rig that is now driving different hardware.
+    if (previous.config && state.config && JSON.stringify(effectiveProviders(previous.config)) !== JSON.stringify(effectiveProviders(state.config))) setup.setField(null);
+    if ((setup.focus || setup.alignment) && state.focus !== previous.focus && state.focus?.state === "running" && previous.focus?.state !== "running") setup.invalidate("focus");
+    if (setup.alignment && state.polar !== previous.polar && state.polar.state === "running" && !["running","paused"].includes(previous.polar.state)) setup.invalidate("alignment");
+    if (state.view !== previous.view && useExperience.getState().mode === "guided") {
+      const step = useExperience.getState().wizard;
+      if (step && !wizardAcceptsView(step, state.view)) useExperience.getState().leaveWizard();
+      useExperience.getState().showTool();
+    }
+  }), []);
+  const openGuidedTool = (destination: ViewName) => {
+    useExperience.getState().leaveWizard();
+    if (destination === "settings") openSettingsPanel("site");
+    else setView(destination);
+    useExperience.getState().showTool();
+  };
+  const openWizardStep = (step: WizardStep) => {
+    const blocked = stepBlocker(step);
+    if (blocked) { useStore.getState().showToast("warning", blocked); return; }
+    const destination = wizardStep(step).view;
+    if (destination) setView(destination);
+    useExperience.getState().openWizard(step);
+  };
+  useEffect(() => {
+    const home = document.getElementById("guided-content");
+    const tool = document.querySelector('[data-testid="retained-tool"]');
+    // Move focus only when its previous owner was just hidden. The mode radio
+    // keeps focus so arrow-key switching still works as a proper radio group.
+    if (showOverview && (tool?.contains(document.activeElement) || document.activeElement === document.body)) home?.focus({ preventScroll: true });
+    if (!showOverview && home?.contains(document.activeElement)) document.getElementById("main-content")?.focus({ preventScroll: true });
+  }, [showOverview]);
   const sequence = useStore((s) => s.sequence);
   const status = useStore((s) => s.status);
   const linkDown = useStore((s) => s.wsPhase !== "up");
@@ -552,7 +616,7 @@ export default function App() {
           WITH the UI — no body/#root starfield here. */}
       <div className="dim-content h-full flex flex-col">
         {/* UX-33: first focusable element — lets keyboard users skip the nav. */}
-        <a href="#main-content" className="skip-link">Skip to content</a>
+        <a href={showOverview ? "#guided-content" : wizardPanel ? "#wizard-panel" : "#main-content"} className="skip-link">Skip to content</a>
         {/* ---------------------------------------------- top status strip */}
         {/* `app-header` is the hook for CSS-HEADERSET in index.css (review #47):
             the three icon buttons in the right-hand cluster measured 44x44 r0 /
@@ -647,9 +711,11 @@ export default function App() {
               unchanged. Hidden on the narrowest widths to protect the dimmer/log
               controls; the full affordance also lives in Settings → Account. */}
           <span className="hidden lg:inline-flex"><SignInButton /></span>
+          <div className="hidden sm:block shrink-0"><ExperienceSwitch /></div>
           <HeaderControls />
           <HealthLeds />
         </header>
+        <div className="experience-mobile sm:hidden"><span>Workspace</span><ExperienceSwitch /></div>
 
         {/* ConnectionBanner renders null when the link is up and telemetry fresh. */}
         <ConnectionBanner />
@@ -736,6 +802,21 @@ export default function App() {
           </div>
         )}
 
+        {isGuided && recoveryMessage && <div className="guided-recovery-notice flex items-center gap-3 px-4 py-2 shrink-0 border-b border-line text-sm">
+          <p role="status" className="flex-1 min-w-0">{recoveryMessage}</p>
+          <button className="btn shrink-0" aria-label="Dismiss setup recovery message" onClick={() => useGuidedSetup.setState({recoveryMessage:null})}><Icon name="x" size={16}/></button>
+        </div>}
+        {guidedVisited && <div className="flex-1 min-h-0" style={{ display: showOverview ? "flex" : "none" }}>
+          <Suspense fallback={<p className="p-6 text-dim" role="status">Opening Guided setup…</p>}>
+            <GuidedHome onOpen={openGuidedTool} onStart={openWizardStep} />
+          </Suspense>
+        </div>}
+        <RetainedTool hidden={showOverview}>
+        {wizardActive && <WizardHeader step={currentWizard} onStep={openWizardStep}/>}
+        {isGuided && !wizardActive && <div className="guided-tool-bar">
+          <button onClick={() => useExperience.getState().showHome()}><Icon name="arrow-left" size={16}/>Your night</button>
+          <span>{NAV.find((item) => item.id === view)?.label ?? "Plan"}<small>Return to your night when you're done here.</small></span>
+        </div>}
         <div className="flex flex-1 min-h-0">
           {/* -------------------------------------------------- left rail */}
           {/* Gating model (onboarding §3b/E16; unified per F-D3): ONE model across
@@ -745,7 +826,7 @@ export default function App() {
               hard-disables (no aria-disabled / no-op onClick); instead a small lock
               icon REPLACES the connected-Led slot as a passive "needs connection"
               hint. This matches BottomNav/NavMoreSheet, which never hard-disabled. */}
-          <nav className="hidden sm:flex flex-col w-[72px] border border-line bg-panel rounded-[16px] my-4 ml-4 py-2 shrink-0 overflow-y-auto backdrop-blur-md shadow-[inset_0_1px_1px_rgba(255,255,255,0.05),inset_0_-1px_2px_rgba(0,0,0,0.5)]" aria-label="Primary">
+          <nav style={isGuided ? { display: "none" } : undefined} className="hidden sm:flex flex-col w-[72px] border border-line bg-panel rounded-[16px] my-4 ml-4 py-2 shrink-0 overflow-y-auto backdrop-blur-md shadow-[inset_0_1px_1px_rgba(255,255,255,0.05),inset_0_-1px_2px_rgba(0,0,0,0.5)]" aria-label="Primary">
             {NAV.map((n) => {
               const gated = !equipConnected && !!GATED[n.id];
               return (
@@ -834,15 +915,17 @@ export default function App() {
           </nav>
 
           {/* ----------------------------------------------- main content */}
+          <WizardPanels step={currentWizard} active={wizardActive} onStep={openWizardStep}/>
           <main
             id="main-content"
+            hidden={wizardPanel}
             tabIndex={-1}
             // `main-safe-pad` replaces `pb-20 sm:pb-4` (review #46): the bottom
             // padding has to clear the fixed bottom nav AND the home-indicator
             // inset, or the last row of a view is unreachable on a notched
             // phone. It is authored CSS on purpose — a Tailwind `pb-*` utility
             // would be indistinguishable from the `p-4` on the same element.
-            className={`flex-1 overflow-y-auto overflow-x-hidden p-4 main-safe-pad outline-none ${dim ? "opacity-60 transition-opacity" : "transition-opacity"}`}
+            className={`flex-1 overflow-y-auto overflow-x-hidden p-4 main-safe-pad outline-none ${isGuided ? "guided-tool-main" : ""} ${dim ? "opacity-60 transition-opacity" : "transition-opacity"}`}
             key={view}
           >
             <div
@@ -866,6 +949,7 @@ export default function App() {
                 FILLS_PANE.has(view) ? "min-h-0 max-h-full" : "min-h-full"
               }`}
             >
+              {wizardActive && !wizardPanel && currentWizard!=="focus" && currentWizard!=="alignment" && <WizardIntro step={currentWizard}/>}
               {gatedOut ? (
                 <NotConnectedInterstitial view={view} />
               ) : Active ? (
@@ -887,9 +971,12 @@ export default function App() {
           <LogDrawer />
         </div>
 
+        {wizardActive && <WizardFooter step={currentWizard} onStep={openWizardStep} onTool={(destination) => setView(destination)}/>}
+
         {/* mobile bottom nav: 5 primary + More (touch §5). BottomNav is a narrow-
             selector child (R27) and renders its own NavMoreSheet; App only mounts it. */}
-        <BottomNav />
+        <div style={isGuided ? { display: "none" } : undefined}><BottomNav /></div>
+        </RetainedTool>
       </div>
 
       {/* ================================================================ .dim-scrim
@@ -938,7 +1025,7 @@ export default function App() {
           .dim-content (like ConfirmHost above), so it's never brightness-
           dimmed, and deliberately does NOT block pointer events over the
           rest of the screen (see FirstRunWizard.tsx header comment). */}
-      <FirstRunWizard />
+      {!isGuided && <FirstRunWizard />}
     </div>
   );
 }

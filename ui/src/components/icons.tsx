@@ -20,7 +20,7 @@ export type IconName =
   | "alert" | "check" | "info" | "x" | "clock"
   // misc
   | "grid" | "plus" | "trash" | "download" | "upload"
-  | "gallery"
+  | "gallery" | "magnify"
   // directional
   | "arrow-up" | "arrow-down" | "arrow-left" | "arrow-right";
 
@@ -33,6 +33,7 @@ export interface IconProps {
 }
 
 const PATHS: Record<IconName, JSX.Element> = {
+  magnify: <><circle cx="10" cy="10" r="6.5"/><path d="M15 15l6 6"/></>,
   rig: <><path d="M4.8 10.6l6.4-6.4 4.6 4.6-6.4 6.4z" /><path d="M9.4 15.4L6 21M12.6 14.4L15 21" /><circle cx="19.4" cy="4.6" r="1.2" fill="currentColor" stroke="none" /></>,
   capture: <><circle cx="12" cy="12" r="8.8" /><path d="M12 20.8l3.7-6.6M4.4 16.4l7.6-.1M4.4 7.6l3.9 6.6M12 3.2l-3.7 6.6M19.6 7.6l-7.6.1M19.6 16.4l-3.9-6.6" /></>,
   focus: <><path d="M8.2 5.6a7.6 7.6 0 000 12.8M15.8 5.6a7.6 7.6 0 010 12.8M12 2.5v2M12 19.5v2" /><circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none" /></>,

@@ -1,0 +1,10 @@
+{
+  "case_id": "chartyard-still-60",
+  "scene": "chartyard",
+  "route": "still",
+  "camera": {"width": 480, "height": 640, "fov_short_deg": 60},
+  "fps": 10,
+  "seed": 1,
+  "expected": "positive",
+  "profile": "chart-noise-free"
+}

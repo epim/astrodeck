@@ -10,6 +10,7 @@ import asyncio
 import json
 import math
 import random
+import time
 from typing import Any
 
 from ..config import FrameSettingsConfig, frames_payload, publish_frames, \
@@ -147,6 +148,7 @@ class PolarAlignSession:
             kw = {k: v for k, v in kw.items() if k != "state"}
         self.state = {**self.state, **kw}
         if "az_error" in kw or "alt_error" in kw:
+            self.state["reading_ts"] = time.time()
             self.state["total_error"] = round(
                 math.hypot(self.state["az_error"], self.state["alt_error"]), 2)
         bus.publish("polar", **self.state)

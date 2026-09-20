@@ -341,9 +341,91 @@ test("both stub markers really render (the tests above are not vacuous)", () => 
   cb.remove();
 });
 
+// Classic store navigation and browser history must agree. Flush queued jsdom
+// hash events from the root-choice cases before exercising real traversal.
+await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+win.history.replaceState(null, "", "#/");
+useStore.getState().setView("connect");
+const historyContainer = freshContainer();
+const historyRoot = createRoot(historyContainer);
+act(() => { historyRoot.render(createElement(Root)); });
+test("bare classic entry is named before the first navigation", () => {
+  eq(win.location.hash, "#/classic/connect");
+});
+const initialHistoryLength = win.history.length;
+await act(async () => {
+  useStore.getState().setView("atlas");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+});
+test("classic actions update the URL and add exactly one history entry", () => {
+  eq(win.location.hash, "#/classic/atlas");
+  eq(win.history.length, initialHistoryLength + 1);
+});
+async function traverse(direction: "back" | "forward"): Promise<void> {
+  await act(async () => {
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("history traversal timed out")), 2000);
+      win.addEventListener("hashchange", () => { clearTimeout(timer); resolve(); }, { once: true });
+      win.history[direction]();
+    });
+  });
+}
+await traverse("back");
+test("Back restores the initial classic destination without growing history", () => {
+  eq(useStore.getState().view, "connect");
+  eq(win.location.hash, "#/classic/connect");
+  eq(win.history.length, initialHistoryLength + 1);
+});
+await traverse("forward");
+test("Forward restores the destination", () => {
+  eq(useStore.getState().view, "atlas");
+  eq(win.location.hash, "#/classic/atlas");
+});
+await act(async () => {
+  win.location.hash = "#/classic/monitor?sky=preview";
+  await new Promise((resolve) => setTimeout(resolve, 20));
+});
+test("hash-driven navigation preserves view query flags", () => {
+  eq(useStore.getState().view, "monitor");
+  eq(win.location.hash, "#/classic/monitor?sky=preview");
+});
+await act(async () => {
+  win.location.hash = "#/classic/monitor?experience=guided&sky=preview";
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  useStore.getState().setView("focus");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+});
+test("tool navigation preserves presentation but drops view-specific demo flags", () => {
+  eq(win.location.hash, "#/classic/focus?experience=guided");
+});
+await act(async () => {
+  win.location.hash = "#/sky";
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  useStore.getState().setView("focus");
+});
+test("the classic subscription leaves new-UI navigation to its own bridge", () => {
+  eq(win.location.hash, "#/sky");
+});
+act(() => { historyRoot.unmount(); });
+historyContainer.remove();
+win.history.replaceState(null, "", "#/classic/atlas");
+useStore.getState().setView("connect");
+test("unmount removes the classic navigation subscription", () => {
+  eq(win.location.hash, "#/classic/atlas");
+});
+test("naming a bare classic entry keeps its query flags", () => {
+  mountAt("#/classic?sky=preview");
+  eq(win.location.hash, "#/classic/connect?sky=preview");
+});
+test("content anchors are not replaced by the classic entry naming", () => {
+  mountAt("#main-content");
+  eq(win.location.hash, "#main-content");
+});
+
 // ------------------------------------------------------------------- tally
 const total = passed + failed;
 console.log(`rootChoice.test: ${passed}/${total} passed`);
 for (const f of failures) console.log("  " + f);
 export default { passed, failed, total };
 export { passed, failed, total };
+if (failed) process.exitCode = 1;

@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Photosphere simulator renderer</title>
+<style>
+  body { margin: 0; background: #101010; color: #d0d0d0;
+         font: 13px/1.5 ui-monospace, monospace; padding: 12px; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "../node_modules/three/build/three.module.js"
+  }
+}
+</script>
+</head>
+<body>
+<p id="status">loading render.js</p>
+<script type="module">
+  // sim/render.py serves tools/photosphere_sim over http.server and waits for
+  // window.simRender, so a module that fails to load has to say so somewhere
+  // the driver can read it rather than leaving the page silently blank.
+  try {
+    await import('./render.js');
+    document.getElementById('status').textContent =
+      'render.js loaded; waiting for simRender.load';
+  } catch (error) {
+    window.simLoadError = String(error && error.stack ? error.stack : error);
+    document.getElementById('status').textContent = window.simLoadError;
+    throw error;
+  }
+</script>
+</body>
+</html>

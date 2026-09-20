@@ -223,11 +223,23 @@ function resolveSpec(from: string, spec: string): string | null {
   return null;
 }
 
+// Issue #39: the previous version of this function matched double-quoted
+// specifiers only (`/from\s+"([^"]+)"/`), so `import './x.css'` and
+// `from '../horizon'` contributed no edges at all - invisible to test 3
+// ("every area stylesheet is imported by a module inside its own area") and
+// test 5 ("a module that emits an area's class reaches that area's
+// stylesheet"), silently, in both directions. `QUOTED` now accepts a
+// double-quoted, single-quoted, or substitution-free template-literal
+// specifier (a `${` inside the backtick form falls through - that is a
+// computed specifier, not a static one this scanner can resolve).
+const QUOTED = `"([^"]+)"|'([^']+)'|\`((?:(?!\\\$\\{)[^\`])+)\``;
+const pick = (m: RegExpMatchArray): string => (m[1] ?? m[2] ?? m[3]) as string;
+
 function specsOf(text: string): string[] {
   const out: string[] = [];
-  for (const m of text.matchAll(/from\s+"([^"]+)"/g)) out.push(m[1]);
-  for (const m of text.matchAll(/import\s+"([^"]+)"/g)) out.push(m[1]);
-  for (const m of text.matchAll(/import\(\s*"([^"]+)"\s*\)/g)) out.push(m[1]);
+  for (const m of text.matchAll(new RegExp(`from\\s+(?:${QUOTED})`, "g"))) out.push(pick(m));
+  for (const m of text.matchAll(new RegExp(`import\\s+(?:${QUOTED})`, "g"))) out.push(pick(m));
+  for (const m of text.matchAll(new RegExp(`import\\(\\s*(?:${QUOTED})\\s*\\)`, "g"))) out.push(pick(m));
   return out;
 }
 
@@ -379,9 +391,77 @@ test("the scan found the areas, the sheets and the classes", () => {
   for (const e of EMITS.values()) emitted += e.exact.size;
   assert(emitted >= 400, `only ${emitted} class emissions found - is the scan working?`);
   assert(definedIn.has("nx-tn-cal"), "tonight.css's .nx-tn-cal did not parse");
-  const card = EMITS.get(join(NEXT, "hubs", "session", "flows", "tonight", "CalibrationMatrixCard.tsx"));
+  const cardPath = join(NEXT, "hubs", "session", "flows", "tonight", "CalibrationMatrixCard.tsx");
+  const card = EMITS.get(cardPath);
   assert(card != null && card.exact.has("nx-tn-cal"),
     "CalibrationMatrixCard's .nx-tn-cal emission did not parse");
+  // Issue #39's corpus assertion: the edge count for a KNOWN real file, so a
+  // scanner that silently starts finding nothing (a regex that stops
+  // matching, a comment-strip that eats the whole file) fails loudly here
+  // instead of quietly starving tests 3 and 5 of edges. Computed by hand
+  // against the file as it stands: `react`, the legacy `CalibrationMatrix`
+  // helper import, `store`, the `ui` barrel, `./tonightModel` and
+  // `./tonight.css` - six specifiers, all double-quoted today. If this
+  // file's imports change, this count changes with it.
+  const cardSpecs = specsOf(read(cardPath));
+  assert(cardSpecs.length === 6,
+    `CalibrationMatrixCard.tsx: expected 6 import specifiers, found ${cardSpecs.length} - ` +
+    "either its imports changed (update this number) or the scanner is missing some");
+  assert(cardSpecs.includes("./tonight.css"),
+    "CalibrationMatrixCard.tsx: the scanner did not find its own css import");
+});
+
+// =================================================== 1b. every quote style
+// Issue #39: specsOf used to match double-quoted specifiers only
+// (`/from\s+"([^"]+)"/`), so `import './x.css'` and `from '../horizon'`
+// contributed NO edge at all - invisible to test 3 ("every area stylesheet is
+// imported by a module inside its own area") and test 5 ("a module that
+// emits an area's class reaches that area's stylesheet"), silently, in both
+// directions. Pinned against a real stylesheet already in the corpus
+// (tonight.css) with synthetic source text, so no new fixture file is needed
+// and nothing under hubs/ has to change.
+//
+// Mutation: restore the double-quote-only pattern (reproduced inline below,
+// unchanged from before this fix) and this test goes red on its own probes.
+
+test("specsOf sees a single-quoted, double-quoted and template-literal specifier", () => {
+  const areaDir = join(NEXT, "hubs", "session", "flows", "tonight");
+  const sheet = join(areaDir, "tonight.css");
+  assert(existsSync(sheet), "tonight.css moved or was renamed - this probe's target is stale");
+  const fromModule = join(areaDir, "SomeOtherCard.tsx");  // need not exist: only used to resolve "./tonight.css"
+
+  const probes = [
+    `import "./tonight.css";`,
+    `import './tonight.css';`,
+    "import `./tonight.css`;",
+  ];
+  for (const src of probes) {
+    const specs = specsOf(src);
+    assert(specs.includes("./tonight.css"), `specsOf missed ${JSON.stringify(src)}`);
+    const resolved = resolveSpec(fromModule, "./tonight.css");
+    assert(resolved === sheet, `resolveSpec did not resolve ${JSON.stringify(src)} to tonight.css`);
+  }
+
+  // The bug this issue fixes, reproduced exactly (this is what specsOf was
+  // before this task): a single-quoted or template-literal import of a
+  // module's own area stylesheet was invisible, which is precisely how a
+  // correctly-authored `import './area.css'` would have gone unseen by test 3.
+  function doubleQuoteOnlySpecsOf(text: string): string[] {
+    const out: string[] = [];
+    for (const m of text.matchAll(/from\s+"([^"]+)"/g)) out.push(m[1]);
+    for (const m of text.matchAll(/import\s+"([^"]+)"/g)) out.push(m[1]);
+    for (const m of text.matchAll(/import\(\s*"([^"]+)"\s*\)/g)) out.push(m[1]);
+    return out;
+  }
+  assert(doubleQuoteOnlySpecsOf(probes[1]).length === 0,
+    "the pre-fix scanner unexpectedly saw a single-quoted specifier - this probe no longer pins the regression");
+  assert(doubleQuoteOnlySpecsOf(probes[2]).length === 0,
+    "the pre-fix scanner unexpectedly saw a template-literal specifier - this probe no longer pins the regression");
+
+  // Negative control: a template literal WITH a substitution is a computed
+  // specifier, not a static one - it must not be reported as an edge.
+  assert(specsOf("import `./${name}.css`;").length === 0,
+    "specsOf treated a substituted template literal as if it were static");
 });
 
 // ====================================================== 2. one sheet per area

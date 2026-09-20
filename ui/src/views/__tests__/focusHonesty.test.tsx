@@ -589,6 +589,73 @@ await test("neither the settings dial nor the Filter select offers a blackout sl
 });
 
 // ------------------------------------------------------------------- report
+const {useExperience}=await import("../../guided/experience");
+const {useGuidedSetup,observeSetupChecks}=await import("../../guided/setup");
+const field={ra_hours:10,dec_deg:30};
+await act(async()=>{
+  useStore.setState({focus:null,telemetryStale:false,wsPhase:"up",status:{...useStore.getState().status,mount:{...field,slewing:false}}} as never);
+  useGuidedSetup.setState({field,location:true,horizon:true,focus:false});
+  useExperience.setState({mode:"guided",home:false,wizard:"focus"});
+});
+await test("Guided camera lesson is separate from the live workspace",()=>{
+  assert(!!byText(/Open camera view/),"lesson has no route to live camera");
+  assert(container.querySelector('.guided-focus-workspace')?.hidden,"camera workspace should not be underneath the lesson");
+});
+await act(async()=>click(byText(/Open camera view/)));
+await test("opening camera view does not offer filter calibration before focus",()=>{
+  assert(!container.querySelector('.guided-focus-workspace')?.hidden,"camera view did not open");
+  assert(!win.document.querySelector('[role="dialog"]'),"filter prompt appeared before a run");
+});
+await act(async()=>useStore.setState({focus:{state:"running",points:[{position:12000,hfr:3}],best:null}} as never));
+await test("Guided autofocus exposes the curve and explanation without advanced controls",()=>{
+  const progress=container.querySelector('[aria-label="Autofocus progress"]');
+  assert(!!progress?.querySelector("svg"),"no live focus curve");
+  assert(progress.textContent.includes("measuring star size in pixels"),"missing explanation");
+  assert(container.querySelector('.guided-focus-camera')?.hidden,"image competes with active curve");
+  assert(!container.textContent.includes("Bahtinov Focus")&&!container.querySelector(".guided-focus-details"),"First Light contains redundant advanced panels");
+});
+await act(async()=>useStore.setState({focus:{state:"failed",points:[],best:null,message:"No stars"}} as never));
+await test("failed autofocus never offers filter calibration",()=>assert(!win.document.querySelector('[role="dialog"]'),"failed run prompted calibration"));
+await act(async()=>useStore.setState({focus:{state:"running",points:[],best:null}} as never));
+await act(async()=>useStore.setState({wsPhase:"down",focus:{state:"done",points:[],best:{position:12000,hfr:1.5}}} as never));
+await test("a disconnected focus result cannot certify Guided readiness",()=>assert(!useGuidedSetup.getState().focus,"disconnected result certified focus"));
+await act(async()=>useStore.setState({wsPhase:"up",focus:{state:"running",points:[],best:null}} as never));
+await act(async()=>useStore.setState({status:{...useStore.getState().status,mount:{...field,slewing:true}},focus:{state:"done",points:[],best:{position:12000,hfr:1.5}}} as never));
+await test("focus cannot be certified while the telescope is moving",()=>assert(!useGuidedSetup.getState().focus,"moving mount certified focus"));
+await act(async()=>useStore.setState({status:{...useStore.getState().status,mount:{...field,slewing:false}},focus:{state:"running",points:[],best:null},filterOffsetsLearn:{state:"running"}} as never));
+await act(async()=>useStore.setState({focus:{state:"done",points:[],best:{position:12000,hfr:1.5}}} as never));
+await test("an individual filter sweep cannot certify an unfinished calibration",()=>assert(!useGuidedSetup.getState().focus,"mid-calibration result certified focus"));
+await act(async()=>{useStore.setState({filterOffsetsLearn:null,focus:{state:"running",points:[],best:null}} as never);root.render(createElement(FocusView,{key:"after-filter-check"}));});
+await act(async()=>useStore.setState({focus:{state:"done",points:[],best:{position:12000,hfr:Infinity}}} as never));
+await test("non-finite star measurements cannot certify focus",()=>assert(!useGuidedSetup.getState().focus,"infinite star radius certified focus"));
+let confirmFocus!:(accepted:boolean)=>void;
+observeSetupChecks((action,fact)=>action==="complete"&&fact==="focus"?new Promise<boolean>(resolve=>{confirmFocus=resolve;}):undefined);
+await act(async()=>useStore.setState({focus:{state:"running",points:[],best:null}} as never));
+await act(async()=>useStore.setState({focus:{state:"done",points:[{position:12000,hfr:1.5}],best:{position:12000,hfr:1.5}}} as never));
+await test("the filter offer waits for controller confirmation",()=>assert(!win.document.querySelector('[role="dialog"]'),"filter offer preceded controller confirmation"));
+await act(async()=>{confirmFocus(false);useGuidedSetup.setState({focus:false});});
+await test("a rejected checkpoint cannot display a focus-ready filter offer",()=>assert(!win.document.querySelector('[role="dialog"]'),"rejected check still showed focus-ready offer"));
+observeSetupChecks(null);
+await act(async()=>useStore.setState({focus:{state:"running",points:[],best:null}} as never));
+await act(async()=>useStore.setState({focus:{state:"done",points:[{position:12000,hfr:1.5}],best:{position:12000,hfr:1.5}}} as never));
+await test("successful autofocus offers only usable filters after completion",()=>{
+  const dialog=win.document.querySelector('[role="dialog"]');
+  assert(!!dialog,"successful run did not offer filter calibration");
+  assert(dialog.textContent.includes("2 filters configured"),"opaque slot counted as a filter");
+  assert(!postsTo("learn-offsets").length,"prompt started hardware without review");
+});
+await act(async()=>[...win.document.querySelectorAll('[role="dialog"] button')].find((b:any)=>b.textContent.includes("Review filter calibration"))?.click());
+await test("accepting the filter offer opens calibration controls directly",()=>assert(win.document.body.textContent.includes("Learn offsets"),"calibration controls did not open"));
+await act(async()=>useStore.setState({focus:{state:"running",points:[],best:null}} as never));
+await test("calibration controls remain mounted during a filter focus sweep",()=>assert(win.document.body.textContent.includes("Learn offsets"),"sweep unmounted calibration controls"));
+await act(async()=>useGuidedSetup.setState({field:null,focus:false}));
+await test("joining a running focus without a local field still exposes Stop",()=>assert(!container.querySelector('.guided-focus-workspace')?.hidden&&byText(/Stop autofocus/),"joining browser hid the active operation"));
+await act(async()=>{root.render(createElement(FocusView,{key:"resumed-filters"}));useStore.setState({filterOffsetsLearn:{state:"running",slot:1,of:2,name:"Ha"},focus:{state:"done",points:[],best:{position:12000,hfr:1.5}}} as never);});
+await test("recovered filter calibration exposes the sweep and its own Stop action",()=>{
+  assert(!container.querySelector('.guided-focus-workspace')?.hidden,"recovered sweep was hidden without a field");
+  assert(byText(/Stop filter measurements/),"recovered filter sweep has no dedicated stop");
+  assert(win.document.querySelector('[role="dialog"]')?.textContent.includes("Ha"),"recovered calibration dialog was not opened");
+});
 await act(async () => { root.unmount(); });
 const total = passed + failed;
 console.log(`focusHonesty.test: ${passed}/${total} passed`);

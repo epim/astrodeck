@@ -150,12 +150,21 @@ export const SkyDome = memo(function SkyDome({
   const geomRef = useRef<DomeGeometry | null>(null);
   const onGeometryRef = useRef(onGeometry);
   useEffect(() => { onGeometryRef.current = onGeometry; });
+  const [containerWidth,setContainerWidth] = useState(0);
+  useEffect(() => {
+    const parent=ref.current?.parentElement;
+    if(!parent)return;
+    const measure=()=>setContainerWidth(parent.clientWidth);
+    const observer=typeof ResizeObserver!=="undefined"?new ResizeObserver(measure):null;
+    observer?.observe(parent);window.addEventListener("resize",measure);measure();
+    return()=>{observer?.disconnect();window.removeEventListener("resize",measure);};
+  }, [!!overlay]);
 
   useEffect(() => {
     const cv = ref.current;
     if (!cv) return;
     const parentW = cv.parentElement?.clientWidth ?? 0;
-    const cssW = Math.max(220, parentW || 320);
+    const cssW = Math.max(80, containerWidth || parentW || 320);
     const cssH = height;
     // Device pixels, so the dome is not a blurry oval on a retina panel.
     const dpr = (typeof window !== "undefined" && window.devicePixelRatio) || 1;
@@ -370,7 +379,7 @@ export const SkyDome = memo(function SkyDome({
       ctx.fillText(emptyNote, cx, cy - r * 0.35);
     }
   }, [grid, pointing, target, targets, emptyNote, stale, staleNote,
-      height, yawDeg]);
+      height, yawDeg, containerWidth]);
 
   // ---- drag to turn the dome
   //
@@ -428,7 +437,7 @@ export const SkyDome = memo(function SkyDome({
 
   return (
     <div
-      style={{ position: "relative", width: geom?.cssW, margin: "0 auto" }}
+      style={{ position: "relative", width: "100%", minWidth: 0, margin: "0 auto" }}
       data-dome-wrap=""
     >
       {canvas}

@@ -418,6 +418,21 @@ def _login(page, base: str, role: str, creds: dict) -> None:
 
 # ------------------------------------------------------------------ routes
 
+def _run_isolated_route(context, base: str, route: dict, out_dir: Path,
+                        width: int) -> dict:
+    """One page per route; cookies/storage stay in the authenticated context.
+
+    Hash navigation keeps the old document's requests and console callbacks
+    alive. A fresh page retains startup errors for this route without charging
+    it for the previous route's delayed failures.
+    """
+    page = context.new_page()
+    try:
+        return _run_route(page, base, route, out_dir, width)
+    finally:
+        page.close()
+
+
 def _run_route(page, base: str, route: dict, out_dir: Path, width: int) -> dict:
     name = route.get("name") or route.get("shot") or route["url"]
     shot_name = route.get("shot", name)
@@ -680,8 +695,9 @@ def main(argv: list[str] | None = None) -> int:
                         context.close()
                         continue
 
+                page.close()
                 for route in routes:
-                    result = _run_route(page, base, route, out_dir, width)
+                    result = _run_isolated_route(context, base, route, out_dir, width)
                     all_results.append(result)
                     status = "PASS" if result["passed"] else "FAIL"
                     print(f"[{width}px] {status:4s} {result['route']:16s} "

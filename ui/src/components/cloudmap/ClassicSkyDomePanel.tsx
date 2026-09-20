@@ -133,11 +133,14 @@ export function ClassicSkyDomePanel({pointing}:{pointing?:{alt:number;az:number}
     window.addEventListener('hashchange',onHash);
     return () => window.removeEventListener('hashchange',onHash);
   },[]);
-  const chooseMode = (next:boolean) => {
-    setPreview(next);
-    history.replaceState(null,'',`#/classic/monitor${next ? '?sky=preview' : ''}`);
+  const leavePreview = () => {
+    setPreview(false);
+    const [path,query] = window.location.hash.split('?');
+    const params = new URLSearchParams(query);
+    params.delete('sky');
+    window.history.replaceState(window.history.state,'',`${path}${params.size ? `?${params}` : ''}`);
   };
-  return <Panel title="Sky dome" className="col-span-full sm:col-span-2 lg:col-span-6 csd-panel" right={<div className="csd-mode" aria-label="Sky dome data source"><button aria-pressed={!preview} onClick={()=>chooseMode(false)}>Live readings</button><button aria-pressed={preview} onClick={()=>chooseMode(true)}>Design preview</button></div>}>
+  return <Panel title="Sky dome" className="col-span-full sm:col-span-2 lg:col-span-6 csd-panel" right={preview ? <div className="csd-mode" aria-label="Sky dome data source"><span>Sample sky</span><button onClick={leavePreview}>Return to live readings</button></div> : undefined}>
     {preview ? <SkyIllustration/> : <ClassicLiveSky key={revision} pointing={pointing}/>}
     <div className="csd-tools"><button onClick={()=>{window.location.hash='/classic/atlas';}}>Sky atlas</button><button onClick={()=>setTool('horizon')}>Edit horizon</button></div>
     {tool && <ClassicSkyTools initialTool={tool} onClose={()=>{setTool(null);setRevision(r=>r+1);}}/>}
