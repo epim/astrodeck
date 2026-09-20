@@ -479,3 +479,54 @@ def test_cal_reusable_accepts_the_good_dict():
     g = NativeGuider(rig["guide_camera"], rig["telescope"],
                      config={"image_scale_arcsec": 2.0}, profile_id=None)
     assert g._cal_reusable(_good_cal_dict()) is True
+
+
+def test_a_calibration_too_far_from_square_is_not_reused(caplog):
+    """#111. On 2026-09-20 a post-flip recalibration came back 39.83 degrees
+    from orthogonal, was marked is_valid, was persisted, and was then handed
+    straight back by a stop-and-start ("reusing persisted calibration") --
+    the operator's most natural remedy restoring the exact calibration that
+    was walking the field. Two axes that far from square decompose every
+    correction wrongly.
+
+    The threshold is the engine's own CAL_ALERT_ORTHOGONALITY_TOLERANCE_DEG,
+    the angle at which it already raises "RA/Dec axis angles are
+    questionable". Until this fix that advisory was the only consumer of its
+    own finding.
+
+    MUTATION: delete the orthogonality arm (the `ortho >
+    _MAX_CAL_ORTHO_ERROR_DEG` block) from `_cal_reusable`. Observed under it:
+    both assertions below fail, because the 39.83 and 28.29 degree dicts are
+    accepted for reuse exactly as they were on the night.
+    """
+    import math as _math
+
+    from astrodeck.guide.native import _MAX_CAL_ORTHO_ERROR_DEG, NativeGuider
+
+    rig = build_sim_rig()
+    g = NativeGuider(rig["guide_camera"], rig["telescope"],
+                     config={"image_scale_arcsec": 2.0}, profile_id=None)
+
+    # The two calibrations actually measured on the rig that night.
+    for measured_deg in (39.83, 28.29):
+        cal = _good_cal_dict()
+        cal["y_angle_error"] = _math.radians(measured_deg)
+        assert g._cal_reusable(cal) is False, (
+            f"a calibration {measured_deg} deg from orthogonal was accepted "
+            "for reuse")
+
+    # A rig whose DEC AXIS RUNS REVERSED calibrates with a raw error near pi
+    # and is perfectly square (GN-06). Folding is why that rig still gets its
+    # calibration reused instead of being refused every night.
+    reversed_but_square = _good_cal_dict()
+    reversed_but_square["y_angle_error"] = _math.pi - _math.radians(1.0)
+    assert g._cal_reusable(reversed_but_square) is True, (
+        "a reversed-Dec rig that is actually square was refused")
+
+    # And the boundary is the engine's number, not a rounder one nearby.
+    just_inside = _good_cal_dict()
+    just_inside["y_angle_error"] = _math.radians(_MAX_CAL_ORTHO_ERROR_DEG - 0.5)
+    assert g._cal_reusable(just_inside) is True
+    just_outside = _good_cal_dict()
+    just_outside["y_angle_error"] = _math.radians(_MAX_CAL_ORTHO_ERROR_DEG + 0.5)
+    assert g._cal_reusable(just_outside) is False
