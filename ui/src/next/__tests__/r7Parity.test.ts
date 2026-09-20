@@ -48,6 +48,7 @@
 
 const { readFileSync, readdirSync, statSync } = await import("node:fs");
 const { fileURLToPath } = await import("node:url");
+const { dirname: pdirname, resolve: presolve } = await import("node:path");
 
 const NEXT = fileURLToPath(new URL("../", import.meta.url));
 const SRC = fileURLToPath(new URL("../../", import.meta.url));
@@ -412,14 +413,15 @@ interface Record_ { file: string; module: string; name: string; typeOnly: boolea
  *  `../../../../components/flows/nodeDefs` becomes `components/flows/nodeDefs`. */
 function moduleOf(file: string, spec: string): string | null {
   if (!spec.startsWith(".")) return null;
-  const parts = file.split(SEP).slice(0, -1).concat(spec.split(/[\\/]/));
-  const stack: string[] = [];
-  for (const part of parts) {
-    if (part === "." || part === "") continue;
-    if (part === "..") stack.pop();
-    else stack.push(part);
-  }
-  const abs = stack.join(SEP);
+  // node:path, not hand-rolled splitting. Splitting an ABSOLUTE POSIX path on
+  // "/" yields a leading "" that encodes the root, and skipping empty parts
+  // threw it away, so `abs` came back relative while SRC (from fileURLToPath)
+  // kept its leading slash. startsWith could then never match, moduleOf
+  // returned null for every specifier, and RECORDS was EMPTY on Linux -- this
+  // whole scan inert, on CI only, because on Windows the first component is
+  // the drive letter and is not empty. The vacuity guard below is what caught
+  // it. Same defect as the CSS scanner's resolveSpec (#116).
+  const abs = presolve(pdirname(file), spec);
   if (!abs.startsWith(SRC)) return null;
   return abs.slice(SRC.length).replace(/\\/g, "/").replace(/\.(tsx?|jsx?)$/, "");
 }
