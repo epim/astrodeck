@@ -60,6 +60,13 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(hub_mod, "config_store", temp_store)
     monkeypatch.setattr(app_module, "config_store", temp_store)
     monkeypatch.setattr(config_mod, "CONFIG_DIR", tmp_path)
+    # The doctor's capture-geometry check scans CAPTURE_DIR live, under a one
+    # second budget, and warns "still reading the library" when it runs out.
+    # Unpinned, that is the DEVELOPER'S real capture directory: this passed in
+    # a worktree holding 13 frames and failed in a checkout holding 5310,
+    # which makes the whole suite a function of who ran it and how many nights
+    # they have banked.
+    monkeypatch.setattr(hub_mod, "CAPTURE_DIR", tmp_path)
     monkeypatch.setattr(app_module, "flow_store", FlowStore(tmp_path / "flows"))
     with TestClient(app_module.create_app()) as c:
         yield c
