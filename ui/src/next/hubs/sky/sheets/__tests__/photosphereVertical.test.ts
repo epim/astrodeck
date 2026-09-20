@@ -438,5 +438,49 @@ test("Manual review can retain obstructions all the way to 90 degrees", () => {
   assert.equal(altFromY(SKY_Y), 90);
   assert.equal(movePoint([{ az: 180, alt: 90 }], 0, 180, 90)[0].alt, 90);
 });
+test("The anchor reaches one bin and six rows, and both limits are the rule (#107)", () => {
+  // AZ_SLOP_ROWS and the one-bin reach of `anchored` decide what the tracer
+  // publishes, and neither was graded: set the slop to 0, 1, 3, 20 or 60 and
+  // this file stayed at 28 of 28. A guard whose deletion changes no test is a
+  // guard nobody is holding.
+  //
+  // Both limits are stated in the constant's own comment -- "a six-row
+  // floating band two bins from a grounded wall stays open, and the same band
+  // in the adjacent bin with the same top row is published" -- so this is that
+  // sentence, made executable.
+  //
+  // Mutation: widen the reach to two bins (add -2 and 2 to the step list) and
+  // the two-bins-away band publishes.
+  // Mutation: raise AZ_SLOP_ROWS to 20 and the mismatched-top band publishes.
+  // Mutation: lower it to 0 and the matched-top band goes open.
+  const wall = sample(row => (row < 30 ? 122 : 40));
+  const floating = (top: number) => sample(row => (row >= top && row < top + 9 ? 40 : 122));
+
+  const place = (bins: Record<number, SkyColumn>) =>
+    traceSkyCoverage(mosaic(bin => bins[bin] ?? openSky));
+
+  // ADJACENT, tops four rows apart: inside the slop, so the wall vouches.
+  const near = place({ 5: wall, 6: floating(34) });
+  assert.ok(near.points[6].alt > 0,
+    `a band beside the wall, four rows off its top, was not published: ${near.points[6].alt}`);
+
+  // ADJACENT, tops ten rows apart: outside the six-row slop. The wall is right
+  // there, but it is not evidence for a surface at a quite different altitude.
+  const offset = place({ 5: wall, 6: floating(40) });
+  assert.equal(offset.points[6].alt, 0,
+    "a band ten rows off the wall's top was anchored anyway, so the slop decides nothing");
+
+  // TWO BINS AWAY, same top row: inside the slop but outside the reach.
+  const distant = place({ 5: wall, 7: floating(30) });
+  assert.equal(distant.points[7].alt, 0,
+    "a band two bins from the wall was anchored, so the one-bin reach decides nothing");
+
+  // ...and the same band one bin closer IS published, which is what makes the
+  // line above about the reach rather than about the band.
+  const adjacent = place({ 5: wall, 6: floating(30) });
+  assert.ok(adjacent.points[6].alt > 0,
+    `the same band in the adjacent bin was not published: ${adjacent.points[6].alt}`);
+});
+
 console.log(`photosphereVertical.test: ${passed}/${passed} passed`);
 export const result = { passed, failed: 0, total: passed };
