@@ -530,3 +530,56 @@ def test_a_calibration_too_far_from_square_is_not_reused(caplog):
     just_outside = _good_cal_dict()
     just_outside["y_angle_error"] = _math.radians(_MAX_CAL_ORTHO_ERROR_DEG + 0.5)
     assert g._cal_reusable(just_outside) is False
+
+
+def test_a_calibration_walked_at_a_far_declination_is_not_reused():
+    """#18. On 2026-09-14 the guider reused a calibration walked at NGC 7331's
+    +34.4 for NGC 7129 at +66.1. An RA pulse moves the star by cos(dec), so
+    only 49 per cent of the calibrated rate survived that move: the guider
+    asked for a 1742 ms RA pulse against the mount's 1000 ms cap and 88 to 98
+    per cent of stars trailed.
+
+    The gate is on the RATE RATIO rather than on degrees, which is the point
+    of this case. cos falls away sharply near the pole, so a fixed degree
+    threshold is simultaneously too tight at the equator and too loose near
+    it: twenty degrees at dec 0 keeps 94 per cent of the rate and is fine,
+    while eight degrees at +60 keeps 75 per cent and is not.
+
+    MUTATION: delete the `abs(ratio - 1.0) > _MAX_CAL_RA_RATE_DRIFT` arm from
+    `_cal_reusable`. Observed: the +34.4 calibration is accepted at +66.1 and
+    the first assertion fails.
+    """
+    import math as _math
+
+    from astrodeck.guide.native import NativeGuider
+
+    rig = build_sim_rig()
+    g = NativeGuider(rig["guide_camera"], rig["telescope"],
+                     config={"image_scale_arcsec": 2.0}, profile_id=None)
+
+    def cal_at(dec_deg: float) -> dict:
+        c = _good_cal_dict()
+        c["declination"] = _math.radians(dec_deg)
+        return c
+
+    # The night itself.
+    assert g._cal_reusable(cal_at(34.4), _math.radians(66.1)) is False, (
+        "a calibration walked at +34.4 was reused at +66.1, where it delivers "
+        "49 per cent of the rate it measured")
+
+    # A move the calibration survives: same axis, 93 per cent of the rate.
+    assert g._cal_reusable(cal_at(34.4), _math.radians(40.0)) is True
+
+    # Near the pole the same DEGREE change is decisive, which a degree
+    # threshold could not express: +60 to +66 keeps 81 per cent and is kept,
+    # +60 to +68 keeps 75 per cent and is not.
+    assert g._cal_reusable(cal_at(60.0), _math.radians(66.0)) is True
+    assert g._cal_reusable(cal_at(60.0), _math.radians(68.0)) is False
+
+    # ...while twenty degrees down at the equator is harmless.
+    assert g._cal_reusable(cal_at(0.0), _math.radians(20.0)) is True
+
+    # An unreadable current declination is not evidence of staleness, so the
+    # arm is skipped rather than guessed. Same posture as the engine's
+    # UNKNOWN_DECLINATION sentinel.
+    assert g._cal_reusable(cal_at(34.4), None) is True
