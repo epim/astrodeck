@@ -675,6 +675,10 @@ def harden_private_path(path: Path, *, directory: bool | None = None) -> None:
 
     The opened object is inspected before its owner or DACL is trusted.  Every
     reparse point is rejected without following it.
+
+    A path that already carries the exact private DACL is left alone: the DACL
+    is read and verified first, and only a failed verification falls through to
+    the set-then-verify path.  See the comment on that check for why.
     """
     kernel32, advapi32 = _win32()
     target = _absolute(path)
@@ -699,6 +703,44 @@ def harden_private_path(path: Path, *, directory: bool | None = None) -> None:
                     "refusing private-state path owned by untrusted SID "
                     f"{owner}: {target}"
                 )
+
+            # VERIFY BEFORE SET. SetSecurityInfo with
+            # PROTECTED_DACL_SECURITY_INFORMATION makes Windows re-propagate
+            # the inheritable ACEs to every descendant, so on a directory it
+            # costs time proportional to the tree beneath it: measured on the
+            # rig at 2 ms empty, 279 ms at 1000 files and 7.0 s on captures/
+            # (about 7400 files). A bookkeeping write every 10 s therefore
+            # stalled the event loop for seconds, and got worse as thumbnails
+            # accumulated through a night. A path already in the correct state
+            # now costs one non-recursive DACL read instead.
+            #
+            # RULING: the unconditional set also re-propagated ACEs onto
+            # pre-existing children as a side effect. That is not what this
+            # function documents and is not a designed repair mechanism.
+            # Children created under this directory inherit correctly from the
+            # parent's inheritable ACEs at creation time, so steady-state
+            # security is unchanged. The deliberate descendant sweep already
+            # exists and is named: persist.secure_private_tree, which hardens a
+            # root and every existing descendant and runs once at startup as
+            # the migration for state written by older releases. That is where
+            # periodic child repair belongs if it is ever wanted. A status poll
+            # is not.
+            #
+            # The postcondition is unchanged: on a normal return the path has
+            # been verified to carry the exact private DACL.
+            try:
+                _verify_private_handle(
+                    kernel32,
+                    advapi32,
+                    handle,
+                    target,
+                    user_sid,
+                    actual_directory,
+                )
+            except PrivateAclError:
+                pass                    # wrong or absent: fall through and set
+            else:
+                return
 
             descriptor, dacl = _private_descriptor(
                 kernel32, advapi32, user_sid, actual_directory
