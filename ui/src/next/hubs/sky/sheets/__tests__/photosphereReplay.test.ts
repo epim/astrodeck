@@ -9,7 +9,7 @@
 // byte-identical files.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, rmdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -648,6 +648,9 @@ await test('capture outcomes: only the waits before the overlap test keep a refu
 // exactly the scanner's own analysis canvas for a 3:4 frame, so the
 // resampler neither shrinks nor magnifies on this pair - the two `resample`
 // cases at the top of this file grade that path on their own.
+/** The repository root: somewhere that is emphatically NOT tmpdir, used by
+ *  the #88 guard case to prove the delete refuses a path it does not own. */
+const REPO_ROOT = fileURLToPath(new URL('../../../../../../../', import.meta.url));
 const FIXTURES = fileURLToPath(new URL('../../../../../../../tools/photosphere_sim/fixtures/', import.meta.url));
 const FIXTURE_RIGHT_LENS = 'chartyard-shortpan-60';
 const FIXTURE_WRONG_LENS = 'chartyard-shortpan-70';
@@ -752,6 +755,54 @@ await test('replay: on the fixture too, the lens the scanner assumes is never to
   // threshold LENS_DOUBT_AFTER = 1 does NOT redden it, because the control's
   // run is 0: the fixture's control never refuses at all.) Run and reverted;
   // see task-2-report.md.
+});
+
+await test('#88 the recursive delete refuses a path it does not own', () => {
+  // The guard exists because an edit to this file deleted two 42 MB
+  // recordings. Until now nothing executed it: every caller goes through
+  // withTempCase, so the guard was a comment that happened to compile, and a
+  // typo in its condition -- a dropped `sep`, an inverted test -- would have
+  // been found by the next accident rather than by the suite.
+  //
+  // The victim here is a throwaway directory this case makes OUTSIDE tmpdir,
+  // so the mutation below is safe to run. It is deliberately not a real case
+  // directory: a test that proves a delete guard by pointing it at 42 MB of
+  // irreplaceable recordings has misunderstood the problem.
+  //
+  // MUTATION: delete the `throw` from rmTemp. Observed: the probe directory
+  // and its file are gone and the "still there" assertion fails -- which is
+  // precisely what happened to chartyard-arc075-60 and -70.
+  const probe = join(REPO_ROOT, '.rmtemp-guard-probe');
+  const witness = join(probe, 'stand-in-for-a-recording.txt');
+  mkdirSync(probe, { recursive: true });
+  writeFileSync(witness, 'not a real recording, but it is not tmpdir either');
+  try {
+    let threw = '';
+    try { rmTemp(probe); } catch (e) { threw = String(e); }
+    assert(threw.includes('refusing a recursive delete'),
+      `rmTemp accepted a path outside tmpdir: ${threw || '(it did not throw)'}`);
+    assert(existsSync(witness),
+      'rmTemp deleted a directory outside tmpdir - this is issue #88 happening again');
+
+    // tmpdir() ITSELF is the other way to get this wrong: it starts with
+    // tmpdir(), so a guard written only as startsWith would sweep the whole
+    // temporary directory.
+    let threwRoot = '';
+    try { rmTemp(tmpdir()); } catch (e) { threwRoot = String(e); }
+    assert(threwRoot.includes('refusing a recursive delete'),
+      'rmTemp accepted tmpdir() itself');
+
+    // And it still does its job for a directory it does own.
+    const mine = mkdtempSync(join(tmpdir(), 'rmtemp-positive-'));
+    writeFileSync(join(mine, 'x'), 'x');
+    rmTemp(mine);
+    assert(!existsSync(mine), 'rmTemp did not delete a directory under tmpdir');
+  } finally {
+    // Non-recursive on purpose: this case is about not reaching for a
+    // recursive delete on a path outside tmpdir.
+    rmSync(witness, { force: true });
+    rmdirSync(probe);
+  }
 });
 
 console.log(`photosphereReplay.test: ${passed}/${passed + failed} passed`
