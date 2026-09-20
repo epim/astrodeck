@@ -110,6 +110,14 @@ const index: SessionFilesIndexT = {
 
 // ================================================================= the fold
 
+test("mixed exposures show no misleading single exposure and sum actual integration", () => {
+  const frames = [frame({ exposure_s: 60 }), frame({ exposure_s: 120 }), frame({ exposure_s: 10 })];
+  const row = foldRows(frames, null)[0];
+  eq(row.exposureS, null, "no median presented as a common exposure");
+  eq(row.integrationS, 190, "sum the exposures, not median times frame count");
+  eq(foldRows(frames, index)[0].exposureS, null, "mixed library settings stay visible with a ledger");
+});
+
 test("precondition: the fixture really has two filters and five frames", () => {
   eq(twoFilters.length, 5, "fixture frame count");
   eq(new Set(twoFilters.map((f) => f.filter)).size, 2, "fixture filter count");

@@ -86,17 +86,17 @@ export function fmtFrameCost(count: number, bytes: number): string {
  *   "picked" — an explicit list of relative paths the user ticked. Exact, but
  *     every path rides in the URL, so it is bounded (see PICKED_URL_BUDGET).
  *
- * The server's `path` parameter DEFINES the set and makes it ignore the filter,
- * so these two are genuinely exclusive — never send both and hope.
+ * Explicit paths define a picked set. With a snapshot, the filter also names
+ * the listing that supplied those paths; it validates scope, not membership.
  */
 export type GallerySelection =
-  | { mode: "filter"; q: string; nightFrom: string; nightTo: string }
-  | { mode: "picked"; paths: string[] };
+  | { mode: "filter"; q: string; nightFrom: string; nightTo: string; snapshot?: string }
+  | { mode: "picked"; paths: string[]; snapshot?: string; q?: string; nightFrom?: string; nightTo?: string };
 
 /** Query string (leading "?", or "" when empty) for the frames LISTING. */
 export function framesQuery(opts: {
   q?: string; nightFrom?: string; nightTo?: string;
-  offset?: number; limit?: number;
+  offset?: number; limit?: number; cursor?: string;
 }): string {
   const p = new URLSearchParams();
   if (opts.q) p.set("q", opts.q);
@@ -104,6 +104,7 @@ export function framesQuery(opts: {
   if (opts.nightTo) p.set("night_to", opts.nightTo);
   if (opts.offset) p.set("offset", String(opts.offset));
   if (opts.limit) p.set("limit", String(opts.limit));
+  if (opts.cursor) p.set("cursor", opts.cursor);
   const s = p.toString();
   return s ? `?${s}` : "";
 }
@@ -121,11 +122,11 @@ export function selectionQuery(sel: GallerySelection): string {
   const p = new URLSearchParams();
   if (sel.mode === "picked") {
     for (const path of sel.paths) p.append("path", path);
-  } else {
-    if (sel.q) p.set("q", sel.q);
-    if (sel.nightFrom) p.set("night_from", sel.nightFrom);
-    if (sel.nightTo) p.set("night_to", sel.nightTo);
   }
+  if (sel.q) p.set("q", sel.q);
+  if (sel.nightFrom) p.set("night_from", sel.nightFrom);
+  if (sel.nightTo) p.set("night_to", sel.nightTo);
+  if (sel.snapshot) p.set("snapshot", sel.snapshot);
   const s = p.toString();
   return s ? `?${s}` : "";
 }
@@ -134,26 +135,22 @@ export function selectionQuery(sel: GallerySelection): string {
 export const framesPath = (o: Parameters<typeof framesQuery>[0]): string =>
   `/api/gallery/frames${framesQuery(o)}`;
 export const nightsPath = (): string => "/api/gallery/nights";
-// No `summaryPath`: /api/gallery/summary exists for callers that have no
-// listing (a script pricing a stream), but this UI always has one — the frames
-// response carries `total`/`bytes` for the WHOLE filtered set from the same
-// server-side resolver download.zip uses, so asking for them again would be a
-// second library walk for two numbers already on screen.
 export const downloadPath = (sel: GallerySelection): string =>
   `/api/gallery/download.zip${selectionQuery(sel)}`;
 /**
- * `v` is the frame's mtime and exists only to bust the BROWSER cache.
+ * `v` is the frame's file version (or full-precision mtime on older servers)
+ * and exists to invalidate the browser cache when the file changes.
  *
- * The server keys its own thumbnail cache on path+mtime+width, so re-capturing
+ * The server keys its own thumbnail cache on path+version+width, so re-capturing
  * to the same path yields a different image — but the response also carries
  * `max-age=3600`, so without a changing URL the browser would keep showing the
  * old thumbnail for an hour and the server-side correctness would never reach
  * the screen. FastAPI ignores query parameters a route does not declare, so this
  * costs the server nothing.
  */
-export const thumbPath = (path: string, width = 256, v?: number): string =>
+export const thumbPath = (path: string, width = 256, v?: number | string): string =>
   `/api/gallery/thumb?path=${encodeURIComponent(path)}&w=${width}` +
-  (v != null && Number.isFinite(v) ? `&v=${Math.round(v)}` : "");
+  (v != null && (typeof v === "string" || Number.isFinite(v)) ? `&v=${encodeURIComponent(v)}` : "");
 export const filePath = (path: string): string =>
   `/api/gallery/file?path=${encodeURIComponent(path)}`;
 
