@@ -14,7 +14,7 @@
 // `horizonAltAt`/point-editing clamps are lifted verbatim from the prototype's
 // `hzAt()`/`hzDrag()` (scratchpad seams/proto/logic.js): wrap-around via a
 // point appended before the first and after the last, and a moved point's
-// azimuth clamped strictly between its neighbours (altitude -8..88).
+// azimuth clamped strictly between its neighbours (altitude -8..90).
 //
 // ASSUMPTION: `movePoint`/neighbour clamping expects `points` already sorted
 // by `az` (as the prototype's stored horizon arrays are) - callers that add a
@@ -61,7 +61,7 @@ export function insertPoint(points: HorizonPoint[], az: number, alt: number): Ho
 }
 
 /** Move point `i`, clamping az strictly between its neighbours (or 0/359 at
- *  the ends) and alt to -8..88 - matches the prototype's drag clamp so a
+ *  the ends) and alt to -8..90, including overhead obstructions, so a
  *  dragged point can never cross a neighbour or invert the polyline. */
 export function movePoint(points: HorizonPoint[], i: number, az: number, alt: number): HorizonPoint[] {
   if (i < 0 || i >= points.length) return points;
@@ -70,7 +70,7 @@ export function movePoint(points: HorizonPoint[], i: number, az: number, alt: nu
   const hi = i < next.length - 1 ? next[i + 1].az - 1 : 359;
   next[i] = {
     az: Math.round(Math.max(lo, Math.min(hi, az))),
-    alt: Math.round(Math.max(-8, Math.min(88, alt))),
+    alt: Math.round(Math.max(-8, Math.min(90, alt))),
   };
   return next;
 }

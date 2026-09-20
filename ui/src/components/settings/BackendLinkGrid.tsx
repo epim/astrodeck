@@ -2,8 +2,8 @@
 // grid). Reads `backend_links` (hub.backend_links): a retained RoleResult joined
 // with the role's LIVE `connected` state. Present on every status poll + hello,
 // and inside ConnectRigResult. `[]` until a RigSpec/profile connect happened
-// (legacy connect_* paths leave it empty), so this grid renders an empty-state
-// hint then, NOT a wall of red.
+// (legacy connect_* paths leave it empty). Device telemetry fills roles absent
+// from that list without inventing a connect-attempt result.
 //
 // Tri-state mapping (NEVER color alone — night mode collapses good/warn/bad toward
 // red, so each cell reads by Led SHAPE + glyph + word):
@@ -18,7 +18,7 @@
 // guarantees an alarm word NEVER renders alone: see linkReason (UX #52).
 
 import type { JSX } from "react";
-import type { BackendLink, LedState } from "../../types";
+import type { BackendLink, DeviceInfo, LedState } from "../../types";
 import { Led, EmptyState } from "../ui";
 // Canonical role order + labels live in backendMeta (mirrors server
 // devices.backend.ROLES) — this grid had drifted its own copy; single source now.
@@ -87,18 +87,24 @@ function LinkRow({ link, dense }: { link: BackendLink; dense?: boolean }): JSX.E
 
 export default function BackendLinkGrid({
   links,
+  connected = {},
   dense = false,
   emptyHint = "Connect a rig from the picker or activate a profile to see per-role link status here.",
 }: {
   links: BackendLink[];
+  /** Live device telemetry also covers rigs connected outside the RigSpec path.
+   * It is not a connect-attempt result: never infer failed/degraded from it. */
+  connected?: Record<string, DeviceInfo>;
   dense?: boolean;
   emptyHint?: string;
 }): JSX.Element {
-  if (links.length === 0) {
+  const linkedRoles = new Set(links.map((link) => link.role));
+  const deviceOnly = Object.entries(connected).filter(([role]) => !linkedRoles.has(role));
+  if (links.length === 0 && deviceOnly.length === 0) {
     return (
       <EmptyState
         icon="link"
-        title="No rig connected yet"
+        title="No connection status available"
         hint={emptyHint}
         size={dense ? "inline" : "hero"}
       />
@@ -106,7 +112,10 @@ export default function BackendLinkGrid({
   }
 
   // Order canonically (camera→rotator); any unknown trailing role keeps its order.
-  const ordered = [...links].sort((a, b) => {
+  const ordered = [
+    ...links.map((link) => ({ role: link.role, link, device: undefined })),
+    ...deviceOnly.map(([role, device]) => ({ role, link: undefined, device })),
+  ].sort((a, b) => {
     const ia = ALL_ROLES.indexOf(a.role as (typeof ALL_ROLES)[number]);
     const ib = ALL_ROLES.indexOf(b.role as (typeof ALL_ROLES)[number]);
     return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
@@ -114,8 +123,16 @@ export default function BackendLinkGrid({
 
   return (
     <div className="flex flex-col gap-2">
-      {ordered.map((l) => (
-        <LinkRow key={l.role} link={l} dense={dense} />
+      {ordered.map(({ role, link, device }) => link ? (
+        <LinkRow key={role} link={link} dense={dense} />
+      ) : (
+        <div key={role} className="flex items-center gap-3 border border-line bg-bg/60 px-3 py-2.5">
+          <Led state={device?.connected ? "on" : "off"} label={`${ROLE_LABEL[role] ?? role}: ${device?.connected ? "connected" : "disconnected"}`} />
+          <span className="label w-28 shrink-0">{ROLE_LABEL[role] ?? role}</span>
+          <span className={`mono text-[11px] tracking-wider ${device?.connected ? "text-good" : "text-faint"}`}>
+            {device?.connected ? "CONNECTED" : "DISCONNECTED"}
+          </span>
+        </div>
       ))}
     </div>
   );

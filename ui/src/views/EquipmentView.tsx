@@ -70,6 +70,7 @@ import { waitForProfileActive } from "../components/settings/ProfileList";
 import { ROLE_LABEL } from "../components/settings/backendMeta";
 import { EmptyState, Field, HonestButton, InfoDot, Led, Panel } from "../components/ui";
 import { Icon } from "../components/icons";
+import { useExperience } from "../guided/experience";
 
 const SLOT_WORD: Record<string, { word: string; tone: string }> = {
   unassigned: { word: "UNASSIGNED", tone: "text-faint" },
@@ -173,6 +174,7 @@ export function compareRoleIdentity(
 }
 
 export default function EquipmentView(): JSX.Element {
+  const guided = useExperience(s => s.mode === "guided" && s.wizard === "equipment");
   const status = useStore((s) => s.status);
   const showToast = useStore((s) => s.showToast);
   const canConfig = useCanConfigBackend();
@@ -897,24 +899,32 @@ export default function EquipmentView(): JSX.Element {
     );
   }
 
+  const firstLightRoles=new Set(["camera","telescope","focuser","filterwheel"]);
+  const optionalRoles=roles.filter(role=>!firstLightRoles.has(role));
+  const roleSlot=(role:string)=><RoleSlot key={role} role={role} drivers={drivers} assignment={assignments[role]??null} link={linkByRole[role]} result={results[role]} status={status} disabled={!canConfig||busy} onAssign={a=>setAssignment(role,a)}/>;
   return (
-    <div className="grid gap-4 lg:grid-cols-[1fr_minmax(260px,340px)]">
+    <div className={`grid gap-4 ${guided ? "" : "lg:grid-cols-[1fr_minmax(260px,340px)]"}`}>
+      {guided && <section className="guided-choice-card">
+        <h2>Find your equipment</h2><p>Power on the mount and camera, then connect them to the AstroDeck controller. Scan to fill in the choices below, review them, and choose Connect rig.</p>
+        <button type="button" className="btn btn-accent min-h-[56px]" disabled={busy || !canConfig || roles.length === 0} onClick={doDetectHardware}><Icon name="refresh" size={22}/>{busyWhat === "scan" ? "Looking for equipment…" : "Autodetect equipment"}</button>
+        <p className="text-xs text-dim">A connected mount and imaging camera are required to continue. You can add other devices later.</p>
+      </section>}
       {/* UX review #51: the nav calls this EQUIPMENT and every button on it
           calls the same thing a "rig", with nothing on screen saying they are
           the same word. One heading settles it. */}
-      <div className="lg:col-span-2 flex items-baseline gap-3 flex-wrap">
+      {!guided && <div className="lg:col-span-2 flex items-baseline gap-3 flex-wrap">
         <h1 className="font-display text-lg tracking-[0.2em] text-ink uppercase">
           Equipment
         </h1>
         <span className="text-[11px] text-dim">
           your rig
         </span>
-      </div>
+      </div>}
       {/* Background-refresh failure (data already loaded): a non-destructive
           inline banner + retry, spanning both columns — never the full-panel
           blank the first-load EmptyState above uses. */}
       {loadErr && data && (
-        <div className="lg:col-span-2 flex items-center gap-2 border border-bad/50 bg-bad/5 px-3 py-2">
+        <div className={`${guided ? "" : "lg:col-span-2"} flex items-center gap-2 border border-bad/50 bg-bad/5 px-3 py-2`}>
           <Icon name="alert" size={14} className="text-bad shrink-0" />
           <span className="text-sm text-ink flex-1">Couldn't refresh drivers: {loadErr}</span>
           <button type="button" className="btn !py-1 !px-2 text-[11px]" onClick={() => void reloadDrivers()}>
@@ -950,16 +960,16 @@ export default function EquipmentView(): JSX.Element {
                   <>
                     {liveUnassignedRoles.length} device
                     {liveUnassignedRoles.length === 1 ? " is" : "s are"} running
-                    from the saved profile this rig booted with. This screen
-                    edits assignments; it does not need to match to be correct.
+                    while a saved profile is active. The assignments below are
+                    this browser's choices for a future connection.
                   </>
                 ) : (
                   <>
                     {liveUnassignedRoles.length} device
                     {liveUnassignedRoles.length === 1 ? " is" : "s are"} connected
-                    but not assigned here — this rig was started somewhere else
-                    (the one-tap simulator, or Profiles → Activate). Pick a
-                    driver on those rows to save them into a profile.
+                    without assignments in this browser. You can save the
+                    connected rig in Profiles below. Choose drivers here only
+                    when you want to change what connects.
                   </>
                 )}
               </span>
@@ -974,35 +984,29 @@ export default function EquipmentView(): JSX.Element {
             </p>
           )}
           <div className="flex flex-col gap-2.5">
-            {roles.map((role) => (
-              <RoleSlot
-                key={role}
-                role={role}
-                drivers={drivers}
-                assignment={assignments[role] ?? null}
-                link={linkByRole[role]}
-                result={results[role]}
-                status={status}
-                disabled={!canConfig || busy}
-                onAssign={(a) => setAssignment(role, a)}
-              />
-            ))}
+            {roles.filter(role=>!guided||firstLightRoles.has(role)).map(roleSlot)}
+            {guided && optionalRoles.length>0 && <details className="group rounded-lg border border-line p-3"><summary className="cursor-pointer min-h-11 flex gap-2 items-center text-sm"><Icon name="arrow-right" size={18} className="shrink-0 transition-transform group-open:rotate-90"/>More equipment · {optionalRoles.filter(isRoleLive).length} connected</summary><p className="text-sm text-dim mb-3">Guide cameras, rotators and other accessories are optional for a first image. Open a device to review its connection.</p><div className="flex flex-col gap-2.5">{optionalRoles.map(roleSlot)}</div></details>}
             {roles.length === 0 && (
               <p className="text-dim text-xs">Loading device slots…</p>
             )}
           </div>
         </Panel>
 
-        <TasksPanel drivers={drivers} busy={busy} />
-        <RotatorCard />
+        {!guided && <><TasksPanel drivers={drivers} busy={busy} /><RotatorCard /></>}
 
         <Panel title="Rig Actions">
           {/* UX-31: naive first-run — promote the real bootstraps instead of a
               greyed-out primary "Connect Rig (0)". */}
-          {assignedCount === 0 && (
+          {assignedCount === 0 && !rigUp && (
             <p className="text-xs text-dim mb-3 leading-relaxed">
-              No equipment yet — <span className="text-ink">Detect hardware rig</span> to auto-assign your
+              No equipment yet — <span className="text-ink">{guided?"Autodetect equipment":"Detect hardware rig"}</span> to auto-assign your
               connected gear, or start the <span className="text-ink">Simulator rig</span> to explore.
+            </p>
+          )}
+          {assignedCount === 0 && rigUp && (
+            <p className="text-xs text-dim mb-3 leading-relaxed">
+              {connectedCount} equipment {connectedCount === 1 ? "role is" : "roles are"} connected.
+              No assignment changes to apply.
             </p>
           )}
           <div className="flex flex-wrap items-center gap-3">
@@ -1050,7 +1054,7 @@ export default function EquipmentView(): JSX.Element {
                 </button>
               );
             })()}
-            {assignedCount === 0 && canConfig && (
+            {assignedCount === 0 && !rigUp && canConfig && (
               <span className="text-[11px] text-dim">
                 nothing assigned yet — pick a driver above, or use one of these
               </span>
@@ -1063,9 +1067,9 @@ export default function EquipmentView(): JSX.Element {
                 wondering why the mount will not move. It stays one tap away
                 because it IS how you explore the app with the scope in the
                 garage. */}
-            <button type="button" className={`btn ${assignedCount === 0 ? "btn-accent" : ""}`} disabled={busy || !canConfig || roles.length === 0} onClick={doDetectHardware}>
+            {!guided && <button type="button" className={`btn ${assignedCount === 0 && !rigUp ? "btn-accent" : ""}`} disabled={busy || !canConfig || roles.length === 0} onClick={doDetectHardware}>
               {busyWhat === "scan" ? "Scanning USB & serial…" : "▶ Detect hardware rig"}
-            </button>
+            </button>}
             <button
               type="button"
               className="btn !text-dim !border-line"
@@ -1202,9 +1206,7 @@ export default function EquipmentView(): JSX.Element {
       </div>
 
       {/* live per-role truth: the boot-LED tri-state grid (kept per spec §4.3) */}
-      <Panel title="Link Status">
-        <BackendLinkGrid links={links} dense />
-      </Panel>
+      {guided ? <details className="group rounded-lg border border-line p-3"><summary className="cursor-pointer min-h-11 flex gap-2 items-center text-sm"><Icon name="arrow-right" size={18} className="shrink-0 transition-transform group-open:rotate-90"/>Advanced equipment settings and connection details</summary><div className="flex flex-col gap-4 pt-3"><TasksPanel drivers={drivers} busy={busy}/><RotatorCard/><Panel title="Link Status"><BackendLinkGrid links={links} connected={status?.connected} dense/></Panel></div></details> : <Panel title="Link Status"><BackendLinkGrid links={links} connected={status?.connected} dense /></Panel>}
     </div>
   );
 }
@@ -1436,7 +1438,7 @@ function RoleSlot({
 // Wiring is deliberately identical to CaptureView's — same modal, same two
 // endpoints — so there is exactly one implementation of the behaviour and two
 // places to reach it.
-function FilterSlotsEditor({
+export function FilterSlotsEditor({
   names,
   offsets,
   opaque = [],
@@ -1446,6 +1448,9 @@ function FilterSlotsEditor({
   position,
   hasFocuser,
   disabled,
+  buttonLabel = "Filter slots & focus offsets…",
+  initiallyOpen = false,
+  learningFirst = false,
 }: {
   names: string[];
   offsets: number[];
@@ -1456,8 +1461,11 @@ function FilterSlotsEditor({
   position: number;
   hasFocuser: boolean;
   disabled: boolean;
+  buttonLabel?: string;
+  initiallyOpen?: boolean;
+  learningFirst?: boolean;
 }): JSX.Element {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(initiallyOpen);
   const showToast = useStore((s) => s.showToast);
   // A blackout slot's offset is a placeholder zero, so it must not count as
   // evidence that offsets were measured — nor as evidence they were not.
@@ -1483,7 +1491,7 @@ function FilterSlotsEditor({
         // reason on the button itself (`learnDisabledReason` below).
         onClick={() => setOpen(true)}
       >
-        Filter slots &amp; focus offsets…
+        {buttonLabel}
       </button>
       <span className="text-dim truncate">
         {names.length ? names.join(" · ") : "no slots reported"} —{" "}
@@ -1492,6 +1500,7 @@ function FilterSlotsEditor({
           ` — darks via ${names[darkSlot] || `slot ${darkSlot + 1}`}`}
       </span>
       <FilterNamesModal
+        learningFirst={learningFirst}
         open={open}
         onClose={close}
         names={names}

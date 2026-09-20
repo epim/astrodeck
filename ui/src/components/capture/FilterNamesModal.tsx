@@ -5,6 +5,7 @@
 // POST /api/filterwheel/names, so they survive a reconnect.
 
 import { useEffect, useRef, useState, type JSX } from "react";
+import { createPortal } from "react-dom";
 import { useFilterOffsetsLearn, usePreviews, useStatus } from "../../store";
 import { nameForOpaqueToggle } from "../../lib/filterSlots";
 import { NARROWBAND_EXPOSURE_MULTIPLE, deriveAutofocusParams,
@@ -67,8 +68,10 @@ export function FilterNamesModal({
   learnDisabledReason = null,
   onLearn,
   onSave,
+  learningFirst = false,
 }: {
   open: boolean;
+  learningFirst?: boolean;
   onClose: () => void;
   names: string[];
   offsets: number[];
@@ -109,7 +112,8 @@ export function FilterNamesModal({
   const priorNames = useRef<(string | undefined)[]>([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [learnOpen, setLearnOpen] = useState(false);
+  const [learnOpen, setLearnOpen] = useState(learningFirst);
+  const [showSlotDetails, setShowSlotDetails] = useState(!learningFirst);
   const [refSlot, setRefSlot] = useState(0);
   // Set by a press on the blocked Start. The reason is on screen either way
   // (see the line under the button); this only raises its voice for the person
@@ -128,6 +132,7 @@ export function FilterNamesModal({
   const [nbExposure, setNbExposure] = useState<string | null>(null);
   const [nbGain, setNbGain] = useState<string | null>(null);
   const [stopping, setStopping] = useState(false);
+  const [learnStarting, setLearnStarting] = useState(false);
   const learn = useFilterOffsetsLearn();
   const status = useStatus();
   const previews = usePreviews();
@@ -166,6 +171,7 @@ export function FilterNamesModal({
     setErr(null);
     setAskedWhy(false);
     setStopping(false);
+    if(learningFirst)setLearnOpen(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
@@ -224,7 +230,7 @@ export function FilterNamesModal({
       }
       if (e.key !== "Tab" || !panel) return;
       const f = panel.querySelectorAll<HTMLElement>(
-        'button:not([disabled]), input, [tabindex]:not([tabindex="-1"])',
+        'button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
       );
       if (f.length === 0) return;
       const first = f[0];
@@ -295,6 +301,17 @@ export function FilterNamesModal({
   const effectiveRef = draftOpaque[refSlot]
     ? draftOpaque.findIndex((b) => !b)
     : refSlot;
+  const learning = learnStarting || learn?.state === "running";
+  const startReason = !onLearn ? "this build has no learn handler wired"
+    : learnStarting ? "Starting filter measurements"
+    : learn?.state === "running" ? "Filter measurements are already running"
+    : learnDisabledReason;
+  const stopLearning = async () => {
+    setStopping(true); setErr(null);
+    try { await api.post("/api/filterwheel/learn-offsets/cancel", {}); }
+    catch(e) { setErr((e as Error).message); }
+    finally { setStopping(false); }
+  };
 
   const save = async () => {
     setBusy(true);
@@ -329,7 +346,7 @@ export function FilterNamesModal({
     }
   };
 
-  return (
+  const content = (
     <div
       className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center"
       role="presentation"
@@ -342,14 +359,16 @@ export function FilterNamesModal({
         ref={panelRef}
         role="dialog"
         aria-modal="true"
-        aria-label="Filter slot names"
+        aria-label={learningFirst ? "Measure filter focus offsets" : "Filter slot names"}
         className="panel relative z-[61] w-full sm:max-w-[420px] max-h-[88vh] sm:rounded-none rounded-t flex flex-col sheet-enter"
       >
         <header className="flex items-center justify-between gap-3 p-4 border-b border-line shrink-0">
-          <h2 className="panel-title !text-ink truncate">Filter slot names</h2>
+          <h2 className="panel-title !text-ink truncate">{learningFirst ? "Measure filter focus offsets" : "Filter slot names"}</h2>
         </header>
 
         <div className="overflow-y-auto p-4 grow flex flex-col gap-2">
+          {learningFirst && <><p className="text-sm text-dim">AstroDeck will focus each filter and compare its position with the reference filter. Review the exposure, then start when you're ready. Successful measurements are saved automatically; a failed filter keeps its previous offset.</p><button className="btn" aria-expanded={showSlotDetails} onClick={()=>setShowSlotDetails(v=>!v)}>{showSlotDetails?"Hide":"Review"} filter names and saved offsets</button></>}
+          {showSlotDetails && <fieldset disabled={learning} className="contents">
           {/* SEVEN COLUMNS DO NOT FIT A PHONE, so the grid scrolls inside its
               own box rather than widening the modal (house rule: wide content
               scrolls in an overflow-x container, the page never does). The
@@ -496,6 +515,7 @@ export function FilterNamesModal({
             (below). Saved with the names, so the wheel is only described once.
           </p>
 
+          </fieldset>}
           {/* --- Advanced: learn the offsets automatically. Collapsed by
                default; the manual grid above is untouched and still the novice
                path (offsets of 0 image perfectly well). --- */}
@@ -516,11 +536,12 @@ export function FilterNamesModal({
                     {anyOpaque && " Blackout slots are skipped."}
                   </p>
                   <label className="flex items-center gap-2 text-[11px] text-dim">
-                    <span>Reference</span>
+                    <span>Reference filter</span>
                     <select
                       className="field !w-32"
                       value={effectiveRef}
                       aria-label="Reference filter"
+                      disabled={learning}
                       onChange={(e) => setRefSlot(Number(e.target.value))}>
                       {/* blackout slots are absent, not disabled: the server
                           rejects them outright, so offering one would only
@@ -533,8 +554,17 @@ export function FilterNamesModal({
                     </select>
                   </label>
                   <p className="text-[10px] text-dim">
-                    Offsets are measured relative to this filter (it stays at 0).
+                    All filters below will be measured. This filter runs first and sets the zero point for the others.
                   </p>
+                  <ol className="guided-filter-plan" aria-label="Filter measurement plan">
+                    {[effectiveRef,...draftNames.map((_,i)=>i).filter(i=>i!==effectiveRef&&!draftOpaque[i])].filter(i=>!draftOpaque[i]).map(i=>{
+                      const active=learn?.state==="running"&&learn.slot===i;
+                      const measured=learn?.done_slots?.includes(i)||(learn?.state==="done"&&!learn.kept?.includes(i));
+                      const kept=learn?.state==="done"&&learn.kept?.includes(i);
+                      return <li key={i} aria-current={active?"step":undefined}><strong>{draftNames[i]||`Slot ${i+1}`}</strong>{i===effectiveRef?" · reference":""}
+                        <small>{active?"Focusing now…":kept?"No reliable focus · prior offset kept":measured?`Measured${learn?.state==="done"?` · ${learn.offsets?.[i]??0} steps`:""}`:learn?.state==="failed"?"Not measured in this run":"Waiting to measure"}</small></li>;
+                    })}
+                  </ol>
                   {/* THE SWEEP'S OWN SETTINGS. Both call sites used to post
                       `{ ref_slot }` alone, so every learn run in this app's
                       history ran at the server's 2 s / gain 120 defaults while
@@ -549,6 +579,7 @@ export function FilterNamesModal({
                       value={learnExposure}
                       inputMode="decimal"
                       aria-label="Sweep exposure seconds"
+                      disabled={learning}
                       onChange={(e) => setLearnExposure(e.target.value)}
                     />
                     <span>s at gain</span>
@@ -557,6 +588,7 @@ export function FilterNamesModal({
                       value={learnGain}
                       inputMode="numeric"
                       aria-label="Sweep gain"
+                      disabled={learning}
                       onChange={(e) => setLearnGain(e.target.value)}
                     />
                   </div>
@@ -569,6 +601,7 @@ export function FilterNamesModal({
                           value={nbExposure ?? String(derivedNbExposure)}
                           inputMode="decimal"
                           aria-label="Narrowband sweep exposure seconds"
+                          disabled={learning}
                           onChange={(e) => setNbExposure(e.target.value)}
                         />
                         <span>s at gain</span>
@@ -577,6 +610,7 @@ export function FilterNamesModal({
                           value={nbGain ?? String(derivedNbGain)}
                           inputMode="numeric"
                           aria-label="Narrowband sweep gain"
+                          disabled={learning}
                           onChange={(e) => setNbGain(e.target.value)}
                         />
                       </div>
@@ -601,33 +635,33 @@ export function FilterNamesModal({
                       the egain twin on the Capture screen does. */}
                   <HonestButton
                     className="btn self-start"
-                    reason={onLearn ? (learnDisabledReason ?? null)
-                                    : "this build has no learn handler wired"}
+                    reason={startReason}
                     onExplain={() => setAskedWhy(true)}
                     onClick={() => {
                       setErr(null);
                       setAskedWhy(false);
+                      setLearnStarting(true);
                       onLearn?.(effectiveRef, {
                         exposure_s: sweepExposureS,
                         gain: sweepGain,
                         narrowband: draftNarrow.map((n, i) => n && !draftOpaque[i]),
                         nb_exposure_s: nbExposureS,
                         nb_gain: nbGainValue,
-                      }).catch((e) => setErr((e as Error).message));
+                      }).catch((e) => setErr((e as Error).message)).finally(()=>setLearnStarting(false));
                     }}>
-                    Start
+                    {learningFirst?"Measure all filters":"Start"}
                   </HonestButton>
-                  {learnDisabledReason && (
+                  {startReason && !learning && (
                     <p role={askedWhy ? "alert" : undefined}
                       className={`text-[11px] inline-flex items-center gap-1.5 ${askedWhy ? "text-warn" : "text-dim"}`}>
-                      <Icon name="lock" size={11} aria-hidden /> Unavailable — {learnDisabledReason}.
+                      <Icon name="lock" size={11} aria-hidden /> Unavailable — {startReason}.
                     </p>
                   )}
                   {learn?.state === "running" && (
                     <>
                       <p className="text-[11px] text-accent" role="status">
                         Focusing {learn.name ?? `slot ${(learn.slot ?? 0) + 1}`}
-                        {learn.of ? ` (${(learn.slot ?? 0) + 1} of ${learn.of})` : ""}…
+                        {` · ${learn.done_slots?.length??0} measured`}…
                       </p>
                       {/* THE WAY OUT. Until this existed the only way to clear
                           a hung filter-offsets run was to restart the server —
@@ -635,23 +669,7 @@ export function FilterNamesModal({
                           unmeasurable position fourteen times and the run could
                           neither finish nor fail. The route waits for the sweep
                           to put the focuser back before it halts it. */}
-                      <button
-                        type="button"
-                        className="btn self-start min-h-11"
-                        disabled={stopping}
-                        onClick={async () => {
-                          setStopping(true);
-                          setErr(null);
-                          try {
-                            await api.post("/api/filterwheel/learn-offsets/cancel", {});
-                          } catch (e) {
-                            setErr((e as Error).message);
-                          } finally {
-                            setStopping(false);
-                          }
-                        }}>
-                        {stopping ? "Stopping…" : "Stop"}
-                      </button>
+
                     </>
                   )}
                   {learn?.state === "failed" && (
@@ -663,6 +681,7 @@ export function FilterNamesModal({
                       {learn.kept!.map((i) => draftNames[i] || `slot ${i + 1}`).join(", ")}
                     </p>
                   )}
+                  {learn?.state==="done"&&<p role="status" className="text-xs text-good">The measured offsets have been saved to your equipment. Review the results above. Save below also applies any edits you make here.</p>}
                 </div>
               )}
             </div>
@@ -672,14 +691,18 @@ export function FilterNamesModal({
         </div>
 
         <footer className="flex justify-end gap-2 p-4 border-t border-line shrink-0">
+          {learn?.state==="running"&&<button type="button" className="btn min-h-11 mr-auto" disabled={stopping} onClick={()=>void stopLearning()}>{stopping?"Stopping…":"Stop"}</button>}
           <button type="button" className="btn" onClick={onClose} disabled={busy}>
-            Cancel
+            {learning?"Close":"Cancel"}
           </button>
-          <button type="button" className="btn btn-accent min-h-12" onClick={save} disabled={busy}>
+          <button type="button" className="btn btn-accent min-h-12" onClick={save} disabled={busy||learnStarting||learn?.state==="running"}>
             {busy ? "Saving…" : "Save"}
           </button>
         </footer>
       </div>
     </div>
   );
+  // Guided runs open this from within the scrolling focus workspace. Portal
+  // out of its animated containing block so phone controls stay on screen.
+  return learningFirst ? createPortal(content, document.body) : content;
 }

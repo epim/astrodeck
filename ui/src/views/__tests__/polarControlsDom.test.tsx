@@ -366,7 +366,32 @@ test("…and it clears when the solves come back", () => {
     "the operator learns to read past");
 });
 
+await publish("done", {phase:"adjusting",total_error:0,az_error:0,alt_error:0,reading_ts:Date.now()/1000});
+test("a measured zero is a valid result, not an absent measurement",()=>{
+  assert(container.textContent.includes("aligned to 0.0"),"measured zero lost its result");
+  assert(!container.textContent.includes("nothing was aligned"),"zero described as unmeasured");
+});
 // ------------------------------------------------------------------- report
+const {useExperience}=await import("../../guided/experience");
+win.HTMLCanvasElement.prototype.getContext=()=>null;
+await act(async()=>{
+  useStore.setState({polar:{state:"idle",az_error:0,alt_error:0,total_error:0,reading_ts:0}} as never);
+  useExperience.setState({mode:"guided",home:false,wizard:"alignment"});
+  root.render(createElement(PolarView,{key:"guided-lesson"}));
+});
+test("Guided alignment lesson has no idle instrument panel or premature final check",()=>{
+  assert(!!container.querySelector("canvas"),"3D example is missing");
+  assert(!container.querySelector('[aria-label^="Solve frame settings"]'),"camera settings leaked into lesson");
+  assert(!container.textContent.includes("Check the final alignment"),"final check leaked into lesson");
+  assert(!container.textContent.includes("Start Alignment"),"live controls leaked into lesson");
+});
+const openLive=[...container.querySelectorAll("button")].find((b:any)=>b.textContent.includes("Skip lesson")) as HTMLButtonElement;
+await act(async()=>openLive.click());
+test("the explicit lesson exit opens live alignment controls",()=>{
+  assert(!container.querySelector("canvas"),"lesson remains above the controls");
+  assert(!!container.querySelector('[aria-label^="Solve frame settings"]'),"live camera dial is missing");
+  assert(container.textContent.includes("Start Alignment"),"live start is missing");
+});
 await act(async () => { root.unmount(); });
 const total = passed + failed;
 console.log(`polarControlsDom.test: ${passed}/${total} passed`);

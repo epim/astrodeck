@@ -92,6 +92,7 @@ await test('A late photosphere camera grant is released after the editor closes'
   const sweep=new PhotosphereSweep();
   const video=document.createElement('video');
   const pending=sweep.start(video,document.createElement('canvas'));
+  await Promise.resolve(); await Promise.resolve();
   sweep.stop();
   let stopped=0;
   grant!({getTracks:()=>[{stop:()=>stopped++}]});

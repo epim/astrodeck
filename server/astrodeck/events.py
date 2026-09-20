@@ -257,6 +257,9 @@ def _persist_default() -> bool:
 
 class EventBus:
     def __init__(self, history: int = 200, persist: bool = True):
+        # Bounded operation snapshots for reconnecting controllers. Unlike log
+        # history these retain terminal results even when no browser was open.
+        self.operation_snapshots: dict[str, dict] = {}
         self._subscribers: set[asyncio.Queue[Event]] = set()
         self._history: deque[Event] = deque(maxlen=history)
         #: rolling per-night disk log (UX #9). ``None`` disables persistence.
@@ -278,6 +281,9 @@ class EventBus:
         self._subscribers.discard(q)
 
     def publish(self, type: str, **data: Any) -> None:
+        if type in ("focus", "filter_offsets"):
+            from copy import deepcopy
+            self.operation_snapshots[type] = {**deepcopy(data), "_observed_at": time.time()}
         # Any publish, not just a log one: if the failure happened on the last
         # log line of the night, the status events still flowing are what carry
         # the notice out.

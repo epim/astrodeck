@@ -3,12 +3,14 @@ import { useStore } from "../store";
 import { Icon } from "./icons";
 import type { IconName } from "./icons";
 import type { Toast, ToastLevel } from "../types";
+import { useExperience } from "../guided/experience";
 
 /**
  * Renders the store toast queue.
  *
  * - Top-center on phone (clear of the bottom-nav / Abort row); bottom-right on
- *   desktop.
+ *   desktop. Guided walkthroughs reserve the measured footer height so a
+ *   notification can never cover Back, Next, or Continue. Stacks scroll.
  * - A single shared aria-live region wraps the stack: assertive only when the
  *   newest toast is an error, else polite.
  * - One shared 500ms TTL sweeper batches all expired ids into a single dismiss
@@ -40,7 +42,7 @@ function ToastCard({ t }: { t: Toast }) {
   return (
     <div
       className={`panel border ${LEVEL_BORDER[t.level]} bg-raise/95 backdrop-blur px-3 py-2.5
-        w-full sm:w-[360px] pointer-events-auto`}
+        w-full sm:w-[360px] shrink-0 pointer-events-auto`}
     >
       <div className="flex items-start gap-2.5">
         <Icon name={LEVEL_ICON[t.level]} size={16} className={`${LEVEL_TEXT[t.level]} mt-0.5 shrink-0`} />
@@ -67,7 +69,7 @@ function ToastCard({ t }: { t: Toast }) {
           type="button"
           aria-label="Dismiss"
           onClick={() => dismissToast(t.id)}
-          className="text-dim hover:text-ink shrink-0 -mr-1 -mt-1 p-1 cursor-pointer"
+          className="text-dim hover:text-ink shrink-0 -mr-1 -mt-1 p-1 min-w-[44px] min-h-[44px] flex items-center justify-center cursor-pointer"
         >
           <Icon name="x" size={14} />
         </button>
@@ -92,6 +94,7 @@ function ToastCard({ t }: { t: Toast }) {
 
 export default function Toasts() {
   const toasts = useStore((s) => s.toasts);
+  const guided = useExperience(s => s.mode === "guided" && !s.home && s.wizard !== null);
 
   // Single shared sweeper: dismissExpired() does the expiry filter in the store
   // and removes all expired ids in one set() (deps [] so it is never torn down
@@ -110,7 +113,13 @@ export default function Toasts() {
     <div
       aria-live={assertive ? "assertive" : "polite"}
       aria-atomic="false"
-      className="fixed z-40 flex flex-col gap-2 pointer-events-none
+      data-guided-notifications={guided || undefined}
+      style={guided ? {
+        top: "auto", bottom: "calc(var(--guided-footer-height, 160px) + 12px)",
+        maxHeight: "min(40dvh, calc(100dvh - var(--guided-footer-height, 160px) - 80px))",
+        overflowY: "auto",
+      } : {maxHeight: "calc(100dvh - 7rem)", overflowY: "auto"}}
+      className="fixed z-40 flex flex-col gap-2 pointer-events-auto
         top-14 left-3 right-3
         sm:top-auto sm:bottom-6 sm:right-6 sm:left-auto sm:w-[360px]"
     >

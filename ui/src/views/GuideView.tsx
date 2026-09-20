@@ -30,6 +30,7 @@ import { compareRmsWindows } from "../lib/rmsCompare";
 import { selectGuideWindows } from "../lib/guideRms";
 import { guideNarration } from "../lib/guideNarration";
 import GuideQuickBar from "../components/GuideQuickBar";
+import { openSettingsPanel } from "../lib/settingsNavigation";
 import {
   RA_GUIDE_ALGORITHMS,
   DEC_GUIDE_ALGORITHMS,
@@ -50,9 +51,6 @@ export default function GuideView() {
   const status = useStatus();
   const guide = useGuide();
   const showToast = useStore((s) => s.showToast);
-  // UX #34: the pixels-not-arcsec note below needs to be able to DELIVER the
-  // user to the control it names, not just name it.
-  const setView = useStore((s) => s.setView);
   const canGuide = useCanControlGuide(); // viewer => graph visible, controls read-only
   const [ditherPx, setDitherPx] = useState("3");
   // UX-24: optional dither settle overrides (blank = the guider's default).
@@ -296,25 +294,17 @@ export default function GuideView() {
           <p className={`text-[11px] mt-2 leading-snug ${toneClass}`}>{narration.verdict}</p>
         )}
         {stats && !isArcsec && (
-          /* UX-15: raw pixels, not arcsec — tell the user why and how to fix it.
-             UX #34: this used to point at "Optics", a panel that exists NOWHERE
-             by that name (the Settings tabs are Connect/Profiles/Calibration/
-             Safety/Alerts/Updates/Account/Users/Auth). The control is the
-             "Guide scope FL" field in Atlas's framing header — name it, and
-             carry the user there rather than making them hunt, because the
-             consequence of not finding it is the pixels-labelled-arcsec gate. */
+          /* Deliver the user directly to the authoritative optics editor. */
           <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5">
             <p className="text-[11px] text-dim leading-snug flex-1 min-w-[220px]">
               RMS is in guide-camera pixels, not arcsec — the guide scope&rsquo;s focal
-              length isn&rsquo;t set. It lives on the Atlas page, in the framing
-              header, as <span className="mono">Guide scope FL</span>. If Atlas is
-              still empty, press <span className="mono">Free-roam the sky</span> first
-              to open the framing controls.
+              length isn&rsquo;t set. Set <span className="mono">Guide scope focal length</span>
+              {" "}in the imaging train settings to use arcseconds.
             </p>
             <button
               className="btn tap min-h-[44px] !px-3 text-[11px]"
-              onClick={() => setView("atlas")}>
-              Open Atlas
+              onClick={() => openSettingsPanel("optics")}>
+              Set guide scope focal length
             </button>
           </div>
         )}

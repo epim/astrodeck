@@ -2904,7 +2904,7 @@ class Hub:
 
     async def capture(self, exposure_s: float, gain: int, offset: int,
                       binning: int = 1, save: bool = False, target: str = "",
-                      frame_type: str = "Light") -> dict:
+                      frame_type: str = "Light", request_id: str | None = None) -> dict:
         cam: Camera = self.require("camera")
         # Serialize the exposure against every other capture path (loop / single /
         # autofocus / sequence / solve) so two coroutines can't poll the shared
@@ -2975,7 +2975,8 @@ class Hub:
         if save and snap is not None:
             local_save_path = await self._save_captured_frame(frame, snap)
 
-        info = await self._publish_preview(frame, wheel_slot=wheel_slot)
+        info = await self._publish_preview(frame, wheel_slot=wheel_slot,
+                                          **({"capture_request_id": request_id} if request_id else {}))
         if save and isinstance(info, dict):
             # UX #1: hand the RESOLVED filter (same value the FITS card carries)
             # back to the caller. The sequence engine records THIS, not the plan's
@@ -3739,7 +3740,8 @@ class Hub:
         return round(float(base) * max(1, int(binning or 1)), 3)
 
     async def _publish_preview(self, frame, *,
-                               wheel_slot: int | None = ...) -> dict:
+                               wheel_slot: int | None = ...,
+                               capture_request_id: str | None = None) -> dict:
         """Build + publish the ``preview`` event = the PreviewInfo contract
         (live-preview spec §4.5/§6). Two corrected paths:
 
@@ -3982,6 +3984,9 @@ class Hub:
         if getattr(frame, "stars", None) is not None:
             info["stars"] = int(frame.stars)
 
+        if capture_request_id:
+            info["capture_request_id"] = capture_request_id
+            info["capture_saved"] = bool(saved_path)
         self.previews[pid] = entry
         self.preview_thumbs[pid] = entry.thumb
         self._trim_previews()
