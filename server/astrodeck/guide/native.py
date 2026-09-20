@@ -167,6 +167,37 @@ _PHASE_B_MSG = "Nudging the mount up and down to measure slack (2 of 2)…"
 # never really scope-anchored.
 _UNKNOWN_DECLINATION = 997.0
 
+#: How far from square a calibration's axes may be and still be reused.
+#: Mirrored from the engine's own CAL_ALERT_ORTHOGONALITY_TOLERANCE_DEG
+#: (native/crates/astro-guide/src/calibration.rs:98, itself PHD2's
+#: scope.cpp:58), deliberately rather than picked: the engine ALREADY raises
+#: "RA/Dec axis angles are questionable" at this exact angle. Until #111 that
+#: advisory was the only consumer of its own finding -- nothing read it, so a
+#: calibration measured 39.83 degrees out of square on 2026-09-20 was marked
+#: is_valid, persisted, reloaded by a stop-and-start, and guided with. Two
+#: axes that far from orthogonal decompose every correction wrongly, which
+#: walks the field instead of holding it.
+_MAX_CAL_ORTHO_ERROR_DEG = 12.5
+
+
+def _folded_ortho_deg(cal: dict) -> float:
+    """A calibration's orthogonality deviation in degrees, Dec-parity folded.
+
+    ONE implementation, shared by ``calibration_report`` (which shows it) and
+    ``_cal_reusable`` (which now acts on it), because a rig whose Dec axis runs
+    reversed calibrates with a raw ``y_angle_error`` near +-pi and is
+    PERFECTLY SQUARE (GN-06). A second copy of this fold that drifted would
+    refuse every reversed-Dec rig its calibration.
+    """
+    if "ortho_error" in cal:
+        folded = float(cal["ortho_error"])
+    else:
+        folded = float(cal.get("y_angle_error", 0.0))
+        if abs(folded) > math.pi / 2:
+            folded = math.atan2(math.sin(folded - math.pi),
+                                math.cos(folded - math.pi))
+    return abs(math.degrees(folded))
+
 
 class GuidingStopped(DeviceError):
     """``stop_guiding`` reached a start that had not begun guiding yet.
@@ -2026,18 +2057,18 @@ class NativeGuider(Guider):
         dec_deg = math.degrees(dec_rad)
         raw_err = float(cal.get("y_angle_error", 0.0))
         reversed_dec = bool(cal.get("dec_axis_reversed", abs(raw_err) > math.pi / 2))
-        if "ortho_error" in cal:
-            folded = float(cal["ortho_error"])
-        else:
-            # Same fold as the engine's Cal::fold_y_angle_error: an error
-            # measured against a reversed axis is re-expressed relative to pi.
-            folded = raw_err
-            if abs(folded) > math.pi / 2:
-                folded = math.atan2(math.sin(folded - math.pi),
-                                    math.cos(folded - math.pi))
+        # The same fold `_cal_reusable` judges, so what the operator is shown
+        # and what the gate acts on cannot disagree (#111).
+        ortho_deg = _folded_ortho_deg(cal)
         return {
             "is_valid": bool(cal.get("is_valid")),
-            "ortho_error_deg": round(abs(math.degrees(folded)), 2),
+            "ortho_error_deg": round(ortho_deg, 2),
+            # What the ENGINE said, and separately whether this rig will reuse
+            # it. is_valid is the engine's own word and stays that; a
+            # calibration can be internally complete and still too far from
+            # square to decompose a correction.
+            "within_ortho_tolerance": ortho_deg <= _MAX_CAL_ORTHO_ERROR_DEG,
+            "ortho_tolerance_deg": _MAX_CAL_ORTHO_ERROR_DEG,
             "dec_axis_reversed": reversed_dec,
             "declination_deg": round(dec_deg, 1) if abs(dec_deg) <= 90.5 else None,
             "pier_side": cal.get("pier_side"),
@@ -2302,6 +2333,21 @@ class NativeGuider(Guider):
         except (TypeError, ValueError):
             return False
         if cal.get("pier_side") in (None, "unknown"):
+            return False
+        # 6. is SQUARE enough to decompose a correction (#111). The engine
+        #    raises its own advisory at this angle and nothing read it, so a
+        #    calibration 39.83 degrees out of square was reused off disk by a
+        #    stop-and-start -- the operator's most natural remedy handing the
+        #    bad calibration straight back. Refusing here drives a fresh
+        #    calibration walk instead, which is what the caller already does
+        #    for every other arm of this gate.
+        ortho = _folded_ortho_deg(cal)
+        if ortho > _MAX_CAL_ORTHO_ERROR_DEG:
+            bus.log("warning",
+                    f"native guider: refusing a persisted calibration whose "
+                    f"axes are {ortho:.1f} deg from orthogonal (limit "
+                    f"{_MAX_CAL_ORTHO_ERROR_DEG:.1f}) - calibrating afresh",
+                    "guide")
             return False
         return True
 
