@@ -288,3 +288,38 @@ async def test_a_banked_frame_clears_the_recovery_bound(sim_hub, monkeypatch):
     assert len(attempts) == 2 * engine_mod._MAX_GUIDING_RECOVERIES, (
         "a banked frame did not re-arm recovery, so one bad patch of cloud "
         "ends guiding for the rest of the night")
+
+
+# ------------------------------------------------------------------ #108
+async def test_a_starting_run_always_publishes_a_frame_counter(sim_hub, monkeypatch):
+    """A supervisor must be able to tell "no frames yet" from "no counter".
+
+    `start()` replaces the published state wholesale, and `_run` does not
+    publish a progress block until after the safety gates, the slew, the
+    autofocus and the plate solve. For those minutes GET /api/sequence/state
+    carried no progress.frames_done at all. My night supervisor read that
+    absence as a counter that had not moved, called it a stall, and aborted a
+    healthy NGC 7331 run on 2026-09-19.
+
+    MUTATION: restore `self.state = {"state": "idle"}` without the progress
+    key. Observed: KeyError 'progress' on the first assertion.
+    """
+    engine = SequenceEngine(sim_hub)
+    engine.plan = SequencePlan(guide=False, recover_guiding=False)
+
+    # Never let the task run: this is about the window BEFORE its first turn,
+    # which is the window the supervisor polled into.
+    async def never(*_a, **_k):
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(engine, "_run", never)
+    engine.start(SequencePlan(guide=False, recover_guiding=False))
+    try:
+        assert "progress" in engine.state, (
+            "a run that has been started publishes no progress block at all, "
+            "so a supervisor cannot distinguish 'no frames yet' from "
+            "'no counter'")
+        assert engine.state["progress"]["frames_done"] == 0
+    finally:
+        if engine._task:
+            engine._task.cancel()

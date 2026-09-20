@@ -810,7 +810,23 @@ class SequenceEngine:
         self._window_closed = False
         # Drop the prior run synchronously: Stop can arrive before the task's
         # first turn. _run publishes running once execution actually begins.
-        self.state = {"state": "idle"}
+        #
+        # The frame counter survives the reset (#108). This is a wholesale
+        # REPLACE, so it used to drop `progress` entirely, and `_run` does not
+        # publish one until it reaches its first _set_state -- after the safety
+        # gates, the slew, the autofocus and the plate solve. For those minutes
+        # GET /api/sequence/state answered a supervisor with no
+        # progress.frames_done at all. Mine read that absence as a frame
+        # counter that had not moved, counted it as a stall, and aborted a
+        # healthy NGC 7331 run on 2026-09-19; the restart then raced the
+        # teardown and the rig sat idle for twenty minutes of clear sky.
+        #
+        # A supervisor cannot tell "no frames yet" from "no counter" unless the
+        # counter is always there, so it is always there. _frames_done is
+        # already seeded above (a resume carries its session's count), so this
+        # is the honest number and not a hopeful zero.
+        self.state = {"state": "idle",
+                      "progress": {"frames_done": self._frames_done}}
         self._task = asyncio.create_task(self._run())
 
     def pause(self) -> None:
