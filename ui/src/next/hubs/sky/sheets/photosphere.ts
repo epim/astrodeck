@@ -260,11 +260,29 @@ const SKY_WINDOW = 12, SKY_WINDOW_MIN = 4;
  *  at 0.36. A grey wall between 30 and 32 per cent darker than the sky is
  *  therefore indistinguishable from an exposure step by this rule (measured:
  *  found at 32.5 per cent, lost at 32.0), and no per-column rule can separate
- *  them - they are the same signal. The evidence that would is cross-column: a
+ *  them - they are the same signal. The evidence that does is cross-column: a
  *  seam is one row across the whole mosaic at one ratio, a wall is local in
- *  azimuth. That is not built, and it is the surviving half of issue #74
- *  together with an edge softer than about ten rows (see `PERSIST_ROWS` and
- *  `columnBoundary`). */
+ *  azimuth. That evidence is `LOCAL_TOLERANCE` below, and it is what closes the
+ *  30-to-32 band and the soft edge (issue #74) without moving this constant -
+ *  which must stay where it is, because it is still the whole of the answer for
+ *  a mosaic too narrow to have neighbours (`AZ_MIN_BINS`).
+ *
+ *  The same allowance also bounds how steep a sky the lagged test in
+ *  `columnRuns` will accept: a model that moves more than this within one
+ *  window reads as walked. Sustained over a whole column that is not a real
+ *  8-bit sky (60 to 481, so it clips long before), but localised near the
+ *  horizon it is - the sunward direction at low sun.
+ *
+ *  What that costs got WORSE with the mosaic, not better, and the figure this
+ *  comment used to carry (12 to 16 degrees, measured before the azimuth pass
+ *  existed) is stale. Measured now, with the gradient local to five bins of
+ *  thirty: +25 per cent per 12 rows publishes 30 degrees where 2b964638
+ *  published 0, and +32 and +40 per cent publish 30 against that commit's 12
+ *  and 14. The narrow allowance finds the candidate and `AZ_DEPARTURE` does not
+ *  refuse it, because a steep glow in a few bins IS a departure those bins have
+ *  and their neighbours do not. It is the blocked direction, and it is issue
+ *  #102, which names the discriminator as the departure's vertical shape - a
+ *  gradient has no surface under it - rather than its extent in azimuth. */
 const EXPOSURE_TOLERANCE = .32, SKY_SIGMAS = 3;
 /** The same for blueness, in 8-bit channel units, with a floor: chroma
  *  subsampling and sensor noise move it a few units on their own, and a grey
@@ -279,8 +297,91 @@ const SKY_BLUE_FLOOR = 8;
  *  as an 87 degree horizon over most of the compass. Above it, a floating
  *  obstruction is kept: the chart's roof stands 14 to 15 degrees tall with
  *  clear sky beneath it and IS an obstruction. A departure that reaches the
- *  bottom of the column needs no such length - the ground is under it. */
+ *  bottom of the column needs no such length - the ground is under it.
+ *
+ *  This is what ONE column can vouch for, and it is all it can: a floating run
+ *  shorter than this is a disc, an eave or a roof seen edge-on and the column
+ *  cannot say which (issue #71). The neighbouring bins can, and
+ *  `azimuthSupport` asks them. */
 const PERSIST_ROWS = 12;
+/** How far a row may sit from the sky model before it is worth ASKING the
+ *  mosaic about. This allowance decides nothing on its own: it only finds
+ *  candidates, and `standsOut` then measures the candidate against what the
+ *  rest of the compass does at the same rows. It is deliberately far below
+ *  `EXPOSURE_TOLERANCE`, because the thing it has to see is a wall whose edge is
+ *  too soft for the wide allowance to notice the column leaving the sky at all
+ *  - by the time a 15-row edge has been walked, the wide allowance has no
+ *  departure to offer the mosaic.
+ *
+ *  Being a detector and not a verdict is what makes 0.12 safe, and it was not
+ *  safe when it was a verdict: at 0.12 an ordinary sky gradient LOCAL to a few
+ *  bins, and an auto-exposure step of 12 per cent over part of the compass, both
+ *  produced runs, and both were published (issue #98). The gradient figure the
+ *  first version of this comment gave was the model's LAG behind the column,
+ *  about 4 per cent on a 100-to-180 airlight ramp; the quantity this constant is
+ *  actually compared with is the model's movement across one window, which on
+ *  that same ramp is 12 x 0.89 = 10.7 units against a level near 105, or about
+ *  10 per cent. So an ordinary airlight ramp sits 1.2x under this allowance, not
+ *  3x, and steeper real skies (the sunward direction at low sun) are over it.
+ *  They produce candidates; `AZ_DEPARTURE` is what refuses them. */
+const LOCAL_TOLERANCE = .12;
+/** How far a candidate's own departure must sit from what the REST OF THE
+ *  MOSAIC does at the same rows, before it is published.
+ *
+ *  This is a comparison of departures, never of levels, and that is the whole
+ *  of issue #98. Two columns of the same empty sky differ in LEVEL for reasons
+ *  that are not obstructions - every frame is auto-exposed at its own heading,
+ *  and a mosaic is stitched out of them - so a rule that asked whether a column
+ *  sits below the mosaic's median at those rows answered "yes" for an arc of
+ *  dimmer sky (which published 90 degrees, flagged certain) and for a 12 per
+ *  cent band seam that was not identical at every azimuth (46 degrees). What
+ *  each column reports here is `body / sky-just-above`, in its own light, so a
+ *  per-column exposure cancels and only what the surface does to the light is
+ *  left.
+ *
+ *  0.31 is the middle of the band issue #74 names, and it is the same bracket
+ *  `EXPOSURE_TOLERANCE` sits in, read from the other side. Above 0.30, because
+ *  a 30 per cent step between two elevation bands is an ordinary re-expose and
+ *  NOTHING separates a minority seam from a minority wall of the same depth -
+ *  the mosaic cannot help there, and the honest answer is the wide allowance's.
+ *  Below 0.32, because a wall 30 to 32 per cent darker than its own sky is the
+ *  band the wide allowance cannot see and issue #74 is about. Measured through
+ *  the real tracer, with the departure local to five bins of thirty: found at
+ *  31 and 32 per cent, not found at 30 or at 25. So the band this closes is the
+ *  top point of the two #74 names, and the bottom point stays open - a 30 per
+ *  cent wall and a 30 per cent re-expose are the same signal to the mosaic as
+ *  well as to the column.
+ *
+ *  So the mosaic buys exactly two things. That one point, and - the larger
+ *  half by far - a wall of ANY depth whose edge is too soft for one column to
+ *  notice it leaving the sky: exact to a 16-row edge, against 10 for a column
+ *  on its own, and no longer the cliff to zero that #74 measured at 13. */
+const AZ_DEPARTURE = .31;
+/** How many azimuth bins a mosaic must have before the neighbours are allowed
+ *  an opinion. Below this there is no majority to outvote a structure: with two
+ *  bins the median of the mosaic's row IS one of the two columns, so a wall
+ *  filling one of them would make the other look like the departure. The
+ *  product scans 30; a fabricated bin or two in a test gets the single-column
+ *  answer, unchanged. */
+const AZ_MIN_BINS = 6;
+/** How far a boundary may move from one bin to the next and still be the same
+ *  surface. A bin is 12 degrees at the shipped 30, and a real edge - a roof
+ *  running away from the observer, a hill shoulder - climbs or falls across
+ *  one; the chart yard's own truth moves by up to 49 degrees inside a single
+ *  bin (issue #53). Six rows is wide enough for a roofline and narrow enough
+ *  that a departure at a quite different altitude is not read as the same
+ *  surface. What keeps two UNRELATED markings apart is not this number but the
+ *  one-bin reach of `anchored`: measured, a six-row floating band two bins from
+ *  a grounded wall stays open, and the same band in the adjacent bin with the
+ *  same top row is published. */
+const AZ_SLOP_ROWS = 6;
+/** How tall a FLOATING departure must stand before the neighbours are allowed
+ *  to vouch for it. `PERSIST_ROWS` is what one column needs; with azimuth
+ *  continuity behind it the floor comes down, but not to nothing - the
+ *  misregistered roof of issue #71 is nine rows, and two or three rows of
+ *  departure with sky underneath is a wire or a chart marking whatever its
+ *  neighbours do. A departure that reaches the ground still needs no height. */
+const AZ_PERSIST_ROWS = 6;
 
 /** The tracer's input, whatever shape it arrived in. A plain `number[]` is a
  *  luminance-only column with no sub-samples: the frame-fold fallback and the
@@ -313,8 +414,30 @@ interface SkyHere {
   lumNoise: number; blueNoise: number;
 }
 
-/** The boundary in ONE column: the altitude of the highest row where the sky
- *  gives way to something that stays. 0 is open to the horizon.
+/** One departure from the sky in ONE column: the rows it covers, and the row
+ *  its boundary would be placed at - already traced back to the top of the
+ *  transition and refined onto the surface below it. `qualifies` is what the
+ *  column can vouch for ALONE: the departure reaches the bottom of the column,
+ *  or it stands `PERSIST_ROWS` tall. Everything else is a candidate that only
+ *  the neighbouring bins can settle. */
+interface ColumnRun {
+  top: number; end: number; grounded: boolean; qualifies: boolean;
+  /** The row the departure was NOTICED at, which is at or below `top`: the
+   *  boundary is traced back up the transition, and on a soft edge that is many
+   *  rows. The sky is what lies above `top` and the surface is what lies below
+   *  `from`; in between is the transition itself, which is neither. */
+  from: number;
+}
+
+/** The altitude a boundary at row `top` publishes: the lowest row still open. */
+const altOfTop = (top: number): number => Math.max(0, Math.min(90, 91 - top));
+
+/** Every departure from the sky in ONE column, top-down, stopping at the first
+ *  one the column can vouch for on its own - that one is the boundary, and the
+ *  candidates above it are what the mosaic is asked about. `exposure` is the
+ *  allowance on the sky model's own level: `EXPOSURE_TOLERANCE` for the verdict
+ *  a single column is allowed to publish, `LOCAL_TOLERANCE` for the candidates
+ *  the neighbours then have to confirm.
  *
  *  The walk down the column carries the sky with it. Every row is measured
  *  against the median of the last `SKY_WINDOW` rows ACCEPTED AS SKY, in both
@@ -332,12 +455,15 @@ interface SkyHere {
  *  that. So the model is watched as well as used: when the model has itself
  *  drifted from the sky it had `SKY_WINDOW` rows above, and everything from
  *  here down stays away from that older sky, the column has walked into
- *  something, and the boundary is traced back to the row where it left. */
-function columnBoundary(column: SkyColumn, seed: SkySeed): number {
+ *  something, and the boundary is traced back to the row where it left. The
+ *  reach of that is about ten rows at `EXPOSURE_TOLERANCE`; softer edges are
+ *  found at `LOCAL_TOLERANCE` and confirmed across azimuth instead. */
+function columnRuns(column: SkyColumn, seed: SkySeed, exposure: number): ColumnRun[] {
   const { lum, blue } = column;
+  const runs: ColumnRun[] = [];
   let last = -1;
   for (let row = 0; row < lum.length; row++) if (Number.isFinite(lum[row])) last = row;
-  if (last < 0) return 0;
+  if (last < 0) return runs;
   const windowLum: number[] = [], windowBlue: number[] = [];
   // The model as it stood at every row, so a row can be compared with the sky
   // as it was `SKY_WINDOW` rows above it. Indexed BY ROW, skipped runs
@@ -352,9 +478,9 @@ function columnBoundary(column: SkyColumn, seed: SkySeed): number {
     const spreadBlue = settled && windowBlue.length ? robustSpread(windowBlue) : seed.blueSpread;
     return {
       lum: level, blue: levelBlue,
-      lumTol: Math.max(EXPOSURE_TOLERANCE * Math.abs(level), SKY_SIGMAS * spread),
+      lumTol: Math.max(exposure * Math.abs(level), SKY_SIGMAS * spread),
       blueTol: Math.max(SKY_BLUE_FLOOR, SKY_SIGMAS * spreadBlue,
-        Number.isFinite(levelBlue) ? EXPOSURE_TOLERANCE * Math.abs(levelBlue) : 0),
+        Number.isFinite(levelBlue) ? exposure * Math.abs(levelBlue) : 0),
       lumNoise: SKY_SIGMAS * spread, blueNoise: SKY_SIGMAS * spreadBlue,
     };
   };
@@ -419,17 +545,17 @@ function columnBoundary(column: SkyColumn, seed: SkySeed): number {
       // overhead frame publish a fully blocked sky, 90 degrees in all 30 bins,
       // flagged certain (issue #73). A bright row 0 takes the ordinary path
       // below, where one row cannot persist.
-      if (start === 0 && lum[0] < here.lum - here.lumTol) return 90;
+      if (start === 0 && lum[0] < here.lum - here.lumTol) {
+        runs.push({ top: 0, end: last, from: 0, grounded: true, qualifies: true });
+        return runs;
+      }
       let end = start;
       while (end < last && off(end + 1, here)) end++;
       // Persistence: it reaches the bottom, or it is tall enough to be a thing.
-      if (end < last && end - start + 1 < PERSIST_ROWS) {
-        for (let skipped = start; skipped <= end; skipped++) {
-          while (history.length <= skipped) history.push(here);
-          history[skipped] = here;
-        }
-        start = end; continue;
-      }
+      // A run that is neither is still recorded - it is the candidate issue #71
+      // is about, and the mosaic decides it in `traceSkyCoverage`.
+      const grounded = end >= last;
+      const qualifies = grounded || end - start + 1 >= PERSIST_ROWS;
       const body = Math.min(end, start + PERSIST_ROWS - 1);
       const bodyLum = percentile(lum.slice(start, body + 1).filter(Number.isFinite), .5);
       const bodyBlues = blue.slice(start, body + 1).filter(Number.isFinite);
@@ -445,7 +571,15 @@ function columnBoundary(column: SkyColumn, seed: SkySeed): number {
       // glint is tall.
       while (top < end && !(betweenSkyAnd(lum[top], here.lum, bodyLum, here.lumTol)
         && betweenSkyAnd(blue[top], here.blue, bodyBlue, here.blueTol))) top++;
-      return Math.max(0, Math.min(90, 91 - top));
+      runs.push({ top, end, from: Math.max(top, start), grounded, qualifies });
+      if (qualifies) return runs;
+      // Stepped over: the run's rows never enter the window, and the model at
+      // each of them is the model that was standing when the run began.
+      for (let skipped = start; skipped <= end; skipped++) {
+        while (history.length <= skipped) history.push(here);
+        history[skipped] = here;
+      }
+      start = end; continue;
     }
     if (walked(here, lagged)) {
       // The model has drifted. That is only a boundary if what is below stays
@@ -455,7 +589,10 @@ function columnBoundary(column: SkyColumn, seed: SkySeed): number {
       for (let row = start; row <= Math.min(start + PERSIST_ROWS - 1, last); row++) {
         if (!off(row, lagged)) { stays = false; break; }
       }
-      if (stays) return Math.max(0, Math.min(90, 91 - walkBack(start, lagged, here.lum, here.blue)));
+      if (stays) {
+        runs.push({ top: walkBack(start, lagged, here.lum, here.blue), end: last, from: start, grounded: true, qualifies: true });
+        return runs;
+      }
     }
     windowLum.push(lum[start]);
     if (windowLum.length > SKY_WINDOW) windowLum.shift();
@@ -464,7 +601,7 @@ function columnBoundary(column: SkyColumn, seed: SkySeed): number {
       if (windowBlue.length > SKY_WINDOW) windowBlue.shift();
     }
   }
-  return 0;
+  return runs;
 }
 
 /** A boundary is a TRANSITION away from the sky AS IT IS HERE that PERSISTS
@@ -503,7 +640,32 @@ function columnBoundary(column: SkyColumn, seed: SkySeed): number {
  * sky. Missing upper-sky data and a DARK zenith are conservatively blocked.
  * Each bin answers for the whole of its own width, so it reports the highest
  * boundary of the columns sampled across it. This produces the existing
- * single-height horizon, not a mask of canopy gaps. */
+ * single-height horizon, not a mask of canopy gaps.
+ *
+ * THEN the mosaic answers what no column can (issues #71 and #74). Three
+ * different things look alike in one column: a floating obstruction shorter
+ * than the persistence floor with clear sky beneath it, an obstruction whose
+ * edge is too soft for the local model to notice leaving the sky, and an
+ * exposure step the size of a wall. Every one of them is settled by the
+ * neighbours, which this function has because it is handed every bin at once:
+ *
+ *   - a wall STANDS OUT: what it does to the light - the surface under it
+ *     against the sky above it, in that column's own exposure - is not what the
+ *     rest of the compass does between the same rows. A seam, a sky gradient
+ *     and an arc of sky exposed differently are all things the mosaic is doing
+ *     there, and comparing DEPARTURES rather than levels is the only way to
+ *     tell, because two columns of the same empty sky differ in level (#98);
+ *   - a wall is ANCHORED - somewhere within a bin of here, a departure through
+ *     the same rows reaches the ground or stands `PERSIST_ROWS` tall - while a
+ *     disc in the sky is flanked by open sky and reaches nothing.
+ *
+ * So a departure found at the narrower `LOCAL_TOLERANCE`, or found at the wide
+ * one but too short to persist, is published when and only when both hold - and
+ * for a departure that reaches the ground the second holds by construction, so
+ * there it is `standsOut` alone. It can only RAISE a bin's boundary, never lower
+ * one: what a single column can vouch for is published whatever the neighbours
+ * say, and the mosaic is asked only about what would otherwise have been
+ * reported as open sky. */
 export function traceSkyCoverage(columns: readonly (number[] | SkyBin)[]): SkyTrace {
   const bins = columns.map(asSkyBin);
   const lumPool: number[] = [], bluePool: number[] = [];
@@ -520,29 +682,152 @@ export function traceSkyCoverage(columns: readonly (number[] | SkyBin)[]): SkyTr
     lumSpread: robustSpread(lumPool),
     blueSpread: robustSpread(bluePool),
   };
+  // Unchanged, and read off the bin's CENTRE column, which is the column this
+  // rule has always been read off: a short column, a gap anywhere in the top 91
+  // rows, or a sky too dark to have been measured at all.
+  const complete = (column: SkyColumn) =>
+    column.lum.length >= 101 && column.lum.slice(0, 91).every(Number.isFinite);
   const uncertainBins: number[] = [];
-  const points = bins.map((bin, index) => {
-    let alt = 0;
-    // Unchanged, and read off the bin's CENTRE column, which is the column
-    // this rule has always been read off: a short column, a gap anywhere in
-    // the top 91 rows, or a sky too dark to have been measured at all.
-    const complete = (column: SkyColumn) =>
-      column.lum.length >= 101 && column.lum.slice(0, 91).every(Number.isFinite);
-    if (!bin.length || !complete(bin[0]) || sky < 40) {
-      alt = 90; uncertainBins.push(index);
-    } else for (const column of bin) {
-      // A sub-column with a gap in it is dropped rather than allowed to lower
-      // the answer, and deliberately does NOT make the bin uncertain: the
-      // uncertainty rule is the centre column's, unchanged, so a bin can be
-      // certain while some of the columns beside its centre went unmeasured.
-      // The cost is under-reported uncertainty relative to what is sampled;
-      // the alternative would mark bins uncertain that the shipped rule calls
-      // measured.
-      if (complete(column)) alt = Math.max(alt, columnBoundary(column, seed));
-    }
-    return { az: Math.round((index + .5) / columns.length * 360), alt };
+  // A sub-column with a gap in it is dropped rather than allowed to lower the
+  // answer, and deliberately does NOT make the bin uncertain: the uncertainty
+  // rule is the centre column's, unchanged, so a bin can be certain while some
+  // of the columns beside its centre went unmeasured. The cost is
+  // under-reported uncertainty relative to what is sampled; the alternative
+  // would mark bins uncertain that the shipped rule calls measured.
+  const measured = bins.map((bin, index) => {
+    if (!bin.length || !complete(bin[0]) || sky < 40) { uncertainBins.push(index); return []; }
+    return bin.filter(complete).map(column => {
+      const alone = columnRuns(column, seed, EXPOSURE_TOLERANCE);
+      const vouched = alone.find(run => run.qualifies);
+      return {
+        column, alt: vouched ? altOfTop(vouched.top) : 0,
+        // Every departure either pass saw. The wide pass contributes the runs
+        // it stepped over as too short (#71); the narrow one contributes the
+        // soft edges and the shallow walls the wide pass cannot see (#74).
+        candidates: [...alone, ...columnRuns(column, seed, LOCAL_TOLERANCE)],
+      };
+    });
   });
-  return { points, uncertainBins };
+  const alts = measured.map((columnsHere, index) =>
+    uncertainBins.includes(index) ? 90 : columnsHere.reduce((alt, c) => Math.max(alt, c.alt), 0));
+  applyAzimuthSupport(measured, alts, bins.length);
+  return {
+    points: alts.map((alt, index) => ({ az: Math.round((index + .5) / columns.length * 360), alt })),
+    uncertainBins,
+  };
+}
+
+/** What one column of the tracer cannot see, and the mosaic can. Raises a bin's
+ *  boundary to a candidate departure - one too short to persist, or one only
+ *  the narrower allowance found - when the neighbouring bins vouch for it in
+ *  both of the ways a wall differs from the alternatives. See
+ *  `traceSkyCoverage`'s own comment for why these two and not others. */
+function applyAzimuthSupport(
+  measured: { column: SkyColumn; alt: number; candidates: ColumnRun[] }[][],
+  alts: number[], binCount: number,
+): void {
+  const sampled = measured.flat();
+  if (binCount < AZ_MIN_BINS || !sampled.length) return;
+  const middle = (values: number[]) => {
+    const finite = values.filter(Number.isFinite);
+    return finite.length ? percentile(finite, .5) : NaN;
+  };
+  /** What the light does between the rows just ABOVE a stretch of column and the
+   *  stretch itself, in that column's own exposure: `body / sky above`. A
+   *  per-column exposure multiplies both and cancels, which is the point - the
+   *  thing being compared across azimuth has to be what a surface DOES to the
+   *  light and not how bright the frame that saw it was (issue #98).
+   *
+   *  The sky is read from the window above `top` and the surface from `from`
+   *  down, so the TRANSITION between them is in neither: a fifteen-row edge is
+   *  ramp all the way from its top, and a ratio measured across it reads as a
+   *  shallow step rather than as the wall it becomes. The body is capped at two
+   *  windows so that a wall is judged by the surface under its edge and not by
+   *  the raster's floor. */
+  const departure = (column: SkyColumn, run: ColumnRun): number => {
+    const above = middle(column.lum.slice(Math.max(0, run.top - SKY_WINDOW), run.top));
+    const body = middle(column.lum.slice(run.from, Math.min(run.end, run.from + 2 * SKY_WINDOW - 1) + 1));
+    return above > 0 ? body / above : NaN;
+  };
+  /** The same question asked of the whole mosaic at the same rows, cached
+   *  because candidates share row ranges: the median over every sampled
+   *  sub-column of what IT does between those rows and the rows above them. An
+   *  exposure seam, a sky gradient and an arc of dimmer sky are all in this
+   *  number; a surface at ONE azimuth is not. */
+  const mosaicDepartures = new Map<number, number>();
+  const mosaicDeparture = (run: ColumnRun): number => {
+    const key = (run.top * 128 + run.from) * 128 + run.end;
+    const held = mosaicDepartures.get(key);
+    if (held !== undefined) return held;
+    const value = middle(sampled.map(c => departure(c.column, run)));
+    mosaicDepartures.set(key, value);
+    return value;
+  };
+  /** Is this departure the column's own, or is it what the whole mosaic is
+   *  doing at these rows? A seam, a sky gradient and an arc of sky exposed
+   *  differently are the second, whatever their amplitude.
+   *
+   *  The median is what the MAJORITY of the sampled compass does. Where more
+   *  than half of it is blocked at those rows - a narrow yard, a city street -
+   *  the median IS the obstruction and nothing can be promoted there. The rule
+   *  turns itself off rather than misfiring, which is the right way round, but
+   *  it is a majority vote and it is worth knowing that it is.
+   *
+   *  `darkOnly` is asked of a departure with SKY UNDER IT, and it is the one
+   *  place this rule is not sign agnostic. A surface standing in the air,
+   *  brighter than the sky around it and brighter than the same rows everywhere
+   *  else on the compass, is a cloud, a glint or a marking far more often than
+   *  it is a structure - the chart yard's sky is painted with 170-bright bands
+   *  four to eight rows tall, and they are exactly the shape of the roof issue
+   *  #71 is about. Darker and it can be an eave, a canopy, a cable tray or a
+   *  roof seen edge-on. The cost is a floating obstruction brighter than its
+   *  sky, which stays open - as it already did under the persistence floor, so
+   *  nothing is lost that was held, and it is recorded on issue #99. Anything
+   *  reaching the ground is judged in either direction, as before. */
+  const standsOut = (column: SkyColumn, run: ColumnRun, darkOnly: boolean): boolean => {
+    const mine = departure(column, run), mosaic = mosaicDeparture(run);
+    if (!Number.isFinite(mine) || !Number.isFinite(mosaic)) return false;
+    return (darkOnly ? mosaic - mine : Math.abs(mine - mosaic)) > AZ_DEPARTURE;
+  };
+  /** Does a departure at this row stand on its own ANYWHERE within a bin of
+   *  here - reaching the ground, or `PERSIST_ROWS` tall? A structure does: a
+   *  roof compressed to nine rows in one bin is twenty rows tall, or on the
+   *  ground, twelve degrees along, because a roofline moves smoothly with
+   *  azimuth. A disc in the sky is flanked by open sky and a chart stripe by
+   *  more chart stripes, neither of which vouches for anything. The bin's own
+   *  other sub-columns count too - they are the same question asked 2.4 degrees
+   *  apart - which is issue #71's third suggestion.
+   *
+   *  Two things to know about what counts as standing on its own. It is any
+   *  CANDIDATE that qualifies, so a run found only at `LOCAL_TOLERANCE` can
+   *  anchor - it has to be able to, because a wall with a soft edge is invisible
+   *  to the wide allowance in every one of its bins and would otherwise have
+   *  nothing to stand on. And a GROUNDED candidate anchors ITSELF, at step 0, so
+   *  for the whole of issue #74's half this test passes by construction and
+   *  `standsOut` is the only thing deciding. It is the floating half - issue #71
+   *  - that this test is for. */
+  const anchored = (index: number, run: ColumnRun): boolean => {
+    for (const step of [0, 1, -1]) {
+      const at = ((index + step) % binCount + binCount) % binCount;
+      for (const c of measured[at]) for (const r of c.candidates) {
+        if (r.qualifies && Math.abs(r.top - run.top) <= AZ_SLOP_ROWS) return true;
+      }
+    }
+    return false;
+  };
+  measured.forEach((columnsHere, index) => {
+    for (const c of columnsHere) for (const run of c.candidates) {
+      const alt = altOfTop(run.top);
+      if (alt <= alts[index]) continue;
+      // The mosaic can lower the persistence floor; it cannot abolish it. A
+      // departure two or three rows tall with sky under it is a wire, a bird or
+      // a marking on the chart, and azimuth continuity says nothing about which
+      // - the chart yard's own stripes run right around the compass.
+      if (!run.grounded && run.end - run.top + 1 < AZ_PERSIST_ROWS) continue;
+      if (!standsOut(c.column, run, !run.grounded) || !anchored(index, run)) continue;
+      alts[index] = alt;
+    }
+  });
 }
 
 /** Fold captured frames into `autoTraceSkyline`'s `columns[]`: one column per
