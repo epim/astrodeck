@@ -407,6 +407,16 @@ def _frame_altitude(target, site: dict, when: float) -> float | None:
         return None
 
 
+#: How many guiding recoveries may be attempted without a frame landing (#72).
+#: Two, because the evidence says the third never helped: on 2026-09-19 the
+#: engine made 18 and none of them held, and each costs a re-centre plus a
+#: full calibration walk (123 to 125 south pulses of up to 1000 ms, about two
+#: minutes of unmonitored Dec motion). One attempt is too few -- a single lost
+#: star on a passing cloud recovers routinely and did so on NGC 7331 for six
+#: hours the same night.
+_MAX_GUIDING_RECOVERIES = 2
+
+
 class SafetyAbort(DeviceError):
     """Raised by the safety gate / mount-floor guard to tear the run down through
     the shielded park/warm wind-down (§1.9-G). A subclass of ``DeviceError`` so
@@ -460,6 +470,12 @@ class SequenceEngine:
         self._frames_since_focus = 0
         #: consecutive dither SETTLE failures; the walking-field gate
         self._dither_settle_fails = 0
+        #: guiding recoveries attempted since the last frame was banked (#72).
+        #: Counts ATTEMPTS, not failures: on 2026-09-20 recovery kept
+        #: SUCCEEDING -- "native guider calibrated and guiding" -- and losing
+        #: the star again minutes later, so a counter keyed on the exception
+        #: path would have read zero through the entire loop.
+        self._guiding_recoveries = 0
         self._last_focus_temp: float | None = None
         #: The temperature-compensation reference (#D-RIG-2): ``(temp_c, pos)``
         #: or None for "not anchored yet".
@@ -4488,6 +4504,11 @@ class SequenceEngine:
         self._frame_started_at = 0.0   # frame complete — no longer in flight
         self._done[key] = i + 1
         self._frames_done += 1
+        # A banked frame is the only evidence that recovery actually worked, so
+        # it is what clears the bound (#72). Clearing it when start_guiding
+        # returned would have re-armed the loop on every cycle of the night
+        # that produced this issue.
+        self._guiding_recoveries = 0
         # ledger append + atomic session save replaces the retired resume-file
         # _persist (same per-frame write cost — sessions spec §3).
         self._record_session_frame(target, step, info, auto_accepted=accepted)
@@ -5349,7 +5370,47 @@ class SequenceEngine:
                 return
         except Exception:
             return
-        bus.log("warning", "guiding lost — attempting recovery", "sequence")
+        # BOUNDED (#72). Unbounded, this re-centred and recalibrated once per
+        # frame loop for as long as the star stayed lost: on 2026-09-19 that
+        # was 2.5 hours, 18 losses and 4 calibration timeouts, and on
+        # 2026-09-20 it ran from a post-flip calibration that was 28 degrees
+        # out of square. Throughout, the sequence reported `running` and the
+        # engine shot one trailed frame per cycle, so a supervisor keyed on
+        # state saw a healthy run and a supervisor keyed on frame COUNT saw
+        # progress. Both are why it survived two nights.
+        #
+        # The bound counts attempts since the last banked frame, and it takes
+        # the action the operator ALREADY chose for "guiding is unavailable"
+        # rather than inventing a second policy for the same situation: a
+        # guider that cannot be kept is a guider that is unavailable.
+        if self._guiding_recoveries >= _MAX_GUIDING_RECOVERIES:
+            cfg = self._cfg
+            require_guiding = bool(cfg and cfg.escalation.require_guiding)
+            action = (cfg.escalation.guiding_action if cfg else "warn")
+            why = (f"guiding could not be kept after "
+                   f"{self._guiding_recoveries} recovery attempts without a "
+                   f"frame")
+            if require_guiding and action == "abort":
+                bus.log("error", why, "sequence")
+                raise SafetyAbort(why)
+            if require_guiding and action == "skip":
+                bus.log("warning", f"{why} — skipping "
+                        f"{getattr(target, 'name', 'this target')}", "sequence")
+                raise StopTarget(why)
+            # Neither: stand down from recovery rather than cycling the mount
+            # to no purpose. The run continues unguided, which is what it would
+            # have done had the guider never come up at all, and the detail
+            # says so instead of claiming to be recovering.
+            bus.log("warning", f"{why}; standing down from recovery and "
+                    f"continuing unguided", "sequence")
+            self._set_state(detail="guiding lost; recovery stood down")
+            return
+
+        self._guiding_recoveries += 1
+        bus.log("warning",
+                f"guiding lost — attempting recovery "
+                f"({self._guiding_recoveries}/{_MAX_GUIDING_RECOVERIES})",
+                "sequence")
         self._set_state(detail="recovering guiding")
 
         # RE-CENTRE BEFORE RESUMING, not after. While guiding was down the field
