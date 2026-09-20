@@ -202,6 +202,33 @@ VisualStability.prototype.observe=function(this:InstanceType<typeof VisualStabil
   realObserve.call(this,at,luma,width,height);
 };
 
+/** A phone HOLDING STILL, as a real gyro reports one: not an exact zero but a
+ *  noise floor around it. The sign alternates sample to sample so the stream is
+ *  noise rather than bias - integrated, it stays near zero instead of walking
+ *  toward QUIET_DRIFT_DEG, which is what lets the long holds below run for
+ *  seconds without the total breaking them for a reason no case is about.
+ *  0.0374 deg/s of magnitude, a thirteenth of QUIET_RATE_DEG_S.
+ *  It is not exactly zero for a load-bearing reason (issue #106): `observe`
+ *  treats an exact `{0,0,0}` triple as no measurement at all, because a stuck
+ *  driver or a synthesised stream is indistinguishable from a still phone. A
+ *  fixture that delivered exact zeros would be testing a device that does not
+ *  exist and would now vouch for nothing. */
+let gyroSign=1;
+const quietGyro=()=>{gyroSign=-gyroSign;return {alpha:0.02*gyroSign,beta:-0.03*gyroSign,gamma:0.01*gyroSign};};
+/** One `devicemotion` sample at the current clock, for the SECOND witness
+ *  (`MotionStability`, issues #63 and #76). It is a module-level helper rather
+ *  than one of `approachAndHold`'s returns because it belongs to neither
+ *  fixture: the gyro is a stream of its own, the driver attaches its own
+ *  listener to it, and the cases that use it choose their own cadence.
+ *  `rotationRate` in degrees per second, `null` for a browser that fires the
+ *  event with no rate sensor behind it. */
+const gyro=(rate:{alpha:number;beta:number;gamma:number}|null|undefined=quietGyro())=>{
+  const ev=new w.Event('devicemotion');
+  Object.defineProperty(ev,'timeStamp',{value:clock});
+  Object.assign(ev,{rotationRate:rate});
+  w.dispatchEvent(ev);
+};
+
 let passed=0,failed=0;
 async function test(name:string,fn:()=>Promise<void>){
   try{await fn();passed++;console.log(`PASS ${name}`);}
@@ -588,6 +615,231 @@ await test('A lost compass over a featureless view names the sky, not the compas
   assert.match(sweep.captureCue,/compass has gone quiet/,`cue was: "${sweep.captureCue}"`);
   assert.doesNotMatch(sweep.captureCue,/move the phone/i,`cue was: "${sweep.captureCue}"`);
   flat=false;
+  sweep.stop();
+});
+
+/** The four cases below are the SECOND WITNESS, wired (issues #63 and #76).
+ *  They share the fixture of the three cases above - 25 textured ticks to a
+ *  video-vouched hold, the scene switched to a flat 128, then ONE reading over
+ *  the blank view - and differ from them in one thing only: a `devicemotion`
+ *  stream. Read them against 'A reading delivered over a featureless view is
+ *  not held by it', which is the same fixture with no gyro at all and still
+ *  says the compass is lost; that case is what stops these from being about the
+ *  fixture rather than about the witness.
+ *  The gyro is sampled once per 100 ms tick, inside MOTION_STALE_MS, and once
+ *  at `silentFrom` before the hold begins so the run's first break sits at or
+ *  before every reading these cases are about rather than 100 ms after it. */
+await test('A phone that comes to rest ON blank sky is held by the gyro (issue #63)',async()=>{
+  // The probe in the issue body, which today reads
+  // `compassReady=false cue="Waiting for the compass..."`: the user pans up
+  // into smooth sky, the view loses its gradient part way through the pan, and
+  // the final orientation event therefore lands over a view that can witness
+  // nothing. The video has nothing to say there and never will; the gyro does,
+  // because `devicemotion` is delivered continuously rather than on change and
+  // `rotationRate` answers the one question - has the phone turned since then.
+  // Instants, identical to the case above it: 25 textured ticks to s+2500 (the
+  // last judgeable frame), 5 featureless ticks to s+3000, the reading at
+  // s+3100, then 25 featureless ticks to s+5600. That is 2500 ms of silence,
+  // past SENSOR_SILENCE_MS = 2000, with the featureless memory standing at
+  // s+2500 - BEFORE the reading - so neither freshness nor the video nor the
+  // memory can hold it, and the gyro is the only thing left that can.
+  // Mutation: drop `|| this.motionVouchesFor(at, now)` from `vouched`. Observed
+  // red: 'a reading the gyro has watched since before it arrived read as lost'.
+  const {sweep,tick,aim,silentFrom}=await approachAndHold();
+  gyro();
+  for(let i=0;i<25;i++){tick();gyro();}
+  flat=true;
+  for(let i=0;i<5;i++){tick();gyro();}
+  aim(10);gyro();
+  assert.equal(clock-silentFrom,3100,'the reading did not land where the instants above assume');
+  for(let i=0;i<25;i++){tick();gyro();}
+  assert.equal(clock-silentFrom,5600);
+  assert.equal(sweep.compassReady,true,'a reading the gyro has watched since before it arrived read as lost');
+  assert.notEqual(sweep.aimTarget,null,'the dome blanked while the gyro was vouching for the heading');
+  // Both blank-sky sentences are false while the gyro holds: capture is not
+  // stopped and the compass has not gone quiet in any sense the user can act on.
+  assert.doesNotMatch(sweep.captureCue,/nothing is being captured/,`cue was: "${sweep.captureCue}"`);
+  assert.doesNotMatch(sweep.captureCue,/compass has gone quiet/,`cue was: "${sweep.captureCue}"`);
+  assert.doesNotMatch(sweep.captureCue,/move the phone/i,`cue was: "${sweep.captureCue}"`);
+  flat=false;
+  sweep.stop();
+});
+
+await test('A gyro reporting a turn refuses the reading it arrived with, and the cue names the sky again',async()=>{
+  // The other half of the same fixture, and what stops the witness being a
+  // blanket licence: over blank sky the video cannot tell "the phone stopped
+  // here" from "the phone turned here", and the gyro can - so it must say so.
+  // The turn is 10 deg/s, twenty times QUIET_RATE_DEG_S, reported from the
+  // reading onward, so every pair breaks the run and no continuity exists to
+  // reach back across the reading.
+  // Same instants as the case above.
+  // Mutation: make `motionVouchesFor` answer on the video's state alone -
+  // `return this.stability.witness(now) === 'featureless';` - so the gyro is
+  // consulted about WHETHER to ask and never about the answer. Observed red:
+  // 'a phone that never stopped turning was vouched for by its own gyro'.
+  // Not the floor and not the total, deliberately: at 10 deg/s over a 100 ms
+  // pair either one catches this on its own, so deleting one leaves the case
+  // green and the mutant that grades the floor lives on the unit case for it
+  // (photospherePose.test.ts, the 2 deg/s pair).
+  const {sweep,tick,aim}=await approachAndHold();
+  const turning={alpha:10,beta:0,gamma:0};
+  gyro();
+  for(let i=0;i<25;i++){tick();gyro();}
+  flat=true;
+  for(let i=0;i<5;i++){tick();gyro();}
+  aim(10);gyro(turning);
+  for(let i=0;i<25;i++){tick();gyro(turning);}
+  assert.equal(sweep.compassReady,false,'a phone that never stopped turning was vouched for by its own gyro');
+  assert.equal(sweep.aimTarget,null,'the aim dot rode a heading the gyro said the phone had left');
+  assert.match(sweep.captureCue,/compass has gone quiet/,`cue was: "${sweep.captureCue}"`);
+  flat=false;
+  sweep.stop();
+});
+
+await test('A gyro that stops delivering vouches for nothing, however quiet its last sample was',async()=>{
+  // MOTION_STALE_MS, end to end. A witness that answered on its last sample
+  // forever is this module's recurring defect - a verdict riding a
+  // value-producing path, so it stops when the evidence stops while the
+  // situation it describes continues - and the gyro must not reintroduce it
+  // over exactly the view that made the video stop speaking.
+  // Same instants as the two above, with the stream ending at the reading:
+  // s+3100 is the last sample, the cue is read at s+5600, so the witness is
+  // 2500 ms past a 200 ms bound.
+  // Mutation: drop the staleness arm of `MotionStability.witness`, returning
+  // only 'quiet'/'turning'. Observed red: 'a gyro that had stopped delivering
+  // went on vouching for a reading'.
+  const {sweep,tick,aim}=await approachAndHold();
+  gyro();
+  for(let i=0;i<25;i++){tick();gyro();}
+  flat=true;
+  for(let i=0;i<5;i++){tick();gyro();}
+  aim(10);gyro();
+  for(let i=0;i<25;i++)tick();
+  assert.equal(sweep.compassReady,false,'a gyro that had stopped delivering went on vouching for a reading');
+  assert.match(sweep.captureCue,/compass has gone quiet/,`cue was: "${sweep.captureCue}"`);
+  flat=false;
+  sweep.stop();
+});
+
+await test('Over blank sky the gyro gets a frame past the pose gates that refused every one (issue #76)',async()=>{
+  // The capture half, and the measured shape of issue #76. On both recorded arc
+  // routes the zenith hold produces only `alignment-wait` for its whole 1.2 s
+  // window, and the instrument added for that issue says which term: `no-pose`,
+  // every record, with the carried anchor at 0 on `chartyard-arc075-60` and
+  // 1.73 degrees on `-70` and the separation term never once reached. The view
+  // there reads featureless, so the video yields no continuity; the sensor went
+  // quiet 20 ms into the hold, so the strict rule's 250 ms window is long gone;
+  // and nothing is left to place the frame with.
+  // This is that state in the harness: a featureless hold with the sensor
+  // silent, where the case above it pins the same hold capturing NOTHING
+  // without a gyro ('a featureless view was captured under a reading nothing
+  // witnessed'). What the assertion grades is the POSE GATES and not the mosaic
+  // - `already-captured`, `too-soon` and `no-target` are all recorded after
+  // them, so any of them is proof the frame was placed - because what the
+  // mosaic does with a flat 128 is registration's business and not this
+  // witness's.
+  // Mutation: make `poseEvidence` return the video's continuity unconditionally
+  // (delete the featureless branch). Observed red: 'every grab over the blank
+  // hold refused for want of a pose, exactly as it does with no gyro at all'.
+  const {sweep,tick,silentFrom}=await approachAndHold();
+  gyro();
+  for(let i=0;i<25;i++){tick();gyro();}
+  assert.equal(clock-silentFrom,2500);
+  assert.ok(sweep.frameCount>0,'the textured hold captured nothing, so the blank phase below shows nothing');
+  flat=true;
+  const before=sweep.captureLog.length;
+  for(let i=0;i<25;i++){tick();gyro();}
+  const window=sweep.captureLog.slice(before);
+  assert.ok(window.length>0,'no grab ran over the blank hold at all');
+  // The instrument itself, graded here rather than assumed: the `no-pose`
+  // assertion below is satisfied by a driver that simply stopped writing the
+  // field, which is the shape of a test that cannot fail. Every
+  // `alignment-wait` this session recorded - the approach makes plenty - has to
+  // name its term and carry the anchor.
+  // Mutation: drop `{wait:'no-pose',anchor}` from the first alignment-wait
+  // return in `grabFrame`. Observed red: 'an alignment-wait record named no
+  // term'.
+  const waits=sweep.captureLog.filter(r=>r.outcome==='alignment-wait');
+  assert.ok(waits.length>0,'no alignment-wait was recorded at all, so the instrument is graded by nothing here');
+  assert.ok(waits.every(r=>r.wait!==undefined&&r.anchor!==undefined),
+    `an alignment-wait record named no term: {${[...new Set(waits.map(r=>`${r.wait??'-'}/${r.anchor??'-'}`))]}}`);
+  const placed=window.filter(r=>r.outcome!=='alignment-wait');
+  assert.ok(placed.length>0,
+    'every grab over the blank hold refused for want of a pose, exactly as it does with no gyro at all: '
+    +`{${[...new Set(window.map(r=>`${r.outcome}/${r.wait??'-'}`))]}}`);
+  assert.ok(!window.some(r=>r.wait==='no-pose'),
+    `a grab over the blank hold still found no pose at all: {${[...new Set(window.map(r=>r.wait??'-'))]}}`);
+  flat=false;
+  sweep.stop();
+});
+
+await test('A gyro reporting exact zeros is not a witness, however long it reports them (issue #106)',async()=>{
+  // The #63 fixture with one substitution: the stream is `{0, 0, 0}` on every
+  // sample instead of a real phone's noise floor. A stuck driver, an emulator
+  // or a WebView that synthesises zeros is indistinguishable from a phone
+  // holding still by the rate alone, and over this view the video cannot tell
+  // them apart either - it is `featureless` by construction wherever this
+  // witness is consulted. So it must refuse, and the refusal has to be visible
+  // end to end and not only in the unit fixture: a false hold here is not a
+  // missed capture, it is a frame placed into the mosaic at a pose the phone has
+  // left.
+  // Mutation: delete `if(a===0&&b===0&&c===0)return;` from
+  // `MotionStability.observe`. Observed red: 'a stream of exact zeros was read
+  // as a phone holding still'.
+  const {sweep,tick,aim}=await approachAndHold();
+  const zeros={alpha:0,beta:0,gamma:0};
+  gyro(zeros);
+  for(let i=0;i<25;i++){tick();gyro(zeros);}
+  flat=true;
+  for(let i=0;i<5;i++){tick();gyro(zeros);}
+  aim(10);gyro(zeros);
+  for(let i=0;i<25;i++){tick();gyro(zeros);}
+  assert.equal(sweep.compassReady,false,'a stream of exact zeros was read as a phone holding still');
+  assert.equal(sweep.aimTarget,null,'the aim dot rode a heading only a dead channel vouched for');
+  assert.match(sweep.captureCue,/compass has gone quiet/,`cue was: "${sweep.captureCue}"`);
+  flat=false;
+  sweep.stop();
+});
+
+await test('The gyro says nothing about a view the video CAN judge: a moving picture is not overruled',async()=>{
+  // The containment, which is the whole of why this witness is safe to have at
+  // all, and which no case reached until this one: `motionVouchesFor` speaks
+  // only while the video answers 'featureless'. Both other unknowns are
+  // excluded, for different reasons, and both are graded here.
+  //   'moving' is a MEASUREMENT that the scene changed. A phone can translate,
+  //   or something can move in the frame, and the picture moves without the
+  //   phone turning - so a gyro reporting no rotation is not wrong about
+  //   rotation and must still not be allowed to talk over a video that watched
+  //   the view move. This is that scene exactly: the fixture shifts one cell a
+  //   frame while the gyro reports a still phone.
+  //   'stale' is a camera that has stopped and may be showing anything, which is
+  //   a worse state with a refusal and a cue of its own.
+  // Instants: the approach's last reading at s, then 25 shifting textured ticks
+  // to s+2500 - past SENSOR_SILENCE_MS = 2000, so bare freshness is gone and
+  // only a witness can hold the reading - and then 2000 ms with no frame at all
+  // and the gyro still delivering, which is past STALE_FRAME_MS = 1000.
+  // Mutation: delete `this.stability.witness(now) === 'featureless' &&` from
+  // `motionVouchesFor`. Observed red: 'the gyro overruled a video that had
+  // measured the view moving'.
+  // Second mutation, for the same condition at the other call site: delete the
+  // featureless branch guard from `poseEvidence` so it hands `forFrame` the
+  // gyro's continuity in every video state. Observed red: 'a grab over a moving
+  // view got past the pose gates on the gyro's word'.
+  const {sweep,tick,silentFrom}=await approachAndHold();
+  gyro();
+  const before=sweep.captureLog.length;
+  for(let i=0;i<25;i++){shift++;tick();gyro();}
+  assert.equal(clock-silentFrom,2500,'the moving hold did not last past SENSOR_SILENCE_MS');
+  assert.equal(sweep.compassReady,false,'the gyro overruled a video that had measured the view moving');
+  assert.equal(sweep.aimTarget,null,'the aim dot rode a heading the video had measured out of date');
+  assert.equal(sweep.frameCount,0,'a moving view was captured because the gyro said the phone was still');
+  const moving=sweep.captureLog.slice(before);
+  assert.ok(moving.length>0,'no grab ran over the moving hold at all');
+  assert.ok(moving.every(r=>r.outcome==='alignment-wait'),
+    `a grab over a moving view got past the pose gates on the gyro's word: {${[...new Set(moving.map(r=>r.outcome))]}}`);
+  // The 'stale' arm: no frame for 2000 ms while the gyro keeps delivering.
+  for(let i=0;i<20;i++){clock+=100;gyro();}
+  assert.equal(sweep.compassReady,false,'the gyro vouched behind a camera that had stopped');
   sweep.stop();
 });
 
