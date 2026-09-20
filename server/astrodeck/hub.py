@@ -3760,9 +3760,14 @@ class Hub:
         data_is_linear = bool(getattr(frame, "data_is_linear", not is_nina))
 
         saved_path = getattr(frame, "saved_path", None)
+        # OFF THE LOOP (#109). frame_stats makes six full passes over the array
+        # including np.median, which sorts; a frame from this camera is
+        # 26,108,352 pixels, so inline in the dict literal this blocked the
+        # event loop for the whole of it, once per published frame.
+        stats = await asyncio.to_thread(frame_stats, data, full_well)
         info: dict[str, Any] = {
             "id": pid,
-            "stats": frame_stats(data, full_well),
+            "stats": stats,
             "exposure_s": frame.exposure_s,
             "gain": frame.gain,
             "binning": binning,
@@ -3824,6 +3829,12 @@ class Hub:
                     # Carry the well depth here too, or `clipped` vanishes for
                     # every frame of a Live View session while `max` keeps
                     # lighting the CLIP chip — the alarm without the advice.
+                    #
+                    # NOT a duplicate of the `stats` computed above: `data` was
+                    # rebound to the stacked mean on the line before this, so
+                    # this measures the stack the UI is being shown, while the
+                    # first measured the sub. Only reachable while Live View is
+                    # armed AND a running mean exists.
                     info["stats"] = await asyncio.to_thread(
                         frame_stats, data, full_well)
                 ls_info = {"frames": outcome.frames,
@@ -7254,15 +7265,29 @@ class Hub:
         # just measured, and a second round of device reads on the status path
         # would cost more than the feature. Coalesced to one write per 10s and
         # swallows its own errors, so it is safe on this hot path.
+        #
+        # OFF THE LOOP (#97). Coalescing bounds how OFTEN this writes, not how
+        # LONG a write takes, and the write goes through the private-ACL path
+        # on a directory holding the night's images: py-spy caught this stack
+        # on the loop thread on 2026-09-19 and the write was measured at 7 s.
+        # record() takes its own lock, because this now runs on a worker thread
+        # and poll_status is entered both from _status_loop and from
+        # /api/status.
         try:
             from .devices import fingerprint as _fp
             _m = out.get("mount") or {}
             _f = out.get("focuser") or {}
             _w = out.get("filterwheel") or {}
-            _fp.record(focuser_position=_f.get("position"),
-                       filter_slot=_w.get("position"),
-                       ra_hours=_m.get("ra_hours"), dec_deg=_m.get("dec_deg"),
-                       parked=_m.get("parked"), tracking=_m.get("tracking"))
+            await asyncio.to_thread(
+                _fp.record, focuser_position=_f.get("position"),
+                filter_slot=_w.get("position"),
+                ra_hours=_m.get("ra_hours"), dec_deg=_m.get("dec_deg"),
+                parked=_m.get("parked"), tracking=_m.get("tracking"))
+            # The worker records a slow write, the loop says it: bus.publish is
+            # loop-affine (see fingerprint._slow_write_notice).
+            _slow = _fp.take_slow_write_notice()
+            if _slow:
+                bus.log("warning", _slow, "fingerprint")
         except Exception:  # noqa: BLE001 — never break status over bookkeeping
             pass
         return out

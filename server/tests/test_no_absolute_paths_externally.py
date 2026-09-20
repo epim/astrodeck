@@ -284,3 +284,47 @@ class TestCsvIsNotALoophole:
 
         j = c.get("/api/reports/r1").json()
         assert str(captures) not in json.dumps(j)
+
+
+class TestLogLines:
+    """A bus log line is an external payload too.
+
+    It reaches the WS stream, the /api/logs ring and the durable night log,
+    and /api/logs is gated on CAP_VIEW_STATUS -- the lowest capability there
+    is. The ruling at the top of this file says no absolute path leaves this
+    process for anybody, so a message built from a `Path` is exactly as much a
+    disclosure as a JSON field, and it is the easier one to write by accident
+    because nothing about a format string looks like a payload.
+
+    Only PRODUCERS THAT BUILD A MESSAGE FROM A PATH belong here. Grading every
+    bus.log call in the server would need each producer driven or a static
+    scan of format strings, which is not this file's blunt shape.
+    """
+
+    def test_a_slow_fingerprint_write_warning_carries_no_absolute_path(
+            self, captures, monkeypatch):
+        """The fingerprint file lives under CAPTURE_DIR, whose path names the
+        operator's Windows account. The warning is allowed to say how long the
+        write took and which file it was; it is not allowed to say where."""
+        from astrodeck.devices import fingerprint
+
+        monkeypatch.setattr(fingerprint, "FINGERPRINT_SLOW_WRITE_S", 0.02)
+        fingerprint.reset_for_tests()
+        real_write = fingerprint.write_json_atomic
+
+        def slow_write(target, payload, **kwargs):
+            time.sleep(0.05)
+            return real_write(target, payload, **kwargs)
+
+        monkeypatch.setattr(fingerprint, "write_json_atomic", slow_write)
+        try:
+            fingerprint.record(focuser_position=11218, filter_slot=1,
+                               ra_hours=1.0, dec_deg=2.0, parked=False,
+                               tracking=True)
+            notice = fingerprint.take_slow_write_notice()
+            assert notice, "premise: the slow write produced a warning"
+            assert str(captures) not in notice, \
+                f"the slow-write warning leaked the capture root:\n{notice}"
+            assert "device_fingerprint.json" in notice
+        finally:
+            fingerprint.reset_for_tests()

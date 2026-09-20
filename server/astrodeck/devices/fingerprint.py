@@ -21,6 +21,7 @@ reason to skip a check that must never be skipped.
 """
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,6 +31,83 @@ from ..persist import read_json_or, write_json_atomic
 #: A tracked field rarely changes, but the status poll runs several times a
 #: second. Coalesce so this is not rewriting the file continuously.
 FINGERPRINT_WRITE_INTERVAL_S = 10.0
+
+#: A write that takes longer than this announces itself. The disk cost of this
+#: file was invisible for months because nothing ever timed it; on the rig it
+#: reached 7 s because the write re-hardened the whole capture tree.
+FINGERPRINT_SLOW_WRITE_S = 1.0
+
+#: record() is no longer single-threaded: the status poll dispatches it with
+#: asyncio.to_thread, and poll_status runs both from the status loop and from
+#: the /api/status route, so two worker threads can enter at once.
+#:
+#: TWO LOCKS, and they are never held at the same time, so there is no lock
+#: order to get wrong. record takes _state_lock for the observation, releases
+#: it, then takes _write_lock for the latch and the write.
+#:
+#: _state_lock guards ONLY the observation trio -- _known/_last_pos/_confirmed
+#: -- wherever it is touched: _observe (with its one-time _ensure_boot read),
+#: verdict's in-process branch, and vouch. Unlocked, a vouch carrying a
+#: MEASURED position (an autofocus result) could be overwritten by a worker
+#: mid-_observe holding a stale device reading; verdict would then answer
+#: focus_trusted=False and the resume ladder would re-run a full autofocus
+#: every ten minutes -- precisely the waste vouch exists to prevent. Held for
+#: microseconds, which is why the loop may take it.
+#:
+#: IT DOES NOT COVER THE WRITE, and that is the point. MEASURED around a real
+#: record(): a small already-private state directory holds 3.46 ms, 2000 files
+#: already private 7.52 ms, and 2000 files NOT yet private 89.64 ms -- and the
+#: rig is roughly 10x slower on this path. The case that decides it is the
+#: first write of a process into a captures/ that is not yet protected: the
+#: full propagating SetSecurityInfo, 7057 ms on the rig, reachable on a
+#: first-ever boot, a fresh install, an upgrade from a pre-hardening release
+#: or a restored capture tree. A verdict() or vouch() on the loop behind one
+#: lock covering that write is a multi-second event-loop stall -- the class
+#: this whole change exists to kill, and harder to see than the original,
+#: because py-spy would show verdict waiting on a lock rather than the write.
+_state_lock = threading.Lock()
+
+#: The coalescing latch AND the write, together and never apart. Splitting
+#: those two would let two callers both read _last_write before either set it
+#: and then interleave two atomic writes over the same staging directory,
+#: which is the thing the original single lock was added for.
+#:
+#: The cost of the split: another thread may advance _last_pos between this
+#: call's _observe and its write, so the file can carry a reading microseconds
+#: newer than the one this caller saw. Same device, newer number -- and the
+#: written value was always "the latest reading", never "this call's argument"
+#: (see the comment on the payload). Nothing downstream can tell the
+#: difference, and nothing that can block indefinitely is held under it.
+_write_lock = threading.Lock()
+
+#: A slow write recorded by the worker thread, for the coroutine that
+#: dispatched it to publish. NOT ``bus.log`` from inside ``record``:
+#: ``EventBus.publish`` hands each event to ``asyncio.Queue.put_nowait``, which
+#: sets futures and calls ``loop.call_soon`` -- loop-affine, not thread-safe,
+#: and its night-log append does file I/O. Same rule, same reason, as the ZWO
+#: pulse watchdog thread (``devices/backends/zwo_am5``): the thread records,
+#: the loop says it.
+#:
+#: NO ABSOLUTE PATH IN THE MESSAGE. It goes to the bus, so it reaches the WS
+#: stream, the /api/logs ring (CAP_VIEW_STATUS, the lowest capability) and the
+#: durable night log. The owner ruling at the top of
+#: ``tests/test_no_absolute_paths_externally.py`` is "no absolute filesystem
+#: path leaves this process, for anybody", and CAPTURE_DIR names the
+#: operator's Windows account. The elapsed time is the whole signal; the file
+#: name is carried the way every other bus.log in this codebase carries one.
+_slow_write_notice: str | None = None
+
+#: Its own lock, so the read-then-clear in ``take_slow_write_notice`` is atomic
+#: against the worker that sets it. A third lock rather than _write_lock, for
+#: the same reason _state_lock is not _write_lock: the reader is the event
+#: loop, and the notice is set from inside the write, so sharing that lock
+#: would make the loop queue behind the write. Held for one assignment, never
+#: across I/O.
+#:
+#: The only nesting anywhere in this module: record acquires it while holding
+#: _write_lock, and nothing acquires _write_lock while holding it. _state_lock
+#: is never held together with either. One direction, so no cycle.
+_notice_lock = threading.Lock()
 
 _PATH: Path | None = None
 _last_write: float = 0.0
@@ -154,28 +232,80 @@ def record(*, focuser_position: int | None, filter_slot: int | None,
     Written with the atomic writer so a power cut mid-write cannot leave a
     truncated file — the one failure that would make this module lie exactly
     when it matters. Swallows its own errors: bookkeeping must never break a run.
+
+    Callable from any thread; the caller on the status path dispatches it off
+    the event loop. See ``_state_lock`` for why the observation and the write
+    take different locks, and why neither is ever held across the other.
     """
     global _last_write
-    _observe(focuser_position)
-    now = _now()
-    if _last_write and now - _last_write < FINGERPRINT_WRITE_INTERVAL_S:
-        return
-    _last_write = now
-    try:
-        write_json_atomic(_path(), {
-            # _last_pos, not the argument: a focuser that has dropped off the
-            # bus reports None, and writing that would blank the one number the
-            # next boot has to compare against — an unrelated cable would make
-            # the power cut undetectable.
-            "focuser_position": _last_pos,
-            "filter_slot": filter_slot,
-            "ra_hours": ra_hours,
-            "dec_deg": dec_deg,
-            "parked": parked,
-            "tracking": tracking,
-        }, backup=False)
-    except Exception:  # noqa: BLE001 — telemetry must never break a run
-        pass
+    with _state_lock:
+        _observe(focuser_position)
+    with _write_lock:
+        now = _now()
+        if _last_write and now - _last_write < FINGERPRINT_WRITE_INTERVAL_S:
+            return
+        _last_write = now
+        try:
+            path = _path()
+            started = time.monotonic()
+            outcome = "took"
+            try:
+                write_json_atomic(path, {
+                    # _last_pos, not the argument: a focuser that has dropped
+                    # off the bus reports None, and writing that would blank
+                    # the one number the next boot has to compare against — an
+                    # unrelated cable would make the power cut undetectable.
+                    # Read outside _state_lock, so a concurrent caller's
+                    # _observe may have advanced it since this call's own:
+                    # the same device, a reading microseconds newer. See the
+                    # note on _write_lock.
+                    "focuser_position": _last_pos,
+                    "filter_slot": filter_slot,
+                    "ra_hours": ra_hours,
+                    "dec_deg": dec_deg,
+                    "parked": parked,
+                    "tracking": tracking,
+                }, backup=False)
+            except Exception:
+                outcome = "failed after"
+                raise
+            finally:
+                # IN THE FINALLY. Timed only on success, a 7 s propagating
+                # SetSecurityInfo that then raised PrivatePermissionsError
+                # would be swallowed in silence -- which is the invisibility
+                # this self-report exists to end. Say so, every time it
+                # happens: a bookkeeping write is meant to be free, and one
+                # that is not has to be visible without a profiler attached to
+                # the live server. Handed to the loop -- see
+                # _slow_write_notice, and note what may NOT go in the text.
+                elapsed = time.monotonic() - started
+                if elapsed >= FINGERPRINT_SLOW_WRITE_S:
+                    _set_slow_write_notice(
+                        f"device fingerprint write {outcome} "
+                        f"{elapsed:.1f}s ({path.name})"
+                    )
+        except Exception:  # noqa: BLE001 — telemetry must never break a run
+            pass
+
+
+def _set_slow_write_notice(notice: str) -> None:
+    global _slow_write_notice
+    with _notice_lock:
+        _slow_write_notice = notice
+
+
+def take_slow_write_notice() -> str | None:
+    """Hand any pending slow-write warning to a caller ON THE LOOP THREAD.
+
+    Called once per dispatch by whoever ran :func:`record` off the loop; the
+    bus publish has to happen there rather than in the worker. See
+    ``_slow_write_notice``. The read-and-clear is atomic against the worker
+    that sets it, so one slow write is announced exactly once.
+    """
+    global _slow_write_notice
+    with _notice_lock:
+        notice, _slow_write_notice = _slow_write_notice, None
+    return notice
 
 
 def _judge(known: object, focuser_position: int | None) -> Verdict:
@@ -201,14 +331,36 @@ def verdict(*, focuser_position: int | None) -> Verdict:
     boot's own reading long before the resume ladder's first tick. The file is
     still read when nothing has recorded yet: that is the un-restarted case,
     where the file has not been touched since the last process wrote it.
+
+    Reads the in-process trio under ``_state_lock``, because a worker thread
+    can be inside ``_observe`` mutating it. The lock does NOT cover the disk
+    read: that would put the loop behind whatever the file system is doing.
+
+    THE DECISION IS RE-TAKEN AFTER THE READ, not before it. Deciding "nothing
+    has recorded in this process, so read the file", releasing, and then
+    reading leaves a window in which a worker's ``record`` can complete both
+    ``_ensure_boot`` and its ``os.replace``. The file read back is then one
+    this boot has just written, and the comparison is the device against
+    itself: focus_trusted=True after a power cut that moved the focuser, the
+    ladder skips the autofocus, and the night is soft. That is the exact
+    "comparing the boot against itself" hazard the ``_boot`` snapshot exists
+    to prevent, and it is the dangerous direction -- misplaced trust, not a
+    wasted autofocus. So the file is read speculatively and thrown away if the
+    snapshot has appeared in the meantime.
     """
     path = _path()
-    if _boot_loaded and path == _boot_path:
-        return _judge(_known, focuser_position)
+    with _state_lock:
+        if _boot_loaded and path == _boot_path:
+            return _judge(_known, focuser_position)
     raw = read_json_or(path, None)
-    if not isinstance(raw, dict):
-        return Verdict(focus_trusted=False)
-    return _judge(raw.get("focuser_position"), focuser_position)
+    with _state_lock:
+        if _boot_loaded and path == _boot_path:
+            # A worker recorded while we were reading; that file is now this
+            # boot's own output. The snapshot is the only honest basis left.
+            return _judge(_known, focuser_position)
+        if not isinstance(raw, dict):
+            return Verdict(focus_trusted=False)
+        return _judge(raw.get("focuser_position"), focuser_position)
 
 
 def vouch(*, focuser_position: int | None) -> None:
@@ -225,14 +377,21 @@ def vouch(*, focuser_position: int | None) -> None:
 
     Only a caller that has just MEASURED may call this. The status poll must
     not: it reads what the device claims, which is the thing being doubted.
+
+    Under ``_state_lock`` for the whole adoption. A worker thread inside
+    ``_observe`` writes the same trio, and with ``_confirmed`` true it assigns
+    the device's LIVE reading to ``_known``; interleaved, that reading lands
+    after the measurement and silently replaces it. ``_ensure_boot`` is inside
+    the lock too, because it writes the trio as well.
     """
     global _known, _last_pos, _confirmed
     pos = _as_int(focuser_position)
     if pos is None:
         return
-    _ensure_boot()        # never let this be the read that skips the snapshot
-    _known = _last_pos = pos
-    _confirmed = True
+    with _state_lock:
+        _ensure_boot()    # never let this be the read that skips the snapshot
+        _known = _last_pos = pos
+        _confirmed = True
 
 
 def reset_for_tests() -> None:
@@ -244,9 +403,10 @@ def reset_for_tests() -> None:
     an order-dependent flake. It is also how a test SIMULATES a restart: the
     file survives, the process state does not.
     """
-    global _last_write, _boot, _boot_loaded, _boot_path
+    global _last_write, _boot, _boot_loaded, _boot_path, _slow_write_notice
     global _known, _last_pos, _confirmed
     _last_write = 0.0
+    _slow_write_notice = None
     _boot = None
     _boot_loaded = False
     _boot_path = None
