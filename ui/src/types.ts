@@ -439,6 +439,8 @@ export interface GuideStats {
   // label) unless the server explicitly says false.
   is_arcsec?: boolean;
   image_scale?: number;
+  calibration_image_scale?: number | null;
+  image_scale_known?: boolean;
   // NOV-7: plain-language narration phase ("idle" | "finding" |
   // "calibrating" | "settling" | "guiding" | "lost"), or "" / absent when
   // unknown (the PHD2/NINA bridge guider leaves it unset — the narration
@@ -792,6 +794,11 @@ export interface SequenceState {
     reason: string;
     text: string;
     holding: boolean;
+    latest_frame?: {
+      cloudy: boolean | null;
+      score: number | null;
+      reason: string;
+    };
   };
 }
 
@@ -2543,12 +2550,35 @@ export interface GalleryFrame {
   filter: string;                // "" when the header was unreadable
   frame_type: string;            // "Light" | "Flat" | … ; "" when unknown
   exposure_s: number | null;     // null when the header did not say
+  width?: number | null;
+  height?: number | null;
+  bin_x?: number | null;
+  bin_y?: number | null;
+  file_version?: string;
   bytes: number;
   mtime: number;
 }
 
+export interface GalleryGeometryGroup {
+  target: string;
+  filter: string;
+  frame_type: string;
+  width: number | null;
+  height: number | null;
+  bin_x: number | null;
+  bin_y: number | null;
+  exposure_s: number | null;
+  count: number;
+  bytes: number;
+}
+
 export interface GalleryFramesPage {
   frames: GalleryFrame[];
+  snapshot?: string;
+  next_cursor?: string | null;
+  /** Counts across the full filter, including frames on later pages. */
+  geometry_groups?: GalleryGeometryGroup[];
+  geometry_truncated?: boolean;
   /** The WHOLE filtered set, not this page — so a download's size can be shown
    *  without a second round trip. Same resolver the summary route uses. */
   total: number;

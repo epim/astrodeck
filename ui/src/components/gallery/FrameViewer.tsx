@@ -63,8 +63,8 @@ export default function FrameViewer({ frame, onClose }: {
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  const placeholder = `${BASE}${thumbPath(frame.path, 256, frame.mtime)}`;
-  const sharp = width ? `${BASE}${viewPath(frame.path, width, frame.mtime)}` : null;
+  const placeholder = `${BASE}${thumbPath(frame.path, 256, frame.file_version ?? frame.mtime)}`;
+  const sharp = width ? `${BASE}${viewPath(frame.path, width, frame.file_version ?? frame.mtime)}` : null;
 
   return (
     <div

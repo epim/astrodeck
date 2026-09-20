@@ -31,7 +31,9 @@
 import { useCallback, useEffect, useMemo, useState, type CSSProperties, type JSX } from "react";
 
 import { ApiError } from "../../../../api";
-import { listFrames, listNights } from "../../../../api/gallery";
+import CaptureGroups from "../../../../components/gallery/CaptureGroups";
+import type { GalleryFramesPage } from "../../../../types";
+import { listFrames, listNights, validateSelection } from "../../../../api/gallery";
 import { getSession, listSessions, patchFrame } from "../../../../api/sessions";
 import { getBundlePreview, listReports, materializeBundle } from "../../../../api/reports";
 import { getRemoteStatus } from "../../../../api/backends";
@@ -52,7 +54,7 @@ import { targetProgress } from "../../../../lib/sessions";
 import { sessionDates } from "../../../../components/sequence/sessionDates";
 import { useSeq, useStore } from "../../../../store";
 import type {
-  BundlePreview, GalleryFrame, RemoteStatus, SequenceState, Session, SessionFrame,
+  BundlePreview, RemoteStatus, SequenceState, Session, SessionFrame,
   SessionReportSummary, SessionRow,
 } from "../../../../types";
 import { buildHash, currentRoute, nav } from "../../../router";
@@ -205,7 +207,7 @@ export function FilesSheet({ params }: SheetProps): JSX.Element {
   const [session, setSession] = useState<Session | null>(null);
   const [index, setIndex] = useState<SessionFilesIndex | null>(null);
   const [gradeNote, setGradeNote] = useState<string | null>(null);
-  const [lib, setLib] = useState<{ frames: GalleryFrame[]; total: number; bytes: number } | null>(null);
+  const [lib, setLib] = useState<GalleryFramesPage | null>(null);
   const [libErr, setLibErr] = useState<string | null>(null);
   const [nightKey, setNightKey] = useState("");
   const [stack, setStack] = useState<SessionStackStatus | null>(null);
@@ -291,7 +293,9 @@ export function FilesSheet({ params }: SheetProps): JSX.Element {
       .then((p) => {
         if (!alive) return;
         const frames = manual ? p.frames.filter((f) => f.frame_type === "Light") : p.frames;
-        setLib({ frames, total: p.total, bytes: p.bytes });
+        setLib({ ...p, frames, geometry_groups: manual
+          ? p.geometry_groups?.filter((g) => g.frame_type.toLowerCase() === "light")
+          : p.geometry_groups });
       })
       .catch((e) => {
         if (!alive) return;
@@ -412,8 +416,11 @@ export function FilesSheet({ params }: SheetProps): JSX.Element {
 
   // -------------------------------------------------------------- selection
   const selection = useMemo(
-    () => buildSelection(rows, tick, scope, manual),
-    [rows, tick, scope, manual],
+    () => {
+      const selected = buildSelection(rows, tick, scope, manual);
+      return lib?.snapshot ? { ...selected, ...scope, snapshot: lib.snapshot } : selected;
+    },
+    [rows, tick, scope, manual, lib?.snapshot],
   );
   const cost = useMemo(() => selectionCost(rows, tick), [rows, tick]);
   const plan = downloadPlan(selection, cost.count);
@@ -480,7 +487,16 @@ export function FilesSheet({ params }: SheetProps): JSX.Element {
 
   const href = plan.ok ? u(plan.href) : u(`/api/gallery/download.zip${selectionQuery(selection)}`);
 
-  const onDownload = () => {
+  const onDownload = (event: { preventDefault(): void }) => {
+    if (selection.snapshot) {
+      event.preventDefault();
+      void validateSelection(selection).then(() => {
+        if (sessionId) noteDownloaded(sessionId, cost.count);
+        window.location.assign(href);
+      }).catch((e) => toast("error", "Download needs a refreshed selection",
+        e instanceof ApiError ? e.message : "Reopen Files and select the frames again."));
+      return;
+    }
     if (sessionId) noteDownloaded(sessionId, cost.count);
   };
 
@@ -644,6 +660,9 @@ export function FilesSheet({ params }: SheetProps): JSX.Element {
         </div>
 
         {/* ----------------------------------------------------- subs card */}
+        {!!lib?.geometry_groups?.length && <Card>
+          <CaptureGroups groups={lib.geometry_groups} incomplete={lib.truncated || lib.geometry_truncated} />
+        </Card>}
         <Card>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
             <Label>SUBS</Label>

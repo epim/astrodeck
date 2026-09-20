@@ -113,6 +113,8 @@ from .. import hub as hub_module
 from .. import config as config_module
 from .. import factory_reset as factory_reset_module
 from .. import gallery as gallery_module
+from .. import capture_geometry
+from .. import gallery_listing
 from ..sync import manifest as sync_manifest_mod
 from ..sync.runner import runner as sync_push_runner
 from ..hub import CAPTURE_DIR, TOUCH_MAX_RATE_DEG_S, PromoteRefused, hub
@@ -1725,6 +1727,10 @@ class GalleryPathsBody(BaseModel):
     ``max_length`` is a denial-of-service bound, not a product limit: the whole
     293-frame reference library is three orders of magnitude below it."""
     paths: list[str] = Field(default_factory=list, max_length=50_000)
+    snapshot: str = ""
+    q: str = ""
+    night_from: str = ""
+    night_to: str = ""
 
 
 class GalleryPurgeBody(GalleryPathsBody):
@@ -4631,7 +4637,7 @@ def create_app(*, bind_host: str | None = None,
             return bool(getattr(cam, "can_cool", False))
         return bool(config_store.cfg().camera_can_cool_seen)
 
-    def _compile_payload(graph: FlowGraph, name: str) -> dict:
+    async def _compile_payload(graph: FlowGraph, name: str) -> dict:
         """``{plan, structural, issues, unmapped}``.
 
         FOUR lists, not one, because four different things can be wrong with a
@@ -4652,6 +4658,7 @@ def create_app(*, bind_host: str | None = None,
         structural = graph.validation_errors()
         compiled = compile_plan(graph, name)
         unmapped: list[dict] = []
+        geometry_issues: list[dict] = []
         try:
             # SAME ARGUMENTS AS THE RUN. A preview compiled differently from the
             # run is a preview of a different night — the defect the park/warm
@@ -4663,6 +4670,11 @@ def create_app(*, bind_host: str | None = None,
                 camera_can_cool=_camera_can_cool(),
                 closes_on_unsafe=bool(
                     config_store.cfg().safety.close_dome_on_unsafe))
+            groups, note = await capture_geometry.inventory()
+            geometry_issues = [{"text": text, "level": "warn"} for text in
+                               capture_geometry.plan_warnings(_plan, groups)]
+            if note:
+                geometry_issues.append({"text": note, "level": "warn"})
         except GraphNotRunnable as e:
             # Not an error response: a half-built graph is the NORMAL state of
             # an editor, and the canvas asks for a compile on every edit. The
@@ -4679,7 +4691,7 @@ def create_app(*, bind_host: str | None = None,
                 "issues": [i.to_json() for i in
                            flow_doctor(graph,
                                        standards=config_store.cfg().standards,
-                                       mount=hub.devices.get("telescope"))],
+                                       mount=hub.devices.get("telescope"))] + geometry_issues,
                 "unmapped": unmapped}
 
     @app.get("/api/flows", dependencies=[Depends(require(CAP_VIEW_STATUS))])
@@ -4875,7 +4887,7 @@ def create_app(*, bind_host: str | None = None,
         Also static-before-parameterised, though only for symmetry — there is no
         POST /api/flows/{flow_id} for it to collide with today, and relying on
         that absence is how the next route added here breaks this one."""
-        return _compile_payload(body.graph or FlowGraph(), body.name or "")
+        return await _compile_payload(body.graph or FlowGraph(), body.name or "")
 
     @app.get("/api/flows/{flow_id}", dependencies=[Depends(require(CAP_VIEW_STATUS))])
     @declare(CAP_VIEW_STATUS)
@@ -4924,7 +4936,7 @@ def create_app(*, bind_host: str | None = None,
             rec = await asyncio.to_thread(flow_store.get, flow_id)
         except KeyError:
             raise HTTPException(404, detail={"code": "not_found"})
-        return _compile_payload(rec.graph, rec.name)
+        return await _compile_payload(rec.graph, rec.name)
 
     @app.get("/api/flows/{flow_id}/tonight",
              dependencies=[Depends(require(CAP_VIEW_SITE_DERIVED))])
@@ -7971,7 +7983,8 @@ def create_app(*, bind_host: str | None = None,
                     422, f"night must be YYYY-MM-DD (got {v!r})")
 
     async def _gallery_rows(q: str, night_from: str, night_to: str,
-                            paths: list[str] | None = None):
+                            paths: list[str] | None = None, snapshot: str = "", *,
+                            path_limit: int = _GALLERY_SELECTION_MAX):
         """The frame set a request refers to, plus per-path refusals.
 
         Two ways to name a set, one resolver: an explicit ``path`` list (the user
@@ -7983,13 +7996,19 @@ def create_app(*, bind_host: str | None = None,
         # accepted because some other parameter happened to win is a 422 the
         # caller will not get next time either.
         _gallery_nights_ok(night_from, night_to)
+        if paths and len(paths) > path_limit:
+            raise HTTPException(422, f"too many paths in one request ({len(paths)} > {path_limit}) — "
+                                "name the set with the search and night filter instead")
+        if snapshot:
+            try:
+                rows, truncated = await asyncio.to_thread(
+                    gallery_listing.selected, snapshot, q, night_from, night_to, paths)
+                return rows, [], truncated
+            except gallery_listing.ListingExpired as e:
+                raise HTTPException(409, str(e))
+            except ValueError as e:
+                raise HTTPException(422, str(e))
         if paths:
-            if len(paths) > _GALLERY_SELECTION_MAX:
-                raise HTTPException(
-                    422, f"too many paths in one request "
-                         f"({len(paths)} > {_GALLERY_SELECTION_MAX}) — name the "
-                         f"set with the search and night filter instead, which "
-                         f"has no size limit")
             rows, failed = await asyncio.to_thread(
                 gallery_module.resolve_selection, paths)
             return rows, failed, False
@@ -8001,7 +8020,7 @@ def create_app(*, bind_host: str | None = None,
     @app.get("/api/gallery/frames", dependencies=[Depends(require(CAP_VIEW_PREVIEW))])
     @declare(CAP_VIEW_PREVIEW)
     async def gallery_frames(q: str = "", night_from: str = "", night_to: str = "",
-                             offset: int = 0, limit: int = 200):
+                             offset: int = 0, limit: int = 200, cursor: str = ""):
         """One page of the capture library, newest capture first.
 
         ``night_from``/``night_to`` are INCLUSIVE noon-to-noon night keys, not
@@ -8016,20 +8035,17 @@ def create_app(*, bind_host: str | None = None,
         offset = max(0, int(offset))
         limit = max(1, min(int(limit), _GALLERY_PAGE_MAX))
         t0 = time.monotonic()
-        rows, _failed, truncated = await _gallery_rows(q, night_from, night_to)
-        totals = gallery_module.summarize(rows)
-        return {
-            "frames": rows[offset:offset + limit],
-            "total": totals["count"],
-            "bytes": totals["bytes"],
-            "offset": offset,
-            "limit": limit,
-            # True only when the walk hit its ceiling: the library is bigger than
-            # a walk should serve and the UI must say so rather than present a
-            # prefix as the whole thing.
-            "truncated": truncated,
-            "scan_ms": round((time.monotonic() - t0) * 1000, 1),
-        }
+        _gallery_nights_ok(night_from, night_to)
+        try:
+            result = await asyncio.to_thread(gallery_listing.page, q=q, night_from=night_from,
+                                             night_to=night_to, offset=offset, limit=limit, cursor=cursor)
+        except gallery_listing.ListingExpired as e:
+            raise HTTPException(409, str(e))
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+        except OSError:
+            raise HTTPException(503, "Could not prepare the gallery listing. Check available temporary storage and try again.")
+        return {**result, "scan_ms": round((time.monotonic() - t0) * 1000, 1)}
 
     @app.get("/api/gallery/nights", dependencies=[Depends(require(CAP_VIEW_PREVIEW))])
     @declare(CAP_VIEW_PREVIEW)
@@ -8046,7 +8062,7 @@ def create_app(*, bind_host: str | None = None,
     @app.get("/api/gallery/summary", dependencies=[Depends(require(CAP_VIEW_PREVIEW))])
     @declare(CAP_VIEW_PREVIEW)
     async def gallery_summary(q: str = "", night_from: str = "",
-                              night_to: str = "",
+                              night_to: str = "", snapshot: str = "",
                               path: list[str] = Query(default=[])):
         """What a download of this exact selection would be: ``{count, bytes}``.
 
@@ -8061,7 +8077,7 @@ def create_app(*, bind_host: str | None = None,
         for the same two numbers. This route is for the callers that have no
         listing — a script or a CLI that wants the size before committing to a
         multi-GB stream."""
-        rows, failed, _ = await _gallery_rows(q, night_from, night_to, path)
+        rows, failed, _ = await _gallery_rows(q, night_from, night_to, path, snapshot)
         return {**gallery_module.summarize(rows), "failed": failed}
 
     @app.get("/api/gallery/thumb", dependencies=[Depends(require(CAP_VIEW_PREVIEW))])
@@ -8073,7 +8089,9 @@ def create_app(*, bind_host: str | None = None,
         draw a "no preview" tile that still lets the user download the frame —
         a frame we cannot render is not a frame that is missing."""
         try:
-            jpeg = await asyncio.to_thread(gallery_module.thumbnail, path, width=w)
+            jpeg = await gallery_module.thumbnail_async(path, width=w)
+        except gallery_module.RenderBusy as e:
+            raise HTTPException(503, str(e), headers={"Retry-After": "1"})
         except KeyError:
             raise HTTPException(404, "frame not found")
         except FileNotFoundError:
@@ -8100,7 +8118,10 @@ def create_app(*, bind_host: str | None = None,
         desktop window being dragged, lands on a handful of cache keys instead of
         re-rendering 26 megapixels per pixel of resize."""
         try:
-            jpeg = await asyncio.to_thread(gallery_module.view, path, width=w)
+            jpeg = await gallery_module.thumbnail_async(
+                path, width=gallery_module.view_width_for(w), ceiling=gallery_module.VIEW_MAX_WIDTH)
+        except gallery_module.RenderBusy as e:
+            raise HTTPException(503, str(e), headers={"Retry-After": "1"})
         except KeyError:
             raise HTTPException(404, "frame not found")
         except FileNotFoundError:
@@ -8176,7 +8197,7 @@ def create_app(*, bind_host: str | None = None,
              dependencies=[Depends(require(CAP_VIEW_MEDIA))])
     @declare(CAP_VIEW_MEDIA)
     async def gallery_download(q: str = "", night_from: str = "",
-                               night_to: str = "",
+                               night_to: str = "", snapshot: str = "",
                                path: list[str] = Query(default=[])):
         """Bulk download as a STREAMED zip. Same parameters as the summary.
 
@@ -8193,7 +8214,7 @@ def create_app(*, bind_host: str | None = None,
         ``X-Gallery-Frames``/``X-Gallery-Bytes`` carry the payload size the
         summary route reported: there is no Content-Length on a streamed zip, so
         without them a client has no way to draw a progress bar."""
-        rows, failed, _ = await _gallery_rows(q, night_from, night_to, path)
+        rows, failed, _ = await _gallery_rows(q, night_from, night_to, path, snapshot)
         if not rows:
             # 404, not an empty zip: an archive with nothing in it is a download
             # that looks like it worked.
@@ -8233,6 +8254,9 @@ def create_app(*, bind_host: str | None = None,
         broken link, and fixing the ledger is a separate item."""
         if not body.paths:
             raise HTTPException(422, "no paths given")
+        if body.snapshot:
+            await _gallery_rows(body.q, body.night_from, body.night_to, body.paths, body.snapshot,
+                                path_limit=50_000)
         return await asyncio.to_thread(gallery_module.trash_frames, body.paths)
 
     @app.get("/api/gallery/trash",

@@ -2,8 +2,6 @@
 // (gallery design 2026-08-03). Cookie auth is automatic; a non-2xx throws
 // ApiError.
 //
-// THREE of the ten routes are deliberately absent, for two different reasons.
-//
 // The two BYTE-CARRYING ones — `/api/gallery/file` and
 // `/api/gallery/download.zip` — are reached as plain navigations (an <a href>),
 // never through `api.get`. The session is a cookie, so a navigation
@@ -12,11 +10,10 @@
 // built to do. lib/gallery.ts builds those two URLs; this module only exposes
 // the JSON.
 //
-// `/api/gallery/summary` is absent because this UI already has its answer — see
-// the note where the wrapper would have gone.
+// Summary is used only to validate a frozen selection before downloading.
 
 import { api } from "../api";
-import { framesPath, nightsPath } from "../lib/gallery";
+import { framesPath, nightsPath, selectionQuery, type GallerySelection } from "../lib/gallery";
 import type {
   GalleryFramesPage,
   GalleryNightsResponse,
@@ -36,6 +33,7 @@ export interface FramesQuery {
   nightTo?: string;
   offset?: number;
   limit?: number;
+  cursor?: string;
 }
 
 /** One page of the library, newest capture first. `total`/`bytes` on the
@@ -49,19 +47,20 @@ export const listFrames = (o: FramesQuery = {}): Promise<GalleryFramesPage> =>
 export const listNights = (): Promise<GalleryNightsResponse> =>
   api.get<GalleryNightsResponse>(nightsPath());
 
-// There is no wrapper for `/api/gallery/summary`, and its absence is a
-// decision. That route prices a selection for a caller that has no listing (a
-// script about to commit to a multi-GB stream). This UI always has a listing,
-// and `total`/`bytes` on it already describe the WHOLE filtered set from the
-// same server-side resolver download.zip uses — so a wrapper here would spend a
-// second library walk to re-learn the two numbers already on the button. Wiring
-// it "for symmetry" is how a surface ends up maintained and never called.
+// Listing totals price the actions. On download, validateSelection checks that
+// the snapshot still exists and its selected files have not changed. It does
+// not rebuild the listing or include newly captured files.
 
 /** Move frames to the trash (a rename inside CAPTURE_DIR — atomic, instant even
  *  for a 200 GB night). Paths are LIBRARY-relative. A POST body, not a query, so
  *  this one has no URL-length ceiling. */
-export const trashFrames = (paths: string[]): Promise<GalleryTrashResult> =>
-  api.post<GalleryTrashResult>("/api/gallery/trash", { paths });
+export const trashFrames = (paths: string[], listing?: { snapshot?: string; q: string; nightFrom: string; nightTo: string }): Promise<GalleryTrashResult> =>
+  api.post<GalleryTrashResult>("/api/gallery/trash", { paths, snapshot: listing?.snapshot,
+    q: listing?.q, night_from: listing?.nightFrom, night_to: listing?.nightTo });
+
+/** Validate a frozen selection before native navigation starts the download. */
+export const validateSelection = (selection: GallerySelection): Promise<unknown> =>
+  api.get(`/api/gallery/summary${selectionQuery(selection)}`);
 
 export const listTrash = (): Promise<GalleryTrashListing> =>
   api.get<GalleryTrashListing>("/api/gallery/trash");
