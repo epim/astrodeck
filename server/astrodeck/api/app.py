@@ -691,6 +691,45 @@ def _discard(coro) -> None:
         close()
 
 
+def _sequence_envelope(engine) -> dict:
+    """The sequence payload, with `state` and `running` made to agree (#117).
+
+    Both seams that serve a sequence to a client (GET /api/sequence/state and
+    the monitor snapshot) bolt liveness onto `engine.state`, which the engine
+    owns and publishes on its own schedule. Between `SequenceEngine.start()`
+    returning and `_run` reaching its first `_set_state`, that dict still says
+    `state: "idle"` while `engine.running` is already True - and that window is
+    not instants: the safety gates, the cooling wait, the slew, the autofocus
+    and the plate solve all happen inside it, minutes of it on this rig.
+
+    A client then gets a different answer depending on which field it trusts.
+    My own night supervisor keys on `state` against a working set, so a
+    starting run read as not-working and the guard that exists to notice a
+    stalled run was watching a sequence it believed was not running at all.
+
+    It is the recurring shape: a verdict field contradicting the evidence field
+    beside it, with the verdict wearing the obvious name (#111 `is_valid` over
+    an advisory saying the axes are questionable, #112 `cloudy: false` over a
+    reason string saying cloudy).
+
+    Fixed here, at the seam, rather than in `start()`: it corrects every
+    consumer at once and leaves the engine's own publishing contract alone.
+    The comment at that line ("_run publishes running once execution actually
+    begins") is a deliberate choice about when the ENGINE says running, and an
+    automated pass is not the place to relitigate it.
+
+    Only `idle` is rewritten, and only while the task is live. A terminal state
+    is left exactly as it is: `running` stays True through the teardown that
+    follows an abort, and "aborting" or "aborted" is the true thing to say
+    there - rewriting it to "running" would reinstate, on the abort path, the
+    same lie this removes from the start path.
+    """
+    payload = engine.state | {"running": engine.running, "paused": engine.paused}
+    if engine.running and payload.get("state") == "idle":
+        payload["state"] = "running"
+    return payload
+
+
 def _refuse_if_lane_blocked(name: str) -> None:
     """Raise the cross-lane 409 for ``name``, or return.
 
@@ -7345,7 +7384,7 @@ def create_app(*, bind_host: str | None = None,
     @app.get("/api/sequence/state", dependencies=[Depends(require(CAP_VIEW_STATUS))])
     @declare(CAP_VIEW_STATUS)
     async def sequence_state():
-        return engine.state | {"running": engine.running, "paused": engine.paused}
+        return _sequence_envelope(engine)
 
     # ----------------------------------------------------------------- monitor
 
@@ -7365,8 +7404,7 @@ def create_app(*, bind_host: str | None = None,
         an idle aligner and no reason. The user then re-runs the thing that just
         refused, and gets the same silence."""
         snap = await hub.monitor_snapshot()
-        snap["sequence"] = engine.state | {
-            "running": engine.running, "paused": engine.paused}
+        snap["sequence"] = _sequence_envelope(engine)
         snap["polar"] = hub.polar.state | {"running": hub.polar.running}
         # SAME SEAM AS /api/status, and it was missing here. This route carries
         # a whole ``poll_status()`` under ``snap["status"]`` — site block,
