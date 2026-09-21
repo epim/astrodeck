@@ -82,6 +82,22 @@ async def test_a_promoted_frame_and_a_saved_one_carry_the_same_cards(
     Sabotage: resolve the filter name only when saving (the pre-D-SES-4
     condition), so the promoted file loses its FILTER card."""
     hub = sim_hub
+    # POINT THE MOUNT SOMEWHERE CIRCUMPOLAR, because this case asserts the sky
+    # cards are present and `Hub` writes them only `if alt > 0` - and the
+    # altitude is the MOUNT's, not the target name's. The sim mount sits where
+    # the fixture leaves it, so from the fixture's 40 N that altitude follows
+    # the time of day: measured at alt -8.2 at 11:30 local on the day this was
+    # written, which is how the assertion was found failing.
+    #
+    # Declination +85 is 35 degrees up at its lowest from here and never sets,
+    # so the header carries AIRMASS, CENTALT, CENTAZ, OBJCTALT and OBJCTAZ at
+    # every hour.
+    #
+    # The first version of this assertion had no such guard and passed for most
+    # of the day, which is the whole trouble with a clock in a test: it is not
+    # flaky, it is wrong for a few hours out of every twenty-four.
+    tel = hub.devices["telescope"]
+    tel.rig.dec_deg = 85.0
     await hub.capture(0.2, 100, 30, 1, save=False, target="M 31")
     await hub.promote_last_frame()
     await hub.capture(0.2, 100, 30, 1, save=True, target="M 31")

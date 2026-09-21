@@ -13,6 +13,8 @@ its own meridian is how a tube meets a pier.
 """
 from __future__ import annotations
 
+import contextlib
+
 import pytest
 
 from astrodeck.sequence.engine import SafetyAbort, SequenceEngine
@@ -126,25 +128,59 @@ async def test_it_says_it_once_and_not_every_frame(log_lines):
     assert len([x for x in log_lines if "no configured site" in x]) == 1, log_lines
 
 
-async def test_a_configured_site_is_not_warned_at(log_lines):
-    """The guard against the fix: a real rig must reach the countdown, not this
-    warning.
+async def test_a_configured_site_reaches_the_countdown(monkeypatch, log_lines):
+    """The guard against the fix: a real rig must get PAST the gate, not merely
+    avoid the warning. "No warning" alone is also true of a gate that returned
+    early for some other reason.
 
-    Two assertions, and the second is the one with teeth. "No warning" alone
-    would also be true of a gate that returned early for some other reason, so
-    this additionally requires the call to get PAST the gate - evidenced by it
-    reaching plan machinery this stub deliberately does not provide. A gate that
-    fired would return quietly and raise nothing.
+    The anchor is `schedule.hours_to_meridian_flip`, the first thing the
+    function does after the site check. Recording the call proves both that the
+    gate passed and that it handed on the configured longitude.
 
-    MUTATION: drop the `not` from the `site_is_set` test. Observed: no
-    AttributeError is raised, because the configured rig is turned back at the
-    gate, and this fails on the `pytest.raises` rather than on the log.
+    A FIRST VERSION ASSERTED `pytest.raises(AttributeError)` from deeper in the
+    call, where the stub plan runs out - and that depended on the TIME OF DAY.
+    The hour angle for this target swings from +9.21 to -11.85 over twenty-four
+    hours, the function branches on its sign, and only some branches reach the
+    plan. It passed when written and failed four hours later. Issue #124 is the
+    same mistake in another file; this is that lesson applied here.
+
+    MUTATION: drop the `not` from the `site_is_set` test. Observed: the stub is
+    never called and this fails on the empty list.
     """
+    from astrodeck.sequence import schedule
+
+    seen: list[float] = []
+    monkeypatch.setattr(schedule, "hours_to_meridian_flip",
+                        lambda ra, lon, *rest: (seen.append(lon), 5.0)[1])
     e = _engine(REAL_SITE)
     e.plan = _Plan(True)
-    with pytest.raises(AttributeError):
+    # What happens BELOW the countdown needs a mount this stub does not have,
+    # and is not what this grades.
+    with contextlib.suppress(Exception):
         await e._maybe_meridian_flip(_Target())
+    assert seen == [REAL_SITE["longitude"]], (
+        f"the countdown was not reached with the configured longitude: {seen}")
     assert not [x for x in log_lines if "no configured site" in x], log_lines
+
+
+async def test_the_default_site_never_reaches_the_countdown(monkeypatch, log_lines):
+    """The other half of the same anchor, and the one that says the refusal is
+    a refusal rather than a warning printed on the way past.
+
+    MUTATION: keep the warning but delete the `return` after it. Observed: the
+    stub IS called and this fails.
+    """
+    from astrodeck.sequence import schedule
+
+    seen: list[float] = []
+    monkeypatch.setattr(schedule, "hours_to_meridian_flip",
+                        lambda ra, lon, *rest: (seen.append(lon), 5.0)[1])
+    e = _engine(DEFAULT_SITE)
+    e.plan = _Plan(True)
+    with contextlib.suppress(Exception):
+        await e._maybe_meridian_flip(_Target())
+    assert seen == [], (
+        f"the engine computed a flip countdown at the 0,0 default: {seen}")
 
 
 async def test_the_strip_says_unknown_rather_than_counting_down_to_nothing(
