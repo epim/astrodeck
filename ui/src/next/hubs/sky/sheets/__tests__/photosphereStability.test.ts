@@ -904,7 +904,12 @@ test('A static sample-scale texture is refused, and that is the honest answer (i
       + `(${raw.toFixed(6)}), so nothing here is about the correction`);
     const s = new VisualStability();
     s.observe(1000, sampleTexture(amp), LW, LH);
-    assert.equal(s.canWitness, false,
+    // Through `witness()` rather than the private `canWitness` it reads: a
+    // fresh first frame answers 'featureless' when the flag is false and
+    // 'moving' when it is true, so this says the same thing at the public
+    // surface. (The first draft touched the field and passed the tsx runner,
+    // which does not typecheck; `tsc -b` refused it. Issue #126.)
+    assert.equal(s.witness(1000), 'featureless',
       `a static sample-scale texture at amp ${amp} was admitted as a witness`);
   }
 });
@@ -940,7 +945,8 @@ test('No bound on the subtraction admits that texture without admitting pure noi
   for (const sigma of [3, 10, 20, 30]) {
     const s = new VisualStability();
     s.observe(1000, flatNoise(sigma, 1), LW, LH);
-    assert.equal(s.canWitness, false,
+    // Public surface, for the reason given in the case above (issue #126).
+    assert.equal(s.witness(1000), 'featureless',
       `a flat field of pure sigma ${sigma} noise was admitted as a witness, so `
       + 'the module would vouch for a hold that never happened');
   }
