@@ -1382,9 +1382,14 @@ class ConnSpecBody(BaseModel):
 class RigSpecBody(BaseModel):
     """A whole-rig connection plan posted to /api/connect/rig (mirrors
     ``devices.backend.RigSpec``): a ``primary`` backend that fills every ROLE it
-    can, plus optional per-role ``roles`` overrides."""
+    can, plus optional per-role ``roles`` overrides.
+
+    ``force`` is the same escape hatch the two profile routes carry, and it is
+    here for the same reason: connecting a rig DISCONNECTS the current one
+    (issue #20)."""
     primary: str
     roles: dict[str, ConnSpecBody] = {}
+    force: bool = False
 
 
 class DitherBody(BaseModel):
@@ -3213,6 +3218,28 @@ def create_app(*, bind_host: str | None = None,
         """
         from ..devices import backends as _b  # noqa: F401 - registration side-effect
         from ..devices.backend import RigSpec, ConnSpec, get_backend
+        # A WHOLE-RIG CONNECT IS DESTRUCTIVE: it disconnects the current rig
+        # before it builds the new one. The two routes that are strictly LESS
+        # destructive - /api/profiles/{id}/apply and /api/profiles/{id}/activate
+        # - have refused mid-night since they were written; this one, with the
+        # widest blast radius on the box, had no guard at all (issue #20). A
+        # night was lost to it on 2026-09-12 and recovered only by a profile
+        # activate.
+        #
+        # Same 409 contract as those two, deliberately: one client-side error
+        # path covers all three, and a caller that already handles "running"
+        # from a profile apply needs no new code for this.
+        #
+        # The issue blamed a missing `primary`, and that is ruled out: the field
+        # is required, has been since it was introduced, and FastAPI rejects a
+        # body without it with a 422 before this function runs. What was missing
+        # is the guard, not the validation.
+        if (engine.running or hub.looping or hub.polar.running) and not body.force:
+            raise HTTPException(409, detail={
+                "detail": "a sequence, capture loop or polar alignment is running",
+                "code": "running"})
+        if body.force and engine.running:
+            await engine.abort()
         # "none" is not a registry backend -- it's the Equipment surface's
         # explicit-only rig mode (spec §4.1): only `roles` overrides are
         # requested, so there is no primary to look up in the registry.
