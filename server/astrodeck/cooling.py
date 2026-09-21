@@ -72,6 +72,48 @@ WARM_MAX_LEAD_C = 3.0
 #: report a stale temperature for a poll or two right after a setpoint change.
 WARM_LEAD_CHECKS = 2
 
+#: How far BELOW the ambient the ramp is climbing to the sensor may sit and
+#: still have "the sensor stopped following, so we are at ambient" believed.
+#:
+#: The lead check above reads a sensor that stops rising as proof the TEC has
+#: run out of work, which is true when we have climbed PAST the real ambient
+#: and false when the TEC never took control at all. Both look identical to it:
+#: a setpoint running away from a temperature that is not moving.
+#:
+#: 2026-09-12 11:49:46, from the night log, is the second one. The ramp started
+#: at −10.3 °C, planned fifteen minutes to 20 °C, and two minutes later logged
+#: "sensor stopped following the setpoint at −10.5 °C — already at ambient" and
+#: switched the TEC off with the sensor thirty degrees below the target. That is
+#: exactly the plunge the whole routine exists to prevent, performed by the
+#: routine, and reported as a success (issue #17).
+#:
+#: Measured against every warm in that night's log, as distance from the
+#: ambient being climbed to at the moment the lead check fired:
+#:
+#:     12.5 → 13.4 °C    6.6 below    a real ambient, correctly ended
+#:     11.3 → 13.6 °C    6.4 below    a real ambient, correctly ended
+#:     14.5 → 14.5 °C    5.5 below    a real ambient, correctly ended
+#:    −10.3 → −10.5 °C  30.5 below    the TEC never followed
+#:
+#: 15 sits between 6.6 and 30.5 with better than a factor of two either side.
+#: It is not a thermal quantity; it is the distance at which "already at
+#: ambient" stops being a believable reading of a stalled sensor.
+WARM_NOT_AMBIENT_C = 15.0
+
+#: While the sensor is that far below ambient and behind the setpoint, the ramp
+#: HOLDS rather than ending: a TEC that is merely slow will rejoin the schedule
+#: and one that has stopped will not, and waiting is the only thing that tells
+#: them apart. These bound the wait, and they are expressed as PROGRESS rather
+#: than as a duration for the same reason - a slow TEC still rises, a dead one
+#: does not, whatever the clock says.
+#:
+#: 0.2 °C is above a driver's quantisation (0.1 °C on the ASI readout) and far
+#: below a real step. 20 checks is five minutes at WARM_STEP_S, which is long
+#: enough that no ordinary thermal inertia reads as a stall and short enough
+#: that a dead cooler is reported while somebody is still awake.
+WARM_STALL_PROGRESS_C = 0.2
+WARM_STALL_CHECKS = 20
+
 #: Ambient assumed when nothing on the rig can measure it. Deliberately warm
 #: (a heated indoor observatory) rather than a guess at tonight's air: guessing
 #: LOW would end the ramp early and cut the TEC while the sensor was still cold,
