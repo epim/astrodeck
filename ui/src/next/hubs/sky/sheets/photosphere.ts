@@ -1781,6 +1781,12 @@ export class PhotosphereSweep {
     // moment..." or "I can't match this view yet...", both about a scan that
     // has just ended.
     this.overlapWaitRun = 0; this.overlapWait = false; this.carryTooLarge = false; this.alignmentWait = false;
+    // And the carried correction, which `begin()` did NOT clear (#94). It is
+    // cleared only in `start()`, so a second scan in one camera session
+    // inherited the first scan's anchor - including, on a wrong lens, an
+    // anchor the first scan's own refusals had already argued against. The
+    // mosaic it was derived against is replaced on the next line.
+    this.visualAnchor = null;
     this.frames = []; this.panorama = new SkyPanorama(); this.coveredCells.clear(); this.aimedZenith=false; this.lastCaptureAt=null; this.scanSamples=[]; this.lastDiagnosticAt=-Infinity; this.hasCapturedFrame = false; this.recording = true;
   }
 
@@ -2329,7 +2335,7 @@ export class PhotosphereSweep {
           // user about a lens.
           const carried=poseSeparation(rawBasis,registration.basis);
           if(carried>this.carriedCorrectionMax){this.overlapWait=true;this.carryTooLarge=true;this.recordCapture(now,'carry-too-large',{separation:carried});return false;}
-          basis=registration.basis;this.visualAnchor={raw:rawBasis,aligned:basis};
+          basis=registration.basis;
           measured=skyAngles(basis.forward);
         }
         // Keep a small, local reproduction bundle. It is downloaded only when
@@ -2349,6 +2355,32 @@ export class PhotosphereSweep {
         if(!target){this.recordCapture(now,'no-target');return false;}
         if(this.coveredCells.has(target.id)){this.recordCapture(now,'already-captured');return false;}
         this.panorama.add(data,canvas.width,canvas.height,basis,lens);
+        // THE ANCHOR IS SET BY A FRAME THAT ENTERED THE MOSAIC, and not by any
+        // frame a registration happened to adjust on its way to being refused
+        // (issue #94). `visualAnchor` is a latest-wins transfer applied to
+        // EVERY later pose, so unlike the fit it is taken from, it outlives its
+        // own frame - which is why the evidence for it has to be stronger than
+        // the evidence for using a corrected pose once.
+        //
+        // The assignment used to sit up beside the bound check, above the
+        // `no-target` and `already-captured` returns. Measured on
+        // `chartyard-arc075-70`, the recorded wrong-lens scan: an anchor of
+        // 1.7412 degrees was worn for the whole scan, and every frame that
+        // actually entered the mosaic there records a correction of exactly
+        // 0.0000. The control recording - the same route with the lens the
+        // scanner assumes, and a byte-identical orientation stream - reads
+        // 0.1736. So the dome overlay and the aim dot sat ten times the
+        // control's error from the sky, taken from a fit no frame was kept on,
+        // inside GATE_OVERLAY_MAX so no gate saw it, and the user was told
+        // about the lens but not about the pose.
+        //
+        // Passing the overlap test is NOT the line, tempting as it is: the
+        // frame that set that 1.7412 anchor passed it. What separates the two
+        // is that a kept frame's pose is the one the mosaic is now built on,
+        // so a later fit against that mosaic is measured against the same
+        // choice. A refused frame's pose is a claim nothing else ever uses.
+        if(registration.adjusted && rawBasis)
+          this.visualAnchor={raw:rawBasis,aligned:registration.basis};
         capturedCell=target.id;capturedBasis=basis;capturedSensorBasis=rawBasis??undefined;capturedAdjusted=registration.adjusted;
         // This frame was placed with a full basis, so if the cap is what it was
         // aimed at, the cap's pixels are as well oriented as any other cell's.
