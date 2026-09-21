@@ -317,6 +317,29 @@ export const BIN_SAMPLES = 5;
  *  of the column - the pooled top-rows statistics stand in, which is where
  *  they came from. */
 const SKY_WINDOW = 12, SKY_WINDOW_MIN = 4;
+/** THE ONE MEASURED FACT both tolerances below are spellings of (issue #107):
+ *  the largest re-exposure a MINORITY of the compass can show without being an
+ *  obstruction. The chart yard puts it at 30 per cent - a 30 per cent step
+ *  between two elevation bands is an ordinary re-expose, and nothing separates
+ *  a minority seam from a minority wall of the same depth, not the column and
+ *  not the mosaic.
+ *
+ *  `EXPOSURE_TOLERANCE` and `AZ_DEPARTURE` were derived independently, one from
+ *  the column rule and one from the azimuth rule, and ended a hundredth apart
+ *  with nothing saying they were the same measurement. Re-measure the fact and
+ *  only one of them would have moved, and the tracer's two halves would then
+ *  disagree about what an exposure step is. Both are expressed from here, so a
+ *  change moves both or neither.
+ *
+ *  Stated in HUNDREDTHS and divided, rather than added as decimals, so the
+ *  arithmetic is exact: 32/100 and 62/200 are the same doubles as the literals
+ *  .32 and .31 that used to stand here, checked rather than assumed. */
+export const RE_EXPOSURE_PCT = 30;
+/** How far ABOVE the fact the wide allowance sits, in the same hundredths.
+ *  This is the band issue #74 is about: a wall 30 to 32 per cent darker than
+ *  its own sky is what a single column cannot see. Two points wide, and the
+ *  mosaic's threshold below takes the middle of it. */
+export const RE_EXPOSURE_BAND_PCT = 2;
 /** How far a row may sit from the sky model and still be sky: this fraction of
  *  the model's own level, or three robust deviations of the model's spread,
  *  whichever is larger.
@@ -352,8 +375,12 @@ const SKY_WINDOW = 12, SKY_WINDOW_MIN = 4;
  *  refuse it, because a steep glow in a few bins IS a departure those bins have
  *  and their neighbours do not. It is the blocked direction, and it is issue
  *  #102, which names the discriminator as the departure's vertical shape - a
- *  gradient has no surface under it - rather than its extent in azimuth. */
-const EXPOSURE_TOLERANCE = .32, SKY_SIGMAS = 3;
+ *  gradient has no surface under it - rather than its extent in azimuth.
+ *
+ *  Expressed from `RE_EXPOSURE_PCT` since issue #107: this is that fact plus
+ *  the whole of the #74 band. */
+export const EXPOSURE_TOLERANCE = (RE_EXPOSURE_PCT + RE_EXPOSURE_BAND_PCT) / 100,
+      SKY_SIGMAS = 3;
 /** The same for blueness, in 8-bit channel units, with a floor: chroma
  *  subsampling and sensor noise move it a few units on their own, and a grey
  *  sky's blueness has no spread to scale by. The exposure allowance applies
@@ -410,7 +437,9 @@ const LOCAL_TOLERANCE = .12;
  *  left.
  *
  *  0.31 is the middle of the band issue #74 names, and it is the same bracket
- *  `EXPOSURE_TOLERANCE` sits in, read from the other side. Above 0.30, because
+ *  `EXPOSURE_TOLERANCE` sits in, read from the other side - which is why it is
+ *  computed from `RE_EXPOSURE_PCT` and half the band rather than written out
+ *  (issue #107). Above 0.30, because
  *  a 30 per cent step between two elevation bands is an ordinary re-expose and
  *  NOTHING separates a minority seam from a minority wall of the same depth -
  *  the mosaic cannot help there, and the honest answer is the wide allowance's.
@@ -426,7 +455,7 @@ const LOCAL_TOLERANCE = .12;
  *  half by far - a wall of ANY depth whose edge is too soft for one column to
  *  notice it leaving the sky: exact to a 16-row edge, against 10 for a column
  *  on its own, and no longer the cliff to zero that #74 measured at 13. */
-const AZ_DEPARTURE = .31;
+export const AZ_DEPARTURE = (RE_EXPOSURE_PCT * 2 + RE_EXPOSURE_BAND_PCT) / 200;
 /** How many azimuth bins a mosaic must have before the neighbours are allowed
  *  an opinion. Below this there is no majority to outvote a structure: with two
  *  bins the median of the mosaic's row IS one of the two columns, so a wall
