@@ -1,183 +1,82 @@
-// domeScope.ts - the little telescope that stands in the middle of the dome
-// and points where the mount points (issue #67).
+// domeScope.ts - the telescope glyph at the middle of the dome, pointing where
+// the mount points (issue #67).
 //
-// TWO FRAMES, ON PURPOSE, AND THIS IS THE WHOLE DESIGN.
+// ONE TAPERED SHAPE, AND NOTHING ELSE.
 //
-// The tripod is real 3D. Its legs are vectors in the observer's frame (+x East,
-// +y North, +z up) pushed through `projectDome` - the dome's own camera, the
-// one every cloud cell and track goes through. So the front leg IS `+y` and is
-// therefore planted north, and the whole stand turns with the dome because the
-// panel's yaw is applied to its vectors exactly as it is to the sky's. Neither
-// is a chosen angle, and neither can drift from the dome, because there is only
-// one camera.
+// It has had a tripod, a mount head, a dew shield and a focuser stub. Each was
+// added to make the thing more recognisable and each made it busier: at the
+// 280-400 px this dome occupies on a phone, the model came out as a handful of
+// grey rectangles in a tangle, and on the low-south panel you could not tell
+// what you were looking at.
 //
-// The TUBE is drawn in screen space, along the projected bearing to the
-// reticle, at a CONSTANT length.
+// So the parts are gone and the silhouette does the work. A shape that is
+// narrow at one end and wide at the other reads as a telescope AND as a
+// direction in the same stroke - the wide end is the objective, the objective
+// is where it is looking. Nothing else here has to carry that.
 //
-// That is a deliberate lie about one quantity and it is worth being plain about
-// which. A tube that is honestly 3D foreshortens, and this projection is
-// orthographic, so a scope pointing near the camera - anywhere low in the south
-// - collapses to a stub. The first version did exactly that, and the render of
-// it was unreadable: at alt 12 az 200 you could not tell what you were looking
-// at. Foreshortening is the correct behaviour of a real object and the wrong
-// behaviour for a 40-pixel indicator whose whole job is to be recognisable at a
-// glance.
+// The bearing is the projected line from the dome's centre to the reticle: the
+// same line the reader's eye follows to the cross, taken from the dome's own
+// projection rather than from a second copy of its camera.
 //
-// So the tube keeps what a reader uses - its BEARING on screen, the same line
-// their eye follows from the mount to the cross - and gives up what they cannot
-// use, its apparent length. It is an icon that agrees with the geometry rather
-// than a model of it.
-//
-// What sells the rest is silhouette, not shading: a tapered tube, a dew shield
-// at the objective, a focuser stub at the back, a mount head where it meets the
-// stand. At the 280-400 px this dome occupies on a phone, outline is all that
-// reads - two-tone faces on a correct 3D mesh read as grey confetti, which is
-// what the first version looked like.
+// The length is CONSTANT. An honestly-3D tube foreshortens, and this projection
+// is orthographic with the camera due south, so anything pointed low in the
+// south pointed at the camera and collapsed to a stub. That is correct for a
+// real object and useless for an indicator, so the glyph keeps the quantity a
+// reader uses - the bearing - and gives up the one they cannot, its apparent
+// length.
 
-import { projectDome, skyVector, type SkyVec } from "./domeProjection";
+import { projectAltAz } from "./domeProjection";
 
-/** Tripod foot radius, as a fraction of the dome radius. */
-export const SCOPE_SCALE = 0.15;
-/** Tube length on screen, as a fraction of the dome radius. Constant - see the
- *  header. Long enough to read as a tube beside a tripod this wide. */
+/** Glyph length, as a fraction of the dome radius. */
 export const TUBE_SCREEN = 0.30;
-
-/** Height of the mount head above the feet, in tripod-radius units. */
-const HUB_H = 0.78;
-const LEG_R = 0.085;
+/** Half-width at the eyepiece end and at the objective, in units of the length.
+ *  The RATIO is what carries the direction, and it has to be unmistakable at
+ *  40 px: at 1.8 the shape reads as a slightly wonky bar and you have to look
+ *  twice to see which end is the objective. At about 3.2 the taper is the first
+ *  thing you see, and the shape still reads as a tube rather than as a dart -
+ *  a dart would be a second reticle, and there is already one. */
+const R_BACK = 0.048;
+const R_FRONT = 0.155;
+/** How far behind the dome's centre the narrow end starts, so the glyph is
+ *  balanced on the centre rather than growing out of it. */
+const BACK = -0.30;
 
 export interface ScopeColors {
-  light: string;
-  dark: string;
+  body: string;
   line: string;
 }
 
 export const SCOPE_COLORS: ScopeColors = {
-  light: "rgba(226,232,242,0.97)",
-  dark: "rgba(126,139,163,0.95)",
+  body: "rgba(226,232,242,0.97)",
   line: "rgba(8,10,16,0.9)",
 };
 
-type V3 = { x: number; y: number; z: number };
 type P2 = { x: number; y: number };
 
-const norm = (a: V3): V3 => {
-  const m = Math.hypot(a.x, a.y, a.z) || 1;
-  return { x: a.x / m, y: a.y / m, z: a.z / m };
-};
-const sub = (a: V3, b: V3): V3 => ({ x: a.x - b.x, y: a.y - b.y, z: a.z - b.z });
-const cross = (a: V3, b: V3): V3 => ({
-  x: a.y * b.z - a.z * b.y,
-  y: a.z * b.x - a.x * b.z,
-  z: a.x * b.y - a.y * b.x,
-});
-
-/** Where the dome's camera is, in the MODEL's frame.
- *
- *  `projectDome` rotates a vector by +yaw and then views it from a fixed camera
- *  due south at `tiltDeg`, whose view direction is `(0, cos t, -sin t)`. The
- *  model is rotated by that same +yaw, so the camera as the model sees it is
- *  that direction rotated back by -yaw. */
-export function cameraDir(tiltDeg: number, yawDeg: number): V3 {
-  const t = (tiltDeg * Math.PI) / 180;
-  const v: V3 = { x: 0, y: Math.cos(t), z: -Math.sin(t) };
-  const w = (-yawDeg * Math.PI) / 180;
-  const cw = Math.cos(w), sw = Math.sin(w);
-  return { x: v.x * cw - v.y * sw, y: v.x * sw + v.y * cw, z: v.z };
-}
-
-/** Width direction for a leg: perpendicular to it AND to the view, so the leg
- *  is as wide as it can be rather than edge-on. An arbitrary perpendicular
- *  collapses a leg to a hairline at some azimuths - correct geometry that
- *  cannot be seen, which is the mistake the tube used to make too. */
-function widthDir(d: V3, view: V3): V3 {
-  const c = cross(d, view);
-  if (Math.hypot(c.x, c.y, c.z) > 1e-6) return norm(c);
-  const c2 = cross(d, { x: 0, y: 0, z: 1 });
-  if (Math.hypot(c2.x, c2.y, c2.z) > 1e-6) return norm(c2);
-  return norm(cross(d, { x: 0, y: 1, z: 0 }));
-}
-
-export interface Leg { points: V3[]; near: boolean }
-
-/** The three legs and the hub, in the observer's frame. Pure geometry, so a
- *  test can check the front leg really is north. */
-export function tripodLegs(view: V3): { legs: Leg[]; hub: V3 } {
-  const hub: V3 = { x: 0, y: 0, z: HUB_H };
-  const legs: Leg[] = [];
-  for (let i = 0; i < 3; i++) {
-    const a = (i * 2 * Math.PI) / 3;
-    // i === 0 is (sin 0, cos 0) = (0, 1) - due NORTH, by construction.
-    const foot: V3 = { x: Math.sin(a), y: Math.cos(a), z: 0 };
-    const d = norm(sub(hub, foot));
-    const w = widthDir(d, view);
-    const s = { x: w.x * LEG_R, y: w.y * LEG_R, z: w.z * LEG_R };
-    legs.push({
-      points: [
-        { x: foot.x + s.x, y: foot.y + s.y, z: foot.z + s.z },
-        { x: hub.x + s.x, y: hub.y + s.y, z: hub.z + s.z },
-        { x: hub.x - s.x, y: hub.y - s.y, z: hub.z - s.z },
-        { x: foot.x - s.x, y: foot.y - s.y, z: foot.z - s.z },
-      ],
-      // Shaded by which side faces the viewer, not by index: lighting leg 0
-      // whatever the yaw moved the highlight to the back of the model when the
-      // dome turned, and inverted the depth cue.
-      near: foot.x * view.x + foot.y * view.y + foot.z * view.z < 0,
-    });
-  }
-  return { legs, hub };
-}
-
 /**
- * The tube's outline in screen space: the mount head at `hub`, a unit screen
- * direction `(ux, uy)` toward the reticle, and a length in px.
+ * The glyph's outline, as screen points.
  *
- * Three closed polygons - body, dew shield, focuser - so the caller fills them
- * in order.
+ * `at` is where it is hung - the dome's centre - `(ux, uy)` is a unit screen
+ * direction toward the reticle, and `len` is the length in px.
+ *
+ * Pure, so a test can check the wide end really is the end that points at the
+ * target without going near a canvas.
  */
-export function tubeOutline(hub: P2, ux: number, uy: number, len: number): P2[][] {
-  const vx = -uy, vy = ux;                       // screen basis across the tube
-  const at = (a: number, b: number): P2 =>
-    ({ x: hub.x + ux * a + vx * b, y: hub.y + uy * a + vy * b });
-
-  const back = -0.26 * len;      // a little of the tube shows behind the mount
-  const front = 0.90 * len;
-  const rBack = 0.115 * len;
-  const rFront = 0.145 * len;    // real tubes are wider at the sky end
-
-  const body: P2[] = [
-    at(back, rBack), at(front, rFront), at(front, -rFront), at(back, -rBack),
+export function tubeOutline(at: P2, ux: number, uy: number, len: number): P2[] {
+  const vx = -uy, vy = ux;                       // across the glyph
+  const p = (a: number, b: number): P2 =>
+    ({ x: at.x + (ux * a + vx * b) * len, y: at.y + (uy * a + vy * b) * len });
+  return [
+    p(BACK, R_BACK), p(1, R_FRONT), p(1, -R_FRONT), p(BACK, -R_BACK),
   ];
-  // The dew shield. This is the single strongest "that is a telescope" cue at
-  // small size; without it the tube reads as a crayon.
-  const shield: P2[] = [
-    at(front, 0.19 * len), at(len, 0.19 * len),
-    at(len, -0.19 * len), at(front, -0.19 * len),
-  ];
-  // The focuser, out of the back at right angles - the other cue, and the one
-  // that says which end you are looking at.
-  const focuser: P2[] = [
-    at(back + 0.03 * len, rBack), at(back + 0.03 * len, rBack + 0.17 * len),
-    at(back - 0.13 * len, rBack + 0.17 * len), at(back - 0.13 * len, rBack),
-  ];
-  return [body, shield, focuser];
-}
-
-function poly(ctx: CanvasRenderingContext2D, pts: P2[], fill: string, line: string) {
-  ctx.beginPath();
-  pts.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
-  ctx.closePath();
-  ctx.fillStyle = fill;
-  ctx.fill();
-  ctx.lineWidth = 1.1;
-  ctx.strokeStyle = line;
-  ctx.stroke();
 }
 
 /**
- * Draw the scope at the dome's centre, aimed at `altDeg`/`azDeg`.
+ * Draw the glyph at the dome's centre, aimed at `altDeg`/`azDeg`.
  *
- * `cx`,`cy`,`r`,`tiltDeg`,`yawDeg` are the panel's own, unchanged.
+ * `cx`,`cy`,`r`,`tiltDeg`,`yawDeg` are the panel's own, unchanged: the bearing
+ * comes from the dome's projection, so the glyph turns with the dome because
+ * the reticle does.
  */
 export function drawDomeScope(
   ctx: CanvasRenderingContext2D,
@@ -186,49 +85,27 @@ export function drawDomeScope(
   tiltDeg: number, yawDeg: number,
   colors: ScopeColors = SCOPE_COLORS,
 ): void {
-  const view = cameraDir(tiltDeg, yawDeg);
-  const s = r * SCOPE_SCALE;
-  const project = (v: V3): P2 => {
-    const q = projectDome({ x: v.x * s / r, y: v.y * s / r, z: v.z * s / r } as SkyVec,
-                          cx, cy, r, tiltDeg, yawDeg);
-    return { x: q.x, y: q.y };
-  };
-
-  const { legs, hub } = tripodLegs(view);
-  const hub2 = project(hub);
-
-  // The tube's SCREEN bearing: from the mount head to where the reticle is
-  // actually drawn. Taken from the projection rather than from a 3D tube, so it
-  // is exactly the line the reader's eye follows to the cross.
-  const aim = projectDome(skyVector(altDeg, azDeg) as unknown as SkyVec,
-                          cx, cy, r, tiltDeg, yawDeg);
-  let dx = aim.x - hub2.x, dy = aim.y - hub2.y;
+  const aim = projectAltAz(altDeg, azDeg, cx, cy, r, tiltDeg, yawDeg);
+  let dx = aim.x - cx, dy = aim.y - cy;
   const m = Math.hypot(dx, dy);
+  // THE ONE DIRECTION WITH NO BEARING ON SCREEN, and it is not the zenith.
+  // `upDot` is `y*sin(t) + z*cos(t)`, so the sky point that lands on the dome's
+  // CENTRE is the one with `upDot == 0` - due south at altitude == the camera
+  // tilt. The zenith projects a full `cos(t)` above centre and has a perfectly
+  // good bearing. The projection hits that point exactly, so this is a real
+  // 0/0 and not a near-miss.
   if (m < 1e-6) { dx = 0; dy = -1; } else { dx /= m; dy /= m; }
 
+  const pts = tubeOutline({ x: cx, y: cy }, dx, dy, r * TUBE_SCREEN);
   ctx.save();
   ctx.lineJoin = "round";
-
-  // Legs, far ones first so a near leg paints over a far one.
-  for (const leg of [...legs].sort((a, b) => Number(a.near) - Number(b.near))) {
-    poly(ctx, leg.points.map(project), leg.near ? colors.light : colors.dark,
-         colors.line);
-  }
-
-  // The mount head, which stops the tube looking balanced on a point.
-  const head = 0.30 * s;
-  poly(ctx, [
-    { x: hub2.x - head, y: hub2.y - head * 0.62 },
-    { x: hub2.x + head, y: hub2.y - head * 0.62 },
-    { x: hub2.x + head * 0.72, y: hub2.y + head * 0.62 },
-    { x: hub2.x - head * 0.72, y: hub2.y + head * 0.62 },
-  ], colors.dark, colors.line);
-
-  // ...then the tube over it.
-  const [body, shield, focuser] = tubeOutline(hub2, dx, dy, r * TUBE_SCREEN);
-  poly(ctx, focuser, colors.dark, colors.line);
-  poly(ctx, body, colors.light, colors.line);
-  poly(ctx, shield, colors.dark, colors.line);
-
+  ctx.beginPath();
+  pts.forEach((q, i) => (i === 0 ? ctx.moveTo(q.x, q.y) : ctx.lineTo(q.x, q.y)));
+  ctx.closePath();
+  ctx.fillStyle = colors.body;
+  ctx.fill();
+  ctx.lineWidth = 1.2;
+  ctx.strokeStyle = colors.line;
+  ctx.stroke();
   ctx.restore();
 }
