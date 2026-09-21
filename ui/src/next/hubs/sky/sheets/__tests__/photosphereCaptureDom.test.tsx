@@ -1069,6 +1069,72 @@ await test('A carried-bound refusal on a calibrated lens is named as the pose, n
     sweep.stop();
   });
 });
+await test('The setting the lens cue names is on screen, in the words the cue uses (#69)', async () => {
+  // The cue tells the user to set the camera view angle. For a long time no
+  // committed component rendered a control for `setCameraViewAngle` at all -
+  // the number input lived only in an unlanded rewrite of `horizon.tsx`, while
+  // a committed test already queried it by aria-label. So the cue named a
+  // setting the shipped product did not have: the recurring "a claim nothing
+  // keeps" shape, with the claim in a sentence and the keeper missing.
+  //
+  // The control has landed. This is the part that was still missing: nothing
+  // couples the words. The cue is deliberately written to name the setting and
+  // quote no label, so it cannot go stale against a rename - but that cuts both
+  // ways, and a control relabelled "Field of view" or "FOV" would leave the
+  // user reading an instruction they cannot match to anything on screen, with
+  // every test still green. The aria-label is not enough on its own: it is not
+  // what the user reads.
+  //
+  // So both ends are asserted against one phrase.
+  // Mutation: relabel the input "Field of view across the short edge". Observed
+  // red HERE and nowhere else - the rest of the file is green, because the
+  // aria-label every other case queries is untouched and the disclosure around
+  // it still says the phrase. That is the gap this case exists for.
+  // Mutation: reword the cue to "the lens geometry may be set wrong ... then
+  // set the lens geometry". Observed red at the #52 case above, which runs
+  // first and pins the cue's text; the assertion here makes the same claim and
+  // ties it to the control.
+  const NAMED = 'view angle';
+  let cue = '';
+  await withTexturedCamera(async () => {
+    const { sweep, offerFrom } = await scanWithOnePatch();
+    await offerFrom(5.5);
+    for (let i = 1; i < LENS_DOUBT_AFTER; i++) await tick();
+    cue = sweep.captureCue;
+    sweep.stop();
+  });
+  assert.match(cue, /may be set wrong for this lens/,
+    `the scan did not reach the lens cue, so this case has no phrase to check: "${cue}"`);
+  assert.ok(cue.toLowerCase().includes(NAMED),
+    `the lens cue no longer names "${NAMED}", so the control below cannot be matched to it: "${cue}"`);
+  const previousHash = w.location.hash;
+  w.location.hash = '#/classic/tonight?experience=guided';
+  const root = createRoot(document.getElementById('root')!);
+  try {
+    await act(async () => root.render(createElement(HorizonSheet,
+      { depth: 0, params: { site: 'current' }, guided: true })));
+    await settle();
+    await click(byTest('capture-photosphere'));
+    const control = document.querySelector<HTMLInputElement>('[aria-label="Camera view angle in degrees"]');
+    assert.ok(control, 'the committed horizon sheet renders no control for setCameraViewAngle');
+    // The control's OWN visible label, not the enclosing disclosure and not the
+    // accessible name. The disclosure's summary and help text say the phrase
+    // too, and another case already pins the summary - so checking the whole
+    // panel would pass on a field relabelled "Field of view" sitting under a
+    // heading that still said the other thing, which is the confusing state,
+    // not a safe one. The aria-label is not the check either: it is not what
+    // the user reads.
+    const label = control.closest('label');
+    assert.ok(label, 'the view-angle input has no visible label at all');
+    const seen = (label.textContent ?? '').toLowerCase();
+    assert.ok(seen.includes(NAMED),
+      `the cue says to set the ${NAMED} and the control's own label never says `
+      + `"${NAMED}": "${(label.textContent ?? '').trim()}"`);
+  } finally {
+    await act(async () => root.unmount());
+    w.location.hash = previousHash;
+  }
+});
 await test('The mocks are the ordinary ones again', async () => {
   // Must stay last. This pins issue #51: "A grant arriving after
   // cancellation is released" used to replace getUserMedia with a mock that
