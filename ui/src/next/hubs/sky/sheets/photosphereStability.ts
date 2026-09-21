@@ -450,12 +450,35 @@ export class VisualStability {
     // FEATURELESS, so the direction is a refusal and never a wrong pose, and
     // that is the only thing keeping this at a cost rather than a defect.
     // CELL_SAMPLES moved this boundary down one octave; it did not remove it.
-    // Nothing in either test file grades it, because every fixture in both is
-    // piecewise-constant at the sample scale - the 320x240 ones are built from
-    // rounded ramps and 17- and 23-pixel blocks, the DOM ones are cell-constant
-    // by construction - so the only sub-cell signal any case presents is
-    // synthetic noise, and the estimator is graded in the world that suits it.
-    // Tracked as epim/astrodeck#90, with the fixture that would grade it.
+    //
+    // ISSUE #90 ASKED WHETHER TO BOUND THE SUBTRACTION SO IT CANNOT TAKE ALL OF
+    // IT. Measured, and the answer is no: there is no bound that admits such a
+    // frame without also admitting a flat field of pure sensor noise, which has
+    // no scene in it at all and must never witness. Each bound, and where each
+    // population first wins a witness at the live sampling:
+    //
+    //   bound   pure noise            static texture
+    //   1.00    never                 never
+    //   0.70    sigma 20, G 0.0558    never
+    //   0.50    sigma 10, G 0.0277    amp 60, G 0.0284
+    //   0.35    sigma 10, G 0.0277    amp 60, G 0.0284
+    //   0.25    sigma 10, G 0.0277    amp 40, G 0.0190
+    //
+    // At every bound loose enough to admit the texture, the noise is admitted
+    // at a LOWER gradient than the texture needs. To one frame's Laplacian the
+    // two are the same thing - the estimate-to-gradient ratio is 1.08 for the
+    // noise and 1.685 for the texture, and it is the noise that reads lower -
+    // so a bound cannot be tuned, only pointed at whichever of the two errors
+    // is preferred. One of them is a false hold, so the plain subtraction and
+    // the refusal it produces stay, and `photosphereStability.test.ts` pins
+    // both halves.
+    //
+    // WHAT WOULD ACTUALLY SEPARATE THEM is the frame PAIR, which this estimator
+    // never looks at: sensor noise is independent between frames and a static
+    // texture is not. On consecutive normalised grids, pure noise moves by
+    // about its own gradient (0.0284 against G 0.0277 at sigma 10) and the
+    // texture moves by exactly 0. That is a redesign of the estimator rather
+    // than a bound on it, and it is recorded on #90 rather than done here.
     const g=Math.max(0,gradient(grid)-noiseGradient(luma,width,height));
     // The floor is a BAND and not a switch (GRADIENT_HYSTERESIS, issue #75):
     // a frame that could witness goes on witnessing down to GRADIENT_FLOOR, and
