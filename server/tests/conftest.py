@@ -224,3 +224,57 @@ def bus_lines(monkeypatch):
                         lambda level, message, source="hub": out.append(
                             (level, message, source)))
     return out
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _the_tree_must_not_move_under_the_run():
+    """Fail loudly if an `astrodeck` source file changes while the suite runs.
+
+    34 tests in 23 files assert on their subject's SOURCE, through
+    `inspect.getsource`. That takes the LINE NUMBER from the loaded code object
+    and the TEXT from the file on disk, via `linecache`, which re-reads a file
+    whenever its mtime moves. So an edit during a run makes every one of them
+    read a slice of the new file at the old line numbers - source belonging to
+    some other part of the module (issue #118).
+
+    Observed 2026-09-20: the suite run that overlapped two inserts near the top
+    of `hub.py` failed `TestNoteSaved::test_the_capture_path_calls_it`, which
+    scrapes a method 1600 lines below them. Reproduced on a throwaway module
+    with no test framework: after three lines were inserted into an earlier
+    function, `inspect.getsource` returned a different function's body for the
+    same live object.
+
+    The false FAIL is the expensive half - it is indistinguishable from a real
+    intermittent, and it cost this session a six-run hunt for a different
+    issue. The false PASS is the dangerous half: a shifted read can land on
+    source that still names the call while the loaded code no longer does, so
+    the guard passes while the seam is gone, which is the exact failure
+    `TestNoteSaved`'s own docstring says it exists to prevent.
+
+    Session-scoped and one place, rather than a check at each of the 34 sites:
+    if nothing moved, every scrape in the run was sound, and if something did,
+    no single test's verdict means anything and saying so once is the honest
+    report. It runs at teardown because that is the only moment that can see
+    the whole run - a mid-run check would clear a file that changes afterwards.
+
+    In a repository where agents share one working tree, this is a normal thing
+    to do by accident, which is why it gets a message rather than a shrug.
+    """
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parents[1] / "astrodeck"
+    before = {p: p.stat().st_mtime_ns for p in root.rglob("*.py")}
+    yield
+    moved = sorted(
+        p.relative_to(root).as_posix() for p, t in before.items()
+        if not p.is_file() or p.stat().st_mtime_ns != t)
+    gone = sorted(p.relative_to(root).as_posix()
+                  for p in root.rglob("*.py") if p not in before)
+    if moved or gone:
+        raise AssertionError(
+            "the source tree changed while this suite was running, so no "
+            "verdict in it can be trusted - the tests that read their "
+            "subject's source (inspect.getsource) were reading a file that no "
+            "longer matched the code they were grading, and they can pass that "
+            "way as easily as fail (issue #118). Re-run on a quiescent tree.\n"
+            f"  changed: {', '.join(moved) or 'none'}\n"
+            f"  appeared: {', '.join(gone) or 'none'}")
