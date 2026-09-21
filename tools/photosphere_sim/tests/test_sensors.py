@@ -3,7 +3,7 @@
 Built on the arc075 route (the still route reports the same orientation
 sequence, since only position differs between the two kinds).
 """
-import json, pathlib, unittest
+import json, math, pathlib, unittest
 
 from sim import sensors, trajectory
 from sim.geometry import wrap_deg
@@ -79,3 +79,95 @@ class FrameRecords(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MotionEvents(unittest.TestCase):
+    """The second witness (issue #105).
+
+    What makes it a second witness rather than a copy of the first: it is not
+    change-driven. A phone holding still stops producing orientation events and
+    keeps producing these, which is what lets a reading be vouched for during a
+    hold.
+    """
+
+    def test_emitted_on_every_tick_including_through_a_hold(self):
+        """MUTATION: threshold the stream the way `orientation_events` does, so
+        a sample equal to the last is dropped. Observed: the holds below emit
+        nothing and the count falls from 6317 to a few hundred."""
+        traj = build()
+        events = sensors.motion_events(traj, sample_hz=60)
+        expected = int(round(traj.duration_ms / (1000.0 / 60))) + 1
+        self.assertEqual(len(events), expected)
+        hold = traj.holds[-1]
+        inside = [e for e in events
+                  if hold.from_ms + 20 <= e["t_event_ms"] <= hold.to_ms - 20]
+        self.assertGreater(len(inside), 5,
+                           "a hold produced almost no motion samples, so the "
+                           "stream is behaving like the change-driven one")
+
+    def test_the_magnitude_is_the_trajectory_own_angular_rate(self):
+        """The correctness claim, and the only quantity the scanner reads:
+        `MotionStability` compares `hypot(alpha, beta, gamma)` against
+        `QUIET_RATE_DEG_S`.
+
+        MUTATION: differentiate the Euler angles instead - return
+        `(d_alpha, d_beta, d_gamma) / dt`. Observed: agreement holds over most
+        of the route and then diverges without bound as the arc approaches the
+        zenith, which is the one hold this stream exists to measure.
+        """
+        traj = build()
+        by_t = {e["t_event_ms"]: math.hypot(e["rate"]["alpha"], e["rate"]["beta"],
+                                            e["rate"]["gamma"])
+                for e in sensors.motion_events(traj, sample_hz=60)}
+        errors = []
+        for frame in traj.frames:
+            nearest = min(by_t, key=lambda k: abs(k - frame.t_capture_ms))
+            if abs(nearest - frame.t_capture_ms) > 9:
+                continue
+            errors.append(abs(by_t[nearest] - frame.angular_rate_deg_s))
+        self.assertGreater(len(errors), 500, "almost nothing was compared")
+        errors.sort()
+        self.assertLess(errors[len(errors) // 2], 0.01,
+                        "the synthesised rate does not track the trajectory's own")
+
+    def test_a_hold_reads_exactly_zero_without_noise(self):
+        """A hold is exactly still, so the stream through it is exactly zero -
+        which is what makes the noise case below able to fail.
+
+        NOT GRADED, and said here rather than claimed: dropping the
+        `angle < 1e-12` guard in `_device_rate_deg_s` leaves this passing.
+        During a hold the relative rotation is exactly the identity, so the
+        fallthrough takes the `norm < 1e-12` branch and returns
+        `degrees(0) / seconds`, which is the same zero. The guard is defensive
+        - it also covers `seconds <= 0`, which the caller already prevents by
+        skipping `t1 <= t0` - and it is kept as a division guard, not because
+        any case here holds it."""
+        traj = build()
+        hold = traj.holds[-1]
+        mid = (hold.from_ms + hold.to_ms) / 2
+        events = sensors.motion_events(traj, sample_hz=60)
+        nearest = min(events, key=lambda e: abs(e["t_event_ms"] - mid))
+        self.assertEqual(
+            math.hypot(nearest["rate"]["alpha"], nearest["rate"]["beta"],
+                       nearest["rate"]["gamma"]), 0.0)
+
+    def test_the_noise_knob_moves_a_still_hold_off_zero_and_repeats(self):
+        """The profile knob the issue asks for, so a case can carry a gyro too
+        noisy to vouch for anything.
+
+        MUTATION: ignore `noise_deg_s`. Observed: the still hold still reads
+        exactly 0 and this fails.
+        """
+        traj = build()
+        hold = traj.holds[-1]
+        mid = (hold.from_ms + hold.to_ms) / 2
+        noisy = sensors.motion_events(traj, sample_hz=60, noise_deg_s=0.4)
+        nearest = min(noisy, key=lambda e: abs(e["t_event_ms"] - mid))
+        self.assertGreater(
+            math.hypot(nearest["rate"]["alpha"], nearest["rate"]["beta"],
+                       nearest["rate"]["gamma"]), 0.0)
+        # Seeded, so a recording repeats. Without this the case format would
+        # carry a stream nobody can reproduce, which is the one thing a
+        # recording may not do.
+        again = sensors.motion_events(traj, sample_hz=60, noise_deg_s=0.4)
+        self.assertEqual([e["rate"] for e in noisy], [e["rate"] for e in again])

@@ -121,8 +121,16 @@ def build_case(case_def: dict, out_root: Path, renderer: Callable) -> Path:
         for record in sensors.frame_records(traj)
     ]
     orientation_obs = sensors.orientation_events(traj)
+    # The SECOND witness (issue #105). Orientation is change-driven, so a phone
+    # holding still goes silent and its samples alone cannot tell a steady view
+    # from a lost sensor; `devicemotion` fires at a fixed rate whether or not
+    # anything moved. Until this existed no recorded case could exercise the
+    # gyro witness at all, and the replay could only report that it changed
+    # nothing where there was no gyro.
+    motion_obs = sensors.motion_events(
+        traj, noise_deg_s=float(case_def.get("gyro_noise_deg_s", 0.0) or 0.0))
     observations = sorted(
-        frame_obs + orientation_obs,
+        frame_obs + orientation_obs + motion_obs,
         key=lambda r: r["t_present_ms"] if r["kind"] == "frame" else r["t_receive_ms"],
     )
     observations_path = out_dir / "input" / "observations.jsonl"
