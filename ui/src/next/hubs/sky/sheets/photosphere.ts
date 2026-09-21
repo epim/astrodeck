@@ -59,11 +59,24 @@ export type CaptureOutcome =
  *  window reading `featureless`, which is the gap issue #63 describes, reaching
  *  capture.
  *
- *  `separation` is therefore a branch no suite and no recording reaches: the
- *  two `forFrame` calls it compares are handed the same evidence at the same
- *  instant and differ only in a capture time, and every path that returns a
- *  pose for both returns poses already inside the 1.5 degrees. It is filed
- *  rather than dressed up with a fixture here. */
+ *  `separation` is therefore a branch no suite and no recording reaches, and
+ *  issue #104 is where that is filed. Re-measured at f17c036b, because the
+ *  mechanism there is now out of date - `rawBasis` is the FRAME's own basis
+ *  on the rVFC path, not a second timed `forFrame` call, so the two sides are
+ *  no longer the same call with different arguments:
+ *
+ *    photosphereStillnessDom   112 evaluations, max 0.000
+ *    photosphereReplay         214 evaluations, max 0.000
+ *    all three recordings        0 refusals
+ *
+ *  Not merely under the threshold - EXACTLY zero, every time, so on today's
+ *  rVFC path the frame's basis and the settled pose are the same reading.
+ *  The gate is kept rather than collapsed into the `unsettled` term above it,
+ *  and the reason is that number: it is not a threshold with margin, it is an
+ *  invariant holding exactly, and the source of one side changed once already.
+ *  A comparison costs nothing; discovering by a misplaced frame that the two
+ *  have drifted apart costs a scan. What is NOT claimed is that the branch is
+ *  tested, because it is not. */
 export type AlignmentWait = 'no-pose' | 'unsettled' | 'separation';
 
 /** `no-pose` only: which of the two sources was missing (issue #76).
