@@ -151,9 +151,9 @@ def _site_dict(site: Any) -> tuple[dict | None, str]:
     neither should have to convert, the same reasoning ``observing_night``
     documents. Returns a plain dict because ``visibility.compute_night``
     subscripts it."""
-    get = site.get if isinstance(site, dict) else (
-        lambda k, d=None: getattr(site, k, d))
-    if get("is_default", False):
+    from ..site_gate import site_get, site_is_set
+    get = site_get(site)
+    if not site_is_set(site):
         return None, _NO_SITE
     try:
         lat = float(get("latitude", 0.0) or 0.0)

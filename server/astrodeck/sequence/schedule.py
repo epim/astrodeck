@@ -169,15 +169,15 @@ def observing_night(site: "dict | Any", twilight_deg: float | None = None,
     from ..config import config_store
     # hub.site is a dict, cfg.site is a pydantic Site. Both callers exist and
     # neither should have to convert, so read either shape here — once.
-    get = site.get if isinstance(site, dict) else (
-        lambda k, d=None: getattr(site, k, d))
-    if get("is_default", False):
+    from ..site_gate import site_lat_lon
+    # The shape shim and the is_default test both live in `site_gate` now
+    # (issue #24): five call sites had written their own and the accessor was
+    # copy-pasted at four of them, which is how a thirty-seventh unguarded
+    # consumer gets written. The RETURN shape stays this function's own.
+    latlon = site_lat_lon(site)
+    if latlon is None:
         return None
-    try:
-        lat = float(get("latitude", 0.0) or 0.0)
-        lon = float(get("longitude", 0.0) or 0.0)
-    except (TypeError, ValueError):
-        return None
+    lat, lon = latlon
     if twilight_deg is None:
         cfg = config_store.cfg()
         twilight_deg = cfg.safety.twilight_deg if cfg else -12.0
@@ -213,18 +213,19 @@ def dark_enough(site: "dict | Any", twilight_deg: float | None = None,
     Fail-open here, fail-closed in the gates that actually move hardware.
     """
     from ..config import config_store
-    get = site.get if isinstance(site, dict) else (
-        lambda k, d=None: getattr(site, k, d))
-    if get("is_default", False):
+    from ..site_gate import site_lat_lon
+    # THE ONE DELIBERATE FAIL-OPEN, and `site_gate`'s module docstring names it
+    # as such: no site means True, because this gate's job is to stop DAYLIGHT
+    # imaging rather than to enforce configuration, and refusing to call it dark
+    # would stop an unconfigured rig taking any frame at all. Every other
+    # consumer of the same question refuses instead (issue #24).
+    latlon = site_lat_lon(site)
+    if latlon is None:
         return True
+    lat, lon = latlon
     if twilight_deg is None:
         cfg = config_store.cfg()
         twilight_deg = cfg.safety.twilight_deg if cfg else -12.0
-    try:
-        lat = float(get("latitude", 0.0) or 0.0)
-        lon = float(get("longitude", 0.0) or 0.0)
-    except (TypeError, ValueError):
-        return True
     t_now = time.time() if now is None else now
     return sun_altitude(lat, lon, t_now) < twilight_deg
 
