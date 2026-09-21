@@ -95,6 +95,44 @@ async def test_guiding_and_finding_are_not_treated_as_mount_motion(sim_hub, monk
             engine._await_guider_quiet("test", timeout_s=0.2), timeout=1.0) is True
 
 
+def test_an_unguided_stretch_is_bounded_by_one_frame():
+    """WHAT BOUNDS THE DAMAGE (issue #27).
+
+    The report is 25 minutes of exposure with the guider at `phase=idle` and no
+    recovery attempted. Every case in this file drives `_maybe_recover_guiding`
+    DIRECTLY, so between them they prove the recovery does the right thing and
+    say nothing at all about how often it is asked - and "how often" is the
+    entire complaint. A recovery that works perfectly and is consulted once a
+    target is indistinguishable from the night in that report.
+
+    It is consulted at the frame boundary, before the exposure, so the worst
+    case is ONE frame of unguided sky. That is the ceiling the issue asks for,
+    and it is a property of where the call sits rather than of what it does.
+
+    Asserted on source order because that is what the claim is about. Driving a
+    run would prove the recovery fires, which the cases below already do; it
+    would not prove there is no path through the loop that skips it.
+
+    MUTATION: move the `_maybe_recover_guiding` call below `await self._capture`.
+    Observed: this fails - the guider is consulted after the frame it was
+    supposed to protect.
+    MUTATION: delete the call. Observed: this fails on the first assertion, and
+    every other case in this file stays green, because they all call the method
+    themselves.
+    """
+    import inspect
+    src = inspect.getsource(SequenceEngine._run_step)
+    recover = src.find("_maybe_recover_guiding")
+    capture = src.find("await self._capture")
+    assert recover != -1, (
+        "the frame loop no longer consults guiding recovery at all; an "
+        "unguided stretch is then bounded by nothing")
+    assert capture != -1, "this case can no longer find the exposure it guards"
+    assert recover < capture, (
+        "guiding recovery is consulted AFTER the exposure, so every frame is "
+        "taken on last frame's answer")
+
+
 async def test_recovery_recentres_BEFORE_it_resumes_guiding(sim_hub, monkeypatch):
     """Order is the point. Re-centring slews, so doing it after start_guiding
     would tear down the guiding we had just paid to re-establish."""
