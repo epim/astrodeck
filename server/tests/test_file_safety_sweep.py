@@ -11,6 +11,8 @@ whether a failure here is a regression or a deliberate change.
 """
 from __future__ import annotations
 
+import os
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -40,6 +42,57 @@ HOSTILE_FILTERS = [
     "a/b",
     "..",
 ]
+
+
+def test_the_containment_backstop_says_what_it_compared(tmp_path, bus_lines):
+    """`safe_id_path`'s LAST check refused with a bare KeyError (issue #113).
+
+    Everything before it is a string test on the id, so a refusal there needs no
+    explanation - the id names the problem. The final check is different: it
+    compares two RESOLVED paths, and it is reached only by an id that already
+    looked like a plain filename. When it fires, the interesting facts are the
+    two paths, and neither was recorded anywhere.
+
+    That cost a real diagnosis. `test_calibration_frames_are_weather_gated`
+    failed once in seven full-suite runs with `KeyError` on a clean 32-character
+    hex session id, raised out of `engine.start()`; it was read as a weather-gate
+    defect and took a six-run hunt to place. What it actually is, is this branch.
+
+    The escape here is a real one, which is what the branch is for: a junction
+    inside the store pointing outside it. `mklink /J` needs no privilege, unlike
+    a file symlink, so this runs as an ordinary user.
+
+    MUTATION: delete the `bus.log` call. Observed: the KeyError is still raised
+    and every other assertion here still passes, which is exactly the state this
+    case is about - the refusal happens and says nothing.
+    """
+    if os.name != "nt":
+        pytest.skip("the junction trick is Windows; the branch itself is not")
+    base = tmp_path / "store"
+    outside = tmp_path / "elsewhere"
+    base.mkdir()
+    outside.mkdir()
+    subprocess.run(["cmd", "/c", "mklink", "/J", str(base / "link"), str(outside)],
+                   check=True, capture_output=True, text=True)
+
+    # A plain filename - no separator, no drive, no dot-ref - so every check
+    # ahead of the backstop passes it through.
+    with pytest.raises(KeyError) as excinfo:
+        safe_id_path(base, "link", suffix="")
+
+    assert excinfo.value.args == ("link",), (
+        "the exception's argument stopped being the id; routes put that in a "
+        "404 body, and a filesystem path does not belong there")
+    warnings = [m for level, m, _ in bus_lines if level == "warning"
+                and "safe_id_path" in m]
+    assert warnings, (
+        f"the containment backstop refused and logged nothing: {bus_lines}")
+    said = warnings[0]
+    assert str(outside.resolve()) in said and str(base.resolve()) in said, (
+        f"the log does not name both paths it compared: {said}")
+    assert "not on the id" in said, (
+        "the log does not say the id was fine, which is the thing a reader of "
+        f"a bare KeyError gets wrong: {said}")
 
 
 @pytest.mark.parametrize("hostile", HOSTILE_FILTERS)

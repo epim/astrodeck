@@ -246,7 +246,35 @@ def safe_id_path(base: Path, ident: str, suffix: str = ".json") -> Path:
             or _refuse_component(ident)):
         raise KeyError(ident)
     resolved = (base / f"{ident}{suffix}").resolve()
-    if resolved.parent != base.resolve():
+    parent = base.resolve()
+    if resolved.parent != parent:
+        # SAY WHAT WAS COMPARED (issue #113).
+        #
+        # This is the backstop, reached only after every string-level vector
+        # above has been excluded - so an id that gets here is one that looked
+        # like a plain filename and then failed a comparison of two resolved
+        # paths. That is either a real containment escape through a symlink, or
+        # the two `resolve()` calls disagreeing for a reason that has nothing to
+        # do with the id. Both are worth knowing about and the bare `KeyError`
+        # told them apart for nobody: a test that hit this spent a six-run hunt
+        # being read as a weather-gate failure, because the only thing anyone
+        # could see was that starting a run raised KeyError on a clean hex id.
+        #
+        # The two paths go to the LOG and not into the exception. Routes map
+        # this KeyError to a 404 and some of them put its argument in the body,
+        # so the argument stays the ident; a filesystem path in an HTTP body is
+        # a different bug.
+        try:
+            from .events import bus
+            bus.log("warning",
+                    f"safe_id_path refused {ident!r}: it resolves to {resolved} "
+                    f"(in {resolved.parent}) while the base resolves to "
+                    f"{parent}. The id itself is a plain filename, so this is "
+                    f"the containment backstop firing on the two paths and not "
+                    f"on the id.",
+                    "persist")
+        except Exception:      # noqa: BLE001 - never turn a refusal into a crash
+            pass
         raise KeyError(ident)
     return resolved
 
