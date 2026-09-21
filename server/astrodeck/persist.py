@@ -222,6 +222,44 @@ def _refuse_component(name: str) -> bool:
             or name.split(".")[0].upper() in _WIN_RESERVED)
 
 
+def path_key(p: Path) -> str:
+    r"""A resolved path in a form two `Path.resolve()` calls can be compared in.
+
+    ISSUE #113, and it took three attempts to see. `safe_id_path` compared
+    `resolved.parent` with `base.resolve()` and refused a clean 32-character hex
+    session id roughly one full-suite run in seven, crashing whatever run was
+    starting. With the two paths finally printed, they were identical except
+    for four characters:
+
+        resolved.parent  C:\Users\...\captures\sessions
+        base.resolve()   \\?\C:\Users\...\captures\sessions
+
+    `ntpath.realpath` gets its answer from `_getfinalpathname`, which ALWAYS
+    returns the extended-length `\\?\` form, and then strips that prefix only
+    if re-resolving the stripped path yields the same final path. When that
+    verification call fails - which a concurrent create, delete or share-lock on
+    the directory can cause, and twelve xdist workers on one temporary tree
+    provide - the prefix is kept. So the two calls disagree not about WHERE the
+    path is but about how to spell it, and only sometimes.
+
+    The asymmetry is which call had an existing path to resolve: the file does
+    not exist yet, so that one takes realpath's non-strict fallback and comes
+    back stripped; the directory does exist, so that one goes through
+    `_getfinalpathname` and can keep the prefix.
+
+    `normcase` rides along because the same function is the other way two
+    resolutions of one directory can differ in spelling on Windows, and a
+    containment check has no business being case-sensitive on a filesystem that
+    is not.
+    """
+    text = os.fspath(p)
+    if text.startswith("\\\\?\\UNC\\"):
+        text = "\\\\" + text[8:]
+    elif text.startswith("\\\\?\\"):
+        text = text[4:]
+    return os.path.normcase(text)
+
+
 def safe_id_path(base: Path, ident: str, suffix: str = ".json") -> Path:
     """Resolve ``base/<ident><suffix>`` for a client-controllable ``ident``,
     raising ``KeyError`` for anything that is not a single contained filename
@@ -247,7 +285,7 @@ def safe_id_path(base: Path, ident: str, suffix: str = ".json") -> Path:
         raise KeyError(ident)
     resolved = (base / f"{ident}{suffix}").resolve()
     parent = base.resolve()
-    if resolved.parent != parent:
+    if path_key(resolved.parent) != path_key(parent):
         # SAY WHAT WAS COMPARED (issue #113).
         #
         # This is the backstop, reached only after every string-level vector
@@ -327,7 +365,11 @@ def safe_subpath(base: Path, relpath: str) -> Path:
         if _refuse_component(p):
             raise KeyError(relpath)
     resolved = base.joinpath(*parts).resolve()
-    if not resolved.is_relative_to(base.resolve()):
+    # Through `path_key` for the reason #113 gives: two `resolve()` calls on
+    # Windows can return the same directory spelled with and without the
+    # extended-length prefix, and `is_relative_to` is a string comparison.
+    _key, _root = path_key(resolved), path_key(base.resolve())
+    if not (_key == _root or _key.startswith(_root + os.sep)):
         raise KeyError(relpath)
     return resolved
 
