@@ -121,10 +121,9 @@ def resume_expected_tonight(hub, now: float | None = None) -> Session | None:
         return None
     if armed is None:
         return None
+    from ..site_gate import site_is_set
     site = getattr(hub, "site", None) or {}
-    get = site.get if isinstance(site, dict) else (
-        lambda k, d=None: getattr(site, k, d))
-    if get("is_default", True):
+    if not site_is_set(site):
         return None
     cfg = config_store.cfg()
     twilight = cfg.safety.twilight_deg if cfg else -12.0
