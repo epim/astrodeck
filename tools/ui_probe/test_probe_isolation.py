@@ -9,7 +9,29 @@ import threading
 import time
 import unittest
 
-from playwright.sync_api import sync_playwright
+# Importable from anywhere, and a loud SKIP rather than a collection error
+# where the pieces are missing (issue #119).
+#
+# The interpreter that has Playwright is the SYSTEM python, which is what
+# `tools/ui_probe/README.md` requires and what `run.ps1` invokes. A `pytest`
+# run from the repository ROOT uses `server/.venv` instead, and this file used
+# to take that whole run down with "Interrupted: 3 errors during collection" -
+# an unrelated suite failing to start because of a test it was never going to
+# be able to run.
+#
+# `sys.path` likewise: `probe` sits beside this file, which `python -m unittest`
+# from this directory supplies for free and a root-level collection does not.
+import sys as _sys
+
+_sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+try:
+    from playwright.sync_api import sync_playwright
+except ImportError as exc:      # pragma: no cover - environment, not logic
+    raise unittest.SkipTest(
+        f"Playwright is not importable here ({exc}). This test needs the system "
+        f"python, per tools/ui_probe/README.md; run it with "
+        f"`cd tools/ui_probe && python -m unittest test_probe_isolation`.")
 
 from probe import _run_isolated_route
 

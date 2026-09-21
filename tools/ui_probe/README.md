@@ -16,6 +16,22 @@ Owns `tools/ui_probe/**` only. Never commits anything itself.
   launch the AstroDeck server subprocess. It does not need Playwright.
 - The UI built (`ui/dist`), or let `run.ps1` build it for you.
 
+## The probe's own tests
+
+The probe has regression tests of its own - no server, no UI, about seven
+seconds. `run.ps1` runs them before it builds anything, and they need the same
+system python everything else here does:
+
+```powershell
+cd tools\ui_probe
+python -m unittest discover -p "test_*.py"
+```
+
+`python -m pytest` does NOT work: the interpreter that has Playwright has no
+pytest, and the one the server suite uses has no Playwright. A `pytest` run
+from the repository root skips these with that reason rather than failing to
+collect them.
+
 ## One command
 
 ```powershell
