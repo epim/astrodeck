@@ -598,6 +598,7 @@ class SequenceEngine:
         #: Rate-limit for the "armed but the mount is offline" warning, so a
         #: dropped link says so once instead of once per frame.
         self._flip_offline_logged = False
+        self._flip_no_site_logged = False
         #: The pier side this target was OBSERVED on while it was still east of
         #: the meridian, i.e. before its flip was owed. The flip-owed invariant
         #: (`_enforce_flip_owed`) compares against this rather than against a
@@ -816,6 +817,7 @@ class SequenceEngine:
         self._flip_armed = False
         self._flip_no_op = set()
         self._flip_offline_logged = False
+        self._flip_no_site_logged = False
         self._pre_flip_side = None
         self._flip_owed = False
         self._tracking_recovered = set()
@@ -5102,6 +5104,35 @@ class SequenceEngine:
                         "sequence")
             return
         self._flip_offline_logged = False
+        # NO SITE, NO MERIDIAN, AND SAY SO (issue #24). The flip is hour angle
+        # and hour angle is longitude, so at the 0,0 default this used to
+        # compute a crossing over the Gulf of Guinea and take it - an
+        # unannounced flip at an arbitrary time, with the field rotating 180
+        # degrees in the middle of the stack for no reason anybody could see.
+        #
+        # Not flipping is the better of the two, because a flip at the wrong
+        # time is itself the hazard, but it is only better if it is AUDIBLE:
+        # this used to fall into the `except: return` below and the run went on
+        # in silence. Rate-limited on the same flag as the offline case, and for
+        # the same reason - the condition holds for the whole run and one line
+        # is the news.
+        #
+        # This is NOT a refusal to run. A run-start refusal was written first
+        # and reverted: `meridian_flip` defaults to True on every plan, so it
+        # stopped calibration runs that never point at the sky, and 27 tests
+        # said so.
+        from ..site_gate import site_is_set
+        if not site_is_set(self.hub.site):
+            if not self._flip_no_site_logged:
+                self._flip_no_site_logged = True
+                bus.log("warning",
+                        f"{target.name}: a meridian flip is armed but this rig "
+                        f"has no configured site, so nothing here can work out "
+                        f"where the meridian is — no flip will be taken. Save "
+                        f"the site's location in settings, or switch the flip "
+                        f"off to stop this run expecting one",
+                        "sequence")
+            return
         # authoritative countdown = server HA math (the device value alone never
         # goes negative, so it can't detect the crossing — the live bug).
         try:

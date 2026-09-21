@@ -12,6 +12,28 @@ _TEST_SITE = Site(name="fixture", latitude=40.0, longitude=-74.0,
                   elevation_m=10.0, is_default=False)
 
 
+def a_real_site(monkeypatch) -> None:
+    """Point the config store's cached site at a real location (#24).
+
+    For the fixtures that do NOT isolate the config store the way `sim_hub`
+    below does, and so come up on whatever the box has - which on a clean
+    checkout is the 0,0 default with `is_default` True. Five test files build
+    their own sim hub that way, and all five compute meridian geometry from it.
+
+    Monkeypatching the fields of the cached `Site` is the idiom those files
+    already use for latitude, so this is the same move made complete: a
+    latitude alone leaves `is_default` True, and `is_default` is the flag every
+    guard added for #24 actually reads.
+
+    Call it BEFORE `Hub()`. 40 N 74 W, and it is not anybody's rig.
+    """
+    from astrodeck.config import config_store
+    site = config_store.cfg().site
+    for field, value in (("name", "fixture"), ("latitude", 40.0),
+                         ("longitude", -74.0), ("elevation_m", 10.0),
+                         ("is_default", False)):
+        monkeypatch.setattr(site, field, value)
+
 @pytest.fixture
 async def sim_hub(tmp_path, monkeypatch):
     # Mirror tests/test_hub_solve.py's sim-hub fixture: fresh Hub, captures
