@@ -1610,6 +1610,24 @@ class Hub:
         self._guide_preview_frame = (verified, now, src) if png else None
         return png, reason
 
+    async def _guider_is_guiding(self, g) -> bool:
+        """Is this guider actually running a loop right now? Never raises.
+
+        `connected` is a REMEMBERED flag and this is a MEASUREMENT, which is the
+        whole of issue #16: a liveness flag that cannot go false leaves every
+        recovery path hanging off it inert. Here it decides who owns the guide
+        sensor, and a guider that is guiding owns it whatever its connect flag
+        still says.
+
+        Asked only when `connected` is already false, so the ordinary path keeps
+        its short-circuit and a PHD2 guider does not take a socket round trip on
+        every 2.5 s panel poll.
+        """
+        try:
+            return bool(await g.is_active())
+        except Exception:  # noqa: BLE001 - a preview must not 500 the panel
+            return False
+
     def _guide_preview_source_name(self) -> str:
         """Which device ``_guide_preview_source`` would ask right now, by name.
 
@@ -1643,7 +1661,8 @@ class Hub:
         name (``preview_ok: False``, reachable only from the guider branch below)
         is exactly where they disagree."""
         g = self.guider
-        if g is not None and getattr(g, "connected", False):
+        if g is not None and (getattr(g, "connected", False)
+                              or await self._guider_is_guiding(g)):
             try:
                 png = await g.guide_frame()
             except Exception:  # noqa: BLE001 — a preview must not 500 the panel
@@ -1684,6 +1703,22 @@ class Hub:
         if cam is self.devices.get("camera"):
             return None, (f"{cam.name} is also the imaging camera — its frames "
                           "show in the capture preview, not here"), False, cam.name
+        # A LIVE GUIDE LOOP OWNS THIS SENSOR. The paragraph below used to end
+        # "the only contender for this sensor is another preview", and on
+        # 2026-09-12 that was wrong: a preview requested during a calibration
+        # walk left the ASI guide camera in VIDEO_MODE_ACTIVE for 11 minutes,
+        # the calibration was lost, and nothing short of a whole-rig profile
+        # activate cleared it (issue #15). A read-only-looking panel destroyed a
+        # live guiding session.
+        #
+        # The guider branch above is the one that serves a running loop, from
+        # the loop's own last frame, without touching the sensor. It is reached
+        # by `connected` OR by the loop being live, so the remembered flag going
+        # stale - issue #16, and the reason this was reachable at all - no
+        # longer routes a preview past the owner and onto the camera.
+        #
+        # What is left here is a guide camera with no guider claiming it, and
+        # for that the sentence below is true again.
         # NO busy_label gate here, deliberately. busy_label is a HUB-WIDE label
         # for the IMAGING train (goto/solve/autofocus/capture/looping), and this
         # line is only reached once we know the guide camera is a different
