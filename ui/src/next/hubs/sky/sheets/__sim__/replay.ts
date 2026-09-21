@@ -252,13 +252,15 @@ export async function replayCase(caseDir: string): Promise<Summary> {
       ...(record.basis === undefined ? {} : { basis: record.basis }),
       ...(record.sensorBasis === undefined ? {} : { sensor_basis: record.sensorBasis }),
       ...(record.adjusted === undefined ? {} : { adjusted: record.adjusted }),
-      // The three fields an `alignment-wait` carries (issue #76): which term
-      // refused, the separation that term measured, and the magnitude of the
+      // The four fields an `alignment-wait` carries (issue #76): which term
+      // refused, which source was missing when that term was `no-pose`, the
+      // separation the `separation` term measured, and the magnitude of the
       // carried visual anchor. Written only where the scanner set them, like
       // every field above, so a record that measured nothing claims nothing.
       ...(record.wait === undefined ? {} : { wait: record.wait }),
       ...(record.separation === undefined ? {} : { separation: record.separation }),
       ...(record.anchor === undefined ? {} : { anchor: record.anchor }),
+      ...(record.gap === undefined ? {} : { gap: record.gap }),
     }));
     const summary: Summary = {
       frames_delivered: framesDelivered,
