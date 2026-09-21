@@ -50,7 +50,17 @@ export interface OrientationObservation {
   gamma: number;
   absolute: boolean;
 }
-export type Observation = FrameObservation | OrientationObservation;
+/** The second witness (issue #105). Emitted on every tick of its grid rather
+ *  than on change, which is the whole difference from `orientation`: a phone
+ *  holding still keeps producing these, and that is what lets a reading be
+ *  vouched for during a hold. */
+export interface MotionObservation {
+  kind: 'motion';
+  t_event_ms: number;
+  t_receive_ms: number;
+  rate: { alpha: number; beta: number; gamma: number };
+}
+export type Observation = FrameObservation | OrientationObservation | MotionObservation;
 
 const PANORAMA_W = 1080, PANORAMA_H = 300;
 /** Decoded frames held back from the garbage collector. Sequential delivery
@@ -89,7 +99,11 @@ function deliveredAt(item: Observation): number {
  *  recorded cases that changes the pose worn by two frames apiece. Equal kinds
  *  keep file order, so the merge is stable and a replay repeats exactly. */
 export function mergeObservations(observations: Observation[]): Observation[] {
-  const rank = (item: Observation) => (item.kind === 'orientation' ? 0 : 1);
+  // Readings before frames, and the two reading kinds keep file order
+  // between themselves. A browser drains its task queue - where both a
+  // `deviceorientationabsolute` and a `devicemotion` land - before the
+  // rendering steps, so both outrank a frame stamped at the same millisecond.
+  const rank = (item: Observation) => (item.kind === 'frame' ? 1 : 0);
   return observations
     .map((item, index) => ({ item, index }))
     .sort((a, b) => deliveredAt(a.item) - deliveredAt(b.item)
@@ -199,7 +213,10 @@ export async function replayCase(caseDir: string): Promise<Summary> {
       if (at > finishAt) break;
       elapsed = at;
       harness.setClock(at);
-      if (item.kind === 'orientation') {
+      if (item.kind === 'motion') {
+        eventsDelivered++;
+        harness.dispatchMotion({ timeStamp: item.t_event_ms, rate: item.rate });
+      } else if (item.kind === 'orientation') {
         eventsDelivered++;
         harness.dispatchOrientation({
           timeStamp: item.t_event_ms, alpha: item.alpha, beta: item.beta, gamma: item.gamma,

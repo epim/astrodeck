@@ -77,6 +77,7 @@ reports, which is the only one of them no package manifest records, and it is
 `observations.jsonl`, one object per line, sorted by delivery time:
 - `{"kind":"frame","frame_id":"f000123","t_capture_ms":12300,"t_present_ms":12360,"width":480,"height":640,"file":"frames/f000123.png"}`
 - `{"kind":"orientation","t_event_ms":12280,"t_receive_ms":12300,"alpha":..,"beta":..,"gamma":..,"absolute":true}`
+- `{"kind":"motion","t_event_ms":12290,"t_receive_ms":12300,"rate":{"alpha":..,"beta":..,"gamma":..}}`
 Delivery time is `t_present_ms` for frames and `t_receive_ms` for events.
 
 At an equal delivery time the two files disagree on purpose, and both are
@@ -92,16 +93,36 @@ a reader of `observations.jsonl` must not infer the delivery order within a
 millisecond from the line order, and a driver must sort the merged stream with
 readings ahead of frames at equal delivery times.
 
-There is no `devicemotion` record, and no case can produce one. The scanner
-gained a gyroscope witness for the view the camera cannot judge (issue #63):
-on a featureless sky the video vouches for nothing, so a reading is held by a
-`rotationRate` that stays quiet. Every recording predates that channel and
-carries only frames and orientation, so in a replay the gyroscope is always
-absent and always refuses. A hold that the recordings score as missed for
-want of a pose may therefore be a hold a real phone would have captured, and
-`every_hold_captured` cannot settle it either way until a recording carries
-motion (issue #105). Issue #76's zenith holds on the arc routes are exactly
-that case.
+`motion` is the SECOND witness (issue #105). The scanner gained a gyroscope
+witness for the view the camera cannot judge (issue #63): on a featureless sky
+the video vouches for nothing, so a reading is held by a `rotationRate` that
+stays quiet. Before this channel existed no recording carried one, the
+gyroscope was absent in every replay and always refused, and a hold the
+recordings scored as missed for want of a pose might have been a hold a real
+phone would have captured - `every_hold_captured` could not settle it either
+way.
+
+Unlike `orientation`, `motion` is NOT change-driven: it is emitted on every
+tick of its 60 Hz grid whether or not anything moved, because that is what a
+`devicemotion` stream does and it is the whole reason the witness works. A
+phone holding still keeps producing these while the orientation stream goes
+silent.
+
+The three numbers are the rate of turn about the DEVICE's own axes, in degrees
+per second, which is not the rate of change of the Euler angles: d(alpha)/dt
+diverges near the poles while the phone turns perfectly steadily, and these
+routes end at the zenith. They are taken from the rotation of the device frame
+between the attitudes half a period either side of the sample, so the vector's
+magnitude is the trajectory's own `angular_rate_deg_s` - which is the only
+quantity the scanner reads, since `MotionStability` compares
+`hypot(alpha, beta, gamma)` against a threshold. Measured against
+`truth/trajectory.jsonl` over the arc route: median error 0.0001 deg/s,
+and exactly 0 through a hold.
+
+A case declares `gyro_noise_deg_s` to carry a gyro too noisy to vouch for
+anything; the default is 0, so the three chart-yard cases are exact and a hold
+reads exactly zero, which no real device does. A case that wants to grade
+`QUIET_RATE_DEG_S` itself has to set it.
 
 `actions.jsonl`: `{"t_ms":0,"action":"begin"}` and `{"t_ms":<end>,"action":"finish"}`.
 
