@@ -90,7 +90,8 @@ class FakeCamera(Camera):
     was "the cooler goes off FIRST"."""
 
     def __init__(self, temp_c: float = -10.0, *, ambient_c: float | None = None,
-                 reports_temp: bool = True, follows: bool = True):
+                 reports_temp: bool = True, follows: bool = True,
+                 follow_fraction: float | None = None):
         super().__init__("Fake Cooled Cam")
         self.connected = True
         self.can_cool = True
@@ -101,6 +102,18 @@ class FakeCamera(Camera):
         # follows=False models a sensor that does NOT track the setpoint (a TEC
         # at its limit, or a setpoint already above the real ambient).
         self._follows = follows
+        # THE MIDDLE OF THE RANGE, which neither of the two settings above can
+        # express (issue #17). `follows=True` is a TEC that reaches every
+        # setpoint the instant it is commanded and `follows=False` is one that
+        # has stopped responding entirely; real hardware is in between, and the
+        # lead check exists precisely to tell those two apart. Without a model
+        # that lags PARTIALLY, no test in this file could say whether ordinary
+        # thermal inertia trips it.
+        #
+        # `follow_fraction` is how much of the remaining gap the sensor closes
+        # per step: 1.0 is the obedient TEC above, 0.0 is the dead one, 0.5
+        # halves the distance each time.
+        self._follow_fraction = follow_fraction
         self.refuse_setpoint = False
 
     async def expose(self, seconds, gain, offset, binning=1, light=True,
@@ -121,7 +134,10 @@ class FakeCamera(Camera):
             raise DeviceError("driver rejected the setpoint")
         self.calls.append((on, target_c))
         if on and target_c is not None and self._follows:
-            self._temp = target_c        # a perfectly obedient TEC
+            if self._follow_fraction is None:
+                self._temp = target_c    # a perfectly obedient TEC
+            else:
+                self._temp += (target_c - self._temp) * self._follow_fraction
 
     async def get_temperature(self) -> float | None:
         return self._temp if self._reports else None
@@ -189,6 +205,75 @@ async def test_warm_ramps_the_setpoint_and_switches_off_only_at_the_end(
     # …and the whole climb, not a token step or two: -10 -> 20 in 0.5 °C steps.
     assert len(setpoints) >= 55, f"only {len(setpoints)} steps — ramp cut short"
     assert any("warming camera" in m for _l, m, _s in bus_lines)
+
+
+async def test_a_lagging_tec_started_from_setpoint_still_walks_all_the_way_up(
+        hub_with_camera):
+    """Issue #17: the ramp is reported to exit almost immediately when the
+    camera is ALREADY AT SETPOINT as it begins, leaving the sensor cold.
+
+    At-AMBIENT is a different case and is already handled - `warm_is_pointless`
+    ends the ramp before it starts and says so. At-SETPOINT means the TEC is
+    working hard with a real gradient still to climb, and the mechanism that
+    could plausibly end the ramp early is the lead check: when the setpoint
+    steps up, the sensor lags while the TEC unwinds, and two consecutive
+    breaches of `WARM_MAX_LEAD_C` finish the ramp.
+
+    Neither existing camera model can ask that question. `follows=True` reaches
+    every setpoint instantly, so the lead is always zero; `follows=False` never
+    moves, so the lead grows without bound. The lead check has therefore never
+    been graded against anything in between, which is the only regime real
+    hardware is in.
+
+    With the sensor closing HALF the remaining gap per step - far laggier than
+    the 1.72 C/min this rig was measured at against a 0.5 C step - the lead
+    settles at half a step, 0.25 C, against a 3.0 C tolerance. The ramp
+    completes. So ordinary inertia from an at-setpoint start does not trip it,
+    and #17's mechanism is not this.
+
+    MUTATION: `WARM_MAX_LEAD_C = 0.2`. Observed: the ramp stops after a couple
+    of steps and this fails on the step count - which is what the reported
+    behaviour would look like, and is how this case would have caught it.
+    """
+    hub, cam = hub_with_camera
+    cam._follow_fraction = 0.5
+    cam._temp = -10.0               # AT the setpoint the run was holding
+    await hub.warm_camera()
+    await _drain(hub)
+    setpoints = [c[1] for c in cam.calls if c[0]]
+    assert len(setpoints) >= 55, (
+        f"a lagging TEC started from its setpoint climbed only {len(setpoints)} "
+        f"steps before the ramp ended: {setpoints[:5]}...{setpoints[-3:]}")
+    assert setpoints[-1] > cooling.WARM_FALLBACK_AMBIENT_C, (
+        f"the ramp stopped at {setpoints[-1]} C, short of ambient")
+    assert "already at ambient" not in (hub._warm_state or {}).get("note", ""), (
+        "the lead check ended a ramp whose sensor was still following")
+
+
+async def test_the_lead_check_still_fires_on_a_tec_that_has_actually_stopped(
+        hub_with_camera):
+    """The other side of the same model, and the reason the one above is not
+    just a looser tolerance: a sensor that closes only a TENTH of the gap per
+    step falls behind faster than the schedule and the ramp must still end.
+
+    Between this and the case above, the lead check is graded on both sides of
+    its boundary with the same camera, rather than only at the two impossible
+    extremes.
+
+    MUTATION: `WARM_MAX_LEAD_C = 30.0`. Observed: this ramp runs to the safety
+    ceiling instead of stopping, and the note never says "already at ambient".
+    """
+    hub, cam = hub_with_camera
+    cam._follow_fraction = 0.1
+    cam._temp = -10.0
+    await hub.warm_camera()
+    await _drain(hub)
+    setpoints = [c[1] for c in cam.calls if c[0]]
+    assert setpoints[-1] < cooling.WARM_FALLBACK_AMBIENT_C, (
+        f"a sensor closing a tenth of the gap per step reached {setpoints[-1]} C; "
+        f"the lead check never fired")
+    assert cam.calls[-1] == (False, None), "the cooler was left on"
+    assert "already at ambient" in (hub._warm_state or {}).get("note", "")
 
 
 async def test_ramp_finishes_when_the_sensor_stops_following(hub_with_camera):
