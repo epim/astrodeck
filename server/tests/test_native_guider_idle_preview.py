@@ -87,11 +87,27 @@ async def test_a_poll_past_the_ttl_reaches_the_sensor_again(monkeypatch):
     assert await g.guide_frame() == first
     assert cam.started == 1, "inside the TTL the cache is the honest answer"
 
-    # 3x the TTL, not 1.2x. At 0.06 the margin was 10 ms, and under xdist on a
-    # loaded machine this test failed roughly one run in three — observed
-    # 2026-08-17 while landing an unrelated change, which cost a full-suite red
-    # and a bisect. The claim is "past the TTL", and 0.15 states it just as well.
-    await asyncio.sleep(0.15)
+    # AGE THE CACHE, DO NOT SLEEP PAST THE TTL (issue #124).
+    #
+    # This was `await asyncio.sleep(0.06)` and failed roughly one run in three
+    # under xdist, observed 2026-08-17, costing a full-suite red and a bisect.
+    # The fix applied then widened the sleep to 0.15, three times the TTL, on
+    # the theory that a loaded machine ran LATE. That theory is wrong, and the
+    # wrong theory is why the sibling case below was left at 0.06 and failed
+    # again on 2026-09-20.
+    #
+    # The mechanism, measured on this box: `time.monotonic()` has a resolution
+    # of 15.625 ms on Windows, asyncio's `_clock_resolution` is the same, and
+    # `BaseEventLoop._run_once` fires a timer once its deadline is within one
+    # resolution of now - so `asyncio.sleep` returns up to 15.625 ms EARLY. The
+    # shortest of 200 `asyncio.sleep(0.06)` calls returned in 0.046 s, inside a
+    # TTL of 0.05, leaving the cache fresh and the exposure untaken. Load does
+    # not make the sleep late; the clock makes it early, and any margin under
+    # one resolution is a coin toss whatever the load.
+    #
+    # So the answer is no margin rather than a bigger one. Ageing the stamp
+    # states "past the TTL" exactly, and there is no clock in it.
+    g._last_frame_at -= nativemod._IDLE_PREVIEW_TTL_S + 0.01
     cam.star_x = 20                      # the field drifted, as a guide field does
     later = await g.guide_frame()
     assert cam.started == 2, "a stale cache must be re-exposed, not re-encoded"
@@ -133,7 +149,11 @@ async def test_a_dedicated_guide_camera_is_still_re_exposed_on_age(monkeypatch):
     assert g.shares_the_imaging_sensor is False, "dedicated is the default"
 
     await g.guide_frame()
-    await asyncio.sleep(0.06)
+    # Aged rather than slept past, for the reason written out at
+    # `test_a_poll_past_the_ttl_reaches_the_sensor_again` above: this is the
+    # case that failed on 2026-09-20, at the 0.06 sleep the sibling had already
+    # been widened away from (issue #124).
+    g._last_frame_at -= nativemod._IDLE_PREVIEW_TTL_S + 0.01
     await g.guide_frame()
     assert cam.started == 2
 
