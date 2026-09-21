@@ -358,6 +358,25 @@ _MAX_PENDING_THUMBS = 4
 _CAMERA_LANE_WAIT_S = 150.0
 
 
+#: A camera that CLAIMS to be connected and has produced nothing for this many
+#: times the expected frame time is treated as dropped (issue #16).
+#:
+#: `connected` is a remembered flag. On 2026-09-12 an ASI guide camera stranded
+#: in VIDEO_MODE_ACTIVE went on reporting `connected: true`, so the reconnect
+#: gate saw a healthy device and never tried to heal it; the rig sat broken
+#: until a human ran a profile activate. A liveness flag that cannot go false is
+#: not a liveness flag, and every recovery hanging off it is inert.
+#:
+#: Three frame times, floored, so a legitimately slow frame is never mistaken
+#: for a dead one: the expected time already includes the exposure and the
+#: measured overhead, and a camera that has missed three of them in a row is not
+#: being slow.
+_CAMERA_SILENT_FACTOR = 3.0
+#: ...and never sooner than this, so a burst of sub-second calibration frames
+#: cannot make the bound a fraction of a second.
+_CAMERA_SILENT_FLOOR_S = 180.0
+
+
 def _timeout_abort(what: str, timeout_s: float, note: str = "") -> SafetyAbort:
     """Log and BUILD (never raise) the abort a bound's expiry produces.
 
@@ -3254,6 +3273,43 @@ class SequenceEngine:
         if context == "slew" and target is not None:
             await self._enforce_mount_floor(projected=True, target=target)
 
+    def _camera_is_silent(self) -> bool:
+        """Has the camera stopped producing frames while the run expects them?
+
+        The other half of issue #16, and the half this layer can answer. The
+        issue's first ask - that `connected` be backed by something the device
+        must actually answer - is a change in every camera backend and cannot be
+        validated without the hardware; this one needs nothing but the clock the
+        no-progress watchdog already keeps.
+
+        Distinct from that watchdog, which ABORTS: it exists to end a night that
+        is not going anywhere, its threshold is tens of minutes, and by the time
+        it fires the sky is gone. This fires early enough to RECOVER, and hands
+        the role to the same reconnect the gate performs for a device that had
+        the decency to report itself gone.
+
+        `_progress_expected` gates it for the same reason it gates the watchdog:
+        the engine sits at state `running` with no frames during a scheduled
+        wait, a slew, a centre, an autofocus and the cooling ramp, and a camera
+        is not silent during those - nobody asked it for anything.
+        """
+        if not self._progress_expected:
+            return False
+        expected = max(0.0, float(self._cur_exposure_s)) + float(self._overhead_ema)
+        bound = max(_CAMERA_SILENT_FLOOR_S, _CAMERA_SILENT_FACTOR * expected)
+        idle = time.time() - self._last_frame_at
+        if idle <= bound:
+            return False
+        bus.log("warning",
+                f"the camera reports connected and has produced no frame in "
+                f"{idle / 60:.1f} min, against {bound / 60:.1f} expected - "
+                f"treating it as dropped and reconnecting", "sequence")
+        # Re-stamp, so the reconnect gets a full window to produce a frame
+        # before this fires again. Without it every later frame boundary sees
+        # the same stale clock and reconnects on each one.
+        self._last_frame_at = time.time()
+        return True
+
     async def _reconnect_gate(self) -> None:
         """Heal a device that has dropped out, before the next exposure needs it.
 
@@ -3291,7 +3347,12 @@ class SequenceEngine:
                 needed.append("telescope")
         for role in needed:
             dev = self.hub.devices.get(role)
-            if dev is None or getattr(dev, "connected", False):
+            if dev is None:
+                continue
+            # A camera that claims to be connected and is producing nothing is
+            # the case `connected` cannot express (issue #16).
+            if getattr(dev, "connected", False) and not (
+                    role == "camera" and self._camera_is_silent()):
                 continue
             tries = max(1, cfg.escalation.reconnect_retries)
             bus.log("warning", f"{role} has dropped out — reconnecting "
