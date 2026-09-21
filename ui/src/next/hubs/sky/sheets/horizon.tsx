@@ -300,6 +300,23 @@ export function HorizonSheet({ params, onClose, onBusyChange, guided = false, on
   }, []);
 
   const cancelCapture = () => {
+    // KEEP THE ALIGNMENT REPORT ON THE WAY OUT (issue #66). It was produced
+    // only in `stopAndTrace`, which returns early on `!sweep.frameCount`, and
+    // rendered only inside the card that a trace opens. So the one session the
+    // report's zero-capture fields exist to explain - nothing captured because
+    // the pixels could not be read (`stillnessReadFailures`) or because the
+    // camera delivered no frame (`mediaGateRefusals`) - was the one session it
+    // could not be obtained from. The diagnostic was written, counted and
+    // tested, and then could not leave the phone.
+    //
+    // Taken BEFORE `stop()`, because `stop()` is what ends the camera session
+    // the report describes.
+    const sweep = sweepRef.current;
+    if (sweep) {
+      try {
+        setAlignmentReport(`data:application/json;charset=utf-8,${encodeURIComponent(sweep.alignmentReport())}`);
+      } catch { /* a report we cannot build must not block the way out */ }
+    }
     sweepRef.current?.stop(); sweepRef.current = null;
     if (tickTimer.current != null) { clearInterval(tickTimer.current); tickTimer.current = null; }
     setCapturing(false); setOpeningCamera(false);
@@ -575,10 +592,21 @@ export function HorizonSheet({ params, onClose, onBusyChange, guided = false, on
           {manualOverhead && <p className="photosphere-detail">You captured overhead by hand. Check that this part of the horizon matches what’s directly above the telescope.</p>}
           {traceUncertain > 0 && <p className="photosphere-error" role="status">{traceUncertain} directions could not be measured reliably. They’re marked blocked up to 90° until you correct them. Rescan in daylight or draw their height by hand.</p>}
           {panorama && <a className="photosphere-download" href={panorama} download="astrodeck-surroundings.png">Download panorama</a>}
-          {alignmentReport && <details className="photosphere-detail"><summary>Help diagnose a scrambled image</summary>
+        </Card>
+      )}
+
+      {/* Its own card, not a corner of the trace card (issue #66): a scan that
+          captured nothing produces no trace, and that is exactly the scan whose
+          report someone needs. The summary says what it is for in both cases,
+          because on a scan that captured nothing "a scrambled image" describes
+          nothing the user saw. */}
+      {alignmentReport && !capturing && (
+        <Card data-testid="photosphere-report-card">
+          <details className="photosphere-detail" data-testid="photosphere-report">
+            <summary>{trace ? 'Help diagnose a scrambled image' : 'Help diagnose a scan that captured nothing'}</summary>
             <p>Save a small set of camera pictures and their recorded angles. This stays on your phone unless you choose to share the file. It includes photos of your surroundings.</p>
             <a className="photosphere-download" href={alignmentReport} download="astrodeck-scan-alignment.json">Download alignment report</a>
-          </details>}
+          </details>
         </Card>
       )}
 
