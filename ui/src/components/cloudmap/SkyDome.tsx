@@ -23,6 +23,7 @@ import {
   projectAltAz,
   type DomeGrid,
 } from "../../lib/domeProjection";
+import { drawDomeScope } from "../../lib/domeScope";
 
 /** Everything a second renderer needs to put a mark on the SAME sphere this
  *  canvas painted: the box it painted into, the horizon centre and radius it
@@ -347,6 +348,12 @@ export const SkyDome = memo(function SkyDome({
     // ---- where the scope is actually looking. Drawn last: it is the one mark
     // that must never be hidden behind a cloud cell.
     if (pointing && pointing.alt >= 0) {
+      // The scope itself, in the middle of the dome, BEFORE the cross (issue
+      // #67). The cross is the precise answer and has to stay on top of
+      // everything; the model is the readable one, and it is drawn under the
+      // reticle for the same reason a map's symbol sits under its label.
+      drawDomeScope(ctx, pointing.alt, pointing.az, cx, cy, r,
+                    DOME_TILT_DEG, yawDeg);
       const p = projectAltAz(pointing.alt, pointing.az, cx, cy, r, DOME_TILT_DEG, yawDeg);
       const cross = () => {
         ctx.beginPath(); ctx.arc(p.x, p.y, 7, 0, Math.PI * 2); ctx.stroke();
