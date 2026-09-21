@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import math
 import time
 from pathlib import Path
 from statistics import median
@@ -397,10 +398,31 @@ def _frame_altitude(target, site: dict, when: float) -> float | None:
     (PRO-10 §1.6 Task B)."""
     try:
         from ..catalog import altaz
+        # AN UNSET SITE IS A GAP (issue #121). Both callers below document
+        # `None` as covering "an unset site" and it did not: `Site.latitude`
+        # and `Site.longitude` default to 0.0 with `is_default` True, so
+        # nothing raised and `altaz` returned a confident altitude for the Gulf
+        # of Guinea. The floor gate then set targets aside for the night, and
+        # the resume arm refused to slew, on a sky nobody observed - which is
+        # the outcome each of those comments was written to prevent.
+        if site.get("is_default"):
+            return None
         lat = site["latitude"]
         lon = site["longitude"]
+        # AND A BAD COORDINATE, which the docstring has always claimed and did
+        # not have either (found while fixing #121). `altaz` does not raise on
+        # NaN - it clamps, and a NaN ra/dec came back as 90.0, i.e. the zenith.
+        # For an altitude FLOOR that is the fail-open direction: a target with
+        # unusable coordinates reads as comfortably above any floor, so the gate
+        # that exists to set it aside never fires and the resume arm slews to it.
+        if not all(math.isfinite(float(v))
+                   for v in (lat, lon, target.ra_hours, target.dec_deg)):
+            return None
         alt, _ = altaz(target.ra_hours, target.dec_deg, lat, lon, when)
-        return round(float(alt), 2)
+        alt = float(alt)
+        if not math.isfinite(alt):
+            return None
+        return round(alt, 2)
     except Exception:
         return None
 

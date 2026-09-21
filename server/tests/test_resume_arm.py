@@ -21,6 +21,23 @@ async def sim_hub(tmp_path, monkeypatch):
     monkeypatch.setattr(_safety, "solar_avoidance", False)
     h = Hub()
     await h.connect_sim()
+    # A CONFIGURED SITE (issue #121). These tests ask the sky questions - three
+    # of them pick a clock time at which a target sits at a chosen altitude and
+    # then assert what the resume ladder does about it. They were asking those
+    # questions of the DEFAULT site, 0N 0E, because nothing here had ever set
+    # one; it worked only because `_frame_altitude` answered from 0,0 as
+    # confidently as from anywhere else.
+    #
+    # It no longer does, and that is the fix: an unset site is "nobody can say",
+    # which is what both of its callers always documented. So a floor refusal
+    # computed against a default site is not a refusal at all, and two of those
+    # three cases would have gone on passing for the wrong reason.
+    #
+    # 40N 74W is an arbitrary real place. Patched as a property so monkeypatch
+    # puts it back, rather than writing through the shared config store.
+    real = dict(h.site, name="Test", latitude=40.0, longitude=-74.0,
+                is_default=False)
+    monkeypatch.setattr(type(h), "site", property(lambda self: real))
     yield h
     await h.disconnect_all()
 
