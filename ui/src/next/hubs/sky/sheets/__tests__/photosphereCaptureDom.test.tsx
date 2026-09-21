@@ -1135,6 +1135,67 @@ await test('The setting the lens cue names is on screen, in the words the cue us
     w.location.hash = previousHash;
   }
 });
+await test('A scan that captured nothing can still hand over its alignment report (#66)', async () => {
+  // `alignmentReport()` exists so that a scan which captured nothing is still
+  // diagnosable - it is why `stillnessReadFailures` and `mediaGateRefusals` are
+  // in its envelope at all. It was produced only in `stopAndTrace`, which
+  // returns early on `!sweep.frameCount`, and rendered only inside the card a
+  // trace opens. So the one session those fields exist to explain was the one
+  // session the report could not be obtained from: written, counted, tested,
+  // and unable to leave the phone.
+  //
+  // This drives the real sheet: open the camera, start a scan, capture nothing
+  // (no textured camera here, so no frame is ever accepted), and leave by the
+  // control a stuck user actually reaches for.
+  // Mutation: drop the `setAlignmentReport` from `cancelCapture`. Observed red:
+  // "a scan that captured nothing offered no alignment report".
+  // Mutation: re-add `&& trace` to the report card's condition. Observed red
+  // the same way - this session produces no trace, which is the whole point.
+  // Mutation: fix the summary at "Help diagnose a scrambled image". Observed
+  // red: "the report is offered under ... which describes a scan that produced
+  // a picture".
+  const previousHash = w.location.hash;
+  w.location.hash = '#/classic/tonight?experience=guided';
+  const root = createRoot(document.getElementById('root')!);
+  try {
+    await act(async () => root.render(createElement(HorizonSheet,
+      { depth: 0, params: { site: 'current' }, guided: true })));
+    await settle();
+    await click(byTest('capture-photosphere'));
+    await click(byTest('start-horizon-scan'));
+    await tick();
+    assert.ok(!document.querySelector('[data-testid="photosphere-report"]'),
+      'the report is offered mid-scan, before there is a finished session to describe');
+    const cancel = [...document.querySelectorAll('button')]
+      .find(b => b.textContent?.includes('Cancel scan'));
+    assert.ok(cancel, 'the scan has no cancel control, so there is no way out to test');
+    await click(cancel);
+    const link = document.querySelector<HTMLAnchorElement>(
+      '[data-testid="photosphere-report"] a.photosphere-download');
+    assert.ok(link, 'a scan that captured nothing offered no alignment report');
+    assert.equal(link.getAttribute('download'), 'astrodeck-scan-alignment.json');
+    assert.ok(link.getAttribute('href')?.startsWith('data:application/json'),
+      `the report link is not a local data URL: ${link.getAttribute('href')?.slice(0, 40)}`);
+    // The content is the envelope, not a placeholder, and it carries the two
+    // counters this session is the reason for.
+    const report = JSON.parse(decodeURIComponent(
+      link.getAttribute('href')!.replace(/^data:application\/json;charset=utf-8,/, '')));
+    for (const key of ['stillnessReadFailures', 'mediaGateRefusals']) {
+      assert.ok(key in report,
+        `the report a zero-capture scan hands over does not carry ${key}, which is `
+        + 'the field that explains a zero-capture scan');
+    }
+    // And the summary says what it is for. On a scan with no trace the user saw
+    // no image at all, so "a scrambled image" names nothing they can recognise.
+    const summary = document.querySelector('[data-testid="photosphere-report"] summary');
+    assert.match(summary?.textContent ?? '', /captured nothing/,
+      `the report is offered under "${summary?.textContent}", which describes a `
+      + 'scan that produced a picture');
+  } finally {
+    await act(async () => root.unmount());
+    w.location.hash = previousHash;
+  }
+});
 await test('The mocks are the ordinary ones again', async () => {
   // Must stay last. This pins issue #51: "A grant arriving after
   // cancellation is released" used to replace getUserMedia with a mock that
