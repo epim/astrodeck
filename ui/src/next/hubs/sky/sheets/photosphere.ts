@@ -482,6 +482,23 @@ const AZ_SLOP_ROWS = 6;
  *  neighbours do. A departure that reaches the ground still needs no height. */
 const AZ_PERSIST_ROWS = 6;
 
+/** How much of a candidate's OWN drop the rows below it may go on repeating
+ *  before it reads as a sky still darkening rather than as a surface, and how
+ *  large that drop has to be for the question to mean anything at all.
+ *
+ *  Issue #102. The mosaic rule compares departures across azimuth, so a steep
+ *  glow confined to a few bins is a departure those bins have and their
+ *  neighbours do not, and it gets promoted. Extent in azimuth cannot separate
+ *  the two, because a wall is also confined to a few bins. Vertical shape can:
+ *  past a wall's edge the rows hold their own level, and a gradient has nothing
+ *  under it at all - it simply goes on falling at the rate that made it look
+ *  like a departure in the first place.
+ *
+ *  A ratio, so a per-column exposure cancels as it does in `departure`. Half is
+ *  where the two shapes are furthest apart rather than where a case sits: a
+ *  surface carries none of the drop and a gradient carries all of it. */
+const AZ_RAMP_SHARE = 0.5, AZ_RAMP_FLOOR = 0.02;
+
 /** The tracer's input, whatever shape it arrived in. A plain `number[]` is a
  *  luminance-only column with no sub-samples: the frame-fold fallback and the
  *  older tests. */
@@ -888,6 +905,39 @@ function applyAzimuthSupport(
     if (!Number.isFinite(mine) || !Number.isFinite(mosaic)) return false;
     return (darkOnly ? mosaic - mine : Math.abs(mine - mosaic)) > AZ_DEPARTURE;
   };
+  /** Does this candidate have a SURFACE under it, or is it a sky that simply
+   *  goes on getting darker? Issue #102's discriminator, and the reason it is
+   *  vertical rather than azimuthal is in `AZ_RAMP_SHARE`.
+   *
+   *  `carry` is what the body does across one window - the second window under
+   *  `from` over the first - and `drop` is the departure that made this a
+   *  candidate. A surface carries none of its drop onward and reads near zero;
+   *  a gradient carries all of it, because the departure IS that same fall
+   *  measured one window earlier.
+   *
+   *  Dividing keeps the sign rather than taking the magnitude, so a body moving
+   *  the OTHER way from the departure that found it cannot be refused here. No
+   *  case pins that: a body that turns back up has left the run before the two
+   *  windows this needs, so it returns unmeasurable first, and `Math.abs` here
+   *  passes the whole suite. It is kept because it can only refuse FEWER
+   *  candidates than the magnitude would, and the wrong half to refuse is the
+   *  one that costs sky. See the note at the foot of `photosphereGradient`.
+   *
+   *  Unmeasurable is not ramping. A run without two full windows of its own
+   *  below `from` is left to `standsOut` alone: reading past `end` would read
+   *  the sky under a floating obstruction, and refusing everything short would
+   *  blind the rule to every wall whose surface runs off the bottom of the
+   *  frame. */
+  const keepsRamping = (column: SkyColumn, run: ColumnRun): boolean => {
+    if (run.from + 2 * SKY_WINDOW - 1 > run.end) return false;
+    const first = middle(column.lum.slice(run.from, run.from + SKY_WINDOW));
+    const second = middle(column.lum.slice(run.from + SKY_WINDOW,
+                                           run.from + 2 * SKY_WINDOW));
+    const drop = 1 - departure(column, run);
+    if (!(first > 0) || !Number.isFinite(second) || !Number.isFinite(drop)) return false;
+    if (Math.abs(drop) < AZ_RAMP_FLOOR) return false;
+    return (1 - second / first) / drop >= AZ_RAMP_SHARE;
+  };
   /** Does a departure at this row stand on its own ANYWHERE within a bin of
    *  here - reaching the ground, or `PERSIST_ROWS` tall? A structure does: a
    *  roof compressed to nine rows in one bin is twenty rows tall, or on the
@@ -923,6 +973,7 @@ function applyAzimuthSupport(
       // a marking on the chart, and azimuth continuity says nothing about which
       // - the chart yard's own stripes run right around the compass.
       if (!run.grounded && run.end - run.top + 1 < AZ_PERSIST_ROWS) continue;
+      if (keepsRamping(c.column, run)) continue;
       if (!standsOut(c.column, run, !run.grounded) || !anchored(index, run)) continue;
       alts[index] = alt;
     }
