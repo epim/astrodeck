@@ -40,3 +40,5 @@ ui/dist-lib/
 .probe/
 tools/photosphere_sim/cache/
 tools/photosphere_sim/node_modules/
+ui/tools/domeshot/bundle.js
+ui/tools/domeshot/dome.png
