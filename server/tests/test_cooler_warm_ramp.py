@@ -260,12 +260,20 @@ async def test_the_lead_check_still_fires_on_a_tec_that_has_actually_stopped(
     its boundary with the same camera, rather than only at the two impossible
     extremes.
 
+    STARTED WARM, and that is the change issue #17 made to this case. It used to
+    start at -10 °C, where a sensor that stops rising is not at ambient at all -
+    it is a TEC that never took control, and ending the ramp there switched the
+    cooler off onto a sensor thirty degrees below the room. This case is about
+    the lead check doing its legitimate job, which is finding the REAL ambient
+    under an assumed one, so it starts where that is what is actually happening:
+    13.5 °C under an assumed 20 °C, which is the 2026-09-12 log's own good case.
+
     MUTATION: `WARM_MAX_LEAD_C = 30.0`. Observed: this ramp runs to the safety
     ceiling instead of stopping, and the note never says "already at ambient".
     """
     hub, cam = hub_with_camera
     cam._follow_fraction = 0.1
-    cam._temp = -10.0
+    cam._temp = 13.5
     await hub.warm_camera()
     await _drain(hub)
     setpoints = [c[1] for c in cam.calls if c[0]]
@@ -279,17 +287,65 @@ async def test_the_lead_check_still_fires_on_a_tec_that_has_actually_stopped(
 async def test_ramp_finishes_when_the_sensor_stops_following(hub_with_camera):
     """A sensor that stops rising with the setpoint means the TEC has nothing
     left to do — i.e. we are AT the real ambient, which the assumed 20 °C ceiling
-    would otherwise sail past. Switching off there is thermally a no-op."""
+    would otherwise sail past. Switching off there is thermally a no-op.
+
+    PINNED AT 13.5 °C, not at -10. This case used to pin the sensor at -10 and
+    assert that the ramp called that "already at ambient" and switched the
+    cooler off - which is issue #17's defect, asserted as correct behaviour.
+    That is why the bug shipped and why the 2026-09-12 log shows it happening
+    for real: a test was holding it in place. The inference in the docstring is
+    sound only when the sensor is somewhere a room could be, and this case now
+    tests it there.
+    """
     hub, cam = hub_with_camera
-    cam._follows = False            # sensor pinned at -10 whatever we command
+    cam._follows = False            # sensor pinned wherever it starts
+    cam._temp = 13.5                # a plausible room, under the assumed 20
     await hub.warm_camera()
     await _drain(hub)
     setpoints = [c[1] for c in cam.calls if c[0]]
     # WARM_MAX_LEAD_C is 3.0 and we require two consecutive breaches, so the ramp
     # stops a little past a 3 °C lead — nowhere near the 20 °C ceiling.
-    assert setpoints[-1] < -5.0, setpoints
+    assert setpoints[-1] < cooling.WARM_FALLBACK_AMBIENT_C, setpoints
     assert cam.calls[-1] == (False, None)
     assert "already at ambient" in (hub._warm_state or {}).get("note", "")
+
+
+async def test_a_tec_that_never_warms_the_sensor_is_not_at_ambient(
+        hub_with_camera, bus_lines):
+    """ISSUE #17, from the 2026-09-12 night log (minutes:seconds from the
+    ramp's start, W):
+
+        W+0:00  ramping the setpoint -10.3 -> 20.0 C at 2 C/min, about 15 min
+        W+2:03  warm finished - sensor stopped following the setpoint at
+                -10.5 C - already at ambient; cooler off
+
+    Two minutes into a planned fifteen, with the sensor thirty degrees below the
+    target, the ramp declared ambient and switched the TEC off. That is the
+    5 °C/min plunge this whole routine exists to prevent, performed by the
+    routine and logged as a success.
+
+    The sensor is pinned, so it never rises: a dead TEC, which is what the log
+    shows. The ramp must not claim ambient and must not switch the cooler off.
+
+    MUTATION: drop the `ambient_c - temp > cooling.WARM_NOT_AMBIENT_C` test.
+    Observed: the note reads "already at ambient" and the last cooler call is
+    `(False, None)` - the exact log line above, reproduced.
+    """
+    hub, cam = hub_with_camera
+    cam._follows = False
+    cam._temp = -10.3               # the log's own starting temperature
+    await hub.warm_camera()
+    await _drain(hub)
+    note = (hub._warm_state or {}).get("note", "")
+    assert "already at ambient" not in note, (
+        f"a sensor at {cam._temp} C was called ambient: {note!r}")
+    assert "could not warm the sensor" in note, note
+    assert cam.calls[-1][0] is True, (
+        f"the cooler was switched off onto a sensor at {cam._temp} C: "
+        f"{cam.calls[-3:]}")
+    assert any("leaving the cooler ENGAGED" in m for _l, m, _s in bus_lines), (
+        "a TEC that will not follow a ramp is a hardware fault and has to be "
+        f"loud: {[(l, m[:60]) for l, m, _ in bus_lines if 'warm' in m.lower()][-3:]}")
 
 
 async def test_measured_ambient_is_used_and_labelled(monkeypatch):

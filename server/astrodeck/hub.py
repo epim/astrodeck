@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import math
 import os
 import shutil
 import threading
@@ -4688,6 +4689,8 @@ class Hub:
         planned_s = cooling.warm_duration_s(start_c, ambient_c, rate)
         budget_s = min(3600.0, max(600.0, planned_s * 3.0))
         started = time.monotonic()
+        stalled_cold = False
+        stall_best, stall_checks = -math.inf, 0
         try:
             while True:
                 await asyncio.sleep(cooling.WARM_STEP_S)
@@ -4718,6 +4721,42 @@ class Hub:
                 if temp is not None and (setpoint - temp) > cooling.WARM_MAX_LEAD_C:
                     lagging += 1
                     if lagging >= cooling.WARM_LEAD_CHECKS:
+                        # A SENSOR THIS FAR BELOW AMBIENT IS NOT AT AMBIENT
+                        # (issue #17). The reasoning above - it stopped rising,
+                        # so the TEC has run out of work - holds only when we
+                        # have climbed PAST the real ambient. A TEC that never
+                        # took control at all looks identical to it, and on
+                        # 2026-09-12 that is what happened: the ramp began at
+                        # −10.3 °C, and two minutes into a planned fifteen it
+                        # called −10.5 °C "already at ambient" and switched the
+                        # cooler off thirty degrees short. The plunge this
+                        # routine exists to prevent, performed by the routine
+                        # and logged as a success.
+                        if ambient_c - temp > cooling.WARM_NOT_AMBIENT_C:
+                            # HOLD, do not end - but only while the sensor is
+                            # still RISING. A slow TEC and a dead one both
+                            # arrive here and a verdict at this instant cannot
+                            # tell them apart; progress can. Holding keeps the
+                            # setpoint where it is, never opening the gap
+                            # wider, and a TEC that is merely behind rejoins
+                            # the schedule. One that has stopped moving for
+                            # `WARM_STALL_CHECKS` polls has stopped.
+                            if temp > stall_best + cooling.WARM_STALL_PROGRESS_C:
+                                stall_best = temp
+                                stall_checks = 0
+                            else:
+                                stall_checks += 1
+                                if stall_checks >= cooling.WARM_STALL_CHECKS:
+                                    stalled_cold = True
+                                    note = (
+                                        f"the ramp could not warm the sensor: "
+                                        f"{temp:.1f} °C and not rising, "
+                                        f"{ambient_c - temp:.0f} °C below the "
+                                        f"{ambient_c:.0f} °C it was being taken "
+                                        f"to")
+                                    break
+                            lagging = cooling.WARM_LEAD_CHECKS
+                            continue
                         note = (f"sensor stopped following the setpoint at "
                                 f"{temp:.1f} °C — already at ambient")
                         break
@@ -4770,9 +4809,35 @@ class Hub:
                     # it: keep polling — the lead check above ends this within
                     # two more steps, and the budget backstops that.
                 if elapsed > budget_s:
+                    # OUT OF TIME WITH THE SENSOR STILL COLD IS THE STALL
+                    # (issue #17). Switching off here is the plunge the routine
+                    # exists to prevent, so the two endings are told apart by
+                    # where the sensor actually is rather than by why we
+                    # stopped waiting for it.
+                    if temp is not None and ambient_c - temp > cooling.WARM_NOT_AMBIENT_C:
+                        stalled_cold = True
+                        note = (f"the ramp could not warm the sensor: "
+                                f"{temp:.1f} °C after {elapsed / 60.0:.0f} min, "
+                                f"{ambient_c - temp:.0f} °C below the "
+                                f"{ambient_c:.0f} °C it was being taken to")
+                        break
                     note = "warm ramp ran out of time — switching the cooler off"
                     bus.log("warning", note, "camera")
                     break
+            # AND IF IT NEVER FOLLOWED, DO NOT ADD THE PLUNGE (issue #17).
+            # Every exit below this point assumes the sensor is at ambient, so
+            # switching off is thermally free. When the ramp could not move the
+            # sensor at all that assumption is false, and switching off is the
+            # one action that turns a hardware fault into a wet sensor. The TEC
+            # is left engaged and the failure is raised as an ERROR rather than
+            # noted: a cooler that will not follow a ramp needs a person, and
+            # leaving it on silently would be the other half of issue #35.
+            if stalled_cold:
+                bus.log("error",
+                        f"warm ramp: {note} — leaving the cooler ENGAGED rather "
+                        f"than switching it off onto a cold sensor. Check the "
+                        f"camera's cooler before the next run", "camera")
+                return
             # Only NOW does the TEC actually stop. Everything above exists so
             # that this line is a no-op thermally instead of a 5 °C/min plunge
             # into the room.
