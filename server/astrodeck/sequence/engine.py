@@ -342,6 +342,22 @@ MISSED_GRACE_S = 300.0
 _MAX_PENDING_THUMBS = 4
 
 
+#: How long run-start waits for a camera-owning operation that was already in
+#: flight when the run began (issue #44).
+#:
+#: Measured on the rig, captures/logs/2026-09-17.jsonl: a solve started at
+#: 03:17:56 at the park position, the next run started at 03:18:10, and that
+#: solve did not let go until its own exposure timeout at 03:19:17 - 81 seconds.
+#: 150 gives that a margin and still answers the operator inside three minutes.
+#:
+#: Waiting and not cancelling: the thing holding the lane is a real operation
+#: with its own bound, usually the previous run's teardown solve, and cancelling
+#: someone else's camera work from a starting run is a bigger claim than this
+#: needs to make. If it outlives the wait, the run refuses rather than pushing
+#: past it.
+_CAMERA_LANE_WAIT_S = 150.0
+
+
 def _timeout_abort(what: str, timeout_s: float, note: str = "") -> SafetyAbort:
     """Log and BUILD (never raise) the abort a bound's expiry produces.
 
@@ -1420,6 +1436,61 @@ class SequenceEngine:
 
     # ------------------------------------------------------------------- run
 
+    async def _await_camera_lane(self) -> None:
+        """Do not start a run on top of somebody else's camera operation (#44).
+
+        2026-09-18, captures/logs/2026-09-17.jsonl. A plate solve began at
+        03:17:56 at the park position, after the previous run completed. The
+        next run started at 03:18:10, fourteen seconds later, and every
+        camera-owning step of it lost to that solve in turn:
+
+            03:18:48  centering: plate solve failed (camera is busy (plate
+                      solve); plate solve refused); using raw GoTo
+            03:18:49  initial autofocus error: camera is busy (plate solve);
+                      autofocus refused
+            03:18:52  sequence failed: camera is busy (plate solve); capture
+                      light refused
+
+        The centring degraded, the autofocus was skipped, and the THIRD refusal
+        crashed the night. Each of those three steps reported the busy lane
+        correctly; what nobody did was ask before starting.
+
+        Two starters racing is what produced it that night, and that is an
+        operator mistake recorded elsewhere. It is not the only way in: a UI
+        tap, an auto-resume, or a script starting a run while the previous
+        teardown's solve is still running reproduces it exactly.
+
+        So: wait for the lane, once, before the run touches a camera. A run that
+        waits ninety seconds and then works is strictly better than one that
+        starts on time and dies three steps in - and a run that cannot have the
+        camera at all refuses HERE, with the holder named, instead of reporting
+        "capture light refused" two minutes later.
+        """
+        lock = getattr(self.hub, "_capture_lock", None)
+        if lock is None or not lock.locked():
+            return
+        holder = getattr(self.hub, "_capture_busy", None) or "another exposure"
+        bus.log("warning",
+                f"the camera is busy ({holder}) as this run starts - waiting up "
+                f"to {_CAMERA_LANE_WAIT_S:.0f}s for it to finish before the "
+                f"first slew", "sequence")
+        self._set_state(detail=f"waiting for {holder}")
+        deadline = time.monotonic() + _CAMERA_LANE_WAIT_S
+        while lock.locked():
+            if time.monotonic() >= deadline:
+                # The same wording `_timeout_abort` gives every other bound, and
+                # the same teardown: SafetyAbort parks and warms rather than
+                # leaving a half-started run behind.
+                raise _timeout_abort(
+                    f"waiting for the camera ({holder}) before starting",
+                    _CAMERA_LANE_WAIT_S,
+                    "the run refused to start rather than lose its centring, "
+                    "its focus and its first frame to it")
+            await asyncio.sleep(0.25)
+        waited = _CAMERA_LANE_WAIT_S - max(0.0, deadline - time.monotonic())
+        bus.log("info",
+                f"the camera is free after {waited:.0f}s - starting", "sequence")
+
     async def _run(self) -> None:
         plan = self.plan
         assert plan is not None
@@ -1430,6 +1501,7 @@ class SequenceEngine:
             # shutter time, not signal on the target.
             bus.log("info", f"sequence '{plan.name}' started: {plan.total_frames()} frames, "
                             f"{plan.light_seconds() / 60:.0f} min integration", "sequence")
+            await self._await_camera_lane()
             self._warn_if_the_run_has_no_temperature(plan)
             self._geometry_seen = set()
             self._geometry_groups, geometry_note = await capture_geometry.inventory(timeout=3.0)
