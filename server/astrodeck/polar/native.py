@@ -41,6 +41,7 @@ from typing import Any
 from ..devices.base import DeviceError
 from ..events import bus
 from ..sequence.schedule import hour_angle_h
+from ..site_gate import site_is_set
 from .session import wait_if_paused
 
 # --- guarded native import -------------------------------------------------
@@ -269,11 +270,17 @@ async def run_native(session: Any, hub: Any) -> None:
 # ------------------------------------------------------------------- internals
 
 async def _drive(session: Any, hub: Any) -> None:
+    # THE SITE IS READ FIRST, before any device is even resolved (#24). It used
+    # to be read after the telescope, the camera and the solver, which meant a
+    # rig with no location was told it had no camera before it was told it had
+    # no site - and on a rig that HAS a camera, the refusal arrived with the
+    # capture path already engaged. Nothing here needs a device to know the
+    # answer, so nothing should be touched to find it out.
+    site = _site_dict(hub)
     tel = hub.require("telescope")
     hub.require("camera")  # fail fast with a clear error if no camera
     from .. import providers as _providers
     solver = _providers.pick_solver(hub)
-    site = _site_dict(hub)
 
     # Refuse BEFORE any slew when the scope is parked at / near a pole. Checked
     # against the mount's own claim, which is cheap and catches the common case;
@@ -1191,6 +1198,27 @@ def _check_alive(hub: Any, epoch: int) -> None:
 
 
 def _site_dict(hub: Any) -> dict:
+    """The site the whole polar routine computes from, or a refusal (#24).
+
+    This is the one gate for every latitude and longitude the native TPPA path
+    reads. `_drive` calls it before the first slew, and `run_native` turns a
+    DeviceError into a terminal `polar{state:"error"}` carrying this message, so
+    an unconfigured rig is told what is wrong instead of being walked through a
+    twenty-four degree rotation for nothing.
+
+    Polar alignment is the worst place in this tree for the 0,0 default. Its
+    whole output is an instruction to a human at the mount - turn the azimuth
+    knob this way, this far - and the operator has no way to tell an answer
+    about their own sky from one about the Gulf of Guinea. Every other
+    site-reading function on this path (`_refuse_low_arc`, `_ra_step_hours`,
+    `_reject_implausible_fit`, `_refuse_if_no_longer_measurable`,
+    `_log_measurement`) is reachable only through `_drive`, which is why they
+    are guarded here rather than five more times.
+    """
+    if not site_is_set(hub.site):
+        raise DeviceError(
+            "no observing site is set, so polar alignment cannot be computed: "
+            "save the site's location in settings first")
     s = hub.site
     return {"latitude_deg": s["latitude"], "longitude_deg": s["longitude"],
             "elevation_m": s.get("elevation_m", 0.0)}
