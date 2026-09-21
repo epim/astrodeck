@@ -94,6 +94,22 @@ def test_the_containment_backstop_says_what_it_compared(tmp_path, bus_lines):
         "the log does not say the id was fine, which is the thing a reader of "
         f"a bare KeyError gets wrong: {said}")
 
+    # AND on the exception, as a PEP 678 note. The bus log reaches the run log;
+    # a pytest traceback shows neither that nor the frame's locals, so the first
+    # reproduction WITH the log in place still printed only `KeyError: <hex>`
+    # and told the next reader nothing. Notes are printed by the traceback
+    # formatter and are not part of `args`.
+    #
+    # MUTATION: delete the `add_note` call. Observed: the bus assertions above
+    # still pass and this one fails, which is the gap that reproduction found.
+    notes = getattr(excinfo.value, "__notes__", [])
+    assert notes, (
+        "the refusal carries no note, so a traceback shows only the id - the "
+        "one thing that was not the problem")
+    note = "; ".join(notes)
+    assert str(outside.resolve()) in note and str(base.resolve()) in note, (
+        f"the note does not name both paths it compared: {note}")
+
 
 @pytest.mark.parametrize("hostile", HOSTILE_FILTERS)
 def test_calibration_bucket_id_cannot_steer_a_path(hostile):

@@ -275,7 +275,19 @@ def safe_id_path(base: Path, ident: str, suffix: str = ".json") -> Path:
                     "persist")
         except Exception:      # noqa: BLE001 - never turn a refusal into a crash
             pass
-        raise KeyError(ident)
+        err = KeyError(ident)
+        # And on the EXCEPTION as a note, not in its args. `bus.log` reaches the
+        # run log; a pytest traceback shows neither that nor the local
+        # variables, so the first reproduction with the log in place still
+        # printed only `KeyError: <hex>`. PEP 678 notes are printed by the
+        # traceback formatter and are not part of `args`, so a route that puts
+        # `e.args[0]` in a 404 body is unaffected.
+        err.add_note(
+            f"safe_id_path: {ident!r} resolved to {resolved} (in "
+            f"{resolved.parent}) while the base {base} resolved to {parent}. "
+            f"The id is a plain filename, so the two resolutions disagreed - "
+            f"see issue #113.")
+        raise err
     return resolved
 
 
