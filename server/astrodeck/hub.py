@@ -2862,10 +2862,16 @@ class Hub:
                 pass
             if lat is not None and lon is not None:
                 try:
-                    alt, _az = coords.altaz(best_ra, best_dec, lat, lon,
-                                            frame.timestamp)
+                    alt, az = coords.altaz(best_ra, best_dec, lat, lon,
+                                           frame.timestamp)
                     if alt > 0:
                         meta.obj_alt_deg = alt
+                        # The azimuth was computed here and thrown away
+                        # (issue #23). Altitude says how high the field was;
+                        # azimuth says which way it faced, and that is what
+                        # separates a tree from a cloud bank when the star
+                        # count drops - both of them are "low".
+                        meta.obj_az_deg = az
                         meta.airmass = coords.airmass(alt)
                 except Exception:
                     pass

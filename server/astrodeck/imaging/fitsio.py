@@ -25,6 +25,11 @@ class FrameMeta:
     site_lon_deg: float | None = None       # +E
     site_elev_m: float | None = None
     obj_alt_deg: float | None = None
+    #: Field AZIMUTH at exposure, degrees east of north (issue #23). Computed
+    #: alongside the altitude and then discarded until now, which left every
+    #: frame saying how high the field was and nothing about which way it faced.
+    #: Altitude alone cannot separate a tree from a cloud bank: both are "low".
+    obj_az_deg: float | None = None
     airmass: float | None = None
     equinox: float = 2000.0
     radesys: str = "ICRS"
@@ -126,6 +131,13 @@ def save_fits(frame: CameraFrame, path: Path, *, target: str = "",
     # --- pointing geometry ---
     if _finite(m.obj_alt_deg):
         hdr["OBJCTALT"] = (float(m.obj_alt_deg), "Altitude of target (deg)")
+        # CENTALT/CENTAZ beside it (issue #23). Same numbers, the names NINA
+        # writes and most downstream tooling greps for; OBJCTALT stays because
+        # this repo's own readers already use it. A duplicated card is cheaper
+        # than an analysis that cannot find the altitude it needs.
+        hdr["CENTALT"] = (float(m.obj_alt_deg), "Altitude of field centre (deg)")
+    if _finite(m.obj_az_deg):
+        hdr["CENTAZ"] = (float(m.obj_az_deg), "Azimuth of field centre (deg E of N)")
     if _finite(m.airmass):
         hdr["AIRMASS"] = (float(m.airmass), "Airmass (Kasten-Young)")
     if m.objctra:
