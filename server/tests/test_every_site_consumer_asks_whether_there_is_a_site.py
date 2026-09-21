@@ -111,28 +111,28 @@ def _scan() -> dict[str, list[int]]:
 # are the dangerous half; the ones that only feed a display already have an
 # empty state a wrong number is no worse than.
 UNGUARDED: dict[str, str] = {
-    # --- A HUMAN ACTS ON THE NUMBER. The worst kind, because the output is an
-    # instruction and the operator has no way to tell 0,0 from their own sky.
+    # --- POLAR ALIGNMENT, guarded upstream rather than five more times.
+    # `_site_dict` refuses at a default site and `_drive` calls it first, before
+    # any device is even resolved, so none of these five is reachable without a
+    # site. They stay listed because the scan is static and cannot know that,
+    # and because a future caller that goes around `_drive` would make each of
+    # them live again. `test_polar_refuses_without_a_site.py` holds the gate.
+    #
+    # Why this path got the guard first: its whole output is an instruction to a
+    # human standing at the mount - turn the azimuth knob this way, this far -
+    # and nothing in that instruction tells the operator it was computed for the
+    # Gulf of Guinea.
     "polar/native.py:_refuse_low_arc":
-        "polar alignment: decides whether the measured arc is high enough to "
-        "trust. At 0,0 the altitudes are someone else's and the refusal fires "
-        "or does not for the wrong reason.",
+        "whether the measured arc is high enough to trust; latitude-dependent.",
     "polar/native.py:_refuse_if_no_longer_measurable":
-        "polar alignment: the target's altitude, used to stop a run that has "
-        "sunk too low. Wrong latitude, wrong altitude, run continues or stops "
-        "on a number about the Gulf of Guinea.",
+        "the target's altitude, used to stop a run that has sunk too low.",
     "polar/native.py:_reject_implausible_fit":
-        "polar alignment: the plausibility bound on the fitted axis error is "
-        "latitude-dependent, so at 0,0 it admits fits it should reject.",
+        "the plausibility bound on the fitted axis error, latitude-dependent.",
     "polar/native.py:_ra_step_hours":
-        "polar alignment: hour angle from longitude, which sets the step "
-        "between measurement points.",
+        "hour angle from longitude, which sets the step between points.",
     "polar/native.py:_log_measurement":
-        "polar alignment: hour angle again, this time into the durable log, so "
-        "a wrong site also poisons the forensics.",
-    "polar/native.py:_site_dict":
-        "polar alignment: assembles the site the whole routine computes from. "
-        "The single place a guard would cover the five above.",
+        "hour angle again, into the durable log, so a wrong site would also "
+        "poison the forensics.",
 
     # --- THE MOUNT MOVES. A wrong pier side or flip point is a cable wrap.
     "hub.py:_compute_meridian":
