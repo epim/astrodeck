@@ -66,6 +66,21 @@ export type CaptureOutcome =
  *  rather than dressed up with a fixture here. */
 export type AlignmentWait = 'no-pose' | 'unsettled' | 'separation';
 
+/** `no-pose` only: which of the two sources was missing (issue #76).
+ *
+ *    `neither`         the sensor placed the frame nowhere - no settled pose
+ *                      AND no tilt. Nothing to work with.
+ *    `below-overhead`  a tilt WAS read, and was refused because this
+ *                      altitude is not in the overhead band. The tilt-only
+ *                      path exists for the zenith alone, so anywhere below
+ *                      85 degrees a tilt is not a licence to place a frame.
+ *
+ *  The distinction is the whole point: `neither` says the sensor stack had
+ *  nothing, and `below-overhead` says it had something the gate declined. A
+ *  log of `no-pose` alone cannot tell a dead stream from a working one being
+ *  turned away, and issue #76's seven missed holds needed exactly that. */
+export type PoseGap = 'neither' | 'below-overhead';
+
 export interface CaptureRecord {
   at: number;
   outcome: CaptureOutcome;
@@ -75,6 +90,9 @@ export interface CaptureRecord {
   adjusted?: boolean;
   /** `alignment-wait` only: which term refused (issue #76). */
   wait?: AlignmentWait;
+  /** `alignment-wait` with `wait: 'no-pose'` only: which source was
+   *  missing. See `PoseGap`. */
+  gap?: PoseGap;
   /** `alignment-wait` with `wait: 'separation'` only: the max-axis degrees
    *  between the settled pose and the pose the frame was worn at - the number
    *  the 1.5 degree gate compared. Absent where nothing was measured. */
@@ -2209,7 +2227,7 @@ export class PhotosphereSweep {
   /** Append one outcome to the diagnostic log. This records; it never decides
    *  anything - every gate below still returns its own `false` on its own
    *  terms, this just names which one fired. */
-  private recordCapture(now: number, outcome: CaptureOutcome, extra?: { cell?: number; basis?: CameraBasis; sensorBasis?: CameraBasis; adjusted?: boolean; wait?: AlignmentWait; separation?: number; anchor?: number }): void {
+  private recordCapture(now: number, outcome: CaptureOutcome, extra?: { cell?: number; basis?: CameraBasis; sensorBasis?: CameraBasis; adjusted?: boolean; wait?: AlignmentWait; separation?: number; anchor?: number; gap?: PoseGap }): void {
     // The exception to "records, never decides", and here deliberately: this is
     // the single point every outcome passes through, so the run of overlap
     // refusals the cue reads cannot miss one. Counting it at the two
@@ -2361,7 +2379,13 @@ export class PhotosphereSweep {
     // the anchor itself rather than on the pose, so a refusal that never formed
     // a pose still says how large the anchor it was carrying was (issue #76).
     const anchor=this.visualAnchor?poseSeparation(this.visualAnchor.raw,this.visualAnchor.aligned):0;
-    if(!manualOverhead && !basis && !(tilt&&overhead)){this.alignmentWait=true;this.recordCapture(now,'alignment-wait',{wait:'no-pose',anchor});return false;}
+    // WHICH SOURCE WAS MISSING, not just that placing the frame failed (#76).
+    // `no-pose` is two different states wearing one name: the sensor gave
+    // nothing at all, or it gave a tilt that this altitude is not entitled to
+    // use. They want different fixes, and the seven holds `chartyard-arc075-60`
+    // misses could not be told apart without this.
+    const gap:PoseGap=tilt?'below-overhead':'neither';
+    if(!manualOverhead && !basis && !(tilt&&overhead)){this.alignmentWait=true;this.recordCapture(now,'alignment-wait',{wait:'no-pose',anchor,gap});return false;}
     // A timestamp does not make a frame taken during motion sharp or account
     // for an entire low-light exposure. Hold still even with frame timestamps.
     const stable=basis?this.poses.forFrame(now,undefined,evidence):this.tilts.forFrame(now,undefined,evidence);

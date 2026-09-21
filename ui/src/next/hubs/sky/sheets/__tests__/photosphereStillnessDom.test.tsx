@@ -773,6 +773,47 @@ await test('Over blank sky the gyro gets a frame past the pose gates that refuse
   sweep.stop();
 });
 
+await test('A no-pose record says WHICH source was missing (issue #76)',async()=>{
+  // The seven holds `chartyard-arc075-60` misses all record `no-pose`, and that
+  // one name covers two different states: the sensor placed the frame nowhere
+  // at all, or it read a tilt that this altitude is not entitled to use (the
+  // tilt-only path exists for the overhead band alone). They want different
+  // fixes and the log could not tell them apart.
+  //
+  // Measured with the field in place, replaying at 27cbc7aa: all 57 `no-pose`
+  // records on that case are `neither`. Not one is `below-overhead`, so the
+  // refusal is the sensor stack having nothing - which rules out the
+  // altitude-band half and is why this instrument was worth adding before any
+  // fix.
+  //
+  // The state below is the same one: a featureless hold with no gyro, where the
+  // strict rule's window is long past and the video yields no continuity.
+  const {sweep,tick,silentFrom}=await approachAndHold();
+  for(let i=0;i<25;i++)tick();
+  assert.equal(clock-silentFrom,2500);
+  flat=true;
+  const before=sweep.captureLog.length;
+  for(let i=0;i<30;i++)tick();
+  const window=sweep.captureLog.slice(before);
+  const none=window.filter(r=>r.wait==='no-pose');
+  // Without this the two assertions below are vacuous, which is exactly the
+  // shape this file keeps catching.
+  assert.ok(none.length>0,
+    `no grab over the blank hold recorded no-pose, so nothing here is graded: `
+    +`{${[...new Set(window.map(r=>`${r.outcome}/${r.wait??'-'}`))]}}`);
+  // Mutation: drop `gap` from the `no-pose` return in `grabFrame`. Observed
+  // red: 'a no-pose record did not say which source was missing'.
+  assert.ok(none.every(r=>r.gap!==undefined),
+    'a no-pose record did not say which source was missing');
+  // Mutation: `const gap:PoseGap='below-overhead';` unconditionally. Observed
+  // red: the set below reads {below-overhead}.
+  assert.deepEqual([...new Set(none.map(r=>r.gap))],['neither'],
+    `a blank hold with no gyro reported a source it did not have: `
+    +`{${[...new Set(none.map(r=>r.gap??'-'))]}}`);
+  flat=false;
+  sweep.stop();
+});
+
 await test('A gyro reporting exact zeros is not a witness, however long it reports them (issue #106)',async()=>{
   // The #63 fixture with one substitution: the stream is `{0, 0, 0}` on every
   // sample instead of a real phone's noise floor. A stuck driver, an emulator
