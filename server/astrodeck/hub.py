@@ -2052,6 +2052,24 @@ class Hub:
         if put is None:
             return
         s = self.site
+        # NOT AT A DEFAULT SITE (issue #24). This writes into the mount's own
+        # firmware, so 0,0 does not merely make the SERVER compute for the Gulf
+        # of Guinea - it makes the MOUNT do it too, independently, for its LST,
+        # its pier-side decision and its internal horizon limit. The user then
+        # sees GOTOs refused or slews to the wrong sky with nothing wrong on
+        # this side to explain it, and the wrong numbers outlive the session
+        # because they are persisted in the hardware.
+        #
+        # A mount that has never been told is in a better state than one that
+        # has been told a lie: it keeps whatever it had, which on a rig that has
+        # been set up by hand is the right answer.
+        from .site_gate import site_is_set
+        if not site_is_set(s):
+            bus.log("info",
+                    "not pushing the observing site to the mount: no site has "
+                    "been saved yet, and writing 0,0 into its firmware would "
+                    "give it a wrong LST and pier side of its own", "config")
+            return
         try:
             await put("sitelatitude", SiteLatitude=s["latitude"])
             await put("sitelongitude", SiteLongitude=s["longitude"])
