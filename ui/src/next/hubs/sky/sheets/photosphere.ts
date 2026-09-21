@@ -366,16 +366,22 @@ export const RE_EXPOSURE_BAND_PCT = 2;
  *  8-bit sky (60 to 481, so it clips long before), but localised near the
  *  horizon it is - the sunward direction at low sun.
  *
- *  What that costs got WORSE with the mosaic, not better, and the figure this
- *  comment used to carry (12 to 16 degrees, measured before the azimuth pass
- *  existed) is stale. Measured now, with the gradient local to five bins of
- *  thirty: +25 per cent per 12 rows publishes 30 degrees where 2b964638
- *  published 0, and +32 and +40 per cent publish 30 against that commit's 12
- *  and 14. The narrow allowance finds the candidate and `AZ_DEPARTURE` does not
- *  refuse it, because a steep glow in a few bins IS a departure those bins have
- *  and their neighbours do not. It is the blocked direction, and it is issue
- *  #102, which names the discriminator as the departure's vertical shape - a
- *  gradient has no surface under it - rather than its extent in azimuth.
+ *  What that costs got WORSE with the mosaic before issue #102 was fixed, and
+ *  worse again than the 12 to 16 degrees this comment carried from before the
+ *  azimuth pass existed: a gradient local to five bins of thirty published 30
+ *  degrees at +25, +32 and +40 per cent per 12 rows, where the column rule
+ *  alone published 0, 13 and 15. The narrow allowance found the candidate and
+ *  `AZ_DEPARTURE` did not refuse it, because a steep glow in a few bins IS a
+ *  departure those bins have and their neighbours do not.
+ *
+ *  `AZ_RAMP_SHARE` closes that, on the discriminator #102 names - the
+ *  departure's vertical shape, because a gradient has no surface under it,
+ *  rather than its extent in azimuth - and those three cases are back to 0, 13
+ *  and 15. What remains is the column rule's own cost at the two steeper
+ *  gradients, 13 and 15 degrees of sky called blocked that is not, which is
+ *  inside the range this comment always quoted and is what the allowance itself
+ *  buys. It is still the blocked direction, so it wastes sky rather than
+ *  trusting cloud, and `photosphereGradient.test.ts` holds the numbers.
  *
  *  Expressed from `RE_EXPOSURE_PCT` since issue #107: this is that fact plus
  *  the whole of the #74 band. */
