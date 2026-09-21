@@ -835,6 +835,84 @@ export function traceSkyCoverage(columns: readonly (number[] | SkyBin)[]): SkyTr
     lumSpread: robustSpread(lumPool),
     blueSpread: robustSpread(bluePool),
   };
+  // A BIN THAT DISAGREES WITH THE POOL WHOLESALE (issue #100). Every column is
+  // seeded from `seed`, the pooled median of the top 26 rows of the WHOLE
+  // mosaic, and keeps using it until it has accepted SKY_WINDOW_MIN rows of its
+  // own sky. A bin whose own sky sits further from that pooled level than
+  // EXPOSURE_TOLERANCE therefore never accepts a row: it reads as one departure
+  // from the top of the frame to the bottom, which reaches the bottom, which
+  // qualifies - and the bin publishes altitude 90, flagged CERTAIN, out of
+  // empty sky. Measured: an arc of five bins of thirty at -34 per cent or at
+  // +40 per cent publishes 90 in all five with `uncertainBins` empty.
+  //
+  // The reference is wrong, not the tolerance. The pooled seed is the right
+  // thing to fall back on when a column has nothing of its own yet, and the
+  // wrong thing to keep using when the column disagrees with it wholesale.
+  //
+  // What separates the two cases is the NEIGHBOURS, which is the same
+  // discriminator the azimuth work uses. An exposure disagreement spans the
+  // frames that were auto-exposed together, so it is an arc of adjacent bins at
+  // one level; a roof over a bin's top rows is local in azimuth and its
+  // neighbours' tops are sky.
+  //
+  // Deliberately confined to bins that are ALREADY BROKEN. A bin whose own top
+  // rows agree with the pool is untouched and seeds exactly as before, so this
+  // cannot move any answer the tracer gets right today - the three recorded
+  // cases score identically before and after. Only the bins that currently
+  // publish a fabricated 90 are decided differently, and they go one of two
+  // ways:
+  //   - its neighbours share its level: an exposure arc. Seed from its own top
+  //     rows and let the walk start from there, which publishes the real
+  //     boundary;
+  //   - they do not: nothing here can tell a lone odd exposure from a roof over
+  //     the zenith, so the bin is UNCERTAIN. That is the honest answer and it
+  //     is what the old behaviour should have been - 90 certain is a fabricated
+  //     measurement, and the cost of the wrong guess in the other direction is
+  //     open sky published over an obstruction.
+  const topOf = (column: SkyColumn): number => {
+    const rows: number[] = [];
+    for (let row = 0; row < 26 && row < column.lum.length; row++) {
+      if (Number.isFinite(column.lum[row])) rows.push(column.lum[row]);
+    }
+    return rows.length >= SKY_WINDOW_MIN ? percentile(rows, .5) : NaN;
+  };
+  const ownLevel = bins.map(bin => (bin.length ? topOf(bin[0]) : NaN));
+  /** Would a column at level `a` accept a sky model sitting at `b`? The same
+   *  sum `columnRuns` applies row by row - `max(exposure * level, SKY_SIGMAS *
+   *  spread)` - so "agrees with the pool" here means exactly "today's seeding
+   *  works for this bin", which is what confines the change below to the bins
+   *  that are already broken. */
+  const accepts = (a: number, b: number): boolean =>
+    Number.isFinite(a) && Number.isFinite(b)
+    && Math.abs(a - b) <= Math.max(EXPOSURE_TOLERANCE * Math.abs(b),
+                                   SKY_SIGMAS * seed.lumSpread);
+  /** Do two bins share a level? The same sum, based on the DIMMER of the two,
+   *  and that asymmetry is deliberate. Basing it on either one in turn lets a
+   *  bright outlier claim agreement it would not grant: at 171 against a
+   *  neighbour's 122, `0.32 * 171` is 55 and the gap is 49, so the outlier
+   *  "agrees" with a neighbour that does not agree with it. Measured - a lone
+   *  bin at +40 per cent seeded itself on that arithmetic and published 0 with
+   *  nothing vouching for it. The dimmer base is the strict reading and it is
+   *  the one that makes the relation symmetric. */
+  const shareLevel = (a: number, b: number): boolean =>
+    Number.isFinite(a) && Number.isFinite(b)
+    && Math.abs(a - b) <= Math.max(EXPOSURE_TOLERANCE * Math.min(Math.abs(a), Math.abs(b)),
+                                   SKY_SIGMAS * seed.lumSpread);
+  /** The seed this bin's columns walk from, and whether it can be trusted at
+   *  all. `null` means neither reference fits and the bin is unmeasurable. */
+  const seedFor = (index: number): SkySeed | null => {
+    const own = ownLevel[index];
+    if (!Number.isFinite(own) || accepts(own, seed.lum)) return seed;  // unchanged
+    const count = bins.length;
+    const sides = [(index + 1) % count, (index - 1 + count) % count];
+    if (!sides.some(at => shareLevel(ownLevel[at], own))) return null;
+    // Its own level, and the POOL's spreads: a bin's own top rows are far too
+    // few to estimate a robust spread from, and the spread is a property of the
+    // sensor and the scene rather than of the exposure this frame happened to
+    // pick. Taking it from the pool is what keeps this a change of REFERENCE
+    // and not a change of tolerance, which is what the issue asks for.
+    return { ...seed, lum: own };
+  };
   // Unchanged, and read off the bin's CENTRE column, which is the column this
   // rule has always been read off: a short column, a gap anywhere in the top 91
   // rows, or a sky too dark to have been measured at all.
@@ -849,15 +927,20 @@ export function traceSkyCoverage(columns: readonly (number[] | SkyBin)[]): SkyTr
   // would mark bins uncertain that the shipped rule calls measured.
   const measured = bins.map((bin, index) => {
     if (!bin.length || !complete(bin[0]) || sky < 40) { uncertainBins.push(index); return []; }
+    // Issue #100: a bin whose own sky matches neither the pool nor its
+    // neighbours has no reference to walk from, and 90-certain was the wrong
+    // way to say so.
+    const here = seedFor(index);
+    if (here === null) { uncertainBins.push(index); return []; }
     return bin.filter(complete).map(column => {
-      const alone = columnRuns(column, seed, EXPOSURE_TOLERANCE);
+      const alone = columnRuns(column, here, EXPOSURE_TOLERANCE);
       const vouched = alone.find(run => run.qualifies);
       return {
         column, alt: vouched ? altOfTop(vouched.top) : 0,
         // Every departure either pass saw. The wide pass contributes the runs
         // it stepped over as too short (#71); the narrow one contributes the
         // soft edges and the shallow walls the wide pass cannot see (#74).
-        candidates: [...alone, ...columnRuns(column, seed, LOCAL_TOLERANCE)],
+        candidates: [...alone, ...columnRuns(column, here, LOCAL_TOLERANCE)],
       };
     });
   });
