@@ -7,6 +7,8 @@ import asyncio
 
 import pytest
 
+from _simhub import a_real_site
+
 import astrodeck.hub as hub_module
 from astrodeck.hub import Hub
 from astrodeck.sequence import ExposureStep, SequenceEngine, SequencePlan, Target
@@ -22,6 +24,11 @@ async def sim_hub(tmp_path, monkeypatch):
     # within 30 deg of M42. monkeypatch restores the field afterward.
     _safety = hub_module.config_store.cfg().safety
     monkeypatch.setattr(_safety, "solar_avoidance", False)
+    # A REAL SITE BEFORE THE HUB (#24). This fixture does not isolate
+    # the config store, so without it the hub comes up on the 0,0
+    # default and every meridian number below is computed for the Gulf
+    # of Guinea.
+    a_real_site(monkeypatch)
     h = Hub()
     await h.connect_sim()
     yield h

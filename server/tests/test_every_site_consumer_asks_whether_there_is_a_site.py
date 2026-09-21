@@ -135,21 +135,27 @@ UNGUARDED: dict[str, str] = {
         "poison the forensics.",
 
     # --- THE MOUNT MOVES. A wrong pier side or flip point is a cable wrap.
-    "hub.py:_compute_meridian":
-        "meridian state: local sidereal time from longitude and the "
-        "over-the-pole test from latitude. Both feed flip decisions.",
-    "sequence/engine.py:_maybe_meridian_flip":
-        "the flip itself. At 0,0 the engine flips at the wrong hour angle, or "
-        "does not flip when it must.",
+    #
+    # `_maybe_meridian_flip` and the hub's `_compute_meridian` are fixed
+    # outright and have left this list: the first declines the flip and says
+    # why, the second publishes "unknown" instead of a countdown to a meridian
+    # somewhere else. `test_the_meridian_needs_a_site.py` holds both.
+    #
+    # The three below still read the site inside a `try` whose `except` returns,
+    # so each is silent rather than refusing. They are reached only during a run
+    # whose flip has already been declined and logged, which is why they are a
+    # follow-up rather than the same commit.
     "sequence/engine.py:_wait_for_flip_point":
         "how long to wait for the meridian, computed from the wrong longitude.",
     "sequence/engine.py:_enforce_flip_owed":
         "whether a flip is overdue, from latitude and pier side.",
+    "sequence/engine.py:_setup_target":
+        "hour angle at slew time, which picks the starting pier side. NOT "
+        "covered by the run gate: it runs whether or not a flip is planned.",
     "sequence/engine.py:_enforce_mount_floor":
         "the altitude floor the mount is held above. A wrong latitude moves "
-        "the floor into or out of the sky the run is using.",
-    "sequence/engine.py:_setup_target":
-        "hour angle at slew time, which picks the starting pier side.",
+        "the floor into or out of the sky the run is using. Also not covered "
+        "by the run gate, and the next one to do.",
     "devices/backends/zwo_am5.py:destination_pier_side":
         "the AM5's pier side for a given target, from latitude.",
     "devices/backends/zwo_am5.py:_site_latlon":

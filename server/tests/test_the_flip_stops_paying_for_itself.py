@@ -35,6 +35,8 @@ import time
 
 import pytest
 
+from _simhub import a_real_site
+
 import astrodeck.hub as hub_module
 import astrodeck.sequence.engine as engine_mod
 from astrodeck.devices.base import PierSide
@@ -50,6 +52,11 @@ async def sim_hub(tmp_path, monkeypatch):
     monkeypatch.setattr(hub_module, "CAPTURE_DIR", tmp_path)
     monkeypatch.setattr(hub_module.config_store.cfg().safety,
                         "solar_avoidance", False)
+    # A REAL SITE BEFORE THE HUB (#24). This fixture does not isolate
+    # the config store, so without it the hub comes up on the 0,0
+    # default and every meridian number below is computed for the Gulf
+    # of Guinea.
+    a_real_site(monkeypatch)
     h = Hub()
     await h.connect_sim()
     yield h

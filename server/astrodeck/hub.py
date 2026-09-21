@@ -6719,7 +6719,20 @@ class Hub:
         # flip countdown down with it -- the caching would then be visible in
         # one field and contradicted by two others.
         side = meridian["pier_side"]
-        if ttf is None and ra_hours is not None:
+        # NO SITE, NO COUNTDOWN (issue #24). Both numbers below are derived from
+        # the site, and at the 0,0 default both come out confident and wrong: a
+        # flip countdown off by the rig's true longitude, and an over-the-pole
+        # verdict for a latitude nobody observes from. The strip already has a
+        # word for not knowing - `ttf` of None falls through to
+        # `status: "unknown"` with `hours_to_flip` null - and "unknown" is the
+        # honest answer here, where "3.2 hours" is a promise about a meridian
+        # that is somewhere else.
+        #
+        # The DEVICE's own `time_to_meridian_flip` (NINA) is untouched: it knows
+        # its own site and this code does not have to.
+        from .site_gate import site_is_set
+        sited = site_is_set(self.site)
+        if ttf is None and ra_hours is not None and sited:
             # HA = LST − RA, wrapped to [−12, 12]; a GEM on the east side tracking
             # west flips when the target crosses the meridian (HA crosses 0).
             lst = lst_hours(self.site["longitude"])
@@ -6727,7 +6740,12 @@ class Hub:
             ttf = -ha
         from .sequence.schedule import flip_unnecessary_over_pole
         try:
-            over_pole = flip_unnecessary_over_pole(dec_deg, self.site["latitude"])
+            # False rather than unknown, and that is the safe way round: it means
+            # "nothing excuses this flip", so a GEM still counts down and still
+            # flips. Defaulting the other way would silence the flip on an
+            # unconfigured rig, which is the failure that wraps a cable.
+            over_pole = (flip_unnecessary_over_pole(dec_deg, self.site["latitude"])
+                         if sited else False)
         except Exception:
             over_pole = False
         # SAME RULE AS THE ENGINE, or the strip promises a flip the run will not
