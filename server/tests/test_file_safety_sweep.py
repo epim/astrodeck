@@ -25,7 +25,72 @@ from astrodeck.auth.capabilities import CAP_CONFIG_BACKEND, CAP_VIEW_STATUS
 from astrodeck.calibration.keys import CalKey, key_index_id
 from astrodeck.auth import reset_active_provider
 from astrodeck.config import AuthConfig, ConfigStore
-from astrodeck.persist import safe_id_path
+from astrodeck.persist import path_key, safe_id_path
+
+
+def test_the_two_windows_spellings_of_one_directory_are_the_same_directory(tmp_path):
+    r"""THE CAUSE of #113, reproduced as a unit.
+
+    `ntpath.realpath` gets its answer from `_getfinalpathname`, which always
+    returns the extended-length `\\?\` form, and strips that prefix only if
+    re-resolving the stripped path yields the same final path. When that
+    verification call fails - a concurrent create, delete or share-lock on the
+    directory will do it, and twelve xdist workers on one temporary tree
+    provide - the prefix is kept. `safe_id_path` then compared
+
+        C:\...\sessions          the file's parent, resolved non-strictly
+        \\?\C:\...\sessions      the base, resolved through _getfinalpathname
+
+    and refused a clean hex id, crashing whatever run was starting. Roughly one
+    full-suite run in seven.
+
+    MUTATION: `path_key` returns `os.path.normcase(os.fspath(p))`, i.e. keeps
+    the prefix. Observed: the two keys differ and this fails - which is the
+    comparison the shipped code used to make.
+    """
+    plain = tmp_path / "sessions"
+    plain.mkdir()
+    extended = Path("\\\\?\\" + str(plain))
+    assert path_key(extended) == path_key(plain), (
+        f"the same directory spelled two ways is not one key: "
+        f"{path_key(extended)} vs {path_key(plain)}")
+    # And case, the other way two resolutions of one directory can differ on a
+    # filesystem that does not care about it.
+    assert path_key(Path(str(plain).upper())) == path_key(plain)
+
+
+def test_the_seam_survives_resolve_returning_the_two_spellings(tmp_path, monkeypatch):
+    r"""#113 at the seam that broke, induced rather than waited for.
+
+    Passing an extended-form base does NOT reproduce it - `resolve()`
+    normalises the prefix away on both sides, so the two agree with or without
+    `path_key`, and a case written that way passes against the broken code.
+    (It was, and it did; that is why this one patches instead.)
+
+    The real condition is `resolve()` ITSELF returning different spellings for
+    the two calls, which is transient and is what made this one run in seven.
+    The asymmetry is which call had an existing path: the directory goes
+    through `_getfinalpathname` and can keep the prefix, the not-yet-existing
+    file takes realpath's non-strict fallback and comes back stripped. So:
+    patch `Path.resolve` to add the prefix for a directory and leave a
+    non-directory alone, which is exactly the pair the rig printed.
+
+    MUTATION: compare `resolved.parent != parent` directly, without
+    `path_key`. Observed: KeyError on a plain hex id - the reported bug, on
+    demand rather than one full-suite run in seven.
+    """
+    base = tmp_path / "sessions"
+    base.mkdir()
+    real_resolve = Path.resolve
+
+    def resolve_directories_the_long_way(self, *args, **kwargs):
+        out = real_resolve(self, *args, **kwargs)
+        return Path("\\\\?\\" + str(out)) if out.is_dir() else out
+
+    monkeypatch.setattr(Path, "resolve", resolve_directories_the_long_way)
+    ident = "9101b65822a941a68d3cf302e4868f7a"
+    out = safe_id_path(base, ident)
+    assert out.name == f"{ident}.json"
 
 
 # ------------------------------------------------- the write primitive (blocker)
