@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { bandForAltitude, cameraElevation, cameraPose, projectSweepColumns, robustSpread, traceSkyCoverage, OVERHEAD_BAND, type SkyColumn, type SweepFrame } from "../photosphere";
+import { readFileSync } from "node:fs";
+import { bandForAltitude, cameraElevation, cameraPose, projectSweepColumns, robustSpread, traceSkyCoverage, AZ_DEPARTURE, EXPOSURE_TOLERANCE, RE_EXPOSURE_BAND_PCT, RE_EXPOSURE_PCT, OVERHEAD_BAND, type SkyColumn, type SweepFrame } from "../photosphere";
 import { altFromY, SKY_Y } from "../horizonStrip";
 import { isObstructed, movePoint } from "../../../../lib/horizonModel";
 
@@ -480,6 +481,50 @@ test("The anchor reaches one bin and six rows, and both limits are the rule (#10
   const adjacent = place({ 5: wall, 6: floating(30) });
   assert.ok(adjacent.points[6].alt > 0,
     `the same band in the adjacent bin was not published: ${adjacent.points[6].alt}`);
+});
+
+test('the column rule and the azimuth rule spell one measured fact (#107)', () => {
+  // `EXPOSURE_TOLERANCE` (.32) and `AZ_DEPARTURE` (.31) were derived
+  // independently - one from the column rule, one from the azimuth rule - and
+  // ended a hundredth apart with nothing saying they were the same
+  // measurement. Re-measure the chart yard's ordinary re-expose and only one of
+  // them moves, and the tracer's two halves then disagree about what an
+  // exposure step is.
+  //
+  // The values first, because the fact is a measurement and not a preference:
+  // both are still exactly what was measured through the real tracer.
+  assert.equal(EXPOSURE_TOLERANCE, .32);
+  assert.equal(AZ_DEPARTURE, .31);
+  // Exactly, not nearly. Stating them in hundredths and dividing gives the
+  // same doubles as the literals that used to stand there; `.30 + .02` happens
+  // to as well, but that is luck and this does not rely on it.
+  assert.equal(RE_EXPOSURE_PCT / 100, .3);
+  // The relations the two comments claim, which are what make them one fact:
+  // the wide allowance is the fact plus the whole #74 band, and the mosaic's
+  // threshold is the middle of that band.
+  assert.equal(EXPOSURE_TOLERANCE, (RE_EXPOSURE_PCT + RE_EXPOSURE_BAND_PCT) / 100);
+  assert.ok(AZ_DEPARTURE > RE_EXPOSURE_PCT / 100,
+    'a departure at the ordinary re-expose is not an obstruction');
+  assert.ok(AZ_DEPARTURE < EXPOSURE_TOLERANCE,
+    'the mosaic threshold must sit inside the band the column cannot see');
+  assert.equal(AZ_DEPARTURE - RE_EXPOSURE_PCT / 100,
+               EXPOSURE_TOLERANCE - AZ_DEPARTURE,
+               'the mosaic threshold is no longer the middle of the band');
+  // And the part that is not arithmetic: neither tolerance may be written out
+  // again. Everything above holds just as well if someone replaces both
+  // expressions with the literals they evaluate to - and that is precisely the
+  // state this issue is about, because then re-measuring the fact moves
+  // neither. Read from the file rather than from the module: the values are
+  // what the module can show, and this is a claim about how they are spelled.
+  const src = readFileSync(new URL('../photosphere.ts', import.meta.url), 'utf8');
+  for (const [name, decl] of [['EXPOSURE_TOLERANCE', /export const EXPOSURE_TOLERANCE\s*=\s*([^,;]+)/],
+                              ['AZ_DEPARTURE', /export const AZ_DEPARTURE\s*=\s*([^,;]+)/]] as const) {
+    const m = src.match(decl);
+    assert.ok(m, `${name} is no longer declared where this case can read it`);
+    assert.ok(m[1].includes('RE_EXPOSURE_PCT'),
+      `${name} is written out as ${m[1].trim()} instead of being expressed from `
+      + 'RE_EXPOSURE_PCT, so re-measuring the fact would move the other one only');
+  }
 });
 
 console.log(`photosphereVertical.test: ${passed}/${passed} passed`);
