@@ -1,100 +1,73 @@
 import assert from "node:assert/strict";
-import { DOME_TILT_DEG, projectAltAz, projectDome } from "../domeProjection";
-import {
-  SCOPE_SCALE, TUBE_SCREEN, cameraDir, drawDomeScope, tripodLegs, tubeOutline,
-} from "../domeScope";
+import { DOME_TILT_DEG, projectAltAz } from "../domeProjection";
+import { TUBE_SCREEN, drawDomeScope, tubeOutline } from "../domeScope";
 
 let passed = 0;
 function test(name: string, fn: () => void) { fn(); passed++; console.log(`PASS ${name}`); }
 
-// The claims in issue #67 that a test can hold: the tripod is planted north, it
-// turns with the dome, and the tube points at the reticle. "3d" and "beautiful"
-// are judged by looking at the render, and are not asserted here - which is not
-// a formality. The first version passed every geometry case in this file while
-// projecting the tube to an invisible hairline, and the second foreshortened it
-// to an unreadable stub at low southern azimuths. Both were found by rendering
-// it and looking at it.
+// What the glyph has to say, and all it has to say (issue #67): which way the
+// mount is pointing. The tripod, the mount head, the dew shield and the focuser
+// were each added to make it more recognisable and each made it busier; they
+// are gone, and the taper carries the direction on its own.
+//
+// "Looks like a telescope" is judged by rendering it and looking. That is not a
+// formality here - three separate versions passed every geometry case in this
+// file while being unreadable on the dome: one projected the tube to an
+// invisible hairline, one foreshortened it to a stub at low southern azimuths,
+// and one was a legible tangle of grey rectangles.
 
 const R = 300, CX = 450, CY = 345;
 
-/** Project a tripod-space point exactly as `drawDomeScope` does. */
-const project = (v: { x: number; y: number; z: number }, yaw = 0) => {
-  const k = SCOPE_SCALE;
-  return projectDome({ x: v.x * k, y: v.y * k, z: v.z * k },
-                     CX, CY, R, DOME_TILT_DEG, yaw);
-};
-
-/** The CENTRE of the first leg's foot. A leg quad is two points at the foot and
- *  two at the hub, each pair offset by the leg's half-width, so a single
- *  lowest-z point is one EDGE of the leg and sits off the meridian. */
-const northFoot = (yaw = 0) => {
-  const { legs } = tripodLegs(cameraDir(DOME_TILT_DEG, yaw));
-  const pts = [...legs[0].points].sort((a, b) => a.z - b.z).slice(0, 2);
-  return { x: (pts[0].x + pts[1].x) / 2,
-           y: (pts[0].y + pts[1].y) / 2,
-           z: (pts[0].z + pts[1].z) / 2 };
-};
-
-/** The mount head, projected - where the tube is hung. */
-const hubAt = (yaw = 0) =>
-  project(tripodLegs(cameraDir(DOME_TILT_DEG, yaw)).hub, yaw);
-
-test("the tripod's front leg is planted due north, not at a chosen angle", () => {
-  const legN = project(northFoot());
-  const skyN = projectAltAz(0, 0, CX, CY, R, DOME_TILT_DEG, 0);
-  // North is the FAR side of this camera, so both sit above the horizon centre.
-  assert.ok(legN.y < CY, `the north leg projected below centre: ${legN.y}`);
-  assert.ok(skyN.y < CY, "the dome's own north is not above centre - the camera "
-                       + "changed and this case is now meaningless");
-  assert.ok(Math.abs(legN.x - CX) < 1e-6,
-            `the north leg is off the meridian by ${legN.x - CX} px`);
-});
-
-test("the tripod turns with the dome", () => {
-  const turned = project(northFoot(90), 90);
-  const still = project(northFoot(0), 0);
-  assert.ok(Math.abs(turned.x - still.x) > 10,
-            `a 90 degree yaw moved the tripod by ${Math.abs(turned.x - still.x)} px`);
-  // ...and the same way the SKY's north went, which is the statement that
-  // matters: one camera, not two.
-  const skyNturned = projectAltAz(0, 0, CX, CY, R, DOME_TILT_DEG, 90);
-  assert.ok(Math.sign(turned.x - CX) === Math.sign(skyNturned.x - CX),
-            "the tripod and the sky disagree about which way north went");
-});
-
-test("the tube points at the reticle, at every attitude", () => {
-  // In SCREEN space, which is where the claim now lives: the tube's bearing
-  // from the mount head is the bearing from the mount head to the drawn cross.
+test("the wide end points at the reticle, at every attitude", () => {
+  // The whole claim, in screen space, where it lives. The glyph's bearing from
+  // the dome centre is the bearing from the dome centre to the drawn cross.
   for (const yaw of [0, 90, 215]) {
     for (let az = 0; az < 360; az += 30) {
       for (const alt of [8, 45, 88]) {
-        const h = hubAt(yaw);
         const aim = projectAltAz(alt, az, CX, CY, R, DOME_TILT_DEG, yaw);
-        let dx = aim.x - h.x, dy = aim.y - h.y;
+        let dx = aim.x - CX, dy = aim.y - CY;
         const m = Math.hypot(dx, dy) || 1;
-        dx /= m; dy /= m;
-
-        const [body] = tubeOutline({ x: h.x, y: h.y }, dx, dy, R * TUBE_SCREEN);
-        const tip = { x: (body[1].x + body[2].x) / 2,
-                      y: (body[1].y + body[2].y) / 2 };
-        const toTip = Math.atan2(tip.y - h.y, tip.x - h.x);
-        const toRet = Math.atan2(aim.y - h.y, aim.x - h.x);
+        const pts = tubeOutline({ x: CX, y: CY }, dx / m, dy / m, R * TUBE_SCREEN);
+        // pts[1] and pts[2] are the two corners of the WIDE end.
+        const tip = { x: (pts[1].x + pts[2].x) / 2, y: (pts[1].y + pts[2].y) / 2 };
+        const toTip = Math.atan2(tip.y - CY, tip.x - CX);
+        const toRet = Math.atan2(aim.y - CY, aim.x - CX);
         let d = Math.abs(toTip - toRet);
         if (d > Math.PI) d = 2 * Math.PI - d;
         assert.ok(d < 1e-6,
-          `yaw ${yaw} alt ${alt} az ${az}: the tube points `
+          `yaw ${yaw} alt ${alt} az ${az}: the glyph points `
           + `${(d * 180 / Math.PI).toFixed(2)} degrees off the reticle`);
       }
     }
   }
 });
 
-test("the tube never foreshortens away, whatever it is aimed at", () => {
-  // THE BUG THE SECOND RENDER FOUND. An honestly-3D tube is orthographically
+test("the wide end is the FAR end - the taper is not backwards", () => {
+  // Pointing straight up the screen, the objective corners must be above the
+  // eyepiece corners AND further apart. A glyph that tapers the other way is
+  // still a glyph, still points along the right line, and tells the reader the
+  // opposite thing.
+  //
+  // MUTATION: swap R_BACK and R_FRONT. Observed: the width assertion fails,
+  // 14.4 px against 46.5.
+  const len = R * TUBE_SCREEN;
+  const pts = tubeOutline({ x: 0, y: 0 }, 0, -1, len);
+  const wide = Math.hypot(pts[1].x - pts[2].x, pts[1].y - pts[2].y);
+  const narrow = Math.hypot(pts[0].x - pts[3].x, pts[0].y - pts[3].y);
+  assert.ok(wide > narrow * 2,
+    `the objective end is ${wide.toFixed(1)} px across and the eyepiece end `
+    + `${narrow.toFixed(1)} - the taper does not read as a direction`);
+  const tipY = (pts[1].y + pts[2].y) / 2;
+  const backY = (pts[0].y + pts[3].y) / 2;
+  assert.ok(tipY < backY, "the glyph is inside out: the wide end is behind");
+});
+
+test("the glyph never foreshortens away, whatever it is aimed at", () => {
+  // THE BUG A RENDER FOUND. An honestly-3D tube is orthographically
   // foreshortened, and south is straight at this camera, so a low southern
-  // pointing collapsed to a stub nobody could identify. The tube is drawn in
+  // pointing collapsed to a stub nobody could identify. The glyph is drawn in
   // screen space at a CONSTANT length now, which is the entire reason that
-  // decision exists - so it is asserted here rather than left to the drawing.
+  // decision exists - so it is asserted rather than left to the drawing.
   //
   // MUTATION: scale the length by the projected distance to the reticle, i.e.
   // let it foreshorten honestly again. Observed: the spread assertion fails,
@@ -102,46 +75,92 @@ test("the tube never foreshortens away, whatever it is aimed at", () => {
   const lens: number[] = [];
   for (let az = 0; az < 360; az += 15) {
     for (const alt of [5, 12, 40, 80]) {
-      const h = hubAt(0);
       const aim = projectAltAz(alt, az, CX, CY, R, DOME_TILT_DEG, 0);
-      let dx = aim.x - h.x, dy = aim.y - h.y;
+      let dx = aim.x - CX, dy = aim.y - CY;
       const m = Math.hypot(dx, dy) || 1;
-      const [body] = tubeOutline({ x: h.x, y: h.y }, dx / m, dy / m,
-                                 R * TUBE_SCREEN);
-      const tip = { x: (body[1].x + body[2].x) / 2,
-                    y: (body[1].y + body[2].y) / 2 };
-      lens.push(Math.hypot(tip.x - h.x, tip.y - h.y));
+      const pts = tubeOutline({ x: CX, y: CY }, dx / m, dy / m, R * TUBE_SCREEN);
+      const tip = { x: (pts[1].x + pts[2].x) / 2, y: (pts[1].y + pts[2].y) / 2 };
+      lens.push(Math.hypot(tip.x - CX, tip.y - CY));
     }
   }
   const lo = Math.min(...lens), hi = Math.max(...lens);
   assert.ok(hi - lo < 1e-6,
-    `the tube's drawn length varies between ${lo.toFixed(1)} and ${hi.toFixed(1)} px`);
+    `the glyph's drawn length varies between ${lo.toFixed(1)} and ${hi.toFixed(1)} px`);
   assert.ok(lo > 0.5 * R * TUBE_SCREEN,
-    `the tube is only ${lo.toFixed(1)} px long against a dome radius of ${R}`);
+    `the glyph is only ${lo.toFixed(1)} px long against a dome radius of ${R}`);
 });
 
-test("the dew shield is at the sky end and the focuser at the other", () => {
-  // Which end is which is the difference between "a telescope" and "a stick",
-  // and it is the pair of cues that made the reworked version readable.
-  // Pointing straight up the screen: the shield sits beyond the body's far
-  // edge, the focuser behind it.
-  const len = R * TUBE_SCREEN;
-  const [body, shield, focuser] = tubeOutline({ x: 0, y: 0 }, 0, -1, len);
-  const tipY = (body[1].y + body[2].y) / 2;
-  const backY = (body[0].y + body[3].y) / 2;
-  // CENTROIDS, not "some corner is past the tip". A first version of this
-  // asserted the minimum y of each piece, and a mutation that moved half the
-  // shield to the back of the tube sailed through it - one remaining corner
-  // beyond the objective was enough. Where the piece sits ON AVERAGE is the
-  // claim being made.
-  const midY = (pts: { y: number }[]) =>
-    pts.reduce((t, p) => t + p.y, 0) / pts.length;
-  assert.ok(midY(shield) < tipY,
-            `the dew shield sits at y ${midY(shield).toFixed(1)}, not beyond the `
-            + `objective at ${tipY.toFixed(1)}`);
-  assert.ok(midY(focuser) > tipY,
-            "the focuser is not behind the objective");
-  assert.ok(backY > tipY, "the tube is inside out");
+test("it turns with the dome, because the reticle does", () => {
+  // There is no 3D left in the glyph, so "turns with the dome" is no longer a
+  // property of a model - it is inherited from the projection that places the
+  // cross. Worth an assertion anyway: it is the behaviour the issue asked for,
+  // and a future version that hard-coded a bearing would pass every case above.
+  const at = (yaw: number) => {
+    const aim = projectAltAz(30, 60, CX, CY, R, DOME_TILT_DEG, yaw);
+    return Math.atan2(aim.y - CY, aim.x - CX);
+  };
+  assert.ok(Math.abs(at(0) - at(90)) > 0.2,
+            "a 90 degree yaw did not move the target bearing at all");
+});
+
+test("the one direction with no bearing on screen still draws", () => {
+  // WHERE THAT ACTUALLY IS, which took a mutation to find out. The first
+  // version of this case used the zenith, on the assumption that the top of
+  // the sky is the middle of the dome. It is not: `upDot` is
+  // `y*sin(t) + z*cos(t)`, so the point that lands on the dome's centre is the
+  // one with `upDot == 0`, which due south is altitude == the camera tilt, 32
+  // degrees. The zenith projects a full `cos(t)` ABOVE centre and has a
+  // perfectly good bearing.
+  //
+  // So the case exercised nothing, and deleting the guard it exists for left
+  // it green. It now points at the place the bearing is genuinely 0/0.
+  //
+  // MUTATION: drop the guard, leaving a bare `dx /= m`. Observed: 0/0 gives
+  // NaN, the outline is all NaN, and the finite checks in the recording
+  // context below fail.
+  //
+  // I also tried widening the guard to half a pixel, on the theory that the
+  // projection would land NEAR the centre rather than on it and the bearing
+  // would be decided by rounding noise. It does land on it exactly, so that
+  // was a fix for a problem that does not exist; the assertion above is what
+  // established it.
+  let filled = 0;
+  const ctx = {
+    save: () => {}, restore: () => {}, beginPath: () => {}, closePath: () => {},
+    moveTo: (x: number, y: number) => { assert.ok(Number.isFinite(x) && Number.isFinite(y)); },
+    lineTo: (x: number, y: number) => { assert.ok(Number.isFinite(x) && Number.isFinite(y)); },
+    fill: () => { filled++; }, stroke: () => {},
+    set fillStyle(_v: string) {}, set strokeStyle(_v: string) {},
+    set lineWidth(_v: number) {}, set lineJoin(_v: string) {},
+  } as unknown as CanvasRenderingContext2D;
+  const centre = projectAltAz(DOME_TILT_DEG, 180, CX, CY, R, DOME_TILT_DEG, 0);
+  assert.ok(Math.hypot(centre.x - CX, centre.y - CY) < 1e-9,
+    `altitude ${DOME_TILT_DEG} due south is supposed to project onto the dome's `
+    + `centre and lands ${Math.hypot(centre.x - CX, centre.y - CY).toFixed(3)} px `
+    + `away - this case is not testing the degenerate bearing any more`);
+  drawDomeScope(ctx, DOME_TILT_DEG, 180, CX, CY, R, DOME_TILT_DEG, 0);
+  drawDomeScope(ctx, 90, 0, CX, CY, R, DOME_TILT_DEG, 0);
+  assert.equal(filled, 2, "the glyph did not draw at the degenerate bearing");
+
+  // ...and it points the DEFINED way, not wherever the noise fell.
+  const pts = tubeOutline({ x: CX, y: CY }, 0, -1, R * TUBE_SCREEN);
+  const want = { x: (pts[1].x + pts[2].x) / 2, y: (pts[1].y + pts[2].y) / 2 };
+  let seen: { x: number; y: number } | null = null;
+  const probe = {
+    save: () => {}, restore: () => {}, beginPath: () => {}, closePath: () => {},
+    moveTo: () => {},
+    lineTo: (x: number, y: number) => { seen = seen ?? { x, y }; },
+    fill: () => {}, stroke: () => {},
+    set fillStyle(_v: string) {}, set strokeStyle(_v: string) {},
+    set lineWidth(_v: number) {}, set lineJoin(_v: string) {},
+  } as unknown as CanvasRenderingContext2D;
+  drawDomeScope(probe, DOME_TILT_DEG, 180, CX, CY, R, DOME_TILT_DEG, 0);
+  const first: { x: number; y: number } = seen!;
+  assert.ok(Math.hypot(first.x - pts[1].x, first.y - pts[1].y) < 1e-6,
+    `at the degenerate bearing the glyph pointed somewhere arbitrary: `
+    + `${first.x.toFixed(2)},${first.y.toFixed(2)} against the defined `
+    + `${pts[1].x.toFixed(2)},${pts[1].y.toFixed(2)} (objective at `
+    + `${want.x.toFixed(2)},${want.y.toFixed(2)})`);
 });
 
 test("it draws, and leaves the canvas as it found it", () => {
@@ -157,11 +176,8 @@ test("it draws, and leaves the canvas as it found it", () => {
   } as unknown as CanvasRenderingContext2D;
 
   drawDomeScope(ctx, 45, 120, CX, CY, R, DOME_TILT_DEG, 0);
-  assert.ok(ops.filter(o => o === "fill").length >= 7,
-            `only ${ops.filter(o => o === "fill").length} pieces were painted`);
-  assert.equal(ops[0], "save", "the model did not save the canvas state");
-  assert.equal(ops[ops.length - 1], "restore",
-               "the model left its own stroke style on the context");
+  assert.deepEqual(ops, ["save", "fill", "stroke", "restore"],
+                   `the glyph is no longer one filled outline: ${ops.join(",")}`);
 });
 
 console.log(`domeScope.test: ${passed}/${passed} passed`);
