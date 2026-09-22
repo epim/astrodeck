@@ -75,8 +75,17 @@ export type CaptureOutcome =
  *  and the reason is that number: it is not a threshold with margin, it is an
  *  invariant holding exactly, and the source of one side changed once already.
  *  A comparison costs nothing; discovering by a misplaced frame that the two
- *  have drifted apart costs a scan. What is NOT claimed is that the branch is
- *  tested, because it is not. */
+ *  have drifted apart costs a scan.
+ *
+ *  THE BRANCH IS NOW TESTED, and the zeros above say why nothing had reached
+ *  it rather than that nothing can. The two sides are `forFrame` at the
+ *  frame's capture time and `forFrame` at now, and the strict path believes a
+ *  capture time up to STALE_FRAME_MS (1000 ms) old while its untimed settle
+ *  window is 500 ms. A frame stamped 900 ms back, arriving 500-800 ms after a
+ *  turn, therefore wears the heading from before the turn while the settle
+ *  test finds the one after it. photosphereStillnessDom's issue #104 case pins
+ *  that refusal; at 800 ms of lag the window is three frames and the 350 ms
+ *  grab cadence steps over it, which is how every recording missed it. */
 export type AlignmentWait = 'no-pose' | 'unsettled' | 'separation';
 
 /** `no-pose` only: which of the two sources was missing (issue #76).

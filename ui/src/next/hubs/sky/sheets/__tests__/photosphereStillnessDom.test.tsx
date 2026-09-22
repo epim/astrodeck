@@ -1762,6 +1762,49 @@ await test('The same scene, the same camera: one sample per cell vouches for a v
   // labour between the two and the reason neither replaces the other.
 });
 
+await test('A lagged frame from before a turn is refused on the SEPARATION term (issue #104)',async()=>{
+  // The branch #104 found reached by nothing. The issue's mechanism said the
+  // two poses the term compares - forFrame at the frame's capture time, and
+  // forFrame at now - agree within 1.5 degrees by construction on the strict
+  // path, because the timed call returns a sample from inside the untimed
+  // call's 500 ms settle window. That is not so: a capture time is believed up
+  // to STALE_FRAME_MS (1000 ms) old, so the timed call can reach back past the
+  // window to a reading from before a turn, while the untimed call sees only
+  // the settled reading after it. The earlier attempt on the issue used a
+  // 1200 ms lag, which is past the stale bound and so answered no-pose.
+  //
+  // The state: readings every 100 ms (the strict rule needs them fresh, and
+  // they keep the silent-settle vouch from taking over), the phone held at
+  // offset 0, then turned 5 degrees and held again, with every frame stamped
+  // 900 ms behind the clock. From 500 ms after the turn the untimed window
+  // holds only the new heading, and until 800 ms after it the frame's capture
+  // time still lands on the old one - four 100 ms frames, which the 350 ms
+  // grab cadence cannot step over. AT 800 MS OF LAG THIS CASE FAILED FIRST:
+  // that leaves three frames, the grabs fell either side of them,
+  // and every refusal read 'unsettled'. The window is real but narrow, which
+  // is why no recording has ever shown it.
+  //
+  // The refusal is the right answer and not a false one: the frame shows the
+  // old heading while the phone is somewhere else, and nothing says the phone
+  // was still when that picture was taken.
+  // Mutation: in grabFrame, raise the separation threshold from 1.5 to 90.
+  // Observed red: 'no grab refused on the separation term'.
+  const {sweep,tick,aim}=await approachAndHold();
+  const step=(offset:number)=>{aim(offset,0);shift=0;tick(900);};
+  for(let i=0;i<12;i++)step(0);
+  const before=sweep.captureLog.length;
+  for(let i=0;i<12;i++)step(5);
+  const window=sweep.captureLog.slice(before);
+  const separated=window.filter(r=>r.outcome==='alignment-wait'&&r.wait==='separation');
+  assert.ok(separated.length>0,
+    'no grab refused on the separation term: '
+    +`{${[...new Set(window.map(r=>`${r.outcome}/${r.wait??'-'}`))]}}`);
+  // The number it decided on is the turn, not noise near the threshold.
+  assert.ok(separated.every(r=>(r.separation??0)>4&&(r.separation??0)<6),
+    `separation should read the 5 degree turn: ${separated.map(r=>r.separation)}`);
+  sweep.stop();
+});
+
 console.log(`photosphereStillnessDom.test: ${passed}/${passed+failed} passed`);
 export const result={passed,failed,total:passed+failed};
 if(failed)process.exitCode=1;
