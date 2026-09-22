@@ -1638,3 +1638,23 @@ the time it is found:
 | #104 | The `separation` term of `grabFrame`'s alignment gate is reached by no test and no recording -- one instance of "a harness that cannot reach the branch." | Section 4.6: found while measuring #76; the term is dead code with a guard's shape, before and after today's pass. |
 | #105 | The simulator's cases record no `devicemotion` channel, so the second (gyro) witness built for #63 cannot be measured by replay at all. | Section 3.1, 4.6: this is why `every_hold_captured` stays red on both arc cases today even though the mechanism it was failing on (#63) is closed. |
 | #106 | The gyro witness read a `rotationRate` of literal zeros as a still phone, so a stuck gyro (or an emulator/WebView that reports exact zeros rather than nulls for "no gyro") would vouch for a heading the phone has already left. | Found and closed within today's pass (task 6 fix round 1, before this document's HEAD): an exact zero triple is now treated as no measurement at all. Left in this list because it was filed as an issue and #48's device pass still needs to say whether any target browser spells "no gyro" this way. |
+
+## 2026-09-22: the recorded gyro has a noise floor
+
+Every chart-yard case now sets `gyro_noise_deg_s: 0.05` (issue #76). The
+recordings were exact, so a hold read exactly zero, and since issue #106 the
+scanner discards an exact zero triple as synthetic, so the replayed gyro was a
+dead one at every held attitude. The input hashes above predate this, and so
+do these numbers. Re-built, replayed and scored:
+
+| case | holds, exact gyro | holds, 0.05 floor | horizon median / p95 / max, floor |
+|---|---|---|---|
+| chartyard-still-60 | 48/48 | 48/48 | 1.80 / 49.00 / 58.35 (unchanged) |
+| chartyard-arc075-60 | 43/48 | 46/48 | 3.20 / 56.40 / 58.35 (unchanged) |
+| chartyard-arc075-70 | 12/48 | 14/48 | 38.92 / 74.15 / 79.80 (was 7.50 / 16.51 / 39.80) |
+
+The arc075-70 horizon did not get worse because of the floor. It got worse
+because the floor let two frames in (holds 37 and 47), and with them the south
+roof is published as open sky, certain: false_open_sr 0.012 -> 0.583. That is
+issue #129. arc075-60's two remaining misses are registration refusals
+(`overlap-wait`), issue #130.

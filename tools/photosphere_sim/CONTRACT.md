@@ -119,10 +119,16 @@ quantity the scanner reads, since `MotionStability` compares
 `truth/trajectory.jsonl` over the arc route: median error 0.0001 deg/s,
 and exactly 0 through a hold.
 
-A case declares `gyro_noise_deg_s` to carry a gyro too noisy to vouch for
-anything; the default is 0, so the three chart-yard cases are exact and a hold
-reads exactly zero, which no real device does. A case that wants to grade
-`QUIET_RATE_DEG_S` itself has to set it.
+A case declares `gyro_noise_deg_s`, Gaussian per axis. The default is 0,
+which makes a hold read EXACTLY zero - and the scanner discards an exact zero
+triple as synthetic (`MotionStability.observe`, issue #106: a real MEMS gyro has
+a noise floor and never reports one twice). So an exact stream does not model a
+quiet gyro, it models a dead one, and at every held attitude the witness goes
+stale. Every chart-yard case therefore sets 0.05 deg/s, a phone gyro's floor at
+60 Hz: a sample's magnitude near 0.09 against `QUIET_RATE_DEG_S` 0.5, and a
+random-walk drift near 0.007 degrees a second against `QUIET_DRIFT_DEG` 0.5. A
+case that wants a gyro too noisy to vouch for anything raises it; issue #76 is
+the measurement that forced this (arc075-60, 43 to 46 of 48 holds).
 
 `actions.jsonl`: `{"t_ms":0,"action":"begin"}` and `{"t_ms":<end>,"action":"finish"}`.
 
