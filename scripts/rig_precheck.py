@@ -88,6 +88,28 @@ def _watch_line() -> str:
     return "; ".join(parts)
 
 
+def _recovery_line() -> str:
+    """Will the engine try to reconnect a dropped or silent device? (#16)
+
+    The reconnect gate - including #16's rule that a camera claiming to be
+    connected while producing nothing is dropped - runs only when
+    `escalation.reconnect_resume` is on, and it is OFF by default. Checked on
+    2026-09-22 it was off on this rig, so that recovery existed and never ran.
+    Whether to turn it on is the operator's call; this makes sure it is a
+    decision somebody sees rather than a default nobody does.
+    """
+    try:
+        with open(os.path.join(ROOT, "config", "astrodeck.json"),
+                  encoding="utf-8") as fh:
+            esc = (json.load(fh) or {}).get("escalation") or {}
+    except (OSError, ValueError) as exc:
+        return f"UNREADABLE ({type(exc).__name__})"
+    if esc.get("reconnect_resume") is True:
+        return "reconnect-and-resume ON"
+    return ("reconnect-and-resume OFF - a dropped or silent device stops the "
+            "run instead of being reconnected (issue #16)")
+
+
 def _session_cookie() -> str:
     with open(os.path.join(ROOT, "config", "astrodeck.json"), encoding="utf-8") as fh:
         cfg = json.load(fh)
@@ -131,6 +153,7 @@ def main(argv: list[str]) -> int:
     print(f"busy lanes: {lanes if lanes else 'none'}")
     print("site: " + _site_line())
     print("watched: " + _watch_line())
+    print("recovery: " + _recovery_line())
     for flag in ("looping", "bahtinov_active", "live_stack_active"):
         print(f"{flag}: {status.get(flag)}")
 
