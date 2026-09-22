@@ -170,6 +170,7 @@ RECENTRE_AFTER_UNGUIDED_S = 60.0
 FLIP_FRAME_MARGIN_S = 30.0
 FLIP_WAIT_STEP_S = 5.0          # cancel/pause-responsive hold step near the flip
 
+
 # --- device-I/O timeout bounds (P0-2) --------------------------------------
 # Every engine await on a device call is bounded so a wedged Alpaca/NINA/PHD2
 # transport can never hang the night on an unbounded await (review §8d: "the
@@ -598,6 +599,11 @@ class SequenceEngine:
         #: the pier side. They get ONE more attempt, with the lead dropped so it
         #: waits for the meridian itself — see `_maybe_meridian_flip`.
         self._flip_no_op: set[str] = set()
+        #: Whether a GoTo taken before the meridian flips this mount, by mount
+        #: NAME (#127). Learned from real attempts and held for the life of the
+        #: process, NOT cleared at run start the way `_flip_no_op` is - that
+        #: clearing is exactly what made every target re-buy the same lesson.
+        self._flips_early_by_mount: dict[str, bool] = {}
         #: Rate-limit for the "armed but the mount is offline" warning, so a
         #: dropped link says so once instead of once per frame.
         self._flip_offline_logged = False
@@ -5330,6 +5336,16 @@ class SequenceEngine:
         # the direction that hurts (an unreadable side reads as FLIPPED in both,
         # which keeps the conservative behaviour).
         nothing_flipped = unchanged or hub_flipped is False
+        # WHAT THIS ATTEMPT DEMONSTRATED ABOUT THE MOUNT (#127). Only an
+        # attempt taken with a real lead is evidence about flipping EARLY; one
+        # taken at the crossing is the ordinary case and teaches nothing. And
+        # only a readable pair of sides is evidence at all: an unreadable side
+        # reads as FLIPPED above, which is the right conservative answer for
+        # this crossing and exactly the wrong thing to write down as a
+        # permanent fact about the hardware.
+        if lead_s > 0 and side_before not in (None, "unknown") \
+                and side_after not in (None, "unknown"):
+            self._learn_mount_flips_early(not nothing_flipped)
         # one flip per meridian crossing: the target now tracks counterweight-down
         # on the far side and the server countdown stays negative for hours, so
         # disarm until the next target re-arms in _setup_target.
@@ -5378,6 +5394,48 @@ class SequenceEngine:
             elif await self._post_flip_focus_is_owed():
                 await self._autofocus("post-flip autofocus", target=target)
 
+    def _mount_name(self) -> str | None:
+        """The connected mount's own name, which is what a learned trait is
+        keyed on. None when there is no mount to name, in which case nothing
+        is learned and nothing is recalled."""
+        try:
+            tel = self.hub.devices.get("telescope")
+            name = getattr(tel, "name", None)
+            return str(name) if name else None
+        except Exception:  # pragma: no cover - defensive
+            return None
+
+    def _mount_flips_early(self) -> bool | None:
+        """Whether a GoTo before the meridian changes THIS mount's pier side.
+
+        True/False once an attempt has demonstrated it, None while nothing has
+        (#127). None is not False: an unknown mount keeps its lead and pays for
+        the lesson once, which is the only honest way to learn it.
+
+        Keyed on the mount's NAME, so swapping the mount - or activating a
+        profile with a different one - re-learns rather than inheriting a fact
+        about different hardware.
+        """
+        name = self._mount_name()
+        return self._flips_early_by_mount.get(name) if name else None
+
+    def _learn_mount_flips_early(self, flips: bool) -> None:
+        """Record what an attempt demonstrated, for the life of this process.
+
+        DELIBERATELY NOT PERSISTED. The first version of this wrote a learned
+        trait to a JSON store under CONFIG_DIR, which is wrong twice over: the
+        engine is a module-level singleton living as long as the server (days
+        on this rig, restarted far more often than the mount changes), so the
+        disk buys almost nothing; and a behaviour that changes because of an
+        invisible file written by a previous night is one nobody can explain
+        from the code in front of them. It also cost 27 test failures
+        immediately, because the store is global and the first test to learn
+        the trait taught every test that ran after it.
+        """
+        name = self._mount_name()
+        if name:
+            self._flips_early_by_mount[name] = bool(flips)
+
     def _flip_lead_s(self, target: Target | None = None) -> float:
         """Seconds before transit at which this plan wants its GEM flip.
 
@@ -5390,9 +5448,18 @@ class SequenceEngine:
         mount that stops before the meridian — and an optimisation that has
         just been shown not to work on this mount should not also cost the
         retry. That retry waits for the crossing itself.
+
+        ZERO ALSO for a mount that has been shown this before, on any target
+        and on any night (#127). `_flip_no_op` is cleared at run start and
+        keyed per target, so without the persisted trait every target re-buys
+        the same lesson: a stop-guiding, a re-slew and a re-centre that arrive
+        back on the side they started on. Two nights of the durable log put the
+        whole crossing at 18 to 20 minutes and five or six frames.
         """
         if target is not None and (
                 getattr(target, "id", None) or target.name) in self._flip_no_op:
+            return 0.0
+        if self._mount_flips_early() is False:
             return 0.0
         lead = getattr(self.plan, "meridian_flip_lead_min", None)
         if lead is None:
