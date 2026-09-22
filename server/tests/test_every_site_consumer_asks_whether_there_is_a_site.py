@@ -141,17 +141,10 @@ UNGUARDED: dict[str, str] = {
     # why, the second publishes "unknown" instead of a countdown to a meridian
     # somewhere else. `test_the_meridian_needs_a_site.py` holds both.
     #
-    # The three below still read the site inside a `try` whose `except` returns,
-    # so each is silent rather than refusing. They are reached only during a run
-    # whose flip has already been declined and logged, which is why they are a
-    # follow-up rather than the same commit.
-    "sequence/engine.py:_wait_for_flip_point":
-        "how long to wait for the meridian, computed from the wrong longitude.",
-    "sequence/engine.py:_enforce_flip_owed":
-        "whether a flip is overdue, from latitude and pier side.",
-    "sequence/engine.py:_setup_target":
-        "hour angle at slew time, which picks the starting pier side. NOT "
-        "covered by the run gate: it runs whether or not a flip is planned.",
+    # `_setup_target`'s latch (now `_arm_meridian_flip`), `_enforce_flip_owed`
+    # and `_wait_for_flip_point` followed; test_the_flip_invariant_needs_a_site
+    # holds them. The invariant was the one with a consequence: at 0,0 it held
+    # a good target for twenty minutes and then abandoned it.
     "devices/backends/zwo_am5.py:destination_pier_side":
         "the AM5's pier side for a given target, from latitude.",
     "devices/backends/zwo_am5.py:_site_latlon":
