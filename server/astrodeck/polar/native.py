@@ -41,7 +41,7 @@ from typing import Any
 from ..devices.base import DeviceError
 from ..events import bus
 from ..sequence.schedule import hour_angle_h
-from ..site_gate import site_is_set
+from ..site_gate import site_lat_lon
 from .session import wait_if_paused
 
 # --- guarded native import -------------------------------------------------
@@ -687,8 +687,8 @@ async def _refuse_if_no_longer_measurable(hub: Any, what: str) -> None:
     import time as _time
 
     from ..catalog.coords import altaz
-    alt, _az = altaz(float(ra), float(dec), float(hub.site["latitude"]),
-                     float(hub.site["longitude"]), _time.time())
+    lat, lon = _site_coords(hub)
+    alt, _az = altaz(float(ra), float(dec), lat, lon, _time.time())
     if alt < MIN_MEASUREMENT_ALT_DEG:
         raise DeviceError(
             f"native TPPA {what}: while waiting for a solve, the field has set "
@@ -973,7 +973,7 @@ def _ra_step_hours(hub: Any, cur_ra_hours: float, pier_side: Any = None,
     means to — but a safety rule whose edge cannot be pinned is a rule nobody
     can check.
     """
-    ha = hour_angle_h(cur_ra_hours, hub.site["longitude"], now)
+    ha = hour_angle_h(cur_ra_hours, _site_coords(hub)[1], now)
     # HA > 0 => west of the meridian, so step further west, which is RA DOWN.
     # HA <= 0 => east (or exactly on it), so step further east, which is RA UP.
     ha_step = -_RA_STEP_HOURS if ha > 0.0 else _RA_STEP_HOURS
@@ -1215,13 +1215,28 @@ def _site_dict(hub: Any) -> dict:
     `_log_measurement`) is reachable only through `_drive`, which is why they
     are guarded here rather than five more times.
     """
-    if not site_is_set(hub.site):
+    lat, lon = _site_coords(hub)
+    return {"latitude_deg": lat, "longitude_deg": lon,
+            "elevation_m": hub.site.get("elevation_m", 0.0)}
+
+
+def _site_coords(hub: Any) -> tuple[float, float]:
+    """``(latitude, longitude)`` for the polar path, or the same refusal as
+    :func:`_site_dict`.
+
+    Every site read on this path goes through here, not only the first. The
+    five helpers below `_drive` were once exempted as "reachable only through
+    `_drive`", which was true and was also a claim nothing checked: the AM5
+    driver's site push carried the same exemption on #24 and turned out to be
+    reached on every reconnect. One helper costs nothing and makes the claim
+    unnecessary.
+    """
+    latlon = site_lat_lon(hub.site)
+    if latlon is None:
         raise DeviceError(
             "no observing site is set, so polar alignment cannot be computed: "
             "save the site's location in settings first")
-    s = hub.site
-    return {"latitude_deg": s["latitude"], "longitude_deg": s["longitude"],
-            "elevation_m": s.get("elevation_m", 0.0)}
+    return latlon
 
 
 def _options(hub: Any, geom: tuple) -> dict:
@@ -1690,8 +1705,7 @@ def _refuse_low_arc(hub: Any, result: Any, step_hours: float) -> None:
     import time as _time
 
     from ..catalog.coords import altaz
-    lat = float(hub.site["latitude"])
-    lon = float(hub.site["longitude"])
+    lat, lon = _site_coords(hub)
     now = _time.time()
     # Each point is projected at the time it will actually be REACHED, not at
     # "now" — see _ARC_LEG_SECONDS.
@@ -1753,7 +1767,7 @@ async def _log_measurement(hub: Any, tel: Any, index: int, result: Any,
     except Exception:  # noqa: BLE001 — see above
         claimed = "the mount would not say where it is"
     try:
-        ha = hour_angle_h(result.ra_hours, hub.site["longitude"], frame.timestamp)
+        ha = hour_angle_h(result.ra_hours, _site_coords(hub)[1], frame.timestamp)
         bus.log("info",
                 f"native TPPA point {index + 1}/3: solved RA "
                 f"{result.ra_hours:.4f}h Dec {result.dec_deg:+.3f}° "
@@ -1780,7 +1794,7 @@ def _reject_implausible_fit(err: dict, hub: Any) -> None:
     the operator judge" is not an option here: the number is not large-but-real,
     it is the output of a fit that silently lost conditioning.
     """
-    lat = float(hub.site["latitude"])
+    lat = _site_coords(hub)[0]
     alt_err_deg = err["alt_arcmin"] / 60.0
     total_deg = err["total_arcmin"] / 60.0
     # error_det.calculate_mount_axis_error: northern alt_err = axis_alt - pole;
