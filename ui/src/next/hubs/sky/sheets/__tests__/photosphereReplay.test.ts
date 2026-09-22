@@ -17,7 +17,7 @@ import { deflateSync } from 'node:zlib';
 import { decodePng, encodePng, pngChunk, PNG_SIGNATURE } from '../__sim__/png';
 import { createHarness, resample } from '../__sim__/harness';
 import { mergeObservations, replayCase, type Observation } from '../__sim__/replay';
-import { DOME_CELLS } from '../photosphereGeometry';
+import { DOME_CELLS, OVERLAP_BRIGHTNESS_MIN, OVERLAP_EDGE_MIN, overlapConflictTerm } from '../photosphereGeometry';
 import { endsOverlapRun, extendsOverlapRun, LENS_DOUBT_AFTER, type CaptureOutcome } from '../photosphere';
 
 let passed = 0, failed = 0, skipped = 0;
@@ -595,6 +595,41 @@ else await test(QUIET, () => {
     'a scan with the lens the scanner assumes was told its lens may be set wrong');
   // Mutation: LENS_DOUBT_AFTER = 1. This case reddens on both assertions.
   // Observed red.
+});
+
+const TERMS = 'replay: every overlap-wait says which term refused, on the numbers that decided it (#130)';
+if (!wrongLens) skip(TERMS, NO_RECORDING);
+else await test(TERMS, () => {
+  // `overlap-wait` was one name for a brightness conflict, an edge conflict
+  // and both, with none of the numbers - the gap `alignment-wait` had before
+  // #76 instrumented it. The wrong-lens scan is the one that refuses often
+  // enough to grade this on every record rather than on one.
+  // Mutation: drop `overlapTerm` from the overlap-wait recordCapture. Observed
+  // red: 'an overlap-wait record named no term'.
+  // Mutation: in overlapConflictTerm, swap the 'brightness' and 'edges'
+  // results. Observed red: 'the term does not match its own numbers', and the
+  // unit case below with it.
+  const waits = (wrongLens.captures as Array<Record<string, unknown>>)
+    .filter(record => record.outcome === 'overlap-wait');
+  assert.ok(waits.length > 0, 'the wrong-lens scan refused nothing, so this grades nothing');
+  for (const record of waits) {
+    assert.ok(['brightness', 'edges', 'both'].includes(record.overlap_term as string),
+      `an overlap-wait record named no term: ${JSON.stringify(record)}`);
+    const dim = typeof record.correlation === 'number' && record.correlation < OVERLAP_BRIGHTNESS_MIN;
+    const edge = typeof record.feature_correlation === 'number' && record.feature_correlation < OVERLAP_EDGE_MIN;
+    const expected = dim && edge ? 'both' : dim ? 'brightness' : 'edges';
+    assert.equal(record.overlap_term, expected, `the term does not match its own numbers: ${JSON.stringify(record)}`);
+    assert.equal(typeof record.samples, 'number');
+    assert.equal(typeof record.searched, 'boolean');
+  }
+});
+
+await test('overlapConflictTerm names the term and is null for anything but a conflict (#130)', () => {
+  assert.equal(overlapConflictTerm({ result: 'agree', samples: 9, correlation: .9, featureCorrelation: .9 }), null);
+  assert.equal(overlapConflictTerm({ result: 'unknown', samples: 0, correlation: null }), null);
+  assert.equal(overlapConflictTerm({ result: 'conflict', samples: 9, correlation: .2, featureCorrelation: .9 }), 'brightness');
+  assert.equal(overlapConflictTerm({ result: 'conflict', samples: 9, correlation: .9, featureCorrelation: .2 }), 'edges');
+  assert.equal(overlapConflictTerm({ result: 'conflict', samples: 9, correlation: .2, featureCorrelation: .2 }), 'both');
 });
 
 const RESET = 'replay: an outcome other than a refusal puts the ordinary cue back (#52)';

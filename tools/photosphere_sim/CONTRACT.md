@@ -166,7 +166,11 @@ the canopy is indistinguishable from one that also found the trunk.
   `{"t_ms","frame_id","compass_ready","tilt_ready","aim":<cell id|null>,"basis":{"right","up","forward"}|null,"frame_count","cue"}`.
 - `result/captures.jsonl`: the scanner's capture log, one line per attempt:
   `{"at","outcome","cell"?, "basis"?, "sensor_basis"?, "adjusted"?, "wait"?,
-  "separation"?, "anchor"?}`. `wait`, `separation` and `anchor` belong to
+  "separation"?, "anchor"?, "gap"?, "overlap_term"?, "correlation"?,
+  "feature_correlation"?, "samples"?, "searched"?}`. The last five belong to
+  `overlap-wait` (issue #130): which term of the conflict refused
+  (`brightness`, `edges` or `both`), the two correlations it decided on, the
+  sample count, and whether registration searched before refusing. `wait`, `separation` and `anchor` belong to
   `alignment-wait` and were added for issue #76, because one outcome name
   covered three different refusals and a log of them said only that a hold did
   not capture. `separation` is written on one other outcome:

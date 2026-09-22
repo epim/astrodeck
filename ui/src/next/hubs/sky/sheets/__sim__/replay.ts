@@ -278,6 +278,14 @@ export async function replayCase(caseDir: string): Promise<Summary> {
       ...(record.separation === undefined ? {} : { separation: record.separation }),
       ...(record.anchor === undefined ? {} : { anchor: record.anchor }),
       ...(record.gap === undefined ? {} : { gap: record.gap }),
+      // What an `overlap-wait` decided on (issue #130): which term refused,
+      // the two correlations, the sample count, and whether registration
+      // searched before refusing.
+      ...(record.overlapTerm === undefined ? {} : { overlap_term: record.overlapTerm }),
+      ...(record.correlation === undefined ? {} : { correlation: record.correlation }),
+      ...(record.featureCorrelation === undefined ? {} : { feature_correlation: record.featureCorrelation }),
+      ...(record.samples === undefined ? {} : { samples: record.samples }),
+      ...(record.searched === undefined ? {} : { searched: record.searched }),
     }));
     const summary: Summary = {
       frames_delivered: framesDelivered,
