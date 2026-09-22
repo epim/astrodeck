@@ -61,6 +61,10 @@ class CameraCapabilities:
     #: which on this engine's polling floor tops out near 20 fps. Declared, never
     #: assumed: a brand that has not implemented the hooks below says so here.
     burst_supported: bool = False
+    #: Can the hot-side fan be read and set? Issue #22: on the Poseidon-M PRO
+    #: it is config 21, and hot-side heat rejection is the dominant TEC
+    #: failure mode - the fan is the only part of it software can touch.
+    has_fan_control: bool = False
     #: Highest frame rate this adapter will honour at full ROI, or None when it
     #: cannot say. Informational: the recorder clamps to it and reports the
     #: clamp rather than silently delivering a slower file than the caller asked
@@ -174,6 +178,14 @@ class CameraAdapter(ABC):
         None is UNKNOWN, never OFF — see Camera.get_dew_heater for the bug that
         distinction exists to prevent. Returns rather than raises for the same
         reason get_temperature does: it is polled."""
+        return None
+
+    def set_fan_power(self, power: int) -> None:
+        raise DeviceError("camera has no controllable fan")
+
+    def get_fan_power(self) -> int | None:
+        """The hot-side fan's level (0-100%), or None when unreadable. None is
+        UNKNOWN, never off, for the reason get_dew_heater gives."""
         return None
 
     def applied_roi(self) -> "ROI | None":

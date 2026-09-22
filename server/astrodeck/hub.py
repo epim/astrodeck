@@ -7224,6 +7224,7 @@ class Hub:
                     "temperature": temp,
                     "can_cool": cam.can_cool,
                     "has_dew_heater": getattr(cam, "has_dew_heater", False),
+                    "has_fan_control": getattr(cam, "has_fan_control", False),
                     "width": cam.sensor_width, "height": cam.sensor_height,
                     "max_gain": cam.max_gain,
                     "max_bin": getattr(cam, "max_bin", 4),
@@ -7327,6 +7328,16 @@ class Hub:
                     dew = await getd() if callable(getd) else None
                     if dew is not None:
                         out["camera"]["dew_heater"] = int(dew)
+                except Exception:
+                    pass
+                # Issue #22: the hot-side fan, read from the camera so a restart
+                # cannot make it look like whatever was last written. Absent
+                # when unknown, never 0.
+                try:
+                    getf = getattr(cam, "get_fan_power", None)
+                    fan = await getf() if callable(getf) else None
+                    if fan is not None:
+                        out["camera"]["fan_power"] = int(fan)
                 except Exception:
                     pass
                 # Monitor cooler readout — driven by the per-backend get_cooler()

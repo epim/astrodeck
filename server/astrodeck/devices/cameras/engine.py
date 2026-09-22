@@ -66,6 +66,7 @@ class NativeCamera(Camera):
             self.max_bin = max(caps.bin_modes)  # UX-27: real supported ceiling
         self.can_cool = caps.has_cooler
         self.has_dew_heater = caps.has_dew_heater
+        self.has_fan_control = caps.has_fan_control
         self.bayer_pattern = caps.bayer_pattern
         # The gain at which this sensor's conversion gain steps down its read
         # noise (Player One IMX571: 125, measured 3.96 e- -> 1.36 e-). Carried
@@ -278,6 +279,23 @@ class NativeCamera(Camera):
         if not self._caps or not self._caps.has_dew_heater:
             raise DeviceError(f"{self.name} has no dew heater")
         await self._run(lambda: self._a.set_dew_heater(int(power)))
+
+    async def set_fan_power(self, power: int) -> None:
+        if not self._caps or not self._caps.has_fan_control:
+            raise DeviceError(f"{self.name} has no controllable fan")
+        power = int(power)
+        if not 0 <= power <= 100:
+            raise DeviceError(f"fan power must be 0-100, got {power}")
+        await self._run(lambda: self._a.set_fan_power(power))
+
+    async def get_fan_power(self) -> int | None:
+        if not self._caps or not self._caps.has_fan_control:
+            return None
+        try:
+            v = await asyncio.to_thread(self._a.get_fan_power)
+        except Exception:  # noqa: BLE001 - polled; an unreadable fan is unknown
+            return None
+        return None if v is None else int(v)
 
     async def get_dew_heater(self) -> int | None:
         if not self._caps or not self._caps.has_dew_heater:

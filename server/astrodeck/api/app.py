@@ -1358,6 +1358,12 @@ class DewBody(BaseModel):
     power: int = 0
 
 
+class FanBody(BaseModel):
+    """Issue #22. Bounded at the boundary so a bad value is a 422, never a
+    write the camera has to refuse."""
+    power: int = Field(..., ge=0, le=100)
+
+
 class CalibratorBody(BaseModel):
     brightness: int = Field(ge=0)
 
@@ -6056,6 +6062,19 @@ def create_app(*, bind_host: str | None = None,
             # A human just moved this heater: the dew loop backs off for the
             # override window rather than overwriting it on the next tick.
             dew_controller.note_manual("camera")
+            return {"ok": True}
+        except DeviceError as e:
+            raise _err(e)
+
+    @app.post("/api/camera/fan", dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
+    async def camera_fan(body: FanBody):
+        """Issue #22: set the hot-side fan (0-100%). Hot-side heat rejection is
+        the dominant TEC failure mode, and ruling the fan out during the
+        2026-09-12 cooler failure took poking config ids from a script."""
+        try:
+            cam = hub.require("camera")
+            await cam.set_fan_power(body.power)
             return {"ok": True}
         except DeviceError as e:
             raise _err(e)

@@ -203,6 +203,11 @@ export interface RigStatus {
     // fallback would move that same lie server-side"), so a consumer must show
     // the absence, never substitute a number for it.
     dew_heater?: number;
+    // The TEC's hot-side FAN (issue #22; config 21 on the Poseidon-M PRO).
+    // Same rule as dew_heater: read back from the camera, ABSENT when the
+    // camera cannot be asked, and a consumer must show that rather than 0.
+    has_fan_control?: boolean;
+    fan_power?: number;
     // WHAT COLOUR THIS SENSOR IS (ruling Q7). Server: hub.py:6871,6928-6929.
     // NORMALISED to the full four letters through `normalise_bayer`
     // (imaging/sessionstack.py:154-164): the native ZWO and Player One bindings
