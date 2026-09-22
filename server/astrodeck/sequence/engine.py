@@ -2499,6 +2499,16 @@ class SequenceEngine:
                     bus.log("warning", f"guiding failed to start: {e} — continuing "
                                        "unguided", "sequence")
 
+        self._arm_meridian_flip(target)
+
+        # setup complete — capture is about to begin. Arm the no-progress watchdog
+        # and anchor its clock to NOW so a slow slew/solve/AF that just finished
+        # doesn't instantly read as a stall against the last target's frame stamp.
+        self._last_frame_at = time.time()
+        self._progress_expected = True
+
+    def _arm_meridian_flip(self, target: Target) -> None:
+        """Set the flip latch for the target just acquired (see below)."""
         # Arm the meridian flip for THIS target, so a GEM tracking east→west
         # across the meridian flips exactly once when it crosses. A target
         # acquired hours west is on the correct pier side and stays disarmed —
@@ -2512,9 +2522,28 @@ class SequenceEngine:
         # the log at all. `schedule.flip_should_arm` owns the boundary and the
         # reasoning for it.
         self._flip_armed = False
-        if self.plan.meridian_flip and "telescope" in self.hub.devices:
+        from ..site_gate import site_lat_lon
+        latlon = site_lat_lon(self.hub.site)
+        if (self.plan.meridian_flip and "telescope" in self.hub.devices
+                and latlon is None):
+            # NO SITE, NOTHING TO ARM (#24). The latch is hour angle, and hour
+            # angle at the 0,0 default is the Gulf of Guinea's: armed on that,
+            # the flip gate would decline it anyway, but the latch is also what
+            # `_enforce_flip_owed` believes. Said here, once per run on the same
+            # flag the flip gate uses, because a latch that is never armed never
+            # reaches the gate's own warning.
+            if not self._flip_no_site_logged:
+                self._flip_no_site_logged = True
+                bus.log("warning",
+                        f"{target.name}: a meridian flip is planned but this "
+                        f"rig has no configured site, so nothing here can work "
+                        f"out where the meridian is — no flip will be taken. "
+                        f"Save the site's location in settings, or switch the "
+                        f"flip off to stop this run expecting one",
+                        "sequence")
+        elif self.plan.meridian_flip and "telescope" in self.hub.devices:
             try:
-                lon = self.hub.site["longitude"]
+                lon = latlon[1]
                 self._flip_armed = schedule.flip_should_arm(
                     schedule.hours_to_meridian_flip(target.ra_hours, lon),
                     self._flip_lead_s(target) / 60.0)
@@ -2530,12 +2559,6 @@ class SequenceEngine:
                         f"flip is owed ({e}) — the flip is DISARMED for this "
                         f"target, so nothing will move it off its limit",
                         "sequence")
-
-        # setup complete — capture is about to begin. Arm the no-progress watchdog
-        # and anchor its clock to NOW so a slow slew/solve/AF that just finished
-        # doesn't instantly read as a stall against the last target's frame stamp.
-        self._last_frame_at = time.time()
-        self._progress_expected = True
 
     async def _capture(self, step, target: Target | None, *, exposure_s=None,
                        save: bool = True) -> dict:
@@ -5504,11 +5527,16 @@ class SequenceEngine:
         Entered only when the flip point falls inside the upcoming frame window
         but has not arrived yet, so we never START an exposure that would
         straddle it. Bounded by construction: the caller only waits when the
-        remaining time is ≤ one frame window."""
-        try:
-            lon = self.hub.site["longitude"]
-        except Exception:
+        remaining time is ≤ one frame window.
+
+        Reached only past `_maybe_meridian_flip`'s site gate, and asks again
+        anyway: a hold computed from the 0,0 default waits for a meridian
+        hours away, and the next caller may not come through that gate."""
+        from ..site_gate import site_lat_lon
+        latlon = site_lat_lon(self.hub.site)
+        if latlon is None:
             return
+        lon = latlon[1]
         while True:
             await self._checkpoint()            # honor a concurrent pause
             ttf_h = schedule.hours_to_meridian_flip(target.ra_hours, lon)
@@ -6364,8 +6392,20 @@ class SequenceEngine:
         if hold_min <= 0:
             self._flip_owed = False
             return                      # 0 is off, as everywhere else here
+        # NO SITE, NO CROSSING TO GUARD (#24). At the 0,0 default the countdown
+        # below crosses zero at the Gulf of Guinea's meridian, hours from the
+        # rig's own. The mount has not flipped because nothing asked it to, so
+        # the side is unchanged, and this used to hold a perfectly good target
+        # for `flip_owed_hold_min` and then skip it - at an arbitrary hour,
+        # with an error saying a flip was owed. Unknown geometry guards
+        # nothing, which is what the `except` below already said.
+        from ..site_gate import site_lat_lon
+        latlon = site_lat_lon(self.hub.site)
+        if latlon is None:
+            self._flip_owed = False
+            return
+        lat, lon = latlon
         try:
-            lon = self.hub.site["longitude"]
             ttf_h = schedule.hours_to_meridian_flip(target.ra_hours, lon)
         except Exception:               # noqa: BLE001 - unknown geometry guards nothing
             return
@@ -6388,8 +6428,7 @@ class SequenceEngine:
         # flip. Same predicate the flip gate itself uses, so the two cannot
         # disagree about which targets are exempt.
         try:
-            if schedule.flip_can_be_skipped(target.dec_deg,
-                                            self.hub.site["latitude"], side):
+            if schedule.flip_can_be_skipped(target.dec_deg, lat, side):
                 self._flip_owed = False
                 return
         except Exception:               # noqa: BLE001 - not skippable is the safe read

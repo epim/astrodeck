@@ -48,6 +48,14 @@ async def sim_hub(tmp_path, monkeypatch):
     monkeypatch.setattr(hub_module, "CAPTURE_DIR", tmp_path)
     monkeypatch.setattr(hub_module.config_store.cfg().safety,
                         "solar_avoidance", False)
+    # A REAL SITE, stated. Every case here ran at the 0,0 default until #24
+    # taught the invariant to stand down without a site - which the invariant
+    # now does, correctly, and which turned eight of these green-for-the-wrong-
+    # reason cases red. The hour angle is stubbed below, so the numbers do not
+    # matter; that there ARE numbers does.
+    monkeypatch.setattr(Hub, "site", property(
+        lambda self: {"latitude": 40.0, "longitude": -74.0,
+                      "elevation_m": 10.0, "is_default": False}))
     h = Hub()
     await h.connect_sim()
     yield h
