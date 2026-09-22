@@ -174,9 +174,11 @@ def _expected_disc_areas(scene: dict, c_ref: np.ndarray) -> dict:
     landmark only where the hit face's normal is within ``acos(_NORMAL_DOT)``
     of the declared one, so on a host of radius ``R`` only a band
     ``R sin(acos(_NORMAL_DOT))`` wide survives. Where that band is narrower
-    than the disc, the expected area is scaled by the ratio of the two widths:
-    a lower bound on the clipped area, which is the safe direction for a
-    filter that must never discard a landmark. Without it the chart yard's
+    than the disc, the expected area is scaled by the ratio of the two widths.
+    That was written as "a lower bound on the clipped area"; measured against
+    the paint (tests/test_sphere_disc_truth.py) it runs 0.4 to 1.2 per cent
+    OVER, because the disc is measured along the curved surface. A 40 per cent
+    filter does not feel that, but the model is close, not a bound. Without it the chart yard's
     ``T1``, a 0.08 m disc on a 0.25 m trunk, is measured against an unclipped
     model it can only ever fill 44 per cent of.
 
