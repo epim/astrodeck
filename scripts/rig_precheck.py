@@ -22,6 +22,39 @@ ROOT = os.environ.get("ASTRODECK_INSTALL_ROOT", r"C:\Users\James\AstroDeck")
 BASE = "http://127.0.0.1:8800"
 
 
+def _site_line() -> str:
+    """Whether a real observing site is saved, WITHOUT printing any of it.
+
+    Issue #128, and it is a fix to a habit rather than to code. Nothing here
+    reported the site, so the way to check it was to read
+    `config/astrodeck.json` over ssh - and that file carries the label and the
+    coordinates in clear. Doing exactly that on 2026-09-21 put the site's label
+    (one of the three privacy needles) into an agent transcript, from a command
+    whose actual question was "is is_default false".
+
+    So the question gets an answer of its own. Nothing below can print a
+    latitude, a longitude or a name: the only facts that leave here are a
+    boolean and an elevation, and the elevation is not a needle.
+    """
+    try:
+        with open(os.path.join(ROOT, "config", "astrodeck.json"),
+                  encoding="utf-8") as fh:
+            site = (json.load(fh) or {}).get("site") or {}
+    except (OSError, ValueError) as exc:
+        return f"UNREADABLE ({type(exc).__name__}) - treat as not set"
+    if site.get("is_default", True):
+        return ("NOT SET - every altitude, meridian flip, dark window and "
+                "sun-avoidance decision is computed for latitude 0, longitude 0")
+    lat, lon = site.get("latitude"), site.get("longitude")
+    if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+        return "saved but its coordinates are not numbers - treat as not set"
+    try:
+        elevation = f"{float(site.get('elevation_m') or 0.0):.0f} m"
+    except (TypeError, ValueError):
+        elevation = "unknown elevation"
+    return f"configured ({elevation})"
+
+
 def _session_cookie() -> str:
     with open(os.path.join(ROOT, "config", "astrodeck.json"), encoding="utf-8") as fh:
         cfg = json.load(fh)
@@ -63,6 +96,7 @@ def main(argv: list[str]) -> int:
     print(f"sequence: {sequence.get('state')} running={sequence.get('running')}")
     lanes = status.get("busy_lanes") or status.get("busy") or {}
     print(f"busy lanes: {lanes if lanes else 'none'}")
+    print("site: " + _site_line())
     for flag in ("looping", "bahtinov_active", "live_stack_active"):
         print(f"{flag}: {status.get(flag)}")
 
