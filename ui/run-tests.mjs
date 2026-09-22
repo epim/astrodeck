@@ -158,7 +158,48 @@ export function runOne(file) {
   });
 }
 
+/** Typecheck the whole project before running anything, and fail the run if
+ *  it does not pass.
+ *
+ *  ISSUE #126. tsx strips types; it does not check them. So a test file could
+ *  contain a type error, print "31/31 passed", and be committed green — and
+ *  two were, on 2026-09-21: `photosphereStability.test.ts` asserted on
+ *  `VisualStability.canWitness`, which is `private`, and TS2341 was raised by
+ *  nothing until a release build ran `tsc -b` in a clean worktree two days and
+ *  76 commits later. A gate that only a release runs is a gate with an
+ *  unbounded interval between the break and the discovery, and the worst
+ *  possible place to find one is between a version bump and a rig waiting for
+ *  the build.
+ *
+ *  It goes INSIDE the runner rather than beside it in the npm script so that
+ *  invoking the runner directly — which is the local habit — cannot skip it.
+ *  Measured at 10.7 s cold on this box, and `tsc -b` is incremental, so a
+ *  repeat run costs a fraction of that. It runs before the file workers
+ *  because a type error usually explains whatever the tests are about to do.
+ */
+function typecheck() {
+  return new Promise((resolve) => {
+    const started = Date.now();
+    execFile(process.execPath,
+             [join(ROOT, "node_modules", "typescript", "bin", "tsc"), "-b"],
+             { cwd: ROOT, maxBuffer: 8 << 20 },
+             (err, stdout, stderr) => {
+      const secs = ((Date.now() - started) / 1000).toFixed(1);
+      if (!err) {
+        console.log(`tsc -b: clean (${secs}s)`);
+        resolve(true);
+        return;
+      }
+      console.error(`\ntsc -b FAILED after ${secs}s — a type error is a broken`
+                    + ` test suite, whatever the tallies below would say:\n`);
+      console.error(`${stdout || ""}${stderr || ""}`.trim());
+      resolve(false);
+    });
+  });
+}
+
 async function main() {
+  if (!await typecheck()) process.exit(1);
   const files = findTests(join(ROOT, "src")).sort();
   if (files.length === 0) {
     console.error("no test files found — the discovery walk is broken, which " +
