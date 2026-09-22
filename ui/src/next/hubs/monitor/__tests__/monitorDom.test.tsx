@@ -163,7 +163,7 @@ const { MonitorHub } = await import("../MonitorHub");
 const { LogScreen } = await import("../log/LogScreen");
 const { AlertsScreen } = await import("../alerts/AlertsScreen");
 const { VIEW_ONLY_NOTE } = await import("../live/RecoveryCards");
-const { FLIP_SITE_REASON } = await import("../live/FlipTile");
+const { FLIP_SITE_REASON, flipFace } = await import("../live/FlipTile");
 const { accessPhrase } = await import("../../../../lib/caps");
 const { WEATHER_OFF_HINT, WEATHER_OFF_TITLE } = await import(
   "../../weather/conditions/verdict"
@@ -626,10 +626,16 @@ await testAsync("a viewer's run controls state the reason and fire nothing", asy
 // `meridian.hours_to_flip` is derived from the site (`lst - ra_hours`), and it
 // inverts to the rig's longitude to about 120 m - so the server nulls it and
 // collapses `meridian.status` to "unknown" for a principal without
-// `view.site_derived`. THE TILE MUST NOT READ THAT AS A BROKEN MOUNT. The
-// fixture below is exactly what a viewer receives, and the assertion is that the
-// tile blames the redaction rather than the hardware.
-await testAsync("a viewer is told the flip clock needs site access, not that the mount is mute", async () => {
+// `view.site_derived`.
+//
+// THE TILE IS NOW NOT DRAWN AT ALL for such a principal (owner's ruling,
+// 2026-09-22: "make it so they cant see those panels at all, rather than having
+// the panels exist but empty"). This case used to assert the opposite - that
+// the tile rendered and blamed the redaction rather than the hardware - and
+// that assertion has moved DOWN a layer to `flipFace`, which still produces
+// exactly that face and is still reached in the frame between a capability
+// changing and the re-render.
+await testAsync("a viewer gets no flip tile at all, and the face it would have shown still blames the redaction", async () => {
   await act(async () => {
     useStore.setState({
       principal: VIEWER,
@@ -642,12 +648,57 @@ await testAsync("a viewer is told the flip clock needs site access, not that the
     } as never);
   });
   await settle();
-  const tile = q('[data-testid="vital-flip"]');
-  assert(tile != null, "the flip tile disappeared - the assertion below would be vacuous");
-  assert(tile.textContent.includes(FLIP_SITE_REASON),
-    `the viewer is not told why the clock is blank: "${tile.textContent}"`);
-  assert(!/does not report a flip/.test(tile.textContent),
-    `a withheld countdown was reported as a mount fault: "${tile.textContent}"`);
+  eq(q('[data-testid="vital-flip"]'), null,
+     "a viewer was shown a FLIP tile it can never fill");
+  eq(q('[data-testid="vital-dawn"]'), null,
+     "a viewer was shown a TO DAWN tile it can never fill");
+  eq(q('[data-testid="vital-dew"]'), null,
+     "a viewer was shown a DEW MARGIN tile it can never fill");
+  // ...and the tiles a viewer CAN fill are all still there. A collapse that
+  // took the grid with it would pass every line above.
+  for (const id of ["sensor", "disk", "next"]) {
+    assert(q(`[data-testid="vital-${id}"]`) != null,
+      `the ${id} tile went with them - a viewer can read that one`);
+  }
+  // The face itself is unchanged and still honest, for the frame between a
+  // capability changing and the re-render, and for any other caller.
+  const face = flipFace(
+    { status: "unknown", hours_to_flip: null, flip_enabled: true, pier_side: "east" } as never,
+    false, false);
+  assert(String(face.sub).includes(FLIP_SITE_REASON),
+    `the withheld face stopped naming the reason: "${String(face.sub)}"`);
+  assert(!/does not report a flip/.test(String(face.sub)),
+    `a withheld countdown is reported as a mount fault: "${String(face.sub)}"`);
+});
+
+// A SPLIT ROLE, WHICH NO SHIPPED ROLE IS - and that is why this case exists.
+// `view.site_derived` and `view.weather` travel together across every current
+// role (viewer and syncer hold neither, operator and admin hold both), so
+// gating a tile on the WRONG one of the two is invisible: a mutation swapping
+// them passed all 37 cases. The capability table already warns that the
+// implication is not an invariant ("if custom/split roles ever exist ... a
+// control.capture-without-view.weather principal must NOT be able to read
+// coordinates"), so the tile-by-tile mapping gets a principal that separates
+// them.
+await testAsync("a principal with site access but not weather keeps the site tiles and loses the dew one", async () => {
+  await act(async () => {
+    useStore.setState({
+      principal: { role: "operator", email: null,
+                   caps: ["view.status", "view.preview", "view.site_derived"] },
+      status: {
+        ...(useStore.getState() as any).status,
+        meridian: { status: "counting", hours_to_flip: 1.63, flip_enabled: true, pier_side: "east" },
+      },
+    } as never);
+  });
+  await settle();
+  assert(q('[data-testid="vital-flip"]') != null,
+    "the FLIP tile is gated on view.weather - it is site data, not weather");
+  assert(q('[data-testid="vital-dawn"]') != null,
+    "the TO DAWN tile is gated on view.weather - it is site data, not weather");
+  eq(q('[data-testid="vital-dew"]'), null,
+     "the DEW MARGIN tile survived without view.weather, so it is gated on the "
+     + "wrong capability");
 });
 
 await testAsync("an operator, with the same tile, still gets the countdown", async () => {
