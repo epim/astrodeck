@@ -30,6 +30,32 @@ coordinates from a holder of `view.weather` breaks the feature for every
 non-admin. That was settled in July as exception I2. The allowlist is the honest
 record of it, and it is what makes this test fail the day a SECOND route starts
 carrying coordinates - which is the risk #19 is actually about.
+
+AND THE SCAN HAS TO BE ABLE TO SEE THAT ENTRY, which for a while it could not.
+`from .config import config_store` binds the singleton into the importing
+module, and this file patched three modules by name while thirty-odd hold their
+own reference - `weather.py` among them. So the route read the REAL store, found
+its default site, answered `"site_lat":null` under both synthetic sites, and
+disclosed nothing to a scan built around it. The allowlist entry was then
+deleted as dead weight, with a docstring recording the vacuum as a measurement.
+The store is now swept across every imported astrodeck module, and
+`test_the_allowlisted_route_is_actually_scanned` fails the day the one known
+positive stops being visible.
+
+MUTATIONS RUN, and what each printed:
+
+  M1, revert the sweep to the three modules this file used to name - the state
+  the tree was actually in. 2 failed: the allowlisted route "disclosed nothing
+  to the scan", and the sweep case. The main control PASSES under this
+  mutation, which is the whole point: the leak was invisible, not absent.
+
+  M2, delete the allowlist entry again. 2 failed, and this time the main
+  control is one of them, naming /api/weather and seven renderings of the
+  coordinates. That is the failure that should have happened when the entry was
+  deleted, and did not.
+
+  M3, drop the dated ruling from the entry's reason. 1 failed: an allowlist
+  whose entries do not point at a decision is a list of excuses.
 """
 from __future__ import annotations
 
@@ -70,7 +96,21 @@ SITE_B = (12.3456789, -45.6789012)
 
 # See the module docstring. A second entry here is a decision somebody has to
 # make and write down, which is the whole point of the list being this short.
-ALLOWED: dict[str, str] = {}
+#
+# This entry was briefly DELETED and the suite stayed green, which is how the
+# vacuum below was found: the scan could not see the one leak it was built
+# around, so the record of the decision looked like dead weight. It is back,
+# and `test_the_allowlisted_route_is_actually_scanned` now fails if it ever
+# stops being load-bearing again.
+ALLOWED: dict[str, str] = {
+    "/api/weather": (
+        "Exception I2, 2026-07-17. The radar and satellite map centres its "
+        "tiles client-side on site_lat/site_lon, so withholding them from a "
+        "holder of view.weather breaks the map for every non-admin. Gated on "
+        "view.weather and never reaching a viewer; the owner accepted that an "
+        "operator can infer the rig's region. Revoking it means reworking the "
+        "map to centre server-side, which is still an open question on #19."),
+}
 
 
 class _FixedPrincipal:
@@ -89,6 +129,22 @@ class _FixedPrincipal:
 def _restore_provider():
     yield
     reset_active_provider()
+
+
+def _sweep_config_store(monkeypatch, store) -> list[str]:
+    """Point every already-imported astrodeck module's `config_store` at
+    `store`. Returns the module names patched, so a case can assert the sweep
+    actually reached something rather than silently matching nothing."""
+    import sys
+    patched = []
+    for name, mod in list(sys.modules.items()):
+        if not name.startswith("astrodeck") or mod is None:
+            continue
+        if getattr(mod, "config_store", None) is None:
+            continue
+        monkeypatch.setattr(mod, "config_store", store, raising=False)
+        patched.append(name)
+    return patched
 
 
 def _client(tmp_path, monkeypatch, lat, lon, role: str = "operator"):
@@ -116,6 +172,23 @@ def _client(tmp_path, monkeypatch, lat, lon, role: str = "operator"):
     monkeypatch.setattr(config_mod, "config_store", store)
     monkeypatch.setattr(hub_mod, "config_store", store)
     monkeypatch.setattr(app_module, "config_store", store)
+    # EVERY module that holds its own reference, not the three this file used
+    # to name. `from .config import config_store` binds the singleton into the
+    # importing module, so patching `astrodeck.config` alone leaves 30-odd
+    # modules still reading the REAL store - and a route that reads the site
+    # through one of them sees the default site under BOTH synthetic sites,
+    # produces no coordinates at all, and passes the differential by having
+    # nothing to disclose.
+    #
+    # That is not hypothetical: it is how `/api/weather` came to sit outside
+    # the allowlist. It names `site_lat`/`site_lon` outright and returned
+    # `null` for both throughout this scan, so the entry recording the I2
+    # exception could be deleted with the suite staying green - a control whose
+    # one known positive had stopped being visible to it.
+    #
+    # Swept rather than listed so a module added tomorrow is covered without
+    # anyone remembering this file exists.
+    _sweep_config_store(monkeypatch, store)
     monkeypatch.setattr(hub_mod, "CAPTURE_DIR", tmp_path / "captures")
     monkeypatch.delenv(app_module.AUTH_ENV_VAR, raising=False)
     monkeypatch.setattr(app_module, "configure_provider_from_auth",
@@ -128,6 +201,8 @@ def _client(tmp_path, monkeypatch, lat, lon, role: str = "operator"):
     monkeypatch.setattr(objects_mod, "CATALOG", objects_mod.CATALOG[:6])
     store.set_site(Site(name="fixture", latitude=lat, longitude=lon,
                         elevation_m=10.0, is_default=False))
+    # Again after the app is built: create_app imports route modules, and a
+    # module first imported there would otherwise keep the real store.
     reset_active_provider()
     principal = principal_for_role(role)
     # Only for the roles the answer must be WITHHELD from. `admin` is used
@@ -136,7 +211,9 @@ def _client(tmp_path, monkeypatch, lat, lon, role: str = "operator"):
         f"the {role} role now holds view.site_precise, so this file is asking "
         "a caller that is entitled to the answer and grades nothing")
     set_active_provider(_FixedPrincipal(principal))
-    return TestClient(app_module.create_app())
+    client = TestClient(app_module.create_app())
+    _sweep_config_store(monkeypatch, store)
+    return client
 
 
 def _routes(client) -> list[str]:
@@ -223,6 +300,56 @@ def test_no_route_prints_the_configured_coordinates(tmp_path, monkeypatch):
           "them - add it to ALLOWED with the decision that says so.")
 
 
+def test_the_allowlisted_route_is_actually_scanned(tmp_path, monkeypatch):
+    """AN ALLOWLIST ENTRY FOR A ROUTE THE SCAN CANNOT SEE IS NOT A DECISION,
+    IT IS A DECORATION - and this file shipped exactly that.
+
+    `/api/weather` names `site_lat` and `site_lon` in its body, which is the
+    disclosure #19 was opened about and the I2 exception permits. But
+    `weather.py` binds `config_store` at import (`from .config import
+    config_store`), and this file patched only `astrodeck.config`,
+    `astrodeck.hub` and `astrodeck.api.app` - so the route read the REAL store,
+    found its default site, and answered `"site_lat":null` under both synthetic
+    sites. No hit, nothing to allow, and the entry recording the decision was
+    deleted as dead weight with the suite staying green.
+
+    Thirty-odd other modules bind the same reference, so the vacuum was never
+    specific to weather: any route reading the site through one of them was
+    being scanned against a site that was not the one configured.
+
+    So this case asserts the positive: the allowlisted route must STILL be
+    disclosing, every run. The day it stops, the entry goes - and the day the
+    isolation breaks again, this fails instead of the allowlist quietly
+    becoming fiction.
+
+    MUTATION: drop `_sweep_config_store` back to the three named modules.
+    Observed: this fails with "/api/weather disclosed nothing", while the main
+    control passes - which is the failure that was live in the tree.
+    """
+    found = _tracking_hits(tmp_path, monkeypatch)
+    for path in ALLOWED:
+        assert path in found, (
+            f"{path} is on the allowlist but disclosed nothing to the scan. "
+            f"Either the route was fixed - in which case remove the entry - or "
+            f"the scan can no longer see it, in which case the allowlist is "
+            f"recording a decision about a route nobody is checking.")
+
+
+def test_the_sweep_reaches_more_than_the_modules_this_file_names(tmp_path,
+                                                                 monkeypatch):
+    """The sweep is the mechanism the case above depends on, so it gets its own
+    assertion rather than being trusted. Three modules were patched by name
+    before; the real number is an order of magnitude larger, and `weather` must
+    be among them."""
+    store = ConfigStore(path=tmp_path / "astrodeck.json")
+    import astrodeck.weather  # noqa: F401 - ensure it is imported to be swept
+    patched = _sweep_config_store(monkeypatch, store)
+    assert len(patched) > 10, (
+        f"the sweep matched only {len(patched)} modules, which is about the "
+        f"number this file used to name by hand: {sorted(patched)}")
+    assert "astrodeck.weather" in patched, sorted(patched)
+
+
 def test_the_scan_can_see_a_disclosure(tmp_path, monkeypatch):
     """The guard on the guard, and this file needs it more than most: a scan
     that found nothing - a broken renderer, an empty route list, a client that
@@ -297,25 +424,35 @@ def test_an_admin_is_told_and_an_operator_is_not(tmp_path, monkeypatch):
         "an operator was given the site's coordinates in full by /api/site")
 
 
-def test_the_allowlist_is_empty_and_any_entry_states_its_reason():
-    """It is EMPTY, and that is a measurement rather than an aspiration.
+def test_the_allowlist_is_one_entry_and_it_states_its_reason():
+    """ONE entry, `/api/weather`, and every entry carries the decision that put
+    it there.
 
-    Issue #19 was expected to ship with one entry - `/api/weather`, exception I2
-    of July, because the radar map centres its tiles client-side. Measured, it
-    does not need one: an operator calling `/api/weather` receives no rendering
-    of the coordinates that tracks the configured site. The exception is
-    enforced by capability, not by that route handing them to everyone, so
-    writing it down here would have recorded a hole that is not there.
+    THIS CASE PREVIOUSLY ASSERTED THE LIST WAS EMPTY, and said so as a
+    measurement: "an operator calling /api/weather receives no rendering of the
+    coordinates that tracks the configured site ... the exception is enforced
+    by capability, not by that route handing them to everyone". That was not a
+    measurement of the route, it was a measurement of a broken fixture. The
+    scan patched three modules' `config_store` and `weather.py` holds a fourth,
+    so the route read the real store's default site and answered
+    `"site_lat":null` under both synthetic sites. The route does hand the
+    coordinates to every `view.weather` holder; that is exactly what I2 says it
+    does, and the empty list was recording the absence of a hole that is
+    present and permitted.
 
-    If an entry is ever added, it carries the decision. An allowlist of one
-    pointing at a dated ruling is a different object from an unguarded leak;
-    a list nobody reads is the same thing as no list.
+    So the invariant here is not "empty" - it is "short, and every entry is
+    owned". A size bound rather than zero, because zero was a claim the fixture
+    could fake and this cannot: a second entry means somebody widened the
+    disclosure and has to write down why.
     """
-    assert ALLOWED == {}, (
-        "a route has been allowed to disclose the rig's location: "
-        f"{sorted(ALLOWED)}. That is a decision somebody has to own.")
+    assert set(ALLOWED) == {"/api/weather"}, (
+        "the set of routes allowed to disclose the rig's location has changed: "
+        f"{sorted(ALLOWED)}. Each one is a decision somebody has to own, and "
+        "the list is short enough that a diff to it is worth reading.")
     for path, why in ALLOWED.items():
         assert len(why) > 40, f"{path} is allowed without a stated reason"
+        assert any(k in why for k in ("I2", "202")), (
+            f"{path}'s reason does not point at a dated ruling: {why}")
 
 
 @pytest.mark.skipif(not NEEDLES.exists(),
