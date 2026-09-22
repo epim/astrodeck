@@ -162,6 +162,9 @@ class Camera(Device):
     max_bin: int = 4
     can_cool: bool = False
     has_dew_heater: bool = False
+    #: A readable, settable hot-side fan (issue #22). Inert everywhere but the
+    #: native adapters that declare it.
+    has_fan_control: bool = False
     bayer_pattern: str | None = None
     #: Sensor gain in e-/ADU at the camera's current gain setting (0.0 = unknown
     #: / not reported). Populated only by native adapters that expose it via
@@ -208,6 +211,15 @@ class Camera(Device):
         "warming to 11 °C (measured)". Nothing depends on it: with None the ramp
         assumes a warm room and ends itself as soon as the sensor stops following
         the setpoint, which IS the real ambient (see astrodeck/cooling.py)."""
+        return None
+
+    async def set_fan_power(self, power: int) -> None:
+        """Set the camera's hot-side fan (0-100%)."""
+        raise DeviceError(f"{self.name} has no controllable fan")
+
+    async def get_fan_power(self) -> int | None:
+        """The fan's CURRENT level (0-100%), or None when this backend cannot
+        be asked. None is unknown, never off, as for get_dew_heater."""
         return None
 
     async def set_dew_heater(self, power: int) -> None:
