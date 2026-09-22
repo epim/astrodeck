@@ -170,8 +170,6 @@ UNGUARDED: dict[str, str] = {
         "a target's altitude curve for the night.",
     "catalog/ephemeris/comets.py:row":
         "a comet's altitude and rise time in the catalogue listing.",
-    "api/app.py:catalog":
-        "the catalogue's per-target altitude column.",
     "api/app.py:site_sky":
         "the /api/site/sky route. Its lat/lon QUERY OVERRIDES are capability "
         "gated and separately audited on #19; this entry is about its DEFAULT "

@@ -119,6 +119,7 @@ from .. import gallery_listing
 from ..sync import manifest as sync_manifest_mod
 from ..sync.runner import runner as sync_push_runner
 from ..hub import CAPTURE_DIR, TOUCH_MAX_RATE_DEG_S, PromoteRefused, hub
+from ..site_gate import site_is_set
 from ..calibration import CalibrationLibrary, MatchTolerance
 from ..calibration.matcher import LightNeed
 from ..imaging import build_caption, compose_share_jpeg, fmt_share_date, to_png
@@ -7880,8 +7881,22 @@ def create_app(*, bind_host: str | None = None,
         # this job. The Atlas marker layer has gated the same body on the same
         # capability since it shipped (catalog/region.py _SITE_DERIVED_BODIES);
         # this is that gate, on the higher-precision half of the same oracle.
-        found = await asyncio.to_thread(
-            search, q, 25, None, principal.has(CAP_VIEW_SITE_DERIVED))
+        # NO SITE IS TREATED EXACTLY LIKE NO PERMISSION TO KNOW IT (#24).
+        # `hub.site` defaults to 0,0 with `is_default` True, so every alt/az
+        # below would be computed for the Gulf of Guinea and the observability
+        # ordering would sink whatever is genuinely up and float whatever is
+        # not - silently, in well-formed rows.
+        #
+        # The catalogue still WORKS: name, type, magnitude and RA/Dec are
+        # catalogue facts and do not depend on where the rig is, which is the
+        # same line already drawn for a caller without `view.site_derived`
+        # (owner's ruling, 2026-09-22: the catalogue should keep working
+        # without exposing the location). Withholding the derived fields is
+        # therefore a path this route already has, and an unset site takes it
+        # rather than needing one of its own.
+        sited = site_is_set(hub.site)
+        derived_ok = principal.has(CAP_VIEW_SITE_DERIVED) and sited
+        found = await asyncio.to_thread(search, q, 25, None, derived_ok)
         # alt/az ONLY for a holder of view.site_derived. Each row is
         # f(site, target), and the caller chooses the target — so a search box
         # is a coordinate oracle with as many samples as the caller cares to
@@ -7889,7 +7904,7 @@ def create_app(*, bind_host: str | None = None,
         # facts and stay: a viewer can still see what is in the sky, just not
         # where the sky is being observed from.
         rows = found.rows
-        if principal.has(CAP_VIEW_SITE_DERIVED):
+        if derived_ok:
             for r in rows:
                 # A SATELLITE ARRIVES WITH ITS OWN alt/az and must keep it.
                 # Its ra_hours/dec_deg are GEOCENTRIC - the direction from
@@ -7917,8 +7932,18 @@ def create_app(*, bind_host: str | None = None,
             # search — i.e. the catalog was 500ing for exactly the callers this
             # change was written for.
             rows = order_by_observability(rows)
+        notes = list(found.notes)
+        if not sited and principal.has(CAP_VIEW_SITE_DERIVED):
+            # A holder whose numbers are missing is owed the reason, and
+            # the reason is fixable in one screen. Without this the rows
+            # look identical to a viewer's and the UI would have to guess
+            # which of the two it was looking at.
+            notes.append(
+                "no observing site is saved, so altitude, azimuth and the "
+                "what-is-up-first ordering are withheld rather than computed "
+                "for latitude 0, longitude 0 - save the site in Settings")
         if explain:
-            return {"results": rows, "notes": found.notes}
+            return {"results": rows, "notes": notes}
         return rows
 
     @app.get("/api/catalog/tonight",
@@ -7933,6 +7958,18 @@ def create_app(*, bind_host: str | None = None,
         from ..catalog.tonight import tonight_score, rank_picks
         from ..catalog.difficulty import difficulty_for
 
+        # AND NEITHER DOES A BAD SITE (#24). Unlike the search route, there is
+        # no useful degraded form here: this route's entire output is
+        # tonight's windows, transit altitudes and a ranking built from them,
+        # all of which are f(site). At the 0,0 default it would rank the whole
+        # catalogue for the Gulf of Guinea and every row would look
+        # well-formed - and this is the list an operator picks targets off, so
+        # a wrong answer is worse than no answer by the width of a night.
+        if not site_is_set(hub.site):
+            raise HTTPException(409, detail={
+                "detail": "no observing site is saved, so tonight's windows "
+                          "cannot be computed - save the site in Settings",
+                "code": "no_site"})
         # A bad date otherwise falls back to TONIGHT inside the anchor parser,
         # answering for the wrong night with no sign anything went wrong.
         date = check_night_date(date)
