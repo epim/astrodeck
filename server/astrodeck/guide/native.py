@@ -204,6 +204,93 @@ def _ra_rate_ratio(cal_dec_rad: float, now_dec_rad: float) -> float | None:
     return math.cos(now_dec_rad) / denom
 
 
+#: A distinctive fragment of the engine's rate-ratio advisory
+#: (astro-guide calibration.rs:738), matched rather than the whole sentence so
+#: a reworded engine string still gets regraded instead of silently escaping.
+_RATE_ADVISORY_MARK = "rates vary by an unexpected amount"
+
+#: Scope::DEC_COMP_LIMIT (scope.cpp:68), the declination beyond which upstream
+#: does not judge the rate ratio at all. Mirrored so the regrade declines
+#: exactly where the engine's own check declines.
+_DEC_COMP_LIMIT_RAD = math.pi / 3.0
+
+
+def regrade_rate_advisory(msg: str, cal: dict,
+                          rates: tuple[float, float] | None,
+                          ) -> tuple[str, str] | None:
+    """Re-judge the engine's "RA and Dec rates vary" advisory against the
+    mount's OWN per-axis guide rates. Returns ``(level, message)``, or None
+    when there is nothing to say.
+
+    THE ADVISORY ASSUMES BOTH AXES PULSE AT THE SAME RATE. It is a literal
+    port of PHD2's `scope.cpp:900-918`, which compares the measured
+    `x_rate / y_rate` against `cos(dec)` — an identity that holds only if the
+    hardware drives RA and Dec at one rate, so that the whole difference is
+    the cos(dec) foreshortening of RA. On a mount where it does not hold, the
+    check cannot pass at any declination, and the sentence it prints names a
+    mechanical cause: "often caused by large Dec backlash".
+
+    This rig is such a mount. The AM5N pulses RA at 1.0x sidereal and Dec at
+    0.5x (`zwo_am5.py`, measured over 10 s GR/GD deltas), so the expected
+    ratio is 2 cos(dec) and the advisory fires on every calibration, at every
+    declination, for a reason that is in the datasheet. It fired twice
+    unprompted in September 2026 and is what opened issue #14; the
+    investigation that followed spent most of a session on a backlash
+    hypothesis that the evidence never required, and its own summary asks for
+    exactly this: "the advisory must know the per-axis guide rates before it
+    is allowed to draw that conclusion".
+
+    So: with the asymmetry taken into account the ratio either comes back into
+    tolerance — in which case the advisory was an artefact and saying
+    "backlash" is worse than saying nothing — or it does not, and then the
+    warning is real and gets to keep the numbers that make it checkable.
+
+    Unchanged (and still a warning) whenever the regrade cannot be done at
+    all: no rates from the mount, a symmetric mount where the engine's own
+    check was already right, an unknown or too-polar declination, or a
+    calibration with no usable rates. A regrade that guesses at a missing
+    input would be the same mistake in the other direction.
+    """
+    if _RATE_ADVISORY_MARK not in msg:
+        return ("warning", msg)
+    try:
+        ra_rate, dec_rate = (abs(float(r)) for r in rates)  # type: ignore[misc]
+    except (TypeError, ValueError):
+        return ("warning", msg)
+    if not (math.isfinite(ra_rate) and math.isfinite(dec_rate)) or dec_rate <= 0:
+        return ("warning", msg)
+    asymmetry = ra_rate / dec_rate
+    if abs(asymmetry - 1.0) < 1e-6:
+        # Equal rates: the engine compared the right two things.
+        return ("warning", msg)
+    try:
+        dec_rad = float(cal.get("declination", _UNKNOWN_DECLINATION))
+        x_rate = float(cal.get("x_rate", 0.0))
+        y_rate = float(cal.get("y_rate", 0.0))
+    except (TypeError, ValueError):
+        return ("warning", msg)
+    if dec_rad == _UNKNOWN_DECLINATION or abs(dec_rad) > _DEC_COMP_LIMIT_RAD:
+        return ("warning", msg)
+    if not (math.isfinite(x_rate) and math.isfinite(y_rate)) or y_rate == 0:
+        return ("warning", msg)
+    expected = math.cos(dec_rad) * asymmetry
+    actual = x_rate / y_rate
+    dec_deg = math.degrees(dec_rad)
+    if abs(expected - actual) <= _MAX_CAL_RA_RATE_DRIFT:
+        return ("info",
+                f"calibration RA/Dec rate ratio {actual:.2f} at dec "
+                f"{dec_deg:+.0f} is what this mount's own {asymmetry:.2f}x "
+                f"guide-rate asymmetry predicts ({expected:.2f}), so the "
+                f"engine's backlash advisory is an artefact of assuming both "
+                f"axes pulse at one rate, and is not raised")
+    return ("warning",
+            f"Calibration completed but the RA/Dec rate ratio is {actual:.2f} "
+            f"where this mount's {asymmetry:.2f}x guide-rate asymmetry and "
+            f"cos(dec {dec_deg:+.0f}) predict {expected:.2f} — a gap the "
+            f"asymmetry does not explain (large Dec backlash is the usual "
+            f"cause)")
+
+
 def _folded_ortho_deg(cal: dict) -> float:
     """A calibration's orthogonality deviation in degrees, Dec-parity folded.
 
@@ -469,6 +556,11 @@ class NativeGuider(Guider):
         # unset. Drives GuideStats.is_arcsec so the UI never labels raw pixels as
         # arcsec (UX-15). Callers that know their scale is real set it True.
         self._image_scale_known = bool(cfg.get("image_scale_known", False))
+        #: The mount's own per-axis guide rates (deg/s, RA then Dec) as last
+        #: read from the driver, kept because `regrade_rate_advisory` needs
+        #: them AFTER a calibration finishes and `_read_guide_rates` is an
+        #: await on a device that may by then be busy. None until one is read.
+        self._axis_guide_rates: tuple[float, float] | None = None
         # Mount-specific meridian-flip constant (PHD2's CalFlipRequiresDecFlip);
         # default False matches the common GEM. Used by BOTH the guiding-start
         # host contract and the meridian-flip ABC method.
@@ -995,8 +1087,16 @@ class NativeGuider(Guider):
                         + ". A longer guide exposure or more gain is the usual "
                           "fix; check the guide scope's focus if raising both "
                           "does not find one")
+            cal_now = {}
+            with contextlib.suppress(Exception):
+                cal_now = self._engine.dump_calibration() or {}
             for msg in (self._engine.calibration_advisories() or []):
-                bus.log("warning", f"native guider calibration: {msg}", "guide")
+                graded = regrade_rate_advisory(str(msg), cal_now,
+                                               self._axis_guide_rates)
+                if graded is None:  # pragma: no cover - defensive
+                    continue
+                level, text = graded
+                bus.log(level, f"native guider calibration: {text}", "guide")
             bus.log("info", "native guider calibration complete", "guide")
         finally:
             # The hint names a step that is over the moment this returns or
@@ -1587,6 +1687,9 @@ class NativeGuider(Guider):
         a sane number of pulses). Any of these may be pinned by the caller's
         config; unset engine tunables take the dossier §15 defaults."""
         cfg = self.config
+        # Kept for the post-calibration advisory regrade, which runs long after
+        # this and cannot re-read the device mid-walk.
+        self._axis_guide_rates = rates
         bus.log("info" if self._image_scale_known else "warning",
                 f"native guider: calibration image scale {self._image_scale:g} "
                 "arcsec/px " + ("from configured optics" if self._image_scale_known
@@ -2084,7 +2187,15 @@ class NativeGuider(Guider):
         if not cal:
             return None
         try:
-            advisories = [str(m) for m in (self._engine.calibration_advisories() or [])]
+            # Regraded with the same function the log uses, so the panel and
+            # the night log cannot disagree about whether this mount has a
+            # backlash problem (#14).
+            advisories = []
+            for m in (self._engine.calibration_advisories() or []):
+                graded = regrade_rate_advisory(str(m), cal,
+                                               self._axis_guide_rates)
+                if graded is not None and graded[0] == "warning":
+                    advisories.append(graded[1])
         except Exception:  # pragma: no cover - defensive
             advisories = []
         dec_rad = float(cal.get("declination", _UNKNOWN_DECLINATION))
