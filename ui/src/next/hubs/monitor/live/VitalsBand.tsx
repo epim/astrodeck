@@ -180,11 +180,30 @@ export function VitalsBand({ runActive, nowMs }: { runActive: boolean; nowMs: nu
 
   return (
     <ReadoutGrid cols={3} data-testid="monitor-vitals">
-      <FlipTile meridian={meridian} runActive={runActive} canSiteDerived={canSiteDerived} />
+      {/* A TILE A ROLE CAN NEVER FILL IS NOT SHOWN AT ALL (owner's ruling,
+          2026-09-22: "make it so they cant see those panels at all, rather
+          than having the panels exist but empty"). A viewer holds neither
+          `view.site_derived` nor `view.weather`, so FLIP, TO DAWN and DEW
+          MARGIN were three dead tiles of six - half a grid printing "--" and
+          the name of a capability.
+
+          These three and no others: every remaining tile is something a
+          viewer genuinely has. The `--` faces are kept in `dewFace`,
+          `dawnFace` and `flipFace` rather than deleted, because they are still
+          reached in the frame between a capability changing and the re-render,
+          and a tile that renders nothing at all would be worse than one that
+          says why. */}
+      {canSiteDerived && (
+        <FlipTile meridian={meridian} runActive={runActive} canSiteDerived={canSiteDerived} />
+      )}
       <Tile label="SENSOR" face={sensorFace(camera, seq.detail)} testId="vital-sensor" />
-      <Tile label="DEW MARGIN" face={dewFace(weather, canWeather)} testId="vital-dew" />
+      {canWeather && (
+        <Tile label="DEW MARGIN" face={dewFace(weather, canWeather)} testId="vital-dew" />
+      )}
       <Tile label="DISK" face={diskFace(status?.disk)} testId="vital-disk" />
-      <Tile label="TO DAWN" face={dawnFace(dark, canSiteDerived, nowMs)} testId="vital-dawn" />
+      {canSiteDerived && (
+        <Tile label="TO DAWN" face={dawnFace(dark, canSiteDerived, nowMs)} testId="vital-dawn" />
+      )}
       <Tile label="NEXT TARGET" face={nextTargetFace(seq, plan)} testId="vital-next" />
     </ReadoutGrid>
   );
