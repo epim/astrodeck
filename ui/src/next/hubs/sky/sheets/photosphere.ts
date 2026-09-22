@@ -589,6 +589,11 @@ interface ColumnRun {
    *  rows. The sky is what lies above `top` and the surface is what lies below
    *  `from`; in between is the transition itself, which is neither. */
   from: number;
+  /** The zenith rule fired on row 0 and row 1 is back at the sky: the whole
+   *  answer rests on ONE sample (issue #100's residual). The bin still
+   *  publishes 90 - relaxing that would risk open sky over a covered zenith -
+   *  but it is not a measurement anyone can call certain. */
+  zenithOnly?: boolean;
 }
 
 /** The altitude a boundary at row `top` publishes: the lowest row still open. */
@@ -708,7 +713,8 @@ function columnRuns(column: SkyColumn, seed: SkySeed, exposure: number): ColumnR
       // flagged certain (issue #73). A bright row 0 takes the ordinary path
       // below, where one row cannot persist.
       if (start === 0 && lum[0] < here.lum - here.lumTol) {
-        runs.push({ top: 0, end: last, from: 0, grounded: true, qualifies: true });
+        runs.push({ top: 0, end: last, from: 0, grounded: true, qualifies: true,
+          zenithOnly: last >= 1 && Number.isFinite(lum[1]) && !off(1, here) });
         return runs;
       }
       let end = start;
@@ -941,7 +947,14 @@ export function traceSkyCoverage(columns: readonly (number[] | SkyBin)[]): SkyTr
     // way to say so.
     const here = seedFor(index);
     if (here === null) { uncertainBins.push(index); return []; }
-    return bin.filter(complete).map(column => {
+    const columns = bin.filter(complete);
+    // Issue #100's residual: row 0 alone dark, row 1 already sky, on the
+    // CENTRE column - the column the uncertainty rule has always read. The
+    // altitude stays 90 either way (an uncertain bin publishes 90), so this
+    // changes what the bin CLAIMS, never what it blocks.
+    const centre = columnRuns(bin[0], here, EXPOSURE_TOLERANCE);
+    if (centre.some(run => run.qualifies && run.zenithOnly)) uncertainBins.push(index);
+    return columns.map(column => {
       const alone = columnRuns(column, here, EXPOSURE_TOLERANCE);
       const vouched = alone.find(run => run.qualifies);
       return {

@@ -170,6 +170,33 @@ test("A bright zenith row does not block the sky under it", () => {
   assert.deepEqual(trace.uncertainBins, []);
   assert.ok(trace.points.every(p => p.alt === 0));
 });
+test("A dark zenith SAMPLE blocks every bin but does not call that certain (issue #100)", () => {
+  // The residual #100 left open. Row 0 is the one overhead sample painted into
+  // every bin, and when it alone reads 34 per cent below the pool the zenith
+  // rule blocks the whole dome - correctly conservative, because relaxing it
+  // would risk open sky under a covered zenith - but it used to publish that
+  // as a MEASUREMENT, uncertain_bins empty, from one pixel. It now keeps the
+  // 90 and says what it is: every bin uncertain. An uncertain bin publishes 90
+  // as well, so this changes the claim and never the block.
+  // Mutation: set `zenithOnly: false` in the zenith rule. Observed red:
+  // 'a single dark sample was published as a certain dome'.
+  const lone = sample(row => (row === 0 ? 80 : 122));
+  const trace = traceSkyCoverage(everywhere(lone));
+  assert.ok(trace.points.every(p => p.alt === 90),
+    `the block itself must not move: ${trace.points.map(p => p.alt)}`);
+  assert.equal(trace.uncertainBins.length, 30,
+    `a single dark sample was published as a certain dome: uncertain ${JSON.stringify(trace.uncertainBins)}`);
+});
+test("A zenith that is really covered is still blocked, and certain", () => {
+  // The control for the case above: rows 0 to 5 dark, i.e. more than the one
+  // shared sample, is a covered zenith and stays a measurement.
+  // Mutation: set `zenithOnly: true` unconditionally. Observed red: 'a covered
+  // zenith was downgraded to uncertain'.
+  const roof = sample(row => (row <= 5 ? 80 : 122));
+  const trace = traceSkyCoverage(everywhere(roof));
+  assert.ok(trace.points.every(p => p.alt === 90), `${trace.points.map(p => p.alt)}`);
+  assert.deepEqual(trace.uncertainBins, [], 'a covered zenith was downgraded to uncertain');
+});
 test("A glint on top of a roof costs the boundary the glint's own height", () => {
   // The bound on the refinement, in the direction that is not safe. Two rows
   // of 255 sit on a roof at 60 whose true top is row 40 (alt 51); they match
