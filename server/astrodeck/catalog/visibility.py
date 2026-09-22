@@ -52,6 +52,21 @@ from astropy.time import Time
 from ..auth import CAP_VIEW_SITE_DERIVED, require
 from ..auth.rbac import declare
 from ..hub import hub
+from ..site_gate import site_lat_lon
+
+
+class NoSite(ValueError):
+    """A night was asked for with no observing site saved (#24).
+
+    Every number this module produces is f(site). At the 0,0 default each one
+    is a confident answer for the Gulf of Guinea in a row that looks exactly
+    like a correct one, so there is no degraded form worth returning: the
+    routes turn this into 409 ``no_site`` and the mosaic reports it per panel.
+    """
+
+
+_NO_SITE_MSG = ("no observing site is saved, so tonight's windows cannot be "
+                "computed - save the site in Settings")
 
 router = APIRouter()
 
@@ -145,9 +160,12 @@ def check_night_date(date: str | None) -> str | None:
 # ----------------------------------------------------------------- time helpers
 
 def _site_location(site: dict) -> EarthLocation:
+    latlon = site_lat_lon(site)
+    if latlon is None:
+        raise NoSite(_NO_SITE_MSG)
     return EarthLocation(
-        lat=float(site["latitude"]) * u.deg,
-        lon=float(site["longitude"]) * u.deg,
+        lat=latlon[0] * u.deg,
+        lon=latlon[1] * u.deg,
         height=float(site.get("elevation_m", 0.0)) * u.m,
     )
 
@@ -527,7 +545,9 @@ def _night_scaffold(site: dict, loc: EarthLocation, anchor: float, lon: float,
     catalog fan-out runs 8 wide) computes the night ONCE rather than eight times,
     and so every reader sees fully-materialised arrays.
     """
-    key = (round(float(site["latitude"]), 9), round(lon, 9),
+    # Latitude from the EarthLocation `_site_location` built, which is where
+    # the no-site refusal lives, rather than read out of the dict a second time.
+    key = (round(float(loc.lat.to_value(u.deg)), 9), round(lon, 9),
            round(float(site.get("elevation_m", 0.0)), 6),
            round(anchor, 3), step_min)
     with _scaffold_lock:
@@ -553,7 +573,10 @@ def compute_night(
     in-process ephemerides), so the mosaic module and tests can call it directly.
     """
     site = site or hub.site
-    lon = float(site["longitude"])
+    latlon = site_lat_lon(site)
+    if latlon is None:
+        raise NoSite(_NO_SITE_MSG)
+    lon = latlon[1]
     loc = _site_location(site)
     step_min = max(1, int(step_min or DEFAULT_STEP_MIN))
     alt_limit = float(alt_limit if alt_limit is not None else DEFAULT_ALT_LIMIT)
@@ -680,9 +703,12 @@ async def get_visibility(
     """
     import asyncio
     date = check_night_date(date)
-    return await asyncio.to_thread(
-        compute_night, ra, dec, date=date, step_min=step_min,
-        alt_limit=alt_limit)
+    try:
+        return await asyncio.to_thread(
+            compute_night, ra, dec, date=date, step_min=step_min,
+            alt_limit=alt_limit)
+    except NoSite as e:
+        raise HTTPException(409, detail={"detail": str(e), "code": "no_site"})
 
 
 @router.post("/api/visibility/order",
@@ -708,7 +734,10 @@ async def post_order(body: OrderBody):
                 compute_night, t.ra_hours, t.dec_deg,
                 date=body.date, step_min=20)
 
-    nights = await asyncio.gather(*[_night(t) for t in body.targets])
+    try:
+        nights = await asyncio.gather(*[_night(t) for t in body.targets])
+    except NoSite as e:
+        raise HTTPException(409, detail={"detail": str(e), "code": "no_site"})
 
     targets_out: list[dict] = []
     for t, night in zip(body.targets, nights):

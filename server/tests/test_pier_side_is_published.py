@@ -99,6 +99,7 @@ def _am5(monkeypatch, *, measured: PierSide, ra_now: float, lon: float = 0.0):
     tel.get_position = _pos
     cfg = AppConfig()
     cfg.site.longitude = lon
+    cfg.site.is_default = False        # a saved site: #24 refuses to predict without one
     monkeypatch.setattr(config_store, "cfg", lambda: cfg)
     return tel
 

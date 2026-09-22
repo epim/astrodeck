@@ -250,11 +250,20 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _site_latlon() -> tuple[float, float]:
-    """Site (lat, lon_east) from config; injectable for tests."""
+def _site_latlon() -> tuple[float, float] | None:
+    """Site (lat, lon_east) from config, or None when no site is saved;
+    injectable for tests.
+
+    NONE, NOT 0,0 (#24). `connect` writes this into the mount's own firmware on
+    every open, so at the default site every connect used to tell the AM5 it
+    stood in the Gulf of Guinea - and the mount then makes its own hour-angle
+    decisions (meridian limits, pier side on a GoTo) from that, where nothing
+    in this tree can see them. Whatever site the mount already holds, set from
+    its handset or a previous session, is a better answer than a made-up one.
+    """
     from ...config import config_store
-    site = config_store.cfg().site
-    return float(site.latitude), float(site.longitude)
+    from ...site_gate import site_lat_lon
+    return site_lat_lon(config_store.cfg().site)
 
 
 class ZwoAm5Telescope(Telescope):
@@ -587,8 +596,14 @@ class ZwoAm5Telescope(Telescope):
             self.firmware = await self._get("GV")
             for cmd in lx200.utc_init_cmds(_utcnow()):
                 await self._cmd_ack(cmd, f"clock init {cmd}")
-            lat, lon = _site_latlon()
-            await self._cmd_ack(lx200.smge(lat, lon), "site init")
+            latlon = _site_latlon()
+            if latlon is not None:
+                await self._cmd_ack(lx200.smge(*latlon), "site init")
+            else:
+                _log.warning(
+                    "%s: no observing site is saved, so the mount keeps the "
+                    "site it already holds rather than being told 0,0. Save "
+                    "the site in settings and reconnect to push it.", self.name)
             await self._get("Gps")   # prime state (parked flag)
             await self._get("GU")
         except Exception:
@@ -868,7 +883,16 @@ class ZwoAm5Telescope(Telescope):
         # single call -- a prediction that never worked, reported as a mount
         # that would not say. A wrong import is a programming error and must
         # crash; only the DEVICE reads below it are allowed to degrade.
-        lon = float(config_store.cfg().site.longitude)
+        # NO SITE, NO PREDICTION (#24). The self-check below compares the
+        # rule against `:Gm#` at the CURRENT position, and a constant hour-angle
+        # error from the wrong longitude can pass it there and still flip the
+        # answer for a destination across the meridian. UNKNOWN is what the
+        # guard already passes.
+        from ...site_gate import site_lat_lon
+        latlon = site_lat_lon(config_store.cfg().site)
+        if latlon is None:
+            return PierSide.UNKNOWN
+        lon = latlon[1]
         try:
             ra_now, _dec_now = await self.get_position()
         except Exception:               # noqa: BLE001 - a failed probe is UNKNOWN
