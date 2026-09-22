@@ -111,28 +111,10 @@ def _scan() -> dict[str, list[int]]:
 # are the dangerous half; the ones that only feed a display already have an
 # empty state a wrong number is no worse than.
 UNGUARDED: dict[str, str] = {
-    # --- POLAR ALIGNMENT, guarded upstream rather than five more times.
-    # `_site_dict` refuses at a default site and `_drive` calls it first, before
-    # any device is even resolved, so none of these five is reachable without a
-    # site. They stay listed because the scan is static and cannot know that,
-    # and because a future caller that goes around `_drive` would make each of
-    # them live again. `test_polar_refuses_without_a_site.py` holds the gate.
-    #
-    # Why this path got the guard first: its whole output is an instruction to a
-    # human standing at the mount - turn the azimuth knob this way, this far -
-    # and nothing in that instruction tells the operator it was computed for the
-    # Gulf of Guinea.
-    "polar/native.py:_refuse_low_arc":
-        "whether the measured arc is high enough to trust; latitude-dependent.",
-    "polar/native.py:_refuse_if_no_longer_measurable":
-        "the target's altitude, used to stop a run that has sunk too low.",
-    "polar/native.py:_reject_implausible_fit":
-        "the plausibility bound on the fitted axis error, latitude-dependent.",
-    "polar/native.py:_ra_step_hours":
-        "hour angle from longitude, which sets the step between points.",
-    "polar/native.py:_log_measurement":
-        "hour angle again, into the durable log, so a wrong site would also "
-        "poison the forensics.",
+    # --- POLAR ALIGNMENT left this list whole. Its five helpers were exempt
+    # as "reachable only through `_drive`", which was true and unchecked; they
+    # now read through `polar/native.py:_site_coords`, which refuses exactly as
+    # `_site_dict` does. test_polar_refuses_without_a_site holds the refusal.
 
     # --- THE MOUNT MOVES. A wrong pier side or flip point is a cable wrap.
     #

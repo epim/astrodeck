@@ -64,18 +64,19 @@ def test_a_real_site_still_computes():
 
 
 def test_a_half_saved_site_is_not_a_site():
-    """`is_default` cleared but no coordinates yet. `site_is_set` says
-    configured, so the gate passes, and then the dict read raises KeyError
-    rather than answering for 0,0 - which is a refusal `run_native` still turns
-    into a terminal error, just a less helpful one.
+    """`is_default` cleared but no coordinates yet. This used to pass the gate
+    and then raise KeyError from the dict read - a refusal, but one that told
+    the operator nothing. The earlier version of this case recorded that as a
+    known limitation and named the fix: route `_site_dict` through
+    `site_lat_lon`, which answers None for exactly this shape. That is now how
+    every polar site read works (`_site_coords`), so the half-saved site gets
+    the same sentence as the unsaved one.
 
-    Recorded rather than fixed: making this say the same thing as the case
-    above means routing `_site_dict` through `site_lat_lon`, which answers None
-    for exactly this shape. It is a real improvement and it is not this issue's
-    scope, so it is written down where the next reader will find it instead of
-    being left to look like an oversight.
+    MUTATION: in `_site_coords`, read `hub.site["latitude"]` and
+    `hub.site["longitude"]` raw instead of `site_lat_lon`. Observed: KeyError,
+    and this fails on the missing DeviceError.
     """
-    with pytest.raises(KeyError):
+    with pytest.raises(DeviceError, match="no observing site is set"):
         native._site_dict(_Hub({"is_default": False}))
 
 
@@ -96,3 +97,39 @@ async def test_the_refusal_happens_before_the_camera_is_taken():
         await native._drive(object(), hub)
     assert hub.required == [], (
         f"devices were taken before the refusal: {hub.required}")
+
+
+def _helpers():
+    from types import SimpleNamespace
+    solved = SimpleNamespace(ra_hours=3.0, dec_deg=80.0)
+    err = {"alt_arcmin": 10.0, "total_arcmin": 12.0, "az_arcmin": 6.0}
+    return {
+        "_refuse_low_arc": lambda hub: native._refuse_low_arc(hub, solved, 1.6),
+        "_reject_implausible_fit":
+            lambda hub: native._reject_implausible_fit(err, hub),
+        "_ra_step_hours": lambda hub: native._ra_step_hours(hub, 3.0),
+    }
+
+
+@pytest.mark.parametrize("name", sorted(_helpers()))
+def test_each_helper_refuses_on_its_own(name):
+    """Below `_drive`, not only at it. These were exempt from #24's gate as
+    "reachable only through `_drive`" - true, and a claim nothing checked. A
+    caller that goes around `_drive` now meets the same refusal.
+
+    MUTATION: in `_site_coords`, `latlon = site_lat_lon(hub.site) or (0.0,
+    0.0)`. Observed: all three fail, each having computed for 0,0.
+    """
+    with pytest.raises(DeviceError, match="no observing site is set"):
+        _helpers()[name](_Hub(DEFAULT_SITE))
+
+
+@pytest.mark.parametrize("name", sorted(_helpers()))
+def test_each_helper_still_computes_at_a_saved_site(name):
+    """The control: a real site gets past `_site_coords`. Whatever a helper
+    then decides about the arc or the fit is not graded here - only that no
+    refusal FOR WANT OF A SITE came out of it."""
+    try:
+        _helpers()[name](_Hub(REAL_SITE))
+    except DeviceError as e:
+        assert "no observing site" not in str(e), e
