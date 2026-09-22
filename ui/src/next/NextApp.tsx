@@ -43,10 +43,10 @@ import TouchGuard from "../components/TouchGuard";
 import Login from "../views/Login";
 
 import { Sheet, Wordmark } from "./ui";
-import { useRoute } from "./router";
+import { nav, useRoute } from "./router";
 import { useBreakpoint } from "./breakpoint";
 import { useLegacyBridge } from "./legacyBridge";
-import { HUBS, HUB_META, preloadHubs } from "./hubs";
+import { HUBS, HUB_META, preloadHubs, useVisibleHubs } from "./hubs";
 import { HubBoundary } from "./shell/HubBoundary";
 import { Header } from "./shell/Header";
 import { Banners } from "./shell/Banners";
@@ -252,6 +252,20 @@ export default function NextApp(): JSX.Element {
   useEffect(() => {
     if (linkUp) preloadHubs(hubOnScreen);
   }, [linkUp, hubOnScreen]);
+
+  // A HUB THIS ROLE CANNOT SEE IS NOT REACHABLE BY HASH EITHER (owner's ruling,
+  // 2026-09-22). Hiding the weather tab while leaving `#/weather` working would
+  // make the deep link the only way in, which reads as a bug rather than a
+  // decision - and `rememberedWeatherSub()` means a viewer who was once an
+  // operator lands there on their next visit without typing anything.
+  //
+  // `nav.replace`, not `nav.hub`: this is a correction to a route that should
+  // not have resolved, so it must not leave a back entry that bounces.
+  const visible = useVisibleHubs();
+  const hubIsVisible = visible.includes(route.hub);
+  useEffect(() => {
+    if (!hubIsVisible && visible.length > 0) nav.replace(`/${visible[0]}`);
+  }, [hubIsVisible, visible]);
 
   // The gate screens keep the toast stack and the confirm card mounted, exactly
   // as App does: what stops the rig speaking over them is the store's own

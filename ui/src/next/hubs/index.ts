@@ -44,6 +44,7 @@ import type { NxIconName } from "../icons";
 import type { SubNavItem, Tone } from "../ui";
 import type { HubId } from "../router";
 import { SUBS } from "../router";
+import { useCan } from "../../lib/caps";
 
 import { sheets as skySheets } from "./sky/sheets";
 import { sheets as weatherSheets } from "./weather/sheets";
@@ -187,6 +188,45 @@ export const HUB_META: Record<HubId, HubMeta> = {
  *  the app: find something, check the sky, watch the run, drive the rig, read
  *  the log, change a setting. */
 export const HUB_ORDER: readonly HubId[] = ["sky", "weather", "session", "rig", "monitor", "settings"];
+
+/** The capability a hub needs before it is worth showing at all, for the hubs
+ *  that have one. A hub absent from this map is visible to every role.
+ *
+ *  OWNER'S RULING, 2026-09-22: "it's ok for the admin to see things like the
+ *  site lat/long, or even operator. But not viewer roles... Similarly the radar
+ *  and other weather data may need to be obstructed from their view. If
+ *  necessary then make it so they cant see those panels at all, rather than
+ *  having the panels exist but empty."
+ *
+ *  Weather is the one hub that qualifies. Its radar and satellite tiles are
+ *  centred on the site, so the map's existence discloses the rig's region
+ *  whatever the panel says, and `/api/weather` is `view.weather`-gated
+ *  server-side. Before this, a viewer got the whole weather shell - a tab, a
+ *  sub-nav, a WEATHER SETTINGS button and a card explaining the emptiness -
+ *  which is precisely the "panels exist but empty" shape the ruling rejects. */
+export const HUB_CAP: Partial<Record<HubId, string>> = { weather: "view.weather" };
+
+/** `HUB_ORDER` minus the hubs this principal cannot use.
+ *
+ *  ONE derivation, shared by the tab bar, the rail and the route guard, so a
+ *  hub cannot be hidden from the navigation while still being reachable by
+ *  hash - which would leave the deep link as the only way in and make it look
+ *  like a bug rather than a decision. */
+export function visibleHubs(has: (cap: string) => boolean): readonly HubId[] {
+  return HUB_ORDER.filter((id) => {
+    const cap = HUB_CAP[id];
+    return !cap || has(cap);
+  });
+}
+
+/** `visibleHubs` bound to the live principal. A hook so the navigation
+ *  re-renders when the role resolves - it starts unresolved and fails closed,
+ *  so the weather tab appears when the capability arrives rather than flashing
+ *  and disappearing. */
+export function useVisibleHubs(): readonly HubId[] {
+  const canWeather = useCan("view.weather");
+  return visibleHubs((cap) => (cap === "view.weather" ? canWeather : true));
+}
 
 // ------------------------------------------------------------ the hub bodies
 
