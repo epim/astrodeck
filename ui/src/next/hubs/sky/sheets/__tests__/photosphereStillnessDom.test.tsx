@@ -1805,6 +1805,32 @@ await test('A lagged frame from before a turn is refused on the SEPARATION term 
   sweep.stop();
 });
 
+await test('The diagnostics carry the granted preview size and the readback timing (issue #90)',async()=>{
+  // #90's second half is two device numbers nothing off-device can produce:
+  // the preview resolution the browser GRANTS, and what the per-frame pixel
+  // readback costs a phone. This makes the next device scan record both in the
+  // report it already exports, instead of needing a harness of its own.
+  // In the envelope rather than only in the samples, because the session the
+  // report exists to explain is often the one with no accepted sample at all.
+  // Mutation: delete the `this.readbackMs.push(...)` line. Observed red:
+  // 'no readback was timed across a scan that read its pixels every frame'.
+  const {sweep,tick}=await approachAndHold();
+  for(let i=0;i<10;i++)tick();
+  const report=JSON.parse(sweep.alignmentReport());
+  assert.deepEqual(report.preview,{width:640,height:480},`preview was ${JSON.stringify(report.preview)}`);
+  assert.ok(report.readback&&report.readback.count>0,
+    `no readback was timed across a scan that read its pixels every frame: ${JSON.stringify(report.readback)}`);
+  for(const k of ['p50','p95','max'])assert.equal(typeof report.readback[k],'number',k);
+  sweep.stop();
+});
+
+await test('readbackSummary says "never read" rather than "read in 0 ms"',async()=>{
+  const {readbackSummary}=await import('../photosphere');
+  assert.equal(readbackSummary([]),null);
+  const s=readbackSummary(Array.from({length:100},(_,i)=>i+1))!;
+  assert.deepEqual(s,{count:100,p50:51,p95:96,max:100});
+});
+
 console.log(`photosphereStillnessDom.test: ${passed}/${passed+failed} passed`);
 export const result={passed,failed,total:passed+failed};
 if(failed)process.exitCode=1;
