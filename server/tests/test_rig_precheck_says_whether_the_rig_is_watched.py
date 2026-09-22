@@ -86,3 +86,30 @@ def test_no_secret_can_escape(tmp_path, monkeypatch):
 def test_an_unreadable_config_is_not_reported_as_watched(tmp_path, monkeypatch):
     monkeypatch.setattr(precheck, "ROOT", str(tmp_path))
     assert "treat as unwatched" in precheck._watch_line()
+
+
+# ------------------------------------------------------------ recovery (#16)
+# Mutation run: `if esc.get("reconnect_resume") is True` -> `if True`.
+# Observed red: 2 failed, test_recovery_off_is_said and the absent-setting case,
+# both reading "reconnect-and-resume ON" for a rig that has it off.
+
+def _recovery(tmp_path, monkeypatch, cfg) -> str:
+    (tmp_path / "config").mkdir(exist_ok=True)
+    (tmp_path / "config" / "astrodeck.json").write_text(json.dumps(cfg), encoding="utf-8")
+    monkeypatch.setattr(precheck, "ROOT", str(tmp_path))
+    return precheck._recovery_line()
+
+
+def test_recovery_off_is_said(tmp_path, monkeypatch):
+    """The rig as it was found on 2026-09-22."""
+    line = _recovery(tmp_path, monkeypatch, {"escalation": {"reconnect_resume": False}})
+    assert line.startswith("reconnect-and-resume OFF") and "#16" in line, line
+
+
+def test_an_absent_setting_is_the_default_and_the_default_is_off(tmp_path, monkeypatch):
+    assert _recovery(tmp_path, monkeypatch, {}).startswith("reconnect-and-resume OFF")
+
+
+def test_recovery_on_is_said(tmp_path, monkeypatch):
+    line = _recovery(tmp_path, monkeypatch, {"escalation": {"reconnect_resume": True}})
+    assert line == "reconnect-and-resume ON", line
