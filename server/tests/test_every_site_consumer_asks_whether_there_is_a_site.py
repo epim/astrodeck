@@ -152,10 +152,6 @@ UNGUARDED: dict[str, str] = {
     "sequence/engine.py:_setup_target":
         "hour angle at slew time, which picks the starting pier side. NOT "
         "covered by the run gate: it runs whether or not a flip is planned.",
-    "sequence/engine.py:_enforce_mount_floor":
-        "the altitude floor the mount is held above. A wrong latitude moves "
-        "the floor into or out of the sky the run is using. Also not covered "
-        "by the run gate, and the next one to do.",
     "devices/backends/zwo_am5.py:destination_pier_side":
         "the AM5's pier side for a given target, from latitude.",
     "devices/backends/zwo_am5.py:_site_latlon":
