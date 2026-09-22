@@ -4531,8 +4531,35 @@ class SequenceEngine:
         # the guard blocks a slew TO a low target and never trips on where the
         # mount happens to point right now (e.g. a horizon-pointing park position).
         from ..catalog import altaz
-        lat = self.hub.site["latitude"]
-        lon = self.hub.site["longitude"]
+        from ..site_gate import site_lat_lon
+        # NO SITE, NO ALTITUDE, AND THEREFORE NO SLEW (#24). Reaching here means
+        # the operator configured a floor, a horizon, a no-go box or a ceiling -
+        # the early return above already let a rig with no limits through - so
+        # there IS something to enforce and this is the code that enforces it.
+        #
+        # At the 0,0 default every alt/az below is computed for the Gulf of
+        # Guinea, and the failure is not a wrong number, it is a guard that
+        # answers confidently in both directions: a target genuinely below the
+        # floor can read as high and be PERMITTED, which is the mount driving
+        # into whatever the floor was drawn around, and one safely high can read
+        # as low and abort the night. A limit evaluated against the wrong
+        # hemisphere is not a weaker limit, it is a different one.
+        #
+        # So this fails CLOSED, unlike `schedule.dark_enough`, which fails open
+        # at a default site on purpose. The two are not in tension: that gate
+        # stops daylight imaging and refusing it would stop an unconfigured rig
+        # from ever taking a frame, while this one stops the mount from hitting
+        # something, and there is no version of "we do not know where we are"
+        # that makes a pier collision acceptable.
+        latlon = site_lat_lon(self.hub.site)
+        if latlon is None:
+            raise SafetyAbort(
+                f"cannot check {target.name} against the altitude limits: no "
+                f"observing site is saved, so every altitude here would be "
+                f"computed for latitude 0, longitude 0. Save the site in "
+                f"Settings, or clear the floor, horizon, no-go and ceiling "
+                f"limits if this mount genuinely has none.")
+        lat, lon = latlon
         ra, dec = target.ra_hours, target.dec_deg
         now = time.time()
         alt_now, az_now = altaz(ra, dec, lat, lon, now)
