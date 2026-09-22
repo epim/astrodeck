@@ -482,12 +482,17 @@ def row(el: dict, when: float | None = None, *,
         # stood at the centre of the Earth, so there is no horizon to be above.
         from ..coords import altaz, round_az_deg
         from ...config import config_store
+        from ...site_gate import site_lat_lon
 
-        site = config_store.cfg().site
-        alt, az = altaz(p["ra_hours"], p["dec_deg"], site.latitude,
-                        site.longitude, p["when_unix"])
-        out["alt"] = round(alt, 1)
-        out["az"] = round_az_deg(az)
+        # No site, no horizon (#24): an alt/az for the 0,0 default is a
+        # confident number for the Gulf of Guinea. Withheld, which is the shape
+        # a non-holder's row already has.
+        latlon = site_lat_lon(config_store.cfg().site)
+        if latlon is not None:
+            alt, az = altaz(p["ra_hours"], p["dec_deg"], latlon[0],
+                            latlon[1], p["when_unix"])
+            out["alt"] = round(alt, 1)
+            out["az"] = round_az_deg(az)
     return out
 
 

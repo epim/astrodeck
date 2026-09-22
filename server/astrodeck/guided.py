@@ -15,9 +15,16 @@ def separation(ra: float, dec: float, other_ra: float, other_dec: float) -> floa
 def sky_context(site, now):
     from astropy.coordinates import get_sun
     from astropy.time import Time
+    from .site_gate import site_lat_lon
+    # Both callers refuse at a default site before reaching here. Asked again
+    # because a sun altitude for 0,0 is what decides "wait until dusk", and the
+    # next caller may not refuse first (#24).
+    latlon = site_lat_lon(site)
+    if latlon is None:
+        raise ValueError("no observing site is saved")
     sun = get_sun(Time(now, format="unix"))
     ra, dec = float(sun.ra.hour), float(sun.dec.deg)
-    return ra, dec, altaz(ra, dec, site["latitude"], site["longitude"], now)[0]
+    return ra, dec, altaz(ra, dec, latlon[0], latlon[1], now)[0]
 
 
 def simulated_equipment(hub) -> bool:

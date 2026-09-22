@@ -4062,6 +4062,14 @@ def create_app(*, bind_host: str | None = None,
         latitude = s.latitude if lat is None else lat
         longitude = s.longitude if lon is None else lon
         out: dict = {}
+        # NO SITE, NO SKY (#24). Without overrides every field below is
+        # computed from the stored site, and at the 0,0 default that is the
+        # Gulf of Guinea's sun and dark window. Withheld rather than invented:
+        # an absent `dark_window` is already what a viewer receives, so every
+        # consumer handles it. Named coordinates are the site picker asking
+        # about a place on purpose, and still answer.
+        if lat is None and lon is None and not site_is_set(s):
+            return out
         # sun_alt_deg and dark_window are the SAME INFORMATION as the place_hint
         # and lst_str withheld below, arrived at by arithmetic: solar altitude
         # over a night gives latitude, and the dark-window boundaries give

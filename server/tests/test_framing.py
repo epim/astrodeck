@@ -154,7 +154,17 @@ def test_rotation_offsets_panels_off_the_dec_axis():
 # --------------------------------------------------------------- route
 
 @pytest.fixture
-def client():
+def client(monkeypatch):
+    # A SAVED SITE, overlaid on whatever the store holds. The transit-altitude
+    # cases computed from the 0,0 default until #24 made the visibility module
+    # refuse it. The overlay still CALLS the real property, so the cold-config
+    # regression below keeps racing the store's lazy first load - which is the
+    # whole of what it tests.
+    from astrodeck.hub import Hub
+    real = Hub.site
+    monkeypatch.setattr(Hub, "site", property(lambda self: {
+        **real.fget(self), "latitude": 40.0, "longitude": -74.0,
+        "is_default": False}))
     app = FastAPI()
     app.include_router(framing.router)
     with TestClient(app) as c:

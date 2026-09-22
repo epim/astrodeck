@@ -483,7 +483,14 @@ class CloudmapService:
         because the satellite was late. Comparing the key costs nothing: the
         listing has already been made.
         """
-        geo = Site(site.latitude, site.longitude, site.elevation_m / 1000.0)
+        # The tick refuses a default site before calling this; asked again
+        # because at 0,0 a refresh fetches, caches and reasons about cloud over
+        # the Atlantic (#24).
+        from ..site_gate import site_lat_lon
+        latlon = site_lat_lon(site)
+        if latlon is None:
+            return
+        geo = Site(latlon[0], latlon[1], site.elevation_m / 1000.0)
         bucket = bucket_for(_resolved_platform(ccfg))
         when = datetime.fromtimestamp(now, tz=timezone.utc)
         stage = MASK_PRODUCT

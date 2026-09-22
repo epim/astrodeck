@@ -145,33 +145,21 @@ UNGUARDED: dict[str, str] = {
     # and `_wait_for_flip_point` followed; test_the_flip_invariant_needs_a_site
     # holds them. The invariant was the one with a consequence: at 0,0 it held
     # a good target for twenty minutes and then abandoned it.
-    "devices/backends/zwo_am5.py:destination_pier_side":
-        "the AM5's pier side for a given target, from latitude.",
-    "devices/backends/zwo_am5.py:_site_latlon":
-        "what gets pushed to the mount as its own site. The mount then makes "
-        "the same wrong decisions internally, where nothing here can see them. "
-        "hub.push_site_to_mount already refuses at a default site, so this is "
-        "reachable only by a caller that goes around it.",
+    #
+    # The AM5 driver's two followed (test_the_am5_is_not_told_a_made_up_site).
+    # `_site_latlon` was listed as reachable "only by a caller that goes around"
+    # `hub.push_site_to_mount` - but `connect` is that caller, and it wrote 0,0
+    # into the mount's firmware on every reconnect. A reason in this list is a
+    # claim, and that one was never checked.
 
     # --- A PLAN OR A DISPLAY IS WRONG. Still wrong, but the operator is looking
     # at a screen rather than at a mount that is about to move.
-    "catalog/visibility.py:_site_location":
-        "the EarthLocation every visibility computation is built on.",
-    "catalog/visibility.py:_night_scaffold":
-        "tonight's dusk and dawn, from the wrong longitude.",
-    "catalog/visibility.py:compute_night":
-        "a target's altitude curve for the night.",
-    "catalog/ephemeris/comets.py:row":
-        "a comet's altitude and rise time in the catalogue listing.",
-    "api/app.py:site_sky":
-        "the /api/site/sky route. Its lat/lon QUERY OVERRIDES are capability "
-        "gated and separately audited on #19; this entry is about its DEFAULT "
-        "path, which computes from the stored site without asking.",
-    "guided.py:sky_context":
-        "the sun's altitude for the guided flow's daylight context.",
-    "cloudmap/service.py:_refresh":
-        "which satellite granule covers the site. At 0,0 it fetches, caches "
-        "and reasons about cloud over the Atlantic.",
+    # `catalog/visibility.py` (the EarthLocation, the night scaffold and
+    # compute_night) followed: it raises NoSite, its routes answer 409 and the
+    # mosaic reports it per panel. test_visibility_needs_a_site holds them.
+
+    # The comet row, /api/site/sky's default path, guided.sky_context and the
+    # cloudmap refresh followed: test_the_display_consumers_need_a_site.
 
     # --- NOT A REAL SITE BY CONSTRUCTION.
     "devices/sim.py:_side_for_ra":
