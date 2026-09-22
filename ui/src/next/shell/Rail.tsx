@@ -9,7 +9,7 @@ import type { JSX } from "react";
 import { NxIcon } from "../icons";
 import { useStore } from "../../store";
 import { nav, type HubId, type Route } from "../router";
-import { HUB_META, HUB_ORDER } from "../hubs";
+import { HUB_META, useVisibleHubs } from "../hubs";
 import { useSessionDot } from "../hubs/session/crossHub";
 import { rememberedWeatherSub } from "./subContext";
 import { tabLabel } from "./TabBar";
@@ -21,10 +21,14 @@ export function Rail({ route, nowMs }: { route: Route; nowMs: number }): JSX.Ele
   // accessible name that folds both in.
   const dot = useSessionDot(nowMs);
   const unseenError = useStore((s) => s.unseenError);
+  // A role that cannot see weather gets no weather tab either (owner's ruling,
+  // 2026-09-22). Same derivation as the tab bar, so the two navigations cannot
+  // disagree about which hubs exist.
+  const hubs = useVisibleHubs();
 
   return (
     <nav className="nx-rail" aria-label="Hubs" data-testid="rail">
-      {HUB_ORDER.map((id: HubId) => {
+      {hubs.map((id: HubId) => {
         const meta = HUB_META[id];
         const active = route.hub === id;
         const alert = id === "session" && dot != null;

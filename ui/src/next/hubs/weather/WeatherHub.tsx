@@ -75,6 +75,36 @@ export function WeatherHub(): JSX.Element {
     ? `hold at ${weather.threshold_pct}% for ${weather.sustain_minutes} min`
     : "";
 
+  // NO CAP, NO WEATHER CHROME AT ALL. This used to render the hub's header -
+  // including a WEATHER SETTINGS button - above the explanatory card, so a
+  // viewer got a weather-shaped screen with a control they could not use. The
+  // owner's ruling of 2026-09-22 is that such a role should not see the panels
+  // at all rather than see them empty, and `NextApp` now redirects away from
+  // this hub entirely.
+  //
+  // The card stays as the backstop for the frame between a capability changing
+  // and the redirect running, and for any future caller that mounts this hub
+  // directly. Backstop, not the gate: it is deliberately the whole return now,
+  // so nothing weather-shaped renders around it.
+  if (!canView) {
+    return (
+      <div data-testid="hub-weather" style={COL}>
+        <EmptyCard
+          data-testid="wx-no-cap"
+          title="WEATHER IS NOT VISIBLE TO THIS ROLE"
+          hint={
+            <span>
+              {`Weather needs ${accessPhrase("view.weather")}.`}
+              <br />
+              Your role can see rig status and previews. Forecast, dome and radar are
+              operator surfaces because the radar map discloses roughly where the rig is.
+            </span>
+          }
+        />
+      </div>
+    );
+  }
+
   return (
     <div data-testid="hub-weather" style={COL}>
       <div style={{
@@ -91,20 +121,7 @@ export function WeatherHub(): JSX.Element {
         />
       </div>
 
-      {!canView ? (
-        <EmptyCard
-          data-testid="wx-no-cap"
-          title="WEATHER IS NOT VISIBLE TO THIS ROLE"
-          hint={
-            <span>
-              {`Weather needs ${accessPhrase("view.weather")}.`}
-              <br />
-              Your role can see rig status and previews. Forecast, dome and radar are
-              operator surfaces because the radar map discloses roughly where the rig is.
-            </span>
-          }
-        />
-      ) : route.sub === "sky" ? (
+      {route.sub === "sky" ? (
         <DomeScreen />
       ) : route.sub === "radar" ? (
         <RadarScreen />

@@ -284,9 +284,62 @@ def _tracking_hits(tmp_path, monkeypatch, role: str = "operator") -> dict[str, l
     return _differential(a, b, _renderings(SITE_A[0]) + _renderings(SITE_A[1]))
 
 
+def test_a_viewer_is_never_shown_the_coordinates(tmp_path, monkeypatch):
+    """THE OWNER'S RULING, 2026-09-22, and the one line of it that is absolute:
+
+        "it's ok for the admin to see things like the site lat/long, or even
+        operator. But not viewer roles. That's the difference. As long as
+        viewers cannot see the lat/long we'll be ok."
+
+    So the operator scan below consults ALLOWED and this one does not. There is
+    no allowlist here and there is no argument for adding one: a route that
+    discloses the site to a viewer is a defect whatever it is for, because the
+    viewer link is the one you hand to someone you are not vouching for.
+
+    Measured today: a viewer reaches 81 routes and NONE of them carries a
+    rendering of the coordinates that tracks the configured site.
+    `/api/weather` answers `{"detail":"capability not held"}`, and the site
+    object in `/api/status`, `/api/site` and `/api/config` is stripped to
+    `is_default` and `horizon_min_deg`.
+
+    This case is what keeps that true. It is deliberately the same scan as the
+    operator one - same renderings, same differential, same route walk - so
+    neither can be strengthened without the other.
+    """
+    leaking = _tracking_hits(tmp_path, monkeypatch, role="viewer")
+    assert not leaking, (
+        "a VIEWER can read the rig's location from these routes:\n"
+        + "\n".join(f"  {p}  as {sorted(h)}" for p, h in sorted(leaking.items()))
+        + "\n\nThere is no allowlist for this one. Strip the field, or gate "
+          "the route on a capability a viewer does not hold.")
+
+
+def test_a_viewer_cannot_reach_the_weather_surfaces_at_all(tmp_path,
+                                                           monkeypatch):
+    """The other half of the same ruling: the radar map's tiles are centred on
+    the site, so the WEATHER surfaces are gated too, not just the coordinate
+    fields inside them.
+
+    Checked as capability rather than as content, because content is what the
+    case above already checks and a 200 with an empty body would pass it. A
+    viewer must be REFUSED here - which is also what lets the UI hide the panel
+    instead of rendering it empty (issue #129).
+    """
+    client = _client(tmp_path, monkeypatch, *SITE_A, role="viewer")
+    for path in ("/api/weather", "/api/weather/tile/radar/5/5/5.png"):
+        assert client.get(path).status_code == 403, (
+            f"a viewer was not refused {path}; the radar and satellite tiles "
+            f"are centred on the site, so reaching them at all discloses its "
+            f"region")
+
+
 def test_no_route_prints_the_configured_coordinates(tmp_path, monkeypatch):
-    """The control. Every parameterless GET, as a viewer, against a site whose
-    coordinates are known to this test.
+    """The control. Every parameterless GET, as an OPERATOR, against a site
+    whose coordinates are known to this test.
+
+    An operator IS allowed to see them (the owner's ruling above), so this scan
+    consults ALLOWED and the viewer scan does not. What it still catches is a
+    SECOND route starting to carry them, which is the drift #19 is about.
 
     MUTATION: remove "/api/weather" from ALLOWED. Observed: this fails naming
     that route, which is also the proof the scan can see a leak at all.
