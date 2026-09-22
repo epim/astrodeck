@@ -86,6 +86,20 @@ export type CaptureOutcome =
  *  test finds the one after it. photosphereStillnessDom's issue #104 case pins
  *  that refusal; at 800 ms of lag the window is three frames and the 350 ms
  *  grab cadence steps over it, which is how every recording missed it. */
+/** How many readback timings the diagnostics keep: a minute and more of
+ *  frames, which is enough for a p95 and small enough to never matter. */
+const READBACK_SAMPLES = 2048;
+
+/** count / p50 / p95 / max of the stillness readback, in ms. Null before the
+ *  first sample, so "never read" cannot be mistaken for "read in 0 ms". */
+export function readbackSummary(ms: readonly number[]):
+    {count:number;p50:number;p95:number;max:number}|null {
+  if (!ms.length) return null;
+  const sorted = [...ms].sort((a, b) => a - b);
+  const at = (q: number) => sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))];
+  return { count: sorted.length, p50: at(.5), p95: at(.95), max: sorted[sorted.length - 1] };
+}
+
 export type AlignmentWait = 'no-pose' | 'unsettled' | 'separation';
 
 /** `no-pose` only: which of the two sources was missing (issue #76).
@@ -1382,6 +1396,12 @@ export class PhotosphereSweep {
   private vouchSlopMs = CONTINUITY_SLOP_MS;
   private lumaCanvas: HTMLCanvasElement | null = null;
   private stillnessFailures = 0;
+  /** How long each stillness-sample readback took, in ms, newest last and
+   *  capped - the GPU stall issue #90 says cannot be measured off-device. The
+   *  JavaScript around it was timed in node; what a phone's pipeline does when
+   *  asked for its pixels back every frame was not, and this is where the next
+   *  device scan records it. */
+  private readbackMs: number[] = [];
   /** Interval-fallback ticks the media gate refused: the running total for this
    *  camera session, and the length of the run in progress. The gate is right
    *  to refuse a frame the camera never delivered, but it returns before
@@ -2303,7 +2323,10 @@ export class PhotosphereSweep {
       const ctx = this.lumaCanvas.getContext("2d", { willReadFrequently: true });
       if (!ctx) throw new Error("no 2d context for the stillness sample");
       ctx.drawImage(video, 0, 0, LUMA_W, LUMA_H);
+      const readStart = performance.now();
       const { data } = ctx.getImageData(0, 0, LUMA_W, LUMA_H);
+      this.readbackMs.push(performance.now() - readStart);
+      if (this.readbackMs.length > READBACK_SAMPLES) this.readbackMs.shift();
       for (let p = 0; p < this.luma.length; p++) this.luma[p] = luminance(data[p*4], data[p*4+1], data[p*4+2]);
       this.stability.observe(at, this.luma, LUMA_W, LUMA_H);
       this.stillnessFailures = 0;
@@ -2707,6 +2730,12 @@ export class PhotosphereSweep {
     return JSON.stringify({version:1,description:'Local camera samples for alignment debugging; contains photos of your surroundings.',
       browser:navigator.userAgent,stillnessReadFailures:this.stillnessFailures,
       mediaGateRefusals:this.mediaGateRefusals,mediaGateRefusalRun:this.mediaGateRefusalRun,
+      // Issue #90's device half, in the envelope so a session with no accepted
+      // sample still answers it. `preview` is what the browser GRANTED, which
+      // decides how much the #62 noise correction was worth; `readback` is the
+      // per-frame pixel readback that correction grew ninefold.
+      preview:this.video?.videoWidth?{width:this.video.videoWidth,height:this.video.videoHeight}:null,
+      readback:readbackSummary(this.readbackMs),
       samples:this.scanSamples},null,2);
   }
 
