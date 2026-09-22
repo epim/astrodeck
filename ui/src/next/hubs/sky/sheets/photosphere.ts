@@ -1,6 +1,6 @@
 // Camera capture retains a bounded colour panorama and an editable horizon
 // draft. Phone sensor pose and lens angles remain estimates for user review.
-import { DOME_CELLS, SkyPanorama, orientationBasis, pixelBlueness, pixelLuminance, skyAngles, cameraLens, targetCell, transferBasis, type CameraBasis } from './photosphereGeometry';
+import { DOME_CELLS, SkyPanorama, orientationBasis, pixelBlueness, pixelLuminance, skyAngles, cameraLens, targetCell, transferBasis, overlapConflictTerm, type CameraBasis } from './photosphereGeometry';
 import { CameraPoseHistory, MotionStability, ScanPoseSource, poseSeparation, viewVouchesFor, CONTINUITY_SLOP_MS, type PoseEvidence } from './photospherePose';
 import { registerFrame, SEARCH_CEILING_DEG } from './photosphereRegistration';
 import { VisualStability, GRID_W, GRID_H, CELL_SAMPLES, STALE_FRAME_MS } from './photosphereStability';
@@ -145,6 +145,17 @@ export interface CaptureRecord {
    *  refusal has to be read against (issue #76), and because it is the one
    *  quantity in the refusal that the previous frames set rather than this one. */
   anchor?: number;
+  /** `overlap-wait` only (issue #130): which term of the overlap conflict
+   *  refused - brightness correlation under OVERLAP_BRIGHTNESS_MIN, edge
+   *  correlation under OVERLAP_EDGE_MIN, or both - with the two numbers it
+   *  decided on, the sample count, and whether registration searched for a
+   *  better fit before giving up (false: it never searched, because the first
+   *  check was already 'unknown' or its edges already agreed). */
+  overlapTerm?: 'brightness'|'edges'|'both';
+  correlation?: number | null;
+  featureCorrelation?: number | null;
+  samples?: number;
+  searched?: boolean;
 }
 
 /** Does this outcome end a run of `overlap-wait` refusals (see
@@ -2368,7 +2379,8 @@ export class PhotosphereSweep {
   /** Append one outcome to the diagnostic log. This records; it never decides
    *  anything - every gate below still returns its own `false` on its own
    *  terms, this just names which one fired. */
-  private recordCapture(now: number, outcome: CaptureOutcome, extra?: { cell?: number; basis?: CameraBasis; sensorBasis?: CameraBasis; adjusted?: boolean; wait?: AlignmentWait; separation?: number; anchor?: number; gap?: PoseGap }): void {
+  private recordCapture(now: number, outcome: CaptureOutcome, extra?: { cell?: number; basis?: CameraBasis; sensorBasis?: CameraBasis; adjusted?: boolean; wait?: AlignmentWait; separation?: number; anchor?: number; gap?: PoseGap;
+    overlapTerm?: 'brightness'|'edges'|'both'; correlation?: number | null; featureCorrelation?: number | null; samples?: number; searched?: boolean }): void {
     // The exception to "records, never decides", and here deliberately: this is
     // the single point every outcome passes through, so the run of overlap
     // refusals the cue reads cannot miss one. Counting it at the two
@@ -2600,7 +2612,9 @@ export class PhotosphereSweep {
         // `carryTooLarge` is cleared on BOTH arms, not only the passing one:
         // this frame reached the overlap test, so whatever the carried bound
         // said about an earlier frame is no longer what refused.
-        if(overlap.result==='conflict'){this.overlapWait=true;this.carryTooLarge=false;this.recordCapture(now,'overlap-wait');return false;}
+        if(overlap.result==='conflict'){this.overlapWait=true;this.carryTooLarge=false;
+          this.recordCapture(now,'overlap-wait',{overlapTerm:overlapConflictTerm(overlap)??undefined,correlation:overlap.correlation,
+            featureCorrelation:overlap.featureCorrelation??null,samples:overlap.samples,searched:registration.evaluations>1});return false;}
         this.overlapWait=false;this.carryTooLarge=false;
         const target=targetCell(basis!.forward);
         if(!target){this.recordCapture(now,'no-target');return false;}
