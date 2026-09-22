@@ -55,6 +55,39 @@ def _site_line() -> str:
     return f"configured ({elevation})"
 
 
+def _watch_line() -> str:
+    """Is anything outside this PC watching it? Counts and booleans only.
+
+    Issue #125: the rig went offline and nothing said so. The product already
+    has the watcher - `alerting.py`'s dead-man ping, sent every minute from a
+    wall-clock timer, whose ABSENCE is what pages - but on 2026-09-22 this rig
+    had no dead-man URL and no alert channel, so it could have been off for a
+    week and nothing would have noticed. This line puts that state in front of
+    every deploy instead of leaving it to be found by the next outage.
+
+    The dead-man URL carries a per-ping secret in its path, and a sink carries
+    a token or a webhook URL, so nothing here can print either: the facts that
+    leave are a boolean and two counts.
+    """
+    try:
+        with open(os.path.join(ROOT, "config", "astrodeck.json"),
+                  encoding="utf-8") as fh:
+            cfg = json.load(fh) or {}
+    except (OSError, ValueError) as exc:
+        return f"UNREADABLE ({type(exc).__name__}) - treat as unwatched"
+    deadman = bool(str(cfg.get("deadman_url") or "").strip())
+    sinks = [s for s in (cfg.get("alerts") or []) if isinstance(s, dict)]
+    live = [s for s in sinks if s.get("enabled", True)]
+    verified = sum(1 for s in live if s.get("verified"))
+    if not deadman and not live:
+        return ("UNWATCHED - no dead-man URL and no alert channel: if this PC "
+                "stops, nothing outside it will say so (issue #125)")
+    parts = ["dead-man configured" if deadman
+             else "NO dead-man URL - an alert channel cannot report its own PC dying"]
+    parts.append(f"{len(live)} alert channel(s), {verified} verified")
+    return "; ".join(parts)
+
+
 def _session_cookie() -> str:
     with open(os.path.join(ROOT, "config", "astrodeck.json"), encoding="utf-8") as fh:
         cfg = json.load(fh)
@@ -97,6 +130,7 @@ def main(argv: list[str]) -> int:
     lanes = status.get("busy_lanes") or status.get("busy") or {}
     print(f"busy lanes: {lanes if lanes else 'none'}")
     print("site: " + _site_line())
+    print("watched: " + _watch_line())
     for flag in ("looping", "bahtinov_active", "live_stack_active"):
         print(f"{flag}: {status.get(flag)}")
 

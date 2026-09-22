@@ -421,6 +421,12 @@ async def _lifespan(app: "FastAPI"):
     except Exception as e:  # noqa: BLE001 - degrade, never crash boot
         bus.log("error", f"plan policy migration failed: {e}", "plans")
     task = asyncio.create_task(dispatcher.run())
+    # #125: what the PC's previous session ended as - clean, a planned restart,
+    # or an unexpected end (power, crash, thermal reset) - into the night log
+    # while the System log still says so. Off the loop and never raises; a
+    # background task so a slow event log cannot delay boot.
+    from ..bootcause import log_boot_cause
+    boot_cause_task = asyncio.create_task(log_boot_cause())
     # Auto-resume-at-dusk service (sessions spec §5) — its own 60s asyncio loop.
     resume_arm.start()
     # Weather forecast poller (weather spec §3) — its own 60 s asyncio loop.
@@ -532,6 +538,11 @@ async def _lifespan(app: "FastAPI"):
         task.cancel()
         try:
             await task
+        except (asyncio.CancelledError, Exception):
+            pass
+        boot_cause_task.cancel()
+        try:
+            await boot_cause_task
         except (asyncio.CancelledError, Exception):
             pass
         # Stop the relay dial-out (best-effort; never raises out of shutdown).
