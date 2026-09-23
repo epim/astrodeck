@@ -487,7 +487,11 @@ no ray hit anything. Measured bin `i` of `N` covers
   unresolvable. `product_bins` is the number of points in THIS result's own
   `result/horizon.json` (whatever the scanner that produced it used, not a
   constant); `resolvable` is `visible_width_deg >= 360 / product_bins`.
-  `resolvable_width_deg` is `max(min_width_deg, 360 / product_bins)`, reported
+  `resolvable_width_deg` is `max(min_width_deg', 360 / product_bins)`, where
+  `min_width_deg'` is the declared label floored at `EDITOR_MIN_WIDTH_DEG`
+  (1.5577 degrees, issue #53: the owner's ruling that the narrowest obstruction
+  the planner honours is the closest two dots can be placed in the horizon
+  editor, at its finest zoom). It is reported
   on every row regardless of `resolvable`, and it still sets the verdict's
   width threshold once an obstacle IS resolvable: the declared value can
   still hold a wide obstacle to a wider minimum than one bin, it just cannot
@@ -514,8 +518,8 @@ no ray hit anything. Measured bin `i` of `N` covers
   `points` array is empty -- has `product_bins` 0, and there is then no
   product resolution to defer to. Nothing is excused: `measured_bins` is 0,
   `measured_resolution_deg` is `null`, every obstacle is `resolvable: true`,
-  `resolvable_width_deg` falls back to the scene's declared `min_width_deg`
-  (`null` where the scene declares none), no bin is resolved so a visible
+  `resolvable_width_deg` falls back to the scene's declared `min_width_deg`,
+  floored at `EDITOR_MIN_WIDTH_DEG` (`null` where the scene declares none), no bin is resolved so a visible
   obstacle's two deficit and two width figures are all `null`, and every
   VISIBLE obstacle is `missed` (an obstacle visible in no bin at all keeps
   its 0.0 widths and is not missed, exactly as at any other resolution).

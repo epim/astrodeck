@@ -36,6 +36,7 @@ import type { SavedLocation } from "../../../../types";
 import {
   FLOOR_ALT_DEG, GROUND_Y, HX, HY, SKY_Y, STRIP_H, STRIP_W,
   altFromY, azFromX, buildFillPathD, buildStrokePathD, hitTestPoint, toViewBox,
+  REVIEW_HIT_PX, REVIEW_STRIP_PX, REVIEW_ZOOM_MAX,
 } from "./horizonStrip";
 import {
   PhotosphereSweep, checkPhotosphereSupport, traceSweep, OVERHEAD_BAND,
@@ -203,7 +204,7 @@ export function HorizonSheet({ params, onClose, onBusyChange, guided = false, on
     const hit = panorama ? points.reduce((best,p,i)=>{
       const dist=Math.hypot((HX(p.az)-x)*rect.width/STRIP_W,(HY(p.alt)-y)*rect.height/STRIP_H);
       return dist<best.distance?{index:i,distance:dist}:best;
-    },{index:-1,distance:18}).index : hitTestPoint(points, x, y);
+    },{index:-1,distance:REVIEW_HIT_PX}).index : hitTestPoint(points, x, y);
     if (hit >= 0) {
       dragRef.current = { index: hit, moved: false, original: points };
       const el = e.currentTarget as unknown as { setPointerCapture?: (id: number) => void };
@@ -437,11 +438,11 @@ export function HorizonSheet({ params, onClose, onBusyChange, guided = false, on
       <div hidden={capturing}>
       {panorama && <div className="photosphere-review-heading">
         <div><strong>Your surroundings</strong><p>Drag the points to follow the tops of trees and roofs. Save when the line matches your view.</p></div>
-        <label>Zoom <input type="range" aria-label="Panorama zoom" min={1} max={4} step={.5} value={reviewZoom} onChange={e=>setReviewZoom(Number(e.target.value))}/></label>
+        <label>Zoom <input type="range" aria-label="Panorama zoom" min={1} max={REVIEW_ZOOM_MAX} step={.5} value={reviewZoom} onChange={e=>setReviewZoom(Number(e.target.value))}/></label>
       </div>}
       <div ref={panoramaScroll} className={panorama ? 'photosphere-editor-scroll' : undefined}
         onScroll={e=>{if(capturing)return;const el=e.currentTarget,max=el.scrollWidth-el.clientWidth;setPanPosition(max>0?el.scrollLeft/max*100:0);if(el.scrollWidth)reviewAz.current=(el.scrollLeft+el.clientWidth/2)/el.scrollWidth*360;}}>
-      <div style={{ position: "relative", width: panorama ? 1040*reviewZoom : undefined }}>
+      <div style={{ position: "relative", width: panorama ? REVIEW_STRIP_PX*reviewZoom : undefined }}>
         <svg
           ref={horizonStrip}
           data-testid="horizon-strip"

@@ -457,7 +457,7 @@ class IdealResult(unittest.TestCase):
         a scanner excused from reporting one. There is no product resolution
         to defer to, so `resolvable` cannot be read off one: every obstacle
         is resolvable, `resolvable_width_deg` falls back to the scene's
-        declared width, nothing is resolved so the deficit and width figures
+        declared width (floored at EDITOR_MIN_WIDTH_DEG, #53), nothing is resolved so the deficit and width figures
         are `null`, and every visible obstacle is missed.
 
         Named mutation: make the fallback `resolvable = False` when
@@ -475,8 +475,10 @@ class IdealResult(unittest.TestCase):
         for obstacle in horizon["obstacles"]:
             with self.subTest(obstacle=obstacle["id"]):
                 self.assertTrue(obstacle["resolvable"])
+                # Issue #53: the declared label, floored at the narrowest
+                # obstruction the horizon editor can represent.
                 self.assertEqual(obstacle["resolvable_width_deg"],
-                                 obstacle["min_width_deg"])
+                                 max(obstacle["min_width_deg"], score.EDITOR_MIN_WIDTH_DEG))
                 self.assertIsNone(obstacle["deficit_median"])
                 self.assertIsNone(obstacle["deficit_p95"])
                 self.assertIsNone(obstacle["width_missed_deg"])

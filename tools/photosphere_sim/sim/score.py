@@ -380,6 +380,19 @@ def _longest_run_deg(under: np.ndarray, step: float) -> float:
     return float(best) * step
 
 
+#: THE NARROWEST OBSTRUCTION THE PLANNER IS REQUIRED TO HONOUR, in degrees of
+#: azimuth (issue #53). The owner's ruling, 2026-09-23: "the distance one could
+#: reasonably put two of the dots on the horizon editor" - an obstruction
+#: narrower than a person can draw is one no horizon can carry, scanned or not.
+#: Derived from the editor's finest setting, the photo review at full zoom:
+#: the strip is 1040 px x zoom wide for 360 degrees, zoom tops out at 4, and a
+#: tap within 18 px of a dot grabs it rather than adding one (the editor's
+#: REVIEW_* constants). 18 / (1040 * 4 / 360) = 1.5577 degrees. The UI suite's
+#: horizonEditorFloor test reads this line against those constants - that
+#: direction, because this package must never read production code.
+EDITOR_MIN_WIDTH_DEG = 18.0 / (1040.0 * 4.0 / 360.0)
+
+
 def _score_obstacles(reference: dict, truth_bins: int, step: float,
                      alt: np.ndarray, resolved: np.ndarray,
                      product_bins: int) -> list:
@@ -482,6 +495,11 @@ def _score_obstacles(reference: dict, truth_bins: int, step: float,
 
         declared = obstacle.get("min_width_deg")
         declared_val = float(declared) if declared is not None else None
+        # Issue #53: the declared label is floored at what the editor can
+        # represent. A label under it (the chart yard's pole-far, 0.25) asks
+        # the scan for something no horizon can carry.
+        if declared_val is not None:
+            declared_val = max(declared_val, EDITOR_MIN_WIDTH_DEG)
         has_min_width = declared_val is not None and declared_val > 0.0
 
         if bin_width_deg is not None:
