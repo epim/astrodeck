@@ -2609,6 +2609,10 @@ export class PhotosphereSweep {
     let capturedBasis: CameraBasis | undefined;
     let capturedSensorBasis: CameraBasis | undefined;
     let capturedAdjusted: boolean | undefined;
+    // What the overlap check read for the frame that was ACCEPTED (issue #130):
+    // without it a refusal's numbers have nothing to be compared against, and
+    // "the still route agrees here and the arc does not" cannot be measured.
+    let capturedOverlap: { correlation: number | null; featureCorrelation: number | null; samples: number } | undefined;
     try {
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
       data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
@@ -2681,6 +2685,7 @@ export class PhotosphereSweep {
         if(registration.adjusted && rawBasis)
           this.visualAnchor={raw:rawBasis,aligned:registration.basis};
         capturedCell=target.id;capturedBasis=basis;capturedSensorBasis=rawBasis??undefined;capturedAdjusted=registration.adjusted;
+        capturedOverlap={correlation:overlap.correlation,featureCorrelation:overlap.featureCorrelation??null,samples:overlap.samples};
         // This frame was placed with a full basis, so if the cap is what it was
         // aimed at, the cap's pixels are as well oriented as any other cell's.
         if(target.alt>89)this.aimedZenith=true;
@@ -2730,7 +2735,7 @@ export class PhotosphereSweep {
     // artefact is one duplicate zenith the user asked for by pressing, and the
     // alternative is refusing a deliberate press for a reason it cannot see.
     this.lastCapturedFrameId = frameId;
-    this.recordCapture(now, 'accepted', { cell: capturedCell, basis: capturedBasis, sensorBasis: capturedSensorBasis, adjusted: capturedAdjusted });
+    this.recordCapture(now, 'accepted', { cell: capturedCell, basis: capturedBasis, sensorBasis: capturedSensorBasis, adjusted: capturedAdjusted, ...capturedOverlap });
     return true;
   }
 
