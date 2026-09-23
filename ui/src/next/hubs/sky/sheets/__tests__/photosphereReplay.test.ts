@@ -656,6 +656,22 @@ await test('traceSweep marks every bin uncertain in doubt, and is traceSkyCovera
   assert.deepEqual(doubted.points.map(p => p.az), sound.points.map(p => p.az), 'the azimuths moved');
 });
 
+const ACCEPTED_OVERLAP = 'replay: an accepted frame logs the overlap it passed on, so a refusal has something to be compared with (#130)';
+if (!rightLens) skip(ACCEPTED_OVERLAP, NO_RECORDING);
+else await test(ACCEPTED_OVERLAP, () => {
+  // Measured with this in place: hold 35 (cell 48, alt 70) passed at
+  // brightness 0.972 / edges 0.929 on the still route and 0.370 / 0.510 on the
+  // arc route - same attitude, only the camera's position differs - which is
+  // parallax dragging agreement to the bar, and past it at holds 36 and 39.
+  // Mutation: drop `...capturedOverlap` from the accepted recordCapture.
+  // Observed red: 'an accepted frame logged no overlap'.
+  const accepted = (rightLens.captures as Array<Record<string, unknown>>)
+    .filter(record => record.outcome === 'accepted' && record.adjusted !== undefined);
+  assert.ok(accepted.length > 0, 'premise: the scan accepted frames');
+  const registered = accepted.filter(record => typeof record.samples === 'number');
+  assert.ok(registered.length > 0, `an accepted frame logged no overlap: ${JSON.stringify(accepted[0])}`);
+});
+
 await test('overlapConflictTerm names the term and is null for anything but a conflict (#130)', () => {
   assert.equal(overlapConflictTerm({ result: 'agree', samples: 9, correlation: .9, featureCorrelation: .9 }), null);
   assert.equal(overlapConflictTerm({ result: 'unknown', samples: 0, correlation: null }), null);
