@@ -18,7 +18,7 @@ import { decodePng, encodePng, pngChunk, PNG_SIGNATURE } from '../__sim__/png';
 import { createHarness, resample } from '../__sim__/harness';
 import { mergeObservations, replayCase, type Observation } from '../__sim__/replay';
 import { DOME_CELLS, OVERLAP_BRIGHTNESS_MIN, OVERLAP_EDGE_MIN, overlapConflictTerm } from '../photosphereGeometry';
-import { endsOverlapRun, extendsOverlapRun, LENS_DOUBT_AFTER, type CaptureOutcome } from '../photosphere';
+import { endsOverlapRun, extendsOverlapRun, LENS_DOUBT_AFTER, traceSkyCoverage, traceSweep, type CaptureOutcome } from '../photosphere';
 
 let passed = 0, failed = 0, skipped = 0;
 function test(name: string, fn: () => void | Promise<void>): Promise<void> {
@@ -622,6 +622,38 @@ else await test(TERMS, () => {
     assert.equal(typeof record.samples, 'number');
     assert.equal(typeof record.searched, 'boolean');
   }
+});
+
+const DOUBT = 'replay: a scan whose lens was in doubt publishes no certain horizon, and a sound one is untouched (#129)';
+if (!wrongLens || !rightLens) skip(DOUBT, NO_RECORDING);
+else await test(DOUBT, () => {
+  // The wrong-lens scan painted the south roof into the top rows of most bins,
+  // the pooled sky seed became the roof, and the tracer published open sky over
+  // it, CERTAIN: false_open_sr 0.583 on the scorer. The sweep had already said
+  // the lens was wrong (the #52 run). Now that doubt reaches the trace.
+  // Mutation: delete the `lensDoubted = true` latch in recordCapture. Observed
+  // red: 'the wrong-lens scan still published 16 certain bins'.
+  // Mutation: latch on ANY overlap-wait (drop the LENS_DOUBT_AFTER test).
+  // Observed red: 'a scan with the lens the scanner assumes was marked in
+  // doubt' - arc075-60 refuses twice, never six in a row.
+  const bins = wrongLens.horizon.points.length;
+  assert.equal(wrongLens.horizon.uncertain_bins.length, bins,
+    `the wrong-lens scan still published ${bins - wrongLens.horizon.uncertain_bins.length} certain bins`);
+  assert.ok(rightLens.horizon.uncertain_bins.length < rightLens.horizon.points.length,
+    'a scan with the lens the scanner assumes was marked in doubt');
+});
+
+await test('traceSweep marks every bin uncertain in doubt, and is traceSkyCoverage otherwise (#129)', () => {
+  const column = { lum: Array.from({ length: 101 }, (_, r) => (r <= 60 ? 122 : 40)), blue: Array.from({ length: 101 }, () => 0) };
+  const columns = Array.from({ length: 30 }, () => [column]);
+  const sound = traceSweep({ columns: () => columns, lensDoubtedThisScan: false });
+  assert.deepEqual(sound, traceSkyCoverage(columns), 'a sound scan must trace exactly as before');
+  assert.ok(sound.points.some(p => p.alt < 90), 'premise: the sound trace found open sky');
+  const doubted = traceSweep({ columns: () => columns, lensDoubtedThisScan: true });
+  assert.equal(doubted.lensInDoubt, true);
+  assert.equal(doubted.uncertainBins.length, 30);
+  assert.ok(doubted.points.every(p => p.alt === 90), 'a doubted scan published open sky');
+  assert.deepEqual(doubted.points.map(p => p.az), sound.points.map(p => p.az), 'the azimuths moved');
 });
 
 await test('overlapConflictTerm names the term and is null for anything but a conflict (#130)', () => {

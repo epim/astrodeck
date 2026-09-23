@@ -38,7 +38,7 @@ import {
   altFromY, azFromX, buildFillPathD, buildStrokePathD, hitTestPoint, toViewBox,
 } from "./horizonStrip";
 import {
-  PhotosphereSweep, checkPhotosphereSupport, traceSkyCoverage, OVERHEAD_BAND,
+  PhotosphereSweep, checkPhotosphereSupport, traceSweep, OVERHEAD_BAND,
 } from "./photosphere";
 import { PhotosphereDome } from './PhotosphereDome';
 import { readPanorama, writePanorama } from './photosphereStorage';
@@ -264,6 +264,7 @@ export function HorizonSheet({ params, onClose, onBusyChange, guided = false, on
   const [, setFrameTick] = useState(0);
   const [trace, setTrace] = useState<HorizonPoint[] | null>(null);
   const [traceUncertain, setTraceUncertain] = useState(0);
+  const [lensInDoubt, setLensInDoubt] = useState(false);
   const [manualOverhead, setManualOverhead] = useState(false);
   const [alignmentReport,setAlignmentReport]=useState<string|null>(null);
   const [lensAngleDraft,setLensAngleDraft]=useState('60');
@@ -366,7 +367,7 @@ export function HorizonSheet({ params, onClose, onBusyChange, guided = false, on
     let image: string;
     try { image = sweep.panoramaImage(); }
     catch (error) { setCaptureError(error instanceof Error ? error.message : 'Could not prepare the panorama. Try again.'); return; }
-    const proposal = traceSkyCoverage(sweep.columns());
+    const proposal = traceSweep(sweep);
     reviewAz.current=sweep.currentHeading;
     setPanorama(image); setReviewZoom(1); setReviewDraft(true);
     setPhotoStored(false);
@@ -374,6 +375,7 @@ export function HorizonSheet({ params, onClose, onBusyChange, guided = false, on
     setPoints(proposal.points); setByHand(false); setDirty(true); setSaved(false); onDirty?.();
     setTrace(proposal.points);
     setTraceUncertain(proposal.uncertainBins.length);
+    setLensInDoubt(!!proposal.lensInDoubt);
     setAlignmentReport(`data:application/json;charset=utf-8,${encodeURIComponent(sweep.alignmentReport())}`);
     setManualOverhead(sweep.usedManualOverhead);
     sweep.stop();
@@ -590,7 +592,8 @@ export function HorizonSheet({ params, onClose, onBusyChange, guided = false, on
           </Mono>
           <Mono size={10} tone="warn">Camera lens angles vary. Check the estimated heights before saving this line for telescope planning. The line blocks everything below the highest obstruction, including gaps beneath branches or overhangs.</Mono>
           {manualOverhead && <p className="photosphere-detail">You captured overhead by hand. Check that this part of the horizon matches what’s directly above the telescope.</p>}
-          {traceUncertain > 0 && <p className="photosphere-error" role="status">{traceUncertain} directions could not be measured reliably. They’re marked blocked up to 90° until you correct them. Rescan in daylight or draw their height by hand.</p>}
+          {lensInDoubt && <p className="photosphere-error" role="status" data-testid="trace-lens-doubt">The camera view angle may be set wrong for this lens, so this scan cannot place the horizon. Every direction is marked blocked. Set the camera view angle, then scan again.</p>}
+          {!lensInDoubt && traceUncertain > 0 && <p className="photosphere-error" role="status">{traceUncertain} directions could not be measured reliably. They’re marked blocked up to 90° until you correct them. Rescan in daylight or draw their height by hand.</p>}
           {panorama && <a className="photosphere-download" href={panorama} download="astrodeck-surroundings.png">Download panorama</a>}
         </Card>
       )}

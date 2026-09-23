@@ -348,6 +348,30 @@ export function projectSweepColumns(frames: SweepFrame[], bins: number,
 export interface SkyTrace {
   points: { az: number; alt: number }[];
   uncertainBins: number[];
+  /** Set by `traceSweep` alone: the scan reached the lens-doubt run on an
+   *  uncalibrated lens, so every bin is uncertain (issue #129). */
+  lensInDoubt?: boolean;
+}
+
+/** The horizon a finished SCAN may publish - `traceSkyCoverage` plus the one
+ *  thing only the sweep knows: whether its lens was in doubt (issue #129).
+ *
+ *  On a lens the scanner has argued against - LENS_DOUBT_AFTER overlap
+ *  refusals in a row, uncalibrated, the state the "camera view angle may be
+ *  set wrong" cue already reports - every frame was painted with the wrong
+ *  field of view. Measured on chartyard-arc075-70 (a 70-degree camera scanned
+ *  at 60): the high-band frames compress toward their centres, the zenith
+ *  frame paints the south roof into the top rows of 19 of 30 bins, the pooled
+ *  sky seed becomes the roof, and the tracer publishes open sky over it,
+ *  CERTAIN - false_open_sr 0.583. No tracer rule can see that from the columns.
+ *  The sweep can: it has already said the lens is wrong. So a scan in that
+ *  state publishes every bin uncertain - 90, blocked, until the view angle is
+ *  set and the sky rescanned. That can only err toward blocking. */
+export function traceSweep(sweep: { columns(): (number[] | SkyBin)[]; lensDoubtedThisScan: boolean }): SkyTrace {
+  const trace = traceSkyCoverage(sweep.columns());
+  if (!sweep.lensDoubtedThisScan) return trace;
+  return { points: trace.points.map(p => ({ ...p, alt: 90 })),
+    uncertainBins: trace.points.map((_, i) => i), lensInDoubt: true };
 }
 
 /** One sampled column of sky: per-row luminance, and the blueness of the same
@@ -1431,6 +1455,10 @@ export class PhotosphereSweep {
    *  read only by `captureCue`; cleared with the rest of the session in
    *  `stop()`, and so by `start()`, which calls it. */
   private overlapWaitRun = 0;
+  /** Did THIS scan reach the lens-doubt run on an uncalibrated lens? Latched,
+   *  and cleared only by `begin()`: one matching frame ends the RUN, but it
+   *  does not un-paint the frames placed with the wrong lens before it. */
+  private lensDoubted = false;
   /** The media clock, in seconds, of the last reading the interval path took
    *  (see `newMediaFrame`, which consumes as it answers and advances this on
    *  every `true`). `null` until the first reading, taken in `start()` once
@@ -1808,6 +1836,7 @@ export class PhotosphereSweep {
   get aspectRatio(): number { return this.video?.videoWidth && this.video.videoHeight ? this.video.videoWidth/this.video.videoHeight : this.imageAspect; }
   get cameraViewAngle():number {return this.shortAxisFov;}
   get hasLensCalibration():boolean {return this.lensCalibrated;}
+  get lensDoubtedThisScan():boolean {return this.lensDoubted;}
   get lens() {return cameraLens(this.aspectRatio,1,this.shortAxisFov);}
   setCameraViewAngle(degrees:number):boolean {
     if(this.recording || !Number.isFinite(degrees) || degrees<35 || degrees>100)return false;
@@ -2034,6 +2063,7 @@ export class PhotosphereSweep {
     // moment..." or "I can't match this view yet...", both about a scan that
     // has just ended.
     this.overlapWaitRun = 0; this.overlapWait = false; this.carryTooLarge = false; this.alignmentWait = false;
+    this.lensDoubted = false;
     // And the carried correction, which `begin()` did NOT clear (#94). It is
     // cleared only in `start()`, so a second scan in one camera session
     // inherited the first scan's anchor - including, on a wrong lens, an
@@ -2395,6 +2425,10 @@ export class PhotosphereSweep {
     // path reaching LENS_DOUBT_AFTER only through the other refusals.
     if (extendsOverlapRun(outcome)) this.overlapWaitRun++;
     else if (endsOverlapRun(outcome)) this.overlapWaitRun = 0;
+    // After the pair, never between them: an `if` here would capture the
+    // `else` above and a run would stop resetting (caught by the #52 replay
+    // case when this line was first written in the middle).
+    if (this.overlapWaitRun >= LENS_DOUBT_AFTER && !this.lensCalibrated) this.lensDoubted = true;
     this.captureRecords.push({ at: now, outcome, ...extra });
     if (this.captureRecords.length > CAPTURE_LOG_LIMIT) this.captureRecords.splice(0, this.captureRecords.length - CAPTURE_LOG_LIMIT);
   }
