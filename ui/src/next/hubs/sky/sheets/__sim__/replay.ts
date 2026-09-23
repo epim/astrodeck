@@ -158,7 +158,7 @@ export async function replayCase(caseDir: string): Promise<Summary> {
   // replay that throws must not leave a frozen `Date.now` behind for the next
   // thing in the process to trip over.
   try {
-    const { PhotosphereSweep, traceSkyCoverage } = await import('../photosphere');
+    const { PhotosphereSweep, traceSweep } = await import('../photosphere');
     const sweep = new PhotosphereSweep();
     await sweep.start(harness.video, harness.canvas);
 
@@ -259,7 +259,9 @@ export async function replayCase(caseDir: string): Promise<Summary> {
     // read at that instant rather than at the last frame's.
     harness.setClock(Number.isFinite(finishAt) ? finishAt : elapsed);
     const columns = sweep.columns();
-    const trace = traceSkyCoverage(columns);
+    // The same entry the app saves through (issue #129): a scan whose lens was
+    // in doubt publishes nothing certain.
+    const trace = traceSweep({ columns: () => columns, lensDoubtedThisScan: sweep.lensDoubtedThisScan });
     const mosaic = sweep.panoramaPixels;
     const cells = sweep.cells;
     const captures = sweep.captureLog.map(record => ({
