@@ -120,7 +120,3 @@ function ClassicFinder({onHorizon}:{onHorizon:(aim:{az:number;alt:number})=>void
   </div>;
 }
 
-export function ClassicSkyToolsLauncher() {
-  const [tool,setTool]=useState<SkyTool|null>(null);
-  return <><div className="flex flex-wrap gap-2"><button className="btn" onClick={()=>setTool('finder')}>AR camera & sky map</button><button className="btn" onClick={()=>setTool('horizon')}>Horizon line</button></div>{tool && <ClassicSkyTools initialTool={tool} onClose={()=>setTool(null)}/>}</>;
-}

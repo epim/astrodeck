@@ -567,6 +567,42 @@ await test("…and an accepted one closes the row and says so", async () => {
 
 await act(async () => { pRoot.unmount(); });
 
+// ============================================================ HORIZON (#131)
+// The horizon editor had no way in from Settings > Site - the place the owner
+// looked for it, and the place the Safety panel's own copy points to. Only
+// Atlas > Layers and Monitor > Sky dome opened it.
+// Mutation: delete the Horizon line <section> from SitePanel. Observed red:
+// 'Settings > Site has no way into the horizon editor'.
+// Mutation: gate it on `!canEdit`. Observed red: both cases below.
+const mountSite = async (caps: string[]) => {
+  useStore.setState({ principal: { role: "admin", email: null, caps } } as never);
+  const host = win.document.createElement("div");
+  win.document.body.appendChild(host);
+  const root = createRoot(host);
+  await act(async () => { root.render(createElement(SitePanel)); });
+  await wait(50);
+  return { host, root };
+};
+
+await test("Settings > Site opens the horizon editor", async () => {
+  const { host, root } = await mountSite(["view.status", "config.site_optics", "config.safety", "view.site_precise"]);
+  const open = host.querySelector('[data-testid="site-edit-horizon"]');
+  assert(open != null, "Settings > Site has no way into the horizon editor");
+  await act(async () => { click(open); });
+  await wait(50);
+  assert(win.document.querySelector('[aria-label="Horizon profile"]') != null,
+    "pressing Edit horizon line did not open the editor");
+  await act(async () => { root.unmount(); });
+});
+
+await test("a caller who cannot edit the site is not offered the editor", async () => {
+  const { host, root } = await mountSite(["view.status"]);
+  assert(host.textContent && host.textContent.length > 0, "premise: the panel rendered for the viewer");
+  assert(host.querySelector('[data-testid="site-edit-horizon"]') == null,
+    "a viewer was offered the horizon editor");
+  await act(async () => { root.unmount(); });
+});
+
 // ------------------------------------------------------------------- report
 const total = passed + failed;
 console.log(`settingsGatesDom.test: ${passed}/${total} passed`);
