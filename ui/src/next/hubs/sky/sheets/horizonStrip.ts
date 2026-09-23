@@ -21,6 +21,16 @@ export const FLOOR_ALT_DEG = 25;
  *  viewBox units there - kept identical here). */
 export const HIT_RADIUS = 16;
 
+/** The photo review's scale (issue #53). These three set the finest two dots
+ *  can be placed by hand - REVIEW_HIT_PX over the strip's pixels per degree at
+ *  REVIEW_ZOOM_MAX, 1.5577 degrees - and that is the narrowest obstruction the
+ *  planner is required to honour (the simulator scorer's EDITOR_MIN_WIDTH_DEG,
+ *  cross-checked by horizonEditorFloor.test.ts). Change one and that test says
+ *  the floor moved. */
+export const REVIEW_STRIP_PX = 1040;
+export const REVIEW_ZOOM_MAX = 4;
+export const REVIEW_HIT_PX = 18;
+
 /** Azimuth (degrees, any range) -> x. Deliberately NOT wrapped: the fill
  *  path extends a point to az-360/az+360 on purpose so the polyline enters
  *  and leaves the visible strip at the correct slope, and wrapping here
